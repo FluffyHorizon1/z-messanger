@@ -107,13 +107,12 @@ jobs:
         run: |
           flutter pub get
           flutter build windows --release
-      - name: Zip build
-        working-directory: app/build/windows/x64/runner/Release
-        run: Compress-Archive -Path * -DestinationPath z-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: z-windows-x64
-          path: app/build/windows/x64/runner/Release/z-windows-x64.zip
+          # Upload the Release folder contents directly so the downloaded
+          # artifact is a single zip you unzip once to get zapp.exe + its files.
+          path: app/build/windows/x64/runner/Release/**
 
   macos:
     name: macOS app

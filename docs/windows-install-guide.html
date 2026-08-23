@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install Z on Windows</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#0b0c0f; --surface:#14161b; --surface2:#1b1e25; --line:#262a33;
+    --accent:#ffb300; --accent-soft:#3a2e0e; --accent-line:#5c4712;
+    --text:#ececed; --muted:#9aa0aa; --faint:#6b7280;
+    --ok:#46a758; --ok-soft:#12251a; --warn:#e5a13a; --warn-soft:#241a0b;
+    --sans:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+    line-height:1.6;font-size:16px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:760px;margin:0 auto;padding:48px 22px 96px}
+  .hero{display:flex;align-items:center;gap:16px;margin-bottom:10px}
+  .mark{font-family:var(--mono);font-weight:600;font-size:40px;color:var(--accent);
+    line-height:1;border:2px solid var(--accent-line);border-radius:12px;
+    width:62px;height:62px;display:flex;align-items:center;justify-content:center;flex:none}
+  h1{font-size:29px;font-weight:700;margin:0;letter-spacing:-.02em;text-wrap:balance}
+  .lede{color:var(--muted);margin:14px 0 0;font-size:16.5px;max-width:64ch}
+  .lede b{color:var(--text);font-weight:600}
+  .facts{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0 8px}
+  .fact{font-family:var(--mono);font-size:12.5px;color:var(--muted);
+    background:var(--surface2);border:1px solid var(--line);border-radius:7px;padding:6px 11px}
+  .fact b{color:var(--accent);font-weight:600}
+  h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.14em;
+    color:var(--faint);margin:44px 0 20px;font-family:var(--mono)}
+  .steps{position:relative;margin:0;padding:0;list-style:none}
+  .steps::before{content:"";position:absolute;left:19px;top:8px;bottom:26px;width:2px;
+    background:linear-gradient(var(--accent-line),var(--line))}
+  .step{position:relative;padding:0 0 26px 58px}
+  .num{position:absolute;left:0;top:-2px;width:40px;height:40px;border-radius:50%;
+    background:var(--bg);border:2px solid var(--accent-line);color:var(--accent);
+    font-family:var(--mono);font-weight:600;font-size:16px;
+    display:flex;align-items:center;justify-content:center}
+  .step h3{margin:6px 0 6px;font-size:19px;font-weight:600;letter-spacing:-.01em}
+  .step p{margin:8px 0;color:var(--muted);font-size:15px}
+  .step p b, .step p strong{color:var(--text)}
+  code{font-family:var(--mono);font-size:.88em;background:var(--surface2);
+    border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#f0cd7a}
+  a{color:var(--accent);text-decoration:none;border-bottom:1px solid var(--accent-line)}
+  a:hover{border-bottom-color:var(--accent)}
+  .seen{background:var(--surface);border:1px solid var(--line);border-radius:8px;
+    padding:11px 14px;margin:12px 0;font-size:13.5px;color:var(--muted)}
+  .seen b{color:var(--text);font-weight:600}
+  .seen .tag{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.1em;
+    color:var(--faint);display:block;margin-bottom:4px}
+  .callout{display:flex;gap:12px;border-radius:10px;padding:14px 16px;margin:16px 0;font-size:14.5px}
+  .callout .ic{flex:none;font-family:var(--mono);font-weight:600}
+  .c-key{background:var(--accent-soft);border:1px solid var(--accent-line)}
+  .c-key .ic{color:var(--accent)}
+  .c-warn{background:var(--warn-soft);border:1px solid #5c4712}
+  .c-warn .ic{color:var(--warn)}
+  .callout b{color:var(--text);font-weight:600}
+  .addr{font-family:var(--mono);color:var(--accent)}
+  hr{border:none;border-top:1px solid var(--line);margin:38px 0}
+  .cmd{background:#0e1014;border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:8px;padding:13px 15px;margin:12px 0;overflow-x:auto}
+  .cmd code{background:none;border:none;padding:0;color:#ffd888;font-size:13.5px;white-space:pre}
+  details{border:1px solid var(--line);border-radius:10px;padding:4px 16px;margin:16px 0;background:var(--surface)}
+  summary{cursor:pointer;font-weight:600;padding:10px 0;font-size:15px}
+  details p{color:var(--muted);font-size:14.5px}
+  footer{color:var(--faint);font-size:13px;margin-top:50px;border-top:1px solid var(--line);
+    padding-top:20px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="mark">Z</div>
+    <h1>Install Z on Windows</h1>
+  </div>
+  <p class="lede">Windows apps must be compiled on Windows, so the cleanest way is to let
+  <b>your project's GitHub build it for you</b> — your code is already on GitHub from setting up the
+  relay, and the build runs there automatically on every push. You just download the result and run it.
+  No coding tools needed.</p>
+
+  <div class="facts">
+    <span class="fact">source <b>GitHub Actions</b></span>
+    <span class="fact">tools needed <b>none</b></span>
+    <span class="fact">your relay <b>z-relay.onrender.com</b></span>
+    <span class="fact">time <b>~10 min</b></span>
+  </div>
+
+  <h2>Get the app from your build</h2>
+  <ol class="steps">
+
+    <li class="step">
+      <div class="num">1</div>
+      <h3>Open your repo's Actions tab</h3>
+      <p>Go to GitHub, open your <code>z-messenger</code> repository, and click the
+      <b>Actions</b> tab at the top. You'll see a workflow called <b>build</b>.</p>
+      <div class="seen"><span class="tag">If you see a green ✓ run</span>
+      Great — click it and skip to step&nbsp;3. <span class="tag" style="margin-top:8px">If there's no run, or it's red ✗</span>
+      Click <b>build</b> in the left sidebar → <b>Run workflow</b> → <b>Run workflow</b>, and wait a few minutes.</div>
+    </li>
+
+    <li class="step">
+      <div class="num">2</div>
+      <h3>Wait for the Windows build to finish</h3>
+      <p>Open the running/most-recent <b>build</b> run. It builds Android, Linux, Windows and macOS in
+      parallel — the <b>Windows build</b> job takes about <b>5–8 minutes</b>. Wait until the run shows
+      a green check (or at least the Windows job does).</p>
+    </li>
+
+    <li class="step">
+      <div class="num">3</div>
+      <h3>Download the Windows build</h3>
+      <p>On the run's summary page, scroll to the bottom to the <b>Artifacts</b> section and download
+      <b>z-windows-x64</b>. It saves as <code>z-windows-x64.zip</code>.</p>
+    </li>
+
+    <li class="step">
+      <div class="num">4</div>
+      <h3>Unzip and run</h3>
+      <p>Right-click <code>z-windows-x64.zip</code> → <b>Extract All</b>. Open the extracted folder and
+      double-click <b>zapp.exe</b>.</p>
+      <div class="seen"><span class="tag">Keep the files together</span>
+      <code>zapp.exe</code> needs the <code>.dll</code> files and the <code>data</code> folder sitting next to
+      it — run it from inside the extracted folder, don't move the exe out on its own.</div>
+      <div class="seen"><span class="tag">See a zip inside the zip?</span>
+      Older builds nested it — if the folder contains another <code>z-windows-x64.zip</code>, extract that one
+      too, then run <code>zapp.exe</code>. (I've updated the build so new ones are a single unzip.)</div>
+    </li>
+
+    <li class="step">
+      <div class="num">5</div>
+      <h3>Get past the "unknown publisher" warning</h3>
+      <p>The app isn't code-signed yet, so Windows shows a blue <b>“Windows protected your PC”</b> screen
+      the first time. Click <b>More info</b> → <b>Run anyway</b>. (This is expected for an unsigned app;
+      signing is a later step that removes it.)</p>
+    </li>
+
+    <li class="step">
+      <div class="num">6</div>
+      <h3>Connect it to your relay</h3>
+      <p>On the first screen, pick a display name and paste your relay address:</p>
+      <div class="callout c-key"><span class="ic">▸</span><div><span class="addr">wss://z-relay.onrender.com</span>
+      &nbsp;<span style="color:var(--muted)">— your live relay.</span></div></div>
+      <p>Tap <b>Test connection</b> (green ✓), then <b>Create my identity</b>. To message someone, both of you
+      point at this same relay and swap contact codes.</p>
+    </li>
+  </ol>
+
+  <div class="callout c-warn"><span class="ic">!</span><div><b>Antivirus note.</b> An unsigned new app can occasionally
+  get flagged by third-party antivirus. It's a false positive (the code is yours, built from your repo) —
+  allow it, or sign the build later to avoid it entirely.</div></div>
+
+  <hr>
+
+  <h2>Prefer to build it on your own PC?</h2>
+  <details>
+    <summary>Show the local build steps</summary>
+    <p>Only if you'd rather not use GitHub. Install
+    <a href="https://docs.flutter.dev/get-started/install/windows">Flutter</a> (stable) and
+    <b>Visual Studio 2022</b> with the <b>“Desktop development with C++”</b> workload. Then, from the
+    unzipped project:</p>
+    <div class="cmd"><code>cd app
+flutter pub get
+flutter build windows --release</code></div>
+    <p>Your app is at <code>app\build\windows\x64\runner\Release\zapp.exe</code> — keep the whole
+    <code>Release</code> folder together and run the exe from inside it.</p>
+  </details>
+
+  <h2>If something's off</h2>
+  <p style="color:var(--muted);font-size:14.5px"><b style="color:var(--text)">No “build” workflow in Actions.</b>
+  Make sure Actions is enabled (repo <b>Settings → Actions → General → Allow all actions</b>), then push any
+  change or use <b>Run workflow</b>.</p>
+  <p style="color:var(--muted);font-size:14.5px"><b style="color:var(--text)">The run failed on a job.</b>
+  You only need the <b>Windows build</b> job's artifact — if another platform's job failed, the Windows one may
+  still have produced its download. Open the run and check the Artifacts section.</p>
+  <p style="color:var(--muted);font-size:14.5px"><b style="color:var(--text)">App says “offline”.</b>
+  Confirm the address is exactly <span class="addr">wss://z-relay.onrender.com</span> and open
+  <a href="https://z-relay.onrender.com/health">the health page</a> — it should say <code>{"ok":true,…}</code>.</p>
+
+  <footer>Z · install on Windows · your relay: z-relay.onrender.com</footer>
+</div>
+</body>
+</html>
