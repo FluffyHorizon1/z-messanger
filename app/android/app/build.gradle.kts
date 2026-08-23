@@ -6,7 +6,10 @@ plugins {
 
 android {
     namespace = "app.zmessenger.zapp"
-    compileSdk = flutter.compileSdkVersion
+    // Pinned to 36: newer plugins (file_picker → flutter_plugin_android_lifecycle)
+    // require consumers to compile against Android API 36+. This only sets which
+    // APIs can be compiled against — targetSdk/minSdk are unchanged below.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
