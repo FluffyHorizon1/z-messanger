@@ -1,0 +1,25 @@
+# Render.com Blueprint — deploys the Z relay as a public, TLS-terminated
+# WebSocket service with an automatic https/wss URL. No domain required.
+#
+# One-click:  push this repo to GitHub, then open
+#   https://render.com/deploy?repo=https://github.com/USER/REPO
+# (or Render Dashboard → New → Blueprint → pick your repo). Render reads this
+# file, builds server/Dockerfile, and gives you wss://z-relay-XXXX.onrender.com
+#
+# The relay stores nothing on disk (it's RAM-only by design), so no database
+# or persistent disk is provisioned here — that's intentional.
+services:
+  - type: web
+    name: z-relay
+    runtime: docker
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    plan: free                 # upgrade to "starter" for always-on (no sleep)
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: LOG_LEVEL
+        value: info
+      - key: QUEUE_TTL_HOURS
+        value: "72"
+      # Render injects PORT automatically and the relay binds it — do not set it.

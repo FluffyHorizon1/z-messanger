@@ -1,0 +1,39 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Dart / Flutter
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+app/.flutter-plugins*
+**/doc/api/
+.pub-cache/
+.pub/
+pubspec.lock  # apps: keep; libraries: ignore — here we keep app+protocol locked
+!app/pubspec.lock
+!protocol/pubspec.lock
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local build/test scratch
+/tmp/
+*.log
+
+# Android local config
+app/android/local.properties
+app/android/key.properties
+*.keystore
+*.jks
+
+# Secrets / user data (should never exist in-repo, but just in case)
+*.zid
