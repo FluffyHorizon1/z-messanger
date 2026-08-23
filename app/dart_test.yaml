@@ -1,0 +1,4 @@
+tags:
+  integration:
+    # Talks to a real relay process; run with: flutter test
+    timeout: 2x

@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Z — Product Roadmap</title>
+<style>
+  :root{
+    --bg:#0c0d10; --surface:#15171c; --surface2:#1c1f26; --line:#23262e;
+    --accent:#ffb300; --accent-dim:#7a5a10; --text:#ededed; --muted:#9aa0aa;
+    --ok:#46a758; --now:#ffb300; --later:#4a5568;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);
+    line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:40px 24px 80px}
+  header{display:flex;align-items:center;gap:16px;margin-bottom:8px}
+  .logo{font-size:52px;font-weight:900;color:var(--accent);line-height:1}
+  h1{font-size:24px;margin:0;font-weight:800;letter-spacing:.2px}
+  .sub{color:var(--muted);margin:2px 0 0}
+  .meta{display:flex;gap:10px;flex-wrap:wrap;margin:22px 0 34px}
+  .chip{background:var(--surface2);border:1px solid var(--line);border-radius:999px;
+    padding:6px 14px;font-size:13px;color:var(--muted)}
+  .chip b{color:var(--text);font-weight:600}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:0 0 30px;font-size:13px;color:var(--muted)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  .timeline{position:relative;padding-left:34px}
+  .timeline::before{content:"";position:absolute;left:11px;top:6px;bottom:6px;width:2px;
+    background:linear-gradient(var(--accent),var(--accent-dim) 40%,var(--line))}
+  .phase{position:relative;margin-bottom:30px}
+  .node{position:absolute;left:-34px;top:2px;width:24px;height:24px;border-radius:50%;
+    background:var(--surface);border:2px solid var(--later);display:flex;align-items:center;
+    justify-content:center;font-size:12px;font-weight:800;color:var(--muted)}
+  .phase.done .node{border-color:var(--ok);color:var(--ok)}
+  .phase.now .node{border-color:var(--now);color:#000;background:var(--now)}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+    padding:16px 18px}
+  .phase.now .card{border-color:var(--accent-dim);box-shadow:0 0 0 1px var(--accent-dim) inset}
+  .phead{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+  .ptitle{font-size:17px;font-weight:700;margin:0}
+  .ptime{font-size:12.5px;color:var(--muted);white-space:nowrap}
+  .badge{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
+    padding:3px 9px;border-radius:6px}
+  .b-done{background:rgba(70,167,88,.15);color:var(--ok)}
+  .b-now{background:rgba(255,179,0,.16);color:var(--accent)}
+  .b-next{background:rgba(120,130,150,.16);color:#aab2c0}
+  .b-later{background:rgba(74,85,104,.18);color:#8b93a3}
+  .pgoal{color:var(--muted);font-size:14px;margin:8px 0 12px}
+  ul{margin:0;padding-left:18px}
+  li{margin:5px 0;font-size:14px}
+  li .dod{color:var(--muted);font-size:12.5px}
+  .tag{color:var(--accent);font-weight:600}
+  .sprint{background:linear-gradient(180deg,#171a12,#141207);border:1px solid var(--accent-dim);
+    border-radius:14px;padding:20px 22px;margin:34px 0}
+  .sprint h2{margin:0 0 6px;font-size:18px;color:var(--accent)}
+  .sprint ol{margin:10px 0 0;padding-left:20px}
+  .sprint li{margin:7px 0}
+  footer{color:var(--muted);font-size:12.5px;margin-top:40px;text-align:center;border-top:1px solid var(--line);padding-top:20px}
+  code{background:var(--surface2);padding:1px 6px;border-radius:5px;font-size:12.5px;color:#e6c072}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">Z</div>
+    <div>
+      <h1>Product Roadmap</h1>
+      <p class="sub">Zero-trust encrypted messenger — path to public launch</p>
+    </div>
+  </header>
+
+  <div class="meta">
+    <span class="chip">Target: <b>Public product</b></span>
+    <span class="chip">Pace: <b>You + Claude, aggressive</b></span>
+    <span class="chip">Platforms: <b>Android · Windows · Linux · macOS</b> <span style="opacity:.6">(+ iOS Ph.6)</span></span>
+    <span class="chip">Current: <b>v1.1</b></span>
+  </div>
+
+  <div class="legend">
+    <span><span class="dot" style="background:var(--ok)"></span>Done</span>
+    <span><span class="dot" style="background:var(--now)"></span>In progress</span>
+    <span><span class="dot" style="background:#aab2c0"></span>Next up</span>
+    <span><span class="dot" style="background:var(--later)"></span>Later</span>
+    <span style="margin-left:auto"><span class="tag">DoD</span> = proof required to call it done</span>
+  </div>
+
+  <div class="timeline">
+
+    <div class="phase done">
+      <div class="node">✓</div>
+      <div class="card">
+        <div class="phead">
+          <p class="ptitle">v1.0 → v1.1 · Foundation shipped</p>
+          <span class="ptime">complete</span>
+        </div>
+        <span class="badge b-done">Done</span>
+        <p class="pgoal">Working E2E messenger across 4 platforms; critical bugs found & fixed with regression tests.</p>
+        <ul>
+          <li>Relay (RAM-only), Double-Ratchet protocol, Flutter app — <span class="dod">8 + 19 + integration + concurrency tests green</span></li>
+          <li>Fixed: ratchet concurrency race, decrypt durability, macOS entitlements</li>
+          <li>One-click Render deploy + in-app connection test</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase now">
+      <div class="node">0</div>
+      <div class="card">
+        <div class="phead">
+          <p class="ptitle">Phase 0 · Foundation hardening</p>
+          <span class="ptime">~1 week</span>
+        </div>
+        <span class="badge b-now">In progress</span>
+        <p class="pgoal">Close correctness gaps a wider install base would expose fast.</p>
+        <ul>
+          <li>Crash/restart fuzz of vault + outbox — <span class="dod tag">DoD:</span> <span class="dod">survives induced failure at every await</span></li>
+          <li>Relay load & abuse test — <span class="dod tag">DoD:</span> <span class="dod">stays up, bounded memory, <code>docs/LOAD.md</code></span></li>
+          <li>Structured error surfacing in UI — <span class="dod tag">DoD:</span> <span class="dod">every failure path has an affordance</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase next">
+      <div class="node">1</div>
+      <div class="card">
+        <div class="phead">
+          <p class="ptitle">Phase 1 · Push notifications</p>
+          <span class="ptime">~2–3 weeks</span>
+        </div>
+        <span class="badge b-next">Next up · make-or-break</span>
+        <p class="pgoal">Messages should arrive with the app closed — without leaking metadata.</p>
+        <ul>
+          <li>Push design ADR (UnifiedPush vs FCM contentless vs foreground service)</li>
+          <li>Contentless "wake &amp; fetch" — <span class="dod tag">DoD:</span> <span class="dod">backgrounded phone gets mail in seconds</span></li>
+          <li>Android no-Google fallback (F-Droid flavor); relay push dispatch (stores no content)</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase next">
+      <div class="node">2</div>
+      <div class="card">
+        <div class="phead">
+          <p class="ptitle">Phase 2 · Signed, trustworthy builds</p>
+          <span class="ptime">~1–2 weeks</span>
+        </div>
+        <span class="badge b-next">Next up</span>
+        <p class="pgoal">Remove SmartScreen / "unknown sources" friction; make binaries verifiable.</p>
+        <ul>
+          <li>Android signing in CI · Windows code signing · macOS sign + notarize</li>
+          <li>Published SHA-256 sums + <code>SECURITY.md</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="phase later">
+      <div class="node">3</div>
+      <div class="card">
+        <div class="phead">
+          <p class="ptitle">Phase 3 · Store distribution</p>
+          <span class="ptime">~2–3 weeks</span>
+        </div>
+        <span class="badge b-later">Later</span>
+        <p class="pgoal">Google Play (testing tracks) · F-Droid · Microsoft Store (MSIX) · polished direct downloads.</p>
+      </div>
+    </div>
+
+    <div class="phase later">
+      <div class="node">4</div>
+      <div class="card">
+        <div class="phead">
+          <p class="ptitle">Phase 4 · Reliability &amp; observability</p>
+          <span class="ptime">~2 weeks</span>
+        </div>
+        <span class="badge b-later">Later</span>
+        <p class="pgoal">Opt-in crash tracking · delivery metrics · message-list paging (50k msgs) · multi-instance relay.</p>
+      </div>
+    </div>
+
+    <div class="phase later">
+      <div class="node">5</div>
+      <div class="card">
+        <div class="phead">
+          <p class="ptitle">Phase 5 · Independent security audit</p>
+          <span class="ptime">~3–4 weeks</span>
+        </div>
+        <span class="badge b-later">Later · trust gate</span>
+        <p class="pgoal">Freeze protocol, publish RFC-grade spec + test vectors, engage auditor, remediate, publish report.</p>
+      </div>
+    </div>
+
+    <div class="phase later">
+      <div class="node">6</div>
+      <div class="card">
+        <div class="phead">
+          <p class="ptitle">Phase 6 · iOS</p>
+          <span class="ptime">~3–4 weeks</span>
+        </div>
+        <span class="badge b-later">Later</span>
+        <p class="pgoal">Keychain vault, APNs push, TestFlight → App Store. Flutter makes it mostly config + platform testing.</p>
+      </div>
+    </div>
+
+    <div class="phase later">
+      <div class="node">7</div>
+      <div class="card">
+        <div class="phead">
+          <p class="ptitle">Phase 7 · Feature depth</p>
+          <span class="ptime">ongoing</span>
+        </div>
+        <span class="badge b-later">Post-launch</span>
+        <p class="pgoal">Ordered by value, each builds on existing layering:</p>
+        <ul>
+          <li><b>Sealed sender</b> (biggest metadata win) · <b>Linked devices</b> · <b>Group chats</b> (post-audit)</li>
+          <li>Voice/media · <b>Post-quantum</b> ML-KEM hybrid handshake · search, theming</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sprint">
+    <h2>▶ Next 3 sessions</h2>
+    <p style="color:var(--muted);margin:0;font-size:14px">Each is one clean Claude session: implement → test → artifact → commit.</p>
+    <ol>
+      <li><b>Reliability</b> — crash/restart fuzz test + visible error states (Phase 0)</li>
+      <li><b>The UX unlock</b> — push notifications ADR + contentless wake prototype (Phase 1)</li>
+      <li><b>Trust</b> — Android signing in CI, the fastest "looks legit" win (Phase 2)</li>
+    </ol>
+  </div>
+
+  <footer>
+    Z roadmap · generated with the codebase review · see <code>ROADMAP.md</code> and <code>docs/REVIEW.md</code> for detail.<br>
+    Nothing ships without proof — every milestone's DoD is a test, a build, or a screenshot.
+  </footer>
+</div>
+</body>
+</html>

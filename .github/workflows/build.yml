@@ -1,0 +1,165 @@
+name: build
+
+# Builds installable artifacts for all four targets and runs the full test
+# suite (relay + protocol + real-relay integration). Artifacts are attached to
+# each run and to GitHub Releases on tags.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: '3.44.7'
+
+jobs:
+  test:
+    name: Tests (relay + protocol + integration)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Relay unit tests
+        working-directory: server
+        run: |
+          npm install
+          npm test
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - name: Protocol + integration tests (through the real relay)
+        working-directory: protocol
+        run: |
+          dart pub get
+          dart test
+      - name: App tests (incl. concurrency regression through the real relay)
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter test
+
+  android:
+    name: Android APK
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - working-directory: app
+        run: |
+          flutter pub get
+          flutter build apk --release --split-per-abi
+          flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: z-android
+          path: app/build/app/outputs/flutter-apk/*.apk
+
+  linux:
+    name: Linux bundle
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libsecret-1-dev liblzma-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - working-directory: app
+        run: |
+          flutter pub get
+          flutter build linux --release
+      - name: Package tarball
+        working-directory: app/build/linux/x64/release
+        run: tar czf z-linux-x64.tar.gz -C bundle .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: z-linux-x64
+          path: app/build/linux/x64/release/z-linux-x64.tar.gz
+
+  windows:
+    name: Windows build
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - working-directory: app
+        run: |
+          flutter pub get
+          flutter build windows --release
+      - name: Zip build
+        working-directory: app/build/windows/x64/runner/Release
+        run: Compress-Archive -Path * -DestinationPath z-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: z-windows-x64
+          path: app/build/windows/x64/runner/Release/z-windows-x64.zip
+
+  macos:
+    name: macOS app
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - working-directory: app
+        run: |
+          flutter pub get
+          flutter build macos --release
+      - name: Zip app bundle
+        working-directory: app/build/macos/Build/Products/Release
+        run: |
+          APP=$(ls -d *.app | head -1)
+          ditto -c -k --sequesterRsrc --keepParent "$APP" z-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: z-macos
+          path: app/build/macos/Build/Products/Release/z-macos.zip
+
+  relay-image:
+    name: Relay Docker image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build relay image
+        working-directory: server
+        run: docker build -t z-relay:${{ github.sha }} .
+
+  release:
+    name: Attach artifacts to release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [android, linux, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true

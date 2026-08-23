@@ -1,0 +1,17 @@
+name: z_protocol
+description: >-
+  End-to-end encryption core for the Z messenger: Ed25519/X25519 identities,
+  X3DH-style handshake, Double Ratchet, XChaCha20-Poly1305 payloads,
+  encrypted attachments, safety numbers. Pure Dart, no Flutter dependency.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  cryptography: ^2.7.0
+
+dev_dependencies:
+  lints: ^4.0.0
+  test: ^1.25.0

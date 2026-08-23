@@ -1,0 +1,32 @@
+# Fly.io config for the Z relay (always-on, great for WebSockets, free allowance).
+#
+# Deploy (from the project root, no GitHub needed):
+#   1. Install flyctl:  https://fly.io/docs/hands-on/install-flyctl/
+#   2. fly auth signup   (or: fly auth login)
+#   3. fly launch --copy-config --config deploy/fly.toml --dockerfile server/Dockerfile --now
+#   4. Your relay is at  wss://<app-name>.fly.dev
+#
+# Rename "app" below to something unique, or let `fly launch` pick a name.
+app = "z-relay"
+primary_region = "iad"          # pick one near you: https://fly.io/docs/reference/regions/
+
+[build]
+  dockerfile = "../server/Dockerfile"
+
+[env]
+  LOG_LEVEL = "info"
+  QUEUE_TTL_HOURS = "72"
+
+[http_service]
+  internal_port = 8080          # the relay defaults to 8080; Fly maps 443→this
+  force_https = true            # gives you wss:// automatically
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0      # set to 1 to never sleep (uses more allowance)
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
