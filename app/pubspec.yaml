@@ -1,0 +1,45 @@
+name: zapp
+description: "Z — zero-trust end-to-end encrypted messenger. Messages live only on your devices."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # E2E crypto core (the exact package verified by the headless test suite).
+  z_protocol:
+    path: ../protocol
+
+  cryptography: ^2.7.0
+  provider: ^6.1.2
+
+  # Encrypted local vault.
+  sqflite_common_ffi: ^2.3.3
+  # 2.x pairs with sqlite3_flutter_libs (compiled from source on
+  # Linux/Windows, bundled on Android/macOS) — no binary downloads at build.
+  sqlite3: ">=2.4.0 <3.0.0"
+  sqlite3_flutter_libs: ^0.5.24
+  path_provider: ^2.1.4
+  path: ^1.9.0
+  flutter_secure_storage: ^9.2.2
+
+  # Contact exchange.
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^5.2.3
+
+  # Attachments.
+  file_picker: ^8.1.2
+
+  intl: ^0.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

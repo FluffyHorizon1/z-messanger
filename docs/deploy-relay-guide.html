@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deploy Your Z Relay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  /* Z relay deploy guide — deliberately single-theme (matches the app's dark
+     amber world). Every color + the body background is painted explicitly, so
+     it holds on any host ground. */
+  :root{
+    --bg:#0b0c0f; --surface:#14161b; --surface2:#1b1e25; --line:#262a33;
+    --accent:#ffb300; --accent-soft:#3a2e0e; --accent-line:#5c4712;
+    --text:#ececed; --muted:#9aa0aa; --faint:#6b7280;
+    --ok:#46a758; --ok-soft:#12251a; --warn:#e5a13a; --warn-soft:#241a0b;
+    --sans:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+    line-height:1.6;font-size:16px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:760px;margin:0 auto;padding:48px 22px 96px}
+
+  /* hero */
+  .hero{display:flex;align-items:center;gap:16px;margin-bottom:10px}
+  .mark{font-family:var(--mono);font-weight:600;font-size:44px;color:var(--accent);
+    line-height:1;border:2px solid var(--accent-line);border-radius:12px;
+    width:66px;height:66px;display:flex;align-items:center;justify-content:center;flex:none}
+  h1{font-size:30px;font-weight:700;margin:0;letter-spacing:-.02em;text-wrap:balance}
+  .lede{color:var(--muted);margin:14px 0 0;font-size:16.5px;max-width:62ch}
+  .lede b{color:var(--text);font-weight:600}
+
+  .facts{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0 8px}
+  .fact{font-family:var(--mono);font-size:12.5px;color:var(--muted);
+    background:var(--surface2);border:1px solid var(--line);border-radius:7px;padding:6px 11px}
+  .fact b{color:var(--accent);font-weight:600}
+
+  h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.14em;
+    color:var(--faint);margin:46px 0 20px;font-family:var(--mono)}
+
+  /* stepper */
+  .steps{position:relative;margin:0;padding:0;list-style:none}
+  .steps::before{content:"";position:absolute;left:19px;top:8px;bottom:26px;width:2px;
+    background:linear-gradient(var(--accent-line),var(--line))}
+  .step{position:relative;padding:0 0 26px 58px}
+  .num{position:absolute;left:0;top:-2px;width:40px;height:40px;border-radius:50%;
+    background:var(--bg);border:2px solid var(--accent-line);color:var(--accent);
+    font-family:var(--mono);font-weight:600;font-size:16px;
+    display:flex;align-items:center;justify-content:center}
+  .step h3{margin:6px 0 6px;font-size:19px;font-weight:600;letter-spacing:-.01em}
+  .step p{margin:8px 0}
+  .step .sub{color:var(--muted);font-size:14.5px}
+
+  code{font-family:var(--mono);font-size:.88em;background:var(--surface2);
+    border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#f0cd7a}
+  a{color:var(--accent);text-decoration:none;border-bottom:1px solid var(--accent-line)}
+  a:hover{border-bottom-color:var(--accent)}
+
+  .cmd{background:#0e1014;border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:8px;padding:13px 15px;margin:12px 0;overflow-x:auto}
+  .cmd code{background:none;border:none;padding:0;color:#ffd888;font-size:13.5px;white-space:pre}
+  .cmd .c{color:var(--faint)} /* comment */
+
+  .seen{background:var(--surface);border:1px solid var(--line);border-radius:8px;
+    padding:11px 14px;margin:12px 0;font-size:13.5px;color:var(--muted)}
+  .seen b{color:var(--text);font-weight:600}
+  .seen .tag{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.1em;
+    color:var(--faint);display:block;margin-bottom:4px}
+
+  .callout{display:flex;gap:12px;border-radius:10px;padding:14px 16px;margin:16px 0;font-size:14.5px}
+  .callout .ic{flex:none;font-family:var(--mono);font-weight:600}
+  .c-key{background:var(--accent-soft);border:1px solid var(--accent-line)}
+  .c-key .ic{color:var(--accent)}
+  .c-warn{background:var(--warn-soft);border:1px solid #5c4712}
+  .c-warn .ic{color:var(--warn)}
+  .c-ok{background:var(--ok-soft);border:1px solid #21402c}
+  .c-ok .ic{color:var(--ok)}
+  .callout b{color:var(--text);font-weight:600}
+  .callout code{background:#00000030}
+
+  .addr{font-family:var(--mono);color:var(--accent);font-size:1em}
+
+  hr{border:none;border-top:1px solid var(--line);margin:40px 0}
+  .tsq{font-weight:600;color:var(--text);margin:16px 0 2px}
+  .tsa{color:var(--muted);font-size:14.5px;margin:0}
+  footer{color:var(--faint);font-size:13px;margin-top:52px;border-top:1px solid var(--line);
+    padding-top:20px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="mark">Z</div>
+    <div>
+      <h1>Deploy your Z relay</h1>
+    </div>
+  </div>
+  <p class="lede">The relay is the one piece you host — a dumb pipe that shuttles
+  <b>encrypted</b> messages between devices and stores nothing readable. This gets
+  one running on <b>Render's free tier</b> and hands you a <span class="addr">wss://</span>
+  address to paste into the app. No domain, no credit card, about 10 minutes.</p>
+
+  <div class="facts">
+    <span class="fact">host <b>Render free</b></span>
+    <span class="fact">cost <b>$0</b></span>
+    <span class="fact">domain <b>not needed</b></span>
+    <span class="fact">time <b>~10 min</b></span>
+    <span class="fact">you already have <b>the source zip</b></span>
+  </div>
+
+  <h2>Before you start</h2>
+  <p class="sub" style="color:var(--muted)">Two free accounts — make them first and the rest is just clicking:</p>
+  <ul class="sub" style="color:var(--muted)">
+    <li>A <a href="https://github.com/signup">GitHub</a> account (Render deploys from here).</li>
+    <li>A <a href="https://dashboard.render.com/register">Render</a> account — choose <b>“Sign in with GitHub”</b>, which links them in one step.</li>
+  </ul>
+
+  <h2>The five steps</h2>
+  <ol class="steps">
+
+    <li class="step">
+      <div class="num">1</div>
+      <h3>Unzip the project</h3>
+      <p class="sub">Unzip <code>z-messenger-src.zip</code> (the source I sent you) somewhere on your
+      computer, then open a terminal <b>in that folder</b> — the one containing
+      <code>render.yaml</code> and the <code>server/</code> folder.</p>
+    </li>
+
+    <li class="step">
+      <div class="num">2</div>
+      <h3>Put the code on GitHub</h3>
+      <p class="sub">Run the helper script — it creates a private GitHub repo and pushes the code for you:</p>
+      <div class="cmd"><code>bash deploy/setup-relay.sh</code></div>
+      <p class="sub">It installs nothing and only touches this folder. If it asks you to log in to
+      GitHub, follow the browser prompt. When it finishes it prints your repo link and the next step.</p>
+      <div class="seen"><span class="tag">No <code>gh</code> installed?</span>
+      The script prints the exact manual <code>git</code> commands instead — or install the
+      <a href="https://cli.github.com">GitHub CLI</a> first to keep it automatic.</div>
+    </li>
+
+    <li class="step">
+      <div class="num">3</div>
+      <h3>Deploy on Render</h3>
+      <p class="sub">In the <a href="https://dashboard.render.com">Render dashboard</a>:</p>
+      <p class="sub">Click <b>New → Blueprint</b> → <b>Connect</b> your
+      <code>z-messenger</code> repo → give it any name → <b>Deploy Blueprint</b>.
+      Render reads <code>render.yaml</code> automatically and provisions a service called
+      <b>z-relay</b>. Wait until it shows <b style="color:var(--ok)">Live</b> (~2 min).</p>
+      <div class="seen"><span class="tag">What Render shows</span>
+      A service named <b>z-relay</b>, runtime <b>Docker</b>, plan <b>Free</b>, health check
+      <code>/health</code> — all pre-filled from the blueprint. You don't type any of it.</div>
+    </li>
+
+    <li class="step">
+      <div class="num">4</div>
+      <h3>Get your relay address</h3>
+      <p class="sub">At the top of the service page is its URL, like
+      <code>https://z-relay-a1b2.onrender.com</code>. Confirm it's alive — open:</p>
+      <div class="cmd"><code>https://z-relay-a1b2.onrender.com/health</code></div>
+      <div class="seen"><span class="tag">You should see</span>
+      <code>{"ok":true, … ,"storage":"ram-only"}</code> — that's your relay saying it's up and stores nothing on disk.</div>
+      <div class="callout c-key"><span class="ic">▸</span><div>Your address for the app is that URL with
+      <b>wss://</b> instead of https://:<br><span class="addr">wss://z-relay-a1b2.onrender.com</span>
+      &nbsp;<span style="color:var(--muted)">(the app also accepts the https:// form and converts it).</span></div></div>
+    </li>
+
+    <li class="step">
+      <div class="num">5</div>
+      <h3>Point the app at it</h3>
+      <p class="sub">Open Z on your phone/desktop. On the first screen (or later in
+      <b>Settings → Relay</b>), paste your <span class="addr">wss://</span> address and tap
+      <b>Test connection</b> — you want the green ✓. Everyone you chat with points at the
+      <b>same</b> address. That's it — you're live.</p>
+    </li>
+  </ol>
+
+  <hr>
+
+  <h2>About the free tier</h2>
+  <div class="callout c-ok"><span class="ic">✓</span><div>WebSockets work on Render free, and message
+  traffic counts as activity — so <b>while you're actively chatting the relay stays awake</b>.
+  You get 750 instance-hours/month, plenty for a personal relay.</div></div>
+  <div class="callout c-warn"><span class="ic">!</span><div>After <b>15 minutes with no traffic</b> a free
+  service sleeps and takes <b>~1 minute</b> to wake on the next connection. Messages aren't lost —
+  the sender's app holds them and resends when the relay wakes. For an always-on relay, change
+  <code>plan: free</code> to <code>plan: starter</code> in <code>render.yaml</code> (or in the dashboard) and
+  redeploy — a few dollars a month, no sleep.</div></div>
+
+  <h2>When you outgrow one relay</h2>
+  <p class="sub" style="color:var(--muted)">You don't need this yet — start with one. When you want
+  high availability or more throughput, the repo ships a ready multi-instance setup (several relays
+  behind a load balancer sharing a RAM-only Redis, still zero-knowledge):</p>
+  <div class="cmd"><code>cd server
+docker compose -f docker-compose.ha.yml up --build --scale relay=3</code></div>
+  <p class="sub" style="color:var(--muted)">Details in <code>docs/SELF_HOSTING.md</code>. Note relays don't
+  federate yet: both people in a chat must use the same relay address.</p>
+
+  <h2>If something's off</h2>
+  <p class="tsq">The app shows “offline” / a red dot.</p>
+  <p class="tsa">Check the address starts with <code>wss://</code> and matches the Render URL exactly.
+  Open the <code>/health</code> link to confirm the relay is awake.</p>
+  <p class="tsq">First message after a while is slow.</p>
+  <p class="tsa">That's the free tier waking up (~1 min). Upgrade to Starter to remove it.</p>
+  <p class="tsq">Render says the build failed.</p>
+  <p class="tsa">Make sure you picked <b>Blueprint</b> (not “Web Service”) so it reads
+  <code>render.yaml</code>. Re-run from <b>New → Blueprint</b> and select the repo again.</p>
+  <p class="tsq">“Test connection” fails right after deploy.</p>
+  <p class="tsa">Give Render a minute to finish; refresh the service page until it says <b>Live</b>, then retry.</p>
+
+  <footer>Z relay · deploy guide · verified against Render's current Blueprint flow, Aug 2026</footer>
+</div>
+</body>
+</html>

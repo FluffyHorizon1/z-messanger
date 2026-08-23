@@ -1,0 +1,14 @@
+# Run the Z relay with a READ-ONLY filesystem so it provably cannot persist
+# anything even if compromised. All state is process RAM and dies with it.
+services:
+  z-relay:
+    build: .
+    ports:
+      - "8080:8080"
+    read_only: true
+    restart: unless-stopped
+    environment:
+      QUEUE_TTL_HOURS: "72"
+      MAX_QUEUE_BYTES_PER_USER: "67108864"
+      LOG_LEVEL: "info"
+    # No volumes. Ever.

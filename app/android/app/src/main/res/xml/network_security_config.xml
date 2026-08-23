@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Message payloads are end-to-end encrypted regardless of transport, so
+  cleartext ws:// only ever exposes routing metadata (never content) to an
+  on-path observer. Cleartext is permitted here so local / LAN testing works
+  out of the box; the app itself nudges you toward wss:// for any public relay
+  (see the connection screen). For production, deploy the relay behind TLS
+  (Render/Fly give you a free wss:// URL automatically).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

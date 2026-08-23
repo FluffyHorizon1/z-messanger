@@ -1,0 +1,36 @@
+# High-availability Z relay: a load balancer in front of N relay instances that
+# share presence + the pending queue through a RAM-only Redis. Any instance can
+# deliver to any connected client. Everything stays zero-knowledge and on-RAM.
+#
+#   docker compose -f docker-compose.ha.yml up --build --scale relay=3
+#
+# Clients connect to http(s)://<host>:8080 (put a TLS proxy in front for wss://).
+services:
+  redis:
+    image: redis:7-alpine
+    # RAM-only: no snapshotting, no append-only file — nothing hits disk.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    restart: unless-stopped
+    # No ports published: only the relays talk to it, over the internal network.
+
+  relay:
+    build: .
+    read_only: true
+    restart: unless-stopped
+    environment:
+      REDIS_URL: "redis://redis:6379"
+      LOG_LEVEL: "info"
+      QUEUE_TTL_HOURS: "72"
+    depends_on:
+      - redis
+    # No ports here — the load balancer fronts them. `--scale relay=N` to add more.
+
+  lb:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx.ha.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - relay
