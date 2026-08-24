@@ -8,6 +8,9 @@ export 'src/attachments.dart';
 export 'src/identity.dart';
 export 'src/messages.dart';
 export 'src/multidevice.dart';
+export 'src/multidevice_session.dart';
+export 'src/pairing.dart';
+export 'src/pairing_relay.dart';
 export 'src/relay_client.dart';
 export 'src/ratchet.dart'
     show
