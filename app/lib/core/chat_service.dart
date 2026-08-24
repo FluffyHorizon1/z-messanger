@@ -468,6 +468,18 @@ class ChatService extends ChangeNotifier {
           file: meta,
         ));
     notifyListeners();
+    // Mirror to my own other devices: the offer (carrying the file key) over
+    // the sync ratchet, then the sealed chunks as sidecar payloads they
+    // reassemble exactly as a recipient would. No-op when no devices are linked.
+    final sync = _sync;
+    if (sync != null) {
+      unawaited(() async {
+        await sync.mirror(threadRid: rid, dir: 'out', inner: inner);
+        for (final p in chunkPayloads) {
+          await sync.fanChunk(p);
+        }
+      }());
+    }
   }
 
   Future<void> setDisappearingTimer(String rid, int seconds) async {
@@ -536,6 +548,15 @@ class ChatService extends ChangeNotifier {
   // ------------------------------------------------------------------
 
   Future<void> _onInbound(RelayInbound m) async {
+    // File chunks travel outside the ratchet (sealed under their own file key)
+    // and may arrive either from a contact or relayed from one of my own
+    // devices, so recognise them before any by-sender routing below.
+    final chunk = tryParseChunk(m.payload);
+    if (chunk != null) {
+      await _onChunk(m, chunk);
+      return;
+    }
+
     // Self-sync from one of my OWN linked devices takes a separate path.
     final sync = _sync;
     if (sync != null && sync.deviceRoutingIds.contains(m.from)) {
@@ -551,13 +572,6 @@ class ChatService extends ChangeNotifier {
     final extraContact = _extraRidToContact[m.from];
     if (extraContact != null) {
       await _handleExtraInbound(extraContact, m);
-      return;
-    }
-
-    // File chunks travel outside the ratchet (sealed under their file key).
-    final chunk = tryParseChunk(m.payload);
-    if (chunk != null) {
-      await _onChunk(m, chunk);
       return;
     }
 
@@ -646,8 +660,10 @@ class ChatService extends ChangeNotifier {
           (inner.kind == 'text' || inner.kind == 'file')) {
         unawaited(_sendReadReceipts(contact.rid));
       }
-      if (inner.kind == 'text') {
-        // Mirror the received text to my own other devices.
+      if (inner.kind == 'text' || inner.kind == 'file') {
+        // Mirror the received message to my own other devices. For a file this
+        // carries the offer (with its file key); the sealed chunks are relayed
+        // separately in _onChunk as they arrive.
         unawaited(_sync?.mirror(threadRid: contact.rid, dir: 'in', inner: inner) ??
             Future<void>.value());
       }
@@ -793,6 +809,13 @@ class ChatService extends ChangeNotifier {
         {'fid': chunk.fid, 'idx': chunk.index, 'payload': m.payload},
         conflictAlgorithm: ConflictAlgorithm.ignore);
     transport.ackReceived(id: m.id, from: m.from);
+    // Relay a contact's chunk to my own other devices so the attachment lands
+    // there too. Skip chunks that were themselves relayed from one of my
+    // devices, so the fan-out can't loop.
+    final sync = _sync;
+    if (sync != null && !sync.deviceRoutingIds.contains(m.from)) {
+      unawaited(sync.fanChunk(m.payload));
+    }
     await _tryAssemble(chunk.fid);
   }
 
@@ -1245,9 +1268,13 @@ class ChatService extends ChangeNotifier {
 
   /// Insert a message mirrored from one of my other devices (no re-send).
   Future<void> _insertMirrored(String rid, String dir, InnerMessage inner) async {
-    if (inner.kind != 'text') return; // attachments don't self-sync yet
     if (!contacts.containsKey(rid)) return;
     final outgoing = dir == 'out';
+    if (inner.kind == 'file') {
+      await _insertMirroredFile(rid, outgoing, inner);
+      return;
+    }
+    if (inner.kind != 'text') return; // only text/file self-sync
     final body = inner.data['body'] as String? ?? '';
     final status = outgoing ? MsgStatus.sent : MsgStatus.delivered;
     await vault.db.insert(
@@ -1277,6 +1304,76 @@ class ChatService extends ChangeNotifier {
           expireAtMs: 0,
         ));
     notifyListeners();
+  }
+
+  /// A mirrored file offer from one of my own devices: record the offer (with
+  /// its file key, so the sidecar chunks can be assembled) and a placeholder
+  /// message, then try to assemble in case those chunks already arrived.
+  Future<void> _insertMirroredFile(
+      String rid, bool outgoing, InnerMessage inner) async {
+    final fid = inner.data['fid'] as String?;
+    if (fid == null) return;
+    final name = inner.data['name'] as String? ?? 'file';
+    final total = (inner.data['chunks'] as num?)?.toInt() ?? 0;
+    final status = outgoing ? MsgStatus.sent : MsgStatus.delivered;
+    await vault.db.insert(
+      'files',
+      {
+        'fid': fid,
+        'rid': rid,
+        'mid': inner.mid,
+        'enc_meta': await vault.seal(jsonEncode({
+          'name': name,
+          'size': inner.data['size'],
+          'mime': inner.data['mime'],
+          'sha256': inner.data['sha256'],
+          'fk': inner.data['fk'],
+          'fn': inner.data['fn'],
+        })),
+        'complete': 0,
+        'got_chunks': 0,
+        'total_chunks': total,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    await vault.db.insert(
+      'messages',
+      {
+        'mid': inner.mid,
+        'rid': rid,
+        'outgoing': outgoing ? 1 : 0,
+        'kind': 'file',
+        'enc_body': await vault.seal(jsonEncode({'fid': fid})),
+        'fid': fid,
+        'ts_ms': inner.ts,
+        'status': status,
+        'expire_at_ms': 0,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    _appendLoaded(
+        rid,
+        ChatMessage(
+          mid: inner.mid,
+          rid: rid,
+          outgoing: outgoing,
+          kind: 'file',
+          body: name,
+          fid: fid,
+          ts: inner.ts,
+          status: status,
+          expireAtMs: 0,
+          file: FileMeta(
+            fid: fid,
+            name: name,
+            size: (inner.data['size'] as num?)?.toInt() ?? 0,
+            mime: inner.data['mime'] as String? ?? 'application/octet-stream',
+            sha256b64: inner.data['sha256'] as String? ?? '',
+            totalChunks: total,
+          ),
+        ));
+    notifyListeners();
+    await _tryAssemble(fid); // sidecar chunks may already be here
   }
 
   // ---- M4: contact device-list distribution + fan-out --------------------

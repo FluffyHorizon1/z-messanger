@@ -91,6 +91,21 @@ class DeviceSyncService {
     });
   }
 
+  /// Fan a raw, already-sealed payload (an encrypted file chunk) to each of my
+  /// other devices' mailboxes. Unlike [mirror] this does NOT use the sync
+  /// ratchet: a chunk is self-contained and sealed under its own file key, so
+  /// it is routing-agnostic — any of my devices decrypts it exactly as the
+  /// original recipient does, given the offer (which carries the file key) has
+  /// been mirrored. Best-effort per device; a missed chunk simply leaves that
+  /// device's copy incomplete until a resend.
+  Future<void> fanChunk(String payload) async {
+    for (final rid in _deviceRids) {
+      try {
+        await transport.send(to: rid, id: newMessageId(), payload: payload);
+      } catch (_) {}
+    }
+  }
+
   /// Decrypt a self-sync payload from one of my devices. Returns the mirrored
   /// (thread, dir, inner) for the caller to insert, or null if it isn't ours.
   Future<({String thread, String dir, InnerMessage inner})?> handleInbound(
