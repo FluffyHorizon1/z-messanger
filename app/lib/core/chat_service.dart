@@ -541,7 +541,10 @@ class ChatService extends ChangeNotifier {
     }
   }
 
-  Future<void> _onConnected() => flushOutbox();
+  Future<void> _onConnected() async {
+    await flushOutbox();
+    await _sync?.prime(); // open the sync ratchet deterministically once online
+  }
 
   // ------------------------------------------------------------------
   // Receiving
@@ -1259,11 +1262,25 @@ class ChatService extends ChangeNotifier {
     }
     _sync = DeviceSyncService(
       vault: vault,
-      transport: transport,
+      reliableSend: _syncSend,
       account: await accountIdentity(),
       myDevices: devices,
     );
     await _sync!.init();
+  }
+
+  /// Reliable send for the self-sync channel: enqueue to the durable outbox and
+  /// flush, so a mirrored message or file chunk gets the same relay-backed,
+  /// retried delivery the contact path has — never dropped to a race or a brief
+  /// disconnect.
+  Future<void> _syncSend(String toRid, String payload) async {
+    await vault.db.insert('outbox', {
+      'id': newMessageId(),
+      'rid': toRid,
+      'payload': payload,
+      'created_ms': _now(),
+    });
+    unawaited(flushOutbox());
   }
 
   /// Insert a message mirrored from one of my other devices (no re-send).

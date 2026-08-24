@@ -89,6 +89,25 @@ class AccountSession {
   /// Forget a revoked/removed device.
   void removeTarget(String routingId) => _convs.remove(routingId);
 
+  /// Open the ratchet with every target device for which THIS device is the
+  /// designated initiator, by encrypting one [helloPlaintext] per such device.
+  /// This mirrors the contact-add hello: the designated side proactively opens
+  /// the session so establishment is deterministic instead of racing the first
+  /// real (best-effort) message. Non-initiator targets are skipped — they
+  /// establish on receipt. Persist this session's state BEFORE sending (same
+  /// rule as [encrypt]).
+  Future<List<FanoutMessage>> openInitiatorSessions(Uint8List helloPlaintext,
+      {int? nowMs}) async {
+    final out = <FanoutMessage>[];
+    for (final e in _convs.entries) {
+      if (e.value.isDesignatedInitiator) {
+        out.add(FanoutMessage(
+            e.key, await e.value.encrypt(helloPlaintext, nowMs: nowMs)));
+      }
+    }
+    return out;
+  }
+
   /// Encrypt once per target device. Returns one payload per mailbox; the
   /// caller sends each to its routing id. Persist this session's state BEFORE
   /// sending (same rule as [Conversation.encrypt]).

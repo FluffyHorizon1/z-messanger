@@ -4,7 +4,6 @@ import 'dart:typed_data';
 
 import 'package:z_protocol/z_protocol.dart';
 
-import 'transport.dart';
 import 'vault.dart';
 
 /// Mirrors your own messages across your linked devices (self-sync).
@@ -17,7 +16,12 @@ import 'vault.dart';
 /// opaque ciphertext to another routing id, exactly like a normal message.
 class DeviceSyncService {
   final Vault vault;
-  final Transport transport;
+
+  /// Reliable, relay-backed delivery provided by the owner (enqueue to the
+  /// durable outbox and flush). Self-sync uses this instead of a raw socket
+  /// write so a mirror or file chunk survives a race or a brief disconnect
+  /// rather than being dropped — the same guarantee the contact path has.
+  final Future<void> Function(String toRid, String payload) reliableSend;
   final AccountIdentity account;
   final List<DeviceCertificate> myDevices; // my OTHER devices
 
@@ -27,7 +31,7 @@ class DeviceSyncService {
 
   DeviceSyncService({
     required this.vault,
-    required this.transport,
+    required this.reliableSend,
     required this.account,
     required this.myDevices,
   });
@@ -53,6 +57,32 @@ class DeviceSyncService {
       _session = await AccountSession.create(
           account, [for (final d in myDevices) DeviceTarget.fromCert(d)]);
     }
+    await prime();
+  }
+
+  /// Proactively open the sync ratchet with each of my devices for which I am
+  /// the designated initiator, so the session is established deterministically
+  /// before any real mirror. Self-sync mirrors are best-effort with no retry,
+  /// so without this the first one races session setup and can be lost. Safe to
+  /// call repeatedly (on connect): on an already-open session it is just an
+  /// extra hello the other side decrypts and ignores.
+  Future<void> prime() async {
+    final s = _session;
+    if (s == null) return;
+    await _lock.run(() async {
+      final envelope = jsonEncode({
+        'thread': '',
+        'dir': 'ping',
+        'inner': base64Encode(InnerMessage.hello(newMessageId(), 0).toBytes()),
+      });
+      final fan = await s.openInitiatorSessions(
+          Uint8List.fromList(utf8.encode(envelope)));
+      if (fan.isEmpty) return;
+      await _save();
+      for (final f in fan) {
+        await reliableSend(f.routingId, f.payload);
+      }
+    });
   }
 
   Future<void> _save() async {
@@ -78,15 +108,11 @@ class DeviceSyncService {
         'inner': base64Encode(inner.toBytes()),
       });
       final fan = await s.encrypt(Uint8List.fromList(utf8.encode(envelope)));
+      // Persist the advanced ratchet BEFORE handing payloads to the reliable
+      // outbox, so any redelivery is still decryptable.
       await _save();
       for (final f in fan) {
-        try {
-          await transport.send(
-              to: f.routingId, id: newMessageId(), payload: f.payload);
-        } catch (_) {
-          // best-effort; the ratchet advanced and is saved, so a retry would
-          // desync — a missed mirror simply shows on next message.
-        }
+        await reliableSend(f.routingId, f.payload);
       }
     });
   }
@@ -96,13 +122,11 @@ class DeviceSyncService {
   /// ratchet: a chunk is self-contained and sealed under its own file key, so
   /// it is routing-agnostic — any of my devices decrypts it exactly as the
   /// original recipient does, given the offer (which carries the file key) has
-  /// been mirrored. Best-effort per device; a missed chunk simply leaves that
-  /// device's copy incomplete until a resend.
+  /// been mirrored. Delivered through the reliable outbox so a whole attachment
+  /// is never lost to a single dropped chunk.
   Future<void> fanChunk(String payload) async {
     for (final rid in _deviceRids) {
-      try {
-        await transport.send(to: rid, id: newMessageId(), payload: payload);
-      } catch (_) {}
+      await reliableSend(rid, payload);
     }
   }
 
