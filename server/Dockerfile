@@ -4,7 +4,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev --no-audit --no-fund
-COPY server.js ./
+COPY server.js push.js ./
 USER node
 # Render/Fly inject $PORT; locally we default to 8080.
 EXPOSE 8080
