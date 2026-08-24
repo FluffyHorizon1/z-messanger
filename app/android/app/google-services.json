@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "509293053660",
+    "project_id": "z-messanger",
+    "storage_bucket": "z-messanger.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:509293053660:android:c66fd70021aedd912d5619",
+        "android_client_info": {
+          "package_name": "app.zmessenger.zapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCGquYe8LJViQ0CJeMbA391irwL6f-csbU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
