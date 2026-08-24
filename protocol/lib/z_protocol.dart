@@ -7,6 +7,7 @@ library z_protocol;
 export 'src/attachments.dart';
 export 'src/identity.dart';
 export 'src/messages.dart';
+export 'src/multidevice.dart';
 export 'src/relay_client.dart';
 export 'src/ratchet.dart'
     show
