@@ -317,6 +317,29 @@ class AccountIdentity {
     );
   }
 
+  /// Sign an account-wide device list (M4): the authenticated statement of
+  /// which devices make up this account, at a monotonic [version]. Contacts
+  /// verify it against the account key and update their fan-out set. Requires
+  /// the account root.
+  Future<SignedDeviceList> signDeviceList(
+      List<DeviceCertificate> devices, int version) async {
+    final seed = accountEdSeed;
+    if (seed == null) {
+      throw StateError('this device does not hold the account root');
+    }
+    final kp = await _ed.newKeyPairFromSeed(seed);
+    final sig = await _ed.sign(
+      SignedDeviceList.signingInput(version, devices),
+      keyPair: kp,
+    );
+    return SignedDeviceList(
+      accountEdPub: accountEdPub,
+      version: version,
+      devices: devices,
+      sig: Uint8List.fromList(sig.bytes),
+    );
+  }
+
   /// Sign a certificate for another (newly enrolling) device. Requires this
   /// device to hold the account root. Used by the enrollment ceremony (M3).
   Future<DeviceCertificate> signDeviceCert({
@@ -399,4 +422,75 @@ class AccountIdentity {
           (j['deviceCert'] as Map).cast<String, Object?>()),
     );
   }
+}
+
+/// An account-signed statement of the account's device set at a monotonic
+/// [version]. A contact keeps the highest version it has seen and fans messages
+/// out to exactly these devices.
+class SignedDeviceList {
+  final Uint8List accountEdPub;
+  final int version;
+  final List<DeviceCertificate> devices;
+  final Uint8List sig;
+
+  SignedDeviceList({
+    required this.accountEdPub,
+    required this.version,
+    required this.devices,
+    required this.sig,
+  });
+
+  static Uint8List signingInput(int version, List<DeviceCertificate> devices) {
+    final eds = [for (final d in devices) d.deviceEdPub]
+      ..sort(_lexCompare);
+    return concatBytes([
+      utf8.encode('z-devlist-v1:'),
+      utf8.encode('$version:'),
+      for (final e in eds) e,
+    ]);
+  }
+
+  Future<List<String>> routingIds() async =>
+      [for (final d in devices) await d.routingId()];
+
+  Future<bool> verify() async {
+    if (accountEdPub.length != 32 || devices.isEmpty) return false;
+    for (final d in devices) {
+      if (!await d.verify(accountEdPub)) return false;
+    }
+    try {
+      return await _ed.verify(
+        signingInput(version, devices),
+        signature: Signature(sig,
+            publicKey:
+                SimplePublicKey(accountEdPub, type: KeyPairType.ed25519)),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Map<String, Object?> toJson() => {
+        'acct': b64(accountEdPub),
+        'ver': version,
+        'devs': [for (final d in devices) d.toJson()],
+        'sig': b64(sig),
+      };
+
+  static SignedDeviceList fromJson(Map<String, Object?> j) => SignedDeviceList(
+        accountEdPub: unb64(j['acct'] as String),
+        version: (j['ver'] as num).toInt(),
+        devices: [
+          for (final d in (j['devs'] as List))
+            DeviceCertificate.fromJson((d as Map).cast<String, Object?>())
+        ],
+        sig: unb64(j['sig'] as String),
+      );
+}
+
+int _lexCompare(Uint8List a, Uint8List b) {
+  for (var i = 0; i < a.length && i < b.length; i++) {
+    if (a[i] != b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
 }

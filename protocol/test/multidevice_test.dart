@@ -149,5 +149,51 @@ void main() {
       expect(b64(rd.deviceEdPub), b64(dev.edPub));
       expect(await rd.deviceCert.verify(a.accountEdPub), isTrue);
     });
+
+    test('signed device list: verifies; tampering & foreign keys rejected',
+        () async {
+      final me = await AccountIdentity.generate();
+      final dev = await ZIdentity.generate();
+      final cert = await me.signDeviceCert(
+          deviceEdPub: dev.edPub, deviceXPub: dev.xPub, deviceId: 'd2');
+      final list = await me.signDeviceList([me.deviceCert, cert], 2);
+
+      expect(await list.verify(), isTrue);
+      expect(list.version, 2);
+      expect((await list.routingIds()).length, 2);
+      expect(await SignedDeviceList.fromJson(list.toJson()).verify(), isTrue);
+
+      // Bump the version without re-signing → invalid.
+      expect(
+          await SignedDeviceList(
+                  accountEdPub: list.accountEdPub,
+                  version: 99,
+                  devices: list.devices,
+                  sig: list.sig)
+              .verify(),
+          isFalse);
+
+      // A different account could not have signed it.
+      final other = await AccountIdentity.generate();
+      expect(
+          await SignedDeviceList(
+                  accountEdPub: other.accountEdPub,
+                  version: 2,
+                  devices: list.devices,
+                  sig: list.sig)
+              .verify(),
+          isFalse);
+
+      // A device without the account root cannot sign a list.
+      final rootless = await AccountIdentity.fromEnrollment(
+        accountEdPub: me.accountEdPub,
+        deviceEdSeed: dev.edSeed,
+        deviceXSeed: dev.xSeed,
+        deviceId: 'd2',
+        deviceCert: cert,
+      );
+      expect(() => rootless.signDeviceList([me.deviceCert], 1),
+          throwsStateError);
+    });
   });
 }

@@ -43,6 +43,12 @@ class ChatService extends ChangeNotifier {
   /// have no linked devices, so single-device behaviour is unchanged.
   DeviceSyncService? _sync;
 
+  /// M4: per-device sessions with a CONTACT's non-primary devices, plus a map
+  /// from those devices' routing ids back to the contact. Both empty for a
+  /// single-device contact, so the primary messaging path is unchanged.
+  final Map<String, AccountSession> _contactExtras = {};
+  final Map<String, String> _extraRidToContact = {};
+
   /// Per‑conversation async mutex. Ratchet state is a read‑modify‑write on
   /// shared in‑memory state that is NOT protected by the DB transaction, so
   /// every encrypt/decrypt+persist for a given contact must be serialized.
@@ -87,6 +93,7 @@ class ChatService extends ChangeNotifier {
     await svc._loadConversations();
     await svc._computeUnread();
     await svc._initSync();
+    await svc._loadContactDeviceLists();
 
     transport.onMessage = (m) => unawaited(svc._onInbound(m));
     transport.onDelivered = (r) => unawaited(svc._onDelivered(r));
@@ -317,6 +324,7 @@ class ChatService extends ChangeNotifier {
       }
     });
     unawaited(flushOutbox());
+    unawaited(_fanToContactExtras(contact.rid, inner)); // M4: to their extra devices
     return inner.mid;
   }
 
@@ -539,6 +547,13 @@ class ChatService extends ChangeNotifier {
       return;
     }
 
+    // Inbound from a contact's non-primary device (M4).
+    final extraContact = _extraRidToContact[m.from];
+    if (extraContact != null) {
+      await _handleExtraInbound(extraContact, m);
+      return;
+    }
+
     // File chunks travel outside the ratchet (sealed under their file key).
     final chunk = tryParseChunk(m.payload);
     if (chunk != null) {
@@ -635,6 +650,9 @@ class ChatService extends ChangeNotifier {
         // Mirror the received text to my own other devices.
         unawaited(_sync?.mirror(threadRid: contact.rid, dir: 'in', inner: inner) ??
             Future<void>.value());
+      }
+      if (inner.kind == 'devlist') {
+        await _applyDevlistInner(contact, inner); // M4: learn their devices
       }
       notifyListeners();
     }
@@ -1169,8 +1187,12 @@ class ChatService extends ChangeNotifier {
       await vault.kvPut('my_devices',
           jsonEncode([for (final d in list) d.toJson()]),
           sensitive: false);
+      await vault.kvPut(
+          'my_devlist_version', '${(await _myDevlistVersion()) + 1}',
+          sensitive: false);
     }
     await _initSync();
+    await broadcastMyDeviceList(); // tell contacts about the new device
   }
 
   Future<void> _initSync() async {
@@ -1222,6 +1244,160 @@ class ChatService extends ChangeNotifier {
           expireAtMs: 0,
         ));
     notifyListeners();
+  }
+
+  // ---- M4: contact device-list distribution + fan-out --------------------
+
+  Future<int> _myDevlistVersion() async =>
+      int.tryParse(await vault.kvGet('my_devlist_version') ?? '1') ?? 1;
+
+  /// Every device of MY account (this device + linked ones).
+  Future<List<DeviceCertificate>> myFullDeviceList() async =>
+      [(await accountIdentity()).deviceCert, ...await _myDevices()];
+
+  /// Tell every contact my current device set (account-signed) so they fan
+  /// messages out to all my devices and accept from any of them.
+  Future<void> broadcastMyDeviceList() async {
+    final me = await accountIdentity();
+    if (!me.holdsAccountRoot) return; // only a root-holding device can sign
+    final list = await me.signDeviceList(
+        await myFullDeviceList(), await _myDevlistVersion());
+    final data = jsonEncode(list.toJson());
+    for (final rid in contacts.keys.toList()) {
+      final contact = contacts[rid];
+      if (contact == null) continue;
+      await _sendInner(
+          contact,
+          InnerMessage(
+              kind: 'devlist',
+              mid: newMessageId(),
+              ts: _now(),
+              data: {'list': data}));
+    }
+  }
+
+  List<DeviceCertificate> _extrasOf(Contact contact, SignedDeviceList list) => [
+        for (final d in list.devices)
+          if (base64Encode(d.deviceEdPub) != base64Encode(contact.bundle.edPub))
+            d
+      ];
+
+  Future<void> _loadContactDeviceLists() async {
+    for (final rid in contacts.keys.toList()) {
+      final devJson = await vault.kvGet('cdev_$rid');
+      if (devJson == null) continue;
+      final contact = contacts[rid];
+      if (contact == null) continue;
+      final list = SignedDeviceList.fromJson(
+          (jsonDecode(devJson) as Map).cast<String, Object?>());
+      final extras = _extrasOf(contact, list);
+      if (extras.isEmpty) continue;
+      final acct = await accountIdentity();
+      final stored = await vault.kvGet('cextra_$rid');
+      if (stored != null) {
+        _contactExtras[rid] = await AccountSession.fromJson(
+            acct, (jsonDecode(stored) as Map).cast<String, Object?>());
+        for (final d in extras) {
+          await _contactExtras[rid]!.addTarget(DeviceTarget.fromCert(d));
+        }
+      } else {
+        _contactExtras[rid] = await AccountSession.create(
+            acct, [for (final d in extras) DeviceTarget.fromCert(d)]);
+      }
+      for (final d in extras) {
+        _extraRidToContact[await d.routingId()] = rid;
+      }
+    }
+  }
+
+  /// Verify + store a device-list a contact sent, and (re)build their extras.
+  Future<void> _applyContactDeviceList(
+      Contact contact, SignedDeviceList list) async {
+    if (base64Encode(list.accountEdPub) != base64Encode(contact.bundle.edPub)) {
+      return; // not signed by this contact's account key
+    }
+    if (!await list.verify()) return;
+    final rid = contact.rid;
+    final storedVer =
+        int.tryParse(await vault.kvGet('cdev_ver_$rid') ?? '0') ?? 0;
+    if (list.version < storedVer) return; // stale
+    await vault.kvPut('cdev_$rid', jsonEncode(list.toJson()), sensitive: false);
+    await vault.kvPut('cdev_ver_$rid', '${list.version}', sensitive: false);
+
+    final extras = _extrasOf(contact, list);
+    final acct = await accountIdentity();
+    final existing = _contactExtras[rid];
+    if (existing == null) {
+      _contactExtras[rid] = await AccountSession.create(
+          acct, [for (final d in extras) DeviceTarget.fromCert(d)]);
+    } else {
+      for (final d in extras) {
+        await existing.addTarget(DeviceTarget.fromCert(d));
+      }
+    }
+    for (final d in extras) {
+      _extraRidToContact[await d.routingId()] = rid;
+    }
+    await _saveExtra(rid);
+  }
+
+  Future<void> _saveExtra(String rid) async {
+    final s = _contactExtras[rid];
+    if (s != null) {
+      await vault.kvPut('cextra_$rid', jsonEncode(s.toJson()), sensitive: false);
+    }
+  }
+
+  /// Fan a just-sent inner message out to a contact's non-primary devices.
+  Future<void> _fanToContactExtras(String rid, InnerMessage inner) async {
+    final s = _contactExtras[rid];
+    if (s == null || s.targetRoutingIds.isEmpty) return;
+    await _withLock(rid, () async {
+      try {
+        final fan = await s.encrypt(inner.toBytes());
+        await _saveExtra(rid);
+        for (final f in fan) {
+          try {
+            await transport.send(
+                to: f.routingId, id: newMessageId(), payload: f.payload);
+          } catch (_) {}
+        }
+      } catch (_) {}
+    });
+  }
+
+  /// Inbound from a contact's non-primary device.
+  Future<void> _handleExtraInbound(String rid, RelayInbound m) async {
+    final contact = contacts[rid];
+    final s = _contactExtras[rid];
+    if (contact == null || s == null) {
+      transport.ackReceived(id: m.id, from: m.from);
+      return;
+    }
+    InnerMessage? inner;
+    await _withLock(rid, () async {
+      try {
+        final dec = await s.decryptFrom(m.from, m.payload);
+        await _saveExtra(rid);
+        inner = InnerMessage.fromBytes(dec.plaintext);
+      } catch (_) {}
+    });
+    transport.ackReceived(id: m.id, from: m.from);
+    if (inner == null) return;
+    if (inner!.kind == 'devlist') {
+      await _applyDevlistInner(contact, inner!);
+    } else if (inner!.kind == 'text') {
+      await _insertMirrored(rid, 'in', inner!);
+    }
+  }
+
+  Future<void> _applyDevlistInner(Contact contact, InnerMessage inner) async {
+    try {
+      final list = SignedDeviceList.fromJson(
+          (jsonDecode(inner.data['list'] as String) as Map)
+              .cast<String, Object?>());
+      await _applyContactDeviceList(contact, list);
+    } catch (_) {}
   }
 
   /// Full local wipe: identity, contacts, messages, keys. Irreversible.
