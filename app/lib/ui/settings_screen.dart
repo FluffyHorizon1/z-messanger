@@ -62,7 +62,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               }
             },
           ),
-          const _SectionHeader('Relay'),
+          const _SectionHeader('Connection'),
           ListTile(
             leading: Icon(
               Icons.cloud_outlined,
@@ -70,44 +70,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ? ZTheme.ok
                   : ZTheme.textSecondary,
             ),
-            title: const Text('Relay server'),
+            title: const Text('Relay'),
             subtitle: Text(
-              '${transport.serverUrl}\n'
-              '${switch (transport.status) {
-                LinkStatus.connected => 'connected — zero-knowledge link up',
-                LinkStatus.connecting => 'connecting…',
+              switch (transport.status) {
+                LinkStatus.connected => 'Connected — zero-knowledge link up',
+                LinkStatus.connecting => 'Connecting…',
                 LinkStatus.disconnected =>
-                  'offline${transport.lastError != null ? ' (${transport.lastError})' : ''}',
-              }}',
+                  'Offline${transport.lastError != null ? ' (${transport.lastError})' : ''}',
+              },
               style: const TextStyle(fontSize: 12),
             ),
-            isThreeLine: true,
-            onTap: () async {
-              final ctrl = TextEditingController(text: transport.serverUrl);
-              final url = await showDialog<String>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Relay server URL'),
-                  content: TextField(
-                    controller: ctrl,
-                    autofocus: true,
-                    decoration:
-                        const InputDecoration(hintText: 'wss://relay.example.com'),
-                  ),
-                  actions: [
-                    TextButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        child: const Text('Cancel')),
-                    FilledButton(
-                        onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-                        child: const Text('Connect')),
-                  ],
-                ),
-              );
-              if (url != null && url.isNotEmpty) {
-                await svc.setServerUrl(url);
-              }
-            },
           ),
           const _SectionHeader('Devices'),
           ListTile(
@@ -189,6 +161,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: TextStyle(fontSize: 12)),
             onTap: () => _exportBackup(context, svc),
           ),
+          const _SectionHeader('Developer'),
+          SwitchListTile(
+            secondary: Icon(
+              svc.devMode ? Icons.code : Icons.code_off,
+              color: svc.devMode ? ZTheme.accent : ZTheme.textSecondary,
+            ),
+            title: const Text('Developer mode'),
+            subtitle: const Text(
+              'Reveal the custom relay address, for a self-hosted or test relay. '
+              'Off by default — Z uses its built-in relay.',
+              style: TextStyle(fontSize: 12),
+            ),
+            value: svc.devMode,
+            activeThumbColor: ZTheme.accent,
+            onChanged: (v) => svc.setDevMode(v),
+          ),
+          if (svc.devMode)
+            ListTile(
+              leading: const Icon(Icons.dns_outlined),
+              title: const Text('Relay address'),
+              subtitle: Text(transport.serverUrl,
+                  style: const TextStyle(fontSize: 12)),
+              onTap: () async {
+                final ctrl = TextEditingController(text: transport.serverUrl);
+                final url = await showDialog<String>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Relay server URL'),
+                    content: TextField(
+                      controller: ctrl,
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                          hintText: 'wss://relay.example.com'),
+                    ),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('Cancel')),
+                      FilledButton(
+                          onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+                          child: const Text('Connect')),
+                    ],
+                  ),
+                );
+                if (url != null && url.isNotEmpty) {
+                  await svc.setServerUrl(url);
+                }
+              },
+            ),
           const _SectionHeader('Danger zone'),
           ListTile(
             leading: const Icon(Icons.delete_forever, color: ZTheme.danger),

@@ -22,9 +22,10 @@ class OnboardingScreen extends StatefulWidget {
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final _name = TextEditingController();
-  final _server = TextEditingController(text: 'wss://your-relay.onrender.com');
+  final _server = TextEditingController(text: defaultRelayUrl);
   bool _busy = false;
   bool _testing = false;
+  bool _showDev = false;
   String? _error;
   String? _testOk; // green message when a probe succeeds
   String? _testWarn; // amber non-TLS notice
@@ -189,54 +190,56 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     helperText: 'Shared only inside your encrypted contact code',
                   ),
                 ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _server,
-                  onChanged: (_) => setState(() {
-                    _testOk = null;
-                    _testWarn = null;
-                  }),
-                  decoration: const InputDecoration(
-                    labelText: 'Relay address',
-                    helperText:
-                        'Your relay URL (e.g. wss://z-relay-xxxx.onrender.com). '
-                        'See DEPLOY.md to get one free in ~5 min.',
-                    helperMaxLines: 2,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                OutlinedButton.icon(
-                  onPressed: (_busy || _testing) ? null : _test,
-                  icon: _testing
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.wifi_tethering, size: 18),
-                  label: Text(_testing ? 'Testing…' : 'Test connection'),
-                ),
-                if (_testOk != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 10),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.check_circle,
-                            color: ZTheme.ok, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(_testOk!,
-                              style: const TextStyle(color: ZTheme.ok)),
-                        ),
-                      ],
+                if (_showDev) ...[
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _server,
+                    onChanged: (_) => setState(() {
+                      _testOk = null;
+                      _testWarn = null;
+                    }),
+                    decoration: const InputDecoration(
+                      labelText: 'Relay address (developer)',
+                      helperText:
+                          'Custom or self-hosted relay. Leave as-is to use the '
+                          'default zmessengers.com relay.',
+                      helperMaxLines: 2,
                     ),
                   ),
-                if (_testWarn != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 10),
-                    child: Text(_testWarn!,
-                        style: const TextStyle(
-                            color: ZTheme.accent, fontSize: 12)),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: (_busy || _testing) ? null : _test,
+                    icon: _testing
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.wifi_tethering, size: 18),
+                    label: Text(_testing ? 'Testing…' : 'Test connection'),
                   ),
+                  if (_testOk != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.check_circle,
+                              color: ZTheme.ok, size: 18),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(_testOk!,
+                                style: const TextStyle(color: ZTheme.ok)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  if (_testWarn != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: Text(_testWarn!,
+                          style: const TextStyle(
+                              color: ZTheme.accent, fontSize: 12)),
+                    ),
+                ],
                 const SizedBox(height: 24),
                 if (_error != null)
                   Padding(
@@ -271,6 +274,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           builder: (_) => NewDeviceLinkScreen(
                               vault: widget.vault, onDone: widget.onDone))),
                   child: const Text('Link to an existing account'),
+                ),
+                TextButton(
+                  onPressed: () => setState(() => _showDev = !_showDev),
+                  child: Text(
+                    _showDev ? 'Hide developer options' : 'Developer options',
+                    style: const TextStyle(
+                        color: ZTheme.textSecondary, fontSize: 12),
+                  ),
                 ),
                 const SizedBox(height: 24),
                 const Text(

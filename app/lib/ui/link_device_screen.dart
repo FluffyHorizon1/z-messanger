@@ -161,9 +161,10 @@ class NewDeviceLinkScreen extends StatefulWidget {
 }
 
 class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
-  final _server = TextEditingController(text: 'wss://z-relay.onrender.com');
+  final _server = TextEditingController(text: defaultRelayUrl);
   PairingInitiator? _initiator;
   bool _busy = false;
+  bool _showDev = false;
   String? _error;
 
   @override
@@ -272,14 +273,29 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
               ),
             ),
           const SizedBox(height: 28),
-          TextField(
-            controller: _server,
-            decoration: const InputDecoration(
-              labelText: 'Relay address',
-              helperText: 'The same relay your other device uses.',
+          if (_showDev) ...[
+            TextField(
+              controller: _server,
+              decoration: const InputDecoration(
+                labelText: 'Relay address (developer)',
+                helperText: 'Custom or self-hosted relay. Leave as-is for the '
+                    'default zmessengers.com relay.',
+                helperMaxLines: 2,
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          Center(
+            child: TextButton(
+              onPressed: () => setState(() => _showDev = !_showDev),
+              child: Text(
+                _showDev ? 'Hide developer options' : 'Developer options',
+                style:
+                    const TextStyle(color: ZTheme.textSecondary, fontSize: 12),
+              ),
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 12),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 14),

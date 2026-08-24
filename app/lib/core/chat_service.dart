@@ -30,6 +30,10 @@ class ChatService extends ChangeNotifier {
   String displayName;
   final Transport transport;
 
+  /// Hidden Developer-mode toggle — reveals the custom-relay option in Settings.
+  /// Persisted in the vault; off by default so normal users never see it.
+  bool devMode = false;
+
   final Map<String, Contact> contacts = {};
   final Map<String, Conversation> _convs = {};
   final Map<String, List<ChatMessage>> messagesByChat = {};
@@ -92,6 +96,7 @@ class ChatService extends ChangeNotifier {
     await svc._loadContacts();
     await svc._loadConversations();
     await svc._computeUnread();
+    svc.devMode = (await vault.kvGet('dev_mode')) == '1';
     await svc._initSync();
     await svc._loadContactDeviceLists();
 
@@ -1116,6 +1121,42 @@ class ChatService extends ChangeNotifier {
     final normalized = normalizeRelayUrl(url);
     await vault.kvPut('server_url', normalized, sensitive: false);
     await transport.setServer(normalized);
+    notifyListeners();
+  }
+
+  Future<void> setDevMode(bool v) async {
+    devMode = v;
+    await vault.kvPut('dev_mode', v ? '1' : '0', sensitive: false);
+    notifyListeners();
+  }
+
+  /// Re-attempt a permanently-failed outgoing message (status -1). The text is
+  /// re-encrypted and re-queued to the durable outbox under its original id, so
+  /// the recipient still de-duplicates it. Non-text failures can only be
+  /// dismissed with [deleteMessage].
+  Future<bool> retryFailedSend(String rid, String mid) async {
+    final contact = contacts[rid];
+    if (contact == null) return false;
+    final rows = await vault.db.query('messages',
+        where: 'rid = ? AND mid = ? AND outgoing = 1',
+        whereArgs: [rid, mid]);
+    if (rows.isEmpty) return false;
+    final row = rows.first;
+    if ((row['status'] as int) != -1 || row['kind'] != 'text') return false;
+    final body = await vault.unseal(row['enc_body'] as String);
+    await vault.db.update('messages', {'status': MsgStatus.pending},
+        where: 'rid = ? AND mid = ?', whereArgs: [rid, mid]);
+    _updateLoadedStatus(rid, mid, MsgStatus.pending);
+    notifyListeners();
+    await _sendInner(contact, InnerMessage.text(mid, _now(), body));
+    return true;
+  }
+
+  /// Remove a single message from this device (local only).
+  Future<void> deleteMessage(String rid, String mid) async {
+    await vault.db.delete('messages',
+        where: 'rid = ? AND mid = ?', whereArgs: [rid, mid]);
+    messagesByChat[rid]?.removeWhere((m) => m.mid == mid);
     notifyListeners();
   }
 

@@ -10,6 +10,7 @@ import 'package:z_protocol/z_protocol.dart';
 
 import 'core/chat_service.dart';
 import 'core/push_service.dart';
+import 'core/relay_url.dart';
 import 'core/transport.dart';
 import 'core/vault.dart';
 import 'ui/home_screen.dart';
@@ -137,8 +138,7 @@ class _BootstrapperState extends State<Bootstrapper>
     final identity = await ZIdentity.fromJson(
         (jsonDecode(idJson) as Map).cast<String, Object?>());
     final name = await vault.kvGet('display_name') ?? 'Me';
-    final serverUrl =
-        await vault.kvGet('server_url') ?? 'ws://localhost:8080';
+    final serverUrl = await vault.kvGet('server_url') ?? defaultRelayUrl;
     final transport = Transport(identity: identity, serverUrl: serverUrl);
     final service = await ChatService.init(
       vault: vault,

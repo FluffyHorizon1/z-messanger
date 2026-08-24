@@ -293,9 +293,12 @@ class _MessageRow extends StatelessWidget {
       );
     }
     final mine = msg.outgoing;
+    final failed = mine && msg.status == -1;
     return Align(
       alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
+      child: GestureDetector(
+        onTap: failed ? () => _showFailedMenu(context) : null,
+        child: Container(
         margin: EdgeInsets.only(
           left: mine ? 64 : 12,
           right: mine ? 12 : 64,
@@ -340,6 +343,48 @@ class _MessageRow extends StatelessWidget {
                   _StatusTicks(status: msg.status),
                 ],
               ],
+            ),
+            if (failed)
+              const Padding(
+                padding: EdgeInsets.only(top: 2),
+                child: Text('Failed to send — tap to retry',
+                    style: TextStyle(fontSize: 10, color: ZTheme.danger)),
+              ),
+          ],
+        ),
+      ),
+      ),
+    );
+  }
+
+  void _showFailedMenu(BuildContext context) {
+    final chat = context.read<ChatService>();
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (msg.kind == 'text')
+              ListTile(
+                leading: const Icon(Icons.refresh, color: ZTheme.accent),
+                title: const Text('Retry send'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final ok = await chat.retryFailedSend(msg.rid, msg.mid);
+                  if (!ok && context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Could not retry this message.')));
+                  }
+                },
+              ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: ZTheme.danger),
+              title: const Text('Delete for me'),
+              onTap: () {
+                Navigator.pop(ctx);
+                chat.deleteMessage(msg.rid, msg.mid);
+              },
             ),
           ],
         ),

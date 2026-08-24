@@ -1,3 +1,9 @@
+/// The relay every install dials by default, so a new user types nothing to get
+/// started. It can be overridden from the hidden Developer-mode settings for a
+/// custom or self-hosted relay. The service must actually be served here
+/// (DNS + TLS + WebSocket) for the default to connect.
+const String defaultRelayUrl = 'wss://zmessengers.com';
+
 /// Helpers for accepting relay addresses in whatever form the user pastes.
 ///
 /// People will paste their Render URL as `https://z-relay-x.onrender.com`,
