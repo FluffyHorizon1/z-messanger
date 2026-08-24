@@ -1195,6 +1195,39 @@ class ChatService extends ChangeNotifier {
     await broadcastMyDeviceList(); // tell contacts about the new device
   }
 
+  /// Revoke a linked device of MY account: drop it from the sync set, bump the
+  /// signed-list version, and re-broadcast so contacts stop fanning to it and
+  /// reject anything it sends. Only a root-holding device can do this.
+  Future<void> removeMyDevice(DeviceCertificate cert) async {
+    if (!await holdsAccountRoot()) return;
+    final list = await _myDevices();
+    final before = list.length;
+    list.removeWhere(
+        (d) => base64Encode(d.deviceEdPub) == base64Encode(cert.deviceEdPub));
+    if (list.length == before) return; // nothing matched
+    await vault.kvPut('my_devices',
+        jsonEncode([for (final d in list) d.toJson()]),
+        sensitive: false);
+    await vault.kvPut(
+        'my_devlist_version', '${(await _myDevlistVersion()) + 1}',
+        sensitive: false);
+    await _initSync();
+    await broadcastMyDeviceList();
+    notifyListeners();
+  }
+
+  /// The linked (secondary) devices of my account, if any.
+  Future<List<DeviceCertificate>> linkedDevices() async => _myDevices();
+
+  /// This install's own device certificate.
+  Future<DeviceCertificate> thisDeviceCert() async =>
+      (await accountIdentity()).deviceCert;
+
+  /// Whether this install holds the account root (can sign device lists, and so
+  /// can add or revoke devices).
+  Future<bool> holdsAccountRoot() async =>
+      (await accountIdentity()).holdsAccountRoot;
+
   Future<void> _initSync() async {
     final devices = await _myDevices();
     if (devices.isEmpty) {
@@ -1285,60 +1318,62 @@ class ChatService extends ChangeNotifier {
   Future<void> _loadContactDeviceLists() async {
     for (final rid in contacts.keys.toList()) {
       final devJson = await vault.kvGet('cdev_$rid');
-      if (devJson == null) continue;
       final contact = contacts[rid];
-      if (contact == null) continue;
+      if (devJson == null || contact == null) continue;
       final list = SignedDeviceList.fromJson(
           (jsonDecode(devJson) as Map).cast<String, Object?>());
-      final extras = _extrasOf(contact, list);
-      if (extras.isEmpty) continue;
-      final acct = await accountIdentity();
-      final stored = await vault.kvGet('cextra_$rid');
-      if (stored != null) {
-        _contactExtras[rid] = await AccountSession.fromJson(
-            acct, (jsonDecode(stored) as Map).cast<String, Object?>());
-        for (final d in extras) {
-          await _contactExtras[rid]!.addTarget(DeviceTarget.fromCert(d));
-        }
-      } else {
-        _contactExtras[rid] = await AccountSession.create(
-            acct, [for (final d in extras) DeviceTarget.fromCert(d)]);
-      }
-      for (final d in extras) {
-        _extraRidToContact[await d.routingId()] = rid;
-      }
+      await _installContactDeviceList(contact, list, persist: false);
     }
   }
 
-  /// Verify + store a device-list a contact sent, and (re)build their extras.
-  Future<void> _applyContactDeviceList(
-      Contact contact, SignedDeviceList list) async {
-    if (base64Encode(list.accountEdPub) != base64Encode(contact.bundle.edPub)) {
-      return; // not signed by this contact's account key
-    }
-    if (!await list.verify()) return;
+  /// Verify (on receipt), store, and reconcile a contact's device list — adding
+  /// newly-learned devices AND dropping revoked ones, so the fan-out set matches
+  /// the list exactly.
+  Future<void> _installContactDeviceList(
+      Contact contact, SignedDeviceList list,
+      {required bool persist}) async {
     final rid = contact.rid;
-    final storedVer =
-        int.tryParse(await vault.kvGet('cdev_ver_$rid') ?? '0') ?? 0;
-    if (list.version < storedVer) return; // stale
-    await vault.kvPut('cdev_$rid', jsonEncode(list.toJson()), sensitive: false);
-    await vault.kvPut('cdev_ver_$rid', '${list.version}', sensitive: false);
+    if (persist) {
+      if (base64Encode(list.accountEdPub) !=
+          base64Encode(contact.bundle.edPub)) {
+        return; // not signed by this contact's account key
+      }
+      if (!await list.verify()) return;
+      final storedVer =
+          int.tryParse(await vault.kvGet('cdev_ver_$rid') ?? '0') ?? 0;
+      if (list.version < storedVer) return; // stale replay
+      await vault.kvPut('cdev_$rid', jsonEncode(list.toJson()),
+          sensitive: false);
+      await vault.kvPut('cdev_ver_$rid', '${list.version}', sensitive: false);
+    }
 
     final extras = _extrasOf(contact, list);
     final acct = await accountIdentity();
-    final existing = _contactExtras[rid];
-    if (existing == null) {
-      _contactExtras[rid] = await AccountSession.create(
-          acct, [for (final d in extras) DeviceTarget.fromCert(d)]);
-    } else {
-      for (final d in extras) {
-        await existing.addTarget(DeviceTarget.fromCert(d));
-      }
+    var session = _contactExtras[rid];
+    if (session == null) {
+      final stored = await vault.kvGet('cextra_$rid');
+      session = stored != null
+          ? await AccountSession.fromJson(
+              acct, (jsonDecode(stored) as Map).cast<String, Object?>())
+          : await AccountSession.create(acct, const []);
+      _contactExtras[rid] = session;
+    }
+
+    final newRids = <String>{};
+    for (final d in extras) {
+      newRids.add(await d.routingId());
+    }
+    for (final r in session.targetRoutingIds.toList()) {
+      if (!newRids.contains(r)) session.removeTarget(r); // revoked device
     }
     for (final d in extras) {
-      _extraRidToContact[await d.routingId()] = rid;
+      await session.addTarget(DeviceTarget.fromCert(d));
     }
-    await _saveExtra(rid);
+    _extraRidToContact.removeWhere((k, v) => v == rid);
+    for (final r in newRids) {
+      _extraRidToContact[r] = rid;
+    }
+    if (persist) await _saveExtra(rid);
   }
 
   Future<void> _saveExtra(String rid) async {
@@ -1396,7 +1431,7 @@ class ChatService extends ChangeNotifier {
       final list = SignedDeviceList.fromJson(
           (jsonDecode(inner.data['list'] as String) as Map)
               .cast<String, Object?>());
-      await _applyContactDeviceList(contact, list);
+      await _installContactDeviceList(contact, list, persist: true);
     } catch (_) {}
   }
 

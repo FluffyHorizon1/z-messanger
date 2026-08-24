@@ -112,14 +112,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const _SectionHeader('Devices'),
           ListTile(
             leading: const Icon(Icons.devices_outlined),
-            title: const Text('Link a device'),
+            title: const Text('Linked devices'),
             subtitle: const Text(
-              'Add your desktop or another phone to this account by pairing '
-              'with a code and comparing a safety number.',
+              'See the devices on your account, link a new one, or revoke one '
+              'you no longer use.',
               style: TextStyle(fontSize: 12),
             ),
             onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const HostLinkScreen())),
+                MaterialPageRoute(builder: (_) => const LinkedDevicesScreen())),
           ),
           if (push.supported) ...[
             const _SectionHeader('Notifications'),

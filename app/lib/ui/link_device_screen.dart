@@ -305,3 +305,200 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
     );
   }
 }
+
+/// Manage the devices on this account: this device, any linked devices, with
+/// the ability to link a new one or revoke an existing one. Adding and revoking
+/// are available only on the root device (the one that created the account).
+class LinkedDevicesScreen extends StatefulWidget {
+  const LinkedDevicesScreen({super.key});
+  @override
+  State<LinkedDevicesScreen> createState() => _LinkedDevicesScreenState();
+}
+
+class _LinkedDevicesScreenState extends State<LinkedDevicesScreen> {
+  bool _loading = true;
+  bool _isRoot = false;
+  DeviceCertificate? _thisDevice;
+  List<DeviceCertificate> _linked = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final chat = context.read<ChatService>();
+    final me = await chat.thisDeviceCert();
+    final linked = await chat.linkedDevices();
+    final root = await chat.holdsAccountRoot();
+    if (!mounted) return;
+    setState(() {
+      _thisDevice = me;
+      _linked = linked;
+      _isRoot = root;
+      _loading = false;
+    });
+  }
+
+  Future<void> _linkNew() async {
+    await Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const HostLinkScreen()));
+    if (!mounted) return;
+    setState(() => _loading = true);
+    await _load();
+  }
+
+  Future<void> _remove(DeviceCertificate cert) async {
+    final chat = context.read<ChatService>();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Revoke this device?'),
+        content: Text(
+          'Messages will stop syncing to "${cert.deviceId}", and your contacts '
+          'will no longer deliver to it. This can\'t be undone — to use that '
+          'device again you would link it fresh.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: ZTheme.danger),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Revoke')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await chat.removeMyDevice(cert);
+    if (!mounted) return;
+    setState(() => _loading = true);
+    await _load();
+  }
+
+  String _fp(DeviceCertificate c) {
+    final s = b64url(c.deviceEdPub);
+    return s.length <= 12 ? s : s.substring(0, 12);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Linked devices')),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(20),
+              children: [
+                if (_thisDevice != null)
+                  _DeviceTile(
+                    title: _thisDevice!.deviceId,
+                    fingerprint: _fp(_thisDevice!),
+                    isThisDevice: true,
+                  ),
+                for (final d in _linked)
+                  _DeviceTile(
+                    title: d.deviceId,
+                    fingerprint: _fp(d),
+                    onRemove: _isRoot ? () => _remove(d) : null,
+                  ),
+                if (_linked.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      'No other devices linked yet.',
+                      style: TextStyle(
+                          color: ZTheme.textSecondary, fontSize: 13),
+                    ),
+                  ),
+                const SizedBox(height: 24),
+                if (_isRoot)
+                  FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: ZTheme.accent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
+                    icon: const Icon(Icons.add_link),
+                    label: const Text('Link a device'),
+                    onPressed: _linkNew,
+                  )
+                else
+                  const Text(
+                    'This is a linked device. Adding or revoking devices is '
+                    'done from your main device — the one that created the '
+                    'account.',
+                    style: TextStyle(
+                        color: ZTheme.textSecondary,
+                        fontSize: 13,
+                        height: 1.5),
+                  ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Each device has its own keys. Revoking one re-signs your '
+                  'device list so your contacts immediately stop trusting it.',
+                  style: TextStyle(
+                      color: ZTheme.textSecondary, fontSize: 12, height: 1.5),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+class _DeviceTile extends StatelessWidget {
+  final String title;
+  final String fingerprint;
+  final bool isThisDevice;
+  final VoidCallback? onRemove;
+  const _DeviceTile({
+    required this.title,
+    required this.fingerprint,
+    this.isThisDevice = false,
+    this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: ZTheme.surface,
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ListTile(
+        leading: Icon(
+          isThisDevice ? Icons.smartphone : Icons.devices_other,
+          color: ZTheme.accent,
+        ),
+        title: Row(
+          children: [
+            Flexible(
+                child: Text(title, overflow: TextOverflow.ellipsis)),
+            if (isThisDevice) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: ZTheme.accent.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Text('This device',
+                    style: TextStyle(fontSize: 11, color: ZTheme.accent)),
+              ),
+            ],
+          ],
+        ),
+        subtitle: Text('Key $fingerprint…',
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+        trailing: onRemove == null
+            ? null
+            : IconButton(
+                icon: const Icon(Icons.delete_outline, color: ZTheme.danger),
+                tooltip: 'Revoke device',
+                onPressed: onRemove,
+              ),
+      ),
+    );
+  }
+}
