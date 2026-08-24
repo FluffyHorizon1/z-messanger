@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../core/backup.dart';
 import '../core/chat_service.dart';
 import '../core/models.dart';
+import '../core/push_service.dart';
 import '../core/transport.dart';
 import 'theme.dart';
 
@@ -22,6 +23,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final svc = context.watch<ChatService>();
     final transport = context.watch<Transport>();
+    final push = context.watch<PushService>();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
@@ -106,6 +108,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
               }
             },
           ),
+          if (push.supported) ...[
+            const _SectionHeader('Notifications'),
+            SwitchListTile(
+              secondary: Icon(
+                push.enabled
+                    ? Icons.notifications_active_outlined
+                    : Icons.notifications_off_outlined,
+                color: push.enabled ? ZTheme.ok : ZTheme.textSecondary,
+              ),
+              title: const Text('Push notifications'),
+              subtitle: const Text(
+                'Wake this device when a message arrives while Z is closed. The '
+                'alert is content-free — messages are fetched and decrypted only '
+                'on your device, never inside the notification.',
+                style: TextStyle(fontSize: 12),
+              ),
+              value: push.enabled,
+              activeThumbColor: ZTheme.accent,
+              onChanged: (v) => context.read<PushService>().setEnabled(v),
+            ),
+          ],
           const _SectionHeader('Security'),
           if (svc.vault.usedFallbackKeyStore)
             const ListTile(

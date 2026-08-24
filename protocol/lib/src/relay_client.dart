@@ -180,6 +180,19 @@ class RelayClient {
     _send({'t': 'recv', 'id': id, 'from': from});
   }
 
+  /// Register this device's push token so the relay can send a content-free
+  /// wake ping when a message arrives while this identity is offline. The
+  /// token is opaque to the relay; no message content or sender is ever put in
+  /// a push. Safe to call repeatedly (e.g. on every reconnect or token refresh).
+  void registerPush({required String token, String platform = 'android'}) {
+    _send({'t': 'push-register', 'token': token, 'platform': platform});
+  }
+
+  /// Stop receiving wake pings for this identity (user disabled push / signed out).
+  void unregisterPush() {
+    _send({'t': 'push-unregister'});
+  }
+
   void _send(Map<String, Object?> frame) {
     if (!isOpen) throw RelayException('not connected');
     _ws.add(jsonEncode(frame));

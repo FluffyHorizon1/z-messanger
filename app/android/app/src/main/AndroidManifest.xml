@@ -3,6 +3,8 @@
          that WebSocket; CAMERA only for scanning contact QR codes. -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- Android 13+ runtime permission for showing message notifications. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="Z"
         android:name="${applicationName}"

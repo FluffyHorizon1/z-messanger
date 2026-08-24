@@ -1,10 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 import 'core/chat_service.dart';
+import 'core/push_service.dart';
 import 'core/transport.dart';
 import 'core/vault.dart';
 import 'ui/home_screen.dart';
@@ -14,6 +19,10 @@ import 'ui/unlock_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Register the background wake-ping handler (Android only; desktop has no FCM).
+  if (!kIsWeb && Platform.isAndroid) {
+    FirebaseMessaging.onBackgroundMessage(zPushBackgroundHandler);
+  }
   runApp(const ZApp());
 }
 
@@ -49,6 +58,7 @@ class _BootstrapperState extends State<Bootstrapper>
     with WidgetsBindingObserver {
   Vault? _vault;
   ChatService? _service;
+  PushService? _push;
   bool _needsOnboarding = false;
   bool _locked = false; // vault exists but needs a passphrase
   String? _unlockError;
@@ -140,9 +150,13 @@ class _BootstrapperState extends State<Bootstrapper>
     for (final rid in service.contacts.keys) {
       await service.loadMessages(rid);
     }
+    // Push (Android): registers this device's wake token with the relay.
+    final push = PushService(transport: transport, vault: vault);
+    unawaited(push.init());
     setState(() {
       _vault = vault;
       _service = service;
+      _push = push;
       _locked = false;
       _needsOnboarding = false;
       _unlocking = false;
@@ -205,6 +219,7 @@ class _BootstrapperState extends State<Bootstrapper>
       providers: [
         ChangeNotifierProvider<ChatService>.value(value: service),
         ChangeNotifierProvider<Transport>.value(value: service.transport),
+        ChangeNotifierProvider<PushService>.value(value: _push!),
       ],
       child: _shell(home: const HomeScreen()),
     );

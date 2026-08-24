@@ -22,6 +22,10 @@ class Transport extends ChangeNotifier {
   int _attempt = 0;
   Timer? _retryTimer;
 
+  /// Opaque FCM push token, if push is enabled. Re-registered on every
+  /// (re)connect because the relay holds tokens in RAM only.
+  String? _pushToken;
+
   /// Wired by ChatService.
   void Function(RelayInbound msg)? onMessage;
   void Function(DeliveredReceipt r)? onDelivered;
@@ -79,6 +83,11 @@ class Transport extends ChangeNotifier {
       client.delivered.listen((r) => onDelivered?.call(r));
       _setStatus(LinkStatus.connected);
       onConnected?.call();
+      if (_pushToken != null) {
+        try {
+          client.registerPush(token: _pushToken!);
+        } catch (_) {}
+      }
     } catch (e) {
       lastError = e.toString();
       _client = null;
@@ -120,6 +129,25 @@ class Transport extends ChangeNotifier {
   void ackReceived({required String id, required String from}) {
     try {
       _client?.ackReceived(id: id, from: from);
+    } catch (_) {}
+  }
+
+  /// Store this device's push token and register it now if connected. It is
+  /// re-registered automatically on every future reconnect.
+  void setPushToken(String? token) {
+    _pushToken = token;
+    if (token != null && isConnected) {
+      try {
+        _client?.registerPush(token: token);
+      } catch (_) {}
+    }
+  }
+
+  /// Turn push off for this identity and tell the relay to forget the token.
+  void unregisterPush() {
+    _pushToken = null;
+    try {
+      _client?.unregisterPush();
     } catch (_) {}
   }
 
