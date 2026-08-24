@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import 'device_sync.dart';
 import 'models.dart';
 import 'relay_url.dart';
 import 'transport.dart';
@@ -37,6 +38,10 @@ class ChatService extends ChangeNotifier {
 
   Timer? _sweeper;
   bool _flushing = false;
+
+  /// Self-sync across my own linked devices. Null until built; inert when I
+  /// have no linked devices, so single-device behaviour is unchanged.
+  DeviceSyncService? _sync;
 
   /// Per‑conversation async mutex. Ratchet state is a read‑modify‑write on
   /// shared in‑memory state that is NOT protected by the DB transaction, so
@@ -81,6 +86,7 @@ class ChatService extends ChangeNotifier {
     await svc._loadContacts();
     await svc._loadConversations();
     await svc._computeUnread();
+    await svc._initSync();
 
     transport.onMessage = (m) => unawaited(svc._onInbound(m));
     transport.onDelivered = (r) => unawaited(svc._onDelivered(r));
@@ -347,6 +353,9 @@ class ChatService extends ChangeNotifier {
           expireAtMs: expireAt,
         ));
     notifyListeners();
+    // Mirror to my own other devices (no-op if none linked).
+    unawaited(_sync?.mirror(threadRid: rid, dir: 'out', inner: inner) ??
+        Future<void>.value());
   }
 
   Future<void> sendFile(
@@ -519,6 +528,17 @@ class ChatService extends ChangeNotifier {
   // ------------------------------------------------------------------
 
   Future<void> _onInbound(RelayInbound m) async {
+    // Self-sync from one of my OWN linked devices takes a separate path.
+    final sync = _sync;
+    if (sync != null && sync.deviceRoutingIds.contains(m.from)) {
+      final mirrored = await sync.handleInbound(m.from, m.payload);
+      transport.ackReceived(id: m.id, from: m.from);
+      if (mirrored != null) {
+        await _insertMirrored(mirrored.thread, mirrored.dir, mirrored.inner);
+      }
+      return;
+    }
+
     // File chunks travel outside the ratchet (sealed under their file key).
     final chunk = tryParseChunk(m.payload);
     if (chunk != null) {
@@ -610,6 +630,11 @@ class ChatService extends ChangeNotifier {
       if (openChatRid == contact.rid &&
           (inner.kind == 'text' || inner.kind == 'file')) {
         unawaited(_sendReadReceipts(contact.rid));
+      }
+      if (inner.kind == 'text') {
+        // Mirror the received text to my own other devices.
+        unawaited(_sync?.mirror(threadRid: contact.rid, dir: 'in', inner: inner) ??
+            Future<void>.value());
       }
       notifyListeners();
     }
@@ -1105,12 +1130,13 @@ class ChatService extends ChangeNotifier {
       ];
 
   /// EXISTING device hosts a link: enter the code shown on the new device,
-  /// confirm the safety string, then seal this account + contacts across.
+  /// confirm the safety string, then seal this account + contacts across. On
+  /// success, remembers the linked device so messages mirror to it.
   Future<bool> hostDeviceLink(
     String code, {
     required Future<bool> Function(String sas) confirmSas,
   }) async {
-    return RelayPairing.runExistingDevice(
+    final linked = await RelayPairing.runExistingDevice(
       relayUrl: transport.serverUrl,
       code: PairingCode.parse(code),
       me: await accountIdentity(),
@@ -1119,6 +1145,83 @@ class ChatService extends ChangeNotifier {
       displayName: displayName,
       confirm: confirmSas,
     );
+    if (linked == null) return false;
+    await addMyDevice(linked);
+    return true;
+  }
+
+  // ---- self-sync plumbing -------------------------------------------------
+
+  Future<List<DeviceCertificate>> _myDevices() async {
+    final s = await vault.kvGet('my_devices');
+    if (s == null) return [];
+    return [
+      for (final j in (jsonDecode(s) as List))
+        DeviceCertificate.fromJson((j as Map).cast<String, Object?>())
+    ];
+  }
+
+  /// Persist a newly-linked device of MY account and (re)build the sync channel.
+  Future<void> addMyDevice(DeviceCertificate cert) async {
+    final list = await _myDevices();
+    if (!list.any((d) => base64Encode(d.deviceEdPub) == base64Encode(cert.deviceEdPub))) {
+      list.add(cert);
+      await vault.kvPut('my_devices',
+          jsonEncode([for (final d in list) d.toJson()]),
+          sensitive: false);
+    }
+    await _initSync();
+  }
+
+  Future<void> _initSync() async {
+    final devices = await _myDevices();
+    if (devices.isEmpty) {
+      _sync = null;
+      return;
+    }
+    _sync = DeviceSyncService(
+      vault: vault,
+      transport: transport,
+      account: await accountIdentity(),
+      myDevices: devices,
+    );
+    await _sync!.init();
+  }
+
+  /// Insert a message mirrored from one of my other devices (no re-send).
+  Future<void> _insertMirrored(String rid, String dir, InnerMessage inner) async {
+    if (inner.kind != 'text') return; // attachments don't self-sync yet
+    if (!contacts.containsKey(rid)) return;
+    final outgoing = dir == 'out';
+    final body = inner.data['body'] as String? ?? '';
+    final status = outgoing ? MsgStatus.sent : MsgStatus.delivered;
+    await vault.db.insert(
+      'messages',
+      {
+        'mid': inner.mid,
+        'rid': rid,
+        'outgoing': outgoing ? 1 : 0,
+        'kind': 'text',
+        'enc_body': await vault.seal(body),
+        'ts_ms': inner.ts,
+        'status': status,
+        'expire_at_ms': 0,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    _appendLoaded(
+        rid,
+        ChatMessage(
+          mid: inner.mid,
+          rid: rid,
+          outgoing: outgoing,
+          kind: 'text',
+          body: body,
+          ts: inner.ts,
+          status: status,
+          expireAtMs: 0,
+        ));
+    notifyListeners();
   }
 
   /// Full local wipe: identity, contacts, messages, keys. Irreversible.

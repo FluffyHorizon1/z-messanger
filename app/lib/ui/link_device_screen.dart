@@ -202,6 +202,11 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
       await widget.vault
           .kvPut('display_name', result.data.displayName ?? 'Me');
       await widget.vault.kvPut('server_url', url, sensitive: false);
+      // Remember the device that linked us, so our messages mirror back to it.
+      await widget.vault.kvPut(
+          'my_devices',
+          jsonEncode([result.data.hostDeviceCert.toJson()]),
+          sensitive: false);
       for (final b in result.data.contacts) {
         final dev = b.devices.first;
         final rid = b64url(await sha256Bytes(dev.deviceEdPub));
