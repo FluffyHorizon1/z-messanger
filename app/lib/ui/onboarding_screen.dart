@@ -7,6 +7,7 @@ import 'package:z_protocol/z_protocol.dart';
 import '../core/backup.dart';
 import '../core/relay_url.dart';
 import '../core/vault.dart';
+import 'link_device_screen.dart';
 import 'theme.dart';
 
 class OnboardingScreen extends StatefulWidget {
@@ -261,6 +262,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 OutlinedButton(
                   onPressed: _busy ? null : _restore,
                   child: const Text('Restore from backup (.zid)'),
+                ),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: _busy
+                      ? null
+                      : () => Navigator.of(context).push(MaterialPageRoute(
+                          builder: (_) => NewDeviceLinkScreen(
+                              vault: widget.vault, onDone: widget.onDone))),
+                  child: const Text('Link to an existing account'),
                 ),
                 const SizedBox(height: 24),
                 const Text(

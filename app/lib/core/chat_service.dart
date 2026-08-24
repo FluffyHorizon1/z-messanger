@@ -1050,6 +1050,77 @@ class ChatService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ------------------------------------------------------------------
+  // Multi-device: account layer (M-app). Additive — the single-device
+  // messaging path above is unchanged. Full cross-device message sync (the
+  // fan-out adoption) is a separate step; this establishes the trusted link.
+  // ------------------------------------------------------------------
+
+  /// A stable per-install device id.
+  Future<String> deviceId() async {
+    var id = await vault.kvGet('device_id');
+    if (id == null) {
+      id = b64url(randomBytes(9));
+      await vault.kvPut('device_id', id, sensitive: false);
+    }
+    return id;
+  }
+
+  /// This install's account identity. On a linked (secondary) device the full
+  /// account was stored at enrollment; on the primary it derives from the
+  /// existing identity (whose keys ARE device #1 of the account).
+  Future<AccountIdentity> accountIdentity() async {
+    final stored = await vault.kvGet('account');
+    if (stored != null) {
+      return AccountIdentity.fromJson(
+          (jsonDecode(stored) as Map).cast<String, Object?>());
+    }
+    return AccountIdentity.fromV1(identity, deviceId: await deviceId());
+  }
+
+  /// True if this install is a linked secondary device.
+  Future<bool> get isLinkedDevice async =>
+      (await vault.kvGet('account')) != null;
+
+  /// The v2 account contact code for this account (one device today).
+  Future<String> myAccountCode() async =>
+      (await accountIdentity()).toAccountBundle(displayName: displayName).encode();
+
+  /// Contacts expressed as account bundles, to hand to a device being linked.
+  List<AccountBundle> contactsAsBundles() => [
+        for (final c in contacts.values)
+          AccountBundle(
+            accountEdPub: c.bundle.edPub,
+            devices: [
+              DeviceCertificate(
+                deviceEdPub: c.bundle.edPub,
+                deviceXPub: c.bundle.xPub,
+                deviceId: 'legacy-v1',
+                sig: c.bundle.bindingSig,
+                legacy: true,
+              )
+            ],
+            displayName: c.name,
+          )
+      ];
+
+  /// EXISTING device hosts a link: enter the code shown on the new device,
+  /// confirm the safety string, then seal this account + contacts across.
+  Future<bool> hostDeviceLink(
+    String code, {
+    required Future<bool> Function(String sas) confirmSas,
+  }) async {
+    return RelayPairing.runExistingDevice(
+      relayUrl: transport.serverUrl,
+      code: PairingCode.parse(code),
+      me: await accountIdentity(),
+      contacts: contactsAsBundles(),
+      includeAccountRoot: false, // the new device cannot enroll further devices
+      displayName: displayName,
+      confirm: confirmSas,
+    );
+  }
+
   /// Full local wipe: identity, contacts, messages, keys. Irreversible.
   Future<void> wipeEverything() async {
     await transport.stop();

@@ -9,6 +9,7 @@ import '../core/chat_service.dart';
 import '../core/models.dart';
 import '../core/push_service.dart';
 import '../core/transport.dart';
+import 'link_device_screen.dart';
 import 'theme.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -107,6 +108,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 await svc.setServerUrl(url);
               }
             },
+          ),
+          const _SectionHeader('Devices'),
+          ListTile(
+            leading: const Icon(Icons.devices_outlined),
+            title: const Text('Link a device'),
+            subtitle: const Text(
+              'Add your desktop or another phone to this account by pairing '
+              'with a code and comparing a safety number.',
+              style: TextStyle(fontSize: 12),
+            ),
+            onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const HostLinkScreen())),
           ),
           if (push.supported) ...[
             const _SectionHeader('Notifications'),
