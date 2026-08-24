@@ -27,6 +27,7 @@ const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
 const { WebSocketServer } = require('ws');
+const { PushSender } = require('./push.js');
 
 // ---------------------------------------------------------------------------
 // Configuration (environment variables)
@@ -118,11 +119,25 @@ class MemoryCoordinator {
     this.online = new Map();
     /** routingId -> {entries:[], bytes} */
     this.queues = new Map();
+    /** routingId -> {token, platform, ts} — opaque FCM tokens, RAM only */
+    this.pushTokens = new Map();
     this.seq = 0;
   }
 
   get name() {
     return 'memory';
+  }
+
+  registerPush(rid, token, platform) {
+    this.pushTokens.set(rid, { token, platform, ts: Date.now() });
+  }
+
+  unregisterPush(rid) {
+    this.pushTokens.delete(rid);
+  }
+
+  getPush(rid) {
+    return this.pushTokens.get(rid) || null;
   }
 
   async register(rid, ws) {
@@ -308,6 +323,27 @@ class RedisCoordinator {
     }
   }
 
+  // Opaque FCM tokens, shared across instances. 30-day TTL; refreshed each
+  // time the client registers. Holds a device push token only — no keys, no
+  // message content.
+  async registerPush(rid, token, platform) {
+    await this.cmd.set(`push:${rid}`, JSON.stringify({ token, platform }), 'EX', 60 * 60 * 24 * 30);
+  }
+
+  async unregisterPush(rid) {
+    await this.cmd.del(`push:${rid}`);
+  }
+
+  async getPush(rid) {
+    const s = await this.cmd.get(`push:${rid}`);
+    if (!s) return null;
+    try {
+      return JSON.parse(s);
+    } catch {
+      return null;
+    }
+  }
+
   async _push(rid, entry) {
     const key = `q:${rid}`;
     await this.cmd.rpush(key, JSON.stringify(entry));
@@ -421,6 +457,10 @@ function createServer(opts = {}) {
     _internal.online = coord.online;
   }
 
+  // Optional push: enabled only when a valid FCM service account is configured.
+  // Tests can inject a fake via opts.pushSender; pass null to force-disable.
+  const pushSender = 'pushSender' in opts ? opts.pushSender : PushSender.fromEnv();
+
   const requestListener = (req, res) => {
     if (req.url === '/health') {
       const s = coord.stats();
@@ -434,6 +474,7 @@ function createServer(opts = {}) {
           connections: s.connections,
           queuedEnvelopes: s.queuedEnvelopes,
           storage: 'ram-only',
+          push: pushSender ? 'enabled' : 'disabled',
         })
       );
       return;
@@ -498,7 +539,7 @@ function createServer(opts = {}) {
         sendJson(ws, { t: 'error', code: 'bad_json' });
         return;
       }
-      handleFrame(ws, state, coord, frame).catch(() => {
+      handleFrame(ws, state, coord, frame, pushSender).catch(() => {
         sendJson(ws, { t: 'error', code: 'internal' });
       });
     });
@@ -535,7 +576,7 @@ function createServer(opts = {}) {
   return { httpServer, wss, coordinator: coord };
 }
 
-async function handleFrame(ws, state, coord, frame) {
+async function handleFrame(ws, state, coord, frame, pushSender) {
   switch (frame.t) {
     case 'auth': {
       if (state.authed) return;
@@ -586,6 +627,42 @@ async function handleFrame(ws, state, coord, frame) {
       }
       const { queued } = await coord.deliverEnqueue(state.rid, to, id, payload);
       sendJson(ws, { t: 'sent', id, queued });
+      // Recipient offline and push configured? Fire a content-free wake ping.
+      // Best-effort and non-blocking — never delays or fails the send.
+      if (queued && pushSender) {
+        const rec = await coord.getPush(to);
+        if (rec && rec.token) {
+          pushSender
+            .sendWake(rec.token)
+            .then((r) => {
+              if (r && r.retiredToken) Promise.resolve(coord.unregisterPush(to)).catch(() => {});
+            })
+            .catch(() => {});
+        }
+      }
+      break;
+    }
+
+    case 'push-register': {
+      if (!state.authed) {
+        sendJson(ws, { t: 'error', code: 'not_authed' });
+        return;
+      }
+      const token = String(frame.token || '');
+      const platform = String(frame.platform || 'unknown').slice(0, 16);
+      if (!token || token.length > 4096) {
+        sendJson(ws, { t: 'error', code: 'bad_push' });
+        return;
+      }
+      await coord.registerPush(state.rid, token, platform);
+      sendJson(ws, { t: 'push-ok' });
+      break;
+    }
+
+    case 'push-unregister': {
+      if (!state.authed) return;
+      await coord.unregisterPush(state.rid);
+      sendJson(ws, { t: 'push-ok' });
       break;
     }
 
@@ -631,5 +708,6 @@ module.exports = {
   routingIdFromPub,
   MemoryCoordinator,
   RedisCoordinator,
+  PushSender,
   _internal,
 };
