@@ -53,11 +53,11 @@ BUILT TO BE VERIFIED, NOT TRUSTED
   hardware keystore, with an optional app passphrase
 • Content-free notifications: the push wake-up contains no message and no
   sender — your device fetches and decrypts privately
-• Open source, with signed releases and published SHA-256 checksums
+• Published, auditable source code — signed releases with SHA-256 checksums
 
 RUN IT YOURSELF IF YOU WANT
 Don't want to use our relay? Host your own with one Docker command and point
-the app at it. The protocol, the server and the app are all open source.
+the app at it. The full source is published for anyone to audit, and the license expressly permits personal self-hosting.
 
 Z is for people who think privacy should be the default, not a feature.
 ```

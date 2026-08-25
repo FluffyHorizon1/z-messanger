@@ -93,7 +93,7 @@ const LANDING_HTML = page(
   lets you point at any relay you trust.</p></div>
 
   <h2>Self-host the relay</h2>
-  <p>This very page is served by the open Z relay. Run yours:
+  <p>This very page is served by the Z relay itself. Run yours (personal use is expressly permitted by the license):
   <code>docker compose up</code> from the repository's
   <a href="https://github.com/FluffyHorizon1/z-messanger">server/</a>
   directory, then enter its address in the app's developer options.</p>
