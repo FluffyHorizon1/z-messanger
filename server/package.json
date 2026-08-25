@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Zero-knowledge, RAM-only WebSocket relay for the Z messenger. Never stores messages on disk.",
   "main": "server.js",
-  "license": "MIT",
+  "license": "SEE LICENSE IN ../LICENSE",
   "engines": {
     "node": ">=20"
   },

@@ -82,8 +82,10 @@ Remove the scary install warnings; make binaries verifiable.
 
 - **3.1 Google Play** (internal → closed → open testing track). Data-safety
   form, privacy policy, listing assets. **DoD:** app live on an internal track.
-- **3.2 F-Droid** (the no-Google-services flavor from 1.3). **DoD:** builds
-  under F-Droid's reproducible pipeline; metadata merged.
+- **3.2 F-Droid** — dropped: F-Droid requires an OSI-approved open-source
+  license, which the proprietary license precludes. Android is covered by
+  Play + the direct signed APK. ~~**DoD:** builds
+  under F-Droid's reproducible pipeline; metadata merged.~~
 - **3.3 Microsoft Store** (MSIX packaging of the Windows build). **DoD:** MSIX
   submitted to Partner Center.
 - **3.4 Direct downloads** polished on the GitHub Releases page as the fallback

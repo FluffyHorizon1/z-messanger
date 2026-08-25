@@ -155,4 +155,6 @@ first‑contact verification).
 
 ## License
 
-MIT. See `LICENSE`.
+Proprietary, source-available — see `LICENSE`. You may read, audit, and
+self-host for personal use; commercial use and redistribution need written
+permission.
