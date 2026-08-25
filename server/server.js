@@ -28,6 +28,7 @@ const http = require('http');
 const https = require('https');
 const { WebSocketServer } = require('ws');
 const { PushSender } = require('./push.js');
+const { LANDING_HTML, PRIVACY_HTML } = require('./pages.js');
 
 // ---------------------------------------------------------------------------
 // Configuration (environment variables)
@@ -479,7 +480,24 @@ function createServer(opts = {}) {
       );
       return;
     }
-    res.writeHead(200, { 'content-type': 'text/plain' });
+    // Static pages (embedded strings — the relay still never touches disk).
+    if (req.url === '/' || req.url === '/index.html') {
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'public, max-age=300',
+      });
+      res.end(LANDING_HTML);
+      return;
+    }
+    if (req.url === '/privacy' || req.url === '/privacy/') {
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'public, max-age=300',
+      });
+      res.end(PRIVACY_HTML);
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'text/plain' });
     res.end('Z relay. Zero-knowledge, RAM-only. Connect via WebSocket.\n');
   };
 
