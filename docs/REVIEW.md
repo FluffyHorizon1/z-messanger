@@ -90,8 +90,8 @@ downloads) solved by pinning to the compile-from-source package line. Finally,
 a scripted two-instance GUI session proved the whole thing end to end, and
 Android APKs were built after taming a Gradle/AGP version dance.
 
-**Round 2 (v1.1).** An adversarial code review (a second Claude agent
-instructed to *refute* the implementation) confirmed one critical and two
+**Round 2 (v1.1).** An adversarial code review (a second, independent pass
+with a brief to *refute* the implementation) confirmed one critical and two
 high-severity bugs, all real:
 
 *The ratchet race (critical).* Nothing serialized concurrent encrypt/decrypt

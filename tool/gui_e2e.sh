@@ -6,7 +6,8 @@
 set -x
 export DISPLAY=:95
 export LIBGL_ALWAYS_SOFTWARE=1
-APP=/home/claude/z-messenger/app/build/linux/x64/release/bundle/zapp
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP=$ROOT/app/build/linux/x64/release/bundle/zapp
 S=/tmp/gui_shots
 mkdir -p $S; rm -f $S/*.png
 rm -rf /tmp/zh_a /tmp/zh_b; mkdir -p /tmp/zh_a /tmp/zh_b
@@ -16,7 +17,7 @@ Xvfb :95 -screen 0 2600x900x24 >/dev/null 2>&1 &
 sleep 3
 openbox --config-file /tmp/ob/rc.xml >/dev/null 2>&1 &
 sleep 2
-(cd /home/claude/z-messenger && PORT=8080 LOG_LEVEL=info node server/server.js >/tmp/relay_gui.log 2>&1) &
+(cd "$ROOT" && PORT=8080 LOG_LEVEL=info node server/server.js >/tmp/relay_gui.log 2>&1) &
 sleep 1
 
 launch() { setsid dbus-run-session -- env HOME=$1 DISPLAY=:95 LIBGL_ALWAYS_SOFTWARE=1 $APP >/tmp/zapp_$(basename $1).log 2>&1 </dev/null & }

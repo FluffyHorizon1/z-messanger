@@ -3,8 +3,8 @@
 **Goal:** take Z from a verified, self-hostable v1.1 to a public, store-listed,
 independently-audited encrypted messenger.
 
-**Operating model:** you + Claude, aggressive pace. Phases are sized in weeks
-and every milestone is scoped so a single focused Claude session can implement
+**Operating model:** solo, aggressive pace. Phases are sized in weeks
+and every milestone is scoped so a single focused working session can implement
 *and verify* it (a test, a build artifact, or a screenshot — never "trust me").
 Dates assume frequent sessions; slip them freely, the ordering is what matters.
 
@@ -148,11 +148,11 @@ Ordered by value; each is a self-contained project on the existing layering.
 2. **The UX unlock:** Phase 1.1 push ADR + 1.2 contentless wake prototype.
 3. **Trust:** Phase 2.1 Android signing in CI (fastest "looks legit" win).
 
-Each is a clean Claude session: implement, test, screenshot/artifact, commit.
+Each is a clean working session: implement, test, screenshot/artifact, commit.
 
-## How to run each milestone with Claude
+## How to run each milestone
 
-Open a session, point at this file, and say e.g. *"do Phase 0.2."* Claude
-implements it, writes the test named in the DoD, runs it, and commits. Because
+Pick a milestone from this file (e.g. *Phase 0.2*), implement it, write the
+test named in the DoD, run it, and commit. Because
 every milestone's DoD is an artifact, you always end a session with proof it
 landed — the same discipline that carried v1.0 → v1.1.
