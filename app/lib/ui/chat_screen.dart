@@ -24,15 +24,34 @@ class _ChatScreenState extends State<ChatScreen> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
   bool _sending = false;
+  bool _loadingOlder = false;
 
   @override
   void initState() {
     super.initState();
+    _scroll.addListener(_maybeLoadOlder);
     final svc = context.read<ChatService>();
     svc.loadMessages(widget.rid).then((_) {
       svc.markChatOpened(widget.rid);
       _jumpToEnd();
     });
+  }
+
+  /// With a reversed list, scrolling towards maxScrollExtent = scrolling into
+  /// the past. Page older history in before the user hits the top.
+  Future<void> _maybeLoadOlder() async {
+    if (_loadingOlder || !_scroll.hasClients) return;
+    if (_scroll.position.pixels < _scroll.position.maxScrollExtent - 400) {
+      return;
+    }
+    final svc = context.read<ChatService>();
+    if (svc.hasMoreByChat[widget.rid] != true) return;
+    _loadingOlder = true;
+    try {
+      await svc.loadOlderMessages(widget.rid);
+    } finally {
+      _loadingOlder = false;
+    }
   }
 
   @override
@@ -44,10 +63,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _jumpToEnd() {
+    // The list is reversed, so offset 0 IS the newest message.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.jumpTo(_scroll.position.maxScrollExtent);
-      }
+      if (_scroll.hasClients) _scroll.jumpTo(0);
     });
   }
 
@@ -171,7 +189,6 @@ class _ChatScreenState extends State<ChatScreen> {
             ? 'end-to-end encrypted · verified'
             : 'end-to-end encrypted');
     final messages = svc.messagesByChat[widget.rid] ?? [];
-    _jumpToEnd();
 
     return Scaffold(
       appBar: AppBar(
@@ -247,10 +264,16 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: ListView.builder(
               controller: _scroll,
+              // Reversed: index 0 = newest, pinned to the bottom. This keeps
+              // the view anchored while older pages prepend, and new messages
+              // appear at the bottom without any manual jumping.
+              reverse: true,
               padding: const EdgeInsets.symmetric(vertical: 12),
               itemCount: messages.length,
-              itemBuilder: (context, i) =>
-                  _MessageRow(msg: messages[i], key: ValueKey(messages[i].mid)),
+              itemBuilder: (context, i) {
+                final msg = messages[messages.length - 1 - i];
+                return _MessageRow(msg: msg, key: ValueKey(msg.mid));
+              },
             ),
           ),
           if (isGroup && group.left)

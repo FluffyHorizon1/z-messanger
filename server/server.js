@@ -105,7 +105,59 @@ function entryToFrame(entry) {
   if (entry.kind === 'receipt') {
     return { t: 'delivered', id: entry.id, to: entry.from, ts: entry.ts };
   }
-  return { t: 'msg', id: entry.id, from: entry.from, payload: entry.payload, ts: entry.ts };
+  // Sealed-sender envelopes carry no sender: `from` is simply absent.
+  return entry.from == null
+    ? { t: 'msg', id: entry.id, payload: entry.payload, ts: entry.ts }
+    : { t: 'msg', id: entry.id, from: entry.from, payload: entry.payload, ts: entry.ts };
+}
+
+// ---------------------------------------------------------------------------
+// Delivery metrics (RAM only, aggregate only — never per-user, never content)
+// ---------------------------------------------------------------------------
+const METRICS = {
+  enqueuedTotal: 0,
+  sealedTotal: 0,
+  deliveredLiveTotal: 0,
+  ackedTotal: 0,
+  latencyBucketsMs: [50, 200, 1000, 5000, 30000],
+  latencyCounts: [0, 0, 0, 0, 0, 0], // one per bucket + +Inf
+  latencySumMs: 0,
+};
+
+function observeAck(entry) {
+  METRICS.ackedTotal += 1;
+  const ms = Math.max(0, Date.now() - (entry.ts || Date.now()));
+  METRICS.latencySumMs += ms;
+  let i = METRICS.latencyBucketsMs.findIndex((b) => ms <= b);
+  if (i === -1) i = METRICS.latencyCounts.length - 1;
+  METRICS.latencyCounts[i] += 1;
+}
+
+function renderMetrics(stats) {
+  const L = [];
+  L.push('# TYPE z_connections gauge');
+  L.push(`z_connections ${stats.connections}`);
+  L.push('# TYPE z_queued_envelopes gauge');
+  L.push(`z_queued_envelopes ${stats.queuedEnvelopes}`);
+  L.push('# TYPE z_enqueued_total counter');
+  L.push(`z_enqueued_total ${METRICS.enqueuedTotal}`);
+  L.push('# TYPE z_sealed_total counter');
+  L.push(`z_sealed_total ${METRICS.sealedTotal}`);
+  L.push('# TYPE z_delivered_live_total counter');
+  L.push(`z_delivered_live_total ${METRICS.deliveredLiveTotal}`);
+  L.push('# TYPE z_acked_total counter');
+  L.push(`z_acked_total ${METRICS.ackedTotal}`);
+  L.push('# TYPE z_delivery_latency_ms histogram');
+  let cum = 0;
+  METRICS.latencyBucketsMs.forEach((b, i) => {
+    cum += METRICS.latencyCounts[i];
+    L.push(`z_delivery_latency_ms_bucket{le="${b}"} ${cum}`);
+  });
+  cum += METRICS.latencyCounts[METRICS.latencyCounts.length - 1];
+  L.push(`z_delivery_latency_ms_bucket{le="+Inf"} ${cum}`);
+  L.push(`z_delivery_latency_ms_sum ${METRICS.latencySumMs}`);
+  L.push(`z_delivery_latency_ms_count ${cum}`);
+  return L.join('\n') + '\n';
 }
 
 // ---------------------------------------------------------------------------
@@ -189,23 +241,33 @@ class MemoryCoordinator {
       seq: ++this.seq,
       kind: 'msg',
       id,
-      from,
+      from, // null for sealed-sender envelopes
       payload,
       ts: Date.now(),
       size: payload.length + 256,
     };
+    METRICS.enqueuedTotal += 1;
+    if (from == null) METRICS.sealedTotal += 1;
     this._enqueue(to, entry);
     const target = this.online.get(to);
     const live = target ? sendJson(target, entryToFrame(entry)) : false;
+    if (live) METRICS.deliveredLiveTotal += 1;
     return { queued: !live };
   }
 
   async ack(recipient, from, id) {
+    // Sealed envelopes are acked by id alone (the relay never knew a sender);
+    // legacy envelopes still match on (from, id).
     const entry = this._removeEntry(
       recipient,
-      (e) => e.kind === 'msg' && e.id === id && e.from === from
+      (e) =>
+        e.kind === 'msg' &&
+        e.id === id &&
+        (from ? e.from === from : e.from == null)
     );
     if (!entry) return;
+    observeAck(entry);
+    if (entry.from == null) return; // sealed: receipts travel E2E instead
     const receipt = {
       seq: ++this.seq,
       kind: 'receipt',
@@ -354,6 +416,8 @@ class RedisCoordinator {
 
   async deliverEnqueue(from, to, id, payload) {
     const entry = { kind: 'msg', id, from, payload, ts: Date.now() };
+    METRICS.enqueuedTotal += 1;
+    if (from == null) METRICS.sealedTotal += 1;
     await this._push(to, entry);
     const owner = await this.cmd.get(`presence:${to}`);
     let live = false;
@@ -367,6 +431,7 @@ class RedisCoordinator {
       );
       live = true; // best-effort; entry stays queued until acked either way
     }
+    if (live) METRICS.deliveredLiveTotal += 1;
     return { queued: !live };
   }
 
@@ -381,13 +446,19 @@ class RedisCoordinator {
       } catch {
         continue;
       }
-      if (e.kind === 'msg' && e.id === id && e.from === from) {
+      if (
+        e.kind === 'msg' &&
+        e.id === id &&
+        (from ? e.from === from : e.from == null)
+      ) {
         await this.cmd.lrem(key, 1, s);
         removed = e;
         break;
       }
     }
     if (!removed) return;
+    observeAck(removed);
+    if (removed.from == null) return; // sealed: no relay receipt possible
     const receipt = { kind: 'receipt', id, from: recipient, ts: Date.now() };
     const owner = await this.cmd.get(`presence:${from}`);
     if (owner === this.id) {
@@ -478,6 +549,12 @@ function createServer(opts = {}) {
           push: pushSender ? 'enabled' : 'disabled',
         })
       );
+      return;
+    }
+    if (req.url === '/metrics') {
+      // Aggregate delivery SLIs only — no per-user data, no content, RAM only.
+      res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' });
+      res.end(renderMetrics(coord.stats()));
       return;
     }
     // Static pages (embedded strings — the relay still never touches disk).
@@ -643,7 +720,17 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
         sendJson(ws, { t: 'error', code: 'too_large', id });
         return;
       }
-      const { queued } = await coord.deliverEnqueue(state.rid, to, id, payload);
+      // Sealed-sender envelopes ('zs1.' prefix) are stored and delivered with
+      // NO sender attribution: the recipient learns the sender only inside the
+      // encrypted envelope, so a full copy of this server yields no social
+      // graph. Authenticity is enforced end-to-end by the inner ratchet.
+      const anon = payload.startsWith('zs1.');
+      const { queued } = await coord.deliverEnqueue(
+        anon ? null : state.rid,
+        to,
+        id,
+        payload
+      );
       sendJson(ws, { t: 'sent', id, queued });
       // Recipient offline and push configured? Fire a content-free wake ping.
       // Best-effort and non-blocking — never delays or fails the send.
@@ -686,6 +773,7 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
 
     case 'recv': {
       if (!state.authed) return;
+      // `from` absent/empty = a sealed envelope being acked by id alone.
       await coord.ack(state.rid, String(frame.from || ''), String(frame.id || ''));
       break;
     }

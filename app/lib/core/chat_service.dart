@@ -54,6 +54,18 @@ class ChatService extends ChangeNotifier {
   final Map<String, AccountSession> _contactExtras = {};
   final Map<String, String> _extraRidToContact = {};
 
+  /// Sealed sender: routing id → X25519 public key of every device we send
+  /// to (contacts, their extra devices, my own linked devices). Every outbound
+  /// envelope is sealed to its recipient so the relay never learns who sent
+  /// it; a rid we hold no key for falls back to a legacy attributed send.
+  final Map<String, Uint8List> _sealKeys = {};
+
+  Future<String> _sealFor(String rid, String payload) async {
+    final key = _sealKeys[rid];
+    if (key == null) return payload;
+    return SealedEnvelope.seal(toXPub: key, fromRid: myRid, payload: payload);
+  }
+
   /// Per‑conversation async mutex. Ratchet state is a read‑modify‑write on
   /// shared in‑memory state that is NOT protected by the DB transaction, so
   /// every encrypt/decrypt+persist for a given contact must be serialized.
@@ -112,10 +124,22 @@ class ChatService extends ChangeNotifier {
     return svc;
   }
 
+  bool _disposed = false;
+
   @override
   void dispose() {
+    _disposed = true;
     _sweeper?.cancel();
     super.dispose();
+  }
+
+  @override
+  void notifyListeners() {
+    // Inbound handlers and best-effort receipts can still be in flight when
+    // the service is torn down (app shutdown, account switch, tests): their
+    // late notifications must be no-ops, not crashes.
+    if (_disposed) return;
+    super.notifyListeners();
   }
 
   // ------------------------------------------------------------------
@@ -136,6 +160,7 @@ class ChatService extends ChangeNotifier {
         verified: (r['verified'] as int) == 1,
         createdMs: r['created_ms'] as int,
       );
+      _sealKeys[r['rid'] as String] = bundle.xPub;
     }
   }
 
@@ -223,6 +248,7 @@ class ChatService extends ChangeNotifier {
       'created_ms': contact.createdMs,
     });
     contacts[rid] = contact;
+    _sealKeys[rid] = bundle.xPub;
     messagesByChat[rid] = [];
     unread[rid] = 0;
 
@@ -312,7 +338,8 @@ class ChatService extends ChangeNotifier {
     await _withLock(contact.rid, () async {
       final conv = await _convFor(contact);
       final snapshot = jsonEncode(conv.toJson());
-      final payload = await conv.encrypt(inner.toBytes());
+      final payload =
+          await _sealFor(contact.rid, await conv.encrypt(inner.toBytes()));
       try {
         await vault.db.transaction((txn) async {
           await _saveConv(contact.rid, txn: txn);
@@ -454,7 +481,9 @@ class ChatService extends ChangeNotifier {
         await txn.insert('outbox', {
           'id': newMessageId(),
           'rid': rid,
-          'payload': p,
+          // Sealed per recipient; the raw chunk list is reused for the
+          // own-device mirror, which seals per device in _syncSend.
+          'payload': await _sealFor(rid, p),
           'created_ms': _now(),
         });
       }
@@ -543,6 +572,11 @@ class ChatService extends ChangeNotifier {
         }
       }
       notifyListeners();
+    } on DatabaseException {
+      // The vault closed mid-flush (app shutting down). Nothing is lost:
+      // unsent rows stay in the durable outbox and the next launch's first
+      // connect flushes them. Flush is fire-and-forget, so don't propagate.
+      return;
     } finally {
       _flushing = false;
     }
@@ -558,19 +592,37 @@ class ChatService extends ChangeNotifier {
   // ------------------------------------------------------------------
 
   Future<void> _onInbound(RelayInbound m) async {
+    // Sealed sender: an envelope with no relay-level sender. Open it with our
+    // private key; the sender's routing id lives INSIDE the ciphertext, so the
+    // relay never learns who sent what. Acks stay anonymous (m.from is empty),
+    // and authenticity is enforced below by the inner ratchet — a forged
+    // sender simply fails decryption for that session and is dropped.
+    var from = m.from;
+    var payload = m.payload;
+    if (from.isEmpty) {
+      final opened = await SealedEnvelope.open(
+          myXSeed: identity.xSeed, myXPub: identity.xPub, blob: payload);
+      if (opened == null) {
+        transport.ackReceived(id: m.id, from: m.from); // not ours: free RAM
+        return;
+      }
+      from = opened.fromRid;
+      payload = opened.payload;
+    }
+
     // File chunks travel outside the ratchet (sealed under their own file key)
     // and may arrive either from a contact or relayed from one of my own
     // devices, so recognise them before any by-sender routing below.
-    final chunk = tryParseChunk(m.payload);
+    final chunk = tryParseChunk(payload);
     if (chunk != null) {
-      await _onChunk(m, chunk);
+      await _onChunk(m, chunk, from, payload);
       return;
     }
 
     // Self-sync from one of my OWN linked devices takes a separate path.
     final sync = _sync;
-    if (sync != null && sync.deviceRoutingIds.contains(m.from)) {
-      final mirrored = await sync.handleInbound(m.from, m.payload);
+    if (sync != null && sync.deviceRoutingIds.contains(from)) {
+      final mirrored = await sync.handleInbound(from, payload);
       transport.ackReceived(id: m.id, from: m.from);
       if (mirrored != null) {
         await _insertMirrored(mirrored.thread, mirrored.dir, mirrored.inner);
@@ -579,13 +631,13 @@ class ChatService extends ChangeNotifier {
     }
 
     // Inbound from a contact's non-primary device (M4).
-    final extraContact = _extraRidToContact[m.from];
+    final extraContact = _extraRidToContact[from];
     if (extraContact != null) {
-      await _handleExtraInbound(extraContact, m);
+      await _handleExtraInbound(extraContact, from, payload, m);
       return;
     }
 
-    final contact = contacts[m.from];
+    final contact = contacts[from];
     if (contact == null) {
       // Unknown sender: we do not hold their verified identity bundle, so we
       // cannot authenticate a session. Drop (and free the relay queue).
@@ -608,7 +660,7 @@ class ChatService extends ChangeNotifier {
         final snapshot = jsonEncode(conv.toJson()); // for rollback
         final DecryptResult dec;
         try {
-          dec = await conv.decrypt(m.payload);
+          dec = await conv.decrypt(payload);
         } on UnknownSessionException {
           // Their session predates our state (e.g. we restored from backup).
           await _saveConv(contact.rid);
@@ -628,7 +680,7 @@ class ChatService extends ChangeNotifier {
             await _saveConv(contact.rid, txn: txn);
             final inserted = await txn.insert(
                 'inbox_dedupe',
-                {'from_rid': m.from, 'mid': parsed.mid, 'seen_ms': now},
+                {'from_rid': from, 'mid': parsed.mid, 'seen_ms': now},
                 conflictAlgorithm: ConflictAlgorithm.ignore);
             if (inserted == 0) return; // duplicate resend — already processed
             await _persistInboundKind(txn, contact, parsed, now);
@@ -669,6 +721,24 @@ class ChatService extends ChangeNotifier {
       if (openChatRid == contact.rid &&
           (inner.kind == 'text' || inner.kind == 'file')) {
         unawaited(_sendReadReceipts(contact.rid));
+      }
+      if (inner.kind == 'text' ||
+          inner.kind == 'file' ||
+          inner.kind == 'gmsg') {
+        // E2E delivery receipt. With sealed sender the relay no longer knows
+        // whom to notify of delivery, so the recipient tells the sender
+        // directly — encrypted, like everything else. Best-effort: if the app
+        // dies mid-send the sender simply keeps a single grey tick.
+        unawaited(_sendInner(
+                contact,
+                InnerMessage(
+                    kind: 'dlv',
+                    mid: newMessageId(),
+                    ts: _now(),
+                    data: {
+                      'mids': [inner.mid]
+                    }))
+            .then((_) {}, onError: (_) {}));
       }
       if (inner.kind == 'text' ||
           inner.kind == 'file' ||
@@ -812,6 +882,21 @@ class ChatService extends ChangeNotifier {
         }
         break;
 
+      case 'dlv':
+        // E2E delivery receipt (replaces the relay's receipt under sealed
+        // sender): mark those outgoing messages delivered, wherever they live.
+        final dlvMids = (inner.data['mids'] as List?)?.cast<String>() ?? [];
+        for (final mid in dlvMids) {
+          await txn.update('messages', {'status': MsgStatus.delivered},
+              where: 'mid = ? AND outgoing = 1 AND status < ?',
+              whereArgs: [mid, MsgStatus.delivered]);
+          for (final e in messagesByChat.entries) {
+            _updateLoadedStatus(e.key, mid, MsgStatus.delivered,
+                onlyUpgrade: true);
+          }
+        }
+        break;
+
       case 'gmsg':
         await _persistGroupText(contact, inner, now, txn: txn);
         break;
@@ -830,18 +915,19 @@ class ChatService extends ChangeNotifier {
     }
   }
 
-  Future<void> _onChunk(RelayInbound m, FileChunk chunk) async {
+  Future<void> _onChunk(
+      RelayInbound m, FileChunk chunk, String from, String payload) async {
     await vault.db.insert(
         'chunks',
-        {'fid': chunk.fid, 'idx': chunk.index, 'payload': m.payload},
+        {'fid': chunk.fid, 'idx': chunk.index, 'payload': payload},
         conflictAlgorithm: ConflictAlgorithm.ignore);
     transport.ackReceived(id: m.id, from: m.from);
     // Relay a contact's chunk to my own other devices so the attachment lands
     // there too. Skip chunks that were themselves relayed from one of my
-    // devices, so the fan-out can't loop.
+    // devices (matched on the OPENED sender), so the fan-out can't loop.
     final sync = _sync;
-    if (sync != null && !sync.deviceRoutingIds.contains(m.from)) {
-      unawaited(sync.fanChunk(m.payload));
+    if (sync != null && !sync.deviceRoutingIds.contains(from)) {
+      unawaited(sync.fanChunk(payload));
     }
     await _tryAssemble(chunk.fid);
   }
@@ -956,44 +1042,85 @@ class ChatService extends ChangeNotifier {
   // Message loading & helpers
   // ------------------------------------------------------------------
 
+  /// Window size for chat history paging (Phase 4.3): opening a 50k-message
+  /// thread costs the same as a 60-message one; older pages load on scroll.
+  static const int messagePageSize = 60;
+
+  /// rid → whether older messages exist beyond what's loaded in memory.
+  final Map<String, bool> hasMoreByChat = {};
+
+  Future<ChatMessage> _rowToMessage(String rid, Map<String, Object?> r) async {
+    final kind = r['kind'] as String;
+    String body;
+    String? senderName;
+    FileMeta? fileMeta;
+    if (kind == 'file') {
+      final fid = r['fid'] as String;
+      fileMeta = await _loadFileMeta(fid);
+      body = fileMeta?.name ?? 'file';
+    } else if (kind == 'gtext') {
+      final j = (jsonDecode(await vault.unseal(r['enc_body'] as String)) as Map)
+          .cast<String, Object?>();
+      body = j['b'] as String? ?? '';
+      senderName = j['sn'] as String?;
+    } else {
+      body = await vault.unseal(r['enc_body'] as String);
+    }
+    return ChatMessage(
+      mid: r['mid'] as String,
+      rid: rid,
+      outgoing: (r['outgoing'] as int) == 1,
+      kind: kind,
+      body: body,
+      fid: r['fid'] as String?,
+      ts: r['ts_ms'] as int,
+      status: r['status'] as int,
+      expireAtMs: r['expire_at_ms'] as int,
+      file: fileMeta,
+      senderName: senderName,
+    );
+  }
+
+  /// Load the NEWEST page of a thread. Older history stays on disk until
+  /// [loadOlderMessages] pulls it in.
   Future<List<ChatMessage>> loadMessages(String rid) async {
     final rows = await vault.db.query('messages',
-        where: 'rid = ?', whereArgs: [rid], orderBy: 'ts_ms', limit: 1000);
+        where: 'rid = ?',
+        whereArgs: [rid],
+        orderBy: 'ts_ms DESC',
+        limit: messagePageSize + 1);
+    hasMoreByChat[rid] = rows.length > messagePageSize;
     final list = <ChatMessage>[];
-    for (final r in rows) {
-      final kind = r['kind'] as String;
-      String body;
-      String? senderName;
-      FileMeta? fileMeta;
-      if (kind == 'file') {
-        final fid = r['fid'] as String;
-        fileMeta = await _loadFileMeta(fid);
-        body = fileMeta?.name ?? 'file';
-      } else if (kind == 'gtext') {
-        final j = (jsonDecode(await vault.unseal(r['enc_body'] as String))
-                as Map)
-            .cast<String, Object?>();
-        body = j['b'] as String? ?? '';
-        senderName = j['sn'] as String?;
-      } else {
-        body = await vault.unseal(r['enc_body'] as String);
-      }
-      list.add(ChatMessage(
-        mid: r['mid'] as String,
-        rid: rid,
-        outgoing: (r['outgoing'] as int) == 1,
-        kind: kind,
-        body: body,
-        fid: r['fid'] as String?,
-        ts: r['ts_ms'] as int,
-        status: r['status'] as int,
-        expireAtMs: r['expire_at_ms'] as int,
-        file: fileMeta,
-        senderName: senderName,
-      ));
+    for (final r in rows.take(messagePageSize).toList().reversed) {
+      list.add(await _rowToMessage(rid, r));
     }
     messagesByChat[rid] = list;
     return list;
+  }
+
+  /// Prepend the next (older) page of a thread. Returns how many messages
+  /// were added; 0 means the full history is already loaded.
+  Future<int> loadOlderMessages(String rid) async {
+    final current = messagesByChat[rid];
+    if (current == null || current.isEmpty || hasMoreByChat[rid] != true) {
+      return 0;
+    }
+    final oldestTs = current.first.ts;
+    final rows = await vault.db.query('messages',
+        where: 'rid = ? AND ts_ms < ?',
+        whereArgs: [rid, oldestTs],
+        orderBy: 'ts_ms DESC',
+        limit: messagePageSize + 1);
+    hasMoreByChat[rid] = rows.length > messagePageSize;
+    final have = current.map((m) => m.mid).toSet();
+    final older = <ChatMessage>[];
+    for (final r in rows.take(messagePageSize).toList().reversed) {
+      final msg = await _rowToMessage(rid, r);
+      if (!have.contains(msg.mid)) older.add(msg);
+    }
+    current.insertAll(0, older);
+    notifyListeners();
+    return older.length;
   }
 
   Future<FileMeta?> _loadFileMeta(String fid) async {
@@ -1332,6 +1459,9 @@ class ChatService extends ChangeNotifier {
 
   Future<void> _initSync() async {
     final devices = await _myDevices();
+    for (final d in devices) {
+      _sealKeys[await d.routingId()] = d.deviceXPub; // seal self-sync too
+    }
     if (devices.isEmpty) {
       _sync = null;
       return;
@@ -1353,7 +1483,7 @@ class ChatService extends ChangeNotifier {
     await vault.db.insert('outbox', {
       'id': newMessageId(),
       'rid': toRid,
-      'payload': payload,
+      'payload': await _sealFor(toRid, payload),
       'created_ms': _now(),
     });
     unawaited(flushOutbox());
@@ -1766,6 +1896,7 @@ class ChatService extends ChangeNotifier {
             conflictAlgorithm: ConflictAlgorithm.ignore);
         contacts[rid] = Contact(
             rid: rid, bundle: bundle, name: cname, createdMs: createdMs);
+        _sealKeys[rid] = bundle.xPub;
         messagesByChat.putIfAbsent(rid, () => []);
         unread.putIfAbsent(rid, () => 0);
       }
@@ -1939,7 +2070,9 @@ class ChatService extends ChangeNotifier {
 
     final newRids = <String>{};
     for (final d in extras) {
-      newRids.add(await d.routingId());
+      final r = await d.routingId();
+      newRids.add(r);
+      _sealKeys[r] = d.deviceXPub; // sealed sender to their extra devices too
     }
     for (final r in session.targetRoutingIds.toList()) {
       if (!newRids.contains(r)) session.removeTarget(r); // revoked device
@@ -1972,7 +2105,9 @@ class ChatService extends ChangeNotifier {
         for (final f in fan) {
           try {
             await transport.send(
-                to: f.routingId, id: newMessageId(), payload: f.payload);
+                to: f.routingId,
+                id: newMessageId(),
+                payload: await _sealFor(f.routingId, f.payload));
           } catch (_) {}
         }
       } catch (_) {}
@@ -1980,7 +2115,8 @@ class ChatService extends ChangeNotifier {
   }
 
   /// Inbound from a contact's non-primary device.
-  Future<void> _handleExtraInbound(String rid, RelayInbound m) async {
+  Future<void> _handleExtraInbound(
+      String rid, String fromDeviceRid, String payload, RelayInbound m) async {
     final contact = contacts[rid];
     final s = _contactExtras[rid];
     if (contact == null || s == null) {
@@ -1990,7 +2126,7 @@ class ChatService extends ChangeNotifier {
     InnerMessage? inner;
     await _withLock(rid, () async {
       try {
-        final dec = await s.decryptFrom(m.from, m.payload);
+        final dec = await s.decryptFrom(fromDeviceRid, payload);
         await _saveExtra(rid);
         inner = InnerMessage.fromBytes(dec.plaintext);
       } catch (_) {}

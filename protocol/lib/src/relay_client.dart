@@ -129,7 +129,9 @@ class RelayClient {
       case 'msg':
         _messages.add(RelayInbound(
           id: frame['id'] as String,
-          from: frame['from'] as String,
+          // Sealed-sender envelopes arrive with no sender: the relay never
+          // knew one. The sender is learned inside the encrypted envelope.
+          from: frame['from'] as String? ?? '',
           payload: frame['payload'] as String,
           serverTs: (frame['ts'] as num?)?.toInt() ?? 0,
         ));
@@ -175,9 +177,10 @@ class RelayClient {
   }
 
   /// Confirm an envelope is safely persisted on this device; the relay then
-  /// wipes it from RAM and notifies the sender.
+  /// wipes it from RAM (and, for legacy attributed envelopes, notifies the
+  /// sender). For sealed envelopes [from] is empty and the ack is by id alone.
   void ackReceived({required String id, required String from}) {
-    _send({'t': 'recv', 'id': id, 'from': from});
+    _send({'t': 'recv', 'id': id, if (from.isNotEmpty) 'from': from});
   }
 
   /// Register this device's push token so the relay can send a content-free
