@@ -35,6 +35,7 @@ class ChatService extends ChangeNotifier {
   bool devMode = false;
 
   final Map<String, Contact> contacts = {};
+  final Map<String, Group> groups = {};
   final Map<String, Conversation> _convs = {};
   final Map<String, List<ChatMessage>> messagesByChat = {};
   final Map<String, int> unread = {};
@@ -94,6 +95,7 @@ class ChatService extends ChangeNotifier {
       transport: transport,
     );
     await svc._loadContacts();
+    await svc._loadGroups();
     await svc._loadConversations();
     await svc._computeUnread();
     svc.devMode = (await vault.kvGet('dev_mode')) == '1';
@@ -151,7 +153,7 @@ class ChatService extends ChangeNotifier {
   }
 
   Future<void> _computeUnread() async {
-    for (final rid in contacts.keys) {
+    for (final rid in [...contacts.keys, ...groups.keys]) {
       final lastOpen =
           int.tryParse(await vault.kvGet('last_open_$rid') ?? '0') ?? 0;
       final n = firstIntValue(await vault.db.rawQuery(
@@ -668,10 +670,15 @@ class ChatService extends ChangeNotifier {
           (inner.kind == 'text' || inner.kind == 'file')) {
         unawaited(_sendReadReceipts(contact.rid));
       }
-      if (inner.kind == 'text' || inner.kind == 'file') {
+      if (inner.kind == 'text' ||
+          inner.kind == 'file' ||
+          inner.kind == 'gmsg' ||
+          inner.kind == 'ginvite' ||
+          inner.kind == 'gleave') {
         // Mirror the received message to my own other devices. For a file this
         // carries the offer (with its file key); the sealed chunks are relayed
-        // separately in _onChunk as they arrive.
+        // separately in _onChunk as they arrive. Group traffic mirrors too so
+        // linked devices track membership and history.
         unawaited(_sync?.mirror(threadRid: contact.rid, dir: 'in', inner: inner) ??
             Future<void>.value());
       }
@@ -803,6 +810,18 @@ class ChatService extends ChangeNotifier {
               whereArgs: [mid, contact.rid, MsgStatus.read]);
           _updateLoadedStatus(contact.rid, mid, MsgStatus.read);
         }
+        break;
+
+      case 'gmsg':
+        await _persistGroupText(contact, inner, now, txn: txn);
+        break;
+
+      case 'ginvite':
+        await _applyGroupInvite(contact.rid, inner.data, txn: txn);
+        break;
+
+      case 'gleave':
+        await _applyGroupLeave(contact.rid, inner.data, txn: txn);
         break;
 
       case 'hello':
@@ -944,11 +963,18 @@ class ChatService extends ChangeNotifier {
     for (final r in rows) {
       final kind = r['kind'] as String;
       String body;
+      String? senderName;
       FileMeta? fileMeta;
       if (kind == 'file') {
         final fid = r['fid'] as String;
         fileMeta = await _loadFileMeta(fid);
         body = fileMeta?.name ?? 'file';
+      } else if (kind == 'gtext') {
+        final j = (jsonDecode(await vault.unseal(r['enc_body'] as String))
+                as Map)
+            .cast<String, Object?>();
+        body = j['b'] as String? ?? '';
+        senderName = j['sn'] as String?;
       } else {
         body = await vault.unseal(r['enc_body'] as String);
       }
@@ -963,6 +989,7 @@ class ChatService extends ChangeNotifier {
         status: r['status'] as int,
         expireAtMs: r['expire_at_ms'] as int,
         file: fileMeta,
+        senderName: senderName,
       ));
     }
     messagesByChat[rid] = list;
@@ -1012,9 +1039,17 @@ class ChatService extends ChangeNotifier {
         unread: unread[c.rid] ?? 0,
       ));
     }
+    for (final g in groups.values) {
+      final msgs = messagesByChat[g.gid];
+      out.add(ChatSummary(
+        group: g,
+        last: (msgs != null && msgs.isNotEmpty) ? msgs.last : null,
+        unread: unread[g.gid] ?? 0,
+      ));
+    }
     out.sort((a, b) {
-      final ta = a.last?.ts ?? a.contact.createdMs;
-      final tb = b.last?.ts ?? b.contact.createdMs;
+      final ta = a.last?.ts ?? a.contact?.createdMs ?? 0;
+      final tb = b.last?.ts ?? b.contact?.createdMs ?? 0;
       return tb.compareTo(ta);
     });
     return out;
@@ -1326,13 +1361,74 @@ class ChatService extends ChangeNotifier {
 
   /// Insert a message mirrored from one of my other devices (no re-send).
   Future<void> _insertMirrored(String rid, String dir, InnerMessage inner) async {
-    if (!contacts.containsKey(rid)) return;
     final outgoing = dir == 'out';
+    // Group kinds route by the gid inside the payload, and an invite may
+    // introduce contacts this device doesn't hold yet — so handle them before
+    // the contacts guard below.
+    if (inner.kind == 'ginvite') {
+      await _applyGroupInvite(outgoing ? '' : rid, inner.data,
+          mirroredOwn: outgoing);
+      notifyListeners();
+      return;
+    }
+    if (inner.kind == 'gleave') {
+      if (outgoing) {
+        final g = groups[inner.data['gid'] as String? ?? ''];
+        if (g != null && !g.left) {
+          g.left = true;
+          await _saveGroups();
+          await _insertSystemMessage(g.gid, 'You left the group.');
+        }
+      } else {
+        await _applyGroupLeave(rid, inner.data);
+      }
+      notifyListeners();
+      return;
+    }
+    if (inner.kind == 'gmsg') {
+      final gid = inner.data['gid'] as String?;
+      final g = gid == null ? null : groups[gid];
+      if (g == null) return;
+      if (outgoing) {
+        // My own group send, made on another of my devices.
+        final body = inner.data['body'] as String? ?? '';
+        await vault.db.insert(
+            'messages',
+            {
+              'mid': inner.mid,
+              'rid': gid,
+              'outgoing': 1,
+              'kind': 'gtext',
+              'enc_body': await vault.seal(jsonEncode({'b': body})),
+              'ts_ms': inner.ts,
+              'status': MsgStatus.sent,
+              'expire_at_ms': 0,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+        _appendLoaded(
+            gid!,
+            ChatMessage(
+              mid: inner.mid,
+              rid: gid,
+              outgoing: true,
+              kind: 'gtext',
+              body: body,
+              ts: inner.ts,
+              status: MsgStatus.sent,
+            ));
+      } else {
+        final c = contacts[rid];
+        if (c != null) await _persistGroupText(c, inner, inner.ts);
+      }
+      notifyListeners();
+      return;
+    }
+    if (!contacts.containsKey(rid)) return;
     if (inner.kind == 'file') {
       await _insertMirroredFile(rid, outgoing, inner);
       return;
     }
-    if (inner.kind != 'text') return; // only text/file self-sync
+    if (inner.kind != 'text') return; // only text/file/group self-sync
     final body = inner.data['body'] as String? ?? '';
     final status = outgoing ? MsgStatus.sent : MsgStatus.delivered;
     await vault.db.insert(
@@ -1432,6 +1528,333 @@ class ChatService extends ChangeNotifier {
         ));
     notifyListeners();
     await _tryAssemble(fid); // sidecar chunks may already be here
+  }
+
+  // ------------------------------------------------------------------
+  // Groups — pairwise-encrypted fan-out over the existing 1:1 ratchets.
+  //
+  // Every group message is individually end-to-end encrypted to each member
+  // over the already-established, authenticated pairwise conversation, with
+  // the group id inside the plaintext. There is NO shared group key, so
+  // removing a member needs no rekey: senders simply stop sending to them,
+  // and anything they send is rejected by the membership check. The creator
+  // is the admin; membership updates are applied only when they arrive over
+  // the admin's channel with a higher version. Invites carry every member's
+  // signature-verified key bundle, so members who aren't each other's
+  // contacts yet are added automatically (unverified, verifiable later).
+  // ------------------------------------------------------------------
+
+  Future<void> _loadGroups() async {
+    final s = await vault.kvGet('groups');
+    if (s == null) return;
+    for (final j in (jsonDecode(s) as List)) {
+      final g = Group.fromJson((j as Map).cast<String, Object?>());
+      groups[g.gid] = g;
+    }
+  }
+
+  /// Persist all groups. Matches the vault's sensitive-kv format so it can be
+  /// written inside an inbound transaction (kvPut cannot take a txn).
+  Future<void> _saveGroups({DatabaseExecutor? txn}) async {
+    final v = await vault
+        .seal(jsonEncode([for (final g in groups.values) g.toJson()]));
+    await (txn ?? vault.db).insert('kv', {'k': 's:groups', 'v': v},
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  /// The invite payload for [g]: name, membership version, and every member's
+  /// verified bundle (including mine), so recipients can auto-add anyone they
+  /// don't know and detect their own removal.
+  Future<Map<String, Object?>> _inviteData(Group g) async => {
+        'gid': g.gid,
+        'name': g.name,
+        'ver': g.ver,
+        'members': [
+          {
+            'b': (await identity.bundle(displayName: displayName)).toJson(),
+            'n': displayName,
+          },
+          for (final rid in g.memberRids)
+            if (contacts[rid] != null)
+              {
+                'b': contacts[rid]!.bundle.toJson(),
+                'n': contacts[rid]!.name,
+              }
+        ],
+      };
+
+  Future<void> _fanGroupInner(Group g, InnerMessage inner) async {
+    for (final rid in g.memberRids.toList()) {
+      final c = contacts[rid];
+      if (c != null) await _sendInner(c, inner);
+    }
+  }
+
+  /// Create a group with [memberRids] (existing contacts) and invite them.
+  Future<String> createGroup(String name, List<String> memberRids) async {
+    final gid = 'g${b64url(randomBytes(12))}';
+    final g = Group(
+      gid: gid,
+      name: name,
+      adminRid: '', // I am the admin
+      memberRids: memberRids.toSet()..remove(myRid),
+    );
+    groups[gid] = g;
+    await _saveGroups();
+    unread[gid] = 0;
+    await _insertSystemMessage(gid, 'You created "$name".');
+    final inner = InnerMessage(
+        kind: 'ginvite',
+        mid: newMessageId(),
+        ts: _now(),
+        data: await _inviteData(g));
+    await _fanGroupInner(g, inner);
+    unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
+        Future<void>.value());
+    notifyListeners();
+    return gid;
+  }
+
+  /// Admin only: add members and re-invite everyone at a higher version.
+  Future<void> addGroupMembers(String gid, List<String> rids) async {
+    final g = groups[gid];
+    if (g == null || !g.iAmAdmin || g.left) return;
+    final added = rids.where((r) => !g.memberRids.contains(r)).toList();
+    if (added.isEmpty) return;
+    g.memberRids.addAll(added);
+    g.ver += 1;
+    await _saveGroups();
+    final names = added.map((r) => contacts[r]?.name ?? 'someone').join(', ');
+    await _insertSystemMessage(gid, 'You added $names.');
+    final inner = InnerMessage(
+        kind: 'ginvite',
+        mid: newMessageId(),
+        ts: _now(),
+        data: await _inviteData(g));
+    await _fanGroupInner(g, inner);
+    unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
+        Future<void>.value());
+    notifyListeners();
+  }
+
+  /// Admin only: remove a member. Remaining members get the new list; the
+  /// removed member's next invite omits them, which their app reads as
+  /// removal. Either way, everyone else now rejects what they send.
+  Future<void> removeGroupMember(String gid, String rid) async {
+    final g = groups[gid];
+    if (g == null || !g.iAmAdmin || g.left) return;
+    if (!g.memberRids.remove(rid)) return;
+    g.ver += 1;
+    await _saveGroups();
+    await _insertSystemMessage(
+        gid, 'You removed ${contacts[rid]?.name ?? 'a member'}.');
+    final inner = InnerMessage(
+        kind: 'ginvite',
+        mid: newMessageId(),
+        ts: _now(),
+        data: await _inviteData(g));
+    await _fanGroupInner(g, inner);
+    // Tell the removed member too, so their app marks the group as left.
+    final removed = contacts[rid];
+    if (removed != null) await _sendInner(removed, inner);
+    unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
+        Future<void>.value());
+    notifyListeners();
+  }
+
+  /// Leave a group: everyone is told directly (authenticated by the pairwise
+  /// channel), and the local copy is kept read-only for history.
+  Future<void> leaveGroup(String gid) async {
+    final g = groups[gid];
+    if (g == null || g.left) return;
+    g.left = true;
+    await _saveGroups();
+    await _insertSystemMessage(gid, 'You left the group.');
+    final inner = InnerMessage(
+        kind: 'gleave', mid: newMessageId(), ts: _now(), data: {'gid': gid});
+    await _fanGroupInner(g, inner);
+    unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
+        Future<void>.value());
+    notifyListeners();
+  }
+
+  /// Send a text to every member of [gid], each over their pairwise ratchet.
+  Future<void> sendGroupText(String gid, String body) async {
+    final g = groups[gid];
+    if (g == null || g.left) return;
+    final ts = _now();
+    final inner = InnerMessage(
+        kind: 'gmsg',
+        mid: newMessageId(),
+        ts: ts,
+        data: {'gid': gid, 'body': body});
+    await vault.db.insert('messages', {
+      'mid': inner.mid,
+      'rid': gid,
+      'outgoing': 1,
+      'kind': 'gtext',
+      'enc_body': await vault.seal(jsonEncode({'b': body})),
+      'ts_ms': ts,
+      'status': MsgStatus.pending,
+      'expire_at_ms': 0,
+    });
+    _appendLoaded(
+        gid,
+        ChatMessage(
+          mid: inner.mid,
+          rid: gid,
+          outgoing: true,
+          kind: 'gtext',
+          body: body,
+          ts: ts,
+          status: MsgStatus.pending,
+        ));
+    notifyListeners();
+    await _fanGroupInner(g, inner);
+    unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
+        Future<void>.value());
+  }
+
+  /// Apply a group invite. [fromRid] is the authenticated sender ('' when the
+  /// invite is a mirror of my own admin action from my other device).
+  Future<void> _applyGroupInvite(String fromRid, Map<String, Object?> data,
+      {DatabaseExecutor? txn, bool mirroredOwn = false}) async {
+    final gid = data['gid'] as String?;
+    if (gid == null || gid.isEmpty) return;
+    final name = data['name'] as String? ?? 'Group';
+    final ver = (data['ver'] as num?)?.toInt() ?? 1;
+    final existing = groups[gid];
+    if (existing != null) {
+      final fromAdmin =
+          mirroredOwn ? existing.iAmAdmin : existing.adminRid == fromRid;
+      if (!fromAdmin || ver <= existing.ver) return; // not admin, or stale
+    }
+
+    // Verify every member bundle; auto-add contacts we don't know yet.
+    var includesMe = false;
+    final memberRids = <String>{};
+    for (final m in (data['members'] as List? ?? const [])) {
+      ContactBundle bundle;
+      String cname;
+      try {
+        final e = (m as Map).cast<String, Object?>();
+        bundle =
+            ContactBundle.fromJson((e['b'] as Map).cast<String, Object?>());
+        if (!await bundle.verify()) continue;
+        cname = e['n'] as String? ?? 'Unknown';
+      } catch (_) {
+        continue;
+      }
+      final rid = await bundle.routingId();
+      if (rid == myRid) {
+        includesMe = true;
+        continue;
+      }
+      memberRids.add(rid);
+      if (!contacts.containsKey(rid)) {
+        final createdMs = _now();
+        await (txn ?? vault.db).insert(
+            'contacts',
+            {
+              'rid': rid,
+              'enc_bundle': await vault.seal(jsonEncode(bundle.toJson())),
+              'enc_name': await vault.seal(cname),
+              'ttl_seconds': 0,
+              'verified': 0,
+              'created_ms': createdMs,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+        contacts[rid] = Contact(
+            rid: rid, bundle: bundle, name: cname, createdMs: createdMs);
+        messagesByChat.putIfAbsent(rid, () => []);
+        unread.putIfAbsent(rid, () => 0);
+      }
+    }
+
+    if (!mirroredOwn) {
+      if (existing != null && !includesMe) {
+        // The admin's new list omits me: I was removed.
+        existing.name = name;
+        existing.ver = ver;
+        existing.left = true;
+        await _saveGroups(txn: txn);
+        await _insertSystemMessage(gid, 'You were removed from "$name".',
+            txn: txn);
+        return;
+      }
+      memberRids.add(fromRid); // the admin is a member too
+    }
+
+    final isNew = existing == null;
+    groups[gid] = Group(
+      gid: gid,
+      name: name,
+      adminRid: mirroredOwn ? '' : fromRid,
+      memberRids: memberRids,
+      ver: ver,
+    );
+    await _saveGroups(txn: txn);
+    unread.putIfAbsent(gid, () => 0);
+    if (isNew) {
+      final by = mirroredOwn
+          ? 'You created'
+          : '${contacts[fromRid]?.name ?? 'Someone'} added you to';
+      await _insertSystemMessage(gid, '$by "$name".', txn: txn);
+    } else {
+      await _insertSystemMessage(gid, 'Group membership updated.', txn: txn);
+    }
+  }
+
+  /// Persist an inbound group text from [contact] (any of their devices).
+  Future<void> _persistGroupText(
+      Contact contact, InnerMessage inner, int now,
+      {DatabaseExecutor? txn}) async {
+    final gid = inner.data['gid'] as String?;
+    final g = gid == null ? null : groups[gid];
+    // Unknown group or non-member sender (e.g. removed): drop silently.
+    if (g == null || g.left || !g.memberRids.contains(contact.rid)) return;
+    final body = inner.data['body'] as String? ?? '';
+    await (txn ?? vault.db).insert(
+        'messages',
+        {
+          'mid': inner.mid,
+          'rid': gid,
+          'outgoing': 0,
+          'kind': 'gtext',
+          'enc_body':
+              await vault.seal(jsonEncode({'b': body, 'sn': contact.name})),
+          'ts_ms': now,
+          'status': MsgStatus.delivered,
+          'expire_at_ms': 0,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore);
+    _appendLoaded(
+        gid!,
+        ChatMessage(
+          mid: inner.mid,
+          rid: gid,
+          outgoing: false,
+          kind: 'gtext',
+          body: body,
+          ts: now,
+          status: MsgStatus.delivered,
+          senderName: contact.name,
+        ));
+    if (openChatRid != gid) unread[gid] = (unread[gid] ?? 0) + 1;
+  }
+
+  /// A member told us (over their authenticated channel) that they left.
+  Future<void> _applyGroupLeave(String fromRid, Map<String, Object?> data,
+      {DatabaseExecutor? txn}) async {
+    final gid = data['gid'] as String?;
+    final g = gid == null ? null : groups[gid];
+    if (g == null) return;
+    if (!g.memberRids.remove(fromRid)) return;
+    if (g.iAmAdmin) g.ver += 1; // future invites exclude them
+    await _saveGroups(txn: txn);
+    await _insertSystemMessage(
+        gid!, '${contacts[fromRid]?.name ?? 'A member'} left the group.',
+        txn: txn);
   }
 
   // ---- M4: contact device-list distribution + fan-out --------------------
@@ -1578,6 +2001,17 @@ class ChatService extends ChangeNotifier {
       await _applyDevlistInner(contact, inner!);
     } else if (inner!.kind == 'text') {
       await _insertMirrored(rid, 'in', inner!);
+    } else if (inner!.kind == 'gmsg') {
+      // A group message sent from one of the contact's other devices carries
+      // the same authority as their primary (the cert bound it to the account).
+      await _persistGroupText(contact, inner!, _now());
+      notifyListeners();
+    } else if (inner!.kind == 'ginvite') {
+      await _applyGroupInvite(contact.rid, inner!.data);
+      notifyListeners();
+    } else if (inner!.kind == 'gleave') {
+      await _applyGroupLeave(contact.rid, inner!.data);
+      notifyListeners();
     }
   }
 

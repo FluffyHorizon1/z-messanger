@@ -7,6 +7,7 @@ import '../core/models.dart';
 import '../core/transport.dart';
 import 'add_contact_screen.dart';
 import 'chat_screen.dart';
+import 'group_screens.dart';
 import 'settings_screen.dart';
 import 'theme.dart';
 
@@ -33,6 +34,14 @@ class HomeScreen extends StatelessWidget {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.group_add_outlined),
+            tooltip: 'New group',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const CreateGroupScreen()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             onPressed: () => Navigator.push(
@@ -125,6 +134,8 @@ class _ChatTile extends StatelessWidget {
     return switch (m.kind) {
       'file' => '📎 ${m.body}',
       'system' => m.body,
+      'gtext' when !m.outgoing && m.senderName != null =>
+        '${m.senderName}: ${m.body}',
       _ => m.body,
     };
   }
@@ -146,25 +157,27 @@ class _ChatTile extends StatelessWidget {
       leading: CircleAvatar(
         radius: 24,
         backgroundColor: ZTheme.surfaceAlt,
-        child: Text(
-          c.name.isNotEmpty ? c.name[0].toUpperCase() : '?',
-          style: const TextStyle(
-              color: ZTheme.accent, fontWeight: FontWeight.w700),
-        ),
+        child: summary.isGroup
+            ? const Icon(Icons.group, color: ZTheme.accent)
+            : Text(
+                summary.title.isNotEmpty ? summary.title[0].toUpperCase() : '?',
+                style: const TextStyle(
+                    color: ZTheme.accent, fontWeight: FontWeight.w700),
+              ),
       ),
       title: Row(
         children: [
           Expanded(
-            child: Text(c.name,
+            child: Text(summary.title,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontWeight: FontWeight.w600)),
           ),
-          if (c.verified)
+          if (c != null && c.verified)
             const Padding(
               padding: EdgeInsets.only(left: 6),
               child: Icon(Icons.verified_user, size: 14, color: ZTheme.ok),
             ),
-          if (c.ttlSec > 0)
+          if (c != null && c.ttlSec > 0)
             const Padding(
               padding: EdgeInsets.only(left: 6),
               child:
@@ -204,7 +217,7 @@ class _ChatTile extends StatelessWidget {
       ),
       onTap: () => Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => ChatScreen(rid: c.rid)),
+        MaterialPageRoute(builder: (_) => ChatScreen(rid: summary.rid)),
       ),
     );
   }

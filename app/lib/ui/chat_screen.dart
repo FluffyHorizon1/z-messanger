@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import '../core/chat_service.dart';
 import '../core/models.dart';
 import 'contact_info_screen.dart';
+import 'group_screens.dart';
 import 'theme.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -56,7 +57,12 @@ class _ChatScreenState extends State<ChatScreen> {
     _input.clear();
     setState(() => _sending = true);
     try {
-      await context.read<ChatService>().sendText(widget.rid, text);
+      final svc = context.read<ChatService>();
+      if (svc.groups.containsKey(widget.rid)) {
+        await svc.sendGroupText(widget.rid, text);
+      } else {
+        await svc.sendText(widget.rid, text);
+      }
       _jumpToEnd();
     } catch (e) {
       if (mounted) {
@@ -152,10 +158,18 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ChatService>();
+    final group = svc.groups[widget.rid];
     final contact = svc.contacts[widget.rid];
-    if (contact == null) {
-      return const Scaffold(body: Center(child: Text('Contact removed')));
+    if (contact == null && group == null) {
+      return const Scaffold(body: Center(child: Text('Conversation removed')));
     }
+    final isGroup = group != null;
+    final title = isGroup ? group.name : contact!.name;
+    final subtitle = isGroup
+        ? '${group.memberRids.length + 1} members · end-to-end encrypted'
+        : (contact!.verified
+            ? 'end-to-end encrypted · verified'
+            : 'end-to-end encrypted');
     final messages = svc.messagesByChat[widget.rid] ?? [];
     _jumpToEnd();
 
@@ -166,27 +180,31 @@ class _ChatScreenState extends State<ChatScreen> {
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute(
-                builder: (_) => ContactInfoScreen(rid: widget.rid)),
+                builder: (_) => isGroup
+                    ? GroupInfoScreen(gid: widget.rid)
+                    : ContactInfoScreen(rid: widget.rid)),
           ),
           child: Row(
             children: [
               CircleAvatar(
                 radius: 18,
                 backgroundColor: ZTheme.surfaceAlt,
-                child: Text(
-                  contact.name.isNotEmpty
-                      ? contact.name[0].toUpperCase()
-                      : '?',
-                  style: const TextStyle(
-                      color: ZTheme.accent, fontWeight: FontWeight.w700),
-                ),
+                child: isGroup
+                    ? const Icon(Icons.group,
+                        size: 20, color: ZTheme.accent)
+                    : Text(
+                        title.isNotEmpty ? title[0].toUpperCase() : '?',
+                        style: const TextStyle(
+                            color: ZTheme.accent,
+                            fontWeight: FontWeight.w700),
+                      ),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(contact.name,
+                    Text(title,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                             fontSize: 16, fontWeight: FontWeight.w600)),
@@ -194,12 +212,13 @@ class _ChatScreenState extends State<ChatScreen> {
                       children: [
                         const Icon(Icons.lock, size: 10, color: ZTheme.ok),
                         const SizedBox(width: 4),
-                        Text(
-                          contact.verified
-                              ? 'end-to-end encrypted · verified'
-                              : 'end-to-end encrypted',
-                          style: const TextStyle(
-                              fontSize: 11, color: ZTheme.textSecondary),
+                        Flexible(
+                          child: Text(
+                            subtitle,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 11, color: ZTheme.textSecondary),
+                          ),
                         ),
                       ],
                     ),
@@ -210,16 +229,17 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ),
         actions: [
-          IconButton(
-            icon: Icon(
-              contact.ttlSec > 0 ? Icons.timer : Icons.timer_outlined,
-              color: contact.ttlSec > 0
-                  ? ZTheme.accent
-                  : ZTheme.textSecondary,
+          if (!isGroup)
+            IconButton(
+              icon: Icon(
+                contact!.ttlSec > 0 ? Icons.timer : Icons.timer_outlined,
+                color: contact.ttlSec > 0
+                    ? ZTheme.accent
+                    : ZTheme.textSecondary,
+              ),
+              tooltip: 'Disappearing messages',
+              onPressed: _pickTimer,
             ),
-            tooltip: 'Disappearing messages',
-            onPressed: _pickTimer,
-          ),
         ],
       ),
       body: Column(
@@ -233,17 +253,32 @@ class _ChatScreenState extends State<ChatScreen> {
                   _MessageRow(msg: messages[i], key: ValueKey(messages[i].mid)),
             ),
           ),
+          if (isGroup && group.left)
+            const SafeArea(
+              child: Padding(
+                padding: EdgeInsets.all(14),
+                child: Text(
+                  'You are no longer in this group. History stays on this '
+                  'device; no new messages can be sent or received.',
+                  textAlign: TextAlign.center,
+                  style:
+                      TextStyle(fontSize: 12, color: ZTheme.textSecondary),
+                ),
+              ),
+            )
+          else
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  IconButton(
-                    icon: const Icon(Icons.attach_file,
-                        color: ZTheme.textSecondary),
-                    onPressed: _attach,
-                  ),
+                  if (!isGroup)
+                    IconButton(
+                      icon: const Icon(Icons.attach_file,
+                          color: ZTheme.textSecondary),
+                      onPressed: _attach,
+                    ),
                   Expanded(
                     child: TextField(
                       controller: _input,
@@ -319,6 +354,20 @@ class _MessageRow extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.end,
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (!mine && msg.senderName != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    msg.senderName!,
+                    style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: ZTheme.accent),
+                  ),
+                ),
+              ),
             if (msg.kind == 'file')
               _FileBody(msg: msg)
             else

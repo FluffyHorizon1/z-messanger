@@ -146,8 +146,8 @@ class _BootstrapperState extends State<Bootstrapper>
       displayName: name,
       transport: transport,
     );
-    // Preload chat previews.
-    for (final rid in service.contacts.keys) {
+    // Preload chat previews (1:1 and group threads).
+    for (final rid in [...service.contacts.keys, ...service.groups.keys]) {
       await service.loadMessages(rid);
     }
     // Push (Android): registers this device's wake token with the relay.
