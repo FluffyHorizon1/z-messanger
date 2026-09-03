@@ -1,0 +1,52 @@
+{
+  "suite": "attachments",
+  "version": 1,
+  "description": "Attachment chunks: XChaCha20-Poly1305 under the per-file key with nonce = fn(16) || uint64le(index), aad = \"z-file-v1:\" || fid. The file offer (inner kind \"file\") carries fk/fn/fid inside the ratchet.",
+  "fid": "WsOJoww7A2P4NpeT",
+  "fid_bytes": "5ac389a30c3b0363f8369793",
+  "fk": "47c16b10f0d3923b45b905dac24e6e19c55d01aa8f271e30444007b030966f61",
+  "fn": "211bcc1b1fe44dfc2bef9906138cd782",
+  "chunks": [
+    {
+      "index": 0,
+      "plaintext": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60616263",
+      "nonce": "211bcc1b1fe44dfc2bef9906138cd7820000000000000000",
+      "aad": "z-file-v1:WsOJoww7A2P4NpeT",
+      "ciphertext": "49e4a95f9fff180984e38a4e846b507ff5bfc058277d384091351211d113054f0d347f47149b53ab2920f3a587a911405e937a38d0bb133bd8fea9f21acb8e336c864e20d07df8b2ce4ef6831d32447a88264939111238731371dd6e1cbdfc61ded20a4f",
+      "mac": "1580d936f6ca4e3400ab032230c76c38",
+      "payload_json": "{\"v\":1,\"t\":\"f\",\"fid\":\"WsOJoww7A2P4NpeT\",\"idx\":0,\"ct\":\"SeSpX5//GAmE44pOhGtQf/W/wFgnfThAkTUSEdETBU8NNH9HFJtTqykg86WHqRFAXpN6ONC7EzvY/qnyGsuOM2yGTiDQffiyzk72gx0yRHqIJkk5ERI4cxNx3W4cvfxh3tIKTw==\",\"mac\":\"FYDZNvbKTjQAqwMiMMdsOA==\"}",
+      "payload": "eyJ2IjoxLCJ0IjoiZiIsImZpZCI6IldzT0pvd3c3QTJQNE5wZVQiLCJpZHgiOjAsImN0IjoiU2VTcFg1Ly9HQW1FNDRwT2hHdFFmL1cvd0ZnbmZUaEFrVFVTRWRFVEJVOE5OSDlIRkp0VHF5a2c4NldIcVJGQVhwTjZPTkM3RXp2WS9xbnlHc3VPTTJ5R1RpRFFmZml5ems3Mmd4MHlSSHFJSmtrNUVSSTRjeE54M1c0Y3ZmeGgzdElLVHc9PSIsIm1hYyI6IkZZRFpOdmJLVGpRQXF3TWlNTWRzT0E9PSJ9"
+    },
+    {
+      "index": 1,
+      "plaintext": "",
+      "nonce": "211bcc1b1fe44dfc2bef9906138cd7820100000000000000",
+      "aad": "z-file-v1:WsOJoww7A2P4NpeT",
+      "ciphertext": "",
+      "mac": "12be1826665ce643b24f9953d791f756",
+      "payload_json": "{\"v\":1,\"t\":\"f\",\"fid\":\"WsOJoww7A2P4NpeT\",\"idx\":1,\"ct\":\"\",\"mac\":\"Er4YJmZc5kOyT5lT15H3Vg==\"}",
+      "payload": "eyJ2IjoxLCJ0IjoiZiIsImZpZCI6IldzT0pvd3c3QTJQNE5wZVQiLCJpZHgiOjEsImN0IjoiIiwibWFjIjoiRXI0WUptWmM1a095VDVsVDE1SDNWZz09In0="
+    },
+    {
+      "index": 4294967301,
+      "plaintext": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "nonce": "211bcc1b1fe44dfc2bef9906138cd7820500000001000000",
+      "aad": "z-file-v1:WsOJoww7A2P4NpeT",
+      "ciphertext": "87b27759b1e2a5beaa1d0a1177621a352022549e51b470aaa9f96adb94ef70d3f429b4b1fce86b6e1e225d1a987a01583a539769e9ed7c1e3c1fb8e095138ce9",
+      "mac": "23185e466b489e80dd044dec91a4d7f5",
+      "payload_json": "{\"v\":1,\"t\":\"f\",\"fid\":\"WsOJoww7A2P4NpeT\",\"idx\":4294967301,\"ct\":\"h7J3WbHipb6qHQoRd2IaNSAiVJ5RtHCqqflq25TvcNP0KbSx/Ohrbh4iXRqYegFYOlOXaentfB48H7jglROM6Q==\",\"mac\":\"IxheRmtInoDdBE3skaTX9Q==\"}",
+      "payload": "eyJ2IjoxLCJ0IjoiZiIsImZpZCI6IldzT0pvd3c3QTJQNE5wZVQiLCJpZHgiOjQyOTQ5NjczMDEsImN0IjoiaDdKM1diSGlwYjZxSFFvUmQySWFOU0FpVko1UnRIQ3FxZmxxMjVUdmNOUDBLYlN4L09ocmJoNGlYUnFZZWdGWU9sT1hhZW50ZkI0OEg3amdsUk9NNlE9PSIsIm1hYyI6Ikl4aGVSbXRJbm9EZEJFM3NrYVRYOVE9PSJ9"
+    }
+  ],
+  "split_example": {
+    "file_len": 1000,
+    "chunk_size": 400,
+    "chunk_lens": [
+      400,
+      400,
+      200
+    ],
+    "default_chunk_size": 491520,
+    "file_sha256": "945acdf575d6a2430bf4d6163e1d03b4b0b896fcef107c8b24bf7ff07a621fa3"
+  }
+}

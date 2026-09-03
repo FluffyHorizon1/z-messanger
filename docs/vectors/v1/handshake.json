@@ -1,0 +1,18 @@
+{
+  "suite": "handshake",
+  "version": 1,
+  "description": "X3DH-style session establishment (no server prekeys): the responder's identity X25519 key stands in for the signed prekey.",
+  "initiator": "alice",
+  "responder": "bob",
+  "ek_seed": "ce56971cde355897421efc0b1046c8bf2f537eddbfbc7b9864f6e7ff7a82f2c3",
+  "ek_pub": "8a47dd8ef6571bd3e8ff8eab1d1d9bddc673faf6b7699538c30710c099014311",
+  "dh1": "5d7ef255fc6b8a357e13e18d99dc122ce600e21b0fd904763c37a6b3e4801868",
+  "dh2": "1f318e57e662940e3c5ff1e37b13fb1f5492e93e3cd1d41fae37276870e98348",
+  "ikm": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff5d7ef255fc6b8a357e13e18d99dc122ce600e21b0fd904763c37a6b3e48018681f318e57e662940e3c5ff1e37b13fb1f5492e93e3cd1d41fae37276870e98348",
+  "hkdf_salt": "0000000000000000000000000000000000000000000000000000000000000000",
+  "hkdf_info": "Z-X3DH-v1",
+  "sk": "63cfeaa75a0f14bd234a8100ae4d32419608ec4466934aec94cd1f268ae2c4f3",
+  "ad_input": "5a2d41442d76314bb675de4f6376ab61737033d701560e4434be1d6736562ae29b8835b763cd24003a11215155f4d445aa6302b45f979079bf3b4e087c9896870e098ab679ccc9",
+  "ad": "3984e90edd33dc37f8784eae69e658c84db6a4969d9633955cecc7ace0449c71",
+  "sid": "n0DtofGfpTA_wuQ6372n71"
+}

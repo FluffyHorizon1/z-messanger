@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -6,7 +7,23 @@ import 'package:cryptography/cryptography.dart';
 
 final Random _sysRandom = Random.secure();
 
+/// Zone key for a deterministic randomness override.
+///
+/// Every random draw the protocol makes (ephemeral keys, ratchet keys, nonces,
+/// file keys, ids) goes through [randomBytes]. Production code never sets this
+/// key, so [randomBytes] is always the OS CSPRNG. The ONLY user is the
+/// test-vector generator (`tool/gen_vectors.dart`), which runs inside
+/// `runZoned(..., zoneValues: {randomOverrideKey: drbg})` so that the vectors
+/// in `docs/vectors/` are reproducible — the same pattern NIST KATs use
+/// (a seeded DRBG in place of the RNG). The override is scoped to that zone
+/// and cannot leak into or be switched on from anywhere else.
+const Symbol randomOverrideKey = #z_protocol_random_override;
+
 Uint8List randomBytes(int n) {
+  final override = Zone.current[randomOverrideKey];
+  if (override != null) {
+    return (override as Uint8List Function(int))(n);
+  }
   final b = Uint8List(n);
   for (var i = 0; i < n; i++) {
     b[i] = _sysRandom.nextInt(256);

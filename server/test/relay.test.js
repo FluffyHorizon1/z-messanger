@@ -238,3 +238,20 @@ test('server code contains no disk-write calls', async () => {
     );
   }
 });
+
+test('push tokens expire from RAM after PUSH_TTL_DAYS (privacy-policy claim)', () => {
+  const { MemoryCoordinator, CFG } = require('../server.js');
+  const coord = new MemoryCoordinator();
+  coord.registerPush('rid-a', 'tok-a', 'android');
+  coord.registerPush('rid-b', 'tok-b', 'android');
+  // Backdate one registration past the TTL; the other stays fresh.
+  coord.pushTokens.get('rid-a').ts = Date.now() - CFG.pushTtlMs - 1000;
+  coord.sweep();
+  assert.strictEqual(coord.getPush('rid-a'), null);
+  assert.strictEqual(coord.getPush('rid-b').token, 'tok-b');
+  // Re-registering refreshes the clock.
+  coord.pushTokens.get('rid-b').ts = Date.now() - CFG.pushTtlMs - 1000;
+  coord.registerPush('rid-b', 'tok-b2', 'android');
+  coord.sweep();
+  assert.strictEqual(coord.getPush('rid-b').token, 'tok-b2');
+});

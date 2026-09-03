@@ -1,0 +1,77 @@
+{
+  "suite": "multidevice",
+  "version": 1,
+  "description": "Account key (Ed25519 trust root), device certificates, zc2. account codes and account-signed device lists. Device #1's Ed25519 key IS the account key (so a one-device account matches the v1 shape).",
+  "account_ed_seed": "00e0efadd9a564bd99df5139b29d4172462faa72037d6c0e90dad0ed1298041b",
+  "account_ed_pub": "07c1c9e0833b8ab6f978b69a73e99878c4543d15e4d2ee5c47bad9cd05ddca80",
+  "account_id": "mBCuMJBcAbwbCsQYZfz1cNXIurgkU6lEMs0dR_zgt7w",
+  "device1": {
+    "ed_seed": "00e0efadd9a564bd99df5139b29d4172462faa72037d6c0e90dad0ed1298041b",
+    "x_seed": "270f55d8ca70fd8c702a17d7de37ddd294ab42cfbb8f4f31506a6b55a37de133",
+    "device_id_bytes": "5b9eea62f83a2d1efe",
+    "device_ed_pub": "07c1c9e0833b8ab6f978b69a73e99878c4543d15e4d2ee5c47bad9cd05ddca80",
+    "device_x_pub": "a445c5a0a68e891b8038dca4e46def0949a8b4782359f4b0fd7d61c901588d17",
+    "device_id": "W57qYvg6LR7-",
+    "routing_id": "mBCuMJBcAbwbCsQYZfz1cNXIurgkU6lEMs0dR_zgt7w",
+    "signing_input": "7a2d6465766963652d636572742d76313a07c1c9e0833b8ab6f978b69a73e99878c4543d15e4d2ee5c47bad9cd05ddca80a445c5a0a68e891b8038dca4e46def0949a8b4782359f4b0fd7d61c901588d1757353771597667364c52372d",
+    "sig": "299b45f1313da8d4236ef5740964dc1ae91576ad12b27ebfd8ec5b26d9fb9b4e960b3c0242883d030128abdcd5953f804f7587d98d08503cd758c49583f77908",
+    "json": {
+      "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+      "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+      "id": "W57qYvg6LR7-",
+      "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+    }
+  },
+  "device2": {
+    "ed_seed": "616f4fa4af57da1f6166ef45e944827fd408c558789ee532d960065a5b5631e3",
+    "x_seed": "b701baa0973bcc68aa0a55b288d1ae087b79ce20cd586b9d700abc578d491c83",
+    "device_ed_pub": "c2d11c3337180cd910ceb258a1910d51e0cd06a911325fa617441435e40e38bd",
+    "device_x_pub": "4aba1c72ad957a42c86695505d0cf5a2f50a1b1c036d5b6513b41858cad6d731",
+    "device_id": "second-device",
+    "routing_id": "QjLbIAg9As49WfAay-MjFlBjVemo6TKJ0VWLbsI9V1w",
+    "signing_input": "7a2d6465766963652d636572742d76313ac2d11c3337180cd910ceb258a1910d51e0cd06a911325fa617441435e40e38bd4aba1c72ad957a42c86695505d0cf5a2f50a1b1c036d5b6513b41858cad6d7317365636f6e642d646576696365",
+    "sig": "a2399fe8fc541e9c885f8474c699e63d2f1fddc70a9a183baf967d92574455ed1137407335f0a51a6f2d2a42315d535229e711b92dfd2f21fae7325348834d0e",
+    "json": {
+      "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+      "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+      "id": "second-device",
+      "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg=="
+    }
+  },
+  "account_code_json": "{\"v\":2,\"acct\":\"B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=\",\"devs\":[{\"ded\":\"B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=\",\"dx\":\"pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=\",\"id\":\"W57qYvg6LR7-\",\"sig\":\"KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA==\"},{\"ded\":\"wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=\",\"dx\":\"Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=\",\"id\":\"second-device\",\"sig\":\"ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==\"}],\"name\":\"Alice\"}",
+  "account_code": "zc2.eyJ2IjoyLCJhY2N0IjoiQjhISjRJTTdpcmI1ZUxhYWMrbVllTVJVUFJYazB1NWNSN3JaelFYZHlvQT0iLCJkZXZzIjpbeyJkZWQiOiJCOEhKNElNN2lyYjVlTGFhYyttWWVNUlVQUlhrMHU1Y1I3clp6UVhkeW9BPSIsImR4IjoicEVYRm9LYU9pUnVBT055azVHM3ZDVW1vdEhnaldmU3cvWDFoeVFGWWpSYz0iLCJpZCI6Ilc1N3FZdmc2TFI3LSIsInNpZyI6IktadEY4VEU5cU5RamJ2VjBDV1RjR3VrVmRxMFNzbjYvMk94Ykp0bjdtMDZXQ3p3Q1FvZzlBd0VvcTl6VmxUK0FUM1dIMlkwSVVEelhXTVNWZy9kNUNBPT0ifSx7ImRlZCI6Ind0RWNNemNZRE5rUXpySllvWkVOVWVETkJxa1JNbCttRjBRVU5lUU9PTDA9IiwiZHgiOiJTcm9jY3EyVmVrTElacFZRWFF6MW92VUtHeHdEYlZ0bEU3UVlXTXJXMXpFPSIsImlkIjoic2Vjb25kLWRldmljZSIsInNpZyI6Im9qbWY2UHhVSHB5SVg0UjB4cG5tUFM4ZjNjY0ttaGc3cjVaOWtsZEVWZTBSTjBCek5mQ2xHbTh0S2tJeFhWTlNLZWNSdVMzOUx5SDY1ekpUU0lOTkRnPT0ifV0sIm5hbWUiOiJBbGljZSJ9",
+  "device_list": {
+    "version": 3,
+    "devices_in_given_order": [
+      "second-device",
+      "W57qYvg6LR7-"
+    ],
+    "signing_input": "7a2d6465766c6973742d76313a333a07c1c9e0833b8ab6f978b69a73e99878c4543d15e4d2ee5c47bad9cd05ddca80c2d11c3337180cd910ceb258a1910d51e0cd06a911325fa617441435e40e38bd",
+    "sig": "5b62bffe8ed6aebb0ea34a54fdf1eebd91ae931f3b3d5c75a30bee961a3537befa1a5910096bb498579960c7bbf7fa0939cbf7e2c269a0fe283baed21cacd80e",
+    "json": {
+      "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+      "ver": 3,
+      "devs": [
+        {
+          "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+          "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+          "id": "second-device",
+          "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg=="
+        },
+        {
+          "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+          "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+          "id": "W57qYvg6LR7-",
+          "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+        }
+      ],
+      "sig": "W2K//o7WrrsOo0pU/fHuvZGukx87PVx1owvulho1N776GlkQCWu0mFeZYMe79/oJOcv34sJpoP4oO67SHKzYDg=="
+    }
+  },
+  "legacy_zc1_as_account": {
+    "contact_code": "zc1.eyJ2IjoxLCJlZCI6IkFEb1JJVkZWOU5SRnFtTUN0RitYa0htL08wNElmSmlXaHc0SmlyWjV6TWs9IiwieCI6InA0WitXQVZ0WURzdy9teEs2QXVOTDBUcUhZWmRIT2FxenNoYnhCazJCMk09Iiwic2lnIjoiUDBjbHFnaXJUdTFZOGZDa1VNSUduSlk5RjRLdWg4aVNNVUlDVi91ZmNhenlmd29NK2UwbUF3TW1tZm5NZGZON3Vqa0c4MzdNMnNHcjh5cG9NenVMQnc9PSIsIm5hbWUiOiJCb2IifQ",
+    "account_ed_pub": "003a11215155f4d445aa6302b45f979079bf3b4e087c9896870e098ab679ccc9",
+    "device_id": "legacy-v1",
+    "legacy": true
+  }
+}

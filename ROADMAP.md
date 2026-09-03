@@ -13,6 +13,26 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 
 ---
 
+## Where things stand (updated 2026-09-03)
+
+| Phase | Status | Evidence |
+|---|---|---|
+| 0 Foundation hardening | ✅ done | `durability_test.dart`, `docs/LOAD.md`, retry/delete affordances |
+| 1 Push notifications | ✅ done (1.3 F-Droid flavour dropped with 3.2) | content-free FCM wake; relay push tests |
+| 2 Signed builds | 2.1 + 2.4 ✅ · 2.2/2.3 ⛔ need paid certificates | signed AAB/APK + `SHA256SUMS.txt` on every release |
+| 3 Store distribution | 3.1 prepared, ⛔ awaiting Play account verification · 3.4 ✅ · 3.2 dropped · 3.3 ⏳ | `docs/play/`, `zmessengers.com` landing + privacy page |
+| 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
+| 5 Independent audit | **5.1 ✅ done** · 5.2/5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1), `docs/vectors/v1/`, two verifiers in CI |
+| 6 iOS | ⛔ needs a Mac + Apple developer account | — |
+| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ (text) · 7.4–7.6 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart` |
+
+**Next up, in order:** group attachments (7.3b) → post-quantum hybrid
+handshake (7.5) → key transparency (7.7, design note first) → voice messages
+(7.4). Externally gated items resume as soon as their gate clears: Play
+submission, Windows/macOS signing, auditor engagement (5.2), iOS.
+
+---
+
 ## Guiding priorities (why the order is what it is)
 
 1. **Don't break the security model.** Every feature is checked against
@@ -26,24 +46,24 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 
 ---
 
-## Phase 0 — Foundation hardening · ~1 week · *in progress*
+## Phase 0 — Foundation hardening · ~1 week · ✅ *done*
 
 Close the correctness gaps that a wider install base would expose fast.
 
 - **0.1 Ratchet concurrency + durability** — ✅ done in v1.1 (per-conversation
   lock, rollback, regression test that fails without the fix).
-- **0.2 Crash/restart fuzz of the vault + outbox.** Kill the app mid-send and
+- **0.2 Crash/restart fuzz of the vault + outbox.** ✅ Kill the app mid-send and
   mid-receive across 100 randomized iterations; assert no message loss, no
   duplication, no ratchet desync. **DoD:** a `flutter test` that survives
   induced failures at every await point in `_sendInner`/`_onInbound`.
-- **0.3 Relay load + abuse test.** Script N concurrent clients, oversized
+- **0.3 Relay load + abuse test.** ✅ Script N concurrent clients, oversized
   frames, rapid reconnects, queue-cap overflow. **DoD:** relay stays up, memory
   bounded, metrics in `/health`; results in `docs/LOAD.md`.
-- **0.4 Structured error surfacing.** Replace silent drops with a visible
+- **0.4 Structured error surfacing.** ✅ Replace silent drops with a visible
   "couldn't decrypt / send failed — retry" state in the UI. **DoD:** each
   failure path renders a user-facing affordance; screenshot per case.
 
-## Phase 1 — Push notifications (the make-or-break UX gap) · ~2–3 weeks
+## Phase 1 — Push notifications (the make-or-break UX gap) · ~2–3 weeks · ✅ *done*
 
 Today messages only arrive with the app open. This is the #1 thing standing
 between Z and daily use — and the hardest to do without leaking metadata.
@@ -68,19 +88,19 @@ between Z and daily use — and the hardest to do without leaking metadata.
 
 Remove the scary install warnings; make binaries verifiable.
 
-- **2.1 Android signing.** Release keystore, `key.properties` wiring, CI signs
+- **2.1 Android signing.** ✅ Release keystore, `key.properties` wiring, CI signs
   the AAB/APK from GitHub secrets. **DoD:** a signed AAB artifact out of CI.
-- **2.2 Windows code signing.** Integrate a signing step (cert or Azure Trusted
+- **2.2 Windows code signing.** ⛔ *gated on a certificate* (CI step scaffolded) Integrate a signing step (cert or Azure Trusted
   Signing) so SmartScreen stops warning. **DoD:** signed `zapp.exe`; signature
   verifies.
-- **2.3 macOS sign + notarize.** Developer ID signing and notarization in CI.
+- **2.3 macOS sign + notarize.** ⛔ *gated on an Apple Developer account* Developer ID signing and notarization in CI.
   **DoD:** notarized `.app`/`.dmg` that opens without Gatekeeper override.
-- **2.4 Reproducible/verifiable releases.** Publish SHA-256 sums and signed
+- **2.4 Reproducible/verifiable releases.** ✅ Publish SHA-256 sums and signed
   release notes. **DoD:** `SECURITY.md` + checksums on the GitHub Release.
 
 ## Phase 3 — Store distribution · ~2–3 weeks
 
-- **3.1 Google Play** (internal → closed → open testing track). Data-safety
+- **3.1 Google Play** ⏳ *prepared; awaiting account verification* (internal → closed → open testing track). Data-safety
   form, privacy policy, listing assets. **DoD:** app live on an internal track.
 - **3.2 F-Droid** — dropped: F-Droid requires an OSI-approved open-source
   license, which the proprietary license precludes. Android is covered by
@@ -88,30 +108,35 @@ Remove the scary install warnings; make binaries verifiable.
   under F-Droid's reproducible pipeline; metadata merged.~~
 - **3.3 Microsoft Store** (MSIX packaging of the Windows build). **DoD:** MSIX
   submitted to Partner Center.
-- **3.4 Direct downloads** polished on the GitHub Releases page as the fallback
+- **3.4 Direct downloads** ✅ polished on the GitHub Releases page as the fallback
   channel. **DoD:** a simple download landing page.
 - *(Apple App Store depends on Phase 6 iOS.)*
 
 ## Phase 4 — Reliability & observability at scale · ~2 weeks
 
-- **4.1 Crash-free tracking.** Opt-in, privacy-preserving crash reporting
+- **4.1 Crash-free tracking.** — dropped: even opt-in crash reporting contradicts the no-telemetry stance; crashes are reproduced from user reports instead. Opt-in, privacy-preserving crash reporting
   (self-hosted, e.g. GlitchTip/Sentry-compatible). **DoD:** crashes visible in a
   dashboard; opt-in respected.
-- **4.2 Delivery SLIs.** Instrument the relay for delivery latency and
+- **4.2 Delivery SLIs.** ✅ Instrument the relay for delivery latency and
   queue-depth (no content). **DoD:** a `/metrics` endpoint + a Grafana panel in
   `docs/`.
-- **4.3 Message list paging.** Move chat history off full-in-memory to windowed
+- **4.3 Message list paging.** ✅ Move chat history off full-in-memory to windowed
   DB paging. **DoD:** smooth scroll with 50k-message synthetic history.
-- **4.4 Multi-instance relay** with shared presence so you can run more than one
+- **4.4 Multi-instance relay** ✅ with shared presence so you can run more than one
   behind a load balancer. **DoD:** two relays, one conversation, no lost mail.
 
 ## Phase 5 — Independent security audit · ~3–4 weeks (mostly external)
 
 The credibility gate for any encryption product.
 
-- **5.1 Audit-prep pass.** Freeze the protocol, expand `PROTOCOL.md` to
+- **5.1 Audit-prep pass.** ✅ Freeze the protocol, expand `PROTOCOL.md` to
   RFC-grade, add cross-implementation test vectors. **DoD:** published test
-  vectors a third party can run.
+  vectors a third party can run — `docs/vectors/v1/` (8 suites), reproduced
+  bit-for-bit by the Dart library (`protocol/test/vectors_test.dart`) and
+  independently verified by a clean-room Node.js implementation
+  (`server/test/vectors.test.js`), both in CI. The pass also closed two
+  findings: a `legacy` device-certificate flag that bypassed verification, and
+  relay push tokens that never expired in the in-memory coordinator.
 - **5.2 Engage an auditor** (e.g. a firm like Cure53/Trail of Bits, or a
   well-scoped community review). **DoD:** signed engagement + scope.
 - **5.3 Remediate & publish.** Fix findings, publish the report and responses.
@@ -130,25 +155,38 @@ real work: Keychain integration, APNs push, App Store review, sandbox quirks.
 
 Ordered by value; each is a self-contained project on the existing layering.
 
-- **7.1 Sealed sender** — hide the sender identity from the relay (biggest
+- **7.1 Sealed sender** ✅ — hide the sender identity from the relay (biggest
   metadata win). Touches envelope format + relay auth only.
-- **7.2 Linked devices** — use the same identity on phone + desktop. Builds on
+- **7.2 Linked devices** ✅ — use the same identity on phone + desktop. Builds on
   contact bundles + session machinery; needs a device-to-device key transfer
   and per-device sessions.
-- **7.3 Group chats** — start with sender-keys for small groups. Meaningful
-  key-management design; explicitly a post-audit item.
+- **7.3 Group chats** ✅ (text) — shipped as pairwise fan-out over the existing
+  1:1 ratchets instead of sender keys: no group key to manage, and group
+  traffic is indistinguishable from direct traffic at the relay.
+  **7.3b Group attachments** ⏳ — reuse the attachment pipeline for groups
+  (offer fanned to every member, chunks sealed per device). **DoD:** a
+  `group_test.dart` case where a photo reaches every member and a removed
+  member cannot decrypt a later one.
 - **7.4 Voice messages & richer media** — reuse the attachment pipeline.
 - **7.5 Post-quantum handshake** — add an ML-KEM (Kyber) hybrid layer to X3DH
   for harvest-now-decrypt-later resistance. Isolated to the handshake.
 - **7.6 Message search, backups sync, themes** — quality-of-life.
+- **7.7 Key transparency** — the zero-trust plan's "catch us, don't trust us"
+  mechanism for key substitution (F2). Needs a design note first: a KT log
+  needs durable append-only storage, which the RAM-only relay deliberately
+  lacks, so it is a separate component. **DoD:** ADR, then a simulated key
+  substitution that is detected and blocks sending.
 
 ---
 
 ## Suggested near-term sprint (the next 3 sessions)
 
-1. **Reliability:** Phase 0.2 crash/restart fuzz test + 0.4 error surfacing.
-2. **The UX unlock:** Phase 1.1 push ADR + 1.2 contentless wake prototype.
-3. **Trust:** Phase 2.1 Android signing in CI (fastest "looks legit" win).
+1. **Groups complete:** 7.3b group attachments.
+2. **Harvest-now-decrypt-later:** 7.5 ML-KEM hybrid in the handshake (needs a
+   vetted pure-Dart ML-KEM; verify against FIPS 203 vectors, add a v2 vector
+   suite).
+3. **Verifiability:** 7.7 key-transparency design note, then 5.2 — engage an
+   auditor with the frozen v1 spec and vectors as the scope document.
 
 Each is a clean working session: implement, test, screenshot/artifact, commit.
 

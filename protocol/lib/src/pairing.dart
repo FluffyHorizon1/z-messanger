@@ -146,7 +146,7 @@ class PairingSession {
 
   Future<Uint8List> _seal(Uint8List plain) async {
     final box = await _aead.encrypt(plain,
-        secretKey: SecretKey(channelKey), nonce: _aead.newNonce());
+        secretKey: SecretKey(channelKey), nonce: randomBytes(12));
     return Uint8List.fromList(box.concatenation());
   }
 

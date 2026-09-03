@@ -48,10 +48,9 @@ class DeviceCertificate {
   final String deviceId;
   final Uint8List sig; // account Ed25519 signature over [signingInput]
 
-  /// True when this record was verified via the legacy v1 binding rule rather
-  /// than the device-cert rule (i.e. it came from a `zc1.` code). Such records
-  /// are already verified at decode time and are not re-checked as device
-  /// certs.
+  /// True when this record is a v1 identity read as a device (it came from a
+  /// `zc1.` code): the device key is the account key and [sig] is the v1
+  /// binding signature. [verify] checks exactly that rule for such records.
   final bool legacy;
 
   DeviceCertificate({
@@ -74,16 +73,33 @@ class DeviceCertificate {
   Future<String> routingId() async => b64url(await sha256Bytes(deviceEdPub));
 
   /// Verify this certificate against an account Ed25519 public key.
+  ///
+  /// The [legacy] flag selects WHICH rule is checked — it never skips the
+  /// check. A legacy record is exactly what a v1 (`zc1.`) contact code decodes
+  /// to: the device key IS the account key, the id is `legacy-v1`, and [sig]
+  /// is the v1 binding signature over the X25519 key. Anything else flagged
+  /// legacy (e.g. a crafted `zc2.` code or device list) fails.
   Future<bool> verify(Uint8List accountEdPub) async {
-    if (legacy) return true; // already verified via the v1 path at decode
-    if (deviceEdPub.length != 32 || deviceXPub.length != 32) return false;
+    if (deviceEdPub.length != 32 ||
+        deviceXPub.length != 32 ||
+        accountEdPub.length != 32) {
+      return false;
+    }
     try {
+      final key = SimplePublicKey(accountEdPub, type: KeyPairType.ed25519);
+      if (legacy) {
+        if (deviceId != 'legacy-v1' ||
+            !constantTimeEquals(deviceEdPub, accountEdPub)) {
+          return false;
+        }
+        return await _ed.verify(
+          concatBytes([utf8.encode(bindContext), deviceXPub]),
+          signature: Signature(sig, publicKey: key),
+        );
+      }
       return await _ed.verify(
         signingInput(deviceEdPub, deviceXPub, deviceId),
-        signature: Signature(
-          sig,
-          publicKey: SimplePublicKey(accountEdPub, type: KeyPairType.ed25519),
-        ),
+        signature: Signature(sig, publicKey: key),
       );
     } catch (_) {
       return false;
@@ -98,7 +114,8 @@ class DeviceCertificate {
         if (legacy) 'legacy': true,
       };
 
-  static DeviceCertificate fromJson(Map<String, Object?> j) => DeviceCertificate(
+  static DeviceCertificate fromJson(Map<String, Object?> j) =>
+      DeviceCertificate(
         deviceEdPub: unb64(j['ded'] as String),
         deviceXPub: unb64(j['dx'] as String),
         deviceId: j['id'] as String,
@@ -179,8 +196,8 @@ class AccountBundle {
     }
     final Map<String, Object?> j;
     try {
-      j = jsonDecode(
-              utf8.decode(unb64url(trimmed.substring(accountCodePrefix.length))))
+      j = jsonDecode(utf8
+              .decode(unb64url(trimmed.substring(accountCodePrefix.length))))
           as Map<String, Object?>;
     } catch (_) {
       throw const FormatException('corrupt contact code');
@@ -297,7 +314,8 @@ class AccountIdentity {
   /// Migrate a v1 [ZIdentity] in place: the old Ed25519 becomes the account key
   /// AND device #1's key (routing id unchanged), and the old X25519 stays as
   /// device #1's ratchet key (existing sessions keep working).
-  static Future<AccountIdentity> fromV1(ZIdentity old, {String? deviceId}) async {
+  static Future<AccountIdentity> fromV1(ZIdentity old,
+      {String? deviceId}) async {
     final id = deviceId ?? b64url(randomBytes(9));
     final cert = await _signCert(
       accountEdSeed: old.edSeed,
@@ -441,8 +459,7 @@ class SignedDeviceList {
   });
 
   static Uint8List signingInput(int version, List<DeviceCertificate> devices) {
-    final eds = [for (final d in devices) d.deviceEdPub]
-      ..sort(_lexCompare);
+    final eds = [for (final d in devices) d.deviceEdPub]..sort(_lexCompare);
     return concatBytes([
       utf8.encode('z-devlist-v1:'),
       utf8.encode('$version:'),

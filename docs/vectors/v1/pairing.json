@@ -1,0 +1,80 @@
+{
+  "suite": "pairing",
+  "version": 1,
+  "description": "Relay-mediated device pairing: pairing code -> rendezvous mailboxes, ephemeral X25519 -> channel key + SAS, then the sealed enrollment blob (ChaCha20-Poly1305, nonce||ct||mac).",
+  "pairing_code": {
+    "secret": "d70d3259e4e1cb631c66",
+    "text": "24GTE-WPE4H-FWGHD-G",
+    "rendezvous_input": "7a2d706169722d72656e64657a766f75732d76313ad70d3259e4e1cb631c66",
+    "rendezvous_routing_id": "ah5vgqeA1ZDKBtl2DV2ZNvyKLvcdcHUpwmVPClTAbOY"
+  },
+  "relay_identities": {
+    "i": {
+      "hkdf_info": "z-pair-relay:i",
+      "hkdf_okm": "5ab5563c0f4636f8948a0db282dae0e7740fb46a19e887bab2e5bde2652b764180a31b2dd2d9559c3bd4cb985c5dedeb98ca8148b5765bbb022c565000d7ed1b",
+      "ed_seed": "5ab5563c0f4636f8948a0db282dae0e7740fb46a19e887bab2e5bde2652b7641",
+      "x_seed": "80a31b2dd2d9559c3bd4cb985c5dedeb98ca8148b5765bbb022c565000d7ed1b",
+      "ed_pub": "ee13d279bd9f3db2a5cc38ed841a2266ad16cd1e5a0fb419d38412c56a2ea788",
+      "routing_id": "60RUVYGsVKyvBK_f1i3EhxfoUEadrpSXrku84rTmJXI"
+    },
+    "r": {
+      "hkdf_info": "z-pair-relay:r",
+      "hkdf_okm": "77fa827001b5cde49726a038b7fed23a85492aa04bdfe8641d485b56767055493369dc6b96bcbd594d21f15932aeb71e2dcb6b964231b0ee8c734a0eba726eec",
+      "ed_seed": "77fa827001b5cde49726a038b7fed23a85492aa04bdfe8641d485b5676705549",
+      "x_seed": "3369dc6b96bcbd594d21f15932aeb71e2dcb6b964231b0ee8c734a0eba726eec",
+      "ed_pub": "4252dbcea881e8d49d1cc1e483126a473319cba50807418f3b075d7abc570f13",
+      "routing_id": "8VOQOCXKWSmPVqRDItfKMLOLr78n8bwKqsyao88jrJs"
+    }
+  },
+  "account": {
+    "account_ed_seed": "022ab1ba804098e6cb293e6770eb3a95da211e6a663bd37311aabecb86beda3f",
+    "account_ed_pub": "47717315280c26193b36a5daa863aa5be0cf532b40b716a51aea3651b45052ab",
+    "device_x_seed": "f6d0c233a1c4cb77febe023d51d6fc53616750997ac05e226953798876a2c369",
+    "device_id": "6_q1BZvnghos",
+    "device_cert_json": {
+      "ded": "R3FzFSgMJhk7NqXaqGOqW+DPUytAtxalGuo2UbRQUqs=",
+      "dx": "EfMak1bXYcAe8iI3IrqIzY6eBvh0+ua9mFC/5FwY7B4=",
+      "id": "6_q1BZvnghos",
+      "sig": "4h7xjVE66Q9KAu8UGlnqkqRmnHJnPFX41OI9f7PAku9SJRY0NexdRBqDtUFfeyyxJTgY9HA9H4z50t8zy50LBA=="
+    }
+  },
+  "new_device": {
+    "device_ed_seed": "4eb3454adf5403eb306401a324990fdfe6155f0b2d9b2fddf885eb1a6b905c8c",
+    "device_x_seed": "afd6d36c005d2ee1c72673da0c6a8c53359e9c4c0eb07e9ef836b25e7adadfc1",
+    "device_ed_pub": "430e8900eb35b41550a906a5193e81f41956804d16c542f7deb525527215b841",
+    "device_x_pub": "b4ad00b44ab5d11faa88c7fc21a7184d4ab8e108f290e6e4f8b981d5d6d96952",
+    "device_id": "new-phone",
+    "eph_seed": "2fbc4b009867b0accd32032dc651501b9d271da917672d58ff90b8601c5b7c6c",
+    "eph_pub": "1d3c863b538ff80e52129754e329f926b44891d11ebfb22e7dfc323ce09fa363",
+    "hello": {
+      "ephx": "HTyGO1OP+A5SEpdU4yn5JrRIkdEev7IuffwyPOCfo2M=",
+      "ded": "Qw6JAOs1tBVQqQalGT6B9BlWgE0WxUL33rUlUnIVuEE=",
+      "dx": "tK0AtEq10R+qiMf8IacYTUq44QjykObk+LmB1dbZaVI=",
+      "id": "new-phone"
+    }
+  },
+  "existing_device": {
+    "eph_seed": "30ce495ddfd60ce7e9b91f3a331fd8f5ba9a0d310162a1135f54fbf2b1093468",
+    "eph_pub": "ef2fed6cd519df0d9cc2567adc319ecc6ebf1bdaf7b06ff9b9f9b01953a7ce16",
+    "reply": {
+      "ephx": "7y/tbNUZ3w2cwlZ63DGezG6/G9r3sG/5ufmwGVOnzhY="
+    }
+  },
+  "dh": "a47e6efcbaf53e31436e09ff40e881d0e613289abbd2ffc1fac9b91d9af06110",
+  "channel_key": "1925e03d8535555720738de9296430ced0c7dee3ee8469a8767f582314a49881",
+  "sas_salt": "1d3c863b538ff80e52129754e329f926b44891d11ebfb22e7dfc323ce09fa363ef2fed6cd519df0d9cc2567adc319ecc6ebf1bdaf7b06ff9b9f9b01953a7ce16",
+  "sas_info": "7a2d706169722d7361732d7631430e8900eb35b41550a906a5193e81f41956804d16c542f7deb525527215b841",
+  "sas_okm": "3963ad5155612544",
+  "sas": "833 745",
+  "enrollment": {
+    "new_device_cert_signing_input": "7a2d6465766963652d636572742d76313a430e8900eb35b41550a906a5193e81f41956804d16c542f7deb525527215b841b4ad00b44ab5d11faa88c7fc21a7184d4ab8e108f290e6e4f8b981d5d6d969526e65772d70686f6e65",
+    "new_device_cert_sig": "d076b5b2ec1ee77f3018dc82a351ab56a389e8ae809fc831f686ac3ba6b62514871850bc5ae4aa1006fdc569474b61f818a6fb7f462ed678066911e0a70e380c",
+    "plaintext": "{\"acct\":\"R3FzFSgMJhk7NqXaqGOqW+DPUytAtxalGuo2UbRQUqs=\",\"name\":\"Alice\",\"cert\":{\"ded\":\"Qw6JAOs1tBVQqQalGT6B9BlWgE0WxUL33rUlUnIVuEE=\",\"dx\":\"tK0AtEq10R+qiMf8IacYTUq44QjykObk+LmB1dbZaVI=\",\"id\":\"new-phone\",\"sig\":\"0Ha1suwe538wGNyCo1GrVqOJ6K6An8gx9oasO6a2JRSHGFC8WuSqEAb9xWlHS2H4GKb7f0Yu1ngGaRHgpw44DA==\"},\"hostcert\":{\"ded\":\"R3FzFSgMJhk7NqXaqGOqW+DPUytAtxalGuo2UbRQUqs=\",\"dx\":\"EfMak1bXYcAe8iI3IrqIzY6eBvh0+ua9mFC/5FwY7B4=\",\"id\":\"6_q1BZvnghos\",\"sig\":\"4h7xjVE66Q9KAu8UGlnqkqRmnHJnPFX41OI9f7PAku9SJRY0NexdRBqDtUFfeyyxJTgY9HA9H4z50t8zy50LBA==\"},\"contacts\":[{\"acct\":\"ADoRIVFV9NRFqmMCtF+XkHm/O04IfJiWhw4JirZ5zMk=\",\"devs\":[{\"ded\":\"ADoRIVFV9NRFqmMCtF+XkHm/O04IfJiWhw4JirZ5zMk=\",\"dx\":\"p4Z+WAVtYDsw/mxK6AuNL0TqHYZdHOaqzshbxBk2B2M=\",\"id\":\"legacy-v1\",\"sig\":\"P0clqgirTu1Y8fCkUMIGnJY9F4Kuh8iSMUICV/ufcazyfwoM+e0mAwMmmfnMdfN7ujkG837M2sGr8ypoMzuLBw==\",\"legacy\":true}],\"name\":\"Bob\"}]}",
+    "nonce": "474b83dfff52dfe61d24d4fc",
+    "sealed": "474b83dfff52dfe61d24d4fc5b90a4136b43c5587279425bc66d589001b3140cf9fd815df007d4a35580af27dea1b60c041315c5598c5d4433842211304645fa94feaee6f02c05b6d3b5b66b8952ae4ab793ce0b954eeb89a7010a8d7fe8b4d8e78ee6b7901ae751de5ef06dca00047b734d1fca861ff2aba6b40b55294094a214f45c3548fada724af3a3922c58886a8b90d34a3e71307d5872ff13b85cd2bf880f24b12c567cbe7691b7dd328831e04ae68674e38fa70195b5e0ff9da1f01c7812ea427d65b7b1967ae161ba3327b4163b2b4fbcdb50f762547ac83dc8677a21b1a410e5481b2fd6a93b06e784a8d7c1ea4d6c79844ec7352e0496d686877ee46126ac5cfb5f96c3dabf13cc37b0f43fd9c2a6bcb4e8c41940153d2fcb0c562bda0b2eda6f545ceda7a5a5d38f169e5216a58c398064672187068d9835a7caea4216b9b526c92e914ee687593230d713a80b38a59391b3f1acb126b4ed18f8b440f087f87ef8debd1b7ddeaa2ec45667a9b46bd9f88c20dfee2816b4a99bc4b3e5e802694382b808f861e9a5f937a80abc816263d22367da44f7f653f3d798f5b26f0b0f6e71ea77d8d4060659b55eb87720a928ee4f7fc0c4c88b6b6e04ce40434b28b78b00228eb7fa4ba10f8bcb3ee294c7f79038a05b48a9331d626e9d59cd8ecd85e854a2032e3c6efcea557a3e01ba8b10f47ab669d42428e45dbbe489b203d5157f86cb6650377501c8ec239974b50ca8c27722e37176dc708126f121dc81a6447d53c6dc954bc30538dd138353b45c02ab2066dd4dd7f31bd0d5c9147003a16ee4102c020cbc72ff1394f1427bdead8b3a80f74051a57da7acee48ff3ab8a1ed006f80a7816ac554200225d38e56315a9ad56983938d25795139c9605e3338106b3b8744f2e7abe80282f0d2816cf760c298b884c13caa55512321b3b89e8b9ba709420d7196d2ef6eda74481e0a69d3bbf14152a8ed2aaadf536f4a5c86fd988c28c5d4fc8a7da0a506b2a7c8baab6b3af951e9e8113579d0c23156597bb1dafc6b1d2e9439bd4ecfb2089d5bc8a8f368ff8bcc5bafee3b553d43edd9df16f780a125cd36d2ca31364fc2c2827c65a17661deca756d924d818d13da7c5b733786fe43f95226bc63638313f2bfa4b02bc9815b4ce3da054e8a26e5d1ead2c7d26feaef7a7f194fec996dc1a5423b013ddd8a8f1bdedb4974e8bef749aec03e93059a764af78c3d43cf6666ea9caa89f49b6d",
+    "enroll_frame": {
+      "k": "enroll",
+      "blob": "R0uD3/9S3+YdJNT8W5CkE2tDxVhyeUJbxm1YkAGzFAz5/YFd8AfUo1WAryfeobYMBBMVxVmMXUQzhCIRMEZF+pT+rubwLAW207W2a4lSrkq3k84LlU7riacBCo1/6LTY547mt5Aa51HeXvBtygAEe3NNH8qGH/KrprQLVSlAlKIU9Fw1SPrackrzo5IsWIhqi5DTSj5xMH1Ycv8TuFzSv4gPJLEsVny+dpG33TKIMeBK5oZ044+nAZW14P+dofAceBLqQn1lt7GWeuFhujMntBY7K0+821D3YlR6yD3IZ3ohsaQQ5UgbL9apOwbnhKjXwepNbHmETsc1LgSW1oaHfuRhJqxc+1+Ww9q/E8w3sPQ/2cKmvLToxBlAFT0vywxWK9oLLtpvVFztp6Wl048WnlIWpYw5gGRnIYcGjZg1p8rqQha5tSbJLpFO5odZMjDXE6gLOKWTkbPxrLEmtO0Y+LRA8If4fvjevRt93qouxFZnqbRr2fiMIN/uKBa0qZvEs+XoAmlDgrgI+GHppfk3qAq8gWJj0iNn2kT39lPz15j1sm8LD25x6nfY1AYGWbVeuHcgqSjuT3/AxMiLa24EzkBDSyi3iwAijrf6S6EPi8s+4pTH95A4oFtIqTMdYm6dWc2OzYXoVKIDLjxu/OpVej4BuosQ9Hq2adQkKORdu+SJsgPVFX+Gy2ZQN3UByOwjmXS1DKjCdyLjcXbccIEm8SHcgaZEfVPG3JVLwwU43RODU7RcAqsgZt1N1/Mb0NXJFHADoW7kECwCDLxy/xOU8UJ73q2LOoD3QFGlfaes7kj/Orih7QBvgKeBasVUIAIl045WMVqa1WmDk40leVE5yWBeMzgQazuHRPLnq+gCgvDSgWz3YMKYuITBPKpVUSMhs7iei5unCUINcZbS727adEgeCmnTu/FBUqjtKqrfU29KXIb9mIwoxdT8in2gpQayp8i6q2s6+VHp6BE1edDCMVZZe7Ha/GsdLpQ5vU7PsgidW8io82j/i8xbr+47VT1D7dnfFveAoSXNNtLKMTZPwsKCfGWhdmHeynVtkk2BjRPafFtzN4b+Q/lSJrxjY4MT8r+ksCvJgVtM49oFToom5dHq0sfSb+rven8ZT+yZbcGlQjsBPd2Kjxve20l06L73Sa7APpMFmnZK94w9Q89mZuqcqon0m20="
+    }
+  }
+}

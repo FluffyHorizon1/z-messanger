@@ -38,7 +38,8 @@ void main() {
     test('enrollment: primary signs a 2nd device; scoped to the account',
         () async {
       final primary = await AccountIdentity.generate();
-      final dev = await ZIdentity.generate(); // stand-in keypairs for new device
+      final dev =
+          await ZIdentity.generate(); // stand-in keypairs for new device
       final cert = await primary.signDeviceCert(
           deviceEdPub: dev.edPub, deviceXPub: dev.xPub, deviceId: 'desktop');
 
@@ -103,7 +104,8 @@ void main() {
       final bundle = AccountBundle(
           accountEdPub: primary.accountEdPub, devices: [tampered]);
       expect(await bundle.verifyAll(), isFalse);
-      expect(() => AccountBundle.decode(bundle.encode()), throwsFormatException);
+      expect(
+          () => AccountBundle.decode(bundle.encode()), throwsFormatException);
     });
 
     test('legacy zc1. code reads as a one-device account', () async {
@@ -116,6 +118,57 @@ void main() {
       expect(acct.displayName, 'Bob');
       expect(await acct.verifyAll(), isTrue); // legacy device pre-verified
       expect(await acct.devices.first.routingId(), await v1.routingId());
+    });
+
+    test('the legacy flag selects a rule, it cannot bypass verification',
+        () async {
+      // Audit-prep finding: `legacy` is attacker-controlled JSON input. A
+      // crafted zc2. code (or device list) must not be able to smuggle an
+      // unsigned device in by flagging it legacy.
+      final victim = await AccountIdentity.generate();
+      final attacker = await AccountIdentity.generate();
+      final rogue = DeviceCertificate(
+        deviceEdPub: attacker.deviceEdPub,
+        deviceXPub: attacker.deviceXPub,
+        deviceId: 'legacy-v1',
+        sig: Uint8List(64),
+        legacy: true,
+      );
+      expect(await rogue.verify(victim.accountEdPub), isFalse);
+      final code = AccountBundle(
+          accountEdPub: victim.accountEdPub,
+          devices: [victim.deviceCert, rogue]).encode();
+      expect(() => AccountBundle.decode(code), throwsFormatException);
+      final list = SignedDeviceList.fromJson({
+        'acct': b64(victim.accountEdPub),
+        'ver': 9,
+        'devs': [victim.deviceCert.toJson(), rogue.toJson()],
+        'sig': b64(Uint8List(64)),
+      });
+      expect(await list.verify(), isFalse);
+
+      // ...while a genuine legacy record (device key == account key, id
+      // 'legacy-v1', sig = v1 binding signature) still verifies.
+      final id = await ZIdentity.generate();
+      final genuine = DeviceCertificate(
+        deviceEdPub: id.edPub,
+        deviceXPub: id.xPub,
+        deviceId: 'legacy-v1',
+        sig: await id.bindingSignature(),
+        legacy: true,
+      );
+      expect(await genuine.verify(id.edPub), isTrue);
+      expect(await genuine.verify(victim.accountEdPub), isFalse);
+      // Wrong id or a device key that is not the account key: rejected.
+      expect(
+          await DeviceCertificate(
+                  deviceEdPub: id.edPub,
+                  deviceXPub: id.xPub,
+                  deviceId: 'phone',
+                  sig: await id.bindingSignature(),
+                  legacy: true)
+              .verify(id.edPub),
+          isFalse);
     });
 
     test('safety number is symmetric and account-key derived', () async {
@@ -192,8 +245,8 @@ void main() {
         deviceId: 'd2',
         deviceCert: cert,
       );
-      expect(() => rootless.signDeviceList([me.deviceCert], 1),
-          throwsStateError);
+      expect(
+          () => rootless.signDeviceList([me.deviceCert], 1), throwsStateError);
     });
   });
 }

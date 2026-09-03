@@ -44,6 +44,9 @@ const CFG = {
     return this.queueTtlHours * 3600 * 1000;
   },
   sweepIntervalMs: intEnv('SWEEP_INTERVAL_SECONDS', 60) * 1000,
+  // Push tokens live this long after their last (re)registration, in both
+  // coordinators — the privacy policy promises a 30-day cap.
+  pushTtlMs: intEnv('PUSH_TTL_DAYS', 30) * 24 * 3600 * 1000,
   ratePerSec: intEnv('RATE_PER_SEC', 80),
   rateBurst: intEnv('RATE_BURST', 240),
   tlsCert: process.env.TLS_CERT || null,
@@ -301,6 +304,10 @@ class MemoryCoordinator {
         if (kept.length === 0) this.queues.delete(rid);
       }
     }
+    const pushCutoff = Date.now() - CFG.pushTtlMs;
+    for (const [rid, rec] of this.pushTokens) {
+      if (rec.ts < pushCutoff) this.pushTokens.delete(rid);
+    }
   }
 
   async heartbeat() {}
@@ -390,7 +397,7 @@ class RedisCoordinator {
   // time the client registers. Holds a device push token only — no keys, no
   // message content.
   async registerPush(rid, token, platform) {
-    await this.cmd.set(`push:${rid}`, JSON.stringify({ token, platform }), 'EX', 60 * 60 * 24 * 30);
+    await this.cmd.set(`push:${rid}`, JSON.stringify({ token, platform }), 'PX', CFG.pushTtlMs);
   }
 
   async unregisterPush(rid) {
