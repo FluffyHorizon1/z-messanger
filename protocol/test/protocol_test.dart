@@ -261,7 +261,7 @@ void main() {
     test('chunk encrypt/decrypt round-trip with reassembly + hash check',
         () async {
       final km = FileKeyMaterial.generate();
-      final file = randomBytes(1500 * 1000); // ~1.5 MB, 4 chunks at 480 KiB
+      final file = randomBytes(500 * 1000); // ~0.5 MB, 4 chunks at 140 KiB
       final chunks = splitChunks(file);
       expect(chunks.length, 4);
 

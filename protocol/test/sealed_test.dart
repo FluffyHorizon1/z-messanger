@@ -93,5 +93,22 @@ void main() {
       expect(SealedEnvelope.looksSealed('zc1.abc'), isFalse);
       expect(SealedEnvelope.looksSealed('zs1.abc'), isTrue);
     });
+
+    test('a max-size attachment chunk, sealed, fits the relay frame cap',
+        () async {
+      // Regression: 480 KiB chunks sealed to ~1.5 MB and were rejected by the
+      // relay (MAX_ENVELOPE_BYTES = 1,000,000) as too_large, silently breaking
+      // every attachment over ~147 KB once sealed sender shipped.
+      final bob = await ZIdentity.generate();
+      final km = FileKeyMaterial.generate();
+      final chunk = await encryptChunk(km, 0, Uint8List(defaultChunkSize));
+      final blob = await SealedEnvelope.seal(
+          toXPub: bob.xPub, fromRid: 'x' * 43, payload: chunk);
+      expect(blob.length, lessThanOrEqualTo(1000000));
+      // ...and lands in the 262144 bucket, so every chunk envelope is the same
+      // size on the wire.
+      final raw = unb64url(blob.substring(4));
+      expect(raw.length - 32 - 12 - 16, 262144);
+    });
   });
 }

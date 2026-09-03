@@ -24,11 +24,10 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2/5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1), `docs/vectors/v1/`, two verifiers in CI |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
-| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ (text) · 7.4–7.6 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart` |
+| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · 7.4–7.7 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart` |
 
-**Next up, in order:** group attachments (7.3b) → post-quantum hybrid
-handshake (7.5) → key transparency (7.7, design note first) → voice messages
-(7.4). Externally gated items resume as soon as their gate clears: Play
+**Next up, in order:** post-quantum hybrid handshake (7.5) → key
+transparency (7.7, design note first) → voice messages (7.4). Externally gated items resume as soon as their gate clears: Play
 submission, Windows/macOS signing, auditor engagement (5.2), iOS.
 
 ---
@@ -163,10 +162,17 @@ Ordered by value; each is a self-contained project on the existing layering.
 - **7.3 Group chats** ✅ (text) — shipped as pairwise fan-out over the existing
   1:1 ratchets instead of sender keys: no group key to manage, and group
   traffic is indistinguishable from direct traffic at the relay.
-  **7.3b Group attachments** ⏳ — reuse the attachment pipeline for groups
-  (offer fanned to every member, chunks sealed per device). **DoD:** a
-  `group_test.dart` case where a photo reaches every member and a removed
-  member cannot decrypt a later one.
+  **7.3b Group attachments** ✅ — the attachment pipeline for groups: one
+  file key, offer (`gfile`) fanned to every member over their pairwise
+  ratchet, chunks sealed per member and queued durably. **DoD:** a
+  `group_test.dart` case where a 7-chunk photo reaches every member with
+  attribution, a non-admin's file reaches members who only know them via
+  the invite, and a removed member cannot obtain a later one — met. Shipping
+  it exposed and fixed two latent attachment bugs: sealed 480 KiB chunks
+  exceeded the relay frame cap (every attachment over ~147 KB had been
+  rejected as `too_large` since sealed sender), and concurrent assembly of
+  the offer and the last chunk could leave an attachment permanently
+  undecryptable.
 - **7.4 Voice messages & richer media** — reuse the attachment pipeline.
 - **7.5 Post-quantum handshake** — add an ML-KEM (Kyber) hybrid layer to X3DH
   for harvest-now-decrypt-later resistance. Isolated to the handshake.
@@ -181,12 +187,12 @@ Ordered by value; each is a self-contained project on the existing layering.
 
 ## Suggested near-term sprint (the next 3 sessions)
 
-1. **Groups complete:** 7.3b group attachments.
-2. **Harvest-now-decrypt-later:** 7.5 ML-KEM hybrid in the handshake (needs a
+1. **Harvest-now-decrypt-later:** 7.5 ML-KEM hybrid in the handshake (needs a
    vetted pure-Dart ML-KEM; verify against FIPS 203 vectors, add a v2 vector
    suite).
-3. **Verifiability:** 7.7 key-transparency design note, then 5.2 — engage an
+2. **Verifiability:** 7.7 key-transparency design note, then 5.2 — engage an
    auditor with the frozen v1 spec and vectors as the scope document.
+3. **Voice messages** (7.4) on the now-proven attachment pipeline.
 
 Each is a clean working session: implement, test, screenshot/artifact, commit.
 

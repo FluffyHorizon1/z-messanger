@@ -17,10 +17,17 @@ import 'util.dart';
 /// The relay learns only: sizes, counts and timing — never names, types or
 /// content. File name/mime/hash travel only inside the ratchet.
 
-/// Raw bytes per chunk. The transport wraps chunk bytes in base64 twice
-/// (once inside the chunk JSON, once around the whole payload), a ~1.78x
-/// expansion — 480 KiB raw stays safely under the relay's 1 MB frame cap.
-const int defaultChunkSize = 480 * 1024;
+/// Raw bytes per chunk.
+///
+/// A chunk payload is base64 twice over (inside the chunk JSON and around the
+/// whole payload, ~1.78x), then SEALED (sealed.dart): padded up to a size
+/// bucket and base64url'd again (~1.33x). The largest bucket whose sealed
+/// envelope still fits the relay's default 1,000,000-character frame cap is
+/// 262144 bytes, and a 140 KiB raw chunk is the most that lands inside it
+/// (255,022 bytes of padded input, ~2.8% padding). Every chunk envelope is
+/// therefore the same size on the wire. 480 KiB (the pre-sealed-sender value)
+/// sealed to 1.5 MB and was rejected by the relay as `too_large`.
+const int defaultChunkSize = 140 * 1024;
 const String _fileAadContext = 'z-file-v1:';
 
 final _aead = Xchacha20.poly1305Aead();
@@ -111,11 +118,12 @@ Future<Uint8List> decryptChunk(
 }
 
 /// Splits [data] into chunks of [chunkSize].
-List<Uint8List> splitChunks(Uint8List data, {int chunkSize = defaultChunkSize}) {
+List<Uint8List> splitChunks(Uint8List data,
+    {int chunkSize = defaultChunkSize}) {
   final out = <Uint8List>[];
   for (var off = 0; off < data.length; off += chunkSize) {
-    out.add(Uint8List.sublistView(
-        data, off, off + chunkSize > data.length ? data.length : off + chunkSize));
+    out.add(Uint8List.sublistView(data, off,
+        off + chunkSize > data.length ? data.length : off + chunkSize));
   }
   if (out.isEmpty) out.add(Uint8List(0));
   return out;

@@ -46,7 +46,6 @@
       400,
       200
     ],
-    "default_chunk_size": 491520,
     "file_sha256": "945acdf575d6a2430bf4d6163e1d03b4b0b896fcef107c8b24bf7ff07a621fa3"
   }
 }

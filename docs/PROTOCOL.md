@@ -324,6 +324,7 @@ Unknown kinds MUST be ignored.
 | `devlist` | `list:string` (the JSON of §3.4, as a string) | account device‑set update |
 | `ginvite` | `gid, name, ver:int, members:[{ "b":ContactBundleJSON, "n":string }]` | group create/update (§11) |
 | `gmsg` | `gid, body` | group text (§11) |
+| `gfile` | `gid` + the `file` members | group attachment offer (§7, §11) |
 | `gleave` | `gid` | sender left the group (§11) |
 
 `ContactBundleJSON` is `{ "ed", "x", "sig", "name" }` as in §2.4 (all `b64`);
@@ -331,8 +332,8 @@ every bundle in a `ginvite` MUST be verified (§2.3) before use.
 
 ### 6.3 Receipts
 
-On persisting an inbound `text`, `file` or `gmsg`, the recipient sends
-`dlv{mids:[mid]}` back over the same pairwise session (best effort). This
+On persisting an inbound `text`, `file`, `gmsg` or `gfile`, the recipient
+sends `dlv{mids:[mid]}` back over the same pairwise session (best effort). This
 replaces the relay's `delivered` frame, which sealed sender (§8) makes
 impossible. `read` is sent when the user views the message.
 
@@ -356,9 +357,12 @@ chunk payload = b64( utf8( JSON{ "v":1, "t":"f", "fid":fid, "idx":i, "ct":b64(ct
 ```
 
 Chunks are consecutive `chunkSize` slices of the file; the last may be
-shorter; an empty file is one empty chunk. `chunkSize` is 480 KiB in this
-implementation (the relay's 1,000,000‑character frame cap, less the double
-base64 expansion); a receiver MUST accept any chunk size. The offer carries the
+shorter; an empty file is one empty chunk. A receiver MUST accept any chunk
+size. *Implementation note:* `chunkSize` is 140 KiB — the largest raw chunk
+whose payload, once sealed (§8), pads into the 262144 bucket, which is the
+largest bucket whose base64url envelope stays under the relay's
+1,000,000‑character frame cap (§12.2). Every chunk envelope is therefore the
+same size on the wire. The offer carries the
 file's `name`, `mime`, `size`, `chunks` and `sha256` (of the plaintext file,
 `b64`). The receiver verifies every tag, reassembles in `idx` order, checks
 `size` and the whole‑file SHA‑256, and only then surfaces the file. The
@@ -383,8 +387,10 @@ nonce    = 12 random bytes
 envelope = "zs1." || b64url( ephPub || nonce || ct || mac )
 ```
 
-`recipientXPub` is the X25519 key of the destination **device** (from its
-device certificate or `zc1.` bundle). Opening: check the prefix, decode, split
+Senders MUST keep an envelope under the relay's frame cap (§12.2) after
+base64url: with the default cap only buckets up to 262144 are usable, which
+is what sizes attachment chunks (§7). `recipientXPub` is the X25519 key of the
+destination **device** (from its device certificate or `zc1.` bundle). Opening: check the prefix, decode, split
 `ephPub(32) || nonce(12) || ct || mac(16)` (reject if shorter than 60 bytes),
 recompute `key` with `X25519(myXSeed, ephPub)`, decrypt, unpad (reject if the
 length prefix exceeds the data), parse, and route `p` through §5/§7 using `f`
@@ -487,6 +493,10 @@ tell group messages from direct ones.
   receiver can decrypt from them. A list that no longer includes the receiver
   means they were removed.
 * `gmsg` is accepted only from a current member of a known, not‑left group.
+* `gfile` is a group attachment offer under the same rule: one file key and
+  one set of chunks (§7), the offer sent to every member over their pairwise
+  session and the chunks queued for every member's mailbox. A member removed
+  before a send never receives the key.
 * `gleave` removes the sender from the receiver's copy of the list; the admin
   bumps `ver` so later invites exclude them.
 
@@ -611,7 +621,9 @@ a "v2" section in this document; v1 vectors are never edited. The freeze test
 `docs/vectors/v1/` holds one JSON file per suite: `identity`, `handshake`,
 `ratchet` (a complete two‑party transcript with three DH ratchet steps and an
 out‑of‑order delivery), `sealed_sender`, `attachments`, `multidevice`,
-`pairing`, `inner_messages`. Byte strings are lowercase hex; wire strings
+`pairing`, `inner_messages`. A suite may gain vectors for a compatible
+extension (a new inner kind, say); existing vectors are never changed. Byte
+strings are lowercase hex; wire strings
 (codes, envelopes, payloads) are given verbatim; every random draw the
 reference implementation made is recorded (`random_draws`, `*_seed`, `nonce`)
 so any implementation can replay a vector exactly. See

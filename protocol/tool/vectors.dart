@@ -686,7 +686,6 @@ Future<Map<String, Object?>> suiteAttachments(List<Actor> a) async {
       'chunk_lens': [
         for (final c in splitChunks(file, chunkSize: 400)) c.length
       ],
-      'default_chunk_size': defaultChunkSize,
       'file_sha256': hex(await refSha256(file)),
     },
   };
@@ -950,6 +949,17 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
     InnerMessage(kind: 'gmsg', mid: 'mid-gmsg', ts: ts, data: {
       'gid': 'gAAECAwQFBgcICQoL',
       'body': 'who is in?',
+    }),
+    InnerMessage(kind: 'gfile', mid: 'mid-gfile', ts: ts, data: {
+      'gid': 'gAAECAwQFBgcICQoL',
+      'fid': 'AAECAwQFBgcICQoL',
+      'name': 'beach.jpg',
+      'size': 1000,
+      'mime': 'image/jpeg',
+      'sha256': base64Encode(List.filled(32, 0xab)),
+      'fk': base64Encode(List.filled(32, 0x01)),
+      'fn': base64Encode(List.filled(16, 0x02)),
+      'chunks': 1,
     }),
     InnerMessage(kind: 'gleave', mid: 'mid-gleave', ts: ts, data: {
       'gid': 'gAAECAwQFBgcICQoL',

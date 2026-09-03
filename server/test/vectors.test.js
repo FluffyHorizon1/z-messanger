@@ -450,7 +450,6 @@ test('attachments: chunk AEAD, nonce layout and payload', () => {
   const lens = [];
   for (let off = 0; off < se.file_len; off += se.chunk_size) lens.push(Math.min(se.chunk_size, se.file_len - off));
   assert.deepEqual(lens, se.chunk_lens);
-  assert.equal(se.default_chunk_size, 480 * 1024);
 });
 
 // ===========================================================================
@@ -582,6 +581,7 @@ const INNER_SCHEMA = {
   devlist: ['list'],
   ginvite: ['gid', 'name', 'ver', 'members'],
   gmsg: ['gid', 'body'],
+  gfile: ['gid', 'fid', 'name', 'size', 'mime', 'sha256', 'fk', 'fn', 'chunks'],
   gleave: ['gid'],
 };
 

@@ -105,7 +105,11 @@ class _ChatScreenState extends State<ChatScreen> {
     if (bytes == null) return;
     final mime = _guessMime(f.name);
     try {
-      await svc.sendFile(widget.rid, f.name, bytes, mime);
+      if (svc.groups.containsKey(widget.rid)) {
+        await svc.sendGroupFile(widget.rid, f.name, bytes, mime);
+      } else {
+        await svc.sendFile(widget.rid, f.name, bytes, mime);
+      }
       _jumpToEnd();
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('$e')));
@@ -157,9 +161,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   sec == current
                       ? Icons.radio_button_checked
                       : Icons.radio_button_off,
-                  color: sec == current
-                      ? ZTheme.accent
-                      : ZTheme.textSecondary,
+                  color: sec == current ? ZTheme.accent : ZTheme.textSecondary,
                 ),
                 title: Text(label),
                 onTap: () => Navigator.pop(ctx, sec),
@@ -207,13 +209,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 radius: 18,
                 backgroundColor: ZTheme.surfaceAlt,
                 child: isGroup
-                    ? const Icon(Icons.group,
-                        size: 20, color: ZTheme.accent)
+                    ? const Icon(Icons.group, size: 20, color: ZTheme.accent)
                     : Text(
                         title.isNotEmpty ? title[0].toUpperCase() : '?',
                         style: const TextStyle(
-                            color: ZTheme.accent,
-                            fontWeight: FontWeight.w700),
+                            color: ZTheme.accent, fontWeight: FontWeight.w700),
                       ),
               ),
               const SizedBox(width: 10),
@@ -250,9 +250,8 @@ class _ChatScreenState extends State<ChatScreen> {
             IconButton(
               icon: Icon(
                 contact!.ttlSec > 0 ? Icons.timer : Icons.timer_outlined,
-                color: contact.ttlSec > 0
-                    ? ZTheme.accent
-                    : ZTheme.textSecondary,
+                color:
+                    contact.ttlSec > 0 ? ZTheme.accent : ZTheme.textSecondary,
               ),
               tooltip: 'Disappearing messages',
               onPressed: _pickTimer,
@@ -284,50 +283,48 @@ class _ChatScreenState extends State<ChatScreen> {
                   'You are no longer in this group. History stays on this '
                   'device; no new messages can be sent or received.',
                   textAlign: TextAlign.center,
-                  style:
-                      TextStyle(fontSize: 12, color: ZTheme.textSecondary),
+                  style: TextStyle(fontSize: 12, color: ZTheme.textSecondary),
                 ),
               ),
             )
           else
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  if (!isGroup)
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
                     IconButton(
                       icon: const Icon(Icons.attach_file,
                           color: ZTheme.textSecondary),
                       onPressed: _attach,
                     ),
-                  Expanded(
-                    child: TextField(
-                      controller: _input,
-                      minLines: 1,
-                      maxLines: 6,
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (_) => _send(),
-                      decoration: const InputDecoration(
-                        hintText: 'Encrypted message…',
-                        contentPadding:
-                            EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    Expanded(
+                      child: TextField(
+                        controller: _input,
+                        minLines: 1,
+                        maxLines: 6,
+                        textInputAction: TextInputAction.send,
+                        onSubmitted: (_) => _send(),
+                        decoration: const InputDecoration(
+                          hintText: 'Encrypted message…',
+                          contentPadding: EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 12),
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton.filled(
-                    style: IconButton.styleFrom(
-                        backgroundColor: ZTheme.accent,
-                        foregroundColor: Colors.black),
-                    icon: const Icon(Icons.arrow_upward),
-                    onPressed: _send,
-                  ),
-                ],
+                    const SizedBox(width: 8),
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                          backgroundColor: ZTheme.accent,
+                          foregroundColor: Colors.black),
+                      icon: const Icon(Icons.arrow_upward),
+                      onPressed: _send,
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -357,74 +354,75 @@ class _MessageRow extends StatelessWidget {
       child: GestureDetector(
         onTap: failed ? () => _showFailedMenu(context) : null,
         child: Container(
-        margin: EdgeInsets.only(
-          left: mine ? 64 : 12,
-          right: mine ? 12 : 64,
-          top: 2,
-          bottom: 2,
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: mine ? ZTheme.mineBubble : ZTheme.theirsBubble,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(mine ? 16 : 4),
-            bottomRight: Radius.circular(mine ? 4 : 16),
+          margin: EdgeInsets.only(
+            left: mine ? 64 : 12,
+            right: mine ? 12 : 64,
+            top: 2,
+            bottom: 2,
           ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (!mine && msg.senderName != null)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 2),
-                  child: Text(
-                    msg.senderName!,
-                    style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: ZTheme.accent),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: mine ? ZTheme.mineBubble : ZTheme.theirsBubble,
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(16),
+              topRight: const Radius.circular(16),
+              bottomLeft: Radius.circular(mine ? 16 : 4),
+              bottomRight: Radius.circular(mine ? 4 : 16),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!mine && msg.senderName != null)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text(
+                      msg.senderName!,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: ZTheme.accent),
+                    ),
                   ),
                 ),
-              ),
-            if (msg.kind == 'file')
-              _FileBody(msg: msg)
-            else
-              Text(msg.body, style: const TextStyle(fontSize: 15, height: 1.3)),
-            const SizedBox(height: 4),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (msg.expireAtMs > 0) ...[
-                  const Icon(Icons.timer_outlined,
-                      size: 11, color: ZTheme.textSecondary),
-                  const SizedBox(width: 3),
+              if (msg.kind == 'file')
+                _FileBody(msg: msg)
+              else
+                Text(msg.body,
+                    style: const TextStyle(fontSize: 15, height: 1.3)),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (msg.expireAtMs > 0) ...[
+                    const Icon(Icons.timer_outlined,
+                        size: 11, color: ZTheme.textSecondary),
+                    const SizedBox(width: 3),
+                  ],
+                  Text(
+                    DateFormat.Hm()
+                        .format(DateTime.fromMillisecondsSinceEpoch(msg.ts)),
+                    style: const TextStyle(
+                        fontSize: 10, color: ZTheme.textSecondary),
+                  ),
+                  if (mine) ...[
+                    const SizedBox(width: 4),
+                    _StatusTicks(status: msg.status),
+                  ],
                 ],
-                Text(
-                  DateFormat.Hm().format(
-                      DateTime.fromMillisecondsSinceEpoch(msg.ts)),
-                  style: const TextStyle(
-                      fontSize: 10, color: ZTheme.textSecondary),
+              ),
+              if (failed)
+                const Padding(
+                  padding: EdgeInsets.only(top: 2),
+                  child: Text('Failed to send — tap to retry',
+                      style: TextStyle(fontSize: 10, color: ZTheme.danger)),
                 ),
-                if (mine) ...[
-                  const SizedBox(width: 4),
-                  _StatusTicks(status: msg.status),
-                ],
-              ],
-            ),
-            if (failed)
-              const Padding(
-                padding: EdgeInsets.only(top: 2),
-                child: Text('Failed to send — tap to retry',
-                    style: TextStyle(fontSize: 10, color: ZTheme.danger)),
-              ),
-          ],
+            ],
+          ),
         ),
-      ),
       ),
     );
   }

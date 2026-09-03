@@ -279,8 +279,8 @@ class ChatService extends ChangeNotifier {
   }
 
   Future<void> deleteContact(String rid) async {
-    final fids = (await vault.db
-            .query('files', columns: ['fid'], where: 'rid = ?', whereArgs: [rid]))
+    final fids = (await vault.db.query('files',
+            columns: ['fid'], where: 'rid = ?', whereArgs: [rid]))
         .map((r) => r['fid'] as String)
         .toList();
     for (final fid in fids) {
@@ -358,7 +358,8 @@ class ChatService extends ChangeNotifier {
       }
     });
     unawaited(flushOutbox());
-    unawaited(_fanToContactExtras(contact.rid, inner)); // M4: to their extra devices
+    unawaited(
+        _fanToContactExtras(contact.rid, inner)); // M4: to their extra devices
     return inner.mid;
   }
 
@@ -678,8 +679,7 @@ class ChatService extends ChangeNotifier {
           await vault.db.transaction((txn) async {
             // Persist the advanced ratchet before acting on content.
             await _saveConv(contact.rid, txn: txn);
-            final inserted = await txn.insert(
-                'inbox_dedupe',
+            final inserted = await txn.insert('inbox_dedupe',
                 {'from_rid': from, 'mid': parsed.mid, 'seen_ms': now},
                 conflictAlgorithm: ConflictAlgorithm.ignore);
             if (inserted == 0) return; // duplicate resend — already processed
@@ -715,7 +715,8 @@ class ChatService extends ChangeNotifier {
     transport.ackReceived(id: m.id, from: m.from);
 
     if (inner != null) {
-      if (inner.kind == 'file') {
+      if ((inner.kind == 'file' || inner.kind == 'gfile') &&
+          inner.data['fid'] is String) {
         await _tryAssemble(inner.data['fid'] as String);
       }
       if (openChatRid == contact.rid &&
@@ -724,33 +725,31 @@ class ChatService extends ChangeNotifier {
       }
       if (inner.kind == 'text' ||
           inner.kind == 'file' ||
-          inner.kind == 'gmsg') {
+          inner.kind == 'gmsg' ||
+          inner.kind == 'gfile') {
         // E2E delivery receipt. With sealed sender the relay no longer knows
         // whom to notify of delivery, so the recipient tells the sender
         // directly — encrypted, like everything else. Best-effort: if the app
         // dies mid-send the sender simply keeps a single grey tick.
         unawaited(_sendInner(
-                contact,
-                InnerMessage(
-                    kind: 'dlv',
-                    mid: newMessageId(),
-                    ts: _now(),
-                    data: {
-                      'mids': [inner.mid]
-                    }))
-            .then((_) {}, onError: (_) {}));
+            contact,
+            InnerMessage(kind: 'dlv', mid: newMessageId(), ts: _now(), data: {
+              'mids': [inner.mid]
+            })).then((_) {}, onError: (_) {}));
       }
       if (inner.kind == 'text' ||
           inner.kind == 'file' ||
           inner.kind == 'gmsg' ||
+          inner.kind == 'gfile' ||
           inner.kind == 'ginvite' ||
           inner.kind == 'gleave') {
         // Mirror the received message to my own other devices. For a file this
         // carries the offer (with its file key); the sealed chunks are relayed
         // separately in _onChunk as they arrive. Group traffic mirrors too so
         // linked devices track membership and history.
-        unawaited(_sync?.mirror(threadRid: contact.rid, dir: 'in', inner: inner) ??
-            Future<void>.value());
+        unawaited(
+            _sync?.mirror(threadRid: contact.rid, dir: 'in', inner: inner) ??
+                Future<void>.value());
       }
       if (inner.kind == 'devlist') {
         await _applyDevlistInner(contact, inner); // M4: learn their devices
@@ -797,66 +796,12 @@ class ChatService extends ChangeNotifier {
         break;
 
       case 'file':
-        final expireAt = inner.ttlSec > 0 ? now + inner.ttlSec * 1000 : 0;
-        final fid = inner.data['fid'] as String;
-        await txn.insert(
-            'files',
-            {
-              'fid': fid,
-              'rid': contact.rid,
-              'mid': inner.mid,
-              'enc_meta': await vault.seal(jsonEncode({
-                'name': inner.data['name'],
-                'size': inner.data['size'],
-                'mime': inner.data['mime'],
-                'sha256': inner.data['sha256'],
-                'fk': inner.data['fk'],
-                'fn': inner.data['fn'],
-              })),
-              'complete': 0,
-              'got_chunks': 0,
-              'total_chunks': (inner.data['chunks'] as num).toInt(),
-            },
-            conflictAlgorithm: ConflictAlgorithm.ignore);
-        await txn.insert(
-            'messages',
-            {
-              'mid': inner.mid,
-              'rid': contact.rid,
-              'outgoing': 0,
-              'kind': 'file',
-              'enc_body': await vault.seal(jsonEncode({'fid': fid})),
-              'fid': fid,
-              'ts_ms': now,
-              'status': MsgStatus.delivered,
-              'expire_at_ms': expireAt,
-            },
-            conflictAlgorithm: ConflictAlgorithm.ignore);
-        _appendLoaded(
-            contact.rid,
-            ChatMessage(
-              mid: inner.mid,
-              rid: contact.rid,
-              outgoing: false,
-              kind: 'file',
-              body: inner.data['name'] as String? ?? 'file',
-              fid: fid,
-              ts: now,
-              status: MsgStatus.delivered,
-              expireAtMs: expireAt,
-              file: FileMeta(
-                fid: fid,
-                name: inner.data['name'] as String? ?? 'file',
-                size: (inner.data['size'] as num?)?.toInt() ?? 0,
-                mime: inner.data['mime'] as String? ??
-                    'application/octet-stream',
-                sha256b64: inner.data['sha256'] as String? ?? '',
-                totalChunks: (inner.data['chunks'] as num).toInt(),
-              ),
-            ));
-        if (openChatRid != contact.rid) {
-          unread[contact.rid] = (unread[contact.rid] ?? 0) + 1;
-        }
+        await _persistFileOffer(txn, contact.rid, inner, now,
+            expireAt: inner.ttlSec > 0 ? now + inner.ttlSec * 1000 : 0);
+        break;
+
+      case 'gfile':
+        await _persistGroupFile(contact, inner, now, txn: txn);
         break;
 
       case 'timer':
@@ -915,11 +860,94 @@ class ChatService extends ChangeNotifier {
     }
   }
 
+  /// Record an inbound attachment offer (the file key rides inside it) and
+  /// its placeholder message in thread [threadRid] — a contact's routing id
+  /// for a direct message, a gid for a group. Chunks are thread-agnostic: they
+  /// are matched to the offer by fid when they arrive (see [_onChunk]).
+  Future<void> _persistFileOffer(
+      DatabaseExecutor txn, String threadRid, InnerMessage inner, int now,
+      {int expireAt = 0, String? senderName}) async {
+    final fid = inner.data['fid'] as String;
+    final name = inner.data['name'] as String? ?? 'file';
+    await txn.insert(
+        'files',
+        {
+          'fid': fid,
+          'rid': threadRid,
+          'mid': inner.mid,
+          'enc_meta': await vault.seal(jsonEncode({
+            'name': name,
+            'size': inner.data['size'],
+            'mime': inner.data['mime'],
+            'sha256': inner.data['sha256'],
+            'fk': inner.data['fk'],
+            'fn': inner.data['fn'],
+          })),
+          'complete': 0,
+          'got_chunks': 0,
+          'total_chunks': (inner.data['chunks'] as num).toInt(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore);
+    await txn.insert(
+        'messages',
+        {
+          'mid': inner.mid,
+          'rid': threadRid,
+          'outgoing': 0,
+          'kind': 'file',
+          'enc_body': await vault.seal(jsonEncode({
+            'fid': fid,
+            if (senderName != null) 'sn': senderName,
+          })),
+          'fid': fid,
+          'ts_ms': now,
+          'status': MsgStatus.delivered,
+          'expire_at_ms': expireAt,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore);
+    _appendLoaded(
+        threadRid,
+        ChatMessage(
+          mid: inner.mid,
+          rid: threadRid,
+          outgoing: false,
+          kind: 'file',
+          body: name,
+          fid: fid,
+          ts: now,
+          status: MsgStatus.delivered,
+          expireAtMs: expireAt,
+          senderName: senderName,
+          file: FileMeta(
+            fid: fid,
+            name: name,
+            size: (inner.data['size'] as num?)?.toInt() ?? 0,
+            mime: inner.data['mime'] as String? ?? 'application/octet-stream',
+            sha256b64: inner.data['sha256'] as String? ?? '',
+            totalChunks: (inner.data['chunks'] as num).toInt(),
+          ),
+        ));
+    if (openChatRid != threadRid) {
+      unread[threadRid] = (unread[threadRid] ?? 0) + 1;
+    }
+  }
+
+  /// A group attachment offer from [contact]: same membership rule as a group
+  /// text (unknown group, left group or non-member sender → silent drop).
+  Future<void> _persistGroupFile(Contact contact, InnerMessage inner, int now,
+      {DatabaseExecutor? txn}) async {
+    final gid = inner.data['gid'] as String?;
+    final g = gid == null ? null : groups[gid];
+    if (g == null || g.left || !g.memberRids.contains(contact.rid)) return;
+    if (inner.data['fid'] is! String || inner.data['chunks'] is! num) return;
+    await _persistFileOffer(txn ?? vault.db, gid!, inner, now,
+        senderName: contact.name);
+  }
+
   Future<void> _onChunk(
       RelayInbound m, FileChunk chunk, String from, String payload) async {
     await vault.db.insert(
-        'chunks',
-        {'fid': chunk.fid, 'idx': chunk.index, 'payload': payload},
+        'chunks', {'fid': chunk.fid, 'idx': chunk.index, 'payload': payload},
         conflictAlgorithm: ConflictAlgorithm.ignore);
     transport.ackReceived(id: m.id, from: m.from);
     // Relay a contact's chunk to my own other devices so the attachment lands
@@ -932,7 +960,17 @@ class ChatService extends ChangeNotifier {
     await _tryAssemble(chunk.fid);
   }
 
-  Future<void> _tryAssemble(String fid) async {
+  /// Assemble [fid] if the offer and every chunk are present. Serialized per
+  /// fid: the offer's post-processing and the last chunk's arrival both call
+  /// this, often within a millisecond of each other, and two concurrent
+  /// assemblies each wrote the blob under a fresh random key — leaving the
+  /// stored key and the bytes on disk from different runs, i.e. an
+  /// attachment that could never be opened. Under the lock the second caller
+  /// sees `complete = 1` and returns.
+  Future<void> _tryAssemble(String fid) =>
+      _withLock('assemble:$fid', () => _tryAssembleLocked(fid));
+
+  Future<void> _tryAssembleLocked(String fid) async {
     final rows =
         await vault.db.query('files', where: 'fid = ?', whereArgs: [fid]);
     if (rows.isEmpty) return; // chunks arrived before the offer — wait
@@ -940,8 +978,8 @@ class ChatService extends ChangeNotifier {
     if ((row['complete'] as int) == 1) return;
 
     final total = row['total_chunks'] as int;
-    final chunkRows = await vault.db.query('chunks',
-        where: 'fid = ?', whereArgs: [fid], orderBy: 'idx');
+    final chunkRows = await vault.db
+        .query('chunks', where: 'fid = ?', whereArgs: [fid], orderBy: 'idx');
     final got = chunkRows.length;
     if (got != row['got_chunks']) {
       await vault.db.update('files', {'got_chunks': got},
@@ -964,8 +1002,7 @@ class ChatService extends ChangeNotifier {
         if (fc == null) throw const FormatException('bad chunk');
         parts.add(await decryptChunk(fk: fk, fn: fn, fid: fid, chunk: fc));
       }
-      final assembled =
-          Uint8List.fromList(parts.expand((x) => x).toList());
+      final assembled = Uint8List.fromList(parts.expand((x) => x).toList());
       if (b64(await sha256Bytes(assembled)) != meta['sha256']) {
         throw const FormatException('attachment hash mismatch');
       }
@@ -980,7 +1017,8 @@ class ChatService extends ChangeNotifier {
             'complete': 1,
             'got_chunks': total,
           },
-          where: 'fid = ?', whereArgs: [fid]);
+          where: 'fid = ?',
+          whereArgs: [fid]);
       await vault.db.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
       _updateLoadedFileProgress(row['rid'] as String, fid, total, total, true);
     } catch (_) {
@@ -1034,8 +1072,7 @@ class ChatService extends ChangeNotifier {
         where:
             "rid = ? AND outgoing = 0 AND receipt_sent = 0 AND kind IN ('text','file')",
         whereArgs: [rid]);
-    await _sendInner(
-        contact, InnerMessage.read(newMessageId(), _now(), mids));
+    await _sendInner(contact, InnerMessage.read(newMessageId(), _now(), mids));
   }
 
   // ------------------------------------------------------------------
@@ -1058,6 +1095,12 @@ class ChatService extends ChangeNotifier {
       final fid = r['fid'] as String;
       fileMeta = await _loadFileMeta(fid);
       body = fileMeta?.name ?? 'file';
+      try {
+        final j =
+            (jsonDecode(await vault.unseal(r['enc_body'] as String)) as Map)
+                .cast<String, Object?>();
+        senderName = j['sn'] as String?; // set for group attachments
+      } catch (_) {}
     } else if (kind == 'gtext') {
       final j = (jsonDecode(await vault.unseal(r['enc_body'] as String)) as Map)
           .cast<String, Object?>();
@@ -1128,8 +1171,9 @@ class ChatService extends ChangeNotifier {
         await vault.db.query('files', where: 'fid = ?', whereArgs: [fid]);
     if (rows.isEmpty) return null;
     final r = rows.first;
-    final meta = (jsonDecode(await vault.unseal(r['enc_meta'] as String)) as Map)
-        .cast<String, Object?>();
+    final meta =
+        (jsonDecode(await vault.unseal(r['enc_meta'] as String)) as Map)
+            .cast<String, Object?>();
     return FileMeta(
       fid: fid,
       name: meta['name'] as String? ?? 'file',
@@ -1148,9 +1192,10 @@ class ChatService extends ChangeNotifier {
     final rows =
         await vault.db.query('files', where: 'fid = ?', whereArgs: [fid]);
     if (rows.isEmpty) throw StateError('no such attachment');
-    final meta = (jsonDecode(await vault.unseal(rows.first['enc_meta'] as String))
-            as Map)
-        .cast<String, Object?>();
+    final meta =
+        (jsonDecode(await vault.unseal(rows.first['enc_meta'] as String))
+                as Map)
+            .cast<String, Object?>();
     final local = (meta['local'] as Map?)?.cast<String, Object?>();
     if (local == null) throw StateError('attachment not complete yet');
     return vault.readBlob(fid, local);
@@ -1260,8 +1305,7 @@ class ChatService extends ChangeNotifier {
     await vault.db.delete('messages',
         where: 'expire_at_ms > 0 AND expire_at_ms <= ?', whereArgs: [now]);
     for (final entry in messagesByChat.entries) {
-      entry.value.removeWhere(
-          (m) => m.expireAtMs > 0 && m.expireAtMs <= now);
+      entry.value.removeWhere((m) => m.expireAtMs > 0 && m.expireAtMs <= now);
     }
     // Housekeeping: dedupe entries older than 30 days.
     await vault.db.delete('inbox_dedupe',
@@ -1300,8 +1344,7 @@ class ChatService extends ChangeNotifier {
     final contact = contacts[rid];
     if (contact == null) return false;
     final rows = await vault.db.query('messages',
-        where: 'rid = ? AND mid = ? AND outgoing = 1',
-        whereArgs: [rid, mid]);
+        where: 'rid = ? AND mid = ? AND outgoing = 1', whereArgs: [rid, mid]);
     if (rows.isEmpty) return false;
     final row = rows.first;
     if ((row['status'] as int) != -1 || row['kind'] != 'text') return false;
@@ -1355,8 +1398,9 @@ class ChatService extends ChangeNotifier {
       (await vault.kvGet('account')) != null;
 
   /// The v2 account contact code for this account (one device today).
-  Future<String> myAccountCode() async =>
-      (await accountIdentity()).toAccountBundle(displayName: displayName).encode();
+  Future<String> myAccountCode() async => (await accountIdentity())
+      .toAccountBundle(displayName: displayName)
+      .encode();
 
   /// Contacts expressed as account bundles, to hand to a device being linked.
   List<AccountBundle> contactsAsBundles() => [
@@ -1411,10 +1455,11 @@ class ChatService extends ChangeNotifier {
   /// Persist a newly-linked device of MY account and (re)build the sync channel.
   Future<void> addMyDevice(DeviceCertificate cert) async {
     final list = await _myDevices();
-    if (!list.any((d) => base64Encode(d.deviceEdPub) == base64Encode(cert.deviceEdPub))) {
+    if (!list.any(
+        (d) => base64Encode(d.deviceEdPub) == base64Encode(cert.deviceEdPub))) {
       list.add(cert);
-      await vault.kvPut('my_devices',
-          jsonEncode([for (final d in list) d.toJson()]),
+      await vault.kvPut(
+          'my_devices', jsonEncode([for (final d in list) d.toJson()]),
           sensitive: false);
       await vault.kvPut(
           'my_devlist_version', '${(await _myDevlistVersion()) + 1}',
@@ -1434,8 +1479,8 @@ class ChatService extends ChangeNotifier {
     list.removeWhere(
         (d) => base64Encode(d.deviceEdPub) == base64Encode(cert.deviceEdPub));
     if (list.length == before) return; // nothing matched
-    await vault.kvPut('my_devices',
-        jsonEncode([for (final d in list) d.toJson()]),
+    await vault.kvPut(
+        'my_devices', jsonEncode([for (final d in list) d.toJson()]),
         sensitive: false);
     await vault.kvPut(
         'my_devlist_version', '${(await _myDevlistVersion()) + 1}',
@@ -1490,7 +1535,8 @@ class ChatService extends ChangeNotifier {
   }
 
   /// Insert a message mirrored from one of my other devices (no re-send).
-  Future<void> _insertMirrored(String rid, String dir, InnerMessage inner) async {
+  Future<void> _insertMirrored(
+      String rid, String dir, InnerMessage inner) async {
     final outgoing = dir == 'out';
     // Group kinds route by the gid inside the payload, and an invite may
     // introduce contacts this device doesn't hold yet — so handle them before
@@ -1551,6 +1597,24 @@ class ChatService extends ChangeNotifier {
         if (c != null) await _persistGroupText(c, inner, inner.ts);
       }
       notifyListeners();
+      return;
+    }
+    if (inner.kind == 'gfile') {
+      final gid = inner.data['gid'] as String?;
+      final g = gid == null ? null : groups[gid];
+      if (g == null || inner.data['fid'] is! String) return;
+      if (outgoing) {
+        // My own group attachment, sent from another of my devices: the
+        // offer lands in the group thread; the sidecar chunks follow by fid.
+        await _insertMirroredFile(gid!, true, inner);
+      } else {
+        final c = contacts[rid];
+        if (c != null) {
+          await _persistGroupFile(c, inner, inner.ts);
+          notifyListeners();
+          await _tryAssemble(inner.data['fid'] as String);
+        }
+      }
       return;
     }
     if (!contacts.containsKey(rid)) return;
@@ -1845,6 +1909,124 @@ class ChatService extends ChangeNotifier {
         Future<void>.value());
   }
 
+  /// Send an attachment to every member of [gid]. One file key, one set of
+  /// encrypted chunks; the offer (carrying the key) goes to each member over
+  /// their pairwise ratchet and the sealed chunks are queued for each
+  /// member's mailbox — so a member removed before the send never receives
+  /// the key, and one removed afterwards cannot decrypt the next file.
+  Future<void> sendGroupFile(
+      String gid, String fileName, Uint8List bytes, String mime) async {
+    final g = groups[gid];
+    if (g == null || g.left) return;
+    if (bytes.length > maxAttachmentBytes) {
+      throw const FormatException(
+          'attachment too large (max 24 MB in this build)');
+    }
+    final ts = _now();
+    final km = FileKeyMaterial.generate();
+    final chunks = splitChunks(bytes);
+    final sha = b64(await sha256Bytes(bytes));
+    final inner = InnerMessage(
+      kind: 'gfile',
+      mid: newMessageId(),
+      ts: ts,
+      data: {
+        'gid': gid,
+        'fid': km.fid,
+        'name': fileName,
+        'size': bytes.length,
+        'mime': mime,
+        'sha256': sha,
+        'fk': b64(km.fk),
+        'fn': b64(km.fn),
+        'chunks': chunks.length,
+      },
+    );
+    final keyInfo = await vault.writeBlob(km.fid, bytes);
+    final chunkPayloads = <String>[];
+    for (var i = 0; i < chunks.length; i++) {
+      chunkPayloads.add(await encryptChunk(km, i, chunks[i]));
+    }
+    // Local copy + placeholder first, so the thread shows the send even if a
+    // member's fan-out below fails and is retried from the outbox.
+    await vault.db.transaction((txn) async {
+      await txn.insert('files', {
+        'fid': km.fid,
+        'rid': gid,
+        'mid': inner.mid,
+        'enc_meta': await vault.seal(jsonEncode({
+          'name': fileName,
+          'size': bytes.length,
+          'mime': mime,
+          'sha256': sha,
+          'local': keyInfo,
+        })),
+        'complete': 1,
+        'got_chunks': chunks.length,
+        'total_chunks': chunks.length,
+      });
+      await txn.insert('messages', {
+        'mid': inner.mid,
+        'rid': gid,
+        'outgoing': 1,
+        'kind': 'file',
+        'enc_body': await vault.seal(jsonEncode({'fid': km.fid})),
+        'fid': km.fid,
+        'ts_ms': ts,
+        'status': MsgStatus.pending,
+        'expire_at_ms': 0,
+      });
+    });
+    _appendLoaded(
+        gid,
+        ChatMessage(
+          mid: inner.mid,
+          rid: gid,
+          outgoing: true,
+          kind: 'file',
+          body: fileName,
+          fid: km.fid,
+          ts: ts,
+          status: MsgStatus.pending,
+          file: FileMeta(
+            fid: km.fid,
+            name: fileName,
+            size: bytes.length,
+            mime: mime,
+            sha256b64: sha,
+            complete: true,
+            gotChunks: chunks.length,
+            totalChunks: chunks.length,
+          ),
+        ));
+    notifyListeners();
+    // Fan out: offer over the ratchet + chunks in the durable outbox, per
+    // member, sealed to each member's device.
+    for (final rid in g.memberRids.toList()) {
+      final c = contacts[rid];
+      if (c == null) continue;
+      await _sendInner(c, inner, also: (txn) async {
+        for (final p in chunkPayloads) {
+          await txn.insert('outbox', {
+            'id': newMessageId(),
+            'rid': rid,
+            'payload': await _sealFor(rid, p),
+            'created_ms': _now(),
+          });
+        }
+      });
+    }
+    final sync = _sync;
+    if (sync != null) {
+      unawaited(() async {
+        await sync.mirror(threadRid: gid, dir: 'out', inner: inner);
+        for (final p in chunkPayloads) {
+          await sync.fanChunk(p);
+        }
+      }());
+    }
+  }
+
   /// Apply a group invite. [fromRid] is the authenticated sender ('' when the
   /// invite is a mirror of my own admin action from my other device).
   Future<void> _applyGroupInvite(String fromRid, Map<String, Object?> data,
@@ -1937,8 +2119,7 @@ class ChatService extends ChangeNotifier {
   }
 
   /// Persist an inbound group text from [contact] (any of their devices).
-  Future<void> _persistGroupText(
-      Contact contact, InnerMessage inner, int now,
+  Future<void> _persistGroupText(Contact contact, InnerMessage inner, int now,
       {DatabaseExecutor? txn}) async {
     final gid = inner.data['gid'] as String?;
     final g = gid == null ? null : groups[gid];
@@ -2038,8 +2219,7 @@ class ChatService extends ChangeNotifier {
   /// Verify (on receipt), store, and reconcile a contact's device list — adding
   /// newly-learned devices AND dropping revoked ones, so the fan-out set matches
   /// the list exactly.
-  Future<void> _installContactDeviceList(
-      Contact contact, SignedDeviceList list,
+  Future<void> _installContactDeviceList(Contact contact, SignedDeviceList list,
       {required bool persist}) async {
     final rid = contact.rid;
     if (persist) {
@@ -2090,7 +2270,8 @@ class ChatService extends ChangeNotifier {
   Future<void> _saveExtra(String rid) async {
     final s = _contactExtras[rid];
     if (s != null) {
-      await vault.kvPut('cextra_$rid', jsonEncode(s.toJson()), sensitive: false);
+      await vault.kvPut('cextra_$rid', jsonEncode(s.toJson()),
+          sensitive: false);
     }
   }
 
@@ -2142,6 +2323,14 @@ class ChatService extends ChangeNotifier {
       // the same authority as their primary (the cert bound it to the account).
       await _persistGroupText(contact, inner!, _now());
       notifyListeners();
+    } else if (inner!.kind == 'file' && inner!.data['fid'] is String) {
+      // An attachment offered from the contact's other device: same as a
+      // mirrored-in offer — record it, chunks arrive by fid.
+      await _insertMirroredFile(rid, false, inner!);
+    } else if (inner!.kind == 'gfile' && inner!.data['fid'] is String) {
+      await _persistGroupFile(contact, inner!, _now());
+      notifyListeners();
+      await _tryAssemble(inner!.data['fid'] as String);
     } else if (inner!.kind == 'ginvite') {
       await _applyGroupInvite(contact.rid, inner!.data);
       notifyListeners();

@@ -78,8 +78,11 @@ void main() {
   // A linked (secondary) device enrolled under [account], pre-wired to
   // self-sync with the primary [hostCert] — the on-disk state the pairing flow
   // would leave behind.
-  Future<ChatService> makeLinked(String name, ZIdentity devId,
-      AccountIdentity account, DeviceCertificate devCert,
+  Future<ChatService> makeLinked(
+      String name,
+      ZIdentity devId,
+      AccountIdentity account,
+      DeviceCertificate devCert,
       DeviceCertificate hostCert) async {
     final dir = await Directory.systemTemp.createTemp('z_$name');
     temps.add(dir);
@@ -147,8 +150,8 @@ void main() {
         deviceXPub: laptopId.xPub,
         deviceId: 'laptop');
     await phone.addMyDevice(laptopCert); // wires the phone's sync channel
-    final laptop =
-        await makeLinked('laptop', laptopId, account, laptopCert, account.deviceCert);
+    final laptop = await makeLinked(
+        'laptop', laptopId, account, laptopCert, account.deviceCert);
 
     final carolId = await ZIdentity.generate();
     final carol = await makePrimary('carol', carolId);
@@ -173,9 +176,10 @@ void main() {
     // A multi-chunk payload with a distinctive pattern. Self-sync now delivers
     // through the durable outbox, so a single send reaches the linked device
     // reliably (offer + every chunk), no retry pump needed.
-    final bytes =
-        Uint8List.fromList(List<int>.generate(60000, (i) => (i * 7) % 256));
-    await phone.sendFile(carolRid, 'photo.bin', bytes, 'application/octet-stream');
+    final bytes = Uint8List.fromList(
+        List<int>.generate(1000000, (i) => (i * 7) % 256)); // 7 sealed chunks
+    await phone.sendFile(
+        carolRid, 'photo.bin', bytes, 'application/octet-stream');
 
     // Normal path: Carol receives and reassembles it.
     final carolGot = await awaitAttachment(carol, phoneRid);
@@ -186,8 +190,7 @@ void main() {
     final laptopGot = await awaitAttachment(laptop, carolRid);
     expect(laptopGot, isNotNull,
         reason: 'attachment did not sync to the linked device');
-    expect(laptopGot, equals(bytes),
-        reason: 'linked device got corrupt bytes');
+    expect(laptopGot, equals(bytes), reason: 'linked device got corrupt bytes');
     // retry: this is a real-relay integration test that spins up three fresh
     // services and fires traffic within ~2s; the per-device Double Ratchet
     // occasionally needs a beat to establish (the same reason the app sends an
