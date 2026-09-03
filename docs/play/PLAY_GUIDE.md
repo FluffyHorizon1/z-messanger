@@ -6,6 +6,14 @@ https://play.google.com/console except taking screenshots. Companion docs:
 
 ## 0. What you need first
 
+- The application id is **`com.zmessenger.www`** (set in
+  `app/android/app/build.gradle.kts`). Play Console binds an app to its
+  package name forever, so create the console entry with exactly this id.
+  Firebase must know it too: in the Firebase console add an Android app
+  with package `com.zmessenger.www`, download its `google-services.json`
+  and replace `app/android/app/google-services.json` — otherwise push
+  registration for the renamed app is not guaranteed to work.
+
 - The signed `app-release.aab` from the GitHub Release (built by CI with your
   upload key).
 - The privacy policy live at https://zmessengers.com/privacy (served by the

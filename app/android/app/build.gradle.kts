@@ -22,7 +22,7 @@ if (hasReleaseSigning) {
 }
 
 android {
-    namespace = "app.zmessenger.zapp"
+    namespace = "com.zmessenger.www"
     // Pinned to 36: newer plugins (file_picker → flutter_plugin_android_lifecycle)
     // require consumers to compile against Android API 36+. This only sets which
     // APIs can be compiled against — targetSdk/minSdk are unchanged below.
@@ -37,7 +37,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "app.zmessenger.zapp"
+        applicationId = "com.zmessenger.www"
         // 23+ gives hardware-backed keystore + EncryptedSharedPreferences.
         minSdk = maxOf(23, flutter.minSdkVersion)
         targetSdk = flutter.targetSdkVersion

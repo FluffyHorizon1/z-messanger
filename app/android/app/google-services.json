@@ -9,7 +9,7 @@
       "client_info": {
         "mobilesdk_app_id": "1:509293053660:android:c66fd70021aedd912d5619",
         "android_client_info": {
-          "package_name": "app.zmessenger.zapp"
+          "package_name": "com.zmessenger.www"
         }
       },
       "oauth_client": [],

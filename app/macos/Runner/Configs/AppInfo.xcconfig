@@ -8,7 +8,7 @@
 PRODUCT_NAME = Z
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = app.zmessenger.zapp
+PRODUCT_BUNDLE_IDENTIFIER = com.zmessenger.www
 
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2026 app.zmessenger. All rights reserved.

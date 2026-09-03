@@ -1,4 +1,4 @@
-package app.zmessenger.zapp
+package com.zmessenger.www
 
 import io.flutter.embedding.android.FlutterActivity
 

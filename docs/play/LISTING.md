@@ -8,8 +8,9 @@ Everything the **Main store listing** page asks for. Paste as-is or tweak.
 Z Messenger
 ```
 
-(The package id stays `app.zmessenger.zapp`; the display name on the phone
-stays "Z". "Z Messenger" is the searchable store title.)
+(The application id is `com.zmessenger.www` — it must match the package name
+registered in Play Console and Firebase; the display name on the phone stays
+"Z". "Z Messenger" is the searchable store title.)
 
 ## Short description (max 80 chars — this one is 79)
 
