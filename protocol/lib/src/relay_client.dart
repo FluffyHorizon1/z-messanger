@@ -26,6 +26,12 @@ class RelayClient {
   final void Function()? _onClosed;
   Timer? _pinger;
 
+  /// Set at the start of [close]: frames still buffered in the socket can be
+  /// dispatched after the closing handshake began (and after the controllers
+  /// are closed), so they are dropped instead of being pushed into a closed
+  /// stream.
+  bool _closing = false;
+
   RelayClient._(this._ws, this._identity, this._onClosed) {
     // dart:io WebSockets are single-subscription: this is the ONE listener,
     // covering both the auth phase and normal operation.
@@ -113,6 +119,7 @@ class RelayClient {
   }
 
   void _onFrame(dynamic data) {
+    if (_closing) return; // late frame during/after close: nothing to deliver
     Map<String, Object?> frame;
     try {
       frame = jsonDecode(data as String) as Map<String, Object?>;
@@ -211,6 +218,7 @@ class RelayClient {
   }
 
   Future<void> close() async {
+    _closing = true;
     _pinger?.cancel();
     try {
       await _ws.close();
