@@ -95,8 +95,47 @@ def check_transcript():
     return len(doc["steps"])
 
 
+def check_rekey():
+    import base64
+    doc = json.load(open(os.path.join(V2, "pq_rekey.json")))
+    assert doc["suite"] == "pq_rekey"
+    rk = doc["rekey"]
+    # The second-generation keypair is reproduced from the recorded seed …
+    seed = unhex(rk["dk_seed"])
+    ek, dk = ML_KEM_768._keygen_internal(seed[:32], seed[32:])
+    if ek.hex() != rk["ek"] or dk.hex() != rk["dk"]:
+        fail("rekey: generation-1 keypair")
+    # … and the re-key offer inner (recovered from the encapsulator's decrypt
+    # step) carries exactly this ek, tagged as generation 1.
+    dec = next(s for s in doc["steps"]
+               if s["op"] == "decrypt" and s["label"].startswith(
+                   "encapsulator receives re-key"))
+    inner = json.loads(bytes.fromhex(dec["plaintext"]).decode())
+    if inner.get("k") != "pqek" or inner.get("g") != 1:
+        fail("rekey: offer inner shape")
+    if base64.b64decode(inner["ek"]) != ek:
+        fail("rekey: offer inner ek")
+    # Generation-1 encapsulation reproduces the recorded ciphertext and secret.
+    K, c = ML_KEM_768._encaps_internal(ek, unhex(rk["m"]))
+    if c.hex() != rk["c"] or K.hex() != rk["K"]:
+        fail("rekey: generation-1 encapsulation")
+    if ML_KEM_768.decaps(dk, c).hex() != rk["K"]:
+        fail("rekey: generation-1 decapsulation")
+    if rk["K"] == doc["gen0_secret"]:
+        fail("rekey: secret did not rotate")
+    # The new ciphertext must appear in a pqg=1 header.
+    hdr = next(s for s in doc["steps"]
+               if s["op"] == "encrypt" and s["header"].get("pqg") == 1
+               and s["header"].get("pqct"))
+    if base64.b64decode(hdr["header"]["pqct"]) != c:
+        fail("rekey: generation-1 header pqct")
+    return len(doc["steps"])
+
+
 if __name__ == "__main__":
     n = check_kats()
     m = check_transcript()
-    print(f"ok: {n} ML-KEM-768 known-answer vectors and the {m}-step v2 "
-          f"transcript reproduced by kyber-py")
+    r = check_rekey()
+    print(f"ok: {n} ML-KEM-768 known-answer vectors, the {m}-step v2 "
+          f"transcript and the {r}-step re-key transcript reproduced by "
+          f"kyber-py")

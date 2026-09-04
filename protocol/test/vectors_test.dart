@@ -48,6 +48,7 @@ void main() {
       ('v1', 'inner_messages'),
       ('v2', 'mlkem768'),
       ('v2', 'pq_ratchet'),
+      ('v2', 'pq_rekey'),
     ]) {
       test('$ver/$suite', () {
         final onDisk = readVectors(suite, ver);

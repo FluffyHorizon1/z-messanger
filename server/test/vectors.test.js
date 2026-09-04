@@ -234,9 +234,19 @@ const kdfCk = (ck) => [hmac(ck, Buffer.from([1])), hmac(ck, Buffer.from([2]))];
 // v2 (§17): optional members are appended in this fixed order; a header
 // without them encodes exactly as in v1.
 const headerBytes = (h) =>
-  utf8(`{"dh":"${h.dh}","n":${h.n},"pn":${h.pn}` + (h.pq ? ',"pq":1' : '') + (h.pqct ? `,"pqct":"${h.pqct}"` : '') + '}');
+  utf8(`{"dh":"${h.dh}","n":${h.n},"pn":${h.pn}`
+    + (h.pq ? ',"pq":1' : '')
+    + (h.pqg ? `,"pqg":${h.pqg}` : '') // 7.5b: generation, omitted when 0
+    + (h.pqct ? `,"pqct":"${h.pqct}"` : '') + '}');
 // v2 message-key mixing: HKDF(ikm = mk, salt = K, info = "Z-PQ-MK-v2").
 const pqMix = (mk, K) => hkdf(mk, K, utf8('Z-PQ-MK-v2'), 32);
+// 7.5b: the secret to mix for a message tagged with generation g (0 when the
+// header omits pqg), or null if this side holds no secret for it.
+function pqSecretFor(pq, g) {
+  if (pq && pq.k && g === (pq.gen || 0)) return pq.k;
+  if (pq && pq.oldK != null && g === pq.oldGen) return pq.oldK;
+  return null;
+}
 
 function makeSession(ad) {
   return { rootKey: null, dhsSeed: null, dhsPub: null, dhrPub: null, cks: null, ckr: null, ns: 0, nr: 0, pn: 0, ad, skipped: new Map() };
@@ -249,6 +259,7 @@ function drEncrypt(s, plaintext, nonce, pq) {
   const mk = mixed ? pqMix(mk0, pq.k) : mk0;
   const header = { dh: b64(s.dhsPub), n: s.ns, pn: s.pn };
   if (mixed) header.pq = 1;
+  if (mixed && (pq.gen || 0) > 0) header.pqg = pq.gen; // 7.5b
   if (mixed && !pq.acked && pq.ct) header.pqct = b64(pq.ct);
   const { ct, mac } = xchachaSeal(mk, nonce, pad7816(plaintext), cat(s.ad, headerBytes(header)));
   s.cks = next;
@@ -280,13 +291,17 @@ function drDecrypt(s, msg, draws, pq) {
   // v2: a message flagged pq needs the shared secret; a header ciphertext
   // establishes it on the offering side (decapsulation is delegated to the
   // Python verifier — here the vector's K is used, see the v2 test).
-  const use = (mk0) => (msg.header.pq ? pqMix(mk0, pq.k) : mk0);
-  if (msg.header.pq) assert.ok(pq && pq.k, 'pq message without a shared secret');
+  const g = msg.header.pqg || 0; // 7.5b generation (0 when absent)
+  const use = (mk0) => (msg.header.pq ? pqMix(mk0, pqSecretFor(pq, g)) : mk0);
+  if (msg.header.pq) assert.ok(pqSecretFor(pq, g) != null, 'pq message without a shared secret');
+  // The peer proves it holds the CURRENT generation's secret only when the
+  // message is of that generation (an in-flight older one does not count).
+  const ackIfCurrent = () => { if (msg.header.pq && g === (pq.gen || 0)) pq.acked = true; };
   const key = `${msg.header.dh}|${msg.header.n}`;
   if (s.skipped.has(key)) {
     const mk = s.skipped.get(key); s.skipped.delete(key);
     const plain = unpad7816(xchachaOpen(use(mk), msg.nonce, msg.ct, msg.mac, aad));
-    if (msg.header.pq) pq.acked = true;
+    ackIfCurrent();
     return plain;
   }
   const theirPub = unb64(msg.header.dh);
@@ -297,7 +312,7 @@ function drDecrypt(s, msg, draws, pq) {
   drSkip(s, msg.header.n);
   const [mk, next] = kdfCk(s.ckr);
   const plain = unpad7816(xchachaOpen(use(mk), msg.nonce, msg.ct, msg.mac, aad));
-  if (msg.header.pq) pq.acked = true;
+  ackIfCurrent();
   s.ckr = next; s.nr += 1;
   return plain;
 }
@@ -775,4 +790,139 @@ test('v2 pq_ratchet: the upgrade transcript replays byte-for-byte on both sides'
   }
   assert.ok(offerSeen);
   assert.ok(conv[encName].pq.acked && conv[offName].pq.k.equals(K));
+});
+
+test('v2 pq_rekey: the re-key transcript replays with generation tracking', () => {
+  const r = loadV2('pq_rekey');
+  assert.equal(r.suite, 'pq_rekey');
+  const encName = r.encapsulator, offName = r.offerer;
+  const E = who[encName], O = who[offName];
+  assert.ok(E.routing_id < O.routing_id, 'encapsulator is the designated initiator');
+
+  const K0 = unhex(r.gen0_secret);
+  const K1 = unhex(r.rekey.K), C1 = unhex(r.rekey.c), EK1 = unhex(r.rekey.ek);
+  assert.notEqual(r.rekey.K, r.gen0_secret, 'the secret must rotate');
+  // Generation-0 ciphertext: the first mixed encrypt that carries pqct without
+  // a pqg field.
+  const C0 = unb64(r.steps.find(
+    (s) => s.op === 'encrypt' && s.header.pqct && !s.header.pqg).header.pqct);
+
+  const conv = {
+    [encName]: { sessions: {}, receivedAny: false, pq: { k: null, ct: null, acked: false } },
+    [offName]: { sessions: {}, receivedAny: false, pq: { k: null, ct: null, acked: false, dkSeed: null } },
+  };
+  const other = (n) => (n === encName ? offName : encName);
+
+  const encryptWith = (me, meName, sess, plaintext, draws, sid) => {
+    const m = drEncrypt(sess, plaintext, draws.shift(), me.pq);
+    const payload = { v: 1, t: 'r', sid };
+    if (sess.initiator && !me.receivedAny) payload.ek = b64(sess.ekPub);
+    Object.assign(payload, { h: m.header, n: b64(m.nonce), ct: b64(m.ct), mac: b64(m.mac) });
+    return { m, payloadStr: b64(utf8(JSON.stringify(payload))) };
+  };
+  const openSession = (me, meName, j) => {
+    assert.ok(j.ek, 'first message must carry ek');
+    const my = who[meName], their = who[other(meName)];
+    const dh1 = x25519(unhex(my.x_seed), unhex(their.x_pub));
+    const dh2 = x25519(unhex(my.x_seed), unb64(j.ek));
+    const sk = hkdf(cat(Buffer.alloc(32, 0xff), dh1, dh2), Buffer.alloc(32), utf8('Z-X3DH-v1'), 32);
+    const sess = makeSession(sha256(cat(utf8('Z-AD-v1'), unhex(their.ed_pub), unhex(my.ed_pub))));
+    sess.rootKey = sk; sess.dhsSeed = unhex(my.x_seed); sess.dhsPub = unhex(my.x_pub);
+    me.sessions[j.sid] = sess;
+    return sess;
+  };
+  // The KEM secret/ciphertext a side ends up with when it establishes gen g.
+  const kemK = (g) => (g === 0 ? K0 : K1);
+  const kemC = (g) => (g === 0 ? C0 : C1);
+
+  for (const step of r.steps) {
+    if (step.op === 'rekey_offer') {
+      const me = conv[step.by];
+      assert.equal(step.by, offName);
+      const draws = step.random_draws.map(unhex);
+      const seed = draws.shift(), mid = draws.shift();
+      assert.equal(hex(seed), r.rekey.dk_seed, 'rekey offer seed');
+      me.pq.dkSeed = seed;
+      const sid = Object.keys(me.sessions)[0];
+      const offerInner = utf8(JSON.stringify(
+        { k: 'pqek', mid: b64url(mid), ts: 3, alg: 'ML-KEM-768', ek: b64(EK1), g: 1 }));
+      const { payloadStr } = encryptWith(me, step.by, me.sessions[sid], offerInner, draws, sid);
+      assert.equal(payloadStr, step.payload, 'rekey offer payload');
+      assert.equal(draws.length, 0, 'all draws consumed (rekey offer)');
+      continue;
+    }
+    const me = conv[step.by];
+    const draws = step.random_draws.map(unhex);
+    if (step.op === 'encrypt') {
+      let sess = me.sessions[step.sid];
+      if (!sess) {
+        assert.equal(step.by, encName);
+        const their = who[other(step.by)], my = who[step.by];
+        const ekSeed = draws.shift();
+        const ekPub = xPub(ekSeed);
+        const dh1 = x25519(unhex(my.x_seed), unhex(their.x_pub));
+        const dh2 = x25519(ekSeed, unhex(their.x_pub));
+        const sk = hkdf(cat(Buffer.alloc(32, 0xff), dh1, dh2), Buffer.alloc(32), utf8('Z-X3DH-v1'), 32);
+        sess = makeSession(sha256(cat(utf8('Z-AD-v1'), unhex(my.ed_pub), unhex(their.ed_pub))));
+        sess.dhsSeed = draws.shift(); sess.dhsPub = xPub(sess.dhsSeed);
+        sess.dhrPub = unhex(their.x_pub);
+        [sess.rootKey, sess.cks] = kdfRk(sk, x25519(sess.dhsSeed, sess.dhrPub));
+        sess.ekPub = ekPub; sess.initiator = true;
+        me.sessions[step.sid] = sess;
+      }
+      const { m, payloadStr } = encryptWith(me, step.by, sess, unhex(step.plaintext), draws, step.sid);
+      assert.equal(draws.length, 0, `all draws consumed (${step.label})`);
+      assert.deepEqual(m.header, step.header, step.label);
+      assert.equal(hex(headerBytes(m.header)), step.header_bytes, `header bytes ${step.label}`);
+      assert.equal(payloadStr, step.payload, `payload ${step.label}`);
+    } else {
+      const j = JSON.parse(unb64(step.payload).toString('utf8'));
+      const sess = me.sessions[j.sid] || openSession(me, step.by, j);
+      const msg = { header: j.h, nonce: unb64(j.n), ct: unb64(j.ct), mac: unb64(j.mac) };
+      const g = msg.header.pqg || 0;
+      // Offerer establishes generation g from a header ciphertext.
+      if (msg.header.pqct && pqSecretFor(me.pq, g) == null) {
+        assert.equal(step.by, offName);
+        assert.equal(hex(unb64(msg.header.pqct)), hex(kemC(g)), 'header pqct is the recorded c');
+        if (me.pq.k != null) { me.pq.oldGen = me.pq.gen || 0; me.pq.oldK = me.pq.k; }
+        me.pq.k = kemK(g); me.pq.gen = g; me.pq.dkSeed = null; me.pq.acked = false;
+      }
+      const plain = drDecrypt(sess, msg, draws, me.pq);
+      me.receivedAny = true;
+      assert.equal(hex(plain), step.plaintext, step.label);
+      // Encapsulator accepts an offer (initial gen 0 or a re-key gen 1).
+      if (step.by === encName && plain.toString('utf8').startsWith('{"k":"pqek"')) {
+        const inner = JSON.parse(plain.toString('utf8'));
+        const ig = inner.g || 0;
+        assert.equal(inner.alg, 'ML-KEM-768');
+        if (ig === 1) assert.equal(hex(unb64(inner.ek)), r.rekey.ek, 'gen1 offered ek');
+        draws.shift(); // Encaps_internal randomness m (checked by kyber-py)
+        if (me.pq.k != null) { me.pq.oldGen = me.pq.gen || 0; me.pq.oldK = me.pq.k; }
+        me.pq.k = kemK(ig); me.pq.ct = kemC(ig); me.pq.gen = ig; me.pq.acked = false;
+      }
+      // Offerer making its initial (generation-0) offer after first contact.
+      if (step.offer_payload) {
+        assert.equal(step.by, offName);
+        const seed = draws.shift(), mid = draws.shift();
+        assert.equal(hex(seed), r.gen0_offer.dk_seed, 'gen0 offer seed');
+        me.pq.dkSeed = seed;
+        const inner = utf8(JSON.stringify(
+          { k: 'pqek', mid: b64url(mid), ts: 2, alg: 'ML-KEM-768', ek: r.gen0_offer.ek_b64 }));
+        assert.equal(inner.toString('utf8'), r.gen0_offer.inner_json, 'gen0 offer inner');
+        const { payloadStr } = encryptWith(me, step.by, me.sessions[j.sid], inner, draws, j.sid);
+        assert.equal(payloadStr, step.offer_payload, 'gen0 offer payload');
+      }
+      assert.equal(draws.length, 0, `all draws consumed (${step.label})`);
+      assert.equal(me.pq.k ? hex(me.pq.k) : null, step.pq_after.k, `pq k after ${step.label}`);
+      assert.equal((me.pq.gen || 0), (step.pq_after.gen || 0), `pq gen after ${step.label}`);
+      if (step.pq_after.old_k) {
+        assert.equal(hex(me.pq.oldK), step.pq_after.old_k, `pq old_k after ${step.label}`);
+      }
+      assert.equal(step.pq_generation, me.pq.k ? (me.pq.gen || 0) : 0, `generation ${step.label}`);
+    }
+  }
+  // Both sides end on generation 1 with the rotated secret.
+  assert.equal(conv[encName].pq.gen, 1);
+  assert.ok(conv[offName].pq.k.equals(K1) && conv[encName].pq.k.equals(K1));
+  assert.ok(conv[encName].pq.acked, 'gen-1 ciphertext acknowledged');
 });

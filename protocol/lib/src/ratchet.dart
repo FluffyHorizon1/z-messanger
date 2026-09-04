@@ -34,19 +34,28 @@ class RatchetHeader {
   /// peer proves it holds the secret. Authenticated: it is part of the AAD.
   final Uint8List? pqCt;
 
+  /// v2 (7.5b): which post-quantum generation this message's mix key belongs
+  /// to. 0 is the first (and, without periodic re-keying, only) generation and
+  /// is NOT emitted — a generation-0 header is byte-identical to the original
+  /// v2 encoding. A re-key increments it, and the field appears from 1 on.
+  final int pqGen;
+
   RatchetHeader({
     required this.dhPub,
     required this.pn,
     required this.n,
     this.pq = false,
     this.pqCt,
+    this.pqGen = 0,
   });
 
   /// Byte-stable encoding, used both on the wire and as AEAD associated data.
-  /// A header without v2 fields encodes exactly as in v1.
+  /// A header without v2 fields encodes exactly as in v1; a generation-0 v2
+  /// header exactly as the original v2 encoding.
   Uint8List encode() {
     final sb = StringBuffer('{"dh":"${b64(dhPub)}","n":$n,"pn":$pn');
     if (pq) sb.write(',"pq":1');
+    if (pqGen > 0) sb.write(',"pqg":$pqGen');
     if (pqCt != null) sb.write(',"pqct":"${b64(pqCt!)}"');
     sb.write('}');
     return Uint8List.fromList(utf8.encode(sb.toString()));
@@ -57,6 +66,7 @@ class RatchetHeader {
         'n': n,
         'pn': pn,
         if (pq) 'pq': 1,
+        if (pqGen > 0) 'pqg': pqGen,
         if (pqCt != null) 'pqct': b64(pqCt!),
       };
 
@@ -66,6 +76,7 @@ class RatchetHeader {
         n: (j['n'] as num).toInt(),
         pq: j['pq'] == 1,
         pqCt: j['pqct'] == null ? null : unb64(j['pqct'] as String),
+        pqGen: (j['pqg'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -75,22 +86,60 @@ class PqState {
   /// Offerer: seed of my pending ML-KEM key pair, until a ciphertext arrives.
   Uint8List? dkSeed;
 
-  /// The agreed shared secret, once established (both sides).
+  /// The agreed shared secret for the current generation [gen] (both sides).
   Uint8List? k;
 
-  /// Encapsulator: ciphertext to attach until the peer sends a `pq` message.
+  /// Encapsulator: ciphertext to attach until the peer sends a `pq` message
+  /// of the current generation.
   Uint8List? ct;
 
-  /// The peer has sent a PQ-mixed message: it holds [k].
+  /// The peer has sent a PQ-mixed message of the current generation: it holds
+  /// [k].
   bool acked;
 
-  /// Offerer: an offer has been handed to the caller for sending.
+  /// Offerer: the initial (generation-0) offer has been handed to the caller.
   bool offered;
 
-  PqState(
-      {this.dkSeed, this.k, this.ct, this.acked = false, this.offered = false});
+  /// 7.5b: the established generation of [k]. 0 is the first establishment;
+  /// every periodic re-key increments it, giving the PQ layer post-compromise
+  /// security (a stolen state does not reveal the next generation's secret).
+  int gen;
+
+  /// 7.5b: the immediately previous generation and its secret, retained only
+  /// across a re-key crossover so messages still in flight under the old
+  /// generation decrypt. Dropped/overwritten at the next re-key.
+  int? oldGen;
+  Uint8List? oldK;
+
+  /// 7.5b offerer: the generation the pending [dkSeed] was generated for (0 for
+  /// the initial offer, gen+1 for a re-key offer).
+  int offerGen;
+
+  /// 7.5b offerer: when this side last STARTED a re-key, for interval pacing.
+  int lastRekeyMs;
+
+  PqState({
+    this.dkSeed,
+    this.k,
+    this.ct,
+    this.acked = false,
+    this.offered = false,
+    this.gen = 0,
+    this.oldGen,
+    this.oldK,
+    this.offerGen = 0,
+    this.lastRekeyMs = 0,
+  });
 
   bool get established => k != null;
+
+  /// The secret to mix for a message tagged with generation [g], or null if
+  /// this side holds no secret for it (fail closed).
+  Uint8List? secretFor(int g) {
+    if (k != null && g == gen) return k;
+    if (oldK != null && g == oldGen) return oldK;
+    return null;
+  }
 
   PqState clone() => PqState(
         dkSeed: dkSeed == null ? null : Uint8List.fromList(dkSeed!),
@@ -98,6 +147,11 @@ class PqState {
         ct: ct == null ? null : Uint8List.fromList(ct!),
         acked: acked,
         offered: offered,
+        gen: gen,
+        oldGen: oldGen,
+        oldK: oldK == null ? null : Uint8List.fromList(oldK!),
+        offerGen: offerGen,
+        lastRekeyMs: lastRekeyMs,
       );
 
   void copyFrom(PqState o) {
@@ -106,6 +160,11 @@ class PqState {
     ct = o.ct;
     acked = o.acked;
     offered = o.offered;
+    gen = o.gen;
+    oldGen = o.oldGen;
+    oldK = o.oldK;
+    offerGen = o.offerGen;
+    lastRekeyMs = o.lastRekeyMs;
   }
 
   Map<String, Object?> toJson() => {
@@ -114,6 +173,11 @@ class PqState {
         if (ct != null) 'ct': b64(ct!),
         'acked': acked,
         'offered': offered,
+        if (gen > 0) 'gen': gen,
+        if (oldGen != null) 'oldGen': oldGen,
+        if (oldK != null) 'oldK': b64(oldK!),
+        if (offerGen > 0) 'offerGen': offerGen,
+        if (lastRekeyMs > 0) 'lastRekeyMs': lastRekeyMs,
       };
 
   static PqState fromJson(Map<String, Object?>? j) => j == null
@@ -124,6 +188,11 @@ class PqState {
           ct: j['ct'] == null ? null : unb64(j['ct'] as String),
           acked: j['acked'] == true,
           offered: j['offered'] == true,
+          gen: (j['gen'] as num?)?.toInt() ?? 0,
+          oldGen: (j['oldGen'] as num?)?.toInt(),
+          oldK: j['oldK'] == null ? null : unb64(j['oldK'] as String),
+          offerGen: (j['offerGen'] as num?)?.toInt() ?? 0,
+          lastRekeyMs: (j['lastRekeyMs'] as num?)?.toInt() ?? 0,
         );
 }
 
@@ -331,6 +400,7 @@ Future<RatchetMessage> ratchetEncrypt(RatchetState state, Uint8List plaintext,
     pn: state.pn,
     n: state.ns,
     pq: pqK != null,
+    pqGen: pqK != null ? pq!.gen : 0,
     pqCt: pqK != null && !(pq!.acked) ? pq.ct : null,
   );
   final nonce = randomBytes(24);
@@ -378,18 +448,30 @@ Future<Uint8List> ratchetDecrypt(RatchetState state, RatchetMessage msg,
 
 Future<Uint8List> _decryptInner(
     RatchetState s, RatchetMessage msg, PqState? pq) async {
-  // 0. v2: a ciphertext in the header establishes the ML-KEM secret (only the
-  //    side that offered a key can decapsulate; anyone else must reject).
+  // 0. v2: a ciphertext in the header establishes the ML-KEM secret for its
+  //    generation (only the side that offered a key for that generation can
+  //    decapsulate; anyone else must reject). 7.5b: a ciphertext for gen+1
+  //    rotates the secret, retaining the previous one for in-flight messages.
   final ct = msg.header.pqCt;
-  if (ct != null && pq != null && pq.k == null) {
+  final hg = msg.header.pqGen;
+  if (ct != null && pq != null && pq.secretFor(hg) == null) {
     final seed = pq.dkSeed;
-    if (seed == null) {
+    if (seed == null || pq.offerGen != hg) {
       throw RatchetDecryptException('pq ciphertext but no pending key');
     }
-    pq.k = pqDecapsulate(seed, ct); // wrong ct → pseudorandom k → MAC fails
-    pq.dkSeed = null; // single use; erased on commit
+    final newK =
+        pqDecapsulate(seed, ct); // wrong ct → pseudorandom k → MAC fails
+    if (pq.k != null) {
+      pq.oldGen = pq.gen; // retain the outgoing generation across the crossover
+      pq.oldK = pq.k;
+    }
+    pq
+      ..k = newK
+      ..gen = hg
+      ..dkSeed = null // single use; erased on commit
+      ..acked = false;
   }
-  if (msg.header.pq && (pq == null || pq.k == null)) {
+  if (msg.header.pq && (pq == null || pq.secretFor(hg) == null)) {
     throw RatchetDecryptException('pq message without a shared secret');
   }
 
@@ -424,14 +506,19 @@ Future<Uint8List> _decryptInner(
 
 Future<Uint8List> _aeadOpen(
     Uint8List mk0, RatchetState s, RatchetMessage msg, PqState? pq) async {
-  final mk = msg.header.pq ? await pqMixMessageKey(mk0, pq!.k!) : mk0;
+  final mk = msg.header.pq
+      ? await pqMixMessageKey(mk0, pq!.secretFor(msg.header.pqGen)!)
+      : mk0;
   try {
     final clear = await _aead.decrypt(
       SecretBox(msg.cipherText, nonce: msg.nonce, mac: Mac(msg.mac)),
       secretKey: SecretKey(mk),
       aad: concatBytes([s.ad, msg.header.encode()]),
     );
-    if (msg.header.pq) pq!.acked = true; // the peer provably holds k
+    // The peer provably holds the CURRENT generation's secret: the encapsulator
+    // can stop attaching its ciphertext. An in-flight message from an older
+    // generation (during a re-key crossover) does not count.
+    if (msg.header.pq && msg.header.pqGen == pq!.gen) pq.acked = true;
     return unpad(clear);
   } on SecretBoxAuthenticationError {
     throw RatchetDecryptException('authentication failed');

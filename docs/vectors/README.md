@@ -24,6 +24,7 @@ to a frozen file; the freeze test then pins the additions too.
 |---|---|---|
 | `mlkem768.json` | ML‑KEM‑768 known answers from seeds: `KeyGen_internal(d,z)`, `Encaps_internal(ek,m)`, `Decaps`, implicit rejection | §17.1 |
 | `pq_ratchet.json` | the nine‑step upgrade transcript: hello, `pqek` offer, encapsulation, first mixed message with `pqct`, mixed reply, steady state | §17.2–17.3 |
+| `pq_rekey.json` | the periodic re‑key transcript: generation‑0 establishment, rotation to generation 1 (`pqg`, second encapsulation), a delayed old‑generation message that still decrypts, the retained old secret | §17.7 |
 
 ## Conventions
 

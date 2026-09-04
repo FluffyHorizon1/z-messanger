@@ -76,12 +76,16 @@ class InnerMessage {
   static InnerMessage read(String mid, int ts, List<String> mids) =>
       InnerMessage(kind: 'read', mid: mid, ts: ts, data: {'mids': mids});
 
-  /// v2 ML-KEM-768 encapsulation-key offer (see pq.dart).
-  static InnerMessage pqOffer(String mid, int ts, Uint8List ek) => InnerMessage(
-      kind: 'pqek',
-      mid: mid,
-      ts: ts,
-      data: {'alg': 'ML-KEM-768', 'ek': b64(ek)});
+  /// v2 ML-KEM-768 encapsulation-key offer (see pq.dart). 7.5b: [gen] tags the
+  /// generation being offered; generation 0 (the initial offer) omits it, so
+  /// the offer's bytes are unchanged from the original v2 encoding.
+  static InnerMessage pqOffer(String mid, int ts, Uint8List ek,
+          {int gen = 0}) =>
+      InnerMessage(kind: 'pqek', mid: mid, ts: ts, data: {
+        'alg': 'ML-KEM-768',
+        'ek': b64(ek),
+        if (gen > 0) 'g': gen,
+      });
 
   /// 7.7a device-list removal notice: sent by a contact to a device it just
   /// dropped from account [acct]'s list (at version [v], fingerprint [h]), so

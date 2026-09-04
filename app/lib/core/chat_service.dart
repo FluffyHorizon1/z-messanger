@@ -13,6 +13,12 @@ import 'vault.dart';
 
 const int maxAttachmentBytes = 24 * 1024 * 1024; // fits relay RAM queue caps
 
+/// 7.5b: how often a conversation rotates its post-quantum (ML-KEM) secret, for
+/// post-compromise security of the PQ layer. Seven days balances protection
+/// against the extra ~1.2 KB ciphertext a rotation puts on one message. The
+/// offering side re-offers on the next message sent after this elapses.
+const int pqRekeyIntervalMs = 7 * 24 * 3600 * 1000;
+
 /// The orchestrator: owns contacts, protocol conversations, the message
 /// store, the outbox, attachments, receipts and disappearing messages.
 ///
@@ -33,6 +39,18 @@ class ChatService extends ChangeNotifier {
   /// Hidden Developer-mode toggle — reveals the custom-relay option in Settings.
   /// Persisted in the vault; off by default so normal users never see it.
   bool devMode = false;
+
+  /// 7.5b: the post-quantum re-key interval applied to conversations. Defaults
+  /// to [pqRekeyIntervalMs]; tests set a short value. Changing it re-applies to
+  /// every open conversation.
+  int get pqRekeyInterval => _pqRekeyInterval;
+  int _pqRekeyInterval = pqRekeyIntervalMs;
+  set pqRekeyInterval(int ms) {
+    _pqRekeyInterval = ms;
+    for (final c in _convs.values) {
+      c.pqRekeyIntervalMs = ms;
+    }
+  }
 
   final Map<String, Contact> contacts = {};
   final Map<String, Group> groups = {};
@@ -215,7 +233,8 @@ class ChatService extends ChangeNotifier {
       final stateJson =
           (jsonDecode(await vault.unseal(r['enc_state'] as String)) as Map)
               .cast<String, Object?>();
-      _convs[rid] = await Conversation.fromJson(identity, stateJson);
+      _convs[rid] = await Conversation.fromJson(identity, stateJson)
+        ..pqRekeyIntervalMs = _pqRekeyInterval;
     }
   }
 
@@ -235,7 +254,8 @@ class ChatService extends ChangeNotifier {
   Future<Conversation> _convFor(Contact contact) async {
     var conv = _convs[contact.rid];
     if (conv == null) {
-      conv = await Conversation.create(identity, contact.bundle);
+      conv = await Conversation.create(identity, contact.bundle)
+        ..pqRekeyIntervalMs = _pqRekeyInterval;
       _convs[contact.rid] = conv;
     }
     return conv;
@@ -347,6 +367,14 @@ class ChatService extends ChangeNotifier {
     final c = contacts[rid];
     if (c == null) return false;
     return (await _convFor(c)).isPostQuantum;
+  }
+
+  /// 7.5b: the current post-quantum generation with [rid] (0 after the first
+  /// establishment, +1 per completed re-key). Exposed for diagnostics/tests.
+  Future<int> pqGenerationWith(String rid) async {
+    final c = contacts[rid];
+    if (c == null) return -1;
+    return (await _convFor(c)).pqGeneration;
   }
 
   Future<String> safetyNumberWith(String rid) async {

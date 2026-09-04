@@ -781,13 +781,16 @@ order **only when present**, so a header without them is byte‑identical to v1:
 
 ```
 hdrBytes = utf8( '{"dh":"' || b64(dhsPub) || '","n":' || decimal(ns) || ',"pn":' || decimal(pn)
-                 || [ ',"pq":1' ] || [ ',"pqct":"' || b64(c) || '"' ] || '}' )
-JSON  h = { "dh", "n", "pn", "pq"?:1, "pqct"?:b64(c) }
+                 || [ ',"pq":1' ] || [ ',"pqg":' || decimal(g) ] || [ ',"pqct":"' || b64(c) || '"' ] || '}' )
+JSON  h = { "dh", "n", "pn", "pq"?:1, "pqg"?:g, "pqct"?:b64(c) }
 ```
 
-`pq:1` means "this message key is mixed with K". `pqct` is the 1088‑byte
-ML‑KEM‑768 ciphertext; being part of the header it is authenticated by the
-AEAD, so it can be neither swapped nor stripped in transit.
+`pq:1` means "this message key is mixed with K". `pqg` (7.5b) is the
+post‑quantum *generation* K belongs to; it is emitted only when `> 0`, so a
+first‑generation header is byte‑identical to the original v2 encoding. `pqct`
+is the 1088‑byte ML‑KEM‑768 ciphertext; being part of the header it is
+authenticated by the AEAD, so it can be neither swapped nor stripped in
+transit.
 
 ### 17.3 State machine
 
@@ -811,9 +814,13 @@ acknowledged), `acked`, `offered`.
 * **Either side**, on successfully decrypting a message with `"pq":1`:
   `acked = true` (the peer provably holds `K`); the encapsulator then stops
   attaching `pqct`.
-* A message with `"pq":1` arriving while `K` is unknown is rejected.
-  Skipped‑key handling is unchanged: cached keys are classical `mk`; the
-  mix is applied at use according to that message's own header.
+* A message with `"pq":1` arriving whose generation's secret is unknown is
+  rejected. Skipped‑key handling is unchanged: cached keys are classical `mk`;
+  the mix is applied at use according to that message's own header (and its
+  generation).
+
+Generation 0 omits `pqg` and is the whole of the state machine above without
+periodic re‑keying (§17.7).
 
 ### 17.4 Compatibility and negotiation
 
@@ -836,10 +843,11 @@ regenerated).
   offer itself, and anything sent before the offer is answered) are
   classical. The reference app sends the contact‑add hello and answers it
   with the offer, so in the normal flow everything the user types is mixed.
-* `K` is established once and is static for the conversation's life: v2 gives
-  no **post‑quantum** post‑compromise security (a quantum adversary who also
-  obtains a device's state keeps `K`). Classical PCS from the DH ratchet is
-  unchanged. A periodic re‑encapsulation ("PQ ratchet") is future work.
+* Generation 0's `K` is established once. Left there it is static for the
+  conversation's life; §17.7 adds periodic re‑encapsulation so a device state
+  stolen at one generation does not keep the next generation's secret
+  (post‑quantum post‑compromise security). Classical PCS from the DH ratchet
+  is unchanged throughout.
 * The initial `SK` (§4) stays classical; a quantum adversary recovers the
   classical `mk`s, which is why the mix is applied to message keys rather
   than relying on the root chain.
@@ -851,7 +859,35 @@ regenerated).
 `vectors/v2/mlkem768.json` — ten seeded `(d, z, m)` known answers with
 `ek, dk, c, K` and an implicit‑rejection pair; `vectors/v2/pq_ratchet.json`
 — a nine‑step transcript (classical hello, offer, encapsulation, first mixed
-message with `pqct`, mixed reply, steady state) with every random draw. The
-KEM values are re‑derived by kyber‑py (`protocol/tool/verify_mlkem.py`); the
-transcript, taking `K` and `c` from the file, is replayed byte‑for‑byte by
-the Node verifier.
+message with `pqct`, mixed reply, steady state) with every random draw;
+`vectors/v2/pq_rekey.json` — a fifteen‑step re‑key transcript (§17.7): the
+generation‑0 establishment, a rotation to generation 1 (second offer,
+encapsulation, `pqg:1`), a delayed generation‑0 message that still decrypts,
+and the retained old secret. The KEM values are re‑derived by kyber‑py
+(`protocol/tool/verify_mlkem.py`); each transcript, taking `K` and `c` from
+the file, is replayed byte‑for‑byte by the Node verifier.
+
+### 17.7 Periodic re‑key (post‑quantum PCS)
+
+Left at generation 0, `K` is static, so a device state captured once protects
+nothing sent afterward against a *quantum* adversary. The offering side
+therefore rotates the ML‑KEM secret on an interval (the reference app: seven
+days), giving the post‑quantum layer the post‑compromise healing the DH
+ratchet already gives the classical layer.
+
+A generation counter `g` starts at 0. The offerer, once established and the
+interval has elapsed, makes a fresh offer carrying `"g":g+1`:
+`{"k":"pqek",…,"alg":"ML-KEM-768","ek":…,"g":g+1}` (the `g` member is omitted
+for the generation‑0 offer, keeping it byte‑unchanged). The encapsulator, on
+a `pqek` whose `g == gen+1`, encapsulates a new `(c′, K′)`, **retains the
+current `(gen, K)` as the previous generation**, sets `gen = g+1`, and from
+then on sends `pqg:g+1` with `pqct = c′` until re‑acknowledged. The offerer,
+on a header with `pqct` for a generation it does not yet hold, decapsulates,
+likewise retains the outgoing generation, and advances. During the crossover
+each side holds two secrets, so a message still in flight under the old
+generation (identified by its own `pqg`) decrypts against the retained secret;
+a message tagged with a generation neither current nor retained is rejected
+(fail‑closed). One previous generation is retained — ample for in‑flight
+reordering given the interval dwarfs a round trip. Everything is a compatible
+extension: `pqg` is a new optional header member and `g` a new optional offer
+member, both ignored by a generation‑0‑only implementation, no version bump.

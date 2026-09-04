@@ -24,12 +24,12 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2/5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1), `docs/vectors/v1/`, two verifiers in CI |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
-| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `devlist_transparency_test.dart`, `voice_test.dart` |
+| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `voice_test.dart` |
 
-**Next up:** a periodic post-quantum re-key (7.5b), then 7.6 quality-of-life.
-Externally gated items resume as soon as their gate clears: Play submission,
-Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public
-transparency log) waits for a public launch with durable infrastructure.
+**Next up:** 7.6 quality-of-life (message search first). Externally gated items
+resume as soon as their gate clears: Play submission, Windows/macOS signing,
+auditor engagement (5.2), iOS; 7.7b (public transparency log) waits for a
+public launch with durable infrastructure.
 
 ---
 
@@ -185,10 +185,19 @@ Ordered by value; each is a self-contained project on the existing layering.
   shared secret, offered inside the ratchet on first contact and mixed into
   every message key from the first round trip on, for harvest-now-decrypt-
   later resistance. Negotiated without any unauthenticated flag, so v2↔v1
-  stays exactly v1. **DoD:** `pq_test.dart` (11 cases incl. tamper, reorder,
-  v1 interop), `pq_upgrade_test.dart` (two real clients over the relay),
-  `docs/vectors/v2/` verified by kyber-py and the Node replay in CI. Not yet
-  covered: post-quantum post-compromise security (a periodic PQ re-key).
+  stays exactly v1. **DoD:** `pq_test.dart`, `pq_upgrade_test.dart` (two real
+  clients over the relay), `docs/vectors/v2/` verified by kyber-py and the
+  Node replay in CI.
+- **7.5b PQ post-compromise security** — ✅ periodic re-key (PROTOCOL.md
+  §17.7): the offering side rotates the ML-KEM secret on an interval (app
+  default 7 days) with a generation counter (`pqg` header, `g` offer member),
+  retaining the previous generation across the crossover so in-flight and
+  out-of-order messages still decrypt; a state stolen at one generation cannot
+  read the next. Compatible extension, no version bump. **DoD:**
+  `pq_test.dart` re-key group (rotation, out-of-order across the boundary,
+  persistence), `pq_rekey_test.dart` (two real clients rotate and keep
+  talking), `docs/vectors/v2/pq_rekey.json` verified by kyber-py and the Node
+  clean-room replay.
 - **7.6 Message search, backups sync, themes** — quality-of-life.
 - **7.7 Key transparency** — the zero-trust plan's "catch us, don't trust us"
   mechanism (F2). Design decided in `docs/adr/0001-key-transparency.md`:
@@ -206,11 +215,12 @@ Ordered by value; each is a self-contained project on the existing layering.
 
 ## Suggested near-term sprint (the next 3 sessions)
 
-1. **PQ post-compromise security** (7.5b): periodic re-encapsulation so a
-   stolen device state does not keep the quantum-safe secret forever.
-2. **Quality-of-life** (7.6): message search first; then backup sync, themes.
-3. **Verifiability:** 5.2 — engage an auditor with the frozen v1 spec, the v2
-   extension, ADR 0001 and the vectors as the scope document.
+1. **Quality-of-life** (7.6): message search first; then backup sync, themes.
+2. **Verifiability:** 5.2 — engage an auditor with the frozen v1 spec, the v2
+   extension (incl. the 7.5b re-key), ADR 0001 and the vectors as the scope
+   document.
+3. **Externally gated:** advance whichever of Play submission, desktop signing
+   or iOS has cleared its gate.
 
 Each is a clean working session: implement, test, screenshot/artifact, commit.
 

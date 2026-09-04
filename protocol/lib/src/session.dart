@@ -123,6 +123,13 @@ class Conversation {
   /// v2 post-quantum state, shared by every session of this conversation.
   final PqState pq;
 
+  /// 7.5b: how often the offering side rotates the ML-KEM secret (post-compromise
+  /// security for the PQ layer). 0 (the default, and what the frozen v2 vectors
+  /// use) disables periodic re-keying — the secret is established once. The app
+  /// sets a real interval; a re-key offer then rides the next message sent after
+  /// the interval elapses (no traffic → nothing to protect → no re-key).
+  int pqRekeyIntervalMs = 0;
+
   /// Whether this side takes part in the v2 post-quantum upgrade. Off, the
   /// conversation behaves exactly as protocol v1 (it neither offers nor
   /// accepts ML-KEM keys, but still interoperates with v2 peers, which then
@@ -153,6 +160,10 @@ class Conversation {
   /// True once both sides share the ML-KEM secret: every message from here on
   /// is protected against harvest-now-decrypt-later.
   bool get isPostQuantum => pq.established;
+
+  /// 7.5b: the current post-quantum generation (0 after the first
+  /// establishment, incremented by each completed re-key).
+  int get pqGeneration => pq.gen;
 
   String get _designatedInitiatorRid =>
       myRid.compareTo(theirRid) < 0 ? myRid : theirRid;
@@ -232,15 +243,52 @@ class Conversation {
   /// it). The offer is made once per conversation, until [resetSessions].
   /// Persist this conversation BEFORE sending — this advances a ratchet.
   Future<String?> takePqOfferPayload({int? nowMs}) async {
-    if (!postQuantum || !isPqOfferer || pq.established || pq.offered) {
-      return null;
+    if (!postQuantum || !isPqOfferer) return null;
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    // Initial offer (generation 0), made once. The re-key clock starts here, so
+    // the interval is measured from establishment rather than the epoch.
+    if (!pq.established && !pq.offered) {
+      final (seed, ek) = pqGenerate();
+      pq
+        ..dkSeed = seed
+        ..offered = true
+        ..offerGen = 0
+        ..lastRekeyMs = now;
+      final offer = InnerMessage.pqOffer(newMessageId(), now, ek);
+      return encrypt(offer.toBytes(), nowMs: nowMs);
     }
+    // 7.5b re-key offer: established, an interval is set and due, and no offer
+    // for a higher generation is already outstanding.
+    if (pq.established &&
+        pqRekeyIntervalMs > 0 &&
+        pq.offerGen <= pq.gen &&
+        now - pq.lastRekeyMs >= pqRekeyIntervalMs) {
+      final nextGen = pq.gen + 1;
+      final (seed, ek) = pqGenerate();
+      pq
+        ..dkSeed = seed
+        ..offerGen = nextGen
+        ..lastRekeyMs = now;
+      final offer = InnerMessage.pqOffer(newMessageId(), now, ek, gen: nextGen);
+      return encrypt(offer.toBytes(), nowMs: nowMs);
+    }
+    return null;
+  }
+
+  /// 7.5b: force the offering side to start a re-key now, regardless of the
+  /// interval (used by tests and vector generation; also available if the app
+  /// wants a user-driven "rotate keys"). No-op off the offerer side.
+  Future<String?> forcePqRekey({int? nowMs}) async {
+    if (!postQuantum || !isPqOfferer || !pq.established) return null;
+    if (pq.offerGen > pq.gen) return null; // one already outstanding
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    final nextGen = pq.gen + 1;
     final (seed, ek) = pqGenerate();
     pq
       ..dkSeed = seed
-      ..offered = true;
-    final offer = InnerMessage.pqOffer(
-        newMessageId(), nowMs ?? DateTime.now().millisecondsSinceEpoch, ek);
+      ..offerGen = nextGen
+      ..lastRekeyMs = now;
+    final offer = InnerMessage.pqOffer(newMessageId(), now, ek, gen: nextGen);
     return encrypt(offer.toBytes(), nowMs: nowMs);
   }
 
@@ -317,26 +365,41 @@ class Conversation {
     session.lastUsedMs = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     _converge();
 
-    // v2: the encapsulating side acts on an inbound offer; the offering side
-    // makes its offer as soon as it has heard from the peer.
-    if (postQuantum && !isPqOfferer && !pq.established) _acceptPqOffer(plain);
+    // v2: the encapsulating side acts on an inbound offer — the initial one and
+    // (7.5b) every re-key offer; the offering side makes its offer as soon as
+    // it has heard from the peer, and re-key offers ride later messages.
+    if (postQuantum && !isPqOfferer) _acceptPqOffer(plain);
     final offerPayload =
         isPqOfferer ? await takePqOfferPayload(nowMs: nowMs) : null;
     return DecryptResult(plain, sid, created, pqOfferPayload: offerPayload);
   }
 
   /// If [plain] is a `pqek` offer for the supported algorithm, encapsulate to
-  /// it. Anything malformed is ignored (the peer simply stays classical).
+  /// it. The initial offer (generation 0) establishes the secret; a re-key
+  /// offer (generation gen+1) rotates it, retaining the outgoing generation for
+  /// the crossover. Anything malformed or out-of-order is ignored.
   void _acceptPqOffer(Uint8List plain) {
     if (!InnerMessage.looksLikeKind(plain, 'pqek')) return;
     try {
       final inner = InnerMessage.fromBytes(plain);
       if (inner.data['alg'] != pqAlgorithm) return;
+      final g = (inner.data['g'] as num?)?.toInt() ?? 0;
+      if (pq.k == null) {
+        if (g != 0) return; // cannot start mid-generation
+      } else {
+        if (g != pq.gen + 1) return; // only the next generation rotates
+      }
       final ek = unb64(inner.data['ek'] as String);
       final (ct, k) = pqEncapsulate(ek);
+      if (pq.k != null) {
+        pq.oldGen =
+            pq.gen; // retain the outgoing generation across the crossover
+        pq.oldK = pq.k;
+      }
       pq
         ..k = k
         ..ct = ct
+        ..gen = g
         ..acked = false;
     } catch (_) {
       // Not a usable offer.

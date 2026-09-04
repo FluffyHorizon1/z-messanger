@@ -1083,6 +1083,12 @@ Map<String, Object?> pqStateJson(PqState p) => {
       'ct': p.ct == null ? null : hex(p.ct!),
       'acked': p.acked,
       'offered': p.offered,
+      // 7.5b generation fields — emitted only once a re-key is involved, so the
+      // generation-0 transcript (pq_ratchet.json) is byte-unchanged.
+      if (p.gen > 0) 'gen': p.gen,
+      if (p.oldGen != null) 'old_gen': p.oldGen,
+      if (p.oldK != null) 'old_k': hex(p.oldK!),
+      if (p.offerGen > 0) 'offer_gen': p.offerGen,
     };
 
 /// The v2 upgrade transcript: classical hello, the offerer's `pqek` offer,
@@ -1244,6 +1250,182 @@ Future<Map<String, Object?>> suitePqRatchet(List<Actor> a) async {
   };
 }
 
+/// 7.5b periodic re-key transcript: a pair reaches the steady generation-0
+/// state, then the offerer rotates to generation 1. Pins the second ML-KEM
+/// encapsulation, the `pqg` header field, the crossover (an old-generation
+/// message still decrypting), and the retained old secret.
+Future<Map<String, Object?>> suitePqRekey(List<Actor> a) async {
+  final alice = a[0], bob = a[1];
+  final d = Drbg(0x0031);
+  final convA = await Conversation.create(
+      alice.id, await bob.id.bundle(displayName: bob.displayName));
+  final convB = await Conversation.create(
+      bob.id, await alice.id.bundle(displayName: alice.displayName));
+  final enc = convA.isDesignatedInitiator ? 'alice' : 'bob';
+  final off = enc == 'alice' ? 'bob' : 'alice';
+  final convs = {'alice': convA, 'bob': convB};
+  final convEnc = convs[enc]!, convOff = convs[off]!;
+  check(convEnc.isDesignatedInitiator && convOff.isPqOfferer, 'roles');
+  final steps = <Map<String, Object?>>[];
+
+  Future<Map<String, Object?>> stepEncrypt(
+      String by, String label, Uint8List plaintext,
+      {String? using}) async {
+    final conv = convs[by]!;
+    final pqBefore = conv.pq.clone();
+    final payload = using != null
+        ? using
+        : await d.run(() => conv.encrypt(plaintext, nowMs: 1));
+    final draws = d.takeDraws();
+    final j = jsonDecode(utf8.decode(base64Decode(payload))) as Map;
+    final header = (j['h'] as Map).cast<String, Object?>();
+    final step = <String, Object?>{
+      'op': 'encrypt',
+      'by': by,
+      'label': label,
+      'sid': conv.outboundSid!,
+      'plaintext': hex(plaintext),
+      'random_draws': [for (final x in draws) hex(x)],
+      'header': header,
+      'header_bytes': hex(RatchetHeader.fromJson(header).encode()),
+      'pq_before': pqStateJson(pqBefore),
+      'pq_after': pqStateJson(conv.pq),
+      'payload': payload,
+    };
+    steps.add(step);
+    return step;
+  }
+
+  Future<Map<String, Object?>> stepDecrypt(
+      String by, String label, String payload,
+      {String? rekeyOffer}) async {
+    final conv = convs[by]!;
+    final pqBefore = conv.pq.clone();
+    final res = await d.run(() => conv.decrypt(payload, nowMs: 2));
+    final draws = d.takeDraws();
+    final step = <String, Object?>{
+      'op': 'decrypt',
+      'by': by,
+      'label': label,
+      'sid': res.sid,
+      'payload': payload,
+      'plaintext': hex(res.plaintext),
+      'random_draws': [for (final x in draws) hex(x)],
+      'pq_before': pqStateJson(pqBefore),
+      'pq_after': pqStateJson(conv.pq),
+      'offer_payload': res.pqOfferPayload,
+      'is_post_quantum': conv.isPostQuantum,
+      'pq_generation': conv.pqGeneration,
+    };
+    steps.add(step);
+    return step;
+  }
+
+  const ts = 1700000000000;
+  // Establish generation 0 (same shape as pq_ratchet, condensed).
+  final e1 =
+      await stepEncrypt(enc, 'hello', InnerMessage.hello('k1', ts).toBytes());
+  final d1 = await stepDecrypt(off, 'offer gen0', e1['payload'] as String);
+  // Capture the generation-0 offer so a clean-room verifier can reproduce it.
+  final gen0DkSeed = unhex((d1['pq_after'] as Map)['dk_seed'] as String);
+  final (gen0Ek, _) = pqKeyPairFromSeed(gen0DkSeed);
+  final de0 =
+      await stepDecrypt(enc, 'encapsulate gen0', d1['offer_payload'] as String);
+  final gen0OfferJson = utf8.decode(unhex(de0['plaintext'] as String));
+  final e2 = await stepEncrypt(enc, 'first mixed (gen0)',
+      InnerMessage.text('k2', ts + 1, 'g0').toBytes());
+  await stepDecrypt(off, 'offerer decapsulates gen0', e2['payload'] as String);
+  final e3 = await stepEncrypt(off, 'offerer reply (gen0)',
+      InnerMessage.text('k3', ts + 2, 'ok').toBytes());
+  await stepDecrypt(enc, 'ack gen0', e3['payload'] as String);
+  check(convEnc.pqGeneration == 0 && convOff.pqGeneration == 0, 'gen0 settled');
+  final k0 = hex(convEnc.pq.k!);
+
+  // An old-generation message from the encapsulator, delayed past the re-key.
+  final delayed = await stepEncrypt(enc, 'delayed gen0 message',
+      InnerMessage.text('k4', ts + 3, 'late g0').toBytes());
+
+  // The offerer starts the re-key; its offer rides an ordinary message.
+  final rk = d.run(() => convOff.forcePqRekey(nowMs: 3));
+  final rekeyOffer = await rk;
+  final rekeyDraws = d.takeDraws();
+  check(rekeyOffer != null && convOff.pq.offerGen == 1, 'rekey offered');
+  final rekeyDkSeed = hex(convOff.pq.dkSeed!);
+  steps.add({
+    'op': 'rekey_offer',
+    'by': off,
+    'label': 'offerer starts re-key to generation 1',
+    'payload': rekeyOffer,
+    'random_draws': [for (final x in rekeyDraws) hex(x)],
+    'pq_after': pqStateJson(convOff.pq),
+  });
+  final (ek1, dk1) = pqKeyPairFromSeed(unhex(rekeyDkSeed));
+
+  // The encapsulator consumes the re-key offer and encapsulates generation 1.
+  final de = await stepDecrypt(
+      enc, 'encapsulator receives re-key; encapsulates gen1', rekeyOffer!);
+  check(convEnc.pqGeneration == 1 && hex(convEnc.pq.oldK!) == k0,
+      'gen1 on enc; gen0 retained');
+  final k1 = hex(convEnc.pq.k!);
+  final ct1 = hex(convEnc.pq.ct!);
+  final m1 = (de['random_draws'] as List).last as String;
+  final (ct1b, k1b) = pqEncapsulate(ek1, m: unhex(m1));
+  check(eq(ct1b, unhex(ct1)) && eq(k1b, unhex(k1)), 'gen1 encaps from m');
+
+  // The delayed gen-0 message still decrypts on the offerer (old secret).
+  await stepDecrypt(off, 'offerer receives the delayed gen0 message',
+      delayed['payload'] as String);
+
+  // The encapsulator's first gen-1 message (carries the new ciphertext, pqg=1).
+  final e4 = await stepEncrypt(enc, 'first mixed (gen1, +pqct)',
+      InnerMessage.text('k5', ts + 4, 'g1').toBytes());
+  check(
+      (e4['header'] as Map)['pqg'] == 1 &&
+          (e4['header'] as Map)['pqct'] != null,
+      'gen1 header');
+  // The offerer decapsulates generation 1.
+  final d4 = await stepDecrypt(
+      off, 'offerer decapsulates gen1', e4['payload'] as String);
+  check(
+      d4['pq_generation'] == 1 && hex(convOff.pq.k!) == k1, 'offerer on gen1');
+  check(k1 != k0, 'secret rotated');
+  // Steady state on generation 1.
+  final e5 = await stepEncrypt(off, 'offerer reply (gen1)',
+      InnerMessage.text('k6', ts + 5, 'g1 ok').toBytes());
+  await stepDecrypt(enc, 'encapsulator acks gen1', e5['payload'] as String);
+  check(convEnc.pq.acked, 'gen1 acked');
+
+  return {
+    'suite': 'pq_rekey',
+    'version': vectorsVersionPq,
+    'description':
+        'Protocol v2 periodic re-key (7.5b): after establishing generation 0, '
+            'the offerer rotates the ML-KEM secret to generation 1. Pins the '
+            'second encapsulation, the pqg header field, the crossover (a '
+            'delayed generation-0 message still decrypts), and the retained '
+            'old secret. Verified by tool/verify_mlkem.py and '
+            'server/test/vectors.test.js.',
+    'encapsulator': enc,
+    'offerer': off,
+    'mix_info': 'Z-PQ-MK-v2',
+    'gen0_secret': k0,
+    'gen0_offer': {
+      'dk_seed': hex(gen0DkSeed),
+      'ek_b64': base64Encode(gen0Ek),
+      'inner_json': gen0OfferJson,
+    },
+    'rekey': {
+      'dk_seed': rekeyDkSeed,
+      'ek': hex(ek1),
+      'dk': hex(dk1),
+      'm': m1,
+      'c': ct1,
+      'K': k1,
+    },
+    'steps': steps,
+  };
+}
+
 /// Generate every suite: `{ 'v1': {name: doc}, 'v2': {name: doc} }`.
 Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
   final a = await actors();
@@ -1261,6 +1443,7 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     'v2': {
       'mlkem768': await suiteMlKem(),
       'pq_ratchet': await suitePqRatchet(a),
+      'pq_rekey': await suitePqRekey(a),
     },
   };
 }

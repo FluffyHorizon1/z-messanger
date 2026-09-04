@@ -255,4 +255,110 @@ void main() {
       expect(off.isPostQuantum, isTrue);
     });
   });
+
+  group('v2 periodic re-key (7.5b)', () {
+    // Drive a pair to the established, steady (acked) generation-0 state.
+    Future<void> establish(Conversation enc, Conversation off) async {
+      final hello = await enc.encrypt(utf8b('hi'));
+      final r1 = await off.decrypt(hello);
+      await enc.decrypt(r1.pqOfferPayload!); // enc holds K
+      final m1 = await enc.encrypt(utf8b('m1'));
+      await off.decrypt(m1); // off holds K
+      final reply = await off.encrypt(utf8b('r1'));
+      await enc.decrypt(reply); // enc.acked = true
+      expect(enc.pqGeneration, 0);
+      expect(off.pqGeneration, 0);
+    }
+
+    test('a re-key rotates the secret and keeps messages flowing', () async {
+      final (enc, off) = await pair();
+      await establish(enc, off);
+      final k0 = Uint8List.fromList(enc.pq.k!);
+
+      // The offerer starts a re-key; the offer rides an ordinary message.
+      final offer = await off.forcePqRekey();
+      expect(offer, isNotNull);
+      expect(off.pq.offerGen, 1);
+      final rekeyMsg = await off.encrypt(utf8b('during rekey'));
+
+      // The encapsulator consumes the offer — generation 1, keeping gen 0 for
+      // the crossover, and its next message carries the new ciphertext.
+      final ro = await enc.decrypt(offer!);
+      expect(InnerMessage.looksLikeKind(ro.plaintext, 'pqek'), isTrue);
+      expect(enc.pqGeneration, 1);
+      expect(enc.pq.oldK, equals(k0));
+      // The gen-0 message sent before the rotation still decrypts (old secret).
+      expect(
+          utf8.decode((await enc.decrypt(rekeyMsg)).plaintext), 'during rekey');
+
+      final g1 = await enc.encrypt(utf8b('gen one'));
+      final h1 = headerOf(g1);
+      expect(h1['pqg'], 1);
+      expect(base64Decode(h1['pqct'] as String).length, 1088);
+
+      // The offerer decapsulates the new generation and converges on gen 1.
+      final r = await off.decrypt(g1);
+      expect(utf8.decode(r.plaintext), 'gen one');
+      expect(off.pqGeneration, 1);
+      expect(off.pq.k, equals(enc.pq.k));
+      expect(off.pq.k, isNot(equals(k0)),
+          reason: 'the secret must actually rotate');
+
+      // Steady state on generation 1: mixed, flag pqg=1, ciphertext gone.
+      final ack = await off.encrypt(utf8b('ack gen1'));
+      await enc.decrypt(ack);
+      expect(enc.pq.acked, isTrue);
+      final steady = await enc.encrypt(utf8b('steady'));
+      expect(headerOf(steady)['pqg'], 1);
+      expect(headerOf(steady).containsKey('pqct'), isFalse);
+      expect(utf8.decode((await off.decrypt(steady)).plaintext), 'steady');
+    });
+
+    test('an out-of-order message from the old generation still decrypts',
+        () async {
+      final (enc, off) = await pair();
+      await establish(enc, off);
+
+      // Encapsulator sends a gen-0 message but it is delayed in the network.
+      final delayed = await enc.encrypt(utf8b('delayed gen0'));
+
+      // Meanwhile a full re-key to generation 1 completes.
+      final offer = await off.forcePqRekey();
+      await enc.decrypt(offer!);
+      final g1 = await enc.encrypt(utf8b('gen1 first'));
+      await off.decrypt(g1);
+      expect(off.pqGeneration, 1);
+
+      // The delayed gen-0 message now arrives: the offerer still holds gen 0
+      // as the retained old secret and decrypts it.
+      expect(
+          utf8.decode((await off.decrypt(delayed)).plaintext), 'delayed gen0');
+    });
+
+    test('the automatic interval offers a re-key on the next send', () async {
+      final (enc, off) = await pair();
+      await establish(enc, off);
+      // lastRekeyMs is 0 until the first rotation, so once an interval is set it
+      // is already due: the offerer's next send carries a re-key offer.
+      off.pqRekeyIntervalMs = 1;
+      final offer = await off.takePqOfferPayload();
+      expect(offer, isNotNull);
+      expect(off.pq.offerGen, 1);
+    });
+
+    test('re-key survives persistence mid-crossover', () async {
+      final (enc, off) = await pair();
+      await establish(enc, off);
+      final offer = await off.forcePqRekey();
+      // Round-trip the offerer through JSON with a re-key outstanding.
+      final off2 = await Conversation.fromJson(
+          off.me, jsonDecode(jsonEncode(off.toJson())));
+      expect(off2.pq.offerGen, 1);
+      await enc.decrypt(offer!);
+      final g1 = await enc.encrypt(utf8b('after reload'));
+      final r = await off2.decrypt(g1);
+      expect(utf8.decode(r.plaintext), 'after reload');
+      expect(off2.pqGeneration, 1);
+    });
+  });
 }
