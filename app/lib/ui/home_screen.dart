@@ -51,14 +51,30 @@ class HomeScreen extends StatelessWidget {
           ),
         ],
       ),
-      body: chats.isEmpty
-          ? const _EmptyState()
-          : ListView.separated(
-              itemCount: chats.length,
-              separatorBuilder: (_, __) =>
-                  const Divider(height: 1, indent: 76),
-              itemBuilder: (context, i) => _ChatTile(summary: chats[i]),
+      body: Column(
+        children: [
+          if (service.removedDeviceAlert != null)
+            _AccountAlertBanner(
+              message: service.removedDeviceAlert!,
+              onDismiss: service.acknowledgeRemovedDeviceAlert,
             ),
+          if (service.ownAccountAlert != null)
+            _AccountAlertBanner(
+              message: service.ownAccountAlert!,
+              onDismiss: service.acknowledgeOwnAccountAlert,
+            ),
+          Expanded(
+            child: chats.isEmpty
+                ? const _EmptyState()
+                : ListView.separated(
+                    itemCount: chats.length,
+                    separatorBuilder: (_, __) =>
+                        const Divider(height: 1, indent: 76),
+                    itemBuilder: (context, i) => _ChatTile(summary: chats[i]),
+                  ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.person_add_alt_1),
         label: const Text('Add contact'),
@@ -180,8 +196,7 @@ class _ChatTile extends StatelessWidget {
           if (c != null && c.ttlSec > 0)
             const Padding(
               padding: EdgeInsets.only(left: 6),
-              child:
-                  Icon(Icons.timer_outlined, size: 14, color: ZTheme.accent),
+              child: Icon(Icons.timer_outlined, size: 14, color: ZTheme.accent),
             ),
         ],
       ),
@@ -197,8 +212,8 @@ class _ChatTile extends StatelessWidget {
         children: [
           if (summary.last != null)
             Text(_time(summary.last!.ts),
-                style: const TextStyle(
-                    fontSize: 12, color: ZTheme.textSecondary)),
+                style:
+                    const TextStyle(fontSize: 12, color: ZTheme.textSecondary)),
           const SizedBox(height: 6),
           if (summary.unread > 0)
             Container(
@@ -218,6 +233,47 @@ class _ChatTile extends StatelessWidget {
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => ChatScreen(rid: summary.rid)),
+      ),
+    );
+  }
+}
+
+/// A serious, dismissible account-level warning shown above the chat list —
+/// used for the 7.7a device-list transparency alerts that concern this
+/// device's own account (a list it never issued, or this device being removed).
+class _AccountAlertBanner extends StatelessWidget {
+  final String message;
+  final VoidCallback onDismiss;
+  const _AccountAlertBanner({required this.message, required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: ZTheme.danger.withValues(alpha: 0.14),
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.gpp_bad, size: 20, color: ZTheme.danger),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  message,
+                  style: const TextStyle(fontSize: 12.5, height: 1.35),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, size: 18),
+                tooltip: 'Dismiss',
+                color: ZTheme.textSecondary,
+                onPressed: onDismiss,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

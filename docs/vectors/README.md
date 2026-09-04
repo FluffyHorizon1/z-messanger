@@ -1,8 +1,11 @@
 # Z protocol test vectors
 
 Known‑answer tests for every construction in [`../PROTOCOL.md`](../PROTOCOL.md).
-Each `v<N>/` directory pins one frozen protocol version; files in a frozen
-directory are never edited (a normative change produces a new directory).
+Each `v<N>/` directory pins one frozen protocol version. Bytes an existing
+implementation computes are never changed in a frozen directory — a normative
+change produces a new directory (PROTOCOL.md §14). Compatible extensions (a
+new inner kind, a new optional member, a new derived value) may *add* entries
+to a frozen file; the freeze test then pins the additions too.
 
 | File | Covers | Spec |
 |---|---|---|
@@ -11,9 +14,9 @@ directory are never edited (a normative change produces a new directory).
 | `ratchet.json` | a complete two‑party Double Ratchet transcript (6 messages, 3 DH ratchet steps, one out‑of‑order delivery) with every intermediate key and state | §4, §5 |
 | `sealed_sender.json` | `zs1.` envelopes at four sizes (including both sides of the 1024‑byte bucket boundary) | §8 |
 | `attachments.json` | chunk nonces (incl. an index above 2³²), AEAD, chunk payloads, chunking | §7 |
-| `multidevice.json` | device certificates, `zc2.` account code, signed device list (unsorted input), legacy mapping | §3 |
+| `multidevice.json` | device certificates, `zc2.` account code, signed device list (unsorted input) and its transparency fingerprint, legacy mapping | §3 |
 | `pairing.json` | pairing code text, rendezvous, relay identities, channel key, SAS, sealed enrollment | §10 |
-| `inner_messages.json` | the plaintext encoding of every inner kind and the self‑sync envelope | §6, §9 |
+| `inner_messages.json` | the plaintext encoding of every inner kind (incl. `dlrm`) and the `dl`/`pdl` transparency members, plus the self‑sync envelope | §6, §9, §3.6 |
 
 `v2/` (post‑quantum hybrid, §17):
 

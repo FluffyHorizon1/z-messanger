@@ -48,6 +48,7 @@
     ],
     "signing_input": "7a2d6465766c6973742d76313a333a07c1c9e0833b8ab6f978b69a73e99878c4543d15e4d2ee5c47bad9cd05ddca80c2d11c3337180cd910ceb258a1910d51e0cd06a911325fa617441435e40e38bd",
     "sig": "5b62bffe8ed6aebb0ea34a54fdf1eebd91ae931f3b3d5c75a30bee961a3537befa1a5910096bb498579960c7bbf7fa0939cbf7e2c269a0fe283baed21cacd80e",
+    "fingerprint": "147d6e6fc7a152a416869445b3814780",
     "json": {
       "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
       "ver": 3,

@@ -773,6 +773,9 @@ Future<Map<String, Object?>> suiteMultidevice(List<Actor> a) async {
       'devices_in_given_order': [dev2Id, me.deviceId],
       'signing_input': hex(listInput),
       'sig': hex(list.sig),
+      // 7.7a: SHA-256(signing_input)[0..16] — the value gossiped as the
+      // device-list fingerprint and the leaf a future transparency log commits.
+      'fingerprint': hex(await list.fingerprint()),
       'json': list.toJson(),
     },
     'legacy_zc1_as_account': {
@@ -970,6 +973,16 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
     InnerMessage(kind: 'gleave', mid: 'mid-gleave', ts: ts, data: {
       'gid': 'gAAECAwQFBgcICQoL',
     }),
+    // 7.7a device-list removal notice.
+    InnerMessage.deviceListRemoved('mid-dlrm', ts,
+        acct: Uint8List.fromList(List.filled(32, 0x11)),
+        v: 4,
+        h: Uint8List.fromList(List.filled(16, 0x22))),
+    // 7.7a: any inner may carry the device-list claim ('dl') and the echo of
+    // the recipient's list ('pdl'). Shown here on a text message.
+    InnerMessage.text('mid-dl', ts, 'gossip rides here')
+      ..data['dl'] = {'v': 3, 'h': base64Encode(List.filled(16, 0x33))}
+      ..data['pdl'] = {'v': 1, 'h': base64Encode(List.filled(16, 0x44))},
   ];
   final vectors = <Map<String, Object?>>[];
   for (final m in kinds) {

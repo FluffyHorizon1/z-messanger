@@ -467,6 +467,15 @@ class SignedDeviceList {
     ]);
   }
 
+  /// A short (16-byte) commitment to this list — the first half of the SHA-256
+  /// of exactly the bytes the account key signs ([signingInput]). Because it
+  /// depends only on the version and the (sorted) device Ed25519 keys, two
+  /// parties that hold the same logical device set at the same version compute
+  /// the same fingerprint regardless of how each learned it. This is the value
+  /// gossiped for device-list transparency (7.7a) and the leaf a future
+  /// transparency log (7.7b) would commit to.
+  Future<Uint8List> fingerprint() => deviceListFingerprint(version, devices);
+
   Future<List<String>> routingIds() async =>
       [for (final d in devices) await d.routingId()];
 
@@ -504,6 +513,17 @@ class SignedDeviceList {
         sig: unb64(j['sig'] as String),
       );
 }
+
+/// The device-list fingerprint for an arbitrary (version, device set), without
+/// needing a signed list in hand — used to compute the baseline fingerprint of
+/// a one-device account (version 1 over its single device) and to verify a
+/// gossiped claim. See [SignedDeviceList.fingerprint].
+Future<Uint8List> deviceListFingerprint(
+        int version, List<DeviceCertificate> devices) async =>
+    Uint8List.sublistView(
+        await sha256Bytes(SignedDeviceList.signingInput(version, devices)),
+        0,
+        16);
 
 int _lexCompare(Uint8List a, Uint8List b) {
   for (var i = 0; i < a.length && i < b.length; i++) {

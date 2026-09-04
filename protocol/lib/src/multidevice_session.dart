@@ -123,6 +123,18 @@ class AccountSession {
     return out;
   }
 
+  /// Encrypt for exactly ONE target device (by routing id), not the whole fan.
+  /// Used to send a device its final device-list removal notice (7.7a) over the
+  /// still-open pairwise session, just before the target is forgotten. Returns
+  /// null if no session is held for that device. Persist BEFORE sending.
+  Future<FanoutMessage?> encryptFor(String routingId, Uint8List plaintext,
+      {int? nowMs}) async {
+    final conv = _convs[routingId];
+    if (conv == null) return null;
+    return FanoutMessage(
+        routingId, await conv.encrypt(plaintext, nowMs: nowMs));
+  }
+
   /// Decrypt an inbound payload known to have come from [senderDeviceRid].
   /// Throws [UnknownSessionException] if we hold no session for that device.
   /// The result may carry a [DecryptResult.pqOfferPayload] that the caller

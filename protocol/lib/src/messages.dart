@@ -14,6 +14,17 @@ import 'util.dart';
 ///   'read'   read receipts { mids: [...] }
 ///   'pqek'   (v2) post-quantum key offer { alg, ek } — consumed by the
 ///            session layer, never shown; ignored by v1 clients
+///   'dlrm'   (7.7a) device-list removal notice { acct, v, h } — a contact
+///            tells a device it just dropped from an account's list that it
+///            was removed; ignored by v1 clients
+///
+/// Device-list transparency (7.7a) also decorates EVERY inner message with two
+/// optional members, carried alongside [data] and ignored by v1 clients:
+///   'dl'   {v, h}  the sender's claim about ITS OWN account's current device
+///                  list (version + [SignedDeviceList.fingerprint]).
+///   'pdl'  {v, h}  the newest device list the sender holds for the RECIPIENT's
+///                  account — an echo that lets the owner detect a list a
+///                  contact was given but the owner's device never issued.
 class InnerMessage {
   final String kind;
   final String mid; // sender-chosen message id (unique per sender)
@@ -71,6 +82,17 @@ class InnerMessage {
       mid: mid,
       ts: ts,
       data: {'alg': 'ML-KEM-768', 'ek': b64(ek)});
+
+  /// 7.7a device-list removal notice: sent by a contact to a device it just
+  /// dropped from account [acct]'s list (at version [v], fingerprint [h]), so
+  /// a device silently excluded by whoever holds the account root learns of it.
+  static InnerMessage deviceListRemoved(String mid, int ts,
+          {required Uint8List acct, required int v, required Uint8List h}) =>
+      InnerMessage(
+          kind: 'dlrm',
+          mid: mid,
+          ts: ts,
+          data: {'acct': b64(acct), 'v': v, 'h': b64(h)});
 
   /// Cheap check of the kind without a full parse: [toBytes] always writes
   /// `{"k":"<kind>"` first.

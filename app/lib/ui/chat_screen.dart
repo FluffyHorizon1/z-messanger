@@ -260,6 +260,11 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
+          if (!isGroup && svc.contactDevlistAlerts[widget.rid] != null)
+            _DevlistBanner(
+              message: svc.contactDevlistAlerts[widget.rid]!,
+              onDismiss: () => svc.acknowledgeContactDevlistAlert(widget.rid),
+            ),
           Expanded(
             child: ListView.builder(
               controller: _scroll,
@@ -597,5 +602,42 @@ class _FileBodyState extends State<_FileBody> {
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('Save failed: $e')));
     }
+  }
+}
+
+/// A dismissible warning strip shown at the top of a chat when this contact's
+/// device-list gossip (7.7a) turned up something the user should check.
+class _DevlistBanner extends StatelessWidget {
+  final String message;
+  final VoidCallback onDismiss;
+  const _DevlistBanner({required this.message, required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: ZTheme.warn.withValues(alpha: 0.12),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(Icons.gpp_maybe, size: 18, color: ZTheme.warn),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(fontSize: 12.5, height: 1.35),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close, size: 18),
+              tooltip: 'Dismiss',
+              color: ZTheme.textSecondary,
+              onPressed: onDismiss,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

@@ -13,7 +13,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 
 ---
 
-## Where things stand (updated 2026-09-03)
+## Where things stand (updated 2026-09-04)
 
 | Phase | Status | Evidence |
 |---|---|---|
@@ -24,11 +24,12 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2/5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1), `docs/vectors/v1/`, two verifiers in CI |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
-| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · 7.5 post-quantum hybrid ✅ · 7.4/7.6/7.7 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart` |
+| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · 7.5 post-quantum hybrid ✅ · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.4/7.6 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `devlist_transparency_test.dart` |
 
-**Next up, in order:** key transparency (7.7, design note first) → voice
-messages (7.4) → a periodic post-quantum re-key (7.5b). Externally gated items resume as soon as their gate clears: Play
-submission, Windows/macOS signing, auditor engagement (5.2), iOS.
+**Next up, in order:** voice messages (7.4) → a periodic post-quantum re-key
+(7.5b). Externally gated items resume as soon as their gate clears: Play
+submission, Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public
+transparency log) waits for a public launch with durable infrastructure.
 
 ---
 
@@ -185,25 +186,25 @@ Ordered by value; each is a self-contained project on the existing layering.
 - **7.6 Message search, backups sync, themes** — quality-of-life.
 - **7.7 Key transparency** — the zero-trust plan's "catch us, don't trust us"
   mechanism (F2). Design decided in `docs/adr/0001-key-transparency.md`:
-  **7.7a** device-list transparency by gossip (no infrastructure; contacts
-  and the owner's own devices cross-check the account-signed device list
-  inside the ratchet, plus a removal notice a rogue device cannot suppress)
-  — build next; **7.7b** a public KEYTRANS-style log committing to the same
-  fingerprints — deferred until there is an operator for durable
-  infrastructure. **DoD (7.7a):** a rogue device with the account root
-  publishes a split or exclusionary list and both the honest device and a
-  contact surface the alert; an honest addition raises nothing.
+  **7.7a** device-list transparency by gossip — ✅ **done** (PROTOCOL.md §3.6:
+  `dl`/`pdl` claims and echoes on every inner message, `dlrm` removal notices,
+  root self-sync of the signed list, conflict/grace rules, alert banners; DoD
+  met by `app/test/devlist_transparency_test.dart`, where a rogue holding the
+  account root publishes a split view and an exclusionary list and in both
+  cases the honest device AND the contact surface alerts, while an honest
+  addition raises nothing); **7.7b** a public KEYTRANS-style log committing to
+  the same fingerprints — deferred until there is an operator for durable
+  infrastructure.
 
 ---
 
 ## Suggested near-term sprint (the next 3 sessions)
 
-1. **Verifiability:** 7.7 key-transparency design note, then 5.2 — engage an
-   auditor with the frozen v1 spec, the v2 extension and the vectors as the
-   scope document.
-2. **Voice messages** (7.4) on the now-proven attachment pipeline.
-3. **PQ post-compromise security** (7.5b): periodic re-encapsulation so a
+1. **Voice messages** (7.4) on the now-proven attachment pipeline.
+2. **PQ post-compromise security** (7.5b): periodic re-encapsulation so a
    stolen device state does not keep the quantum-safe secret forever.
+3. **Verifiability:** 5.2 — engage an auditor with the frozen v1 spec, the v2
+   extension, ADR 0001 and the vectors as the scope document.
 
 Each is a clean working session: implement, test, screenshot/artifact, commit.
 

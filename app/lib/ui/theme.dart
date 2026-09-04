@@ -13,6 +13,7 @@ class ZTheme {
   static const Color textSecondary = Color(0xFF9AA0AA);
   static const Color danger = Color(0xFFE5484D);
   static const Color ok = Color(0xFF46A758);
+  static const Color warn = Color(0xFFF5A623);
 
   static ThemeData dark() {
     final base = ThemeData.dark(useMaterial3: true);

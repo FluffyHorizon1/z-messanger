@@ -198,6 +198,68 @@ exactly the listed devices (§9) and accepts messages only from them.
 A `zc1.` code is read as a one‑device account: `accountEdPub = ed`, with the
 single device `{ded: ed, dx: x, id: "legacy-v1", sig: bindingSig, legacy: true}`.
 
+### 3.6 Device‑list transparency (gossip)
+
+The signed device list (§3.4) is trustworthy only if whoever signed it is the
+legitimate account. Whoever holds the account seed — a stolen backup, a
+compromised or coerced root device — can sign a list that adds a rogue device
+or removes an honest one. Nothing above makes that visible. Z makes it
+*detectable*, with no new infrastructure, by having the parties that already
+receive a device list cross‑check it inside the existing end‑to‑end channel.
+All members here are compatible extensions (§14): optional inner‑message
+members and one new inner kind, ignored by older clients. This is decision
+7.7a of ADR 0001; a future public transparency log (7.7b) commits to exactly
+the fingerprint defined here.
+
+**Fingerprint.** For a signed device list at `version` over device set
+`devs`:
+
+```
+fp = SHA-256( signingInput(version, devs) )[0..16]      // §3.4 input; 16 bytes
+```
+
+It commits to the exact `(version, sorted deviceEdPubs)`, so two parties
+holding the same list compute the same 16 bytes however each obtained it. A
+one‑device account's baseline is `fp` at `version = 1` over its single device.
+
+**Claim and echo.** Every inner message (§6.1) MAY carry:
+
+```
+"dl"  : { "v":version, "h":b64(fp) }   // sender's claim about ITS OWN account's current list
+"pdl" : { "v":version, "h":b64(fp) }   // newest list the sender holds for the RECIPIENT's account (echo)
+```
+
+**Receiver rules**, kept per contact account (latest `(v,h)` per sending
+device of that account):
+
+* **Conflict** — two devices of the account claim the same `v` with different
+  `h`, or a device's claimed `v` decreases (a rollback), or a device claims
+  `v == held` with `h ≠ held.h`: surface *“their devices disagree — one may not
+  be theirs.”* Sending is never blocked.
+* **Unconfirmed** (after a short grace so a normal update in flight does not
+  alarm): the highest version any of the account's devices claims is **below**
+  the version the receiver was handed → the handed list is newer than the
+  account's own devices admit (a split view to the receiver); or a device
+  claims a version **above** the held one and the account's broadcast that
+  would install it never arrives.
+
+**Owner rule.** On each `pdl` a device receives about its *own* account, it
+compares with the newest list it issued or learned by self‑sync (§9): an echo
+`v` higher than known, or the same `v` with a different `h`, means a device
+holding the account key issued a list this device never saw — surfaced loudly
+(the T1/T2 signal, actionable only by the owner).
+
+**Removal notice.** When a contact installs a verified list that *drops*
+devices it previously held, it sends each dropped device one final inner
+message of kind `dlrm` (§6.2) over the still‑known pairwise session before
+forgetting it. A rogue cannot suppress it: it is sent by the contact, not the
+account.
+
+**Root discipline.** A root‑holding device MUST self‑sync every new signed
+list to the account's own other devices (§9, envelope `dir:"acct"`) before or
+with the contacts, so an honest update reaches them within the grace window
+and only a rogue list stands out.
+
 ## 4. Session establishment (X3DH‑style, no server prekeys)
 
 Z has no server storage, so the responder's long‑term X25519 identity key
@@ -334,9 +396,14 @@ Unknown kinds MUST be ignored.
 | `gfile` | `gid` + the `file` members | group attachment offer (§7, §11) |
 | `gleave` | `gid` | sender left the group (§11) |
 | `pqek` | `alg:"ML-KEM-768", ek:b64` | v2 post‑quantum key offer (§17); consumed by the session layer, never shown |
+| `dlrm` | `acct:b64, v:int, h:b64` | device‑list removal notice (§3.6); tells a device it was dropped from account `acct`'s list |
 
 `ContactBundleJSON` is `{ "ed", "x", "sig", "name" }` as in §2.4 (all `b64`);
 every bundle in a `ginvite` MUST be verified (§2.3) before use.
+
+Independently of kind, an inner message MAY also carry the device‑list
+transparency members `dl` and `pdl` (§3.6), each `{ "v":int, "h":b64 }`;
+clients that do not implement 7.7a ignore them.
 
 ### 6.3 Receipts
 
@@ -429,18 +496,21 @@ real message.
 devices over the same per‑device sessions, wrapped as:
 
 ```
-utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping", "inner":b64(innerMessageBytes) } )
+utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping"|"acct", "inner":b64(innerMessageBytes) } )
 ```
 
 `dir = "ping"` with a `hello` inner is the proactive session opener and is
 ignored on receipt; `"out"`/`"in"` insert the inner message into `thread` as
-sent/received respectively. Attachment chunks are not re‑encrypted for sync:
-the chunk payloads (§7) are forwarded verbatim to each of the user's other
-devices, which decrypt them with the mirrored offer.
+sent/received respectively; `"acct"` carries a `devlist` inner and updates the
+receiving device's knowledge of its *own* account's current signed list (§3.6
+root discipline). Attachment chunks are not re‑encrypted for sync: the chunk
+payloads (§7) are forwarded verbatim to each of the user's other devices, which
+decrypt them with the mirrored offer.
 
 **Device‑list distribution.** A root‑holding device signs the account's device
-set (§3.4) whenever it changes and sends it to every contact as `devlist`.
-Revocation is removal from the list at a higher version.
+set (§3.4) whenever it changes and sends it to every contact as `devlist` and,
+by self‑sync (`dir:"acct"`), to its own other devices (§3.6). Revocation is
+removal from the list at a higher version.
 
 ## 10. Device pairing (enrollment)
 
@@ -647,7 +717,9 @@ known‑answer‑test technique); production builds have no such hook exposed.
 * **Trust is established out‑of‑band.** A contact code or account code
   substituted before it reaches the user substitutes the identity; safety
   numbers (§2.5) are the detection mechanism. There is no key directory to
-  trust — and, as yet, no key transparency log to catch a substituted one.
+  trust — and, as yet, no public key‑transparency log to catch a substituted
+  one, though device‑list transparency by gossip (§3.6) already makes silent
+  device enrolment, split views and silent removal detectable.
 * **The relay sees transport metadata.** IP addresses, timing and padded
   sizes of envelopes and which mailboxes are read are visible transiently and
   are not stored. Sealed sender (§8) removes the sender; size buckets blunt

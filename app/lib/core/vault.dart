@@ -47,7 +47,8 @@ class Vault {
   final Directory root;
   final Directory filesDir;
   final SecretKey _masterKey;
-  final Uint8List _masterKeyBytes; // kept so we can re-wrap on passphrase change
+  final Uint8List
+      _masterKeyBytes; // kept so we can re-wrap on passphrase change
   final Uint8List _deviceSecret;
   final bool usedFallbackKeyStore;
   bool _hasPassphrase;
@@ -62,8 +63,14 @@ class Vault {
         hashLength: 32,
       );
 
-  Vault._(this.db, this.root, this.filesDir, this._masterKey,
-      this._masterKeyBytes, this._deviceSecret, this.usedFallbackKeyStore,
+  Vault._(
+      this.db,
+      this.root,
+      this.filesDir,
+      this._masterKey,
+      this._masterKeyBytes,
+      this._deviceSecret,
+      this.usedFallbackKeyStore,
       this._hasPassphrase);
 
   bool get hasPassphrase => _hasPassphrase;
@@ -95,7 +102,8 @@ class Vault {
 
   /// Opens the vault. Supply [passphrase] when [inspect] reported
   /// requiresPassphrase. [rootOverride] lets tests use a temp directory.
-  static Future<Vault> open({String? passphrase, Directory? rootOverride}) async {
+  static Future<Vault> open(
+      {String? passphrase, Directory? rootOverride}) async {
     final root = rootOverride ??
         Directory(p.join((await getApplicationSupportDirectory()).path, 'z'));
     final filesDir = Directory(p.join(root.path, 'files'));
@@ -123,9 +131,11 @@ class Vault {
       final legacy = await _legacyMasterKey(root, deleteAfter: true);
       masterKeyBytes = legacy ?? zp.randomBytes(32);
       hasPass = false;
-      final wrapKey = await _deriveWrapKey(deviceSecret, passphrase: null,
-          salt: Uint8List(0));
-      await _writeConfig(root, hasPassphrase: false, salt: Uint8List(0),
+      final wrapKey = await _deriveWrapKey(deviceSecret,
+          passphrase: null, salt: Uint8List(0));
+      await _writeConfig(root,
+          hasPassphrase: false,
+          salt: Uint8List(0),
           wrapped: await _wrap(masterKeyBytes, wrapKey));
     }
 
@@ -416,11 +426,11 @@ class Vault {
   Future<Map<String, String>> writeBlob(String fid, Uint8List bytes) async {
     final key = zp.randomBytes(32);
     final nonce = zp.randomBytes(24);
-    final box = await _aead.encrypt(bytes,
-        secretKey: SecretKey(key), nonce: nonce);
+    final box =
+        await _aead.encrypt(bytes, secretKey: SecretKey(key), nonce: nonce);
     final f = File(p.join(filesDir.path, '$fid.bin'));
-    await f.writeAsBytes(<int>[...box.cipherText, ...box.mac.bytes],
-        flush: true);
+    await f
+        .writeAsBytes(<int>[...box.cipherText, ...box.mac.bytes], flush: true);
     return {'k': zp.b64(key), 'n': zp.b64(nonce)};
   }
 
@@ -469,6 +479,12 @@ class Vault {
       }
     }
     return null;
+  }
+
+  Future<void> kvDelete(String key) async {
+    for (final prefix in ['s:', 'p:']) {
+      await db.delete('kv', where: 'k = ?', whereArgs: [prefix + key]);
+    }
   }
 
   /// Destroys everything: database, attachments, master key.

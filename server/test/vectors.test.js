@@ -509,6 +509,8 @@ test('multidevice: device certificates, zc2 account code, signed device list', (
   assert.ok(edVerify(acctPub, input, unhex(dl.sig)));
   assert.equal(dl.json.ver, dl.version);
   assert.equal(hex(unb64(dl.json.sig)), dl.sig);
+  // 7.7a device-list fingerprint: SHA-256(signing_input)[0..16].
+  assert.equal(hex(sha256(input).subarray(0, 16)), dl.fingerprint);
   // Legacy zc1 read as a one-device account.
   const legacy = v.legacy_zc1_as_account;
   const lj = JSON.parse(unb64url(legacy.contact_code.slice(4)).toString('utf8'));
@@ -600,6 +602,7 @@ const INNER_SCHEMA = {
   gmsg: ['gid', 'body'],
   gfile: ['gid', 'fid', 'name', 'size', 'mime', 'sha256', 'fk', 'fn', 'chunks'],
   gleave: ['gid'],
+  dlrm: ['acct', 'v', 'h'], // 7.7a device-list removal notice
 };
 
 test('inner messages: every kind parses with its required fields', () => {
@@ -612,6 +615,13 @@ test('inner messages: every kind parses with its required fields', () => {
     assert.equal(typeof j.mid, 'string');
     assert.equal(typeof j.ts, 'number');
     for (const f of INNER_SCHEMA[m.kind]) assert.ok(f in j, `${m.kind} needs ${f}`);
+    // 7.7a: the optional device-list claim/echo, where present, are {v, h}.
+    for (const k of ['dl', 'pdl']) {
+      if (k in j) {
+        assert.equal(typeof j[k].v, 'number', `${k}.v`);
+        assert.equal(typeof j[k].h, 'string', `${k}.h`);
+      }
+    }
     assert.equal(m.padded_len, Math.ceil((utf8(m.json).length + 1) / 256) * 256);
     seen.add(m.kind);
   }

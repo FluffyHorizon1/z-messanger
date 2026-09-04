@@ -54,6 +54,46 @@ class ChatService extends ChangeNotifier {
   final Map<String, AccountSession> _contactExtras = {};
   final Map<String, String> _extraRidToContact = {};
 
+  // ---- 7.7a device-list transparency (gossip) ----------------------------
+  //
+  // Every inner message carries the sender's claim about its own device list
+  // ('dl') and an echo of the recipient's ('pdl'). Cross-checking these — with
+  // no new infrastructure, inside the existing E2E channel — makes silent
+  // device enrolment, split views and silent removal detectable. See
+  // docs/adr/0001-key-transparency.md and PROTOCOL.md §3.6.
+
+  /// Grace before a "list changed but never confirmed" observation becomes an
+  /// alert: a version bump seen from a contact before the owner's broadcast
+  /// arrives is normal for a moment and must not cry wolf. Tests shorten it.
+  Duration devlistGrace = const Duration(seconds: 8);
+
+  /// Per-contact banner: their devices disagree, or a list we were handed is
+  /// not confirmed by their devices. rid → message. Empty when all clear.
+  final Map<String, String> contactDevlistAlerts = {};
+
+  /// Loud alert to the owner: a contact was given a device list for MY account
+  /// that this device never issued (T1/T2). Null when clear.
+  String? ownAccountAlert;
+
+  /// This device was told by a contact that it was removed from its own
+  /// account's device list (T3). Null when clear.
+  String? removedDeviceAlert;
+
+  /// Latest claim each of a contact's devices has made about that account's
+  /// list: contactRid → deviceRid → (version, fingerprint-b64, max-version-seen).
+  final Map<String, Map<String, ({int v, String h, int mx})>> _contactClaims =
+      {};
+
+  /// Deferred checks awaiting the grace period. contactRid → first-seen time of
+  /// an unconfirmed situation (held newer than any device admits, or a device
+  /// claims newer than we hold and the broadcast hasn't arrived).
+  final Map<String, DateTime> _pendingContact = {};
+
+  /// Deferred owner-echo checks. source contactRid → (echoed version, fp, seen).
+  final Map<String, ({int v, String h, DateTime seen})> _pendingOwnerEcho = {};
+
+  Timer? _devlistTimer;
+
   /// Sealed sender: routing id → X25519 public key of every device we send
   /// to (contacts, their extra devices, my own linked devices). Every outbound
   /// envelope is sealed to its recipient so the relay never learns who sent
@@ -113,6 +153,7 @@ class ChatService extends ChangeNotifier {
     svc.devMode = (await vault.kvGet('dev_mode')) == '1';
     await svc._initSync();
     await svc._loadContactDeviceLists();
+    await svc._loadDevlistState();
 
     transport.onMessage = (m) => unawaited(svc._onInbound(m));
     transport.onDelivered = (r) => unawaited(svc._onDelivered(r));
@@ -130,6 +171,7 @@ class ChatService extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _sweeper?.cancel();
+    _devlistTimer?.cancel();
     super.dispose();
   }
 
@@ -351,6 +393,8 @@ class ChatService extends ChangeNotifier {
       final offer = await conv.takePqOfferPayload();
       final offerPayload =
           offer == null ? null : await _sealFor(contact.rid, offer);
+      // 7.7a: stamp our device-list claim + an echo of theirs onto the wire.
+      await _decorateForWire(inner, contact);
       final payload =
           await _sealFor(contact.rid, await conv.encrypt(inner.toBytes()));
       try {
@@ -790,6 +834,13 @@ class ChatService extends ChangeNotifier {
       if (inner.kind == 'devlist') {
         await _applyDevlistInner(contact, inner); // M4: learn their devices
       }
+      if (inner.kind == 'dlrm') {
+        await _handleRemovalNotice(
+            inner); // 7.7a: I was removed from my account
+      }
+      // 7.7a: cross-check the device-list claim/echo on EVERY inbound. Runs
+      // after any devlist install above so the "held" list is current.
+      await _observeDevlistGossip(contact.rid, contact.rid, inner);
       notifyListeners();
     }
   }
@@ -1573,6 +1624,13 @@ class ChatService extends ChangeNotifier {
   /// Insert a message mirrored from one of my other devices (no re-send).
   Future<void> _insertMirrored(
       String rid, String dir, InnerMessage inner) async {
+    // 7.7a rule 8: my root device self-synced the account's latest signed list.
+    // Learn it so this device's own-account version keeps pace and an echo of a
+    // rogue list stands out.
+    if (dir == 'acct') {
+      await _applyOwnDeviceList(inner);
+      return;
+    }
     final outgoing = dir == 'out';
     // Group kinds route by the gid inside the payload, and an invite may
     // introduce contacts this device doesn't hold yet — so handle them before
@@ -2216,12 +2274,36 @@ class ChatService extends ChangeNotifier {
 
   /// Tell every contact my current device set (account-signed) so they fan
   /// messages out to all my devices and accept from any of them.
-  Future<void> broadcastMyDeviceList() async {
+  /// Tell every contact my current device set (account-signed). [alsoOwnDevices]
+  /// drives 7.7a rule 8 — self-syncing the same signed list to my own other
+  /// devices so they always know the latest legitimate version. It defaults to
+  /// true and the app never turns it off; the flag exists so a split-view
+  /// adversary (which by definition keeps the owner's devices in the dark) can
+  /// be modelled in tests.
+  Future<void> broadcastMyDeviceList({bool alsoOwnDevices = true}) async {
     final me = await accountIdentity();
     if (!me.holdsAccountRoot) return; // only a root-holding device can sign
     final list = await me.signDeviceList(
         await myFullDeviceList(), await _myDevlistVersion());
     final data = jsonEncode(list.toJson());
+    // 7.7a: this device now KNOWS the latest legitimate (version, fingerprint)
+    // of its own account — record it so an echo from a contact carrying a list
+    // this device never issued stands out (owner rule).
+    await _recordOwnList(list);
+    // 7.7a root discipline (rule 8): my own other devices must always know the
+    // latest legitimate version, so a rogue enrolment shows up as a version
+    // they never saw. Self-sync the signed list to them before (or with) the
+    // contacts. No-op when nothing is linked.
+    if (alsoOwnDevices) {
+      await _sync?.mirror(
+          threadRid: '',
+          dir: 'acct',
+          inner: InnerMessage(
+              kind: 'devlist',
+              mid: newMessageId(),
+              ts: _now(),
+              data: {'list': data}));
+    }
     for (final rid in contacts.keys.toList()) {
       final contact = contacts[rid];
       if (contact == null) continue;
@@ -2290,8 +2372,34 @@ class ChatService extends ChangeNotifier {
       newRids.add(r);
       _sealKeys[r] = d.deviceXPub; // sealed sender to their extra devices too
     }
-    for (final r in session.targetRoutingIds.toList()) {
-      if (!newRids.contains(r)) session.removeTarget(r); // revoked device
+    // 7.7a removal notice (T3): a device we previously held and that this
+    // verified list drops is told once, over the still-open pairwise session,
+    // that it was removed — so a device silently excluded by whoever holds the
+    // account root hears of it from the people who stopped delivering to it. A
+    // rogue cannot suppress this: it is sent by the contact, not the account.
+    final removed = [
+      for (final r in session.targetRoutingIds.toList())
+        if (!newRids.contains(r)) r
+    ];
+    if (persist && removed.isNotEmpty) {
+      final fp = await list.fingerprint();
+      for (final r in removed) {
+        try {
+          final note = InnerMessage.deviceListRemoved(newMessageId(), _now(),
+              acct: list.accountEdPub, v: list.version, h: fp);
+          final fm = await session.encryptFor(r, note.toBytes());
+          await _saveExtra(rid);
+          if (fm != null) {
+            await transport.send(
+                to: r,
+                id: newMessageId(),
+                payload: await _sealFor(r, fm.payload));
+          }
+        } catch (_) {}
+      }
+    }
+    for (final r in removed) {
+      session.removeTarget(r);
     }
     for (final d in extras) {
       await session.addTarget(DeviceTarget.fromCert(d));
@@ -2315,8 +2423,10 @@ class ChatService extends ChangeNotifier {
   Future<void> _fanToContactExtras(String rid, InnerMessage inner) async {
     final s = _contactExtras[rid];
     if (s == null || s.targetRoutingIds.isEmpty) return;
+    final contact = contacts[rid];
     await _withLock(rid, () async {
       try {
+        if (contact != null) await _decorateForWire(inner, contact);
         final fan = await s.encrypt(inner.toBytes());
         await _saveExtra(rid);
         for (final f in fan) {
@@ -2362,6 +2472,10 @@ class ChatService extends ChangeNotifier {
     }
     transport.ackReceived(id: m.id, from: m.from);
     if (inner == null) return;
+    // 7.7a: a removal notice about my own account can ride here too.
+    if (inner!.kind == 'dlrm') {
+      await _handleRemovalNotice(inner!);
+    }
     if (inner!.kind == 'devlist') {
       await _applyDevlistInner(contact, inner!);
     } else if (inner!.kind == 'text') {
@@ -2386,6 +2500,9 @@ class ChatService extends ChangeNotifier {
       await _applyGroupLeave(contact.rid, inner!.data);
       notifyListeners();
     }
+    // 7.7a: observe the claim/echo after any devlist install above, so the
+    // "held" list this cross-check compares against is current.
+    await _observeDevlistGossip(rid, fromDeviceRid, inner!);
   }
 
   Future<void> _applyDevlistInner(Contact contact, InnerMessage inner) async {
@@ -2395,6 +2512,358 @@ class ChatService extends ChangeNotifier {
               .cast<String, Object?>());
       await _installContactDeviceList(contact, list, persist: true);
     } catch (_) {}
+  }
+
+  // ------------------------------------------------------------------
+  // 7.7a device-list transparency (gossip). See docs/adr/0001-key-transparency.md.
+  // ------------------------------------------------------------------
+
+  /// Load persisted alerts and per-contact claims at startup.
+  Future<void> _loadDevlistState() async {
+    ownAccountAlert = await vault.kvGet('own_alert');
+    removedDeviceAlert = await vault.kvGet('removed_alert');
+    for (final rid in contacts.keys.toList()) {
+      final a = await vault.kvGet('cdl_alert_$rid');
+      if (a != null) contactDevlistAlerts[rid] = a;
+      final c = await vault.kvGet('cdl_claims_$rid');
+      if (c == null) continue;
+      final m = (jsonDecode(c) as Map).cast<String, Object?>();
+      _contactClaims[rid] = {
+        for (final e in m.entries)
+          e.key: (
+            v: ((e.value as Map)['v'] as num).toInt(),
+            h: (e.value as Map)['h'] as String,
+            mx: ((e.value as Map)['mx'] as num).toInt(),
+          )
+      };
+    }
+  }
+
+  /// This device's authenticated (version, fingerprint) claim about its OWN
+  /// account's device list. A root device records the exact value it signed; a
+  /// linked device records what it learned by self-sync; before either, the
+  /// baseline is version 1 over the device set this install knows locally.
+  Future<(int, String)> _ownListClaim() async {
+    final vs = await vault.kvGet('own_list_v');
+    final hs = await vault.kvGet('own_list_h');
+    if (vs != null && hs != null) return (int.parse(vs), hs);
+    final v = await _myDevlistVersion();
+    return (v, b64(await deviceListFingerprint(v, await myFullDeviceList())));
+  }
+
+  Future<void> _recordOwnList(SignedDeviceList list) async {
+    await vault.kvPut('own_list_v', '${list.version}', sensitive: false);
+    await vault.kvPut('own_list_h', b64(await list.fingerprint()),
+        sensitive: false);
+  }
+
+  /// The newest verified (version, fingerprint) this device holds for a
+  /// contact's account. Falls back to the baseline: version 1 over the single
+  /// account-key device from their verified contact code.
+  Future<(int, String)> _heldClaimFor(Contact c) async {
+    final stored = await vault.kvGet('cdev_${c.rid}');
+    if (stored != null) {
+      final list = SignedDeviceList.fromJson(
+          (jsonDecode(stored) as Map).cast<String, Object?>());
+      return (list.version, b64(await list.fingerprint()));
+    }
+    final legacy = DeviceCertificate(
+        deviceEdPub: c.bundle.edPub,
+        deviceXPub: c.bundle.xPub,
+        deviceId: 'legacy-v1',
+        sig: c.bundle.bindingSig,
+        legacy: true);
+    return (1, b64(await deviceListFingerprint(1, [legacy])));
+  }
+
+  /// Stamp an outgoing inner with our own-list claim ('dl') and an echo of the
+  /// recipient's list ('pdl'). Ignored by v1 clients; observed by v2 ones.
+  /// Best-effort: the transparency gossip must never break a send, so a failure
+  /// to read local state (e.g. a vault closing on shutdown) just omits it.
+  Future<void> _decorateForWire(InnerMessage inner, Contact contact) async {
+    try {
+      final (v, h) = await _ownListClaim();
+      inner.data['dl'] = {'v': v, 'h': h};
+      final (pv, ph) = await _heldClaimFor(contact);
+      inner.data['pdl'] = {'v': pv, 'h': ph};
+    } catch (_) {
+      // Leave the message undecorated; gossip resumes on the next send.
+    }
+  }
+
+  /// A linked device applies the account's latest signed list, self-synced from
+  /// the root device (rule 8), keeping its own-account version in step.
+  Future<void> _applyOwnDeviceList(InnerMessage inner) async {
+    try {
+      final list = SignedDeviceList.fromJson(
+          (jsonDecode(inner.data['list'] as String) as Map)
+              .cast<String, Object?>());
+      final me = await accountIdentity();
+      if (base64Encode(list.accountEdPub) != base64Encode(me.accountEdPub)) {
+        return;
+      }
+      if (!await list.verify()) return;
+      if (list.version < await _myDevlistVersion()) return; // stale
+      final others = [
+        for (final d in list.devices)
+          if (base64Encode(d.deviceEdPub) != base64Encode(me.deviceEdPub)) d
+      ];
+      await vault.kvPut(
+          'my_devices', jsonEncode([for (final d in others) d.toJson()]),
+          sensitive: false);
+      await vault.kvPut('my_devlist_version', '${list.version}',
+          sensitive: false);
+      await _recordOwnList(list);
+      await _initSync();
+      // Catching up may resolve a pending owner-echo (the normal-update case).
+      await _reevaluateDevlistPending();
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// Cross-check the claim ('dl') and echo ('pdl') carried by an inbound inner
+  /// from [deviceRid] of contact [rid].
+  Future<void> _observeDevlistGossip(
+      String rid, String deviceRid, InnerMessage inner) async {
+    if (!contacts.containsKey(rid)) return;
+    // Best-effort: never let a transparency cross-check throw out of the
+    // inbound path (e.g. the vault closing during shutdown/restart).
+    try {
+      final dl = inner.data['dl'];
+      if (dl is Map && dl['v'] is num && dl['h'] is String) {
+        await _observeContactClaim(
+            rid, deviceRid, (dl['v'] as num).toInt(), dl['h'] as String);
+      }
+      final pdl = inner.data['pdl'];
+      if (pdl is Map && pdl['v'] is num && pdl['h'] is String) {
+        await _observeOwnEcho(
+            rid, (pdl['v'] as num).toInt(), pdl['h'] as String);
+      }
+    } catch (_) {
+      // Transient (closed vault, malformed member): skip this observation.
+    }
+  }
+
+  Future<void> _observeContactClaim(
+      String rid, String deviceRid, int v, String h) async {
+    final claims = _contactClaims.putIfAbsent(rid, () => {});
+    final prev = claims[deviceRid];
+    final mx = prev == null ? v : (prev.mx > v ? prev.mx : v);
+    claims[deviceRid] = (v: v, h: h, mx: mx);
+    await _saveClaims(rid);
+    await _evaluateContact(rid);
+  }
+
+  /// Owner rule: a contact echoes the list it holds for MY account. A version
+  /// higher than this device knows, or the same version with a different
+  /// fingerprint, means a device holding my account key issued a list this
+  /// device never saw (T1/T2). Deferred through the grace period so a normal
+  /// bump seen before my own self-sync arrives does not cry wolf.
+  Future<void> _observeOwnEcho(String rid, int echoV, String echoH) async {
+    final (knownV, knownH) = await _ownListClaim();
+    final consistent = echoV < knownV || (echoV == knownV && echoH == knownH);
+    if (consistent) {
+      _pendingOwnerEcho.remove(rid);
+      return;
+    }
+    _pendingOwnerEcho[rid] = (
+      v: echoV,
+      h: echoH,
+      seen: _pendingOwnerEcho[rid]?.seen ?? DateTime.now()
+    );
+    await _reevaluateDevlistPending();
+  }
+
+  Future<void> _evaluateContact(String rid) async {
+    final claims = _contactClaims[rid];
+    final contact = contacts[rid];
+    if (claims == null || claims.isEmpty || contact == null) return;
+    final (heldV, heldH) = await _heldClaimFor(contact);
+
+    final byVersion = <int, Set<String>>{};
+    var maxV = 0;
+    var rollback = false;
+    for (final c in claims.values) {
+      (byVersion[c.v] ??= <String>{}).add(c.h);
+      if (c.v > maxV) maxV = c.v;
+      if (c.v < c.mx) rollback = true;
+    }
+    String? conflict;
+    for (final hs in byVersion.values) {
+      if (hs.length > 1) {
+        conflict = 'disagree';
+        break;
+      }
+    }
+    conflict ??= rollback ? 'rollback' : null;
+    if (conflict == null) {
+      for (final c in claims.values) {
+        if (c.v == heldV && c.h != heldH) {
+          conflict = 'split';
+          break;
+        }
+      }
+    }
+    if (conflict != null) {
+      _pendingContact.remove(rid);
+      await _setContactAlert(rid, _conflictMsg(contact.name, conflict));
+      return;
+    }
+
+    // Deferred (grace) cases:
+    //   maxV < heldV → I hold a list newer than any of their devices admits to
+    //     (a split view handed to me / T2).
+    //   maxV > heldV → a device claims a newer list and the broadcast that
+    //     would install it never arrived.
+    if (maxV != heldV) {
+      final since = _pendingContact.putIfAbsent(rid, () => DateTime.now());
+      if (DateTime.now().difference(since) >= devlistGrace) {
+        _pendingContact.remove(rid);
+        await _setContactAlert(
+            rid,
+            maxV < heldV
+                ? "${contact.name}'s devices don't confirm the device list "
+                    'this device was given. One of their devices may not be '
+                    'theirs — check with them before continuing.'
+                : "${contact.name}'s device list changed but the update never "
+                    'arrived. Their new device could not be verified.');
+      } else {
+        _scheduleDevlistRecheck();
+      }
+    } else {
+      _pendingContact.remove(rid);
+      await _setContactAlert(rid, null);
+    }
+  }
+
+  /// Re-run the deferred checks after the grace period.
+  Future<void> _reevaluateDevlistPending() async {
+    if (_disposed) return;
+    try {
+      await _reevaluateDevlistPendingInner();
+    } catch (_) {
+      // Vault closed or similar: the checks re-run on the next inbound event.
+    }
+  }
+
+  Future<void> _reevaluateDevlistPendingInner() async {
+    final now = DateTime.now();
+    var anyPending = false;
+
+    final (knownV, knownH) = await _ownListClaim();
+    for (final key in _pendingOwnerEcho.keys.toList()) {
+      final ec = _pendingOwnerEcho[key]!;
+      final consistent = ec.v < knownV || (ec.v == knownV && ec.h == knownH);
+      if (consistent) {
+        _pendingOwnerEcho.remove(key);
+      } else if (now.difference(ec.seen) >= devlistGrace) {
+        ownAccountAlert ??=
+            'A contact was given a device list for your account that this '
+            'device never issued. A device holding your account key may have '
+            "enrolled another device. If that wasn't you, reset your identity "
+            'now.';
+        await vault.kvPut('own_alert', ownAccountAlert!, sensitive: false);
+        _pendingOwnerEcho.remove(key); // recorded; the alert stays until ack
+      } else {
+        anyPending = true;
+      }
+    }
+
+    for (final rid in _pendingContact.keys.toList()) {
+      await _evaluateContact(rid);
+      if (_pendingContact.containsKey(rid)) anyPending = true;
+    }
+    if (anyPending) _scheduleDevlistRecheck();
+    notifyListeners();
+  }
+
+  void _scheduleDevlistRecheck() {
+    if (_disposed) return;
+    _devlistTimer?.cancel();
+    _devlistTimer = Timer(devlistGrace + const Duration(milliseconds: 200),
+        () => unawaited(_reevaluateDevlistPending()));
+  }
+
+  /// A contact told this device it was dropped from its own account's list.
+  Future<void> _handleRemovalNotice(InnerMessage inner) async {
+    try {
+      final acctB64 = inner.data['acct'];
+      if (acctB64 is! String) return;
+      final me = await accountIdentity();
+      if (acctB64 != b64(me.accountEdPub)) return; // not about my account
+      final v = (inner.data['v'] as num?)?.toInt() ?? 0;
+      removedDeviceAlert =
+          'This device was removed from your account (device list v$v). If you '
+          'did not do this, your account key may be compromised — reset your '
+          'identity.';
+      await vault.kvPut('removed_alert', removedDeviceAlert!, sensitive: false);
+      notifyListeners();
+    } catch (_) {
+      // Best-effort; a redelivery will surface it again.
+    }
+  }
+
+  Future<void> _saveClaims(String rid) async {
+    final claims = _contactClaims[rid];
+    if (claims == null) return;
+    await vault.kvPut(
+        'cdl_claims_$rid',
+        jsonEncode({
+          for (final e in claims.entries)
+            e.key: {'v': e.value.v, 'h': e.value.h, 'mx': e.value.mx}
+        }),
+        sensitive: false);
+  }
+
+  Future<void> _setContactAlert(String rid, String? msg) async {
+    if (msg == null) {
+      contactDevlistAlerts.remove(rid);
+      await vault.kvDelete('cdl_alert_$rid');
+    } else {
+      contactDevlistAlerts[rid] = msg;
+      await vault.kvPut('cdl_alert_$rid', msg, sensitive: false);
+    }
+  }
+
+  String _conflictMsg(String name, String kind) {
+    switch (kind) {
+      case 'rollback':
+        return "$name's device list went backwards a version. One of their "
+            'devices may be replaying an old list — check with them.';
+      default:
+        return "$name's devices disagree about their device list. One of them "
+            'may not be theirs — check with them before continuing.';
+    }
+  }
+
+  /// The version of the device list this device believes is current for its OWN
+  /// account. Exposed for diagnostics and tests.
+  Future<int> ownDeviceListVersion() async => (await _ownListClaim()).$1;
+
+  /// The version of the newest device list this device holds for [rid]'s
+  /// account (1 = the baseline single-device list). Exposed for tests.
+  Future<int> heldContactListVersion(String rid) async {
+    final c = contacts[rid];
+    if (c == null) return 0;
+    return (await _heldClaimFor(c)).$1;
+  }
+
+  /// Dismiss a contact's device-list banner (until a new inconsistency arises).
+  Future<void> acknowledgeContactDevlistAlert(String rid) async {
+    await _setContactAlert(rid, null);
+    notifyListeners();
+  }
+
+  Future<void> acknowledgeOwnAccountAlert() async {
+    ownAccountAlert = null;
+    await vault.kvDelete('own_alert');
+    notifyListeners();
+  }
+
+  Future<void> acknowledgeRemovedDeviceAlert() async {
+    removedDeviceAlert = null;
+    await vault.kvDelete('removed_alert');
+    notifyListeners();
   }
 
   /// Full local wipe: identity, contacts, messages, keys. Irreversible.
