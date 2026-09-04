@@ -184,10 +184,15 @@ Ordered by value; each is a self-contained project on the existing layering.
   covered: post-quantum post-compromise security (a periodic PQ re-key).
 - **7.6 Message search, backups sync, themes** — quality-of-life.
 - **7.7 Key transparency** — the zero-trust plan's "catch us, don't trust us"
-  mechanism for key substitution (F2). Needs a design note first: a KT log
-  needs durable append-only storage, which the RAM-only relay deliberately
-  lacks, so it is a separate component. **DoD:** ADR, then a simulated key
-  substitution that is detected and blocks sending.
+  mechanism (F2). Design decided in `docs/adr/0001-key-transparency.md`:
+  **7.7a** device-list transparency by gossip (no infrastructure; contacts
+  and the owner's own devices cross-check the account-signed device list
+  inside the ratchet, plus a removal notice a rogue device cannot suppress)
+  — build next; **7.7b** a public KEYTRANS-style log committing to the same
+  fingerprints — deferred until there is an operator for durable
+  infrastructure. **DoD (7.7a):** a rogue device with the account root
+  publishes a split or exclusionary list and both the honest device and a
+  contact surface the alert; an honest addition raises nothing.
 
 ---
 
