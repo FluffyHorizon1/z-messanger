@@ -1260,6 +1260,65 @@ class ChatService extends ChangeNotifier {
     );
   }
 
+  /// 7.6 message search. Scans stored messages, decrypting bodies (and file
+  /// names) in memory ONLY — the query and its matches never touch disk, in
+  /// keeping with the vault invariant — and returns the most recent matches.
+  /// Case-insensitive substring over text, group text and attachment names.
+  Future<List<SearchHit>> searchMessages(String query,
+      {int limit = 100}) async {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return [];
+    // Newest first; scan a bounded window so a huge history can't stall search.
+    final rows = await vault.db.query('messages',
+        where: 'kind IN (?, ?, ?)',
+        whereArgs: ['text', 'gtext', 'file'],
+        orderBy: 'ts_ms DESC',
+        limit: 5000);
+    final hits = <SearchHit>[];
+    for (final r in rows) {
+      final rid = r['rid'] as String;
+      final isGroup = groups.containsKey(rid);
+      // The chat must still exist locally to show and open the result.
+      final title = isGroup ? groups[rid]?.name : contacts[rid]?.name;
+      if (title == null) continue;
+      final ChatMessage m;
+      try {
+        m = await _rowToMessage(rid, r);
+      } catch (_) {
+        continue; // unreadable cell (e.g. mid-wipe) — skip
+      }
+      final idx = m.body.toLowerCase().indexOf(q);
+      if (idx < 0) continue;
+      hits.add(SearchHit(
+        rid: rid,
+        mid: m.mid,
+        title: title,
+        isGroup: isGroup,
+        outgoing: m.outgoing,
+        kind: m.kind,
+        snippet: _snippet(m.body, idx, q.length),
+        ts: m.ts,
+        senderName: m.senderName,
+      ));
+      if (hits.length >= limit) break;
+    }
+    return hits;
+  }
+
+  /// A short window of [body] around the match at [idx], with ellipses when it
+  /// is clipped, so results read cleanly without leaking the whole message.
+  static String _snippet(String body, int idx, int qlen) {
+    const pad = 24;
+    if (body.length <= 80) return body;
+    var start = idx - pad;
+    var end = idx + qlen + pad;
+    final pre = start > 0 ? '…' : '';
+    final post = end < body.length ? '…' : '';
+    if (start < 0) start = 0;
+    if (end > body.length) end = body.length;
+    return '$pre${body.substring(start, end).trim()}$post';
+  }
+
   /// Load the NEWEST page of a thread. Older history stays on disk until
   /// [loadOlderMessages] pulls it in.
   Future<List<ChatMessage>> loadMessages(String rid) async {

@@ -24,12 +24,12 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2/5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1), `docs/vectors/v1/`, two verifiers in CI |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
-| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `voice_test.dart` |
+| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search ✅ (backup-sync/themes ⏳) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `voice_test.dart`, `search_test.dart` |
 
-**Next up:** 7.6 quality-of-life (message search first). Externally gated items
-resume as soon as their gate clears: Play submission, Windows/macOS signing,
-auditor engagement (5.2), iOS; 7.7b (public transparency log) waits for a
-public launch with durable infrastructure.
+**Next up:** finish 7.6 quality-of-life (backup sync, themes — search done).
+Externally gated items resume as soon as their gate clears: Play submission,
+Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public transparency
+log) waits for a public launch with durable infrastructure.
 
 ---
 
@@ -198,7 +198,14 @@ Ordered by value; each is a self-contained project on the existing layering.
   persistence), `pq_rekey_test.dart` (two real clients rotate and keep
   talking), `docs/vectors/v2/pq_rekey.json` verified by kyber-py and the Node
   clean-room replay.
-- **7.6 Message search, backups sync, themes** — quality-of-life.
+- **7.6 Quality-of-life** — **message search ✅**: full-text search across all
+  conversations that decrypts bodies (and attachment names) in memory only —
+  the query and its matches never touch disk, preserving the vault invariant.
+  Home search icon → debounced search screen with highlighted snippets; tapping
+  a hit opens the chat. `ChatService.searchMessages`, `search_test.dart` (direct
+  / group / attachment-name hits, case-insensitivity, and a check that stored
+  cells stay sealed). Still open under 7.6: backup sync, themes; jumping a
+  result to its exact position in long history (opens the chat for now).
 - **7.7 Key transparency** — the zero-trust plan's "catch us, don't trust us"
   mechanism (F2). Design decided in `docs/adr/0001-key-transparency.md`:
   **7.7a** device-list transparency by gossip — ✅ **done** (PROTOCOL.md §3.6:
@@ -215,7 +222,8 @@ Ordered by value; each is a self-contained project on the existing layering.
 
 ## Suggested near-term sprint (the next 3 sessions)
 
-1. **Quality-of-life** (7.6): message search first; then backup sync, themes.
+1. **Quality-of-life** (7.6, continued): backup sync and themes (message search
+   is done).
 2. **Verifiability:** 5.2 — engage an auditor with the frozen v1 spec, the v2
    extension (incl. the 7.5b re-key), ADR 0001 and the vectors as the scope
    document.

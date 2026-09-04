@@ -8,6 +8,7 @@ import '../core/transport.dart';
 import 'add_contact_screen.dart';
 import 'chat_screen.dart';
 import 'group_screens.dart';
+import 'search_screen.dart';
 import 'settings_screen.dart';
 import 'theme.dart';
 
@@ -34,6 +35,14 @@ class HomeScreen extends StatelessWidget {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.search),
+            tooltip: 'Search messages',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SearchScreen()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.group_add_outlined),
             tooltip: 'New group',

@@ -139,4 +139,29 @@ class ChatSummary {
   String get title => group?.name ?? contact!.name;
 }
 
+/// A message-search result (7.6). Bodies are decrypted only in memory during
+/// the search; nothing about the query or its plaintext is written to disk.
+class SearchHit {
+  final String rid; // the chat (contact rid or gid)
+  final String mid;
+  final String title; // chat display name
+  final bool isGroup;
+  final bool outgoing;
+  final String kind; // 'text' | 'gtext' | 'file'
+  final String snippet; // a window of the body around the match
+  final int ts;
+  final String? senderName; // for group messages
+  SearchHit({
+    required this.rid,
+    required this.mid,
+    required this.title,
+    required this.isGroup,
+    required this.outgoing,
+    required this.kind,
+    required this.snippet,
+    required this.ts,
+    this.senderName,
+  });
+}
+
 enum LinkStatus { disconnected, connecting, connected }
