@@ -405,6 +405,12 @@ Independently of kind, an inner message MAY also carry the device‑list
 transparency members `dl` and `pdl` (§3.6), each `{ "v":int, "h":b64 }`;
 clients that do not implement 7.7a ignore them.
 
+A `file` or `gfile` offer MAY additionally carry `voice:true` and `dur:int`
+(seconds): the attachment is a recorded voice message of that duration, and
+clients render an inline player. The pipeline is unchanged — same keys,
+chunks and limits (§7) — and a client that ignores the members shows an
+ordinary audio file attachment.
+
 ### 6.3 Receipts
 
 On persisting an inbound `text`, `file`, `gmsg` or `gfile`, the recipient

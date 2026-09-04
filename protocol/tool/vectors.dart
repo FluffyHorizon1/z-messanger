@@ -983,6 +983,19 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
     InnerMessage.text('mid-dl', ts, 'gossip rides here')
       ..data['dl'] = {'v': 3, 'h': base64Encode(List.filled(16, 0x33))}
       ..data['pdl'] = {'v': 1, 'h': base64Encode(List.filled(16, 0x44))},
+    // 7.4: a voice note is a file offer with the optional voice/dur members.
+    InnerMessage(kind: 'file', mid: 'mid-voice', ts: ts, data: {
+      'fid': 'AAECAwQFBgcICQoM',
+      'name': 'voice-1700000000000.m4a',
+      'size': 48000,
+      'mime': 'audio/mp4',
+      'sha256': base64Encode(List.filled(32, 0xcd)),
+      'fk': base64Encode(List.filled(32, 0x03)),
+      'fn': base64Encode(List.filled(16, 0x04)),
+      'chunks': 1,
+      'voice': true,
+      'dur': 7,
+    }),
   ];
   final vectors = <Map<String, Object?>>[];
   for (final m in kinds) {

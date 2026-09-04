@@ -466,8 +466,17 @@ class ChatService extends ChangeNotifier {
         Future<void>.value());
   }
 
+  /// 7.4: record-and-send convenience — a voice note is an ordinary encrypted
+  /// attachment (same keys, chunks, mirroring) whose offer carries `voice` and
+  /// `dur`, so receivers render a player instead of a file card.
+  Future<void> sendVoiceNote(String rid, Uint8List bytes, int durSec,
+          {String mime = 'audio/mp4'}) =>
+      sendFile(rid, _voiceNoteName(mime), bytes, mime,
+          voice: true, durSec: durSec);
+
   Future<void> sendFile(
-      String rid, String fileName, Uint8List bytes, String mime) async {
+      String rid, String fileName, Uint8List bytes, String mime,
+      {bool voice = false, int durSec = 0}) async {
     if (bytes.length > maxAttachmentBytes) {
       throw const FormatException(
           'attachment too large (max 24 MB in this build)');
@@ -493,6 +502,8 @@ class ChatService extends ChangeNotifier {
         'fk': b64(km.fk),
         'fn': b64(km.fn),
         'chunks': chunks.length,
+        if (voice) 'voice': true,
+        if (durSec > 0) 'dur': durSec,
       },
     );
     final expireAt = ttl > 0 ? ts + ttl * 1000 : 0;
@@ -508,6 +519,8 @@ class ChatService extends ChangeNotifier {
       complete: true,
       gotChunks: chunks.length,
       totalChunks: chunks.length,
+      voice: voice,
+      durSec: durSec,
     );
 
     // Pre-encrypt every chunk before the transaction.
@@ -527,6 +540,8 @@ class ChatService extends ChangeNotifier {
           'mime': mime,
           'sha256': sha,
           'local': keyInfo,
+          if (voice) 'voice': true,
+          if (durSec > 0) 'dur': durSec,
         })),
         'complete': 1,
         'got_chunks': chunks.length,
@@ -956,6 +971,8 @@ class ChatService extends ChangeNotifier {
       {int expireAt = 0, String? senderName}) async {
     final fid = inner.data['fid'] as String;
     final name = inner.data['name'] as String? ?? 'file';
+    final voice = inner.data['voice'] == true;
+    final durSec = (inner.data['dur'] as num?)?.toInt() ?? 0;
     await txn.insert(
         'files',
         {
@@ -969,6 +986,8 @@ class ChatService extends ChangeNotifier {
             'sha256': inner.data['sha256'],
             'fk': inner.data['fk'],
             'fn': inner.data['fn'],
+            if (voice) 'voice': true,
+            if (durSec > 0) 'dur': durSec,
           })),
           'complete': 0,
           'got_chunks': 0,
@@ -1012,6 +1031,8 @@ class ChatService extends ChangeNotifier {
             mime: inner.data['mime'] as String? ?? 'application/octet-stream',
             sha256b64: inner.data['sha256'] as String? ?? '',
             totalChunks: (inner.data['chunks'] as num).toInt(),
+            voice: voice,
+            durSec: durSec,
           ),
         ));
     if (openChatRid != threadRid) {
@@ -1270,6 +1291,8 @@ class ChatService extends ChangeNotifier {
       complete: (r['complete'] as int) == 1,
       gotChunks: r['got_chunks'] as int,
       totalChunks: r['total_chunks'] as int,
+      voice: meta['voice'] == true,
+      durSec: (meta['dur'] as num?)?.toInt() ?? 0,
     );
   }
 
@@ -1757,6 +1780,8 @@ class ChatService extends ChangeNotifier {
     if (fid == null) return;
     final name = inner.data['name'] as String? ?? 'file';
     final total = (inner.data['chunks'] as num?)?.toInt() ?? 0;
+    final voice = inner.data['voice'] == true;
+    final durSec = (inner.data['dur'] as num?)?.toInt() ?? 0;
     final status = outgoing ? MsgStatus.sent : MsgStatus.delivered;
     await vault.db.insert(
       'files',
@@ -1771,6 +1796,8 @@ class ChatService extends ChangeNotifier {
           'sha256': inner.data['sha256'],
           'fk': inner.data['fk'],
           'fn': inner.data['fn'],
+          if (voice) 'voice': true,
+          if (durSec > 0) 'dur': durSec,
         })),
         'complete': 0,
         'got_chunks': 0,
@@ -1812,6 +1839,8 @@ class ChatService extends ChangeNotifier {
             mime: inner.data['mime'] as String? ?? 'application/octet-stream',
             sha256b64: inner.data['sha256'] as String? ?? '',
             totalChunks: total,
+            voice: voice,
+            durSec: durSec,
           ),
         ));
     notifyListeners();
@@ -2008,8 +2037,15 @@ class ChatService extends ChangeNotifier {
   /// their pairwise ratchet and the sealed chunks are queued for each
   /// member's mailbox — so a member removed before the send never receives
   /// the key, and one removed afterwards cannot decrypt the next file.
+  /// 7.4: voice note into a group — same pairwise fan-out as any attachment.
+  Future<void> sendGroupVoiceNote(String gid, Uint8List bytes, int durSec,
+          {String mime = 'audio/mp4'}) =>
+      sendGroupFile(gid, _voiceNoteName(mime), bytes, mime,
+          voice: true, durSec: durSec);
+
   Future<void> sendGroupFile(
-      String gid, String fileName, Uint8List bytes, String mime) async {
+      String gid, String fileName, Uint8List bytes, String mime,
+      {bool voice = false, int durSec = 0}) async {
     final g = groups[gid];
     if (g == null || g.left) return;
     if (bytes.length > maxAttachmentBytes) {
@@ -2034,6 +2070,8 @@ class ChatService extends ChangeNotifier {
         'fk': b64(km.fk),
         'fn': b64(km.fn),
         'chunks': chunks.length,
+        if (voice) 'voice': true,
+        if (durSec > 0) 'dur': durSec,
       },
     );
     final keyInfo = await vault.writeBlob(km.fid, bytes);
@@ -2054,6 +2092,8 @@ class ChatService extends ChangeNotifier {
           'mime': mime,
           'sha256': sha,
           'local': keyInfo,
+          if (voice) 'voice': true,
+          if (durSec > 0) 'dur': durSec,
         })),
         'complete': 1,
         'got_chunks': chunks.length,
@@ -2091,6 +2131,8 @@ class ChatService extends ChangeNotifier {
             complete: true,
             gotChunks: chunks.length,
             totalChunks: chunks.length,
+            voice: voice,
+            durSec: durSec,
           ),
         ));
     notifyListeners();
@@ -2871,6 +2913,23 @@ class ChatService extends ChangeNotifier {
     await transport.stop();
     await vault.wipe();
   }
+}
+
+/// A default file name for a recorded voice note, from its container mime.
+String _voiceNoteName(String mime) {
+  final ext = switch (mime) {
+    'audio/mp4' || 'audio/aac' || 'audio/m4a' => 'm4a',
+    'audio/ogg' || 'audio/opus' => 'ogg',
+    'audio/wav' || 'audio/x-wav' => 'wav',
+    _ => 'bin',
+  };
+  return 'voice-${DateTime.now().millisecondsSinceEpoch}.$ext';
+}
+
+/// mm:ss display for a voice-note duration.
+String describeDuration(int seconds) {
+  final m = seconds ~/ 60, s = seconds % 60;
+  return '$m:${s.toString().padLeft(2, '0')}';
 }
 
 String describeTtl(int seconds) {

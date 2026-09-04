@@ -28,6 +28,12 @@ class FileMeta {
   int gotChunks;
   int totalChunks;
 
+  /// 7.4: true when this attachment is a recorded voice message (offer member
+  /// `voice`), with its duration in seconds (`dur`). Older clients ignore both
+  /// and render a plain audio file attachment.
+  final bool voice;
+  final int durSec;
+
   FileMeta({
     required this.fid,
     required this.name,
@@ -37,6 +43,8 @@ class FileMeta {
     this.complete = false,
     this.gotChunks = 0,
     this.totalChunks = 0,
+    this.voice = false,
+    this.durSec = 0,
   });
 }
 
@@ -111,7 +119,8 @@ class Group {
         gid: j['gid'] as String,
         name: j['name'] as String? ?? 'Group',
         adminRid: j['admin'] as String? ?? '',
-        memberRids: ((j['members'] as List?) ?? const []).cast<String>().toSet(),
+        memberRids:
+            ((j['members'] as List?) ?? const []).cast<String>().toSet(),
         ver: (j['ver'] as num?)?.toInt() ?? 1,
         left: j['left'] == true,
       );

@@ -24,11 +24,11 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2/5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1), `docs/vectors/v1/`, two verifiers in CI |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
-| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · 7.5 post-quantum hybrid ✅ · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.4/7.6 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `devlist_transparency_test.dart` |
+| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `devlist_transparency_test.dart`, `voice_test.dart` |
 
-**Next up, in order:** voice messages (7.4) → a periodic post-quantum re-key
-(7.5b). Externally gated items resume as soon as their gate clears: Play
-submission, Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public
+**Next up:** a periodic post-quantum re-key (7.5b), then 7.6 quality-of-life.
+Externally gated items resume as soon as their gate clears: Play submission,
+Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public
 transparency log) waits for a public launch with durable infrastructure.
 
 ---
@@ -174,7 +174,13 @@ Ordered by value; each is a self-contained project on the existing layering.
   rejected as `too_large` since sealed sender), and concurrent assembly of
   the offer and the last chunk could leave an attachment permanently
   undecryptable.
-- **7.4 Voice messages & richer media** — reuse the attachment pipeline.
+- **7.4 Voice messages** ✅ — a voice note is an ordinary encrypted attachment
+  whose offer carries the optional `voice`/`dur` members (§6.2): capture
+  streams PCM into RAM and is wrapped as WAV in memory (plaintext never
+  touches disk), playback decrypts to RAM and feeds the player from there.
+  Mic button + inline player in the chat; direct, group and self-sync all
+  reuse the proven pipeline (`voice_test.dart`). Richer media (video preview
+  etc.) stays open under 7.6.
 - **7.5 Post-quantum hybrid** ✅ — protocol v2: an ML-KEM-768 (FIPS 203)
   shared secret, offered inside the ratchet on first contact and mixed into
   every message key from the first round trip on, for harvest-now-decrypt-
@@ -200,9 +206,9 @@ Ordered by value; each is a self-contained project on the existing layering.
 
 ## Suggested near-term sprint (the next 3 sessions)
 
-1. **Voice messages** (7.4) on the now-proven attachment pipeline.
-2. **PQ post-compromise security** (7.5b): periodic re-encapsulation so a
+1. **PQ post-compromise security** (7.5b): periodic re-encapsulation so a
    stolen device state does not keep the quantum-safe secret forever.
+2. **Quality-of-life** (7.6): message search first; then backup sync, themes.
 3. **Verifiability:** 5.2 — engage an auditor with the frozen v1 spec, the v2
    extension, ADR 0001 and the vectors as the scope document.
 

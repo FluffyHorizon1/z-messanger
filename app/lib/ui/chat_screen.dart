@@ -1,16 +1,21 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:record/record.dart';
 
 import '../core/chat_service.dart';
 import '../core/models.dart';
+import '../core/voice.dart';
 import 'contact_info_screen.dart';
 import 'group_screens.dart';
 import 'theme.dart';
+import 'voice_widgets.dart';
 
 class ChatScreen extends StatefulWidget {
   final String rid;
@@ -25,6 +30,15 @@ class _ChatScreenState extends State<ChatScreen> {
   final _scroll = ScrollController();
   bool _sending = false;
   bool _loadingOlder = false;
+
+  // Voice-message capture (7.4): PCM streams into RAM only; the WAV is built
+  // in memory and enters the normal encrypted-attachment pipeline.
+  final AudioRecorder _recorder = AudioRecorder();
+  StreamSubscription<Uint8List>? _recSub;
+  final BytesBuilder _pcm = BytesBuilder();
+  Timer? _recTimer;
+  int _recElapsedMs = 0;
+  bool _recording = false;
 
   @override
   void initState() {
@@ -59,7 +73,72 @@ class _ChatScreenState extends State<ChatScreen> {
     context.read<ChatService>().markChatClosed(widget.rid);
     _input.dispose();
     _scroll.dispose();
+    _recTimer?.cancel();
+    _recSub?.cancel();
+    _recorder.dispose();
     super.dispose();
+  }
+
+  Future<void> _startRecording() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      if (!await _recorder.hasPermission()) {
+        messenger.showSnackBar(const SnackBar(
+            content: Text('Microphone permission is needed to record.')));
+        return;
+      }
+      // Stream raw PCM into memory — the recording never touches disk.
+      final stream = await _recorder.startStream(const RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: voiceSampleRate,
+        numChannels: 1,
+      ));
+      _pcm.clear();
+      _recSub = stream.listen(_pcm.add);
+      _recTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
+        if (mounted) setState(() => _recElapsedMs += 250);
+      });
+      setState(() {
+        _recording = true;
+        _recElapsedMs = 0;
+      });
+    } catch (_) {
+      messenger.showSnackBar(const SnackBar(
+          content: Text("Recording isn't available on this device.")));
+    }
+  }
+
+  Future<void> _stopRecording({required bool send}) async {
+    final svc = context.read<ChatService>();
+    final messenger = ScaffoldMessenger.of(context);
+    _recTimer?.cancel();
+    _recTimer = null;
+    try {
+      await _recorder.stop();
+    } catch (_) {}
+    await _recSub?.cancel();
+    _recSub = null;
+    final pcm = _pcm.takeBytes();
+    if (mounted) setState(() => _recording = false);
+    if (!send) return;
+    // Under half a second of audio is a misfire, not a message.
+    if (pcm.length < voiceSampleRate) {
+      messenger.showSnackBar(
+          const SnackBar(content: Text('Voice message too short.')));
+      return;
+    }
+    final wav = wavFromPcm16(pcm);
+    final dur = pcm16DurationSec(pcm.length);
+    try {
+      if (svc.groups.containsKey(widget.rid)) {
+        await svc.sendGroupVoiceNote(widget.rid, wav, dur, mime: 'audio/wav');
+      } else {
+        await svc.sendVoiceNote(widget.rid, wav, dur, mime: 'audio/wav');
+      }
+      _jumpToEnd();
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Send failed: $e')));
+    }
   }
 
   void _jumpToEnd() {
@@ -292,6 +371,43 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             )
+          else if (_recording)
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 8, 8),
+                child: Row(
+                  children: [
+                    const Icon(Icons.mic, color: ZTheme.danger),
+                    const SizedBox(width: 10),
+                    Text(describeDuration(_recElapsedMs ~/ 1000),
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text('Recording… sent encrypted, like everything',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 12, color: ZTheme.textSecondary)),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline,
+                          color: ZTheme.textSecondary),
+                      tooltip: 'Discard',
+                      onPressed: () => _stopRecording(send: false),
+                    ),
+                    const SizedBox(width: 4),
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                          backgroundColor: ZTheme.accent,
+                          foregroundColor: Colors.black),
+                      icon: const Icon(Icons.arrow_upward),
+                      tooltip: 'Send voice message',
+                      onPressed: () => _stopRecording(send: true),
+                    ),
+                  ],
+                ),
+              ),
+            )
           else
             SafeArea(
               child: Padding(
@@ -318,7 +434,13 @@ class _ChatScreenState extends State<ChatScreen> {
                         ),
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.mic_none,
+                          color: ZTheme.textSecondary),
+                      tooltip: 'Record a voice message',
+                      onPressed: _startRecording,
+                    ),
+                    const SizedBox(width: 4),
                     IconButton.filled(
                       style: IconButton.styleFrom(
                           backgroundColor: ZTheme.accent,
@@ -508,6 +630,11 @@ class _FileBodyState extends State<_FileBody> {
     final f = widget.msg.file;
     if (f == null) {
       return const Text('…', style: TextStyle(color: ZTheme.textSecondary));
+    }
+    // 7.4: a complete voice message renders as an inline player; while chunks
+    // are still arriving it shows the ordinary receiving card below.
+    if (f.voice && f.complete) {
+      return VoiceNoteBody(fid: f.fid, meta: f);
     }
     if (_isImage && _imageBytes == null && !_loadingPreview) {
       _loadingPreview = true;

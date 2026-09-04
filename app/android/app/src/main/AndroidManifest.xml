@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.CAMERA"/>
     <!-- Android 13+ runtime permission for showing message notifications. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Voice messages (7.4): microphone capture, requested on first use. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
         android:label="Z"
         android:name="${applicationName}"

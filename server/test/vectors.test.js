@@ -622,6 +622,11 @@ test('inner messages: every kind parses with its required fields', () => {
         assert.equal(typeof j[k].h, 'string', `${k}.h`);
       }
     }
+    // 7.4: a voice-note offer flags voice:true with a numeric duration.
+    if ('voice' in j) {
+      assert.equal(j.voice, true);
+      assert.equal(typeof j.dur, 'number');
+    }
     assert.equal(m.padded_len, Math.ceil((utf8(m.json).length + 1) / 256) * 256);
     seen.add(m.kind);
   }
