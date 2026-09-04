@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'pq.dart';
 import 'util.dart';
 
 /// Double Ratchet (Signal specification) with:
@@ -11,6 +12,7 @@ import 'util.dart';
 ///   - HKDF-SHA256 for the root chain
 ///   - HMAC-SHA256 for the symmetric chains
 ///   - XChaCha20-Poly1305 for message encryption
+///   - (v2) an ML-KEM-768 shared secret mixed into message keys, see pq.dart
 ///
 /// Every message is encrypted with a fresh, single-use message key. Old keys
 /// are deleted as soon as they are used (forward secrecy); every round trip
@@ -23,19 +25,106 @@ class RatchetHeader {
   final Uint8List dhPub;
   final int pn;
   final int n;
-  RatchetHeader({required this.dhPub, required this.pn, required this.n});
+
+  /// v2: the message key of this message is PQ-mixed (the sender holds the
+  /// ML-KEM shared secret).
+  final bool pq;
+
+  /// v2: ML-KEM-768 ciphertext, attached by the encapsulating side until the
+  /// peer proves it holds the secret. Authenticated: it is part of the AAD.
+  final Uint8List? pqCt;
+
+  RatchetHeader({
+    required this.dhPub,
+    required this.pn,
+    required this.n,
+    this.pq = false,
+    this.pqCt,
+  });
 
   /// Byte-stable encoding, used both on the wire and as AEAD associated data.
-  Uint8List encode() =>
-      Uint8List.fromList(utf8.encode('{"dh":"${b64(dhPub)}","n":$n,"pn":$pn}'));
+  /// A header without v2 fields encodes exactly as in v1.
+  Uint8List encode() {
+    final sb = StringBuffer('{"dh":"${b64(dhPub)}","n":$n,"pn":$pn');
+    if (pq) sb.write(',"pq":1');
+    if (pqCt != null) sb.write(',"pqct":"${b64(pqCt!)}"');
+    sb.write('}');
+    return Uint8List.fromList(utf8.encode(sb.toString()));
+  }
 
-  Map<String, Object?> toJson() => {'dh': b64(dhPub), 'n': n, 'pn': pn};
+  Map<String, Object?> toJson() => {
+        'dh': b64(dhPub),
+        'n': n,
+        'pn': pn,
+        if (pq) 'pq': 1,
+        if (pqCt != null) 'pqct': b64(pqCt!),
+      };
 
   static RatchetHeader fromJson(Map<String, Object?> j) => RatchetHeader(
         dhPub: unb64(j['dh'] as String),
         pn: (j['pn'] as num).toInt(),
         n: (j['n'] as num).toInt(),
+        pq: j['pq'] == 1,
+        pqCt: j['pqct'] == null ? null : unb64(j['pqct'] as String),
       );
+}
+
+/// v2 post-quantum state of one conversation (shared by all its sessions —
+/// the KEM secret is between the two parties, not tied to a DH session).
+class PqState {
+  /// Offerer: seed of my pending ML-KEM key pair, until a ciphertext arrives.
+  Uint8List? dkSeed;
+
+  /// The agreed shared secret, once established (both sides).
+  Uint8List? k;
+
+  /// Encapsulator: ciphertext to attach until the peer sends a `pq` message.
+  Uint8List? ct;
+
+  /// The peer has sent a PQ-mixed message: it holds [k].
+  bool acked;
+
+  /// Offerer: an offer has been handed to the caller for sending.
+  bool offered;
+
+  PqState(
+      {this.dkSeed, this.k, this.ct, this.acked = false, this.offered = false});
+
+  bool get established => k != null;
+
+  PqState clone() => PqState(
+        dkSeed: dkSeed == null ? null : Uint8List.fromList(dkSeed!),
+        k: k == null ? null : Uint8List.fromList(k!),
+        ct: ct == null ? null : Uint8List.fromList(ct!),
+        acked: acked,
+        offered: offered,
+      );
+
+  void copyFrom(PqState o) {
+    dkSeed = o.dkSeed;
+    k = o.k;
+    ct = o.ct;
+    acked = o.acked;
+    offered = o.offered;
+  }
+
+  Map<String, Object?> toJson() => {
+        if (dkSeed != null) 'dkSeed': b64(dkSeed!),
+        if (k != null) 'k': b64(k!),
+        if (ct != null) 'ct': b64(ct!),
+        'acked': acked,
+        'offered': offered,
+      };
+
+  static PqState fromJson(Map<String, Object?>? j) => j == null
+      ? PqState()
+      : PqState(
+          dkSeed: j['dkSeed'] == null ? null : unb64(j['dkSeed'] as String),
+          k: j['k'] == null ? null : unb64(j['k'] as String),
+          ct: j['ct'] == null ? null : unb64(j['ct'] as String),
+          acked: j['acked'] == true,
+          offered: j['offered'] == true,
+        );
 }
 
 class RatchetMessage {
@@ -223,17 +312,27 @@ Future<RatchetState> ratchetInitResponder({
 /// Encrypts [plaintext]; mutates [state] (advances the sending chain).
 /// Callers must persist the new state BEFORE handing the ciphertext to the
 /// network, so a crash can never reuse a message key.
-Future<RatchetMessage> ratchetEncrypt(
-    RatchetState state, Uint8List plaintext) async {
+Future<RatchetMessage> ratchetEncrypt(RatchetState state, Uint8List plaintext,
+    {PqState? pq}) async {
   final cks = state.cks;
   if (cks == null) {
     throw StateError(
         'sending chain not initialized (responder must receive before sending '
         'on this session)');
   }
-  final (mk, nextCk) = await _kdfCk(cks);
-  final header =
-      RatchetHeader(dhPub: state.dhsPub, pn: state.pn, n: state.ns);
+  final (mk0, nextCk) = await _kdfCk(cks);
+  // v2: once the ML-KEM secret is established every message key is mixed
+  // with it, and the header says so. The encapsulating side also carries the
+  // ciphertext until the peer has demonstrably decapsulated it.
+  final pqK = pq?.k;
+  final mk = pqK == null ? mk0 : await pqMixMessageKey(mk0, pqK);
+  final header = RatchetHeader(
+    dhPub: state.dhsPub,
+    pn: state.pn,
+    n: state.ns,
+    pq: pqK != null,
+    pqCt: pqK != null && !(pq!.acked) ? pq.ct : null,
+  );
   final nonce = randomBytes(24);
   final box = await _aead.encrypt(
     pad(plaintext),
@@ -254,11 +353,13 @@ Future<RatchetMessage> ratchetEncrypt(
 /// Decrypts a message, handling out-of-order delivery and DH ratchet steps.
 /// On success returns the plaintext and REPLACES the contents of [state].
 /// On any failure the state is left completely untouched.
-Future<Uint8List> ratchetDecrypt(
-    RatchetState state, RatchetMessage msg) async {
+Future<Uint8List> ratchetDecrypt(RatchetState state, RatchetMessage msg,
+    {PqState? pq}) async {
   final work = state.clone();
-  final plaintext = await _decryptInner(work, msg);
+  final pqWork = pq?.clone();
+  final plaintext = await _decryptInner(work, msg, pqWork);
   // Commit.
+  pq?.copyFrom(pqWork!);
   state
     ..rootKey = work.rootKey
     ..dhsSeed = work.dhsSeed
@@ -275,12 +376,28 @@ Future<Uint8List> ratchetDecrypt(
   return plaintext;
 }
 
-Future<Uint8List> _decryptInner(RatchetState s, RatchetMessage msg) async {
+Future<Uint8List> _decryptInner(
+    RatchetState s, RatchetMessage msg, PqState? pq) async {
+  // 0. v2: a ciphertext in the header establishes the ML-KEM secret (only the
+  //    side that offered a key can decapsulate; anyone else must reject).
+  final ct = msg.header.pqCt;
+  if (ct != null && pq != null && pq.k == null) {
+    final seed = pq.dkSeed;
+    if (seed == null) {
+      throw RatchetDecryptException('pq ciphertext but no pending key');
+    }
+    pq.k = pqDecapsulate(seed, ct); // wrong ct → pseudorandom k → MAC fails
+    pq.dkSeed = null; // single use; erased on commit
+  }
+  if (msg.header.pq && (pq == null || pq.k == null)) {
+    throw RatchetDecryptException('pq message without a shared secret');
+  }
+
   // 1. Try skipped message keys (out-of-order arrivals).
   final skipKey = '${b64(msg.header.dhPub)}|${msg.header.n}';
   final cachedMk = s.skipped.remove(skipKey);
   if (cachedMk != null) {
-    return _aeadOpen(unb64(cachedMk), s, msg);
+    return _aeadOpen(unb64(cachedMk), s, msg, pq);
   }
 
   // 2. New ratchet public key? Perform a DH ratchet step.
@@ -299,20 +416,22 @@ Future<Uint8List> _decryptInner(RatchetState s, RatchetMessage msg) async {
     throw RatchetDecryptException('no receiving chain');
   }
   final (mk, nextCk) = await _kdfCk(ckr);
-  final plain = await _aeadOpen(mk, s, msg);
+  final plain = await _aeadOpen(mk, s, msg, pq);
   s.ckr = nextCk;
   s.nr += 1;
   return plain;
 }
 
 Future<Uint8List> _aeadOpen(
-    Uint8List mk, RatchetState s, RatchetMessage msg) async {
+    Uint8List mk0, RatchetState s, RatchetMessage msg, PqState? pq) async {
+  final mk = msg.header.pq ? await pqMixMessageKey(mk0, pq!.k!) : mk0;
   try {
     final clear = await _aead.decrypt(
       SecretBox(msg.cipherText, nonce: msg.nonce, mac: Mac(msg.mac)),
       secretKey: SecretKey(mk),
       aad: concatBytes([s.ad, msg.header.encode()]),
     );
+    if (msg.header.pq) pq!.acked = true; // the peer provably holds k
     return unpad(clear);
   } on SecretBoxAuthenticationError {
     throw RatchetDecryptException('authentication failed');

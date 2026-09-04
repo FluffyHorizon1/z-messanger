@@ -1,13 +1,19 @@
-# Z — Protocol Specification, version 1 (frozen)
+# Z — Protocol Specification, version 1 (frozen) + version 2 (post‑quantum)
 
-**Status:** FROZEN. Protocol v1 was frozen on 2026‑09‑03 for external review
-(roadmap Phase 5.1). Every construction below is pinned by the machine‑checked
+**Status:** v1 (§0–§16) is FROZEN — frozen on 2026‑09‑03 for external review
+(roadmap Phase 5.1). Every construction in it is pinned by the machine‑checked
 test vectors in [`vectors/v1/`](vectors/v1/) — the Dart reference
 implementation (`protocol/`) must reproduce them bit‑for‑bit
 (`protocol/test/vectors_test.dart`), and an independent implementation written
 from this document alone, in Node.js with no shared code, must verify them
 (`server/test/vectors.test.js`). Both run in CI. A change to anything normative
-here is a protocol version bump, not an edit (§14).
+in v1 is a protocol version bump, not an edit (§14).
+
+**v2** (§17) adds the post‑quantum hybrid on top of v1 as a negotiated,
+backward‑compatible extension: a v2 client speaks exact v1 to a v1 peer. It
+is pinned by [`vectors/v2/`](vectors/v2/), verified by the same Dart and Node
+checks plus `protocol/tool/verify_mlkem.py` (kyber‑py, an independent FIPS 203
+implementation).
 
 This document is written so that a competent implementer can build an
 interoperable client without reading the Dart source. Where the reference
@@ -57,6 +63,7 @@ generated) it is marked *implementation note*.
 | Sealed‑sender and pairing‑channel AEAD | ChaCha20‑Poly1305 (12‑byte nonce) |
 | Hashing, routing ids | SHA‑256 |
 | Backup passphrase KDF (§13, informative) | Argon2id |
+| Post‑quantum key encapsulation (v2, §17) | ML‑KEM‑768 (FIPS 203) |
 
 ## 2. Identity
 
@@ -326,6 +333,7 @@ Unknown kinds MUST be ignored.
 | `gmsg` | `gid, body` | group text (§11) |
 | `gfile` | `gid` + the `file` members | group attachment offer (§7, §11) |
 | `gleave` | `gid` | sender left the group (§11) |
+| `pqek` | `alg:"ML-KEM-768", ek:b64` | v2 post‑quantum key offer (§17); consumed by the session layer, never shown |
 
 `ContactBundleJSON` is `{ "ed", "x", "sig", "name" }` as in §2.4 (all `b64`);
 every bundle in a `ginvite` MUST be verified (§2.3) before use.
@@ -618,7 +626,9 @@ a "v2" section in this document; v1 vectors are never edited. The freeze test
 
 ## 15. Test vectors
 
-`docs/vectors/v1/` holds one JSON file per suite: `identity`, `handshake`,
+`docs/vectors/v2/` holds the v2 suites `mlkem768` (ML‑KEM‑768 known answers,
+including implicit rejection) and `pq_ratchet` (the §17 upgrade transcript);
+`docs/vectors/v1/` holds one JSON file per v1 suite: `identity`, `handshake`,
 `ratchet` (a complete two‑party transcript with three DH ratchet steps and an
 out‑of‑order delivery), `sealed_sender`, `attachments`, `multidevice`,
 `pairing`, `inner_messages`. A suite may gain vectors for a compatible
@@ -656,3 +666,114 @@ known‑answer‑test technique); production builds have no such hook exposed.
 * **`legacy` records** (§3.1) are verified under the v1 binding rule; they
   cannot be used to introduce an unsigned device (this closed an audit‑prep
   finding in the pre‑freeze code, which accepted the flag at face value).
+
+---
+
+## 17. Protocol v2 — post‑quantum hybrid
+
+### 17.1 Goal and shape
+
+v1 rests entirely on X25519. An adversary that records traffic today and later
+obtains a cryptographically relevant quantum computer recovers every `SK`,
+every DH ratchet step, and therefore every message ("harvest now, decrypt
+later"). v2 mixes an **ML‑KEM‑768** shared secret into the Double Ratchet's
+message keys, established once per conversation during the first round trip:
+
+```
+offerer       : generates an ephemeral ML‑KEM‑768 key pair (seed d||z, 64 bytes) and sends ek
+                INSIDE the ratchet as an inner message of kind `pqek` (§6.2)
+encapsulator  : (c, K) = ML‑KEM.Encaps(ek); carries c in the ratchet header of its messages
+                until the peer has shown it holds K
+offerer       : K = ML‑KEM.Decaps(dk, c); erases dk
+both          : for every message whose header carries `"pq":1`:
+                    mk' = HKDF( ikm = mk, salt = K, info = utf8("Z-PQ-MK-v2"), L = 32 )
+                and mk' replaces mk in §5.3 / §5.4 (nothing else in the ratchet changes)
+```
+
+Roles are fixed per pair, independent of who opened the DH session: the
+**designated initiator** of §4 (the lower routing id) encapsulates; the other
+party offers. `K` is a property of the conversation, not of one DH session:
+it applies to every session of the pair (a session created by a
+double‑initiation race uses the same `K`), and `resetSessions` discards it.
+
+### 17.2 Header extension
+
+The canonical header of §5.3 gains two optional members, appended in this
+order **only when present**, so a header without them is byte‑identical to v1:
+
+```
+hdrBytes = utf8( '{"dh":"' || b64(dhsPub) || '","n":' || decimal(ns) || ',"pn":' || decimal(pn)
+                 || [ ',"pq":1' ] || [ ',"pqct":"' || b64(c) || '"' ] || '}' )
+JSON  h = { "dh", "n", "pn", "pq"?:1, "pqct"?:b64(c) }
+```
+
+`pq:1` means "this message key is mixed with K". `pqct` is the 1088‑byte
+ML‑KEM‑768 ciphertext; being part of the header it is authenticated by the
+AEAD, so it can be neither swapped nor stripped in transit.
+
+### 17.3 State machine
+
+Per conversation: `dkSeed` (offerer, pending), `K`, `c` (encapsulator, until
+acknowledged), `acked`, `offered`.
+
+* **Offerer**, on the first successful decryption from the peer or before its
+  own first send, and while `K` is unknown and no offer has been made:
+  generate `(ek, dk)` from 64 random bytes, keep the seed, send
+  `{"k":"pqek","mid":…,"ts":…,"alg":"ML-KEM-768","ek":b64(ek)}` as an ordinary
+  inner message (encrypted, padded, authenticated like any other; a v1 peer
+  ignores the unknown kind).
+* **Encapsulator**, on decrypting a `pqek` while `K` is unknown: verify
+  `alg`, `len(ek) == 1184`; `(c, K) = Encaps(ek)`; from now on every message
+  it sends is mixed and carries `"pq":1`, plus `pqct` until `acked`.
+* **Offerer**, on a header carrying `pqct` while `K` is unknown: if no
+  `dkSeed` is pending → reject; else `K = Decaps(dk, c)`, erase `dkSeed`,
+  then decrypt the message under the mixed key. A wrong or tampered `c`
+  yields (by FIPS 203 implicit rejection) a pseudorandom `K` and the AEAD
+  fails: reject, state untouched — including the pending `dkSeed`.
+* **Either side**, on successfully decrypting a message with `"pq":1`:
+  `acked = true` (the peer provably holds `K`); the encapsulator then stops
+  attaching `pqct`.
+* A message with `"pq":1` arriving while `K` is unknown is rejected.
+  Skipped‑key handling is unchanged: cached keys are classical `mk`; the
+  mix is applied at use according to that message's own header.
+
+### 17.4 Compatibility and negotiation
+
+No unauthenticated capability flag exists. The offer is inside the ratchet
+(a v1 peer discards it as an unknown kind and nothing else changes); the
+ciphertext is sent only by a party that has received an offer, and `pq:1`
+only by a party that holds `K`. Hence v2↔v1 in either direction stays exactly
+v1, and an active network attacker cannot force a downgrade: the offer is
+encrypted and authenticated, `pqct` is in the AAD, and stripping either only
+produces an authentication failure. A v2 implementation MAY be run with the
+extension disabled; it then behaves as v1 (this is how the v1 vectors are
+regenerated).
+
+### 17.5 Security properties and limits
+
+* Every message with `pq:1` is confidential against an adversary that breaks
+  X25519 later but never learns `K`. `K` is protected by ML‑KEM‑768 against
+  such an adversary, and `dk` never leaves the offerer and is erased on use.
+* The first messages of a conversation (the session‑opening `hello`, the
+  offer itself, and anything sent before the offer is answered) are
+  classical. The reference app sends the contact‑add hello and answers it
+  with the offer, so in the normal flow everything the user types is mixed.
+* `K` is established once and is static for the conversation's life: v2 gives
+  no **post‑quantum** post‑compromise security (a quantum adversary who also
+  obtains a device's state keeps `K`). Classical PCS from the DH ratchet is
+  unchanged. A periodic re‑encapsulation ("PQ ratchet") is future work.
+* The initial `SK` (§4) stays classical; a quantum adversary recovers the
+  classical `mk`s, which is why the mix is applied to message keys rather
+  than relying on the root chain.
+* ML‑KEM in pure Dart is best‑effort constant‑time. In this hybrid a timing
+  leak in the KEM can at worst reduce security to v1, never below it.
+
+### 17.6 Vectors
+
+`vectors/v2/mlkem768.json` — ten seeded `(d, z, m)` known answers with
+`ek, dk, c, K` and an implicit‑rejection pair; `vectors/v2/pq_ratchet.json`
+— a nine‑step transcript (classical hello, offer, encapsulation, first mixed
+message with `pqct`, mixed reply, steady state) with every random draw. The
+KEM values are re‑derived by kyber‑py (`protocol/tool/verify_mlkem.py`); the
+transcript, taking `K` and `c` from the file, is replayed byte‑for‑byte by
+the Node verifier.

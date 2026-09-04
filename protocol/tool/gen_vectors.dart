@@ -1,4 +1,4 @@
-// Writes the protocol test vectors to docs/vectors/v1/ (repo root relative).
+// Writes the protocol test vectors to docs/vectors/v1/ and v2/ (repo root relative).
 //
 //   cd protocol && dart run tool/gen_vectors.dart [output-dir]
 //
@@ -12,14 +12,17 @@ import 'dart:io';
 import 'vectors.dart';
 
 Future<void> main(List<String> args) async {
-  final outDir = Directory(args.isNotEmpty
+  final root = args.isNotEmpty
       ? args[0]
-      : '${File.fromUri(Platform.script).parent.parent.parent.path}/docs/vectors/v$vectorsVersion');
-  await outDir.create(recursive: true);
+      : '${File.fromUri(Platform.script).parent.parent.parent.path}/docs/vectors';
   final all = await generateAll();
-  for (final e in all.entries) {
-    final f = File('${outDir.path}/${e.key}.json');
-    await f.writeAsString(encodeVectorFile(e.value));
-    stdout.writeln('wrote ${f.path} (${await f.length()} bytes)');
+  for (final ver in all.entries) {
+    final outDir = Directory('$root/${ver.key}');
+    await outDir.create(recursive: true);
+    for (final e in ver.value.entries) {
+      final f = File('${outDir.path}/${e.key}.json');
+      await f.writeAsString(encodeVectorFile(e.value));
+      stdout.writeln('wrote ${f.path} (${await f.length()} bytes)');
+    }
   }
 }

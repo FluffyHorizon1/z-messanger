@@ -6,6 +6,28 @@ import 'package:z_protocol/z_protocol.dart';
 
 Uint8List utf8b(String s) => Uint8List.fromList(utf8.encode(s));
 
+/// Payloads addressed to [rid], in send order. With the v2 post-quantum
+/// upgrade the offering side of a pair emits a silent `pqek` offer ahead of
+/// its first message, so a device may receive one or two payloads.
+List<String> payloadsFor(List<FanoutMessage> fan, String rid) => [
+      for (final f in fan)
+        if (f.routingId == rid) f.payload
+    ];
+
+/// Decrypts every payload in order and returns the user-visible plaintexts
+/// (offers are consumed by the session layer and dropped here).
+Future<List<String>> decryptAll(
+    AccountSession sess, String fromRid, List<String> payloads) async {
+  final out = <String>[];
+  for (final p in payloads) {
+    final dec = await sess.decryptFrom(fromRid, p);
+    if (!InnerMessage.looksLikeKind(dec.plaintext, 'pqek')) {
+      out.add(utf8.decode(dec.plaintext));
+    }
+  }
+  return out;
+}
+
 class TestDevice {
   final AccountIdentity id; // this device's local identity
   final DeviceCertificate cert; // its public membership record
@@ -45,15 +67,15 @@ void main() {
         DeviceTarget.fromCert(bob[1].cert),
       ]);
       final fan = await aliceSess.encrypt(utf8b('hi bob'));
-      expect(fan.length, 2, reason: 'one payload per contact device');
+      expect(fan.map((f) => f.routingId).toSet().length, 2,
+          reason: 'every contact device is addressed');
 
       for (final bd in bob) {
         final rid = await bd.id.routingId();
-        final msg = fan.firstWhere((f) => f.routingId == rid);
         final sess = await AccountSession.create(
             bd.id, [DeviceTarget.fromCert(alice[0].cert)]);
-        final dec = await sess.decryptFrom(a1rid, msg.payload);
-        expect(utf8.decode(dec.plaintext), 'hi bob');
+        expect(
+            await decryptAll(sess, a1rid, payloadsFor(fan, rid)), ['hi bob']);
       }
     });
 
@@ -69,14 +91,13 @@ void main() {
         DeviceTarget.fromCert(alice[1].cert),
       ]);
       final fan = await sess.encrypt(utf8b('note to self+bob'));
-      expect(fan.length, 2);
+      expect(fan.map((f) => f.routingId).toSet().length, 2);
 
       final a2rid = await a2.routingId();
-      final mine = fan.firstWhere((f) => f.routingId == a2rid);
-      final a2sess =
-          await AccountSession.create(a2, [DeviceTarget.fromCert(alice[0].cert)]);
-      final dec = await a2sess.decryptFrom(a1rid, mine.payload);
-      expect(utf8.decode(dec.plaintext), 'note to self+bob');
+      final a2sess = await AccountSession.create(
+          a2, [DeviceTarget.fromCert(alice[0].cert)]);
+      expect(await decryptAll(a2sess, a1rid, payloadsFor(fan, a2rid)),
+          ['note to self+bob']);
     });
 
     test('bidirectional round-trip between two single-device accounts',
@@ -88,15 +109,14 @@ void main() {
 
       final aSess =
           await AccountSession.create(a1, [DeviceTarget.fromCert(bob[0].cert)]);
-      final bSess =
-          await AccountSession.create(b1, [DeviceTarget.fromCert(alice[0].cert)]);
+      final bSess = await AccountSession.create(
+          b1, [DeviceTarget.fromCert(alice[0].cert)]);
 
       final f1 = await aSess.encrypt(utf8b('hi'));
-      expect(utf8.decode((await bSess.decryptFrom(a1rid, f1.single.payload)).plaintext),
-          'hi');
+      expect(await decryptAll(bSess, a1rid, payloadsFor(f1, b1rid)), ['hi']);
       final f2 = await bSess.encrypt(utf8b('hey back'));
-      expect(utf8.decode((await aSess.decryptFrom(b1rid, f2.single.payload)).plaintext),
-          'hey back');
+      expect(
+          await decryptAll(aSess, b1rid, payloadsFor(f2, a1rid)), ['hey back']);
     });
 
     test('session state serializes mid-conversation', () async {
@@ -107,16 +127,17 @@ void main() {
 
       var aSess =
           await AccountSession.create(a1, [DeviceTarget.fromCert(bob[0].cert)]);
-      final bSess =
-          await AccountSession.create(b1, [DeviceTarget.fromCert(alice[0].cert)]);
+      final bSess = await AccountSession.create(
+          b1, [DeviceTarget.fromCert(alice[0].cert)]);
 
+      final b1rid = await b1.routingId();
       final f1 = await aSess.encrypt(utf8b('m1'));
-      await bSess.decryptFrom(a1rid, f1.single.payload);
+      await decryptAll(bSess, a1rid, payloadsFor(f1, b1rid));
 
-      aSess = await AccountSession.fromJson(a1, aSess.toJson()); // persist + restore
+      aSess = await AccountSession.fromJson(
+          a1, aSess.toJson()); // persist + restore
       final f2 = await aSess.encrypt(utf8b('m2'));
-      expect(utf8.decode((await bSess.decryptFrom(a1rid, f2.single.payload)).plaintext),
-          'm2');
+      expect(await decryptAll(bSess, a1rid, payloadsFor(f2, b1rid)), ['m2']);
     });
 
     test('decrypting from an unknown device is rejected', () async {
@@ -141,15 +162,14 @@ void main() {
       expect(sess.targetRoutingIds.length, 2);
 
       final fan = await sess.encrypt(utf8b('now to both'));
-      expect(fan.length, 2);
+      expect(fan.map((f) => f.routingId).toSet().length, 2);
 
       final b2 = bob[1].id;
       final b2rid = await b2.routingId();
-      final msg = fan.firstWhere((f) => f.routingId == b2rid);
-      final b2sess =
-          await AccountSession.create(b2, [DeviceTarget.fromCert(alice[0].cert)]);
-      expect(utf8.decode((await b2sess.decryptFrom(a1rid, msg.payload)).plaintext),
-          'now to both');
+      final b2sess = await AccountSession.create(
+          b2, [DeviceTarget.fromCert(alice[0].cert)]);
+      expect(await decryptAll(b2sess, a1rid, payloadsFor(fan, b2rid)),
+          ['now to both']);
     });
   });
 }

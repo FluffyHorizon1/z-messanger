@@ -26,7 +26,9 @@ import 'package:z_protocol/src/util.dart'
     show concatBytes, pad, randomOverrideKey;
 import 'package:z_protocol/z_protocol.dart';
 
+/// Frozen v1 suites (never change) and the v2 post-quantum suites.
 const int vectorsVersion = 1;
+const int vectorsVersionPq = 2;
 
 // ---------------------------------------------------------------------------
 // Deterministic randomness (splitmix64) — every draw is recorded.
@@ -320,10 +322,14 @@ Future<Map<String, Object?>> suiteHandshake(List<Actor> a) async {
 Future<Map<String, Object?>> suiteRatchet(List<Actor> a) async {
   final alice = a[0], bob = a[1];
   final d = Drbg(0x0003);
+  // v1 vectors: the post-quantum extension (v2) is switched off, so the
+  // transcript is exactly what a v1 implementation produces.
   final convA = await Conversation.create(
-      alice.id, await bob.id.bundle(displayName: bob.displayName));
+      alice.id, await bob.id.bundle(displayName: bob.displayName),
+      postQuantum: false);
   final convB = await Conversation.create(
-      bob.id, await alice.id.bundle(displayName: alice.displayName));
+      bob.id, await alice.id.bundle(displayName: alice.displayName),
+      postQuantum: false);
 
   final steps = <Map<String, Object?>>[];
   final transcript = <Map<String, Object?>>[];
@@ -999,18 +1005,237 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
   };
 }
 
-/// Generate every suite. Keys are the file names (without `.json`).
-Future<Map<String, Map<String, Object?>>> generateAll() async {
+// ---------------------------------------------------------------------------
+// v2 — post-quantum hybrid
+// ---------------------------------------------------------------------------
+
+/// ML-KEM-768 known-answer vectors produced by the library from fixed seeds.
+/// They are NOT self-certifying: `tool/verify_mlkem.py` re-derives every one
+/// with kyber-py (an independent implementation validated against the NIST
+/// KATs) in CI. Includes implicit-rejection cases (a flipped ciphertext byte
+/// must decapsulate to a different, deterministic secret).
+Future<Map<String, Object?>> suiteMlKem() async {
+  final d = Drbg(0x0020);
+  final vectors = <Map<String, Object?>>[];
+  for (var i = 0; i < 10; i++) {
+    final seed = d.next(64);
+    final m = d.next(32);
+    final (ek, dk) = pqKeyPairFromSeed(seed);
+    final (ct, k) = pqEncapsulate(ek, m: m);
+    check(eq(pqDecapsulate(seed, ct), k), 'decaps');
+    final bad = Uint8List.fromList(ct);
+    bad[i * 97 % bad.length] ^= 0x01;
+    final kBad = pqDecapsulate(seed, bad);
+    check(!eq(kBad, k), 'implicit rejection');
+    vectors.add({
+      'd': hex(seed.sublist(0, 32)),
+      'z': hex(seed.sublist(32)),
+      'ek': hex(ek),
+      'dk': hex(dk),
+      'm': hex(m),
+      'c': hex(ct),
+      'K': hex(k),
+      'c_bad': hex(bad),
+      'K_bad': hex(kBad),
+    });
+  }
+  return {
+    'suite': 'mlkem768',
+    'version': vectorsVersionPq,
+    'description':
+        'ML-KEM-768 (FIPS 203) known answers: KeyGen_internal(d, z) -> (ek, dk); '
+            'Encaps_internal(ek, m) -> (K, c); Decaps(dk, c) -> K; and implicit '
+            'rejection Decaps(dk, c_bad) -> K_bad. Verified against kyber-py by '
+            'tool/verify_mlkem.py.',
+    'vectors': vectors,
+  };
+}
+
+Map<String, Object?> pqStateJson(PqState p) => {
+      'dk_seed': p.dkSeed == null ? null : hex(p.dkSeed!),
+      'k': p.k == null ? null : hex(p.k!),
+      'ct': p.ct == null ? null : hex(p.ct!),
+      'acked': p.acked,
+      'offered': p.offered,
+    };
+
+/// The v2 upgrade transcript: classical hello, the offerer's `pqek` offer,
+/// the encapsulator's first mixed message carrying `pqct`, the offerer's
+/// mixed reply, and the steady state. Everything a v1 implementation already
+/// does is unchanged; this suite pins what v2 adds.
+Future<Map<String, Object?>> suitePqRatchet(List<Actor> a) async {
+  final alice = a[0], bob = a[1];
+  final d = Drbg(0x0021);
+  final convA = await Conversation.create(
+      alice.id, await bob.id.bundle(displayName: bob.displayName));
+  final convB = await Conversation.create(
+      bob.id, await alice.id.bundle(displayName: alice.displayName));
+  // Roles are fixed by routing-id order (the designated initiator
+  // encapsulates, the other side offers); resolve them from the actors.
+  final enc = convA.isDesignatedInitiator ? 'alice' : 'bob';
+  final off = enc == 'alice' ? 'bob' : 'alice';
+  final convs = {'alice': convA, 'bob': convB};
+  final convEnc = convs[enc]!, convOff = convs[off]!;
+  check(convEnc.isDesignatedInitiator && convOff.isPqOfferer, 'roles');
+  final steps = <Map<String, Object?>>[];
+
+  Future<Map<String, Object?>> stepEncrypt(
+      String by, String label, Uint8List plaintext) async {
+    final conv = convs[by]!;
+    final pqBefore = conv.pq.clone();
+    final payload = await d.run(() => conv.encrypt(plaintext, nowMs: 1));
+    final draws = d.takeDraws();
+    final j = jsonDecode(utf8.decode(base64Decode(payload))) as Map;
+    final header = (j['h'] as Map).cast<String, Object?>();
+    final sid = conv.outboundSid!;
+    final st = conv.sessions[sid]!.ratchet;
+    final step = <String, Object?>{
+      'op': 'encrypt',
+      'by': by,
+      'label': label,
+      'sid': sid,
+      'plaintext': hex(plaintext),
+      'random_draws': [for (final x in draws) hex(x)],
+      'header': header,
+      'header_bytes': hex(RatchetHeader.fromJson(header).encode()),
+      'pq_before': pqStateJson(pqBefore),
+      'pq_after': pqStateJson(conv.pq),
+      'ck_after': hex(st.cks!),
+      'payload': payload,
+    };
+    steps.add(step);
+    return step;
+  }
+
+  Future<Map<String, Object?>> stepDecrypt(
+      String by, String label, String payload) async {
+    final conv = convs[by]!;
+    final pqBefore = conv.pq.clone();
+    final res = await d.run(() => conv.decrypt(payload, nowMs: 2));
+    final draws = d.takeDraws();
+    final step = <String, Object?>{
+      'op': 'decrypt',
+      'by': by,
+      'label': label,
+      'sid': res.sid,
+      'payload': payload,
+      'plaintext': hex(res.plaintext),
+      'random_draws': [for (final x in draws) hex(x)],
+      'pq_before': pqStateJson(pqBefore),
+      'pq_after': pqStateJson(conv.pq),
+      'offer_payload': res.pqOfferPayload,
+      'is_post_quantum': conv.isPostQuantum,
+    };
+    steps.add(step);
+    return step;
+  }
+
+  const ts = 1700000000000;
+  // 1. the encapsulator opens with a classical hello.
+  final s1 = await stepEncrypt(
+      enc,
+      'm1 hello from the encapsulator (classical)',
+      InnerMessage.hello('m1', ts).toBytes());
+  // 2. the offerer decrypts it and produces the pqek offer.
+  final s2 = await stepDecrypt(
+      off, 'offerer receives m1; offers ML-KEM key', s1['payload'] as String);
+  check(s2['offer_payload'] != null, 'offer produced');
+  final offerPayload = s2['offer_payload'] as String;
+  final offerJ = jsonDecode(utf8.decode(base64Decode(offerPayload))) as Map;
+  final offerHeader = (offerJ['h'] as Map).cast<String, Object?>();
+  final dkSeed = unhex((s2['pq_after'] as Map)['dk_seed'] as String);
+  final (ek, dk) = pqKeyPairFromSeed(dkSeed);
+  // 3. the encapsulator decrypts the offer: its DH step, then it encapsulates.
+  final s3 = await stepDecrypt(
+      enc, 'encapsulator receives the offer; encapsulates', offerPayload);
+  final offerInner = InnerMessage.fromBytes(unhex(s3['plaintext'] as String));
+  check(offerInner.kind == 'pqek' && offerInner.data['ek'] == base64Encode(ek),
+      'offer inner');
+  final kA = unhex((s3['pq_after'] as Map)['k'] as String);
+  final ct = unhex((s3['pq_after'] as Map)['ct'] as String);
+  final m = (s3['random_draws'] as List).last as String; // last draw = m
+  final (ct2, k2) = pqEncapsulate(ek, m: unhex(m));
+  check(eq(ct2, ct) && eq(k2, kA), 'encaps from recorded m');
+  check(eq(pqDecapsulate(dkSeed, ct), kA), 'decaps');
+  // 4. the encapsulator's first mixed message, carrying the ciphertext.
+  final s4 = await stepEncrypt(enc, 'm2 first pq message (+pqct)',
+      InnerMessage.text('m2', ts + 1, 'quantum-safe hello').toBytes());
+  check(
+      (s4['header'] as Map)['pq'] == 1 && (s4['header'] as Map)['pqct'] != null,
+      'pq header');
+  // 5. the offerer decapsulates and decrypts.
+  await stepDecrypt(
+      off, 'offerer receives m2; decapsulates', s4['payload'] as String);
+  check(
+      hex(convOff.pq.k!) == hex(kA) && convOff.pq.dkSeed == null, 'offerer K');
+  // 6. the offerer's mixed reply (flag only).
+  final s6 = await stepEncrypt(off, 'm3 pq reply (flag only)',
+      InnerMessage.text('m3', ts + 2, 'same here').toBytes());
+  check(
+      (s6['header'] as Map)['pq'] == 1 && (s6['header'] as Map)['pqct'] == null,
+      'reply header');
+  // 7. the encapsulator learns the peer holds K and stops attaching it.
+  await stepDecrypt(enc, 'encapsulator receives m3; ciphertext acknowledged',
+      s6['payload'] as String);
+  check(convEnc.pq.acked, 'acked');
+  final s8 = await stepEncrypt(enc, 'm4 steady state',
+      InnerMessage.text('m4', ts + 3, 'steady').toBytes());
+  check((s8['header'] as Map)['pqct'] == null, 'no more ct');
+  await stepDecrypt(off, 'offerer receives m4', s8['payload'] as String);
+  // Sanity: a v1 receiver cannot decrypt a pq message (no shared secret).
+  final v1 = await Conversation.create(convOff.me, await convEnc.me.bundle(),
+      postQuantum: false);
+  var v1Failed = false;
+  try {
+    await v1.decrypt(s1['payload'] as String); // fine: classical hello
+    await v1.decrypt(s4['payload'] as String);
+  } on RatchetDecryptException {
+    v1Failed = true;
+  }
+  check(v1Failed, 'v1 rejects pq message');
+
+  return {
+    'suite': 'pq_ratchet',
+    'version': vectorsVersionPq,
+    'description':
+        'Protocol v2 upgrade transcript between the designated initiator '
+            '(encapsulator) and the other party (offerer). Random draws are recorded per '
+            'operation in the order the library makes them; the ML-KEM values '
+            'are cross-checked by tool/verify_mlkem.py, the rest by '
+            'server/test/vectors.test.js.',
+    'encapsulator': enc,
+    'offerer': off,
+    'mix_info': 'Z-PQ-MK-v2',
+    'offer': {
+      'dk_seed': hex(dkSeed),
+      'ek': hex(ek),
+      'dk': hex(dk),
+      'inner_json': utf8.decode(unhex(s3['plaintext'] as String)),
+      'header': offerHeader,
+    },
+    'encapsulation': {'m': m, 'c': hex(ct), 'K': hex(kA)},
+    'steps': steps,
+  };
+}
+
+/// Generate every suite: `{ 'v1': {name: doc}, 'v2': {name: doc} }`.
+Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
   final a = await actors();
   return {
-    'identity': await suiteIdentity(a),
-    'handshake': await suiteHandshake(a),
-    'ratchet': await suiteRatchet(a),
-    'sealed_sender': await suiteSealed(a),
-    'attachments': await suiteAttachments(a),
-    'multidevice': await suiteMultidevice(a),
-    'pairing': await suitePairing(a),
-    'inner_messages': await suiteInnerMessages(a),
+    'v1': {
+      'identity': await suiteIdentity(a),
+      'handshake': await suiteHandshake(a),
+      'ratchet': await suiteRatchet(a),
+      'sealed_sender': await suiteSealed(a),
+      'attachments': await suiteAttachments(a),
+      'multidevice': await suiteMultidevice(a),
+      'pairing': await suitePairing(a),
+      'inner_messages': await suiteInnerMessages(a),
+    },
+    'v2': {
+      'mlkem768': await suiteMlKem(),
+      'pq_ratchet': await suitePqRatchet(a),
+    },
   };
 }
 

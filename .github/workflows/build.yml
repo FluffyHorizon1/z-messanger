@@ -43,6 +43,10 @@ jobs:
         run: |
           dart pub get
           dart test
+      - name: ML-KEM vectors vs kyber-py (independent FIPS 203 implementation)
+        run: |
+          python3 -m pip install --quiet kyber-py==1.2.0
+          python3 protocol/tool/verify_mlkem.py
       - name: App tests (incl. concurrency regression through the real relay)
         working-directory: app
         run: |

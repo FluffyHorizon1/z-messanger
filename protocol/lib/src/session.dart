@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 
 import 'identity.dart';
+import 'messages.dart';
+import 'pq.dart';
 import 'ratchet.dart';
 import 'util.dart';
 
@@ -44,7 +46,8 @@ Future<Uint8List> _deriveSk(Uint8List dh1, Uint8List dh2) async {
   return Uint8List.fromList(await key.extractBytes());
 }
 
-Future<Uint8List> _deriveAd(Uint8List initiatorEdPub, Uint8List responderEdPub) =>
+Future<Uint8List> _deriveAd(
+        Uint8List initiatorEdPub, Uint8List responderEdPub) =>
     sha256Bytes(
         concatBytes([utf8.encode(_adContext), initiatorEdPub, responderEdPub]));
 
@@ -95,7 +98,16 @@ class DecryptResult {
   final Uint8List plaintext;
   final String sid;
   final bool createdNewSession;
-  DecryptResult(this.plaintext, this.sid, this.createdNewSession);
+
+  /// v2: a ready-to-send transport payload carrying this side's ML-KEM offer,
+  /// produced when the offering side has just heard from the peer for the
+  /// first time. The caller sends it to the peer like any other payload
+  /// (after persisting the conversation, whose state it advanced). Null when
+  /// there is nothing to offer.
+  final String? pqOfferPayload;
+
+  DecryptResult(this.plaintext, this.sid, this.createdNewSession,
+      {this.pqOfferPayload});
 }
 
 /// All E2E state for one contact. Serializable; the app persists it
@@ -108,17 +120,39 @@ class Conversation {
   final Map<String, Session> sessions;
   String? outboundSid;
 
-  Conversation._(this.me, this.them, this.myRid, this.theirRid, this.sessions,
-      this.outboundSid);
+  /// v2 post-quantum state, shared by every session of this conversation.
+  final PqState pq;
 
-  static Future<Conversation> create(ZIdentity me, ContactBundle them) async {
+  /// Whether this side takes part in the v2 post-quantum upgrade. Off, the
+  /// conversation behaves exactly as protocol v1 (it neither offers nor
+  /// accepts ML-KEM keys, but still interoperates with v2 peers, which then
+  /// stay classical too). Only the v1 test-vector generator turns it off.
+  final bool postQuantum;
+
+  Conversation._(this.me, this.them, this.myRid, this.theirRid, this.sessions,
+      this.outboundSid,
+      {PqState? pq, this.postQuantum = true})
+      : pq = pq ?? PqState();
+
+  static Future<Conversation> create(ZIdentity me, ContactBundle them,
+      {bool postQuantum = true}) async {
     return Conversation._(
-        me, them, await me.routingId(), await them.routingId(), {}, null);
+        me, them, await me.routingId(), await them.routingId(), {}, null,
+        postQuantum: postQuantum);
   }
 
   /// True if this side should proactively open the session at contact-add
   /// time (deterministic role assignment prevents most double-initiations).
   bool get isDesignatedInitiator => myRid.compareTo(theirRid) < 0;
+
+  /// v2 roles, fixed per pair: the designated initiator ENCAPSULATES, the
+  /// other side OFFERS the ML-KEM key. (Independent of which side happened to
+  /// open the DH session first.)
+  bool get isPqOfferer => !isDesignatedInitiator;
+
+  /// True once both sides share the ML-KEM secret: every message from here on
+  /// is protected against harvest-now-decrypt-later.
+  bool get isPostQuantum => pq.established;
 
   String get _designatedInitiatorRid =>
       myRid.compareTo(theirRid) < 0 ? myRid : theirRid;
@@ -151,8 +185,8 @@ class Conversation {
     final sk = await _deriveSk(dh1, dh2);
     final ad = await _deriveAd(me.edPub, them.edPub);
 
-    final ratchet = await ratchetInitInitiator(
-        sk: sk, theirDhPub: them.xPub, ad: ad);
+    final ratchet =
+        await ratchetInitInitiator(sk: sk, theirDhPub: them.xPub, ad: ad);
     final session = Session(
       sid: await sessionIdFromEk(ekPub),
       initiatorRid: myRid,
@@ -192,12 +226,29 @@ class Conversation {
     return Uint8List.fromList(await secret.extractBytes());
   }
 
+  /// v2: if this side should offer its ML-KEM key and has not yet done so,
+  /// returns the offer as an encrypted transport payload for the caller to
+  /// send (it is an inner message of kind `pqek`, so a v1 peer just ignores
+  /// it). The offer is made once per conversation, until [resetSessions].
+  /// Persist this conversation BEFORE sending — this advances a ratchet.
+  Future<String?> takePqOfferPayload({int? nowMs}) async {
+    if (!postQuantum || !isPqOfferer || pq.established || pq.offered) {
+      return null;
+    }
+    final (seed, ek) = pqGenerate();
+    pq
+      ..dkSeed = seed
+      ..offered = true;
+    final offer = InnerMessage.pqOffer(
+        newMessageId(), nowMs ?? DateTime.now().millisecondsSinceEpoch, ek);
+    return encrypt(offer.toBytes(), nowMs: nowMs);
+  }
+
   /// Encrypts [plaintext] for this contact, creating a session if none
   /// exists. Returns the opaque transport payload (a base64 string the relay
   /// cannot interpret). Persist this conversation's state BEFORE sending.
   Future<String> encrypt(Uint8List plaintext, {int? nowMs}) async {
-    Session? session =
-        outboundSid == null ? null : sessions[outboundSid!];
+    Session? session = outboundSid == null ? null : sessions[outboundSid!];
     if (session == null || session.ratchet.cks == null) {
       // Either no session at all, or we only hold a responder session on
       // which we have not yet received anything (cannot send on it).
@@ -207,7 +258,7 @@ class Conversation {
         ..sort((a, b) => b.lastUsedMs.compareTo(a.lastUsedMs));
       session = usable.isNotEmpty ? usable.first : await _initiateSession();
     }
-    final msg = await ratchetEncrypt(session.ratchet, plaintext);
+    final msg = await ratchetEncrypt(session.ratchet, plaintext, pq: pq);
     session.lastUsedMs = nowMs ?? DateTime.now().millisecondsSinceEpoch;
 
     final payload = <String, Object?>{
@@ -256,50 +307,76 @@ class Conversation {
     }
 
     final msg = RatchetMessage(
-      header:
-          RatchetHeader.fromJson((j['h'] as Map).cast<String, Object?>()),
+      header: RatchetHeader.fromJson((j['h'] as Map).cast<String, Object?>()),
       nonce: unb64(j['n'] as String),
       cipherText: unb64(j['ct'] as String),
       mac: unb64(j['mac'] as String),
     );
-    final plain = await ratchetDecrypt(session.ratchet, msg);
+    final plain = await ratchetDecrypt(session.ratchet, msg, pq: pq);
     session.receivedAny = true;
     session.lastUsedMs = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     _converge();
-    return DecryptResult(plain, sid, created);
+
+    // v2: the encapsulating side acts on an inbound offer; the offering side
+    // makes its offer as soon as it has heard from the peer.
+    if (postQuantum && !isPqOfferer && !pq.established) _acceptPqOffer(plain);
+    final offerPayload =
+        isPqOfferer ? await takePqOfferPayload(nowMs: nowMs) : null;
+    return DecryptResult(plain, sid, created, pqOfferPayload: offerPayload);
+  }
+
+  /// If [plain] is a `pqek` offer for the supported algorithm, encapsulate to
+  /// it. Anything malformed is ignored (the peer simply stays classical).
+  void _acceptPqOffer(Uint8List plain) {
+    if (!InnerMessage.looksLikeKind(plain, 'pqek')) return;
+    try {
+      final inner = InnerMessage.fromBytes(plain);
+      if (inner.data['alg'] != pqAlgorithm) return;
+      final ek = unb64(inner.data['ek'] as String);
+      final (ct, k) = pqEncapsulate(ek);
+      pq
+        ..k = k
+        ..ct = ct
+        ..acked = false;
+    } catch (_) {
+      // Not a usable offer.
+    }
   }
 
   /// Drop sessions unused for [olderThanMs], but never the outbound one.
   void pruneStaleSessions(int nowMs, {int olderThanMs = 7 * 24 * 3600 * 1000}) {
-    sessions.removeWhere((sid, s) =>
-        sid != outboundSid && nowMs - s.lastUsedMs > olderThanMs);
+    sessions.removeWhere(
+        (sid, s) => sid != outboundSid && nowMs - s.lastUsedMs > olderThanMs);
   }
 
-  /// Wipe all sessions (used for an explicit "reset secure session").
+  /// Wipe all sessions (used for an explicit "reset secure session"). The
+  /// post-quantum secret is dropped with them and re-established afresh.
   void resetSessions() {
     sessions.clear();
     outboundSid = null;
+    pq.copyFrom(PqState());
   }
 
   Map<String, Object?> toJson() => {
         'them': them.toJson(),
         'outboundSid': outboundSid,
-        'sessions': {
-          for (final e in sessions.entries) e.key: e.value.toJson()
-        },
+        'sessions': {for (final e in sessions.entries) e.key: e.value.toJson()},
+        'pq': pq.toJson(),
       };
 
-  static Future<Conversation> fromJson(
-      ZIdentity me, Map<String, Object?> j) async {
+  static Future<Conversation> fromJson(ZIdentity me, Map<String, Object?> j,
+      {bool postQuantum = true}) async {
     final them =
         ContactBundle.fromJson((j['them'] as Map).cast<String, Object?>());
-    final conv = await create(me, them);
+    final conv = await create(me, them, postQuantum: postQuantum);
     final sess = (j['sessions'] as Map).cast<String, Object?>();
     for (final e in sess.entries) {
       conv.sessions[e.key] =
           Session.fromJson((e.value as Map).cast<String, Object?>());
     }
     conv.outboundSid = j['outboundSid'] as String?;
+    conv.pq
+        .copyFrom(PqState.fromJson((j['pq'] as Map?)?.cast<String, Object?>()));
     return conv;
   }
 }

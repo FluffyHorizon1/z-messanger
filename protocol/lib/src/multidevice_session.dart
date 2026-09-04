@@ -63,8 +63,8 @@ class AccountSession {
     AccountIdentity me,
     List<DeviceTarget> targets,
   ) async {
-    final myDevice =
-        await ZIdentity.fromSeeds(edSeed: me.deviceEdSeed, xSeed: me.deviceXSeed);
+    final myDevice = await ZIdentity.fromSeeds(
+        edSeed: me.deviceEdSeed, xSeed: me.deviceXSeed);
     final convs = <String, Conversation>{};
     for (final t in targets) {
       convs[await t.routingId()] =
@@ -114,13 +114,19 @@ class AccountSession {
   Future<List<FanoutMessage>> encrypt(Uint8List plaintext, {int? nowMs}) async {
     final out = <FanoutMessage>[];
     for (final e in _convs.entries) {
-      out.add(FanoutMessage(e.key, await e.value.encrypt(plaintext, nowMs: nowMs)));
+      // v2: a pending post-quantum offer rides ahead of the message.
+      final offer = await e.value.takePqOfferPayload(nowMs: nowMs);
+      if (offer != null) out.add(FanoutMessage(e.key, offer));
+      out.add(
+          FanoutMessage(e.key, await e.value.encrypt(plaintext, nowMs: nowMs)));
     }
     return out;
   }
 
   /// Decrypt an inbound payload known to have come from [senderDeviceRid].
   /// Throws [UnknownSessionException] if we hold no session for that device.
+  /// The result may carry a [DecryptResult.pqOfferPayload] that the caller
+  /// must send back to [senderDeviceRid].
   Future<DecryptResult> decryptFrom(String senderDeviceRid, String payload,
       {int? nowMs}) async {
     final conv = _convs[senderDeviceRid];
@@ -145,8 +151,8 @@ class AccountSession {
 
   static Future<AccountSession> fromJson(
       AccountIdentity me, Map<String, Object?> j) async {
-    final myDevice =
-        await ZIdentity.fromSeeds(edSeed: me.deviceEdSeed, xSeed: me.deviceXSeed);
+    final myDevice = await ZIdentity.fromSeeds(
+        edSeed: me.deviceEdSeed, xSeed: me.deviceXSeed);
     final convs = <String, Conversation>{};
     final raw = (j['convs'] as Map).cast<String, Object?>();
     for (final e in raw.entries) {

@@ -299,6 +299,14 @@ class ChatService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// v2: true once this device and [rid] share the ML-KEM secret, i.e. every
+  /// message from here on is protected against harvest-now-decrypt-later.
+  Future<bool> isPostQuantumWith(String rid) async {
+    final c = contacts[rid];
+    if (c == null) return false;
+    return (await _convFor(c)).isPostQuantum;
+  }
+
   Future<String> safetyNumberWith(String rid) async {
     final c = contacts[rid]!;
     return safetyNumber(identity.edPub, c.bundle.edPub);
@@ -338,11 +346,24 @@ class ChatService extends ChangeNotifier {
     await _withLock(contact.rid, () async {
       final conv = await _convFor(contact);
       final snapshot = jsonEncode(conv.toJson());
+      // v2: if this side owes the peer its post-quantum key offer, it goes
+      // out first (silent, ignored by v1 peers).
+      final offer = await conv.takePqOfferPayload();
+      final offerPayload =
+          offer == null ? null : await _sealFor(contact.rid, offer);
       final payload =
           await _sealFor(contact.rid, await conv.encrypt(inner.toBytes()));
       try {
         await vault.db.transaction((txn) async {
           await _saveConv(contact.rid, txn: txn);
+          if (offerPayload != null) {
+            await txn.insert('outbox', {
+              'id': newMessageId(),
+              'rid': contact.rid,
+              'payload': offerPayload,
+              'created_ms': _now(),
+            });
+          }
           await txn.insert('outbox', {
             'id': inner.mid,
             'rid': contact.rid,
@@ -675,10 +696,24 @@ class ChatService extends ChangeNotifier {
 
         final parsed = InnerMessage.fromBytes(dec.plaintext);
         final now = _now();
+        // v2: hearing from the peer for the first time triggers this side's
+        // post-quantum key offer; it is queued with the same durability as
+        // any message, in the transaction that persists the ratchet.
+        final offerPayload = dec.pqOfferPayload == null
+            ? null
+            : await _sealFor(contact.rid, dec.pqOfferPayload!);
         try {
           await vault.db.transaction((txn) async {
             // Persist the advanced ratchet before acting on content.
             await _saveConv(contact.rid, txn: txn);
+            if (offerPayload != null) {
+              await txn.insert('outbox', {
+                'id': newMessageId(),
+                'rid': contact.rid,
+                'payload': offerPayload,
+                'created_ms': now,
+              });
+            }
             final inserted = await txn.insert('inbox_dedupe',
                 {'from_rid': from, 'mid': parsed.mid, 'seen_ms': now},
                 conflictAlgorithm: ConflictAlgorithm.ignore);
@@ -713,6 +748,7 @@ class ChatService extends ChangeNotifier {
 
     // Processed (or a benign drop/duplicate): the relay may forget the envelope.
     transport.ackReceived(id: m.id, from: m.from);
+    unawaited(flushOutbox()); // a queued v2 key offer, if any, goes out now
 
     if (inner != null) {
       if ((inner.kind == 'file' || inner.kind == 'gfile') &&
@@ -2305,13 +2341,25 @@ class ChatService extends ChangeNotifier {
       return;
     }
     InnerMessage? inner;
+    String? offer;
     await _withLock(rid, () async {
       try {
         final dec = await s.decryptFrom(fromDeviceRid, payload);
         await _saveExtra(rid);
         inner = InnerMessage.fromBytes(dec.plaintext);
+        offer = dec.pqOfferPayload;
       } catch (_) {}
     });
+    if (offer != null) {
+      // v2: our post-quantum key offer for that device (best effort, like the
+      // rest of the extra-device path).
+      try {
+        await transport.send(
+            to: fromDeviceRid,
+            id: newMessageId(),
+            payload: await _sealFor(fromDeviceRid, offer!));
+      } catch (_) {}
+    }
     transport.ackReceived(id: m.id, from: m.from);
     if (inner == null) return;
     if (inner!.kind == 'devlist') {

@@ -17,9 +17,9 @@ import 'package:z_protocol/z_protocol.dart';
 
 import '../tool/vectors.dart';
 
-Directory vectorsDir() {
+Directory vectorsDir([String ver = 'v1']) {
   // `dart test` runs with cwd = protocol/.
-  final d = Directory('../docs/vectors/v$vectorsVersion');
+  final d = Directory('../docs/vectors/$ver');
   if (!d.existsSync()) {
     fail('vectors directory not found at ${d.absolute.path} — run '
         '`dart run tool/gen_vectors.dart`');
@@ -27,44 +27,50 @@ Directory vectorsDir() {
   return d;
 }
 
-Map<String, Object?> readVectors(String suite) =>
-    (jsonDecode(File('${vectorsDir().path}/$suite.json').readAsStringSync())
+Map<String, Object?> readVectors(String suite, [String ver = 'v1']) =>
+    (jsonDecode(File('${vectorsDir(ver).path}/$suite.json').readAsStringSync())
             as Map)
         .cast<String, Object?>();
 
 void main() {
   group('frozen vectors are reproduced exactly', () {
-    late Map<String, Map<String, Object?>> generated;
+    late Map<String, Map<String, Map<String, Object?>>> generated;
     setUpAll(() async => generated = await generateAll());
 
-    for (final suite in [
-      'identity',
-      'handshake',
-      'ratchet',
-      'sealed_sender',
-      'attachments',
-      'multidevice',
-      'pairing',
-      'inner_messages',
+    for (final (ver, suite) in [
+      ('v1', 'identity'),
+      ('v1', 'handshake'),
+      ('v1', 'ratchet'),
+      ('v1', 'sealed_sender'),
+      ('v1', 'attachments'),
+      ('v1', 'multidevice'),
+      ('v1', 'pairing'),
+      ('v1', 'inner_messages'),
+      ('v2', 'mlkem768'),
+      ('v2', 'pq_ratchet'),
     ]) {
-      test(suite, () {
-        final onDisk = readVectors(suite);
+      test('$ver/$suite', () {
+        final onDisk = readVectors(suite, ver);
         // Compare through canonical JSON so the diff, if any, is readable.
-        expect(encodeVectorFile(generated[suite]!), encodeVectorFile(onDisk),
-            reason: '$suite.json differs from what the library now produces; '
-                'if the change is intentional, regenerate the vectors, update '
-                'PROTOCOL.md and bump the version');
+        expect(
+            encodeVectorFile(generated[ver]![suite]!), encodeVectorFile(onDisk),
+            reason: '$ver/$suite.json differs from what the library now '
+                'produces; if the change is intentional, regenerate the '
+                'vectors, update PROTOCOL.md and bump the version');
       });
     }
 
     test('no vector file is missing or unexpected', () {
-      final files = vectorsDir()
-          .listSync()
-          .whereType<File>()
-          .map((f) => f.uri.pathSegments.last)
-          .where((n) => n.endsWith('.json'))
-          .toSet();
-      expect(files, {for (final k in generated.keys) '$k.json'});
+      for (final ver in generated.keys) {
+        final files = vectorsDir(ver)
+            .listSync()
+            .whereType<File>()
+            .map((f) => f.uri.pathSegments.last)
+            .where((n) => n.endsWith('.json'))
+            .toSet();
+        expect(files, {for (final k in generated[ver]!.keys) '$k.json'},
+            reason: ver);
+      }
     });
   });
 
@@ -106,8 +112,10 @@ void main() {
       }
       final alice = ids['alice']!, bob = ids['bob']!;
       final convs = {
-        'alice': await Conversation.create(alice, await bob.bundle()),
-        'bob': await Conversation.create(bob, await alice.bundle()),
+        'alice': await Conversation.create(alice, await bob.bundle(),
+            postQuantum: false),
+        'bob': await Conversation.create(bob, await alice.bundle(),
+            postQuantum: false),
       };
       final steps = {
         for (final s in (ratchet['steps'] as List).cast<Map>())

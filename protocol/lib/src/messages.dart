@@ -12,6 +12,8 @@ import 'util.dart';
 ///   'file'   file offer { fid, name, size, mime, sha256, fk, fn, chunks, csize }
 ///   'timer'  disappearing-messages setting { sec } (0 = off)
 ///   'read'   read receipts { mids: [...] }
+///   'pqek'   (v2) post-quantum key offer { alg, ek } — consumed by the
+///            session layer, never shown; ignored by v1 clients
 class InnerMessage {
   final String kind;
   final String mid; // sender-chosen message id (unique per sender)
@@ -62,6 +64,24 @@ class InnerMessage {
 
   static InnerMessage read(String mid, int ts, List<String> mids) =>
       InnerMessage(kind: 'read', mid: mid, ts: ts, data: {'mids': mids});
+
+  /// v2 ML-KEM-768 encapsulation-key offer (see pq.dart).
+  static InnerMessage pqOffer(String mid, int ts, Uint8List ek) => InnerMessage(
+      kind: 'pqek',
+      mid: mid,
+      ts: ts,
+      data: {'alg': 'ML-KEM-768', 'ek': b64(ek)});
+
+  /// Cheap check of the kind without a full parse: [toBytes] always writes
+  /// `{"k":"<kind>"` first.
+  static bool looksLikeKind(Uint8List bytes, String kind) {
+    final prefix = utf8.encode('{"k":"$kind"');
+    if (bytes.length < prefix.length) return false;
+    for (var i = 0; i < prefix.length; i++) {
+      if (bytes[i] != prefix[i]) return false;
+    }
+    return true;
+  }
 }
 
 /// Generates a collision-resistant message/envelope id (base64url, 16 bytes).

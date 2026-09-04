@@ -11,6 +11,14 @@ export 'src/multidevice.dart';
 export 'src/multidevice_session.dart';
 export 'src/pairing.dart';
 export 'src/pairing_relay.dart';
+export 'src/pq.dart'
+    show
+        pqAlgorithm,
+        pqGenerate,
+        pqKeyPairFromSeed,
+        pqEncapsulate,
+        pqDecapsulate,
+        pqMixMessageKey;
 export 'src/relay_client.dart';
 export 'src/sealed.dart';
 export 'src/ratchet.dart'
@@ -19,6 +27,7 @@ export 'src/ratchet.dart'
         RatchetHeader,
         RatchetMessage,
         RatchetDecryptException,
+        PqState,
         ratchetEncrypt,
         ratchetDecrypt,
         ratchetInitInitiator,

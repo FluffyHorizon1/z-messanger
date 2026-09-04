@@ -15,6 +15,13 @@ directory are never edited (a normative change produces a new directory).
 | `pairing.json` | pairing code text, rendezvous, relay identities, channel key, SAS, sealed enrollment | §10 |
 | `inner_messages.json` | the plaintext encoding of every inner kind and the self‑sync envelope | §6, §9 |
 
+`v2/` (post‑quantum hybrid, §17):
+
+| File | Covers | Spec |
+|---|---|---|
+| `mlkem768.json` | ML‑KEM‑768 known answers from seeds: `KeyGen_internal(d,z)`, `Encaps_internal(ek,m)`, `Decaps`, implicit rejection | §17.1 |
+| `pq_ratchet.json` | the nine‑step upgrade transcript: hello, `pqek` offer, encapsulation, first mixed message with `pqct`, mixed reply, steady state | §17.2–17.3 |
+
 ## Conventions
 
 * Byte strings are lowercase hex. Strings that are literally on the wire —
@@ -38,9 +45,12 @@ cd protocol && dart test test/vectors_test.dart   # reference implementation rep
                                                   # then consumes them through the public API only
 cd server   && node --test test/vectors.test.js   # clean-room Node.js implementation (Node crypto only,
                                                   # no shared code) re-derives every vector from PROTOCOL.md
+pip install kyber-py==1.2.0 && python3 protocol/tool/verify_mlkem.py
+                                                  # v2: ML-KEM-768 values re-derived by an independent
+                                                  # FIPS 203 implementation (kyber-py)
 ```
 
-The Node file is deliberately self‑contained (~600 lines including an
+The Node file is deliberately self‑contained (~800 lines including an
 HChaCha20 for XChaCha20‑Poly1305) and is a reasonable starting point for a
 third implementation.
 

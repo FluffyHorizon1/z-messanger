@@ -24,10 +24,10 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2/5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1), `docs/vectors/v1/`, two verifiers in CI |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
-| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · 7.4–7.7 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart` |
+| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · 7.5 post-quantum hybrid ✅ · 7.4/7.6/7.7 ⏳ | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart` |
 
-**Next up, in order:** post-quantum hybrid handshake (7.5) → key
-transparency (7.7, design note first) → voice messages (7.4). Externally gated items resume as soon as their gate clears: Play
+**Next up, in order:** key transparency (7.7, design note first) → voice
+messages (7.4) → a periodic post-quantum re-key (7.5b). Externally gated items resume as soon as their gate clears: Play
 submission, Windows/macOS signing, auditor engagement (5.2), iOS.
 
 ---
@@ -174,8 +174,14 @@ Ordered by value; each is a self-contained project on the existing layering.
   the offer and the last chunk could leave an attachment permanently
   undecryptable.
 - **7.4 Voice messages & richer media** — reuse the attachment pipeline.
-- **7.5 Post-quantum handshake** — add an ML-KEM (Kyber) hybrid layer to X3DH
-  for harvest-now-decrypt-later resistance. Isolated to the handshake.
+- **7.5 Post-quantum hybrid** ✅ — protocol v2: an ML-KEM-768 (FIPS 203)
+  shared secret, offered inside the ratchet on first contact and mixed into
+  every message key from the first round trip on, for harvest-now-decrypt-
+  later resistance. Negotiated without any unauthenticated flag, so v2↔v1
+  stays exactly v1. **DoD:** `pq_test.dart` (11 cases incl. tamper, reorder,
+  v1 interop), `pq_upgrade_test.dart` (two real clients over the relay),
+  `docs/vectors/v2/` verified by kyber-py and the Node replay in CI. Not yet
+  covered: post-quantum post-compromise security (a periodic PQ re-key).
 - **7.6 Message search, backups sync, themes** — quality-of-life.
 - **7.7 Key transparency** — the zero-trust plan's "catch us, don't trust us"
   mechanism for key substitution (F2). Needs a design note first: a KT log
@@ -187,12 +193,12 @@ Ordered by value; each is a self-contained project on the existing layering.
 
 ## Suggested near-term sprint (the next 3 sessions)
 
-1. **Harvest-now-decrypt-later:** 7.5 ML-KEM hybrid in the handshake (needs a
-   vetted pure-Dart ML-KEM; verify against FIPS 203 vectors, add a v2 vector
-   suite).
-2. **Verifiability:** 7.7 key-transparency design note, then 5.2 — engage an
-   auditor with the frozen v1 spec and vectors as the scope document.
-3. **Voice messages** (7.4) on the now-proven attachment pipeline.
+1. **Verifiability:** 7.7 key-transparency design note, then 5.2 — engage an
+   auditor with the frozen v1 spec, the v2 extension and the vectors as the
+   scope document.
+2. **Voice messages** (7.4) on the now-proven attachment pipeline.
+3. **PQ post-compromise security** (7.5b): periodic re-encapsulation so a
+   stolen device state does not keep the quantum-safe secret forever.
 
 Each is a clean working session: implement, test, screenshot/artifact, commit.
 

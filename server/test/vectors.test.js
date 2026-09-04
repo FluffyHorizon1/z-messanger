@@ -231,16 +231,25 @@ const kdfRk = (rk, dh) => {
   return [out.subarray(0, 32), out.subarray(32)];
 };
 const kdfCk = (ck) => [hmac(ck, Buffer.from([1])), hmac(ck, Buffer.from([2]))];
-const headerBytes = (h) => utf8(`{"dh":"${h.dh}","n":${h.n},"pn":${h.pn}}`);
+// v2 (§17): optional members are appended in this fixed order; a header
+// without them encodes exactly as in v1.
+const headerBytes = (h) =>
+  utf8(`{"dh":"${h.dh}","n":${h.n},"pn":${h.pn}` + (h.pq ? ',"pq":1' : '') + (h.pqct ? `,"pqct":"${h.pqct}"` : '') + '}');
+// v2 message-key mixing: HKDF(ikm = mk, salt = K, info = "Z-PQ-MK-v2").
+const pqMix = (mk, K) => hkdf(mk, K, utf8('Z-PQ-MK-v2'), 32);
 
 function makeSession(ad) {
   return { rootKey: null, dhsSeed: null, dhsPub: null, dhrPub: null, cks: null, ckr: null, ns: 0, nr: 0, pn: 0, ad, skipped: new Map() };
 }
 
-function drEncrypt(s, plaintext, nonce) {
+function drEncrypt(s, plaintext, nonce, pq) {
   assert.ok(s.cks, 'sending chain not initialised');
-  const [mk, next] = kdfCk(s.cks);
+  const [mk0, next] = kdfCk(s.cks);
+  const mixed = pq && pq.k;
+  const mk = mixed ? pqMix(mk0, pq.k) : mk0;
   const header = { dh: b64(s.dhsPub), n: s.ns, pn: s.pn };
+  if (mixed) header.pq = 1;
+  if (mixed && !pq.acked && pq.ct) header.pqct = b64(pq.ct);
   const { ct, mac } = xchachaSeal(mk, nonce, pad7816(plaintext), cat(s.ad, headerBytes(header)));
   s.cks = next;
   s.ns += 1;
@@ -266,12 +275,19 @@ function drSkip(s, until) {
   }
 }
 
-function drDecrypt(s, msg, draws) {
+function drDecrypt(s, msg, draws, pq) {
   const aad = cat(s.ad, headerBytes(msg.header));
+  // v2: a message flagged pq needs the shared secret; a header ciphertext
+  // establishes it on the offering side (decapsulation is delegated to the
+  // Python verifier — here the vector's K is used, see the v2 test).
+  const use = (mk0) => (msg.header.pq ? pqMix(mk0, pq.k) : mk0);
+  if (msg.header.pq) assert.ok(pq && pq.k, 'pq message without a shared secret');
   const key = `${msg.header.dh}|${msg.header.n}`;
   if (s.skipped.has(key)) {
     const mk = s.skipped.get(key); s.skipped.delete(key);
-    return unpad7816(xchachaOpen(mk, msg.nonce, msg.ct, msg.mac, aad));
+    const plain = unpad7816(xchachaOpen(use(mk), msg.nonce, msg.ct, msg.mac, aad));
+    if (msg.header.pq) pq.acked = true;
+    return plain;
   }
   const theirPub = unb64(msg.header.dh);
   if (!s.dhrPub || !s.dhrPub.equals(theirPub)) {
@@ -280,7 +296,8 @@ function drDecrypt(s, msg, draws) {
   }
   drSkip(s, msg.header.n);
   const [mk, next] = kdfCk(s.ckr);
-  const plain = unpad7816(xchachaOpen(mk, msg.nonce, msg.ct, msg.mac, aad));
+  const plain = unpad7816(xchachaOpen(use(mk), msg.nonce, msg.ct, msg.mac, aad));
+  if (msg.header.pq) pq.acked = true;
   s.ckr = next; s.nr += 1;
   return plain;
 }
@@ -602,4 +619,145 @@ test('inner messages: every kind parses with its required fields', () => {
   const s = JSON.parse(v.sync_envelope.json);
   assert.deepEqual(Object.keys(s), ['thread', 'dir', 'inner']);
   assert.equal(JSON.parse(unb64(s.inner).toString('utf8')).k, 'text');
+});
+
+// ===========================================================================
+// v2 — post-quantum hybrid (§17). The ML-KEM operations themselves are
+// verified by protocol/tool/verify_mlkem.py (kyber-py); this replay takes the
+// shared secret K and ciphertext c from the vector and checks everything
+// built on them: the pqek offer message, the header extension, the
+// message-key mixing, when the ciphertext rides and when it stops.
+// ===========================================================================
+const V2_DIR = path.join(__dirname, '..', '..', 'docs', 'vectors', 'v2');
+const loadV2 = (name) => JSON.parse(fs.readFileSync(path.join(V2_DIR, `${name}.json`), 'utf8'));
+
+test('v2 mlkem768: vector file is well-formed (values checked by kyber-py)', () => {
+  const v = loadV2('mlkem768');
+  assert.equal(v.suite, 'mlkem768');
+  assert.equal(v.vectors.length, 10);
+  for (const x of v.vectors) {
+    assert.equal(unhex(x.ek).length, 1184);
+    assert.equal(unhex(x.dk).length, 2400);
+    assert.equal(unhex(x.c).length, 1088);
+    assert.equal(unhex(x.K).length, 32);
+    assert.notEqual(x.K, x.K_bad, 'implicit rejection yields a different secret');
+    assert.notEqual(x.c, x.c_bad);
+  }
+});
+
+test('v2 pq_ratchet: the upgrade transcript replays byte-for-byte on both sides', () => {
+  const r = loadV2('pq_ratchet');
+  assert.equal(r.mix_info, 'Z-PQ-MK-v2');
+  const K = unhex(r.encapsulation.K), C = unhex(r.encapsulation.c);
+  const EK = unhex(r.offer.ek);
+  assert.equal(EK.length, 1184); assert.equal(C.length, 1088); assert.equal(K.length, 32);
+  const encName = r.encapsulator, offName = r.offerer;
+  const E = who[encName], O = who[offName];
+  // Roles follow routing-id order: the encapsulator is the lower routing id.
+  assert.ok(E.routing_id < O.routing_id, 'encapsulator is the designated initiator');
+
+  const conv = {
+    [encName]: { sessions: {}, receivedAny: false, pq: { k: null, ct: null, acked: false } },
+    [offName]: { sessions: {}, receivedAny: false, pq: { k: null, ct: null, acked: false, dkSeed: null } },
+  };
+  const other = (n) => (n === encName ? offName : encName);
+  let offerSeen = false;
+
+  const encryptWith = (me, meName, sess, plaintext, draws, sidExpected) => {
+    const m = drEncrypt(sess, plaintext, draws.shift(), me.pq);
+    const payload = { v: 1, t: 'r', sid: sidExpected };
+    if (sess.initiator && !me.receivedAny) payload.ek = b64(sess.ekPub);
+    Object.assign(payload, { h: m.header, n: b64(m.nonce), ct: b64(m.ct), mac: b64(m.mac) });
+    return { m, payloadStr: b64(utf8(JSON.stringify(payload))) };
+  };
+
+  const openSession = (me, meName, j) => {
+    // Responder accepts from the attached ek (same as v1).
+    assert.ok(j.ek, 'first message must carry ek');
+    const my = who[meName], their = who[other(meName)];
+    const dh1 = x25519(unhex(my.x_seed), unhex(their.x_pub));
+    const dh2 = x25519(unhex(my.x_seed), unb64(j.ek));
+    const sk = hkdf(cat(Buffer.alloc(32, 0xff), dh1, dh2), Buffer.alloc(32), utf8('Z-X3DH-v1'), 32);
+    const sess = makeSession(sha256(cat(utf8('Z-AD-v1'), unhex(their.ed_pub), unhex(my.ed_pub))));
+    sess.rootKey = sk; sess.dhsSeed = unhex(my.x_seed); sess.dhsPub = unhex(my.x_pub);
+    me.sessions[j.sid] = sess;
+    return sess;
+  };
+
+  for (const step of r.steps) {
+    const me = conv[step.by];
+    const draws = step.random_draws.map(unhex);
+    if (step.op === 'encrypt') {
+      let sess = me.sessions[step.sid];
+      if (!sess) {
+        // Encapsulator opens the session: draws = ekSeed, dhsSeed, nonce.
+        assert.equal(step.by, encName);
+        const their = who[other(step.by)], my = who[step.by];
+        const ekSeed = draws.shift();
+        const ekPub = xPub(ekSeed);
+        const dh1 = x25519(unhex(my.x_seed), unhex(their.x_pub));
+        const dh2 = x25519(ekSeed, unhex(their.x_pub));
+        const sk = hkdf(cat(Buffer.alloc(32, 0xff), dh1, dh2), Buffer.alloc(32), utf8('Z-X3DH-v1'), 32);
+        sess = makeSession(sha256(cat(utf8('Z-AD-v1'), unhex(my.ed_pub), unhex(their.ed_pub))));
+        sess.dhsSeed = draws.shift(); sess.dhsPub = xPub(sess.dhsSeed);
+        sess.dhrPub = unhex(their.x_pub);
+        [sess.rootKey, sess.cks] = kdfRk(sk, x25519(sess.dhsSeed, sess.dhrPub));
+        sess.ekPub = ekPub; sess.initiator = true;
+        me.sessions[step.sid] = sess;
+        assert.equal(b64url(sha256(ekPub)).slice(0, 22), step.sid);
+      }
+      assert.deepEqual(me.pq.k ? hex(me.pq.k) : null, step.pq_before.k, `pq state before ${step.label}`);
+      const { m, payloadStr } = encryptWith(me, step.by, sess, unhex(step.plaintext), draws, step.sid);
+      assert.equal(draws.length, 0, 'all draws consumed');
+      assert.deepEqual(m.header, step.header, step.label);
+      assert.equal(hex(headerBytes(m.header)), step.header_bytes);
+      assert.equal(payloadStr, step.payload, `payload ${step.label}`);
+      assert.equal(hex(sess.cks), step.ck_after);
+    } else {
+      const j = JSON.parse(unb64(step.payload).toString('utf8'));
+      let sess = me.sessions[j.sid] || openSession(me, step.by, j);
+      const msg = { header: j.h, nonce: unb64(j.n), ct: unb64(j.ct), mac: unb64(j.mac) };
+      if (msg.header.pqct && !me.pq.k) {
+        // Offerer: decapsulation delegated to kyber-py; the vector's K is the
+        // decapsulation of exactly this ciphertext.
+        assert.equal(step.by, offName);
+        assert.ok(me.pq.dkSeed, 'offer must precede a ciphertext');
+        assert.equal(hex(unb64(msg.header.pqct)), r.encapsulation.c, 'header pqct is the recorded c');
+        me.pq.k = K; me.pq.dkSeed = null;
+      }
+      const plain = drDecrypt(sess, msg, draws, me.pq);
+      me.receivedAny = true;
+      assert.equal(hex(plain), step.plaintext, step.label);
+
+      // Encapsulator receiving the offer: encapsulate (delegated) → K, c.
+      if (step.by === encName && !me.pq.k && plain.toString('utf8').startsWith('{"k":"pqek"')) {
+        const inner = JSON.parse(plain.toString('utf8'));
+        assert.equal(inner.alg, 'ML-KEM-768');
+        assert.equal(hex(unb64(inner.ek)), r.offer.ek, 'offered ek');
+        assert.equal(r.offer.inner_json, plain.toString('utf8'));
+        const m32 = draws.shift(); // Encaps_internal randomness m (checked by kyber-py)
+        assert.equal(hex(m32), r.encapsulation.m);
+        me.pq.k = K; me.pq.ct = C; me.pq.acked = false;
+        offerSeen = true;
+      }
+      // Offerer making its offer after first contact: pqGenerate(64) +
+      // newMessageId(16) + the offer's encryption nonce(24).
+      if (step.offer_payload) {
+        assert.equal(step.by, offName);
+        const seed = draws.shift(); const mid = draws.shift();
+        assert.equal(hex(seed), r.offer.dk_seed, 'offer seed');
+        me.pq.dkSeed = seed;
+        const offerInner = utf8(JSON.stringify({ k: 'pqek', mid: b64url(mid), ts: 2, alg: 'ML-KEM-768', ek: b64(EK) }));
+        assert.equal(offerInner.toString('utf8'), r.offer.inner_json);
+        const { payloadStr } = encryptWith(me, step.by, sess, offerInner, draws, j.sid);
+        assert.equal(payloadStr, step.offer_payload, 'offer payload');
+      }
+      assert.equal(draws.length, 0, `all draws consumed in ${step.label}`);
+      assert.equal(me.pq.k ? hex(me.pq.k) : null, step.pq_after.k, `pq k after ${step.label}`);
+      assert.equal(me.pq.acked, step.pq_after.acked, `acked after ${step.label}`);
+      assert.equal(Boolean(me.pq.k), step.is_post_quantum);
+    }
+  }
+  assert.ok(offerSeen);
+  assert.ok(conv[encName].pq.acked && conv[offName].pq.k.equals(K));
 });

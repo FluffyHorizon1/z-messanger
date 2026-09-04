@@ -75,8 +75,8 @@ class DeviceSyncService {
         'dir': 'ping',
         'inner': base64Encode(InnerMessage.hello(newMessageId(), 0).toBytes()),
       });
-      final fan = await s.openInitiatorSessions(
-          Uint8List.fromList(utf8.encode(envelope)));
+      final fan = await s
+          .openInitiatorSessions(Uint8List.fromList(utf8.encode(envelope)));
       if (fan.isEmpty) return;
       await _save();
       for (final f in fan) {
@@ -88,7 +88,8 @@ class DeviceSyncService {
   Future<void> _save() async {
     final s = _session;
     if (s != null) {
-      await vault.kvPut('sync_session', jsonEncode(s.toJson()), sensitive: false);
+      await vault.kvPut('sync_session', jsonEncode(s.toJson()),
+          sensitive: false);
     }
   }
 
@@ -136,12 +137,19 @@ class DeviceSyncService {
       String fromDeviceRid, String payload) async {
     final s = _session;
     if (s == null || !_deviceRids.contains(fromDeviceRid)) return null;
-    return _lock.run(() async {
+    String? offer;
+    final mirrored = await _lock.run(() async {
       try {
         final dec = await s.decryptFrom(fromDeviceRid, payload);
         await _save();
-        final j = jsonDecode(utf8.decode(dec.plaintext)) as Map<String, Object?>;
-        final inner = InnerMessage.fromBytes(base64Decode(j['inner'] as String));
+        offer = dec.pqOfferPayload;
+        // v2: a post-quantum key offer from my other device is consumed by
+        // the session layer above; it carries no mirrored message.
+        if (InnerMessage.looksLikeKind(dec.plaintext, 'pqek')) return null;
+        final j =
+            jsonDecode(utf8.decode(dec.plaintext)) as Map<String, Object?>;
+        final inner =
+            InnerMessage.fromBytes(base64Decode(j['inner'] as String));
         return (
           thread: j['thread'] as String,
           dir: j['dir'] as String,
@@ -151,6 +159,8 @@ class DeviceSyncService {
         return null;
       }
     });
+    if (offer != null) await reliableSend(fromDeviceRid, offer!);
+    return mirrored;
   }
 }
 
