@@ -13,7 +13,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 
 ---
 
-## Where things stand (updated 2026-09-04)
+## Where things stand (updated 2026-09-05)
 
 | Phase | Status | Evidence |
 |---|---|---|
@@ -22,7 +22,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 2 Signed builds | 2.1 + 2.4 ✅ · 2.2/2.3 ⛔ need paid certificates | signed AAB/APK + `SHA256SUMS.txt` on every release |
 | 3 Store distribution | 3.1 prepared, ⛔ awaiting Play account verification · 3.4 ✅ · 3.2 dropped · 3.3 ⏳ | `docs/play/`, `zmessengers.com` landing + privacy page |
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
-| 5 Independent audit | **5.1 ✅ done** · 5.2/5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1), `docs/vectors/v1/`, two verifiers in CI |
+| 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
 | 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search + history sync ✅ (themes ⏳) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart` |
 
@@ -138,7 +138,13 @@ The credibility gate for any encryption product.
   findings: a `legacy` device-certificate flag that bypassed verification, and
   relay push tokens that never expired in the in-memory coordinator.
 - **5.2 Engage an auditor** (e.g. a firm like Cure53/Trail of Bits, or a
-  well-scoped community review). **DoD:** signed engagement + scope.
+  well-scoped community review). Scope written: `docs/AUDIT_SCOPE.md` —
+  twelve numbered claims each mapped to its spec section and existing
+  evidence, ten priority areas for scrutiny, in/out of scope, known
+  limitations, and how to run every verifier; `docs/THREAT_MODEL.md`
+  refreshed to the shipped system (sealed sender, multi-device trust root,
+  groups, PQ hybrid + re-key, device-list transparency). **DoD:** signed
+  engagement + scope (the scope half is done; the engagement is external).
 - **5.3 Remediate & publish.** Fix findings, publish the report and responses.
   **DoD:** public report + a v-bump changelog of fixes.
 

@@ -60,4 +60,7 @@ warnings. The checksum is your integrity check either way.
 - The relay holds queued ciphertext in RAM only, addressed to routing IDs that
   are hashes, never the keys themselves.
 
-See `PROTOCOL.md` / `THREAT_MODEL.md` (where present) for the full model.
+See `docs/PROTOCOL.md` (the normative wire format, with test vectors) and
+`docs/THREAT_MODEL.md` for the full model, and `docs/AUDIT_SCOPE.md` for the
+brief we hand to security reviewers — the claims we make, where each is
+specified and tested, and where we would like the most scrutiny.
