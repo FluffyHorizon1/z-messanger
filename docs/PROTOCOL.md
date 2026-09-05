@@ -258,7 +258,21 @@ account.
 **Root discipline.** A root‑holding device MUST self‑sync every new signed
 list to the account's own other devices (§9, envelope `dir:"acct"`) before or
 with the contacts, so an honest update reaches them within the grace window
-and only a rogue list stands out.
+and only a rogue list stands out. It re‑asserts its newest list on every
+reconnect and whenever one of its devices asks (`dir:"acctreq"`), and a
+non‑root device asks before treating an inconsistent echo as an alarm — so a
+device that merely missed an update is repaired, while an alert raised when
+the root was unreachable clears itself once the root's answer explains the
+echo. Conversely a root's list carrying a version **lower** than the device
+already holds is itself an alert: an honest root never regresses, so the
+newer list was signed by someone else holding the account key (the
+split‑view attacker answering the device's request from the root's mailbox).
+
+**Self‑healing distribution.** A root that receives an echo `pdl` for its own
+account with `v` below its current version knows that contact never got the
+list (added after a device was linked, or a broadcast lost) and sends it
+again (cooldown‑limited); it also introduces its device set alongside the
+contact‑add hello. Distribution therefore converges without user action.
 
 ## 4. Session establishment (X3DH‑style, no server prekeys)
 
@@ -502,14 +516,16 @@ real message.
 devices over the same per‑device sessions, wrapped as:
 
 ```
-utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping"|"acct", "inner":b64(innerMessageBytes) } )
+utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping"|"acct"|"acctreq", "inner":b64(innerMessageBytes) } )
 ```
 
 `dir = "ping"` with a `hello` inner is the proactive session opener and is
 ignored on receipt; `"out"`/`"in"` insert the inner message into `thread` as
 sent/received respectively; `"acct"` carries a `devlist` inner and updates the
 receiving device's knowledge of its *own* account's current signed list (§3.6
-root discipline). Attachment chunks are not re‑encrypted for sync: the chunk
+root discipline); `"acctreq"` (a `hello` inner) asks the root to send that
+list — a root answers with `"acct"`, any other device ignores it. Attachment
+chunks are not re‑encrypted for sync: the chunk
 payloads (§7) are forwarded verbatim to each of the user's other devices, which
 decrypt them with the mirrored offer.
 

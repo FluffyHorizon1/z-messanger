@@ -110,6 +110,10 @@ class ChatService extends ChangeNotifier {
   /// Deferred owner-echo checks. source contactRid → (echoed version, fp, seen).
   final Map<String, ({int v, String h, DateTime seen})> _pendingOwnerEcho = {};
 
+  /// The (version, fingerprint) echo that raised [ownAccountAlert], kept so a
+  /// later honest list from my root can clear the alert if it explains it.
+  (int, String)? _ownAlertEcho;
+
   Timer? _devlistTimer;
 
   /// Sealed sender: routing id → X25519 public key of every device we send
@@ -319,6 +323,14 @@ class ChatService extends ChangeNotifier {
     final conv = await _convFor(contact);
     if (conv.isDesignatedInitiator) {
       await _sendInner(contact, InnerMessage.hello(newMessageId(), _now()));
+      // 7.7a hardening: a multi-device account introduces its device set with
+      // the hello, so the new contact fans out to every device from the first
+      // message. If they have not added us yet this is dropped like the hello;
+      // the echo on their first message then triggers a re-send.
+      if (await _myDevlistVersion() > 1) {
+        final data = await _signCurrentDeviceList();
+        if (data != null) await _sendInner(contact, _devlistInner(data));
+      }
     }
     notifyListeners();
     return contact;
@@ -694,6 +706,11 @@ class ChatService extends ChangeNotifier {
   Future<void> _onConnected() async {
     await flushOutbox();
     await _sync?.prime(); // open the sync ratchet deterministically once online
+    // 7.7a hardening: on every (re)connect a root re-asserts its newest signed
+    // list to its own devices. Cheap, idempotent on the receiving side, and it
+    // is what lets a device that was fed a list behind the root's back hear
+    // the contradiction as soon as the root is reachable again.
+    if (await holdsAccountRoot()) unawaited(_selfSyncCurrentDeviceList());
   }
 
   // ------------------------------------------------------------------
@@ -1741,6 +1758,12 @@ class ChatService extends ChangeNotifier {
       await _applyOwnDeviceList(inner);
       return;
     }
+    // One of my linked devices asks for the current list: the root answers by
+    // self-sync (non-root devices have nothing authoritative to say).
+    if (dir == 'acctreq') {
+      await _selfSyncCurrentDeviceList();
+      return;
+    }
     final outgoing = dir == 'out';
     // Group kinds route by the gid inside the payload, and an invite may
     // introduce contacts this device doesn't hold yet — so handle them before
@@ -2410,40 +2433,88 @@ class ChatService extends ChangeNotifier {
   /// adversary (which by definition keeps the owner's devices in the dark) can
   /// be modelled in tests.
   Future<void> broadcastMyDeviceList({bool alsoOwnDevices = true}) async {
-    final me = await accountIdentity();
-    if (!me.holdsAccountRoot) return; // only a root-holding device can sign
-    final list = await me.signDeviceList(
-        await myFullDeviceList(), await _myDevlistVersion());
-    final data = jsonEncode(list.toJson());
-    // 7.7a: this device now KNOWS the latest legitimate (version, fingerprint)
-    // of its own account — record it so an echo from a contact carrying a list
-    // this device never issued stands out (owner rule).
-    await _recordOwnList(list);
+    final data = await _signCurrentDeviceList();
+    if (data == null) return; // only a root-holding device can sign
     // 7.7a root discipline (rule 8): my own other devices must always know the
     // latest legitimate version, so a rogue enrolment shows up as a version
     // they never saw. Self-sync the signed list to them before (or with) the
     // contacts. No-op when nothing is linked.
-    if (alsoOwnDevices) {
-      await _sync?.mirror(
-          threadRid: '',
-          dir: 'acct',
-          inner: InnerMessage(
-              kind: 'devlist',
-              mid: newMessageId(),
-              ts: _now(),
-              data: {'list': data}));
-    }
+    if (alsoOwnDevices) await _selfSyncDeviceList(data);
     for (final rid in contacts.keys.toList()) {
       final contact = contacts[rid];
       if (contact == null) continue;
-      await _sendInner(
-          contact,
-          InnerMessage(
-              kind: 'devlist',
-              mid: newMessageId(),
-              ts: _now(),
-              data: {'list': data}));
+      await _sendInner(contact, _devlistInner(data));
     }
+  }
+
+  InnerMessage _devlistInner(String listJson) => InnerMessage(
+      kind: 'devlist',
+      mid: newMessageId(),
+      ts: _now(),
+      data: {'list': listJson});
+
+  /// Sign the account's current device set at the current version (root
+  /// only; null elsewhere) and record it as this device's own-list knowledge.
+  Future<String?> _signCurrentDeviceList() async {
+    final me = await accountIdentity();
+    if (!me.holdsAccountRoot) return null;
+    final list = await me.signDeviceList(
+        await myFullDeviceList(), await _myDevlistVersion());
+    // 7.7a: this device now KNOWS the latest legitimate (version, fingerprint)
+    // of its own account — record it so an echo from a contact carrying a list
+    // this device never issued stands out (owner rule).
+    await _recordOwnList(list);
+    return jsonEncode(list.toJson());
+  }
+
+  /// Self-sync a signed list to my own other devices (`dir:"acct"`).
+  Future<void> _selfSyncDeviceList(String listJson) async {
+    await _sync?.mirror(
+        threadRid: '', dir: 'acct', inner: _devlistInner(listJson));
+  }
+
+  /// Root: push the current signed list to my own devices — at startup and
+  /// whenever one of them asks (`acctreq`) — so a linked device that missed a
+  /// broadcast (linked before 7.7a, lost sync) catches up instead of claiming
+  /// a stale version to contacts or mistaking an honest echo for a rogue list.
+  Future<void> _selfSyncCurrentDeviceList() async {
+    if (_sync == null) return;
+    final data = await _signCurrentDeviceList();
+    if (data != null) await _selfSyncDeviceList(data);
+  }
+
+  /// Self-healing distribution (7.7a hardening): a contact whose echo of MY
+  /// list is older than my current version never received it (added after a
+  /// device was linked, or the broadcast was lost) — hand it over now. Root
+  /// only (it can sign, and every contact already knows its routing id). A
+  /// per-contact cooldown bounds the retries if their install keeps failing.
+  final Map<String, int> _dlResentAtMs = {};
+  static const int _dlResendCooldownMs = 60 * 1000;
+
+  Future<void> _maybeResendDeviceList(String rid) async {
+    final contact = contacts[rid];
+    if (contact == null || !await holdsAccountRoot()) return;
+    final last = _dlResentAtMs[rid] ?? 0;
+    if (_now() - last < _dlResendCooldownMs) return;
+    final data = await _signCurrentDeviceList();
+    if (data == null) return;
+    _dlResentAtMs[rid] = _now();
+    await _sendInner(contact, _devlistInner(data));
+  }
+
+  /// Linked device: ask my root for the account's current signed list (it
+  /// answers by self-sync). Sent when a contact's echo disagrees with what
+  /// this device knows, so an honest update that never reached us is fetched
+  /// before the grace period turns it into an alarm. Rate-limited.
+  int _lastAcctReqMs = 0;
+  Future<void> _requestOwnDeviceList() async {
+    if (_sync == null || await holdsAccountRoot()) return;
+    if (_now() - _lastAcctReqMs < 30 * 1000) return;
+    _lastAcctReqMs = _now();
+    await _sync?.mirror(
+        threadRid: '',
+        dir: 'acctreq',
+        inner: InnerMessage.hello(newMessageId(), _now()));
   }
 
   List<DeviceCertificate> _extrasOf(Contact contact, SignedDeviceList list) => [
@@ -2651,6 +2722,12 @@ class ChatService extends ChangeNotifier {
   Future<void> _loadDevlistState() async {
     ownAccountAlert = await vault.kvGet('own_alert');
     removedDeviceAlert = await vault.kvGet('removed_alert');
+    final ae = await vault.kvGet('own_alert_echo');
+    if (ae != null && ae.contains('|')) {
+      final i = ae.indexOf('|');
+      _ownAlertEcho =
+          (int.tryParse(ae.substring(0, i)) ?? 0, ae.substring(i + 1));
+    }
     for (final rid in contacts.keys.toList()) {
       final a = await vault.kvGet('cdl_alert_$rid');
       if (a != null) contactDevlistAlerts[rid] = a;
@@ -2732,7 +2809,26 @@ class ChatService extends ChangeNotifier {
         return;
       }
       if (!await list.verify()) return;
-      if (list.version < await _myDevlistVersion()) return; // stale
+      final knownV = await _myDevlistVersion();
+      if (list.version < knownV) {
+        // My root just sent an OLDER list than this device already holds. An
+        // honest root never regresses (it re-asserts its newest signed list),
+        // so the newer list this device holds was signed by someone else
+        // holding the account key — the split-view attacker answering this
+        // device's own request, or a device enrolled behind the root's back.
+        ownAccountAlert ??=
+            'Your main device sent an older device list (v${list.version}) '
+            'than this device already holds (v$knownV). The newer list was '
+            'signed by another device holding your account key. If that '
+            "wasn't you, reset your identity now.";
+        await vault.kvPut('own_alert', ownAccountAlert!, sensitive: false);
+        notifyListeners();
+        return;
+      }
+      if (list.version == knownV &&
+          b64(await list.fingerprint()) == (await _ownListClaim()).$2) {
+        return; // already hold exactly this list (a reconnect re-assertion)
+      }
       final others = [
         for (final d in list.devices)
           if (base64Encode(d.deviceEdPub) != base64Encode(me.deviceEdPub)) d
@@ -2744,7 +2840,17 @@ class ChatService extends ChangeNotifier {
           sensitive: false);
       await _recordOwnList(list);
       await _initSync();
-      // Catching up may resolve a pending owner-echo (the normal-update case).
+      // Catching up may resolve a pending owner-echo (the normal-update case),
+      // or explain an alert already raised while the root was unreachable: if
+      // the echo that raised it is consistent with what the root just sent,
+      // it was an honest update this device had merely missed.
+      final alertEcho = _ownAlertEcho;
+      if (ownAccountAlert != null && alertEcho != null) {
+        final (knownV, knownH) = await _ownListClaim();
+        final explained = alertEcho.$1 < knownV ||
+            (alertEcho.$1 == knownV && alertEcho.$2 == knownH);
+        if (explained) await acknowledgeOwnAccountAlert();
+      }
       await _reevaluateDevlistPending();
       notifyListeners();
     } catch (_) {}
@@ -2790,8 +2896,15 @@ class ChatService extends ChangeNotifier {
   /// bump seen before my own self-sync arrives does not cry wolf.
   Future<void> _observeOwnEcho(String rid, int echoV, String echoH) async {
     final (knownV, knownH) = await _ownListClaim();
-    final consistent = echoV < knownV || (echoV == knownV && echoH == knownH);
-    if (consistent) {
+    if (echoV < knownV) {
+      // They hold an older list than mine: they never got the current one
+      // (added after a device was linked, or a broadcast was lost). Hand it
+      // over — self-healing distribution. Never an alarm.
+      _pendingOwnerEcho.remove(rid);
+      await _maybeResendDeviceList(rid);
+      return;
+    }
+    if (echoV == knownV && echoH == knownH) {
       _pendingOwnerEcho.remove(rid);
       return;
     }
@@ -2800,6 +2913,10 @@ class ChatService extends ChangeNotifier {
       h: echoH,
       seen: _pendingOwnerEcho[rid]?.seen ?? DateTime.now()
     );
+    // Before treating this as a rogue list, ask my root for the account's
+    // current list: if this device simply missed an honest update, the answer
+    // arrives inside the grace period and the pending check clears.
+    await _requestOwnDeviceList();
     await _reevaluateDevlistPending();
   }
 
@@ -2892,6 +3009,14 @@ class ChatService extends ChangeNotifier {
             "enrolled another device. If that wasn't you, reset your identity "
             'now.';
         await vault.kvPut('own_alert', ownAccountAlert!, sensitive: false);
+        // Remember the strongest echo behind the alert, so that if my root
+        // later proves it honest (its answer makes the echo consistent) the
+        // alert clears itself instead of demanding a needless identity reset.
+        if (_ownAlertEcho == null || ec.v >= _ownAlertEcho!.$1) {
+          _ownAlertEcho = (ec.v, ec.h);
+          await vault.kvPut('own_alert_echo', '${ec.v}|${ec.h}',
+              sensitive: false);
+        }
         _pendingOwnerEcho.remove(key); // recorded; the alert stays until ack
       } else {
         anyPending = true;
@@ -2985,7 +3110,9 @@ class ChatService extends ChangeNotifier {
 
   Future<void> acknowledgeOwnAccountAlert() async {
     ownAccountAlert = null;
+    _ownAlertEcho = null;
     await vault.kvDelete('own_alert');
+    await vault.kvDelete('own_alert_echo');
     notifyListeners();
   }
 

@@ -214,7 +214,11 @@ Ordered by value; each is a self-contained project on the existing layering.
   met by `app/test/devlist_transparency_test.dart`, where a rogue holding the
   account root publishes a split view and an exclusionary list and in both
   cases the honest device AND the contact surface alerts, while an honest
-  addition raises nothing); **7.7b** a public KEYTRANS-style log committing to
+  addition raises nothing). Hardened with self-healing distribution (a stale
+  echo makes the root re-send the list; the root re-asserts it on reconnect
+  and on request; a root list that *regresses* is itself an alert, which is
+  what catches a split-view attacker who answers a device's request from the
+  root's mailbox) — `devlist_distribution_test.dart`; **7.7b** a public KEYTRANS-style log committing to
   the same fingerprints — deferred until there is an operator for durable
   infrastructure.
 

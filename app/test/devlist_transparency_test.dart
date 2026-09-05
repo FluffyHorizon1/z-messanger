@@ -150,6 +150,11 @@ void main() {
     }
   }
 
+  List<String> texts(ChatService svc, String rid) => [
+        for (final m in svc.messagesByChat[rid] ?? const [])
+          if (m.kind == 'text') m.body
+      ];
+
   Future<bool> versionReaches(Future<int> Function() read, int want) async {
     final deadline = DateTime.now().add(const Duration(seconds: 15));
     while (DateTime.now().isBefore(deadline)) {
@@ -242,21 +247,37 @@ void main() {
         reason: 'Carol never installed the rogue v3 list');
 
     // Carol echoes the (rogue) list she now holds back to the account's
-    // devices; the honest laptop was given a version it never issued.
+    // devices. The laptop sees a version it never received and asks its root
+    // for the truth — but the rogue is squatting on the root's mailbox and
+    // answers with its own v3, so the laptop swallows it for now. (A rogue
+    // holding device #1's keys could always have pushed that list; the split
+    // view is caught the moment the honest root is heard from again.)
     await s.carol.sendText(s.accountRid, 'hey');
-    await waitUntil(() => s.laptop.ownAccountAlert != null);
-    expect(s.laptop.ownAccountAlert, isNotNull,
-        reason: 'the honest laptop did not flag the unissued list');
+    await waitUntil(() => texts(s.laptop, s.carol.myRid).contains('hey'));
+    expect(
+        await versionReaches(() => s.laptop.ownDeviceListVersion(), 3), isTrue,
+        reason: 'the rogue, impersonating the root, fed the laptop its list');
 
-    // The honest phone returns and speaks with its true (v2) claim; Carol now
-    // sees device #1 contradict the v3 list it was handed.
+    // The honest phone returns. Three independent detections follow:
     await rogue.transport.stop();
     s.phone.transport.start();
     await waitUntil(() => s.phone.transport.isConnected);
+    // 1. On reconnect the phone re-asserts its honest v2 list to its own
+    //    devices; the laptop holds v3 from "the root" — an honest root never
+    //    regresses, so the laptop flags the newer list as signed by someone else.
+    await waitUntil(() => s.laptop.ownAccountAlert != null);
+    expect(s.laptop.ownAccountAlert, contains('older device list'),
+        reason: 'the laptop did not flag the contradicting root sync');
+    // 2. The phone speaks with its true (v2) claim; Carol sees device #1
+    //    contradict the v3 list it was handed (a rollback on that device).
     await s.phone.sendText(s.carol.myRid, 'still me');
     await waitUntil(() => s.carol.contactDevlistAlerts[s.accountRid] != null);
     expect(s.carol.contactDevlistAlerts[s.accountRid], isNotNull,
         reason: 'Carol did not flag the contradictory device list');
+    // 3. Carol's receipt back to the phone echoes v3 — a list the root never
+    //    issued and cannot explain: after the grace period the root alerts.
+    await waitUntil(() => s.phone.ownAccountAlert != null,
+        timeout: const Duration(seconds: 25));
   }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
 
   test('exclusion (b): a rogue list that drops the honest device is caught',
