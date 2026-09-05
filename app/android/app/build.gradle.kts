@@ -38,8 +38,9 @@ android {
 
     defaultConfig {
         applicationId = "com.zmessenger.www"
-        // 23+ gives hardware-backed keystore + EncryptedSharedPreferences.
-        minSdk = maxOf(23, flutter.minSdkVersion)
+        // 24+: hardware-backed keystore + EncryptedSharedPreferences, and the
+        // floor of androidx.biometric (app lock, 7.8).
+        minSdk = maxOf(24, flutter.minSdkVersion)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -81,4 +82,7 @@ flutter {
 dependencies {
     // Backports java.time etc. so flutter_local_notifications works on old APIs.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    // Theme.AppCompat.* parents in res/values/styles.xml (needed by the
+    // biometric prompt on Android 8.1 and below).
+    implementation("androidx.appcompat:appcompat:1.7.0")
 }

@@ -30,5 +30,7 @@
 	<string>NSApplication</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Z uses the microphone to record encrypted voice messages.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Z uses Touch ID / Face ID to unlock the app.</string>
 </dict>
 </plist>

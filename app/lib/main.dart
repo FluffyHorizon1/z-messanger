@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
+import 'dart:typed_data';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -8,12 +9,14 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import 'core/app_lock.dart';
 import 'core/chat_service.dart';
 import 'core/push_service.dart';
 import 'core/relay_url.dart';
 import 'core/transport.dart';
 import 'core/vault.dart';
 import 'ui/home_screen.dart';
+import 'ui/lock_screen.dart';
 import 'ui/onboarding_screen.dart';
 import 'ui/theme.dart';
 import 'ui/unlock_screen.dart';
@@ -39,10 +42,30 @@ class ZApp extends StatelessWidget {
   }
 }
 
-MaterialApp _shell({required Widget home}) => MaterialApp(
+/// [overlay] (the screen lock, 7.8) is laid over the Navigator through
+/// `builder`, so whatever the user had open survives the lock: the routes
+/// underneath are kept, just hidden, unfocused and pointer-blocked. The
+/// wrapper chain is always present (only its flags change) so the Navigator
+/// keeps its place in the tree — and its stack — when the lock comes and
+/// goes. The overlay gets its own Overlay so text fields inside it work
+/// without the Navigator's.
+MaterialApp _shell({required Widget home, Widget? overlay}) => MaterialApp(
       title: 'Z',
       debugShowCheckedModeBanner: false,
       theme: ZTheme.dark(),
+      builder: (context, child) => Stack(
+        fit: StackFit.expand,
+        children: [
+          ExcludeFocus(
+            excluding: overlay != null,
+            child: ExcludeSemantics(
+              excluding: overlay != null,
+              child: IgnorePointer(ignoring: overlay != null, child: child!),
+            ),
+          ),
+          if (overlay != null) Overlay.wrap(child: overlay),
+        ],
+      ),
       home: home,
     );
 
@@ -60,8 +83,10 @@ class _BootstrapperState extends State<Bootstrapper>
   Vault? _vault;
   ChatService? _service;
   PushService? _push;
+  AppLock? _appLock;
   bool _needsOnboarding = false;
   bool _locked = false; // vault exists but needs a passphrase
+  bool _biometricOffered = false; // biometric unlock is on: offer the prompt
   String? _unlockError;
   bool _unlocking = false;
   Object? _fatal;
@@ -76,32 +101,100 @@ class _BootstrapperState extends State<Bootstrapper>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _appLock?.removeListener(_onLockChanged);
     super.dispose();
+  }
+
+  void _onLockChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final lock = _appLock;
+    final wasLocked = lock?.locked ?? false;
+    lock?.onLifecycle(state);
     if (state == AppLifecycleState.resumed) {
       _service?.transport.nudge();
       _service?.flushOutbox();
+      // Came back to an app that was already locked (the prompt had been
+      // dismissed before leaving): ask again. A lock that was just applied
+      // by onLifecycle prompts itself when its screen appears.
+      if (lock != null && wasLocked && lock.locked && !lock.authInFlight) {
+        lock.requestUnlock(passphraseFallback: _vault?.hasPassphrase ?? false);
+      }
     }
   }
 
   Future<void> _boot() async {
     try {
+      final lock = AppLock(root: await Vault.defaultRoot());
+      await lock.load();
+      lock.addListener(_onLockChanged);
+      _appLock = lock;
+
       final status = await Vault.inspect();
       if (status.requiresPassphrase) {
-        setState(() => _locked = true); // show the unlock screen
+        // The passphrase is the gate at launch. With biometric unlock on,
+        // try the OS prompt first; the passphrase screen stays the fallback.
+        _biometricOffered = lock.settings.biometricUnlock;
+        setState(() => _locked = true);
+        if (_biometricOffered) await _tryBiometricUnlock();
         return;
       }
+      // No passphrase: the screen lock (if on) gates the launch. The vault
+      // opens and the service starts underneath the lock screen meanwhile.
+      if (lock.settings.screenLock) lock.lockNow();
       await _openAndStart(null);
     } catch (e) {
       setState(() => _fatal = e);
     }
   }
 
-  Future<void> _openAndStart(String? passphrase) async {
-    final vault = await Vault.open(passphrase: passphrase);
+  /// Biometric unlock of a passphrase vault (7.8): the OS prompt releases
+  /// the stored pass key, which opens the vault without the passphrase.
+  Future<void> _tryBiometricUnlock() async {
+    final lock = _appLock;
+    if (lock == null || _unlocking) return;
+    setState(() {
+      _unlocking = true;
+      _unlockError = null;
+    });
+    try {
+      final passKey = await lock.passKeyAfterPrompt();
+      if (passKey == null) {
+        // Cancelled / unavailable / nothing stored: back to the passphrase.
+        if (mounted) setState(() => _unlocking = false);
+        return;
+      }
+      await _openAndStart(null, passKey: passKey);
+    } on WrongPassphraseException {
+      // Stale pass key (passphrase changed without re-enrolling): forget it.
+      await lock.disableBiometricUnlock();
+      if (mounted) {
+        setState(() {
+          _unlocking = false;
+          _biometricOffered = false;
+          _unlockError =
+              'Biometric unlock is out of date — enter your passphrase, then '
+              'turn it on again in Settings.';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _unlocking = false;
+          _unlockError = '$e';
+        });
+      }
+    }
+  }
+
+  Future<void> _openAndStart(String? passphrase, {Uint8List? passKey}) async {
+    final vault = await Vault.open(passphrase: passphrase, passKey: passKey);
+    // Typing the passphrase (or passing the biometric prompt) satisfies the
+    // screen lock too — no second prompt at launch.
+    if (passphrase != null || passKey != null) _appLock?.markAuthenticated();
     final idJson = await vault.kvGet('identity');
     if (idJson == null) {
       setState(() {
@@ -191,6 +284,7 @@ class _BootstrapperState extends State<Bootstrapper>
       return _shell(
         home: UnlockScreen(
           onUnlock: _tryUnlock,
+          onBiometric: _biometricOffered ? _tryBiometricUnlock : null,
           busy: _unlocking,
           error: _unlockError,
         ),
@@ -201,6 +295,15 @@ class _BootstrapperState extends State<Bootstrapper>
         home: OnboardingScreen(vault: _vault!, onDone: _onboardingDone),
       );
     }
+    final lock = _appLock;
+    final overlay = lock != null && lock.locked
+        ? LockScreen(
+            lock: lock,
+            verifyPassphrase: (_vault?.hasPassphrase ?? false)
+                ? (p) => _vault!.verifyPassphrase(p)
+                : null,
+          )
+        : null;
     final service = _service;
     if (service == null) {
       return _shell(
@@ -213,6 +316,7 @@ class _BootstrapperState extends State<Bootstrapper>
                     color: ZTheme.accent)),
           ),
         ),
+        overlay: overlay,
       );
     }
     return MultiProvider(
@@ -220,8 +324,9 @@ class _BootstrapperState extends State<Bootstrapper>
         ChangeNotifierProvider<ChatService>.value(value: service),
         ChangeNotifierProvider<Transport>.value(value: service.transport),
         ChangeNotifierProvider<PushService>.value(value: _push!),
+        ChangeNotifierProvider<AppLock>.value(value: lock!),
       ],
-      child: _shell(home: const HomeScreen()),
+      child: _shell(home: const HomeScreen(), overlay: overlay),
     );
   }
 }

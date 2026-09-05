@@ -4,11 +4,13 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/app_lock.dart';
 import '../core/backup.dart';
 import '../core/chat_service.dart';
 import '../core/models.dart';
 import '../core/push_service.dart';
 import '../core/transport.dart';
+import '../core/vault.dart';
 import 'link_device_screen.dart';
 import 'theme.dart';
 
@@ -20,11 +22,24 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  // Whether the OS prompt exists here (false on Linux, or a device with no
+  // biometrics and no PIN): decides whether the app-lock rows are shown.
+  bool _lockAvailable = false;
+
+  @override
+  void initState() {
+    super.initState();
+    context.read<AppLock>().available.then((v) {
+      if (mounted) setState(() => _lockAvailable = v);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ChatService>();
     final transport = context.watch<Transport>();
     final push = context.watch<PushService>();
+    final lock = context.watch<AppLock>();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
@@ -137,9 +152,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: TextStyle(fontSize: 12),
             ),
           ),
+          if (_lockAvailable) ...[
+            SwitchListTile(
+              secondary: Icon(
+                lock.settings.screenLock
+                    ? Icons.fingerprint
+                    : Icons.lock_open_outlined,
+                color:
+                    lock.settings.screenLock ? ZTheme.ok : ZTheme.textSecondary,
+              ),
+              title: const Text('Screen lock'),
+              subtitle: Text(
+                lock.settings.screenLock
+                    ? 'Z asks for your fingerprint, face or device PIN when it '
+                        'opens and after ${_lockAfterLabel(lock.settings.lockAfterSec).toLowerCase()} in the background.'
+                    : 'Ask for your fingerprint, face or device PIN to open Z. '
+                        'Messages still arrive while it is locked.',
+                style: const TextStyle(fontSize: 12),
+              ),
+              value: lock.settings.screenLock,
+              activeThumbColor: ZTheme.accent,
+              onChanged: (v) => _toggleScreenLock(context, lock, v),
+            ),
+            if (lock.settings.screenLock)
+              ListTile(
+                leading: const Icon(Icons.timer_outlined),
+                title: const Text('Lock after'),
+                subtitle: Text(_lockAfterLabel(lock.settings.lockAfterSec),
+                    style: const TextStyle(fontSize: 12)),
+                onTap: () => _pickLockAfter(context, lock),
+              ),
+          ],
           ListTile(
             leading: Icon(
-              svc.vault.hasPassphrase ? Icons.password : Icons.password_outlined,
+              svc.vault.hasPassphrase
+                  ? Icons.password
+                  : Icons.password_outlined,
               color: svc.vault.hasPassphrase ? ZTheme.ok : ZTheme.textSecondary,
             ),
             title: Text(svc.vault.hasPassphrase
@@ -151,8 +199,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   : 'Add a passphrase that unlocks the app on this device. Combined with the device keystore; never sent anywhere.',
               style: const TextStyle(fontSize: 12),
             ),
-            onTap: () => _managePassphrase(context, svc),
+            onTap: () => _managePassphrase(context, svc, lock),
           ),
+          if (_lockAvailable && svc.vault.hasPassphrase)
+            SwitchListTile(
+              secondary: Icon(
+                lock.settings.biometricUnlock
+                    ? Icons.face
+                    : Icons.face_retouching_off,
+                color: lock.settings.biometricUnlock
+                    ? ZTheme.ok
+                    : ZTheme.textSecondary,
+              ),
+              title: const Text('Unlock with biometrics'),
+              subtitle: const Text(
+                'Open the vault with your fingerprint or face instead of '
+                'typing the passphrase. While this is on, a key derived from '
+                'your passphrase (never the passphrase itself) sits in this '
+                'device\'s keystore — so on THIS device, someone who can '
+                'break into the keystore no longer needs your passphrase. '
+                'Turning it off deletes that key.',
+                style: TextStyle(fontSize: 12),
+              ),
+              value: lock.settings.biometricUnlock,
+              activeThumbColor: ZTheme.accent,
+              onChanged: (v) => _toggleBiometricUnlock(context, svc, lock, v),
+            ),
           ListTile(
             leading: const Icon(Icons.save_alt),
             title: const Text('Export identity backup (.zid)'),
@@ -323,7 +395,90 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Future<void> _managePassphrase(BuildContext context, ChatService svc) async {
+  static String _lockAfterLabel(int sec) => switch (sec) {
+        0 => 'Immediately',
+        60 => '1 minute',
+        3600 => '1 hour',
+        _ => '${sec ~/ 60} minutes',
+      };
+
+  Future<void> _toggleScreenLock(
+      BuildContext context, AppLock lock, bool on) async {
+    final messenger = ScaffoldMessenger.of(context);
+    if (!on) {
+      await lock.disableScreenLock();
+      return;
+    }
+    final r = await lock.enableScreenLock();
+    switch (r) {
+      case GateResult.ok:
+        messenger.showSnackBar(const SnackBar(
+            content: Text('Screen lock on. Z will ask before opening.')));
+      case GateResult.unavailable:
+        messenger.showSnackBar(const SnackBar(
+            content: Text('Set up a fingerprint, face or device PIN in your '
+                'system settings first.')));
+      case GateResult.cancelled:
+      case GateResult.failed:
+        messenger.showSnackBar(const SnackBar(
+            content: Text('Not enabled — the prompt was not completed.')));
+    }
+  }
+
+  Future<void> _pickLockAfter(BuildContext context, AppLock lock) async {
+    final sec = await showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Lock after'),
+        children: [
+          RadioGroup<int>(
+            groupValue: lock.settings.lockAfterSec,
+            onChanged: (v) => Navigator.pop(ctx, v),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final c in LockSettings.lockAfterChoices)
+                  RadioListTile<int>(
+                    value: c,
+                    activeColor: ZTheme.accent,
+                    title: Text(_lockAfterLabel(c)),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (sec != null) await lock.setLockAfter(sec);
+  }
+
+  Future<void> _toggleBiometricUnlock(
+      BuildContext context, ChatService svc, AppLock lock, bool on) async {
+    final messenger = ScaffoldMessenger.of(context);
+    if (!on) {
+      await lock.disableBiometricUnlock();
+      messenger.showSnackBar(const SnackBar(
+          content: Text('Biometric unlock off — the stored key was deleted.')));
+      return;
+    }
+    final pass = await _askSecret(context, 'Enter your passphrase');
+    if (pass == null || pass.isEmpty) return;
+    try {
+      final ok = await lock.enrolBiometricUnlock(svc.vault, pass);
+      messenger.showSnackBar(SnackBar(
+          content: Text(ok
+              ? 'Biometric unlock on.'
+              : 'Not enabled — the prompt was not completed.')));
+    } on WrongPassphraseException {
+      messenger
+          .showSnackBar(const SnackBar(content: Text('Incorrect passphrase.')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Could not enable: $e')));
+    }
+  }
+
+  Future<void> _managePassphrase(
+      BuildContext context, ChatService svc, AppLock lock) async {
     final messenger = ScaffoldMessenger.of(context);
     if (!svc.vault.hasPassphrase) {
       final pass = await _newPassphrase(context);
@@ -331,7 +486,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await svc.vault.setPassphrase(pass);
       if (mounted) setState(() {});
       messenger.showSnackBar(const SnackBar(
-          content: Text('Passphrase set. You\'ll be asked for it next launch.')));
+          content:
+              Text('Passphrase set. You\'ll be asked for it next launch.')));
       return;
     }
     // Already set: offer change or remove.
@@ -362,8 +518,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final current = await _askSecret(context, 'Enter current passphrase');
     if (current == null) return;
     if (!await svc.vault.verifyPassphrase(current)) {
-      messenger.showSnackBar(
-          const SnackBar(content: Text('Incorrect passphrase.')));
+      messenger
+          .showSnackBar(const SnackBar(content: Text('Incorrect passphrase.')));
       return;
     }
 
@@ -372,14 +528,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final next = await _newPassphrase(context);
       if (next == null) return;
       await svc.vault.setPassphrase(next);
+      await lock.onPassphraseChanged(svc.vault, next); // re-key biometrics
       if (mounted) setState(() {});
-      messenger.showSnackBar(
-          const SnackBar(content: Text('Passphrase changed.')));
+      messenger
+          .showSnackBar(const SnackBar(content: Text('Passphrase changed.')));
     } else {
       await svc.vault.removePassphrase();
+      await lock.onPassphraseRemoved();
       if (mounted) setState(() {});
       messenger.showSnackBar(const SnackBar(
-          content: Text('Passphrase removed. The app opens automatically now.')));
+          content:
+              Text('Passphrase removed. The app opens automatically now.')));
     }
   }
 

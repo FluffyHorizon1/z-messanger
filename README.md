@@ -41,6 +41,10 @@ your own server or Fly.io? See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
   under a key held in the OS keystore — with an **optional passphrase** (Argon2id)
   that unlocks the app on this device. The passphrase composes with the keystore
   and never leaves the device.
+- **App lock.** Fingerprint / face / device PIN to open Z (and again after a
+  chosen time in the background), and optionally to open a passphrase‑protected
+  vault without typing the passphrase — trade‑offs spelled out in
+  `docs/THREAT_MODEL.md`.
 - **Disappearing messages** (per‑chat timer) and **encrypted attachments**
   (per‑file key delivered inside the ratchet, chunks sealed and hash‑verified).
 - **Safety numbers** to detect machine‑in‑the‑middle key substitution.

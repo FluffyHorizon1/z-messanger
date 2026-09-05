@@ -169,6 +169,25 @@ recipient device so the relay does not learn who sent it.
   macOS/iOS Keychain, Windows credential store, Linux Secret Service),
   optionally wrapped by an app passphrase. If no keystore is available the
   app falls back to a permission‑restricted key file and warns you.
+- **App lock (biometrics / device PIN).** Two optional features, both
+  driven by the OS prompt (fingerprint, face, or the device credential as
+  fallback):
+  - *Screen lock* asks for the prompt when Z opens and again after a chosen
+    time in the background. It is a **UI gate**, like the phone's own lock
+    screen: the vault stays open underneath so messages keep arriving, and
+    it does not change what is stored or how it is encrypted. Someone who
+    can read the app's storage is not stopped by it.
+  - *Unlock with biometrics* (only when an app passphrase is set) lets the
+    prompt open the vault instead of typing the passphrase. To do that, Z
+    keeps the Argon2id output for the current passphrase — never the
+    passphrase — in the OS keystore, and deletes it when the feature is
+    turned off or the passphrase is removed. **The trade‑off:** while it is
+    on, the device secret and that key together unwrap the vault key, so on
+    *that* device an attacker who can extract keystore entries (root, a
+    forensic image of an unlocked phone) no longer needs the passphrase.
+    The passphrase becomes a UI gate on that device; it still protects the
+    vault against anyone who does not have the keystore. Leave it off if
+    the passphrase is your defence against exactly that attacker.
 
 ## Recommendations for high‑risk users
 
@@ -180,7 +199,9 @@ recipient device so the relay does not learn who sent it.
    you can explain it.
 4. Enable disappearing messages for sensitive threads.
 5. Keep your OS and device encryption on; use a strong device passcode and
-   the app passphrase.
+   the app passphrase. Turn on the screen lock; leave "unlock with
+   biometrics" off if you rely on the passphrase against someone who can
+   image the device.
 6. Understand that metadata (which mailbox, when, how much) is the residual
    risk — treat the relay operator accordingly.
 

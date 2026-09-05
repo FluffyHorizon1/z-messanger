@@ -22,6 +22,11 @@ import 'package:z_protocol/z_protocol.dart' as zp;
 /// - Attachments are stored as separate blobs, each sealed with its own
 ///   random key, which is itself stored only inside an encrypted cell.
 /// - Nothing is ever uploaded anywhere: this vault IS the message store.
+/// - With a passphrase set, the master key is wrapped under
+///   HKDF(deviceSecret || Argon2id(passphrase)). Biometric unlock (7.8) keeps
+///   that Argon2id output — never the passphrase — in the OS keystore and
+///   feeds it back through [Vault.open]`(passKey:)` after the OS prompt.
+///
 /// Thrown by [Vault.open] when the vault is passphrase-protected and no
 /// passphrase (or the wrong one) was supplied.
 class VaultLockedException implements Exception {
@@ -78,12 +83,16 @@ class Vault {
   static File _configFile(Directory root) =>
       File(p.join(root.path, 'key.json'));
 
+  /// The vault directory for this install (also home to the app-lock
+  /// settings, see `AppLock`). Tests pass `rootOverride` instead.
+  static Future<Directory> defaultRoot() async =>
+      Directory(p.join((await getApplicationSupportDirectory()).path, 'z'));
+
   /// Reports whether a vault exists here and whether it is passphrase-locked —
   /// without needing the passphrase or opening the database. The bootstrapper
   /// calls this to decide whether to show the unlock screen.
   static Future<VaultStatus> inspect({Directory? rootOverride}) async {
-    final root = rootOverride ??
-        Directory(p.join((await getApplicationSupportDirectory()).path, 'z'));
+    final root = rootOverride ?? await defaultRoot();
     final cfg = _configFile(root);
     if (await cfg.exists()) {
       try {
@@ -101,11 +110,15 @@ class Vault {
   }
 
   /// Opens the vault. Supply [passphrase] when [inspect] reported
-  /// requiresPassphrase. [rootOverride] lets tests use a temp directory.
+  /// requiresPassphrase — or, for biometric unlock (7.8), the [passKey]
+  /// previously obtained from [passKeyFor] (the Argon2id output for the
+  /// current passphrase, so the slow KDF is skipped and the passphrase itself
+  /// is never stored). A stale [passKey] — one derived before the passphrase
+  /// was changed — fails with [WrongPassphraseException] exactly like a wrong
+  /// passphrase. [rootOverride] lets tests use a temp directory.
   static Future<Vault> open(
-      {String? passphrase, Directory? rootOverride}) async {
-    final root = rootOverride ??
-        Directory(p.join((await getApplicationSupportDirectory()).path, 'z'));
+      {String? passphrase, Uint8List? passKey, Directory? rootOverride}) async {
+    final root = rootOverride ?? await defaultRoot();
     final filesDir = Directory(p.join(root.path, 'files'));
     await filesDir.create(recursive: true);
 
@@ -120,11 +133,14 @@ class Vault {
       hasPass = j['hasPassphrase'] == true;
       final salt =
           j['salt'] != null ? zp.unb64(j['salt'] as String) : Uint8List(0);
-      if (hasPass && (passphrase == null || passphrase.isEmpty)) {
+      final havePassphrase = passphrase != null && passphrase.isNotEmpty;
+      if (hasPass && !havePassphrase && passKey == null) {
         throw VaultLockedException();
       }
-      final wrapKey = await _deriveWrapKey(deviceSecret,
-          passphrase: hasPass ? passphrase : null, salt: salt);
+      final wrapKey = hasPass && !havePassphrase
+          ? await _deriveWrapKey(deviceSecret, passKey: passKey, salt: salt)
+          : await _deriveWrapKey(deviceSecret,
+              passphrase: hasPass ? passphrase : null, salt: salt);
       masterKeyBytes = await _unwrap(j['wrapped'] as String, wrapKey);
     } else {
       // First open with the new scheme: migrate a legacy key or make a new one.
@@ -257,36 +273,62 @@ class Vault {
   /// "confirm current passphrase" step before changing/removing it).
   Future<bool> verifyPassphrase(String passphrase) async {
     try {
-      final j = jsonDecode(await _configFile(root).readAsString())
-          as Map<String, Object?>;
-      if (j['hasPassphrase'] != true) return true;
-      final salt = zp.unb64(j['salt'] as String);
-      final wrapKey = await _deriveWrapKey(_deviceSecret,
-          passphrase: passphrase, salt: salt);
-      await _unwrap(j['wrapped'] as String, wrapKey);
+      await passKeyFor(passphrase);
       return true;
     } catch (_) {
       return false;
     }
   }
 
+  /// The 32-byte Argon2id output for [passphrase] under the current salt —
+  /// the "pass key" that biometric unlock (7.8) keeps in the OS keystore so
+  /// the vault can be opened with [open]`(passKey:)` after a successful
+  /// biometric prompt. The result is verified against the wrapped master key
+  /// first, so a wrong passphrase throws [WrongPassphraseException] rather
+  /// than producing a key that could never unlock anything. Throws
+  /// [StateError] when no passphrase is set (there is nothing to derive).
+  Future<Uint8List> passKeyFor(String passphrase) async {
+    final j = jsonDecode(await _configFile(root).readAsString())
+        as Map<String, Object?>;
+    if (j['hasPassphrase'] != true) {
+      throw StateError('no passphrase is set');
+    }
+    final salt = zp.unb64(j['salt'] as String);
+    final passKey = await _argon2(passphrase, salt);
+    final wrapKey =
+        await _deriveWrapKey(_deviceSecret, passKey: passKey, salt: salt);
+    await _unwrap(j['wrapped'] as String, wrapKey); // WrongPassphraseException
+    return passKey;
+  }
+
   // ------------------------------------------------------------------
   // Key wrapping internals
   // ------------------------------------------------------------------
 
+  static Future<Uint8List> _argon2(String passphrase, Uint8List salt) async {
+    final k = await _kdf().deriveKey(
+      secretKey: SecretKey(utf8.encode(passphrase)),
+      nonce: salt,
+    );
+    return Uint8List.fromList(await k.extractBytes());
+  }
+
   /// K_wrap = HKDF( deviceSecret [|| Argon2id(passphrase, salt)] ). Composing
   /// the device keystore secret with the passphrase means BOTH the device and
-  /// the passphrase are needed to unlock — neither alone suffices.
+  /// the passphrase are needed to unlock — neither alone suffices. The
+  /// Argon2id output may be supplied precomputed as [passKey] (biometric
+  /// unlock); the derivation is otherwise identical.
   static Future<SecretKey> _deriveWrapKey(Uint8List deviceSecret,
-      {String? passphrase, required Uint8List salt}) async {
+      {String? passphrase, Uint8List? passKey, required Uint8List salt}) async {
     var material = deviceSecret;
     if (passphrase != null && passphrase.isNotEmpty) {
-      final passKey = await _kdf().deriveKey(
-        secretKey: SecretKey(utf8.encode(passphrase)),
-        nonce: salt,
-      );
-      material = Uint8List.fromList(
-          [...deviceSecret, ...await passKey.extractBytes()]);
+      passKey = await _argon2(passphrase, salt);
+    }
+    if (passKey != null) {
+      if (passKey.length != 32) {
+        throw ArgumentError('passKey must be 32 bytes');
+      }
+      material = Uint8List.fromList([...deviceSecret, ...passKey]);
     }
     final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
     return hkdf.deriveKey(

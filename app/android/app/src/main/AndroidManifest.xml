@@ -7,6 +7,11 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- Voice messages (7.4): microphone capture, requested on first use. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- App lock (7.8): fingerprint / face prompt via androidx.biometric.
+         USE_FINGERPRINT covers Android 7–8.1; USE_BIOMETRIC covers 9+. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+    <uses-permission android:name="android.permission.USE_FINGERPRINT"
+        android:maxSdkVersion="27"/>
     <application
         android:label="Z"
         android:name="${applicationName}"

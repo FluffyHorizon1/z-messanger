@@ -24,10 +24,11 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
-| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search + history sync ✅ (themes ⏳) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart` |
+| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search + history sync ✅ (themes ⏳) · **7.8 app lock (biometrics) ✅** (7.8b keystore auth-binding ⏳) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
 
-**Next up:** 7.6 themes (needs visual verification); 5.2 engagement is
-external.
+**Next up:** 7.6 themes (needs visual verification); 7.8b (bind the
+biometric pass key to the keystore's own user-authentication requirement —
+native code); 5.2 engagement is external.
 Externally gated items resume as soon as their gate clears: Play submission,
 Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public transparency
 log) waits for a public launch with durable infrastructure.
@@ -236,13 +237,32 @@ Ordered by value; each is a self-contained project on the existing layering.
   root's mailbox) — `devlist_distribution_test.dart`; **7.7b** a public KEYTRANS-style log committing to
   the same fingerprints — deferred until there is an operator for durable
   infrastructure.
+- **7.8 App lock** ✅ — biometric / device-credential authentication to open
+  the app (`local_auth`: Android, iOS, macOS, Windows Hello; hidden on Linux).
+  *Screen lock*: the OS prompt on launch and after a chosen time in the
+  background (immediately … 1 hour); a UI gate laid over the navigation stack
+  so the open chat survives, with the vault passphrase as fallback when one
+  is set, and a lock nobody can pass (device credential removed) opens and
+  switches itself off. *Unlock with biometrics*: a passphrase-protected
+  vault opens from the prompt via the stored Argon2id pass key
+  (`Vault.open(passKey:)`), bound to the passphrase salt, re-derived on
+  passphrase change and deleted on disable / removal — with the trade-off
+  stated in THREAT_MODEL.md. Android moved to `FlutterFragmentActivity`,
+  AppCompat themes and minSdk 24 for `androidx.biometric`. **DoD:**
+  `app_lock_test.dart` (timing, prompt outcomes, in-flight noise, auto-off,
+  pass-key lifecycle against a real vault), `lock_screen_test.dart`,
+  `vault_passphrase_test.dart` pass-key case. **7.8b** ⏳: bind the pass key
+  to keystore user-authentication (`setUserAuthenticationRequired` /
+  Keychain access control) so the entry is unreadable without the prompt at
+  the OS level — needs platform code beyond `flutter_secure_storage`.
 
 ---
 
 ## Suggested near-term sprint (the next 3 sessions)
 
 1. **Quality-of-life** (7.6, continued): themes (search, history sync and
-   jump-to-message are done).
+   jump-to-message are done); 7.8b keystore auth-binding for the biometric
+   pass key.
 2. **Verifiability:** 5.2 — engage an auditor with the frozen v1 spec, the v2
    extension (incl. the 7.5b re-key), ADR 0001 and the vectors as the scope
    document.

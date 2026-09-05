@@ -698,7 +698,17 @@ The app keeps all state in a SQLite vault with per‑cell XChaCha20‑Poly1305
 encryption under a 256‑bit master key held in the OS keystore (optionally
 wrapped by an app passphrase). Attachments are stored as separate files sealed
 under per‑file keys kept in encrypted cells. Disappearing messages are swept
-every 20 s. An identity backup (`.zid`) is:
+every 20 s.
+
+The master key is wrapped as `XChaCha20‑Poly1305(K_wrap, master)` with
+`K_wrap = HKDF‑SHA256(deviceSecret ‖ passKey?, info "z-wrap-v1")`, where
+`deviceSecret` is a 32‑byte keystore secret and `passKey =
+Argon2id(passphrase, salt, m = 19456 KiB, t = 2, p = 1, L = 32)` is present
+only while a passphrase is set. The optional *biometric unlock* keeps that
+`passKey` (not the passphrase) in the keystore and releases it after the OS
+prompt; a new salt on every passphrase change makes an old `passKey` fail
+closed. The *screen lock* is a UI gate over the open vault and changes
+nothing here. An identity backup (`.zid`) is:
 
 ```
 inner = JSON{ "v":1, "identity":{ "edSeed":b64, "xSeed":b64 }, "name":string, "contacts":[...] }

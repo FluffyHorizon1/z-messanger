@@ -4,13 +4,20 @@ import 'theme.dart';
 
 /// Shown at launch when the vault is passphrase-protected. The passphrase is
 /// combined with the device keystore secret to unwrap the local vault key; it
-/// never leaves the device and is never sent to any server.
+/// never leaves the device and is never sent to any server. With biometric
+/// unlock enabled (7.8) the bootstrapper tries the OS prompt first and
+/// [onBiometric] re-offers it here.
 class UnlockScreen extends StatefulWidget {
   final Future<void> Function(String passphrase) onUnlock;
+  final Future<void> Function()? onBiometric;
   final bool busy;
   final String? error;
   const UnlockScreen(
-      {super.key, required this.onUnlock, this.busy = false, this.error});
+      {super.key,
+      required this.onUnlock,
+      this.onBiometric,
+      this.busy = false,
+      this.error});
 
   @override
   State<UnlockScreen> createState() => _UnlockScreenState();
@@ -90,6 +97,14 @@ class _UnlockScreenState extends State<UnlockScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2))
                       : const Text('Unlock'),
                 ),
+                if (widget.onBiometric != null) ...[
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: widget.busy ? null : widget.onBiometric,
+                    icon: const Icon(Icons.fingerprint),
+                    label: const Text('Use fingerprint / face'),
+                  ),
+                ],
                 const SizedBox(height: 24),
                 const Text(
                   'Your passphrase unlocks the encrypted vault on THIS device '
