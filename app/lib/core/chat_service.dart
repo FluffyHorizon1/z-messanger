@@ -1669,8 +1669,9 @@ class ChatService extends ChangeNotifier {
   /// Persist a newly-linked device of MY account and (re)build the sync channel.
   Future<void> addMyDevice(DeviceCertificate cert) async {
     final list = await _myDevices();
-    if (!list.any(
-        (d) => base64Encode(d.deviceEdPub) == base64Encode(cert.deviceEdPub))) {
+    final isNew = !list.any(
+        (d) => base64Encode(d.deviceEdPub) == base64Encode(cert.deviceEdPub));
+    if (isNew) {
       list.add(cert);
       await vault.kvPut(
           'my_devices', jsonEncode([for (final d in list) d.toJson()]),
@@ -1681,6 +1682,116 @@ class ChatService extends ChangeNotifier {
     }
     await _initSync();
     await broadcastMyDeviceList(); // tell contacts about the new device
+    // 7.6b: a device that just joined starts with the recent history instead
+    // of an empty screen (queued through the durable outbox, so it lands even
+    // if the new device is briefly offline).
+    if (isNew) unawaited(_syncHistoryTo(await cert.routingId()));
+  }
+
+  // ---- 7.6b history sync to a newly linked device ---------------------------
+
+  /// How much recent history a newly linked device receives, per chat.
+  static const int historySyncPerChat = 200;
+
+  /// Items per self-sync envelope (~30 KB, well under the relay frame cap).
+  static const int historySyncBatch = 100;
+
+  /// Replay the newest [historySyncPerChat] text messages of every chat to
+  /// ONE of my devices (the one just linked), oldest first, in batches over
+  /// the self-sync channel. Attachments are not replayed: their key material
+  /// is not retained on the sender's side, and a placeholder that could never
+  /// complete would be worse than the file simply living on the other device.
+  Future<void> _syncHistoryTo(String deviceRid) async {
+    final sync = _sync;
+    if (sync == null) return;
+    final items = <Map<String, Object?>>[];
+    Future<void> flush() async {
+      if (items.isEmpty) return;
+      final batch = List<Map<String, Object?>>.from(items);
+      items.clear();
+      try {
+        await sync.mirrorTo(
+            deviceRid: deviceRid,
+            threadRid: '',
+            dir: 'hist',
+            inner: InnerMessage(
+                kind: 'hist',
+                mid: newMessageId(),
+                ts: _now(),
+                data: {'items': batch}));
+      } catch (_) {
+        // Best effort: a lost batch only means a shorter history over there.
+      }
+    }
+
+    for (final thread in [...contacts.keys, ...groups.keys]) {
+      final rows = await vault.db.query('messages',
+          where: 'rid = ? AND kind IN (?, ?)',
+          whereArgs: [thread, 'text', 'gtext'],
+          orderBy: 'ts_ms DESC',
+          limit: historySyncPerChat);
+      for (final r in rows.reversed) {
+        final ChatMessage m;
+        try {
+          m = await _rowToMessage(thread, r);
+        } catch (_) {
+          continue;
+        }
+        items.add({
+          't': thread,
+          'mid': m.mid,
+          'o': m.outgoing,
+          'k': m.kind,
+          'b': m.body,
+          'ts': m.ts,
+          if (m.senderName != null) 'sn': m.senderName,
+        });
+        if (items.length >= historySyncBatch) await flush();
+      }
+    }
+    await flush();
+  }
+
+  /// Receiving side of [_syncHistoryTo]: store each item as an ordinary text /
+  /// group-text row (deduplicated by message id, so an item that also arrived
+  /// as a live mirror is not doubled), skipping threads this device does not
+  /// hold, then refresh any thread that is currently loaded.
+  Future<void> _applyHistoryBatch(InnerMessage inner) async {
+    final items = (inner.data['items'] as List?)?.cast<Map>() ?? const [];
+    final touched = <String>{};
+    for (final it in items) {
+      final thread = it['t'] as String?;
+      final mid = it['mid'] as String?;
+      if (thread == null || mid == null) continue;
+      if (!contacts.containsKey(thread) && !groups.containsKey(thread)) {
+        continue;
+      }
+      final kind = it['k'] == 'gtext' ? 'gtext' : 'text';
+      final body = it['b'] as String? ?? '';
+      final outgoing = it['o'] == true;
+      final sn = it['sn'] as String?;
+      final encBody = kind == 'gtext'
+          ? jsonEncode({'b': body, if (sn != null) 'sn': sn})
+          : body;
+      await vault.db.insert(
+          'messages',
+          {
+            'mid': mid,
+            'rid': thread,
+            'outgoing': outgoing ? 1 : 0,
+            'kind': kind,
+            'enc_body': await vault.seal(encBody),
+            'ts_ms': (it['ts'] as num?)?.toInt() ?? _now(),
+            'status': outgoing ? MsgStatus.sent : MsgStatus.delivered,
+            'expire_at_ms': 0,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+      touched.add(thread);
+    }
+    for (final t in touched) {
+      if (messagesByChat.containsKey(t)) await loadMessages(t);
+    }
+    if (touched.isNotEmpty) notifyListeners();
   }
 
   /// Revoke a linked device of MY account: drop it from the sync set, bump the
@@ -1762,6 +1873,11 @@ class ChatService extends ChangeNotifier {
     // self-sync (non-root devices have nothing authoritative to say).
     if (dir == 'acctreq') {
       await _selfSyncCurrentDeviceList();
+      return;
+    }
+    // 7.6b: recent history replayed by my root when this device was linked.
+    if (dir == 'hist') {
+      await _applyHistoryBatch(inner);
       return;
     }
     final outgoing = dir == 'out';

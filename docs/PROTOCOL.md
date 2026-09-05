@@ -516,7 +516,7 @@ real message.
 devices over the same per‑device sessions, wrapped as:
 
 ```
-utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping"|"acct"|"acctreq", "inner":b64(innerMessageBytes) } )
+utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping"|"acct"|"acctreq"|"hist", "inner":b64(innerMessageBytes) } )
 ```
 
 `dir = "ping"` with a `hello` inner is the proactive session opener and is
@@ -524,7 +524,13 @@ ignored on receipt; `"out"`/`"in"` insert the inner message into `thread` as
 sent/received respectively; `"acct"` carries a `devlist` inner and updates the
 receiving device's knowledge of its *own* account's current signed list (§3.6
 root discipline); `"acctreq"` (a `hello` inner) asks the root to send that
-list — a root answers with `"acct"`, any other device ignores it. Attachment
+list — a root answers with `"acct"`, any other device ignores it; `"hist"`
+carries an inner of kind `hist` whose `items` replay recent history to a
+device that was just linked: each item is
+`{ "t":thread, "mid", "o":outgoing, "k":"text"|"gtext", "b":body, "ts", "sn"? }`,
+stored as an ordinary row (deduplicated on `mid`) and ignored for a thread the
+receiving device does not hold. The reference app replays the newest 200 text
+messages per chat in batches of 100; attachments are not replayed. Attachment
 chunks are not re‑encrypted for sync: the chunk
 payloads (§7) are forwarded verbatim to each of the user's other devices, which
 decrypt them with the mirrored offer.

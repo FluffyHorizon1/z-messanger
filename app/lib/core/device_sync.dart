@@ -118,6 +118,30 @@ class DeviceSyncService {
     });
   }
 
+  /// Mirror to ONE of my devices only (7.6b history sync to a newly linked
+  /// device): same envelope, encrypted on that device's session alone.
+  Future<void> mirrorTo({
+    required String deviceRid,
+    required String threadRid,
+    required String dir,
+    required InnerMessage inner,
+  }) async {
+    final s = _session;
+    if (s == null || !_deviceRids.contains(deviceRid)) return;
+    await _lock.run(() async {
+      final envelope = jsonEncode({
+        'thread': threadRid,
+        'dir': dir,
+        'inner': base64Encode(inner.toBytes()),
+      });
+      final f = await s.encryptFor(
+          deviceRid, Uint8List.fromList(utf8.encode(envelope)));
+      if (f == null) return;
+      await _save();
+      await reliableSend(f.routingId, f.payload);
+    });
+  }
+
   /// Fan a raw, already-sealed payload (an encrypted file chunk) to each of my
   /// other devices' mailboxes. Unlike [mirror] this does NOT use the sync
   /// ratchet: a chunk is self-contained and sealed under its own file key, so
