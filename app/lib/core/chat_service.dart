@@ -1353,6 +1353,46 @@ class ChatService extends ChangeNotifier {
     return list;
   }
 
+  /// How far back a search hit can be jumped to directly. Beyond this the chat
+  /// opens normally (the hit is reachable by paging), so the window a jump
+  /// loads is always bounded.
+  static const int jumpWindowMax = 500;
+
+  /// 7.6: open a thread so that message [mid] is on screen — the loaded window
+  /// runs from that message to the newest one, so the existing "load older on
+  /// scroll-up" paging still works from its far end. Returns false (and loads
+  /// nothing) when the message is unknown or more than [jumpWindowMax]
+  /// messages back; the caller then falls back to [loadMessages].
+  Future<bool> loadMessagesAround(String rid, String mid) async {
+    final target = await vault.db.query('messages',
+        columns: ['ts_ms'],
+        where: 'rid = ? AND mid = ?',
+        whereArgs: [rid, mid],
+        limit: 1);
+    if (target.isEmpty) return false;
+    final ts = target.first['ts_ms'] as int;
+    final newer = firstIntValue(await vault.db.rawQuery(
+            'SELECT COUNT(*) FROM messages WHERE rid = ? AND ts_ms >= ?',
+            [rid, ts])) ??
+        0;
+    if (newer > jumpWindowMax) return false;
+    final rows = await vault.db.query('messages',
+        where: 'rid = ? AND ts_ms >= ?',
+        whereArgs: [rid, ts],
+        orderBy: 'ts_ms ASC');
+    final list = <ChatMessage>[];
+    for (final r in rows) {
+      list.add(await _rowToMessage(rid, r));
+    }
+    final older = firstIntValue(await vault.db.rawQuery(
+            'SELECT COUNT(*) FROM messages WHERE rid = ? AND ts_ms < ?',
+            [rid, ts])) ??
+        0;
+    hasMoreByChat[rid] = older > 0;
+    messagesByChat[rid] = list;
+    return true;
+  }
+
   /// Prepend the next (older) page of a thread. Returns how many messages
   /// were added; 0 means the full history is already loaded.
   Future<int> loadOlderMessages(String rid) async {

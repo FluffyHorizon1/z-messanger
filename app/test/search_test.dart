@@ -161,4 +161,83 @@ void main() {
           reason: 'plaintext leaked into a stored cell');
     }
   }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+
+  group('jump to message', _jumpTests);
+}
+
+// ---------------------------------------------------------------------------
+// 7.6: jump-to-message. Exercised on rows written straight into the vault so
+// the window arithmetic is deterministic and fast.
+// ---------------------------------------------------------------------------
+void _jumpTests() {
+  late Directory dir;
+  late ChatService svc;
+  late String rid;
+
+  setUp(() async {
+    dir = await Directory.systemTemp.createTemp('z_jump');
+    final vault = await Vault.open(rootOverride: dir);
+    final identity = await ZIdentity.generate();
+    await vault.kvPut('identity', jsonEncode(identity.toJson()));
+    // A transport that never connects: the relay is not needed here.
+    final transport =
+        Transport(identity: identity, serverUrl: 'ws://127.0.0.1:1');
+    svc = await ChatService.init(
+        vault: vault,
+        identity: identity,
+        displayName: 'j',
+        transport: transport);
+    // A contact (needed for the thread to exist) and 700 stored messages.
+    final other = await ZIdentity.generate();
+    final contact = await svc
+        .addContactFromCode(await other.bundle().then((b) => b.encode()));
+    rid = contact.rid;
+    for (var i = 0; i < 700; i++) {
+      await vault.db.insert('messages', {
+        'mid': 'm$i',
+        'rid': rid,
+        'outgoing': i % 2,
+        'kind': 'text',
+        'enc_body': await vault.seal('msg $i'),
+        'ts_ms': 1000 + i,
+        'status': 1,
+        'expire_at_ms': 0,
+      });
+    }
+  });
+
+  tearDown(() async {
+    await svc.transport.stop();
+    if (dir.existsSync()) dir.deleteSync(recursive: true);
+  });
+
+  test('loads a window from the hit to the newest message', () async {
+    expect(await svc.loadMessagesAround(rid, 'm650'), isTrue);
+    final loaded = svc.messagesByChat[rid]!;
+    expect(loaded.first.mid, 'm650', reason: 'window starts at the hit');
+    expect(loaded.last.mid, 'm699', reason: 'window runs to the newest');
+    expect(loaded.length, 50);
+    expect(svc.hasMoreByChat[rid], isTrue, reason: 'older history remains');
+    // Paging older from the window's far end still works.
+    expect(await svc.loadOlderMessages(rid), ChatService.messagePageSize);
+    expect(svc.messagesByChat[rid]!.first.mid, 'm590');
+  });
+
+  test('the jump window cap is inclusive at exactly jumpWindowMax', () async {
+    // 700 messages: the very oldest is too deep to jump to …
+    expect(await svc.loadMessagesAround(rid, 'm0'), isFalse);
+    // … while a hit with exactly jumpWindowMax messages from it to the newest
+    // (m200..m699 = 500) is still loaded whole.
+    expect(await svc.loadMessagesAround(rid, 'm200'), isTrue);
+    expect(svc.messagesByChat[rid]!.length, ChatService.jumpWindowMax);
+    expect(svc.messagesByChat[rid]!.first.mid, 'm200');
+    expect(svc.hasMoreByChat[rid], isTrue);
+  });
+
+  test('unknown or too-deep hits fall back (nothing is loaded)', () async {
+    expect(await svc.loadMessagesAround(rid, 'nope'), isFalse);
+    expect(await svc.loadMessagesAround(rid, 'm100'), isFalse,
+        reason: '600 newer messages exceed the jump window');
+    expect(svc.messagesByChat[rid] ?? [], isEmpty);
+  });
 }

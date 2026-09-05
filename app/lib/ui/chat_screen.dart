@@ -19,7 +19,11 @@ import 'voice_widgets.dart';
 
 class ChatScreen extends StatefulWidget {
   final String rid;
-  const ChatScreen({super.key, required this.rid});
+
+  /// 7.6: open with this message on screen (a search hit). When it is too far
+  /// back to load directly the chat simply opens at the newest messages.
+  final String? focusMid;
+  const ChatScreen({super.key, required this.rid, this.focusMid});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -40,14 +44,54 @@ class _ChatScreenState extends State<ChatScreen> {
   int _recElapsedMs = 0;
   bool _recording = false;
 
+  // 7.6: the search hit being shown, tinted for a moment so the eye finds it.
+  String? _highlightMid;
+  Timer? _highlightTimer;
+
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_maybeLoadOlder);
     final svc = context.read<ChatService>();
-    svc.loadMessages(widget.rid).then((_) {
-      svc.markChatOpened(widget.rid);
-      _jumpToEnd();
+    final focus = widget.focusMid;
+    if (focus != null) {
+      svc.loadMessagesAround(widget.rid, focus).then((found) async {
+        if (!found) await svc.loadMessages(widget.rid);
+        svc.markChatOpened(widget.rid);
+        if (found) {
+          _jumpToStart();
+          _flashHighlight(focus);
+        } else {
+          _jumpToEnd();
+        }
+      });
+    } else {
+      svc.loadMessages(widget.rid).then((_) {
+        svc.markChatOpened(widget.rid);
+        _jumpToEnd();
+      });
+    }
+  }
+
+  /// With a reversed list the loaded window's OLDEST message — the search hit
+  /// — sits at maxScrollExtent. Jump there once laid out, and once more a
+  /// frame later so the estimate settles as the rows are built.
+  void _jumpToStart() {
+    void jump() {
+      if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      jump();
+      WidgetsBinding.instance.addPostFrameCallback((_) => jump());
+    });
+  }
+
+  void _flashHighlight(String mid) {
+    _highlightTimer?.cancel();
+    setState(() => _highlightMid = mid);
+    _highlightTimer = Timer(const Duration(milliseconds: 2500), () {
+      if (mounted) setState(() => _highlightMid = null);
     });
   }
 
@@ -76,6 +120,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _recTimer?.cancel();
     _recSub?.cancel();
     _recorder.dispose();
+    _highlightTimer?.cancel();
     super.dispose();
   }
 
@@ -355,7 +400,10 @@ class _ChatScreenState extends State<ChatScreen> {
               itemCount: messages.length,
               itemBuilder: (context, i) {
                 final msg = messages[messages.length - 1 - i];
-                return _MessageRow(msg: msg, key: ValueKey(msg.mid));
+                return _MessageRow(
+                    msg: msg,
+                    key: ValueKey(msg.mid),
+                    highlighted: msg.mid == _highlightMid);
               },
             ),
           ),
@@ -460,7 +508,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
 class _MessageRow extends StatelessWidget {
   final ChatMessage msg;
-  const _MessageRow({super.key, required this.msg});
+  final bool highlighted;
+  const _MessageRow({super.key, required this.msg, this.highlighted = false});
 
   @override
   Widget build(BuildContext context) {
@@ -490,6 +539,9 @@ class _MessageRow extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
             color: mine ? ZTheme.mineBubble : ZTheme.theirsBubble,
+            border: highlighted
+                ? Border.all(color: ZTheme.accent, width: 1.5)
+                : null,
             borderRadius: BorderRadius.only(
               topLeft: const Radius.circular(16),
               topRight: const Radius.circular(16),

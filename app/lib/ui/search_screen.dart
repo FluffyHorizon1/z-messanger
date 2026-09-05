@@ -162,7 +162,8 @@ class _HitTile extends StatelessWidget {
       subtitle: _Highlighted(text: '$prefix${hit.snippet}', query: query),
       onTap: () => Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => ChatScreen(rid: hit.rid)),
+        MaterialPageRoute(
+            builder: (_) => ChatScreen(rid: hit.rid, focusMid: hit.mid)),
       ),
     );
   }

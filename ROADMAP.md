@@ -26,7 +26,8 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
 | 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search + history sync ✅ (themes ⏳) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart` |
 
-**Next up:** 7.6 themes (needs visual verification), then 5.2.
+**Next up:** 7.6 themes (needs visual verification); 5.2 engagement is
+external.
 Externally gated items resume as soon as their gate clears: Play submission,
 Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public transparency
 log) waits for a public launch with durable infrastructure.
@@ -214,9 +215,12 @@ Ordered by value; each is a self-contained project on the existing layering.
   that has just been linked receives the newest 200 text/group-text messages
   per chat from its root over the self-sync channel (`dir:"hist"`, batched,
   deduplicated on message id; attachments are not replayed since their key
-  material is not retained by the sender) — `history_sync_test.dart`. Still
-  open under 7.6: themes; jumping a search result to its exact position in
-  long history (opens the chat for now).
+  material is not retained by the sender) — `history_sync_test.dart`.
+  **Jump to message ✅**: a search hit opens the chat with that message on
+  screen and briefly outlined — the loaded window runs from the hit to the
+  newest message (cap 500, so a deeper hit opens the chat normally) and the
+  existing scroll-up paging continues from its far end (`search_test.dart`
+  jump group). Still open under 7.6: themes.
 - **7.7 Key transparency** — the zero-trust plan's "catch us, don't trust us"
   mechanism (F2). Design decided in `docs/adr/0001-key-transparency.md`:
   **7.7a** device-list transparency by gossip — ✅ **done** (PROTOCOL.md §3.6:
@@ -237,8 +241,8 @@ Ordered by value; each is a self-contained project on the existing layering.
 
 ## Suggested near-term sprint (the next 3 sessions)
 
-1. **Quality-of-life** (7.6, continued): themes; search-hit jump-to-message
-   (search and history sync are done).
+1. **Quality-of-life** (7.6, continued): themes (search, history sync and
+   jump-to-message are done).
 2. **Verifiability:** 5.2 — engage an auditor with the frozen v1 spec, the v2
    extension (incl. the 7.5b re-key), ADR 0001 and the vectors as the scope
    document.
