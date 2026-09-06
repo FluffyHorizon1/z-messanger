@@ -91,7 +91,8 @@ class _LockScreenState extends State<LockScreen> {
     final canFallback = widget.verifyPassphrase != null;
     return Scaffold(
       backgroundColor: ZTheme.bg,
-      body: Center(
+      body: SafeArea(
+          child: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(32),
           child: ConstrainedBox(
@@ -173,7 +174,7 @@ class _LockScreenState extends State<LockScreen> {
             ),
           ),
         ),
-      ),
+      )),
     );
   }
 }

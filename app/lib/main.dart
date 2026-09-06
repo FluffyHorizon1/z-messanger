@@ -6,6 +6,8 @@ import 'dart:typed_data';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'
+    show SystemChrome, SystemUiMode, SystemUiOverlayStyle;
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
 
@@ -23,9 +25,22 @@ import 'ui/unlock_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // Register the background wake-ping handler (Android only; desktop has no FCM).
   if (!kIsWeb && Platform.isAndroid) {
+    // Register the background wake-ping handler (desktop has no FCM).
     FirebaseMessaging.onBackgroundMessage(zPushBackgroundHandler);
+    // Edge-to-edge on every Android version, not just 15+ where it is the
+    // default for apps targeting SDK 35: the system bars become transparent
+    // overlays and every screen insets its own content (SafeArea / the
+    // MediaQuery padding that ListView and Scaffold apply themselves).
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarDividerColor: Colors.transparent,
+      systemNavigationBarContrastEnforced: false,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarIconBrightness: Brightness.light,
+    ));
   }
   runApp(const ZApp());
 }

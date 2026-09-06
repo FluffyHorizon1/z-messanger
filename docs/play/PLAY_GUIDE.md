@@ -79,6 +79,10 @@ Each tester opens the opt-in link on their phone, accepts, and installs from
 Play. Internal testing has no review delay — the build is available within
 minutes.
 
+After each upload, look at the release's **Recommendations** (App bundle
+explorer → the version) — `CONSOLE_RECOMMENDATIONS.md` records what each
+one means for Z and which are fixed, declined, or not ours.
+
 ## 5. Iterating
 
 Every new upload needs a **higher versionCode**. In `app/pubspec.yaml` bump

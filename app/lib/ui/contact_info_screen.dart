@@ -35,7 +35,8 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
     return Scaffold(
       appBar: AppBar(title: Text(contact.name)),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: EdgeInsets.fromLTRB(
+            16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
         children: [
           Center(
             child: CircleAvatar(

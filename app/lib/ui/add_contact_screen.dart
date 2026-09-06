@@ -156,7 +156,8 @@ class _AddContactScreenState extends State<AddContactScreen>
 
   Widget _pasteTab() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.fromLTRB(
+          24, 24, 24, 24 + MediaQuery.paddingOf(context).bottom),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -227,7 +228,9 @@ class _AddContactScreenState extends State<AddContactScreen>
           ),
         ),
         Padding(
-          padding: const EdgeInsets.all(16),
+          // Keeps the caption above the navigation bar (edge-to-edge).
+          padding: EdgeInsets.fromLTRB(
+              16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
           child: Text(
             _error ?? 'Point the camera at their Z code.',
             style: TextStyle(

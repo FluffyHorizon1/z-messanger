@@ -96,7 +96,8 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Link a device')),
       body: ListView(
-        padding: const EdgeInsets.all(24),
+        padding: EdgeInsets.fromLTRB(
+            24, 24, 24, 24 + MediaQuery.paddingOf(context).bottom),
         children: [
           const Text(
             'On the device you want to add, install Z and choose '
@@ -243,7 +244,8 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Link to an account')),
       body: ListView(
-        padding: const EdgeInsets.all(24),
+        padding: EdgeInsets.fromLTRB(
+            24, 24, 24, 24 + MediaQuery.paddingOf(context).bottom),
         children: [
           const Text(
             'On your existing device, open Settings → Linked devices → '
@@ -406,7 +408,8 @@ class _LinkedDevicesScreenState extends State<LinkedDevicesScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
-              padding: const EdgeInsets.all(20),
+              padding: EdgeInsets.fromLTRB(
+                  20, 20, 20, 20 + MediaQuery.paddingOf(context).bottom),
               children: [
                 if (_thisDevice != null)
                   _DeviceTile(

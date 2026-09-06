@@ -20,7 +20,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 0 Foundation hardening | ✅ done | `durability_test.dart`, `docs/LOAD.md`, retry/delete affordances |
 | 1 Push notifications | ✅ done (1.3 F-Droid flavour dropped with 3.2) | content-free FCM wake; relay push tests |
 | 2 Signed builds | 2.1 + 2.4 ✅ · 2.2/2.3 ⛔ need paid certificates | signed AAB/APK + `SHA256SUMS.txt` on every release |
-| 3 Store distribution | 3.1 prepared, ⛔ awaiting Play account verification · 3.4 ✅ · 3.2 dropped · 3.3 ⏳ | `docs/play/`, `zmessengers.com` landing + privacy page |
+| 3 Store distribution | 3.1 prepared, ⛔ awaiting Play account verification · 3.4 ✅ · 3.2 dropped · 3.3 ⏳ · **3.5 Play Console recommendations ✅** (16 KB pages, edge-to-edge; bitmap/PiP items assessed) | `docs/play/`, `CONSOLE_RECOMMENDATIONS.md`, `app/tool/check_16k.sh` in CI, `zmessengers.com` landing + privacy page |
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
@@ -112,6 +112,17 @@ Remove the scary install warnings; make binaries verifiable.
   submitted to Partner Center.
 - **3.4 Direct downloads** ✅ polished on the GitHub Releases page as the fallback
   channel. **DoD:** a simple download landing page.
+- **3.5 Play Console recommendations** ✅ — the items the Console raised on
+  the first upload, each resolved or deliberately declined in
+  `docs/play/CONSOLE_RECOMMENDATIONS.md`: **16 KB page-size alignment**
+  (required for Android 15+ targets) fixed by moving `mobile_scanner` to
+  7.4 (ML Kit 17.3 / CameraX 1.6), with `app/tool/check_16k.sh` verifying
+  every 64-bit library in the APK and AAB in CI; **edge-to-edge** enabled
+  on every Android version with the screens that set their own list
+  padding or centre a form now insetting for the navigation bar
+  (`edge_to_edge_test.dart`); **bitmap downsampling** traced with dexdump +
+  the R8 mapping to library code on paths Z never takes; **picture-in-
+  picture** not applicable (no video).
 - *(Apple App Store depends on Phase 6 iOS.)*
 
 ## Phase 4 — Reliability & observability at scale · ~2 weeks

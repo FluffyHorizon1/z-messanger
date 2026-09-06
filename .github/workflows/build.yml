@@ -93,6 +93,11 @@ jobs:
           flutter build apk --release --split-per-abi
           flutter build apk --release
           flutter build appbundle --release
+      - name: 16 KB page-size alignment (Play requirement for Android 15+ targets)
+        working-directory: app
+        run: |
+          tool/check_16k.sh build/app/outputs/flutter-apk/app-release.apk
+          tool/check_16k.sh build/app/outputs/bundle/release/app-release.aab
       - name: Remove signing material
         if: always()
         working-directory: app/android

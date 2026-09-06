@@ -59,7 +59,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   Future<void> _create() async {
     if (_name.text.trim().isEmpty) {
-      setState(() => _error = 'Pick a display name (only your contacts ever see it).');
+      setState(() =>
+          _error = 'Pick a display name (only your contacts ever see it).');
       return;
     }
     final url = normalizeRelayUrl(_server.text);
@@ -107,8 +108,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       final contacts = (restored['contacts'] as List?) ?? [];
       for (final c in contacts) {
         final rec = (c as Map).cast<String, Object?>();
-        final bundle =
-            ContactBundle.fromJson((rec['bundle'] as Map).cast<String, Object?>());
+        final bundle = ContactBundle.fromJson(
+            (rec['bundle'] as Map).cast<String, Object?>());
         if (!await bundle.verify()) continue;
         final rid = await bundle.routingId();
         await widget.vault.db.insert(
@@ -117,8 +118,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               'rid': rid,
               'enc_bundle':
                   await widget.vault.seal(jsonEncode(bundle.toJson())),
-              'enc_name': await widget.vault
-                  .seal(rec['name'] as String? ?? 'Unknown'),
+              'enc_name':
+                  await widget.vault.seal(rec['name'] as String? ?? 'Unknown'),
               'ttl_seconds': (rec['ttl'] as num?)?.toInt() ?? 0,
               'verified': (rec['verified'] as bool? ?? false) ? 1 : 0,
               'created_ms': DateTime.now().millisecondsSinceEpoch,
@@ -161,7 +162,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
+      body: SafeArea(
+          child: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(32),
           child: ConstrainedBox(
@@ -187,7 +189,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   controller: _name,
                   decoration: const InputDecoration(
                     labelText: 'Display name',
-                    helperText: 'Shared only inside your encrypted contact code',
+                    helperText:
+                        'Shared only inside your encrypted contact code',
                   ),
                 ),
                 if (_showDev) ...[
@@ -294,7 +297,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             ),
           ),
         ),
-      ),
+      )),
     );
   }
 }

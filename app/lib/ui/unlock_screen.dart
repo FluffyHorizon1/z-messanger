@@ -36,7 +36,8 @@ class _UnlockScreenState extends State<UnlockScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
+      body: SafeArea(
+          child: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(32),
           child: ConstrainedBox(
@@ -118,7 +119,7 @@ class _UnlockScreenState extends State<UnlockScreen> {
             ),
           ),
         ),
-      ),
+      )),
     );
   }
 }
