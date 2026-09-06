@@ -24,11 +24,13 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
+| 8 Message interactions | **8.1a replies ✅** · 8.1b reactions ⏳ · 8.1c edit / delete-for-everyone / forward ⏳ | `replies_test.dart` (schema-1 migration + two-client wire behaviour), `docs/vectors/v1/inner_messages.json` |
 | 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search + history sync + themes ✅ · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
 
-**Next up:** 5.2 engagement is external; 7.8c (Keychain / Windows Hello
-binding of the biometric pass key) when a Mac / Windows build can be
-verified. Everything else in Phase 7 is shipped.
+**Next up:** 8.1 message interactions is in progress (replies ✅; reactions
+and edit/delete next). 5.2 engagement is external; 7.8c (Keychain / Windows
+Hello binding of the biometric pass key) when a Mac / Windows build can be
+verified.
 Externally gated items resume as soon as their gate clears: Play submission,
 Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public transparency
 log) waits for a public launch with durable infrastructure.
@@ -295,6 +297,33 @@ Ordered by value; each is a self-contained project on the existing layering.
   Windows Hello — needs a Mac / Windows toolchain to verify.
 
 ---
+
+## Phase 8 — Message interactions · ongoing
+
+What people expect of a messenger day to day, built as additive inner kinds
+and optional members (§14: no protocol version bump) so an older build simply
+ignores what it does not know.
+
+- **8.1a Replies** ✅ — a content message may carry `rt`, the `mid` it answers
+  (PROTOCOL §6.4). Only the id travels: the quote a recipient sees is rendered
+  from *their own* stored copy, so a reply can never attribute words to
+  someone. An id that names nothing in that conversation — expired, never
+  received, or belonging to another chat — degrades to "message unavailable"
+  rather than resolving, which also stops `rt` being used to probe the vault.
+  Long-press a message to reply; the composer shows what is being answered and
+  the quote in the bubble taps through to the original (reusing the
+  jump-to-message window from 7.6c). Schema 2 migrates an installed vault in
+  place. **DoD:** `app/test/replies_test.dart` — a schema-1 database upgrades
+  with every message intact, two clients exchange a reply through the real
+  relay and each renders the quote from its own copy, cross-chat and unknown
+  ids resolve to nothing, malformed `rt` is ignored — plus additive vectors
+  and the Node clean-room shape check.
+- **8.1b Reactions** ⏳ — `react`/`greact` {mid, emo}, one per sender per
+  message, sealed in the new `reactions` table.
+- **8.1c Edit, delete for everyone, forward** ⏳ — `edit`/`del` restricted to
+  the original sender (enforced per-sender in groups, where anyone could
+  otherwise claim to delete a neighbour's message), an "edited" marker, and
+  tombstones.
 
 ## Suggested near-term sprint (the next 3 sessions)
 

@@ -996,6 +996,14 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
       'voice': true,
       'dur': 7,
     }),
+    // 8.1: a reply carries only the quoted message's id ('rt'), never its
+    // text — 1:1 and in a group.
+    InnerMessage.text('mid-reply', ts, 'yes, 7am works', replyTo: 'mid-text'),
+    InnerMessage(kind: 'gmsg', mid: 'mid-greply', ts: ts, data: {
+      'gid': 'gAAECAwQFBgcICQoL',
+      'body': 'me too',
+      'rt': 'mid-gmsg',
+    }),
   ];
   final vectors = <Map<String, Object?>>[];
   for (final m in kinds) {
@@ -1003,6 +1011,7 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
     final back = InnerMessage.fromBytes(bytes);
     check(back.kind == m.kind && back.mid == m.mid && back.ttlSec == m.ttlSec,
         'inner round trip');
+    check(back.replyTo == m.replyTo, 'reply id round trip');
     vectors.add({
       'kind': m.kind,
       'json': utf8.decode(bytes),

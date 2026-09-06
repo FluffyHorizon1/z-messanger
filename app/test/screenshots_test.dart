@@ -108,7 +108,7 @@ class _Fixture {
     var n = 0;
     // Messages: the seal is async, so resolve it before inserting.
     Future<void> insert(String rid, bool out, String kind, String body,
-        {int status = 1, String? fid}) async {
+        {int status = 1, String? fid, String? replyTo}) async {
       await vault.db.insert('messages', {
         'mid': 'm${n++}',
         'rid': rid,
@@ -119,6 +119,7 @@ class _Fixture {
         'ts_ms': t0 + n * 60 * 1000,
         'status': status,
         'expire_at_ms': 0,
+        'reply_to': replyTo,
       });
     }
 
@@ -144,6 +145,9 @@ class _Fixture {
     });
     await insert(aliceRid, false, 'file', jsonEncode({}), fid: 'f1');
     await insert(aliceRid, true, 'text', 'Got it, thanks!', status: 2);
+    // 8.1: a reply, so the quote block is in the rendered screenshots.
+    await insert(aliceRid, false, 'text', 'Bring the thermos too?',
+        replyTo: 'm1');
     await insert(bobRid, true, 'text', 'Lunch tomorrow?', status: 1);
     await insert(bobRid, false, 'text', 'Sure, 12:30 at the usual place.');
 

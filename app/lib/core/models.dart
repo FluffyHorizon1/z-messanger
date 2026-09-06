@@ -69,6 +69,15 @@ class ChatMessage {
   FileMeta? file; // populated for file messages when loaded
   final String? senderName; // group messages: display name of the sender
 
+  /// 8.1: the `mid` this message replies to, or null. Only the id is stored
+  /// and sent — see [quote] for what is actually shown.
+  final String? replyTo;
+
+  /// 8.1: a snapshot of the quoted message, resolved locally at load time
+  /// from [replyTo]. Null when the quoted message is not (or no longer) in
+  /// this device's vault, which renders as an unavailable quote.
+  QuotedMessage? quote;
+
   ChatMessage({
     required this.mid,
     required this.rid,
@@ -80,6 +89,26 @@ class ChatMessage {
     this.status = MsgStatus.pending,
     this.expireAtMs = 0,
     this.file,
+    this.senderName,
+    this.replyTo,
+    this.quote,
+  });
+}
+
+/// What a reply shows of the message it answers (8.1). Built from the
+/// receiver's own stored copy — nothing about a quote travels on the wire.
+class QuotedMessage {
+  final String mid;
+  final bool outgoing; // was the quoted message mine?
+  final String kind; // 'text' | 'file' | 'gtext'
+  final String preview; // body, or the attachment's name
+  final String? senderName; // group: who wrote the quoted message
+
+  const QuotedMessage({
+    required this.mid,
+    required this.outgoing,
+    required this.kind,
+    required this.preview,
     this.senderName,
   });
 }

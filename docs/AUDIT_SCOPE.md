@@ -112,7 +112,11 @@ than bugs we expect.
    entry read after the app's own prompt, documented as making the
    passphrase a UI gate there. On all platforms confirm the entry is
    deleted on disable / passphrase removal, re‑sealed on passphrase change,
-   and that a stale entry fails closed.
+   and that a stale entry fails closed. Schema 2 (8.1) adds `reply_to` to
+   `messages` in the clear — deliberately, since `mid`/`rid` already are —
+   plus `edited_ms`/`deleted` and a `reactions` table whose emoji are sealed;
+   confirm the migration is additive and that `rt` is resolved scoped to one
+   conversation (§6.4).
 9. **Relay robustness** (`server.js`). RAM caps per mailbox, envelope size
    cap (1,000,000 chars), dedupe/ack semantics, push‑token expiry,
    two‑instance coordination (Redis kick/flush), authentication

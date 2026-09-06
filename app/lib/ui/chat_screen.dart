@@ -5,6 +5,7 @@ import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:record/record.dart';
@@ -31,6 +32,7 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final _input = TextEditingController();
+  final _inputFocus = FocusNode();
   final _scroll = ScrollController();
   bool _sending = false;
   bool _loadingOlder = false;
@@ -120,6 +122,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _svc.markChatClosed(widget.rid);
     _input.dispose();
+    _inputFocus.dispose();
     _scroll.dispose();
     _recTimer?.cancel();
     _recSub?.cancel();
@@ -197,17 +200,49 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// 8.1: the message the composer is currently replying to (null = none).
+  /// Only its id is sent; the quote a recipient sees comes from their own
+  /// copy of that message.
+  ChatMessage? _replyTo;
+
+  void _startReply(ChatMessage msg) {
+    setState(() => _replyTo = msg);
+    _inputFocus.requestFocus();
+  }
+
+  /// Opens the conversation at the quoted message and flashes it, reusing the
+  /// jump machinery search results use.
+  Future<void> _goToQuoted(String mid) async {
+    final svc = context.read<ChatService>();
+    final messenger = ScaffoldMessenger.of(context);
+    if (svc.messagesByChat[widget.rid]?.any((m) => m.mid == mid) ?? false) {
+      _flashHighlight(mid);
+      return;
+    }
+    if (await svc.loadMessagesAround(widget.rid, mid)) {
+      _jumpToStart();
+      _flashHighlight(mid);
+    } else {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('That message is too far back to jump to.')));
+    }
+  }
+
   Future<void> _send() async {
     final text = _input.text.trim();
     if (text.isEmpty || _sending) return;
     _input.clear();
-    setState(() => _sending = true);
+    final replyTo = _replyTo?.mid;
+    setState(() {
+      _sending = true;
+      _replyTo = null;
+    });
     try {
       final svc = context.read<ChatService>();
       if (svc.groups.containsKey(widget.rid)) {
-        await svc.sendGroupText(widget.rid, text);
+        await svc.sendGroupText(widget.rid, text, replyTo: replyTo);
       } else {
-        await svc.sendText(widget.rid, text);
+        await svc.sendText(widget.rid, text, replyTo: replyTo);
       }
       _jumpToEnd();
     } catch (e) {
@@ -411,7 +446,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 return _MessageRow(
                     msg: msg,
                     key: ValueKey(msg.mid),
-                    highlighted: msg.mid == _highlightMid);
+                    highlighted: msg.mid == _highlightMid,
+                    canReply: !(isGroup && group.left),
+                    onReply: () => _startReply(msg),
+                    onQuoteTap: _goToQuoted);
               },
             ),
           ),
@@ -467,46 +505,59 @@ class _ChatScreenState extends State<ChatScreen> {
             )
           else
             SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    IconButton(
-                      icon: Icon(Icons.attach_file,
-                          color: context.z.textSecondary),
-                      onPressed: _attach,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_replyTo != null)
+                    _ReplyBar(
+                      msg: _replyTo!,
+                      onCancel: () => setState(() => _replyTo = null),
                     ),
-                    Expanded(
-                      child: TextField(
-                        controller: _input,
-                        minLines: 1,
-                        maxLines: 6,
-                        textInputAction: TextInputAction.send,
-                        onSubmitted: (_) => _send(),
-                        decoration: const InputDecoration(
-                          hintText: 'Encrypted message…',
-                          contentPadding: EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 12),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        IconButton(
+                          icon: Icon(Icons.attach_file,
+                              color: context.z.textSecondary),
+                          onPressed: _attach,
                         ),
-                      ),
+                        Expanded(
+                          child: TextField(
+                            controller: _input,
+                            focusNode: _inputFocus,
+                            minLines: 1,
+                            maxLines: 6,
+                            textInputAction: TextInputAction.send,
+                            onSubmitted: (_) => _send(),
+                            decoration: InputDecoration(
+                              hintText: _replyTo == null
+                                  ? 'Encrypted message…'
+                                  : 'Reply…',
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 12),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.mic_none,
+                              color: context.z.textSecondary),
+                          tooltip: 'Record a voice message',
+                          onPressed: _startRecording,
+                        ),
+                        const SizedBox(width: 4),
+                        IconButton.filled(
+                          style: IconButton.styleFrom(
+                              backgroundColor: context.z.accent,
+                              foregroundColor: context.z.onAccent),
+                          icon: const Icon(Icons.arrow_upward),
+                          onPressed: _send,
+                        ),
+                      ],
                     ),
-                    IconButton(
-                      icon:
-                          Icon(Icons.mic_none, color: context.z.textSecondary),
-                      tooltip: 'Record a voice message',
-                      onPressed: _startRecording,
-                    ),
-                    const SizedBox(width: 4),
-                    IconButton.filled(
-                      style: IconButton.styleFrom(
-                          backgroundColor: context.z.accent,
-                          foregroundColor: context.z.onAccent),
-                      icon: const Icon(Icons.arrow_upward),
-                      onPressed: _send,
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
         ],
@@ -518,7 +569,21 @@ class _ChatScreenState extends State<ChatScreen> {
 class _MessageRow extends StatelessWidget {
   final ChatMessage msg;
   final bool highlighted;
-  const _MessageRow({super.key, required this.msg, this.highlighted = false});
+
+  /// 8.1: false in a group you have left — history stays readable, but
+  /// there is nothing to reply into.
+  final bool canReply;
+  final VoidCallback? onReply;
+  final void Function(String mid)? onQuoteTap;
+
+  const _MessageRow({
+    super.key,
+    required this.msg,
+    this.highlighted = false,
+    this.canReply = true,
+    this.onReply,
+    this.onQuoteTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -538,6 +603,7 @@ class _MessageRow extends StatelessWidget {
       alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
         onTap: failed ? () => _showFailedMenu(context) : null,
+        onLongPress: canReply ? () => _showActions(context) : null,
         child: Container(
           margin: EdgeInsets.only(
             left: mine ? 64 : 12,
@@ -576,11 +642,25 @@ class _MessageRow extends StatelessWidget {
                     ),
                   ),
                 ),
-              if (msg.kind == 'file')
-                _FileBody(msg: msg)
-              else
-                Text(msg.body,
-                    style: const TextStyle(fontSize: 15, height: 1.3)),
+              // 8.1: the quote is rendered from THIS device's copy of the
+              // message being answered — never from anything the sender sent.
+              if (msg.replyTo != null)
+                _QuoteBlock(
+                  quote: msg.quote,
+                  mine: mine,
+                  onTap: msg.quote == null
+                      ? null
+                      : () => onQuoteTap?.call(msg.quote!.mid),
+                ),
+              // Left-aligned: a quote widens the bubble past the body, and
+              // text hanging off the right edge reads as a mistake.
+              Align(
+                alignment: Alignment.centerLeft,
+                child: msg.kind == 'file'
+                    ? _FileBody(msg: msg)
+                    : Text(msg.body,
+                        style: const TextStyle(fontSize: 15, height: 1.3)),
+              ),
               const SizedBox(height: 4),
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -615,6 +695,36 @@ class _MessageRow extends StatelessWidget {
     );
   }
 
+  void _showActions(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.reply, color: ctx.z.accent),
+              title: const Text('Reply'),
+              onTap: () {
+                Navigator.pop(ctx);
+                onReply?.call();
+              },
+            ),
+            if (msg.kind != 'file')
+              ListTile(
+                leading: Icon(Icons.copy_outlined, color: ctx.z.textSecondary),
+                title: const Text('Copy text'),
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: msg.body));
+                  Navigator.pop(ctx);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showFailedMenu(BuildContext context) {
     final chat = context.read<ChatService>();
     showModalBottomSheet<void>(
@@ -644,6 +754,118 @@ class _MessageRow extends StatelessWidget {
                 chat.deleteMessage(msg.rid, msg.mid);
               },
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The bar above the composer while a reply is being written (8.1).
+class _ReplyBar extends StatelessWidget {
+  final ChatMessage msg;
+  final VoidCallback onCancel;
+  const _ReplyBar({required this.msg, required this.onCancel});
+
+  @override
+  Widget build(BuildContext context) {
+    final who = msg.outgoing ? 'yourself' : (msg.senderName ?? 'them');
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+      padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+      decoration: BoxDecoration(
+        color: context.z.surfaceAlt,
+        borderRadius: BorderRadius.circular(10),
+        border: Border(left: BorderSide(color: context.z.accent, width: 3)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('Replying to $who',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: context.z.accent)),
+                const SizedBox(height: 2),
+                Text(
+                  msg.kind == 'file' ? '📎 ${msg.body}' : msg.body,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style:
+                      TextStyle(fontSize: 12, color: context.z.textSecondary),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: Icon(Icons.close, size: 18, color: context.z.textSecondary),
+            tooltip: 'Cancel reply',
+            onPressed: onCancel,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The quoted message shown inside a reply's bubble (8.1). [quote] is null
+/// when this device has no copy of the quoted message — it expired, was never
+/// received, or arrived before this feature — which is shown honestly rather
+/// than guessed at.
+class _QuoteBlock extends StatelessWidget {
+  final QuotedMessage? quote;
+  final bool mine;
+  final VoidCallback? onTap;
+  const _QuoteBlock({required this.quote, required this.mine, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final q = quote;
+    final unavailable = q == null;
+    final who = unavailable
+        ? 'Message unavailable'
+        : (q.outgoing ? 'You' : (q.senderName ?? 'Them'));
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+        decoration: BoxDecoration(
+          color:
+              (mine ? context.z.bg : context.z.surface).withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(8),
+          border: Border(
+              left: BorderSide(
+                  color:
+                      unavailable ? context.z.textSecondary : context.z.accent,
+                  width: 3)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(who,
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    fontStyle: unavailable ? FontStyle.italic : null,
+                    color: unavailable
+                        ? context.z.textSecondary
+                        : context.z.accent)),
+            if (!unavailable) ...[
+              const SizedBox(height: 2),
+              Text(
+                q.kind == 'file' ? '📎 ${q.preview}' : q.preview,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, color: context.z.textSecondary),
+              ),
+            ],
           ],
         ),
       ),

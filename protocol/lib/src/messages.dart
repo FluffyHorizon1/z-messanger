@@ -18,6 +18,14 @@ import 'util.dart';
 ///            tells a device it just dropped from an account's list that it
 ///            was removed; ignored by v1 clients
 ///
+/// Message interactions (8.1) add one optional member to the content kinds
+/// ('text', 'file', 'gmsg', 'gfile'), ignored by clients that predate it:
+///   'rt'   string  the `mid` this message replies to, in the same
+///                  conversation. Only the id travels: the quoted text is
+///                  whatever the RECEIVER already has stored for that id, so a
+///                  reply can never put words in the quoted sender's mouth.
+///                  An unknown id renders as an unavailable quote.
+///
 /// Device-list transparency (7.7a) also decorates EVERY inner message with two
 /// optional members, carried alongside [data] and ignored by v1 clients:
 ///   'dl'   {v, h}  the sender's claim about ITS OWN account's current device
@@ -63,9 +71,12 @@ class InnerMessage {
     );
   }
 
-  static InnerMessage text(String mid, int ts, String body, {int ttlSec = 0}) =>
-      InnerMessage(
-          kind: 'text', mid: mid, ts: ts, ttlSec: ttlSec, data: {'body': body});
+  static InnerMessage text(String mid, int ts, String body,
+          {int ttlSec = 0, String? replyTo}) =>
+      InnerMessage(kind: 'text', mid: mid, ts: ts, ttlSec: ttlSec, data: {
+        'body': body,
+        if (replyTo != null && replyTo.isNotEmpty) 'rt': replyTo,
+      });
 
   static InnerMessage hello(String mid, int ts) =>
       InnerMessage(kind: 'hello', mid: mid, ts: ts);
@@ -97,6 +108,16 @@ class InnerMessage {
           mid: mid,
           ts: ts,
           data: {'acct': b64(acct), 'v': v, 'h': b64(h)});
+
+  /// The `mid` this message replies to (8.1), or null when it is not a reply
+  /// or the member is malformed. Length-capped: a reply id is one of our own
+  /// message ids (22 base64url chars), and a peer cannot make us index a
+  /// megabyte of attacker text by claiming it is an id.
+  String? get replyTo {
+    final v = data['rt'];
+    if (v is! String || v.isEmpty || v.length > 64) return null;
+    return v;
+  }
 
   /// Cheap check of the kind without a full parse: [toBytes] always writes
   /// `{"k":"<kind>"` first.

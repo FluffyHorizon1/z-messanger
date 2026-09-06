@@ -642,6 +642,14 @@ test('inner messages: every kind parses with its required fields', () => {
       assert.equal(j.voice, true);
       assert.equal(typeof j.dur, 'number');
     }
+    // 8.1: a reply carries the quoted message's id and nothing else of it —
+    // in particular no copy of the quoted text.
+    if ('rt' in j) {
+      assert.ok(['text', 'file', 'gmsg', 'gfile'].includes(j.k), 'rt on a content kind');
+      assert.equal(typeof j.rt, 'string');
+      assert.ok(j.rt.length > 0 && j.rt.length <= 64, 'rt is an id, not a payload');
+      assert.ok(!('rtbody' in j) && !('quote' in j), 'no quoted text on the wire');
+    }
     assert.equal(m.padded_len, Math.ceil((utf8(m.json).length + 1) / 256) * 256);
     seen.add(m.kind);
   }

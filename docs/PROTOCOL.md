@@ -399,15 +399,15 @@ Unknown kinds MUST be ignored.
 | kind | members | meaning |
 |---|---|---|
 | `hello` | — | silent session opener (§4); never shown |
-| `text` | `body:string` | chat message |
-| `file` | `fid, name, size:int, mime, sha256:b64, fk:b64, fn:b64, chunks:int` | attachment offer (§7) |
+| `text` | `body:string`, opt. `rt:string` | chat message; `rt` = the `mid` this replies to (§6.4) |
+| `file` | `fid, name, size:int, mime, sha256:b64, fk:b64, fn:b64, chunks:int`, opt. `rt` | attachment offer (§7) |
 | `timer` | `sec:int` | set the disappearing timer for the conversation (0 = off) |
 | `read` | `mids:[string]` | read receipts |
 | `dlv` | `mids:[string]` | end‑to‑end delivery receipts (§6.3) |
 | `devlist` | `list:string` (the JSON of §3.4, as a string) | account device‑set update |
 | `ginvite` | `gid, name, ver:int, members:[{ "b":ContactBundleJSON, "n":string }]` | group create/update (§11) |
-| `gmsg` | `gid, body` | group text (§11) |
-| `gfile` | `gid` + the `file` members | group attachment offer (§7, §11) |
+| `gmsg` | `gid, body`, opt. `rt` | group text (§11) |
+| `gfile` | `gid` + the `file` members, opt. `rt` | group attachment offer (§7, §11) |
 | `gleave` | `gid` | sender left the group (§11) |
 | `pqek` | `alg:"ML-KEM-768", ek:b64` | v2 post‑quantum key offer (§17); consumed by the session layer, never shown |
 | `dlrm` | `acct:b64, v:int, h:b64` | device‑list removal notice (§3.6); tells a device it was dropped from account `acct`'s list |
@@ -418,6 +418,30 @@ every bundle in a `ginvite` MUST be verified (§2.3) before use.
 Independently of kind, an inner message MAY also carry the device‑list
 transparency members `dl` and `pdl` (§3.6), each `{ "v":int, "h":b64 }`;
 clients that do not implement 7.7a ignore them.
+
+### 6.4 Replies (8.1)
+
+A content message (`text`, `file`, `gmsg`, `gfile`) MAY carry `rt`: the `mid`
+of an earlier message **in the same conversation** that it replies to. That is
+the whole wire format — the quoted text is never transmitted.
+
+This is deliberate. A reply that carried its own copy of the quoted text could
+show the recipient words the quoted sender never wrote; carrying only the id
+means the quote a recipient sees is always what their own device stored for
+that id. Consequences a receiver MUST handle:
+
+- **Unknown id** (never received, already expired under §8, or deleted): show
+  the reply with the quote marked unavailable. Never fetch it from anywhere.
+- **Cross‑conversation id**: an `rt` naming a message outside the conversation
+  it arrived in MUST be treated as unknown. Receivers look the id up scoped to
+  the conversation, so a peer cannot use a reply to probe whether some id
+  exists elsewhere in the vault.
+- **Malformed or oversized** `rt` (not a string, empty, longer than 64 chars):
+  ignore the member and render an ordinary message.
+
+`rt` is one‑way: replying does not modify the quoted message, and a reply to a
+message with a disappearing timer follows the timer of the conversation as it
+stands when the reply is sent, not the quoted message's.
 
 A `file` or `gfile` offer MAY additionally carry `voice:true` and `dur:int`
 (seconds): the attachment is a recorded voice message of that duration, and

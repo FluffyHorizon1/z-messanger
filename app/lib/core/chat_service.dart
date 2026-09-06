@@ -468,11 +468,15 @@ class ChatService extends ChangeNotifier {
     return inner.mid;
   }
 
-  Future<void> sendText(String rid, String body) async {
+  /// [replyTo] (8.1) is the `mid` of a message in this same conversation;
+  /// only the id is sent, and it is dropped if it names nothing we hold.
+  Future<void> sendText(String rid, String body, {String? replyTo}) async {
     final contact = contacts[rid]!;
     final ttl = contact.ttlSec;
     final ts = _now();
-    final inner = InnerMessage.text(newMessageId(), ts, body, ttlSec: ttl);
+    final quoted = await _resolveQuote(rid, replyTo);
+    final inner = InnerMessage.text(newMessageId(), ts, body,
+        ttlSec: ttl, replyTo: quoted?.mid);
     final expireAt = ttl > 0 ? ts + ttl * 1000 : 0;
 
     await _sendInner(contact, inner, also: (txn) async {
@@ -485,6 +489,7 @@ class ChatService extends ChangeNotifier {
         'ts_ms': ts,
         'status': MsgStatus.pending,
         'expire_at_ms': expireAt,
+        'reply_to': quoted?.mid,
       });
     });
 
@@ -499,6 +504,8 @@ class ChatService extends ChangeNotifier {
           ts: ts,
           status: MsgStatus.pending,
           expireAtMs: expireAt,
+          replyTo: quoted?.mid,
+          quote: quoted,
         ));
     notifyListeners();
     // Mirror to my own other devices (no-op if none linked).
@@ -516,7 +523,7 @@ class ChatService extends ChangeNotifier {
 
   Future<void> sendFile(
       String rid, String fileName, Uint8List bytes, String mime,
-      {bool voice = false, int durSec = 0}) async {
+      {bool voice = false, int durSec = 0, String? replyTo}) async {
     if (bytes.length > maxAttachmentBytes) {
       throw const FormatException(
           'attachment too large (max 24 MB in this build)');
@@ -524,6 +531,7 @@ class ChatService extends ChangeNotifier {
     final contact = contacts[rid]!;
     final ttl = contact.ttlSec;
     final ts = _now();
+    final quoted = await _resolveQuote(rid, replyTo);
     final km = FileKeyMaterial.generate();
     final chunks = splitChunks(bytes);
     final sha = b64(await sha256Bytes(bytes));
@@ -544,6 +552,7 @@ class ChatService extends ChangeNotifier {
         'chunks': chunks.length,
         if (voice) 'voice': true,
         if (durSec > 0) 'dur': durSec,
+        if (quoted != null) 'rt': quoted.mid,
       },
     );
     final expireAt = ttl > 0 ? ts + ttl * 1000 : 0;
@@ -597,6 +606,7 @@ class ChatService extends ChangeNotifier {
         'ts_ms': ts,
         'status': MsgStatus.pending,
         'expire_at_ms': expireAt,
+        'reply_to': quoted?.mid,
       });
       for (final p in chunkPayloads) {
         await txn.insert('outbox', {
@@ -623,6 +633,8 @@ class ChatService extends ChangeNotifier {
           status: MsgStatus.pending,
           expireAtMs: expireAt,
           file: meta,
+          replyTo: quoted?.mid,
+          quote: quoted,
         ));
     notifyListeners();
     // Mirror to my own other devices: the offer (carrying the file key) over
@@ -912,6 +924,10 @@ class ChatService extends ChangeNotifier {
     switch (inner.kind) {
       case 'text':
         final expireAt = inner.ttlSec > 0 ? now + inner.ttlSec * 1000 : 0;
+        // 8.1: resolve the quote against THIS conversation only, so a reply
+        // can neither quote another chat nor probe for ids outside it.
+        final quoted =
+            await _resolveQuote(contact.rid, inner.replyTo, txn: txn);
         await txn.insert(
             'messages',
             {
@@ -923,6 +939,7 @@ class ChatService extends ChangeNotifier {
               'ts_ms': now,
               'status': MsgStatus.delivered,
               'expire_at_ms': expireAt,
+              'reply_to': quoted?.mid,
             },
             conflictAlgorithm: ConflictAlgorithm.ignore);
         _appendLoaded(
@@ -936,6 +953,8 @@ class ChatService extends ChangeNotifier {
               ts: now,
               status: MsgStatus.delivered,
               expireAtMs: expireAt,
+              replyTo: quoted?.mid,
+              quote: quoted,
             ));
         if (openChatRid != contact.rid) {
           unread[contact.rid] = (unread[contact.rid] ?? 0) + 1;
@@ -1018,6 +1037,7 @@ class ChatService extends ChangeNotifier {
     final name = inner.data['name'] as String? ?? 'file';
     final voice = inner.data['voice'] == true;
     final durSec = (inner.data['dur'] as num?)?.toInt() ?? 0;
+    final quoted = await _resolveQuote(threadRid, inner.replyTo, txn: txn);
     await txn.insert(
         'files',
         {
@@ -1054,6 +1074,7 @@ class ChatService extends ChangeNotifier {
           'ts_ms': now,
           'status': MsgStatus.delivered,
           'expire_at_ms': expireAt,
+          'reply_to': quoted?.mid,
         },
         conflictAlgorithm: ConflictAlgorithm.ignore);
     _appendLoaded(
@@ -1069,6 +1090,8 @@ class ChatService extends ChangeNotifier {
           status: MsgStatus.delivered,
           expireAtMs: expireAt,
           senderName: senderName,
+          replyTo: quoted?.mid,
+          quote: quoted,
           file: FileMeta(
             fid: fid,
             name: name,
@@ -1262,6 +1285,7 @@ class ChatService extends ChangeNotifier {
     } else {
       body = await vault.unseal(r['enc_body'] as String);
     }
+    final replyTo = r['reply_to'] as String?;
     return ChatMessage(
       mid: r['mid'] as String,
       rid: rid,
@@ -1274,6 +1298,9 @@ class ChatService extends ChangeNotifier {
       expireAtMs: r['expire_at_ms'] as int,
       file: fileMeta,
       senderName: senderName,
+      replyTo: replyTo,
+      // Resolved on every load: the quoted message may since have expired.
+      quote: await _resolveQuote(rid, replyTo),
     );
   }
 
@@ -1416,6 +1443,50 @@ class ChatService extends ChangeNotifier {
     current.insertAll(0, older);
     notifyListeners();
     return older.length;
+  }
+
+  /// 8.1: looks up [mid] **inside conversation [rid]** and builds what a
+  /// reply will show of it. Returns null — an unavailable quote — when the id
+  /// is malformed, names nothing here, names a system notice, or names a
+  /// message in another chat; the caller then stores no reply link at all, so
+  /// a peer cannot use `rt` to learn whether an id exists elsewhere.
+  Future<QuotedMessage?> _resolveQuote(String rid, String? mid,
+      {DatabaseExecutor? txn}) async {
+    if (mid == null || mid.isEmpty || mid.length > 64) return null;
+    final rows = await (txn ?? vault.db).query('messages',
+        columns: ['mid', 'outgoing', 'kind', 'enc_body', 'fid'],
+        where: 'rid = ? AND mid = ?',
+        whereArgs: [rid, mid],
+        limit: 1);
+    if (rows.isEmpty) return null;
+    final r = rows.first;
+    final kind = r['kind'] as String;
+    if (kind == 'system') return null;
+    String preview;
+    String? senderName;
+    try {
+      if (kind == 'file') {
+        preview = (await _loadFileMeta(r['fid'] as String? ?? ''))?.name ??
+            'Attachment';
+      } else if (kind == 'gtext') {
+        final j =
+            (jsonDecode(await vault.unseal(r['enc_body'] as String)) as Map)
+                .cast<String, Object?>();
+        preview = j['b'] as String? ?? '';
+        senderName = j['sn'] as String?;
+      } else {
+        preview = await vault.unseal(r['enc_body'] as String);
+      }
+    } catch (_) {
+      return null; // unreadable row: better no quote than a wrong one
+    }
+    return QuotedMessage(
+      mid: mid,
+      outgoing: (r['outgoing'] as int) == 1,
+      kind: kind,
+      preview: preview.length > 240 ? preview.substring(0, 240) : preview,
+      senderName: senderName,
+    );
   }
 
   Future<FileMeta?> _loadFileMeta(String fid) async {
@@ -1951,6 +2022,7 @@ class ChatService extends ChangeNotifier {
       if (outgoing) {
         // My own group send, made on another of my devices.
         final body = inner.data['body'] as String? ?? '';
+        final quoted = await _resolveQuote(gid!, inner.replyTo);
         await vault.db.insert(
             'messages',
             {
@@ -1962,10 +2034,11 @@ class ChatService extends ChangeNotifier {
               'ts_ms': inner.ts,
               'status': MsgStatus.sent,
               'expire_at_ms': 0,
+              'reply_to': quoted?.mid,
             },
             conflictAlgorithm: ConflictAlgorithm.ignore);
         _appendLoaded(
-            gid!,
+            gid,
             ChatMessage(
               mid: inner.mid,
               rid: gid,
@@ -1974,6 +2047,8 @@ class ChatService extends ChangeNotifier {
               body: body,
               ts: inner.ts,
               status: MsgStatus.sent,
+              replyTo: quoted?.mid,
+              quote: quoted,
             ));
       } else {
         final c = contacts[rid];
@@ -2008,6 +2083,7 @@ class ChatService extends ChangeNotifier {
     if (inner.kind != 'text') return; // only text/file/group self-sync
     final body = inner.data['body'] as String? ?? '';
     final status = outgoing ? MsgStatus.sent : MsgStatus.delivered;
+    final quoted = await _resolveQuote(rid, inner.replyTo);
     await vault.db.insert(
       'messages',
       {
@@ -2019,6 +2095,7 @@ class ChatService extends ChangeNotifier {
         'ts_ms': inner.ts,
         'status': status,
         'expire_at_ms': 0,
+        'reply_to': quoted?.mid,
       },
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
@@ -2033,6 +2110,8 @@ class ChatService extends ChangeNotifier {
           ts: inner.ts,
           status: status,
           expireAtMs: 0,
+          replyTo: quoted?.mid,
+          quote: quoted,
         ));
     notifyListeners();
   }
@@ -2049,6 +2128,7 @@ class ChatService extends ChangeNotifier {
     final voice = inner.data['voice'] == true;
     final durSec = (inner.data['dur'] as num?)?.toInt() ?? 0;
     final status = outgoing ? MsgStatus.sent : MsgStatus.delivered;
+    final quoted = await _resolveQuote(rid, inner.replyTo);
     await vault.db.insert(
       'files',
       {
@@ -2083,6 +2163,7 @@ class ChatService extends ChangeNotifier {
         'ts_ms': inner.ts,
         'status': status,
         'expire_at_ms': 0,
+        'reply_to': quoted?.mid,
       },
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
@@ -2098,6 +2179,8 @@ class ChatService extends ChangeNotifier {
           ts: inner.ts,
           status: status,
           expireAtMs: 0,
+          replyTo: quoted?.mid,
+          quote: quoted,
           file: FileMeta(
             fid: fid,
             name: name,
@@ -2262,15 +2345,17 @@ class ChatService extends ChangeNotifier {
   }
 
   /// Send a text to every member of [gid], each over their pairwise ratchet.
-  Future<void> sendGroupText(String gid, String body) async {
+  Future<void> sendGroupText(String gid, String body, {String? replyTo}) async {
     final g = groups[gid];
     if (g == null || g.left) return;
     final ts = _now();
-    final inner = InnerMessage(
-        kind: 'gmsg',
-        mid: newMessageId(),
-        ts: ts,
-        data: {'gid': gid, 'body': body});
+    final quoted = await _resolveQuote(gid, replyTo);
+    final inner =
+        InnerMessage(kind: 'gmsg', mid: newMessageId(), ts: ts, data: {
+      'gid': gid,
+      'body': body,
+      if (quoted != null) 'rt': quoted.mid,
+    });
     await vault.db.insert('messages', {
       'mid': inner.mid,
       'rid': gid,
@@ -2280,6 +2365,7 @@ class ChatService extends ChangeNotifier {
       'ts_ms': ts,
       'status': MsgStatus.pending,
       'expire_at_ms': 0,
+      'reply_to': quoted?.mid,
     });
     _appendLoaded(
         gid,
@@ -2291,6 +2377,8 @@ class ChatService extends ChangeNotifier {
           body: body,
           ts: ts,
           status: MsgStatus.pending,
+          replyTo: quoted?.mid,
+          quote: quoted,
         ));
     notifyListeners();
     await _fanGroupInner(g, inner);
@@ -2311,7 +2399,7 @@ class ChatService extends ChangeNotifier {
 
   Future<void> sendGroupFile(
       String gid, String fileName, Uint8List bytes, String mime,
-      {bool voice = false, int durSec = 0}) async {
+      {bool voice = false, int durSec = 0, String? replyTo}) async {
     final g = groups[gid];
     if (g == null || g.left) return;
     if (bytes.length > maxAttachmentBytes) {
@@ -2319,6 +2407,7 @@ class ChatService extends ChangeNotifier {
           'attachment too large (max 24 MB in this build)');
     }
     final ts = _now();
+    final quoted = await _resolveQuote(gid, replyTo);
     final km = FileKeyMaterial.generate();
     final chunks = splitChunks(bytes);
     final sha = b64(await sha256Bytes(bytes));
@@ -2338,6 +2427,7 @@ class ChatService extends ChangeNotifier {
         'chunks': chunks.length,
         if (voice) 'voice': true,
         if (durSec > 0) 'dur': durSec,
+        if (quoted != null) 'rt': quoted.mid,
       },
     );
     final keyInfo = await vault.writeBlob(km.fid, bytes);
@@ -2375,6 +2465,7 @@ class ChatService extends ChangeNotifier {
         'ts_ms': ts,
         'status': MsgStatus.pending,
         'expire_at_ms': 0,
+        'reply_to': quoted?.mid,
       });
     });
     _appendLoaded(
@@ -2388,6 +2479,8 @@ class ChatService extends ChangeNotifier {
           fid: km.fid,
           ts: ts,
           status: MsgStatus.pending,
+          replyTo: quoted?.mid,
+          quote: quoted,
           file: FileMeta(
             fid: km.fid,
             name: fileName,
@@ -2528,6 +2621,7 @@ class ChatService extends ChangeNotifier {
     // Unknown group or non-member sender (e.g. removed): drop silently.
     if (g == null || g.left || !g.memberRids.contains(contact.rid)) return;
     final body = inner.data['body'] as String? ?? '';
+    final quoted = await _resolveQuote(gid!, inner.replyTo, txn: txn);
     await (txn ?? vault.db).insert(
         'messages',
         {
@@ -2540,10 +2634,11 @@ class ChatService extends ChangeNotifier {
           'ts_ms': now,
           'status': MsgStatus.delivered,
           'expire_at_ms': 0,
+          'reply_to': quoted?.mid,
         },
         conflictAlgorithm: ConflictAlgorithm.ignore);
     _appendLoaded(
-        gid!,
+        gid,
         ChatMessage(
           mid: inner.mid,
           rid: gid,
@@ -2553,6 +2648,8 @@ class ChatService extends ChangeNotifier {
           ts: now,
           status: MsgStatus.delivered,
           senderName: contact.name,
+          replyTo: quoted?.mid,
+          quote: quoted,
         ));
     if (openChatRid != gid) unread[gid] = (unread[gid] ?? 0) + 1;
   }

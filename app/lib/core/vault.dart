@@ -80,6 +80,48 @@ class Vault {
 
   bool get hasPassphrase => _hasPassphrase;
 
+  /// Database schema version.
+  ///
+  /// 1 — the original store.
+  /// 2 — message interactions (8.1): reply/edit/delete columns on `messages`
+  ///     and the `reactions` table. Everything the phase needs lands in one
+  ///     migration so an installed app upgrades once, not three times.
+  static const int schemaVersion = 2;
+
+  // Message ids are already stored in the clear (they are the primary key),
+  // so `reply_to` — a mid within the same chat — reveals nothing the row
+  // layout does not. Bodies and reaction emoji stay sealed.
+  static const String _v2MessageColumns = '''
+              reply_to TEXT,
+              edited_ms INTEGER NOT NULL DEFAULT 0,
+              deleted INTEGER NOT NULL DEFAULT 0''';
+
+  static const String _createReactions = '''
+            CREATE TABLE reactions(
+              rid TEXT NOT NULL,
+              mid TEXT NOT NULL,
+              sender_rid TEXT NOT NULL,
+              enc_emoji TEXT NOT NULL,
+              ts_ms INTEGER NOT NULL,
+              PRIMARY KEY (rid, mid, sender_rid)
+            )''';
+
+  /// Schema migrations. Each step is additive (new nullable/defaulted columns
+  /// and new tables) so an interrupted upgrade cannot lose messages, and a
+  /// vault written by a newer build still opens read-compatible rows.
+  static Future<void> _migrate(Database db, int from, int to) async {
+    if (from < 2) {
+      for (final column in const [
+        'reply_to TEXT',
+        'edited_ms INTEGER NOT NULL DEFAULT 0',
+        'deleted INTEGER NOT NULL DEFAULT 0',
+      ]) {
+        await db.execute('ALTER TABLE messages ADD COLUMN $column');
+      }
+      await db.execute(_createReactions);
+    }
+  }
+
   static File _configFile(Directory root) =>
       File(p.join(root.path, 'key.json'));
 
@@ -159,7 +201,8 @@ class Vault {
     final db = await databaseFactoryFfi.openDatabase(
       p.join(root.path, 'z.db'),
       options: OpenDatabaseOptions(
-        version: 1,
+        version: schemaVersion,
+        onUpgrade: _migrate,
         onCreate: (db, v) async {
           await db.execute('''
             CREATE TABLE contacts(
@@ -188,10 +231,12 @@ class Vault {
               status INTEGER NOT NULL DEFAULT 0,
               expire_at_ms INTEGER NOT NULL DEFAULT 0,
               receipt_sent INTEGER NOT NULL DEFAULT 0,
+              $_v2MessageColumns,
               PRIMARY KEY (rid, mid)
             )''');
           await db.execute(
               'CREATE INDEX idx_messages_rid_ts ON messages(rid, ts_ms)');
+          await db.execute(_createReactions);
           await db.execute('''
             CREATE TABLE files(
               fid TEXT PRIMARY KEY,
