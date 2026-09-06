@@ -52,7 +52,7 @@ like the review to either confirm or break each one.
 | C8 | Pairing: a machine‑in‑the‑middle on the rendezvous produces a different SAS on each screen; the enrollment payload is bound to the channel. | §10 | `pairing.json` (both roles replayed by Node), `pairing_test.dart` |
 | C9 | Groups: no shared key; a member removed before a send never receives the key; membership only changes over the admin's authenticated channel. | §11 | `app/test/group_test.dart` |
 | C10 | Device‑list transparency: silent enrolment, split views and silent removal are surfaced to the owner and to a contact; an honest addition raises nothing; a rogue that answers a device's request from the root's mailbox is still caught. | §3.6, `adr/0001` | `app/test/devlist_transparency_test.dart`, `devlist_distribution_test.dart` |
-| C11 | Plaintext never touches disk: vault cells, attachments, voice capture, search, history sync. The biometric pass key opens the vault only through the OS prompt, is bound to the passphrase salt, and is removed with the feature. | §13, app invariants | `vault_passphrase_test.dart` (pass‑key path), `app_lock_test.dart`, `lock_screen_test.dart`, `search_test.dart` (stored cells checked), `voice.dart` design |
+| C11 | Plaintext never touches disk: vault cells, attachments, voice capture, search, history sync. The biometric pass key opens the vault only through the OS prompt (on Android the keystore enforces that itself), is bound to the passphrase salt, and is removed with the feature. | §13, app invariants | `vault_passphrase_test.dart` (pass‑key path), `app_lock_test.dart` (incl. bound‑store cases), `lock_screen_test.dart`, `search_test.dart` (stored cells checked), `voice.dart` design, `BioKey.kt` review |
 | C12 | The wire format is frozen: any change to bytes an implementation computes fails CI; compatible extensions are additive only. | §14, `vectors/README.md` | `protocol/test/vectors_test.dart` freeze, Node clean‑room replay (13 suites) |
 
 ## 4. Where we would like the most attention
@@ -102,11 +102,17 @@ than bugs we expect.
    t = 2, p = 1), the keystore fallback file, and what the app writes to
    temp/log locations. The app lock (7.8): the screen lock is a UI gate
    over an open vault — confirm nothing about storage changes and that the
-   lock cannot be bypassed from the navigation stack; biometric unlock
-   stores the Argon2id output (`z_bio_passkey`) in the keystore and is
-   documented as making the passphrase a UI gate on that device — confirm
-   the entry is deleted on disable / passphrase removal and re‑derived on
-   passphrase change, and that a stale entry fails closed.
+   lock cannot be bypassed from the navigation stack. Biometric unlock
+   keeps the Argon2id output under `z_bio_passkey`: on Android (7.8b,
+   `android/.../BioKey.kt`) sealed with AES‑GCM under a Keystore key with
+   per‑use user authentication authorised through a `CryptoObject` —
+   review the `KeyGenParameterSpec` (auth types per API level,
+   `setInvalidatedByBiometricEnrollment`), the error → outcome mapping and
+   that an invalidated key fails closed; on macOS/Windows a plain keystore
+   entry read after the app's own prompt, documented as making the
+   passphrase a UI gate there. On all platforms confirm the entry is
+   deleted on disable / passphrase removal, re‑sealed on passphrase change,
+   and that a stale entry fails closed.
 9. **Relay robustness** (`server.js`). RAM caps per mailbox, envelope size
    cap (1,000,000 chars), dedupe/ack semantics, push‑token expiry,
    two‑instance coordination (Redis kick/flush), authentication
@@ -146,10 +152,11 @@ derivations themselves).
   retain per‑file key material); the search index is not persisted (search
   decrypts in memory every time).
 - ML‑KEM‑768 in pure Dart is not audited for constant‑time behaviour.
-- Biometric unlock (opt‑in) keeps a passphrase‑derived key in the OS
-  keystore; it is not gated by the keystore's own user‑authentication
-  binding (`setUserAuthenticationRequired` / access‑control flags), which
-  would need native code beyond `flutter_secure_storage`. Planned as 7.8b.
+- Biometric unlock (opt‑in) is hardware‑bound on Android only. On
+  macOS/Windows the passphrase‑derived key is a plain keystore entry gated
+  by the app's own prompt, not by Keychain access control / Windows Hello
+  user presence — native code that cannot be verified without those
+  toolchains; planned as 7.8c.
 
 ## 7. Artifacts and how to run them
 
@@ -211,7 +218,9 @@ app/lib/core/
   chat_service.dart        orchestrator (see the invariants in its header comment)
   device_sync.dart         self-sync envelopes (out/in/ping/acct/acctreq/hist)
   vault.dart               encrypted SQLite vault, keystore, passphrase, blobs
-  app_lock.dart            screen lock + biometric unlock (local_auth behind a testable gate)
+  app_lock.dart            screen lock + biometric unlock (local_auth behind a testable gate; BoundKeyStore)
+app/android/app/src/main/kotlin/com/zmessenger/www/BioKey.kt
+                           hardware-bound pass key: Keystore + BiometricPrompt CryptoObject (7.8b)
   transport.dart           relay link with backoff
   voice.dart               in-memory WAV capture wrapper
   backup.dart              identity backup (.zid)

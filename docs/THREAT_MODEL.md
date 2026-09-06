@@ -180,14 +180,33 @@ recipient device so the relay does not learn who sent it.
   - *Unlock with biometrics* (only when an app passphrase is set) lets the
     prompt open the vault instead of typing the passphrase. To do that, Z
     keeps the Argon2id output for the current passphrase — never the
-    passphrase — in the OS keystore, and deletes it when the feature is
-    turned off or the passphrase is removed. **The trade‑off:** while it is
-    on, the device secret and that key together unwrap the vault key, so on
-    *that* device an attacker who can extract keystore entries (root, a
-    forensic image of an unlocked phone) no longer needs the passphrase.
-    The passphrase becomes a UI gate on that device; it still protects the
-    vault against anyone who does not have the keystore. Leave it off if
-    the passphrase is your defence against exactly that attacker.
+    passphrase — on the device, and deletes it when the feature is turned
+    off or the passphrase is removed. How well that key is protected
+    depends on the platform:
+    - **Android (hardware‑bound).** The key is sealed under an Android
+      Keystore key created with "user authentication required, for every
+      use": the keystore itself will not run the decryption unless the user
+      has just passed the system prompt, and the prompt is tied to that
+      exact operation (`BiometricPrompt` + `CryptoObject`). Copying the
+      app's data, or asking the keystore from inside the process, yields
+      nothing; re‑enrolling a fingerprint or face permanently invalidates
+      the key, and the app falls back to the passphrase. On Android 11+
+      the device PIN is accepted as fallback; on 7–10 the key is
+      biometric‑only. What remains is an attacker who controls the
+      unlocked, running device (a compromised endpoint — see above).
+    - **macOS / Windows (software‑gated).** The key is an ordinary keystore
+      entry that Z reads only after its own prompt. **The trade‑off:**
+      while it is on, the device secret and that key together unwrap the
+      vault key, so on *that* machine an attacker who can extract keystore
+      entries (an admin, a forensic image of an unlocked machine) no longer
+      needs the passphrase. The passphrase becomes a UI gate there; it
+      still protects the vault against anyone who does not have the
+      keystore. Leave it off on those platforms if the passphrase is your
+      defence against exactly that attacker. Binding the entry to the
+      Keychain's / Windows Hello's own user‑presence check is planned once
+      those builds can be verified.
+    The settings screen says which of the two applies on the device in
+    front of you.
 
 ## Recommendations for high‑risk users
 
@@ -199,9 +218,9 @@ recipient device so the relay does not learn who sent it.
    you can explain it.
 4. Enable disappearing messages for sensitive threads.
 5. Keep your OS and device encryption on; use a strong device passcode and
-   the app passphrase. Turn on the screen lock; leave "unlock with
-   biometrics" off if you rely on the passphrase against someone who can
-   image the device.
+   the app passphrase. Turn on the screen lock; on macOS / Windows leave
+   "unlock with biometrics" off if you rely on the passphrase against
+   someone who can image the machine (on Android it is hardware‑bound).
 6. Understand that metadata (which mailbox, when, how much) is the residual
    risk — treat the relay operator accordingly.
 

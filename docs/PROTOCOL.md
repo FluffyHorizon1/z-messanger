@@ -705,10 +705,12 @@ The master key is wrapped as `XChaCha20‑Poly1305(K_wrap, master)` with
 `deviceSecret` is a 32‑byte keystore secret and `passKey =
 Argon2id(passphrase, salt, m = 19456 KiB, t = 2, p = 1, L = 32)` is present
 only while a passphrase is set. The optional *biometric unlock* keeps that
-`passKey` (not the passphrase) in the keystore and releases it after the OS
-prompt; a new salt on every passphrase change makes an old `passKey` fail
-closed. The *screen lock* is a UI gate over the open vault and changes
-nothing here. An identity backup (`.zid`) is:
+`passKey` (not the passphrase) on the device and releases it after the OS
+prompt — on Android sealed as `AES‑256‑GCM(K_hw, passKey)` under a Keystore
+key that requires user authentication for every use, elsewhere as a plain
+keystore entry; a new salt on every passphrase change makes an old
+`passKey` fail closed. The *screen lock* is a UI gate over the open vault
+and changes nothing here. An identity backup (`.zid`) is:
 
 ```
 inner = JSON{ "v":1, "identity":{ "edSeed":b64, "xSeed":b64 }, "name":string, "contacts":[...] }

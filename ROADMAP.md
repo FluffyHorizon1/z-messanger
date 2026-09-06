@@ -24,11 +24,11 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
-| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search + history sync ✅ (themes ⏳) · **7.8 app lock (biometrics) ✅** (7.8b keystore auth-binding ⏳) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
+| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search + history sync ✅ (themes ⏳) · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
 
-**Next up:** 7.6 themes (needs visual verification); 7.8b (bind the
-biometric pass key to the keystore's own user-authentication requirement —
-native code); 5.2 engagement is external.
+**Next up:** 7.6 themes (needs visual verification); 5.2 engagement is
+external; 7.8c (Keychain / Windows Hello binding of the biometric pass key)
+when a Mac / Windows build can be verified.
 Externally gated items resume as soon as their gate clears: Play submission,
 Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public transparency
 log) waits for a public launch with durable infrastructure.
@@ -251,18 +251,32 @@ Ordered by value; each is a self-contained project on the existing layering.
   AppCompat themes and minSdk 24 for `androidx.biometric`. **DoD:**
   `app_lock_test.dart` (timing, prompt outcomes, in-flight noise, auto-off,
   pass-key lifecycle against a real vault), `lock_screen_test.dart`,
-  `vault_passphrase_test.dart` pass-key case. **7.8b** ⏳: bind the pass key
-  to keystore user-authentication (`setUserAuthenticationRequired` /
-  Keychain access control) so the entry is unreadable without the prompt at
-  the OS level — needs platform code beyond `flutter_secure_storage`.
+  `vault_passphrase_test.dart` pass-key case.
+  **7.8b Hardware-bound pass key (Android)** ✅ — the pass key is sealed
+  with AES-256-GCM under an Android Keystore key created with
+  `setUserAuthenticationRequired(true)` and a per-use timeout (11+:
+  biometric or device credential; 7–10: biometric only), authorised through
+  `BiometricPrompt` + `CryptoObject`, so the keystore itself refuses to run
+  the decryption until the user has just passed the system prompt — the
+  entry is useless to anyone who copies the app's data. New biometric
+  enrolments invalidate the key (`setInvalidatedByBiometricEnrollment`);
+  the app then falls back to the passphrase and explains. Lives in the app
+  (`BioKey.kt` + a `z/biokey` method channel behind `BoundKeyStore`), with
+  the 7.8 software-gated entry kept as the fallback for devices that cannot
+  make such a key and for macOS/Windows; the settings row says which one
+  is in effect. **DoD:** `app_lock_test.dart` bound-store cases (sealed
+  v2 entry, no UI prompt, re-seal on passphrase change, invalidation resets
+  the feature, plain-entry fallback), APK build compiles the Kotlin,
+  THREAT_MODEL per-platform paragraph. **7.8c** ⛔: the same binding via
+  Keychain access control (`kSecAccessControlBiometryCurrentSet`) and
+  Windows Hello — needs a Mac / Windows toolchain to verify.
 
 ---
 
 ## Suggested near-term sprint (the next 3 sessions)
 
 1. **Quality-of-life** (7.6, continued): themes (search, history sync and
-   jump-to-message are done); 7.8b keystore auth-binding for the biometric
-   pass key.
+   jump-to-message are done).
 2. **Verifiability:** 5.2 — engage an auditor with the frozen v1 spec, the v2
    extension (incl. the 7.5b re-key), ADR 0001 and the vectors as the scope
    document.

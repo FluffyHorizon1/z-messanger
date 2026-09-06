@@ -3,7 +3,9 @@
 // biometric-unlock key lifecycle against a real vault — runs headless.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
@@ -32,21 +34,74 @@ class FakeGate implements BiometricGate {
   }
 }
 
+/// A hardware-bound store: seals under a numbered "key"; forgetting or
+/// re-enrolling biometrics ([invalidate]) makes old blobs unreadable, as the
+/// Android Keystore does. [nextOpen] scripts the prompt outcome of `open`.
+class FakeBoundKeyStore implements BoundKeyStore {
+  bool isAvailable = true;
+  int keyGen = 0; // 0 = no key
+  final vault = <int, Uint8List>{};
+  String? nextSeal; // error code for the next seal, else success
+  String? nextOpen; // error code for the next open, else success
+  int seals = 0, opens = 0;
+
+  @override
+  Future<bool> get available async => isAvailable;
+
+  @override
+  Future<BoundBlob> seal(Uint8List secret) async {
+    seals++;
+    final err = nextSeal;
+    nextSeal = null;
+    if (err != null) throw BoundKeyException(err);
+    keyGen++;
+    vault[keyGen] = Uint8List.fromList(secret);
+    return BoundBlob(iv: Uint8List.fromList([keyGen]), ct: Uint8List(1));
+  }
+
+  @override
+  Future<Uint8List> open(BoundBlob blob) async {
+    opens++;
+    final err = nextOpen;
+    nextOpen = null;
+    if (err != null) throw BoundKeyException(err);
+    final gen = blob.iv.first;
+    if (gen != keyGen || !vault.containsKey(gen)) {
+      throw const BoundKeyException('invalidated');
+    }
+    return vault[gen]!;
+  }
+
+  @override
+  Future<void> forget() async {
+    vault.remove(keyGen);
+    keyGen = 0;
+  }
+
+  /// A new fingerprint was enrolled: the key is permanently gone.
+  void invalidate() {
+    vault.clear();
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late Directory dir;
   late FakeGate gate;
   late MemorySecretStore store;
+  late FakeBoundKeyStore bound;
   int now = 1000000;
 
-  AppLock makeLock() =>
-      AppLock(root: dir, gate: gate, store: store, clock: () => now);
+  AppLock makeLock() => AppLock(
+      root: dir, gate: gate, store: store, bound: bound, clock: () => now);
 
   setUp(() async {
     dir = await Directory.systemTemp.createTemp('z_applock');
     gate = FakeGate();
     store = MemorySecretStore();
+    bound = FakeBoundKeyStore()
+      ..isAvailable = false; // plain entries unless a test opts in
     now = 1000000;
   });
 
@@ -273,5 +328,113 @@ void main() {
     final calls = gate.calls;
     expect(await launch.passKeyAfterPrompt(), isNull);
     expect(gate.calls, calls);
+  });
+
+  // 7.8b: with a hardware-bound store the keystore's own prompt replaces
+  // ours, the entry is a sealed blob, and a reset key fails closed.
+  test('bound store: sealed entry, no UI prompt, invalidation resets',
+      () async {
+    const pass = 'correct horse battery staple';
+    bound.isAvailable = true;
+    final vault = await Vault.open(rootOverride: dir);
+    await vault.kvPut('identity', '{"x":2}');
+    await vault.setPassphrase(pass);
+    final lock = makeLock();
+    await lock.load();
+    expect(await lock.boundAvailable, isTrue);
+
+    // The seal's own prompt cancelled: nothing stored, feature off.
+    bound.nextSeal = 'cancelled';
+    expect(await lock.enrolBiometricUnlock(vault, pass), isFalse);
+    expect(store.map, isEmpty);
+    expect(gate.calls, 0, reason: 'our prompt is never shown');
+
+    // Enrolled: the entry is a v2 blob, not the pass key.
+    expect(await lock.enrolBiometricUnlock(vault, pass), isTrue);
+    expect(lock.biometricUnlockBound, isTrue);
+    final raw = store.map[AppLock.passKeyStorageKey]!;
+    expect(raw.startsWith('{'), isTrue);
+    expect(raw, contains('"v":2'));
+    final pk = await vault.passKeyFor(pass);
+    expect(raw.contains(base64Encode(pk)), isFalse,
+        reason: 'the pass key itself is not in the entry');
+    await vault.db.close();
+
+    // Launch: the bound open (with the OS prompt inside) yields the key.
+    final launch = makeLock();
+    await launch.load();
+    expect(launch.biometricUnlockBound, isTrue, reason: 'learned from entry');
+    launch.lockNow();
+    bound.nextOpen = 'cancelled';
+    expect(await launch.passKeyAfterPrompt(), isNull);
+    expect(launch.lastResult, GateResult.cancelled);
+    expect(launch.locked, isTrue);
+    final got = await launch.passKeyAfterPrompt();
+    expect(got, pk);
+    expect(launch.locked, isFalse);
+    expect(gate.calls, 0);
+    var v = await Vault.open(rootOverride: dir, passKey: got);
+    expect(await v.kvGet('identity'), '{"x":2}');
+
+    // Passphrase change re-seals (a new hardware key each time).
+    const pass2 = 'a different much longer passphrase';
+    await v.setPassphrase(pass2);
+    final sealsBefore = bound.seals;
+    await launch.onPassphraseChanged(v, pass2);
+    expect(bound.seals, sealsBefore + 1);
+    expect(launch.settings.biometricUnlock, isTrue);
+    await v.db.close();
+    expect(
+        await launch.passKeyAfterPrompt(),
+        await (() async {
+          final t = await Vault.open(rootOverride: dir, passphrase: pass2);
+          final k = await t.passKeyFor(pass2);
+          await t.db.close();
+          return k;
+        })());
+
+    // Biometrics re-enrolled: the key is gone → entry removed, feature off,
+    // and the caller is told so it can explain.
+    bound.invalidate();
+    await expectLater(launch.passKeyAfterPrompt(),
+        throwsA(isA<BiometricKeyInvalidatedException>()));
+    expect(launch.settings.biometricUnlock, isFalse);
+    expect(store.map, isEmpty);
+    expect(launch.biometricUnlockBound, isFalse);
+
+    // A re-seal that cannot happen (prompt dismissed) switches off too.
+    v = await Vault.open(rootOverride: dir, passphrase: pass2);
+    expect(await launch.enrolBiometricUnlock(v, pass2), isTrue);
+    await v.setPassphrase(pass);
+    bound.nextSeal = 'cancelled';
+    await launch.onPassphraseChanged(v, pass);
+    expect(launch.settings.biometricUnlock, isFalse);
+    expect(store.map, isEmpty);
+    await v.db.close();
+  });
+
+  test('bound store that cannot make a key falls back to a plain entry',
+      () async {
+    const pass = 'correct horse battery staple';
+    bound.isAvailable = true;
+    bound.nextSeal = 'unavailable'; // e.g. key generation refused
+    final vault = await Vault.open(rootOverride: dir);
+    await vault.setPassphrase(pass);
+    final lock = makeLock();
+    await lock.load();
+    gate.answers.add(GateResult.ok);
+    expect(await lock.enrolBiometricUnlock(vault, pass), isTrue);
+    expect(gate.calls, 1, reason: 'our prompt gates the plain entry');
+    expect(lock.biometricUnlockBound, isFalse);
+    expect(store.map[AppLock.passKeyStorageKey]!.startsWith('{'), isFalse);
+    await vault.db.close();
+
+    // …and opens through our prompt, as in 7.8.
+    gate.answers.add(GateResult.ok);
+    final pk = await lock.passKeyAfterPrompt();
+    expect(pk, isNotNull);
+    final v = await Vault.open(rootOverride: dir, passKey: pk);
+    expect(v.hasPassphrase, isTrue);
+    await v.db.close();
   });
 }

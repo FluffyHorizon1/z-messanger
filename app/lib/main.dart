@@ -180,6 +180,18 @@ class _BootstrapperState extends State<Bootstrapper>
               'turn it on again in Settings.';
         });
       }
+    } on BiometricKeyInvalidatedException {
+      // The hardware key was reset (biometrics re-enrolled); already off.
+      if (mounted) {
+        setState(() {
+          _unlocking = false;
+          _biometricOffered = false;
+          _unlockError =
+              'Your fingerprints or face changed, so biometric unlock was '
+              'reset. Enter your passphrase, then turn it on again in '
+              'Settings.';
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() {

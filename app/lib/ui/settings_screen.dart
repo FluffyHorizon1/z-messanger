@@ -25,13 +25,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Whether the OS prompt exists here (false on Linux, or a device with no
   // biometrics and no PIN): decides whether the app-lock rows are shown.
   bool _lockAvailable = false;
+  // Whether this device can seal the pass key under a hardware key that
+  // only the authenticated user can operate (7.8b, Android).
+  bool _boundAvailable = false;
 
   @override
   void initState() {
     super.initState();
-    context.read<AppLock>().available.then((v) {
+    final lock = context.read<AppLock>();
+    lock.available.then((v) {
       if (mounted) setState(() => _lockAvailable = v);
     });
+    lock.boundAvailable.then((v) {
+      if (mounted) setState(() => _boundAvailable = v);
+    });
+  }
+
+  String _biometricUnlockCopy(AppLock lock) {
+    const lead = 'Open the vault with your fingerprint or face instead of '
+        'typing the passphrase. ';
+    final boundNow = lock.settings.biometricUnlock
+        ? lock.biometricUnlockBound
+        : _boundAvailable;
+    if (boundNow) {
+      return '${lead}The key that opens it is sealed by this device\'s '
+          'secure hardware and can only be used right after the system '
+          'prompt — copying the app\'s data does not reveal it. Re-enrolling '
+          'a fingerprint or face resets it.';
+    }
+    return '${lead}While this is on, a key derived from your passphrase '
+        '(never the passphrase itself) sits in this device\'s keystore — so '
+        'on THIS device, someone who can break into the keystore no longer '
+        'needs your passphrase. Turning it off deletes that key.';
   }
 
   @override
@@ -211,15 +236,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ? ZTheme.ok
                     : ZTheme.textSecondary,
               ),
-              title: const Text('Unlock with biometrics'),
-              subtitle: const Text(
-                'Open the vault with your fingerprint or face instead of '
-                'typing the passphrase. While this is on, a key derived from '
-                'your passphrase (never the passphrase itself) sits in this '
-                'device\'s keystore — so on THIS device, someone who can '
-                'break into the keystore no longer needs your passphrase. '
-                'Turning it off deletes that key.',
-                style: TextStyle(fontSize: 12),
+              title: Text(lock.biometricUnlockBound
+                  ? 'Unlock with biometrics — hardware-bound'
+                  : 'Unlock with biometrics'),
+              subtitle: Text(
+                _biometricUnlockCopy(lock),
+                style: const TextStyle(fontSize: 12),
               ),
               value: lock.settings.biometricUnlock,
               activeThumbColor: ZTheme.accent,

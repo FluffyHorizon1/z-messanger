@@ -85,4 +85,7 @@ dependencies {
     // Theme.AppCompat.* parents in res/values/styles.xml (needed by the
     // biometric prompt on Android 8.1 and below).
     implementation("androidx.appcompat:appcompat:1.7.0")
+    // BioKey.kt (7.8b): BiometricPrompt with a CryptoObject for the
+    // hardware-bound pass key. Same version local_auth_android ships.
+    implementation("androidx.biometric:biometric:1.1.0")
 }
