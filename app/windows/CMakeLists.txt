@@ -52,6 +52,14 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
+# MSVC 14.51+ (Visual Studio 2026 18.6) hard-deprecates <experimental/coroutine>
+# with a static_assert (STL1011). local_auth_windows still compiles its
+# C++/WinRT code with /await against that header, so acknowledge the
+# deprecation for every plugin added below — Microsoft's documented escape
+# hatch until the header is removed and the plugin moves to C++20 <coroutine>.
+# A directory-scope definition set here is inherited by the plugin
+# subdirectories that generated_plugins.cmake adds.
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
