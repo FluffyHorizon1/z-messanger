@@ -52,6 +52,12 @@ jobs:
         run: |
           flutter pub get
           flutter test
+      - name: Theme screenshots (light + dark, rendered by screenshots_test.dart)
+        uses: actions/upload-artifact@v4
+        with:
+          name: z-screenshots
+          path: app/build/screenshots/*.png
+          if-no-files-found: warn
 
   android:
     name: Android APK + AAB

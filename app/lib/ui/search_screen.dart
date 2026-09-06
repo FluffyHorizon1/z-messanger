@@ -101,8 +101,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _body() {
     if (_searching) {
-      return const Center(
-          child: CircularProgressIndicator(color: ZTheme.accent));
+      return Center(child: CircularProgressIndicator(color: context.z.accent));
     }
     if (_query.isEmpty) {
       return const _Hint(
@@ -140,12 +139,12 @@ class _HitTile extends StatelessWidget {
     return ListTile(
       leading: CircleAvatar(
         radius: 20,
-        backgroundColor: ZTheme.surfaceAlt,
+        backgroundColor: context.z.surfaceAlt,
         child: hit.isGroup
-            ? const Icon(Icons.group, color: ZTheme.accent, size: 20)
+            ? Icon(Icons.group, color: context.z.accent, size: 20)
             : Text(hit.title.isNotEmpty ? hit.title[0].toUpperCase() : '?',
-                style: const TextStyle(
-                    color: ZTheme.accent, fontWeight: FontWeight.w700)),
+                style: TextStyle(
+                    color: context.z.accent, fontWeight: FontWeight.w700)),
       ),
       title: Row(
         children: [
@@ -155,8 +154,7 @@ class _HitTile extends StatelessWidget {
                 style: const TextStyle(fontWeight: FontWeight.w600)),
           ),
           Text(time(hit.ts),
-              style:
-                  const TextStyle(fontSize: 12, color: ZTheme.textSecondary)),
+              style: TextStyle(fontSize: 12, color: context.z.textSecondary)),
         ],
       ),
       subtitle: _Highlighted(text: '$prefix${hit.snippet}', query: query),
@@ -187,8 +185,8 @@ class _Highlighted extends StatelessWidget {
       if (at > i) spans.add(TextSpan(text: text.substring(i, at)));
       spans.add(TextSpan(
           text: text.substring(at, at + q.length),
-          style: const TextStyle(
-              color: ZTheme.accent, fontWeight: FontWeight.w700)));
+          style:
+              TextStyle(color: context.z.accent, fontWeight: FontWeight.w700)));
       i = at + q.length;
     }
     if (i < text.length) spans.add(TextSpan(text: text.substring(i)));
@@ -196,7 +194,7 @@ class _Highlighted extends StatelessWidget {
       TextSpan(children: spans),
       maxLines: 2,
       overflow: TextOverflow.ellipsis,
-      style: const TextStyle(color: ZTheme.textSecondary),
+      style: TextStyle(color: context.z.textSecondary),
     );
   }
 }
@@ -214,12 +212,11 @@ class _Hint extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, size: 48, color: ZTheme.textSecondary),
+            Icon(icon, size: 48, color: context.z.textSecondary),
             const SizedBox(height: 16),
             Text(text,
                 textAlign: TextAlign.center,
-                style:
-                    const TextStyle(color: ZTheme.textSecondary, height: 1.5)),
+                style: TextStyle(color: context.z.textSecondary, height: 1.5)),
           ],
         ),
       ),

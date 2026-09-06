@@ -24,17 +24,17 @@ Future<bool> confirmSasDialog(BuildContext context, String sas) async {
           const SizedBox(height: 18),
           Text(
             sas,
-            style: const TextStyle(
+            style: TextStyle(
                 fontSize: 40,
                 fontFamily: 'monospace',
                 letterSpacing: 6,
-                color: ZTheme.accent),
+                color: context.z.accent),
           ),
           const SizedBox(height: 12),
-          const Text(
+          Text(
             'If they differ, cancel — someone may be intercepting the link.',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12, color: ZTheme.textSecondary),
+            style: TextStyle(fontSize: 12, color: context.z.textSecondary),
           ),
         ],
       ),
@@ -99,11 +99,11 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
         padding: EdgeInsets.fromLTRB(
             24, 24, 24, 24 + MediaQuery.paddingOf(context).bottom),
         children: [
-          const Text(
+          Text(
             'On the device you want to add, install Z and choose '
             '"Link to an existing account". It will show a pairing code — '
             'enter it here.',
-            style: TextStyle(color: ZTheme.textSecondary, height: 1.5),
+            style: TextStyle(color: context.z.textSecondary, height: 1.5),
           ),
           const SizedBox(height: 24),
           TextField(
@@ -119,8 +119,8 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
           const SizedBox(height: 20),
           FilledButton(
             style: FilledButton.styleFrom(
-              backgroundColor: ZTheme.accent,
-              foregroundColor: Colors.black,
+              backgroundColor: context.z.accent,
+              foregroundColor: context.z.onAccent,
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
             onPressed: _busy ? null : _link,
@@ -136,13 +136,13 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
               padding: const EdgeInsets.only(top: 18),
               child: Text(_status!,
                   style: TextStyle(
-                      color: _ok ? ZTheme.ok : ZTheme.textSecondary)),
+                      color: _ok ? context.z.ok : context.z.textSecondary)),
             ),
           const SizedBox(height: 24),
-          const Text(
+          Text(
             'Live message sync across your devices arrives in a follow-up '
             'update; linking establishes the trusted, verified connection now.',
-            style: TextStyle(color: ZTheme.textSecondary, fontSize: 12),
+            style: TextStyle(color: context.z.textSecondary, fontSize: 12),
           ),
         ],
       ),
@@ -198,16 +198,16 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
       final acct = result.account;
       await widget.vault.kvPut(
           'identity',
-          jsonEncode(
-              {'edSeed': b64(acct.deviceEdSeed), 'xSeed': b64(acct.deviceXSeed)}));
+          jsonEncode({
+            'edSeed': b64(acct.deviceEdSeed),
+            'xSeed': b64(acct.deviceXSeed)
+          }));
       await widget.vault.kvPut('account', jsonEncode(acct.toJson()));
-      await widget.vault
-          .kvPut('display_name', result.data.displayName ?? 'Me');
+      await widget.vault.kvPut('display_name', result.data.displayName ?? 'Me');
       await widget.vault.kvPut('server_url', url, sensitive: false);
       // Remember the device that linked us, so our messages mirror back to it.
       await widget.vault.kvPut(
-          'my_devices',
-          jsonEncode([result.data.hostDeviceCert.toJson()]),
+          'my_devices', jsonEncode([result.data.hostDeviceCert.toJson()]),
           sensitive: false);
       for (final b in result.data.contacts) {
         final dev = b.devices.first;
@@ -247,10 +247,10 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
         padding: EdgeInsets.fromLTRB(
             24, 24, 24, 24 + MediaQuery.paddingOf(context).bottom),
         children: [
-          const Text(
+          Text(
             'On your existing device, open Settings → Linked devices → '
             '"Link a device", then enter the code below.',
-            style: TextStyle(color: ZTheme.textSecondary, height: 1.5),
+            style: TextStyle(color: context.z.textSecondary, height: 1.5),
           ),
           const SizedBox(height: 28),
           Center(
@@ -258,11 +258,11 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
                 ? const CircularProgressIndicator()
                 : SelectableText(
                     code,
-                    style: const TextStyle(
+                    style: TextStyle(
                         fontFamily: 'monospace',
                         fontSize: 26,
                         letterSpacing: 3,
-                        color: ZTheme.accent),
+                        color: context.z.accent),
                   ),
           ),
           if (code != null)
@@ -270,8 +270,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
               child: TextButton.icon(
                 icon: const Icon(Icons.copy, size: 16),
                 label: const Text('Copy code'),
-                onPressed: () =>
-                    Clipboard.setData(ClipboardData(text: code)),
+                onPressed: () => Clipboard.setData(ClipboardData(text: code)),
               ),
             ),
           const SizedBox(height: 28),
@@ -292,8 +291,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
               onPressed: () => setState(() => _showDev = !_showDev),
               child: Text(
                 _showDev ? 'Hide developer options' : 'Developer options',
-                style:
-                    const TextStyle(color: ZTheme.textSecondary, fontSize: 12),
+                style: TextStyle(color: context.z.textSecondary, fontSize: 12),
               ),
             ),
           ),
@@ -301,13 +299,12 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 14),
-              child:
-                  Text(_error!, style: const TextStyle(color: ZTheme.danger)),
+              child: Text(_error!, style: TextStyle(color: context.z.danger)),
             ),
           FilledButton(
             style: FilledButton.styleFrom(
-              backgroundColor: ZTheme.accent,
-              foregroundColor: Colors.black,
+              backgroundColor: context.z.accent,
+              foregroundColor: context.z.onAccent,
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
             onPressed: (_busy || _initiator == null) ? null : _start,
@@ -383,7 +380,7 @@ class _LinkedDevicesScreenState extends State<LinkedDevicesScreen> {
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text('Cancel')),
           FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: ZTheme.danger),
+              style: FilledButton.styleFrom(backgroundColor: context.z.danger),
               onPressed: () => Navigator.pop(ctx, true),
               child: const Text('Revoke')),
         ],
@@ -424,20 +421,20 @@ class _LinkedDevicesScreenState extends State<LinkedDevicesScreen> {
                     onRemove: _isRoot ? () => _remove(d) : null,
                   ),
                 if (_linked.isEmpty)
-                  const Padding(
+                  Padding(
                     padding: EdgeInsets.symmetric(vertical: 8),
                     child: Text(
                       'No other devices linked yet.',
                       style: TextStyle(
-                          color: ZTheme.textSecondary, fontSize: 13),
+                          color: context.z.textSecondary, fontSize: 13),
                     ),
                   ),
                 const SizedBox(height: 24),
                 if (_isRoot)
                   FilledButton.icon(
                     style: FilledButton.styleFrom(
-                      backgroundColor: ZTheme.accent,
-                      foregroundColor: Colors.black,
+                      backgroundColor: context.z.accent,
+                      foregroundColor: context.z.onAccent,
                       padding: const EdgeInsets.symmetric(vertical: 16),
                     ),
                     icon: const Icon(Icons.add_link),
@@ -445,21 +442,23 @@ class _LinkedDevicesScreenState extends State<LinkedDevicesScreen> {
                     onPressed: _linkNew,
                   )
                 else
-                  const Text(
+                  Text(
                     'This is a linked device. Adding or revoking devices is '
                     'done from your main device — the one that created the '
                     'account.',
                     style: TextStyle(
-                        color: ZTheme.textSecondary,
+                        color: context.z.textSecondary,
                         fontSize: 13,
                         height: 1.5),
                   ),
                 const SizedBox(height: 20),
-                const Text(
+                Text(
                   'Each device has its own keys. Revoking one re-signs your '
                   'device list so your contacts immediately stop trusting it.',
                   style: TextStyle(
-                      color: ZTheme.textSecondary, fontSize: 12, height: 1.5),
+                      color: context.z.textSecondary,
+                      fontSize: 12,
+                      height: 1.5),
                 ),
               ],
             ),
@@ -482,28 +481,26 @@ class _DeviceTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      color: ZTheme.surface,
+      color: context.z.surface,
       margin: const EdgeInsets.only(bottom: 10),
       child: ListTile(
         leading: Icon(
           isThisDevice ? Icons.smartphone : Icons.devices_other,
-          color: ZTheme.accent,
+          color: context.z.accent,
         ),
         title: Row(
           children: [
-            Flexible(
-                child: Text(title, overflow: TextOverflow.ellipsis)),
+            Flexible(child: Text(title, overflow: TextOverflow.ellipsis)),
             if (isThisDevice) ...[
               const SizedBox(width: 8),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: ZTheme.accent.withValues(alpha: 0.15),
+                  color: context.z.accent.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(6),
                 ),
-                child: const Text('This device',
-                    style: TextStyle(fontSize: 11, color: ZTheme.accent)),
+                child: Text('This device',
+                    style: TextStyle(fontSize: 11, color: context.z.accent)),
               ),
             ],
           ],
@@ -513,7 +510,7 @@ class _DeviceTile extends StatelessWidget {
         trailing: onRemove == null
             ? null
             : IconButton(
-                icon: const Icon(Icons.delete_outline, color: ZTheme.danger),
+                icon: Icon(Icons.delete_outline, color: context.z.danger),
                 tooltip: 'Revoke device',
                 onPressed: onRemove,
               ),

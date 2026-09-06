@@ -41,12 +41,12 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
           Center(
             child: CircleAvatar(
               radius: 40,
-              backgroundColor: ZTheme.surfaceAlt,
+              backgroundColor: context.z.surfaceAlt,
               child: Text(
                 contact.name.isNotEmpty ? contact.name[0].toUpperCase() : '?',
-                style: const TextStyle(
+                style: TextStyle(
                     fontSize: 32,
-                    color: ZTheme.accent,
+                    color: context.z.accent,
                     fontWeight: FontWeight.w700),
               ),
             ),
@@ -55,10 +55,10 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
           Center(
             child: Text(
               'routing id: ${contact.rid.substring(0, 16)}…',
-              style: const TextStyle(
+              style: TextStyle(
                   fontSize: 11,
                   fontFamily: 'monospace',
-                  color: ZTheme.textSecondary),
+                  color: context.z.textSecondary),
             ),
           ),
           const SizedBox(height: 24),
@@ -68,9 +68,9 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Row(
+                  Row(
                     children: [
-                      Icon(Icons.security, size: 18, color: ZTheme.accent),
+                      Icon(Icons.security, size: 18, color: context.z.accent),
                       SizedBox(width: 8),
                       Text('Safety number',
                           style: TextStyle(fontWeight: FontWeight.w700)),
@@ -93,18 +93,20 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                       ),
                     ),
                   const SizedBox(height: 12),
-                  const Text(
+                  Text(
                     'Compare these 60 digits with the ones on their device '
                     '(in person or on a call you trust). If they match, no '
                     'one is sitting between you — not even the relay.',
                     style: TextStyle(
-                        fontSize: 12, color: ZTheme.textSecondary, height: 1.5),
+                        fontSize: 12,
+                        color: context.z.textSecondary,
+                        height: 1.5),
                   ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Mark as verified'),
                     value: contact.verified,
-                    activeThumbColor: ZTheme.ok,
+                    activeThumbColor: context.z.ok,
                     onChanged: (v) => svc.setVerified(widget.rid, v),
                   ),
                 ],
@@ -143,7 +145,7 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             },
           ),
           ListTile(
-            leading: const Icon(Icons.refresh, color: ZTheme.accent),
+            leading: Icon(Icons.refresh, color: context.z.accent),
             title: const Text('Reset secure session'),
             subtitle: const Text(
                 'Start a fresh encryption session (use if messages stop decrypting)'),
@@ -156,9 +158,9 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             },
           ),
           ListTile(
-            leading: const Icon(Icons.delete_outline, color: ZTheme.danger),
-            title: const Text('Delete contact & all messages',
-                style: TextStyle(color: ZTheme.danger)),
+            leading: Icon(Icons.delete_outline, color: context.z.danger),
+            title: Text('Delete contact & all messages',
+                style: TextStyle(color: context.z.danger)),
             onTap: () async {
               final sure = await showDialog<bool>(
                 context: context,
@@ -174,7 +176,7 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                         child: const Text('Cancel')),
                     FilledButton(
                         style: FilledButton.styleFrom(
-                            backgroundColor: ZTheme.danger),
+                            backgroundColor: context.z.danger),
                         onPressed: () => Navigator.pop(ctx, true),
                         child: const Text('Delete')),
                   ],

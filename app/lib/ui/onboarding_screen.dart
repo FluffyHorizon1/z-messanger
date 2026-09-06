@@ -171,18 +171,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('Z',
+                Text('Z',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                         fontSize: 88,
                         fontWeight: FontWeight.w900,
-                        color: ZTheme.accent,
+                        color: context.z.accent,
                         height: 1)),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'Zero-trust messaging.\nNo accounts. No phone number. No server storage.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: ZTheme.textSecondary, height: 1.5),
+                  style: TextStyle(color: context.z.textSecondary, height: 1.5),
                 ),
                 const SizedBox(height: 40),
                 TextField(
@@ -225,12 +225,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       padding: const EdgeInsets.only(top: 10),
                       child: Row(
                         children: [
-                          const Icon(Icons.check_circle,
-                              color: ZTheme.ok, size: 18),
+                          Icon(Icons.check_circle,
+                              color: context.z.ok, size: 18),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(_testOk!,
-                                style: const TextStyle(color: ZTheme.ok)),
+                                style: TextStyle(color: context.z.ok)),
                           ),
                         ],
                       ),
@@ -239,8 +239,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     Padding(
                       padding: const EdgeInsets.only(top: 10),
                       child: Text(_testWarn!,
-                          style: const TextStyle(
-                              color: ZTheme.accent, fontSize: 12)),
+                          style:
+                              TextStyle(color: context.z.accent, fontSize: 12)),
                     ),
                 ],
                 const SizedBox(height: 24),
@@ -248,12 +248,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16),
                     child: Text(_error!,
-                        style: const TextStyle(color: ZTheme.danger)),
+                        style: TextStyle(color: context.z.danger)),
                   ),
                 FilledButton(
                   style: FilledButton.styleFrom(
-                    backgroundColor: ZTheme.accent,
-                    foregroundColor: Colors.black,
+                    backgroundColor: context.z.accent,
+                    foregroundColor: context.z.onAccent,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                   ),
                   onPressed: _busy ? null : _create,
@@ -282,16 +282,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   onPressed: () => setState(() => _showDev = !_showDev),
                   child: Text(
                     _showDev ? 'Hide developer options' : 'Developer options',
-                    style: const TextStyle(
-                        color: ZTheme.textSecondary, fontSize: 12),
+                    style:
+                        TextStyle(color: context.z.textSecondary, fontSize: 12),
                   ),
                 ),
                 const SizedBox(height: 24),
-                const Text(
+                Text(
                   'Your identity is a cryptographic key pair generated on this device. '
                   'It never leaves it unencrypted.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: ZTheme.textSecondary, fontSize: 12),
+                  style:
+                      TextStyle(color: context.z.textSecondary, fontSize: 12),
                 ),
               ],
             ),

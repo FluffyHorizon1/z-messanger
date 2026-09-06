@@ -13,6 +13,7 @@ import 'package:z_protocol/z_protocol.dart';
 
 import 'core/app_lock.dart';
 import 'core/chat_service.dart';
+import 'core/prefs.dart';
 import 'core/push_service.dart';
 import 'core/relay_url.dart';
 import 'core/transport.dart';
@@ -32,15 +33,9 @@ void main() {
     // default for apps targeting SDK 35: the system bars become transparent
     // overlays and every screen insets its own content (SafeArea / the
     // MediaQuery padding that ListView and Scaffold apply themselves).
+    // The bar icons' brightness follows the theme: see the AnnotatedRegion
+    // in _shell.
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      systemNavigationBarColor: Colors.transparent,
-      systemNavigationBarDividerColor: Colors.transparent,
-      systemNavigationBarContrastEnforced: false,
-      statusBarIconBrightness: Brightness.light,
-      systemNavigationBarIconBrightness: Brightness.light,
-    ));
   }
   runApp(const ZApp());
 }
@@ -64,23 +59,45 @@ class ZApp extends StatelessWidget {
 /// keeps its place in the tree — and its stack — when the lock comes and
 /// goes. The overlay gets its own Overlay so text fields inside it work
 /// without the Navigator's.
-MaterialApp _shell({required Widget home, Widget? overlay}) => MaterialApp(
+MaterialApp _shell(
+        {required Widget home, Widget? overlay, required ThemeMode mode}) =>
+    MaterialApp(
       title: 'Z',
       debugShowCheckedModeBanner: false,
-      theme: ZTheme.dark(),
-      builder: (context, child) => Stack(
-        fit: StackFit.expand,
-        children: [
-          ExcludeFocus(
-            excluding: overlay != null,
-            child: ExcludeSemantics(
-              excluding: overlay != null,
-              child: IgnorePointer(ignoring: overlay != null, child: child!),
-            ),
+      theme: ZTheme.light(),
+      darkTheme: ZTheme.dark(),
+      themeMode: mode,
+      builder: (context, child) {
+        // Transparent system bars whose icons match the palette in effect
+        // (an AppBar overrides this for its own screen, as it should).
+        final dark = Theme.of(context).brightness == Brightness.dark;
+        return AnnotatedRegion<SystemUiOverlayStyle>(
+          value: SystemUiOverlayStyle(
+            statusBarColor: Colors.transparent,
+            statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+            statusBarBrightness: dark ? Brightness.dark : Brightness.light,
+            systemNavigationBarColor: Colors.transparent,
+            systemNavigationBarDividerColor: Colors.transparent,
+            systemNavigationBarContrastEnforced: false,
+            systemNavigationBarIconBrightness:
+                dark ? Brightness.light : Brightness.dark,
           ),
-          if (overlay != null) Overlay.wrap(child: overlay),
-        ],
-      ),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              ExcludeFocus(
+                excluding: overlay != null,
+                child: ExcludeSemantics(
+                  excluding: overlay != null,
+                  child:
+                      IgnorePointer(ignoring: overlay != null, child: child!),
+                ),
+              ),
+              if (overlay != null) Overlay.wrap(child: overlay),
+            ],
+          ),
+        );
+      },
       home: home,
     );
 
@@ -99,6 +116,7 @@ class _BootstrapperState extends State<Bootstrapper>
   ChatService? _service;
   PushService? _push;
   AppLock? _appLock;
+  AppPrefs? _prefs;
   bool _needsOnboarding = false;
   bool _locked = false; // vault exists but needs a passphrase
   bool _biometricOffered = false; // biometric unlock is on: offer the prompt
@@ -117,6 +135,7 @@ class _BootstrapperState extends State<Bootstrapper>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _appLock?.removeListener(_onLockChanged);
+    _prefs?.removeListener(_onLockChanged);
     super.dispose();
   }
 
@@ -143,7 +162,14 @@ class _BootstrapperState extends State<Bootstrapper>
 
   Future<void> _boot() async {
     try {
-      final lock = AppLock(root: await Vault.defaultRoot());
+      final root = await Vault.defaultRoot();
+      // Theme first: every screen below, unlock and lock included, uses it.
+      final prefs = AppPrefs(root: root);
+      await prefs.load();
+      prefs.addListener(_onLockChanged);
+      _prefs = prefs;
+
+      final lock = AppLock(root: root);
       await lock.load();
       lock.addListener(_onLockChanged);
       _appLock = lock;
@@ -291,16 +317,21 @@ class _BootstrapperState extends State<Bootstrapper>
 
   @override
   Widget build(BuildContext context) {
+    final mode = _prefs?.themeMode ?? ThemeMode.system;
     if (_fatal != null) {
       return _shell(
-        home: Scaffold(
-          body: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text(
-                'Z could not start:\n$_fatal',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: ZTheme.danger),
+        mode: mode,
+        // Builder: the palette lives in the MaterialApp below this widget.
+        home: Builder(
+          builder: (ctx) => Scaffold(
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Z could not start:\n$_fatal',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: ctx.z.danger),
+                ),
               ),
             ),
           ),
@@ -309,6 +340,7 @@ class _BootstrapperState extends State<Bootstrapper>
     }
     if (_locked) {
       return _shell(
+        mode: mode,
         home: UnlockScreen(
           onUnlock: _tryUnlock,
           onBiometric: _biometricOffered ? _tryBiometricUnlock : null,
@@ -319,6 +351,7 @@ class _BootstrapperState extends State<Bootstrapper>
     }
     if (_needsOnboarding && _vault != null) {
       return _shell(
+        mode: mode,
         home: OnboardingScreen(vault: _vault!, onDone: _onboardingDone),
       );
     }
@@ -334,13 +367,16 @@ class _BootstrapperState extends State<Bootstrapper>
     final service = _service;
     if (service == null) {
       return _shell(
-        home: const Scaffold(
-          body: Center(
-            child: Text('Z',
-                style: TextStyle(
-                    fontSize: 64,
-                    fontWeight: FontWeight.w900,
-                    color: ZTheme.accent)),
+        mode: mode,
+        home: Builder(
+          builder: (ctx) => Scaffold(
+            body: Center(
+              child: Text('Z',
+                  style: TextStyle(
+                      fontSize: 64,
+                      fontWeight: FontWeight.w900,
+                      color: ctx.z.accent)),
+            ),
           ),
         ),
         overlay: overlay,
@@ -352,8 +388,9 @@ class _BootstrapperState extends State<Bootstrapper>
         ChangeNotifierProvider<Transport>.value(value: service.transport),
         ChangeNotifierProvider<PushService>.value(value: _push!),
         ChangeNotifierProvider<AppLock>.value(value: lock!),
+        ChangeNotifierProvider<AppPrefs>.value(value: _prefs!),
       ],
-      child: _shell(home: const HomeScreen(), overlay: overlay),
+      child: _shell(mode: mode, home: const HomeScreen(), overlay: overlay),
     );
   }
 }

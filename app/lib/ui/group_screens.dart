@@ -65,26 +65,24 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
           ),
           Expanded(
             child: contacts.isEmpty
-                ? const Center(
+                ? Center(
                     child: Text('Add some contacts first.',
-                        style: TextStyle(color: ZTheme.textSecondary)),
+                        style: TextStyle(color: context.z.textSecondary)),
                   )
                 : ListView(
                     children: [
                       for (final c in contacts)
                         CheckboxListTile(
                           value: _selected.contains(c.rid),
-                          activeColor: ZTheme.accent,
-                          checkColor: Colors.black,
+                          activeColor: context.z.accent,
+                          checkColor: context.z.onAccent,
                           title: Text(c.name),
                           secondary: CircleAvatar(
-                            backgroundColor: ZTheme.surfaceAlt,
+                            backgroundColor: context.z.surfaceAlt,
                             child: Text(
-                              c.name.isNotEmpty
-                                  ? c.name[0].toUpperCase()
-                                  : '?',
-                              style: const TextStyle(
-                                  color: ZTheme.accent,
+                              c.name.isNotEmpty ? c.name[0].toUpperCase() : '?',
+                              style: TextStyle(
+                                  color: context.z.accent,
                                   fontWeight: FontWeight.w700),
                             ),
                           ),
@@ -106,8 +104,8 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                 width: double.infinity,
                 child: FilledButton(
                   style: FilledButton.styleFrom(
-                    backgroundColor: ZTheme.accent,
-                    foregroundColor: Colors.black,
+                    backgroundColor: context.z.accent,
+                    foregroundColor: context.z.onAccent,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                   ),
                   onPressed: _busy ? null : _create,
@@ -159,8 +157,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                 for (final c in candidates)
                   CheckboxListTile(
                     value: picked.contains(c.rid),
-                    activeColor: ZTheme.accent,
-                    checkColor: Colors.black,
+                    activeColor: context.z.accent,
+                    checkColor: context.z.onAccent,
                     title: Text(c.name),
                     onChanged: (v) => setSt(() {
                       if (v == true) {
@@ -203,7 +201,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text('Cancel')),
           FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: ZTheme.danger),
+              style: FilledButton.styleFrom(backgroundColor: context.z.danger),
               onPressed: () => Navigator.pop(ctx, true),
               child: const Text('Leave')),
         ],
@@ -235,8 +233,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           Center(
             child: CircleAvatar(
               radius: 36,
-              backgroundColor: ZTheme.surfaceAlt,
-              child: const Icon(Icons.group, size: 36, color: ZTheme.accent),
+              backgroundColor: context.z.surfaceAlt,
+              child: Icon(Icons.group, size: 36, color: context.z.accent),
             ),
           ),
           const SizedBox(height: 10),
@@ -247,27 +245,27 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   : '${members.length + 1} members · every message is '
                       'end-to-end encrypted to each member',
               textAlign: TextAlign.center,
-              style:
-                  const TextStyle(fontSize: 12, color: ZTheme.textSecondary),
+              style: TextStyle(fontSize: 12, color: context.z.textSecondary),
             ),
           ),
           const SizedBox(height: 18),
           Card(
-            color: ZTheme.surface,
+            color: context.z.surface,
             child: Column(
               children: [
                 ListTile(
-                  leading: const Icon(Icons.person, color: ZTheme.accent),
+                  leading: Icon(Icons.person, color: context.z.accent),
                   title: Text(g.iAmAdmin ? 'You (admin)' : 'You'),
                 ),
                 for (final rid in members)
                   ListTile(
                     leading: CircleAvatar(
-                      backgroundColor: ZTheme.surfaceAlt,
+                      backgroundColor: context.z.surfaceAlt,
                       child: Text(
                         (chat.contacts[rid]?.name ?? '?')[0].toUpperCase(),
-                        style: const TextStyle(
-                            color: ZTheme.accent, fontWeight: FontWeight.w700),
+                        style: TextStyle(
+                            color: context.z.accent,
+                            fontWeight: FontWeight.w700),
                       ),
                     ),
                     title: Row(
@@ -277,22 +275,21 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                               overflow: TextOverflow.ellipsis),
                         ),
                         if (rid == g.adminRid)
-                          const Padding(
+                          Padding(
                             padding: EdgeInsets.only(left: 6),
                             child: Text('admin',
                                 style: TextStyle(
                                     fontSize: 11,
-                                    color: ZTheme.textSecondary)),
+                                    color: context.z.textSecondary)),
                           ),
                       ],
                     ),
                     trailing: (g.iAmAdmin && !g.left)
                         ? IconButton(
-                            icon: const Icon(Icons.person_remove_outlined,
-                                color: ZTheme.danger, size: 20),
+                            icon: Icon(Icons.person_remove_outlined,
+                                color: context.z.danger, size: 20),
                             tooltip: 'Remove from group',
-                            onPressed: () =>
-                                chat.removeGroupMember(g.gid, rid),
+                            onPressed: () => chat.removeGroupMember(g.gid, rid),
                           )
                         : null,
                   ),
@@ -310,18 +307,18 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           if (!g.left)
             OutlinedButton.icon(
               style:
-                  OutlinedButton.styleFrom(foregroundColor: ZTheme.danger),
+                  OutlinedButton.styleFrom(foregroundColor: context.z.danger),
               icon: const Icon(Icons.logout),
               label: const Text('Leave group'),
               onPressed: () => _leave(chat),
             ),
           const SizedBox(height: 20),
-          const Text(
+          Text(
             'Groups have no server-side existence: the relay never learns the '
             'group\'s name or member list. Each message is sent as separate '
             'end-to-end encrypted copies over your verified 1:1 channels.',
-            style: TextStyle(fontSize: 12, color: ZTheme.textSecondary,
-                height: 1.5),
+            style: TextStyle(
+                fontSize: 12, color: context.z.textSecondary, height: 1.5),
           ),
         ],
       ),

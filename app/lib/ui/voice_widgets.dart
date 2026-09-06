@@ -116,14 +116,14 @@ class _VoiceNoteBodyState extends State<VoiceNoteBody> {
               width: 34,
               height: 34,
               child: _loading
-                  ? const Padding(
+                  ? Padding(
                       padding: EdgeInsets.all(8),
                       child: CircularProgressIndicator(
-                          strokeWidth: 2, color: ZTheme.accent),
+                          strokeWidth: 2, color: context.z.accent),
                     )
                   : IconButton(
                       padding: EdgeInsets.zero,
-                      color: ZTheme.accent,
+                      color: context.z.accent,
                       icon: Icon(playing
                           ? Icons.pause_circle_filled
                           : Icons.play_circle_fill),
@@ -139,15 +139,14 @@ class _VoiceNoteBodyState extends State<VoiceNoteBody> {
                 child: LinearProgressIndicator(
                   value: frac,
                   minHeight: 4,
-                  backgroundColor: ZTheme.surfaceAlt,
-                  color: ZTheme.accent,
+                  backgroundColor: context.z.surfaceAlt,
+                  color: context.z.accent,
                 ),
               ),
             ),
             const SizedBox(width: 8),
             Text(label,
-                style:
-                    const TextStyle(fontSize: 12, color: ZTheme.textSecondary)),
+                style: TextStyle(fontSize: 12, color: context.z.textSecondary)),
           ],
         );
       },

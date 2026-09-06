@@ -45,20 +45,20 @@ class _UnlockScreenState extends State<UnlockScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Icon(Icons.lock_outline, size: 56, color: ZTheme.accent),
+                Icon(Icons.lock_outline, size: 56, color: context.z.accent),
                 const SizedBox(height: 16),
-                const Text('Z',
+                Text('Z',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                         fontSize: 56,
                         fontWeight: FontWeight.w900,
-                        color: ZTheme.accent,
+                        color: context.z.accent,
                         height: 1)),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'Enter your passphrase to unlock this device.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: ZTheme.textSecondary),
+                  style: TextStyle(color: context.z.textSecondary),
                 ),
                 const SizedBox(height: 28),
                 TextField(
@@ -72,7 +72,7 @@ class _UnlockScreenState extends State<UnlockScreen> {
                     suffixIcon: IconButton(
                       icon: Icon(
                           _obscure ? Icons.visibility : Icons.visibility_off,
-                          color: ZTheme.textSecondary),
+                          color: context.z.textSecondary),
                       onPressed: () => setState(() => _obscure = !_obscure),
                     ),
                   ),
@@ -81,13 +81,13 @@ class _UnlockScreenState extends State<UnlockScreen> {
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
                     child: Text(widget.error!,
-                        style: const TextStyle(color: ZTheme.danger)),
+                        style: TextStyle(color: context.z.danger)),
                   ),
                 const SizedBox(height: 20),
                 FilledButton(
                   style: FilledButton.styleFrom(
-                    backgroundColor: ZTheme.accent,
-                    foregroundColor: Colors.black,
+                    backgroundColor: context.z.accent,
+                    foregroundColor: context.z.onAccent,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                   ),
                   onPressed: widget.busy ? null : _submit,
@@ -107,13 +107,14 @@ class _UnlockScreenState extends State<UnlockScreen> {
                   ),
                 ],
                 const SizedBox(height: 24),
-                const Text(
+                Text(
                   'Your passphrase unlocks the encrypted vault on THIS device '
                   'only. It is never sent anywhere, and there is no way to '
                   'recover it — if you forget it, restore your identity from a '
                   '.zid backup.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: ZTheme.textSecondary, fontSize: 12),
+                  style:
+                      TextStyle(color: context.z.textSecondary, fontSize: 12),
                 ),
               ],
             ),

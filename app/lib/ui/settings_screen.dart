@@ -8,6 +8,7 @@ import '../core/app_lock.dart';
 import '../core/backup.dart';
 import '../core/chat_service.dart';
 import '../core/models.dart';
+import '../core/prefs.dart';
 import '../core/push_service.dart';
 import '../core/transport.dart';
 import '../core/vault.dart';
@@ -65,6 +66,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final transport = context.watch<Transport>();
     final push = context.watch<PushService>();
     final lock = context.watch<AppLock>();
+    final prefs = context.watch<AppPrefs>();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
@@ -102,13 +104,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
               }
             },
           ),
+          const _SectionHeader('Appearance'),
+          ListTile(
+            leading: Icon(switch (prefs.themeMode) {
+              ThemeMode.light => Icons.light_mode_outlined,
+              ThemeMode.dark => Icons.dark_mode_outlined,
+              ThemeMode.system => Icons.brightness_auto_outlined,
+            }),
+            title: const Text('Theme'),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: SegmentedButton<ThemeMode>(
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(value: ThemeMode.system, label: Text('System')),
+                  ButtonSegment(value: ThemeMode.light, label: Text('Light')),
+                  ButtonSegment(value: ThemeMode.dark, label: Text('Dark')),
+                ],
+                selected: {prefs.themeMode},
+                onSelectionChanged: (s) => prefs.setThemeMode(s.first),
+              ),
+            ),
+          ),
           const _SectionHeader('Connection'),
           ListTile(
             leading: Icon(
               Icons.cloud_outlined,
               color: transport.status == LinkStatus.connected
-                  ? ZTheme.ok
-                  : ZTheme.textSecondary,
+                  ? context.z.ok
+                  : context.z.textSecondary,
             ),
             title: const Text('Relay'),
             subtitle: Text(
@@ -140,7 +164,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 push.enabled
                     ? Icons.notifications_active_outlined
                     : Icons.notifications_off_outlined,
-                color: push.enabled ? ZTheme.ok : ZTheme.textSecondary,
+                color: push.enabled ? context.z.ok : context.z.textSecondary,
               ),
               title: const Text('Push notifications'),
               subtitle: const Text(
@@ -150,14 +174,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: TextStyle(fontSize: 12),
               ),
               value: push.enabled,
-              activeThumbColor: ZTheme.accent,
+              activeThumbColor: context.z.accent,
               onChanged: (v) => context.read<PushService>().setEnabled(v),
             ),
           ],
           const _SectionHeader('Security'),
           if (svc.vault.usedFallbackKeyStore)
-            const ListTile(
-              leading: Icon(Icons.warning_amber, color: ZTheme.accent),
+            ListTile(
+              leading: Icon(Icons.warning_amber, color: context.z.accent),
               title: Text('OS keystore unavailable'),
               subtitle: Text(
                 'The vault key is stored in a restricted file instead of the '
@@ -183,8 +207,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 lock.settings.screenLock
                     ? Icons.fingerprint
                     : Icons.lock_open_outlined,
-                color:
-                    lock.settings.screenLock ? ZTheme.ok : ZTheme.textSecondary,
+                color: lock.settings.screenLock
+                    ? context.z.ok
+                    : context.z.textSecondary,
               ),
               title: const Text('Screen lock'),
               subtitle: Text(
@@ -196,7 +221,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: const TextStyle(fontSize: 12),
               ),
               value: lock.settings.screenLock,
-              activeThumbColor: ZTheme.accent,
+              activeThumbColor: context.z.accent,
               onChanged: (v) => _toggleScreenLock(context, lock, v),
             ),
             if (lock.settings.screenLock)
@@ -213,7 +238,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               svc.vault.hasPassphrase
                   ? Icons.password
                   : Icons.password_outlined,
-              color: svc.vault.hasPassphrase ? ZTheme.ok : ZTheme.textSecondary,
+              color: svc.vault.hasPassphrase
+                  ? context.z.ok
+                  : context.z.textSecondary,
             ),
             title: Text(svc.vault.hasPassphrase
                 ? 'App passphrase — on'
@@ -233,8 +260,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ? Icons.face
                     : Icons.face_retouching_off,
                 color: lock.settings.biometricUnlock
-                    ? ZTheme.ok
-                    : ZTheme.textSecondary,
+                    ? context.z.ok
+                    : context.z.textSecondary,
               ),
               title: Text(lock.biometricUnlockBound
                   ? 'Unlock with biometrics — hardware-bound'
@@ -244,7 +271,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: const TextStyle(fontSize: 12),
               ),
               value: lock.settings.biometricUnlock,
-              activeThumbColor: ZTheme.accent,
+              activeThumbColor: context.z.accent,
               onChanged: (v) => _toggleBiometricUnlock(context, svc, lock, v),
             ),
           ListTile(
@@ -259,7 +286,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           SwitchListTile(
             secondary: Icon(
               svc.devMode ? Icons.code : Icons.code_off,
-              color: svc.devMode ? ZTheme.accent : ZTheme.textSecondary,
+              color: svc.devMode ? context.z.accent : context.z.textSecondary,
             ),
             title: const Text('Developer mode'),
             subtitle: const Text(
@@ -268,7 +295,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: TextStyle(fontSize: 12),
             ),
             value: svc.devMode,
-            activeThumbColor: ZTheme.accent,
+            activeThumbColor: context.z.accent,
             onChanged: (v) => svc.setDevMode(v),
           ),
           if (svc.devMode)
@@ -306,21 +333,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           const _SectionHeader('Danger zone'),
           ListTile(
-            leading: const Icon(Icons.delete_forever, color: ZTheme.danger),
-            title: const Text('Wipe everything',
-                style: TextStyle(color: ZTheme.danger)),
+            leading: Icon(Icons.delete_forever, color: context.z.danger),
+            title: Text('Wipe everything',
+                style: TextStyle(color: context.z.danger)),
             subtitle: const Text(
                 'Destroys identity, contacts, messages and keys on this device.',
                 style: TextStyle(fontSize: 12)),
             onTap: () => _wipe(context, svc),
           ),
           const SizedBox(height: 24),
-          const Center(
+          Center(
             child: Text(
               'Z 1.0.0 — zero-trust messenger\n'
               'No accounts · No analytics · No server storage',
               textAlign: TextAlign.center,
-              style: TextStyle(color: ZTheme.textSecondary, fontSize: 12),
+              style: TextStyle(color: context.z.textSecondary, fontSize: 12),
             ),
           ),
           const SizedBox(height: 24),
@@ -390,8 +417,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               if (error != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
-                  child: Text(error!,
-                      style: const TextStyle(color: ZTheme.danger)),
+                  child:
+                      Text(error!, style: TextStyle(color: context.z.danger)),
                 ),
             ],
           ),
@@ -462,7 +489,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 for (final c in LockSettings.lockAfterChoices)
                   RadioListTile<int>(
                     value: c,
-                    activeColor: ZTheme.accent,
+                    activeColor: context.z.accent,
                     title: Text(_lockAfterLabel(c)),
                   ),
               ],
@@ -516,18 +543,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!context.mounted) return;
     final action = await showModalBottomSheet<String>(
       context: context,
-      backgroundColor: ZTheme.surface,
+      backgroundColor: context.z.surface,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.edit_outlined, color: ZTheme.accent),
+              leading: Icon(Icons.edit_outlined, color: context.z.accent),
               title: const Text('Change passphrase'),
               onTap: () => Navigator.pop(ctx, 'change'),
             ),
             ListTile(
-              leading: const Icon(Icons.lock_open, color: ZTheme.danger),
+              leading: Icon(Icons.lock_open, color: context.z.danger),
               title: const Text('Remove passphrase'),
               onTap: () => Navigator.pop(ctx, 'remove'),
             ),
@@ -602,7 +629,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text('Cancel')),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: ZTheme.danger),
+            style: FilledButton.styleFrom(backgroundColor: context.z.danger),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Wipe'),
           ),
@@ -626,10 +653,10 @@ class _SectionHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
       child: Text(
         text.toUpperCase(),
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 11,
           letterSpacing: 1.2,
-          color: ZTheme.accent,
+          color: context.z.accent,
           fontWeight: FontWeight.w700,
         ),
       ),

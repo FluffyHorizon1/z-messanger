@@ -25,9 +25,9 @@ class HomeScreen extends StatelessWidget {
       appBar: AppBar(
         title: Row(
           children: [
-            const Text('Z',
+            Text('Z',
                 style: TextStyle(
-                    color: ZTheme.accent,
+                    color: context.z.accent,
                     fontWeight: FontWeight.w900,
                     fontSize: 26)),
             const SizedBox(width: 12),
@@ -103,9 +103,9 @@ class _StatusDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (color, label) = switch (status) {
-      LinkStatus.connected => (ZTheme.ok, 'relay linked'),
-      LinkStatus.connecting => (ZTheme.accent, 'linking…'),
-      LinkStatus.disconnected => (ZTheme.danger, 'offline'),
+      LinkStatus.connected => (context.z.ok, 'relay linked'),
+      LinkStatus.connecting => (context.z.accent, 'linking…'),
+      LinkStatus.disconnected => (context.z.danger, 'offline'),
     };
     return Row(children: [
       Container(
@@ -115,7 +115,7 @@ class _StatusDot extends StatelessWidget {
       ),
       const SizedBox(width: 6),
       Text(label,
-          style: const TextStyle(fontSize: 12, color: ZTheme.textSecondary)),
+          style: TextStyle(fontSize: 12, color: context.z.textSecondary)),
     ]);
   }
 }
@@ -128,8 +128,8 @@ class _EmptyState extends StatelessWidget {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
-        children: const [
-          Icon(Icons.lock_outline, size: 56, color: ZTheme.textSecondary),
+        children: [
+          Icon(Icons.lock_outline, size: 56, color: context.z.textSecondary),
           SizedBox(height: 16),
           Text('No conversations yet',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
@@ -141,7 +141,7 @@ class _EmptyState extends StatelessWidget {
               'then every message is end-to-end encrypted and stored only on '
               'your two devices.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: ZTheme.textSecondary, height: 1.5),
+              style: TextStyle(color: context.z.textSecondary, height: 1.5),
             ),
           ),
         ],
@@ -181,13 +181,13 @@ class _ChatTile extends StatelessWidget {
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       leading: CircleAvatar(
         radius: 24,
-        backgroundColor: ZTheme.surfaceAlt,
+        backgroundColor: context.z.surfaceAlt,
         child: summary.isGroup
-            ? const Icon(Icons.group, color: ZTheme.accent)
+            ? Icon(Icons.group, color: context.z.accent)
             : Text(
                 summary.title.isNotEmpty ? summary.title[0].toUpperCase() : '?',
-                style: const TextStyle(
-                    color: ZTheme.accent, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                    color: context.z.accent, fontWeight: FontWeight.w700),
               ),
       ),
       title: Row(
@@ -198,14 +198,15 @@ class _ChatTile extends StatelessWidget {
                 style: const TextStyle(fontWeight: FontWeight.w600)),
           ),
           if (c != null && c.verified)
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(left: 6),
-              child: Icon(Icons.verified_user, size: 14, color: ZTheme.ok),
+              child: Icon(Icons.verified_user, size: 14, color: context.z.ok),
             ),
           if (c != null && c.ttlSec > 0)
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(left: 6),
-              child: Icon(Icons.timer_outlined, size: 14, color: ZTheme.accent),
+              child:
+                  Icon(Icons.timer_outlined, size: 14, color: context.z.accent),
             ),
         ],
       ),
@@ -213,7 +214,7 @@ class _ChatTile extends StatelessWidget {
         _preview(summary.last),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(color: ZTheme.textSecondary),
+        style: TextStyle(color: context.z.textSecondary),
       ),
       trailing: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -221,19 +222,18 @@ class _ChatTile extends StatelessWidget {
         children: [
           if (summary.last != null)
             Text(_time(summary.last!.ts),
-                style:
-                    const TextStyle(fontSize: 12, color: ZTheme.textSecondary)),
+                style: TextStyle(fontSize: 12, color: context.z.textSecondary)),
           const SizedBox(height: 6),
           if (summary.unread > 0)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
-                color: ZTheme.accent,
+                color: context.z.accent,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text('${summary.unread}',
-                  style: const TextStyle(
-                      color: Colors.black,
+                  style: TextStyle(
+                      color: context.z.onAccent,
                       fontSize: 12,
                       fontWeight: FontWeight.w700)),
             ),
@@ -258,7 +258,7 @@ class _AccountAlertBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: ZTheme.danger.withValues(alpha: 0.14),
+      color: context.z.danger.withValues(alpha: 0.14),
       child: SafeArea(
         bottom: false,
         child: Padding(
@@ -266,7 +266,7 @@ class _AccountAlertBanner extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.gpp_bad, size: 20, color: ZTheme.danger),
+              Icon(Icons.gpp_bad, size: 20, color: context.z.danger),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
@@ -277,7 +277,7 @@ class _AccountAlertBanner extends StatelessWidget {
               IconButton(
                 icon: const Icon(Icons.close, size: 18),
                 tooltip: 'Dismiss',
-                color: ZTheme.textSecondary,
+                color: context.z.textSecondary,
                 onPressed: onDismiss,
               ),
             ],

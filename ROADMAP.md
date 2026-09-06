@@ -24,11 +24,11 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
-| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search + history sync ✅ (themes ⏳) · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
+| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search + history sync + themes ✅ · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
 
-**Next up:** 7.6 themes (needs visual verification); 5.2 engagement is
-external; 7.8c (Keychain / Windows Hello binding of the biometric pass key)
-when a Mac / Windows build can be verified.
+**Next up:** 5.2 engagement is external; 7.8c (Keychain / Windows Hello
+binding of the biometric pass key) when a Mac / Windows build can be
+verified. Everything else in Phase 7 is shipped.
 Externally gated items resume as soon as their gate clears: Play submission,
 Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public transparency
 log) waits for a public launch with durable infrastructure.
@@ -232,7 +232,19 @@ Ordered by value; each is a self-contained project on the existing layering.
   screen and briefly outlined — the loaded window runs from the hit to the
   newest message (cap 500, so a deeper hit opens the chat normally) and the
   existing scroll-up paging continues from its far end (`search_test.dart`
-  jump group). Still open under 7.6: themes.
+  jump group). **Themes ✅**: light and dark palettes as a `ZColors`
+  `ThemeExtension` read through `context.z` (every hard-coded colour in the
+  UI migrated), `ZTheme.light()/dark()` with the M3 container roles kept on
+  the amber scale, `AppPrefs` (`prefs.json`, read before the vault opens so
+  the unlock/lock screens are themed too) with Settings › Appearance
+  (System / Light / Dark), system-bar icons following the theme. Both
+  palettes clear WCAG AA for every text/background pair
+  (`app/tool/contrast.py`). Visual verification is built in:
+  `screenshots_test.dart` renders eight screens in both modes with real
+  Roboto / Material Icons to `build/screenshots/` (uploaded as a CI
+  artifact), and the Linux binary was run under Xvfb with `prefs.json`
+  forced each way. Also fixed on the way: `ChatScreen.dispose` looked up an
+  ancestor after deactivation (a debug-build assertion on every chat close).
 - **7.7 Key transparency** — the zero-trust plan's "catch us, don't trust us"
   mechanism (F2). Design decided in `docs/adr/0001-key-transparency.md`:
   **7.7a** device-list transparency by gossip — ✅ **done** (PROTOCOL.md §3.6:
@@ -286,8 +298,8 @@ Ordered by value; each is a self-contained project on the existing layering.
 
 ## Suggested near-term sprint (the next 3 sessions)
 
-1. **Quality-of-life** (7.6, continued): themes (search, history sync and
-   jump-to-message are done).
+1. **Quality-of-life**: 7.6 is complete (search, history sync,
+   jump-to-message, themes); pick up polish from real-device use.
 2. **Verifiability:** 5.2 — engage an auditor with the frozen v1 spec, the v2
    extension (incl. the 7.5b re-key), ADR 0001 and the vectors as the scope
    document.

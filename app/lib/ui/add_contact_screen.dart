@@ -53,8 +53,8 @@ class _AddContactScreenState extends State<AddContactScreen>
       if (!mounted) return;
       Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(
-            '${contact.name} added. Compare safety numbers when you can.'),
+        content:
+            Text('${contact.name} added. Compare safety numbers when you can.'),
       ));
     } on FormatException catch (e) {
       setState(() {
@@ -78,9 +78,9 @@ class _AddContactScreenState extends State<AddContactScreen>
         title: const Text('Add contact'),
         bottom: TabBar(
           controller: _tabs,
-          indicatorColor: ZTheme.accent,
-          labelColor: ZTheme.accent,
-          unselectedLabelColor: ZTheme.textSecondary,
+          indicatorColor: context.z.accent,
+          labelColor: context.z.accent,
+          unselectedLabelColor: context.z.textSecondary,
           tabs: [
             const Tab(text: 'MY CODE'),
             const Tab(text: 'PASTE'),
@@ -105,11 +105,11 @@ class _AddContactScreenState extends State<AddContactScreen>
       padding: const EdgeInsets.all(24),
       child: Column(
         children: [
-          const Text(
+          Text(
             'Have your contact scan this QR code, or send them the text code '
             'over a channel you trust. Codes contain only PUBLIC keys.',
             textAlign: TextAlign.center,
-            style: TextStyle(color: ZTheme.textSecondary, height: 1.5),
+            style: TextStyle(color: context.z.textSecondary, height: 1.5),
           ),
           const SizedBox(height: 24),
           if (code == null)
@@ -132,10 +132,10 @@ class _AddContactScreenState extends State<AddContactScreen>
               code,
               maxLines: 3,
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                   fontSize: 11,
                   fontFamily: 'monospace',
-                  color: ZTheme.textSecondary),
+                  color: context.z.textSecondary),
             ),
             const SizedBox(height: 16),
             FilledButton.icon(
@@ -144,8 +144,8 @@ class _AddContactScreenState extends State<AddContactScreen>
               onPressed: () async {
                 await Clipboard.setData(ClipboardData(text: code));
                 if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Code copied')));
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(const SnackBar(content: Text('Code copied')));
               },
             ),
           ],
@@ -181,13 +181,12 @@ class _AddContactScreenState extends State<AddContactScreen>
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
-              child:
-                  Text(_error!, style: const TextStyle(color: ZTheme.danger)),
+              child: Text(_error!, style: TextStyle(color: context.z.danger)),
             ),
           FilledButton(
             style: FilledButton.styleFrom(
-              backgroundColor: ZTheme.accent,
-              foregroundColor: Colors.black,
+              backgroundColor: context.z.accent,
+              foregroundColor: context.z.onAccent,
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
             onPressed: _busy ? null : () => _import(_pasteCtrl.text),
@@ -199,10 +198,10 @@ class _AddContactScreenState extends State<AddContactScreen>
                 : const Text('Verify & add'),
           ),
           const SizedBox(height: 12),
-          const Text(
+          Text(
             'The code\'s signature is checked before the contact is added — a '
             'tampered code is rejected.',
-            style: TextStyle(color: ZTheme.textSecondary, fontSize: 12),
+            style: TextStyle(color: context.z.textSecondary, fontSize: 12),
           ),
         ],
       ),
@@ -234,7 +233,9 @@ class _AddContactScreenState extends State<AddContactScreen>
           child: Text(
             _error ?? 'Point the camera at their Z code.',
             style: TextStyle(
-                color: _error != null ? ZTheme.danger : ZTheme.textSecondary),
+                color: _error != null
+                    ? context.z.danger
+                    : context.z.textSecondary),
           ),
         ),
       ],

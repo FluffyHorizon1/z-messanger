@@ -48,11 +48,15 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _highlightMid;
   Timer? _highlightTimer;
 
+  // Read once: dispose() must not look up ancestors (the element is already
+  // deactivated there, which is an assertion failure in debug builds).
+  late final ChatService _svc;
+
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_maybeLoadOlder);
-    final svc = context.read<ChatService>();
+    final svc = _svc = context.read<ChatService>();
     final focus = widget.focusMid;
     if (focus != null) {
       svc.loadMessagesAround(widget.rid, focus).then((found) async {
@@ -114,7 +118,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
-    context.read<ChatService>().markChatClosed(widget.rid);
+    _svc.markChatClosed(widget.rid);
     _input.dispose();
     _scroll.dispose();
     _recTimer?.cancel();
@@ -269,7 +273,7 @@ class _ChatScreenState extends State<ChatScreen> {
     ];
     final chosen = await showModalBottomSheet<int>(
       context: context,
-      backgroundColor: ZTheme.surface,
+      backgroundColor: context.z.surface,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -285,7 +289,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   sec == current
                       ? Icons.radio_button_checked
                       : Icons.radio_button_off,
-                  color: sec == current ? ZTheme.accent : ZTheme.textSecondary,
+                  color: sec == current
+                      ? context.z.accent
+                      : context.z.textSecondary,
                 ),
                 title: Text(label),
                 onTap: () => Navigator.pop(ctx, sec),
@@ -331,13 +337,14 @@ class _ChatScreenState extends State<ChatScreen> {
             children: [
               CircleAvatar(
                 radius: 18,
-                backgroundColor: ZTheme.surfaceAlt,
+                backgroundColor: context.z.surfaceAlt,
                 child: isGroup
-                    ? const Icon(Icons.group, size: 20, color: ZTheme.accent)
+                    ? Icon(Icons.group, size: 20, color: context.z.accent)
                     : Text(
                         title.isNotEmpty ? title[0].toUpperCase() : '?',
-                        style: const TextStyle(
-                            color: ZTheme.accent, fontWeight: FontWeight.w700),
+                        style: TextStyle(
+                            color: context.z.accent,
+                            fontWeight: FontWeight.w700),
                       ),
               ),
               const SizedBox(width: 10),
@@ -351,14 +358,14 @@ class _ChatScreenState extends State<ChatScreen> {
                             fontSize: 16, fontWeight: FontWeight.w600)),
                     Row(
                       children: [
-                        const Icon(Icons.lock, size: 10, color: ZTheme.ok),
+                        Icon(Icons.lock, size: 10, color: context.z.ok),
                         const SizedBox(width: 4),
                         Flexible(
                           child: Text(
                             subtitle,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 11, color: ZTheme.textSecondary),
+                            style: TextStyle(
+                                fontSize: 11, color: context.z.textSecondary),
                           ),
                         ),
                       ],
@@ -374,8 +381,9 @@ class _ChatScreenState extends State<ChatScreen> {
             IconButton(
               icon: Icon(
                 contact!.ttlSec > 0 ? Icons.timer : Icons.timer_outlined,
-                color:
-                    contact.ttlSec > 0 ? ZTheme.accent : ZTheme.textSecondary,
+                color: contact.ttlSec > 0
+                    ? context.z.accent
+                    : context.z.textSecondary,
               ),
               tooltip: 'Disappearing messages',
               onPressed: _pickTimer,
@@ -408,14 +416,15 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
           if (isGroup && group.left)
-            const SafeArea(
+            SafeArea(
               child: Padding(
                 padding: EdgeInsets.all(14),
                 child: Text(
                   'You are no longer in this group. History stays on this '
                   'device; no new messages can be sent or received.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 12, color: ZTheme.textSecondary),
+                  style:
+                      TextStyle(fontSize: 12, color: context.z.textSecondary),
                 ),
               ),
             )
@@ -425,29 +434,29 @@ class _ChatScreenState extends State<ChatScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 4, 8, 8),
                 child: Row(
                   children: [
-                    const Icon(Icons.mic, color: ZTheme.danger),
+                    Icon(Icons.mic, color: context.z.danger),
                     const SizedBox(width: 10),
                     Text(describeDuration(_recElapsedMs ~/ 1000),
                         style: const TextStyle(
                             fontSize: 15, fontWeight: FontWeight.w600)),
                     const SizedBox(width: 10),
-                    const Expanded(
+                    Expanded(
                       child: Text('Recording… sent encrypted, like everything',
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                              fontSize: 12, color: ZTheme.textSecondary)),
+                              fontSize: 12, color: context.z.textSecondary)),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.delete_outline,
-                          color: ZTheme.textSecondary),
+                      icon: Icon(Icons.delete_outline,
+                          color: context.z.textSecondary),
                       tooltip: 'Discard',
                       onPressed: () => _stopRecording(send: false),
                     ),
                     const SizedBox(width: 4),
                     IconButton.filled(
                       style: IconButton.styleFrom(
-                          backgroundColor: ZTheme.accent,
-                          foregroundColor: Colors.black),
+                          backgroundColor: context.z.accent,
+                          foregroundColor: context.z.onAccent),
                       icon: const Icon(Icons.arrow_upward),
                       tooltip: 'Send voice message',
                       onPressed: () => _stopRecording(send: true),
@@ -464,8 +473,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     IconButton(
-                      icon: const Icon(Icons.attach_file,
-                          color: ZTheme.textSecondary),
+                      icon: Icon(Icons.attach_file,
+                          color: context.z.textSecondary),
                       onPressed: _attach,
                     ),
                     Expanded(
@@ -483,16 +492,16 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.mic_none,
-                          color: ZTheme.textSecondary),
+                      icon:
+                          Icon(Icons.mic_none, color: context.z.textSecondary),
                       tooltip: 'Record a voice message',
                       onPressed: _startRecording,
                     ),
                     const SizedBox(width: 4),
                     IconButton.filled(
                       style: IconButton.styleFrom(
-                          backgroundColor: ZTheme.accent,
-                          foregroundColor: Colors.black),
+                          backgroundColor: context.z.accent,
+                          foregroundColor: context.z.onAccent),
                       icon: const Icon(Icons.arrow_upward),
                       onPressed: _send,
                     ),
@@ -519,7 +528,7 @@ class _MessageRow extends StatelessWidget {
         child: Text(
           msg.body,
           textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 12, color: ZTheme.textSecondary),
+          style: TextStyle(fontSize: 12, color: context.z.textSecondary),
         ),
       );
     }
@@ -538,9 +547,9 @@ class _MessageRow extends StatelessWidget {
           ),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
-            color: mine ? ZTheme.mineBubble : ZTheme.theirsBubble,
+            color: mine ? context.z.mineBubble : context.z.theirsBubble,
             border: highlighted
-                ? Border.all(color: ZTheme.accent, width: 1.5)
+                ? Border.all(color: context.z.accent, width: 1.5)
                 : null,
             borderRadius: BorderRadius.only(
               topLeft: const Radius.circular(16),
@@ -560,10 +569,10 @@ class _MessageRow extends StatelessWidget {
                     padding: const EdgeInsets.only(bottom: 2),
                     child: Text(
                       msg.senderName!,
-                      style: const TextStyle(
+                      style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w700,
-                          color: ZTheme.accent),
+                          color: context.z.accent),
                     ),
                   ),
                 ),
@@ -577,15 +586,15 @@ class _MessageRow extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (msg.expireAtMs > 0) ...[
-                    const Icon(Icons.timer_outlined,
-                        size: 11, color: ZTheme.textSecondary),
+                    Icon(Icons.timer_outlined,
+                        size: 11, color: context.z.textSecondary),
                     const SizedBox(width: 3),
                   ],
                   Text(
                     DateFormat.Hm()
                         .format(DateTime.fromMillisecondsSinceEpoch(msg.ts)),
-                    style: const TextStyle(
-                        fontSize: 10, color: ZTheme.textSecondary),
+                    style:
+                        TextStyle(fontSize: 10, color: context.z.textSecondary),
                   ),
                   if (mine) ...[
                     const SizedBox(width: 4),
@@ -594,10 +603,10 @@ class _MessageRow extends StatelessWidget {
                 ],
               ),
               if (failed)
-                const Padding(
+                Padding(
                   padding: EdgeInsets.only(top: 2),
                   child: Text('Failed to send — tap to retry',
-                      style: TextStyle(fontSize: 10, color: ZTheme.danger)),
+                      style: TextStyle(fontSize: 10, color: context.z.danger)),
                 ),
             ],
           ),
@@ -616,7 +625,7 @@ class _MessageRow extends StatelessWidget {
           children: [
             if (msg.kind == 'text')
               ListTile(
-                leading: const Icon(Icons.refresh, color: ZTheme.accent),
+                leading: Icon(Icons.refresh, color: context.z.accent),
                 title: const Text('Retry send'),
                 onTap: () async {
                   Navigator.pop(ctx);
@@ -628,7 +637,7 @@ class _MessageRow extends StatelessWidget {
                 },
               ),
             ListTile(
-              leading: const Icon(Icons.delete_outline, color: ZTheme.danger),
+              leading: Icon(Icons.delete_outline, color: context.z.danger),
               title: const Text('Delete for me'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -649,14 +658,14 @@ class _StatusTicks extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return switch (status) {
-      -1 => const Icon(Icons.error_outline, size: 12, color: ZTheme.danger),
+      -1 => Icon(Icons.error_outline, size: 12, color: context.z.danger),
       MsgStatus.pending =>
-        const Icon(Icons.schedule, size: 12, color: ZTheme.textSecondary),
+        Icon(Icons.schedule, size: 12, color: context.z.textSecondary),
       MsgStatus.sent =>
-        const Icon(Icons.check, size: 12, color: ZTheme.textSecondary),
+        Icon(Icons.check, size: 12, color: context.z.textSecondary),
       MsgStatus.delivered =>
-        const Icon(Icons.done_all, size: 12, color: ZTheme.textSecondary),
-      _ => const Icon(Icons.done_all, size: 12, color: ZTheme.accent),
+        Icon(Icons.done_all, size: 12, color: context.z.textSecondary),
+      _ => Icon(Icons.done_all, size: 12, color: context.z.accent),
     };
   }
 }
@@ -681,7 +690,7 @@ class _FileBodyState extends State<_FileBody> {
   Widget build(BuildContext context) {
     final f = widget.msg.file;
     if (f == null) {
-      return const Text('…', style: TextStyle(color: ZTheme.textSecondary));
+      return Text('…', style: TextStyle(color: context.z.textSecondary));
     }
     // 7.4: a complete voice message renders as an inline player; while chunks
     // are still arriving it shows the ordinary receiving card below.
@@ -712,8 +721,8 @@ class _FileBodyState extends State<_FileBody> {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.insert_drive_file_outlined,
-                  size: 28, color: ZTheme.accent),
+              Icon(Icons.insert_drive_file_outlined,
+                  size: 28, color: context.z.accent),
               const SizedBox(width: 8),
               Flexible(
                 child: Column(
@@ -728,8 +737,8 @@ class _FileBodyState extends State<_FileBody> {
                       f.complete
                           ? _size(f.size)
                           : 'receiving ${f.gotChunks}/${f.totalChunks}…',
-                      style: const TextStyle(
-                          fontSize: 11, color: ZTheme.textSecondary),
+                      style: TextStyle(
+                          fontSize: 11, color: context.z.textSecondary),
                     ),
                   ],
                 ),
@@ -743,7 +752,7 @@ class _FileBodyState extends State<_FileBody> {
               style: TextButton.styleFrom(
                 padding: EdgeInsets.zero,
                 minimumSize: const Size(0, 28),
-                foregroundColor: ZTheme.accent,
+                foregroundColor: context.z.accent,
               ),
               icon: const Icon(Icons.download, size: 14),
               label: const Text('Save', style: TextStyle(fontSize: 12)),
@@ -794,13 +803,13 @@ class _DevlistBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: ZTheme.warn.withValues(alpha: 0.12),
+      color: context.z.warn.withValues(alpha: 0.12),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Icon(Icons.gpp_maybe, size: 18, color: ZTheme.warn),
+            Icon(Icons.gpp_maybe, size: 18, color: context.z.warn),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
@@ -811,7 +820,7 @@ class _DevlistBanner extends StatelessWidget {
             IconButton(
               icon: const Icon(Icons.close, size: 18),
               tooltip: 'Dismiss',
-              color: ZTheme.textSecondary,
+              color: context.z.textSecondary,
               onPressed: onDismiss,
             ),
           ],

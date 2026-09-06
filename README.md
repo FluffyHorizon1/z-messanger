@@ -41,6 +41,8 @@ your own server or Fly.io? See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
   under a key held in the OS keystore — with an **optional passphrase** (Argon2id)
   that unlocks the app on this device. The passphrase composes with the keystore
   and never leaves the device.
+- **Light and dark.** Follows the system by default; Settings › Appearance
+  overrides it. Both palettes clear WCAG AA contrast (`app/tool/contrast.py`).
 - **App lock.** Fingerprint / face / device PIN to open Z (and again after a
   chosen time in the background), and optionally to open a passphrase‑protected
   vault without typing the passphrase — trade‑offs spelled out in

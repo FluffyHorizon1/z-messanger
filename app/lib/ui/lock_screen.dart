@@ -90,7 +90,7 @@ class _LockScreenState extends State<LockScreen> {
     final status = _status(lock);
     final canFallback = widget.verifyPassphrase != null;
     return Scaffold(
-      backgroundColor: ZTheme.bg,
+      backgroundColor: context.z.bg,
       body: SafeArea(
           child: Center(
         child: SingleChildScrollView(
@@ -100,33 +100,33 @@ class _LockScreenState extends State<LockScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Icon(Icons.fingerprint, size: 64, color: ZTheme.accent),
+                Icon(Icons.fingerprint, size: 64, color: context.z.accent),
                 const SizedBox(height: 16),
-                const Text('Z',
+                Text('Z',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                         fontSize: 56,
                         fontWeight: FontWeight.w900,
-                        color: ZTheme.accent,
+                        color: context.z.accent,
                         height: 1)),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'Locked',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: ZTheme.textSecondary),
+                  style: TextStyle(color: context.z.textSecondary),
                 ),
                 if (status != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
                     child: Text(status,
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: ZTheme.warn)),
+                        style: TextStyle(color: context.z.warn)),
                   ),
                 const SizedBox(height: 28),
                 FilledButton.icon(
                   style: FilledButton.styleFrom(
-                    backgroundColor: ZTheme.accent,
-                    foregroundColor: Colors.black,
+                    backgroundColor: context.z.accent,
+                    foregroundColor: context.z.onAccent,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                   ),
                   onPressed: lock.authInFlight ? null : _prompt,
@@ -138,8 +138,8 @@ class _LockScreenState extends State<LockScreen> {
                   if (!_showPassphrase)
                     TextButton(
                       onPressed: () => setState(() => _showPassphrase = true),
-                      child: const Text('Use passphrase instead',
-                          style: TextStyle(color: ZTheme.textSecondary)),
+                      child: Text('Use passphrase instead',
+                          style: TextStyle(color: context.z.textSecondary)),
                     )
                   else ...[
                     TextField(
@@ -156,7 +156,7 @@ class _LockScreenState extends State<LockScreen> {
                       Padding(
                         padding: const EdgeInsets.only(top: 12),
                         child: Text(_passError!,
-                            style: const TextStyle(color: ZTheme.danger)),
+                            style: TextStyle(color: context.z.danger)),
                       ),
                     const SizedBox(height: 12),
                     OutlinedButton(
