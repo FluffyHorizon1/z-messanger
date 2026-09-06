@@ -411,6 +411,12 @@ Unknown kinds MUST be ignored.
 | `gleave` | `gid` | sender left the group (§11) |
 | `pqek` | `alg:"ML-KEM-768", ek:b64` | v2 post‑quantum key offer (§17); consumed by the session layer, never shown |
 | `dlrm` | `acct:b64, v:int, h:b64` | device‑list removal notice (§3.6); tells a device it was dropped from account `acct`'s list |
+| `react` | `rt:string, emo:string` | reaction to one message (§6.5); `emo:""` withdraws |
+| `greact` | `gid` + the `react` members | reaction inside a group (§6.5, §11) |
+| `edit` | `rt:string, body:string` | new text for one of the sender's own messages (§6.6) |
+| `gedit` | `gid` + the `edit` members | the same inside a group (§6.6, §11) |
+| `del` | `mids:[string]` | delete‑for‑everyone of the sender's own messages (§6.6) |
+| `gdel` | `gid, mids:[string]` | the same inside a group (§6.6, §11) |
 
 `ContactBundleJSON` is `{ "ed", "x", "sig", "name" }` as in §2.4 (all `b64`);
 every bundle in a `ginvite` MUST be verified (§2.3) before use.
@@ -442,6 +448,68 @@ that id. Consequences a receiver MUST handle:
 `rt` is one‑way: replying does not modify the quoted message, and a reply to a
 message with a disappearing timer follows the timer of the conversation as it
 stands when the reply is sent, not the quoted message's.
+
+### 6.5 Reactions (8.1b)
+
+`react` (and `greact` in a group) attaches one emoji to one earlier message:
+
+```
+{ "k":"react", "mid":<this message's id>, "ts":…, "rt":<target>, "emo":"👍" }
+```
+
+- `rt` is the same member replies use (§6.4) — "the message in this
+  conversation that this one refers to" — and carries the same bounds. It is
+  deliberately not called `mid`, which already names the inner message's own
+  id. `emo` is the emoji, or `""` to withdraw. A sender has at most **one** reaction per message — a
+  second `react` replaces the first, which is why no separate "remove" kind is
+  needed.
+- `emo` MUST be at most 32 UTF‑16 code units and MUST NOT contain control
+  characters. A reaction is a badge, not a second text channel; receivers drop
+  anything longer or containing control characters rather than storing it.
+- The same conversation‑scoped lookup as §6.4 applies: a reaction whose target
+  is unknown **in the conversation it arrived in** is dropped. Reactions are
+  not messages — they never create a conversation, never count as unread, and
+  never change a message's ordering.
+- A reaction to a message that later disappears (§8) or is deleted (§6.6) goes
+  with it.
+- Reactions are stored under the reacting device's routing id, so a group
+  member sees who reacted, and one member cannot overwrite another's.
+
+### 6.6 Edit and delete for everyone (8.1c)
+
+`edit` replaces the text of a message; `del` removes messages. Both are
+**requests about the sender's own messages**, and the receiver is what makes
+that true:
+
+> A receiver MUST apply an `edit` or `del` only to messages **that same sender
+> wrote in that same conversation**. Anything else is dropped silently.
+
+In a 1:1 conversation the ratchet already establishes who is speaking, so the
+check is that the target is an *incoming* message of that conversation. In a
+group this is the security-relevant case: membership is pairwise fan‑out, so
+any member can send a `gdel` naming any id they have seen. Receivers therefore
+record the **sender's routing id** alongside each stored group message and
+require it to equal the sender of the edit/delete. A stored message with no
+recorded sender (written before 8.1c) fails the check and is left alone —
+fail‑closed, because the alternative is letting one member delete another's
+message.
+
+Further rules:
+
+- `edit` applies to text kinds only (`text`, `gmsg`); an edit naming an
+  attachment or a system notice is dropped. The original `ts` is kept, so
+  editing cannot reorder a conversation, and the receiver marks the message as
+  edited — an edit is never silent.
+- `del` erases the body (and any attachment blob and its chunks, and any
+  reactions) but keeps a **tombstone** row, so the conversation does not
+  silently change shape and a later message replying to it still resolves as
+  "unavailable" rather than pointing at a hole.
+- Neither verb is a message: no unread bump, no ordering change. An
+  edit/delete naming an unknown id is dropped — it is not an invitation to
+  fetch anything.
+- Deleting for everyone is best‑effort by nature: a recipient who has already
+  read, screenshotted or copied the message is beyond the protocol's reach,
+  and the UI says so rather than implying a guarantee.
 
 A `file` or `gfile` offer MAY additionally carry `voice:true` and `dur:int`
 (seconds): the attachment is a recorded voice message of that duration, and

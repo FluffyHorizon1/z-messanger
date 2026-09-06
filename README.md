@@ -41,8 +41,10 @@ your own server or Fly.io? See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
   under a key held in the OS keystore — with an **optional passphrase** (Argon2id)
   that unlocks the app on this device. The passphrase composes with the keystore
   and never leaves the device.
-- **Replies** that quote from *your* copy of the message, never from anything
-  the sender attached — so nobody can put words in someone's mouth.
+- **Replies, reactions, edits and delete-for-everyone.** A reply quotes from
+  *your* copy of the message, never from anything the sender attached, so
+  nobody can put words in someone's mouth; an edit or a delete is only ever
+  applied to messages the sender actually wrote.
 - **Light and dark.** Follows the system by default; Settings › Appearance
   overrides it. Both palettes clear WCAG AA contrast (`app/tool/contrast.py`).
 - **App lock.** Fingerprint / face / device PIN to open Z (and again after a

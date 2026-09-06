@@ -228,6 +228,120 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  Future<void> _editMessage(ChatMessage msg) async {
+    final ctrl = TextEditingController(text: msg.body);
+    final next = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Edit message'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLines: 5,
+          minLines: 1,
+          decoration: const InputDecoration(hintText: 'Message'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (!mounted || next == null || next.isEmpty || next == msg.body) return;
+    final ok = await context
+        .read<ChatService>()
+        .editMessage(widget.rid, msg.mid, next);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('That message can no longer be edited.')));
+    }
+  }
+
+  Future<void> _deleteForEveryone(ChatMessage msg) async {
+    final sure = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete for everyone?'),
+        content: const Text(
+            'The message is removed here and the other side is asked to '
+            'remove it too. Anyone who already read it may have kept a copy — '
+            'no app can undo that.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: ctx.z.danger),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (sure != true || !mounted) return;
+    await context.read<ChatService>().deleteForEveryone(widget.rid, [msg.mid]);
+  }
+
+  Future<void> _forward(ChatMessage msg) async {
+    final svc = context.read<ChatService>();
+    final messenger = ScaffoldMessenger.of(context);
+    final targets = <({String rid, String name, bool group})>[
+      for (final g in svc.groups.values)
+        if (!g.left && g.gid != widget.rid)
+          (rid: g.gid, name: g.name, group: true),
+      for (final c in svc.contacts.values)
+        if (c.rid != widget.rid) (rid: c.rid, name: c.name, group: false),
+    ];
+    if (targets.isEmpty) {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('No other conversation to forward to.')));
+      return;
+    }
+    final to = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+              child: Text('Forward to',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w700, color: ctx.z.accent)),
+            ),
+            for (final t in targets)
+              ListTile(
+                leading: Icon(t.group ? Icons.group : Icons.person_outline),
+                title: Text(t.name),
+                onTap: () => Navigator.pop(ctx, t.rid),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (to == null) return;
+    try {
+      await svc.forwardMessage(widget.rid, msg.mid, to);
+      messenger.showSnackBar(const SnackBar(content: Text('Forwarded.')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Forward failed: $e')));
+    }
+  }
+
+  Future<void> _react(String mid, String emoji) async {
+    try {
+      await context.read<ChatService>().toggleReaction(widget.rid, mid, emoji);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Reaction failed: $e')));
+      }
+    }
+  }
+
   Future<void> _send() async {
     final text = _input.text.trim();
     if (text.isEmpty || _sending) return;
@@ -449,7 +563,13 @@ class _ChatScreenState extends State<ChatScreen> {
                     highlighted: msg.mid == _highlightMid,
                     canReply: !(isGroup && group.left),
                     onReply: () => _startReply(msg),
-                    onQuoteTap: _goToQuoted);
+                    onQuoteTap: _goToQuoted,
+                    onReact: (isGroup && group.left)
+                        ? null
+                        : (emoji) => _react(msg.mid, emoji),
+                    onEdit: () => _editMessage(msg),
+                    onDelete: () => _deleteForEveryone(msg),
+                    onForward: () => _forward(msg));
               },
             ),
           ),
@@ -576,6 +696,14 @@ class _MessageRow extends StatelessWidget {
   final VoidCallback? onReply;
   final void Function(String mid)? onQuoteTap;
 
+  /// 8.1b: toggles my reaction with the given emoji.
+  final void Function(String emoji)? onReact;
+
+  /// 8.1c.
+  final VoidCallback? onEdit;
+  final VoidCallback? onDelete;
+  final VoidCallback? onForward;
+
   const _MessageRow({
     super.key,
     required this.msg,
@@ -583,6 +711,10 @@ class _MessageRow extends StatelessWidget {
     this.canReply = true,
     this.onReply,
     this.onQuoteTap,
+    this.onReact,
+    this.onEdit,
+    this.onDelete,
+    this.onForward,
   });
 
   @override
@@ -603,7 +735,8 @@ class _MessageRow extends StatelessWidget {
       alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
         onTap: failed ? () => _showFailedMenu(context) : null,
-        onLongPress: canReply ? () => _showActions(context) : null,
+        onLongPress:
+            (canReply && !msg.deleted) ? () => _showActions(context) : null,
         child: Container(
           margin: EdgeInsets.only(
             left: mine ? 64 : 12,
@@ -652,14 +785,46 @@ class _MessageRow extends StatelessWidget {
                       ? null
                       : () => onQuoteTap?.call(msg.quote!.mid),
                 ),
+              if (msg.forwarded && !msg.deleted)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 3),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.shortcut,
+                          size: 12, color: context.z.textSecondary),
+                      const SizedBox(width: 4),
+                      Text('Forwarded',
+                          style: TextStyle(
+                              fontSize: 11,
+                              fontStyle: FontStyle.italic,
+                              color: context.z.textSecondary)),
+                    ]),
+                  ),
+                ),
               // Left-aligned: a quote widens the bubble past the body, and
               // text hanging off the right edge reads as a mistake.
               Align(
                 alignment: Alignment.centerLeft,
-                child: msg.kind == 'file'
-                    ? _FileBody(msg: msg)
-                    : Text(msg.body,
-                        style: const TextStyle(fontSize: 15, height: 1.3)),
+                child: msg.deleted
+                    ? Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.block,
+                            size: 14, color: context.z.textSecondary),
+                        const SizedBox(width: 6),
+                        Text(
+                          mine
+                              ? 'You deleted this message'
+                              : 'This message was deleted',
+                          style: TextStyle(
+                              fontSize: 14,
+                              fontStyle: FontStyle.italic,
+                              color: context.z.textSecondary),
+                        ),
+                      ])
+                    : (msg.kind == 'file'
+                        ? _FileBody(msg: msg)
+                        : Text(msg.body,
+                            style: const TextStyle(fontSize: 15, height: 1.3))),
               ),
               const SizedBox(height: 4),
               Row(
@@ -669,6 +834,14 @@ class _MessageRow extends StatelessWidget {
                     Icon(Icons.timer_outlined,
                         size: 11, color: context.z.textSecondary),
                     const SizedBox(width: 3),
+                  ],
+                  if (msg.editedMs > 0 && !msg.deleted) ...[
+                    Text('edited',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontStyle: FontStyle.italic,
+                            color: context.z.textSecondary)),
+                    const SizedBox(width: 4),
                   ],
                   Text(
                     DateFormat.Hm()
@@ -688,6 +861,14 @@ class _MessageRow extends StatelessWidget {
                   child: Text('Failed to send — tap to retry',
                       style: TextStyle(fontSize: 10, color: context.z.danger)),
                 ),
+              if (msg.reactions.isNotEmpty)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: _ReactionChips(
+                    reactions: msg.reactions,
+                    onTap: onReact,
+                  ),
+                ),
             ],
           ),
         ),
@@ -696,12 +877,35 @@ class _MessageRow extends StatelessWidget {
   }
 
   void _showActions(BuildContext context) {
+    final mine = msg.reactions.where((r) => r.mine).map((r) => r.emoji).toSet();
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (onReact != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    for (final emoji in ChatService.quickReactions)
+                      IconButton(
+                        // The one already on this message reads as selected.
+                        style: mine.contains(emoji)
+                            ? IconButton.styleFrom(
+                                backgroundColor: ctx.z.accentDim)
+                            : null,
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          onReact!(emoji);
+                        },
+                        icon: Text(emoji, style: const TextStyle(fontSize: 22)),
+                      ),
+                  ],
+                ),
+              ),
             ListTile(
               leading: Icon(Icons.reply, color: ctx.z.accent),
               title: const Text('Reply'),
@@ -717,6 +921,35 @@ class _MessageRow extends StatelessWidget {
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: msg.body));
                   Navigator.pop(ctx);
+                },
+              ),
+            if (onForward != null)
+              ListTile(
+                leading: Icon(Icons.shortcut, color: ctx.z.textSecondary),
+                title: const Text('Forward'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onForward!();
+                },
+              ),
+            // Editing and deleting for everyone are for my own messages.
+            if (msg.outgoing && onEdit != null && msg.kind != 'file')
+              ListTile(
+                leading: Icon(Icons.edit_outlined, color: ctx.z.textSecondary),
+                title: const Text('Edit'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onEdit!();
+                },
+              ),
+            if (msg.outgoing && onDelete != null)
+              ListTile(
+                leading: Icon(Icons.delete_outline, color: ctx.z.danger),
+                title: Text('Delete for everyone',
+                    style: TextStyle(color: ctx.z.danger)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onDelete!();
                 },
               ),
           ],
@@ -756,6 +989,62 @@ class _MessageRow extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Reaction chips under a bubble (8.1b): one chip per distinct emoji with a
+/// count, mine outlined. Tapping toggles my own reaction with that emoji.
+class _ReactionChips extends StatelessWidget {
+  final List<MessageReaction> reactions;
+  final void Function(String emoji)? onTap;
+  const _ReactionChips({required this.reactions, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final counts = <String, int>{};
+    final mine = <String>{};
+    final who = <String, List<String>>{};
+    for (final r in reactions) {
+      counts[r.emoji] = (counts[r.emoji] ?? 0) + 1;
+      if (r.mine) mine.add(r.emoji);
+      who
+          .putIfAbsent(r.emoji, () => [])
+          .add(r.mine ? 'You' : (r.senderName ?? 'Someone'));
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Wrap(
+        spacing: 4,
+        runSpacing: 4,
+        children: [
+          for (final e in counts.keys)
+            Tooltip(
+              message: who[e]!.join(', '),
+              child: InkWell(
+                onTap: onTap == null ? null : () => onTap!(e),
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: context.z.surfaceAlt,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: mine.contains(e)
+                          ? context.z.accent
+                          : context.z.divider,
+                    ),
+                  ),
+                  child: Text(
+                    counts[e]! > 1 ? '$e ${counts[e]}' : e,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

@@ -116,7 +116,12 @@ than bugs we expect.
    `messages` in the clear — deliberately, since `mid`/`rid` already are —
    plus `edited_ms`/`deleted` and a `reactions` table whose emoji are sealed;
    confirm the migration is additive and that `rt` is resolved scoped to one
-   conversation (§6.4).
+   conversation (§6.4). Schema 3 adds `forwarded`. The **authorship rule**
+   (§6.6) is the security-relevant part of 8.1c: an `edit`/`del` must apply
+   only to messages the sender wrote, which in a group is checked against the
+   sender rid recorded in the sealed envelope (`sr`) and fails closed on rows
+   that predate it — try to break it, since pairwise fan-out means any member
+   can address any other.
 9. **Relay robustness** (`server.js`). RAM caps per mailbox, envelope size
    cap (1,000,000 chars), dedupe/ack semantics, push‑token expiry,
    two‑instance coordination (Redis kick/flush), authentication

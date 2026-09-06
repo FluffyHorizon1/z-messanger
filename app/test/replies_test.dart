@@ -18,6 +18,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/models.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -28,6 +29,8 @@ void main() {
 
   group('schema migration', _migrationTests);
   group('over the wire', _wireTests);
+  group('reactions', _reactionTests);
+  group('edit, delete and forward', _editDeleteTests);
 }
 
 // ---------------------------------------------------------------------------
@@ -334,4 +337,495 @@ void _wireTests() {
     final bytes = InnerMessage.text('m', 1, 'hi', replyTo: 'abc').toBytes();
     expect(InnerMessage.fromBytes(bytes).replyTo, 'abc');
   });
+}
+
+// ---------------------------------------------------------------------------
+// 8.1b reactions. A reaction is a badge on an existing message: one per
+// sender, replaceable, withdrawable, scoped to its conversation, and it never
+// becomes a message of its own.
+// ---------------------------------------------------------------------------
+void _reactionTests() {
+  late Process relay;
+  late int port;
+  final temps = <Directory>[];
+  final services = <ChatService>[];
+
+  setUpAll(() async {
+    final serverDir =
+        '${Directory.current.parent.path}${Platform.pathSeparator}server';
+    port = 41000 + DateTime.now().millisecondsSinceEpoch % 20000;
+    relay = await Process.start('node', ['server.js'],
+        workingDirectory: serverDir,
+        environment: {'PORT': '$port', 'LOG_LEVEL': 'silent'});
+    for (var i = 0; i < 60; i++) {
+      try {
+        final res = await (await HttpClient()
+                .getUrl(Uri.parse('http://127.0.0.1:$port/health')))
+            .close();
+        await res.drain<void>();
+        if (res.statusCode == 200) return;
+      } catch (_) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    }
+    fail('relay did not start');
+  });
+
+  tearDownAll(() async {
+    for (final s in services) {
+      await s.transport.stop();
+    }
+    relay.kill();
+    for (final d in temps) {
+      if (d.existsSync()) d.deleteSync(recursive: true);
+    }
+  });
+
+  Future<ChatService> makeClient(String name) async {
+    final dir = await Directory.systemTemp.createTemp('z_react_$name');
+    temps.add(dir);
+    final vault = await Vault.open(rootOverride: dir);
+    final identity = await ZIdentity.generate();
+    await vault.kvPut('identity', jsonEncode(identity.toJson()));
+    final transport =
+        Transport(identity: identity, serverUrl: 'ws://127.0.0.1:$port');
+    final svc = await ChatService.init(
+        vault: vault,
+        identity: identity,
+        displayName: name,
+        transport: transport);
+    services.add(svc);
+    return svc;
+  }
+
+  Future<void> waitUntil(bool Function() cond,
+      {Duration timeout = const Duration(seconds: 25)}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (!cond()) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('condition not met');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+  }
+
+  List<MessageReaction> reactionsOn(ChatService s, String rid, String mid) =>
+      s.messagesByChat[rid]!.firstWhere((m) => m.mid == mid).reactions;
+
+  test('a reaction rides to the peer, replaces, and withdraws', () async {
+    final ann = await makeClient('ann');
+    final ben = await makeClient('ben');
+    await waitUntil(
+        () => ann.transport.isConnected && ben.transport.isConnected);
+    await ann.addContactFromCode(await ben.myContactCode());
+    await ben.addContactFromCode(await ann.myContactCode());
+    await Future<void>.delayed(const Duration(seconds: 1));
+
+    await ann.sendText(ben.myRid, 'shipping it today');
+    await waitUntil(() => (ben.messagesByChat[ann.myRid] ?? [])
+        .any((m) => m.body.contains('shipping')));
+    final mid = ben.messagesByChat[ann.myRid]!.first.mid;
+
+    // Ben reacts; Ann sees it on her own copy of the message she sent.
+    expect(await ben.toggleReaction(ann.myRid, mid, '👍'), '👍');
+    expect(reactionsOn(ben, ann.myRid, mid).single.mine, isTrue);
+    await waitUntil(() => reactionsOn(ann, ben.myRid, mid).isNotEmpty);
+    var atAnn = reactionsOn(ann, ben.myRid, mid).single;
+    expect(atAnn.emoji, '👍');
+    expect(atAnn.mine, isFalse);
+    expect(atAnn.senderRid, ben.myRid);
+
+    // A reaction is not a message: no row, no unread, no thread of its own.
+    final rows = await ann.vault.db
+        .query('messages', where: 'rid = ?', whereArgs: [ben.myRid]);
+    expect(rows.length, 1, reason: 'still just the text message');
+    expect(ann.unread[ben.myRid] ?? 0, 0);
+
+    // A second reaction from the same sender REPLACES the first.
+    expect(await ben.toggleReaction(ann.myRid, mid, '🙏'), '🙏');
+    await waitUntil(
+        () => reactionsOn(ann, ben.myRid, mid).single.emoji == '🙏');
+    expect(reactionsOn(ann, ben.myRid, mid).length, 1);
+
+    // Reacting again with the same emoji withdraws it.
+    expect(await ben.toggleReaction(ann.myRid, mid, '🙏'), '');
+    expect(reactionsOn(ben, ann.myRid, mid), isEmpty);
+    await waitUntil(() => reactionsOn(ann, ben.myRid, mid).isEmpty);
+
+    // It survives a reload from disk.
+    expect(await ben.toggleReaction(ann.myRid, mid, '❤️'), '❤️');
+    await waitUntil(() => reactionsOn(ann, ben.myRid, mid).isNotEmpty);
+    ann.messagesByChat.remove(ben.myRid);
+    await ann.loadMessages(ben.myRid);
+    expect(reactionsOn(ann, ben.myRid, mid).single.emoji, '❤️');
+
+    // …and the emoji is sealed at rest.
+    final stored =
+        await ann.vault.db.query('reactions', columns: ['enc_emoji']);
+    expect(stored.single['enc_emoji'].toString().contains('❤'), isFalse);
+  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+
+  test('two members react in a group; each is kept separately', () async {
+    final host = await makeClient('host');
+    final m1 = await makeClient('m1');
+    final m2 = await makeClient('m2');
+    await waitUntil(() =>
+        host.transport.isConnected &&
+        m1.transport.isConnected &&
+        m2.transport.isConnected);
+    for (final c in [m1, m2]) {
+      await host.addContactFromCode(await c.myContactCode());
+      await c.addContactFromCode(await host.myContactCode());
+    }
+    await Future<void>.delayed(const Duration(seconds: 1));
+    final gid = await host.createGroup('Crew', [m1.myRid, m2.myRid]);
+    await waitUntil(
+        () => m1.groups.containsKey(gid) && m2.groups.containsKey(gid));
+    await host.sendGroupText(gid, 'launch at noon');
+    await waitUntil(() =>
+        (m1.messagesByChat[gid] ?? []).any((m) => m.body.contains('launch')) &&
+        (m2.messagesByChat[gid] ?? []).any((m) => m.body.contains('launch')));
+    final mid = m1.messagesByChat[gid]!
+        .firstWhere((m) => m.body.contains('launch'))
+        .mid;
+
+    await m1.toggleReaction(gid, mid, '🎉');
+    await m2.toggleReaction(gid, mid, '👍');
+    await waitUntil(() => reactionsOn(host, gid, mid).length == 2);
+    final byRid = {
+      for (final r in reactionsOn(host, gid, mid)) r.senderRid: r.emoji
+    };
+    expect(byRid[m1.myRid], '🎉');
+    expect(byRid[m2.myRid], '👍');
+    // One member cannot clobber another's: m1 withdrawing leaves m2's.
+    await m1.toggleReaction(gid, mid, '🎉');
+    await waitUntil(() => reactionsOn(host, gid, mid).length == 1);
+    expect(reactionsOn(host, gid, mid).single.senderRid, m2.myRid);
+  }, timeout: const Timeout(Duration(minutes: 3)), retry: 2);
+
+  test('a reaction to an unknown or cross-chat message is dropped', () async {
+    final me = await makeClient('rme');
+    final pal = await makeClient('rpal');
+    final other = await makeClient('rother');
+    await waitUntil(() =>
+        me.transport.isConnected &&
+        pal.transport.isConnected &&
+        other.transport.isConnected);
+    for (final c in [pal, other]) {
+      await me.addContactFromCode(await c.myContactCode());
+      await c.addContactFromCode(await me.myContactCode());
+    }
+    await Future<void>.delayed(const Duration(seconds: 1));
+
+    await other.sendText(me.myRid, 'in the other chat');
+    await waitUntil(() => (me.messagesByChat[other.myRid] ?? []).isNotEmpty);
+    final elsewhere = me.messagesByChat[other.myRid]!.first.mid;
+
+    // Pal reacts to a message that lives in a different conversation, and to
+    // one that does not exist at all. Neither may land.
+    // A well-behaved client refuses to send these, so play the hostile peer
+    // directly: the receiver's check is what must hold.
+    for (final target in [elsewhere, 'no-such-mid']) {
+      await pal.sendRawInner(
+          me.myRid,
+          InnerMessage.reaction(
+              newMessageId(), DateTime.now().millisecondsSinceEpoch,
+              target: target, emoji: '👍'));
+    }
+    await pal.sendText(me.myRid, 'ping'); // ordering barrier
+    await waitUntil(() =>
+        (me.messagesByChat[pal.myRid] ?? []).any((m) => m.body == 'ping'));
+    expect(await me.vault.db.query('reactions'), isEmpty);
+    // The other conversation is untouched.
+    expect(reactionsOn(me, other.myRid, elsewhere), isEmpty);
+  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+
+  test('an oversized or control-laden emoji never reaches the vault', () {
+    // Protocol level: the payload is rejected before any storage.
+    expect(
+        InnerMessage.reaction('m', 1, target: 't', emoji: 'x' * 33)
+            .reactionData,
+        isNull);
+    expect(
+        InnerMessage.reaction('m', 1, target: 't', emoji: 'a\nb').reactionData,
+        isNull);
+    expect(InnerMessage.reaction('m', 1, target: '', emoji: '👍').reactionData,
+        isNull);
+    final ok = InnerMessage.reaction('m', 1, target: 'tgt', emoji: '👍');
+    expect(ok.reactionData!.target, 'tgt');
+    expect(ok.reactionData!.emoji, '👍');
+    // The withdrawal form is valid and carries an empty emoji.
+    expect(
+        InnerMessage.reaction('m', 1, target: 'tgt', emoji: '')
+            .reactionData!
+            .emoji,
+        '');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 8.1c edit / delete-for-everyone / forward. The security property is
+// authorship: a peer may only change what it wrote, and in a group — where
+// fan-out means anyone can address anyone — that has to be enforced against
+// the recorded sender, not against who happens to be asking.
+// ---------------------------------------------------------------------------
+void _editDeleteTests() {
+  late Process relay;
+  late int port;
+  final temps = <Directory>[];
+  final services = <ChatService>[];
+
+  setUpAll(() async {
+    final serverDir =
+        '${Directory.current.parent.path}${Platform.pathSeparator}server';
+    port = 41000 + DateTime.now().millisecondsSinceEpoch % 20000;
+    relay = await Process.start('node', ['server.js'],
+        workingDirectory: serverDir,
+        environment: {'PORT': '$port', 'LOG_LEVEL': 'silent'});
+    for (var i = 0; i < 60; i++) {
+      try {
+        final res = await (await HttpClient()
+                .getUrl(Uri.parse('http://127.0.0.1:$port/health')))
+            .close();
+        await res.drain<void>();
+        if (res.statusCode == 200) return;
+      } catch (_) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    }
+    fail('relay did not start');
+  });
+
+  tearDownAll(() async {
+    for (final s in services) {
+      await s.transport.stop();
+    }
+    relay.kill();
+    for (final d in temps) {
+      if (d.existsSync()) d.deleteSync(recursive: true);
+    }
+  });
+
+  Future<ChatService> makeClient(String name) async {
+    final dir = await Directory.systemTemp.createTemp('z_ed_$name');
+    temps.add(dir);
+    final vault = await Vault.open(rootOverride: dir);
+    final identity = await ZIdentity.generate();
+    await vault.kvPut('identity', jsonEncode(identity.toJson()));
+    final transport =
+        Transport(identity: identity, serverUrl: 'ws://127.0.0.1:$port');
+    final svc = await ChatService.init(
+        vault: vault,
+        identity: identity,
+        displayName: name,
+        transport: transport);
+    services.add(svc);
+    return svc;
+  }
+
+  Future<void> waitUntil(bool Function() cond,
+      {Duration timeout = const Duration(seconds: 25)}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (!cond()) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('condition not met');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+  }
+
+  ChatMessage msgOf(ChatService s, String rid, String mid) =>
+      s.messagesByChat[rid]!.firstWhere((m) => m.mid == mid);
+
+  test('an edit reaches the peer, is marked, and keeps its place', () async {
+    final ed = await makeClient('ed');
+    final flo = await makeClient('flo');
+    await waitUntil(
+        () => ed.transport.isConnected && flo.transport.isConnected);
+    await ed.addContactFromCode(await flo.myContactCode());
+    await flo.addContactFromCode(await ed.myContactCode());
+    await Future<void>.delayed(const Duration(seconds: 1));
+
+    await ed.sendText(flo.myRid, 'see you at 6');
+    await ed.sendText(flo.myRid, 'bring the tickets');
+    await waitUntil(() => (flo.messagesByChat[ed.myRid] ?? []).length >= 2);
+    final first = flo.messagesByChat[ed.myRid]!.first;
+    final originalTs = first.ts;
+
+    expect(await ed.editMessage(flo.myRid, first.mid, 'see you at 7'), isTrue);
+    await waitUntil(() => msgOf(flo, ed.myRid, first.mid).body.endsWith('7'));
+    final atFlo = msgOf(flo, ed.myRid, first.mid);
+    expect(atFlo.editedMs, greaterThan(0), reason: 'an edit is never silent');
+    expect(atFlo.ts, originalTs, reason: 'editing must not reorder');
+    expect(flo.messagesByChat[ed.myRid]!.first.mid, first.mid);
+    // The old text is gone from disk, not merely hidden.
+    final rows = await flo.vault.db.query('messages',
+        columns: ['enc_body'], where: 'mid = ?', whereArgs: [first.mid]);
+    expect(await flo.vault.unseal(rows.first['enc_body'] as String),
+        'see you at 7');
+
+    // Flo cannot edit Ed's message, however she asks.
+    await flo.sendRawInner(
+        ed.myRid,
+        InnerMessage.edit(newMessageId(), DateTime.now().millisecondsSinceEpoch,
+            target: first.mid, body: 'I never said this'));
+    await flo.sendText(ed.myRid, 'barrier');
+    await waitUntil(() =>
+        (ed.messagesByChat[flo.myRid] ?? []).any((m) => m.body == 'barrier'));
+    expect(msgOf(ed, flo.myRid, first.mid).body, 'see you at 7');
+    expect(msgOf(ed, flo.myRid, first.mid).editedMs, greaterThan(0));
+  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+
+  test('delete for everyone tombstones on both sides and takes the blob',
+      () async {
+    final gus = await makeClient('gus');
+    final hal = await makeClient('hal');
+    await waitUntil(
+        () => gus.transport.isConnected && hal.transport.isConnected);
+    await gus.addContactFromCode(await hal.myContactCode());
+    await hal.addContactFromCode(await gus.myContactCode());
+    await Future<void>.delayed(const Duration(seconds: 1));
+
+    await gus.sendText(hal.myRid, 'oops wrong chat');
+    await gus.sendFile(hal.myRid, 'private.pdf',
+        Uint8List.fromList(List<int>.filled(2048, 7)), 'application/pdf');
+    await waitUntil(() => (hal.messagesByChat[gus.myRid] ?? []).length >= 2);
+    final textMid =
+        hal.messagesByChat[gus.myRid]!.firstWhere((m) => m.kind == 'text').mid;
+    final fileMsg =
+        hal.messagesByChat[gus.myRid]!.firstWhere((m) => m.kind == 'file');
+    await waitUntil(
+        () => msgOf(hal, gus.myRid, fileMsg.mid).file?.complete == true);
+
+    await gus.deleteForEveryone(hal.myRid, [textMid, fileMsg.mid]);
+    await waitUntil(() => msgOf(hal, gus.myRid, textMid).deleted);
+    await waitUntil(() => msgOf(hal, gus.myRid, fileMsg.mid).deleted);
+
+    // Tombstone, not a hole: the row stays so the conversation keeps shape.
+    expect(hal.messagesByChat[gus.myRid]!.length, 2);
+    expect(msgOf(hal, gus.myRid, textMid).body, isEmpty);
+    // Body and attachment are actually gone from disk.
+    final rows = await hal.vault.db.query('messages',
+        columns: ['enc_body', 'fid'], where: 'mid = ?', whereArgs: [textMid]);
+    expect(await hal.vault.unseal(rows.first['enc_body'] as String), '');
+    expect(await hal.vault.db.query('files'), isEmpty);
+    expect(await hal.vault.db.query('chunks'), isEmpty);
+    expect(File('${hal.vault.filesDir.path}/${fileMsg.fid}.bin').existsSync(),
+        isFalse);
+    // The sender's own copy is a tombstone too.
+    expect(msgOf(gus, hal.myRid, textMid).deleted, isTrue);
+
+    // Hal cannot delete Gus's remaining messages by asking.
+    await gus.sendText(hal.myRid, 'still here');
+    await waitUntil(() => (hal.messagesByChat[gus.myRid] ?? [])
+        .any((m) => m.body == 'still here'));
+    final survivor = hal.messagesByChat[gus.myRid]!
+        .firstWhere((m) => m.body == 'still here')
+        .mid;
+    await hal.sendRawInner(
+        gus.myRid,
+        InnerMessage.deleteForEveryone(
+            newMessageId(), DateTime.now().millisecondsSinceEpoch,
+            targets: [survivor]));
+    await hal.sendText(gus.myRid, 'barrier');
+    await waitUntil(() =>
+        (gus.messagesByChat[hal.myRid] ?? []).any((m) => m.body == 'barrier'));
+    expect(msgOf(gus, hal.myRid, survivor).deleted, isFalse,
+        reason: 'only the author may delete for everyone');
+  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+
+  test('a group member cannot edit or delete a neighbour\'s message', () async {
+    final owner = await makeClient('owner');
+    final rogue = await makeClient('rogue');
+    final bystander = await makeClient('bystander');
+    await waitUntil(() =>
+        owner.transport.isConnected &&
+        rogue.transport.isConnected &&
+        bystander.transport.isConnected);
+    for (final c in [rogue, bystander]) {
+      await owner.addContactFromCode(await c.myContactCode());
+      await c.addContactFromCode(await owner.myContactCode());
+    }
+    // The two members also know each other, so the rogue can address the
+    // bystander directly — exactly the position a group member is in.
+    await rogue.addContactFromCode(await bystander.myContactCode());
+    await bystander.addContactFromCode(await rogue.myContactCode());
+    await Future<void>.delayed(const Duration(seconds: 1));
+
+    final gid =
+        await owner.createGroup('Board', [rogue.myRid, bystander.myRid]);
+    await waitUntil(() =>
+        rogue.groups.containsKey(gid) && bystander.groups.containsKey(gid));
+    await owner.sendGroupText(gid, 'the vote is on Thursday');
+    await waitUntil(() => (bystander.messagesByChat[gid] ?? [])
+        .any((m) => m.body.contains('Thursday')));
+    final target = bystander.messagesByChat[gid]!
+        .firstWhere((m) => m.body.contains('Thursday'))
+        .mid;
+
+    // The rogue is a legitimate member of this group, and sends the
+    // bystander a gedit and a gdel naming the OWNER's message.
+    await rogue.sendRawInner(
+        bystander.myRid,
+        InnerMessage.edit(newMessageId(), DateTime.now().millisecondsSinceEpoch,
+            target: target, body: 'the vote is cancelled', gid: gid));
+    await rogue.sendRawInner(
+        bystander.myRid,
+        InnerMessage.deleteForEveryone(
+            newMessageId(), DateTime.now().millisecondsSinceEpoch,
+            targets: [target], gid: gid));
+    await rogue.sendGroupText(gid, 'barrier');
+    await waitUntil(() =>
+        (bystander.messagesByChat[gid] ?? []).any((m) => m.body == 'barrier'));
+
+    final still = msgOf(bystander, gid, target);
+    expect(still.body, contains('Thursday'),
+        reason: 'a member may not rewrite another member\'s message');
+    expect(still.editedMs, 0);
+    expect(still.deleted, isFalse,
+        reason: 'a member may not delete another member\'s message');
+
+    // The owner CAN edit and delete their own, over the same channel.
+    expect(await owner.editMessage(gid, target, 'the vote moved to Friday'),
+        isTrue);
+    await waitUntil(
+        () => msgOf(bystander, gid, target).body.contains('Friday'));
+    await owner.deleteForEveryone(gid, [target]);
+    await waitUntil(() => msgOf(bystander, gid, target).deleted);
+  }, timeout: const Timeout(Duration(minutes: 3)), retry: 2);
+
+  test('forwarding sends a new message marked as forwarded', () async {
+    final ida = await makeClient('ida');
+    final jon = await makeClient('jon');
+    final kim = await makeClient('kim');
+    await waitUntil(() =>
+        ida.transport.isConnected &&
+        jon.transport.isConnected &&
+        kim.transport.isConnected);
+    for (final c in [jon, kim]) {
+      await ida.addContactFromCode(await c.myContactCode());
+      await c.addContactFromCode(await ida.myContactCode());
+    }
+    await Future<void>.delayed(const Duration(seconds: 1));
+
+    await jon.sendText(ida.myRid, 'the venue changed to the old mill');
+    await waitUntil(() => (ida.messagesByChat[jon.myRid] ?? []).isNotEmpty);
+    final received = ida.messagesByChat[jon.myRid]!.first;
+
+    await ida.forwardMessage(jon.myRid, received.mid, kim.myRid);
+    await waitUntil(() => (kim.messagesByChat[ida.myRid] ?? []).isNotEmpty);
+    final atKim = kim.messagesByChat[ida.myRid]!.first;
+    expect(atKim.body, contains('old mill'));
+    expect(atKim.forwarded, isTrue);
+    // A NEW message, not a replay of Jon's: different id, and it is from Ida.
+    expect(atKim.mid, isNot(received.mid));
+    expect(atKim.outgoing, isFalse);
+    // Ida's own copy is marked too, and survives a reload.
+    expect(ida.messagesByChat[kim.myRid]!.single.forwarded, isTrue);
+    ida.messagesByChat.remove(kim.myRid);
+    await ida.loadMessages(kim.myRid);
+    expect(ida.messagesByChat[kim.myRid]!.single.forwarded, isTrue);
+    // Nothing about Jon travels with it: the marker is a flag, not provenance.
+    expect(atKim.senderName, isNull);
+  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
 }

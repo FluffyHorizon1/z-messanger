@@ -618,6 +618,12 @@ const INNER_SCHEMA = {
   gfile: ['gid', 'fid', 'name', 'size', 'mime', 'sha256', 'fk', 'fn', 'chunks'],
   gleave: ['gid'],
   dlrm: ['acct', 'v', 'h'], // 7.7a device-list removal notice
+  react: ['rt', 'emo'], // 8.1b reaction; 'rt' names the target message
+  greact: ['gid', 'rt', 'emo'],
+  edit: ['rt', 'body'], // 8.1c edit of the sender's own message
+  gedit: ['gid', 'rt', 'body'],
+  del: ['mids'], // 8.1c delete-for-everyone of the sender's own messages
+  gdel: ['gid', 'mids'],
 };
 
 test('inner messages: every kind parses with its required fields', () => {
@@ -642,10 +648,36 @@ test('inner messages: every kind parses with its required fields', () => {
       assert.equal(j.voice, true);
       assert.equal(typeof j.dur, 'number');
     }
+    // 8.1b: a reaction is a bounded badge — one target, one short emoji,
+    // never a second text channel.
+    if (j.k === 'react' || j.k === 'greact') {
+      assert.equal(typeof j.emo, 'string');
+      assert.ok(j.emo.length <= 32, 'emoji stays a badge');
+      assert.ok(![...j.emo].some((c) => c.codePointAt(0) < 0x20), 'no control chars');
+      assert.ok(typeof j.rt === 'string' && j.rt.length <= 64, 'target is an id');
+      assert.ok(!('body' in j), 'a reaction carries no text');
+    }
+    // 8.1c: a delete names ids only, and a bounded number of them.
+    if (j.k === 'del' || j.k === 'gdel') {
+      assert.ok(Array.isArray(j.mids) && j.mids.length > 0, 'mids is a list');
+      assert.ok(j.mids.length <= 256, 'bounded');
+      for (const m2 of j.mids) {
+        assert.ok(typeof m2 === 'string' && m2.length <= 64, 'an id');
+      }
+    }
+    // A forward marker is a boolean flag, never a provenance claim about who
+    // originally wrote the message.
+    if ('fw' in j) {
+      assert.equal(j.fw, true);
+      assert.ok(!('from' in j) && !('origin' in j), 'no attributed origin');
+    }
     // 8.1: a reply carries the quoted message's id and nothing else of it —
     // in particular no copy of the quoted text.
     if ('rt' in j) {
-      assert.ok(['text', 'file', 'gmsg', 'gfile'].includes(j.k), 'rt on a content kind');
+      assert.ok(
+        ['text', 'file', 'gmsg', 'gfile', 'react', 'greact', 'edit', 'gedit']
+          .includes(j.k),
+        'rt names a target only on a content kind, reaction or edit');
       assert.equal(typeof j.rt, 'string');
       assert.ok(j.rt.length > 0 && j.rt.length <= 64, 'rt is an id, not a payload');
       assert.ok(!('rtbody' in j) && !('quote' in j), 'no quoted text on the wire');

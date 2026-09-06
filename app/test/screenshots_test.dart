@@ -5,7 +5,10 @@
 //
 // Real Roboto + Material Icons are loaded from the Flutter SDK cache when
 // it can be found (the test shell ships them), otherwise the test still
-// runs with the placeholder font.
+// runs with the placeholder font. Emoji (reaction chips) render as tofu
+// here: the headless shell has no colour-emoji face and cannot load the
+// system CBDT one. On a device they render normally — the chip's shape,
+// border and count are what these screenshots are checking.
 @Tags(['screenshots'])
 library;
 
@@ -108,7 +111,10 @@ class _Fixture {
     var n = 0;
     // Messages: the seal is async, so resolve it before inserting.
     Future<void> insert(String rid, bool out, String kind, String body,
-        {int status = 1, String? fid, String? replyTo}) async {
+        {int status = 1,
+        String? fid,
+        String? replyTo,
+        bool forwarded = false}) async {
       await vault.db.insert('messages', {
         'mid': 'm${n++}',
         'rid': rid,
@@ -120,6 +126,7 @@ class _Fixture {
         'status': status,
         'expire_at_ms': 0,
         'reply_to': replyTo,
+        'forwarded': forwarded ? 1 : 0,
       });
     }
 
@@ -148,6 +155,22 @@ class _Fixture {
     // 8.1: a reply, so the quote block is in the rendered screenshots.
     await insert(aliceRid, false, 'text', 'Bring the thermos too?',
         replyTo: 'm1');
+    // 8.1b/c: a reaction, an edited message, a tombstone and a forward.
+    await vault.db.insert('reactions', {
+      'rid': aliceRid,
+      'mid': 'm1',
+      'sender_rid': aliceRid,
+      'enc_emoji': await vault.seal('👍'),
+      'ts_ms': t0,
+    });
+    await insert(aliceRid, true, 'text', 'Packing it now.', status: 2);
+    await vault.db.update('messages', {'edited_ms': t0 + 1},
+        where: 'mid = ?', whereArgs: ['m${n - 1}']);
+    await insert(aliceRid, true, 'text', '', status: 2);
+    await vault.db.update('messages', {'deleted': 1},
+        where: 'mid = ?', whereArgs: ['m${n - 1}']);
+    await insert(aliceRid, false, 'text', 'Forecast says clear until 4pm.',
+        forwarded: true);
     await insert(bobRid, true, 'text', 'Lunch tomorrow?', status: 1);
     await insert(bobRid, false, 'text', 'Sure, 12:30 at the usual place.');
 

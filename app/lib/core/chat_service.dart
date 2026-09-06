@@ -470,13 +470,15 @@ class ChatService extends ChangeNotifier {
 
   /// [replyTo] (8.1) is the `mid` of a message in this same conversation;
   /// only the id is sent, and it is dropped if it names nothing we hold.
-  Future<void> sendText(String rid, String body, {String? replyTo}) async {
+  Future<void> sendText(String rid, String body,
+      {String? replyTo, bool forwarded = false}) async {
     final contact = contacts[rid]!;
     final ttl = contact.ttlSec;
     final ts = _now();
     final quoted = await _resolveQuote(rid, replyTo);
     final inner = InnerMessage.text(newMessageId(), ts, body,
         ttlSec: ttl, replyTo: quoted?.mid);
+    if (forwarded) inner.data['fw'] = true;
     final expireAt = ttl > 0 ? ts + ttl * 1000 : 0;
 
     await _sendInner(contact, inner, also: (txn) async {
@@ -490,6 +492,7 @@ class ChatService extends ChangeNotifier {
         'status': MsgStatus.pending,
         'expire_at_ms': expireAt,
         'reply_to': quoted?.mid,
+        'forwarded': forwarded ? 1 : 0,
       });
     });
 
@@ -506,6 +509,7 @@ class ChatService extends ChangeNotifier {
           expireAtMs: expireAt,
           replyTo: quoted?.mid,
           quote: quoted,
+          forwarded: forwarded,
         ));
     notifyListeners();
     // Mirror to my own other devices (no-op if none linked).
@@ -523,7 +527,10 @@ class ChatService extends ChangeNotifier {
 
   Future<void> sendFile(
       String rid, String fileName, Uint8List bytes, String mime,
-      {bool voice = false, int durSec = 0, String? replyTo}) async {
+      {bool voice = false,
+      int durSec = 0,
+      String? replyTo,
+      bool forwarded = false}) async {
     if (bytes.length > maxAttachmentBytes) {
       throw const FormatException(
           'attachment too large (max 24 MB in this build)');
@@ -553,6 +560,7 @@ class ChatService extends ChangeNotifier {
         if (voice) 'voice': true,
         if (durSec > 0) 'dur': durSec,
         if (quoted != null) 'rt': quoted.mid,
+        if (forwarded) 'fw': true,
       },
     );
     final expireAt = ttl > 0 ? ts + ttl * 1000 : 0;
@@ -607,6 +615,7 @@ class ChatService extends ChangeNotifier {
         'status': MsgStatus.pending,
         'expire_at_ms': expireAt,
         'reply_to': quoted?.mid,
+        'forwarded': forwarded ? 1 : 0,
       });
       for (final p in chunkPayloads) {
         await txn.insert('outbox', {
@@ -940,6 +949,7 @@ class ChatService extends ChangeNotifier {
               'status': MsgStatus.delivered,
               'expire_at_ms': expireAt,
               'reply_to': quoted?.mid,
+              'forwarded': inner.data['fw'] == true ? 1 : 0,
             },
             conflictAlgorithm: ConflictAlgorithm.ignore);
         _appendLoaded(
@@ -949,6 +959,7 @@ class ChatService extends ChangeNotifier {
               rid: contact.rid,
               outgoing: false,
               kind: 'text',
+              forwarded: inner.data['fw'] == true,
               body: inner.data['body'] as String? ?? '',
               ts: now,
               status: MsgStatus.delivered,
@@ -1012,6 +1023,24 @@ class ChatService extends ChangeNotifier {
         await _persistGroupText(contact, inner, now, txn: txn);
         break;
 
+      // 8.1b: a reaction is not a message — no row, no unread, no ordering.
+      case 'react':
+      case 'greact':
+        await _applyReaction(contact, inner, txn: txn);
+        break;
+
+      // 8.1c: requests about the SENDER'S OWN messages; the checks inside
+      // decide whether they apply (§6.6).
+      case 'edit':
+      case 'gedit':
+        await _applyEdit(contact, inner, txn: txn);
+        break;
+
+      case 'del':
+      case 'gdel':
+        await _applyDelete(contact, inner, txn: txn);
+        break;
+
       case 'ginvite':
         await _applyGroupInvite(contact.rid, inner.data, txn: txn);
         break;
@@ -1032,7 +1061,7 @@ class ChatService extends ChangeNotifier {
   /// are matched to the offer by fid when they arrive (see [_onChunk]).
   Future<void> _persistFileOffer(
       DatabaseExecutor txn, String threadRid, InnerMessage inner, int now,
-      {int expireAt = 0, String? senderName}) async {
+      {int expireAt = 0, String? senderName, String? senderRid}) async {
     final fid = inner.data['fid'] as String;
     final name = inner.data['name'] as String? ?? 'file';
     final voice = inner.data['voice'] == true;
@@ -1069,12 +1098,14 @@ class ChatService extends ChangeNotifier {
           'enc_body': await vault.seal(jsonEncode({
             'fid': fid,
             if (senderName != null) 'sn': senderName,
+            if (senderRid != null) 'sr': senderRid,
           })),
           'fid': fid,
           'ts_ms': now,
           'status': MsgStatus.delivered,
           'expire_at_ms': expireAt,
           'reply_to': quoted?.mid,
+          'forwarded': inner.data['fw'] == true ? 1 : 0,
         },
         conflictAlgorithm: ConflictAlgorithm.ignore);
     _appendLoaded(
@@ -1084,6 +1115,7 @@ class ChatService extends ChangeNotifier {
           rid: threadRid,
           outgoing: false,
           kind: 'file',
+          forwarded: inner.data['fw'] == true,
           body: name,
           fid: fid,
           ts: now,
@@ -1117,7 +1149,7 @@ class ChatService extends ChangeNotifier {
     if (g == null || g.left || !g.memberRids.contains(contact.rid)) return;
     if (inner.data['fid'] is! String || inner.data['chunks'] is! num) return;
     await _persistFileOffer(txn ?? vault.db, gid!, inner, now,
-        senderName: contact.name);
+        senderName: contact.name, senderRid: contact.rid);
   }
 
   Future<void> _onChunk(
@@ -1264,12 +1296,13 @@ class ChatService extends ChangeNotifier {
 
   Future<ChatMessage> _rowToMessage(String rid, Map<String, Object?> r) async {
     final kind = r['kind'] as String;
+    final deleted = ((r['deleted'] as int?) ?? 0) == 1;
     String body;
     String? senderName;
     FileMeta? fileMeta;
     if (kind == 'file') {
       final fid = r['fid'] as String;
-      fileMeta = await _loadFileMeta(fid);
+      fileMeta = deleted ? null : await _loadFileMeta(fid);
       body = fileMeta?.name ?? 'file';
       try {
         final j =
@@ -1285,6 +1318,7 @@ class ChatService extends ChangeNotifier {
     } else {
       body = await vault.unseal(r['enc_body'] as String);
     }
+    if (deleted) body = '';
     final replyTo = r['reply_to'] as String?;
     return ChatMessage(
       mid: r['mid'] as String,
@@ -1301,6 +1335,9 @@ class ChatService extends ChangeNotifier {
       replyTo: replyTo,
       // Resolved on every load: the quoted message may since have expired.
       quote: await _resolveQuote(rid, replyTo),
+      editedMs: (r['edited_ms'] as int?) ?? 0,
+      deleted: deleted,
+      forwarded: ((r['forwarded'] as int?) ?? 0) == 1,
     );
   }
 
@@ -1376,6 +1413,7 @@ class ChatService extends ChangeNotifier {
     for (final r in rows.take(messagePageSize).toList().reversed) {
       list.add(await _rowToMessage(rid, r));
     }
+    await _attachReactions(rid, list);
     messagesByChat[rid] = list;
     return list;
   }
@@ -1415,6 +1453,7 @@ class ChatService extends ChangeNotifier {
             'SELECT COUNT(*) FROM messages WHERE rid = ? AND ts_ms < ?',
             [rid, ts])) ??
         0;
+    await _attachReactions(rid, list);
     hasMoreByChat[rid] = older > 0;
     messagesByChat[rid] = list;
     return true;
@@ -1440,9 +1479,485 @@ class ChatService extends ChangeNotifier {
       final msg = await _rowToMessage(rid, r);
       if (!have.contains(msg.mid)) older.add(msg);
     }
+    await _attachReactions(rid, older);
     current.insertAll(0, older);
     notifyListeners();
     return older.length;
+  }
+
+  // ------------------------------------------------------------------
+  // 8.1c edit / delete for everyone / forward
+  // ------------------------------------------------------------------
+
+  /// Text kinds an edit may touch. Attachments and system notices are not
+  /// editable: there is no body to replace.
+  static const Set<String> _editableKinds = {'text', 'gtext'};
+
+  /// Replaces the text of one of MY messages and tells the other side. The
+  /// original timestamp is kept and the message is marked edited — an edit is
+  /// never silent. Returns false when the message is not mine, not text, or
+  /// already deleted.
+  Future<bool> editMessage(String rid, String mid, String newBody) async {
+    final body = newBody.trim();
+    if (body.isEmpty) return false;
+    final isGroup = groups.containsKey(rid);
+    if (isGroup && groups[rid]!.left) return false;
+    final rows = await vault.db.query('messages',
+        where: 'rid = ? AND mid = ?', whereArgs: [rid, mid], limit: 1);
+    if (rows.isEmpty) return false;
+    final r = rows.first;
+    if ((r['outgoing'] as int) != 1) return false; // only my own
+    if (((r['deleted'] as int?) ?? 0) == 1) return false;
+    final kind = r['kind'] as String;
+    if (!_editableKinds.contains(kind)) return false;
+
+    final now = _now();
+    await _applyEditLocally(rid, mid, kind, body, now);
+    notifyListeners();
+
+    final inner = InnerMessage.edit(newMessageId(), now,
+        target: mid, body: body, gid: isGroup ? rid : null);
+    if (isGroup) {
+      await _fanGroupInner(groups[rid]!, inner);
+    } else {
+      await _sendInner(contacts[rid]!, inner);
+    }
+    unawaited(_sync?.mirror(threadRid: rid, dir: 'out', inner: inner) ??
+        Future<void>.value());
+    return true;
+  }
+
+  /// Writes the new body, preserving the sealed envelope's other members
+  /// (sender name/rid, forwarded flag) so a group edit keeps its attribution.
+  Future<void> _applyEditLocally(
+      String rid, String mid, String kind, String body, int now,
+      {DatabaseExecutor? txn}) async {
+    final db = txn ?? vault.db;
+    String sealed;
+    if (kind == 'gtext') {
+      Map<String, Object?> j = {};
+      final rows = await db.query('messages',
+          columns: ['enc_body'],
+          where: 'rid = ? AND mid = ?',
+          whereArgs: [rid, mid],
+          limit: 1);
+      if (rows.isNotEmpty) {
+        try {
+          j = (jsonDecode(await vault.unseal(rows.first['enc_body'] as String))
+                  as Map)
+              .cast<String, Object?>();
+        } catch (_) {}
+      }
+      j['b'] = body;
+      sealed = await vault.seal(jsonEncode(j));
+    } else {
+      sealed = await vault.seal(body);
+    }
+    await db.update('messages', {'enc_body': sealed, 'edited_ms': now},
+        where: 'rid = ? AND mid = ?', whereArgs: [rid, mid]);
+    final loaded = messagesByChat[rid];
+    final idx = loaded?.indexWhere((m) => m.mid == mid) ?? -1;
+    if (loaded != null && idx >= 0) {
+      final old = loaded[idx];
+      loaded[idx] = ChatMessage(
+        mid: old.mid,
+        rid: old.rid,
+        outgoing: old.outgoing,
+        kind: old.kind,
+        body: body,
+        fid: old.fid,
+        ts: old.ts,
+        status: old.status,
+        expireAtMs: old.expireAtMs,
+        file: old.file,
+        senderName: old.senderName,
+        replyTo: old.replyTo,
+        quote: old.quote,
+        reactions: old.reactions,
+        editedMs: now,
+        forwarded: old.forwarded,
+      );
+    }
+  }
+
+  /// Deletes MY messages for everyone: the body (and any attachment) is wiped
+  /// here and the peers are asked to do the same. Best effort by nature — a
+  /// recipient who already read it is beyond reach, which the UI states.
+  Future<void> deleteForEveryone(String rid, List<String> mids) async {
+    final isGroup = groups.containsKey(rid);
+    if (isGroup && groups[rid]!.left) return;
+    final mine = <String>[];
+    for (final mid in mids) {
+      final rows = await vault.db.query('messages',
+          columns: ['outgoing'],
+          where: 'rid = ? AND mid = ?',
+          whereArgs: [rid, mid],
+          limit: 1);
+      if (rows.isNotEmpty && (rows.first['outgoing'] as int) == 1) {
+        mine.add(mid);
+      }
+    }
+    if (mine.isEmpty) return;
+    for (final mid in mine) {
+      await _tombstone(rid, mid);
+    }
+    notifyListeners();
+    final inner = InnerMessage.deleteForEveryone(newMessageId(), _now(),
+        targets: mine, gid: isGroup ? rid : null);
+    if (isGroup) {
+      await _fanGroupInner(groups[rid]!, inner);
+    } else {
+      await _sendInner(contacts[rid]!, inner);
+    }
+    unawaited(_sync?.mirror(threadRid: rid, dir: 'out', inner: inner) ??
+        Future<void>.value());
+  }
+
+  /// Turns one message into a tombstone: body wiped, attachment blob and
+  /// chunks destroyed, reactions dropped, row kept so the conversation keeps
+  /// its shape and replies to it still resolve (as "unavailable").
+  Future<void> _tombstone(String rid, String mid,
+      {DatabaseExecutor? txn}) async {
+    final db = txn ?? vault.db;
+    final rows = await db.query('messages',
+        columns: ['fid', 'kind'],
+        where: 'rid = ? AND mid = ?',
+        whereArgs: [rid, mid],
+        limit: 1);
+    if (rows.isEmpty) return;
+    final fid = rows.first['fid'] as String?;
+    if (fid != null) {
+      await vault.deleteBlob(fid);
+      await db.delete('files', where: 'fid = ?', whereArgs: [fid]);
+      await db.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
+    }
+    await db.update(
+        'messages',
+        {
+          'deleted': 1,
+          'enc_body': await vault.seal(''),
+          'fid': null,
+          'reply_to': null,
+        },
+        where: 'rid = ? AND mid = ?',
+        whereArgs: [rid, mid]);
+    await db.delete('reactions',
+        where: 'rid = ? AND mid = ?', whereArgs: [rid, mid]);
+    final loaded = messagesByChat[rid];
+    final idx = loaded?.indexWhere((m) => m.mid == mid) ?? -1;
+    if (loaded != null && idx >= 0) {
+      final old = loaded[idx];
+      loaded[idx] = ChatMessage(
+        mid: old.mid,
+        rid: old.rid,
+        outgoing: old.outgoing,
+        kind: old.kind,
+        body: '',
+        ts: old.ts,
+        status: old.status,
+        senderName: old.senderName,
+        deleted: true,
+      );
+    }
+  }
+
+  /// Who wrote a stored message, for the authorship rule. Returns null when
+  /// the row is mine, unknown, or (a pre-8.1c group row) does not record it —
+  /// all of which make an incoming edit/delete inapplicable.
+  Future<String?> _storedSenderRid(String rid, Map<String, Object?> r) async {
+    // Mine: nobody else may edit or delete it, whoever asks.
+    if ((r['outgoing'] as int) == 1) return null;
+    // 1:1: the conversation is the peer, and the ratchet already proved who
+    // is speaking.
+    if (!groups.containsKey(rid)) return rid;
+    // Group: the sealed envelope records the sender's routing id ('sr').
+    // A row written before 8.1c has none, and fails the check — deliberately,
+    // since the alternative is letting a member delete a neighbour's message.
+    try {
+      final j = (jsonDecode(await vault.unseal(r['enc_body'] as String)) as Map)
+          .cast<String, Object?>();
+      final sr = j['sr'];
+      return sr is String && sr.isNotEmpty ? sr : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// An edit that arrived from [contact]. Applied ONLY to a message that same
+  /// contact wrote in that same conversation (§6.6).
+  Future<void> _applyEdit(Contact contact, InnerMessage inner,
+      {DatabaseExecutor? txn}) async {
+    final target = inner.replyTo;
+    final body = inner.data['body'];
+    if (target == null || body is! String) return;
+    final gid = inner.data['gid'] as String?;
+    final String rid;
+    if (inner.kind == 'gedit') {
+      final g = gid == null ? null : groups[gid];
+      if (g == null || g.left || !g.memberRids.contains(contact.rid)) return;
+      rid = gid!;
+    } else {
+      rid = contact.rid;
+    }
+    final db = txn ?? vault.db;
+    final rows = await db.query('messages',
+        where: 'rid = ? AND mid = ?', whereArgs: [rid, target], limit: 1);
+    if (rows.isEmpty) return;
+    final r = rows.first;
+    if (((r['deleted'] as int?) ?? 0) == 1) return;
+    final kind = r['kind'] as String;
+    if (!_editableKinds.contains(kind)) return;
+    // The authorship rule.
+    if (await _storedSenderRid(rid, r) != contact.rid) return;
+    await _applyEditLocally(rid, target, kind, body, inner.ts, txn: txn);
+  }
+
+  /// A delete-for-everyone from [contact], subject to the same rule.
+  Future<void> _applyDelete(Contact contact, InnerMessage inner,
+      {DatabaseExecutor? txn}) async {
+    final targets = inner.deleteTargets;
+    if (targets.isEmpty) return;
+    final gid = inner.data['gid'] as String?;
+    final String rid;
+    if (inner.kind == 'gdel') {
+      final g = gid == null ? null : groups[gid];
+      if (g == null || g.left || !g.memberRids.contains(contact.rid)) return;
+      rid = gid!;
+    } else {
+      rid = contact.rid;
+    }
+    final db = txn ?? vault.db;
+    for (final target in targets) {
+      final rows = await db.query('messages',
+          where: 'rid = ? AND mid = ?', whereArgs: [rid, target], limit: 1);
+      if (rows.isEmpty) continue;
+      if (await _storedSenderRid(rid, rows.first) != contact.rid) continue;
+      await _tombstone(rid, target, txn: txn);
+    }
+  }
+
+  /// Passes a message on to another conversation as a NEW message, marked
+  /// "forwarded". An attachment is re-sent from this device's copy: the
+  /// recipient gets fresh key material, since the original key belongs to the
+  /// original conversation.
+  Future<void> forwardMessage(String fromRid, String mid, String toRid) async {
+    final rows = await vault.db.query('messages',
+        where: 'rid = ? AND mid = ?', whereArgs: [fromRid, mid], limit: 1);
+    if (rows.isEmpty) return;
+    final r = rows.first;
+    if (((r['deleted'] as int?) ?? 0) == 1) return;
+    final msg = await _rowToMessage(fromRid, r);
+    final toGroup = groups.containsKey(toRid);
+    if (!toGroup && !contacts.containsKey(toRid)) return;
+    if (toGroup && groups[toRid]!.left) return;
+    if (msg.kind == 'file') {
+      final fid = msg.fid;
+      if (fid == null) return;
+      final bytes = await readAttachment(fid);
+      final meta = msg.file;
+      if (toGroup) {
+        await sendGroupFile(toRid, meta?.name ?? 'file', bytes,
+            meta?.mime ?? 'application/octet-stream',
+            forwarded: true);
+      } else {
+        await sendFile(toRid, meta?.name ?? 'file', bytes,
+            meta?.mime ?? 'application/octet-stream',
+            forwarded: true);
+      }
+      return;
+    }
+    if (toGroup) {
+      await sendGroupText(toRid, msg.body, forwarded: true);
+    } else {
+      await sendText(toRid, msg.body, forwarded: true);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 8.1b reactions
+  // ------------------------------------------------------------------
+
+  /// The emoji offered in the picker. Kept short and unambiguous; any emoji
+  /// that arrives from a peer still renders, this is only what we send.
+  static const List<String> quickReactions = [
+    '👍',
+    '❤️',
+    '😂',
+    '😮',
+    '😢',
+    '🙏'
+  ];
+
+  /// Adds, replaces or withdraws MY reaction to [mid] in conversation [rid]:
+  /// reacting with the emoji already showing withdraws it. Returns the emoji
+  /// now in effect (empty when withdrawn).
+  Future<String> toggleReaction(String rid, String mid, String emoji) async {
+    final isGroup = groups.containsKey(rid);
+    if (!isGroup && !contacts.containsKey(rid)) return '';
+    if (isGroup && (groups[rid]!.left)) return '';
+    // The target must exist here — the same conversation-scoped rule the
+    // wire format uses (§6.4/§6.5).
+    final target = await vault.db.query('messages',
+        columns: ['mid'],
+        where: 'rid = ? AND mid = ?',
+        whereArgs: [rid, mid],
+        limit: 1);
+    if (target.isEmpty) return '';
+
+    final current = await _myReaction(rid, mid);
+    final next = current == emoji ? '' : emoji;
+    await _storeReaction(rid: rid, mid: mid, senderRid: myRid, emoji: next);
+    await _refreshLoadedReactions(rid, mid);
+    notifyListeners();
+
+    final inner = InnerMessage.reaction(newMessageId(), _now(),
+        target: mid, emoji: next, gid: isGroup ? rid : null);
+    if (isGroup) {
+      await _fanGroupInner(groups[rid]!, inner);
+    } else {
+      // _sendInner already fans out to the contact's other devices.
+      await _sendInner(contacts[rid]!, inner);
+    }
+    unawaited(_sync?.mirror(threadRid: rid, dir: 'out', inner: inner) ??
+        Future<void>.value());
+    return next;
+  }
+
+  /// Sends an arbitrary inner to [rid], bypassing the checks a well-behaved
+  /// client applies before sending. Exists so tests can play a HOSTILE peer —
+  /// the receiver's own validation is the security property, and it has to be
+  /// exercised by traffic a friendly client would never produce.
+  @visibleForTesting
+  Future<void> sendRawInner(String rid, InnerMessage inner) async {
+    final contact = contacts[rid];
+    if (contact == null) return;
+    await _sendInner(contact, inner);
+  }
+
+  Future<String> _myReaction(String rid, String mid) async {
+    final rows = await vault.db.query('reactions',
+        columns: ['enc_emoji'],
+        where: 'rid = ? AND mid = ? AND sender_rid = ?',
+        whereArgs: [rid, mid, myRid],
+        limit: 1);
+    if (rows.isEmpty) return '';
+    try {
+      return await vault.unseal(rows.first['enc_emoji'] as String);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// Writes one sender's reaction (empty [emoji] removes it). Emoji are
+  /// sealed like any other content.
+  Future<void> _storeReaction({
+    required String rid,
+    required String mid,
+    required String senderRid,
+    required String emoji,
+    DatabaseExecutor? txn,
+  }) async {
+    final db = txn ?? vault.db;
+    if (emoji.isEmpty) {
+      await db.delete('reactions',
+          where: 'rid = ? AND mid = ? AND sender_rid = ?',
+          whereArgs: [rid, mid, senderRid]);
+      return;
+    }
+    await db.insert(
+        'reactions',
+        {
+          'rid': rid,
+          'mid': mid,
+          'sender_rid': senderRid,
+          'enc_emoji': await vault.seal(emoji),
+          'ts_ms': _now(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  /// A reaction that arrived from [contact] (1:1 or group). Dropped unless it
+  /// names a message in that same conversation.
+  Future<void> _applyReaction(Contact contact, InnerMessage inner,
+      {DatabaseExecutor? txn}) async {
+    final r = inner.reactionData;
+    if (r == null) return;
+    final gid = inner.data['gid'] as String?;
+    final String rid;
+    if (inner.kind == 'greact') {
+      final g = gid == null ? null : groups[gid];
+      if (g == null || g.left || !g.memberRids.contains(contact.rid)) return;
+      rid = gid!;
+    } else {
+      rid = contact.rid;
+    }
+    final target = await (txn ?? vault.db).query('messages',
+        columns: ['mid'],
+        where: 'rid = ? AND mid = ?',
+        whereArgs: [rid, r.target],
+        limit: 1);
+    if (target.isEmpty) return; // unknown here: nothing to react to
+    await _storeReaction(
+        rid: rid,
+        mid: r.target,
+        senderRid: contact.rid,
+        emoji: r.emoji,
+        txn: txn);
+    await _refreshLoadedReactions(rid, r.target, txn: txn);
+  }
+
+  /// Re-reads the reactions of one loaded message so the UI updates without
+  /// reloading the thread. [txn] MUST be passed when called from inside the
+  /// inbound transaction — going to `vault.db` there deadlocks against the
+  /// lock the transaction already holds.
+  Future<void> _refreshLoadedReactions(String rid, String mid,
+      {DatabaseExecutor? txn}) async {
+    final loaded = messagesByChat[rid];
+    if (loaded == null) return;
+    final idx = loaded.indexWhere((m) => m.mid == mid);
+    if (idx < 0) return;
+    loaded[idx].reactions =
+        (await _loadReactions(rid, [mid], txn: txn))[mid] ?? [];
+  }
+
+  /// Reactions for a set of message ids in one query, decrypted in memory.
+  Future<Map<String, List<MessageReaction>>> _loadReactions(
+      String rid, List<String> mids,
+      {DatabaseExecutor? txn}) async {
+    if (mids.isEmpty) return {};
+    final marks = List.filled(mids.length, '?').join(',');
+    final rows = await (txn ?? vault.db).rawQuery(
+        'SELECT mid, sender_rid, enc_emoji FROM reactions '
+        'WHERE rid = ? AND mid IN ($marks) ORDER BY ts_ms ASC',
+        [rid, ...mids]);
+    final out = <String, List<MessageReaction>>{};
+    for (final r in rows) {
+      String emoji;
+      try {
+        emoji = await vault.unseal(r['enc_emoji'] as String);
+      } catch (_) {
+        continue;
+      }
+      if (emoji.isEmpty) continue;
+      final sender = r['sender_rid'] as String;
+      out.putIfAbsent(r['mid'] as String, () => []).add(MessageReaction(
+            emoji: emoji,
+            senderRid: sender,
+            mine: sender == myRid,
+            senderName: sender == myRid ? null : contacts[sender]?.name,
+          ));
+    }
+    return out;
+  }
+
+  /// Attaches reactions to a freshly loaded page (one query for the page).
+  Future<void> _attachReactions(String rid, List<ChatMessage> list) async {
+    if (list.isEmpty) return;
+    final byMid = await _loadReactions(rid, [for (final m in list) m.mid]);
+    if (byMid.isEmpty) return;
+    for (final m in list) {
+      m.reactions = byMid[m.mid] ?? [];
+    }
   }
 
   /// 8.1: looks up [mid] **inside conversation [rid]** and builds what a
@@ -1626,6 +2141,11 @@ class ChatService extends ChangeNotifier {
         await vault.db.delete('files', where: 'fid = ?', whereArgs: [fid]);
         await vault.db.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
       }
+    }
+    for (final r in doomed) {
+      await vault.db.delete('reactions',
+          where: 'rid = ? AND mid = ?',
+          whereArgs: [r['rid'] as String, r['mid'] as String]);
     }
     await vault.db.delete('messages',
         where: 'expire_at_ms > 0 AND expire_at_ms <= ?', whereArgs: [now]);
@@ -2080,6 +2600,30 @@ class ChatService extends ChangeNotifier {
       await _insertMirroredFile(rid, outgoing, inner);
       return;
     }
+    // 8.1b: a reaction mirrored from one of my devices (or replayed inbound)
+    // applies here too, credited to whoever made it.
+    if (inner.kind == 'react' || inner.kind == 'greact') {
+      final r = inner.reactionData;
+      if (r == null) return;
+      final gid = inner.data['gid'] as String?;
+      final thread = inner.kind == 'greact' ? gid : rid;
+      if (thread == null) return;
+      if (inner.kind == 'greact' && !groups.containsKey(thread)) return;
+      final target = await vault.db.query('messages',
+          columns: ['mid'],
+          where: 'rid = ? AND mid = ?',
+          whereArgs: [thread, r.target],
+          limit: 1);
+      if (target.isEmpty) return;
+      await _storeReaction(
+          rid: thread,
+          mid: r.target,
+          senderRid: outgoing ? myRid : rid,
+          emoji: r.emoji);
+      await _refreshLoadedReactions(thread, r.target);
+      notifyListeners();
+      return;
+    }
     if (inner.kind != 'text') return; // only text/file/group self-sync
     final body = inner.data['body'] as String? ?? '';
     final status = outgoing ? MsgStatus.sent : MsgStatus.delivered;
@@ -2345,7 +2889,8 @@ class ChatService extends ChangeNotifier {
   }
 
   /// Send a text to every member of [gid], each over their pairwise ratchet.
-  Future<void> sendGroupText(String gid, String body, {String? replyTo}) async {
+  Future<void> sendGroupText(String gid, String body,
+      {String? replyTo, bool forwarded = false}) async {
     final g = groups[gid];
     if (g == null || g.left) return;
     final ts = _now();
@@ -2355,6 +2900,7 @@ class ChatService extends ChangeNotifier {
       'gid': gid,
       'body': body,
       if (quoted != null) 'rt': quoted.mid,
+      if (forwarded) 'fw': true,
     });
     await vault.db.insert('messages', {
       'mid': inner.mid,
@@ -2366,6 +2912,7 @@ class ChatService extends ChangeNotifier {
       'status': MsgStatus.pending,
       'expire_at_ms': 0,
       'reply_to': quoted?.mid,
+      'forwarded': forwarded ? 1 : 0,
     });
     _appendLoaded(
         gid,
@@ -2379,6 +2926,7 @@ class ChatService extends ChangeNotifier {
           status: MsgStatus.pending,
           replyTo: quoted?.mid,
           quote: quoted,
+          forwarded: forwarded,
         ));
     notifyListeners();
     await _fanGroupInner(g, inner);
@@ -2399,7 +2947,10 @@ class ChatService extends ChangeNotifier {
 
   Future<void> sendGroupFile(
       String gid, String fileName, Uint8List bytes, String mime,
-      {bool voice = false, int durSec = 0, String? replyTo}) async {
+      {bool voice = false,
+      int durSec = 0,
+      String? replyTo,
+      bool forwarded = false}) async {
     final g = groups[gid];
     if (g == null || g.left) return;
     if (bytes.length > maxAttachmentBytes) {
@@ -2428,6 +2979,7 @@ class ChatService extends ChangeNotifier {
         if (voice) 'voice': true,
         if (durSec > 0) 'dur': durSec,
         if (quoted != null) 'rt': quoted.mid,
+        if (forwarded) 'fw': true,
       },
     );
     final keyInfo = await vault.writeBlob(km.fid, bytes);
@@ -2466,6 +3018,7 @@ class ChatService extends ChangeNotifier {
         'status': MsgStatus.pending,
         'expire_at_ms': 0,
         'reply_to': quoted?.mid,
+        'forwarded': forwarded ? 1 : 0,
       });
     });
     _appendLoaded(
@@ -2629,12 +3182,15 @@ class ChatService extends ChangeNotifier {
           'rid': gid,
           'outgoing': 0,
           'kind': 'gtext',
-          'enc_body':
-              await vault.seal(jsonEncode({'b': body, 'sn': contact.name})),
+          // 'sr' (8.1c): WHO sent it. Display names are not identity, and a
+          // group edit/delete has to be checked against the sender's rid.
+          'enc_body': await vault.seal(
+              jsonEncode({'b': body, 'sn': contact.name, 'sr': contact.rid})),
           'ts_ms': now,
           'status': MsgStatus.delivered,
           'expire_at_ms': 0,
           'reply_to': quoted?.mid,
+          'forwarded': inner.data['fw'] == true ? 1 : 0,
         },
         conflictAlgorithm: ConflictAlgorithm.ignore);
     _appendLoaded(
@@ -2644,6 +3200,7 @@ class ChatService extends ChangeNotifier {
           rid: gid,
           outgoing: false,
           kind: 'gtext',
+          forwarded: inner.data['fw'] == true,
           body: body,
           ts: now,
           status: MsgStatus.delivered,

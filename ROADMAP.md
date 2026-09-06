@@ -24,13 +24,15 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
-| 8 Message interactions | **8.1a replies ✅** · 8.1b reactions ⏳ · 8.1c edit / delete-for-everyone / forward ⏳ | `replies_test.dart` (schema-1 migration + two-client wire behaviour), `docs/vectors/v1/inner_messages.json` |
+| 8 Message interactions | **✅ complete** — 8.1a replies · 8.1b reactions · 8.1c edit / delete-for-everyone / forward | `replies_test.dart` (13 cases incl. the group authorship abuse test), `docs/vectors/v1/inner_messages.json`, PROTOCOL §6.4–6.6 |
+| 9–15 | see `docs/ROADMAP_8_15.md` | — |
 | 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search + history sync + themes ✅ · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
 
-**Next up:** 8.1 message interactions is in progress (replies ✅; reactions
-and edit/delete next). 5.2 engagement is external; 7.8c (Keychain / Windows
-Hello binding of the biometric pass key) when a Mac / Windows build can be
-verified.
+**Next up:** phase 9 (encrypted backup & restore). The full plan for phases
+8–15 — backup, multi-device, key transparency, calls, PQ identity,
+verifiability, GA — is `docs/ROADMAP_8_15.md`; the externally gated items
+(auditor engagement, Play re-upload, desktop certificates, iOS, 7.8c) are
+folded into phases 14 and 15 there.
 Externally gated items resume as soon as their gate clears: Play submission,
 Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public transparency
 log) waits for a public launch with durable infrastructure.
@@ -318,22 +320,43 @@ ignores what it does not know.
   relay and each renders the quote from its own copy, cross-chat and unknown
   ids resolve to nothing, malformed `rt` is ignored — plus additive vectors
   and the Node clean-room shape check.
-- **8.1b Reactions** ⏳ — `react`/`greact` {mid, emo}, one per sender per
-  message, sealed in the new `reactions` table.
-- **8.1c Edit, delete for everyone, forward** ⏳ — `edit`/`del` restricted to
-  the original sender (enforced per-sender in groups, where anyone could
-  otherwise claim to delete a neighbour's message), an "edited" marker, and
-  tombstones.
+- **8.1b Reactions** ✅ — `react`/`greact` carry `{rt, emo}`: the target id
+  (the same member replies use — it is deliberately not called `mid`, which
+  already names the inner's own id) and one emoji, `""` to withdraw. One
+  reaction per sender per message, so a second replaces the first and no
+  "remove" kind is needed; emoji are bounded at 32 code units with no control
+  characters, because a reaction is a badge and not a second text channel.
+  Stored per reacting rid in the sealed `reactions` table, so a group member
+  sees who reacted and nobody can overwrite a neighbour's. A reaction is not a
+  message: no row, no unread, no reordering, and it dies with its target.
+  **DoD:** the reaction group in `replies_test.dart` — round trip, replace,
+  withdraw, reload, two members reacting independently in a group, a hostile
+  peer's cross-chat and unknown targets dropped, oversized/control emoji
+  rejected at the protocol layer.
+- **8.1c Edit, delete for everyone, forward** ✅ — `edit`/`gedit` {rt, body}
+  and `del`/`gdel` {mids}. Both are *requests about the sender's own
+  messages*, and the receiver is what makes that true (§6.6): in a group,
+  where pairwise fan-out lets any member address any other, the stored
+  message records the sender's routing id (`sr` inside the sealed envelope)
+  and an edit/delete must match it — a row without one (written before 8.1c)
+  fails closed. Edits keep the original `ts` and set an "edited" marker, so
+  editing can neither reorder a conversation nor be silent; deletes wipe the
+  body, the attachment blob and chunks, and any reactions, leaving a
+  tombstone so the conversation keeps its shape and replies still resolve.
+  Forwarding sends a *new* message with an `fw` marker (schema 3 column — a
+  1:1 text row's sealed body is the bare message, with nowhere to put a
+  flag), re-keying an attachment for its new recipient. **DoD:** the
+  edit/delete group in `replies_test.dart`, including a legitimate group
+  member failing to edit *or* delete a neighbour's message over the same
+  channel the owner then successfully uses.
 
 ## Suggested near-term sprint (the next 3 sessions)
 
-1. **Quality-of-life**: 7.6 is complete (search, history sync,
-   jump-to-message, themes); pick up polish from real-device use.
-2. **Verifiability:** 5.2 — engage an auditor with the frozen v1 spec, the v2
-   extension (incl. the 7.5b re-key), ADR 0001 and the vectors as the scope
-   document.
-3. **Externally gated:** advance whichever of Play submission, desktop signing
-   or iOS has cleared its gate.
+1. **Phase 9.1–9.2** — the archive format and export/import (see
+   `docs/ROADMAP_8_15.md`).
+2. **Phase 9.3–9.5** — destination, recovery ceremony, scheduled export.
+3. **Phase 10.1** — promote the identity to an account key that signs device
+   certificates.
 
 Each is a clean working session: implement, test, screenshot/artifact, commit.
 

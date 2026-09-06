@@ -1004,6 +1004,25 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
       'body': 'me too',
       'rt': 'mid-gmsg',
     }),
+    // 8.1b: a reaction names its target and one emoji; the empty emoji
+    // withdraws it.
+    InnerMessage.reaction('mid-react', ts, target: 'mid-text', emoji: '👍'),
+    InnerMessage.reaction('mid-unreact', ts, target: 'mid-text', emoji: ''),
+    InnerMessage.reaction('mid-greact', ts,
+        target: 'mid-gmsg', emoji: '🎉', gid: 'gAAECAwQFBgcICQoL'),
+    // 8.1c: edit and delete-for-everyone name the sender's OWN messages; the
+    // receiver enforces that, the wire format merely asks.
+    InnerMessage.edit('mid-edit', ts,
+        target: 'mid-text', body: 'hello there (fixed)'),
+    InnerMessage.edit('mid-gedit', ts,
+        target: 'mid-gmsg', body: 'who is in? (fixed)',
+        gid: 'gAAECAwQFBgcICQoL'),
+    InnerMessage.deleteForEveryone('mid-del', ts,
+        targets: ['mid-text', 'mid-voice']),
+    InnerMessage.deleteForEveryone('mid-gdel', ts,
+        targets: ['mid-gmsg'], gid: 'gAAECAwQFBgcICQoL'),
+    // A forwarded message is an ordinary one with a marker.
+    InnerMessage.text('mid-fw', ts, 'passing this on')..data['fw'] = true,
   ];
   final vectors = <Map<String, Object?>>[];
   for (final m in kinds) {
@@ -1012,6 +1031,9 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
     check(back.kind == m.kind && back.mid == m.mid && back.ttlSec == m.ttlSec,
         'inner round trip');
     check(back.replyTo == m.replyTo, 'reply id round trip');
+    check(back.deleteTargets.length == m.deleteTargets.length, 'del targets');
+    check(back.reactionData?.emoji == m.reactionData?.emoji, 'reaction rt');
+    check(back.reactionData?.target == m.reactionData?.target, 'reaction tgt');
     vectors.add({
       'kind': m.kind,
       'json': utf8.decode(bytes),

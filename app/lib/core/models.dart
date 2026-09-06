@@ -73,6 +73,22 @@ class ChatMessage {
   /// and sent — see [quote] for what is actually shown.
   final String? replyTo;
 
+  /// 8.1c: when the sender last edited this message (0 = never). The
+  /// original [ts] is kept, so an edit never reorders a conversation.
+  int editedMs;
+
+  /// 8.1c: deleted for everyone — the row survives as a tombstone so the
+  /// conversation keeps its shape and replies still resolve.
+  bool deleted;
+
+  /// 8.1c: shown as "Forwarded" — set on a message that was passed on rather
+  /// than written here.
+  final bool forwarded;
+
+  /// 8.1b: reactions on this message, newest sender last. Rebuilt from the
+  /// `reactions` table whenever the thread is loaded.
+  List<MessageReaction> reactions;
+
   /// 8.1: a snapshot of the quoted message, resolved locally at load time
   /// from [replyTo]. Null when the quoted message is not (or no longer) in
   /// this device's vault, which renders as an unavailable quote.
@@ -92,6 +108,27 @@ class ChatMessage {
     this.senderName,
     this.replyTo,
     this.quote,
+    List<MessageReaction>? reactions,
+    this.editedMs = 0,
+    this.deleted = false,
+    this.forwarded = false,
+  }) : reactions = reactions ?? [];
+}
+
+/// One person's reaction to one message (8.1b).
+class MessageReaction {
+  final String emoji;
+  final String senderRid;
+  final bool mine;
+
+  /// Display name of the reacting contact; null for me or an unknown rid.
+  final String? senderName;
+
+  const MessageReaction({
+    required this.emoji,
+    required this.senderRid,
+    required this.mine,
+    this.senderName,
   });
 }
 

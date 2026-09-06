@@ -84,9 +84,11 @@ class Vault {
   ///
   /// 1 — the original store.
   /// 2 — message interactions (8.1): reply/edit/delete columns on `messages`
-  ///     and the `reactions` table. Everything the phase needs lands in one
-  ///     migration so an installed app upgrades once, not three times.
-  static const int schemaVersion = 2;
+  ///     and the `reactions` table.
+  /// 3 — 8.1c: `forwarded`, which needs a column of its own — a 1:1 text
+  ///     row's sealed body is the bare message, with no envelope to put a
+  ///     flag in, and inventing one would misparse ordinary text.
+  static const int schemaVersion = 3;
 
   // Message ids are already stored in the clear (they are the primary key),
   // so `reply_to` — a mid within the same chat — reveals nothing the row
@@ -94,7 +96,8 @@ class Vault {
   static const String _v2MessageColumns = '''
               reply_to TEXT,
               edited_ms INTEGER NOT NULL DEFAULT 0,
-              deleted INTEGER NOT NULL DEFAULT 0''';
+              deleted INTEGER NOT NULL DEFAULT 0,
+              forwarded INTEGER NOT NULL DEFAULT 0''';
 
   static const String _createReactions = '''
             CREATE TABLE reactions(
@@ -119,6 +122,10 @@ class Vault {
         await db.execute('ALTER TABLE messages ADD COLUMN $column');
       }
       await db.execute(_createReactions);
+    }
+    if (from < 3) {
+      await db.execute(
+          'ALTER TABLE messages ADD COLUMN forwarded INTEGER NOT NULL DEFAULT 0');
     }
   }
 

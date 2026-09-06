@@ -18,13 +18,25 @@ import 'util.dart';
 ///            tells a device it just dropped from an account's list that it
 ///            was removed; ignored by v1 clients
 ///
+///   'edit'   (8.1c) new text for one of the SENDER'S OWN messages
+///            { rt, body }; 'gedit' adds { gid }
+///   'del'    (8.1c) delete-for-everyone of the sender's own messages
+///            { mids:[...] }; 'gdel' adds { gid }
+///   'react'  (8.1b) reaction to one message { rt, emo } — `rt` names the
+///            target (same member as a reply, below), `emo` is the emoji or
+///            "" to withdraw; one reaction per sender per message
+///   'greact' (8.1b) the same inside a group { gid, rt, emo }
+///
 /// Message interactions (8.1) add one optional member to the content kinds
 /// ('text', 'file', 'gmsg', 'gfile'), ignored by clients that predate it:
-///   'rt'   string  the `mid` this message replies to, in the same
-///                  conversation. Only the id travels: the quoted text is
-///                  whatever the RECEIVER already has stored for that id, so a
-///                  reply can never put words in the quoted sender's mouth.
-///                  An unknown id renders as an unavailable quote.
+///   'rt'   string  the `mid` this message refers to, in the same
+///                  conversation — the message being replied to, or (on
+///                  'react'/'greact') reacted to. Only the id travels: the
+///                  quoted text is whatever the RECEIVER already has stored
+///                  for that id, so a reply can never put words in the quoted
+///                  sender's mouth. An unknown id renders as unavailable.
+///                  NB it is deliberately not called 'mid': that key already
+///                  names the inner message's own id.
 ///
 /// Device-list transparency (7.7a) also decorates EVERY inner message with two
 /// optional members, carried alongside [data] and ignored by v1 clients:
@@ -117,6 +129,74 @@ class InnerMessage {
     final v = data['rt'];
     if (v is! String || v.isEmpty || v.length > 64) return null;
     return v;
+  }
+
+  /// 8.1b: react to [target] with [emoji], or withdraw with an empty string.
+  /// One reaction per sender per message: a second one replaces the first.
+  static InnerMessage reaction(String mid, int ts,
+          {required String target, required String emoji, String? gid}) =>
+      InnerMessage(
+          kind: gid == null ? 'react' : 'greact',
+          mid: mid,
+          ts: ts,
+          data: {
+            if (gid != null) 'gid': gid,
+            'rt': target,
+            'emo': emoji,
+          });
+
+  /// The reaction payload of a 'react'/'greact', or null when the members are
+  /// missing or implausible. Emoji are bounded (a family sequence is already
+  /// 11 UTF-16 units, so 32 is generous) and must not carry control
+  /// characters — a reaction is a badge, not a channel for arbitrary text.
+  ({String target, String emoji})? get reactionData {
+    final target = replyTo; // same member, same bounds
+    final emo = data['emo'];
+    if (target == null) return null;
+    if (emo is! String || emo.length > 32) return null;
+    for (final unit in emo.codeUnits) {
+      if (unit < 0x20 || unit == 0x7f) return null;
+    }
+    return (target: target, emoji: emo);
+  }
+
+  /// 8.1c: replacement text for one of the sender's own messages. The
+  /// receiver enforces authorship — this is a request, not an instruction.
+  static InnerMessage edit(String mid, int ts,
+          {required String target, required String body, String? gid}) =>
+      InnerMessage(
+          kind: gid == null ? 'edit' : 'gedit',
+          mid: mid,
+          ts: ts,
+          data: {
+            if (gid != null) 'gid': gid,
+            'rt': target,
+            'body': body,
+          });
+
+  /// 8.1c: delete-for-everyone of the sender's own messages.
+  static InnerMessage deleteForEveryone(String mid, int ts,
+          {required List<String> targets, String? gid}) =>
+      InnerMessage(
+          kind: gid == null ? 'del' : 'gdel',
+          mid: mid,
+          ts: ts,
+          data: {
+            if (gid != null) 'gid': gid,
+            'mids': targets,
+          });
+
+  /// The ids a 'del'/'gdel' asks to remove: strings of plausible id length,
+  /// capped so one envelope cannot ask for unbounded work.
+  List<String> get deleteTargets {
+    final v = data['mids'];
+    if (v is! List) return const [];
+    final out = <String>[];
+    for (final e in v) {
+      if (e is String && e.isNotEmpty && e.length <= 64) out.add(e);
+      if (out.length >= 256) break;
+    }
+    return out;
   }
 
   /// Cheap check of the kind without a full parse: [toBytes] always writes
