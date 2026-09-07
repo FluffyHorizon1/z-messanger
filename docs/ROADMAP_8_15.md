@@ -209,12 +209,16 @@ forges identities even though it cannot read past traffic.
   ML-DSA-65; both signatures required, verification fails if either fails.
 - **13.2 contact code v3** — `zc3.` carrying hybrid account keys and hybrid
   device certs; v2 codes still resolve with a "classical identity" marker.
-  **Open problem to decide in the phase:** ML-DSA-65 public keys are ~2 KB and
-  signatures ~3.3 KB, so a code carrying a hybrid account key plus hybrid
-  device certs does not fit a scannable QR — and scanning is the core
-  onboarding flow. Options: a compact reference in the QR with the PQ half
-  fetched over the resulting session, a multi-part QR, or classical-in-QR with
-  PQ upgrade on first contact. Pick one before 13.1 hardens the format.
+  **Open problem — now decided: see `adr/0003-pq-identity-qr.md`.** Measured,
+  a one-device v3 code is 7 373 B against a 2 953 B absolute QR ceiling, so it
+  does not fit by a factor of nine against what actually scans. The QR carries
+  a 32-byte **commitment** to the PQ half (not a "reference", which binds
+  nothing and collapses into trust-on-first-use); the ML-DSA keys travel
+  in-band and are checked against it, mismatch being a hard failure. The ADR
+  also found that shipping hybrid certs in a device list moves it from the
+  1 024-byte padding bucket to 16 384 or 65 536, telling the relay when an
+  account changes its device set and roughly how many devices it has — 13.1
+  must not ship that.
 - **13.3 safety number v2** — derived from both key halves. A visible, one-time
   change for every user, so it needs deliberate re-verification UX.
 - **13.4 spec + vectors** — PROTOCOL §18 for v3, a v3 vector suite with an
@@ -385,3 +389,15 @@ direction; the phases, their order and both ordering arguments stand.
    then actually reaching the new device, since the device list only matters
    if it changes the fan-out. The relay is untouched: its last commit predates
    the phase.
+
+15. **13.2 — the QR problem is decided, and it uncovered a padding leak**
+   (`adr/0003-pq-identity-qr.md`). The roadmap's "compact reference in the QR"
+   was unsafe as written: a reference binds nothing, so it degrades to
+   trust-on-first-use, where an attacker present at the first exchange
+   substitutes their own ML-DSA key and passes every hybrid check afterwards.
+   It is a **commitment**. Separately, hybrid device certs would push a
+   device-list update out of the 1 024-byte bucket that ordinary chat occupies
+   and into one almost nothing else uses — a new metadata leak introduced by a
+   phase meant to strengthen authentication, and the opposite direction from
+   ADR-0001's T1–T3. Same fix, applied in-band: the list carries commitments,
+   the PQ halves travel separately.
