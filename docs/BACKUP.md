@@ -266,17 +266,91 @@ Three independent checks run in CI:
 
 ---
 
-## 8. Status
+## 8. Destination, recovery and schedule
 
-Phases 9.1 and 9.2 (format, export, import) are implemented and tested. Still
-to come in phase 9:
+### 8.1 Two steps, not one
 
-* **9.3** destination — user‑chosen local file first.
-* **9.4** recovery UX — code generation and confirmation ceremony, restore
-  flow, and the honest framing: lose the code and the archive is gone, because
-  there is no server‑side path to be compelled.
-* **9.5** optional scheduled re‑export, off by default.
-* **`.zid` folded into this format.** The existing identity‑only backup stays
-  for now; it becomes a subset of `.zbk` when the restore UI lands in 9.4, so
-  there is one archive format and one unlock ceremony rather than two artifacts
-  a user could pick between in a crisis.
+Taking a backup and handing it to the user are separate, because they fail
+differently and only the first has to succeed for the history to be safe.
+
+1. **Write.** The archive is streamed into the app's own backup folder
+   (`<vault>/backups/`). No dialog, no user present, and neither the archive
+   nor any attachment is ever held whole in memory. It is built under a
+   `.partial` name and renamed only after the terminator is written, so an
+   interrupted run leaves nothing a later restore could mistake for a
+   complete archive.
+2. **Hand over.** The finished file is copied wherever the user chooses.
+
+A backup that was taken but not yet exported is still a backup: it survives an
+app update, though not a lost phone. The UI says which of the two you have.
+Only the two newest archives are kept, plus the previous one as a spare, so an
+automatic schedule cannot fill the device.
+
+### 8.2 Who writes the file
+
+`FilePicker.saveFile` has three incompatible contracts and no way to ask which
+one you are on: Android and iOS **require** the bytes and write the file
+themselves; macOS **throws** if given any; Linux and Windows return a path and
+expect the caller to write. `lib/core/file_export.dart` holds that rule once,
+as a property of the platform, and callers say what they want rather than how
+to get it. On desktop an existing file is streamed to its destination; on
+mobile the platform forces a full read, which is why there is a size ceiling
+above which the archive stays in the app folder and the UI says so.
+
+### 8.3 The ceremony
+
+A generated code is shown once, then must be typed back before the archive is
+written. That is the only moment at which a mis-transcribed code is still
+recoverable, and the parser is forgiving of everything except not having
+written it down — case, spacing, dashes and the I/1, O/0 confusions all pass.
+
+The screen states the consequence rather than burying it: nobody can recover
+the code, including us, and that is the same property that means nobody can be
+compelled to produce the messages either.
+
+### 8.4 Restoring
+
+The user picks a file; Z works out what it is. Both formats begin with a JSON
+object, so identification costs a short read and **no key derivation** — which
+matters, because guessing wrong would mean running Argon2id against the wrong
+secret and then reporting a failure that could not say what went wrong.
+
+`.zid`, the older identity-only backup, is **folded into this format in the
+direction that matters**: Z no longer writes one, and reads one forever. A
+user replacing a lost phone should not have to know which artifact they kept,
+and the restore screen says up front whether the file carries history or only
+an identity.
+
+### 8.5 Automatic backup (off by default)
+
+Off is the honest default: a backup the user did not ask for is a copy of
+their history they do not know exists.
+
+Turning it on stores the recovery code, sealed, in the vault — an unattended
+run cannot stop to ask for one. That is a real trade and worth stating: anyone
+who can open the vault can then open every archive this device wrote. But
+anyone who can open the vault already has the plaintext history, so the
+archive tells them nothing new. What the code protects is the archive **once
+it has left the device** — on a stick, in a sync folder, in someone's cloud
+storage — and that is untouched by keeping a copy behind the vault's own
+encryption. Turning the schedule off erases the stored code.
+
+The user is asked to type the code when enabling, so the stored copy is one
+they actually hold rather than one they have already lost.
+
+---
+
+## 9. Status
+
+Phase 9 is complete: format and streaming export/import (9.1, 9.2),
+destination and the cross-platform save layer (9.3), the recovery ceremony and
+the unified restore path (9.4), and the optional schedule (9.5).
+
+Still open, and deliberately so:
+
+* **iOS.** The backup folder and the vault must both be excluded from iCloud
+  backup, and `flutter_secure_storage` must not let the device secret sync to
+  iCloud Keychain. Tracked with the rest of the iOS work.
+* **A cloud destination** remains user-supplied storage the client writes
+  finished ciphertext into. The relay never stores or proxies a backup; that
+  is an anti-goal, not an omission.

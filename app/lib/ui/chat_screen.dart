@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import 'package:record/record.dart';
 
 import '../core/chat_service.dart';
+import '../core/file_export.dart';
 import '../core/models.dart';
 import '../core/voice.dart';
 import 'contact_info_screen.dart';
@@ -1285,15 +1286,12 @@ class _FileBodyState extends State<_FileBody> {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final bytes = await svc.readAttachment(fid);
-      final path = await FilePicker.platform.saveFile(
+      // Who writes the bytes differs per platform; FileExport knows.
+      final path = await FileExport.saveBytes(
         dialogTitle: 'Save decrypted copy',
         fileName: name,
         bytes: bytes,
       );
-      if (path != null && !Platform.isAndroid) {
-        // Desktop platforms return a path but do not write the bytes.
-        await File(path).writeAsBytes(bytes, flush: true);
-      }
       if (path != null) {
         messenger.showSnackBar(
             const SnackBar(content: Text('Saved (decrypted copy)')));

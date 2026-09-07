@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import 'backup_store.dart';
 import 'device_sync.dart';
 import 'models.dart';
 import 'relay_url.dart';
@@ -184,7 +185,24 @@ class ChatService extends ChangeNotifier {
     svc._sweeper =
         Timer.periodic(const Duration(seconds: 20), (_) => svc._sweep());
     transport.start();
+    // 9.5: a scheduled backup, if the user asked for one. Off by default, in
+    // which case this costs two key-value reads and stops. Unawaited and
+    // failure-swallowing on purpose — a backup is never worth delaying or
+    // breaking the app's start over.
+    unawaited(svc._runScheduledBackup());
     return svc;
+  }
+
+  Future<void> _runScheduledBackup() async {
+    try {
+      final sched = BackupSchedule(vault);
+      if (await sched.intervalDays() <= 0) return; // the common case
+      await sched.runIfDue(await BackupStore.open(vault));
+    } catch (_) {
+      // A failed automatic backup is reported the next time the user opens
+      // the backup screen (which shows when the last one actually ran), not
+      // by interrupting whatever they were doing.
+    }
   }
 
   bool _disposed = false;

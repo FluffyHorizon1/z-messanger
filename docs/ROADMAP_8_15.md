@@ -77,13 +77,13 @@ That is the whole case for the phase, and it is enough on its own.
   memory; import with forward-compatible schema migration (an archive written
   at schema 3 must restore on schema 5). Restore builds a **fresh vault** with
   its own device secret and master key: nothing device-bound travels.
-- **9.3 destination** — user-chosen local file first. Any cloud target is
+- **9.3 destination** *(done — `file_export.dart`, `backup_store.dart`)* — user-chosen local file first. Any cloud target is
   user-supplied storage the client writes ciphertext to; the relay never
   stores or proxies backups. That is an explicit anti-goal, not an omission.
-- **9.4 recovery UX** — code generation and confirmation ceremony, restore
+- **9.4 recovery UX** *(done — `backup_screen.dart`, `restore.dart`)* — code generation and confirmation ceremony, restore
   flow, and the honest framing: lose the code and the archive is gone, because
   there is no server-side path to be compelled.
-- **9.5 scheduled backup** — optional periodic re-export, off by default.
+- **9.5 scheduled backup** *(done — `BackupSchedule`)* — optional periodic re-export, off by default.
 
 **Exit:** an archive taken on device A restores every message, contact, group
 and attachment on a wiped device B, and B then re-establishes sessions and
@@ -350,3 +350,16 @@ direction; the phases, their order and both ordering arguments stand.
    now carry their own secret; the replaced session is pinned out of the
    outbound path but stays readable. Covered in both rid orderings, since both
    the pinning and the PQ roles turn on that comparison.
+
+11. **9.3 — the save-dialog contract was already broken, on macOS.** The app
+   passed `bytes` to `FilePicker.saveFile` on every platform and then wrote
+   again unless it was on Android. macOS throws outright when given bytes, so
+   saving an attachment or an identity backup was broken on a target that
+   already ships, and iOS would have written every file twice the moment that
+   target existed. The rule now lives in `file_export.dart` as a property of
+   the platform, checked for all five from a Linux test runner.
+12. **9.5 — automatic backup stores the recovery code, and says so.** An
+   unattended run cannot ask for a code. The trade is defensible because
+   anyone who can open the vault already has the plaintext history, while the
+   code protects the archive after it leaves the device — but it is a trade,
+   so the UI states it and disabling the schedule erases the code.

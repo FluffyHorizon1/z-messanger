@@ -1,10 +1,11 @@
+import 'dart:io';
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:z_protocol/z_protocol.dart';
 
-import '../core/backup.dart';
+import '../core/restore.dart';
 import '../core/relay_url.dart';
 import '../core/vault.dart';
 import 'link_device_screen.dart';
@@ -82,57 +83,90 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
   }
 
+  /// One restore path for both artifacts (9.4). The user picks a file; we
+  /// work out whether it is a `.zbk` archive or the older `.zid` identity
+  /// backup and ask for the matching secret. Nobody should have to know
+  /// which kind of file they kept, least of all while replacing a lost phone.
   Future<void> _restore() async {
     final picked = await FilePicker.platform.pickFiles(
-      dialogTitle: 'Choose your .zid backup',
-      withData: true,
+      dialogTitle: 'Choose your Z backup',
+      withData: false,
     );
-    final data = picked?.files.single.bytes;
-    if (data == null) return;
+    final path = picked?.files.single.path;
+    if (path == null) return;
+    final file = File(path);
+    final preview = await Restore.identify(file);
     if (!mounted) return;
-    final pass = await _askPassphrase(context);
-    if (pass == null || pass.isEmpty) return;
+    if (preview.kind == BackupKind.unknown) {
+      setState(() => _error = 'That file is not a Z backup.');
+      return;
+    }
+    final secret = preview.kind == BackupKind.archive
+        ? await _askRecoveryCode(context)
+        : await _askPassphrase(context);
+    if (secret == null || secret.isEmpty) return;
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      final restored = await BackupFile.import(data, pass);
-      final idJson = (restored['identity'] as Map).cast<String, Object?>();
-      await widget.vault.kvPut('identity', jsonEncode(idJson));
-      await widget.vault
-          .kvPut('display_name', restored['name'] as String? ?? 'Me');
-      await widget.vault
-          .kvPut('server_url', _server.text.trim(), sensitive: false);
-      // Re-insert contacts (sessions start fresh; that is expected).
-      final contacts = (restored['contacts'] as List?) ?? [];
-      for (final c in contacts) {
-        final rec = (c as Map).cast<String, Object?>();
-        final bundle = ContactBundle.fromJson(
-            (rec['bundle'] as Map).cast<String, Object?>());
-        if (!await bundle.verify()) continue;
-        final rid = await bundle.routingId();
-        await widget.vault.db.insert(
-            'contacts',
-            {
-              'rid': rid,
-              'enc_bundle':
-                  await widget.vault.seal(jsonEncode(bundle.toJson())),
-              'enc_name':
-                  await widget.vault.seal(rec['name'] as String? ?? 'Unknown'),
-              'ttl_seconds': (rec['ttl'] as num?)?.toInt() ?? 0,
-              'verified': (rec['verified'] as bool? ?? false) ? 1 : 0,
-              'created_ms': DateTime.now().millisecondsSinceEpoch,
-            },
-            conflictAlgorithm: null);
-      }
+      await Restore.run(
+        vault: widget.vault,
+        file: file,
+        secret: secret,
+        kind: preview.kind,
+        serverUrl: _server.text.trim(),
+      );
       await widget.onDone();
-    } catch (e) {
+    } on FormatException catch (e) {
+      // The message is the useful part here: a mistyped recovery code is
+      // caught by its checksum and says so, which a generic "wrong secret"
+      // would throw away.
       setState(() {
         _busy = false;
-        _error = 'Restore failed: wrong passphrase or corrupt file.';
+        _error = e.message;
+      });
+    } catch (_) {
+      setState(() {
+        _busy = false;
+        _error = 'Restore failed: wrong secret, or the file is damaged.';
       });
     }
+  }
+
+  Future<String?> _askRecoveryCode(BuildContext context) {
+    final ctrl = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Recovery code'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+                'The 25-character code you saved when you made this backup.'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              autocorrect: false,
+              textCapitalization: TextCapitalization.characters,
+              decoration: const InputDecoration(
+                  hintText: 'ZBK-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX'),
+              onSubmitted: (v) => Navigator.pop(ctx, v),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctrl.text),
+              child: const Text('Restore')),
+        ],
+      ),
+    );
   }
 
   Future<String?> _askPassphrase(BuildContext context) {
@@ -267,7 +301,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 const SizedBox(height: 12),
                 OutlinedButton(
                   onPressed: _busy ? null : _restore,
-                  child: const Text('Restore from backup (.zid)'),
+                  child: const Text('Restore from a backup'),
                 ),
                 const SizedBox(height: 8),
                 TextButton(

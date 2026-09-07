@@ -1,17 +1,16 @@
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/app_lock.dart';
-import '../core/backup.dart';
 import '../core/chat_service.dart';
 import '../core/models.dart';
 import '../core/prefs.dart';
 import '../core/push_service.dart';
 import '../core/transport.dart';
 import '../core/vault.dart';
+import 'backup_screen.dart';
 import 'link_device_screen.dart';
 import 'theme.dart';
 
@@ -275,12 +274,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (v) => _toggleBiometricUnlock(context, svc, lock, v),
             ),
           ListTile(
-            leading: const Icon(Icons.save_alt),
-            title: const Text('Export identity backup (.zid)'),
+            leading: const Icon(Icons.enhanced_encryption),
+            title: const Text('Backup'),
             subtitle: const Text(
-                'Identity keys + contact list, passphrase-encrypted. No messages.',
+                'Everything — messages, contacts, groups, attachments — '
+                'encrypted with a recovery code only you hold.',
                 style: TextStyle(fontSize: 12)),
-            onTap: () => _exportBackup(context, svc),
+            onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const BackupScreen())),
           ),
           const _SectionHeader('Developer'),
           SwitchListTile(
@@ -356,94 +357,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Future<void> _exportBackup(BuildContext context, ChatService svc) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final pass = await _newPassphrase(context);
-    if (pass == null) return;
-    final records = <Map<String, Object?>>[
-      for (final c in svc.contacts.values)
-        {
-          'bundle': c.bundle.toJson(),
-          'name': c.name,
-          'ttl': c.ttlSec,
-          'verified': c.verified,
-        }
-    ];
-    final bytes = await BackupFile.export(
-      identity: svc.identity,
-      displayName: svc.displayName,
-      contactRecords: records,
-      passphrase: pass,
-    );
-    final path = await FilePicker.platform.saveFile(
-      dialogTitle: 'Save identity backup',
-      fileName: 'my-identity.zid',
-      bytes: bytes,
-    );
-    if (path != null && !Platform.isAndroid) {
-      await File(path).writeAsBytes(bytes, flush: true);
-    }
-    if (path != null) {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('Backup saved. Store it somewhere safe.')));
-    }
-  }
-
-  Future<String?> _newPassphrase(BuildContext context) async {
-    final a = TextEditingController();
-    final b = TextEditingController();
-    String? error;
-    return showDialog<String>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) => AlertDialog(
-          title: const Text('Backup passphrase'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: a,
-                obscureText: true,
-                autofocus: true,
-                decoration: const InputDecoration(
-                    labelText: 'Passphrase (12+ characters)'),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: b,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Repeat'),
-              ),
-              if (error != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child:
-                      Text(error!, style: TextStyle(color: context.z.danger)),
-                ),
-            ],
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel')),
-            FilledButton(
-              onPressed: () {
-                if (a.text.length < 12) {
-                  setState(() => error = 'Use at least 12 characters.');
-                } else if (a.text != b.text) {
-                  setState(() => error = 'Passphrases do not match.');
-                } else {
-                  Navigator.pop(ctx, a.text);
-                }
-              },
-              child: const Text('Encrypt & save'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   static String _lockAfterLabel(int sec) => switch (sec) {
         0 => 'Immediately',
         60 => '1 minute',
@@ -499,6 +412,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (sec != null) await lock.setLockAfter(sec);
+  }
+
+  Future<String?> _newPassphrase(BuildContext context) async {
+    final a = TextEditingController();
+    final b = TextEditingController();
+    String? error;
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: const Text('Backup passphrase'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: a,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                    labelText: 'Passphrase (12+ characters)'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: b,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Repeat'),
+              ),
+              if (error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child:
+                      Text(error!, style: TextStyle(color: context.z.danger)),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () {
+                if (a.text.length < 12) {
+                  setState(() => error = 'Use at least 12 characters.');
+                } else if (a.text != b.text) {
+                  setState(() => error = 'Passphrases do not match.');
+                } else {
+                  Navigator.pop(ctx, a.text);
+                }
+              },
+              child: const Text('Encrypt & save'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _toggleBiometricUnlock(
