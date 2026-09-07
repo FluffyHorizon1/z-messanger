@@ -1,7 +1,7 @@
 name: zapp
 description: "Z — zero-trust end-to-end encrypted messenger. Messages live only on your devices."
 publish_to: 'none'
-version: 1.9.9+15
+version: 2.0.0+16
 
 environment:
   sdk: ^3.5.0
