@@ -682,7 +682,8 @@ n          = u32be(sasBytes[0..4]) AND 0x7FFFFFFF;   SAS = decimal(n mod 1000000
 enroll (existing → new) : { "k":"enroll", "blob":b64(sealed) }
 sealed     = nonce(12) || ct || mac(16)  where (ct, mac) = ChaCha20Poly1305(channelKey, nonce, aad = ∅, utf8(enrollment))
 enrollment = JSON{ "acct":b64(accountEdPub), "root"?:b64(accountEdSeed), "name":string|null,
-                   "cert":deviceCert(new device), "hostcert":deviceCert(existing device),
+                   "pqpub"?:b64(accountMlDsaPub), "cert":deviceCert(new device),
+                   "hostcert":deviceCert(existing device),
                    "contacts":[ AccountBundleJSON... ] }
 ```
 
@@ -691,6 +692,12 @@ machine‑in‑the‑middle sees a different ephemeral on each leg and therefore
 different SAS on each screen. The new device MUST verify that `cert` carries
 its own keys and verifies (§3.1) under `acct` before installing. `root` is
 present only if the host chose to let the new device enroll further devices.
+`pqpub` is the account's ML-DSA-65 **public** key (§18.1), present when the
+host has one: it is public, so it travels even where the account root does
+not, and without it the new device would have no account post-quantum
+identity to speak for (§18.2). It is absent from an enrollment performed by a
+build that predates v3, and a device that receives none MUST behave as a
+classical identity rather than deriving a key of its own.
 `AccountBundleJSON` is `{ "acct", "devs", "name" }` (§3.3 without the wrapper).
 
 ## 11. Groups
@@ -1096,16 +1103,41 @@ ceiling and nearer 800 bytes for a symbol that scans reliably.
 So the code carries a **commitment** to the post‑quantum half, not the half:
 
 ```
-zc3.<base64url(json)>
-json = { "v":3, "ed":b64(ed_pub), "x":b64(x_pub), "sig":b64(binding_sig),
-         "pqc":b64(pq_commit), "name"?:string }
 pq_commit = SHA-256( utf8("z-pqid-v3:") || ml_dsa_public_key )     32 bytes
 ```
 
 `ed`, `x` and `sig` are exactly the v1 fields with the same meanings (§2.4),
-so the classical view of a v3 code is a v1 bundle and every existing path —
-routing id, handshake, sessions — consumes it unchanged. The encoded code is
-~370 bytes.
+so the classical view is a v1 bundle and every existing path — routing id,
+handshake, sessions — consumes it unchanged. The encoded code is ~370 bytes.
+
+**The commitment is carried as an optional member of a v1 code, and that is
+what clients emit:**
+
+```
+zc1.<base64url(json)>
+json = { "v":1, "ed":…, "x":…, "sig":…, "pqc":b64(pq_commit), "name"?:string }
+```
+
+§14 is explicit that a new optional JSON member is compatible evolution and
+does **not** warrant a version bump — only a change to bytes an existing
+implementation would compute differently does. The commitment changes nothing
+anyone computes; it is pure addition, and a client that predates v3 reads the
+classical identity and ignores it. A distinct prefix, by contrast, is a flag
+day: every such client rejects an unknown prefix outright, so emitting one
+would hand out codes most people cannot scan in order to convey information
+they would have ignored.
+
+An explicit form also exists and MUST be accepted:
+
+```
+zc3.<base64url(json)>          json as above but "v":3, "pqc" REQUIRED
+```
+
+A `zc3.` code without `pqc` is a downgrade attempt — it announced a version
+that requires one — and MUST be refused. A `zc1.` code without `pqc` is simply
+a classical identity. Clients SHOULD emit the `zc1.` form; the `zc3.` form is
+specified for the case where the prefix itself must eventually signal
+something.
 
 The ML‑DSA public key is delivered **inside the ratchet**, as an additive
 inner message (§6):
@@ -1132,7 +1164,32 @@ outright — if the peer has not added us yet there is no session to decrypt it
 key on inbound traffic, bounded (the reference client: three attempts per
 run), and a side receiving a `pqid` SHOULD answer with its own. Between them
 the exchange completes whichever side spoke first and whether or not the
-opening message survived.
+opening message survived. Two people who have added each other and then said
+nothing stay classical, correctly and on both sides, until one of them speaks.
+
+**Multi-device rules.** An account has ONE post-quantum identity, and every
+device of it must reach the same view of every contact, or the safety number
+(§18.5) differs between a person's own phone and laptop — a mismatch that
+reads to the user exactly like a key substitution.
+
+* The account's ML-DSA **public** key is part of enrollment (§10, `pqpub`),
+  so a linked device holds the account's key rather than deriving one of its
+  own. A device enrolled by a build that predates v3 has none; it MUST show
+  the classical identity rather than invent one.
+* A `pqid` MUST be offered to a contact again when that contact's device list
+  gains a device (§3.4). The first offer went out before that device existed
+  and cannot have reached it; without a re-offer it stays classical
+  indefinitely while its siblings are hybrid.
+* The exchange MUST run on the non-primary device path as well as the primary
+  one: a contact's linked device runs its own sessions and holds its own
+  commitment, so a `pqid` arriving from one is checked and answered like any
+  other.
+* A device emits a commitment only when the classical identity in the code it
+  hands out is the account identity the commitment binds. Where it is not —
+  a linked device, whose code names its own key (§2.4) — the code is emitted
+  without `pqc`. Binding one identity's post-quantum key to another
+  identity's classical key would produce a code whose `sig` does not verify,
+  and is the substitution the commitment exists to prevent, self-inflicted.
 
 This is a **commitment, not a reference**. A lookup identifier — a URL, a key
 id — binds nothing, and a code carrying one degrades to trust‑on‑first‑use,
@@ -1231,16 +1288,19 @@ either side links or drops a device.
 
 ### 18.6 The compatibility window
 
-A `zc3.` prefix is simply unparseable to an older build, so emission cannot
-lead. The window is:
+Because the commitment rides in a v1 code (§18.2), there is **no flag day**:
+a build in the field reads the emitted code as the v1 identity it also is.
+Emission was therefore switched on in the same release that added acceptance,
+rather than waiting a version for the population to catch up.
 
-1. **This release** accepts `zc1.` and `zc3.` codes, derives and stores a
-   post‑quantum identity, exchanges `pqid`, and keeps **emitting** the code
-   format it emitted before. `ChatService.myContactCodeV3` exists and is not
-   yet what the UI hands out.
-2. **The next** switches emission to `zc3.` once enough of the population can
-   read one.
-3. **Later**, v2 emission is dropped.
+What an older client loses is only what it could never have used: it does not
+see the commitment, so it treats the contact as classical — which is exactly
+what it would have done anyway. Nothing it does breaks, and nothing it shows
+is wrong.
+
+The `zc3.` form remains accepted and unemitted. Switching to it later is a
+deliberate flag day and should only be taken if the prefix itself needs to
+carry meaning.
 
 An account's post‑quantum half is a 32‑byte seed sealed in the vault and
 carried in the backup archive (§9). A restore that lost it would derive a

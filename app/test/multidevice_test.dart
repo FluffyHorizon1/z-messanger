@@ -99,6 +99,9 @@ void main() {
     await vault.kvPut('identity', jsonEncode(devId.toJson()));
     final enrolled = await AccountIdentity.fromEnrollment(
       accountEdPub: account.accountEdPub,
+      // Forwarded exactly as `hostDeviceLink` does: public, so it travels
+      // even though the account root does not.
+      accountMlPub: account.accountMlPub,
       deviceEdSeed: devId.edSeed,
       deviceXSeed: devId.xSeed,
       deviceId: 'laptop',
@@ -152,6 +155,15 @@ void main() {
     if (carolFirst) {
       await carol.addContactFromCode(await phone.myContactCode());
       await phone.addContactFromCode(await carol.myContactCode());
+      // Adding each other opens no session on its own: only the designated
+      // initiator greets, and if it greeted before the other side had added
+      // it, that greeting was dropped. That is by design — nothing is lost,
+      // and until someone speaks both sides honestly show a CLASSICAL
+      // identity (ADR 0003, "a window where the PQ half is unknown"). So
+      // exchange a word, as two people who have just swapped codes do,
+      // rather than waiting on a convergence the protocol never promised.
+      await carol.sendText(phone.myRid, 'hi');
+      await phone.sendText(carol.myRid, 'hi back');
     }
 
     final laptopId = await ZIdentity.generate();
@@ -159,8 +171,17 @@ void main() {
         deviceEdPub: laptopId.edPub,
         deviceXPub: laptopId.xPub,
         deviceId: 'laptop');
+    // Enrollment as `hostDeviceLink` performs it: the account's post-quantum
+    // PUBLIC key rides along, so both devices speak for one identity. Without
+    // it the laptop would be honest but classical, and the two devices would
+    // show different safety numbers for the same contact.
+    final myMl = await phone.pqAccountPublic();
     final laptop = await makeLinked(
-        'laptop', laptopId, account, laptopCert, account.deviceCert);
+        'laptop',
+        laptopId,
+        myMl == null ? account : account.withAccountMlPub(myMl),
+        laptopCert,
+        account.deviceCert);
     await waitUntil(() => laptop.transport.isConnected,
         what: 'laptop connected');
     return (
@@ -181,16 +202,36 @@ void main() {
     // It must be anchored to the account key, which is stable by design,
     // never to a per-device key.
     final s = await linkedPair();
+    // Let the v3 identity exchange settle first. Codes now carry a
+    // post-quantum commitment (§18.2), so a contact's number moves ONCE when
+    // the key arrives and the identity becomes hybrid. That is a different
+    // event from linking a device, and straddling it would test nothing —
+    // the invariant here is that a DEVICE change moves nothing, at whatever
+    // assurance level the identity has reached.
+    await waitUntil(
+        () => s.carol.assuranceWith(s.phone.myRid) == IdentityAssurance.hybrid,
+        what: 'carol holds the account post-quantum key');
     final before = await s.carol.safetyNumberWith(s.phone.myRid);
 
     // Anchoring to the account key must not MOVE the number for an account
     // that has never linked anything, or every already-verified contact in
     // the wild would suddenly read as compromised. On a device holding the
     // root the account key is the original identity key, so the value is
-    // byte-identical to the pre-multi-device formula.
-    expect(before,
+    // byte-identical to the pre-multi-device formula — for the CLASSICAL
+    // number, which is what a contact who has not upgraded still computes.
+    // (`before` is the v3 number here, since the identity has settled to
+    // hybrid; the property being pinned is that anchoring to the account key
+    // moved nothing, not that the two versions agree — they must not.)
+    expect(
         await safetyNumber(s.phone.identity.edPub, s.carol.identity.edPub),
+        await safetyNumber((await s.phone.accountIdentity()).accountEdPub,
+            (await s.carol.accountIdentity()).accountEdPub),
         reason: 'a single-device account keeps the number it always had');
+    expect(
+        before,
+        isNot(
+            await safetyNumber(s.phone.identity.edPub, s.carol.identity.edPub)),
+        reason: 'and the v3 number is deliberately a different value');
 
     await s.phone.addMyDevice(s.laptopCert);
     await s.laptop.addContactFromCode(await s.carol.myContactCode());
@@ -202,7 +243,14 @@ void main() {
         reason: 'linking a device must not look like a new identity');
 
     // And both of the account's own devices show Carol the same number, so a
-    // user who verified on one can check on the other.
+    // user who verified on one can check on the other. The laptop reaches
+    // that view asynchronously — Carol's post-quantum key was offered to this
+    // account before the laptop existed, so it is re-offered when the device
+    // appears on the list (§18.2). Converging is the requirement; converging
+    // instantly is not.
+    await waitUntil(
+        () => s.laptop.assuranceWith(s.carol.myRid) == IdentityAssurance.hybrid,
+        what: 'the laptop reaches the same view of carol as the phone');
     expect(await s.laptop.safetyNumberWith(s.carol.myRid),
         await s.phone.safetyNumberWith(s.carol.myRid),
         reason: 'one account, one safety number, whichever device shows it');
@@ -211,6 +259,94 @@ void main() {
     await s.phone.removeMyDevice(s.laptopCert);
     expect(await s.carol.safetyNumberWith(s.phone.myRid), before,
         reason: 'revoking a device must not look like a new identity either');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test(
+      'a linked device speaks for the account post-quantum identity, never '
+      'one of its own', () async {
+    // The phase-10 bug, in its v3 form. A linked device that derived a
+    // post-quantum key of its own would be a SECOND identity wearing the
+    // account's name: it would show a different safety number for the same
+    // contact, and a contact scanning it would be told to expect a key the
+    // account cannot sign with. The account key is public, so it travels at
+    // enrollment even though the account root does not.
+    final phoneId = await ZIdentity.generate();
+    final phone = await makePrimary('acctphone', phoneId);
+    await waitUntil(() => phone.transport.isConnected, what: 'connected');
+    final account = await phone.accountIdentity();
+    final accountMl = (await phone.pqIdentity())!.publicKey.mlPub;
+
+    final laptopId = await ZIdentity.generate();
+    final cert = await account.signDeviceCert(
+        deviceEdPub: laptopId.edPub,
+        deviceXPub: laptopId.xPub,
+        deviceId: 'laptop');
+    final laptop = await makeLinked('acctlaptop', laptopId,
+        account.withAccountMlPub(accountMl), cert, account.deviceCert);
+    await waitUntil(() => laptop.transport.isConnected, what: 'laptop up');
+
+    // The laptop holds no account root, so it cannot derive a key pair…
+    expect(await laptop.pqIdentity(), isNull);
+    // …but it knows the account's public half, and it is the SAME one. This
+    // is what makes both devices show one safety number (§18.5).
+    expect(await laptop.pqAccountPublic(), accountMl);
+    expect(await phone.pqAccountPublic(), accountMl);
+
+    // The code the ROOT hands out carries the commitment.
+    final fromPhone = await scanContactCode(await phone.myContactCode());
+    expect(fromPhone.assurance, IdentityAssurance.pendingPostQuantum);
+    expect(
+        fromPhone.v3!.pqCommit,
+        await HybridPublicKey(edPub: account.accountEdPub, mlPub: accountMl)
+            .pqCommitment());
+
+    // The laptop's does NOT — and that is the point of this assertion, not an
+    // oversight. A contact code carries the classical identity of the device
+    // showing it (v1 has always worked this way), so on a linked device the
+    // commitment would bind the ACCOUNT's post-quantum key to the LAPTOP's
+    // Ed25519 key: two identities glued together, with a binding signature
+    // that does not verify. Emitting no commitment is the honest answer; a
+    // made-up one is the dangerous answer.
+    final laptopCode = await laptop.myContactCode();
+    final fromLaptop = await scanContactCode(laptopCode);
+    expect(fromLaptop.assurance, IdentityAssurance.classical);
+    expect(fromLaptop.v3, isNull);
+    expect(fromLaptop.classical.edPub, laptopId.edPub,
+        reason: 'a code names the device that shows it — ROADMAP 13.6');
+
+    // And the refusal is structural, not a check this call site happens to
+    // make: building the code the laptop is NOT allowed to build throws.
+    expect(
+        () => ContactBundleV3.forIdentity(laptopId,
+            HybridPublicKey(edPub: account.accountEdPub, mlPub: accountMl)),
+        throwsA(isA<FormatException>()));
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a device linked before v3 stays honest rather than inventing a key',
+      () async {
+    // An enrollment performed by a build that predates v3 carries no account
+    // post-quantum key. Such a device must show the classical number and a
+    // code with no commitment — not fabricate an identity.
+    final phoneId = await ZIdentity.generate();
+    final phone = await makePrimary('oldphone', phoneId);
+    await waitUntil(() => phone.transport.isConnected, what: 'connected');
+    final account = await phone.accountIdentity();
+    final laptopId = await ZIdentity.generate();
+    final cert = await account.signDeviceCert(
+        deviceEdPub: laptopId.edPub,
+        deviceXPub: laptopId.xPub,
+        deviceId: 'laptop');
+    // NOTE: no withAccountMlPub — this is the pre-v3 enrollment.
+    final laptop = await makeLinked(
+        'oldlaptop', laptopId, account, cert, account.deviceCert);
+    await waitUntil(() => laptop.transport.isConnected, what: 'laptop up');
+
+    expect(await laptop.pqIdentity(), isNull);
+    expect(await laptop.pqAccountPublic(), isNull);
+    final code = await laptop.myContactCode();
+    expect(code, startsWith('zc1.'));
+    expect((await scanContactCode(code)).assurance, IdentityAssurance.classical,
+        reason: 'no commitment is better than a made-up one');
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('phone and laptop both send and receive, with no mailbox contention',

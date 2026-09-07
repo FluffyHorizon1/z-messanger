@@ -116,16 +116,19 @@ void main() {
 
     // The account's post-quantum half is derived from a stored seed, and its
     // classical half is the identity's own key.
-    final aPq = await a.pqIdentity();
+    final aPq = (await a.pqIdentity())!;
     expect(aPq.publicKey.edPub, a.identity.edPub);
     expect(await a.vault.kvGet('pq_seed'), isNotNull);
     // Stable across calls — a fresh key each time would break every
     // commitment already handed out.
-    expect((await a.pqIdentity()).publicKey.mlPub, aPq.publicKey.mlPub);
+    expect((await a.pqIdentity())!.publicKey.mlPub, aPq.publicKey.mlPub);
 
-    final code = await a.myContactCodeV3();
-    expect(code, startsWith('zc3.'));
+    final code = await a.myContactCode();
+    expect(code, startsWith('zc1.'),
+        reason: 'the emitted code stays readable by builds in the field');
     expect(code.length, lessThan(400), reason: 'still QR-sized');
+    // An older client reads it as an ordinary v1 identity.
+    expect((await ContactBundle.decode(code)).edPub, a.identity.edPub);
 
     await b.addContactFromCode(code);
     await a.addContactFromCode(await b.myContactCode());
@@ -156,9 +159,13 @@ void main() {
     expect(hybridNumber, isNot(classicalNumber));
     expect(hybridNumber.split(' ').length, 12);
 
-    // Ana only holds a v1 code for Ben, so her side stays classical — the
-    // asymmetry is real and must not be papered over.
-    expect(a.assuranceWith(b.myRid), IdentityAssurance.classical);
+    // Both sides now hand out commitment-carrying codes, so the upgrade is
+    // symmetric: Ana reaches hybrid for Ben too, without either of them
+    // doing anything different from before.
+    await waitUntil(() => a.assuranceWith(b.myRid) == IdentityAssurance.hybrid,
+        what: 'Ana upgraded her view of Ben as well');
+    expect(await a.safetyNumberWith(b.myRid), hybridNumber,
+        reason: 'and both read the same number for the pair');
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('a substituted post-quantum key is refused, not absorbed', () async {
@@ -199,7 +206,7 @@ void main() {
     // mismatch — indistinguishable, to them, from an attack.
     final dir = await tempDir('bk');
     final a = await start(dir, 'Ana');
-    final before = (await a.pqIdentity()).publicKey.mlPub;
+    final before = (await a.pqIdentity())!.publicKey.mlPub;
     final identity = a.identity;
 
     final store = await BackupStore.open(a.vault);

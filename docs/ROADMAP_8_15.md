@@ -223,8 +223,21 @@ forges identities even though it cannot read past traffic.
   change for every user, so it needs deliberate re-verification UX.
 - **13.4 spec + vectors** — PROTOCOL §18 for v3, a v3 vector suite with an
   independent checker, v1/v2 suites frozen as usual.
-- **13.5 compatibility window** *(release 1 done — accepts v3, still emits v2; PROTOCOL §18.6)* — one release accepting v2 identities and
+- **13.5 compatibility window** *(done — no flag day was needed; PROTOCOL §18.6)* — one release accepting v2 identities and
   emitting v3, then v2 emission is dropped.
+- **13.6 an account-anchored contact code** *(found while switching emission
+  on; not yet built)* — a contact code carries the classical identity of the
+  **device** that shows it, which has been true since v1 and was invisible
+  while every account had one device. Scanning someone's laptop therefore adds
+  the laptop, not the person: their device list then fails the "signed by this
+  contact's account key" check, and the safety number is computed against a
+  per-device key. v3 makes the seam visible rather than worse — a linked
+  device declines to attach a post-quantum commitment, because the commitment
+  binds the ACCOUNT's key and the code names the DEVICE's, and gluing the two
+  together produces a code whose binding signature does not verify. Closing it
+  needs the account to vouch for the device key inside the code, which is what
+  a device certificate already is; the code format has to carry one, so it is
+  a format change and belongs in its own increment.
 
 **Exit:** three independent checkers agree on the v3 vectors; a v2 and a v3
 client interoperate during the window; a forged device cert with only a valid
@@ -401,3 +414,29 @@ direction; the phases, their order and both ordering arguments stand.
    phase meant to strengthen authentication, and the opposite direction from
    ADR-0001's T1–T3. Same fix, applied in-band: the list carries commitments,
    the PQ halves travel separately.
+
+16. **13.2/13.5 — the `zc3.` prefix was a mistake, corrected when emission was
+   switched on.** PROTOCOL §14 already said a new optional JSON member is
+   compatible evolution while a change to computed bytes is a version bump; a
+   commitment is the former. Measured: the shipped v1 decoder reads a `zc1.`
+   code carrying `pqc` and rejects a `zc3.` code outright. So the commitment
+   rides in a v1 code, the whole installed base can still scan what new
+   clients hand out, and the compatibility window collapsed from three
+   releases to none. `zc3.` remains specified and accepted, unemitted.
+
+17. **13.5 — switching emission on found two multi-device bugs, both of the
+   phase-10 family.** Neither is about post-quantum cryptography; both are
+   about an account with more than one device disagreeing with itself, and
+   both were invisible until a second identity value existed to disagree
+   about. (a) A linked device derived an ML-DSA key **of its own** from its
+   own seed, so the account had two post-quantum identities and each device
+   committed to a different one. The account's ML-DSA public key now travels
+   at enrollment (`EnrollmentData.pqpub`), and a device that cannot reach the
+   account's key emits no commitment rather than inventing one — `13.6` above
+   is the remaining half. (b) A contact's post-quantum key was offered once
+   per contact, so a device linked **after** that offer never received it and
+   showed a classical safety number while its sibling showed a hybrid one:
+   two numbers for one account, and a mismatch that reads to the user exactly
+   like a key substitution. The offer is now re-made when a contact's device
+   list gains a device, and the exchange completes on the extra-device path
+   as well as the primary one.

@@ -85,9 +85,19 @@ The insight is that the out‑of‑band channel does not need to *transport* the
 key. It needs to *bind* it. A collision‑resistant hash does that in 32 bytes:
 
 ```
-zc3 code = ed_pub(32) ‖ x_pub(32) ‖ binding_sig(64) ‖ pq_commit(32) ‖ name
+code      = ed_pub(32) ‖ x_pub(32) ‖ binding_sig(64) ‖ pq_commit(32) ‖ name
 pq_commit = SHA-256( "z-pqid-v3:" ‖ mldsa_account_pub )
 ```
+
+**Correction, made when emission was switched on:** this was first built
+behind a new `zc3.` prefix, which was wrong. PROTOCOL §14 says a new optional
+JSON member is compatible evolution and does not warrant a version bump —
+only a change to bytes an existing implementation would compute differently
+does, and a commitment changes none. A prefix, meanwhile, is rejected outright
+by every build in the field, so a `zc3.` code would have been unreadable to
+the entire installed base in order to convey something they would have
+ignored. The commitment therefore rides as an optional member of a `zc1.`
+code. `zc3.` stays specified and accepted, and is not emitted.
 
 That is **+32 bytes on the existing code** — around 160 bytes total, well
 inside a comfortable QR.
@@ -124,6 +134,20 @@ into option (b). The security here comes entirely from the QR carrying a
   not yet have.
 * **`zc2.` codes still resolve**, marked as classical identities, per 13.5's
   compatibility window.
+* **The commitment is account-scoped, and that has multi-device consequences
+  the design did not anticipate.** `pq_commit` binds the *account's* ML-DSA
+  key to the classical identity printed in the *same code*. On a one-device
+  account those are the same identity and the distinction is invisible. On an
+  account with a linked device they are not, and two things follow, both found
+  by switching emission on rather than by reading the design:
+  1. Every device must hold the account's ML-DSA public key — it is public, so
+     it travels at enrollment — or a linked device derives one of its own and
+     the account acquires a second post-quantum identity.
+  2. A contact code names the device that shows it (true since v1, invisible
+     until now), so a linked device cannot attach an account commitment
+     without producing a code whose binding signature fails. It emits none.
+     Closing that properly means the code must carry a device certificate, a
+     format change, tracked as ROADMAP 13.6.
 
 ## Measured, not assumed
 

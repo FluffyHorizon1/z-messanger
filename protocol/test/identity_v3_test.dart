@@ -29,7 +29,9 @@ void main() {
 
     test('it fits in a QR, which is the entire point', () {
       final s = code.encode();
-      expect(s, startsWith('zc3.'));
+      expect(s, startsWith('zc1.'),
+          reason: 'the emitted code is a v1 code carrying one extra member, '
+              'so every build already in the field can still read it');
       // A comfortable QR is a few hundred bytes; the key this commits to is
       // 1952 on its own, and a full hybrid account code would be ~7.4 KB.
       expect(s.length, lessThan(400),
@@ -78,7 +80,7 @@ void main() {
           as Map<String, Object?>;
       final bent = Uint8List.fromList(unb64(j['pqc'] as String))..[0] ^= 0x01;
       j['pqc'] = b64(bent);
-      final tampered = 'zc3.${b64url(utf8.encode(jsonEncode(j)))}';
+      final tampered = 'zc1.${b64url(utf8.encode(jsonEncode(j)))}';
       final parsed = await ContactBundleV3.decode(tampered);
       expect(await parsed.acceptsPqKey(pq.publicKey), isFalse);
     });
@@ -89,7 +91,7 @@ void main() {
       j['x'] = b64((await ZIdentity.generate()).xPub);
       expect(
           () => ContactBundleV3.decode(
-              'zc3.${b64url(utf8.encode(jsonEncode(j)))}'),
+              'zc1.${b64url(utf8.encode(jsonEncode(j)))}'),
           throwsFormatException);
     });
 
@@ -98,11 +100,33 @@ void main() {
       // treats it as an old code. It says v3, so it must carry one.
       final j = jsonDecode(utf8.decode(unb64url(code.encode().substring(4))))
           as Map<String, Object?>;
+      j['v'] = 3;
       j.remove('pqc');
       expect(
           () => ContactBundleV3.decode(
               'zc3.${b64url(utf8.encode(jsonEncode(j)))}'),
           throwsFormatException);
+    });
+
+    test('a client already in the field can still read the emitted code',
+        () async {
+      // The whole reason the commitment rides in a v1 code rather than behind
+      // a zc3. prefix. PROTOCOL §14: a new optional member is compatible
+      // evolution; a new prefix is a flag day, and every build in the field
+      // rejects zc3. outright.
+      final emitted = code.encode();
+      final old = await ContactBundle.decode(emitted); // the v1 decoder
+      expect(old.edPub, me.edPub);
+      expect(old.xPub, me.xPub);
+      expect(old.displayName, 'Finn');
+      expect(await old.verify(), isTrue);
+
+      // …while the strict form is not readable by that decoder at all.
+      expect(() => ContactBundle.decode(code.encodeStrict()),
+          throwsFormatException);
+      // Both forms carry the same commitment to a v3 client.
+      expect((await ContactBundleV3.decode(code.encodeStrict())).pqCommit,
+          (await ContactBundleV3.decode(emitted)).pqCommit);
     });
 
     test('a hybrid key that is not this identity cannot be committed to',

@@ -305,8 +305,42 @@ class ChatService extends ChangeNotifier {
   // Contacts
   // ------------------------------------------------------------------
 
-  Future<String> myContactCode() async =>
-      (await identity.bundle(displayName: displayName)).encode();
+  /// The code this device hands out (§18.2, §18.6).
+  ///
+  /// Where the account's post-quantum key can honestly be committed to, it
+  /// carries the commitment — in a **v1-shaped** code, so a build already in
+  /// the field reads the classical identity and ignores the extra member,
+  /// while a v3 client sees the commitment and knows a post-quantum key is
+  /// coming. There is no flag day, which is why emission could be switched on
+  /// without waiting for the population to upgrade first.
+  Future<String> myContactCode() async {
+    final account = await accountIdentity();
+    final mlPub = await pqAccountPublic();
+    // A commitment binds the account's post-quantum key to the CLASSICAL
+    // identity printed in the same code, and a contact code has always
+    // carried this device's own classical identity (`ZIdentity.bundle`).
+    // On a device holding the account root those are one identity, so the
+    // commitment belongs. On a linked device they are two, and committing
+    // one to the other would produce a code whose binding signature does
+    // not verify — `ContactBundleV3.forIdentity` refuses to build it, and
+    // that refusal is the rule, not an implementation detail.
+    //
+    // So a linked device emits a plain v1 code: honest about being
+    // classical rather than committing to a key it cannot speak for. That
+    // its code is device-anchored at all is a phase-10 gap (a contact who
+    // scans a laptop gets the laptop, not the account); v3 does not widen
+    // it, and ROADMAP 13.6 is where it is closed.
+    if (mlPub == null ||
+        !constantTimeEquals(identity.edPub, account.accountEdPub)) {
+      return (await identity.bundle(displayName: displayName)).encode();
+    }
+    return (await ContactBundleV3.forIdentity(
+      identity,
+      HybridPublicKey(edPub: identity.edPub, mlPub: mlPub),
+      displayName: displayName,
+    ))
+        .encode();
+  }
 
   HybridKeyPair? _pq;
 
@@ -317,30 +351,46 @@ class ChatService extends ChangeNotifier {
   ///
   /// The classical half IS this identity's Ed25519 key: one identity, two
   /// signature algorithms over it.
-  Future<HybridKeyPair> pqIdentity() async {
+  Future<HybridKeyPair?> pqIdentity() async {
     final cached = _pq;
     if (cached != null) return cached;
+    final rootSeed = (await accountIdentity()).accountEdSeed;
+    if (rootSeed == null) return null; // linked device: see pqAccountPublic
     var seedB64 = await vault.kvGet('pq_seed');
     if (seedB64 == null) {
       seedB64 = b64(randomBytes(32));
       await vault.kvPut('pq_seed', seedB64);
     }
-    final kp = await HybridKeyPair.fromSeeds(
-        edSeed: identity.edSeed, mlSeed: unb64(seedB64));
+    final kp =
+        await HybridKeyPair.fromSeeds(edSeed: rootSeed, mlSeed: unb64(seedB64));
     _pq = kp;
     return kp;
   }
 
-  /// The v3 contact code for this account. NOT yet what [myContactCode]
-  /// returns: §13.5's compatibility window is one release that ACCEPTS v3 and
-  /// keeps emitting v2, because a `zc3.` prefix is simply unparseable to an
-  /// older build. Emission flips in the release after.
-  Future<String> myContactCodeV3() async => (await ContactBundleV3.forIdentity(
-        identity,
-        (await pqIdentity()).publicKey,
-        displayName: displayName,
-      ))
-          .encode();
+  /// The account's ML-DSA **public** key, whichever device is asking.
+  ///
+  /// Derived on a device holding the root; received at enrollment on a linked
+  /// one (`EnrollmentData.accountMlPub`). Null on a device linked by a build
+  /// that predates v3 — honest, rather than inventing one: that device then
+  /// shows the classical safety number and hands out a code with no
+  /// commitment until it is re-enrolled.
+  Future<Uint8List?> pqAccountPublic() async {
+    final mine = await pqIdentity();
+    if (mine != null) return mine.publicKey.mlPub;
+    return (await accountIdentity()).accountMlPub;
+  }
+
+  /// The explicit `zc3.` form. Not handed out — [myContactCode] emits the
+  /// compatible shape — but kept because the strict form is specified,
+  /// vectored, and is what a future release could switch to if the prefix
+  /// ever needs to signal something on its own.
+  Future<String?> myContactCodeStrictV3() async {
+    final mine = await pqIdentity();
+    if (mine == null) return null;
+    return (await ContactBundleV3.forIdentity(identity, mine.publicKey,
+            displayName: displayName))
+        .encodeStrict();
+  }
 
   Future<Contact> addContactFromCode(String code, {String? alias}) async {
     // Accepts zc1. and zc3.; a v3 code yields the same classical bundle plus
@@ -470,14 +520,16 @@ class ChatService extends ChangeNotifier {
   Future<String> safetyNumberWith(String rid) async {
     final c = contacts[rid]!;
     final theirs = c.hybridKey;
-    if (theirs != null) {
+    final myMl = await pqAccountPublic();
+    if (theirs != null && myMl != null) {
       // v3 (§18.5): both halves of both account keys. Only reachable once
       // their post-quantum key has arrived AND matched the commitment from
       // the code that was scanned — never on the strength of a delivered key
       // alone.
+      // Our own ACCOUNT key, never a per-device one, or two devices of one
+      // account would show different numbers for the same contact.
       final mine = HybridPublicKey(
-          edPub: (await accountIdentity()).accountEdPub,
-          mlPub: (await pqIdentity()).publicKey.mlPub);
+          edPub: (await accountIdentity()).accountEdPub, mlPub: myMl);
       return safetyNumberV3(mine, theirs);
     }
     return safetyNumber((await accountIdentity()).accountEdPub, c.bundle.edPub);
@@ -525,11 +577,10 @@ class ChatService extends ChangeNotifier {
       return;
     }
     try {
-      final mine = await pqIdentity();
+      final mlPub = await pqAccountPublic();
+      if (mlPub == null) return;
       await _sendInner(
-          contact,
-          InnerMessage.pqIdentity(
-              newMessageId(), _now(), mine.publicKey.mlPub));
+          contact, InnerMessage.pqIdentity(newMessageId(), _now(), mlPub));
     } catch (_) {
       // The next message re-offers it; see _onInbound.
     }
@@ -569,10 +620,22 @@ class ChatService extends ChangeNotifier {
           'numbers before trusting this chat.');
       return true;
     }
+    // Persist FIRST, then update memory. If the write fails the contact stays
+    // pending and the key simply arrives again — whereas setting the field
+    // first would leave memory claiming hybrid while disk says classical, so
+    // a restart would silently downgrade an identity the user had been told
+    // was upgraded.
+    try {
+      if (_disposed) return false;
+      await vault.db.update(
+          'contacts', {'enc_pq_pub': await vault.seal(b64(candidate.mlPub))},
+          where: 'rid = ?', whereArgs: [contact.rid]);
+    } catch (_) {
+      // Shutting down, or the vault is gone. Best-effort: the nudge re-runs
+      // the exchange next time.
+      return false;
+    }
     contact.pqPub = candidate.mlPub;
-    await vault.db.update(
-        'contacts', {'enc_pq_pub': await vault.seal(b64(candidate.mlPub))},
-        where: 'rid = ?', whereArgs: [contact.rid]);
     return true;
   }
 
@@ -1095,7 +1158,12 @@ class ChatService extends ChangeNotifier {
                 Future<void>.value());
       }
       if (inner.kind == 'pqid') {
-        if (await _onPqIdentity(contact, inner)) notifyListeners();
+        // This whole path is best-effort and runs unawaited from the
+        // transport, so a failure here must not escape as an unhandled async
+        // error — the exchange re-runs.
+        try {
+          if (await _onPqIdentity(contact, inner)) notifyListeners();
+        } catch (_) {}
         // Answer in kind, so an exchange started by either side completes.
         unawaited(_sendPqIdentity(contact).then((_) {}, onError: (_) {}));
       }
@@ -2470,10 +2538,15 @@ class ChatService extends ChangeNotifier {
     String code, {
     required Future<bool> Function(String sas) confirmSas,
   }) async {
+    // The new device needs the ACCOUNT's post-quantum public key, or it would
+    // have no v3 identity to show and would fall back to classical codes
+    // while the phone handed out hybrid ones (§18).
+    final acct = await accountIdentity();
+    final myMl = await pqAccountPublic();
     final linked = await RelayPairing.runExistingDevice(
       relayUrl: transport.serverUrl,
       code: PairingCode.parse(code),
-      me: await accountIdentity(),
+      me: myMl == null ? acct : acct.withAccountMlPub(myMl),
       contacts: contactsAsBundles(),
       includeAccountRoot: false, // the new device cannot enroll further devices
       displayName: displayName,
@@ -3606,6 +3679,10 @@ class ChatService extends ChangeNotifier {
         } catch (_) {}
       }
     }
+    final appeared = [
+      for (final r in newRids)
+        if (!session.targetRoutingIds.contains(r)) r
+    ];
     for (final r in removed) {
       session.removeTarget(r);
     }
@@ -3617,6 +3694,22 @@ class ChatService extends ChangeNotifier {
       _extraRidToContact[r] = rid;
     }
     if (persist) await _saveExtra(rid);
+
+    // §18.2: a device that has just appeared has never heard our post-quantum
+    // key, because the offer went out before it existed. Left alone it shows
+    // its owner a CLASSICAL safety number for us while their other devices
+    // show a hybrid one — two numbers for one account, which is exactly the
+    // confusion phase 10 exists to prevent, and worse here because the
+    // mismatch reads as a key substitution.
+    //
+    // Re-offering is why the offer fans out at all: `_sendInner` reaches
+    // every device on the list, so one send serves the whole account. Once
+    // per device-list change, at a moment that has already generated traffic.
+    if (persist && appeared.isNotEmpty) {
+      _pqSent.remove(rid);
+      _pqNudges.remove(rid);
+      unawaited(_sendPqIdentity(contact).then((_) {}, onError: (_) {}));
+    }
   }
 
   Future<void> _saveExtra(String rid) async {
@@ -3683,6 +3776,21 @@ class ChatService extends ChangeNotifier {
     // 7.7a: a removal notice about my own account can ride here too.
     if (inner!.kind == 'dlrm') {
       await _handleRemovalNotice(inner!);
+    }
+    if (inner!.kind == 'pqid') {
+      // §18.2 on the extra-device path. A contact's linked device runs its own
+      // sessions and holds its own commitment, so the exchange has to complete
+      // here too — otherwise their laptop stays classical while their phone is
+      // hybrid, and one account shows two safety numbers.
+      try {
+        if (await _onPqIdentity(contact, inner!)) notifyListeners();
+      } catch (_) {}
+      // Answer to the ACCOUNT: `_sendInner` fans to every device on its list,
+      // which now includes the one that just asked. The once-per-contact gate
+      // is cleared first, because that device is newer than our offer — it is
+      // asking precisely because it never saw it.
+      _pqSent.remove(contact.rid);
+      unawaited(_sendPqIdentity(contact).then((_) {}, onError: (_) {}));
     }
     if (inner!.kind == 'devlist') {
       await _applyDevlistInner(contact, inner!);

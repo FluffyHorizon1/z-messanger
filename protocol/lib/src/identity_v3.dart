@@ -104,7 +104,8 @@ class ContactBundleV3 {
     );
   }
 
-  String encode() {
+  /// The explicit v3 form. **Not what clients emit** — see [encode].
+  String encodeStrict() {
     final j = <String, Object?>{
       'v': 3,
       'ed': b64(edPub),
@@ -116,27 +117,62 @@ class ContactBundleV3 {
     return contactCodePrefixV3 + b64url(utf8.encode(jsonEncode(j)));
   }
 
-  /// Parses and VERIFIES a v3 code.
+  /// The code clients hand out: a **v1 code carrying one extra member**.
+  ///
+  /// PROTOCOL.md §14 is explicit that "new optional JSON members" are
+  /// compatible evolution and do not warrant a version bump — only a change
+  /// to bytes an existing implementation would compute differently does. The
+  /// commitment changes nothing anyone computes; it is pure addition. A
+  /// `zc3.` prefix, by contrast, is rejected outright by every build already
+  /// in the field, so emitting one would mean handing out a code most people
+  /// cannot scan in order to convey information they would have ignored.
+  ///
+  /// So the commitment rides in a `zc1.` code. An older client reads the
+  /// classical identity and ignores `pqc`; a v3 client sees the commitment
+  /// and knows a post-quantum key is coming. Same information, no flag day.
+  String encode() {
+    final j = <String, Object?>{
+      'v': 1,
+      'ed': b64(edPub),
+      'x': b64(xPub),
+      'sig': b64(bindingSig),
+      'pqc': b64(pqCommit),
+      if (displayName != null && displayName!.isNotEmpty) 'name': displayName,
+    };
+    return contactCodePrefix + b64url(utf8.encode(jsonEncode(j)));
+  }
+
+  /// Parses and VERIFIES a code carrying a commitment, in either form: the
+  /// `zc1.`-with-`pqc` one clients emit, or the explicit `zc3.` one.
   static Future<ContactBundleV3> decode(String code) async {
     final trimmed = code.trim();
-    if (!trimmed.startsWith(contactCodePrefixV3)) {
-      throw const FormatException('not a Z v3 contact code');
+    final int expectVersion;
+    final String body;
+    if (trimmed.startsWith(contactCodePrefixV3)) {
+      expectVersion = 3;
+      body = trimmed.substring(contactCodePrefixV3.length);
+    } else if (trimmed.startsWith(contactCodePrefix)) {
+      expectVersion = 1;
+      body = trimmed.substring(contactCodePrefix.length);
+    } else {
+      throw const FormatException('not a Z contact code');
     }
     final Map<String, Object?> j;
     try {
-      j = jsonDecode(utf8
-              .decode(unb64url(trimmed.substring(contactCodePrefixV3.length))))
-          as Map<String, Object?>;
+      j = jsonDecode(utf8.decode(unb64url(body))) as Map<String, Object?>;
     } catch (_) {
       throw const FormatException('corrupt contact code');
     }
-    if (j['v'] != 3) throw const FormatException('unsupported version');
+    if (j['v'] != expectVersion) {
+      throw const FormatException('unsupported version');
+    }
     final pqc = j['pqc'];
     if (pqc is! String) {
-      // A v3 code without a commitment is a downgrade attempt, not an old
-      // code: old codes say v1 or v2 and are handled by their own decoders.
+      // For a zc3. code this is a downgrade attempt: it announced a version
+      // that requires one. For a zc1. code it simply means a classical
+      // identity, which `scanContactCode` sorts out before reaching here.
       throw const FormatException(
-          'a v3 contact code must carry a post-quantum commitment');
+          'this contact code carries no post-quantum commitment');
     }
     final b = ContactBundleV3(
       edPub: unb64(j['ed'] as String),
@@ -218,6 +254,15 @@ Future<ScannedIdentity> scanContactCode(
         v3: b);
   }
   if (t.startsWith(contactCodePrefix)) {
+    // A v1 code may carry a post-quantum commitment as an extra member
+    // (§18.2). If it does, this is a v3 identity wearing a v1 shape so that
+    // clients already in the field can still read it; if not, it is a plain
+    // v1 identity and nothing post-quantum was promised.
+    if (_carriesCommitment(t)) {
+      final b = await ContactBundleV3.decode(t);
+      return ScannedIdentity(b.classical, IdentityAssurance.pendingPostQuantum,
+          v3: b);
+    }
     return ScannedIdentity(
         await ContactBundle.decode(t), IdentityAssurance.classical);
   }
@@ -366,4 +411,18 @@ bool _lexLessBytes(Uint8List a, Uint8List b) {
     if (a[i] != b[i]) return a[i] < b[i];
   }
   return a.length < b.length;
+}
+
+/// Peeks at a `zc1.` code for a `pqc` member, without verifying anything —
+/// [scanContactCode] uses it only to choose which decoder to run, and both
+/// decoders verify what they parse.
+bool _carriesCommitment(String code) {
+  try {
+    final j = jsonDecode(
+            utf8.decode(unb64url(code.substring(contactCodePrefix.length))))
+        as Map<String, Object?>;
+    return j['pqc'] is String;
+  } catch (_) {
+    return false;
+  }
 }

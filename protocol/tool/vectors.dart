@@ -1787,7 +1787,24 @@ Future<Map<String, Object?>> suiteContactCodeV3() async {
       'a v3 scan is pending, not hybrid');
   final v1scan = await scanContactCode((await id.bundle()).encode());
   check(v1scan.assurance == IdentityAssurance.classical,
-      'a v1 scan is classical');
+      'a plain v1 code, with no commitment, is classical');
+
+  // The compatibility claim, checkable by a third party: the emitted code is
+  // a v1 code, so the SHIPPED v1 decoder reads it — which is why emission
+  // could be switched on without waiting for the population to upgrade.
+  final asV1 = await ContactBundle.decode(encoded);
+  check(eq(asV1.edPub, id.edPub) && eq(asV1.xPub, id.xPub),
+      'the v1 decoder reads the emitted code');
+  final strict = code.encodeStrict();
+  var strictRejected = false;
+  try {
+    await ContactBundle.decode(strict);
+  } on FormatException {
+    strictRejected = true;
+  }
+  check(strictRejected, 'the strict zc3. form is NOT readable by a v1 client');
+  check((await ContactBundleV3.decode(strict)).pqCommit.isNotEmpty,
+      'both forms carry the same commitment');
 
   final inner =
       InnerMessage.pqIdentity('mid-pqid', 1700000000000, pq.publicKey.mlPub);
@@ -1819,8 +1836,16 @@ Future<Map<String, Object?>> suiteContactCodeV3() async {
     },
     'code': encoded,
     'code_json':
-        utf8.decode(unb64url(encoded.substring(contactCodePrefixV3.length))),
+        utf8.decode(unb64url(encoded.substring(contactCodePrefix.length))),
     'code_len': encoded.length,
+    'strict_code': strict,
+    'strict_code_json':
+        utf8.decode(unb64url(strict.substring(contactCodePrefixV3.length))),
+    'compatibility':
+        'the emitted code declares v1 and carries pqc as an extra member, so '
+            'a client that predates v3 reads the classical identity and '
+            'ignores it (PROTOCOL §14); the zc3. form is rejected outright by '
+            'such a client and is therefore never emitted',
     'pqid_inner': {
       'json':
           utf8.decode(inner.toBytes()).replaceAll(RegExp(r'\x80[\x00]*$'), ''),

@@ -1143,15 +1143,27 @@ test('v3 contact_code_v3: the code parses, binds, and commits — checked here '
   assert.equal(v.prefix, 'zc3.');
   assert.equal(v.commit_context, 'z-pqid-v3:');
 
-  // The code is a prefix plus base64url JSON, and it stays scannable — the
-  // point of the whole design, since the key it commits to is 1952 bytes.
-  assert.ok(v.code.startsWith('zc3.'));
+  // The emitted code is a prefix plus base64url JSON, and it stays scannable
+  // — the point of the whole design, since the key it commits to is 1952
+  // bytes. It declares v1 and carries the commitment as an extra member, so
+  // a client that predates v3 reads the classical identity and ignores it
+  // (PROTOCOL §14). That is what let emission switch on without a flag day.
+  assert.ok(v.code.startsWith('zc1.'), 'the emitted code is v1-shaped');
   assert.equal(v.code.length, v.code_len);
   assert.ok(v.code_len < 400, 'a v3 code must stay QR-sized');
   const json = unb64url(v.code.slice(4)).toString('utf8');
   assert.equal(json, v.code_json);
   const c = JSON.parse(json);
-  assert.equal(c.v, 3);
+  assert.equal(c.v, 1, 'declares v1, so an older decoder accepts it');
+  assert.ok(typeof c.pqc === 'string', 'and carries the commitment anyway');
+
+  // The strict zc3. form exists, carries the same commitment, and is exactly
+  // what an older client CANNOT read — which is why it is not emitted.
+  const strict = JSON.parse(unb64url(v.strict_code.slice(4)).toString('utf8'));
+  assert.ok(v.strict_code.startsWith('zc3.'));
+  assert.equal(strict.v, 3);
+  assert.equal(strict.pqc, c.pqc, 'both forms commit to the same key');
+  assert.equal(strict.ed, c.ed);
 
   // Every field in the code matches the recorded identity.
   const id = v.identity;

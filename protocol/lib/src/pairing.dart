@@ -112,6 +112,17 @@ class PairingCode {
 class EnrollmentData {
   final Uint8List accountEdPub;
   final Uint8List? accountEdSeed; // present iff the new device may enroll others
+
+  /// v3 (§18): the ACCOUNT's ML-DSA public key.
+  ///
+  /// Public, so it travels even when the account root does not. A linked
+  /// device needs it for the same reason it needs `accountEdPub`: the
+  /// identity a contact verifies belongs to the account, not to whichever
+  /// device happens to be showing it. Without this a linked device would
+  /// derive a post-quantum key of its own and hand out a contact code
+  /// committing to it — a different identity wearing the account's name.
+  /// Absent from an enrollment performed by a build that predates v3.
+  final Uint8List? accountMlPub;
   final List<AccountBundle> contacts;
   final String? displayName;
   final DeviceCertificate deviceCert; // this (new) device's cert
@@ -120,6 +131,7 @@ class EnrollmentData {
   EnrollmentData({
     required this.accountEdPub,
     required this.accountEdSeed,
+    this.accountMlPub,
     required this.contacts,
     required this.displayName,
     required this.deviceCert,
@@ -181,6 +193,7 @@ class PairingSession {
     final payload = <String, Object?>{
       'acct': b64(me.accountEdPub),
       if (root != null) 'root': b64(root),
+      if (me.accountMlPub != null) 'pqpub': b64(me.accountMlPub!),
       'name': displayName,
       'cert': cert.toJson(),
       'hostcert': me.deviceCert.toJson(),
@@ -195,6 +208,7 @@ class PairingSession {
     return EnrollmentData(
       accountEdPub: unb64(j['acct'] as String),
       accountEdSeed: j['root'] == null ? null : unb64(j['root'] as String),
+      accountMlPub: j['pqpub'] == null ? null : unb64(j['pqpub'] as String),
       displayName: j['name'] as String?,
       deviceCert:
           DeviceCertificate.fromJson((j['cert'] as Map).cast<String, Object?>()),
@@ -304,6 +318,7 @@ class PairingInitiator {
     return AccountIdentity.fromEnrollment(
       accountEdPub: data.accountEdPub,
       accountEdSeed: data.accountEdSeed,
+      accountMlPub: data.accountMlPub,
       deviceEdSeed: deviceEdSeed,
       deviceXSeed: deviceXSeed,
       deviceId: deviceId,

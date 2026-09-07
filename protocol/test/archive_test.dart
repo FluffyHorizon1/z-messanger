@@ -40,13 +40,31 @@ void main() {
         () async {
       final code = await RecoveryCode.generate();
       final text = (await code.format()).replaceAll('-', '').substring(3);
-      // Change one data character to a different valid one.
-      final i = 3;
-      final wrong = RecoveryCode.alphabet
-          .split('')
-          .firstWhere((c) => c != text[i] && c != '0' && c != '1');
-      final typo = text.replaceRange(i, i + 1, wrong);
-      expect(() => RecoveryCode.parse(typo), throwsA(isA<FormatException>()));
+
+      // A 5-bit checksum catches 31 of every 32 single-character typos, not
+      // all of them, and asserting "this one particular substitution is
+      // rejected" therefore fails about 3% of the time — a flake that says
+      // nothing about the code when it fires. Measure the rate instead: it is
+      // the actual property, it is deterministic at this sample size (775
+      // substitutions, ~24 expected survivors, so 90% is many standard
+      // deviations clear), and it fails loudly if the checksum is ever
+      // dropped, where every one of them would sail through.
+      var tried = 0, caught = 0;
+      for (var i = 0; i < RecoveryCode.dataChars; i++) {
+        for (final c in RecoveryCode.alphabet.split('')) {
+          if (c == text[i]) continue;
+          tried++;
+          try {
+            await RecoveryCode.parse(text.replaceRange(i, i + 1, c));
+          } on FormatException {
+            caught++;
+          }
+        }
+      }
+      expect(
+          tried, RecoveryCode.dataChars * (RecoveryCode.alphabet.length - 1));
+      expect(caught / tried, greaterThan(0.9),
+          reason: 'a 5-bit checksum must catch ~31 of every 32 typos');
       // Wrong length and impossible characters are reported too.
       expect(
           () => RecoveryCode.parse('ZBK-123'), throwsA(isA<FormatException>()));

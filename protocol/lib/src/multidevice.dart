@@ -240,6 +240,11 @@ class AccountBundle {
 class AccountIdentity {
   final Uint8List accountEdPub;
   final Uint8List? accountEdSeed; // present iff this device holds the root
+
+  /// v3 (§18): the ACCOUNT's ML-DSA public key, where known. A device holding
+  /// the root derives it from the account seed; a linked device receives it
+  /// at enrollment. Null on a device linked by a build that predates v3.
+  final Uint8List? accountMlPub;
   final Uint8List deviceEdSeed;
   final Uint8List deviceXSeed;
   final Uint8List deviceEdPub;
@@ -250,6 +255,7 @@ class AccountIdentity {
   AccountIdentity._({
     required this.accountEdPub,
     required this.accountEdSeed,
+    this.accountMlPub,
     required this.deviceEdSeed,
     required this.deviceXSeed,
     required this.deviceEdPub,
@@ -377,12 +383,31 @@ class AccountIdentity {
     );
   }
 
+  /// A copy carrying the account's ML-DSA public key. Used when handing an
+  /// enrollment to a new device: the key is public, so it travels even though
+  /// the account root does not, and without it the new device would have no
+  /// account post-quantum identity to show (§18).
+  AccountIdentity withAccountMlPub(Uint8List mlPub) => AccountIdentity._(
+        accountEdPub: accountEdPub,
+        accountEdSeed: accountEdSeed,
+        accountMlPub: mlPub,
+        deviceEdSeed: deviceEdSeed,
+        deviceXSeed: deviceXSeed,
+        deviceEdPub: deviceEdPub,
+        deviceXPub: deviceXPub,
+        deviceId: deviceId,
+        deviceCert: deviceCert,
+      );
+
   /// Build the newly-enrolled device's local identity from material handed to
   /// it during the ceremony. [accountEdSeed] is optional — pass it only if the
-  /// new device should also be able to enroll further devices.
+  /// new device should also be able to enroll further devices;
+  /// [accountMlPub] is public and should always be passed when the host has
+  /// one, or the new device has no account post-quantum identity (§18.2).
   static Future<AccountIdentity> fromEnrollment({
     required Uint8List accountEdPub,
     Uint8List? accountEdSeed,
+    Uint8List? accountMlPub,
     required Uint8List deviceEdSeed,
     required Uint8List deviceXSeed,
     required String deviceId,
@@ -391,6 +416,7 @@ class AccountIdentity {
     return AccountIdentity._(
       accountEdPub: accountEdPub,
       accountEdSeed: accountEdSeed,
+      accountMlPub: accountMlPub,
       deviceEdSeed: deviceEdSeed,
       deviceXSeed: deviceXSeed,
       deviceEdPub: await _edPubFromSeed(deviceEdSeed),
@@ -417,6 +443,7 @@ class AccountIdentity {
   Map<String, Object?> toJson() => {
         'accountEdPub': b64(accountEdPub),
         if (accountEdSeed != null) 'accountEdSeed': b64(accountEdSeed!),
+        if (accountMlPub != null) 'accountMlPub': b64(accountMlPub!),
         'deviceEdSeed': b64(deviceEdSeed),
         'deviceXSeed': b64(deviceXSeed),
         'deviceId': deviceId,
@@ -431,6 +458,8 @@ class AccountIdentity {
       accountEdSeed: j['accountEdSeed'] == null
           ? null
           : unb64(j['accountEdSeed'] as String),
+      accountMlPub:
+          j['accountMlPub'] == null ? null : unb64(j['accountMlPub'] as String),
       deviceEdSeed: deviceEdSeed,
       deviceXSeed: deviceXSeed,
       deviceEdPub: await _edPubFromSeed(deviceEdSeed),
