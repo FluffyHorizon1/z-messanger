@@ -49,6 +49,7 @@ void main() {
       ('v2', 'mlkem768'),
       ('v2', 'pq_ratchet'),
       ('v2', 'pq_rekey'),
+      ('backup', 'archive'),
     ]) {
       test('$ver/$suite', () {
         final onDisk = readVectors(suite, ver);
@@ -242,6 +243,95 @@ void main() {
       expect(data.contacts.length, 1);
       final installed = await n.installFromData(data);
       expect(installed.holdsAccountRoot, isFalse);
+    });
+
+    test('backup archive: the recorded code opens every frame of the file',
+        () async {
+      final v = readVectors('archive', 'backup');
+      final rc = v['recovery_code'] as Map;
+      final kdf = v['kdf'] as Map;
+      final head = v['header'] as Map;
+
+      // The code round-trips from its printed form — including the way a
+      // person actually copies it back in.
+      final parsed = await RecoveryCode.parse(rc['mangled_input'] as String);
+      expect(hex(parsed.entropy), rc['entropy']);
+      expect(await parsed.format(), rc['formatted']);
+      expect(hex(await parsed.keyMaterial()), rc['key_material']);
+
+      // Argon2id is a standard RFC 9106 KAT here: password, salt and
+      // parameters in, the archive key out.
+      final key = await ZArchive.deriveKey(
+          await parsed.keyMaterial(), unhex(kdf['salt'] as String));
+      expect(hex(await key.extractBytes()), kdf['key']);
+
+      // Reading the file with nothing but the recorded bytes: header line,
+      // then length-prefixed frames.
+      final bytes = unhex((v['file'] as Map)['bytes'] as String);
+      final nl = bytes.indexOf(0x0a);
+      final header = Uint8List.fromList(bytes.sublist(0, nl));
+      expect(hex(header), head['bytes']);
+      final parsedHeader = ZArchive.parseHeader(header);
+      expect(parsedHeader['schema'], 3);
+      final np = unb64(parsedHeader['np'] as String);
+      expect(hex(np), head['nonce_prefix']);
+
+      var off = nl + 1;
+      var index = 0;
+      for (final f in (v['frames'] as List).cast<Map>()) {
+        final len =
+            ByteData.view(Uint8List.fromList(bytes).buffer).getUint32(off);
+        off += 4;
+        final sealed = Uint8List.fromList(bytes.sublist(off, off + len));
+        off += len;
+        expect(hex(sealed), '${f['ciphertext']}${f['mac']}');
+        final (kind, payload) = await ZArchive.openFrame(
+            key: key,
+            header: header,
+            noncePrefix: np,
+            index: index,
+            sealed: sealed);
+        expect(kind, f['kind']);
+        expect(hex([kind, ...payload]), f['plaintext']);
+        if (kind == ZArchive.kindBlob) {
+          final blob = v['blob_body'] as Map;
+          final (fid, blobBytes) = ZArchive.parseBlobPayload(payload);
+          expect(fid, blob['fid']);
+          expect(hex(blobBytes), blob['bytes']);
+        } else {
+          expect(utf8.decode(payload), f['payload_json']);
+        }
+        index++;
+      }
+      expect(off, bytes.length, reason: 'the file is exactly its frames');
+      expect(index, (v['frames'] as List).length);
+
+      // …and the two failures the format exists to catch.
+      await expectLater(
+          ZArchive.openFrame(
+              key: key,
+              header: header,
+              noncePrefix: np,
+              index: 0,
+              sealed: unhex((v['must_fail'] as Map)['frame_1_opened_at_index_0']
+                  as String)),
+          throwsA(isA<FormatException>()),
+          reason: 'a frame moved to another index must not open');
+      final wrongKey = await ZArchive.deriveKey(
+          await RecoveryCode(unhex(
+                  (v['must_fail'] as Map)['wrong_code_entropy'] as String))
+              .keyMaterial(),
+          unhex(kdf['salt'] as String));
+      await expectLater(
+          ZArchive.openFrame(
+              key: wrongKey,
+              header: header,
+              noncePrefix: np,
+              index: 0,
+              sealed: unhex('${(v['frames'] as List).first['ciphertext']}'
+                  '${(v['frames'] as List).first['mac']}')),
+          throwsA(isA<FormatException>()),
+          reason: 'the wrong recovery code must not open a frame');
     });
   });
 }

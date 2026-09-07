@@ -1,6 +1,7 @@
 # Z — roadmap, phases 8–15
 
-**Status:** adopted · September 2026
+**Status:** adopted · September 2026 · revised after code review (see
+*Revisions after review* at the end for what changed and why)
 **Basis:** phases 0–7 done or externally gated (`ROADMAP.md`), phase 8
 complete, `ZERO_TRUST_PLAN.md`, `z-multidevice-design.md`.
 
@@ -54,17 +55,28 @@ conveniences that can land any time and do not need a phase.
 
 The strongest runner-up when phase 8 was chosen, and it only gets more urgent:
 `.zid` carries identity and contacts only, so today losing the sole device
-loses all history. It is also the cheapest answer to "does a newly linked
-desktop get my history?" in phase 10 — restore from backup instead of building
-a bespoke history-transfer channel.
+loses all history — permanently, since no server holds a copy to fall back on.
+That is the whole case for the phase, and it is enough on its own.
 
-- **9.1 archive format** — versioned, AEAD-sealed archive of the whole vault
-  (messages, contacts, group state, attachment blobs), key derived by Argon2id
-  from a user-held 12-word recovery code. Documented in `docs/BACKUP.md` and
-  vectored, because a backup you cannot read in two years is not a backup.
-- **9.2 export / import** — streaming export so large blob sets don't blow
+- **9.1 archive format** *(done — `docs/BACKUP.md`, `backup/archive.json`)* — versioned, AEAD-sealed archive of messages,
+  contacts, group state, attachment blobs **and the identity**, key derived by
+  Argon2id from a user-held 12-word recovery code. Documented in
+  `docs/BACKUP.md` and vectored, because a backup you cannot read in two years
+  is not a backup.
+  **Session state is deliberately excluded.** The vault's `conversations` rows
+  hold live double-ratchet state; restoring them can put the same ratchet on
+  two devices, reusing chain keys and message numbers, and the relay's
+  one-socket-per-routing-id rule (it closes the older with `4002 replaced by
+  new connection`) means the two would also fight over the mailbox. An archive
+  therefore restores *history*, and every conversation re-handshakes with a
+  `hello` on first use — cheap, and the only safe answer.
+  **`.zid` becomes a subset of this format**, not a second mechanism: one
+  archive format, one unlock story. Two artifacts with two different unlock
+  ceremonies is how someone picks the wrong one in a crisis.
+- **9.2 export / import** *(done — `app/lib/core/archive.dart`)* — streaming export so large blob sets don't blow
   memory; import with forward-compatible schema migration (an archive written
-  at schema 3 must restore on schema 5).
+  at schema 3 must restore on schema 5). Restore builds a **fresh vault** with
+  its own device secret and master key: nothing device-bound travels.
 - **9.3 destination** — user-chosen local file first. Any cloud target is
   user-supplied storage the client writes ciphertext to; the relay never
   stores or proxies backups. That is an explicit anti-goal, not an omission.
@@ -73,9 +85,13 @@ a bespoke history-transfer channel.
   there is no server-side path to be compelled.
 - **9.5 scheduled backup** — optional periodic re-export, off by default.
 
-**Exit:** an archive taken on device A restores byte-faithfully on a wiped
-device B, including attachments; a wrong recovery code fails closed with no
-oracle; an archive from an older schema restores onto the current one in test.
+**Exit:** an archive taken on device A restores every message, contact, group
+and attachment on a wiped device B, and B then re-establishes sessions and
+exchanges messages with a contact who never knew a restore happened; the
+restored vault contains **no** session state; a wrong recovery code fails
+closed with no oracle (and a mistyped one is caught by the code's checksum
+before the KDF runs); an archive from an older schema restores onto the
+current one in test.
 
 ---
 
@@ -97,8 +113,10 @@ sender-side fan-out, **relay unchanged**. M1–M5 there map onto 10.1–10.5.
   Extend the concurrency regression to the multi-device case.
 - **10.3 enrollment ceremony** — QR + 6-word SAS; the new device generates its
   own keys, the existing device signs the cert and hands over the account key
-  and contact list over the verified channel. History comes from a phase-9
-  restore, not a bespoke transfer.
+  and contact list over the verified channel. History for a newly linked
+  device already works: 7.6b replays the newest 200 messages per chat over the
+  self-sync channel. A phase-9 restore is for resurrecting a *dead* device,
+  not for bootstrapping a second live one.
 - **10.4 device-list distribution + revocation** — in-band account-signed
   "device list version N" updates over each existing conversation; contacts
   verify against the account key they hold. Removal publishes N+1 and sessions
@@ -125,7 +143,12 @@ service**, not as relay features.
   Deployed independently; the relay stays RAM-only.
 - **11.2 client verification** — every key used for encryption checked by
   inclusion proof against the current head and consistency proof against the
-  last head seen. **Hard fail**: no send, not a warning banner.
+  last head seen. **A proof that fails is a hard fail**: no send, not a
+  warning banner. A log that is merely *unreachable* is not the same thing and
+  must not be treated as one — hard-failing on unavailability turns a network
+  block into a kill switch, which is precisely the adversary this is for. On
+  unreachable: proceed against the last known-good head, in a visibly degraded
+  state, and refuse only on mismatch or on a head that cannot be reconciled.
 - **11.3 mirrored heads** — cross-published to a public repo and at least one
   independent witness, so a forked view is detectable.
 - **11.4 self-monitoring** — background audit of your own log entries ("am I
@@ -145,14 +168,21 @@ The largest remaining consumer-facing gap now that voice *messages* (7.4) have
 shipped. Depends on phase 10 because a call has to ring a device, not a person.
 
 - **12.1 signalling** — offer/answer/ICE candidates as ordinary sealed
-  envelopes over the existing relay; no call verb the relay can distinguish by
-  size or timing beyond what padding already permits; no call records anywhere.
+  envelopes over the existing relay; no call verb the relay can distinguish;
+  no call records anywhere. Be honest about the limit: a call is a sustained
+  bidirectional flow and is distinguishable from messaging by traffic analysis
+  whatever the padding does. The claim is "no identifiable verb", not "the
+  relay cannot tell a call is happening".
 - **12.2 1:1 voice** — media keys derived from the existing pairwise ratchet,
   SRTP with DTLS as the fallback path; direct P2P preferred.
 - **12.3 video** — same transport, added once voice is stable on real devices.
-- **12.4 relay-assisted path** — TURN only where P2P fails, run as a separate
+- **12.4 relay-assisted path** — TURN where P2P fails, run as a separate
   service with the IP-exposure trade-off written into `DATA_MAP.md` and stated
-  in the UI. Honesty here matters more than the feature does.
+  in the UI. Note which way the disclosure runs: **P2P reveals your IP to the
+  person you are calling**, TURN reveals it to the TURN operator instead. For
+  a product whose whole premise is not trusting infrastructure, "your contact
+  learns your IP" is the surprising one — so the default and the per-call
+  disclosure both need deciding here, not assumed.
 
 **Anti-scope:** group calls via an SFU. A mixer that sees who is talking to
 whom is exactly the metadata concentration this design exists to avoid;
@@ -175,6 +205,12 @@ forges identities even though it cannot read past traffic.
   ML-DSA-65; both signatures required, verification fails if either fails.
 - **13.2 contact code v3** — `zc3.` carrying hybrid account keys and hybrid
   device certs; v2 codes still resolve with a "classical identity" marker.
+  **Open problem to decide in the phase:** ML-DSA-65 public keys are ~2 KB and
+  signatures ~3.3 KB, so a code carrying a hybrid account key plus hybrid
+  device certs does not fit a scannable QR — and scanning is the core
+  onboarding flow. Options: a compact reference in the QR with the PQ half
+  fetched over the resulting session, a multi-part QR, or classical-in-QR with
+  PQ upgrade on first contact. Pick one before 13.1 hardens the format.
 - **13.3 safety number v2** — derived from both key halves. A visible, one-time
   change for every user, so it needs deliberate re-verification UX.
 - **13.4 spec + vectors** — PROTOCOL §18 for v3, a v3 vector suite with an
@@ -195,7 +231,10 @@ the premise of the product. Freeze the protocol at v3 before starting —
 auditing a moving spec wastes the money.
 
 - **14.1 reproducible builds** — deterministic APK/AAB and desktop bundles; two
-  independent machines produce bit-identical artefacts.
+  independent machines produce bit-identical artefacts. Scope this as a spike
+  first: Dart AOT snapshot determinism and AGP build timestamps are not a
+  given, and the answer may be "reproducible with a pinned toolchain image",
+  which is worth knowing before it is promised.
 - **14.2 provenance & signing** — SLSA Build L3 provenance in CI, Sigstore
   signing, artefacts in a public transparency log; the updater verifies
   signature *and* log inclusion before applying.
@@ -223,8 +262,12 @@ Everything currently externally gated, plus the work to call it 1.0.
   desktop vault.
 - **15.3 scale & performance** — large-vault paging, fan-out cost with
   multi-device groups, relay load profile, cold-start time.
-- **15.4 docs & support** — user documentation, recovery guidance, an honest
-  "what a compromised endpoint defeats" page.
+- **15.4 docs & support & access** — user documentation, recovery guidance, an
+  honest "what a compromised endpoint defeats" page. Also the two things
+  missing from this roadmap entirely: **accessibility** (semantics labels and
+  a screen-reader pass on every screen, dynamic type — Play checks this
+  separately from the items cleared in 3.5) and **localization** (strings are
+  hardcoded English today).
 - **15.5 GA criteria checklist** — audit ✓, reproducible builds ✓, KT live ✓,
   backup ✓, multi-device ✓, published threat model ✓.
 
@@ -258,3 +301,52 @@ the sequence reorders cleanly.
 **Rough shape, not a schedule.** 8 and 9 are small; 10, 12 and 13 are each
 multi-patch protocol phases; 11 and 14 are gated on other people (infra
 operator, auditor) so they should be *started* early even if they close late.
+
+---
+
+## Revisions after review
+
+The plan above is as adopted, with these changes made after checking it
+against the code. Each is a correction of fact rather than a change of
+direction; the phases, their order and both ordering arguments stand.
+
+1. **9.1 — session state excluded from the archive.** `conversations.enc_state`
+   is live ratchet state; restoring it risks the same ratchet on two devices,
+   and the relay kicks the older socket for a routing id, so the two would
+   also fight over the mailbox. History restores; sessions re-handshake.
+2. **9.1 — `.zid` folded into the same format** rather than kept as a second
+   artifact with its own unlock ceremony.
+3. **9 exit criteria — "byte-faithfully" replaced.** A faithful restore of
+   session state is precisely what must not happen; the criterion is now that
+   every message and attachment returns *and* B talks to a contact afterwards.
+4. **10.3 — history for a new device already exists** (7.6b, 200 messages per
+   chat over the self-sync channel). Phase 9's value is the sole-device
+   data-loss case, which is argument enough on its own.
+5. **11.2 — mismatch and unavailability separated**, so the log cannot become
+   a censorship-triggered kill switch.
+6. **12.1 / 12.4 — two honesty corrections**: a call is distinguishable from
+   messaging by traffic analysis regardless of padding, and P2P discloses the
+   caller's IP to the callee (the surprising direction, given the premise).
+7. **13.2 — the QR size problem named** as something to decide in the phase.
+8. **14.1 — reproducibility scoped as a spike**; **15.4 — accessibility and
+   localization added**, which the roadmap did not cover anywhere.
+9. **9.1 — the recovery code is 25 Crockford base32 characters, not 12 words.**
+   A word list means shipping and pinning a 2048‑word list per language and
+   getting its provenance right, to solve a transcription problem the encoding
+   can solve on its own: Crockford's alphabet omits I, L, O and U, is
+   case‑insensitive, and folds the usual mis‑copies (I/L→1, O→0) on input. Same
+   entropy class (120 bits + a 5‑bit checksum that catches ~31 of 32
+   single‑character typos before the KDF runs), shorter to type, nothing to
+   localize. `docs/BACKUP.md` §3.
+10. **9.1 — the post‑quantum secret moved from the conversation to the
+   session** (`PROTOCOL.md` §17.1). The phase‑9 round‑trip test showed the
+   restored device receiving nothing: the peer kept mixing the ML‑KEM secret of
+   the era the restore threw away, and rejected the fresh generation‑0 offer as
+   out‑of‑order. The first fix — drop the old session and reset the secret —
+   broke device‑list transparency (7.7a), because a receiver cannot tell a
+   restore from a second device holding the same key, and dropping the replaced
+   session let either one cut the other off. Two live sessions need two live
+   eras, which a conversation‑wide generation counter cannot express. Sessions
+   now carry their own secret; the replaced session is pinned out of the
+   outbound path but stays readable. Covered in both rid orderings, since both
+   the pinning and the PQ roles turn on that comparison.

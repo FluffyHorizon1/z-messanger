@@ -305,6 +305,26 @@ designated side opens the session proactively with a `hello` (§6.2) at
 contact‑add time. Sessions unused for 7 days may be pruned, never the current
 outbound one.
 
+**A peer that lost its state.** A device that reinstalls, or restores from a
+backup (which deliberately carries no session state — `BACKUP.md`), opens a
+brand‑new session while the peer still holds one that was carrying traffic in
+*both* directions. Convergence alone cannot resolve this: it keeps preferring
+whichever session the designated initiator opened, so unless the side that
+restarted happens to be that initiator, every reply would go out on a session
+the peer cannot decrypt. A receiver that accepts a new session while holding
+another it has already *received on* therefore **pins** the new one as its
+outbound session. The narrowness matters: a session it has never received on
+is the simultaneous‑start case above, which convergence already settles, and
+is left alone.
+
+The pinned side is not dropped in favour of the new one, it is merely no
+longer sent on. A receiver cannot distinguish a peer that lost its state from
+a second device holding the same identity key (§3.6), so discarding the
+replaced session would let either of them permanently cut the other off. Once
+a peer has shown that it loses sessions, the receiver simply follows whichever
+session it last heard them speak on. Both remain decryptable, each with its
+own post‑quantum secret (§17.1).
+
 ## 5. Double Ratchet
 
 The Signal Double Ratchet with X25519, HKDF‑SHA256, HMAC‑SHA256 and
@@ -896,9 +916,18 @@ both          : for every message whose header carries `"pq":1`:
 
 Roles are fixed per pair, independent of who opened the DH session: the
 **designated initiator** of §4 (the lower routing id) encapsulates; the other
-party offers. `K` is a property of the conversation, not of one DH session:
-it applies to every session of the pair (a session created by a
-double‑initiation race uses the same `K`), and `resetSessions` discards it.
+party offers.
+
+`K` belongs to the **session**, not to the pair. Two sessions of the same pair
+can be alive at once — the double‑initiation race of §4, and a peer that
+restored from backup and opened a fresh one — and their eras are independent:
+a session negotiates its own `K` from generation 0, and a generation counter
+shared across sessions could not describe both. Mixing one session's `K` into
+another session's message keys makes those messages undecryptable, which is
+exactly what a restore would otherwise cause. A newly opened session therefore
+starts classical and re‑runs §17.3 on its own, while the session it replaced
+keeps the secret of its own era for as long as it is retained.
+`resetSessions` discards the sessions and their secrets together.
 
 ### 17.2 Header extension
 
@@ -920,7 +949,7 @@ transit.
 
 ### 17.3 State machine
 
-Per conversation: `dkSeed` (offerer, pending), `K`, `c` (encapsulator, until
+Per session: `dkSeed` (offerer, pending), `K`, `c` (encapsulator, until
 acknowledged), `acked`, `offered`.
 
 * **Offerer**, on the first successful decryption from the peer or before its

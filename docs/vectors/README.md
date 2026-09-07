@@ -26,6 +26,14 @@ to a frozen file; the freeze test then pins the additions too.
 | `pq_ratchet.json` | the nine‑step upgrade transcript: hello, `pqek` offer, encapsulation, first mixed message with `pqct`, mixed reply, steady state | §17.2–17.3 |
 | `pq_rekey.json` | the periodic re‑key transcript: generation‑0 establishment, rotation to generation 1 (`pqg`, second encapsulation), a delayed old‑generation message that still decrypts, the retained old secret | §17.7 |
 
+`backup/` is a storage format rather than a wire format, so it sits outside the
+protocol version directories; it is frozen on the same terms
+([`../BACKUP.md`](../BACKUP.md)):
+
+| File | Covers | Spec |
+|---|---|---|
+| `archive.json` | `.zbk` backup: the recovery code (entropy → Crockford base32 → checksum, and a mangled transcription parsed back), the Argon2id KAT, the header, and a complete four‑frame archive with every nonce, AAD rule, ciphertext and tag — plus the two cases that must fail (a frame moved to another index, the wrong code) | `BACKUP.md` §3–§4 |
+
 ## Conventions
 
 * Byte strings are lowercase hex. Strings that are literally on the wire —

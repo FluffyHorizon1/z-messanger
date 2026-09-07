@@ -65,6 +65,15 @@ class Session {
   bool receivedAny; // initiator stops attaching `ek` once a reply arrived
   int lastUsedMs;
 
+  /// v2 post-quantum state for THIS session. It belongs to the session and
+  /// not to the conversation: the ML-KEM secret is agreed inside a session's
+  /// key schedule, and two sessions of the same pair can be alive at once
+  /// (§4 initiation race, and a peer that restored from backup and opened a
+  /// fresh one). A shared generation counter could not describe both eras,
+  /// and mixing one era's secret into the other's messages makes them
+  /// undecryptable.
+  final PqState pq;
+
   Session({
     required this.sid,
     required this.initiatorRid,
@@ -72,7 +81,8 @@ class Session {
     required this.ratchet,
     this.receivedAny = false,
     this.lastUsedMs = 0,
-  });
+    PqState? pq,
+  }) : pq = pq ?? PqState();
 
   Map<String, Object?> toJson() => {
         'sid': sid,
@@ -81,9 +91,14 @@ class Session {
         'ratchet': ratchet.toJson(),
         'receivedAny': receivedAny,
         'lastUsedMs': lastUsedMs,
+        'pq': pq.toJson(),
       };
 
-  static Session fromJson(Map<String, Object?> j) => Session(
+  /// [inheritedPq] is the conversation-level state written by builds before
+  /// the per-session split; a stored session without its own `pq` takes it,
+  /// which is exactly right because those vaults only ever had one era.
+  static Session fromJson(Map<String, Object?> j, {PqState? inheritedPq}) =>
+      Session(
         sid: j['sid'] as String,
         initiatorRid: j['initiatorRid'] as String,
         ekPub: unb64(j['ekPub'] as String),
@@ -91,6 +106,9 @@ class Session {
             (j['ratchet'] as Map).cast<String, Object?>()),
         receivedAny: j['receivedAny'] as bool,
         lastUsedMs: (j['lastUsedMs'] as num).toInt(),
+        pq: j['pq'] != null
+            ? PqState.fromJson((j['pq'] as Map).cast<String, Object?>())
+            : inheritedPq?.clone(),
       );
 }
 
@@ -120,8 +138,20 @@ class Conversation {
   final Map<String, Session> sessions;
   String? outboundSid;
 
-  /// v2 post-quantum state, shared by every session of this conversation.
-  final PqState pq;
+  /// The session the peer was last seen actually using, once they have shown
+  /// us they no longer hold the one we were using (see [decrypt]). Null in
+  /// the normal case, where [_converge] decides.
+  String? pinnedSid;
+
+  /// Post-quantum state for a conversation that has no session yet. Live
+  /// state belongs to the session (see [Session.pq]); this only stands in so
+  /// [pq] is never null, and is what a pre-split stored conversation loads
+  /// into before its sessions inherit it.
+  final PqState _idlePq;
+
+  /// v2 post-quantum state of the session we currently send on.
+  PqState get pq =>
+      (outboundSid == null ? null : sessions[outboundSid!])?.pq ?? _idlePq;
 
   /// 7.5b: how often the offering side rotates the ML-KEM secret (post-compromise
   /// security for the PQ layer). 0 (the default, and what the frozen v2 vectors
@@ -139,7 +169,7 @@ class Conversation {
   Conversation._(this.me, this.them, this.myRid, this.theirRid, this.sessions,
       this.outboundSid,
       {PqState? pq, this.postQuantum = true})
-      : pq = pq ?? PqState();
+      : _idlePq = pq ?? PqState();
 
   static Future<Conversation> create(ZIdentity me, ContactBundle them,
       {bool postQuantum = true}) async {
@@ -169,6 +199,16 @@ class Conversation {
       myRid.compareTo(theirRid) < 0 ? myRid : theirRid;
 
   void _converge() {
+    // A pinned session wins outright: the peer has demonstrably lost or
+    // replaced state, and this is the session we last heard them speak on.
+    final pinned = pinnedSid;
+    if (pinned != null) {
+      if (sessions.containsKey(pinned)) {
+        outboundSid = pinned;
+        return;
+      }
+      pinnedSid = null; // it was pruned; fall back to the standing rule
+    }
     // Prefer the session opened by the designated initiator; both sides apply
     // the same rule, so both settle on the same session.
     Session? preferred;
@@ -245,17 +285,24 @@ class Conversation {
   Future<String?> takePqOfferPayload({int? nowMs}) async {
     if (!postQuantum || !isPqOfferer) return null;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
-    // Initial offer (generation 0), made once. The re-key clock starts here, so
-    // the interval is measured from establishment rather than the epoch.
+    // Read the state of the session the offer would actually go out on —
+    // which is not always [outboundSid], and must not be created here unless
+    // there is something to send.
+    final existing = _sendableSession();
+    final pq = existing?.pq ?? _idlePq;
+    // Initial offer (generation 0), made once per SESSION. The re-key clock
+    // starts here, so the interval is measured from establishment rather than
+    // the epoch.
     if (!pq.established && !pq.offered) {
+      final session = existing ?? await _initiateSession();
       final (seed, ek) = pqGenerate();
-      pq
+      session.pq
         ..dkSeed = seed
         ..offered = true
         ..offerGen = 0
         ..lastRekeyMs = now;
       final offer = InnerMessage.pqOffer(newMessageId(), now, ek);
-      return encrypt(offer.toBytes(), nowMs: nowMs);
+      return _encryptOn(session, offer.toBytes(), nowMs: nowMs);
     }
     // 7.5b re-key offer: established, an interval is set and due, and no offer
     // for a higher generation is already outstanding.
@@ -263,14 +310,15 @@ class Conversation {
         pqRekeyIntervalMs > 0 &&
         pq.offerGen <= pq.gen &&
         now - pq.lastRekeyMs >= pqRekeyIntervalMs) {
-      final nextGen = pq.gen + 1;
+      final session = existing!; // established implies a sendable session
+      final nextGen = session.pq.gen + 1;
       final (seed, ek) = pqGenerate();
-      pq
+      session.pq
         ..dkSeed = seed
         ..offerGen = nextGen
         ..lastRekeyMs = now;
       final offer = InnerMessage.pqOffer(newMessageId(), now, ek, gen: nextGen);
-      return encrypt(offer.toBytes(), nowMs: nowMs);
+      return _encryptOn(session, offer.toBytes(), nowMs: nowMs);
     }
     return null;
   }
@@ -279,34 +327,47 @@ class Conversation {
   /// interval (used by tests and vector generation; also available if the app
   /// wants a user-driven "rotate keys"). No-op off the offerer side.
   Future<String?> forcePqRekey({int? nowMs}) async {
-    if (!postQuantum || !isPqOfferer || !pq.established) return null;
-    if (pq.offerGen > pq.gen) return null; // one already outstanding
+    if (!postQuantum || !isPqOfferer) return null;
+    final session = _sendableSession();
+    if (session == null || !session.pq.established) return null;
+    if (session.pq.offerGen > session.pq.gen) return null; // one outstanding
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
-    final nextGen = pq.gen + 1;
+    final nextGen = session.pq.gen + 1;
     final (seed, ek) = pqGenerate();
-    pq
+    session.pq
       ..dkSeed = seed
       ..offerGen = nextGen
       ..lastRekeyMs = now;
     final offer = InnerMessage.pqOffer(newMessageId(), now, ek, gen: nextGen);
-    return encrypt(offer.toBytes(), nowMs: nowMs);
+    return _encryptOn(session, offer.toBytes(), nowMs: nowMs);
   }
 
   /// Encrypts [plaintext] for this contact, creating a session if none
   /// exists. Returns the opaque transport payload (a base64 string the relay
   /// cannot interpret). Persist this conversation's state BEFORE sending.
-  Future<String> encrypt(Uint8List plaintext, {int? nowMs}) async {
-    Session? session = outboundSid == null ? null : sessions[outboundSid!];
-    if (session == null || session.ratchet.cks == null) {
-      // Either no session at all, or we only hold a responder session on
-      // which we have not yet received anything (cannot send on it).
-      final usable = sessions.values
-          .where((s) => s.ratchet.cks != null)
-          .toList()
-        ..sort((a, b) => b.lastUsedMs.compareTo(a.lastUsedMs));
-      session = usable.isNotEmpty ? usable.first : await _initiateSession();
-    }
-    final msg = await ratchetEncrypt(session.ratchet, plaintext, pq: pq);
+  Future<String> encrypt(Uint8List plaintext, {int? nowMs}) async =>
+      _encryptOn(await _outboundSession(), plaintext, nowMs: nowMs);
+
+  /// The session outgoing traffic goes on, or null if there is none we can
+  /// send on yet.
+  Session? _sendableSession() {
+    final session = outboundSid == null ? null : sessions[outboundSid!];
+    if (session != null && session.ratchet.cks != null) return session;
+    // Either no session at all, or we only hold a responder session on which
+    // we have not yet received anything (cannot send on it).
+    final usable = sessions.values.where((s) => s.ratchet.cks != null).toList()
+      ..sort((a, b) => b.lastUsedMs.compareTo(a.lastUsedMs));
+    return usable.isNotEmpty ? usable.first : null;
+  }
+
+  /// The session outgoing traffic goes on, opening one if there is none.
+  Future<Session> _outboundSession() async =>
+      _sendableSession() ?? await _initiateSession();
+
+  Future<String> _encryptOn(Session session, Uint8List plaintext,
+      {int? nowMs}) async {
+    final msg =
+        await ratchetEncrypt(session.ratchet, plaintext, pq: session.pq);
     session.lastUsedMs = nowMs ?? DateTime.now().millisecondsSinceEpoch;
 
     final payload = <String, Object?>{
@@ -360,15 +421,46 @@ class Conversation {
       cipherText: unb64(j['ct'] as String),
       mac: unb64(j['mac'] as String),
     );
-    final plain = await ratchetDecrypt(session.ratchet, msg, pq: pq);
+    final plain = await ratchetDecrypt(session.ratchet, msg, pq: session.pq);
     session.receivedAny = true;
     session.lastUsedMs = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+
+    // Which session do we answer on? Normally [_converge] decides, and both
+    // sides apply the same rule. But a peer that opens a BRAND-NEW session
+    // while we hold one that was already carrying traffic in both directions
+    // has lost its state — a reinstall, or a restore from backup (§9), which
+    // deliberately does not carry session state. Convergence keeps preferring
+    // whichever session the designated initiator opened, so unless the peer
+    // that restarted happens to be that initiator we would go on replying on
+    // a session they cannot decrypt, and every reply would vanish. Pin the
+    // one they opened instead.
+    //
+    // The condition is narrow on purpose: a session that has never received
+    // anything is the simultaneous-initiation race (§4), which convergence
+    // already resolves, and is left alone.
+    //
+    // The old session is KEPT. We cannot tell a peer that lost its state from
+    // a second device holding the same identity key, and if the first one
+    // speaks again we must still be able to read it — dropping the session
+    // here would let anyone able to open one session cut the other off. So
+    // once a peer has shown us they lose sessions, we simply follow whichever
+    // one they actually speak on. Each session carries its own post-quantum
+    // secret ([Session.pq]), so the new session re-handshakes from classical
+    // while the old one keeps the secret of its own era.
+    if (created) {
+      if (sessions.values.any((s) => s.sid != sid && s.receivedAny)) {
+        pinnedSid = sid;
+      }
+    } else if (pinnedSid != null && pinnedSid != sid) {
+      pinnedSid = sid;
+    }
     _converge();
 
     // v2: the encapsulating side acts on an inbound offer — the initial one and
     // (7.5b) every re-key offer; the offering side makes its offer as soon as
-    // it has heard from the peer, and re-key offers ride later messages.
-    if (postQuantum && !isPqOfferer) _acceptPqOffer(plain);
+    // it has heard from the peer, and re-key offers ride later messages. Both
+    // are scoped to the session the message arrived on.
+    if (postQuantum && !isPqOfferer) _acceptPqOffer(session.pq, plain);
     final offerPayload =
         isPqOfferer ? await takePqOfferPayload(nowMs: nowMs) : null;
     return DecryptResult(plain, sid, created, pqOfferPayload: offerPayload);
@@ -378,7 +470,7 @@ class Conversation {
   /// it. The initial offer (generation 0) establishes the secret; a re-key
   /// offer (generation gen+1) rotates it, retaining the outgoing generation for
   /// the crossover. Anything malformed or out-of-order is ignored.
-  void _acceptPqOffer(Uint8List plain) {
+  void _acceptPqOffer(PqState pq, Uint8List plain) {
     if (!InnerMessage.looksLikeKind(plain, 'pqek')) return;
     try {
       final inner = InnerMessage.fromBytes(plain);
@@ -417,13 +509,17 @@ class Conversation {
   void resetSessions() {
     sessions.clear();
     outboundSid = null;
-    pq.copyFrom(PqState());
+    pinnedSid = null;
+    _idlePq.copyFrom(PqState());
   }
 
   Map<String, Object?> toJson() => {
         'them': them.toJson(),
         'outboundSid': outboundSid,
+        if (pinnedSid != null) 'pinnedSid': pinnedSid,
         'sessions': {for (final e in sessions.entries) e.key: e.value.toJson()},
+        // The live session's state, also written at this level so a build
+        // that predates the per-session split still reads a usable value.
         'pq': pq.toJson(),
       };
 
@@ -432,14 +528,17 @@ class Conversation {
     final them =
         ContactBundle.fromJson((j['them'] as Map).cast<String, Object?>());
     final conv = await create(me, them, postQuantum: postQuantum);
+    final legacyPq =
+        PqState.fromJson((j['pq'] as Map?)?.cast<String, Object?>());
+    conv._idlePq.copyFrom(legacyPq);
     final sess = (j['sessions'] as Map).cast<String, Object?>();
     for (final e in sess.entries) {
-      conv.sessions[e.key] =
-          Session.fromJson((e.value as Map).cast<String, Object?>());
+      conv.sessions[e.key] = Session.fromJson(
+          (e.value as Map).cast<String, Object?>(),
+          inheritedPq: legacyPq);
     }
     conv.outboundSid = j['outboundSid'] as String?;
-    conv.pq
-        .copyFrom(PqState.fromJson((j['pq'] as Map?)?.cast<String, Object?>()));
+    conv.pinnedSid = j['pinnedSid'] as String?;
     return conv;
   }
 }

@@ -6,7 +6,8 @@ specified and tested, what is in and out of scope, what we already know is
 weak, and how to run everything. It is written so a reviewer can start
 without a call. Companion documents: `PROTOCOL.md` (normative wire format,
 frozen v1 + the v2 post‑quantum extension), `THREAT_MODEL.md` (what we do
-and do not protect against), `adr/0001-key-transparency.md` (the one design
+and do not protect against), `BACKUP.md` (the `.zbk` archive format and what
+it deliberately refuses to restore), `adr/0001-key-transparency.md` (the one design
 decision that changes the trust model), `SECURITY.md` (disclosure).
 
 ## 1. What we are asking for
@@ -53,7 +54,8 @@ like the review to either confirm or break each one.
 | C9 | Groups: no shared key; a member removed before a send never receives the key; membership only changes over the admin's authenticated channel. | §11 | `app/test/group_test.dart` |
 | C10 | Device‑list transparency: silent enrolment, split views and silent removal are surfaced to the owner and to a contact; an honest addition raises nothing; a rogue that answers a device's request from the root's mailbox is still caught. | §3.6, `adr/0001` | `app/test/devlist_transparency_test.dart`, `devlist_distribution_test.dart` |
 | C11 | Plaintext never touches disk: vault cells, attachments, voice capture, search, history sync. The biometric pass key opens the vault only through the OS prompt (on Android the keystore enforces that itself), is bound to the passphrase salt, and is removed with the feature. | §13, app invariants | `vault_passphrase_test.dart` (pass‑key path), `app_lock_test.dart` (incl. bound‑store cases), `lock_screen_test.dart`, `search_test.dart` (stored cells checked), `voice.dart` design, `BioKey.kt` review |
-| C12 | The wire format is frozen: any change to bytes an implementation computes fails CI; compatible extensions are additive only. | §14, `vectors/README.md` | `protocol/test/vectors_test.dart` freeze, Node clean‑room replay (13 suites) |
+| C12 | The wire format is frozen: any change to bytes an implementation computes fails CI; compatible extensions are additive only. | §14, `vectors/README.md` | `protocol/test/vectors_test.dart` freeze, Node clean‑room replay (15 suites) |
+| C13 | A backup archive restores history onto a wiped device without ever restoring session state; a wrong recovery code, a truncated file or a moved frame all fail closed with no oracle; the restored device re‑handshakes, including the post‑quantum layer, rather than silently downgrading. | `BACKUP.md` | `app/test/backup_test.dart` (round trip, fail‑closed, schema compatibility), `protocol/test/archive_test.dart`, `backup/archive.json` replayed by Node |
 
 ## 4. Where we would like the most attention
 
@@ -170,16 +172,16 @@ derivations themselves).
 ## 7. Artifacts and how to run them
 
 ```
-# Protocol library: 84 tests incl. the vector freeze
+# Protocol library: 94 tests incl. the vector freeze
 cd protocol && dart test
 
-# Relay: 40 tests incl. the clean-room vector replay (13 suites, no shared code)
+# Relay: 42 tests incl. the clean-room vector replay (15 suites, no shared code)
 cd server && npm test
 
 # ML-KEM values re-derived by an unrelated FIPS 203 implementation
 pip install kyber-py==1.2.0 && python3 protocol/tool/verify_mlkem.py
 
-# App: 13 test files, most driving real clients through the real relay
+# App: 19 test files, most driving real clients through the real relay
 # (each spawns its own relay process; node must be on PATH)
 cd app && flutter test
 

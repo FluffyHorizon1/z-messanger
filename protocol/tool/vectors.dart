@@ -1458,6 +1458,229 @@ Future<Map<String, Object?>> suitePqRekey(List<Actor> a) async {
 }
 
 /// Generate every suite: `{ 'v1': {name: doc}, 'v2': {name: doc} }`.
+// ---------------------------------------------------------------------------
+// Backup archive (§9) — recovery code + `.zbk` frame layer
+// ---------------------------------------------------------------------------
+
+Future<Map<String, Object?>> suiteBackup() async {
+  final d = Drbg(0x0009);
+
+  // The recovery code: 120 bits, Crockford base32, one checksum character.
+  final code = await d.run(() async => RecoveryCode.generate());
+  final entropyDraws = d.takeDraws();
+  check(entropyDraws.length == 1 && entropyDraws[0].length == 15,
+      'recovery code draws 15 bytes and nothing else');
+  final formatted = await code.format();
+  final material = await code.keyMaterial();
+  check(formatted.startsWith('ZBK-') && formatted.length == 4 + 25 + 4,
+      'formatted code shape');
+  check(utf8.decode(material) == formatted.substring(4).replaceAll('-', ''),
+      'key material is the canonical 25 characters');
+
+  // A transcription mangled the way people actually mangle one — lower case,
+  // spaces for dashes, letter-o for zero, letter-l for one — parses back to
+  // the same 120 bits.
+  final mangled = formatted
+      .toLowerCase()
+      .replaceAll('-', ' ')
+      .replaceAll('0', 'o')
+      .replaceAll('1', 'l');
+  final reparsed = await RecoveryCode.parse(mangled);
+  check(eq(reparsed.entropy, code.entropy), 'mangled code parses back');
+
+  // Every character of the code, flipped one at a time, must be caught by the
+  // checksum or the alphabet — never silently accepted as a different code.
+  var typosCaught = 0, typosTried = 0;
+  final canonical = formatted.substring(4).replaceAll('-', '');
+  for (var i = 0; i < canonical.length; i++) {
+    for (final c in RecoveryCode.alphabet.split('')) {
+      if (c == canonical[i]) continue;
+      typosTried++;
+      final bad = canonical.replaceRange(i, i + 1, c);
+      try {
+        final got = await RecoveryCode.parse(bad);
+        check(!eq(got.entropy, code.entropy), 'a typo cannot be the same code');
+      } on FormatException {
+        typosCaught++;
+      }
+    }
+  }
+
+  // The archive itself: header line, then sealed frames.
+  final salt = d.next(16);
+  final noncePrefix = d.next(16);
+  final key = await ZArchive.deriveKey(material, salt);
+  final keyBytes = Uint8List.fromList(await key.extractBytes());
+  const createdMs = 1700000000000;
+  const schema = 3;
+  final header = ZArchive.buildHeader(
+      salt: salt,
+      noncePrefix: noncePrefix,
+      schema: schema,
+      createdMs: createdMs);
+
+  final blobBytes =
+      Uint8List.fromList(List.generate(48, (i) => (i * 7) & 0xff));
+  final bodies = <(int, List<int>)>[
+    (
+      ZArchive.kindRecord,
+      utf8.encode(jsonEncode(
+          {'t': 'meta', 'app': 'z', 'schema': schema, 'name': 'Alice'}))
+    ),
+    (
+      ZArchive.kindRecord,
+      utf8.encode(jsonEncode({
+        't': 'message',
+        'mid': 'm-0001',
+        'rid': 'contact-rid',
+        'out': 1,
+        'kind': 'text',
+        'body': 'the survey data is ready',
+        'ts': createdMs,
+        'status': 2,
+        'expire': 0,
+      }))
+    ),
+    (ZArchive.kindBlob, ZArchive.blobPayload('F1', blobBytes)),
+    (ZArchive.kindEnd, utf8.encode(jsonEncode({'t': 'end', 'records': 2}))),
+  ];
+
+  final frames = <Map<String, Object?>>[];
+  final file = BytesBuilder()
+    ..add(header)
+    ..addByte(0x0a);
+  final sealedAll = <Uint8List>[];
+  for (var i = 0; i < bodies.length; i++) {
+    final (kind, payload) = bodies[i];
+    final sealed = await ZArchive.sealFrame(
+        key: key,
+        header: header,
+        noncePrefix: noncePrefix,
+        index: i,
+        kind: kind,
+        payload: payload);
+    sealedAll.add(sealed);
+    final (gotKind, gotPayload) = await ZArchive.openFrame(
+        key: key,
+        header: header,
+        noncePrefix: noncePrefix,
+        index: i,
+        sealed: sealed);
+    check(gotKind == kind && eq(gotPayload, payload), 'frame $i round trip');
+    final nonce = Uint8List(24)..setRange(0, 16, noncePrefix);
+    ByteData.view(nonce.buffer).setUint64(16, i);
+    final len = ByteData(4)..setUint32(0, sealed.length);
+    file
+      ..add(len.buffer.asUint8List())
+      ..add(sealed);
+    frames.add({
+      'index': i,
+      'kind': kind,
+      'nonce': hex(nonce),
+      'plaintext': hex([kind, ...payload]),
+      if (kind != ZArchive.kindBlob) 'payload_json': utf8.decode(payload),
+      'ciphertext': hex(sealed.sublist(0, sealed.length - 16)),
+      'mac': hex(sealed.sublist(sealed.length - 16)),
+    });
+  }
+  final (blobFid, blobBack) = ZArchive.parseBlobPayload(
+      bodies[2].$2 is Uint8List
+          ? bodies[2].$2 as Uint8List
+          : Uint8List.fromList(bodies[2].$2));
+  check(blobFid == 'F1' && eq(blobBack, blobBytes), 'blob frame body layout');
+
+  // Negative cases, recorded so another implementation can check that it also
+  // refuses them: a frame moved to another index, and the wrong code.
+  var moved = false;
+  try {
+    await ZArchive.openFrame(
+        key: key,
+        header: header,
+        noncePrefix: noncePrefix,
+        index: 0,
+        sealed: sealedAll[1]);
+  } on FormatException {
+    moved = true;
+  }
+  check(moved, 'a frame moved to another index fails');
+
+  final wrongKey = await ZArchive.deriveKey(
+      await RecoveryCode(Uint8List(15)).keyMaterial(), salt);
+  var wrong = false;
+  try {
+    await ZArchive.openFrame(
+        key: wrongKey,
+        header: header,
+        noncePrefix: noncePrefix,
+        index: 0,
+        sealed: sealedAll[0]);
+  } on FormatException {
+    wrong = true;
+  }
+  check(wrong, 'the wrong recovery code fails');
+
+  final fileBytes = file.takeBytes();
+  return {
+    'suite': 'backup_archive',
+    'version': vectorsVersion,
+    'description':
+        'Backup archive (.zbk): a plaintext header line, then length-prefixed '
+            'XChaCha20-Poly1305 frames under one Argon2id-derived key. '
+            'nonce = np(16) || uint64be(index); aad = header_bytes || '
+            'uint64be(index), which pins each frame to its position in this '
+            'archive. Frame plaintext is [kind byte][body]; the last frame is '
+            'the terminator, whose absence means the file was truncated.',
+    'recovery_code': {
+      'entropy': hex(code.entropy),
+      'alphabet': RecoveryCode.alphabet,
+      'formatted': formatted,
+      'canonical': canonical,
+      'key_material': hex(material),
+      'checksum_rule': 'sha256(entropy)[0] & 0x1f indexes the alphabet',
+      'mangled_input': mangled,
+      'typo_variants_tried': typosTried,
+      'typo_variants_rejected': typosCaught,
+    },
+    'kdf': {
+      'name': 'argon2id',
+      'rfc': 9106,
+      'memory_kib': ZArchive.kdfMemoryKib,
+      'iterations': ZArchive.kdfIterations,
+      'parallelism': ZArchive.kdfParallelism,
+      'password': hex(material),
+      'salt': hex(salt),
+      'tag_len': 32,
+      'key': hex(keyBytes),
+    },
+    'header': {
+      'bytes': hex(header),
+      'json': utf8.decode(header),
+      'nonce_prefix': hex(noncePrefix),
+      'aad_rule': 'header_bytes || uint64be(frame_index)',
+    },
+    'frame_kinds': {
+      'record': ZArchive.kindRecord,
+      'blob': ZArchive.kindBlob,
+      'end': ZArchive.kindEnd,
+    },
+    'blob_body': {
+      'layout': 'uint8 id_len || id || bytes',
+      'fid': 'F1',
+      'bytes': hex(blobBytes),
+    },
+    'frames': frames,
+    'must_fail': {
+      'frame_1_opened_at_index_0': hex(sealedAll[1]),
+      'wrong_code_entropy': hex(Uint8List(15)),
+    },
+    'file': {
+      'bytes': hex(fileBytes),
+      'len': fileBytes.length,
+      'sha256': hex(await refSha256(fileBytes)),
+    },
+  };
+}
+
 Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
   final a = await actors();
   return {
@@ -1475,6 +1698,9 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
       'mlkem768': await suiteMlKem(),
       'pq_ratchet': await suitePqRatchet(a),
       'pq_rekey': await suitePqRekey(a),
+    },
+    'backup': {
+      'archive': await suiteBackup(),
     },
   };
 }

@@ -966,3 +966,115 @@ test('v2 pq_rekey: the re-key transcript replays with generation tracking', () =
   assert.ok(conv[offName].pq.k.equals(K1) && conv[encName].pq.k.equals(K1));
   assert.ok(conv[encName].pq.acked, 'gen-1 ciphertext acknowledged');
 });
+
+// ===========================================================================
+// Backup archive (§9). Node has no Argon2id, so the key is taken from the
+// vector — the KDF step is a standard RFC 9106 KAT (password, salt, m/t/p,
+// tag length, output are all recorded) that any Argon2id implementation can
+// reproduce, and the Dart suite checks it on every run. Everything BUILT on
+// that key is re-derived here from the recorded bytes with no shared code:
+// the nonce, the associated data, the frame layout and the two failures the
+// format exists to catch.
+// ===========================================================================
+const BK_DIR = path.join(__dirname, '..', '..', 'docs', 'vectors', 'backup');
+const loadBk = (name) => JSON.parse(fs.readFileSync(path.join(BK_DIR, `${name}.json`), 'utf8'));
+
+const u64be = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; };
+
+test('backup archive: every frame opens at its own index and nowhere else', () => {
+  const v = loadBk('archive');
+  const key = unhex(v.kdf.key);
+  const file = unhex(v.file.bytes);
+  assert.equal(file.length, v.file.len);
+  assert.equal(hex(sha256(file)), v.file.sha256);
+
+  // Header: a plaintext JSON line, terminated by \n.
+  const nl = file.indexOf(0x0a);
+  const header = file.subarray(0, nl);
+  assert.equal(hex(header), v.header.bytes);
+  const h = JSON.parse(header.toString('utf8'));
+  assert.equal(h.z, 'zbk');
+  assert.equal(h.v, 1);
+  assert.equal(h.kdf, 'argon2id');
+  assert.equal(h.m, v.kdf.memory_kib);
+  assert.equal(h.t, v.kdf.iterations);
+  assert.equal(h.p, v.kdf.parallelism);
+  assert.equal(hex(Buffer.from(h.salt, 'base64')), v.kdf.salt);
+  const np = Buffer.from(h.np, 'base64');
+  assert.equal(hex(np), v.header.nonce_prefix);
+
+  // Frames: [u32be len][ciphertext || mac], nonce = np || u64be(i),
+  // aad = header || u64be(i).
+  let off = nl + 1;
+  let i = 0;
+  let records = 0;
+  let sawEnd = false;
+  const sealedAll = [];
+  for (const f of v.frames) {
+    const len = file.readUInt32BE(off); off += 4;
+    const sealed = file.subarray(off, off + len); off += len;
+    sealedAll.push(sealed);
+    assert.equal(hex(sealed), f.ciphertext + f.mac, `frame ${i} bytes`);
+    const nonce = cat(np, u64be(i));
+    assert.equal(hex(nonce), f.nonce, `frame ${i} nonce`);
+    const plain = xchachaOpen(key, nonce,
+      sealed.subarray(0, sealed.length - 16),
+      sealed.subarray(sealed.length - 16),
+      cat(header, u64be(i)));
+    assert.equal(hex(plain), f.plaintext, `frame ${i} plaintext`);
+    assert.equal(plain[0], f.kind, `frame ${i} kind byte`);
+    const body = plain.subarray(1);
+    if (f.kind === v.frame_kinds.blob) {
+      const idLen = body[0];
+      assert.equal(body.subarray(1, 1 + idLen).toString('utf8'), v.blob_body.fid);
+      assert.equal(hex(body.subarray(1 + idLen)), v.blob_body.bytes);
+    } else {
+      assert.equal(body.toString('utf8'), f.payload_json, `frame ${i} json`);
+      const rec = JSON.parse(f.payload_json);
+      if (f.kind === v.frame_kinds.end) { sawEnd = true; assert.equal(rec.records, records); }
+      else records++;
+    }
+    i++;
+  }
+  assert.equal(off, file.length, 'the file is exactly its frames');
+  assert.ok(sawEnd, 'the archive ends with a terminator');
+
+  // A frame lifted to another index must not open: the index is in both the
+  // nonce and the aad, so reordering and duplication are detected.
+  assert.equal(hex(sealedAll[1]), v.must_fail.frame_1_opened_at_index_0);
+  assert.throws(() => xchachaOpen(key, cat(np, u64be(0)),
+    sealedAll[1].subarray(0, sealedAll[1].length - 16),
+    sealedAll[1].subarray(sealedAll[1].length - 16),
+    cat(header, u64be(0))));
+
+  // …and neither does the right frame under a key that is not this archive's.
+  const notTheKey = sha256(utf8('not the archive key'));
+  assert.throws(() => xchachaOpen(notTheKey, cat(np, u64be(0)),
+    sealedAll[0].subarray(0, sealedAll[0].length - 16),
+    sealedAll[0].subarray(sealedAll[0].length - 16),
+    cat(header, u64be(0))));
+});
+
+test('backup archive: the recovery code decodes to the recorded entropy', () => {
+  const v = loadBk('archive');
+  const A = v.recovery_code.alphabet;
+  assert.equal(A, '0123456789ABCDEFGHJKMNPQRSTVWXYZ');
+  assert.equal(A.length, 32);
+  for (const c of 'ILOU') assert.ok(!A.includes(c), `${c} is excluded`);
+
+  // Normalise the printed form the way a reader must: drop the prefix and
+  // separators, upper-case, fold the confusable letters onto digits.
+  const canonical = v.recovery_code.mangled_input
+    .toUpperCase().replace(/^\s*ZBK\s*[-\s]?/, '').replace(/[\s\-_]/g, '')
+    .replace(/[IL]/g, '1').replace(/O/g, '0');
+  assert.equal(canonical, v.recovery_code.canonical);
+  assert.equal(canonical.length, 25);
+  assert.equal(hex(utf8(canonical)), v.recovery_code.key_material);
+
+  // 24 data characters are 120 bits, big-endian; the 25th is the checksum.
+  let bits = '';
+  for (let i = 0; i < 24; i++) bits += A.indexOf(canonical[i]).toString(2).padStart(5, '0');
+  const entropy = Buffer.from(bits.match(/.{8}/g).map((b) => parseInt(b, 2)));
+  assert.equal(hex(entropy), v.recovery_code.entropy);
+  assert.equal(canonical[24], A[sha256(entropy)[0] & 0x1f], 'checksum character');
+});

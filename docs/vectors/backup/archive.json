@@ -1,0 +1,89 @@
+{
+  "suite": "backup_archive",
+  "version": 1,
+  "description": "Backup archive (.zbk): a plaintext header line, then length-prefixed XChaCha20-Poly1305 frames under one Argon2id-derived key. nonce = np(16) || uint64be(index); aad = header_bytes || uint64be(index), which pins each frame to its position in this archive. Frame plaintext is [kind byte][body]; the last frame is the terminator, whose absence means the file was truncated.",
+  "recovery_code": {
+    "entropy": "646070befe52afae62eaaf875e8a2d",
+    "alphabet": "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+    "formatted": "ZBK-CHG71-FQYAA-QTWRQ-ANY3N-X2HD2",
+    "canonical": "CHG71FQYAAQTWRQANY3NX2HD2",
+    "key_material": "434847373146515941415154575251414e59334e5832484432",
+    "checksum_rule": "sha256(entropy)[0] & 0x1f indexes the alphabet",
+    "mangled_input": "zbk chg7l fqyaa qtwrq any3n x2hd2",
+    "typo_variants_tried": 775,
+    "typo_variants_rejected": 751
+  },
+  "kdf": {
+    "name": "argon2id",
+    "rfc": 9106,
+    "memory_kib": 19456,
+    "iterations": 2,
+    "parallelism": 1,
+    "password": "434847373146515941415154575251414e59334e5832484432",
+    "salt": "b689b544e52bec4360603197d68ce9c8",
+    "tag_len": 32,
+    "key": "9995b9fef1cf293c6dd6cd59ee6fddc53a583b715ff40b3e9f489f9c647769c8"
+  },
+  "header": {
+    "bytes": "7b227a223a227a626b222c2276223a312c22617070223a227a222c226b6466223a226172676f6e326964222c226d223a31393435362c2274223a322c2270223a312c2273616c74223a22746f6d31524f557237454e6759444758316f7a7079413d3d222c226e70223a226f5964594c33697a4e6b502b613436417066525748513d3d222c22736368656d61223a332c2263726561746564223a313730303030303030303030307d",
+    "json": "{\"z\":\"zbk\",\"v\":1,\"app\":\"z\",\"kdf\":\"argon2id\",\"m\":19456,\"t\":2,\"p\":1,\"salt\":\"tom1ROUr7ENgYDGX1ozpyA==\",\"np\":\"oYdYL3izNkP+a46ApfRWHQ==\",\"schema\":3,\"created\":1700000000000}",
+    "nonce_prefix": "a187582f78b33643fe6b8e80a5f4561d",
+    "aad_rule": "header_bytes || uint64be(frame_index)"
+  },
+  "frame_kinds": {
+    "record": 0,
+    "blob": 1,
+    "end": 2
+  },
+  "blob_body": {
+    "layout": "uint8 id_len || id || bytes",
+    "fid": "F1",
+    "bytes": "00070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b4249"
+  },
+  "frames": [
+    {
+      "index": 0,
+      "kind": 0,
+      "nonce": "a187582f78b33643fe6b8e80a5f4561d0000000000000000",
+      "plaintext": "007b2274223a226d657461222c22617070223a227a222c22736368656d61223a332c226e616d65223a22416c696365227d",
+      "payload_json": "{\"t\":\"meta\",\"app\":\"z\",\"schema\":3,\"name\":\"Alice\"}",
+      "ciphertext": "85c614dc4a3460da1eedb4a4985ab79fbdec577c912407bb3a1d3ce99a8232807ce7889978d92e1a8a68dbbd9a23c7d207",
+      "mac": "c42faa33463554bd4f9f4d4223d87d87"
+    },
+    {
+      "index": 1,
+      "kind": 0,
+      "nonce": "a187582f78b33643fe6b8e80a5f4561d0000000000000001",
+      "plaintext": "007b2274223a226d657373616765222c226d6964223a226d2d30303031222c22726964223a22636f6e746163742d726964222c226f7574223a312c226b696e64223a2274657874222c22626f6479223a22746865207375727665792064617461206973207265616479222c227473223a313730303030303030303030302c22737461747573223a322c22657870697265223a307d",
+      "payload_json": "{\"t\":\"message\",\"mid\":\"m-0001\",\"rid\":\"contact-rid\",\"out\":1,\"kind\":\"text\",\"body\":\"the survey data is ready\",\"ts\":1700000000000,\"status\":2,\"expire\":0}",
+      "ciphertext": "647052c2a51acbca5d5becd124231b1489e906894cdf5d0914f45295f7166d96f357f3cf0901ab71c8a59eb22a9f7ea2e5a91a580a7d88d888fa32694a89d0cb54dba1a39032154b96b964bb03ed2cb788d6fa65a6852739fecdc5fca7963645e6b08878c8113ced47ab1afbc03a643175b7818c07a54560d780a054855fa8aabf817a037cedf181733090c597bd57d5bf68a14e",
+      "mac": "36eaa64481d27543a2437de354c49639"
+    },
+    {
+      "index": 2,
+      "kind": 1,
+      "nonce": "a187582f78b33643fe6b8e80a5f4561d0000000000000002",
+      "plaintext": "0102463100070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b4249",
+      "ciphertext": "30a00836812000e4b417a6ddd701230aae6548fb2532deedf156e355d80fd4831c2c92d03093d4aff58cd4d7eb0f9e0512e2bf0b",
+      "mac": "46ee35c82b41d7ab769539707cd8ba95"
+    },
+    {
+      "index": 3,
+      "kind": 2,
+      "nonce": "a187582f78b33643fe6b8e80a5f4561d0000000000000003",
+      "plaintext": "027b2274223a22656e64222c227265636f726473223a327d",
+      "payload_json": "{\"t\":\"end\",\"records\":2}",
+      "ciphertext": "eeaac53ed1b21c93ba9c28f17d85f5c4f3005c1899219d16",
+      "mac": "38d9094fc23ee02b650525c31afd4172"
+    }
+  ],
+  "must_fail": {
+    "frame_1_opened_at_index_0": "647052c2a51acbca5d5becd124231b1489e906894cdf5d0914f45295f7166d96f357f3cf0901ab71c8a59eb22a9f7ea2e5a91a580a7d88d888fa32694a89d0cb54dba1a39032154b96b964bb03ed2cb788d6fa65a6852739fecdc5fca7963645e6b08878c8113ced47ab1afbc03a643175b7818c07a54560d780a054855fa8aabf817a037cedf181733090c597bd57d5bf68a14e36eaa64481d27543a2437de354c49639",
+    "wrong_code_entropy": "000000000000000000000000000000"
+  },
+  "file": {
+    "bytes": "7b227a223a227a626b222c2276223a312c22617070223a227a222c226b6466223a226172676f6e326964222c226d223a31393435362c2274223a322c2270223a312c2273616c74223a22746f6d31524f557237454e6759444758316f7a7079413d3d222c226e70223a226f5964594c33697a4e6b502b613436417066525748513d3d222c22736368656d61223a332c2263726561746564223a313730303030303030303030307d0a0000004185c614dc4a3460da1eedb4a4985ab79fbdec577c912407bb3a1d3ce99a8232807ce7889978d92e1a8a68dbbd9a23c7d207c42faa33463554bd4f9f4d4223d87d87000000a4647052c2a51acbca5d5becd124231b1489e906894cdf5d0914f45295f7166d96f357f3cf0901ab71c8a59eb22a9f7ea2e5a91a580a7d88d888fa32694a89d0cb54dba1a39032154b96b964bb03ed2cb788d6fa65a6852739fecdc5fca7963645e6b08878c8113ced47ab1afbc03a643175b7818c07a54560d780a054855fa8aabf817a037cedf181733090c597bd57d5bf68a14e36eaa64481d27543a2437de354c496390000004430a00836812000e4b417a6ddd701230aae6548fb2532deedf156e355d80fd4831c2c92d03093d4aff58cd4d7eb0f9e0512e2bf0b46ee35c82b41d7ab769539707cd8ba9500000028eeaac53ed1b21c93ba9c28f17d85f5c4f3005c1899219d1638d9094fc23ee02b650525c31afd4172",
+    "len": 521,
+    "sha256": "6d551e7f474c169e6a1976d58df6b661a2e43543fa1fe81aef685d1ec1ba06f0"
+  }
+}

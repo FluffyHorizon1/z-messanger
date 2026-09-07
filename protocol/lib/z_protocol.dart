@@ -4,6 +4,7 @@
 /// is testable headlessly and reusable in other Dart frontends.
 library z_protocol;
 
+export 'src/archive.dart';
 export 'src/attachments.dart';
 export 'src/identity.dart';
 export 'src/messages.dart';
@@ -19,6 +20,7 @@ export 'src/pq.dart'
         pqEncapsulate,
         pqDecapsulate,
         pqMixMessageKey;
+export 'src/recovery_code.dart';
 export 'src/relay_client.dart';
 export 'src/sealed.dart';
 export 'src/ratchet.dart'
