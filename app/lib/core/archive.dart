@@ -129,11 +129,31 @@ class BackupArchive {
       if (serverUrl != null) 'server': serverUrl,
     });
     if (idJson != null) {
-      await record({'t': 'identity', 'identity': jsonDecode(idJson)});
+      // v3 (§18.1): the ML-DSA half of this identity is a 32-byte seed, so it
+      // rides along here rather than as a 4 032-byte secret key. Without it a
+      // restored device would generate a DIFFERENT post-quantum key, and
+      // every contact holding a commitment to the old one would see a
+      // mismatch — indistinguishable, to them, from an attack.
+      await record({
+        't': 'identity',
+        'identity': jsonDecode(idJson),
+        if (await vault.kvGet('pq_seed') != null)
+          'pq_seed': await vault.kvGet('pq_seed'),
+      });
     }
 
-    // Contacts.
+    // Contacts, including their v3 state: the commitment from the code that
+    // was scanned and the post-quantum key that matched it. Losing those on a
+    // restore would silently downgrade every verified contact to classical.
     for (final c in await vault.db.query('contacts')) {
+      String? pqPub;
+      if (c['enc_pq_pub'] != null) {
+        try {
+          pqPub = await vault.unseal(c['enc_pq_pub'] as String);
+        } catch (_) {
+          pqPub = null; // unreadable cell: the key re-arrives in-band
+        }
+      }
       await record({
         't': 'contact',
         'rid': c['rid'],
@@ -142,6 +162,8 @@ class BackupArchive {
         'ttl': c['ttl_seconds'],
         'verified': c['verified'],
         'created': c['created_ms'],
+        if (c['pq_commit'] != null) 'pqc': c['pq_commit'],
+        if (pqPub != null) 'pqk': pqPub,
       });
     }
 
@@ -336,6 +358,9 @@ class BackupArchive {
               }
             case 'identity':
               await kv('identity', jsonEncode(r['identity']));
+              if (r['pq_seed'] is String) {
+                await kv('pq_seed', r['pq_seed'] as String);
+              }
             case 'contact':
               contacts++;
               await txn.insert(
@@ -347,6 +372,9 @@ class BackupArchive {
                     'ttl_seconds': (r['ttl'] as num?)?.toInt() ?? 0,
                     'verified': (r['verified'] as num?)?.toInt() ?? 0,
                     'created_ms': (r['created'] as num?)?.toInt() ?? 0,
+                    'pq_commit': r['pqc'],
+                    if (r['pqk'] is String)
+                      'enc_pq_pub': await vault.seal(r['pqk'] as String),
                   },
                   conflictAlgorithm: ConflictAlgorithm.replace);
             case 'groups':

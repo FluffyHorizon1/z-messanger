@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:z_protocol/z_protocol.dart';
 
 class Contact {
@@ -8,6 +10,16 @@ class Contact {
   bool verified; // user compared safety numbers
   final int createdMs;
 
+  /// v3 (§18.2): the 32-byte commitment carried by the `zc3.` code that was
+  /// scanned, if it was one. Null for a v1/v2 contact — nothing post-quantum
+  /// was promised, so nothing is missing.
+  Uint8List? pqCommit;
+
+  /// The contact's ML-DSA-65 account key, once it has arrived in-band AND
+  /// matched [pqCommit]. Never set from an unverified source: this being
+  /// non-null is what [assurance] reports as hybrid.
+  Uint8List? pqPub;
+
   Contact({
     required this.rid,
     required this.bundle,
@@ -15,7 +27,28 @@ class Contact {
     this.ttlSec = 0,
     this.verified = false,
     required this.createdMs,
+    this.pqCommit,
+    this.pqPub,
   });
+
+  /// What is actually known about this identity's authenticity.
+  ///
+  /// The three states are kept apart on purpose (§18.3). The classical view
+  /// of a v3 code is byte-for-byte a v1 bundle, so everything keeps working
+  /// the moment a code is scanned — which makes it easy to show the identity
+  /// as post-quantum before the key has arrived and been checked. It has not.
+  IdentityAssurance get assurance {
+    if (pqCommit == null) return IdentityAssurance.classical;
+    return pqPub == null
+        ? IdentityAssurance.pendingPostQuantum
+        : IdentityAssurance.hybrid;
+  }
+
+  /// The contact's account key as a hybrid public key, or null until the
+  /// post-quantum half is known and verified.
+  HybridPublicKey? get hybridKey => pqPub == null
+      ? null
+      : HybridPublicKey(edPub: bundle.edPub, mlPub: pqPub!);
 }
 
 class FileMeta {

@@ -88,7 +88,7 @@ class Vault {
   /// 3 — 8.1c: `forwarded`, which needs a column of its own — a 1:1 text
   ///     row's sealed body is the bare message, with no envelope to put a
   ///     flag in, and inventing one would misparse ordinary text.
-  static const int schemaVersion = 3;
+  static const int schemaVersion = 4;
 
   // Message ids are already stored in the clear (they are the primary key),
   // so `reply_to` — a mid within the same chat — reveals nothing the row
@@ -126,6 +126,18 @@ class Vault {
     if (from < 3) {
       await db.execute(
           'ALTER TABLE messages ADD COLUMN forwarded INTEGER NOT NULL DEFAULT 0');
+    }
+    if (from < 4) {
+      // v3 identity (§18). Two columns, both nullable, both meaning "not
+      // known yet" when absent:
+      //   pq_commit  — the 32-byte commitment from a scanned zc3. code
+      //   enc_pq_pub — the ML-DSA key that arrived in-band and matched it
+      // A contact with a commitment but no key is pendingPostQuantum; with
+      // neither, classical. The pair is what decides which safety number is
+      // shown, so neither may be inferred from the other.
+      for (final column in const ['pq_commit TEXT', 'enc_pq_pub TEXT']) {
+        await db.execute('ALTER TABLE contacts ADD COLUMN $column');
+      }
     }
   }
 
@@ -218,7 +230,9 @@ class Vault {
               enc_name TEXT NOT NULL,
               ttl_seconds INTEGER NOT NULL DEFAULT 0,
               verified INTEGER NOT NULL DEFAULT 0,
-              created_ms INTEGER NOT NULL
+              created_ms INTEGER NOT NULL,
+              pq_commit TEXT,
+              enc_pq_pub TEXT
             )''');
           await db.execute('''
             CREATE TABLE conversations(

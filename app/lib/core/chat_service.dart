@@ -234,6 +234,8 @@ class ChatService extends ChangeNotifier {
       final bundle = ContactBundle.fromJson(
           (jsonDecode(await vault.unseal(r['enc_bundle'] as String)) as Map)
               .cast<String, Object?>());
+      final commit = r['pq_commit'] as String?;
+      final sealedPq = r['enc_pq_pub'] as String?;
       contacts[r['rid'] as String] = Contact(
         rid: r['rid'] as String,
         bundle: bundle,
@@ -241,6 +243,8 @@ class ChatService extends ChangeNotifier {
         ttlSec: r['ttl_seconds'] as int,
         verified: (r['verified'] as int) == 1,
         createdMs: r['created_ms'] as int,
+        pqCommit: commit == null ? null : unb64(commit),
+        pqPub: sealedPq == null ? null : unb64(await vault.unseal(sealedPq)),
       );
       _sealKeys[r['rid'] as String] = bundle.xPub;
     }
@@ -304,8 +308,47 @@ class ChatService extends ChangeNotifier {
   Future<String> myContactCode() async =>
       (await identity.bundle(displayName: displayName)).encode();
 
+  HybridKeyPair? _pq;
+
+  /// This account's hybrid key (§18.1). The ML-DSA half is derived from a
+  /// 32-byte seed generated once and sealed in the vault — not from a stored
+  /// 4 032-byte secret key, so a backup archive carries 32 more bytes rather
+  /// than four kilobytes, and a restore reproduces the same identity.
+  ///
+  /// The classical half IS this identity's Ed25519 key: one identity, two
+  /// signature algorithms over it.
+  Future<HybridKeyPair> pqIdentity() async {
+    final cached = _pq;
+    if (cached != null) return cached;
+    var seedB64 = await vault.kvGet('pq_seed');
+    if (seedB64 == null) {
+      seedB64 = b64(randomBytes(32));
+      await vault.kvPut('pq_seed', seedB64);
+    }
+    final kp = await HybridKeyPair.fromSeeds(
+        edSeed: identity.edSeed, mlSeed: unb64(seedB64));
+    _pq = kp;
+    return kp;
+  }
+
+  /// The v3 contact code for this account. NOT yet what [myContactCode]
+  /// returns: §13.5's compatibility window is one release that ACCEPTS v3 and
+  /// keeps emitting v2, because a `zc3.` prefix is simply unparseable to an
+  /// older build. Emission flips in the release after.
+  Future<String> myContactCodeV3() async => (await ContactBundleV3.forIdentity(
+        identity,
+        (await pqIdentity()).publicKey,
+        displayName: displayName,
+      ))
+          .encode();
+
   Future<Contact> addContactFromCode(String code, {String? alias}) async {
-    final bundle = await ContactBundle.decode(code); // verifies signature
+    // Accepts zc1. and zc3.; a v3 code yields the same classical bundle plus
+    // the commitment its post-quantum key must later match. (zc2. account
+    // codes are for device linking, not contact exchange, and never reached
+    // this path.)
+    final scanned = await scanContactCode(code);
+    final bundle = scanned.classical;
     final rid = await bundle.routingId();
     if (rid == myRid) {
       throw const FormatException('that is your own contact code');
@@ -322,6 +365,7 @@ class ChatService extends ChangeNotifier {
       bundle: bundle,
       name: name,
       createdMs: DateTime.now().millisecondsSinceEpoch,
+      pqCommit: scanned.v3?.pqCommit,
     );
     await vault.db.insert('contacts', {
       'rid': rid,
@@ -330,6 +374,7 @@ class ChatService extends ChangeNotifier {
       'ttl_seconds': 0,
       'verified': 0,
       'created_ms': contact.createdMs,
+      if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
     });
     contacts[rid] = contact;
     _sealKeys[rid] = bundle.xPub;
@@ -341,6 +386,7 @@ class ChatService extends ChangeNotifier {
     final conv = await _convFor(contact);
     if (conv.isDesignatedInitiator) {
       await _sendInner(contact, InnerMessage.hello(newMessageId(), _now()));
+      await _sendPqIdentity(contact);
       // 7.7a hardening: a multi-device account introduces its device set with
       // the hello, so the new contact fans out to every device from the first
       // message. If they have not added us yet this is dropped like the hello;
@@ -423,7 +469,111 @@ class ChatService extends ChangeNotifier {
   /// (`z-multidevice-design.md` §3).
   Future<String> safetyNumberWith(String rid) async {
     final c = contacts[rid]!;
+    final theirs = c.hybridKey;
+    if (theirs != null) {
+      // v3 (§18.5): both halves of both account keys. Only reachable once
+      // their post-quantum key has arrived AND matched the commitment from
+      // the code that was scanned — never on the strength of a delivered key
+      // alone.
+      final mine = HybridPublicKey(
+          edPub: (await accountIdentity()).accountEdPub,
+          mlPub: (await pqIdentity()).publicKey.mlPub);
+      return safetyNumberV3(mine, theirs);
+    }
     return safetyNumber((await accountIdentity()).accountEdPub, c.bundle.edPub);
+  }
+
+  /// Which safety number [safetyNumberWith] just produced, so the UI can
+  /// explain a number that has changed rather than letting it read as a key
+  /// substitution — the one failure mode worse than not upgrading at all.
+  IdentityAssurance assuranceWith(String rid) =>
+      contacts[rid]?.assurance ?? IdentityAssurance.classical;
+
+  /// Sends this account's ML-DSA key (§18.2). It does not fit in the QR that
+  /// bound it, so it travels here instead and is checked against the
+  /// commitment the other side scanned.
+  ///
+  /// Sent to every contact, not only those we hold a v3 code for: whether the
+  /// RECIPIENT scanned a v3 code of ours is not something the sender can
+  /// know, and `contact.pqCommit` answers the opposite question — whether we
+  /// scanned theirs. Volunteering it is safe because a delivered key is only
+  /// ever accepted against a commitment (`_onPqIdentity`); one that arrives
+  /// unasked-for is ignored. It costs ~2 KB once per contact, at a moment
+  /// when a burst of traffic between two previously unrelated mailboxes has
+  /// already told the relay a contact was added.
+  ///
+  /// Best-effort, like the opening hello.
+  final Set<String> _pqSent = {}; // volunteered once per contact per run
+  final Map<String, int> _pqNudges = {}; // re-asks while a commitment is unmet
+  static const int _maxPqNudges = 3;
+
+  /// [nudge] is for the side that holds a commitment it still cannot check.
+  ///
+  /// The distinction matters because the opening send can vanish: if the peer
+  /// has not added us yet there is no session to decrypt it, so it is dropped
+  /// and "already sent" is a lie. The volunteering path is once per contact —
+  /// enough, and quiet against an older peer that has no post-quantum
+  /// identity to answer with. The nudging path ignores that and re-asks a
+  /// bounded number of times, because the nudger KNOWS something is missing
+  /// and the peer's answer is what completes the exchange.
+  Future<void> _sendPqIdentity(Contact contact, {bool nudge = false}) async {
+    if (nudge) {
+      final n = _pqNudges[contact.rid] ?? 0;
+      if (n >= _maxPqNudges) return;
+      _pqNudges[contact.rid] = n + 1;
+    } else if (!_pqSent.add(contact.rid)) {
+      return;
+    }
+    try {
+      final mine = await pqIdentity();
+      await _sendInner(
+          contact,
+          InnerMessage.pqIdentity(
+              newMessageId(), _now(), mine.publicKey.mlPub));
+    } catch (_) {
+      // The next message re-offers it; see _onInbound.
+    }
+  }
+
+  /// Handles an inbound `pqid`. Returns true if the contact's assurance
+  /// changed, so the caller can notify.
+  ///
+  /// A key that does not match the commitment is REFUSED and the mismatch
+  /// recorded — never accepted, and never quietly ignored so the contact
+  /// lingers as classical. It means the key that arrived is not the key the
+  /// person in front of you committed to.
+  Future<bool> _onPqIdentity(Contact contact, InnerMessage inner) async {
+    final commit = contact.pqCommit;
+    if (commit == null) return false; // nothing was promised; nothing to check
+    if (contact.pqPub != null) return false; // already established
+    final raw = inner.data['pk'];
+    if (inner.data['alg'] != 'ML-DSA-65' || raw is! String) return false;
+    final HybridPublicKey candidate;
+    try {
+      candidate =
+          HybridPublicKey(edPub: contact.bundle.edPub, mlPub: unb64(raw));
+    } catch (_) {
+      return false; // wrong length: not a usable key
+    }
+    final scanned = ContactBundleV3(
+      edPub: contact.bundle.edPub,
+      xPub: contact.bundle.xPub,
+      bindingSig: contact.bundle.bindingSig,
+      pqCommit: commit,
+    );
+    if (!await scanned.acceptsPqKey(candidate)) {
+      await _insertSystemMessage(
+          contact.rid,
+          "${contact.name}'s post-quantum key does not match the code you "
+          'scanned. Their identity has not been upgraded — compare safety '
+          'numbers before trusting this chat.');
+      return true;
+    }
+    contact.pqPub = candidate.mlPub;
+    await vault.db.update(
+        'contacts', {'enc_pq_pub': await vault.seal(b64(candidate.mlPub))},
+        where: 'rid = ?', whereArgs: [contact.rid]);
+    return true;
   }
 
   /// Discard all ratchet sessions with this contact and open a fresh one.
@@ -943,6 +1093,22 @@ class ChatService extends ChangeNotifier {
         unawaited(
             _sync?.mirror(threadRid: contact.rid, dir: 'in', inner: inner) ??
                 Future<void>.value());
+      }
+      if (inner.kind == 'pqid') {
+        if (await _onPqIdentity(contact, inner)) notifyListeners();
+        // Answer in kind, so an exchange started by either side completes.
+        unawaited(_sendPqIdentity(contact).then((_) {}, onError: (_) {}));
+      }
+      if (inner.kind == 'hello') {
+        unawaited(_sendPqIdentity(contact).then((_) {}, onError: (_) {}));
+      }
+      if (contact.pqCommit != null && contact.pqPub == null) {
+        // We hold a commitment we still cannot check. Speaking up is what
+        // prompts them to answer in kind, and it has to bypass the
+        // once-per-contact gate: our own opening send may have been dropped
+        // before either side had a session.
+        unawaited(_sendPqIdentity(contact, nudge: true)
+            .then((_) {}, onError: (_) {}));
       }
       if (inner.kind == 'devlist') {
         await _applyDevlistInner(contact, inner); // M4: learn their devices

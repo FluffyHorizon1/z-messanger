@@ -1120,6 +1120,20 @@ mismatch. It MUST NOT fall back to treating the contact as classical: a
 mismatch means the key that arrived is not the key the person in front of you
 committed to. A v2 peer ignores the unknown kind, as with `pqek`.
 
+A key that arrives with **no** commitment to check it against is ignored, not
+stored. That is what makes it safe to volunteer the key to every contact
+rather than only to those known to hold a `zc3.` code — which the sender
+cannot know anyway, since holding a commitment is the *receiver's* state.
+
+Delivery follows the first traffic, as the v2 `pqek` offer does: nothing can
+be exchanged before a session exists. An opening message can also be dropped
+outright — if the peer has not added us yet there is no session to decrypt it
+— so a side holding a commitment it cannot yet check SHOULD re-send its own
+key on inbound traffic, bounded (the reference client: three attempts per
+run), and a side receiving a `pqid` SHOULD answer with its own. Between them
+the exchange completes whichever side spoke first and whether or not the
+opening message survived.
+
 This is a **commitment, not a reference**. A lookup identifier — a URL, a key
 id — binds nothing, and a code carrying one degrades to trust‑on‑first‑use,
 where an attacker present at the exchange supplies their own ML‑DSA key and
@@ -1215,7 +1229,23 @@ key substitution.
 As in v1 the inputs are **account** keys, so the number does not move when
 either side links or drops a device.
 
-### 18.6 Still to specify
+### 18.6 The compatibility window
 
-The §13.5 compatibility window: one release accepting v2 identities and
-emitting v3, then v2 emission dropped.
+A `zc3.` prefix is simply unparseable to an older build, so emission cannot
+lead. The window is:
+
+1. **This release** accepts `zc1.` and `zc3.` codes, derives and stores a
+   post‑quantum identity, exchanges `pqid`, and keeps **emitting** the code
+   format it emitted before. `ChatService.myContactCodeV3` exists and is not
+   yet what the UI hands out.
+2. **The next** switches emission to `zc3.` once enough of the population can
+   read one.
+3. **Later**, v2 emission is dropped.
+
+An account's post‑quantum half is a 32‑byte seed sealed in the vault and
+carried in the backup archive (§9). A restore that lost it would derive a
+*different* ML‑DSA key, and every contact holding a commitment to the old one
+would see a mismatch — indistinguishable, to them, from an attack. The archive
+therefore carries the seed, and a contact's commitment and established key
+travel with it too, so a restore does not silently downgrade every verified
+contact to classical.

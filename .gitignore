@@ -37,3 +37,7 @@ app/android/key.properties
 
 # Secrets / user data (should never exist in-repo, but just in case)
 *.zid
+
+# Python bytecode from the vector verifiers (protocol/tool/verify_*.py)
+__pycache__/
+*.pyc

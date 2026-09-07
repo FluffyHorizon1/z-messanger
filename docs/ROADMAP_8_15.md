@@ -223,7 +223,7 @@ forges identities even though it cannot read past traffic.
   change for every user, so it needs deliberate re-verification UX.
 - **13.4 spec + vectors** — PROTOCOL §18 for v3, a v3 vector suite with an
   independent checker, v1/v2 suites frozen as usual.
-- **13.5 compatibility window** — one release accepting v2 identities and
+- **13.5 compatibility window** *(release 1 done — accepts v3, still emits v2; PROTOCOL §18.6)* — one release accepting v2 identities and
   emitting v3, then v2 emission is dropped.
 
 **Exit:** three independent checkers agree on the v3 vectors; a v2 and a v3
