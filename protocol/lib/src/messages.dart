@@ -12,6 +12,8 @@ import 'util.dart';
 ///   'file'   file offer { fid, name, size, mime, sha256, fk, fn, chunks, csize }
 ///   'timer'  disappearing-messages setting { sec } (0 = off)
 ///   'read'   read receipts { mids: [...] }
+///   'pqid'   (v3) post-quantum identity key { alg, pk } — checked against
+///            the commitment carried by the zc3. contact code (§13.2)
 ///   'pqek'   (v2) post-quantum key offer { alg, ek } — consumed by the
 ///            session layer, never shown; ignored by v1 clients
 ///   'dlrm'   (7.7a) device-list removal notice { acct, v, h } — a contact
@@ -108,6 +110,17 @@ class InnerMessage {
         'alg': 'ML-KEM-768',
         'ek': b64(ek),
         if (gen > 0) 'g': gen,
+      });
+
+  /// v3 (§13.2): this account's post-quantum public key, delivered inside the
+  /// ratchet because it does not fit in the QR code that bound it. The
+  /// receiver checks it against the commitment from the scan
+  /// (`ContactBundleV3.acceptsPqKey`) and refuses the identity on a mismatch
+  /// — a v2 peer simply ignores the unknown kind, as with `pqek`.
+  static InnerMessage pqIdentity(String mid, int ts, Uint8List mlPub) =>
+      InnerMessage(kind: 'pqid', mid: mid, ts: ts, data: {
+        'alg': 'ML-DSA-65',
+        'pk': b64(mlPub),
       });
 
   /// 7.7a device-list removal notice: sent by a contact to a device it just

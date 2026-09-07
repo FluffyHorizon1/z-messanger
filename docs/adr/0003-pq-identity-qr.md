@@ -1,6 +1,6 @@
 # ADR 0003 — Getting a post-quantum identity through a QR code
 
-**Status:** Proposed (2026‑09‑07) · **Roadmap:** 13.2 · **Decides:** the open
+**Status:** Accepted (2026‑09‑07) · **Roadmap:** 13.2 · **Decides:** the open
 problem the roadmap requires settling *before* 13.1 hardens the v3 format.
 
 > ADR 0002 is reserved for the iOS push architecture, being written in
@@ -179,9 +179,10 @@ itself by size.
 
 ## Status of this decision
 
-Proposed, not accepted: it changes the wire format for v3 and should be read
-before 13.1 begins. The QR decision turns only on the size arithmetic and on
-option (b) being unsound, both of which are settled. The bucket finding above
-is an additional input to 13.1 and is the one most likely to be missed, since
-nothing fails — the messages go through, they are simply legible as a category
-to anyone watching sizes.
+Accepted on the owner's go-ahead, and implemented as PROTOCOL.md §18.1–18.3
+with vectors in `docs/vectors/v3/`. The QR decision turns only on the size
+arithmetic and on option (b) being unsound, both settled and now checkable by
+a third party. The bucket finding above remains an input to the device-list
+work, and is the one most likely to be missed, since nothing fails — the
+messages go through, they are simply legible as a category to anyone watching
+sizes.

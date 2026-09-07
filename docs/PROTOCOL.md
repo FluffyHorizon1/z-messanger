@@ -1046,3 +1046,111 @@ a message tagged with a generation neither current nor retained is rejected
 reordering given the interval dwarfs a round trip. Everything is a compatible
 extension: `pqg` is a new optional header member and `g` a new optional offer
 member, both ignored by a generation‑0‑only implementation, no version bump.
+
+## 18. Protocol v3 — post‑quantum identity *(in progress)*
+
+v2 (§17) protects **confidentiality** against a future quantum adversary: a
+recording made today is not readable once a CRQC exists, because every message
+key is mixed with an ML‑KEM‑768 secret. It does nothing for
+**authentication**. Account keys, device keys, device certificates and safety
+numbers are all Ed25519, so the same adversary could forge a device
+certificate — mint a device that appears to belong to an account — without
+reading a word of what it recorded. v3 closes that.
+
+Status: §18.1 and §18.2 are implemented and vectored (`docs/vectors/v3/`);
+device certificates, safety number v2 and the compatibility window are not yet
+written. Nothing in v1 or v2 changes.
+
+### 18.1 Hybrid signatures
+
+Every v3 signature is a pair, over **identical bytes**:
+
+```
+sign(m)   = ( Ed25519.Sign(sk_ed, m), ML-DSA-65.Sign(sk_ml, m) )
+verify(m) = Ed25519.Verify(...) AND ML-DSA-65.Verify(...)
+```
+
+Both must verify. A verifier MUST NOT accept a signature carrying one half,
+and an implementation MUST NOT be able to represent one: a half‑signature is a
+parse error, not a value that verification can be run against and return false
+for. The attack this exists to stop is a downgrade — an adversary who can
+forge the classical half strips the half they cannot forge — so "false" and
+"unparseable" are meaningfully different outcomes, the first being something
+callers retry.
+
+Sizes (FIPS 204 Table 2, ML‑DSA‑65): public key 1 952 B, signature 3 309 B,
+secret key 4 032 B. An identity persists the 32‑byte **seed**, not the secret
+key: keygen is `ML-DSA.KeyGen_internal(ζ)`, deterministic in that seed, the
+same relationship Ed25519 and X25519 already have to theirs. Production
+signing is **hedged** (a fresh 32‑byte `rnd`), per FIPS 204; the deterministic
+variant appears only in the known‑answer vectors, since a deterministic
+signature is materially easier to attack by fault injection.
+
+### 18.2 Contact code v3 (`zc3.`)
+
+A hybrid identity does not fit in a QR code, and scanning is how trust is
+established here. A v3 account code carrying hybrid keys and hybrid device
+certificates is ~7.4 KB for a single device, against a 2 953‑byte absolute QR
+ceiling and nearer 800 bytes for a symbol that scans reliably.
+
+So the code carries a **commitment** to the post‑quantum half, not the half:
+
+```
+zc3.<base64url(json)>
+json = { "v":3, "ed":b64(ed_pub), "x":b64(x_pub), "sig":b64(binding_sig),
+         "pqc":b64(pq_commit), "name"?:string }
+pq_commit = SHA-256( utf8("z-pqid-v3:") || ml_dsa_public_key )     32 bytes
+```
+
+`ed`, `x` and `sig` are exactly the v1 fields with the same meanings (§2.4),
+so the classical view of a v3 code is a v1 bundle and every existing path —
+routing id, handshake, sessions — consumes it unchanged. The encoded code is
+~370 bytes.
+
+The ML‑DSA public key is delivered **inside the ratchet**, as an additive
+inner message (§6):
+
+```
+{"k":"pqid","mid":…,"ts":…,"alg":"ML-DSA-65","pk":b64(ml_pub)}
+```
+
+The receiver MUST check `SHA-256("z-pqid-v3:" || pk)` against the `pqc` from
+the scanned code, in constant time, and MUST refuse the identity on a
+mismatch. It MUST NOT fall back to treating the contact as classical: a
+mismatch means the key that arrived is not the key the person in front of you
+committed to. A v2 peer ignores the unknown kind, as with `pqek`.
+
+This is a **commitment, not a reference**. A lookup identifier — a URL, a key
+id — binds nothing, and a code carrying one degrades to trust‑on‑first‑use,
+where an attacker present at the exchange supplies their own ML‑DSA key and
+passes every hybrid check thereafter. Security here rests entirely on the
+binding, whose strength is SHA‑256 collision resistance.
+
+**The device list is deliberately not in the code.** `zc2.` carries one as a
+convenience; under v3 each certificate would be 5 389 bytes. Device lists
+already reach contacts in‑band, account‑signed and verified against the
+account key (§3.4), including contacts who were offline for an entire
+enrollment. The code establishes the account identity — the thing a human must
+confirm by looking at a screen — and the rest follows from it.
+
+### 18.3 Identity assurance states
+
+A client MUST distinguish three states and MUST NOT present the second as the
+third:
+
+| state | meaning |
+|---|---|
+| `classical` | a `zc1.`/`zc2.` code: no post‑quantum key was promised. Nothing is missing, but a CRQC could forge this identity |
+| `pendingPostQuantum` | a `zc3.` code was scanned; the key is committed to but has not arrived. Authentication is classical until it does |
+| `hybrid` | the key arrived and matched the commitment |
+
+### 18.4 Still to specify
+
+Hybrid device certificates and device lists, safety number v2 over both key
+halves (§2.5 — note it is anchored to the **account** key), and the §13.5
+compatibility window. One constraint is already known and is recorded in
+`adr/0003-pq-identity-qr.md`: putting 5 389‑byte certificates in a device list
+moves it from the 1 024‑byte padding bucket that ordinary chat occupies to
+16 384 or 65 536, which would tell the relay when an account changes its
+device set and roughly how many devices it has. The device list must carry
+commitments too, with the post‑quantum halves travelling separately.

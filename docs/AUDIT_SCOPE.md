@@ -57,7 +57,8 @@ like the review to either confirm or break each one.
 | C12 | The wire format is frozen: any change to bytes an implementation computes fails CI; compatible extensions are additive only. | §14, `vectors/README.md` | `protocol/test/vectors_test.dart` freeze, Node clean‑room replay (15 suites) |
 | C13 | A backup archive restores history onto a wiped device without ever restoring session state; a wrong recovery code, a truncated file or a moved frame all fail closed with no oracle; the restored device re‑handshakes, including the post‑quantum layer, rather than silently downgrading. | `BACKUP.md` | `app/test/backup_test.dart` (round trip, fail‑closed, schema compatibility), `protocol/test/archive_test.dart`, `backup/archive.json` replayed by Node |
 | C14 | One account on several devices: each device has its own routing id and its own ratchets, so two devices never contend for a mailbox and never share a chain; the safety number is anchored to the account key and does not move when a device is added or removed; a contact offline for the whole enrollment still learns the new device and fans out to it. | `PROTOCOL.md` §2.5, §3; `z-multidevice-design.md` | `app/test/multidevice_test.dart`, `devlist_distribution_test.dart`, `devlist_transparency_test.dart`, `history_sync_test.dart` |
-| C15 | Hybrid signatures (v3, in progress): a signature verifies only if BOTH the Ed25519 and the ML-DSA-65 halves verify over identical bytes; a stripped half does not parse at all, so a downgrade is not expressible; an identity stays derivable from two 32-byte seeds. | §13.1, `adr/0003-pq-identity-qr.md` | `protocol/test/pqsign_test.dart` (11), `v3/mldsa65.json` re-derived by dilithium-py and structurally replayed by Node |
+| C15 | Hybrid signatures (v3, in progress): a signature verifies only if BOTH the Ed25519 and the ML-DSA-65 halves verify over identical bytes; a stripped half does not parse at all, so a downgrade is not expressible; an identity stays derivable from two 32-byte seeds. | §18.1, `adr/0003-pq-identity-qr.md` | `protocol/test/pqsign_test.dart` (11), `v3/mldsa65.json` re-derived by dilithium-py and structurally replayed by Node |
+| C16 | A `zc3.` contact code stays QR-sized (~370 bytes) while binding a 1952-byte post-quantum key: the key is delivered in-band and refused unless it matches the commitment carried by the scanned code. A v3 code with the commitment stripped is refused rather than treated as a classical one, and a scanned identity's assurance state is never reported as hybrid before the key has arrived and matched. | §18.2, §18.3 | `protocol/test/identity_v3_test.dart` (10), `v3/contact_code_v3.json` replayed by Node with its own Ed25519 and SHA-256 |
 
 ## 4. Where we would like the most attention
 
@@ -174,10 +175,10 @@ derivations themselves).
 ## 7. Artifacts and how to run them
 
 ```
-# Protocol library: 107 tests incl. the vector freeze
+# Protocol library: 118 tests incl. the vector freeze
 cd protocol && dart test
 
-# Relay: 43 tests incl. the clean-room vector replay (16 suites, no shared code)
+# Relay: 44 tests incl. the clean-room vector replay (17 suites, no shared code)
 cd server && npm test
 
 # ML-KEM and ML-DSA values re-derived by unrelated FIPS 203/204 implementations

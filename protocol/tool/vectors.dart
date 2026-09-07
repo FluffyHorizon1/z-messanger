@@ -1764,6 +1764,77 @@ Future<Map<String, Object?>> suiteMlDsa() async {
   };
 }
 
+Future<Map<String, Object?>> suiteContactCodeV3() async {
+  final d = Drbg(0x000A);
+  final id = await d.run(() async => ZIdentity.generate());
+  final draws = d.takeDraws();
+  check(draws.length == 2, 'identity draws ed and x seeds');
+  final mlSeed = d.next(32);
+  final pq = await HybridKeyPair.fromSeeds(edSeed: id.edSeed, mlSeed: mlSeed);
+  final code =
+      await ContactBundleV3.forIdentity(id, pq.publicKey, displayName: 'Finn');
+  final encoded = code.encode();
+
+  // The properties a third implementation must reproduce.
+  check(await code.acceptsPqKey(pq.publicKey), 'committed key accepted');
+  final wrongSeed = d.next(32);
+  final wrong =
+      await HybridKeyPair.fromSeeds(edSeed: id.edSeed, mlSeed: wrongSeed);
+  check(!await code.acceptsPqKey(wrong.publicKey), 'substituted key refused');
+
+  final scanned = await scanContactCode(encoded);
+  check(scanned.assurance == IdentityAssurance.pendingPostQuantum,
+      'a v3 scan is pending, not hybrid');
+  final v1scan = await scanContactCode((await id.bundle()).encode());
+  check(v1scan.assurance == IdentityAssurance.classical,
+      'a v1 scan is classical');
+
+  final inner =
+      InnerMessage.pqIdentity('mid-pqid', 1700000000000, pq.publicKey.mlPub);
+
+  return {
+    'suite': 'contact_code_v3',
+    'version': vectorsVersionV3,
+    'description':
+        'Contact code v3 (§13.2): classical keys in full, the post-quantum '
+            'half bound by a 32-byte commitment so the code still fits a QR '
+            '(docs/adr/0003). The ML-DSA key is delivered in-band as inner '
+            'kind "pqid" and checked against the commitment; a substituted '
+            'key must be refused rather than silently accepted, which is the '
+            'whole security of the arrangement.',
+    'prefix': contactCodePrefixV3,
+    'commit_context': pqCommitContext,
+    'identity': {
+      'ed_seed': hex(id.edSeed),
+      'x_seed': hex(id.xSeed),
+      'ed_pub': hex(id.edPub),
+      'x_pub': hex(id.xPub),
+      'binding_sig': hex(await id.bindingSignature()),
+      'routing_id': await id.routingId(),
+    },
+    'pq': {
+      'ml_seed': hex(mlSeed),
+      'ml_pub': hex(pq.publicKey.mlPub),
+      'commitment': hex(code.pqCommit),
+    },
+    'code': encoded,
+    'code_json':
+        utf8.decode(unb64url(encoded.substring(contactCodePrefixV3.length))),
+    'code_len': encoded.length,
+    'pqid_inner': {
+      'json':
+          utf8.decode(inner.toBytes()).replaceAll(RegExp(r'\x80[\x00]*$'), ''),
+      'bytes': hex(inner.toBytes()),
+    },
+    'must_refuse': {
+      'reason': 'a different ML-DSA key under the same classical identity',
+      'ml_seed': hex(wrongSeed),
+      'ml_pub': hex(wrong.publicKey.mlPub),
+      'commitment': hex(await wrong.publicKey.pqCommitment()),
+    },
+  };
+}
+
 Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
   final a = await actors();
   return {
@@ -1784,6 +1855,7 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     },
     'v3': {
       'mldsa65': await suiteMlDsa(),
+      'contact_code_v3': await suiteContactCodeV3(),
     },
     'backup': {
       'archive': await suiteBackup(),

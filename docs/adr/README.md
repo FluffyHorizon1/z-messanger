@@ -7,4 +7,4 @@ stay in place with their status updated.
 | # | Decision | Status |
 |---|---|---|
 | [0001](0001-key-transparency.md) | Key transparency: device‑list transparency by gossip first, public log later | Accepted 2026‑09‑04 |
-| [0003](0003-pq-identity-qr.md) | Post‑quantum identity: the QR carries a commitment, the ML‑DSA half travels in‑session | Proposed 2026‑09‑07 |
+| [0003](0003-pq-identity-qr.md) | Post‑quantum identity: the QR carries a commitment, the ML‑DSA half travels in‑session | Accepted 2026‑09‑07 |

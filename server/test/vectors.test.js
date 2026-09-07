@@ -1135,3 +1135,54 @@ test('v3 mldsa65: sizes, the classical half, and the commitment', () => {
   // It is domain-separated: a bare hash of the key is a different value.
   assert.notEqual(hex(sha256(unhex(h.ml_pub))), h.pq_commitment);
 });
+
+test('v3 contact_code_v3: the code parses, binds, and commits — checked here '
+  + 'with Node\'s own crypto', () => {
+  const v = loadV3('contact_code_v3');
+  assert.equal(v.suite, 'contact_code_v3');
+  assert.equal(v.prefix, 'zc3.');
+  assert.equal(v.commit_context, 'z-pqid-v3:');
+
+  // The code is a prefix plus base64url JSON, and it stays scannable — the
+  // point of the whole design, since the key it commits to is 1952 bytes.
+  assert.ok(v.code.startsWith('zc3.'));
+  assert.equal(v.code.length, v.code_len);
+  assert.ok(v.code_len < 400, 'a v3 code must stay QR-sized');
+  const json = unb64url(v.code.slice(4)).toString('utf8');
+  assert.equal(json, v.code_json);
+  const c = JSON.parse(json);
+  assert.equal(c.v, 3);
+
+  // Every field in the code matches the recorded identity.
+  const id = v.identity;
+  assert.equal(hex(unb64(c.ed)), id.ed_pub);
+  assert.equal(hex(unb64(c.x)), id.x_pub);
+  assert.equal(hex(unb64(c.sig)), id.binding_sig);
+  assert.equal(hex(unb64(c.pqc)), v.pq.commitment);
+
+  // The binding signature covers the X25519 key, verified with Node's Ed25519.
+  assert.ok(edVerify(unb64(c.ed), cat(utf8('z-bind-v1:'), unb64(c.x)),
+    unb64(c.sig)), 'binding signature');
+  assert.equal(b64url(sha256(unb64(c.ed))), id.routing_id, 'routing id');
+
+  // The commitment, recomputed independently: SHA-256 over the context and
+  // the ML-DSA public key. This is the only thing standing between a scanned
+  // code and a substituted post-quantum key.
+  assert.equal(hex(sha256(cat(utf8(v.commit_context), unhex(v.pq.ml_pub)))),
+    v.pq.commitment, 'pq commitment');
+
+  // …and a different ML-DSA key under the same classical identity produces a
+  // different commitment, so it cannot satisfy this code.
+  assert.equal(hex(sha256(cat(utf8(v.commit_context),
+    unhex(v.must_refuse.ml_pub)))), v.must_refuse.commitment);
+  assert.notEqual(v.must_refuse.commitment, v.pq.commitment,
+    'a substituted key must not satisfy the commitment');
+
+  // The in-band delivery carries exactly the committed key.
+  const inner = JSON.parse(v.pqid_inner.json);
+  assert.equal(inner.k, 'pqid');
+  assert.equal(inner.alg, 'ML-DSA-65');
+  assert.equal(hex(unb64(inner.pk)), v.pq.ml_pub);
+  assert.equal(hex(sha256(cat(utf8(v.commit_context), unb64(inner.pk)))),
+    v.pq.commitment, 'the delivered key satisfies the scanned commitment');
+});

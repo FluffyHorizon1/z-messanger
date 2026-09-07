@@ -205,9 +205,9 @@ re-keying. The remaining gap is **authentication**: identity keys, device
 certificates and safety numbers are still purely classical, so a future CRQC
 forges identities even though it cannot read past traffic.
 
-- **13.1 hybrid signatures** — account and device keys become Ed25519 +
+- **13.1 hybrid signatures** *(primitive done — `pqsign.dart`, PROTOCOL §18.1)* — account and device keys become Ed25519 +
   ML-DSA-65; both signatures required, verification fails if either fails.
-- **13.2 contact code v3** — `zc3.` carrying hybrid account keys and hybrid
+- **13.2 contact code v3** *(done — `identity_v3.dart`, PROTOCOL §18.2–18.3)* — `zc3.` carrying hybrid account keys and hybrid
   device certs; v2 codes still resolve with a "classical identity" marker.
   **Open problem — now decided: see `adr/0003-pq-identity-qr.md`.** Measured,
   a one-device v3 code is 7 373 B against a 2 953 B absolute QR ceiling, so it
