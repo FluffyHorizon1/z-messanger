@@ -34,7 +34,14 @@ void main() {
     HttpOverrides.global = null;
     final serverDir =
         '${Directory.current.parent.path}${Platform.pathSeparator}server';
-    port = 41000 + DateTime.now().millisecondsSinceEpoch % 20000;
+    // An OS-assigned free port. The old formula derived the port from the
+    // clock, so two suites starting in the same millisecond got the SAME
+    // port — and `flutter test` runs files concurrently, so one relay lost
+    // the bind and its whole file failed in setUpAll with 'relay did not
+    // start'. Asking the OS removes the shared input entirely.
+    final portProbe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    port = portProbe.port;
+    await portProbe.close();
     relay = await Process.start('node', ['server.js'],
         workingDirectory: serverDir,
         environment: {'PORT': '$port', 'LOG_LEVEL': 'silent'});
