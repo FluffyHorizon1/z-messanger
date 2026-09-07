@@ -20,6 +20,7 @@ export 'src/pq.dart'
         pqEncapsulate,
         pqDecapsulate,
         pqMixMessageKey;
+export 'src/pqsign.dart';
 export 'src/recovery_code.dart';
 export 'src/relay_client.dart';
 export 'src/sealed.dart';

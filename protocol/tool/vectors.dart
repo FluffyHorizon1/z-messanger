@@ -29,6 +29,7 @@ import 'package:z_protocol/z_protocol.dart';
 /// Frozen v1 suites (never change) and the v2 post-quantum suites.
 const int vectorsVersion = 1;
 const int vectorsVersionPq = 2;
+const int vectorsVersionV3 = 3;
 
 // ---------------------------------------------------------------------------
 // Deterministic randomness (splitmix64) — every draw is recorded.
@@ -1681,6 +1682,88 @@ Future<Map<String, Object?>> suiteBackup() async {
   };
 }
 
+// ---------------------------------------------------------------------------
+// ML-DSA-65 (FIPS 204) — the v3 hybrid-signature primitive
+// ---------------------------------------------------------------------------
+
+Future<Map<String, Object?>> suiteMlDsa() async {
+  // Seeded keygen and DETERMINISTIC signing (rnd = 0^32), so every value here
+  // is reproducible by any FIPS 204 implementation from the recorded seed and
+  // message alone. Production signing is hedged; determinism is a property of
+  // the vector, not of the protocol.
+  final vectors = <Map<String, Object?>>[];
+  for (var i = 0; i < 4; i++) {
+    final seed = Uint8List(32)..fillRange(0, 32, i + 1);
+    final (pk, sk) = pqDsaKeyPairSeeded(seed);
+    final msg = Uint8List.fromList(utf8.encode('z-device-cert-v1:device-$i'));
+    final sig = pqDsaSignDeterministic(sk, msg);
+    check(pqDsaVerify(pk, msg, sig), 'ml-dsa vector $i verifies');
+    // A flipped byte anywhere in the signature must fail.
+    final bent = Uint8List.fromList(sig)..[i * 97 % sig.length] ^= 0x01;
+    check(!pqDsaVerify(pk, msg, bent), 'ml-dsa vector $i tamper rejected');
+    vectors.add({
+      'seed': hex(seed),
+      'pk': hex(pk),
+      'sk': hex(sk),
+      'message': utf8.decode(msg),
+      'message_hex': hex(msg),
+      'signature': hex(sig),
+      'tampered_signature': hex(bent),
+    });
+  }
+
+  // The commitment ADR 0003 puts in a zc3. contact code, in place of the
+  // 1952-byte key it binds.
+  final kp = await HybridKeyPair.fromSeeds(
+      edSeed: Uint8List(32)..fillRange(0, 32, 0xA1),
+      mlSeed: Uint8List(32)..fillRange(0, 32, 0xB2));
+  final commit = await kp.publicKey.pqCommitment();
+  final m = Uint8List.fromList(utf8.encode('z-device-cert-v1:hybrid'));
+  // Deterministic: production signing is hedged, so a recorded hedged
+  // signature could never be reproduced — which the freeze test catches.
+  final hs = await kp.sign(m, deterministic: true);
+  check(await hybridVerify(kp.publicKey, m, hs), 'hybrid verifies');
+  check(
+      !await hybridVerify(
+          kp.publicKey,
+          m,
+          HybridSignature(
+              ed: hs.ed,
+              ml: (await kp.sign(Uint8List(1), deterministic: true)).ml)),
+      'classical-only half rejected');
+
+  return {
+    'suite': 'mldsa65',
+    'version': vectorsVersionV3,
+    'description':
+        'ML-DSA-65 (FIPS 204) known answers from seeds, plus the hybrid '
+            'Ed25519+ML-DSA-65 construction of protocol v3 (§13.1). Keygen is '
+            'KeyGen_internal(zeta) and signing is deterministic (rnd = 0^32) '
+            'so a third implementation reproduces every value from the seed '
+            'and message alone; production signing is hedged. A signature '
+            'verifies only if BOTH halves verify over identical bytes — the '
+            'downgrade an adversary who breaks Ed25519 would otherwise '
+            'attempt. The 32-byte commitment is what a zc3. contact code '
+            'carries in place of the public key (docs/adr/0003).',
+    'algorithm': hybridAlgorithm,
+    'public_key_bytes': mlDsaPublicKeyBytes,
+    'signature_bytes': mlDsaSignatureBytes,
+    'deterministic_rnd': hex(Uint8List(32)),
+    'vectors': vectors,
+    'hybrid': {
+      'ed_seed': hex(kp.edSeed),
+      'ml_seed': hex(kp.mlSeed),
+      'ed_pub': hex(kp.publicKey.edPub),
+      'ml_pub': hex(kp.publicKey.mlPub),
+      'message': utf8.decode(m),
+      'ed_sig': hex(hs.ed),
+      'ml_sig': hex(hs.ml),
+      'commit_context': pqCommitContext,
+      'pq_commitment': hex(commit),
+    },
+  };
+}
+
 Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
   final a = await actors();
   return {
@@ -1698,6 +1781,9 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
       'mlkem768': await suiteMlKem(),
       'pq_ratchet': await suitePqRatchet(a),
       'pq_rekey': await suitePqRekey(a),
+    },
+    'v3': {
+      'mldsa65': await suiteMlDsa(),
     },
     'backup': {
       'archive': await suiteBackup(),

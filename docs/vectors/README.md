@@ -26,6 +26,12 @@ to a frozen file; the freeze test then pins the additions too.
 | `pq_ratchet.json` | the nine‑step upgrade transcript: hello, `pqek` offer, encapsulation, first mixed message with `pqct`, mixed reply, steady state | §17.2–17.3 |
 | `pq_rekey.json` | the periodic re‑key transcript: generation‑0 establishment, rotation to generation 1 (`pqg`, second encapsulation), a delayed old‑generation message that still decrypts, the retained old secret | §17.7 |
 
+`v3/` (hybrid signatures, §13.1 — in progress):
+
+| File | Covers | Spec |
+|---|---|---|
+| `mldsa65.json` | ML‑DSA‑65 known answers from seeds (`KeyGen_internal(zeta)`, deterministic signing with `rnd = 0^32`, verification, and a one‑byte tamper that must fail), plus the hybrid Ed25519 + ML‑DSA‑65 construction and the 32‑byte contact‑code commitment | §13.1, `adr/0003` |
+
 `backup/` is a storage format rather than a wire format, so it sits outside the
 protocol version directories; it is frozen on the same terms
 ([`../BACKUP.md`](../BACKUP.md)):

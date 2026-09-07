@@ -1078,3 +1078,60 @@ test('backup archive: the recovery code decodes to the recorded entropy', () => 
   assert.equal(hex(entropy), v.recovery_code.entropy);
   assert.equal(canonical[24], A[sha256(entropy)[0] & 0x1f], 'checksum character');
 });
+
+// ===========================================================================
+// v3 — hybrid signatures (§13.1). Node has no ML-DSA, so the post-quantum
+// half is checked by protocol/tool/verify_mldsa.py (dilithium-py, an
+// unrelated FIPS 204 implementation). What Node CAN check independently is
+// everything built around it: the classical half of the hybrid signature,
+// with its own Ed25519; the ADR-0003 commitment, with its own SHA-256; and
+// that the recorded sizes are the FIPS 204 ones rather than whatever the
+// Dart library happened to produce.
+// ===========================================================================
+const V3_DIR = path.join(__dirname, '..', '..', 'docs', 'vectors', 'v3');
+const loadV3 = (name) => JSON.parse(fs.readFileSync(path.join(V3_DIR, `${name}.json`), 'utf8'));
+
+test('v3 mldsa65: sizes, the classical half, and the commitment', () => {
+  const v = loadV3('mldsa65');
+  assert.equal(v.suite, 'mldsa65');
+  assert.equal(v.algorithm, 'Ed25519+ML-DSA-65');
+  // FIPS 204 Table 2 for ML-DSA-65.
+  assert.equal(v.public_key_bytes, 1952);
+  assert.equal(v.signature_bytes, 3309);
+  assert.equal(hex(unhex(v.deterministic_rnd)), '00'.repeat(32));
+
+  assert.equal(v.vectors.length, 4);
+  for (const [i, x] of v.vectors.entries()) {
+    assert.equal(unhex(x.pk).length, 1952, `vector ${i} pk`);
+    assert.equal(unhex(x.sk).length, 4032, `vector ${i} sk`);
+    assert.equal(unhex(x.signature).length, 3309, `vector ${i} sig`);
+    assert.equal(unhex(x.seed).length, 32, `vector ${i} seed`);
+    // The tampered signature really is a one-byte change, so the vector is
+    // exercising a flipped bit rather than a differently-shaped object.
+    const good = unhex(x.signature), bent = unhex(x.tampered_signature);
+    assert.equal(good.length, bent.length);
+    let diff = 0;
+    for (let b = 0; b < good.length; b++) if (good[b] !== bent[b]) diff++;
+    assert.equal(diff, 1, `vector ${i} tamper is exactly one byte`);
+    assert.equal(x.message_hex, hex(utf8(x.message)));
+  }
+
+  // The hybrid construction: Node verifies the Ed25519 half itself.
+  const h = v.hybrid;
+  assert.equal(unhex(h.ed_pub).length, 32);
+  assert.equal(unhex(h.ml_pub).length, 1952);
+  assert.equal(unhex(h.ed_sig).length, 64);
+  assert.equal(unhex(h.ml_sig).length, 3309);
+  assert.ok(edVerify(unhex(h.ed_pub), utf8(h.message), unhex(h.ed_sig)),
+    'the classical half of the hybrid signature verifies');
+  assert.ok(!edVerify(unhex(h.ed_pub), utf8(h.message + '!'), unhex(h.ed_sig)),
+    'and does not verify a different message');
+
+  // The commitment a zc3. contact code carries in place of the 1952-byte key
+  // (ADR 0003): SHA-256 over a domain separator and the key.
+  assert.equal(h.commit_context, 'z-pqid-v3:');
+  assert.equal(hex(sha256(cat(utf8(h.commit_context), unhex(h.ml_pub)))),
+    h.pq_commitment, 'pq commitment');
+  // It is domain-separated: a bare hash of the key is a different value.
+  assert.notEqual(hex(sha256(unhex(h.ml_pub))), h.pq_commitment);
+});

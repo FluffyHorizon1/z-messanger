@@ -47,6 +47,10 @@ jobs:
         run: |
           python3 -m pip install --quiet kyber-py==1.2.0
           python3 protocol/tool/verify_mlkem.py
+      - name: ML-DSA vectors vs dilithium-py (independent FIPS 204 implementation)
+        run: |
+          python3 -m pip install --quiet dilithium-py==1.4.0
+          python3 protocol/tool/verify_mldsa.py
       - name: App tests (incl. concurrency regression through the real relay)
         working-directory: app
         run: |

@@ -57,6 +57,7 @@ like the review to either confirm or break each one.
 | C12 | The wire format is frozen: any change to bytes an implementation computes fails CI; compatible extensions are additive only. | §14, `vectors/README.md` | `protocol/test/vectors_test.dart` freeze, Node clean‑room replay (15 suites) |
 | C13 | A backup archive restores history onto a wiped device without ever restoring session state; a wrong recovery code, a truncated file or a moved frame all fail closed with no oracle; the restored device re‑handshakes, including the post‑quantum layer, rather than silently downgrading. | `BACKUP.md` | `app/test/backup_test.dart` (round trip, fail‑closed, schema compatibility), `protocol/test/archive_test.dart`, `backup/archive.json` replayed by Node |
 | C14 | One account on several devices: each device has its own routing id and its own ratchets, so two devices never contend for a mailbox and never share a chain; the safety number is anchored to the account key and does not move when a device is added or removed; a contact offline for the whole enrollment still learns the new device and fans out to it. | `PROTOCOL.md` §2.5, §3; `z-multidevice-design.md` | `app/test/multidevice_test.dart`, `devlist_distribution_test.dart`, `devlist_transparency_test.dart`, `history_sync_test.dart` |
+| C15 | Hybrid signatures (v3, in progress): a signature verifies only if BOTH the Ed25519 and the ML-DSA-65 halves verify over identical bytes; a stripped half does not parse at all, so a downgrade is not expressible; an identity stays derivable from two 32-byte seeds. | §13.1, `adr/0003-pq-identity-qr.md` | `protocol/test/pqsign_test.dart` (11), `v3/mldsa65.json` re-derived by dilithium-py and structurally replayed by Node |
 
 ## 4. Where we would like the most attention
 
@@ -173,14 +174,16 @@ derivations themselves).
 ## 7. Artifacts and how to run them
 
 ```
-# Protocol library: 95 tests incl. the vector freeze
+# Protocol library: 107 tests incl. the vector freeze
 cd protocol && dart test
 
-# Relay: 42 tests incl. the clean-room vector replay (15 suites, no shared code)
+# Relay: 43 tests incl. the clean-room vector replay (16 suites, no shared code)
 cd server && npm test
 
-# ML-KEM values re-derived by an unrelated FIPS 203 implementation
-pip install kyber-py==1.2.0 && python3 protocol/tool/verify_mlkem.py
+# ML-KEM and ML-DSA values re-derived by unrelated FIPS 203/204 implementations
+pip install kyber-py==1.2.0 dilithium-py
+python3 protocol/tool/verify_mlkem.py
+python3 protocol/tool/verify_mldsa.py
 
 # App: 22 test files, most driving real clients through the real relay
 # (each spawns its own relay process; node must be on PATH)

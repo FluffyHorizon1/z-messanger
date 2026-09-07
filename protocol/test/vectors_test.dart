@@ -49,6 +49,7 @@ void main() {
       ('v2', 'mlkem768'),
       ('v2', 'pq_ratchet'),
       ('v2', 'pq_rekey'),
+      ('v3', 'mldsa65'),
       ('backup', 'archive'),
     ]) {
       test('$ver/$suite', () {
