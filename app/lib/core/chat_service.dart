@@ -407,9 +407,23 @@ class ChatService extends ChangeNotifier {
     return (await _convFor(c)).pqGeneration;
   }
 
+  /// The number two people read to each other to rule out a
+  /// man-in-the-middle.
+  ///
+  /// It is anchored to the ACCOUNT key, never to this device's own key. On a
+  /// device that holds the root the two are the same value, so nothing moves
+  /// for an account that has never linked anything — but on a linked device
+  /// they differ, and using the device key there would mean a phone and a
+  /// laptop showing different numbers for the same contact. Someone who
+  /// verified on one and then checked on the other would see a mismatch and
+  /// conclude they were under attack; and a contact would see the number
+  /// change every time a device was added, which makes a real substitution
+  /// indistinguishable from someone opening the desktop app. Stability across
+  /// device changes is the property that makes verification mean anything
+  /// (`z-multidevice-design.md` §3).
   Future<String> safetyNumberWith(String rid) async {
     final c = contacts[rid]!;
-    return safetyNumber(identity.edPub, c.bundle.edPub);
+    return safetyNumber((await accountIdentity()).accountEdPub, c.bundle.edPub);
   }
 
   /// Discard all ratchet sessions with this contact and open a fresh one.

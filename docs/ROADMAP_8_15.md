@@ -95,7 +95,11 @@ current one in test.
 
 ---
 
-## Phase 10 · Multi-device
+## Phase 10 · Multi-device *(complete)*
+
+M1–M5 were built incrementally across phases 3–7, so this phase was mostly a
+matter of proving the exit criteria rather than writing new machinery — and
+proving them found one real bug (revision 13 below).
 
 `z-multidevice-design.md` executed as written: per-device sessions,
 sender-side fan-out, **relay unchanged**. M1–M5 there map onto 10.1–10.5.
@@ -363,3 +367,21 @@ direction; the phases, their order and both ordering arguments stand.
    anyone who can open the vault already has the plaintext history, while the
    code protects the archive after it leaves the device — but it is a trade,
    so the UI states it and disabling the schedule erases the code.
+
+13. **10.1 — the safety number was anchored to the wrong key.**
+   `ChatService.safetyNumberWith` used `identity.edPub`, this DEVICE's key,
+   where `PROTOCOL.md` §2.5 already specified the ACCOUNT key. On a device
+   holding the root the two coincide, so it looked correct for the entire
+   single-device era; on a linked device they differ, and a phone and a laptop
+   showed different numbers for the same contact. Someone who verified on one
+   and checked on the other would read a mismatch as an attack. Fixed to use
+   the account key, which is byte-identical for an account that has never
+   linked a device — a test pins that, because silently moving this number
+   would make every already-verified contact in the wild look compromised.
+14. **10 exit criteria are now tested directly** (`app/test/multidevice_test.dart`):
+   both devices sending and receiving with no mailbox contention and no
+   duplicates, the safety number surviving an add and a remove, and a contact
+   who was offline for the whole enrollment still learning the device — and
+   then actually reaching the new device, since the device list only matters
+   if it changes the fan-out. The relay is untouched: its last commit predates
+   the phase.
