@@ -32,6 +32,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'identity.dart';
+import 'multidevice.dart';
 import 'pqsign.dart';
 import 'util.dart';
 
@@ -225,4 +226,144 @@ Future<ScannedIdentity> scanContactCode(
         await accountFallback(t), IdentityAssurance.classical);
   }
   throw const FormatException('not a Z contact code');
+}
+
+// ---------------------------------------------------------------------------
+// Hybrid device certificates (§18.4) and safety number v2 (§18.5)
+// ---------------------------------------------------------------------------
+
+/// How well a device's membership of an account has been established.
+enum DeviceAssurance {
+  /// The account signed this device classically only — a v1/v2 account, or a
+  /// v3 one whose post-quantum signature has not arrived yet. Correct today,
+  /// forgeable by a quantum adversary later.
+  classical,
+
+  /// Both halves of the account's signature check out.
+  hybrid,
+}
+
+/// A device certificate signed under both of an account's keys.
+///
+/// The certificate is the whole ballgame for §13: it is the account's
+/// statement that a device belongs to it, so forging one inserts a rogue
+/// device into every contact's fan-out and reads everything from then on.
+/// That is the one thing a quantum adversary could do to this design without
+/// touching a single recorded ciphertext, and it is what the post-quantum half
+/// is here to stop.
+///
+/// Both signatures cover the **identical** bytes — `DeviceCertificate
+/// .signingInput` — so there is no way to obtain a valid pair attesting to
+/// different devices.
+class HybridDeviceCertificate {
+  /// The classical certificate, unchanged in shape from v2. A v3-unaware
+  /// client reads exactly this and is none the wiser.
+  final DeviceCertificate classical;
+
+  /// ML-DSA-65 over the same signing input. 3 309 bytes.
+  final Uint8List mlSig;
+
+  HybridDeviceCertificate({required this.classical, required this.mlSig}) {
+    if (classical.legacy) {
+      // A legacy record is a v1 identity read as a device: the "signature" is
+      // the v1 binding signature and there is no account key separate from
+      // the device key. There is nothing for a post-quantum half to attest
+      // to, and pretending otherwise would let a v1 identity be presented as
+      // post-quantum verified.
+      throw const HybridFormatException(
+          'a legacy v1 record cannot be a hybrid certificate');
+    }
+    if (mlSig.length != mlDsaSignatureBytes) {
+      throw HybridFormatException(
+          'ML-DSA-65 signature must be $mlDsaSignatureBytes bytes');
+    }
+  }
+
+  Uint8List get signingInput => DeviceCertificate.signingInput(
+      classical.deviceEdPub, classical.deviceXPub, classical.deviceId);
+
+  /// Signs [deviceEdPub]/[deviceXPub]/[deviceId] under an account's hybrid
+  /// key. Only a device holding the account root can do this.
+  static Future<HybridDeviceCertificate> sign({
+    required HybridKeyPair accountKey,
+    required Uint8List deviceEdPub,
+    required Uint8List deviceXPub,
+    required String deviceId,
+    bool deterministic = false,
+  }) async {
+    final input =
+        DeviceCertificate.signingInput(deviceEdPub, deviceXPub, deviceId);
+    final both = await accountKey.sign(input, deterministic: deterministic);
+    return HybridDeviceCertificate(
+      classical: DeviceCertificate(
+        deviceEdPub: deviceEdPub,
+        deviceXPub: deviceXPub,
+        deviceId: deviceId,
+        sig: both.ed,
+      ),
+      mlSig: both.ml,
+    );
+  }
+
+  /// True only if BOTH halves verify under [accountKey].
+  ///
+  /// There is deliberately no way to ask this object for a classical-only
+  /// verdict: a caller that wants one uses [classical] and gets
+  /// [DeviceAssurance.classical] back from wherever it is tracking that, so
+  /// the weaker check is always a visible choice rather than a fallback.
+  Future<bool> verify(HybridPublicKey accountKey) async {
+    if (!await classical.verify(accountKey.edPub)) return false;
+    return pqDsaVerify(accountKey.mlPub, signingInput, mlSig);
+  }
+
+  Map<String, Object?> toJson() => {
+        ...classical.toJson(),
+        'mlsig': b64(mlSig),
+      };
+
+  /// A certificate without its post-quantum half does not parse as a hybrid
+  /// one. Stripping must not produce something a verifier could evaluate.
+  static HybridDeviceCertificate fromJson(Map<String, Object?> j) {
+    final ml = j['mlsig'];
+    if (ml is! String) {
+      throw const HybridFormatException(
+          'a hybrid device certificate needs its post-quantum half');
+    }
+    return HybridDeviceCertificate(
+      classical: DeviceCertificate.fromJson(j),
+      mlSig: unb64(ml),
+    );
+  }
+}
+
+/// Safety number v2 (§18.5): the number two people compare, derived from
+/// **both halves of both account keys**.
+///
+/// Same shape as v1 — twelve five-digit groups, symmetric in the two
+/// identities — and the same rule about which keys go in: the ACCOUNT keys,
+/// so the number does not move when either side links or drops a device.
+/// (That rule was specified from the start and was still got wrong once; see
+/// the phase-10 fix.)
+///
+/// The salt differs from v1's, so a v2 number can never coincide with a v1
+/// number for the same pair. That matters because the change is visible to
+/// every user exactly once, and a client showing the new number must say so
+/// rather than letting it look like a key substitution.
+Future<String> safetyNumberV3(HybridPublicKey a, HybridPublicKey b) async {
+  final aFirst = _lexLessBytes(a.edPub, b.edPub);
+  final lo = aFirst ? a : b;
+  final hi = aFirst ? b : a;
+  return safetyNumberFromMaterial(
+      concatBytes([lo.edPub, lo.mlPub, hi.edPub, hi.mlPub]),
+      context: safetyContextV3);
+}
+
+const String safetyContextV3 = 'z-safety-v2';
+
+bool _lexLessBytes(Uint8List a, Uint8List b) {
+  final n = a.length < b.length ? a.length : b.length;
+  for (var i = 0; i < n; i++) {
+    if (a[i] != b[i]) return a[i] < b[i];
+  }
+  return a.length < b.length;
 }

@@ -178,10 +178,23 @@ class ContactBundle {
 Future<String> safetyNumber(Uint8List edPubA, Uint8List edPubB) async {
   final lo = _lexLess(edPubA, edPubB) ? edPubA : edPubB;
   final hi = identical(lo, edPubA) ? edPubB : edPubA;
+  return safetyNumberFromMaterial(concatBytes([lo, hi]),
+      context: safetyContext);
+}
+
+/// The display derivation shared by every version of the safety number: HKDF
+/// over already-ordered key material, rendered as twelve five-digit groups.
+///
+/// [context] is the HKDF salt and is what keeps versions apart — a v1 and a
+/// v3 number for the same pair of people can never coincide, which matters
+/// because the v3 change is visible to every user exactly once and must not
+/// be mistakable for a key substitution.
+Future<String> safetyNumberFromMaterial(Uint8List ikm,
+    {required String context}) async {
   final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 60);
   final key = await hkdf.deriveKey(
-    secretKey: SecretKey(concatBytes([lo, hi])),
-    nonce: utf8.encode(safetyContext),
+    secretKey: SecretKey(ikm),
+    nonce: utf8.encode(context),
     info: utf8.encode('display'),
   );
   final bytes = await key.extractBytes();

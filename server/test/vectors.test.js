@@ -1186,3 +1186,47 @@ test('v3 contact_code_v3: the code parses, binds, and commits — checked here '
   assert.equal(hex(sha256(cat(utf8(v.commit_context), unb64(inner.pk)))),
     v.pq.commitment, 'the delivered key satisfies the scanned commitment');
 });
+
+test('v3 device_cert_v3: both halves cover the same input, and the classical '
+  + 'half alone is not enough', () => {
+  const v = loadV3('device_cert_v3');
+  assert.equal(v.suite, 'device_cert_v3');
+  assert.equal(v.signing_context, 'z-device-cert-v1:');
+
+  // The signing input is the v2 one, unchanged: context || dev_ed || dev_x ||
+  // device_id. Both algorithms attest to exactly these bytes, which is what
+  // makes it impossible to hold a valid pair over different devices.
+  const dev = v.device;
+  const input = cat(utf8(v.signing_context), unhex(dev.ed_pub),
+    unhex(dev.x_pub), utf8(dev.device_id));
+  assert.equal(hex(input), v.signing_input, 'signing input');
+  assert.equal(b64url(sha256(unhex(dev.ed_pub))), dev.routing_id);
+
+  // Node verifies the classical half itself.
+  const acct = v.account;
+  assert.ok(edVerify(unhex(acct.ed_pub), input, unhex(v.cert.ed_sig)),
+    'genuine certificate: classical half verifies');
+  assert.equal(unhex(v.cert.ml_sig).length, 3309);
+  assert.equal(unhex(acct.ml_pub).length, 1952);
+
+  // The forged record: its Ed25519 half is GENUINE over this device — Node
+  // confirms that independently — and only the post-quantum half gives it
+  // away. This is the exit criterion for the phase, and the reason a
+  // classical-only check can no longer gate anything.
+  assert.ok(edVerify(unhex(acct.ed_pub), input, unhex(v.must_refuse.ed_sig)),
+    'the forgery really does pass a classical-only check');
+  assert.notEqual(v.must_refuse.ml_sig, v.cert.ml_sig,
+    'and differs only in the half that cannot be forged');
+
+  // A hybrid certificate is ~3.4 KB, which is why it cannot ride in a QR or
+  // in a device list that must stay inside the 1024-byte padding bucket.
+  assert.ok(v.cert.json_bytes > 3000, 'hybrid certificates are large');
+
+  // Safety number v2: twelve five-digit groups, different from v1 for the
+  // same pair, so the one-time change cannot be mistaken for a substitution.
+  const sn = v.safety_number_v2;
+  assert.equal(sn.context, 'z-safety-v2');
+  assert.equal(sn.value.split(' ').length, 12);
+  assert.ok(sn.value.split(' ').every((g) => /^[0-9]{5}$/.test(g)));
+  assert.notEqual(sn.value, sn.v1_value_for_comparison);
+});

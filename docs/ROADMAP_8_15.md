@@ -205,7 +205,7 @@ re-keying. The remaining gap is **authentication**: identity keys, device
 certificates and safety numbers are still purely classical, so a future CRQC
 forges identities even though it cannot read past traffic.
 
-- **13.1 hybrid signatures** *(primitive done — `pqsign.dart`, PROTOCOL §18.1)* — account and device keys become Ed25519 +
+- **13.1 hybrid signatures** *(done — `pqsign.dart`, hybrid device certs, PROTOCOL §18.1, §18.4)* — account and device keys become Ed25519 +
   ML-DSA-65; both signatures required, verification fails if either fails.
 - **13.2 contact code v3** *(done — `identity_v3.dart`, PROTOCOL §18.2–18.3)* — `zc3.` carrying hybrid account keys and hybrid
   device certs; v2 codes still resolve with a "classical identity" marker.
@@ -219,7 +219,7 @@ forges identities even though it cannot read past traffic.
   1 024-byte padding bucket to 16 384 or 65 536, telling the relay when an
   account changes its device set and roughly how many devices it has — 13.1
   must not ship that.
-- **13.3 safety number v2** — derived from both key halves. A visible, one-time
+- **13.3 safety number v2** *(protocol done — PROTOCOL §18.5; UX outstanding)* — derived from both key halves. A visible, one-time
   change for every user, so it needs deliberate re-verification UX.
 - **13.4 spec + vectors** — PROTOCOL §18 for v3, a v3 vector suite with an
   independent checker, v1/v2 suites frozen as usual.

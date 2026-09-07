@@ -1835,6 +1835,96 @@ Future<Map<String, Object?>> suiteContactCodeV3() async {
   };
 }
 
+Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
+  final d = Drbg(0x000B);
+  final acct =
+      await HybridKeyPair.fromSeeds(edSeed: d.next(32), mlSeed: d.next(32));
+  final dev = await d.run(() async => ZIdentity.generate());
+  d.takeDraws();
+
+  final cert = await HybridDeviceCertificate.sign(
+    accountKey: acct,
+    deviceEdPub: dev.edPub,
+    deviceXPub: dev.xPub,
+    deviceId: 'laptop',
+    deterministic: true, // vectors only; production signing is hedged
+  );
+  check(await cert.verify(acct.publicKey), 'hybrid cert verifies');
+  check(await cert.classical.verify(acct.publicKey.edPub),
+      'its classical half is a plain v2 certificate');
+
+  // The exit criterion for §13: a certificate whose classical half is
+  // genuine but whose post-quantum half attests to a different device.
+  final decoy = await HybridDeviceCertificate.sign(
+    accountKey: acct,
+    deviceEdPub:
+        (await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32)))
+            .edPub,
+    deviceXPub: dev.xPub,
+    deviceId: 'rogue',
+    deterministic: true,
+  );
+  final forged =
+      HybridDeviceCertificate(classical: cert.classical, mlSig: decoy.mlSig);
+  check(!await forged.verify(acct.publicKey), 'classical-only cert refused');
+  check(await forged.classical.verify(acct.publicKey.edPub),
+      '…even though its classical half still passes');
+
+  // Safety number v2 over both halves of both accounts.
+  final peer =
+      await HybridKeyPair.fromSeeds(edSeed: d.next(32), mlSeed: d.next(32));
+  final sn = await safetyNumberV3(acct.publicKey, peer.publicKey);
+  check(sn == await safetyNumberV3(peer.publicKey, acct.publicKey),
+      'safety number v2 is symmetric');
+  final v1sn = await safetyNumber(acct.publicKey.edPub, peer.publicKey.edPub);
+  check(sn != v1sn, 'v2 and v1 numbers differ for the same pair');
+
+  final certJson = jsonEncode(cert.toJson());
+  return {
+    'suite': 'device_cert_v3',
+    'version': vectorsVersionV3,
+    'description':
+        'Hybrid device certificates (§18.4) and safety number v2 (§18.5). '
+            'Both signatures cover the SAME signing input, and a certificate '
+            'verifies only if both halves do — the "must_refuse" record here '
+            'has a genuine Ed25519 signature over this device and a genuine '
+            'ML-DSA signature over a different one, which is exactly what an '
+            'adversary who has broken Ed25519 can produce. Signing is '
+            'deterministic for reproducibility; production signing is hedged.',
+    'signing_context': deviceCertContext,
+    'account': {
+      'ed_pub': hex(acct.publicKey.edPub),
+      'ml_pub': hex(acct.publicKey.mlPub),
+    },
+    'device': {
+      'ed_pub': hex(dev.edPub),
+      'x_pub': hex(dev.xPub),
+      'device_id': 'laptop',
+      'routing_id': await cert.classical.routingId(),
+    },
+    'signing_input': hex(cert.signingInput),
+    'cert': {
+      'ed_sig': hex(cert.classical.sig),
+      'ml_sig': hex(cert.mlSig),
+      'json': certJson,
+      'json_bytes': certJson.length,
+    },
+    'must_refuse': {
+      'reason': 'genuine classical half, post-quantum half over another device',
+      'ed_sig': hex(forged.classical.sig),
+      'ml_sig': hex(forged.mlSig),
+    },
+    'safety_number_v2': {
+      'context': safetyContextV3,
+      'peer_ed_pub': hex(peer.publicKey.edPub),
+      'peer_ml_pub': hex(peer.publicKey.mlPub),
+      'ikm_rule': 'lo.ed || lo.ml || hi.ed || hi.ml, ordered by Ed25519 key',
+      'value': sn,
+      'v1_value_for_comparison': v1sn,
+    },
+  };
+}
+
 Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
   final a = await actors();
   return {
@@ -1856,6 +1946,7 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     'v3': {
       'mldsa65': await suiteMlDsa(),
       'contact_code_v3': await suiteContactCodeV3(),
+      'device_cert_v3': await suiteDeviceCertV3(a),
     },
     'backup': {
       'archive': await suiteBackup(),

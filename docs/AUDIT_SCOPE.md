@@ -59,6 +59,7 @@ like the review to either confirm or break each one.
 | C14 | One account on several devices: each device has its own routing id and its own ratchets, so two devices never contend for a mailbox and never share a chain; the safety number is anchored to the account key and does not move when a device is added or removed; a contact offline for the whole enrollment still learns the new device and fans out to it. | `PROTOCOL.md` §2.5, §3; `z-multidevice-design.md` | `app/test/multidevice_test.dart`, `devlist_distribution_test.dart`, `devlist_transparency_test.dart`, `history_sync_test.dart` |
 | C15 | Hybrid signatures (v3, in progress): a signature verifies only if BOTH the Ed25519 and the ML-DSA-65 halves verify over identical bytes; a stripped half does not parse at all, so a downgrade is not expressible; an identity stays derivable from two 32-byte seeds. | §18.1, `adr/0003-pq-identity-qr.md` | `protocol/test/pqsign_test.dart` (11), `v3/mldsa65.json` re-derived by dilithium-py and structurally replayed by Node |
 | C16 | A `zc3.` contact code stays QR-sized (~370 bytes) while binding a 1952-byte post-quantum key: the key is delivered in-band and refused unless it matches the commitment carried by the scanned code. A v3 code with the commitment stripped is refused rather than treated as a classical one, and a scanned identity's assurance state is never reported as hybrid before the key has arrived and matched. | §18.2, §18.3 | `protocol/test/identity_v3_test.dart` (10), `v3/contact_code_v3.json` replayed by Node with its own Ed25519 and SHA-256 |
+| C17 | A device certificate verifies only if BOTH the account's Ed25519 and ML-DSA-65 signatures check out over identical bytes; a certificate whose classical half is genuine but whose post-quantum half attests to a different device is rejected, and a stripped one does not parse. A v1 legacy record cannot be presented as post-quantum verified. Safety number v2 covers both key halves, is anchored to the account key, and can never coincide with a v1 number for the same pair. | §18.4, §18.5 | `protocol/test/identity_v3_test.dart` (19), `v3/device_cert_v3.json` replayed by Node, which confirms independently that the forgery passes a classical-only check |
 
 ## 4. Where we would like the most attention
 
@@ -175,10 +176,10 @@ derivations themselves).
 ## 7. Artifacts and how to run them
 
 ```
-# Protocol library: 118 tests incl. the vector freeze
+# Protocol library: 128 tests incl. the vector freeze
 cd protocol && dart test
 
-# Relay: 44 tests incl. the clean-room vector replay (17 suites, no shared code)
+# Relay: 45 tests incl. the clean-room vector replay (18 suites, no shared code)
 cd server && npm test
 
 # ML-KEM and ML-DSA values re-derived by unrelated FIPS 203/204 implementations

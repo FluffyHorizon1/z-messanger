@@ -32,6 +32,7 @@ to a frozen file; the freeze test then pins the additions too.
 |---|---|---|
 | `mldsa65.json` | ML‑DSA‑65 known answers from seeds (`KeyGen_internal(zeta)`, deterministic signing with `rnd = 0^32`, verification, and a one‑byte tamper that must fail), plus the hybrid Ed25519 + ML‑DSA‑65 construction and the 32‑byte contact‑code commitment | §18.1, `adr/0003` |
 | `contact_code_v3.json` | the `zc3.` code end to end: identity seeds → keys → binding signature → routing id, the commitment over the ML‑DSA key, the encoded code and its JSON, the `pqid` inner message that delivers the key, and a substituted key that must be refused | §18.2 |
+| `device_cert_v3.json` | hybrid device certificates: the shared signing input, both signatures, and a forgery whose Ed25519 half is genuine over this device while its ML‑DSA half attests to another — plus safety number v2 over both key halves | §18.4, §18.5 |
 
 `backup/` is a storage format rather than a wire format, so it sits outside the
 protocol version directories; it is frozen on the same terms

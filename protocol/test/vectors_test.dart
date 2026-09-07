@@ -51,6 +51,7 @@ void main() {
       ('v2', 'pq_rekey'),
       ('v3', 'mldsa65'),
       ('v3', 'contact_code_v3'),
+      ('v3', 'device_cert_v3'),
       ('backup', 'archive'),
     ]) {
       test('$ver/$suite', () {

@@ -1144,13 +1144,78 @@ third:
 | `pendingPostQuantum` | a `zc3.` code was scanned; the key is committed to but has not arrived. Authentication is classical until it does |
 | `hybrid` | the key arrived and matched the commitment |
 
-### 18.4 Still to specify
+### 18.4 Hybrid device certificates
 
-Hybrid device certificates and device lists, safety number v2 over both key
-halves (§2.5 — note it is anchored to the **account** key), and the §13.5
-compatibility window. One constraint is already known and is recorded in
-`adr/0003-pq-identity-qr.md`: putting 5 389‑byte certificates in a device list
-moves it from the 1 024‑byte padding bucket that ordinary chat occupies to
-16 384 or 65 536, which would tell the relay when an account changes its
-device set and roughly how many devices it has. The device list must carry
-commitments too, with the post‑quantum halves travelling separately.
+A device certificate is the account's statement that a device belongs to it,
+so forging one inserts a rogue device into every contact's fan‑out. It is the
+one thing a quantum adversary could do to this design without touching a
+single recorded ciphertext, and it is what §18.1 exists for.
+
+The signing input is **unchanged** from §3.2:
+
+```
+input  = utf8("z-device-cert-v1:") || device_ed_pub || device_x_pub || utf8(device_id)
+cert   = { ed, x, id, sig, mlsig }
+sig    = Ed25519.Sign(account_ed_sk,  input)
+mlsig  = ML-DSA-65.Sign(account_ml_sk, input)
+```
+
+Both signatures cover identical bytes, so no valid pair can attest to
+different devices. A verifier MUST require both. Dropping `mlsig` MUST be a
+parse error, not a certificate that verifies classically — the classical half
+of a forgery by a quantum adversary is genuine, so a classical‑only check can
+no longer gate anything.
+
+A **legacy** record (§3.3 — a v1 identity read as a device) has no hybrid
+form: there is no account key distinct from the device key, so there is
+nothing for a post‑quantum half to attest to. Attaching one MUST be rejected,
+or a v1 identity could be presented as post‑quantum verified.
+
+Devices keep **classical** keys of their own. A device's Ed25519 key
+authenticates it to the relay and fixes its routing id; the relay is untrusted
+and its mailboxes hold only sealed ciphertext, so a forged relay
+authentication gains nothing a quantum adversary would not already have. What
+must be hybrid is the account's attestation, and that is the certificate.
+
+**Distribution is constrained, and the constraint is not obvious.** A hybrid
+certificate is ~3.4 KB. Sealed sender pads envelopes into buckets (§8) so the
+relay cannot tell one kind of message from another, and today a device‑list
+update sits in the 1 024‑byte bucket alongside ordinary chat. Certificates of
+this size move it to 16 384 or 65 536 — buckets almost nothing else occupies —
+which would tell the relay **when an account changes its device set and
+roughly how many devices it has**, from envelope size alone. That is a new
+leak running opposite to the threats `adr/0001` is about, and it would be
+introduced by a phase whose purpose is to strengthen authentication.
+
+A device list therefore continues to carry classical certificates and keeps
+its bucket; the post‑quantum halves travel separately, on their own schedule,
+uncorrelated with a device‑list event. A device is tracked as
+`classical`‑verified until its `mlsig` has arrived and checked, then
+`hybrid`. Suppressing that delivery is possible for a network attacker and
+leaves a device classically verified — detectable by a client that knows from
+the scanned `zc3.` code to expect a hybrid half, and worth surfacing, but not
+preventable by the network layer.
+
+### 18.5 Safety number v2
+
+Derived from **both halves of both account keys**, ordered as in §2.5:
+
+```
+(lo, hi) = the two accounts, ordered by Ed25519 public key
+K        = HKDF( ikm = lo.ed || lo.ml || hi.ed || hi.ml,
+                 salt = utf8("z-safety-v2"), info = utf8("display"), L = 60 )
+```
+
+The display rule is unchanged (twelve five‑digit groups). The salt differs
+from v1's, so a v1 and a v2 number for the same pair can never coincide —
+which matters because the change is visible to every user exactly once, and a
+client showing the new number MUST say why rather than letting it look like a
+key substitution.
+
+As in v1 the inputs are **account** keys, so the number does not move when
+either side links or drops a device.
+
+### 18.6 Still to specify
+
+The §13.5 compatibility window: one release accepting v2 identities and
+emitting v3, then v2 emission dropped.

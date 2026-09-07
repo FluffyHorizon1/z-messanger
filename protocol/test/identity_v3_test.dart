@@ -150,6 +150,8 @@ void main() {
     });
   });
 
+  _hybridCertsAndSafetyNumber();
+
   group('the in-band delivery', () {
     test('a pqid message carries the key the commitment expects', () async {
       final edSeed = randomBytes(32);
@@ -176,6 +178,154 @@ void main() {
           await code.acceptsPqKey(HybridPublicKey(
               edPub: id.edPub, mlPub: unb64(forged.data['pk'] as String))),
           isFalse);
+    });
+  });
+}
+
+void _hybridCertsAndSafetyNumber() {
+  group('hybrid device certificates', () {
+    late HybridKeyPair account;
+    late ZIdentity device;
+    late HybridDeviceCertificate cert;
+
+    setUpAll(() async {
+      account = await HybridKeyPair.generate();
+      device = await ZIdentity.generate();
+      cert = await HybridDeviceCertificate.sign(
+        accountKey: account,
+        deviceEdPub: device.edPub,
+        deviceXPub: device.xPub,
+        deviceId: 'laptop',
+      );
+    });
+
+    test('a genuine certificate verifies under both halves', () async {
+      expect(await cert.verify(account.publicKey), isTrue);
+      // …and its classical half is a plain v2 certificate, so a client that
+      // has never heard of v3 reads it unchanged.
+      expect(await cert.classical.verify(account.publicKey.edPub), isTrue);
+      expect(cert.classical.deviceId, 'laptop');
+    });
+
+    test('a cert with only a valid classical half is rejected', () async {
+      // The phase's exit criterion. This is what an adversary who has broken
+      // Ed25519 produces: a real classical signature over the device they
+      // want to insert, and a post-quantum signature they cannot forge — here
+      // stood in for by a valid signature over a DIFFERENT device.
+      final other = await HybridDeviceCertificate.sign(
+        accountKey: account,
+        deviceEdPub: (await ZIdentity.generate()).edPub,
+        deviceXPub: device.xPub,
+        deviceId: 'rogue',
+      );
+      final forged = HybridDeviceCertificate(
+          classical: cert.classical, mlSig: other.mlSig);
+      expect(await forged.verify(account.publicKey), isFalse);
+      // The classical half alone still passes, which is exactly why the
+      // hybrid check has to be the one that gates anything.
+      expect(await forged.classical.verify(account.publicKey.edPub), isTrue);
+    });
+
+    test('a cert with only a valid post-quantum half is rejected', () async {
+      final stranger = await HybridKeyPair.generate();
+      final wrongEd = await HybridDeviceCertificate.sign(
+        accountKey: stranger,
+        deviceEdPub: device.edPub,
+        deviceXPub: device.xPub,
+        deviceId: 'laptop',
+      );
+      final forged = HybridDeviceCertificate(
+          classical: wrongEd.classical, mlSig: cert.mlSig);
+      expect(await forged.verify(account.publicKey), isFalse);
+    });
+
+    test('another account cannot vouch for this device', () async {
+      final stranger = await HybridKeyPair.generate();
+      expect(await cert.verify(stranger.publicKey), isFalse);
+      // Nor can half of one: the right classical account key paired with
+      // somebody else's post-quantum key.
+      final mixed = HybridPublicKey(
+          edPub: account.publicKey.edPub, mlPub: stranger.publicKey.mlPub);
+      expect(await cert.verify(mixed), isFalse);
+    });
+
+    test('a stripped certificate does not parse', () {
+      final j = cert.toJson()..remove('mlsig');
+      expect(() => HybridDeviceCertificate.fromJson(j),
+          throwsA(isA<HybridFormatException>()));
+      expect(
+          () => HybridDeviceCertificate(
+              classical: cert.classical, mlSig: Uint8List(100)),
+          throwsA(isA<HybridFormatException>()));
+    });
+
+    test('a legacy v1 record cannot be dressed as hybrid', () async {
+      // A legacy record is a v1 identity read as a device: its "signature" is
+      // the v1 binding signature and there is no separate account key. Letting
+      // one carry a post-quantum half would present a v1 identity as
+      // post-quantum verified.
+      final v1 = await ZIdentity.generate();
+      final legacy = DeviceCertificate(
+        deviceEdPub: v1.edPub,
+        deviceXPub: v1.xPub,
+        deviceId: 'legacy-v1',
+        sig: await v1.bindingSignature(),
+        legacy: true,
+      );
+      expect(await legacy.verify(v1.edPub), isTrue,
+          reason: 'still valid as v1');
+      expect(
+          () => HybridDeviceCertificate(classical: legacy, mlSig: cert.mlSig),
+          throwsA(isA<HybridFormatException>()));
+    });
+
+    test('it round-trips through JSON', () async {
+      final back = HybridDeviceCertificate.fromJson(cert.toJson());
+      expect(await back.verify(account.publicKey), isTrue);
+      expect(back.mlSig, cert.mlSig);
+    });
+  });
+
+  group('safety number v2', () {
+    test('symmetric, stable, and never equal to the v1 number', () async {
+      final a = await HybridKeyPair.generate();
+      final b = await HybridKeyPair.generate();
+
+      final ab = await safetyNumberV3(a.publicKey, b.publicKey);
+      final ba = await safetyNumberV3(b.publicKey, a.publicKey);
+      expect(ab, ba, reason: 'both people must read the same number');
+      expect(ab.split(' ').length, 12);
+      expect(ab.replaceAll(' ', '').length, 60);
+
+      // Domain separation: the v1 number over the same classical keys is a
+      // different value, so the one-time change is unambiguous rather than
+      // looking like a substitution.
+      final v1 = await safetyNumber(a.publicKey.edPub, b.publicKey.edPub);
+      expect(ab, isNot(v1));
+
+      // It depends on the post-quantum halves, which is the entire point: a
+      // substituted ML-DSA key changes the number two people read aloud.
+      final bPqSwapped = HybridPublicKey(
+          edPub: b.publicKey.edPub,
+          mlPub: (await HybridKeyPair.generate()).publicKey.mlPub);
+      expect(await safetyNumberV3(a.publicKey, bPqSwapped), isNot(ab));
+
+      // …and on the classical halves too.
+      final c = await HybridKeyPair.generate();
+      expect(await safetyNumberV3(a.publicKey, c.publicKey), isNot(ab));
+    });
+
+    test('the v1 number is unchanged by the refactor', () async {
+      // safetyNumberFromMaterial was extracted out of safetyNumber; v1 output
+      // must be byte-identical or every verified contact in the wild breaks.
+      final a = await ZIdentity.generate();
+      final b = await ZIdentity.generate();
+      final lo = a.edPub[0] <= b.edPub[0] ? a.edPub : b.edPub;
+      final hi = identical(lo, a.edPub) ? b.edPub : a.edPub;
+      expect(
+          await safetyNumber(a.edPub, b.edPub),
+          await safetyNumberFromMaterial(Uint8List.fromList([...lo, ...hi]),
+              context: safetyContext));
     });
   });
 }
