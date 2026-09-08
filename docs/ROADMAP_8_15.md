@@ -205,8 +205,15 @@ re-keying. The remaining gap is **authentication**: identity keys, device
 certificates and safety numbers are still purely classical, so a future CRQC
 forges identities even though it cannot read past traffic.
 
-- **13.1 hybrid signatures** *(done — `pqsign.dart`, hybrid device certs, PROTOCOL §18.1, §18.4)* — account and device keys become Ed25519 +
+- **13.1 hybrid signatures** *(done — `pqsign.dart`, hybrid device certs and a hybrid device-list signature, PROTOCOL §18.1, §18.4, §18.9; `adr/0004`)* — account and device keys become Ed25519 +
   ML-DSA-65; both signatures required, verification fails if either fails.
+  Distribution turned out to be the hard half and changed the shape: what
+  travels to a contact is **one signature over the device list**, not one per
+  certificate, because per-certificate halves do not authenticate the *set* —
+  an adversary who can forge Ed25519 presents a subset whose every remaining
+  certificate is genuine. It travels as its own message on a delayed,
+  jittered schedule, so the list keeps its 1024-byte padding bucket and the
+  16 KB envelope the signature needs is uncorrelated with a device change.
 - **13.2 contact code v3** *(done — `identity_v3.dart`, PROTOCOL §18.2–18.3)* — `zc3.` carrying hybrid account keys and hybrid
   device certs; v2 codes still resolve with a "classical identity" marker.
   **Open problem — now decided: see `adr/0003-pq-identity-qr.md`.** Measured,
@@ -254,7 +261,9 @@ forges identities even though it cannot read past traffic.
 
 **Exit:** three independent checkers agree on the v3 vectors; a v2 and a v3
 client interoperate during the window; a forged device cert with only a valid
-Ed25519 half is rejected.
+Ed25519 half is rejected. **Met** — Dart, a Node clean-room and dilithium-py
+each rebuild the device-list signing input from the list itself and confirm
+that an excluded device and a rolled-back version both fail.
 
 ---
 
@@ -494,3 +503,17 @@ direction; the phases, their order and both ordering arguments stand.
    because the user scans on whichever one is in their hand — so it is stamped
    with the device that sent it and the contact screen says so. Both guards
    were checked by removing them and watching the tests fail.
+
+21. **13.1 — distribution changed the shape of the signature** (`adr/0004`).
+   §18.4 implied a post-quantum half per certificate. Measuring showed the
+   buckets cannot hide 3.3 KB whatever is done — moving the halves out of the
+   list does not put them back in the 1024 bucket, it only decorrelates them
+   in time, and ADR 0003's "16 384 or 65 536" was really 16 384 for one to
+   three devices with the cliff at four. But the deciding argument was not
+   size: **per-certificate halves do not authenticate the set.** Given a
+   genuine hybrid list, an adversary who can forge Ed25519 presents a subset
+   — classical signature forged, every remaining certificate's post-quantum
+   half genuine and copied — and every check passes while the honest device is
+   excluded (ADR-0001 T2). One signature over the list covers membership and
+   version, is constant-size whatever the device count, and is what phase
+   13's exit criterion actually rests on.

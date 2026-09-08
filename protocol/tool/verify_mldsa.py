@@ -17,6 +17,7 @@ say which values to look at.
 Exit status 0 = every value reproduced; anything else prints the first
 mismatch and exits 1.
 """
+import base64
 import json
 import os
 import sys
@@ -29,6 +30,7 @@ except ImportError:  # pragma: no cover
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PATH = os.path.join(ROOT, "docs", "vectors", "v3", "mldsa65.json")
+CERT_PATH = os.path.join(ROOT, "docs", "vectors", "v3", "device_cert_v3.json")
 
 checks = 0
 
@@ -91,8 +93,48 @@ def main():
     commit = hashlib.sha256(h["commit_context"].encode() + pk).hexdigest()
     eq(commit, h["pq_commitment"], "pq commitment")
 
-    print(f"ok: {len(v['vectors'])} ML-DSA-65 known-answer vectors and the "
-          f"hybrid construction reproduced by dilithium-py ({checks} checks)")
+    # 18.9 / ADR 0004: the account's post-quantum signature over its DEVICE
+    # LIST. Checked from an independent implementation because this is the
+    # artefact phase 13's exit criterion actually rests on — a forged device
+    # set must not verify, and per-certificate signatures would not have
+    # caught one.
+    with open(CERT_PATH, encoding="utf-8") as f:
+        cv = json.load(f)
+    dl = cv["device_list"]
+    acct_pk = bytes.fromhex(cv["account"]["ml_pub"])
+    inp = bytes.fromhex(dl["signing_input"])
+    if not ML_DSA_65.verify(acct_pk, inp, bytes.fromhex(dl["ml_sig"])):
+        print("MISMATCH device list: signature does not verify",
+              file=sys.stderr)
+        sys.exit(1)
+    globals()["checks"] += 1
+
+    # The signing input is rebuilt here, not taken on trust: context, version,
+    # then the device Ed25519 keys sorted. If that reconstruction disagreed
+    # with the recorded bytes, the signature would be attesting to something
+    # other than the set a reader computes.
+    lst = json.loads(dl["list_json"])
+    eds = sorted(base64.b64decode(d["ded"]) for d in lst["devs"])
+    rebuilt = b"z-devlist-v1:" + f"{lst['ver']}:".encode() + b"".join(eds)
+    eq(rebuilt.hex(), dl["signing_input"], "device list signing input")
+
+    # An excluded device changes the input, so the genuine signature fails —
+    # which is the whole reason the signature is over the list and not over
+    # each certificate.
+    for name in ("excluded", "rolled_back"):
+        other = bytes.fromhex(dl["must_refuse"][f"{name}_signing_input"])
+        if other == inp:
+            print(f"MISMATCH device list: {name} input equals the genuine one",
+                  file=sys.stderr)
+            sys.exit(1)
+        if ML_DSA_65.verify(acct_pk, other, bytes.fromhex(dl["ml_sig"])):
+            print(f"MISMATCH device list: {name} set verified", file=sys.stderr)
+            sys.exit(1)
+        globals()["checks"] += 2
+
+    print(f"ok: {len(v['vectors'])} ML-DSA-65 known-answer vectors, the "
+          f"hybrid construction and the device-list signature reproduced by "
+          f"dilithium-py ({checks} checks)")
 
 
 if __name__ == "__main__":

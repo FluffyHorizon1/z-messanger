@@ -1265,6 +1265,54 @@ test('v3 device_cert_v3: both halves cover the same input, and the classical '
   // in a device list that must stay inside the 1024-byte padding bucket.
   assert.ok(v.cert.json_bytes > 3000, 'hybrid certificates are large');
 
+  // 18.9 / ADR 0004: what actually travels to a contact is one ML-DSA
+  // signature over the device LIST. Recomputed here from the list itself, so
+  // a third implementation checks the *set* is what was signed rather than
+  // taking the recorded input on trust.
+  const dl = v.device_list;
+  const list = JSON.parse(dl.list_json);
+  const eds = list.devs.map(d => unb64(d.ded))
+    .sort((p, q) => Buffer.compare(p, q));
+  const listInput = cat(utf8('z-devlist-v1:'), utf8(`${list.ver}:`), ...eds);
+  assert.equal(hex(listInput), dl.signing_input,
+    'the post-quantum half covers exactly 3.4\'s signing input');
+  assert.ok(edVerify(unb64(list.acct), listInput, unb64(list.sig)),
+    'and the classical half covers the same bytes');
+  assert.equal(unhex(dl.ml_sig).length, 3309);
+  assert.deepEqual(JSON.parse(dl.sig_json).mlsig, b64(unhex(dl.ml_sig)));
+
+  // The attack the shape exists for: a SUBSET of the genuine list. It is
+  // classically perfect — every certificate in it is untouched and verifies
+  // against the account key — so a per-certificate post-quantum half would
+  // have caught nothing. The list-level input differs, which is what does.
+  const ex = JSON.parse(dl.must_refuse.excluded_list_json);
+  assert.ok(ex.devs.length < list.devs.length, 'it is a strict subset');
+  for (const d of ex.devs) {
+    assert.ok(edVerify(unb64(ex.acct),
+      certInput(unb64(d.ded), unb64(d.dx), d.id), unb64(d.sig)),
+      'every certificate left in it is genuine');
+  }
+  const exEds = ex.devs.map(d => unb64(d.ded)).sort((p, q) => Buffer.compare(p, q));
+  const exInput = cat(utf8('z-devlist-v1:'), utf8(`${ex.ver}:`), ...exEds);
+  assert.equal(hex(exInput), dl.must_refuse.excluded_signing_input);
+  assert.notEqual(hex(exInput), hex(listInput),
+    'a different membership is a different signing input');
+  assert.ok(edVerify(unb64(ex.acct), exInput, unb64(ex.sig)),
+    'and it is classically signed — which is the whole problem');
+
+  // A rollback is caught the same way: the version is inside the input.
+  const rb = JSON.parse(dl.must_refuse.rolled_back_list_json);
+  assert.notEqual(rb.ver, list.ver);
+  const rbEds = rb.devs.map(d => unb64(d.ded)).sort((p, q) => Buffer.compare(p, q));
+  assert.equal(hex(cat(utf8('z-devlist-v1:'), utf8(`${rb.ver}:`), ...rbEds)),
+    dl.must_refuse.rolled_back_signing_input);
+  assert.notEqual(dl.must_refuse.rolled_back_signing_input, dl.signing_input);
+
+  // The size claim behind choosing one signature over the list: it does not
+  // grow with the device set.
+  assert.ok(dl.sig_json_bytes < 4600 && dl.sig_json_bytes > 4400,
+    'one constant-size artefact, whatever the device count');
+
   // Safety number v2: twelve five-digit groups, different from v1 for the
   // same pair, so the one-time change cannot be mistaken for a substitution.
   const sn = v.safety_number_v2;

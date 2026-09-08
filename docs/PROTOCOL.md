@@ -1269,13 +1269,11 @@ leak running opposite to the threats `adr/0001` is about, and it would be
 introduced by a phase whose purpose is to strengthen authentication.
 
 A device list therefore continues to carry classical certificates and keeps
-its bucket; the post‑quantum halves travel separately, on their own schedule,
-uncorrelated with a device‑list event. A device is tracked as
-`classical`‑verified until its `mlsig` has arrived and checked, then
-`hybrid`. Suppressing that delivery is possible for a network attacker and
-leaves a device classically verified — detectable by a client that knows from
-the scanned `zc3.` code to expect a hybrid half, and worth surfacing, but not
-preventable by the network layer.
+its bucket, and the post‑quantum half travels separately. **What travels is
+one signature over the list, not one per certificate — see §18.9**, which
+supersedes what this paragraph originally implied. The certificate format
+above is unchanged; it is what enrollment hands to the device it describes,
+where size does not matter.
 
 ### 18.5 Safety number v2
 
@@ -1445,3 +1443,58 @@ on the others. That is bounded rather than eliminated — any device can add a
 contact, because the user scans on whichever one is in their hand — so a
 client SHOULD show where such a contact came from, and MUST NOT present it as
 something the user did on this device.
+
+### 18.9 A post-quantum signature over the device list
+
+The account signs its device list under ML‑DSA‑65 as well as Ed25519, over
+**exactly the bytes §3.4 already defines**:
+
+```
+input  = utf8("z-devlist-v1:") || utf8(decimal(version)) || ":" || eds[0] || eds[1] || …
+sig    = Ed25519.Sign(account_ed_sk,  input)     carried in the list, as today
+mlsig  = ML-DSA-65.Sign(account_ml_sk, input)    delivered separately
+```
+
+**Over the list, not over each certificate**, and that is the security
+property rather than an economy. Consider the adversary phase 13 exists for:
+one who can forge Ed25519 but not ML‑DSA. Given a genuine list for
+`{phone, laptop, tablet}` whose certificates each carried a post‑quantum half,
+they can present a list for `{phone, tablet}` — the classical list signature
+forged, every remaining certificate's `mlsig` *genuine* and copied unchanged.
+Every check passes and the honest device has been excluded, which is
+`adr/0001`'s T2. A signature over the list covers the membership and the
+version, so neither can be changed. See `adr/0004` for the measurements and
+the options rejected.
+
+The signature travels as its own inner message:
+
+```
+{"k":"dlpq","mid":…,"ts":…,"sig":"{\"acct\":b64,\"ver\":n,\"mlsig\":b64}"}
+```
+
+A sender MUST NOT send it with the list. A ~3.3 KB signature does not fit the
+1 024‑byte bucket a device list and ordinary chat share, and no arrangement
+makes it fit; what a separate message buys is that the 16 384‑byte envelope it
+needs is **uncorrelated in time** with a device‑set change. Clients SHOULD
+therefore delay it — the reference client by hours, jittered — and send it
+once per contact per list version.
+
+A receiver MUST:
+
+* check that `acct` is the account key it holds for that contact;
+* refuse a `ver` lower than one it has already accepted;
+* **store it even when it cannot yet be verified.** The contact's account
+  ML‑DSA key arrives on its own independent schedule (§18.2) and may not be
+  here yet. Discarding an early signature would make the two schedules depend
+  on each other, which is the coupling this design exists to avoid; it is held
+  and re‑checked when the key lands;
+* treat the list as `classical` until a signature over **this** version and
+  **this** device set verifies, then `hybrid` (§18.4). A list whose version
+  has since moved on is classical again until the signature for the new one
+  arrives.
+
+Suppression is possible for a network attacker and leaves a list classically
+verified. That is not preventable at the network layer, and is detectable: a
+client that knows from a scanned commitment to expect a post‑quantum identity,
+and has held a list without a signature for some time, should say so rather
+than presenting classical verification as the finished state.

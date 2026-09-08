@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -171,6 +172,9 @@ class ChatService extends ChangeNotifier {
     );
     await svc._loadContacts();
     await svc._refreshAllVerification();
+    for (final rid in svc.contacts.keys.toList()) {
+      await svc._refreshDeviceAssurance(rid, notify: false);
+    }
     await svc._loadGroups();
     await svc._loadConversations();
     await svc._computeUnread();
@@ -178,6 +182,7 @@ class ChatService extends ChangeNotifier {
     await svc._initSync();
     await svc._loadContactDeviceLists();
     await svc._loadDevlistState();
+    svc._schedulePqListDelivery(); // §18.9, on its own clock
 
     transport.onMessage = (m) => unawaited(svc._onInbound(m));
     transport.onDelivered = (r) => unawaited(svc._onDelivered(r));
@@ -267,8 +272,12 @@ class ChatService extends ChangeNotifier {
   Future<void> reloadContacts() async {
     contacts.clear();
     _verification.clear();
+    _deviceAssurance.clear();
     await _loadContacts();
     await _refreshAllVerification();
+    for (final rid in contacts.keys.toList()) {
+      await _refreshDeviceAssurance(rid, notify: false);
+    }
     notifyListeners();
   }
 
@@ -490,20 +499,39 @@ class ChatService extends ChangeNotifier {
       accountEdPub: scanned.v3?.declaredAccountEdPub,
       deviceCert: scanned.deviceCert,
     );
-    await vault.db.insert('contacts', {
-      'rid': rid,
-      'enc_bundle': await vault.seal(jsonEncode(bundle.toJson())),
-      'enc_name': await vault.seal(name),
-      'ttl_seconds': 0,
-      'verified': 0,
-      'created_ms': contact.createdMs,
-      if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
-      if (contact.accountEdPub != null) 'acct_ed': b64(contact.accountEdPub!),
-      if (contact.deviceCert != null)
-        'dev_cert': jsonEncode(contact.deviceCert!.toJson()),
-      if (contact.addedByDevice != null) 'added_by': contact.addedByDevice,
+    // 13.7 put a second writer on this table: the same contact can arrive from
+    // one of my own devices while the user is scanning it here. The check
+    // above and the insert below have to be one step, or the two interleave
+    // and the insert dies on the primary key.
+    final claimed = await _withLock<bool>(rid, () async {
+      if (contacts.containsKey(rid)) return false;
+      await vault.db.insert(
+          'contacts',
+          {
+            'rid': rid,
+            'enc_bundle': await vault.seal(jsonEncode(bundle.toJson())),
+            'enc_name': await vault.seal(name),
+            'ttl_seconds': 0,
+            'verified': 0,
+            'created_ms': contact.createdMs,
+            if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
+            if (contact.accountEdPub != null)
+              'acct_ed': b64(contact.accountEdPub!),
+            if (contact.deviceCert != null)
+              'dev_cert': jsonEncode(contact.deviceCert!.toJson()),
+            if (contact.addedByDevice != null)
+              'added_by': contact.addedByDevice,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      contacts[rid] = contact;
+      return true;
     });
-    contacts[rid] = contact;
+    if (!claimed) {
+      // It landed from another of my devices while this scan was in flight.
+      // The user gets the same answer either way, and it is true.
+      throw FormatException(
+          'already in your contacts as "${contacts[rid]!.name}"');
+    }
     _sealKeys[rid] = bundle.xPub;
     messagesByChat[rid] = [];
     unread[rid] = 0;
@@ -527,6 +555,7 @@ class ChatService extends ChangeNotifier {
     // an unknown sender for ever. Best-effort and unawaited — the contact is
     // already added here whether or not the sync lands.
     unawaited(_mirrorContact(contact).then((_) {}, onError: (_) {}));
+    _schedulePqListDelivery(); // §18.9: a new contact is owed the signature
     notifyListeners();
     return contact;
   }
@@ -583,6 +612,8 @@ class ChatService extends ChangeNotifier {
     final bundleJson = inner.data['bundle'];
     if (rid is! String || bundleJson is! Map) return;
     if (rid == myRid || contacts.containsKey(rid)) return;
+    // Everything below is checks; the claim itself is taken under the lock at
+    // the end, because a scan of the same code may be in flight here.
     final ContactBundle bundle;
     try {
       bundle = ContactBundle.fromJson(bundleJson.cast<String, Object?>());
@@ -628,24 +659,28 @@ class ChatService extends ChangeNotifier {
       deviceCert: cert,
       addedByDevice: await _myDeviceLabel(fromDeviceRid),
     );
-    await vault.db.insert(
-        'contacts',
-        {
-          'rid': rid,
-          'enc_bundle': await vault.seal(jsonEncode(bundle.toJson())),
-          'enc_name': await vault.seal(contact.name),
-          'ttl_seconds': 0,
-          'verified': 0,
-          'created_ms': contact.createdMs,
-          if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
-          if (contact.pqPub != null)
-            'enc_pq_pub': await vault.seal(b64(contact.pqPub!)),
-          if (acct != null) 'acct_ed': b64(acct),
-          if (cert != null) 'dev_cert': jsonEncode(cert.toJson()),
-          'added_by': contact.addedByDevice,
-        },
-        conflictAlgorithm: ConflictAlgorithm.ignore);
-    contacts[rid] = contact;
+    final row = {
+      'rid': rid,
+      'enc_bundle': await vault.seal(jsonEncode(bundle.toJson())),
+      'enc_name': await vault.seal(contact.name),
+      'ttl_seconds': 0,
+      'verified': 0,
+      'created_ms': contact.createdMs,
+      if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
+      if (contact.pqPub != null)
+        'enc_pq_pub': await vault.seal(b64(contact.pqPub!)),
+      if (acct != null) 'acct_ed': b64(acct),
+      if (cert != null) 'dev_cert': jsonEncode(cert.toJson()),
+      'added_by': contact.addedByDevice,
+    };
+    final inserted = await _withLock<bool>(rid, () async {
+      if (contacts.containsKey(rid)) return false; // a scan won the race
+      await vault.db
+          .insert('contacts', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+      contacts[rid] = contact;
+      return true;
+    });
+    if (!inserted) return;
     _sealKeys[rid] = bundle.xPub;
     messagesByChat.putIfAbsent(rid, () => []);
     unread.putIfAbsent(rid, () => 0);
@@ -953,6 +988,10 @@ class ChatService extends ChangeNotifier {
               HybridPublicKey(edPub: acctEd, mlPub: myMl), candidate);
     }
     contact.pqPub = candidate.mlPub;
+    // §18.9: a device-list signature that arrived before this key was held
+    // rather than discarded. It can be checked now.
+    unawaited(
+        _refreshDeviceAssurance(contact.rid).then((_) {}, onError: (_) {}));
     if (after != null) {
       _setVerificationState(
           contact.rid, _classifyVerification(contact, after, classical!));
@@ -1507,6 +1546,9 @@ class ChatService extends ChangeNotifier {
       }
       if (inner.kind == 'devlist') {
         await _applyDevlistInner(contact, inner); // M4: learn their devices
+      }
+      if (inner.kind == 'dlpq') {
+        await _onPqListSignature(contact, inner); // §18.9
       }
       if (inner.kind == 'dlrm') {
         await _handleRemovalNotice(
@@ -3860,11 +3902,193 @@ class ChatService extends ChangeNotifier {
     if (!me.holdsAccountRoot) return null;
     final list = await me.signDeviceList(
         await myFullDeviceList(), await _myDevlistVersion());
+    // §18.9: the same bytes, signed again under ML-DSA-65. Computed here so
+    // it always exists for the list that exists — but NOT sent here. It
+    // travels on its own schedule (`_deliverPqListSignatures`), which is what
+    // stops a 16 KB envelope marking the moment a device set changed.
+    await _signListPostQuantum(list);
     // 7.7a: this device now KNOWS the latest legitimate (version, fingerprint)
     // of its own account — record it so an echo from a contact carrying a list
     // this device never issued stands out (owner rule).
     await _recordOwnList(list);
     return jsonEncode(list.toJson());
+  }
+
+  /// The account's ML-DSA-65 signature over its own current device list
+  /// (§18.9). Root only — signing needs the account's post-quantum secret,
+  /// which is derived from the account root seed.
+  Future<void> _signListPostQuantum(SignedDeviceList list) async {
+    final pq = await pqIdentity();
+    if (pq == null) return; // not the root, or a pre-v3 account
+    try {
+      final sig =
+          await HybridDeviceListSignature.sign(accountKey: pq, list: list);
+      await vault.kvPut('own_list_mlsig', jsonEncode(sig.toJson()),
+          sensitive: false);
+      // Arm the delivery clock. Arming it HERE is fine and telling the
+      // difference matters: what decorrelates the signature from the list is
+      // the delay before it goes out, not pretending the client does not know
+      // a new one exists.
+      _schedulePqListDelivery();
+    } catch (_) {
+      // Best-effort: the list is still classically signed and usable, and the
+      // signature is recomputed the next time the list is.
+    }
+  }
+
+  /// How long after a device list is signed its post-quantum signature is
+  /// offered to contacts (§18.9, ADR 0004).
+  ///
+  /// This delay IS the mechanism. The signature does not fit in the 1 024-byte
+  /// bucket that a device list and ordinary chat share — nothing 3.3 KB long
+  /// does — so it cannot be hidden by size. What it can be is uncorrelated in
+  /// time, and then the 16 384-byte envelope says only "this account runs a
+  /// v3 client", never "this account changed its devices just now". Hours in
+  /// production; tests set it small because the verification, not the delay,
+  /// is what they are checking.
+  Duration _pqListDelay = const Duration(hours: 2);
+  Duration get pqListDelay => _pqListDelay;
+  set pqListDelay(Duration d) {
+    _pqListDelay = d;
+    // Re-arm: a pending timer was scheduled against the OLD delay, and
+    // [_schedulePqListDelivery] deliberately leaves a pending one alone so a
+    // busy client cannot keep pushing delivery out for ever.
+    _pqListTimer?.cancel();
+    _pqListTimer = null;
+    _schedulePqListDelivery();
+  }
+
+  Timer? _pqListTimer;
+
+  void _schedulePqListDelivery() {
+    if (_disposed || _pqListTimer != null) return;
+    // Jittered, so several contacts are not served in one recognisable burst.
+    final jitter = Duration(
+        milliseconds:
+            (_pqListDelay.inMilliseconds * 0.4 * _rand.nextDouble()).round());
+    _pqListTimer = Timer(_pqListDelay + jitter, () {
+      _pqListTimer = null;
+      unawaited(_deliverPqListSignatures().then((_) {}, onError: (_) {}));
+    });
+  }
+
+  final Random _rand = Random.secure();
+
+  /// Offer the current list's post-quantum signature to any contact that has
+  /// not had this version. Runs off the timer above, never off a device-list
+  /// change.
+  Future<void> _deliverPqListSignatures() async {
+    final stored = await vault.kvGet('own_list_mlsig');
+    if (stored == null) return;
+    final sig = HybridDeviceListSignature.fromJson(
+        (jsonDecode(stored) as Map).cast<String, Object?>());
+    for (final rid in contacts.keys.toList()) {
+      final contact = contacts[rid];
+      if (contact == null) continue;
+      final sent =
+          int.tryParse(await vault.kvGet('dlpq_sent_$rid') ?? '0') ?? 0;
+      if (sent >= sig.version) continue;
+      try {
+        await _sendInner(
+            contact,
+            InnerMessage(
+                kind: 'dlpq',
+                mid: newMessageId(),
+                ts: _now(),
+                data: {'sig': jsonEncode(sig.toJson())}));
+        await vault.kvPut('dlpq_sent_$rid', '${sig.version}', sensitive: false);
+      } catch (_) {
+        // Try again on the next tick; nothing depends on this arriving now.
+        _schedulePqListDelivery();
+      }
+    }
+  }
+
+  /// An inbound `dlpq` (§18.9).
+  ///
+  /// Stored FIRST and verified second, and stored even when it cannot be
+  /// verified yet. The contact's account ML-DSA key arrives on its own
+  /// independent schedule (§18.2) and may not be here yet; discarding a
+  /// signature that arrives first would quietly make the two schedules depend
+  /// on each other, which is exactly what ADR 0004 separates them to avoid.
+  Future<void> _onPqListSignature(Contact contact, InnerMessage inner) async {
+    final raw = inner.data['sig'];
+    if (raw is! String) return;
+    final HybridDeviceListSignature sig;
+    try {
+      sig = HybridDeviceListSignature.fromJson(
+          (jsonDecode(raw) as Map).cast<String, Object?>());
+    } catch (_) {
+      return; // malformed or truncated: never reaches a verifier
+    }
+    if (base64Encode(sig.accountEdPub) != base64Encode(contact.accountEd)) {
+      return; // not this contact's account
+    }
+    final held =
+        int.tryParse(await vault.kvGet('cdev_pq_ver_${contact.rid}') ?? '0') ??
+            0;
+    if (sig.version < held) return; // stale replay
+    await vault.kvPut('cdev_pq_${contact.rid}', raw, sensitive: false);
+    await vault.kvPut('cdev_pq_ver_${contact.rid}', '${sig.version}',
+        sensitive: false);
+    await _refreshDeviceAssurance(contact.rid);
+  }
+
+  final Map<String, DeviceAssurance> _deviceAssurance = {};
+
+  /// Whether this contact's device list is post-quantum verified (§18.4).
+  ///
+  /// `classical` is not a failure — it is correct today and forgeable later,
+  /// and the two must be told apart rather than the second shown as the
+  /// first. A list stays classical until a signature over exactly this
+  /// version and this device set has been checked against the contact's
+  /// account key.
+  DeviceAssurance deviceAssuranceWith(String rid) =>
+      _deviceAssurance[rid] ?? DeviceAssurance.classical;
+
+  Future<void> _refreshDeviceAssurance(String rid, {bool notify = true}) async {
+    final was = _deviceAssurance[rid];
+    final now = await _computeDeviceAssurance(rid);
+    if (now == DeviceAssurance.classical) {
+      _deviceAssurance.remove(rid);
+    } else {
+      _deviceAssurance[rid] = now;
+    }
+    if (notify && was != now) notifyListeners();
+  }
+
+  Future<DeviceAssurance> _computeDeviceAssurance(String rid) async {
+    final contact = contacts[rid];
+    final mlPub = contact?.pqPub;
+    if (contact == null || mlPub == null) return DeviceAssurance.classical;
+    final listJson = await vault.kvGet('cdev_$rid');
+    final sigJson = await vault.kvGet('cdev_pq_$rid');
+    if (listJson == null || sigJson == null) return DeviceAssurance.classical;
+    try {
+      final list = SignedDeviceList.fromJson(
+          (jsonDecode(listJson) as Map).cast<String, Object?>());
+      final sig = HybridDeviceListSignature.fromJson(
+          (jsonDecode(sigJson) as Map).cast<String, Object?>());
+      return await sig.verifies(list, mlPub)
+          ? DeviceAssurance.hybrid
+          : DeviceAssurance.classical;
+    } catch (_) {
+      return DeviceAssurance.classical;
+    }
+  }
+
+  /// The stored signature for a contact's list, if one has arrived.
+  @visibleForTesting
+  Future<String?> debugHeldPqListSignature(String rid) =>
+      vault.kvGet('cdev_pq_$rid');
+
+  /// This account's own signature over its current list.
+  @visibleForTesting
+  Future<HybridDeviceListSignature?> debugPqSignatureForCurrentList() async {
+    final stored = await vault.kvGet('own_list_mlsig');
+    if (stored == null) return null;
+    return HybridDeviceListSignature.fromJson(
+        (jsonDecode(stored) as Map).cast<String, Object?>());
   }
 
   /// Self-sync a signed list to my own other devices (`dir:"acct"`).
@@ -3982,6 +4206,9 @@ class ChatService extends ChangeNotifier {
       await vault.kvPut('cdev_$rid', jsonEncode(list.toJson()),
           sensitive: false);
       await vault.kvPut('cdev_ver_$rid', '${list.version}', sensitive: false);
+      // A new list is classical until a signature over THIS version arrives
+      // (§18.9); the one we hold, if any, is for an older set.
+      await _refreshDeviceAssurance(rid, notify: false);
     }
 
     final extras = _extrasOf(contact, list);
@@ -4140,6 +4367,9 @@ class ChatService extends ChangeNotifier {
       // asking precisely because it never saw it.
       _pqSent.remove(contact.rid);
       unawaited(_sendPqIdentity(contact).then((_) {}, onError: (_) {}));
+    }
+    if (inner!.kind == 'dlpq') {
+      await _onPqListSignature(contact, inner!); // §18.9, extra-device path
     }
     if (inner!.kind == 'devlist') {
       await _applyDevlistInner(contact, inner!);

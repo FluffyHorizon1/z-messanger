@@ -411,6 +411,102 @@ enum DeviceAssurance {
   hybrid,
 }
 
+/// The account's ML-DSA-65 signature over its device list (§18.9, ADR 0004).
+///
+/// **Over the LIST, not over each certificate**, and that is the point rather
+/// than an economy. An adversary who can forge Ed25519 but not ML-DSA — the
+/// whole premise of phase 13 — can take a genuine hybrid list for
+/// `{phone, laptop, tablet}` and present one for `{phone, tablet}`: the
+/// classical list signature is forged, and each remaining certificate's
+/// post-quantum half is *genuine*, copied unchanged. Every check passes and
+/// the honest device has been excluded (`adr/0001` T2). A signature over the
+/// list covers the membership and the version, so neither can be changed.
+///
+/// It travels as its own message, on a schedule unrelated to the list's, so
+/// the 16 384-byte envelope it needs says nothing about when a device set
+/// changed. See ADR 0004 for the measurements behind that.
+class HybridDeviceListSignature {
+  final Uint8List accountEdPub;
+  final int version;
+
+  /// ML-DSA-65 over exactly [SignedDeviceList.signingInput] — the same bytes
+  /// the classical signature covers, so no valid pair can attest to different
+  /// device sets.
+  final Uint8List mlSig;
+
+  HybridDeviceListSignature({
+    required this.accountEdPub,
+    required this.version,
+    required this.mlSig,
+  }) {
+    if (accountEdPub.length != 32) {
+      throw const HybridFormatException('account key must be 32 bytes');
+    }
+    if (mlSig.length != mlDsaSignatureBytes) {
+      throw HybridFormatException(
+          'ML-DSA-65 signature must be $mlDsaSignatureBytes bytes');
+    }
+  }
+
+  /// Signs [list] with the account's hybrid key. Only a device holding the
+  /// account root can do this.
+  static Future<HybridDeviceListSignature> sign({
+    required HybridKeyPair accountKey,
+    required SignedDeviceList list,
+    bool deterministic = false,
+  }) async {
+    if (!constantTimeEquals(accountKey.publicKey.edPub, list.accountEdPub)) {
+      throw const HybridFormatException(
+          'that hybrid key does not belong to this account');
+    }
+    final both = await accountKey.sign(
+        SignedDeviceList.signingInput(list.version, list.devices),
+        deterministic: deterministic);
+    return HybridDeviceListSignature(
+      accountEdPub: list.accountEdPub,
+      version: list.version,
+      mlSig: both.ml,
+    );
+  }
+
+  /// Checks this signature against a list and the account's ML-DSA key.
+  ///
+  /// Every part must line up: the key must be the one this list claims, the
+  /// version must match, and the signature must cover the list's own signing
+  /// input. A caller that has not yet established [accountMlPub] against the
+  /// commitment from a scanned code (§18.2) has nothing to check with and
+  /// must hold the signature rather than accept it.
+  Future<bool> verifies(SignedDeviceList list, Uint8List accountMlPub) async {
+    if (!constantTimeEquals(accountEdPub, list.accountEdPub)) return false;
+    if (version != list.version) return false;
+    try {
+      return pqDsaVerify(accountMlPub,
+          SignedDeviceList.signingInput(list.version, list.devices), mlSig);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Map<String, Object?> toJson() => {
+        'acct': b64(accountEdPub),
+        'ver': version,
+        'mlsig': b64(mlSig),
+      };
+
+  static HybridDeviceListSignature fromJson(Map<String, Object?> j) {
+    final acct = j['acct'], ver = j['ver'], sig = j['mlsig'];
+    if (acct is! String || ver is! num || sig is! String) {
+      throw const HybridFormatException(
+          'a device-list signature needs an account, a version and a signature');
+    }
+    return HybridDeviceListSignature(
+      accountEdPub: unb64(acct),
+      version: ver.toInt(),
+      mlSig: unb64(sig),
+    );
+  }
+}
+
 /// A device certificate signed under both of an account's keys.
 ///
 /// The certificate is the whole ballgame for §13: it is the account's

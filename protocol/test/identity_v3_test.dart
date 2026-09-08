@@ -485,6 +485,126 @@ void _hybridCertsAndSafetyNumber() {
     });
   });
 
+  group('a hybrid device-list signature (18.9)', () {
+    late ZIdentity root;
+    late AccountIdentity account;
+    late HybridKeyPair pq;
+    late List<DeviceCertificate> devices;
+    late SignedDeviceList list;
+
+    setUpAll(() async {
+      final seed = randomBytes(32);
+      root = await ZIdentity.fromSeeds(edSeed: seed, xSeed: randomBytes(32));
+      account = await AccountIdentity.fromV1(root, deviceId: 'phone');
+      pq = await HybridKeyPair.fromSeeds(edSeed: seed, mlSeed: randomBytes(32));
+      devices = [account.deviceCert];
+      for (final name in ['laptop', 'tablet']) {
+        final d = await ZIdentity.generate();
+        devices.add(await account.signDeviceCert(
+            deviceEdPub: d.edPub, deviceXPub: d.xPub, deviceId: name));
+      }
+      list = await account.signDeviceList(devices, 3);
+    });
+
+    test('it covers the same bytes the classical signature does', () async {
+      final s =
+          await HybridDeviceListSignature.sign(accountKey: pq, list: list);
+      expect(await s.verifies(list, pq.publicKey.mlPub), isTrue);
+      expect(await list.verify(), isTrue,
+          reason: 'and the list itself is untouched');
+    });
+
+    test(
+        'excluding a device breaks it — which per-certificate signatures '
+        'would not', () async {
+      // The argument ADR 0004 turns on. An adversary who can forge Ed25519
+      // but not ML-DSA takes the genuine list and presents a SUBSET: they
+      // re-sign it classically (assumed forgeable) while every remaining
+      // certificate's post-quantum half is genuine and copied unchanged. If
+      // the post-quantum halves lived on the certificates, every check would
+      // pass and the honest device would be silently excluded.
+      final subset = devices.sublist(0, 2);
+      final excluded = await account.signDeviceList(subset, 3);
+      expect(await excluded.verify(), isTrue,
+          reason: 'classically it is a perfectly good list');
+      for (final d in subset) {
+        expect(await d.verify(account.accountEdPub), isTrue,
+            reason: 'and every certificate in it is genuine');
+      }
+      // But the account never signed THIS SET post-quantum.
+      final s =
+          await HybridDeviceListSignature.sign(accountKey: pq, list: list);
+      expect(await s.verifies(excluded, pq.publicKey.mlPub), isFalse);
+    });
+
+    test('a rollback to an earlier version breaks it too', () async {
+      final older = await account.signDeviceList(devices, 2);
+      final s =
+          await HybridDeviceListSignature.sign(accountKey: pq, list: list);
+      expect(await s.verifies(older, pq.publicKey.mlPub), isFalse);
+      // And a signature genuinely made at v2 does not pass for v3, so an old
+      // one cannot be replayed onto the current set.
+      final old =
+          await HybridDeviceListSignature.sign(accountKey: pq, list: older);
+      expect(await old.verifies(list, pq.publicKey.mlPub), isFalse);
+    });
+
+    test('another account cannot sign for this one', () async {
+      final stranger = await HybridKeyPair.generate();
+      expect(
+          () =>
+              HybridDeviceListSignature.sign(accountKey: stranger, list: list),
+          throwsA(isA<HybridFormatException>()));
+      // Nor does a genuine signature of theirs verify against this list.
+      final s =
+          await HybridDeviceListSignature.sign(accountKey: pq, list: list);
+      expect(await s.verifies(list, stranger.publicKey.mlPub), isFalse);
+    });
+
+    test('a bent signature is refused, not merely unequal', () async {
+      final s =
+          await HybridDeviceListSignature.sign(accountKey: pq, list: list);
+      final bent = Uint8List.fromList(s.mlSig)..[0] ^= 0x01;
+      final tampered = HybridDeviceListSignature(
+          accountEdPub: s.accountEdPub, version: s.version, mlSig: bent);
+      expect(await tampered.verifies(list, pq.publicKey.mlPub), isFalse);
+    });
+
+    test('a truncated signature does not parse at all', () async {
+      final s =
+          await HybridDeviceListSignature.sign(accountKey: pq, list: list);
+      final j = s.toJson();
+      j['mlsig'] = b64(Uint8List.fromList(s.mlSig.sublist(0, 100)));
+      expect(() => HybridDeviceListSignature.fromJson(j),
+          throwsA(isA<HybridFormatException>()),
+          reason: 'a short signature must never reach a verifier that could '
+              'return false and be retried');
+      j.remove('mlsig');
+      expect(() => HybridDeviceListSignature.fromJson(j),
+          throwsA(isA<HybridFormatException>()));
+    });
+
+    test('it round-trips through JSON', () async {
+      final s =
+          await HybridDeviceListSignature.sign(accountKey: pq, list: list);
+      final back = HybridDeviceListSignature.fromJson(s.toJson());
+      expect(back.version, s.version);
+      expect(back.accountEdPub, s.accountEdPub);
+      expect(await back.verifies(list, pq.publicKey.mlPub), isTrue);
+    });
+
+    test('its size does not depend on how many devices there are', () async {
+      // ADR 0004's reason for one signature over the list rather than one per
+      // device: nothing about the artefact scales with the set, so the
+      // envelope it travels in cannot leak a device count.
+      final one = await account.signDeviceList([devices.first], 3);
+      final a = await HybridDeviceListSignature.sign(accountKey: pq, list: one);
+      final b =
+          await HybridDeviceListSignature.sign(accountKey: pq, list: list);
+      expect(jsonEncode(a.toJson()).length, jsonEncode(b.toJson()).length);
+    });
+  });
+
   group('safety number v2', () {
     test('symmetric, stable, and never equal to the v1 number', () async {
       final a = await HybridKeyPair.generate();

@@ -1950,6 +1950,34 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
   final v1sn = await safetyNumber(acct.publicKey.edPub, peer.publicKey.edPub);
   check(sn != v1sn, 'v2 and v1 numbers differ for the same pair');
 
+  // §18.9 / ADR 0004: the account's post-quantum signature over its DEVICE
+  // LIST, which is what actually travels to contacts. Over the set, not over
+  // each certificate — an adversary who can forge Ed25519 can otherwise
+  // present a SUBSET of a genuine hybrid list, since every certificate left
+  // in it is untouched.
+  final acctId = await AccountIdentity.fromV1(
+      await ZIdentity.fromSeeds(edSeed: acct.edSeed, xSeed: d.next(32)),
+      deviceId: 'phone');
+  final devices = <DeviceCertificate>[acctId.deviceCert];
+  for (final name in ['laptop', 'tablet']) {
+    final x = await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+    devices.add(await acctId.signDeviceCert(
+        deviceEdPub: x.edPub, deviceXPub: x.xPub, deviceId: name));
+  }
+  final list = await acctId.signDeviceList(devices, 3);
+  final listSig = await HybridDeviceListSignature.sign(
+      accountKey: acct, list: list, deterministic: true);
+  check(await listSig.verifies(list, acct.publicKey.mlPub),
+      'the list signature verifies');
+  final subset = await acctId.signDeviceList(devices.sublist(0, 2), 3);
+  check(await subset.verify(),
+      'the excluded list is classically perfect — that is the point');
+  check(!await listSig.verifies(subset, acct.publicKey.mlPub),
+      'but the account never signed THAT set post-quantum');
+  final rolledBack = await acctId.signDeviceList(devices, 2);
+  check(!await listSig.verifies(rolledBack, acct.publicKey.mlPub),
+      'nor an earlier version of it');
+
   final certJson = jsonEncode(cert.toJson());
   return {
     'suite': 'device_cert_v3',
@@ -1963,6 +1991,32 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
             'adversary who has broken Ed25519 can produce. Signing is '
             'deterministic for reproducibility; production signing is hedged.',
     'signing_context': deviceCertContext,
+    'device_list': {
+      'note':
+          'ADR 0004. The account signs its device LIST under ML-DSA-65 as well '
+              'as Ed25519, over exactly the bytes 3.4 already defines. Over '
+              'the set rather than per certificate: given a genuine hybrid '
+              'list, an adversary who can forge Ed25519 but not ML-DSA can '
+              'present "excluded" below — a classically perfect list whose '
+              'every remaining certificate is genuine and untouched. Only a '
+              'signature over the SET catches it. The signature travels as its '
+              'own message on an unrelated schedule, so the list keeps its '
+              '1024-byte padding bucket and its timing.',
+      'list_json': jsonEncode(list.toJson()),
+      'signing_input':
+          hex(SignedDeviceList.signingInput(list.version, list.devices)),
+      'ml_sig': hex(listSig.mlSig),
+      'sig_json': jsonEncode(listSig.toJson()),
+      'sig_json_bytes': jsonEncode(listSig.toJson()).length,
+      'must_refuse': {
+        'excluded_list_json': jsonEncode(subset.toJson()),
+        'excluded_signing_input':
+            hex(SignedDeviceList.signingInput(subset.version, subset.devices)),
+        'rolled_back_list_json': jsonEncode(rolledBack.toJson()),
+        'rolled_back_signing_input': hex(SignedDeviceList.signingInput(
+            rolledBack.version, rolledBack.devices)),
+      },
+    },
     'account': {
       'ed_pub': hex(acct.publicKey.edPub),
       'ml_pub': hex(acct.publicKey.mlPub),
