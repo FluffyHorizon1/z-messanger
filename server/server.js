@@ -28,7 +28,7 @@ const http = require('http');
 const https = require('https');
 const { WebSocketServer } = require('ws');
 const { PushSender } = require('./push.js');
-const { LANDING_HTML, PRIVACY_HTML } = require('./pages.js');
+const { ROUTES } = require('./pages.js');
 
 // ---------------------------------------------------------------------------
 // Configuration (environment variables)
@@ -565,20 +565,17 @@ function createServer(opts = {}) {
       return;
     }
     // Static pages (embedded strings — the relay still never touches disk).
-    if (req.url === '/' || req.url === '/index.html') {
+    // Every public path lives in pages.js ROUTES, so a page cannot be added
+    // to the site without being reachable here, and the ad sitelinks cannot
+    // point at a path that 404s.
+    const pagePath = req.url.split('?')[0];
+    const pageHtml = ROUTES.get(pagePath);
+    if (pageHtml) {
       res.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'public, max-age=300',
       });
-      res.end(LANDING_HTML);
-      return;
-    }
-    if (req.url === '/privacy' || req.url === '/privacy/') {
-      res.writeHead(200, {
-        'content-type': 'text/html; charset=utf-8',
-        'cache-control': 'public, max-age=300',
-      });
-      res.end(PRIVACY_HTML);
+      res.end(pageHtml);
       return;
     }
     res.writeHead(404, { 'content-type': 'text/plain' });
