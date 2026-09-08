@@ -170,6 +170,7 @@ class ChatService extends ChangeNotifier {
       transport: transport,
     );
     await svc._loadContacts();
+    await svc._refreshAllVerification();
     await svc._loadGroups();
     await svc._loadConversations();
     await svc._computeUnread();
@@ -245,9 +246,67 @@ class ChatService extends ChangeNotifier {
         createdMs: r['created_ms'] as int,
         pqCommit: commit == null ? null : unb64(commit),
         pqPub: sealedPq == null ? null : unb64(await vault.unseal(sealedPq)),
+        verifiedSn: r['verified_sn'] as String?,
+        pqMismatch: (r['pq_mismatch'] as int? ?? 0) == 1,
       );
       _sealKeys[r['rid'] as String] = bundle.xPub;
     }
+  }
+
+  /// Re-read the contact table from disk. Tests use it after writing a row
+  /// behind the service's back; nothing in the app needs it.
+  @visibleForTesting
+  Future<void> reloadContacts() async {
+    contacts.clear();
+    _verification.clear();
+    await _loadContacts();
+    await _refreshAllVerification();
+    notifyListeners();
+  }
+
+  /// 13.3. Cached because the UI asks on every rebuild — a chat header, a row
+  /// in the contact list — while the answer changes at most twice in a
+  /// contact's life: when the user ticks the box, and when the identity gains
+  /// its post-quantum half. Computing it costs a safety-number derivation
+  /// (~0.2 ms here) and only ever for a contact the user actually verified.
+  final Map<String, VerificationState> _verification = {};
+
+  Future<void> _refreshAllVerification() async {
+    for (final rid in contacts.keys.toList()) {
+      await _backfillVerifiedSn(rid);
+      await _refreshVerification(rid, notify: false);
+    }
+  }
+
+  /// A contact verified before 13.3 has a tick but no recorded number.
+  ///
+  /// Dropping every such tick on upgrade would be safe but obnoxious — it is
+  /// most of the verifications in existence, and it would teach people that
+  /// the tick is noise. Instead record the CLASSICAL number, which is what
+  /// any earlier build showed for a contact still at classical assurance. The
+  /// tick then survives where nothing has moved, and a contact that has since
+  /// gone hybrid classifies as "upgraded, re-verify" — asking for a
+  /// comparison rather than asserting one, which is the direction to be wrong
+  /// in.
+  Future<void> _backfillVerifiedSn(String rid) async {
+    final c = contacts[rid];
+    if (c == null || !c.verified || c.verifiedSn != null) return;
+    final sn = await safetyNumber(
+        (await accountIdentity()).accountEdPub, c.bundle.edPub);
+    try {
+      await vault.db.update('contacts', {'verified_sn': sn},
+          where: 'rid = ?', whereArgs: [rid]);
+    } catch (_) {
+      return; // read-only or shutting down; next start tries again
+    }
+    c.verifiedSn = sn;
+  }
+
+  Future<void> _refreshVerification(String rid, {bool notify = true}) async {
+    final was = _verification[rid];
+    final now = await _computeVerification(rid);
+    _setVerificationState(rid, now);
+    if (notify && was != now) notifyListeners();
   }
 
   Future<void> _loadConversations() async {
@@ -450,11 +509,76 @@ class ChatService extends ChangeNotifier {
     return contact;
   }
 
+  /// Record (or withdraw) the user's confirmation that they compared numbers.
+  ///
+  /// The number itself is stored alongside the flag (13.3). Without it the
+  /// app knows a number was checked but not which, so when the identity gains
+  /// its post-quantum half and the number moves it can neither keep the tick
+  /// honestly nor explain why it is dropping one.
   Future<void> setVerified(String rid, bool v) async {
-    contacts[rid]?.verified = v;
-    await vault.db.update('contacts', {'verified': v ? 1 : 0},
+    final c = contacts[rid];
+    if (c == null) return;
+    final sn = v ? await safetyNumberWith(rid) : null;
+    await vault.db.update(
+        'contacts', {'verified': v ? 1 : 0, 'verified_sn': sn},
         where: 'rid = ?', whereArgs: [rid]);
+    c.verified = v;
+    c.verifiedSn = sn;
+    await _refreshVerification(rid, notify: false);
     notifyListeners();
+  }
+
+  /// What the tick is worth right now (13.3) — see [VerificationState].
+  ///
+  /// Synchronous, so a list row or a chat header can ask on every rebuild.
+  VerificationState verificationWith(String rid) =>
+      _verification[rid] ?? VerificationState.unverified;
+
+  /// The classification behind [verificationWith].
+  ///
+  /// "Upgraded" is claimed only when the recorded number is demonstrably the
+  /// CLASSICAL number for this pair and the identity has since gone hybrid.
+  /// Any other change is reported as unexplained rather than assumed benign:
+  /// the reassuring story is the one an attacker benefits from, so it has to
+  /// be earned each time rather than inferred from "the number is different".
+  Future<VerificationState> _computeVerification(String rid) async {
+    final c = contacts[rid];
+    // Never verified, or a tick with no number behind it — which after
+    // [_backfillVerifiedSn] means only that the backfill could not be
+    // written. Either way nothing here backs a tick, and no derivation is
+    // needed to say so.
+    if (c == null || !c.verified || c.verifiedSn == null) {
+      return VerificationState.unverified;
+    }
+    return _classifyVerification(
+        c,
+        await safetyNumberWith(rid),
+        await safetyNumber(
+            (await accountIdentity()).accountEdPub, c.bundle.edPub));
+  }
+
+  /// The judgement itself, given the two numbers — kept synchronous and
+  /// separate so it can also be applied at the exact instant an identity is
+  /// upgraded, with no await between the key landing and the tick being
+  /// reclassified. A window there is a window in which the UI shows a green
+  /// tick against a number the user never compared.
+  VerificationState _classifyVerification(
+      Contact c, String current, String classical) {
+    final was = c.verifiedSn;
+    if (!c.verified || was == null) return VerificationState.unverified;
+    if (was == current) return VerificationState.verified;
+    if (was == classical && c.assurance == IdentityAssurance.hybrid) {
+      return VerificationState.upgradedReverify;
+    }
+    return VerificationState.changedUnexpectedly;
+  }
+
+  void _setVerificationState(String rid, VerificationState st) {
+    if (st == VerificationState.unverified) {
+      _verification.remove(rid);
+    } else {
+      _verification[rid] = st;
+    }
   }
 
   Future<void> renameContact(String rid, String name) async {
@@ -613,6 +737,19 @@ class ChatService extends ChangeNotifier {
       pqCommit: commit,
     );
     if (!await scanned.acceptsPqKey(candidate)) {
+      // Refusal is durable state, and it is announced ONCE. The offer is
+      // re-made on traffic (§18.2), so every message would otherwise
+      // re-insert this warning — burying the thing it wants read under
+      // copies of itself, at the request of whoever is sending the bad key.
+      if (contact.pqMismatch) return false;
+      try {
+        if (_disposed) return false;
+        await vault.db.update('contacts', {'pq_mismatch': 1},
+            where: 'rid = ?', whereArgs: [contact.rid]);
+      } catch (_) {
+        return false; // shutting down; the next arrival records it
+      }
+      contact.pqMismatch = true;
       await _insertSystemMessage(
           contact.rid,
           "${contact.name}'s post-quantum key does not match the code you "
@@ -635,7 +772,25 @@ class ChatService extends ChangeNotifier {
       // the exchange next time.
       return false;
     }
+    // The number is about to move, which is the one moment in a contact's
+    // life when a tick can go stale (13.3). Work out what it becomes BEFORE
+    // installing the key, so the key and the reclassification land together
+    // and nothing can observe a green tick against the new number.
+    String? after, classical;
+    if (contact.verified && contact.verifiedSn != null) {
+      final acctEd = (await accountIdentity()).accountEdPub;
+      final myMl = await pqAccountPublic();
+      classical = await safetyNumber(acctEd, contact.bundle.edPub);
+      after = myMl == null
+          ? classical
+          : await safetyNumberV3(
+              HybridPublicKey(edPub: acctEd, mlPub: myMl), candidate);
+    }
     contact.pqPub = candidate.mlPub;
+    if (after != null) {
+      _setVerificationState(
+          contact.rid, _classifyVerification(contact, after, classical!));
+    }
     return true;
   }
 

@@ -20,6 +20,23 @@ class Contact {
   /// non-null is what [assurance] reports as hybrid.
   Uint8List? pqPub;
 
+  /// The safety number the user actually read aloud and confirmed (13.3).
+  ///
+  /// [verified] records THAT a number was compared; this records WHICH. The
+  /// two come apart exactly once in a contact's life, when the identity gains
+  /// its post-quantum half and the number moves — and that moment must not
+  /// look like a key substitution, nor be papered over with a tick against a
+  /// number nobody checked.
+  String? verifiedSn;
+
+  /// A post-quantum key arrived and did NOT match [pqCommit] (§18.2).
+  ///
+  /// Durable, because the refusal is a fact about this contact and not just a
+  /// line in the transcript: the warning is announced once, the contact
+  /// screen keeps showing it, and the identity stays pending forever rather
+  /// than being retried into acceptance.
+  bool pqMismatch;
+
   Contact({
     required this.rid,
     required this.bundle,
@@ -29,6 +46,8 @@ class Contact {
     required this.createdMs,
     this.pqCommit,
     this.pqPub,
+    this.verifiedSn,
+    this.pqMismatch = false,
   });
 
   /// What is actually known about this identity's authenticity.
@@ -261,6 +280,28 @@ class SearchHit {
     required this.ts,
     this.senderName,
   });
+}
+
+/// What the tick next to a contact is actually worth (13.3).
+///
+/// Kept apart from [IdentityAssurance], which is about the identity; this is
+/// about the USER's act of checking it, and the two can disagree.
+enum VerificationState {
+  /// Never compared, or compared by a build that did not record which number.
+  unverified,
+
+  /// Compared, and the number shown now is the number that was compared.
+  verified,
+
+  /// Compared — but the identity has since gained its post-quantum half, so
+  /// the number moved. Expected, one time, for every contact in existence;
+  /// the user must be told that plainly and asked to read it again.
+  upgradedReverify,
+
+  /// Compared, the number moved, and this build cannot account for it. No
+  /// legitimate path produces this: it must be surfaced as the alarming
+  /// thing it would be, never smoothed into [upgradedReverify].
+  changedUnexpectedly,
 }
 
 enum LinkStatus { disconnected, connecting, connected }

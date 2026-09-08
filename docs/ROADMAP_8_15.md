@@ -219,8 +219,12 @@ forges identities even though it cannot read past traffic.
   1 024-byte padding bucket to 16 384 or 65 536, telling the relay when an
   account changes its device set and roughly how many devices it has — 13.1
   must not ship that.
-- **13.3 safety number v2** *(protocol done — PROTOCOL §18.5; UX outstanding)* — derived from both key halves. A visible, one-time
-  change for every user, so it needs deliberate re-verification UX.
+- **13.3 safety number v2** *(done — PROTOCOL §18.5, `verification_ux_test.dart`)* — derived from both key halves. A visible, one-time
+  change for every user, so it needed deliberate re-verification UX: the app
+  records WHICH number was compared, never shows a tick against a number that
+  has since moved, names the upgrade as an upgrade, and refuses to call any
+  other change one. A refused post-quantum key is durable state, announced
+  once and shown on the contact screen.
 - **13.4 spec + vectors** — PROTOCOL §18 for v3, a v3 vector suite with an
   independent checker, v1/v2 suites frozen as usual.
 - **13.5 compatibility window** *(done — no flag day was needed; PROTOCOL §18.6)* — one release accepting v2 identities and
@@ -440,3 +444,15 @@ direction; the phases, their order and both ordering arguments stand.
    like a key substitution. The offer is now re-made when a contact's device
    list gains a device, and the exchange completes on the extra-device path
    as well as the primary one.
+
+18. **13.3 — the UX was the hard half, and it changed the data model.** The
+   protocol work said "derive from both halves"; what a user sees is a number
+   that changed, which is what an attack looks like. `verified` recorded THAT
+   a number was compared and not WHICH, so it could not tell an upgrade from
+   a substitution — it had to become a stored number (schema 5,
+   `contacts.verified_sn`), and the archive had to carry it or a restore
+   reinstates a tick nothing backs. The same pass found that a refused
+   post-quantum key had no memory at all: it was re-announced on every
+   arrival, so whoever was sending the bad key could bury the warning under
+   copies of itself. Refusal is now durable (`contacts.pq_mismatch`),
+   announced once, and shown on the contact screen.

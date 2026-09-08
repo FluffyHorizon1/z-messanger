@@ -17,6 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/archive.dart';
 import 'package:zapp/core/backup_store.dart';
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/models.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -195,6 +196,142 @@ void main() {
 
     // Refused: still pending, never upgraded, and the safety number has not
     // silently moved to one derived from an unverified key.
+    expect(b.assuranceWith(a.myRid), IdentityAssurance.pendingPostQuantum);
+    expect(b.contacts[a.myRid]!.pqPub, isNull);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test(
+      'the number that moves when an identity is upgraded does not keep its '
+      'verified tick, and the app can say why', () async {
+    // 13.3's whole problem. The safety number moves ONCE for every existing
+    // user as their contacts' identities gain a post-quantum half. A user who
+    // read the old number aloud and ticked "verified" must not be shown a
+    // green tick against a number they never checked — and must not be shown
+    // a bare change either, because an unexplained change is exactly what a
+    // key substitution looks like. The app has to distinguish the two.
+    final a = await start(await tempDir('va'), 'Ana');
+    final b = await start(await tempDir('vb'), 'Ben');
+    await waitUntil(() => a.transport.isConnected && b.transport.isConnected,
+        what: 'connected');
+
+    // Ana scans Ben before Ben has scanned her — the ordinary case of one
+    // person going first. Nothing can come back, so her view stays pending
+    // and this is deterministic rather than a race with the answer.
+    await a.addContactFromCode(await b.myContactCode());
+    expect(a.assuranceWith(b.myRid), IdentityAssurance.pendingPostQuantum);
+
+    final classical = await a.safetyNumberWith(b.myRid);
+    await a.setVerified(b.myRid, true);
+    expect(a.verificationWith(b.myRid), VerificationState.verified);
+
+    // Ben scans Ana, they speak, and Ben's post-quantum key arrives and
+    // matches the commitment Ana already held.
+    await b.addContactFromCode(await a.myContactCode());
+    await b.sendText(a.myRid, 'hello');
+    await waitUntil(() => a.assuranceWith(b.myRid) == IdentityAssurance.hybrid,
+        what: "Ben's post-quantum key arrived and matched");
+
+    final upgraded = await a.safetyNumberWith(b.myRid);
+    expect(upgraded, isNot(classical), reason: 'the number does move');
+
+    // The tick does not follow the number it no longer covers…
+    expect(a.verificationWith(b.myRid), VerificationState.upgradedReverify);
+    // …but the fact that Ana verified once is not thrown away either, or the
+    // UI could only say "unverified", which is both untrue and unhelpful.
+    expect(a.contacts[b.myRid]!.verified, isTrue);
+
+    // Re-reading it aloud settles it.
+    await a.setVerified(b.myRid, true);
+    expect(a.verificationWith(b.myRid), VerificationState.verified);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test(
+      'a number that moved for no reason this build can explain is not '
+      'passed off as an upgrade', () async {
+    // The branch that fires if the reasoning above is wrong. "Upgraded" is
+    // claimed only when what was verified is demonstrably the classical
+    // number for this pair; anything else is reported as unexplained, which
+    // is what a user needs to hear before an upgrade story they might
+    // otherwise accept.
+    final a = await start(await tempDir('ua'), 'Ana');
+    final b = await start(await tempDir('ub'), 'Ben');
+    await waitUntil(() => a.transport.isConnected && b.transport.isConnected,
+        what: 'connected');
+    await a.addContactFromCode(await b.myContactCode());
+    await a.setVerified(b.myRid, true);
+    expect(a.verificationWith(b.myRid), VerificationState.verified);
+
+    // Something no legitimate path produces: a stored value that is neither
+    // the number now shown nor the classical number for this pair.
+    await a.vault.db.update('contacts', {'verified_sn': '00000 00000 00000'},
+        where: 'rid = ?', whereArgs: [b.myRid]);
+    await a.reloadContacts();
+    expect(a.verificationWith(b.myRid), VerificationState.changedUnexpectedly);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a tick from before 13.3 survives the upgrade instead of vanishing',
+      () async {
+    // Most verifications in existence were made by a build that recorded only
+    // THAT a number was compared. Dropping every one of them on upgrade would
+    // be safe and obnoxious — it teaches people the tick is noise. The
+    // classical number is what any such build showed, so it is recorded on
+    // first load and the tick keeps meaning something.
+    final dir = await tempDir('bf');
+    final a = await start(dir, 'Ana');
+    final b = await start(await tempDir('bf2'), 'Ben');
+    await waitUntil(() => a.transport.isConnected && b.transport.isConnected,
+        what: 'connected');
+    await a.addContactFromCode(await b.myContactCode());
+    await a.setVerified(b.myRid, true);
+    final classical = await a.safetyNumberWith(b.myRid);
+
+    // Exactly what an older row looks like: verified, no number recorded.
+    await a.vault.db.update('contacts', {'verified_sn': null},
+        where: 'rid = ?', whereArgs: [b.myRid]);
+    await a.reloadContacts();
+
+    expect(a.contacts[b.myRid]!.verifiedSn, classical,
+        reason: 'the classical number is recorded, not guessed at later');
+    expect(a.verificationWith(b.myRid), VerificationState.verified,
+        reason: 'and the tick still stands, because nothing has moved yet');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a refused key is announced once, not on every message it rides in on',
+      () async {
+    // The mismatch path had no memory: every inbound `pqid` that failed the
+    // check inserted the same system message again, so an attacker who kept
+    // sending could bury the chat in the very warning meant to be read.
+    final a = await start(await tempDir('ma'), 'Ana');
+    final b = await start(await tempDir('mb'), 'Ben');
+    await waitUntil(() => a.transport.isConnected && b.transport.isConnected,
+        what: 'connected');
+
+    final impostor = await HybridKeyPair.fromSeeds(
+        edSeed: a.identity.edSeed, mlSeed: randomBytes(32));
+    final wrongCode = await ContactBundleV3.forIdentity(
+        a.identity, impostor.publicKey,
+        displayName: 'Ana');
+    await b.addContactFromCode(wrongCode.encode());
+    await a.addContactFromCode(await b.myContactCode());
+
+    await b.sendText(a.myRid, 'is this really you');
+    await waitUntil(
+        () => (b.messagesByChat[a.myRid] ?? [])
+            .any((m) => m.body.contains('does not match')),
+        what: 'the mismatch was surfaced');
+    expect(b.contacts[a.myRid]!.pqMismatch, isTrue,
+        reason: 'the refusal is state, not just a line in the transcript');
+
+    // Keep talking: Ana re-offers her key on traffic, and every one of those
+    // fails the same check.
+    for (var i = 0; i < 4; i++) {
+      await b.sendText(a.myRid, 'still there? $i');
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+    final warnings = (b.messagesByChat[a.myRid] ?? [])
+        .where((m) => m.body.contains('does not match'))
+        .length;
+    expect(warnings, 1, reason: 'said once, and it stays said');
     expect(b.assuranceWith(a.myRid), IdentityAssurance.pendingPostQuantum);
     expect(b.contacts[a.myRid]!.pqPub, isNull);
   }, timeout: const Timeout(Duration(minutes: 3)));

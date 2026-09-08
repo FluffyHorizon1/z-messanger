@@ -177,6 +177,12 @@ class _ChatTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = summary.contact;
+    // The tick tracks the VERIFICATION, not the flag: a contact whose
+    // identity was upgraded has a number the user has not compared, and a
+    // green shield against it would be a claim the app cannot support (13.3).
+    final verification = c == null
+        ? VerificationState.unverified
+        : context.watch<ChatService>().verificationWith(c.rid);
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       leading: CircleAvatar(
@@ -197,10 +203,22 @@ class _ChatTile extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontWeight: FontWeight.w600)),
           ),
-          if (c != null && c.verified)
+          if (verification == VerificationState.verified)
             Padding(
-              padding: EdgeInsets.only(left: 6),
+              padding: const EdgeInsets.only(left: 6),
               child: Icon(Icons.verified_user, size: 14, color: context.z.ok),
+            ),
+          if (verification == VerificationState.upgradedReverify)
+            Padding(
+              padding: const EdgeInsets.only(left: 6),
+              child:
+                  Icon(Icons.shield_outlined, size: 14, color: context.z.warn),
+            ),
+          if (verification == VerificationState.changedUnexpectedly)
+            Padding(
+              padding: const EdgeInsets.only(left: 6),
+              child: Icon(Icons.gpp_maybe_outlined,
+                  size: 14, color: context.z.danger),
             ),
           if (c != null && c.ttlSec > 0)
             Padding(

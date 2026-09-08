@@ -164,6 +164,12 @@ class BackupArchive {
         'created': c['created_ms'],
         if (c['pq_commit'] != null) 'pqc': c['pq_commit'],
         if (pqPub != null) 'pqk': pqPub,
+        // 13.3: WHICH number the user compared, and whether a post-quantum
+        // key has already been refused for this contact. Without them a
+        // restore reinstates a tick it cannot account for, and forgets a
+        // refusal — the two facts a restored device most needs to keep.
+        if (c['verified_sn'] != null) 'vsn': c['verified_sn'],
+        if ((c['pq_mismatch'] as int? ?? 0) == 1) 'pqbad': 1,
       });
     }
 
@@ -375,6 +381,8 @@ class BackupArchive {
                     'pq_commit': r['pqc'],
                     if (r['pqk'] is String)
                       'enc_pq_pub': await vault.seal(r['pqk'] as String),
+                    'verified_sn': r['vsn'],
+                    'pq_mismatch': (r['pqbad'] as num?)?.toInt() ?? 0,
                   },
                   conflictAlgorithm: ConflictAlgorithm.replace);
             case 'groups':

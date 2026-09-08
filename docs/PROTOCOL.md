@@ -1215,6 +1215,13 @@ third:
 | `pendingPostQuantum` | a `zc3.` code was scanned; the key is committed to but has not arrived. Authentication is classical until it does |
 | `hybrid` | the key arrived and matched the commitment |
 
+A key that arrives and does **not** match is a fourth situation, and it is not
+a state of the identity: the identity stays `pendingPostQuantum`, because
+nothing was upgraded. The refusal MUST be recorded durably and surfaced, and
+it MUST be announced **once** — the offer is re-made on traffic (§18.2), so a
+client that announces per arrival hands whoever is sending the bad key a way
+to bury the warning under copies of itself.
+
 ### 18.4 Hybrid device certificates
 
 A device certificate is the account's statement that a device belongs to it,
@@ -1285,6 +1292,27 @@ key substitution.
 
 As in v1 the inputs are **account** keys, so the number does not move when
 either side links or drops a device.
+
+**What a client must do about the change.** A user's confirmation that they
+compared numbers is a statement about a *particular* number, so a client:
+
+* MUST record **which** number was confirmed, not only that one was. A flag
+  alone cannot tell a number that has moved from one that has not.
+* MUST NOT present a contact as verified once the number differs from the one
+  confirmed.
+* MUST distinguish the upgrade from everything else. Claiming "upgraded" is
+  only justified when the confirmed number is demonstrably the v1 number for
+  that pair and the identity is now `hybrid`; any other difference MUST be
+  presented as unexplained. The reassuring account is the one an attacker
+  benefits from, so it has to be earned rather than assumed from "different".
+* SHOULD say, before the number moves, that it will — a `pendingPostQuantum`
+  identity is a warning the client already has and the user does not.
+
+A client upgrading from a build that recorded no number MAY record the v1
+number for its existing confirmations, since that is what any such build
+displayed; the worst case is a contact already at `hybrid`, which then reads
+as "upgraded, compare again" — asking for a comparison rather than asserting
+one, which is the direction to be wrong in.
 
 ### 18.6 The compatibility window
 

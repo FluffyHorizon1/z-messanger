@@ -465,11 +465,20 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final isGroup = group != null;
     final title = isGroup ? group.name : contact!.name;
+    // "verified" here means the tick still covers the number being shown
+    // (13.3). A contact whose identity was upgraded has a tick that no longer
+    // does, and saying "verified" anyway is the claim this phase exists to
+    // stop making.
     final subtitle = isGroup
         ? '${group.memberRids.length + 1} members · end-to-end encrypted'
-        : (contact!.verified
-            ? 'end-to-end encrypted · verified'
-            : 'end-to-end encrypted');
+        : switch (svc.verificationWith(widget.rid)) {
+            VerificationState.verified => 'end-to-end encrypted · verified',
+            VerificationState.upgradedReverify =>
+              'end-to-end encrypted · re-verify',
+            VerificationState.changedUnexpectedly =>
+              'end-to-end encrypted · number changed',
+            VerificationState.unverified => 'end-to-end encrypted',
+          };
     final messages = svc.messagesByChat[widget.rid] ?? [];
 
     return Scaffold(

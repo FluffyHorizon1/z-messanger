@@ -88,7 +88,7 @@ class Vault {
   /// 3 — 8.1c: `forwarded`, which needs a column of its own — a 1:1 text
   ///     row's sealed body is the bare message, with no envelope to put a
   ///     flag in, and inventing one would misparse ordinary text.
-  static const int schemaVersion = 4;
+  static const int schemaVersion = 5;
 
   // Message ids are already stored in the clear (they are the primary key),
   // so `reply_to` — a mid within the same chat — reveals nothing the row
@@ -136,6 +136,23 @@ class Vault {
       // neither, classical. The pair is what decides which safety number is
       // shown, so neither may be inferred from the other.
       for (final column in const ['pq_commit TEXT', 'enc_pq_pub TEXT']) {
+        await db.execute('ALTER TABLE contacts ADD COLUMN $column');
+      }
+    }
+    if (from < 5) {
+      // 13.3. Two more nullable columns on contacts:
+      //   verified_sn  — the safety number the user actually compared, so a
+      //                  number that has since MOVED can be told apart from
+      //                  one that has not. `verified` alone cannot: it says
+      //                  a number was checked, not which.
+      //   pq_mismatch  — a post-quantum key arrived and did not match the
+      //                  commitment. Refusal is durable state; without it
+      //                  the warning is re-announced on every retry and the
+      //                  contact screen has nothing to show at all.
+      // An existing verified contact has no recorded number; ChatService
+      // backfills the classical one on first load, since that is what every
+      // earlier build showed. See `_backfillVerifiedSn`.
+      for (final column in const ['verified_sn TEXT', 'pq_mismatch INTEGER']) {
         await db.execute('ALTER TABLE contacts ADD COLUMN $column');
       }
     }
@@ -232,7 +249,9 @@ class Vault {
               verified INTEGER NOT NULL DEFAULT 0,
               created_ms INTEGER NOT NULL,
               pq_commit TEXT,
-              enc_pq_pub TEXT
+              enc_pq_pub TEXT,
+              verified_sn TEXT,
+              pq_mismatch INTEGER
             )''');
           await db.execute('''
             CREATE TABLE conversations(

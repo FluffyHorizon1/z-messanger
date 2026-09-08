@@ -37,7 +37,10 @@ user‑supplied storage that the client writes finished ciphertext into.
 
 ## 2. What travels — and what does not
 
-**In the archive:** the identity, contacts (with their verification state),
+**In the archive:** the identity, contacts (with their verification state —
+including WHICH number was compared, without which a restore reinstates a tick
+it cannot account for, and any post‑quantum key refusal, which must survive a
+restore or the warning is lost),
 group state, every message with its phase‑8 structure (replies, reactions,
 edits, deletions, forward marks), and attachment bytes.
 
@@ -205,7 +208,7 @@ leaves the device.
 |---|---|
 | `meta` | display name, server URL, schema |
 | `identity` | the identity key material |
-| `contact` | routing id, contact bundle, name, TTL, verified flag |
+| `contact` | routing id, contact bundle, name, TTL, verified flag, the v3 identity state (`pqc` commitment, `pqk` accepted key), and the 13.3 verification state — `vsn`, the safety number the user actually compared, and `pqbad`, set once a post‑quantum key has been refused |
 | `groups` | the group list blob |
 | `message` | mid, rid, direction, kind, body, timestamp, status, expiry, and the phase‑8 fields (`rt` reply target, `edited`, `deleted`, `fw`) |
 | `reaction` | rid, mid, sender, emoji, timestamp |
