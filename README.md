@@ -114,13 +114,17 @@ Share your contact code (Add contact → My code) with someone running Z, add
 theirs, and start messaging. Compare safety numbers to verify no one is in the
 middle.
 
-### 3. Prebuilt installers
+### 3. Install it
 
-Every push builds artifacts for all four platforms in CI
+**Android:** on Google Play as
+[Z Messenger](https://play.google.com/store/apps/details?id=com.zmessenger.www)
+(`com.zmessenger.www`).
+
+Every push also builds artifacts for all four platforms in CI
 ([`.github/workflows/build.yml`](.github/workflows/build.yml)); tagging a
-`vX.Y.Z` release attaches them:
+`vX.Y.Z` release attaches them, with `SHA256SUMS.txt`:
 
-- **Android:** `app-release.apk` (and per‑ABI splits)
+- **Android:** `app-release.apk` (and per‑ABI splits) — the same build Play ships
 - **Linux:** `z-linux-x64.tar.gz` (unpack and run `zapp`)
 - **Windows:** `z-windows-x64.zip` (unzip and run `zapp.exe`)
 - **macOS:** `z-macos.zip` (unzip `Z.app`)

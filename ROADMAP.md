@@ -20,7 +20,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 0 Foundation hardening | ✅ done | `durability_test.dart`, `docs/LOAD.md`, retry/delete affordances |
 | 1 Push notifications | ✅ done (1.3 F-Droid flavour dropped with 3.2) | content-free FCM wake; relay push tests |
 | 2 Signed builds | 2.1 + 2.4 ✅ · 2.2/2.3 ⛔ need paid certificates | signed AAB/APK + `SHA256SUMS.txt` on every release |
-| 3 Store distribution | 3.1 prepared, ⛔ awaiting Play account verification · 3.4 ✅ · 3.2 dropped · 3.3 ⏳ · **3.5 Play Console recommendations ✅** (16 KB pages, edge-to-edge; bitmap/PiP items assessed) | `docs/play/`, `CONSOLE_RECOMMENDATIONS.md`, `app/tool/check_16k.sh` in CI, `zmessengers.com` landing + privacy page |
+| 3 Store distribution | **3.1 ✅ live on Google Play** · 3.4 ✅ · 3.2 dropped · 3.3 ⏳ · **3.5 Play Console recommendations ✅** (16 KB pages, edge-to-edge; bitmap/PiP items assessed) | `docs/play/`, `CONSOLE_RECOMMENDATIONS.md`, `app/tool/check_16k.sh` in CI, `zmessengers.com` landing + privacy page |
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
@@ -106,8 +106,10 @@ Remove the scary install warnings; make binaries verifiable.
 
 ## Phase 3 — Store distribution · ~2–3 weeks
 
-- **3.1 Google Play** ⏳ *prepared; awaiting account verification* (internal → closed → open testing track). Data-safety
-  form, privacy policy, listing assets. **DoD:** app live on an internal track.
+- **3.1 Google Play** ✅ *live* — published as
+  [Z Messenger](https://play.google.com/store/apps/details?id=com.zmessenger.www)
+  (`com.zmessenger.www`). Data-safety form, privacy policy and listing assets
+  submitted and accepted. **DoD met:** the app is live on Play.
 - **3.2 F-Droid** — dropped: F-Droid requires an OSI-approved open-source
   license, which the proprietary license precludes. Android is covered by
   Play + the direct signed APK. ~~**DoD:** builds

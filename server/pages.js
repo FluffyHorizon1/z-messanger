@@ -110,6 +110,7 @@ const STYLE = `
 `;
 
 const RELEASES = 'https://github.com/FluffyHorizon1/z-messanger/releases/latest';
+const PLAY = 'https://play.google.com/store/apps/details?id=com.zmessenger.www';
 const REPO = 'https://github.com/FluffyHorizon1/z-messanger';
 
 // Every page that is served. The footer is generated from this list, so a page
@@ -179,8 +180,9 @@ const LANDING_HTML = page(
     <a class="btn" href="/download">Download for Android</a>
     <a class="btn alt" href="/how-it-works">How it works</a>
   </div>
-  <p class="muted">Also on Windows, macOS and Linux. Every release ships
-  SHA-256 checksums so you can verify what you downloaded.</p>
+  <p class="muted">On <a href="${PLAY}">Google Play</a>, and as a direct
+  download for Android, Windows, macOS and Linux. Every release ships SHA-256
+  checksums so you can verify what you downloaded.</p>
 
   <h2>What makes Z different</h2>
   <div class="grid two">
@@ -346,13 +348,16 @@ const DOWNLOAD_HTML = page(
   are ready to message in seconds.</p>
 
   <div class="btns">
-    <a class="btn" href="${RELEASES}">Android (APK)</a>
+    <a class="btn" href="${PLAY}">Android — Google Play</a>
+    <a class="btn alt" href="${RELEASES}">Android (APK)</a>
     <a class="btn alt" href="${RELEASES}">Windows</a>
     <a class="btn alt" href="${RELEASES}">macOS</a>
     <a class="btn alt" href="${RELEASES}">Linux</a>
   </div>
-  <p class="muted">Android 7.0 or newer. Desktop builds are unsigned for now,
-  so your system may warn on first run.</p>
+  <p class="muted">Android 7.0 or newer. Play keeps you updated automatically;
+  the APK is there if you would rather not use Play, and is the same build.
+  Desktop builds are unsigned for now, so your system may warn on first
+  run.</p>
 
   <h2>Verify what you downloaded</h2>
   <p>Every release publishes <code>SHA256SUMS.txt</code> alongside the files.
@@ -363,8 +368,12 @@ const DOWNLOAD_HTML = page(
   <code>Get-FileHash</code> in PowerShell.</p>
 
   <h2>Google Play</h2>
-  <p>The Play listing is in preparation. Until it is live, the Android build
-  here is the same artifact that will be published there.</p>
+  <p>Z is on Google Play as
+  <a href="${PLAY}">Z Messenger</a>. The Play build and the APK above come from
+  the same tagged release and the same CI pipeline, so you can check either
+  against the published checksums.</p>
+  <p class="muted">Google Play and the Google Play logo are trademarks of
+  Google LLC.</p>
 
   <h2>Or build it yourself</h2>
   <p>The source is published and the protocol is fully specified, so you can
@@ -439,7 +448,7 @@ const SECURITY_HTML = page(
   that does not exist.</p>
 
   <div class="btns">
-    <a class="btn alt" href="${REPO}/blob/main/THREAT_MODEL.md">Threat model</a>
+    <a class="btn alt" href="${REPO}/blob/main/docs/THREAT_MODEL.md">Threat model</a>
     <a class="btn alt" href="${REPO}/blob/main/docs/PROTOCOL.md">Protocol spec</a>
     <a class="btn alt" href="${REPO}/blob/main/docs/AUDIT_SCOPE.md">Audit scope</a>
   </div>

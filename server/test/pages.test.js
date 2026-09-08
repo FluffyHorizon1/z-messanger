@@ -168,6 +168,48 @@ test('the site does not claim an audit it has not had', async () => {
     'the security page must state the audit status plainly');
 });
 
+test('the download page routes Android to the live Play listing', async () => {
+  const r = await get('/download');
+  assert.ok(
+    r.body.includes('https://play.google.com/store/apps/details?id=com.zmessenger.www'),
+    'no link to the Play listing'
+  );
+  assert.ok(
+    /trademarks of\s+Google LLC/.test(r.body),
+    'Play trademark attribution missing'
+  );
+  assert.ok(
+    !/in preparation|coming soon/i.test(r.body),
+    'the page still says the listing is pending'
+  );
+  // The APK stays reachable: Play is a route to the app, not the only one.
+  assert.ok(r.body.includes('releases/latest'), 'direct download removed');
+});
+
+test('no page claims the Play listing is still pending', async () => {
+  for (const [path] of [['/'], ...PAGES]) {
+    const r = await get(path);
+    assert.ok(
+      !/(Play listing|listing) is in preparation|Play listing coming soon/i.test(r.body),
+      `${path} still describes Play as pending`
+    );
+  }
+});
+
+test('every repository document the site links to actually exists', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const root = path.join(__dirname, '..', '..');
+  const linked = new Set();
+  for (const [, html] of ROUTES) {
+    for (const m of html.matchAll(/href="[^"]*\/blob\/main\/([^"]+)"/g)) linked.add(m[1]);
+  }
+  assert.ok(linked.size > 0, 'no repository documents linked — did the links change shape?');
+  for (const rel of linked) {
+    assert.ok(fs.existsSync(path.join(root, rel)), `the site links to ${rel}, which is not in the repo`);
+  }
+});
+
 test('pages are embedded strings — no fs reads in pages.js', async () => {
   const fs = require('fs');
   const src = fs.readFileSync(require.resolve('../pages.js'), 'utf8');
