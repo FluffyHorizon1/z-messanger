@@ -88,7 +88,7 @@ class Vault {
   /// 3 — 8.1c: `forwarded`, which needs a column of its own — a 1:1 text
   ///     row's sealed body is the bare message, with no envelope to put a
   ///     flag in, and inventing one would misparse ordinary text.
-  static const int schemaVersion = 5;
+  static const int schemaVersion = 6;
 
   // Message ids are already stored in the clear (they are the primary key),
   // so `reply_to` — a mid within the same chat — reveals nothing the row
@@ -153,6 +153,18 @@ class Vault {
       // backfills the classical one on first load, since that is what every
       // earlier build showed. See `_backfillVerifiedSn`.
       for (final column in const ['verified_sn TEXT', 'pq_mismatch INTEGER']) {
+        await db.execute('ALTER TABLE contacts ADD COLUMN $column');
+      }
+    }
+    if (from < 6) {
+      // 13.6 (§18.7). A contact code describes the DEVICE showing it; a code
+      // that also names the ACCOUNT carries these two, together:
+      //   acct_ed   — the account's Ed25519 key, what a human confirms
+      //   dev_cert  — that account's certificate for the scanned device
+      // Absent on every contact added before §18.7, which means the device is
+      // the account (§3.5) — the reading that was already implied, so no
+      // safety number moves and no device list stops verifying.
+      for (final column in const ['acct_ed TEXT', 'dev_cert TEXT']) {
         await db.execute('ALTER TABLE contacts ADD COLUMN $column');
       }
     }
@@ -251,7 +263,9 @@ class Vault {
               pq_commit TEXT,
               enc_pq_pub TEXT,
               verified_sn TEXT,
-              pq_mismatch INTEGER
+              pq_mismatch INTEGER,
+              acct_ed TEXT,
+              dev_cert TEXT
             )''');
           await db.execute('''
             CREATE TABLE conversations(

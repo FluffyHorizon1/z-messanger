@@ -137,6 +137,181 @@ void main() {
     });
   });
 
+  group('an account-anchored code (18.7)', () {
+    // A contact code has always described the DEVICE showing it. That was
+    // invisible while every account had one device, and wrong the moment one
+    // did not: scanning someone's laptop added the laptop, so their device
+    // list failed the "signed by this contact's account key" check and their
+    // safety number was computed against a per-device key. The fix is for the
+    // code to name the account and carry the account's certificate for the
+    // device it describes.
+    late ZIdentity root; // the account root
+    late ZIdentity laptop; // a linked device
+    late HybridKeyPair accountPq;
+    late DeviceCertificate laptopCert;
+    late AccountIdentity account;
+
+    setUpAll(() async {
+      final rootSeed = randomBytes(32);
+      root =
+          await ZIdentity.fromSeeds(edSeed: rootSeed, xSeed: randomBytes(32));
+      accountPq = await HybridKeyPair.fromSeeds(
+          edSeed: rootSeed, mlSeed: randomBytes(32));
+      account = await AccountIdentity.fromV1(root);
+      laptop = await ZIdentity.generate();
+      laptopCert = await account.signDeviceCert(
+          deviceEdPub: laptop.edPub,
+          deviceXPub: laptop.xPub,
+          deviceId: 'laptop');
+    });
+
+    Future<ContactBundleV3> laptopCode() => ContactBundleV3.forIdentity(
+          laptop,
+          accountPq.publicKey,
+          displayName: 'Finn',
+          accountEdPub: root.edPub,
+          cert: laptopCert,
+        );
+
+    test('scanning a linked device yields the person, not the device',
+        () async {
+      final scanned = await scanContactCode((await laptopCode()).encode());
+      // The session still opens with the device that is actually reachable…
+      expect(scanned.classical.edPub, laptop.edPub);
+      expect(scanned.classical.xPub, laptop.xPub);
+      // …but the identity a human confirms is the account.
+      expect(scanned.accountEdPub, root.edPub);
+      expect(scanned.deviceCert!.deviceId, 'laptop');
+      expect(scanned.assurance, IdentityAssurance.pendingPostQuantum);
+    });
+
+    test('so the safety number is the same whichever device was scanned',
+        () async {
+      // The property the whole change exists for. Two people who verified on
+      // one pairing must not read different numbers because one of them
+      // happened to scan a laptop.
+      final other = await ZIdentity.generate();
+      final viaLaptop = await scanContactCode((await laptopCode()).encode());
+      final viaRoot = await scanContactCode(
+          (await ContactBundleV3.forIdentity(root, accountPq.publicKey))
+              .encode());
+      expect(await safetyNumber(other.edPub, viaLaptop.accountEdPub),
+          await safetyNumber(other.edPub, viaRoot.accountEdPub));
+      // And it is NOT the number the laptop's own key would have produced,
+      // which is what an unfixed client shows.
+      expect(await safetyNumber(other.edPub, viaLaptop.accountEdPub),
+          isNot(await safetyNumber(other.edPub, laptop.edPub)));
+    });
+
+    test('the post-quantum commitment belongs to the account', () async {
+      // Before 18.7 a linked device could not carry a commitment at all: the
+      // commitment binds the ACCOUNT's key and the code named the DEVICE's,
+      // so the two could not be glued together honestly. Now they can.
+      final scanned = await scanContactCode((await laptopCode()).encode());
+      expect(await scanned.v3!.acceptsPqKey(accountPq.publicKey), isTrue);
+    });
+
+    test('a claimed account with no certificate is refused', () async {
+      final good = (await laptopCode()).encode();
+      final j = jsonDecode(utf8.decode(unb64url(good.substring(4))))
+          as Map<String, Object?>;
+      j.remove('cert');
+      expect(() => scanContactCode('zc1.${b64url(utf8.encode(jsonEncode(j)))}'),
+          throwsFormatException,
+          reason: 'a claim without proof is an assertion');
+    });
+
+    test("someone else's certificate does not make you them", () async {
+      // The attack this format has to survive: an attacker holds a genuine
+      // certificate of the account (they are public — they travel in device
+      // lists) and presents it beside their OWN keys.
+      final attacker = await ZIdentity.generate();
+      final good = (await laptopCode()).encode();
+      final j = jsonDecode(utf8.decode(unb64url(good.substring(4))))
+          as Map<String, Object?>;
+      j['ed'] = b64(attacker.edPub);
+      j['x'] = b64(attacker.xPub);
+      j['sig'] = b64(await attacker.bindingSignature()); // their own, valid
+      expect(() => scanContactCode('zc1.${b64url(utf8.encode(jsonEncode(j)))}'),
+          throwsFormatException,
+          reason: 'the certificate must be FOR the device in the code');
+    });
+
+    test('a certificate signed by a different account is refused', () async {
+      final stranger = await AccountIdentity.fromV1(await ZIdentity.generate());
+      final forged = await stranger.signDeviceCert(
+          deviceEdPub: laptop.edPub,
+          deviceXPub: laptop.xPub,
+          deviceId: 'laptop');
+      // Built by hand: `forIdentity` refuses to assemble this at all.
+      expect(
+          () => ContactBundleV3.forIdentity(laptop, accountPq.publicKey,
+              accountEdPub: root.edPub, cert: forged),
+          throwsFormatException);
+      final j = jsonDecode(
+              utf8.decode(unb64url((await laptopCode()).encode().substring(4))))
+          as Map<String, Object?>;
+      j['cert'] = forged.toJson();
+      expect(() => scanContactCode('zc1.${b64url(utf8.encode(jsonEncode(j)))}'),
+          throwsFormatException);
+    });
+
+    test('a legacy record cannot stand in for an account endorsement',
+        () async {
+      // The legacy rule is "the device key IS the account key" — exactly what
+      // an account-anchored code is not. Allowing one here would let a v1
+      // binding signature pass as an account's endorsement of a device it
+      // never signed for.
+      final j = jsonDecode(
+              utf8.decode(unb64url((await laptopCode()).encode().substring(4))))
+          as Map<String, Object?>;
+      j['cert'] = DeviceCertificate(
+        deviceEdPub: laptop.edPub,
+        deviceXPub: laptop.xPub,
+        deviceId: 'legacy-v1',
+        sig: await laptop.bindingSignature(),
+        legacy: true,
+      ).toJson();
+      expect(() => scanContactCode('zc1.${b64url(utf8.encode(jsonEncode(j)))}'),
+          throwsFormatException);
+    });
+
+    test('stripping the anchor cannot silently reduce it to a device',
+        () async {
+      // `acct` without `pqc` must not fall through to the v1 decoder, which
+      // ignores members it does not know — that would turn the person back
+      // into the laptop without anything failing.
+      final j = jsonDecode(
+              utf8.decode(unb64url((await laptopCode()).encode().substring(4))))
+          as Map<String, Object?>;
+      j.remove('pqc');
+      expect(() => scanContactCode('zc1.${b64url(utf8.encode(jsonEncode(j)))}'),
+          throwsFormatException);
+    });
+
+    test('a client already in the field still reads it as the device',
+        () async {
+      // The compatibility bargain. An old client cannot learn the account —
+      // it has no idea `acct` exists — so it does what it does today and adds
+      // the device. That is not a regression; it is exactly the behaviour
+      // being replaced, and nothing about it breaks.
+      final old = await ContactBundle.decode((await laptopCode()).encode());
+      expect(old.edPub, laptop.edPub);
+      expect(await old.verify(), isTrue);
+    });
+
+    test('a root device does not pay for what it does not need', () async {
+      // Account and device are the same identity there, so saying so twice
+      // only makes the QR bigger.
+      final code = await ContactBundleV3.forIdentity(root, accountPq.publicKey);
+      expect(code.declaredAccountEdPub, isNull);
+      expect(code.accountEdPub, root.edPub);
+      expect(code.encode().length, lessThan(400));
+      // The linked device's code is bigger, and still comfortably scannable.
+      expect((await laptopCode()).encode().length, lessThan(800));
+    });
+  });
+
   group('scanning any code', () {
     test(
         'v1 reports classical, v3 reports pending, and the difference is '
@@ -342,14 +517,37 @@ void _hybridCertsAndSafetyNumber() {
     test('the v1 number is unchanged by the refactor', () async {
       // safetyNumberFromMaterial was extracted out of safetyNumber; v1 output
       // must be byte-identical or every verified contact in the wild breaks.
+      //
+      // The ordering is FULL lexicographic (§2.5), not a comparison of first
+      // bytes: two keys agreeing on byte 0 and differing later are ordered by
+      // the later byte. Comparing only `edPub[0]` here made this test disagree
+      // with the implementation about one pair in every few hundred — a flake
+      // that says nothing about the code when it fires, on the one property
+      // that must never move.
       final a = await ZIdentity.generate();
       final b = await ZIdentity.generate();
-      final lo = a.edPub[0] <= b.edPub[0] ? a.edPub : b.edPub;
-      final hi = identical(lo, a.edPub) ? b.edPub : a.edPub;
+      var less = a.edPub.length < b.edPub.length;
+      for (var i = 0; i < a.edPub.length && i < b.edPub.length; i++) {
+        if (a.edPub[i] != b.edPub[i]) {
+          less = a.edPub[i] < b.edPub[i];
+          break;
+        }
+      }
+      final lo = less ? a.edPub : b.edPub;
+      final hi = less ? b.edPub : a.edPub;
       expect(
           await safetyNumber(a.edPub, b.edPub),
           await safetyNumberFromMaterial(Uint8List.fromList([...lo, ...hi]),
               context: safetyContext));
+      // Pinned against a fixed pair too, so the ordering rule cannot drift in
+      // both places at once.
+      final x = Uint8List.fromList([1, 2, ...List.filled(30, 0)]);
+      final y = Uint8List.fromList([1, 3, ...List.filled(30, 0)]);
+      expect(
+          await safetyNumber(y, x),
+          await safetyNumberFromMaterial(Uint8List.fromList([...x, ...y]),
+              context: safetyContext),
+          reason: 'ordered by the first byte that differs, not the first byte');
     });
   });
 }

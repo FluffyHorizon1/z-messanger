@@ -1165,6 +1165,37 @@ test('v3 contact_code_v3: the code parses, binds, and commits — checked here '
   assert.equal(strict.pqc, c.pqc, 'both forms commit to the same key');
   assert.equal(strict.ed, c.ed);
 
+  // 18.7: the same account emitted by a LINKED device. Checked here with this
+  // file's own Ed25519, so the three-way agreement covers the anchoring rule
+  // and not just the commitment.
+  const a = v.anchored;
+  const ac = JSON.parse(unb64url(a.code.slice(4)).toString('utf8'));
+  assert.equal(a.code.length, a.code_len);
+  assert.ok(a.code_len < 800, 'an anchored code still scans');
+  assert.equal(unb64url(a.code.slice(4)).toString('utf8'), a.code_json);
+  assert.equal(ac.v, 1, 'still v1-shaped, so an older client reads it');
+
+  // The code describes the DEVICE…
+  assert.equal(ac.ed, a.device_ed);
+  assert.equal(ac.x, a.device_x);
+  assert.ok(edVerify(unb64(ac.ed), cat(utf8('z-bind-v1:'), unb64(ac.x)),
+    unb64(ac.sig)), 'the binding signature is the device\'s own');
+  // …and names the ACCOUNT, with that account's certificate for the device.
+  assert.equal(ac.acct, a.account_ed);
+  assert.notEqual(ac.acct, ac.ed, 'the two are different keys here');
+  assert.deepEqual(ac.cert, a.cert);
+  assert.ok(edVerify(unb64(ac.acct),
+    certInput(unb64(ac.cert.ded), unb64(ac.cert.dx), ac.cert.id),
+    unb64(ac.cert.sig)), 'the certificate is signed by the named account');
+  // The check that stops a stranger holding a genuine certificate of that
+  // account and presenting it beside their own keys.
+  assert.equal(ac.cert.ded, ac.ed, 'the certificate is FOR this device');
+  assert.equal(ac.cert.dx, ac.x);
+  assert.ok(!ac.cert.legacy, 'a legacy record cannot anchor a code');
+  // One account, one identity: the commitment is the same one the root's own
+  // code carries.
+  assert.equal(ac.pqc, c.pqc, 'the commitment is the account\'s');
+
   // Every field in the code matches the recorded identity.
   const id = v.identity;
   assert.equal(hex(unb64(c.ed)), id.ed_pub);

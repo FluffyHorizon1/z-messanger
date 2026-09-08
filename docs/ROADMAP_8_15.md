@@ -229,19 +229,26 @@ forges identities even though it cannot read past traffic.
   independent checker, v1/v2 suites frozen as usual.
 - **13.5 compatibility window** *(done — no flag day was needed; PROTOCOL §18.6)* — one release accepting v2 identities and
   emitting v3, then v2 emission is dropped.
-- **13.6 an account-anchored contact code** *(found while switching emission
-  on; not yet built)* — a contact code carries the classical identity of the
-  **device** that shows it, which has been true since v1 and was invisible
-  while every account had one device. Scanning someone's laptop therefore adds
-  the laptop, not the person: their device list then fails the "signed by this
-  contact's account key" check, and the safety number is computed against a
-  per-device key. v3 makes the seam visible rather than worse — a linked
-  device declines to attach a post-quantum commitment, because the commitment
-  binds the ACCOUNT's key and the code names the DEVICE's, and gluing the two
-  together produces a code whose binding signature does not verify. Closing it
-  needs the account to vouch for the device key inside the code, which is what
-  a device certificate already is; the code format has to carry one, so it is
-  a format change and belongs in its own increment.
+- **13.6 an account-anchored contact code** *(done — PROTOCOL §18.7)* — a
+  contact code carried the classical identity of the **device** showing it,
+  true since v1 and invisible while every account had one device. Scanning
+  someone's laptop added the laptop, not the person: their device list then
+  failed the "signed by this contact's account key" check, and the safety
+  number was computed against a per-device key. A code may now name its
+  account and carry that account's certificate for the device it describes —
+  `ed`/`x` stay the reachable mailbox, `acct` is the identity a human
+  confirms. That also lets a linked device carry the post-quantum commitment,
+  which it could not before. A linked device can now forward the
+  account-signed device list it holds, without which a contact scanned from
+  one would be told, by ordinary use, that a device-list update never arrived.
+- **13.7 contact propagation across an account's devices** *(exposed by 13.6;
+  not yet built)* — a contact added on one device is unknown to the account's
+  others, so they cannot act on messages from that contact. Contacts travel at
+  LINK time (`contactsAsBundles`) and never after. Harmless while contacts
+  were only ever added by scanning a root device; reachable now that a laptop
+  can be scanned. Needs a contact record to sync over the existing device-sync
+  channel, which is a new assertion one device makes to another and deserves
+  its own look at what a rogue linked device could inject.
 
 **Exit:** three independent checkers agree on the v3 vectors; a v2 and a v3
 client interoperate during the window; a forged device cert with only a valid
@@ -456,3 +463,17 @@ direction; the phases, their order and both ordering arguments stand.
    arrival, so whoever was sending the bad key could bury the warning under
    copies of itself. Refusal is now durable (`contacts.pq_mismatch`),
    announced once, and shown on the contact screen.
+
+19. **13.6 — anchoring the code to the account exposed the next layer down.**
+   The format change was small: two optional members, `acct` and `cert`, that
+   must both be present or both absent, with a verifier that checks the
+   certificate is FOR the device in the code (without which a stranger holding
+   any genuine certificate of that account — they are public, they travel in
+   device lists — presents it beside their own keys and is scanned as that
+   account). What it uncovered was that only a root device could hand a
+   contact its device list, so a contact scanned from a laptop would sit
+   behind the 7.7a grace period and be told an update never arrived: a
+   transparency alarm raised by ordinary use, which is how a real one stops
+   being read. A linked device now forwards the account-signed list it already
+   holds. And one gap is left open rather than papered over: contacts do not
+   propagate between an account's own devices (13.7).

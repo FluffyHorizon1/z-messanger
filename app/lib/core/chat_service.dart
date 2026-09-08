@@ -248,6 +248,13 @@ class ChatService extends ChangeNotifier {
         pqPub: sealedPq == null ? null : unb64(await vault.unseal(sealedPq)),
         verifiedSn: r['verified_sn'] as String?,
         pqMismatch: (r['pq_mismatch'] as int? ?? 0) == 1,
+        accountEdPub:
+            r['acct_ed'] == null ? null : unb64(r['acct_ed'] as String),
+        deviceCert: r['dev_cert'] == null
+            ? null
+            : DeviceCertificate.fromJson(
+                (jsonDecode(r['dev_cert'] as String) as Map)
+                    .cast<String, Object?>()),
       );
       _sealKeys[r['rid'] as String] = bundle.xPub;
     }
@@ -291,8 +298,8 @@ class ChatService extends ChangeNotifier {
   Future<void> _backfillVerifiedSn(String rid) async {
     final c = contacts[rid];
     if (c == null || !c.verified || c.verifiedSn != null) return;
-    final sn = await safetyNumber(
-        (await accountIdentity()).accountEdPub, c.bundle.edPub);
+    final sn =
+        await safetyNumber((await accountIdentity()).accountEdPub, c.accountEd);
     try {
       await vault.db.update('contacts', {'verified_sn': sn},
           where: 'rid = ?', whereArgs: [rid]);
@@ -375,28 +382,28 @@ class ChatService extends ChangeNotifier {
   Future<String> myContactCode() async {
     final account = await accountIdentity();
     final mlPub = await pqAccountPublic();
-    // A commitment binds the account's post-quantum key to the CLASSICAL
-    // identity printed in the same code, and a contact code has always
-    // carried this device's own classical identity (`ZIdentity.bundle`).
-    // On a device holding the account root those are one identity, so the
-    // commitment belongs. On a linked device they are two, and committing
-    // one to the other would produce a code whose binding signature does
-    // not verify — `ContactBundleV3.forIdentity` refuses to build it, and
-    // that refusal is the rule, not an implementation detail.
-    //
-    // So a linked device emits a plain v1 code: honest about being
-    // classical rather than committing to a key it cannot speak for. That
-    // its code is device-anchored at all is a phase-10 gap (a contact who
-    // scans a laptop gets the laptop, not the account); v3 does not widen
-    // it, and ROADMAP 13.6 is where it is closed.
-    if (mlPub == null ||
-        !constantTimeEquals(identity.edPub, account.accountEdPub)) {
+    if (mlPub == null) {
+      // No account post-quantum key reachable from here — a device linked by
+      // a build that predates v3. Emit the plain v1 code rather than
+      // committing to something this device made up; re-linking fixes it.
       return (await identity.bundle(displayName: displayName)).encode();
     }
+    // §18.7. The code describes THIS DEVICE — its keys are the ones a contact
+    // opens a session with — but the identity it is *about* is the account.
+    // On a device holding the root those are the same key and saying so twice
+    // only makes the QR bigger. On a linked device they differ, and the
+    // account's certificate for this device is what makes the claim
+    // checkable: without it a contact scanning a laptop adds the laptop, and
+    // the commitment could not be carried at all, because it binds the
+    // account's post-quantum key to whatever classical identity sits beside
+    // it in the same code.
+    final linked = !constantTimeEquals(identity.edPub, account.accountEdPub);
     return (await ContactBundleV3.forIdentity(
       identity,
-      HybridPublicKey(edPub: identity.edPub, mlPub: mlPub),
+      HybridPublicKey(edPub: account.accountEdPub, mlPub: mlPub),
       displayName: displayName,
+      accountEdPub: linked ? account.accountEdPub : null,
+      cert: linked ? account.deviceCert : null,
     ))
         .encode();
   }
@@ -469,12 +476,18 @@ class ChatService extends ChangeNotifier {
     final name = (alias?.trim().isNotEmpty ?? false)
         ? alias!.trim()
         : (bundle.displayName ?? 'Unknown');
+    // §18.7: the routing id is the DEVICE's, because that is the mailbox that
+    // can be reached, while the identity is the ACCOUNT's. For a code that
+    // predates §18.7 these are the same key, so nothing about an existing
+    // contact changes.
     final contact = Contact(
       rid: rid,
       bundle: bundle,
       name: name,
       createdMs: DateTime.now().millisecondsSinceEpoch,
       pqCommit: scanned.v3?.pqCommit,
+      accountEdPub: scanned.v3?.declaredAccountEdPub,
+      deviceCert: scanned.deviceCert,
     );
     await vault.db.insert('contacts', {
       'rid': rid,
@@ -484,6 +497,9 @@ class ChatService extends ChangeNotifier {
       'verified': 0,
       'created_ms': contact.createdMs,
       if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
+      if (contact.accountEdPub != null) 'acct_ed': b64(contact.accountEdPub!),
+      if (contact.deviceCert != null)
+        'dev_cert': jsonEncode(contact.deviceCert!.toJson()),
     });
     contacts[rid] = contact;
     _sealKeys[rid] = bundle.xPub;
@@ -501,7 +517,7 @@ class ChatService extends ChangeNotifier {
       // message. If they have not added us yet this is dropped like the hello;
       // the echo on their first message then triggers a re-send.
       if (await _myDevlistVersion() > 1) {
-        final data = await _signCurrentDeviceList();
+        final data = await _shareableDeviceList();
         if (data != null) await _sendInner(contact, _devlistInner(data));
       }
     }
@@ -554,7 +570,7 @@ class ChatService extends ChangeNotifier {
         c,
         await safetyNumberWith(rid),
         await safetyNumber(
-            (await accountIdentity()).accountEdPub, c.bundle.edPub));
+            (await accountIdentity()).accountEdPub, c.accountEd));
   }
 
   /// The judgement itself, given the two numbers — kept synchronous and
@@ -656,7 +672,7 @@ class ChatService extends ChangeNotifier {
           edPub: (await accountIdentity()).accountEdPub, mlPub: myMl);
       return safetyNumberV3(mine, theirs);
     }
-    return safetyNumber((await accountIdentity()).accountEdPub, c.bundle.edPub);
+    return safetyNumber((await accountIdentity()).accountEdPub, c.accountEd);
   }
 
   /// Which safety number [safetyNumberWith] just produced, so the UI can
@@ -725,13 +741,12 @@ class ChatService extends ChangeNotifier {
     if (inner.data['alg'] != 'ML-DSA-65' || raw is! String) return false;
     final HybridPublicKey candidate;
     try {
-      candidate =
-          HybridPublicKey(edPub: contact.bundle.edPub, mlPub: unb64(raw));
+      candidate = HybridPublicKey(edPub: contact.accountEd, mlPub: unb64(raw));
     } catch (_) {
       return false; // wrong length: not a usable key
     }
     final scanned = ContactBundleV3(
-      edPub: contact.bundle.edPub,
+      edPub: contact.accountEd,
       xPub: contact.bundle.xPub,
       bindingSig: contact.bundle.bindingSig,
       pqCommit: commit,
@@ -780,7 +795,7 @@ class ChatService extends ChangeNotifier {
     if (contact.verified && contact.verifiedSn != null) {
       final acctEd = (await accountIdentity()).accountEdPub;
       final myMl = await pqAccountPublic();
-      classical = await safetyNumber(acctEd, contact.bundle.edPub);
+      classical = await safetyNumber(acctEd, contact.accountEd);
       after = myMl == null
           ? classical
           : await safetyNumberV3(
@@ -2672,16 +2687,8 @@ class ChatService extends ChangeNotifier {
   List<AccountBundle> contactsAsBundles() => [
         for (final c in contacts.values)
           AccountBundle(
-            accountEdPub: c.bundle.edPub,
-            devices: [
-              DeviceCertificate(
-                deviceEdPub: c.bundle.edPub,
-                deviceXPub: c.bundle.xPub,
-                deviceId: 'legacy-v1',
-                sig: c.bundle.bindingSig,
-                legacy: true,
-              )
-            ],
+            accountEdPub: c.accountEd,
+            devices: [c.deviceCert ?? _legacyCertOf(c)],
             displayName: c.name,
           )
       ];
@@ -3729,14 +3736,33 @@ class ChatService extends ChangeNotifier {
 
   Future<void> _maybeResendDeviceList(String rid) async {
     final contact = contacts[rid];
-    if (contact == null || !await holdsAccountRoot()) return;
+    if (contact == null) return;
     final last = _dlResentAtMs[rid] ?? 0;
     if (_now() - last < _dlResendCooldownMs) return;
-    final data = await _signCurrentDeviceList();
+    final data = await _shareableDeviceList();
     if (data == null) return;
     _dlResentAtMs[rid] = _now();
     await _sendInner(contact, _devlistInner(data));
   }
+
+  /// The account-signed device list THIS device can hand to a contact.
+  ///
+  /// A root signs a fresh one. A linked device cannot sign — but it holds the
+  /// list its root signed and self-synced to it (7.7a rule 8), and passing an
+  /// account-signed blob along is not a privilege: the recipient verifies the
+  /// signature against the account key they already hold, so a forwarded list
+  /// is worth exactly what the root's own copy is worth, and a tampered one
+  /// is worth nothing.
+  ///
+  /// This became necessary with §18.7. A contact can now be added by scanning
+  /// a LINKED device, and that device is then the only one the contact can
+  /// reach — the root has never heard of them. Without this the contact would
+  /// hold a one-device list, see the laptop claim a newer version on every
+  /// message, and be told after the grace period that "the device list
+  /// changed but the update never arrived" — an alarm raised by ordinary
+  /// use, which is how a real one stops being read.
+  Future<String?> _shareableDeviceList() async =>
+      await _signCurrentDeviceList() ?? await vault.kvGet('own_list_json');
 
   /// Linked device: ask my root for the account's current signed list (it
   /// answers by self-sync). Sent when a contact's echo disagrees with what
@@ -3752,6 +3778,18 @@ class ChatService extends ChangeNotifier {
         dir: 'acctreq',
         inner: InnerMessage.hello(newMessageId(), _now()));
   }
+
+  /// A contact scanned before §18.7 as the one-device account it read as:
+  /// the device key IS the account key, and the v1 binding signature is the
+  /// certificate (§3.5). Never used for a contact whose code carried a real
+  /// one — that is the whole difference.
+  DeviceCertificate _legacyCertOf(Contact c) => DeviceCertificate(
+        deviceEdPub: c.bundle.edPub,
+        deviceXPub: c.bundle.xPub,
+        deviceId: 'legacy-v1',
+        sig: c.bundle.bindingSig,
+        legacy: true,
+      );
 
   List<DeviceCertificate> _extrasOf(Contact contact, SignedDeviceList list) => [
         for (final d in list.devices)
@@ -3777,8 +3815,7 @@ class ChatService extends ChangeNotifier {
       {required bool persist}) async {
     final rid = contact.rid;
     if (persist) {
-      if (base64Encode(list.accountEdPub) !=
-          base64Encode(contact.bundle.edPub)) {
+      if (base64Encode(list.accountEdPub) != base64Encode(contact.accountEd)) {
         return; // not signed by this contact's account key
       }
       if (!await list.verify()) return;
@@ -4032,6 +4069,10 @@ class ChatService extends ChangeNotifier {
     await vault.kvPut('own_list_v', '${list.version}', sensitive: false);
     await vault.kvPut('own_list_h', b64(await list.fingerprint()),
         sensitive: false);
+    // The blob itself, so a device that cannot SIGN a list can still hand
+    // over the one its account signed. See [_shareableDeviceList].
+    await vault.kvPut('own_list_json', jsonEncode(list.toJson()),
+        sensitive: false);
   }
 
   /// The newest verified (version, fingerprint) this device holds for a
@@ -4044,13 +4085,10 @@ class ChatService extends ChangeNotifier {
           (jsonDecode(stored) as Map).cast<String, Object?>());
       return (list.version, b64(await list.fingerprint()));
     }
-    final legacy = DeviceCertificate(
-        deviceEdPub: c.bundle.edPub,
-        deviceXPub: c.bundle.xPub,
-        deviceId: 'legacy-v1',
-        sig: c.bundle.bindingSig,
-        legacy: true);
-    return (1, b64(await deviceListFingerprint(1, [legacy])));
+    return (
+      1,
+      b64(await deviceListFingerprint(1, [c.deviceCert ?? _legacyCertOf(c)]))
+    );
   }
 
   /// Stamp an outgoing inner with our own-list claim ('dl') and an echo of the

@@ -170,6 +170,13 @@ class BackupArchive {
         // refusal — the two facts a restored device most needs to keep.
         if (c['verified_sn'] != null) 'vsn': c['verified_sn'],
         if ((c['pq_mismatch'] as int? ?? 0) == 1) 'pqbad': 1,
+        // 13.6: the account this contact IS, and the certificate proving the
+        // scanned device belongs to it. A restore that lost these would
+        // re-anchor the contact to a device — moving their safety number and
+        // making their device list stop verifying, both of which read to the
+        // user as an attack.
+        if (c['acct_ed'] != null) 'acct': c['acct_ed'],
+        if (c['dev_cert'] != null) 'cert': jsonDecode(c['dev_cert'] as String),
       });
     }
 
@@ -383,6 +390,8 @@ class BackupArchive {
                       'enc_pq_pub': await vault.seal(r['pqk'] as String),
                     'verified_sn': r['vsn'],
                     'pq_mismatch': (r['pqbad'] as num?)?.toInt() ?? 0,
+                    'acct_ed': r['acct'],
+                    if (r['cert'] != null) 'dev_cert': jsonEncode(r['cert']),
                   },
                   conflictAlgorithm: ConflictAlgorithm.replace);
             case 'groups':

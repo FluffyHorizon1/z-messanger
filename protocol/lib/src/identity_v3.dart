@@ -57,11 +57,22 @@ enum IdentityAssurance {
 /// A v3 contact code: classical keys in full, the post-quantum half bound by
 /// a 32-byte commitment.
 class ContactBundleV3 {
-  final Uint8List edPub; // 32 — account Ed25519
-  final Uint8List xPub; // 32 — account X25519
+  final Uint8List edPub; // 32 — the Ed25519 key of the DEVICE showing this
+  final Uint8List xPub; // 32 — that device's X25519 key
   final Uint8List bindingSig; // 64 — binds xPub to edPub, as in v1
   final Uint8List pqCommit; // 32 — SHA-256("z-pqid-v3:" || ml_pub)
   final String? displayName;
+
+  /// The ACCOUNT's Ed25519 key, when the code says one (§18.7).
+  ///
+  /// Null means the code is self-anchored: the device showing it *is* the
+  /// account, which is the §3.5 legacy mapping and the only case a v1 code
+  /// could express. Use [accountEdPub], never this.
+  final Uint8List? declaredAccountEdPub;
+
+  /// The account's certificate for the device in this code, present exactly
+  /// when [declaredAccountEdPub] is — it is what makes the claim checkable.
+  final DeviceCertificate? deviceCert;
 
   ContactBundleV3({
     required this.edPub,
@@ -69,7 +80,17 @@ class ContactBundleV3 {
     required this.bindingSig,
     required this.pqCommit,
     this.displayName,
+    this.declaredAccountEdPub,
+    this.deviceCert,
   });
+
+  /// The identity this code is ABOUT: an account, not a device.
+  ///
+  /// Everything a human confirms — the safety number, the post-quantum
+  /// commitment — is anchored here, so that scanning someone's laptop and
+  /// scanning their phone are the same act. Where a code says nothing, the
+  /// device is the account (§3.5).
+  Uint8List get accountEdPub => declaredAccountEdPub ?? edPub;
 
   /// The classical view of this identity — what every existing code path
   /// (routing, sessions, safety numbers) already consumes.
@@ -81,19 +102,47 @@ class ContactBundleV3 {
 
   Future<String> routingId() => classical.routingId();
 
-  /// Builds the code for [me], committing to [pqPublic].
+  /// Builds the code [me] hands out, committing to [pqPublic].
+  ///
+  /// [accountEdPub] and [cert] together make the code account-anchored
+  /// (§18.7): pass them on a device that is not the account root, so what a
+  /// contact scans is the person rather than the laptop in front of them.
+  /// Omit both on a root device, where the two are the same identity and
+  /// saying so twice only makes the code bigger.
   static Future<ContactBundleV3> forIdentity(
     ZIdentity me,
     HybridPublicKey pqPublic, {
     String? displayName,
+    Uint8List? accountEdPub,
+    DeviceCertificate? cert,
   }) async {
-    if (!constantTimeEquals(me.edPub, pqPublic.edPub)) {
-      // The classical half of the hybrid key IS this identity's key. If they
+    if ((accountEdPub == null) != (cert == null)) {
+      // One without the other is either an unprovable claim or a proof of
+      // nothing. Refusing here means no caller can build the shape the
+      // decoder would have to reject.
+      throw const FormatException(
+          'an account-anchored code needs both the account key and a '
+          'certificate for this device');
+    }
+    final anchor = accountEdPub ?? me.edPub;
+    if (!constantTimeEquals(anchor, pqPublic.edPub)) {
+      // The classical half of the hybrid key IS the ACCOUNT's key. If they
       // differ, the code would commit to a post-quantum key belonging to a
       // different identity — the exact substitution the commitment exists to
       // prevent, self-inflicted.
       throw const FormatException(
           'the hybrid key does not belong to this identity');
+    }
+    if (cert != null) {
+      if (!constantTimeEquals(cert.deviceEdPub, me.edPub) ||
+          !constantTimeEquals(cert.deviceXPub, me.xPub)) {
+        throw const FormatException(
+            'the certificate is not for the device in this code');
+      }
+      if (!await cert.verify(anchor)) {
+        throw const FormatException(
+            'the certificate is not signed by that account');
+      }
     }
     return ContactBundleV3(
       edPub: me.edPub,
@@ -101,6 +150,8 @@ class ContactBundleV3 {
       bindingSig: await me.bindingSignature(),
       pqCommit: await pqPublic.pqCommitment(),
       displayName: displayName,
+      declaredAccountEdPub: accountEdPub,
+      deviceCert: cert,
     );
   }
 
@@ -112,6 +163,8 @@ class ContactBundleV3 {
       'x': b64(xPub),
       'sig': b64(bindingSig),
       'pqc': b64(pqCommit),
+      if (declaredAccountEdPub != null) 'acct': b64(declaredAccountEdPub!),
+      if (deviceCert != null) 'cert': deviceCert!.toJson(),
       if (displayName != null && displayName!.isNotEmpty) 'name': displayName,
     };
     return contactCodePrefixV3 + b64url(utf8.encode(jsonEncode(j)));
@@ -137,6 +190,8 @@ class ContactBundleV3 {
       'x': b64(xPub),
       'sig': b64(bindingSig),
       'pqc': b64(pqCommit),
+      if (declaredAccountEdPub != null) 'acct': b64(declaredAccountEdPub!),
+      if (deviceCert != null) 'cert': deviceCert!.toJson(),
       if (displayName != null && displayName!.isNotEmpty) 'name': displayName,
     };
     return contactCodePrefix + b64url(utf8.encode(jsonEncode(j)));
@@ -174,12 +229,49 @@ class ContactBundleV3 {
       throw const FormatException(
           'this contact code carries no post-quantum commitment');
     }
+    // §18.7: a code may name the ACCOUNT it belongs to and prove that the
+    // device it describes is one of that account's, so scanning someone's
+    // laptop adds the person rather than the laptop. The two members come as
+    // a pair — a claim without a certificate is an assertion, and a
+    // certificate without a claim is a proof of nothing.
+    final acct = j['acct'], cert = j['cert'];
+    if ((acct == null) != (cert == null)) {
+      throw const FormatException(
+          'an account-anchored contact code needs both the account key and a '
+          'certificate');
+    }
+    Uint8List? acctEd;
+    DeviceCertificate? deviceCert;
+    if (acct != null) {
+      if (acct is! String || cert is! Map) {
+        throw const FormatException('malformed account anchor');
+      }
+      acctEd = unb64(acct);
+      if (acctEd.length != 32) {
+        throw const FormatException('bad account key length');
+      }
+      try {
+        deviceCert = DeviceCertificate.fromJson(cert.cast<String, Object?>());
+      } catch (_) {
+        throw const FormatException('malformed device certificate');
+      }
+      if (deviceCert.legacy) {
+        // The legacy rule says "the device key IS the account key", which is
+        // precisely what an account-anchored code is not. Accepting one here
+        // would let a v1 binding signature stand in for an account's
+        // endorsement of a device it never signed for.
+        throw const FormatException(
+            'a legacy record cannot anchor a code to an account');
+      }
+    }
     final b = ContactBundleV3(
       edPub: unb64(j['ed'] as String),
       xPub: unb64(j['x'] as String),
       bindingSig: unb64(j['sig'] as String),
       pqCommit: unb64(pqc),
       displayName: j['name'] as String?,
+      declaredAccountEdPub: acctEd,
+      deviceCert: deviceCert,
     );
     if (b.edPub.length != 32 || b.xPub.length != 32) {
       throw const FormatException('bad key length');
@@ -190,6 +282,21 @@ class ContactBundleV3 {
     if (!await b.classical.verify()) {
       throw const FormatException(
           'contact code signature invalid (possible tampering)');
+    }
+    if (deviceCert != null) {
+      // The certificate must be FOR the device in this code, not merely a
+      // genuine certificate of that account's. Without this check anyone
+      // holding any device certificate of Bob's could present their own keys
+      // beside it and be scanned as Bob.
+      if (!constantTimeEquals(deviceCert.deviceEdPub, b.edPub) ||
+          !constantTimeEquals(deviceCert.deviceXPub, b.xPub)) {
+        throw const FormatException(
+            'the certificate in this code is for a different device');
+      }
+      if (!await deviceCert.verify(acctEd!)) {
+        throw const FormatException(
+            'this device is not certified by the account it claims');
+      }
     }
     return b;
   }
@@ -203,7 +310,9 @@ class ContactBundleV3 {
   /// which is either a broken implementation or an active attacker; the
   /// caller must refuse the identity rather than carry on classically.
   Future<bool> acceptsPqKey(HybridPublicKey candidate) async {
-    if (!constantTimeEquals(candidate.edPub, edPub)) return false;
+    // Against the ACCOUNT key: a post-quantum identity belongs to the person,
+    // not to whichever of their devices was scanned (§18.7).
+    if (!constantTimeEquals(candidate.edPub, accountEdPub)) return false;
     return constantTimeEquals(await candidate.pqCommitment(), pqCommit);
   }
 
@@ -234,6 +343,20 @@ class ScannedIdentity {
   final ContactBundleV3? v3;
 
   const ScannedIdentity(this.classical, this.assurance, {this.v3});
+
+  /// The account this code identifies (§18.7).
+  ///
+  /// [classical] describes the DEVICE — its keys are what a session is opened
+  /// with and what a routing id is derived from — while this is the identity
+  /// a human confirms. They differ only when someone's linked device was
+  /// scanned; for every code that predates §18.7 they are the same key, which
+  /// is why every existing safety number is unchanged.
+  Uint8List get accountEdPub => v3?.accountEdPub ?? classical.edPub;
+
+  /// The account's certificate for the scanned device, when the code carried
+  /// one. It is the evidence behind [accountEdPub], and it is what lets this
+  /// contact's device list be checked later.
+  DeviceCertificate? get deviceCert => v3?.deviceCert;
 }
 
 /// Parses a `zc1.`, `zc2.` or `zc3.` code, so a caller never has to ask the
@@ -258,7 +381,7 @@ Future<ScannedIdentity> scanContactCode(
     // (§18.2). If it does, this is a v3 identity wearing a v1 shape so that
     // clients already in the field can still read it; if not, it is a plain
     // v1 identity and nothing post-quantum was promised.
-    if (_carriesCommitment(t)) {
+    if (_carriesV3Members(t)) {
       final b = await ContactBundleV3.decode(t);
       return ScannedIdentity(b.classical, IdentityAssurance.pendingPostQuantum,
           v3: b);
@@ -413,15 +536,22 @@ bool _lexLessBytes(Uint8List a, Uint8List b) {
   return a.length < b.length;
 }
 
-/// Peeks at a `zc1.` code for a `pqc` member, without verifying anything —
-/// [scanContactCode] uses it only to choose which decoder to run, and both
-/// decoders verify what they parse.
-bool _carriesCommitment(String code) {
+/// Peeks at a `zc1.` code for members only a v3 client writes, without
+/// verifying anything — [scanContactCode] uses it only to choose which
+/// decoder to run, and both decoders verify what they parse.
+///
+/// `acct` counts as well as `pqc`, and that matters: without it, a code that
+/// anchors itself to an account would be handed to the v1 decoder, which
+/// ignores members it does not know — silently reducing the person to the
+/// device they were standing at. Routing it here instead means the v3 decoder
+/// gets it, and a code that anchors to an account without also committing to
+/// its post-quantum key is refused rather than quietly downgraded.
+bool _carriesV3Members(String code) {
   try {
     final j = jsonDecode(
             utf8.decode(unb64url(code.substring(contactCodePrefix.length))))
         as Map<String, Object?>;
-    return j['pqc'] is String;
+    return j['pqc'] is String || j['acct'] is String;
   } catch (_) {
     return false;
   }

@@ -1806,6 +1806,32 @@ Future<Map<String, Object?>> suiteContactCodeV3() async {
   check((await ContactBundleV3.decode(strict)).pqCommit.isNotEmpty,
       'both forms carry the same commitment');
 
+  // §18.7: the same account, seen from a LINKED device. The code describes
+  // that device — its keys are the reachable mailbox — while naming the
+  // account it belongs to and carrying the account's certificate for it, so
+  // scanning a laptop and scanning a phone are the same act.
+  final laptop = await d.run(() async => ZIdentity.generate());
+  final account = await AccountIdentity.fromV1(id, deviceId: 'phone');
+  final laptopCert = await account.signDeviceCert(
+      deviceEdPub: laptop.edPub, deviceXPub: laptop.xPub, deviceId: 'laptop');
+  final anchored = await ContactBundleV3.forIdentity(laptop, pq.publicKey,
+      displayName: 'Finn', accountEdPub: id.edPub, cert: laptopCert);
+  final anchoredCode = anchored.encode();
+  final anchoredScan = await scanContactCode(anchoredCode);
+  check(eq(anchoredScan.classical.edPub, laptop.edPub),
+      'the session opens with the device in the code');
+  check(eq(anchoredScan.accountEdPub, id.edPub),
+      'but the identity is the account');
+  check(
+      await safetyNumber(anchoredScan.accountEdPub, wrong.publicKey.edPub) ==
+          await safetyNumber(scanned.accountEdPub, wrong.publicKey.edPub),
+      'so the number is the same whichever device was scanned');
+  check(await anchored.acceptsPqKey(pq.publicKey),
+      "the commitment is the account's, carried by a device");
+  final anchoredAsV1 = await ContactBundle.decode(anchoredCode);
+  check(eq(anchoredAsV1.edPub, laptop.edPub),
+      'an older client still reads it as the device, unchanged');
+
   final inner =
       InnerMessage.pqIdentity('mid-pqid', 1700000000000, pq.publicKey.mlPub);
 
@@ -1846,6 +1872,26 @@ Future<Map<String, Object?>> suiteContactCodeV3() async {
             'a client that predates v3 reads the classical identity and '
             'ignores it (PROTOCOL §14); the zc3. form is rejected outright by '
             'such a client and is therefore never emitted',
+    // §18.7. The same account, emitted by a linked device.
+    'anchored': {
+      'device_ed': b64(laptop.edPub),
+      'device_x': b64(laptop.xPub),
+      'account_ed': b64(id.edPub),
+      'cert': laptopCert.toJson(),
+      'code': anchoredCode,
+      'code_json': utf8
+          .decode(unb64url(anchoredCode.substring(contactCodePrefix.length))),
+      'code_len': anchoredCode.length,
+      'note':
+          'the code describes the DEVICE (ed, x, sig) and names the ACCOUNT '
+              '(acct) with that account\'s certificate for the device (cert). '
+              'A verifier must check the binding signature against ed, the '
+              'certificate against acct, AND that the certificate is for the '
+              'ed/x in this code — otherwise anyone holding a genuine '
+              'certificate of that account could present it beside their own '
+              'keys. The safety number and the pqc commitment are anchored to '
+              'acct, so scanning any device of an account gives one identity.',
+    },
     'pqid_inner': {
       'json':
           utf8.decode(inner.toBytes()).replaceAll(RegExp(r'\x80[\x00]*$'), ''),

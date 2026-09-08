@@ -197,6 +197,8 @@ exactly the listed devices (§9) and accepts messages only from them.
 
 A `zc1.` code is read as a one‑device account: `accountEdPub = ed`, with the
 single device `{ded: ed, dx: x, id: "legacy-v1", sig: bindingSig, legacy: true}`.
+A code carrying `acct` says otherwise and is read under §18.7 instead — this
+mapping is the default, not the only reading.
 
 ### 3.6 Device‑list transparency (gossip)
 
@@ -1197,8 +1199,9 @@ where an attacker present at the exchange supplies their own ML‑DSA key and
 passes every hybrid check thereafter. Security here rests entirely on the
 binding, whose strength is SHA‑256 collision resistance.
 
-**The device list is deliberately not in the code.** `zc2.` carries one as a
-convenience; under v3 each certificate would be 5 389 bytes. Device lists
+**The device list is deliberately not in the code.** One certificate — for the
+device showing the code — is (§18.7); the *list* is not. `zc2.` carries one as
+a convenience; under v3 each certificate would be 5 389 bytes. Device lists
 already reach contacts in‑band, account‑signed and verified against the
 account key (§3.4), including contacts who were offline for an entire
 enrollment. The code establishes the account identity — the thing a human must
@@ -1337,3 +1340,71 @@ would see a mismatch — indistinguishable, to them, from an attack. The archive
 therefore carries the seed, and a contact's commitment and established key
 travel with it too, so a restore does not silently downgrade every verified
 contact to classical.
+
+### 18.7 An account-anchored contact code
+
+A contact code has always described the **device** showing it: `ed` and `x`
+are that device's keys, `sig` binds them, and the routing id is `SHA-256(ed)`.
+With one device per account that is also the account's identity (§3.5). With
+more than one it is not, and scanning someone's laptop added the **laptop** —
+their device list then failed the "signed by this contact's account key" check
+of §3.4, so multi-device delivery and every §7.7a transparency guarantee that
+rides on the list silently stopped working for that contact, and their safety
+number was computed against a per-device key, so two people could both verify
+and read different numbers.
+
+A code may therefore name the account it belongs to, and prove it:
+
+```
+zc1.<base64url(json)>
+json = { "v":1, "ed":…, "x":…, "sig":…, "pqc":…,
+         "acct":b64(accountEdPub), "cert":deviceCert, "name"?:string }
+```
+
+`acct` and `cert` are **one member in two parts** and MUST both be present or
+both absent — a claim without a certificate is an assertion, and a certificate
+without a claim proves nothing. A verifier MUST:
+
+1. verify `sig` against `ed` as in §2.4 (the device owns its X25519 key);
+2. verify `cert` against `acct` under §3.1 — and reject a `legacy` record,
+   whose rule is "the device key IS the account key", which is precisely what
+   an account-anchored code is not;
+3. check that `cert.ded == ed` and `cert.dx == x`. **Without this a stranger
+   holding any genuine certificate of that account — they are public, they
+   travel in device lists — could present it beside their own keys and be
+   scanned as that account.**
+
+The code then means: talk to *this device*, whose identity is *that account*.
+`ed`/`x` remain what a session is opened with and what the routing id is
+derived from, because that is the mailbox that can be reached. Everything a
+human confirms — the safety number (§18.5) and the post-quantum commitment
+(§18.2) — is anchored to `acct`. A code with no `acct` means the device is the
+account, exactly as §3.5 already said, so no existing code changes meaning and
+no existing safety number moves.
+
+A client SHOULD omit both members on a device that holds the account root,
+where the two identities are the same key and saying so twice only makes the
+QR bigger. Measured: ~370 bytes for a root device's code, ~640 for a linked
+device's, against a ceiling near 800 for a symbol that scans reliably.
+
+`acct` also implies `pqc`: a code that anchors to an account MUST carry the
+commitment, and a decoder MUST refuse one that does not, rather than falling
+back to the v1 reading. Otherwise stripping `pqc` would quietly turn the
+person back into the device — the v1 decoder ignores members it does not
+know, so nothing would fail.
+
+**A linked device must be able to hand over its account's device list.** Since
+a contact can now be added by scanning a linked device, that device is the
+only one the contact can reach — the root has never heard of them. A device
+that cannot sign a list MUST still forward the account-signed list it holds
+(§7.7a rule 8 self-sync); this is not a privilege, because the recipient
+verifies the signature against the account key they already hold. Without it
+the contact holds a one-device list, sees a newer version claimed on every
+message, and is told after the grace period that an update never arrived — a
+transparency alarm raised by ordinary use, which is how a real one stops being
+read.
+
+**Known limit.** A contact added on one device is not propagated to that
+account's other devices, so the account's *other* devices cannot yet act on
+messages from a contact added this way. That predates this section and was
+unreachable while a contact could only be added by scanning a root device.

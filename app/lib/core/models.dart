@@ -29,6 +29,24 @@ class Contact {
   /// number nobody checked.
   String? verifiedSn;
 
+  /// The ACCOUNT this contact is, when the code said one (§18.7).
+  ///
+  /// [bundle] describes the DEVICE that was scanned — its keys open the
+  /// session and give the routing id — while this is the identity the user
+  /// confirmed. Null for every code that predates §18.7, where the device IS
+  /// the account (§3.5); [accountEd] is what code should read, and it returns
+  /// the bundle's key in that case, so no existing safety number moves.
+  Uint8List? accountEdPub;
+
+  /// The account's certificate for [bundle]'s device, present exactly when
+  /// [accountEdPub] is. It is the evidence for the claim, kept because a
+  /// device this account vouches for is also what a device list is checked
+  /// against and what a newly linked device must be told.
+  DeviceCertificate? deviceCert;
+
+  /// The key everything a human confirms is anchored to.
+  Uint8List get accountEd => accountEdPub ?? bundle.edPub;
+
   /// A post-quantum key arrived and did NOT match [pqCommit] (§18.2).
   ///
   /// Durable, because the refusal is a fact about this contact and not just a
@@ -48,6 +66,8 @@ class Contact {
     this.pqPub,
     this.verifiedSn,
     this.pqMismatch = false,
+    this.accountEdPub,
+    this.deviceCert,
   });
 
   /// What is actually known about this identity's authenticity.
@@ -65,9 +85,8 @@ class Contact {
 
   /// The contact's account key as a hybrid public key, or null until the
   /// post-quantum half is known and verified.
-  HybridPublicKey? get hybridKey => pqPub == null
-      ? null
-      : HybridPublicKey(edPub: bundle.edPub, mlPub: pqPub!);
+  HybridPublicKey? get hybridKey =>
+      pqPub == null ? null : HybridPublicKey(edPub: accountEd, mlPub: pqPub!);
 }
 
 class FileMeta {

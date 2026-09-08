@@ -300,26 +300,159 @@ void main() {
         await HybridPublicKey(edPub: account.accountEdPub, mlPub: accountMl)
             .pqCommitment());
 
-    // The laptop's does NOT — and that is the point of this assertion, not an
-    // oversight. A contact code carries the classical identity of the device
-    // showing it (v1 has always worked this way), so on a linked device the
-    // commitment would bind the ACCOUNT's post-quantum key to the LAPTOP's
-    // Ed25519 key: two identities glued together, with a binding signature
-    // that does not verify. Emitting no commitment is the honest answer; a
-    // made-up one is the dangerous answer.
+    // And so does the laptop's — the SAME commitment, because there is one
+    // account and one post-quantum identity. It can only do that because the
+    // code is account-anchored (§18.7): a commitment binds the ACCOUNT's key
+    // to the classical identity beside it, so before the code could name the
+    // account, a linked device gluing the two together would have produced a
+    // binding signature that does not verify.
     final laptopCode = await laptop.myContactCode();
     final fromLaptop = await scanContactCode(laptopCode);
-    expect(fromLaptop.assurance, IdentityAssurance.classical);
-    expect(fromLaptop.v3, isNull);
-    expect(fromLaptop.classical.edPub, laptopId.edPub,
-        reason: 'a code names the device that shows it — ROADMAP 13.6');
+    expect(fromLaptop.assurance, IdentityAssurance.pendingPostQuantum);
+    expect(fromLaptop.v3!.pqCommit, fromPhone.v3!.pqCommit,
+        reason: 'one account, one post-quantum identity');
+    expect(fromLaptop.accountEdPub, account.accountEdPub);
+    // The code still describes the DEVICE, because that is the mailbox a
+    // contact can actually reach.
+    expect(fromLaptop.classical.edPub, laptopId.edPub);
 
-    // And the refusal is structural, not a check this call site happens to
-    // make: building the code the laptop is NOT allowed to build throws.
+    // And the anchor is structural, not a courtesy of this call site: a code
+    // claiming an account it cannot prove membership of will not be built.
+    expect(
+        () => ContactBundleV3.forIdentity(laptopId,
+            HybridPublicKey(edPub: account.accountEdPub, mlPub: accountMl),
+            accountEdPub: account.accountEdPub),
+        throwsA(isA<FormatException>()),
+        reason: 'a claim needs the certificate that proves it');
     expect(
         () => ContactBundleV3.forIdentity(laptopId,
             HybridPublicKey(edPub: account.accountEdPub, mlPub: accountMl)),
-        throwsA(isA<FormatException>()));
+        throwsA(isA<FormatException>()),
+        reason:
+            "and unanchored, the laptop cannot speak for the account's key");
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('scanning a linked device adds the person, not the laptop', () async {
+    // 13.6, and the last of the phase-10 family. A contact code names the
+    // device showing it — true since v1, invisible while every account had
+    // one device. Scanning someone's laptop therefore added the LAPTOP: their
+    // device list failed the "signed by this contact's account key" check, so
+    // multi-device delivery never worked for that contact, and their safety
+    // number was computed against a per-device key, so two people who both
+    // verified could read different numbers depending on which device each
+    // had scanned.
+    final phoneId = await ZIdentity.generate();
+    final phone = await makePrimary('l6phone', phoneId);
+    final carol = await makePrimary('l6carol', await ZIdentity.generate());
+    await waitUntil(
+        () => phone.transport.isConnected && carol.transport.isConnected,
+        what: 'connected');
+    final account = await phone.accountIdentity();
+    final accountMl = await phone.pqAccountPublic();
+
+    final laptopId = await ZIdentity.generate();
+    final laptopCert = await account.signDeviceCert(
+        deviceEdPub: laptopId.edPub,
+        deviceXPub: laptopId.xPub,
+        deviceId: 'laptop');
+    final laptop = await makeLinked('l6laptop', laptopId,
+        account.withAccountMlPub(accountMl!), laptopCert, account.deviceCert);
+    await waitUntil(() => laptop.transport.isConnected, what: 'laptop up');
+    await phone.addMyDevice(laptopCert);
+
+    // Carol scans the LAPTOP's code.
+    await carol.addContactFromCode(await laptop.myContactCode());
+    final rid = laptop.myRid;
+    final contact = carol.contacts[rid]!;
+
+    // She reaches the laptop, because that is the mailbox in the code…
+    expect(contact.bundle.edPub, laptopId.edPub);
+    // …but the identity she has added is the account.
+    expect(contact.accountEd, account.accountEdPub);
+    expect(contact.deviceCert!.deviceId, 'laptop');
+
+    // So the number she reads is the one she would have read from the phone.
+    expect(
+        await carol.safetyNumberWith(rid),
+        await safetyNumber(
+            (await carol.accountIdentity()).accountEdPub, account.accountEdPub),
+        reason: 'one account, one number, whichever device was scanned');
+
+    // And the commitment is the account's, so the post-quantum upgrade
+    // completes from a scan of a laptop exactly as from a scan of the phone —
+    // it could not be carried at all before 18.7.
+    expect(contact.pqCommit, isNotNull);
+    await laptop.addContactFromCode(await carol.myContactCode());
+    await carol.sendText(rid, 'hello from carol');
+    await waitUntil(() => carol.assuranceWith(rid) == IdentityAssurance.hybrid,
+        what: "carol reaches hybrid from the laptop's code");
+    expect(carol.contacts[rid]!.pqPub, accountMl,
+        reason: "the key that arrived is the ACCOUNT's");
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test("a contact scanned from a laptop accepts that account's device list",
+      () async {
+    // The other half of the same bug, and the one with teeth: a device list
+    // is rejected unless it is signed by the account key held for that
+    // contact. Anchored to a device, that check could never pass, so a
+    // contact added by scanning a laptop silently lost multi-device delivery
+    // AND every 7.7a transparency guarantee that rides on the list.
+    final phoneId = await ZIdentity.generate();
+    final phone = await makePrimary('dlphone', phoneId);
+    final carol = await makePrimary('dlcarol', await ZIdentity.generate());
+    await waitUntil(
+        () => phone.transport.isConnected && carol.transport.isConnected,
+        what: 'connected');
+    final account = await phone.accountIdentity();
+    final accountMl = await phone.pqAccountPublic();
+
+    final laptopId = await ZIdentity.generate();
+    final laptopCert = await account.signDeviceCert(
+        deviceEdPub: laptopId.edPub,
+        deviceXPub: laptopId.xPub,
+        deviceId: 'laptop');
+    final laptop = await makeLinked('dllaptop', laptopId,
+        account.withAccountMlPub(accountMl!), laptopCert, account.deviceCert);
+    await waitUntil(() => laptop.transport.isConnected, what: 'laptop up');
+    await phone.addMyDevice(laptopCert);
+
+    await carol.addContactFromCode(await laptop.myContactCode());
+    await laptop.addContactFromCode(await carol.myContactCode());
+    await laptop.sendText(carol.myRid, 'from the laptop');
+    await waitUntil(
+        () => texts(carol, laptop.myRid).contains('from the laptop'),
+        what: 'carol hears the laptop');
+
+    // The account's list reaches her and VERIFIES — the check that could
+    // never pass before, because it compares the list's account key against
+    // the key held for this contact.
+    var version = 0;
+    await waitUntil(() {
+      unawaited(
+          carol.heldContactListVersion(laptop.myRid).then((v) => version = v));
+      return version >= 2;
+    }, what: "carol installs the account's device list");
+
+    // …and no false alarm along the way. Without a linked device being able
+    // to forward the list its root signed, Carol would hold a one-device list
+    // for ever, watch the laptop claim a newer version on every message, and
+    // be told after the grace period that "their device list changed but the
+    // update never arrived" — 7.7a's alarm, raised by ordinary use, which is
+    // how a real one stops being read.
+    await Future<void>.delayed(carol.devlistGrace + const Duration(seconds: 1));
+    await carol.sendText(laptop.myRid, 'still here');
+    await waitUntil(() => texts(laptop, carol.myRid).contains('still here'),
+        what: 'a later message still flows');
+    expect(carol.contactDevlistAlerts[laptop.myRid], isNull,
+        reason:
+            'ordinary multi-device use must not raise a transparency alarm');
+
+    // KNOWN GAP, not a 13.6 regression: Carol's fan-out now reaches the phone,
+    // but the phone has never heard of Carol — a contact added on one device
+    // is not propagated to that account's others. That predates §18.7 and was
+    // simply unreachable while a contact could only be added by scanning a
+    // root device. Tracked as ROADMAP 13.7.
+    expect(phone.contacts.containsKey(carol.myRid), isFalse);
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('a device linked before v3 stays honest rather than inventing a key',
