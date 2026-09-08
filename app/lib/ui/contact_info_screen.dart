@@ -79,6 +79,22 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             ),
           ),
           const SizedBox(height: 24),
+          if (contact.addedByDevice != null) ...[
+            // 13.7: this contact arrived from another of the user's own
+            // devices rather than from a scan made here. Saying so is the
+            // check on the one thing a linked device can assert with no scan
+            // behind it — a chat that appears on its own should look like
+            // something that happened, not something the user did.
+            _Banner(
+              tone: context.z.accent,
+              icon: Icons.devices_outlined,
+              title: 'Added on ${contact.addedByDevice}',
+              body: 'This contact came from another of your devices, so no '
+                  'code was scanned here. Compare the safety number below '
+                  'before you rely on it.',
+            ),
+            const SizedBox(height: 12),
+          ],
           if (contact.pqMismatch) ...[
             _Banner(
               tone: context.z.danger,

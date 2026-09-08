@@ -47,6 +47,16 @@ class Contact {
   /// The key everything a human confirms is anchored to.
   Uint8List get accountEd => accountEdPub ?? bundle.edPub;
 
+  /// Which of my OWN devices added this contact, when it was not this one
+  /// (13.7). Null means the user added it here.
+  ///
+  /// Kept because propagation is the one thing a linked device can assert
+  /// that has no scan behind it. The record is insert-only and never
+  /// verified, so the worst a rogue device can do is make a chat appear —
+  /// and this is what lets the app say where it came from instead of letting
+  /// it look like something the user did.
+  String? addedByDevice;
+
   /// A post-quantum key arrived and did NOT match [pqCommit] (§18.2).
   ///
   /// Durable, because the refusal is a fact about this contact and not just a
@@ -68,6 +78,7 @@ class Contact {
     this.pqMismatch = false,
     this.accountEdPub,
     this.deviceCert,
+    this.addedByDevice,
   });
 
   /// What is actually known about this identity's authenticity.

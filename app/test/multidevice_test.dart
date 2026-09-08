@@ -20,6 +20,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/models.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -447,12 +448,85 @@ void main() {
         reason:
             'ordinary multi-device use must not raise a transparency alarm');
 
-    // KNOWN GAP, not a 13.6 regression: Carol's fan-out now reaches the phone,
-    // but the phone has never heard of Carol — a contact added on one device
-    // is not propagated to that account's others. That predates §18.7 and was
-    // simply unreachable while a contact could only be added by scanning a
-    // root device. Tracked as ROADMAP 13.7.
-    expect(phone.contacts.containsKey(carol.myRid), isFalse);
+    // 13.7: and the phone knows Carol too, though it never scanned her. A
+    // contact added on one device used to be invisible to the account's
+    // others — they dropped her messages as an unknown sender — because
+    // contacts travelled only at LINK time.
+    await waitUntil(() => phone.contacts.containsKey(carol.myRid),
+        what: 'the phone learned the contact the laptop added');
+    expect(phone.contacts[carol.myRid]!.accountEd,
+        (await carol.accountIdentity()).accountEdPub);
+    expect(phone.contacts[carol.myRid]!.addedByDevice, isNotNull,
+        reason: 'a contact this device did not add says where it came from');
+
+    // Which is the whole point: Carol's fan-out now lands on a device that
+    // can read it.
+    await carol.sendText(laptop.myRid, 'and the phone too');
+    await waitUntil(
+        () => texts(phone, carol.myRid).contains('and the phone too'),
+        what: 'the phone receives from a contact it never scanned');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a contact from another of my devices never overwrites one I hold',
+      () async {
+    // The attack this propagation opens, and the reason it is insert-only.
+    // A linked device is already trusted to read the account's messages and
+    // send as the account — but it does NOT hold the account root, so it
+    // cannot enroll devices. Letting it REPLACE a contact record would hand
+    // it something strictly worse: silently re-pointing a name the user has
+    // already verified at keys of its choosing, with no scan and nothing on
+    // screen to notice.
+    final s = await linkedPair();
+    await s.phone.addMyDevice(s.laptopCert); // the two devices now sync
+    final rid = s.carol.myRid;
+    final original = s.phone.contacts[rid]!.bundle.edPub;
+    await s.phone.setVerified(rid, true);
+    // Prove the channel is live before trusting a negative result from it:
+    // the laptop's own contact does reach the phone.
+    final bystander =
+        await makePrimary('bystander', await ZIdentity.generate());
+    await waitUntil(() => bystander.transport.isConnected, what: 'connected');
+    await s.laptop.addContactFromCode(await bystander.myContactCode());
+    await waitUntil(() => s.phone.contacts.containsKey(bystander.myRid),
+        what: 'an honest contact sync arrives');
+
+    // The laptop asserts a DIFFERENT identity under the same routing id —
+    // which a genuine sync can never produce, since the rid is the hash of
+    // the key it claims.
+    final impostor = await ZIdentity.generate();
+    await s.laptop.debugAssertContactToMyDevices(
+        rid: rid, bundle: await impostor.bundle(displayName: 'Carol'));
+    await Future<void>.delayed(const Duration(seconds: 2));
+
+    expect(s.phone.contacts[rid]!.bundle.edPub, original,
+        reason: 'the record the user actually scanned stands');
+    expect(s.phone.verificationWith(rid), VerificationState.verified,
+        reason: 'and the tick it earned is untouched');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a routing id that does not match the key it carries is dropped',
+      () async {
+    // Insert-only is not enough on its own: a rogue device could still add a
+    // NEW contact whose rid is not the hash of the bundle in it, so the two
+    // disagree about who this is. Every honest path derives the rid from the
+    // key; a sync that does not is not a sync.
+    final s = await linkedPair();
+    await s.phone.addMyDevice(s.laptopCert);
+    final bystander =
+        await makePrimary('bystander2', await ZIdentity.generate());
+    await waitUntil(() => bystander.transport.isConnected, what: 'connected');
+    await s.laptop.addContactFromCode(await bystander.myContactCode());
+    await waitUntil(() => s.phone.contacts.containsKey(bystander.myRid),
+        what: 'the channel is live');
+
+    final stranger = await ZIdentity.generate();
+    await s.laptop.debugAssertContactToMyDevices(
+        rid: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        bundle: await stranger.bundle(displayName: 'Not who I say'));
+    await Future<void>.delayed(const Duration(seconds: 2));
+    expect(
+        s.phone.contacts.keys.any((k) => k.startsWith('AAAAAAAAAAAAAAAAAAAA')),
+        isFalse);
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('a device linked before v3 stays honest rather than inventing a key',

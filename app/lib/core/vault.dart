@@ -88,7 +88,7 @@ class Vault {
   /// 3 — 8.1c: `forwarded`, which needs a column of its own — a 1:1 text
   ///     row's sealed body is the bare message, with no envelope to put a
   ///     flag in, and inventing one would misparse ordinary text.
-  static const int schemaVersion = 6;
+  static const int schemaVersion = 7;
 
   // Message ids are already stored in the clear (they are the primary key),
   // so `reply_to` — a mid within the same chat — reveals nothing the row
@@ -167,6 +167,12 @@ class Vault {
       for (final column in const ['acct_ed TEXT', 'dev_cert TEXT']) {
         await db.execute('ALTER TABLE contacts ADD COLUMN $column');
       }
+    }
+    if (from < 7) {
+      // 13.7: which of MY OWN devices added this contact, when it was not
+      // this one. Null — the value for every existing row — means the user
+      // added it here, which is what was true of all of them.
+      await db.execute('ALTER TABLE contacts ADD COLUMN added_by TEXT');
     }
   }
 
@@ -265,7 +271,8 @@ class Vault {
               verified_sn TEXT,
               pq_mismatch INTEGER,
               acct_ed TEXT,
-              dev_cert TEXT
+              dev_cert TEXT,
+              added_by TEXT
             )''');
           await db.execute('''
             CREATE TABLE conversations(

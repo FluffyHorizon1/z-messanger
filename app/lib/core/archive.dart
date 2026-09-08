@@ -177,6 +177,10 @@ class BackupArchive {
         // user as an attack.
         if (c['acct_ed'] != null) 'acct': c['acct_ed'],
         if (c['dev_cert'] != null) 'cert': jsonDecode(c['dev_cert'] as String),
+        // 13.7: which of the user's own devices added this. A restore that
+        // dropped it would present a contact nobody scanned here as one the
+        // user added themselves.
+        if (c['added_by'] != null) 'addedby': c['added_by'],
       });
     }
 
@@ -392,6 +396,7 @@ class BackupArchive {
                     'pq_mismatch': (r['pqbad'] as num?)?.toInt() ?? 0,
                     'acct_ed': r['acct'],
                     if (r['cert'] != null) 'dev_cert': jsonEncode(r['cert']),
+                    'added_by': r['addedby'],
                   },
                   conflictAlgorithm: ConflictAlgorithm.replace);
             case 'groups':

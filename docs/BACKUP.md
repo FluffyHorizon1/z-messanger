@@ -208,7 +208,7 @@ leaves the device.
 |---|---|
 | `meta` | display name, server URL, schema |
 | `identity` | the identity key material |
-| `contact` | routing id, contact bundle, name, TTL, verified flag, the v3 identity state (`pqc` commitment, `pqk` accepted key), and the 13.3 verification state — `vsn`, the safety number the user actually compared, and `pqbad`, set once a post‑quantum key has been refused; and the §18.7 anchor — `acct`, the account this contact IS, with `cert`, the certificate for the device that was scanned |
+| `contact` | routing id, contact bundle, name, TTL, verified flag, the v3 identity state (`pqc` commitment, `pqk` accepted key), and the 13.3 verification state — `vsn`, the safety number the user actually compared, and `pqbad`, set once a post‑quantum key has been refused; and the §18.7 anchor — `acct`, the account this contact IS, with `cert`, the certificate for the device that was scanned; and `addedby`, which of the user's own devices added it (§18.8) |
 | `groups` | the group list blob |
 | `message` | mid, rid, direction, kind, body, timestamp, status, expiry, and the phase‑8 fields (`rt` reply target, `edited`, `deleted`, `fw`) |
 | `reaction` | rid, mid, sender, emoji, timestamp |

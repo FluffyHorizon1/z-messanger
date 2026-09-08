@@ -174,7 +174,16 @@ void main() {
     final phoneCode = await phone.myContactCode();
     await phone.addContactFromCode(carolCode);
     await carol.addContactFromCode(phoneCode);
-    await laptop.addContactFromCode(carolCode);
+    // 13.7: the phone's contact now propagates to its own devices, so the
+    // laptop may already hold Carol by the time this runs — in which case
+    // scanning her code here is a duplicate and says so. Either route gets
+    // the laptop to the same place, which is all this setup wants.
+    try {
+      await laptop.addContactFromCode(carolCode);
+    } on FormatException {
+      // already synced from the phone
+    }
+    await waitUntil(() => laptop.contacts.containsKey(carol.myRid));
     final carolRid = carol.myRid;
     final phoneRid = phone.myRid;
 

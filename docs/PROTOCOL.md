@@ -1404,7 +1404,44 @@ message, and is told after the grace period that an update never arrived — a
 transparency alarm raised by ordinary use, which is how a real one stops being
 read.
 
-**Known limit.** A contact added on one device is not propagated to that
-account's other devices, so the account's *other* devices cannot yet act on
-messages from a contact added this way. That predates this section and was
-unreachable while a contact could only be added by scanning a root device.
+Contacts added this way reach the account's other devices under §18.8.
+
+### 18.8 Contacts across an account's own devices
+
+Contacts travelled only at enrollment (§10, `contacts`), so one added
+afterwards existed on exactly one device and the account's others dropped that
+person's messages as an unknown sender. §18.7 made that reachable in ordinary
+use, since a contact can now be added by scanning any device. A device that
+adds a contact therefore announces it to its own devices over the self-sync
+channel (§7.7a rule 8's transport), as `dir:"contact"` carrying:
+
+```
+{"k":"cadd","mid":…,"ts":…, "rid":…, "bundle":ContactBundleJSON, "name":string,
+ "pqc"?:b64, "pqk"?:b64, "acct"?:b64, "cert"?:deviceCert }
+```
+
+A receiver MUST:
+
+* **insert only, never update.** An rid it already holds is left exactly as it
+  is. A linked device is already trusted to read this account's messages and
+  send as it, but it holds no account root and so cannot enroll devices;
+  letting it REPLACE a contact record would be strictly worse than either,
+  silently re-pointing a name the user has already verified at keys of the
+  sender's choosing, with no scan and nothing on screen to notice;
+* check that `rid` is the routing id derived from `bundle` (§2.2) and that the
+  bundle's binding signature verifies. Every honest path derives one from the
+  other; a record where they disagree is not a sync but an assertion about who
+  someone is;
+* re-check `acct`/`cert` under §18.7 rather than trusting the sender's word
+  for them;
+* store the contact **unverified**, and record which device sent it. A tick
+  records that the user compared a number while holding a particular device;
+  it is not a fact one device can assert to another, and forwarding it would
+  let a rogue device inject a contact that already looks checked. Enrollment
+  has always started every contact unverified for the same reason.
+
+What remains is that any of an account's devices can make a *new* chat appear
+on the others. That is bounded rather than eliminated — any device can add a
+contact, because the user scans on whichever one is in their hand — so a
+client SHOULD show where such a contact came from, and MUST NOT present it as
+something the user did on this device.

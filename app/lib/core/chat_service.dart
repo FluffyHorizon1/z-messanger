@@ -250,6 +250,7 @@ class ChatService extends ChangeNotifier {
         pqMismatch: (r['pq_mismatch'] as int? ?? 0) == 1,
         accountEdPub:
             r['acct_ed'] == null ? null : unb64(r['acct_ed'] as String),
+        addedByDevice: r['added_by'] as String?,
         deviceCert: r['dev_cert'] == null
             ? null
             : DeviceCertificate.fromJson(
@@ -500,6 +501,7 @@ class ChatService extends ChangeNotifier {
       if (contact.accountEdPub != null) 'acct_ed': b64(contact.accountEdPub!),
       if (contact.deviceCert != null)
         'dev_cert': jsonEncode(contact.deviceCert!.toJson()),
+      if (contact.addedByDevice != null) 'added_by': contact.addedByDevice,
     });
     contacts[rid] = contact;
     _sealKeys[rid] = bundle.xPub;
@@ -521,8 +523,157 @@ class ChatService extends ChangeNotifier {
         if (data != null) await _sendInner(contact, _devlistInner(data));
       }
     }
+    // 13.7: tell my own other devices, or they drop this person's messages as
+    // an unknown sender for ever. Best-effort and unawaited — the contact is
+    // already added here whether or not the sync lands.
+    unawaited(_mirrorContact(contact).then((_) {}, onError: (_) {}));
     notifyListeners();
     return contact;
+  }
+
+  /// Announce a contact to my account's other devices (13.7).
+  ///
+  /// Contacts used to travel only at LINK time (`contactsAsBundles`), so one
+  /// added afterwards existed on exactly one device and the others dropped
+  /// that person's messages as an unknown sender. This closes that, over the
+  /// same self-sync channel the device list already uses.
+  Future<void> _mirrorContact(Contact c) async {
+    await _sync?.mirror(threadRid: '', dir: 'contact', inner: _contactInner(c));
+  }
+
+  InnerMessage _contactInner(Contact c) => InnerMessage(
+        kind: 'cadd',
+        mid: newMessageId(),
+        ts: _now(),
+        data: {
+          'rid': c.rid,
+          'bundle': c.bundle.toJson(),
+          'name': c.name,
+          if (c.pqCommit != null) 'pqc': b64(c.pqCommit!),
+          if (c.accountEdPub != null) 'acct': b64(c.accountEdPub!),
+          if (c.deviceCert != null) 'cert': c.deviceCert!.toJson(),
+          // Deliberately NOT sent: `verified`/`verified_sn`. A tick records
+          // that THIS user compared a number while holding THIS device; it is
+          // not a fact one device can assert to another, and forwarding it
+          // would let a rogue device inject a contact that already looks
+          // checked. Linking a device has always started every contact
+          // unverified for the same reason.
+          if (c.pqPub != null) 'pqk': b64(c.pqPub!),
+        },
+      );
+
+  /// A contact announced by one of MY devices (13.7).
+  ///
+  /// **Insert-only, and never an update.** A linked device is already trusted
+  /// to read this account's messages and send as it, but it does not hold the
+  /// account root and so cannot enroll devices. Letting it REPLACE a contact
+  /// record would give it something strictly worse than either: silently
+  /// re-pointing a name the user has already verified at keys of its
+  /// choosing, with no scan and nothing on screen to notice. So an rid this
+  /// device already holds is left exactly as it is.
+  ///
+  /// What remains is that a rogue device can make a NEW chat appear. That is
+  /// bounded rather than eliminated — any device can add a contact, because
+  /// the user scans on whichever one is in their hand — so the record is
+  /// stored unverified and stamped with the device that sent it, and the
+  /// contact screen says so.
+  Future<void> _applyMirroredContact(
+      String fromDeviceRid, InnerMessage inner) async {
+    final rid = inner.data['rid'];
+    final bundleJson = inner.data['bundle'];
+    if (rid is! String || bundleJson is! Map) return;
+    if (rid == myRid || contacts.containsKey(rid)) return;
+    final ContactBundle bundle;
+    try {
+      bundle = ContactBundle.fromJson(bundleJson.cast<String, Object?>());
+    } catch (_) {
+      return;
+    }
+    // The routing id must be the hash of the key claimed beside it. Every
+    // honest path derives one from the other; a record where they disagree is
+    // not a sync, it is an assertion about who someone is.
+    if (await bundle.routingId() != rid) return;
+    if (!await bundle.verify()) return;
+    Uint8List? acct;
+    DeviceCertificate? cert;
+    final a = inner.data['acct'], cj = inner.data['cert'];
+    if (a is String && cj is Map) {
+      try {
+        acct = unb64(a);
+        cert = DeviceCertificate.fromJson(cj.cast<String, Object?>());
+        // §18.7's rule, re-checked here rather than trusted: the certificate
+        // must be this account's, and must be for the device in the bundle.
+        if (cert.legacy ||
+            !constantTimeEquals(cert.deviceEdPub, bundle.edPub) ||
+            !constantTimeEquals(cert.deviceXPub, bundle.xPub) ||
+            !await cert.verify(acct)) {
+          return;
+        }
+      } catch (_) {
+        return;
+      }
+    }
+    final pqc = inner.data['pqc'];
+    final pqk = inner.data['pqk'];
+    final contact = Contact(
+      rid: rid,
+      bundle: bundle,
+      name: (inner.data['name'] as String?)?.trim().isNotEmpty == true
+          ? (inner.data['name'] as String).trim()
+          : (bundle.displayName ?? 'Unknown'),
+      createdMs: _now(),
+      pqCommit: pqc is String ? unb64(pqc) : null,
+      pqPub: pqk is String ? unb64(pqk) : null,
+      accountEdPub: acct,
+      deviceCert: cert,
+      addedByDevice: await _myDeviceLabel(fromDeviceRid),
+    );
+    await vault.db.insert(
+        'contacts',
+        {
+          'rid': rid,
+          'enc_bundle': await vault.seal(jsonEncode(bundle.toJson())),
+          'enc_name': await vault.seal(contact.name),
+          'ttl_seconds': 0,
+          'verified': 0,
+          'created_ms': contact.createdMs,
+          if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
+          if (contact.pqPub != null)
+            'enc_pq_pub': await vault.seal(b64(contact.pqPub!)),
+          if (acct != null) 'acct_ed': b64(acct),
+          if (cert != null) 'dev_cert': jsonEncode(cert.toJson()),
+          'added_by': contact.addedByDevice,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore);
+    contacts[rid] = contact;
+    _sealKeys[rid] = bundle.xPub;
+    messagesByChat.putIfAbsent(rid, () => []);
+    unread.putIfAbsent(rid, () => 0);
+    notifyListeners();
+  }
+
+  /// A readable name for one of my own devices, from its routing id.
+  Future<String> _myDeviceLabel(String deviceRid) async {
+    for (final d in await myFullDeviceList()) {
+      if (await d.routingId() == deviceRid) return d.deviceId;
+    }
+    return 'another device';
+  }
+
+  /// Assert a contact record to my own devices. Exists so a test can send the
+  /// records an honest client never would; nothing in the app calls it.
+  @visibleForTesting
+  Future<void> debugAssertContactToMyDevices(
+      {required String rid, required ContactBundle bundle}) async {
+    await _sync?.mirror(
+        threadRid: '',
+        dir: 'contact',
+        inner: InnerMessage(
+          kind: 'cadd',
+          mid: newMessageId(),
+          ts: _now(),
+          data: {'rid': rid, 'bundle': bundle.toJson(), 'name': 'asserted'},
+        ));
   }
 
   /// Record (or withdraw) the user's confirmation that they compared numbers.
@@ -1187,7 +1338,13 @@ class ChatService extends ChangeNotifier {
       final mirrored = await sync.handleInbound(from, payload);
       transport.ackReceived(id: m.id, from: m.from);
       if (mirrored != null) {
-        await _insertMirrored(mirrored.thread, mirrored.dir, mirrored.inner);
+        if (mirrored.dir == 'contact') {
+          // Carries the sending device, which the sync ratchet authenticates
+          // — so the label on an injected contact cannot itself be forged.
+          await _applyMirroredContact(from, mirrored.inner);
+        } else {
+          await _insertMirrored(mirrored.thread, mirrored.dir, mirrored.inner);
+        }
       }
       return;
     }

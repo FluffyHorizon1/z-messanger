@@ -241,14 +241,16 @@ forges identities even though it cannot read past traffic.
   which it could not before. A linked device can now forward the
   account-signed device list it holds, without which a contact scanned from
   one would be told, by ordinary use, that a device-list update never arrived.
-- **13.7 contact propagation across an account's devices** *(exposed by 13.6;
-  not yet built)* — a contact added on one device is unknown to the account's
-  others, so they cannot act on messages from that contact. Contacts travel at
-  LINK time (`contactsAsBundles`) and never after. Harmless while contacts
-  were only ever added by scanning a root device; reachable now that a laptop
-  can be scanned. Needs a contact record to sync over the existing device-sync
-  channel, which is a new assertion one device makes to another and deserves
-  its own look at what a rogue linked device could inject.
+- **13.7 contact propagation across an account's devices** *(done — PROTOCOL
+  §18.8)* — a contact added on one device was unknown to the account's others,
+  which dropped that person's messages as an unknown sender; contacts
+  travelled at LINK time and never after. They now sync over the existing
+  device-sync channel. Because this is the one assertion a device makes to its
+  siblings with no scan behind it, the receiver is **insert-only** (never an
+  update, so a name the user verified cannot be re-pointed), checks the
+  routing id against the key beside it, re-checks §18.7's certificate rules,
+  stores the contact unverified, and records which device sent it so the
+  contact screen can say so.
 
 **Exit:** three independent checkers agree on the v3 vectors; a v2 and a v3
 client interoperate during the window; a forged device cert with only a valid
@@ -477,3 +479,18 @@ direction; the phases, their order and both ordering arguments stand.
    being read. A linked device now forwards the account-signed list it already
    holds. And one gap is left open rather than papered over: contacts do not
    propagate between an account's own devices (13.7).
+
+20. **13.7 — the interesting part was deciding what NOT to send.** Propagating
+   a contact is the only assertion a device makes to its siblings with nothing
+   scanned behind it, so the question is what a rogue linked device gains. It
+   already reads the account's messages and sends as the account, and it holds
+   no root so it cannot enroll devices. Allowing an UPDATE would have handed
+   it something worse than either — silently re-pointing a verified name at
+   keys of its choosing — so the receiver is insert-only. Forwarding the
+   verified flag would have let it inject a contact that already looks
+   checked, so the tick does not travel (enrollment has always started
+   contacts unverified for the same reason). What is left, a new chat
+   appearing, is bounded rather than removed: any device can add a contact,
+   because the user scans on whichever one is in their hand — so it is stamped
+   with the device that sent it and the contact screen says so. Both guards
+   were checked by removing them and watching the tests fail.
