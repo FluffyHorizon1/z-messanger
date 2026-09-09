@@ -28,7 +28,17 @@ jobs:
         with:
           node-version: '22'
       - name: Install redis (enables the HA multi-instance relay test)
-        run: sudo apt-get update && sudo apt-get install -y redis-server
+        run: |
+          # The runner image ships a third-party Chrome apt repo, and it has
+          # been failing to serve its index. `apt-get update` exits 100 if ANY
+          # configured repo fails, so a broken repository we do not use took
+          # down a step that only wants redis. Drop it (it is a .sources file
+          # on 24.04, not a .list), and do not let a stale index from any other
+          # third-party repo fail the job either — if redis genuinely cannot be
+          # installed, the install below says so.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*
+          sudo apt-get update || true
+          sudo apt-get install -y redis-server
       - name: Relay unit tests
         working-directory: server
         run: |
