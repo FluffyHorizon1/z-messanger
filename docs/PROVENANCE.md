@@ -141,7 +141,7 @@ bit of app content fails the job, which was checked by flipping one.
 | Reproducible build, same machine and path | measured (14.1) |
 | Reproducible build, across runners | **measured, and it holds** (2026-09-09) — at a fixed checkout path; see `REPRODUCIBLE_BUILDS.md` |
 | Reproducible build, across checkout paths | no — two libraries embed the build path (R16, accepted, bounded and documented) |
-| SLSA provenance on release artefacts | **written, not yet run** — first tagged release exercises it |
+| SLSA provenance on release artefacts | **still not exercised** — the first tagged build reached the release job and died two steps before it (see below) |
 | Sigstore keyless signing + Rekor log | via `actions/attest-build-provenance` |
 | SLSA Build L3 | not reached; L2. See above |
 | Updater verifying provenance | no updater exists |
@@ -165,3 +165,36 @@ supposed to mean.
 
 The half still missing is that **nobody outside the project has done it**. That
 is the phase-14 exit criterion and it cannot be self-certified.
+
+## What the first tagged build found (2026-09-09)
+
+The release job ran for the first time and **failed before publishing
+anything**. No assets, no attestation, no release. Two things came out of it,
+one good and one embarrassing.
+
+The good one: the collection step's fix works. `SHA256SUMS.txt` listed the four
+APKs, the AAB, the three desktop bundles and the screenshots — and **none of
+the reproducibility artefacts**. The bug where a repro build's debug-key-signed
+`app-release.apk` could overwrite the real one under the same name is
+genuinely closed, confirmed on a real tag rather than by reading the diff.
+
+The embarrassing one:
+
+```
+python3: can't open file '.../release/../tool/verify_reproducible.py'
+```
+
+The release job had always been pure downloads and uploads, so it had no
+`actions/checkout`. Adding a step that runs a script out of `tool/` was enough
+to break it, and nothing said so until a tag was pushed — which is the most
+expensive moment to find out, because the version number is already spent.
+
+It now checks out (sparsely, `tool/` only) **before** `download-artifact`,
+since checkout cleans the workspace and the other order deletes what was just
+downloaded. And because "remember that jobs need a checkout" is exactly the
+kind of thing nobody remembers, `tool/check_workflow.py` now asserts it: any
+job whose `run:` steps reference `tool/`, `docs/`, `protocol/`, `app/`,
+`server/` or `scripts/` must have a checkout, and it must precede any artifact
+download. It runs on every push, so the next occurrence fails in seconds
+instead of on a tag. Both rules were verified by reintroducing the bug and
+watching them fire.

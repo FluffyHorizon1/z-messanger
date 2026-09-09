@@ -91,6 +91,8 @@ run "audit brief describes this repository" "all" "." \
     python3 tool/check_audit_scope.py
 run "reproducibility tool's own tests" "C25" "." \
     python3 tool/test_verify_reproducible.py
+run "CI jobs check out what they use" "C25 C26" "." \
+    python3 tool/check_workflow.py
 
 echo
 echo "${bold}1. Protocol library — every cryptographic construction${rst}"
