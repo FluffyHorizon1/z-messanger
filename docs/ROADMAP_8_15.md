@@ -287,8 +287,8 @@ auditing a moving spec wastes the money.
   shared a path, a container and a clock, and a build from a different path was
   attempted and defeated by the container's 2 cores and 8 GB. That check
   belongs in 14.2 and is cheap there.
-- **14.2 provenance & signing** *(written — `docs/PROVENANCE.md`, CI jobs in
-  `build.yml`; not yet executed, and two corrections)* — Sigstore keyless
+- **14.2 provenance & signing** *(run — and the reproducibility half FAILED;
+  `docs/PROVENANCE.md`, CI jobs in `build.yml`)* — Sigstore keyless
   signing and a Rekor transparency log entry per release artefact, plus the
   cross-machine reproducibility check 14.1 could not run. Two things the
   roadmap said that turned out not to hold: **this configuration is SLSA Build
@@ -298,6 +298,11 @@ auditing a moving spec wastes the money.
   inclusion" has nothing to attach to. Android rollback is handled by Play;
   desktop rollback is not handled at all, which belongs in the residual-risk
   column rather than behind the word "signed".
+
+  **Then it ran (2026-09-09) and the cross-machine build check failed** — the
+  detail is in the commit that recorded it and in `REPRODUCIBLE_BUILDS.md`.
+  The claim is now stated at its true strength everywhere it appears, and it
+  is **R16, open** in the register this patch finally lands.
 
 - **14.3 external cryptographic audit** *(the package is ready; the engagement
   is not ours to run)* — scope per `AUDIT_SCOPE.md`: handshake, ratchet, PQ
@@ -337,8 +342,25 @@ auditing a moving spec wastes the money.
   passes, because an expired security.txt invites reports to an address nobody
   promises to read. Outstanding: a live submission through both channels, which
   needs somebody outside to send one.
-- **14.5 published documents** — threat model with an honest residual-risk
-  column, `DATA_MAP.md` refreshed for calls and KT, protocol whitepaper.
+- **14.5 published documents** *(done — `THREAT_MODEL.md` residual-risk
+  register, `DATA_MAP.md`, `WHITEPAPER.md`)* — the threat model gained a
+  **residual-risk register**: sixteen numbered rows saying what is left after
+  everything built, who is exposed, why it remains, and whether it is
+  accepted, deferred or open. It gathers what the last five phases left
+  behind, which was otherwise findable only by reading every ADR.
+  `DATA_MAP.md` is new — every column of the vault, everything the relay holds
+  in RAM, every third party, and what leaves the device in what shape. It
+  could **not** be "refreshed for calls and KT" as this line originally asked,
+  because neither exists; both are listed under "not yet built" with the open
+  decision that shapes each. `WHITEPAPER.md` is the third: not a second
+  protocol spec but the **argument**, organised around the claims Z makes
+  rather than around the wire format.
+
+  This entry lands late and out of order. The register and `DATA_MAP.md` were
+  written before the whitepaper but reached `main` after it, after 14.3 and
+  after 14.2b — which is why the audit-brief check had to be disabled on
+  arrival in `e59e630`: the brief cited two things that did not yet exist. The
+  check is re-enabled in the same commit that lands them.
 
 **Exit:** a bit-identical rebuild reproduced by someone outside the project; a
 tampered update rejected by the client; audit report closed out; VDP live.

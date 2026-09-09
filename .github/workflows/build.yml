@@ -61,12 +61,16 @@ jobs:
         run: |
           python3 -m pip install --quiet dilithium-py==1.4.0
           python3 protocol/tool/verify_mldsa.py
-      # tool/check_audit_scope.py exists and passes on everything it can see,
-      # but the brief cites the residual-risk register and DATA_MAP.md, which
-      # belong to a patch that has not landed in this branch — so it reports 3
-      # problems it cannot fix. Wiring it in now would mean a check that fails
-      # on arrival, which teaches people to skip checks. Wire it in with that
-      # patch: `python3 tool/check_audit_scope.py`.
+      # The audit brief is the first document an external reviewer reads and
+      # the one that rots fastest: it names files that get renamed, it misses
+      # test suites added after it was written, and it states counts by hand.
+      #
+      # Disabled in e59e630 because the brief cited the residual-risk register
+      # and DATA_MAP.md, which had not landed yet — a check that fails the
+      # moment it arrives is one people learn to skip. Both landed in the
+      # commit that re-enabled this, and it reports zero problems.
+      - name: Audit brief still describes this repository
+        run: python3 tool/check_audit_scope.py
       - name: App tests (incl. concurrency regression through the real relay)
         working-directory: app
         run: |

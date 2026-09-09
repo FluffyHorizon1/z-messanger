@@ -139,6 +139,52 @@ recipient device so the relay does not learn who sent it.
   ML‑KEM in pure Dart is best‑effort constant‑time; a timing leak there can at
   worst reduce security to v1, never below it.
 
+## Residual risk register
+
+The section above says what Z does not protect against. This says what is
+*left over after everything currently built* — including the risks the recent
+phases introduced or uncovered, which would otherwise be scattered across five
+ADRs and findable only by someone who read all of them.
+
+Two things this register is for. An auditor should be able to start here rather
+than reconstruct it. And a claim like "post‑quantum secure" or "signed
+releases" should be checkable against a specific line saying what that does and
+does not cover — because the dangerous failure is not an unmitigated risk, it
+is an unmitigated risk hidden behind a phrase that sounds like it was handled.
+
+**Exposed to** is who actually gets the information or capability.
+**Status** is one of: *accepted* (a deliberate trade), *deferred* (a plan
+exists, gated on something), *open* (should be closed and is not yet).
+
+| # | Residual risk | Exposed to | Why it remains | What reduces it | Status |
+|---|---|---|---|---|---|
+| R1 | Which mailbox receives traffic, when, and in which of six size buckets | Relay operator | Delivering a message requires knowing where to deliver it. Sealed sender removes the *sender*; the recipient cannot be removed without a mixnet | Self‑host (`SELF_HOSTING.md`), or front the relay with Tor | accepted |
+| R2 | An occasional ~16 KB envelope marks an account as running a v3 client | Relay operator | A 3.3 KB post‑quantum signature does not fit the 1 024‑byte bucket ordinary chat shares, and no arrangement makes it fit (`adr/0004`) | Its *timing* is decorrelated from any device‑set change, and its size is constant regardless of device count, so it reveals nothing beyond "v3" | accepted |
+| R3 | The post‑quantum device‑list signature can be dropped, leaving a list verified classically for ever | On‑path attacker | Not preventable at the network layer: it is the one large envelope in a conversation and therefore the easy one to drop | Detected and surfaced (§18.9) — the sender states inside the ratchet that it sent one, and a claim with nothing behind it is asked about and then reported | accepted |
+| R4 | A contact code (QR) is authenticated classically end to end | A future quantum adversary present at the exchange | A hybrid identity is ~9× too large to scan (`adr/0003`). The commitment binds the post‑quantum key to the scan; it does not make the scan itself post‑quantum | Exchange codes in person; the commitment means the *in‑band* key cannot be substituted afterwards | accepted |
+| R5 | The session‑opening `hello`, the key offer, and anything before the offer is answered are classical | A future quantum adversary recording now | The first round trip has no shared post‑quantum secret yet, by construction | The mix applies to message keys, so everything after the first round trip is covered; the exposure is bounded to the opening exchange | accepted |
+| R6 | Whoever holds an identity backup and its passphrase *is* the account until noticed | Anyone with both | There is no server custody to appeal to — that is the product | Device‑list transparency (7.7a) makes a rogue enrolment visible within a message or two of use; the remedy is an identity reset | accepted |
+| R7 | No key transparency: a first contact exchange the attacker fully controls cannot be detected later | An attacker controlling the initial exchange | `adr/0001` defers it: a transparency log is a separate service (Merkle log, HSM, mirrors, an independent witness) and real operational cost | Safety numbers, which catch it the moment two people compare | **deferred** — gated on the trigger in `adr/0001` |
+| R8 | A desktop user can be served an older release, with valid provenance | Whoever serves the download | There is no in‑app updater, deliberately — an updater is a code‑execution channel into every install | Play refuses an older `versionCode` on Android. On desktop, the release page and the attestation both name the version, but only if the user looks | **open** — see `PROVENANCE.md` |
+| R9 | Build provenance is SLSA **L2**, not L3: a compromised build step could forge provenance about itself | Anyone who can inject into the build | L3 needs the build isolated from the signing material, which is a restructure rather than a setting | Provenance is signed by the hosted build service and publicly logged, so a forged one is at least visible | **open** |
+| R10 | Reproducibility is proven on one machine, not across machines | — | *Settled on 2026‑09‑09, and the answer was no.* The first run failed | **Superseded by R16**, which records what was actually measured. Kept here rather than deleted: this row said the first CI run would settle it, and a register that quietly removes a row once its answer turns out to be unwelcome is not a register | superseded |
+| R11 | Google holds the Play app‑signing key and can sign an APK as Z | Google, or anyone who compels Google | Play App Signing is a condition of distributing through Play | Reproducible builds plus provenance let anyone compare what Play serves against what the source produces — the substitution is detectable, not preventable | accepted |
+| R12 | A push notification tells Google (FCM) that *some* device should wake | Google | Waking a sleeping device requires the platform's push service | Notifications are **contentless** — no text, no sender; the device then fetches from the mailbox as usual, and tokens live in relay RAM and expire | accepted |
+| R13 | A malicious contact can retain, screenshot or leak anything sent to them | Your contact | Nothing cryptographic can prevent it | Disappearing messages are a courtesy against accidental retention, and are described as exactly that | accepted |
+| R14 | A hostile relay can refuse to deliver, or drop queued ciphertext | Relay operator | Availability depends on the relay you choose | Self‑host; the relay cannot read what it drops | accepted |
+| R15 | Timing and volume correlation by someone watching both ends | A global passive adversary | Z is not an anonymity network and does not claim to be | Tor for the transport, if that is your threat model | accepted |
+| R16 | **The APK is not reproducible across machines.** Two CI runners building the same commit produced APKs differing in all six `libapp.so`/`libdartjni.so` entries; every other entry matched | Anyone who wants to check the shipped binary against the source themselves — which is the whole point of publishing it | Measured on 2026-09-09 and not yet explained. The failing job varied the runner *and* the checkout path at once, so it cannot say which mattered; `libapp.so` is known to embed its absolute build directory, but the two APKs were exactly the same size, which that alone would not produce | Same‑machine, same‑path reproducibility does hold (14.1) and still catches a tampered build server. A three‑way CI experiment now separates machine from path, and each build publishes per‑library hashes and ELF build ids | **open** — and the most useful thing an external reviewer could hand back |
+
+### What is NOT on this list, and why
+
+* **Anything phase 13 closed.** A linked device inventing its own post‑quantum
+  identity, a contact code naming a laptop rather than a person, a device list
+  a quantum adversary could forge by exclusion — all fixed, all tested, none
+  residual. They are in `ROADMAP_8_15.md`'s revision list rather than here.
+* **A compromised endpoint.** Not a residual risk so much as the boundary of
+  the whole exercise: an attacker who has your unlocked device has whatever you
+  can see.
+
 ## Design decisions that follow from "zero trust"
 
 - **No accounts, no phone numbers, no directory, no key server.** Nothing to
