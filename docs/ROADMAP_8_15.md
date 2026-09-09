@@ -275,14 +275,26 @@ Nothing here adds a feature; all of it converts claims into evidence, which is
 the premise of the product. Freeze the protocol at v3 before starting —
 auditing a moving spec wastes the money.
 
-- **14.1 reproducible builds** — deterministic APK/AAB and desktop bundles; two
-  independent machines produce bit-identical artefacts. Scope this as a spike
-  first: Dart AOT snapshot determinism and AGP build timestamps are not a
-  given, and the answer may be "reproducible with a pinned toolchain image",
-  which is worth knowing before it is promised.
+- **14.1 reproducible builds** *(spike done — `docs/REPRODUCIBLE_BUILDS.md`,
+  `tool/verify_reproducible.py`; same-machine reproducibility achieved,
+  cross-machine outstanding)* — the spike's answer was better than the question
+  expected. Dart AOT and the Android build were **already** deterministic: two
+  release builds differed in 8 603 bytes, every one of them inside an AGP
+  "dependency metadata" blob (encrypted to Google, fresh randomness per build)
+  that has no business in this app anyway. Disabling it makes two builds
+  byte-identical, signature included — no timestamp stripping, no
+  `SOURCE_DATE_EPOCH`. What is NOT established is cross-machine: both builds
+  shared a path, a container and a clock, and a build from a different path was
+  attempted and defeated by the container's 2 cores and 8 GB. That check
+  belongs in 14.2 and is cheap there.
 - **14.2 provenance & signing** — SLSA Build L3 provenance in CI, Sigstore
   signing, artefacts in a public transparency log; the updater verifies
-  signature *and* log inclusion before applying.
+  signature *and* log inclusion before applying. **First task, inherited from
+  14.1: build the same commit in two differently-named CI workspaces and
+  confirm the hashes match.** Pin the toolchain from
+  `docs/REPRODUCIBLE_BUILDS.md` in an image so a verifier does not reconstruct
+  it by hand, and publish the hash with each release — the property exists
+  now; what is missing is somebody outside the project able to check it.
 - **14.3 external cryptographic audit** *(the gated 5.2 engagement)* — scope
   per `AUDIT_SCOPE.md`: handshake, ratchet, PQ mixing, device certs and the
   enrollment ceremony, KT client. Remediate to zero open high/critical.
