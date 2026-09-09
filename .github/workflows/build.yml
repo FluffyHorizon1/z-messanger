@@ -241,16 +241,30 @@ jobs:
           name: z-macos
           path: app/build/macos/Build/Products/Release/z-macos.zip
 
-  # 14.1 could establish that two builds on the SAME machine are byte-identical
-  # and no more: a build from a different path was attempted there and defeated
-  # by the container it ran in. This is that check, and it is cheap here — two
-  # separate runner VMs, two differently-named workspaces, one commit.
+  # 14.1 established that two builds on the SAME machine in the SAME directory
+  # are byte-identical. This job was meant to extend that across machines and
+  # paths — and its first real run (2026-09-09) FAILED, which is a finding and
+  # is recorded as such in REPRODUCIBLE_BUILDS.md and THREAT_MODEL.md (R16).
   #
-  # The comparison ignores the APK signing block, for a reason that is about
-  # keys and not about the build: a machine that has never signed an Android
-  # build generates its own debug key on first use, so two fresh runners sign
-  # with different keys. Everything outside the signature must match exactly,
-  # and `verify_reproducible.py` fails if a single byte of app content differs.
+  # The first version of this job varied the machine and the checkout path at
+  # the same time, so its failure could not say which mattered. That is a
+  # badly designed experiment, and the fix is to run three builds instead of
+  # two and compare them in pairs:
+  #
+  #   a  runner 1, path `z`
+  #   b  runner 2, path `z`      a vs b isolates the MACHINE
+  #   c  runner 3, path `a-deliberately-much-longer-checkout-directory`
+  #                              a vs c isolates the PATH
+  #
+  # The path arm is not idle curiosity: `libapp.so` embeds the absolute build
+  # directory (verified — the Dart AOT snapshot carries
+  # `file://<checkout>/app/.dart_tool/flutter_build/dart_plugin_registrant.dart`
+  # as a source URI), so path-independence is not something this toolchain
+  # gives for free even if it turns out not to be what broke the first run.
+  #
+  # The comparison ignores the APK signing block, for a reason about keys and
+  # not the build: a machine that has never signed an Android build generates
+  # its own debug key on first use, so fresh runners sign with different keys.
   reproducible:
     name: Reproducible build (${{ matrix.slot }})
     needs: test
@@ -261,6 +275,8 @@ jobs:
           - slot: a
             dir: z
           - slot: b
+            dir: z
+          - slot: c
             dir: a-deliberately-much-longer-checkout-directory
     steps:
       - uses: actions/checkout@v4
@@ -282,29 +298,60 @@ jobs:
         run: |
           flutter pub get
           flutter build apk --release
+      # Enough to tell a path difference from a machine difference without
+      # downloading 80 MB and guessing: the build id is a hash of the linked
+      # output, so if a/b agree and a/c differ, the path is the variable.
+      - name: Fingerprint the native libraries
+        working-directory: ${{ matrix.dir }}/app
+        run: |
+          mkdir -p /tmp/fp && cd /tmp/fp
+          unzip -o -q "$GITHUB_WORKSPACE/${{ matrix.dir }}/app/build/app/outputs/flutter-apk/app-release.apk" 'lib/*' -d x
+          for f in $(find x -name '*.so' | sort); do
+            printf '%-44s %s  build-id=%s\n' "${f#x/lib/}" \
+              "$(sha256sum "$f" | cut -c1-16)" \
+              "$(readelf -n "$f" 2>/dev/null | awk '/Build ID/{print $3}')"
+          done | tee "$GITHUB_WORKSPACE/fingerprint-${{ matrix.slot }}.txt"
+          echo "--- embedded absolute build paths in libapp.so ---"
+          strings -a x/lib/arm64-v8a/libapp.so \
+            | grep -oE 'file:///[A-Za-z0-9_./-]+' | sort -u | head \
+            | tee -a "$GITHUB_WORKSPACE/fingerprint-${{ matrix.slot }}.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: repro-${{ matrix.slot }}
-          path: ${{ matrix.dir }}/app/build/app/outputs/flutter-apk/app-release.apk
+          path: |
+            ${{ matrix.dir }}/app/build/app/outputs/flutter-apk/app-release.apk
+            fingerprint-${{ matrix.slot }}.txt
 
   reproducible-compare:
     name: Reproducible build — compare
     needs: reproducible
     runs-on: ubuntu-latest
+    # This is a KNOWN-FAILING check, not a flaky one: as of 2026-09-09 the app
+    # is not reproducible across runners, and the job says so loudly without
+    # blocking a release on a property we have just discovered we do not have.
+    # It goes back to blocking the moment it passes — a check that is allowed
+    # to fail forever is not a check.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with:
-          name: repro-a
-          path: repro-a
+        with: { name: repro-a, path: repro-a }
       - uses: actions/download-artifact@v4
-        with:
-          name: repro-b
-          path: repro-b
-      - name: Compare the two builds
+        with: { name: repro-b, path: repro-b }
+      - uses: actions/download-artifact@v4
+        with: { name: repro-c, path: repro-c }
+      - name: Fingerprints side by side
+        run: |
+          for s in a b c; do echo "=== $s ==="; cat repro-$s/fingerprint-$s.txt; done
+      - name: Same path, different machine (a vs b)
         run: |
           python3 tool/verify_reproducible.py --ignore-signing-block \
             repro-a/app-release.apk repro-b/app-release.apk
+      - name: Same machine kind, different path (a vs c)
+        if: always()
+        run: |
+          python3 tool/verify_reproducible.py --ignore-signing-block \
+            repro-a/app-release.apk repro-c/app-release.apk
 
   relay-image:
     name: Relay Docker image

@@ -138,15 +138,24 @@ bit of app content fails the job, which was checked by flipping one.
 
 | | |
 |---|---|
-| Reproducible build, same machine | measured (14.1) |
-| Reproducible build, two runners and two paths | **written, not yet run** — this repository's CI has not executed it |
+| Reproducible build, same machine and path | measured (14.1) |
+| Reproducible build, across runners | **run, and it FAILED** (2026-09-09) — see `REPRODUCIBLE_BUILDS.md` |
 | SLSA provenance on release artefacts | **written, not yet run** — first tagged release exercises it |
 | Sigstore keyless signing + Rekor log | via `actions/attest-build-provenance` |
 | SLSA Build L3 | not reached; L2. See above |
 | Updater verifying provenance | no updater exists |
 
-The two "written, not yet run" rows are exactly that: the workflow changes are
-in the repository and have never executed, because that needs a push to the
-real repository. **The first CI run on `main` is the thing that turns them into
-results**, and if the reproducibility job fails there, that is a finding about
-the build and not about the job.
+The previous version of this table said the reproducibility job was "written,
+not yet run", and added: *"if the reproducibility job fails there, that is a
+finding about the build and not about the job."* It ran on 2026-09-09 and it
+failed. Six native libraries differ between two runners; everything else in the
+APK matches. The full output, what it does and does not establish, and the
+redesigned three-way experiment are in `REPRODUCIBLE_BUILDS.md`.
+
+That matters here rather than only there, because provenance and
+reproducibility answer different halves of one question. Provenance still says
+*these bytes came from that commit, on that workflow* — unaffected. What is
+missing is the other half: *and you can rebuild them yourself and get the same
+bytes*. Until the cross-machine failure is understood, an attestation is a
+statement about the build service, not something an outsider can independently
+check, and this document should not be read as claiming otherwise.

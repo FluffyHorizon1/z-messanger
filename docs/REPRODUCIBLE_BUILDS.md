@@ -142,6 +142,94 @@ nothing.
 
 ---
 
+## What the first cross-machine run found (2026-09-09)
+
+The section above was written from a same-machine, same-path measurement, and
+it said so. CI ran the cross-machine version for the first time on 2026-09-09,
+and it **failed**. That result is a finding, not a broken job, and it is
+recorded here in full because a reproducible-builds document that quietly
+drops its first negative result is worth nothing.
+
+```
+repro-a/app-release.apk: 80,475,855 bytes  sha256 f267f10f5443e518…
+repro-b/app-release.apk: 80,475,855 bytes  sha256 53d896784809a2c0…
+
+404078 differing run(s), 6,438,215 bytes in total.
+Differences reach OUTSIDE the signing block — the app content is not reproducible.
+
+  differs: lib/arm64-v8a/libapp.so       (crc ef99c70b vs 8cd97edf, content)
+  differs: lib/arm64-v8a/libdartjni.so   (crc 8304bf4f vs cb459136, content)
+  differs: lib/armeabi-v7a/libapp.so     (crc bdc72381 vs a1db562d, content)
+  differs: lib/armeabi-v7a/libdartjni.so (crc 83504d20 vs ff070e05, content)
+  differs: lib/x86_64/libapp.so          (crc be55413f vs 9fdd2017, content)
+  differs: lib/x86_64/libdartjni.so      (crc ea3009e2 vs 20e87b76, content)
+```
+
+Read it carefully, because it is more specific than "the build is not
+reproducible":
+
+* **Six entries differ; every other entry is identical.** The dex, the
+  resources, the manifest, the assets and the other four native libraries all
+  matched. Whatever the cause is, it is confined to the two libraries that are
+  compiled during the build.
+* **The APKs are exactly the same size** — 80,475,855 bytes both. That matters,
+  and it is the reason the obvious explanation is not yet the answer.
+
+### What is established, and what is still a guess
+
+Established, by inspecting a local build:
+
+* `libapp.so` **does** embed its absolute build directory. The Dart AOT
+  snapshot carries the source URI
+  `file://<checkout>/app/.dart_tool/flutter_build/dart_plugin_registrant.dart`,
+  and it is the only absolute build path in the file. So this toolchain does
+  not give path-independence for free, whatever else is true.
+
+Not established, and this is the important part:
+
+* **The job that failed cannot say what caused it**, because it varied two
+  things at once — the runner *and* the checkout directory name (`z` versus
+  `a-deliberately-much-longer-checkout-directory`). That is a badly designed
+  experiment, and it was mine.
+* The identical byte *count* argues against the path being the whole story: a
+  forty-character difference in an embedded string should change the size of
+  `libapp.so`, and did not change the size of anything. A same-size,
+  content-differs-throughout pattern is more typical of an ordering or hashing
+  difference than of a substituted string.
+* `libdartjni.so` differing is unexplained either way. It carries no embedded
+  build path.
+
+### The experiment, redesigned
+
+`.github/workflows/build.yml` now builds three times instead of two:
+
+| slot | runner | checkout path |
+|---|---|---|
+| a | fresh | `z` |
+| b | fresh | `z` |
+| c | fresh | `a-deliberately-much-longer-checkout-directory` |
+
+**a vs b** varies only the machine. **a vs c** varies only the path. Each build
+also publishes a fingerprint — a SHA-256 and the ELF build id of every `.so`,
+plus the absolute paths found inside `libapp.so` — so the next run answers the
+question directly instead of requiring 160 MB to be downloaded and diffed by
+hand.
+
+The compare job is marked `continue-on-error` for now. That is deliberate and
+temporary: it should not block a release on a property we have just learned we
+do not have, and it goes back to blocking the moment it passes. A check that is
+permitted to fail indefinitely has stopped being a check.
+
+### What this costs a verifier today
+
+A verifier who rebuilds this commit on their own machine should expect the six
+native libraries to differ, and everything else to match. That is weaker than
+the claim in `PROVENANCE.md` and it is now stated at that strength in
+`AUDIT_SCOPE.md` (C25) and in the residual-risk register (R16). Until it is
+fixed, "reproducible" for Z means *reproducible on the same machine at the same
+path*, which is a real property — it is what catches a tampered build server —
+and a much smaller one than it sounds.
+
 ## What has NOT been established
 
 Stated plainly, because a reproducibility claim with unexamined edges is worse
@@ -167,6 +255,10 @@ than none — it invites people to stop looking.
   *before* signing. The desktop bundles are unmeasured.
 * **`flutter clean` was used between builds, not a fresh checkout.** Untracked
   state in the working tree could in principle influence a build.
+* **Cross-machine reproducibility is not merely unestablished — it has been
+  measured and it failed.** See the section above; this list was written before
+  that run and the entry that used to sit here ("path-independence has not been
+  checked") understated it.
 * Only the debug signing key was exercised, because the release keystore is not
   in this environment. The signature was identical across builds with that key;
   a release key with a different algorithm (ECDSA, or RSASSA‑PSS) would sign
@@ -177,7 +269,15 @@ than none — it invites people to stop looking.
 ## Exit criterion
 
 Phase 14's exit asks for *"a bit-identical rebuild reproduced by someone
-outside the project"*. What exists now is the property and the tool; what is
-missing is the someone. That needs 14.2's pinned build image and a published
-hash per release, and it needs the path-independence check above to pass on a
-machine that can finish the build.
+outside the project"*. As of 2026-09-09 that criterion is **not met**, and the
+reason is no longer "nobody outside has tried": the project's own CI tried, on
+two machines, and the builds differed. The tool exists and the same-machine
+property holds; what is missing is the property the exit criterion actually
+asks for.
+
+The order of work is now: find the cause with the three-way experiment above,
+fix it (or document it as a pinned part of the build recipe, which is what
+Debian does with build paths and is a legitimate answer), and only then pin a
+build image and publish a hash per release. Publishing a hash for a build
+nobody else can reproduce would be the appearance of the property rather than
+the property.

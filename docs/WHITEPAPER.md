@@ -225,10 +225,15 @@ is tested. It is the efficient starting point for anyone trying to break one.
 
 ## 8. Claim: the binary matches the source
 
-**Mechanism.** Two independent release builds of the same commit are
-byte-for-byte identical, signature included. Release artefacts carry SLSA build
-provenance, signed keyless through Sigstore and recorded in a public
+**Mechanism.** Two release builds of the same commit, on one machine at one
+path, are byte-for-byte identical, signature included. Release artefacts carry
+SLSA build provenance, signed keyless through Sigstore and recorded in a public
 transparency log.
+
+Read that first sentence's qualifiers as load-bearing. **Across two machines
+the builds are not identical**, which CI established on 2026-09-09, and the
+cause is not yet known — see the last paragraph of this section. This is the
+weakest claim in the document.
 
 **Why the log matters more than the signature.** A signature you can check is
 also one that can be issued quietly to a single person. An append-only public
@@ -249,7 +254,16 @@ stop checking.
 **Not covered.** Provenance is SLSA **L2**, not L3 (R9): a compromised build
 step could forge provenance about itself. There is no in-app updater, so a
 desktop user can be served an older release with valid provenance (R8).
-Cross-machine reproducibility is written into CI and has not yet run (R10).
+
+And the big one: **cross-machine reproducibility failed on its first real run**
+(R16). Two CI runners building the same commit produced APKs differing in all
+six `libapp.so` / `libdartjni.so` entries, with every other entry identical and
+both files exactly the same size. The failing job varied the runner and the
+checkout path at the same time, so it cannot say which mattered; a three-way
+experiment now separates them. Until that is understood, this section claims
+only that a build can be checked *against another build on the same machine at
+the same path*, which catches a tampered build server and does not give an
+outsider what "reproducible build" normally promises.
 
 ## 9. What Z does not claim
 
@@ -268,6 +282,10 @@ assume it does is where harm happens:
 * **Not audited.** No external cryptographic review has been performed yet.
   That is 14.3, and until it happens the honest statement is that this design
   has been reviewed by the people who wrote it.
+* **Not independently rebuildable.** A verifier on their own machine will not
+  currently reproduce the shipped APK byte for byte (R16). Same machine, same
+  path, yes; that is a narrower property than the phrase "reproducible build"
+  is normally taken to mean, and the difference is ours to close.
 
 The full list, with severities and status, is the residual-risk register in
 `docs/THREAT_MODEL.md`.
