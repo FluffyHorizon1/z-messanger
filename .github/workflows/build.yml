@@ -71,6 +71,11 @@ jobs:
       # commit that re-enabled this, and it reports zero problems.
       - name: Audit brief still describes this repository
         run: python3 tool/check_audit_scope.py
+      # The content digest published with each release rests on one claim:
+      # signing an APK does not move it. This inserts a real APK signing block
+      # and checks that it does not.
+      - name: Reproducibility tool's own tests
+        run: python3 tool/test_verify_reproducible.py
       - name: App tests (incl. concurrency regression through the real relay)
         working-directory: app
         run: |
@@ -298,6 +303,13 @@ jobs:
             dir: z
           - slot: c
             dir: a-deliberately-much-longer-checkout-directory
+          # d varies locale and timezone and nothing else — the last inputs
+          # nobody had checked. All three runners above share en_US.UTF-8 and
+          # UTC, so a leak there would have been invisible in every run so far.
+          - slot: d
+            dir: z
+            tz: Australia/Eucla
+            locale: fr_FR.UTF-8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -312,6 +324,10 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
       - name: Build release APK
         working-directory: ${{ matrix.dir }}/app
+        env:
+          TZ: ${{ matrix.tz || 'UTC' }}
+          LC_ALL: ${{ matrix.locale || 'C.UTF-8' }}
+          LANG: ${{ matrix.locale || 'C.UTF-8' }}
         # No signing secrets on purpose: this job proves the APP is
         # reproducible, and it must run on pull requests, where secrets are
         # not available.
@@ -371,9 +387,11 @@ jobs:
         with: { name: repro-b, path: repro-b }
       - uses: actions/download-artifact@v4
         with: { name: repro-c, path: repro-c }
+      - uses: actions/download-artifact@v4
+        with: { name: repro-d, path: repro-d }
 
       - name: Fingerprints side by side
-        run: for s in a b c; do echo "=== $s ==="; cat repro-$s/fingerprint-$s.txt; done
+        run: for s in a b c d; do echo "=== $s ==="; cat repro-$s/fingerprint-$s.txt; done
 
       # Cheap and decisive, and it runs before the 80 MB comparison so a
       # regression is named in the first ten seconds rather than the last.
@@ -408,6 +426,20 @@ jobs:
             exit 1
           fi
           echo "OK: bounded to the two libraries compiled during the build."
+
+      # Australia/Eucla is UTC+08:45 — a quarter-hour offset, so a leaked
+      # timestamp is off by a value no rounding hides. French locale for
+      # decimal separators and month names.
+      - name: Locale and timezone must not matter (a vs d)
+        run: |
+          if diff -u repro-a/fingerprint-a.txt repro-d/fingerprint-d.txt; then
+            echo "OK: TZ and LC_ALL do not reach the build."
+          else
+            echo "::error::A different timezone or locale changed the build."
+            echo "::error::That is a new finding — REPRODUCIBLE_BUILDS.md says"
+            echo "::error::these were untested, not that they were safe."
+            exit 1
+          fi
 
       - name: Full APK, same path, different machine (a vs b)
         run: |
@@ -457,13 +489,44 @@ jobs:
       - name: Collect artifacts and compute SHA-256 sums
         run: |
           mkdir -p release
-          find dist -type f -not -name 'app-release.apk' -exec cp {} release/ \;
-          # The reproducibility job's two copies are the same artefact under
-          # the same name; they are evidence, not something to ship.
-          rm -rf dist/repro-a dist/repro-b
-          find dist -type f -name 'app-release.apk' -exec cp {} release/ \;
+          # Drop the reproducibility evidence FIRST, before anything is copied.
+          # Those jobs upload an `app-release.apk` of their own, signed with a
+          # throwaway debug key, plus a fingerprint text file. Removing them
+          # after the copy — as this step used to — let a debug-signed APK
+          # land in `release/` under the same name as the real one and clobber
+          # it, and shipped the fingerprints as release assets. It also named
+          # repro-a and repro-b explicitly, so slot c was never removed at all.
+          rm -rf dist/repro-*
+          find dist -type f -exec cp {} release/ \;
           cd release
           sha256sum * | tee SHA256SUMS.txt
+      # A hash of the signed APK is the one number a verifier CANNOT check:
+      # reproducing it needs the release key, which is the whole point of not
+      # publishing the release key. So publish the number they can check — a
+      # digest over the zip entries only, which signing does not disturb.
+      # `tool/test_verify_reproducible.py` proves that by inserting a real
+      # signing block and watching the digest hold still.
+      - name: Content digest — the number an outside rebuild can match
+        run: |
+          cd release
+          if [ -f app-release.apk ]; then
+            d=$(python3 ../tool/verify_reproducible.py --content-digest app-release.apk)
+            {
+              echo "# Content digest of app-release.apk: $d"
+              echo "#"
+              echo "# Unlike the SHA-256 above, this one is reproducible from source."
+              echo "# It covers every zip entry — name, compression, CRC, bytes — and"
+              echo "# not the APK signing block, so a local unsigned rebuild matches it."
+              echo "#"
+              echo "#   git clone https://github.com/FluffyHorizon1/z-messanger z"
+              echo "#   cd z/app && flutter build apk --release"
+              echo "#   python3 ../tool/verify_reproducible.py --content-digest \\"
+              echo "#       build/app/outputs/flutter-apk/app-release.apk"
+              echo "#"
+              echo "# The directory must be named z — see docs/REPRODUCIBLE_BUILDS.md."
+            } >> SHA256SUMS.txt
+            cat SHA256SUMS.txt
+          fi
       # 14.2: SLSA build provenance — a signed statement of WHICH commit,
       # WHICH workflow and WHICH runner produced each of these bytes,
       # countersigned into Sigstore's public transparency log. A checksum only

@@ -109,6 +109,39 @@ component that reaches the snapshot. Debian pins build paths in `.buildinfo`
 for the same reason; the full account is under
 [The answer: the path, and only the path](#the-answer-the-path-and-only-the-path-2026-09-09).
 
+### The one-line check
+
+Comparing against a *released* APK is not the same job, because the release is
+signed with a key you do not have and never will. The SHA-256 in
+`SHA256SUMS.txt` therefore covers a signature you cannot reproduce — it is the
+one number on the release page that an outside rebuild can never match.
+
+So each release also publishes a **content digest**: a hash over every zip
+entry — name, compression method, CRC and bytes — and nothing else. The APK
+signing block is not an entry, so signing does not move it, and an unsigned
+local rebuild of the same commit produces the same value.
+
+```
+python3 tool/verify_reproducible.py --content-digest \
+    build/app/outputs/flutter-apk/app-release.apk
+```
+
+Compare that one line with the `# Content digest` comment at the foot of the
+release's `SHA256SUMS.txt`. If they match, your build produced the same
+archive we shipped, entry for entry. If they do not, run the two-file
+comparison above against the downloaded APK and the tool will say which
+entries moved.
+
+That the digest survives signing is not asserted — it is tested.
+`tool/test_verify_reproducible.py` builds a zip, inserts a genuine APK signing
+block the way `apksigner` does (between the last entry and the central
+directory, offsets rewritten), and checks the digest does not move; it also
+checks the digest *does* move for a changed entry, a reordered archive, a
+different compression method, and a renamed entry whose name/content boundary
+has been slid by one byte.
+
+### Reading a difference
+
 Exit status 0 means identical. On a difference the tool prints **where**:
 which zip entries differ and why (timestamp, CRC, content), whether anything
 outside the signing block moved, and which signing-block pair is responsible.
@@ -323,9 +356,13 @@ than none — it invites people to stop looking.
   predicted — "an absolute build path embedded in a binary" — is precisely
   what was found, which is some consolation for having guessed the wrong cause
   twice in between.
-* **Locale and timezone are still untested.** The path was the variable CI
-  varied; `TZ` and `LC_ALL` were the same on all three runners. Cheap to add
-  as a fourth slot, and worth doing before anyone calls this closed.
+* **Locale and timezone are now tested, but the result is not in yet.** All
+  three runners in the 2026-09-09 run shared `en_US.UTF-8` and UTC, so a leak
+  there would have been invisible. A fourth slot builds at the same path under
+  `Australia/Eucla` (UTC+08:45 — a quarter-hour offset, so a leaked timestamp
+  is off by an amount no rounding hides) and `fr_FR.UTF-8`, and CI fails if its
+  fingerprint differs from slot a's. **Until that job has run, this line
+  records an expectation, not a measurement.**
 * **The wall-clock time did vary between the two builds and changed nothing**,
   so no timestamp is embedded and `SOURCE_DATE_EPOCH` is not needed. Locale,
   timezone, CPU model, kernel and filesystem ordering were all constant and are
@@ -356,7 +393,11 @@ hold. What is still missing is the **someone**: nobody outside the project has
 run it. That is not something the project can do for itself, and it should not
 be quietly counted as done.
 
-What can be done next, in order: publish a hash per release so an outsider has
-something to compare against; add a locale/timezone slot to close the last
-untested variable; and file the embedded-path issue upstream in the Flutter
-tool, since pinning the path is a workaround and the fix belongs there.
+Two of the three things that were next are now done: each release publishes a
+**content digest** an outside rebuild can actually match (the signed SHA-256
+never could), and a fourth CI slot varies locale and timezone. What remains is
+to file the embedded-path issue upstream in the Flutter tool — pinning the path
+is a workaround, and the fix belongs where the absolute URI is written.
+
+And then the part no amount of CI can supply: somebody who is not us, running
+the four commands above, and saying whether the number matched.

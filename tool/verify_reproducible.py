@@ -12,6 +12,7 @@ signing block moved at all.
 Usage:
     python3 tool/verify_reproducible.py a.apk b.apk
     python3 tool/verify_reproducible.py --ignore-signing-block a.apk b.apk
+    python3 tool/verify_reproducible.py --content-digest app-release.apk
 
 Exit status is 0 when the two files are byte-for-byte identical, 1 when they
 differ, 2 when something could not be read. See docs/REPRODUCIBLE_BUILDS.md
@@ -108,6 +109,40 @@ def differing_runs(a: bytes, b: bytes, block: int = 1 << 16):
     return runs
 
 
+def content_digest(path: str) -> str:
+    """A digest of what the build produced, ignoring what signing added.
+
+    The SHA256SUMS.txt published with a release is a hash of the *signed* APK.
+    An outsider rebuilding from source cannot reproduce it and never will: it
+    covers the release signature, and they do not have the release key. So the
+    one number a verifier is handed is the one number they cannot check, and
+    the only way to compare is to download 80 MB and run a diff.
+
+    This is the number they can check. It covers every zip entry, in order —
+    name, compression method, CRC-32 and the stored bytes — and nothing else.
+    Signing does not add, remove or recompress entries; it inserts a signing
+    block between the last entry and the central directory and rewrites the
+    offsets. None of that is hashed here, so a signed release APK and an
+    unsigned local rebuild of the same commit produce the same digest.
+
+    What it deliberately still catches: a changed file, a reordered archive, a
+    different compression method, an added or removed entry.
+    """
+    h = hashlib.sha256()
+    with zipfile.ZipFile(path) as z:
+        for info in z.infolist():
+            # Names are length-prefixed so that two adjacent fields cannot be
+            # slid into each other to forge a match.
+            name = info.filename.encode()
+            h.update(struct.pack("<I", len(name)))
+            h.update(name)
+            h.update(struct.pack("<IQ", info.compress_type, info.CRC))
+            with z.open(info, "r") as f:
+                while chunk := f.read(1 << 20):
+                    h.update(chunk)
+    return h.hexdigest()
+
+
 def compare_entries(pa: str, pb: str) -> int:
     """Per-entry comparison. Returns the number of entries that differ."""
     with zipfile.ZipFile(pa) as za, zipfile.ZipFile(pb) as zb:
@@ -145,6 +180,17 @@ def main(argv) -> int:
     args = [a for a in argv[1:] if not a.startswith("--")]
     flags = {a for a in argv[1:] if a.startswith("--")}
     ignore_sig = "--ignore-signing-block" in flags
+    if "--content-digest" in flags:
+        if len(args) != 1 or flags - {"--content-digest"}:
+            print(__doc__)
+            return 2
+        try:
+            print(content_digest(args[0]))
+        except (OSError, zipfile.BadZipFile) as e:
+            print(f"cannot read: {e}")
+            return 2
+        return 0
+
     if len(args) != 2 or flags - {"--ignore-signing-block"}:
         print(__doc__)
         return 2

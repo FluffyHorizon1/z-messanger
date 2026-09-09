@@ -86,9 +86,11 @@ if [ "$LIST" = 1 ]; then
   exit 0
 fi
 
-echo "${bold}0. The brief itself${rst}"
+echo "${bold}0. The brief itself, and the tools${rst}"
 run "audit brief describes this repository" "all" "." \
     python3 tool/check_audit_scope.py
+run "reproducibility tool's own tests" "C25" "." \
+    python3 tool/test_verify_reproducible.py
 
 echo
 echo "${bold}1. Protocol library — every cryptographic construction${rst}"
