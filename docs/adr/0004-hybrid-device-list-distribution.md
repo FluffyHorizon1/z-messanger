@@ -136,12 +136,16 @@ mechanism ever exists for another reason**; do not build one for this.
   envelope. That says "this account runs a v3 client and periodically ships a
   large authentication artefact". It does not say when the device set changed,
   or how large it is. That is the whole of what this design claims.
-* **Suppression is possible and not preventable at the network layer.** An
-  attacker who drops the signature leaves the list classically verified.
-  §18.4 already says this must be surfaced: a client that expects a hybrid
-  half — because it scanned a code carrying a post‑quantum commitment — and
-  has held a list without one for some time should say so, rather than
-  presenting classical verification as the finished state.
+* **Suppression is possible and not preventable at the network layer**, and
+  the residual signal above is what makes it easy: the 16 384‑bucket envelope
+  is the one to drop. Detecting it turned out to need a piece this ADR did not
+  anticipate. "Hybrid identity but classical list" is *not* evidence of
+  suppression — a client built before §18.9 has a post‑quantum identity and
+  never signs its lists — so alarming on it would fire for every such contact
+  during rollout, which is how an alarm stops being read. The sender therefore
+  claims, inside the ratchet, that it has **sent** the signature; only a claim
+  with nothing behind it is a problem, and the claim cannot be stripped by
+  whoever dropped the envelope. See §18.9.
 * **Ordering matters.** The signature cannot be checked before the contact's
   account ML‑DSA key has arrived and matched its commitment (§18.2). A
   signature that arrives first is held, not discarded, and re‑checked when the

@@ -1550,6 +1550,13 @@ class ChatService extends ChangeNotifier {
       if (inner.kind == 'dlpq') {
         await _onPqListSignature(contact, inner); // §18.9
       }
+      if (inner.kind == 'dlpqreq') {
+        await _onPqListRequest(contact); // §18.9 repair
+      }
+      final pql = inner.data['pql'];
+      if (pql is num) {
+        await _observePqListClaim(contact, pql.toInt()); // §18.9
+      }
       if (inner.kind == 'dlrm') {
         await _handleRemovalNotice(
             inner); // 7.7a: I was removed from my account
@@ -3985,23 +3992,116 @@ class ChatService extends ChangeNotifier {
     for (final rid in contacts.keys.toList()) {
       final contact = contacts[rid];
       if (contact == null) continue;
-      final sent =
-          int.tryParse(await vault.kvGet('dlpq_sent_$rid') ?? '0') ?? 0;
+      final sent = _dlpqSent[rid] ?? 0;
       if (sent >= sig.version) continue;
       try {
-        await _sendInner(
-            contact,
-            InnerMessage(
-                kind: 'dlpq',
-                mid: newMessageId(),
-                ts: _now(),
-                data: {'sig': jsonEncode(sig.toJson())}));
-        await vault.kvPut('dlpq_sent_$rid', '${sig.version}', sensitive: false);
+        if (debugSuppressPqList == PqListSuppression.none) {
+          await _sendInner(
+              contact,
+              InnerMessage(
+                  kind: 'dlpq',
+                  mid: newMessageId(),
+                  ts: _now(),
+                  data: {'sig': jsonEncode(sig.toJson())}));
+        }
+        // The claim records that we SENT it (§18.9), so it is stamped after
+        // the send, never before. `silent` models a client with no such
+        // notion at all, which must therefore claim nothing.
+        if (debugSuppressPqList != PqListSuppression.silent) {
+          await vault.kvPut('dlpq_sent_$rid', '${sig.version}',
+              sensitive: false);
+          _dlpqSent[rid] = sig.version;
+        }
       } catch (_) {
         // Try again on the next tick; nothing depends on this arriving now.
         _schedulePqListDelivery();
       }
     }
+  }
+
+  /// Test-only: model a network attacker dropping the signature (§18.9).
+  PqListSuppression debugSuppressPqList = PqListSuppression.none;
+
+  /// Contacts whose post-quantum device-list signature was claimed but never
+  /// arrived (§18.9). Keyed by routing id; the value is what to tell the user.
+  final Map<String, String> pqListAlerts = {};
+
+  /// How many times we have asked a contact to re-send it. Exposed so a test
+  /// can tell "asked and repaired" from "never asked".
+  int pqListRequestsSent(String rid) => _pqReqSent[rid] ?? 0;
+  final Map<String, int> _pqReqSent = {};
+
+  /// Which list version we have sent each contact (§18.9), in memory so the
+  /// outbound decoration costs nothing. Loaded once at startup.
+  final Map<String, int> _dlpqSent = {};
+  final Map<String, DateTime> _pqMissingSince = {};
+  static const int _maxPqListRequests = 3;
+
+  /// A contact's claim that it has sent us its list signature (§18.9).
+  ///
+  /// Three outcomes, and telling them apart is the whole job:
+  ///   * no claim — an older build that does not sign lists. Not an attack,
+  ///     and saying so would make every future warning worthless.
+  ///   * claim, and we hold the signature — nothing to do.
+  ///   * claim, and we do not — it was lost or removed. Ask first, because
+  ///     most losses are a dropped connection; alarm only if asking does not
+  ///     help within the grace period.
+  Future<void> _observePqListClaim(Contact contact, int claimed) async {
+    final rid = contact.rid;
+    final held =
+        int.tryParse(await vault.kvGet('cdev_pq_ver_$rid') ?? '0') ?? 0;
+    if (held >= claimed && deviceAssuranceWith(rid) == DeviceAssurance.hybrid) {
+      _pqMissingSince.remove(rid);
+      _pqReqSent.remove(rid);
+      if (pqListAlerts.remove(rid) != null) {
+        await vault.kvDelete('pql_alert_$rid');
+        notifyListeners();
+      }
+      return;
+    }
+    final since = _pqMissingSince.putIfAbsent(rid, () => DateTime.now());
+    final asked = _pqReqSent[rid] ?? 0;
+    if (asked < _maxPqListRequests) {
+      _pqReqSent[rid] = asked + 1;
+      try {
+        await _sendInner(
+            contact,
+            InnerMessage(
+                kind: 'dlpqreq',
+                mid: newMessageId(),
+                ts: _now(),
+                data: {'v': claimed}));
+      } catch (_) {}
+      return;
+    }
+    if (DateTime.now().difference(since) < devlistGrace) return;
+    if (pqListAlerts.containsKey(rid)) return;
+    final msg = '${contact.name}\'s app says it sent the post-quantum '
+        'signature for its device list, and it has not arrived. Their device '
+        'list is still verified classically, which works today but is what a '
+        'future quantum adversary could forge. Something on the network may '
+        'be removing it.';
+    pqListAlerts[rid] = msg;
+    await vault.kvPut('pql_alert_$rid', msg, sensitive: false);
+    notifyListeners();
+  }
+
+  /// A contact asking for the signature we told them we sent. Answering is
+  /// free — it is public, account-signed, and they already hold the list it
+  /// covers.
+  Future<void> _onPqListRequest(Contact contact) async {
+    if (debugSuppressPqList != PqListSuppression.none) return;
+    final stored = await vault.kvGet('own_list_mlsig');
+    if (stored == null) return;
+    try {
+      await _sendInner(
+          contact,
+          InnerMessage(
+              kind: 'dlpq',
+              mid: newMessageId(),
+              ts: _now(),
+              data: {'sig': stored}));
+    } catch (_) {}
   }
 
   /// An inbound `dlpq` (§18.9).
@@ -4415,6 +4515,12 @@ class ChatService extends ChangeNotifier {
 
   /// Load persisted alerts and per-contact claims at startup.
   Future<void> _loadDevlistState() async {
+    for (final rid in contacts.keys.toList()) {
+      final a = await vault.kvGet('pql_alert_$rid');
+      if (a != null) pqListAlerts[rid] = a;
+      final sent = int.tryParse(await vault.kvGet('dlpq_sent_$rid') ?? '0') ?? 0;
+      if (sent > 0) _dlpqSent[rid] = sent;
+    }
     ownAccountAlert = await vault.kvGet('own_alert');
     removedDeviceAlert = await vault.kvGet('removed_alert');
     final ae = await vault.kvGet('own_alert_echo');
@@ -4488,6 +4594,18 @@ class ChatService extends ChangeNotifier {
       inner.data['dl'] = {'v': v, 'h': h};
       final (pv, ph) = await _heldClaimFor(contact);
       inner.data['pdl'] = {'v': pv, 'h': ph};
+      // §18.9: "I have SENT you my post-quantum list signature at this
+      // version." Stamped only after delivery, so a claim with no signature
+      // behind it means the envelope was lost or removed — not that the
+      // sender is an older build, which says nothing here and is accused of
+      // nothing. It rides inside the ratchet, so an attacker who drops the
+      // signature cannot strip the evidence that they did.
+      //
+      // Read from memory: this is the outbound path of every message, and a
+      // database round trip per send to fetch a number that changes once per
+      // device-list version is not a trade worth making.
+      final sent = _dlpqSent[contact.rid] ?? 0;
+      if (sent > 0) inner.data['pql'] = sent;
     } catch (_) {
       // Leave the message undecorated; gossip resumes on the next send.
     }

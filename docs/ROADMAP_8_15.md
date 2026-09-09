@@ -263,7 +263,9 @@ forges identities even though it cannot read past traffic.
 client interoperate during the window; a forged device cert with only a valid
 Ed25519 half is rejected. **Met** — Dart, a Node clean-room and dilithium-py
 each rebuild the device-list signing input from the list itself and confirm
-that an excluded device and a rolled-back version both fail.
+that an excluded device and a rolled-back version both fail; and suppressing
+the signature, the one thing the network can still do, is detected and
+surfaced (§18.9) without accusing a peer that simply does not sign lists.
 
 ---
 
@@ -517,3 +519,15 @@ direction; the phases, their order and both ordering arguments stand.
    excluded (ADR-0001 T2). One signature over the list covers membership and
    version, is constant-size whatever the device count, and is what phase
    13's exit criterion actually rests on.
+
+22. **§18.9 — detecting suppression needed a piece the ADR had not
+   anticipated.** The signature is the easiest thing on the wire to drop: the
+   only ~16 KB envelope an ordinary conversation makes. But "hybrid identity,
+   classical list" is not evidence of an attack — a client built before §18.9
+   has a post-quantum identity and never signs its lists — so alarming on it
+   would have fired for every such contact during rollout, which is how an
+   alarm stops being read. The sender now claims, inside the ratchet where
+   whoever dropped the envelope cannot strip it, that it has SENT the
+   signature; a claim with nothing behind it is asked about before anyone is
+   told, because most losses are a dropped connection. Checked by making the
+   detection naive and watching the innocent case fail.

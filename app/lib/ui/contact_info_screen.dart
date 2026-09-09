@@ -95,6 +95,19 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             ),
             const SizedBox(height: 12),
           ],
+          if (svc.pqListAlerts[widget.rid] != null) ...[
+            // §18.9: the signature that makes their device list unforgeable by
+            // a quantum adversary was claimed and never arrived. Nothing is
+            // broken today, which is exactly why it has to be said out loud —
+            // a list that stays classical for ever looks like nothing at all.
+            _Banner(
+              tone: context.z.warn,
+              icon: Icons.cloud_off_outlined,
+              title: 'A post-quantum signature never arrived',
+              body: svc.pqListAlerts[widget.rid]!,
+            ),
+            const SizedBox(height: 12),
+          ],
           if (contact.pqMismatch) ...[
             _Banner(
               tone: context.z.danger,
@@ -158,6 +171,24 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                         color: context.z.textSecondary,
                         height: 1.5),
                   ),
+                  if (contact.assurance == IdentityAssurance.hybrid) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      svc.deviceAssuranceWith(widget.rid) ==
+                              DeviceAssurance.hybrid
+                          ? 'Their device list is signed post-quantum too, so '
+                              'the set of devices you send to cannot be '
+                              'forged or quietly reduced.'
+                          : 'Their device list is signed classically only. '
+                              'That is correct today; the post-quantum '
+                              'signature for it travels separately and may '
+                              'not have arrived yet.',
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: context.z.textSecondary,
+                          height: 1.5),
+                    ),
+                  ],
                   if (svc.verificationWith(widget.rid) !=
                       VerificationState.unverified) ...[
                     const SizedBox(height: 12),

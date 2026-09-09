@@ -56,7 +56,15 @@ void main() {
   });
 
   tearDown(() async {
+    // The screen derives its safety number asynchronously and that work
+    // outlives the last pump: `mounted` guards the setState, but the awaits
+    // inside are already in flight and will touch the vault. Deleting the
+    // directory underneath them turns a finished test into a failure of
+    // whichever test runs next. tearDown is outside FakeAsync, so a real
+    // pause here is a real pause.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
     await svc.transport.stop();
+    await svc.vault.db.close();
     if (dir.existsSync()) dir.deleteSync(recursive: true);
   });
 
@@ -159,6 +167,20 @@ void main() {
     expect(find.text('The number changed — here is why'), findsNothing);
     expect(
         find.textContaining('This is the number you compared'), findsOneWidget);
+  });
+
+  testWidgets('a device list that is only classically signed says so',
+      (tester) async {
+    // §18.9. The identity is post-quantum verified; the DEVICE LIST behind it
+    // may not be yet, and those are different claims. Collapsing them would
+    // let a suppressed signature hide behind a hybrid identity.
+    await real(tester, upgradeToHybrid);
+    await show(tester);
+    expect(find.text('Post-quantum'), findsOneWidget);
+    expect(find.textContaining('signed classically only'), findsOneWidget,
+        reason: 'the list is a separate claim from the identity');
+    expect(find.textContaining('may not have arrived yet'), findsOneWidget,
+        reason: 'and its absence is normal at first, not an accusation');
   });
 
   testWidgets('a refused post-quantum key is stated plainly, at the top',

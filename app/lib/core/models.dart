@@ -334,4 +334,26 @@ enum VerificationState {
   changedUnexpectedly,
 }
 
+/// Models a network attacker between two accounts, for tests (§18.9).
+///
+/// The device-list signature is the single easiest thing on the wire to drop:
+/// it is the only ~16 KB envelope an ordinary conversation produces. There is
+/// no way to test what a client does about that without being able to produce
+/// it, and the alternative — trusting that the detection works — is how
+/// detection quietly stops working.
+enum PqListSuppression {
+  /// Normal: sign, send, and claim.
+  none,
+
+  /// Send nothing and claim nothing. NOT an attack — this is a client built
+  /// before §18.9, which has a post-quantum identity and never signs lists.
+  /// A contact must not be accused over it.
+  silent,
+
+  /// Claim to have sent it, and send nothing. This is what a dropped envelope
+  /// looks like from the other side, whether the cause was a lost connection
+  /// or a relay removing it on purpose.
+  claimOnly,
+}
+
 enum LinkStatus { disconnected, connecting, connected }

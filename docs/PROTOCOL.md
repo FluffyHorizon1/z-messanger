@@ -1466,10 +1466,11 @@ Every check passes and the honest device has been excluded, which is
 version, so neither can be changed. See `adr/0004` for the measurements and
 the options rejected.
 
-The signature travels as its own inner message:
+The signature travels as its own inner message, and can be asked for:
 
 ```
 {"k":"dlpq","mid":…,"ts":…,"sig":"{\"acct\":b64,\"ver\":n,\"mlsig\":b64}"}
+{"k":"dlpqreq","mid":…,"ts":…,"v":n}
 ```
 
 A sender MUST NOT send it with the list. A ~3.3 KB signature does not fit the
@@ -1493,8 +1494,39 @@ A receiver MUST:
   has since moved on is classical again until the signature for the new one
   arrives.
 
-Suppression is possible for a network attacker and leaves a list classically
-verified. That is not preventable at the network layer, and is detectable: a
-client that knows from a scanned commitment to expect a post‑quantum identity,
-and has held a list without a signature for some time, should say so rather
-than presenting classical verification as the finished state.
+**Suppression, and how it is told apart from an old client.** The signature is
+the single easiest thing on the wire to drop: it is the only ~16 KB envelope an
+ordinary conversation produces. Dropping it leaves the list classically
+verified — everything works, nothing fails, and the account never gets the
+protection this section exists for. That cannot be prevented at the network
+layer.
+
+Detecting it naively does not work either. A client built before this section
+has a post‑quantum identity (it emits `pqid`, so its contacts reach `hybrid`)
+and simply never signs its lists. Alarming on "hybrid identity, classical
+list" would fire for every such contact, and an alarm that fires on ordinary
+use is one nobody reads.
+
+So a sender that has **sent** the signature says so, in the claim it already
+stamps on outgoing messages (§7.7a):
+
+```
+"pql": <version of the list whose signature has been sent to you>
+```
+
+It is stamped after delivery, never before, and it rides inside the ratchet —
+so an attacker who drops the signature cannot also strip the evidence that it
+was sent, short of dropping the conversation itself. A receiver then has three
+distinguishable cases:
+
+| what it sees | what it means | what to do |
+|---|---|---|
+| no `pql` | a client that does not sign its lists | report `classical`; accuse nobody |
+| `pql` ≤ what it holds and verifies | nothing missing | clear any alert |
+| `pql` > what it holds | it was lost or removed | ask, then alert |
+
+A receiver MUST ask before alerting — most losses are a dropped connection,
+and the sender answers a `dlpqreq` with the signature it already holds. Only
+when asking (bounded; the reference client asks three times) has not produced
+it within the grace period is the user told. The list stays `classical`
+throughout: nothing is ever accepted on the strength of a claim.
