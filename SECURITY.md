@@ -93,3 +93,10 @@ See `docs/PROTOCOL.md` (the normative wire format, with test vectors) and
 `docs/THREAT_MODEL.md` for the full model, and `docs/AUDIT_SCOPE.md` for the
 brief we hand to security reviewers — the claims we make, where each is
 specified and tested, and where we would like the most scrutiny.
+
+If you want the reasoning rather than the byte layout, start with
+`docs/WHITEPAPER.md`: it takes each claim in turn and says what is asserted,
+what mechanism carries it, why that mechanism and not the obvious
+alternative, and what it does not cover. `docs/DATA_MAP.md` is the inventory
+underneath both — every column of the vault, everything the relay holds, and
+every third party that learns anything.

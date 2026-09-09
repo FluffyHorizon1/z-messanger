@@ -67,7 +67,11 @@ your own server or Fly.io? See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
   with a definition-of-done for each ([visual timeline](docs/roadmap.html)).
 - **[`DEPLOY.md`](DEPLOY.md)** — get the relay online in ~5 minutes (one-click).
 - **[`docs/WINDOWS.md`](docs/WINDOWS.md)** — running Z on Windows.
-- **[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)** · **[`docs/PROTOCOL.md`](docs/PROTOCOL.md)** · **[`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)** · **[`docs/BUILD.md`](docs/BUILD.md)**
+- **[`docs/WHITEPAPER.md`](docs/WHITEPAPER.md)** — the design and security
+  argument: each claim Z makes, the mechanism behind it, why that mechanism and
+  not the obvious alternative, how to check it, and what it does not cover.
+  Read this before the spec if you want to know whether the design is sound.
+- **[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)** · **[`docs/PROTOCOL.md`](docs/PROTOCOL.md)** · **[`docs/DATA_MAP.md`](docs/DATA_MAP.md)** · **[`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)** · **[`docs/BUILD.md`](docs/BUILD.md)**
 
 ## Repository layout
 
