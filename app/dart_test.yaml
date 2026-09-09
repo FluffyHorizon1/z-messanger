@@ -2,3 +2,12 @@ tags:
   integration:
     # Talks to a real relay process; run with: flutter test
     timeout: 2x
+  bench:
+    # Measurements, not assertions about behaviour, and slow. Skipped by
+    # default so a busy machine cannot turn a number into a red build:
+    #
+    #     flutter test --run-skipped --tags bench
+    #
+    # The numbers they produce live in docs/PERFORMANCE.md.
+    timeout: 6x
+    skip: "benchmark — run with: flutter test --run-skipped --tags bench"

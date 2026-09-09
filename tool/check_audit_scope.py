@@ -45,6 +45,11 @@ UNCITED_OK = {
     "app/test/paging_test.dart":
         "that a 50,000-message thread opens by loading one page — a performance "
         "property; the sealing of those rows is C11's, not this test's",
+    "app/test/fanout_bench_test.dart":
+        "a measurement, not an assertion about behaviour — it times group "
+        "fan-out and reports where the cost goes (docs/PERFORMANCE.md). The "
+        "one thing it asserts, that fan-out stays linear, is a design "
+        "property rather than a security claim",
     "server/test/pages.test.js":
         "the landing and privacy pages the relay also serves; security.txt, the "
         "one page that carries a security promise, is C27",

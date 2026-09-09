@@ -396,8 +396,39 @@ Everything currently externally gated, plus the work to call it 1.0.
   code-signing certificates, iOS build and App Store submission.
 - **15.2 carry-over hardening** — 7.8c Keychain / Windows Hello binding for the
   desktop vault.
-- **15.3 scale & performance** — large-vault paging, fan-out cost with
-  multi-device groups, relay load profile, cold-start time.
+- **15.3 scale & performance** *(measured — `docs/PERFORMANCE.md`; the fixes
+  it names are not yet made)* — large-vault paging already had a test with a
+  1.5 s budget for the first page of a 50 000-message thread. Fan-out was the
+  open question, because it is the cost someone will one day cite as a reason
+  to add a shared group key, and it deserved a number.
+
+  **The design holds.** Group send is linear in the member count — per-member
+  cost at fifty members is 0.79× what it is at five, slightly *sub*-linear as
+  fixed overhead amortises. No quadratic term, and the benchmark asserts that
+  bound so a future regression fails rather than merely feeling slow.
+
+  **What is wrong is elsewhere.** A fifty-member send takes ~1.2 s and
+  `chat_screen.dart` awaits it with the composer disabled — a frozen send
+  button and no message on screen for over a second. The message is durable
+  the moment its outbox rows commit; nothing requires the user to watch the
+  fan-out finish. That is a UI fix, not a cryptography one.
+
+  **And a latent one worth more than either.** Every send serialises the whole
+  conversation twice, including the ratchet's cache of skipped message keys
+  (cap 1536). Empty in the benchmark, so those numbers are a best case: at the
+  cap it adds **+20.7 ms per recipient per send**, roughly doubling the cost,
+  and grows worse than linearly. It only appears after out-of-order delivery —
+  on a bad network, when things are already going badly — and it is paid on
+  the send path for state that only matters on receive.
+
+  Batching the outbox writes is 8.7× cheaper per insert and is *not* the fix:
+  it is ~13% of the cost, and one transaction across fifty recipients turns
+  one recipient's failure into fifty rolled-back ratchets.
+
+  Still unmeasured and named as such: real hardware, devices-per-member (the
+  extra-device fan-out is `unawaited` and not in these timings), cold start,
+  relay latency under sustained load, and the receive side — which is where
+  the skipped-key cache is actually used.
 - **15.4 docs & support & access** — user documentation, recovery guidance, an
   honest "what a compromised endpoint defeats" page. Also the two things
   missing from this roadmap entirely: **accessibility** (semantics labels and
