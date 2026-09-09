@@ -230,10 +230,11 @@ path, are byte-for-byte identical, signature included. Release artefacts carry
 SLSA build provenance, signed keyless through Sigstore and recorded in a public
 transparency log.
 
-Read that first sentence's qualifiers as load-bearing. **Across two machines
-the builds are not identical**, which CI established on 2026-09-09, and the
-cause is not yet known — see the last paragraph of this section. This is the
-weakest claim in the document.
+Read that first sentence's qualifiers as load-bearing, and read *which*
+qualifier carefully. **Across two machines the builds are identical.** Across
+two different checkout *paths* they are not, because the Dart snapshot embeds
+the directory it was built in — so the path is part of the recipe, the way
+Debian records a build path. See the last paragraph of this section.
 
 **Why the log matters more than the signature.** A signature you can check is
 also one that can be issued quietly to a single person. An append-only public
@@ -255,15 +256,20 @@ stop checking.
 step could forge provenance about itself. There is no in-app updater, so a
 desktop user can be served an older release with valid provenance (R8).
 
-And the big one: **cross-machine reproducibility failed on its first real run**
-(R16). Two CI runners building the same commit produced APKs differing in all
-six `libapp.so` / `libdartjni.so` entries, with every other entry identical and
-both files exactly the same size. The failing job varied the runner and the
-checkout path at the same time, so it cannot say which mattered; a three-way
-experiment now separates them. Until that is understood, this section claims
-only that a build can be checked *against another build on the same machine at
-the same path*, which catches a tampered build server and does not give an
-outsider what "reproducible build" normally promises.
+And the honest edge: the build is reproducible **at a stated path** (R16). Two
+libraries — the Dart AOT snapshot and one compiled beside it — carry the
+absolute build directory, so a verifier who checks out into a differently-named
+folder sees those two differ and everything else match. That is a documented
+condition rather than a defect in the argument, and CI bounds it: a third
+path-dependent library would fail the build.
+
+The first cross-machine run *did* fail, and the two guesses this document made
+about why were both wrong — recorded in `REPRODUCIBLE_BUILDS.md` rather than
+tidied away, because a security argument that quietly edits its own mistaken
+reasoning is worth less than one that shows it.
+
+What genuinely remains: **nobody outside the project has rebuilt a release**.
+The property holds; the independent check has not happened.
 
 ## 9. What Z does not claim
 
@@ -282,10 +288,10 @@ assume it does is where harm happens:
 * **Not audited.** No external cryptographic review has been performed yet.
   That is 14.3, and until it happens the honest statement is that this design
   has been reviewed by the people who wrote it.
-* **Not independently rebuildable.** A verifier on their own machine will not
-  currently reproduce the shipped APK byte for byte (R16). Same machine, same
-  path, yes; that is a narrower property than the phrase "reproducible build"
-  is normally taken to mean, and the difference is ours to close.
+* **Not yet rebuilt by anyone else.** The build is reproducible across
+  machines at a stated checkout path, measured in CI — but no one outside the
+  project has checked, and a reproducibility claim verified only by its author
+  is a claim about intentions.
 
 The full list, with severities and status, is the residual-risk register in
 `docs/THREAT_MODEL.md`.

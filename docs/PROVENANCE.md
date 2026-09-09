@@ -139,23 +139,29 @@ bit of app content fails the job, which was checked by flipping one.
 | | |
 |---|---|
 | Reproducible build, same machine and path | measured (14.1) |
-| Reproducible build, across runners | **run, and it FAILED** (2026-09-09) — see `REPRODUCIBLE_BUILDS.md` |
+| Reproducible build, across runners | **measured, and it holds** (2026-09-09) — at a fixed checkout path; see `REPRODUCIBLE_BUILDS.md` |
+| Reproducible build, across checkout paths | no — two libraries embed the build path (R16, accepted, bounded and documented) |
 | SLSA provenance on release artefacts | **written, not yet run** — first tagged release exercises it |
 | Sigstore keyless signing + Rekor log | via `actions/attest-build-provenance` |
 | SLSA Build L3 | not reached; L2. See above |
 | Updater verifying provenance | no updater exists |
 
-The previous version of this table said the reproducibility job was "written,
-not yet run", and added: *"if the reproducibility job fails there, that is a
-finding about the build and not about the job."* It ran on 2026-09-09 and it
-failed. Six native libraries differ between two runners; everything else in the
-APK matches. The full output, what it does and does not establish, and the
-redesigned three-way experiment are in `REPRODUCIBLE_BUILDS.md`.
+This table has now been wrong in both directions on the same row, which is
+worth leaving on the record. It first said the cross-machine job was "written,
+not yet run", adding that a failure there would be *"a finding about the build
+and not about the job"*. It ran on 2026-09-09 and failed, so the row said
+FAILED. A redesigned three-way run then showed the machine was never the
+variable at all: two runners at the same checkout path produce identical bytes,
+and only the *path* changes anything. The row says what was measured, twice
+corrected, and `REPRODUCIBLE_BUILDS.md` carries both the failure and the answer.
 
-That matters here rather than only there, because provenance and
-reproducibility answer different halves of one question. Provenance still says
-*these bytes came from that commit, on that workflow* — unaffected. What is
-missing is the other half: *and you can rebuild them yourself and get the same
-bytes*. Until the cross-machine failure is understood, an attestation is a
-statement about the build service, not something an outsider can independently
-check, and this document should not be read as claiming otherwise.
+Why that matters here and not only there: provenance and reproducibility answer
+different halves of one question. Provenance says *these bytes came from that
+commit, on that workflow*. Reproducibility says *and you can rebuild them
+yourself*. The second half now holds, on the stated condition that you check
+out into a directory named `z` — so an attestation from this repository is
+something an outsider can independently check, which is what it was always
+supposed to mean.
+
+The half still missing is that **nobody outside the project has done it**. That
+is the phase-14 exit criterion and it cannot be self-certified.

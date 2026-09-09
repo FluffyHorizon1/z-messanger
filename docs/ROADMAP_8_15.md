@@ -287,8 +287,8 @@ auditing a moving spec wastes the money.
   shared a path, a container and a clock, and a build from a different path was
   attempted and defeated by the container's 2 cores and 8 GB. That check
   belongs in 14.2 and is cheap there.
-- **14.2 provenance & signing** *(run — and the reproducibility half FAILED;
-  `docs/PROVENANCE.md`, CI jobs in `build.yml`)* — Sigstore keyless
+- **14.2 provenance & signing** *(done — reproducibility measured and
+  explained; `docs/PROVENANCE.md`, CI jobs in `build.yml`)* — Sigstore keyless
   signing and a Rekor transparency log entry per release artefact, plus the
   cross-machine reproducibility check 14.1 could not run. Two things the
   roadmap said that turned out not to hold: **this configuration is SLSA Build
@@ -299,10 +299,30 @@ auditing a moving spec wastes the money.
   desktop rollback is not handled at all, which belongs in the residual-risk
   column rather than behind the word "signed".
 
-  **Then it ran (2026-09-09) and the cross-machine build check failed** — the
-  detail is in the commit that recorded it and in `REPRODUCIBLE_BUILDS.md`.
-  The claim is now stated at its true strength everywhere it appears, and it
-  is **R16, open** in the register this patch finally lands.
+  **Then it ran (2026-09-09), failed, and a redesigned run answered it the
+  same day.** The first job varied the runner *and* the checkout path at once
+  and so could not name a cause. Three builds — two machines at one path, one
+  at a different path — settled it: **the machine is not a variable**, two
+  runners fingerprint identically down to the ELF build ids, and the *path* is
+  the whole story. `libapp.so` carries its absolute build directory as a
+  source URI and `libdartjni.so`, compiled beside it, inherits it; every
+  prebuilt library is identical in all three.
+
+  Both guesses made while it was open were wrong — that the identical APK size
+  argued against the path (it does not: native libraries are stored
+  uncompressed and page-aligned, so the padding absorbs a short string), and
+  that `libdartjni.so` was a second unexplained phenomenon (it was the same
+  one). Both are kept in `REPRODUCIBLE_BUILDS.md` rather than tidied away.
+
+  So the build path is now part of the recipe — clone into a directory named
+  `z` — the way Debian records `Build-Path`. **R16 is accepted, bounded and
+  documented** rather than open: CI asserts machine-independence, and asserts
+  that a path change moves those two libraries and no others, so the leak
+  cannot spread unnoticed. The real fix is a relative URI, which is upstream
+  work in the Flutter tool.
+
+  Still outstanding, and not self-certifiable: **a rebuild by someone outside
+  the project**, which is phase 14's exit criterion.
 
 - **14.3 external cryptographic audit** *(the package is ready; the engagement
   is not ours to run)* — scope per `AUDIT_SCOPE.md`: handshake, ratchet, PQ

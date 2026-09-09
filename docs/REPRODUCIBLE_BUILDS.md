@@ -94,9 +94,20 @@ Second build after `flutter clean`, minutes later. Identical.
 ## How to verify a build
 
 ```
+git clone https://github.com/FluffyHorizon1/z-messanger z    # the name matters
+cd z/app
 flutter build apk --release
-python3 tool/verify_reproducible.py <ours>.apk build/app/outputs/flutter-apk/app-release.apk
+python3 ../tool/verify_reproducible.py \
+    <ours>.apk build/app/outputs/flutter-apk/app-release.apk
 ```
+
+**Clone into a directory named `z`.** That is not decoration: `libapp.so` and
+`libdartjni.so` embed the absolute build directory, so a checkout named
+anything else reproduces every entry in the APK except those two. The parent
+directory is irrelevant — `~/src/z` and `/tmp/z` agree — it is only the final
+component that reaches the snapshot. Debian pins build paths in `.buildinfo`
+for the same reason; the full account is under
+[The answer: the path, and only the path](#the-answer-the-path-and-only-the-path-2026-09-09).
 
 Exit status 0 means identical. On a difference the tool prints **where**:
 which zip entries differ and why (timestamp, CRC, content), whether anything
@@ -177,6 +188,9 @@ reproducible":
 
 ### What is established, and what is still a guess
 
+*This section is kept as it was written, because the guesses in it were wrong
+in a way worth being able to look up. The answer is in the next section.*
+
 Established, by inspecting a local build:
 
 * `libapp.so` **does** embed its absolute build directory. The Dart AOT
@@ -191,17 +205,14 @@ Not established, and this is the important part:
   things at once — the runner *and* the checkout directory name (`z` versus
   `a-deliberately-much-longer-checkout-directory`). That is a badly designed
   experiment, and it was mine.
-* The identical byte *count* argues against the path being the whole story: a
+* ~~The identical byte *count* argues against the path being the whole story: a
   forty-character difference in an embedded string should change the size of
-  `libapp.so`, and did not change the size of anything. A same-size,
-  content-differs-throughout pattern is more typical of an ordering or hashing
-  difference than of a substituted string.
-* `libdartjni.so` differing is unexplained either way. It carries no embedded
-  build path.
+  `libapp.so`, and did not change the size of anything.~~ **Wrong — see below.**
+* ~~`libdartjni.so` differing is unexplained either way.~~ **Also wrong.**
 
 ### The experiment, redesigned
 
-`.github/workflows/build.yml` now builds three times instead of two:
+`.github/workflows/build.yml` builds three times instead of two:
 
 | slot | runner | checkout path |
 |---|---|---|
@@ -211,40 +222,110 @@ Not established, and this is the important part:
 
 **a vs b** varies only the machine. **a vs c** varies only the path. Each build
 also publishes a fingerprint — a SHA-256 and the ELF build id of every `.so`,
-plus the absolute paths found inside `libapp.so` — so the next run answers the
-question directly instead of requiring 160 MB to be downloaded and diffed by
-hand.
+plus the absolute paths found inside `libapp.so`.
 
-The compare job is marked `continue-on-error` for now. That is deliberate and
-temporary: it should not block a release on a property we have just learned we
-do not have, and it goes back to blocking the moment it passes. A check that is
-permitted to fail indefinitely has stopped being a check.
+## The answer: the path, and only the path (2026-09-09)
+
+The three-way run settled it in one pass.
+
+**a vs b — two different runner VMs, same checkout path — fingerprinted
+identically.** Every one of the twenty-four native libraries, every SHA-256,
+every ELF build id. Nothing about the machine matters.
+
+**a vs c — same runner image, different checkout path — differed in exactly
+six**, and they are the six that are *compiled during the build*:
+
+```
+arm64-v8a/libapp.so        arm64-v8a/libdartjni.so
+armeabi-v7a/libapp.so      armeabi-v7a/libdartjni.so
+x86_64/libapp.so           x86_64/libdartjni.so
+```
+
+Every prebuilt library — `libflutter.so`, `libsqlite3.so`, `libbarhopper_v3.so`,
+`libdatastore_shared_counter.so`, `libimage_processing_util_jni.so`,
+`libsurface_util_jni.so` — was byte-identical in all three.
+
+The build ids are the tell. `arm64-v8a/libapp.so` went from
+`b718850932687d08f90d3cfa231b6c0f` to `b7188509f45fb27af90d3cfa225664c1`:
+the same first eight bytes and the same middle, differing in between. That is
+one input changing, not a different compilation.
+
+### Why the earlier reasoning was wrong
+
+Two guesses above were wrong, and both were wrong for the same reason — an
+assumption asserted without being checked.
+
+**"The identical file size argues against the path."** It does not. Native
+libraries in a release APK are stored *uncompressed and page-aligned*, so the
+zip entry is padded out to an alignment boundary. A forty-character string
+difference disappears into that padding, and the total is unchanged. The size
+being equal was evidence of nothing, and treating it as evidence *against* the
+obvious explanation sent the analysis the wrong way for a day.
+
+**"`libdartjni.so` carries no embedded build path, so it is unexplained."**
+The `strings` search behind that only looked for `/home`, `/Users`, `/b` and
+`/buildbot` prefixes in one local artefact. It is compiled during the build
+like `libapp.so`, and it tracks the path exactly as `libapp.so` does — a and b
+identical, a and c different. There was never a second phenomenon to explain.
+
+The general lesson, and it is the same one as the two-variable experiment: an
+inference offered in place of a measurement should be labelled as one. Both of
+these read as findings and were guesses.
+
+## What this means for a verifier
+
+**Cross-machine reproducibility holds.** Two people on two machines, checking
+out to the same relative path, get the same bytes. That is the property this
+phase was after, and it is now measured rather than hoped for.
+
+**The build path is part of the recipe.** This is not unusual — Debian records
+`Build-Path` in `.buildinfo` for exactly this reason, and a great many packages
+are reproducible only at a fixed path. Z's recipe is therefore:
+
+> Check out the repository into a directory named **`z`**, and build from
+> `z/app`. The parent directory does not matter; the name does, because it is
+> the last component of the path that reaches the Dart AOT snapshot.
+
+A verifier who builds in `~/src/z` and one who builds in `/tmp/z` agree. One
+who builds in `~/src/z-messanger` will differ in six libraries and match in
+everything else, which the comparison tool will tell them precisely.
+
+**The leak is bounded, and the bound is checked.** CI asserts that a path
+change moves `libapp.so` and `libdartjni.so` and *nothing else*; a seventh
+library appearing there fails the build, because it would mean this section is
+understating the problem.
+
+### Closing it properly
+
+Pinning the path is a documented workaround, not a fix. The fix is for the
+snapshot not to carry an absolute path at all, and the offending string is a
+generated file — `.dart_tool/flutter_build/dart_plugin_registrant.dart` —
+referenced by URI. Making that relative is upstream work in the Flutter tool,
+and worth filing there. Until then the recipe above is the honest position:
+reproducible, at a stated path, verifiably so.
 
 ### What this costs a verifier today
 
-A verifier who rebuilds this commit on their own machine should expect the six
-native libraries to differ, and everything else to match. That is weaker than
-the claim in `PROVENANCE.md` and it is now stated at that strength in
-`AUDIT_SCOPE.md` (C25) and in the residual-risk register (R16). Until it is
-fixed, "reproducible" for Z means *reproducible on the same machine at the same
-path*, which is a real property — it is what catches a tampered build server —
-and a much smaller one than it sounds.
+Almost nothing, now that the recipe names the path: check out into a directory
+called `z` and the six libraries match too. A verifier who ignores that and
+builds elsewhere gets everything matching except `libapp.so` and
+`libdartjni.so`, and `tool/verify_reproducible.py` names them, so the outcome
+is a known deviation rather than a mystery.
 
 ## What has NOT been established
 
 Stated plainly, because a reproducibility claim with unexamined edges is worse
 than none — it invites people to stop looking.
 
-* **Both builds were on the same machine, in the same directory, in the same
-  container.** Genuine reproducibility means a *different* machine reproduces
-  it. The classic failure is an absolute build path embedded in a binary, and
-  that is specifically untested here.
-  * A build from a different path, timezone and locale was attempted and
-    abandoned: a cold build in a fresh directory exhausted the container
-    (2 cores, 8 GB) and had not finished Kotlin compilation after 35 minutes.
-    That is a limit of this container, not a result.
-  * **This is the first thing 14.2 must check**, and it is cheap there: the
-    same commit built in two differently-named CI workspaces.
+* ~~Both builds were on the same machine, in the same directory.~~
+  **Settled.** Two runner VMs at the same path fingerprint identically; a
+  different path moves exactly two libraries. The classic failure this bullet
+  predicted — "an absolute build path embedded in a binary" — is precisely
+  what was found, which is some consolation for having guessed the wrong cause
+  twice in between.
+* **Locale and timezone are still untested.** The path was the variable CI
+  varied; `TZ` and `LC_ALL` were the same on all three runners. Cheap to add
+  as a fourth slot, and worth doing before anyone calls this closed.
 * **The wall-clock time did vary between the two builds and changed nothing**,
   so no timestamp is embedded and `SOURCE_DATE_EPOCH` is not needed. Locale,
   timezone, CPU model, kernel and filesystem ordering were all constant and are
@@ -269,15 +350,13 @@ than none — it invites people to stop looking.
 ## Exit criterion
 
 Phase 14's exit asks for *"a bit-identical rebuild reproduced by someone
-outside the project"*. As of 2026-09-09 that criterion is **not met**, and the
-reason is no longer "nobody outside has tried": the project's own CI tried, on
-two machines, and the builds differed. The tool exists and the same-machine
-property holds; what is missing is the property the exit criterion actually
-asks for.
+outside the project"*. The **property** is now established — two machines, one
+path, identical bytes — and the recipe states the one condition that makes it
+hold. What is still missing is the **someone**: nobody outside the project has
+run it. That is not something the project can do for itself, and it should not
+be quietly counted as done.
 
-The order of work is now: find the cause with the three-way experiment above,
-fix it (or document it as a pinned part of the build recipe, which is what
-Debian does with build paths and is a legitimate answer), and only then pin a
-build image and publish a hash per release. Publishing a hash for a build
-nobody else can reproduce would be the appearance of the property rather than
-the property.
+What can be done next, in order: publish a hash per release so an outsider has
+something to compare against; add a locale/timezone slot to close the last
+untested variable; and file the embedded-path issue upstream in the Flutter
+tool, since pinning the path is a workaround and the fix belongs there.

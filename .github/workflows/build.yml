@@ -335,23 +335,34 @@ jobs:
           strings -a x/lib/arm64-v8a/libapp.so \
             | grep -oE 'file:///[A-Za-z0-9_./-]+' | sort -u | head \
             | tee -a "$GITHUB_WORKSPACE/fingerprint-${{ matrix.slot }}.txt"
+      # Stage both files in ONE flat directory before uploading. Given two
+      # paths, upload-artifact roots the archive at their least common
+      # ancestor and preserves the tree below it — so the previous version put
+      # the APK at `repro-a/<checkout dir>/app/build/app/outputs/flutter-apk/`
+      # while the fingerprint sat at the top level, and every compare step
+      # died on "No such file: repro-a/app-release.apk". The fingerprints
+      # still printed, which is the only reason that run told us anything.
+      - name: Stage the artefact
+        run: |
+          mkdir -p out
+          cp "${{ matrix.dir }}/app/build/app/outputs/flutter-apk/app-release.apk" out/
+          cp "fingerprint-${{ matrix.slot }}.txt" out/
       - uses: actions/upload-artifact@v4
         with:
           name: repro-${{ matrix.slot }}
-          path: |
-            ${{ matrix.dir }}/app/build/app/outputs/flutter-apk/app-release.apk
-            fingerprint-${{ matrix.slot }}.txt
+          path: out/
 
   reproducible-compare:
     name: Reproducible build — compare
     needs: reproducible
     runs-on: ubuntu-latest
-    # This is a KNOWN-FAILING check, not a flaky one: as of 2026-09-09 the app
-    # is not reproducible across runners, and the job says so loudly without
-    # blocking a release on a property we have just discovered we do not have.
-    # It goes back to blocking the moment it passes — a check that is allowed
-    # to fail forever is not a check.
-    continue-on-error: true
+    # No longer continue-on-error. The 2026-09-09 three-way run answered the
+    # question this job was built to ask: `a` and `b` — two different runner
+    # VMs, same checkout path — produced byte-identical native libraries,
+    # build ids included, while `c` differed from `a` in exactly the six
+    # libraries that are compiled during the build. The machine is not a
+    # variable; the path is. So a failure here is news again, and news should
+    # fail the build.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -360,18 +371,59 @@ jobs:
         with: { name: repro-b, path: repro-b }
       - uses: actions/download-artifact@v4
         with: { name: repro-c, path: repro-c }
+
       - name: Fingerprints side by side
+        run: for s in a b c; do echo "=== $s ==="; cat repro-$s/fingerprint-$s.txt; done
+
+      # Cheap and decisive, and it runs before the 80 MB comparison so a
+      # regression is named in the first ten seconds rather than the last.
+      - name: Machine independence — a and b must fingerprint identically
         run: |
-          for s in a b c; do echo "=== $s ==="; cat repro-$s/fingerprint-$s.txt; done
-      - name: Same path, different machine (a vs b)
+          if diff -u repro-a/fingerprint-a.txt repro-b/fingerprint-b.txt; then
+            echo "OK: two runners, identical native libraries."
+          else
+            echo "::error::Two runners at the same path produced different"
+            echo "::error::native libraries. Until 2026-09-09 this was an open"
+            echo "::error::question (R16); it was answered 'the machine does not"
+            echo "::error::matter'. If this fails, that answer has changed."
+            exit 1
+          fi
+
+      # The path DOES matter, and this bounds how much. libapp.so is the Dart
+      # AOT snapshot, which embeds the absolute build directory as a source
+      # URI; libdartjni.so is compiled during the build and picks it up too.
+      # Nothing else should. A seventh name appearing here means the leak has
+      # spread and REPRODUCIBLE_BUILDS.md is understating it.
+      - name: Path dependence — a vs c differs only where we have documented
+        run: |
+          paste -d' ' <(cut -d' ' -f1 repro-a/fingerprint-a.txt) \
+                      <(awk '{print $2}' repro-a/fingerprint-a.txt) \
+                      <(awk '{print $2}' repro-c/fingerprint-c.txt) 2>/dev/null \
+            | awk '$2 != $3 && $1 != "" {print $1}' | sort > /tmp/differing.txt
+          echo "differs between path 'z' and the long path:"; cat /tmp/differing.txt
+          if grep -qvE '(libapp|libdartjni)\.so$' /tmp/differing.txt; then
+            echo "::error::A library other than libapp.so/libdartjni.so is"
+            echo "::error::path-dependent. The build-path leak has spread."
+            grep -vE '(libapp|libdartjni)\.so$' /tmp/differing.txt
+            exit 1
+          fi
+          echo "OK: bounded to the two libraries compiled during the build."
+
+      - name: Full APK, same path, different machine (a vs b)
         run: |
           python3 tool/verify_reproducible.py --ignore-signing-block \
             repro-a/app-release.apk repro-b/app-release.apk
-      - name: Same machine kind, different path (a vs c)
+
+      # Expected to differ, and reported rather than enforced: this is R16 as
+      # a measurement, not a gate. See REPRODUCIBLE_BUILDS.md — a verifier is
+      # told which path to build in, the way Debian records Build-Path.
+      - name: Full APK, different path (a vs c) — expected to differ
         if: always()
+        continue-on-error: true
         run: |
           python3 tool/verify_reproducible.py --ignore-signing-block \
-            repro-a/app-release.apk repro-c/app-release.apk
+            repro-a/app-release.apk repro-c/app-release.apk \
+            || echo "Differs, as documented. The bound is checked above."
 
   relay-image:
     name: Relay Docker image
