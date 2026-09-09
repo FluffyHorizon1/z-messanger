@@ -236,6 +236,71 @@ jobs:
           name: z-macos
           path: app/build/macos/Build/Products/Release/z-macos.zip
 
+  # 14.1 could establish that two builds on the SAME machine are byte-identical
+  # and no more: a build from a different path was attempted there and defeated
+  # by the container it ran in. This is that check, and it is cheap here — two
+  # separate runner VMs, two differently-named workspaces, one commit.
+  #
+  # The comparison ignores the APK signing block, for a reason that is about
+  # keys and not about the build: a machine that has never signed an Android
+  # build generates its own debug key on first use, so two fresh runners sign
+  # with different keys. Everything outside the signature must match exactly,
+  # and `verify_reproducible.py` fails if a single byte of app content differs.
+  reproducible:
+    name: Reproducible build (${{ matrix.slot }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - slot: a
+            dir: z
+          - slot: b
+            dir: a-deliberately-much-longer-checkout-directory
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ${{ matrix.dir }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - name: Build release APK
+        working-directory: ${{ matrix.dir }}/app
+        # No signing secrets on purpose: this job proves the APP is
+        # reproducible, and it must run on pull requests, where secrets are
+        # not available.
+        run: |
+          flutter pub get
+          flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repro-${{ matrix.slot }}
+          path: ${{ matrix.dir }}/app/build/app/outputs/flutter-apk/app-release.apk
+
+  reproducible-compare:
+    name: Reproducible build — compare
+    needs: reproducible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: repro-a
+          path: repro-a
+      - uses: actions/download-artifact@v4
+        with:
+          name: repro-b
+          path: repro-b
+      - name: Compare the two builds
+        run: |
+          python3 tool/verify_reproducible.py --ignore-signing-block \
+            repro-a/app-release.apk repro-b/app-release.apk
+
   relay-image:
     name: Relay Docker image
     needs: test
@@ -249,11 +314,17 @@ jobs:
   release:
     name: Attach artifacts + checksums to release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [android, linux, windows, macos]
-    # Creating the Release and uploading its assets needs a writable token; the
-    # repo default is read-only, which 403s the publish step without this.
+    needs: [android, linux, windows, macos, reproducible-compare]
+    # contents: write   — create the Release and upload its assets (the repo
+    #                     default token is read-only and 403s the publish).
+    # id-token: write   — 14.2: mint the short-lived OIDC token Sigstore uses
+    #                     to sign provenance. Keyless: nothing to store, and no
+    #                     signing key for anyone to steal or for us to lose.
+    # attestations: write — record the attestation against the release.
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -262,9 +333,23 @@ jobs:
       - name: Collect artifacts and compute SHA-256 sums
         run: |
           mkdir -p release
-          find dist -type f -exec cp {} release/ \;
+          find dist -type f -not -name 'app-release.apk' -exec cp {} release/ \;
+          # The reproducibility job's two copies are the same artefact under
+          # the same name; they are evidence, not something to ship.
+          rm -rf dist/repro-a dist/repro-b
+          find dist -type f -name 'app-release.apk' -exec cp {} release/ \;
           cd release
           sha256sum * | tee SHA256SUMS.txt
+      # 14.2: SLSA build provenance — a signed statement of WHICH commit,
+      # WHICH workflow and WHICH runner produced each of these bytes,
+      # countersigned into Sigstore's public transparency log. A checksum only
+      # says two files match; provenance says where the file came from, and
+      # the log means we cannot quietly issue a different answer to one person
+      # than to everybody else.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'release/*'
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:

@@ -51,6 +51,25 @@ Platform code-signatures, when a release is signed (see `docs/SIGNING.md`):
 An unsigned build still works; it just triggers the OS "unknown developer"
 warnings. The checksum is your integrity check either way.
 
+### Where the bytes came from
+
+A checksum only proves two files match. If the download page and the checksum
+come from the same place, checking one against the other proves that place was
+consistent — which is what an attacker who controlled it would also be. Tagged
+releases therefore carry a **build provenance attestation**, signed keyless
+through Sigstore and recorded in a public transparency log:
+
+```
+gh attestation verify z-linux-x64.tar.gz --repo FluffyHorizon1/z-messanger
+```
+
+That names the commit, workflow and runner the file was built from, and it is
+logged publicly, so the same answer cannot be given quietly to one person and
+not to everyone. To go further and check those bytes match the source, build it
+yourself: `docs/REPRODUCIBLE_BUILDS.md`. What provenance does and does not
+prove — including that there is no in-app updater, and what that means — is in
+`docs/PROVENANCE.md`.
+
 ## What protects your messages
 
 - Content is end-to-end encrypted with a Signal-style Double Ratchet; keys never

@@ -11,10 +11,20 @@ signing block moved at all.
 
 Usage:
     python3 tool/verify_reproducible.py a.apk b.apk
+    python3 tool/verify_reproducible.py --ignore-signing-block a.apk b.apk
 
 Exit status is 0 when the two files are byte-for-byte identical, 1 when they
 differ, 2 when something could not be read. See docs/REPRODUCIBLE_BUILDS.md
 for the build procedure these are expected to come from.
+
+`--ignore-signing-block` succeeds when everything OUTSIDE the APK signing
+block matches — that is, when the app is identical and only the signature is
+not. Two machines that have never signed an Android build before each generate
+their own debug key, so their signatures differ for a reason that says nothing
+about the build; and a release key using a randomised algorithm (ECDSA,
+RSASSA-PSS) signs differently every time by design. Neither is evidence about
+the app. Use this mode when comparing builds from different machines, and the
+plain mode when comparing builds that were signed with the same key.
 """
 
 import hashlib
@@ -132,10 +142,13 @@ def compare_entries(pa: str, pb: str) -> int:
 
 
 def main(argv) -> int:
-    if len(argv) != 3:
+    args = [a for a in argv[1:] if not a.startswith("--")]
+    flags = {a for a in argv[1:] if a.startswith("--")}
+    ignore_sig = "--ignore-signing-block" in flags
+    if len(args) != 2 or flags - {"--ignore-signing-block"}:
         print(__doc__)
         return 2
-    pa, pb = argv[1], argv[2]
+    pa, pb = args[0], args[1]
     try:
         a = open(pa, "rb").read()
         b = open(pb, "rb").read()
@@ -168,6 +181,10 @@ def main(argv) -> int:
               if inside else
               "Differences reach OUTSIDE the signing block — the app content "
               "itself is not reproducible.")
+        if ignore_sig and inside:
+            print("\nThe app is IDENTICAL; only the signature differs, which "
+                  "--ignore-signing-block was asked to allow.")
+            return 0
         print("\nSigning block, pair by pair:")
         pairs_a = list(walk_pairs(a, *sa))
         pairs_b = {pid: (off, ln) for pid, off, ln in walk_pairs(b, *sb)}

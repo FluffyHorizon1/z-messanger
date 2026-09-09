@@ -287,14 +287,17 @@ auditing a moving spec wastes the money.
   shared a path, a container and a clock, and a build from a different path was
   attempted and defeated by the container's 2 cores and 8 GB. That check
   belongs in 14.2 and is cheap there.
-- **14.2 provenance & signing** — SLSA Build L3 provenance in CI, Sigstore
-  signing, artefacts in a public transparency log; the updater verifies
-  signature *and* log inclusion before applying. **First task, inherited from
-  14.1: build the same commit in two differently-named CI workspaces and
-  confirm the hashes match.** Pin the toolchain from
-  `docs/REPRODUCIBLE_BUILDS.md` in an image so a verifier does not reconstruct
-  it by hand, and publish the hash with each release — the property exists
-  now; what is missing is somebody outside the project able to check it.
+- **14.2 provenance & signing** *(written — `docs/PROVENANCE.md`, CI jobs in
+  `build.yml`; not yet executed, and two corrections)* — Sigstore keyless
+  signing and a Rekor transparency log entry per release artefact, plus the
+  cross-machine reproducibility check 14.1 could not run. Two things the
+  roadmap said that turned out not to hold: **this configuration is SLSA Build
+  L2, not L3** — L3 needs the build isolated from the signing material, which
+  is a restructure into an isolated reusable workflow, not a flag — and
+  **there is no updater**, so "the updater verifies signature and log
+  inclusion" has nothing to attach to. Android rollback is handled by Play;
+  desktop rollback is not handled at all, which belongs in the residual-risk
+  column rather than behind the word "signed".
 - **14.3 external cryptographic audit** *(the gated 5.2 engagement)* — scope
   per `AUDIT_SCOPE.md`: handshake, ratchet, PQ mixing, device certs and the
   enrollment ceremony, KT client. Remediate to zero open high/critical.
