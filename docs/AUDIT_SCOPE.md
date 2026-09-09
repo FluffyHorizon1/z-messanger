@@ -1,14 +1,20 @@
-# Z — Security audit scope (Phase 5.2)
+# Z — Security audit scope (phase 5.2, prepared 14.3)
 
 This is the brief for an independent security review of Z, a zero‑trust,
 end‑to‑end encrypted messenger. It says what we claim, where each claim is
 specified and tested, what is in and out of scope, what we already know is
 weak, and how to run everything. It is written so a reviewer can start
 without a call. Companion documents: `PROTOCOL.md` (normative wire format,
-frozen v1 + the v2 post‑quantum extension), `THREAT_MODEL.md` (what we do
-and do not protect against), `BACKUP.md` (the `.zbk` archive format and what
-it deliberately refuses to restore), `adr/0001-key-transparency.md` (the one design
-decision that changes the trust model), `SECURITY.md` (disclosure).
+frozen v1, the v2 post‑quantum confidentiality extension and the v3 hybrid
+identity layer), `WHITEPAPER.md` (the argument rather than the format — read
+this first if you want to know what is claimed before how it is encoded),
+`THREAT_MODEL.md` (what we do and do not protect against, and a residual‑risk
+register of what is left), `DATA_MAP.md` (every piece of data, where it lives
+and who can read it), `BACKUP.md` (the `.zbk` archive format and what it
+deliberately refuses to restore), `adr/` (the three design decisions worth
+arguing with — `0001-key-transparency.md` is the one that changes the trust
+model; 0002 is a reserved number, not a suppressed record), `VDP.md` and `SECURITY.md` (disclosure, and the safe harbour that
+covers you while you look).
 
 ## 1. What we are asking for
 
@@ -26,9 +32,9 @@ Three components, one operator‑independent trust story:
 
 | Component | Language / size | Role |
 |---|---|---|
-| `protocol/` (`z_protocol`) | pure Dart, ~3.3 k lines in 13 modules, ~1.9 k lines of tests | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values |
-| `app/` | Flutter (Dart), core ~4.6 k lines (`lib/core/`), UI ~3.7 k lines, 13 integration test files (~2.6 k lines) | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
-| `server/` | Node.js, `server.js` ~830 lines, ~1.9 k lines of tests incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics; two‑instance mode via Redis |
+| `protocol/` (`z_protocol`) | pure Dart, ~4.7 k lines in 17 modules, ~3.1 k lines of tests (147) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values |
+| `app/` | Flutter (Dart), core ~8.4 k lines (`lib/core/`), UI ~6.0 k lines, 26 test files (~7.1 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
+| `server/` | Node.js, `server.js` ~840 lines, ~2.4 k lines of tests (50) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics; two‑instance mode via Redis |
 
 Every message is encrypted on a device and decrypted only on the recipient
 devices; the relay sees padded ciphertext addressed to a mailbox id and,
@@ -43,20 +49,20 @@ like the review to either confirm or break each one.
 
 | # | Claim | Spec | Existing evidence |
 |---|---|---|---|
-| C1 | The relay (even hostile) cannot read content, learn senders, forge or replay messages, or recover anything after restart. | `PROTOCOL.md` §5, §8, §12; `THREAT_MODEL.md` | `server/test/relay.test.js` (40), sealed‑sender vectors, `app/test/durability_test.dart` |
+| C1 | The relay (even hostile) cannot read content, learn senders, forge or replay messages, or recover anything after restart. | `PROTOCOL.md` §5, §8, §12; `THREAT_MODEL.md` | `server/test/relay.test.js` (40), `server/test/sealed.test.js` (5), `server/test/load.test.js` (7 — oversized envelopes, malformed frames and a client swarm rejected rather than absorbed), `server/test/ha.test.js` (the same guarantees with two instances sharing one Redis), `protocol/test/relay_integration_test.dart`, sealed‑sender vectors, `app/test/durability_test.dart` |
 | C2 | The Double Ratchet is Signal's construction; message keys are single‑use; forward secrecy and classical post‑compromise security hold; out‑of‑order delivery is bounded (512 per chain, 1536 cached). | §4, §5 | `protocol/test/protocol_test.dart`, `ratchet.json` transcript replayed byte‑for‑byte by the Node clean‑room verifier |
 | C3 | Concurrent sends/receives on one conversation can never reuse a message index (per‑conversation lock, rollback on persist failure, ack only after vault commit). | app design, `chat_service.dart` header comment | `concurrency_test.dart`, `durability_test.dart` (crash/restart at every await) |
-| C4 | Sealed sender hides the sender from the relay; the unauthenticated outer layer cannot be abused for anything worse than a failed decryption. | §8 | `sealed_sender.json`, `protocol/test/sealed_test.dart`, relay tests |
+| C4 | Sealed sender hides the sender from the relay; the unauthenticated outer layer cannot be abused for anything worse than a failed decryption. | §8 | `sealed_sender.json`, `protocol/test/sealed_test.dart`, `server/test/sealed.test.js` (5 — the relay side, written against the wire format rather than our code) |
 | C5 | Protocol v2 mixes an ML‑KEM‑768 secret into every message key after the first round trip, cannot be downgraded by an active attacker, and v2↔v1 is exactly v1. | §17.1–17.5 | `pq_test.dart` (15), `mlkem768.json` + `pq_ratchet.json` re‑derived by kyber‑py and replayed by Node, `app/test/pq_upgrade_test.dart` |
 | C6 | Periodic re‑key gives the PQ layer post‑compromise security; the crossover cannot lose or mis‑decrypt in‑flight messages; unknown generations fail closed. | §17.7 | `pq_test.dart` re‑key group, `pq_rekey.json` (kyber‑py + Node), `app/test/pq_rekey_test.dart` |
 | C7 | Device certificates and signed device lists are verified against the account key; a `legacy` record cannot introduce an unsigned device; contacts fan out to exactly the listed devices. | §3 | `protocol/test/multidevice_test.dart`, `multidevice.json` (Node re‑derives signatures) |
-| C8 | Pairing: a machine‑in‑the‑middle on the rendezvous produces a different SAS on each screen; the enrollment payload is bound to the channel. | §10 | `pairing.json` (both roles replayed by Node), `pairing_test.dart` |
+| C8 | Pairing: a machine‑in‑the‑middle on the rendezvous produces a different SAS on each screen; the enrollment payload is bound to the channel. | §10 | `pairing.json` (both roles replayed by Node), `protocol/test/pairing_test.dart`, `protocol/test/pairing_relay_test.dart` (the rendezvous transport itself) |
 | C9 | Groups: no shared key; a member removed before a send never receives the key; membership only changes over the admin's authenticated channel. | §11 | `app/test/group_test.dart` |
 | C10 | Device‑list transparency: silent enrolment, split views and silent removal are surfaced to the owner and to a contact; an honest addition raises nothing; a rogue that answers a device's request from the root's mailbox is still caught. | §3.6, `adr/0001` | `app/test/devlist_transparency_test.dart`, `devlist_distribution_test.dart` |
-| C11 | Plaintext never touches disk: vault cells, attachments, voice capture, search, history sync. The biometric pass key opens the vault only through the OS prompt (on Android the keystore enforces that itself), is bound to the passphrase salt, and is removed with the feature. | §13, app invariants | `vault_passphrase_test.dart` (pass‑key path), `app_lock_test.dart` (incl. bound‑store cases), `lock_screen_test.dart`, `search_test.dart` (stored cells checked), `voice.dart` design, `BioKey.kt` review |
+| C11 | Plaintext never touches disk: vault cells, attachments, voice capture, search, history sync. The biometric pass key opens the vault only through the OS prompt (on Android the keystore enforces that itself), is bound to the passphrase salt, and is removed with the feature. | §13, app invariants | `vault_passphrase_test.dart` (pass‑key path), `app_lock_test.dart` (incl. bound‑store cases), `lock_screen_test.dart`, `search_test.dart` (stored cells checked), `app/test/voice_test.dart` (3 — a voice note is an ordinary sealed attachment, driven through the real relay), `app/test/attachment_sync_test.dart` (a file mirrored to a linked device stays sealed on the way), `BioKey.kt` review |
 | C12 | The wire format is frozen: any change to bytes an implementation computes fails CI; compatible extensions are additive only. | §14, `vectors/README.md` | `protocol/test/vectors_test.dart` freeze, Node clean‑room replay (15 suites) |
-| C13 | A backup archive restores history onto a wiped device without ever restoring session state; a wrong recovery code, a truncated file or a moved frame all fail closed with no oracle; the restored device re‑handshakes, including the post‑quantum layer, rather than silently downgrading. | `BACKUP.md` | `app/test/backup_test.dart` (round trip, fail‑closed, schema compatibility), `protocol/test/archive_test.dart`, `backup/archive.json` replayed by Node |
-| C14 | One account on several devices: each device has its own routing id and its own ratchets, so two devices never contend for a mailbox and never share a chain; the safety number is anchored to the account key and does not move when a device is added or removed; a contact offline for the whole enrollment still learns the new device and fans out to it. | `PROTOCOL.md` §2.5, §3; `z-multidevice-design.md` | `app/test/multidevice_test.dart`, `devlist_distribution_test.dart`, `devlist_transparency_test.dart`, `history_sync_test.dart` |
+| C13 | A backup archive restores history onto a wiped device without ever restoring session state; a wrong recovery code, a truncated file or a moved frame all fail closed with no oracle; the restored device re‑handshakes, including the post‑quantum layer, rather than silently downgrading. | `BACKUP.md` | `app/test/backup_test.dart` (round trip, fail‑closed, schema compatibility), `app/test/backup_store_test.dart` (11 — where an archive is written and by whom, checked for every platform rather than the one under test), `app/test/restore_test.dart` (4 — one restore path for both `.zbk` and the older `.zid`), `protocol/test/archive_test.dart`, `backup/archive.json` replayed by Node |
+| C14 | One account on several devices: each device has its own routing id and its own ratchets, so two devices never contend for a mailbox and never share a chain; the safety number is anchored to the account key and does not move when a device is added or removed; a contact offline for the whole enrollment still learns the new device and fans out to it. | `PROTOCOL.md` §2.5, §3 | `app/test/multidevice_test.dart`, `protocol/test/multidevice_session_test.dart` (6 — the per-device fan-out sessions underneath, at the protocol layer), `devlist_distribution_test.dart`, `devlist_transparency_test.dart`, `history_sync_test.dart`, `app/test/attachment_sync_test.dart` |
 | C15 | Hybrid signatures (v3, in progress): a signature verifies only if BOTH the Ed25519 and the ML-DSA-65 halves verify over identical bytes; a stripped half does not parse at all, so a downgrade is not expressible; an identity stays derivable from two 32-byte seeds. | §18.1, `adr/0003-pq-identity-qr.md` | `protocol/test/pqsign_test.dart` (11), `v3/mldsa65.json` re-derived by dilithium-py and structurally replayed by Node |
 | C16 | A contact code carrying a commitment stays QR-sized (~370 bytes) while binding a 1952-byte post-quantum key: the key is delivered in-band and refused unless it matches the commitment carried by the scanned code. A v3 code with the commitment stripped is refused rather than treated as a classical one, and a scanned identity's assurance state is never reported as hybrid before the key has arrived and matched. | §18.2, §18.3 | `protocol/test/identity_v3_test.dart` (10), `v3/contact_code_v3.json` replayed by Node with its own Ed25519 and SHA-256 |
 | C17 | A device certificate verifies only if BOTH the account's Ed25519 and ML-DSA-65 signatures check out over identical bytes; a certificate whose classical half is genuine but whose post-quantum half attests to a different device is rejected, and a stripped one does not parse. A v1 legacy record cannot be presented as post-quantum verified. Safety number v2 covers both key halves, is anchored to the account key, and can never coincide with a v1 number for the same pair. | §18.4, §18.5 | `protocol/test/identity_v3_test.dart` (19), `v3/device_cert_v3.json` replayed by Node, which confirms independently that the forgery passes a classical-only check |
@@ -71,6 +77,7 @@ like the review to either confirm or break each one.
 | C26 | A release names its own origin: each artefact carries a SLSA build provenance attestation, signed keyless through Sigstore and recorded in a public transparency log, so the commit and workflow that produced it are stated publicly and cannot be asserted differently to different people. There are no signing keys to steal. The claim is deliberately **Build L2, not L3** — L3 requires the build to be isolated from the signing material — and there is no in-app updater, so no rollback protection on desktop. | `PROVENANCE.md` | `.github/workflows/build.yml` (`reproducible`, `reproducible-compare`, `release`); NOT yet executed — the first CI run on `main` is what turns this row into evidence |
 | C27 | A researcher can find out where to report and whether they are safe to look: RFC 9116 `security.txt` served by the relay on both the well-known and the bare path, pointing at a policy that grants safe harbour in writing, states response targets, names what is most worth attacking and what is a documented limit, and says plainly that no bounty is funded. The mandatory `Expires` field is enforced by a test rather than by memory. | `VDP.md`, RFC 9116 | `server/test/security_txt.test.js` (5) — including one that fails the build once the expiry passes |
 | C29 | The argument is written down and falsifiable, not only the wire format: `WHITEPAPER.md` states each claim, the mechanism, why that mechanism rather than the obvious alternative, how a reader checks it independently, and what it does not cover — including a section that lists only what Z does **not** claim. Every mechanism it describes cites the normative section and the test, and it names `PROTOCOL.md` as the authority wherever the two disagree, so a discrepancy is a bug in the whitepaper rather than an ambiguity in the protocol. **A disagreement between this document and the code is itself a finding we want.** | `WHITEPAPER.md` | Every claim section resolves to a `PROTOCOL.md` section and a test named in this table (C1–C28); no mechanism is asserted here that is not specified and tested elsewhere |
+| C30 | A vault survives its own history. The schema has moved 1 → 7 across eight phases; a database written by an early build opens on this one with every message present and **every sealed cell byte-identical** — migrations add columns and never rewrite a cell, so no upgrade can quietly re-encrypt (or fail to re-encrypt) stored plaintext. Re-opening an already-migrated vault is a no-op rather than an error, and an archive written at an earlier schema restores while a record type from a *later* one is carried rather than dropped. | `vault.dart` migrations, `BACKUP.md` | `app/test/replies_test.dart` (13, incl. a schema-1 database built by hand and upgraded in place, asserting the stored cells come back unchanged), `app/test/backup_test.dart` (the cross-schema archive cases), `app/test/restore_test.dart` |
 
 ## 4. Where we would like the most attention
 
@@ -187,10 +194,10 @@ derivations themselves).
 ## 7. Artifacts and how to run them
 
 ```
-# Protocol library: 128 tests incl. the vector freeze
+# Protocol library: 147 tests incl. the vector freeze
 cd protocol && dart test
 
-# Relay: 45 tests incl. the clean-room vector replay (18 suites, no shared code)
+# Relay: 50 tests incl. the clean-room vector replay (18 suites, no shared code)
 cd server && npm test
 
 # ML-KEM and ML-DSA values re-derived by unrelated FIPS 203/204 implementations
@@ -198,7 +205,12 @@ pip install kyber-py==1.2.0 dilithium-py
 python3 protocol/tool/verify_mlkem.py
 python3 protocol/tool/verify_mldsa.py
 
-# App: 23 test files, most driving real clients through the real relay
+# This brief itself: every file it names exists, and every test suite in the
+# repository is cited by a claim (or listed in the script as deliberately
+# claiming nothing, with a reason)
+python3 tool/check_audit_scope.py
+
+# App: 26 test files, most driving real clients through the real relay
 # (each spawns its own relay process; node must be on PATH)
 cd app && flutter test
 
@@ -210,8 +222,10 @@ cd protocol && dart run tool/gen_vectors.dart
 the reference implementation made is recorded next to the output it produced,
 so a third implementation can be checked without any of our code.
 
-Test vectors and both independent verifiers run on every CI push
-(`.github/workflows/build.yml`), alongside the Android and Linux builds.
+Test vectors, both independent verifiers and the brief-consistency check run
+on every CI push (`.github/workflows/build.yml`), alongside the Android and
+Linux builds. Until 14.3 the ML-DSA verifier was documented but not wired in,
+which is the kind of gap the consistency check exists to stop recurring.
 
 ## 8. What we would like back
 

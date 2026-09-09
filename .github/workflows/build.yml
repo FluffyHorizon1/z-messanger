@@ -51,6 +51,11 @@ jobs:
         run: |
           python3 -m pip install --quiet dilithium-py==1.4.0
           python3 protocol/tool/verify_mldsa.py
+      # The audit brief is the first document an external reviewer reads and the
+      # one that rots fastest: it names files that get renamed, and it misses
+      # test suites added after it was written. Both are cheap to check.
+      - name: Audit brief still describes this repository
+        run: python3 tool/check_audit_scope.py
       - name: App tests (incl. concurrency regression through the real relay)
         working-directory: app
         run: |
