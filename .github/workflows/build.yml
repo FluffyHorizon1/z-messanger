@@ -483,6 +483,10 @@ jobs:
       attestations: write
     runs-on: ubuntu-latest
     steps:
+      # The content-digest step below runs tool/verify_reproducible.py, which
+      # lives in the repository — this job downloads artefacts but never
+      # checked the source out, so the step could not find it.
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
