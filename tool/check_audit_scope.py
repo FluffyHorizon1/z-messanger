@@ -69,6 +69,27 @@ def paths_in(text):
     return out
 
 
+def suite_map(text):
+    """Which claims each test suite backs, read from the brief itself.
+
+    This mapping is not maintained anywhere: it is derived by asking which
+    claim rows mention a suite's filename. That keeps `audit_verify.sh` from
+    becoming a fifth place where the claim/evidence relationship is written
+    down and a fifth place for it to go stale.
+    """
+    out = {}
+    for cid, _claim, _spec, ev in claim_rows(text):
+        pat = r"((?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+(?:_test\.dart|\.test\.js))"
+        for name in re.findall(pat, ev):
+            # The brief writes basenames; a runner needs to know which suite
+            # to attribute the result to, so resolve back to a real path.
+            hit = resolve(name)
+            key = hit.relative_to(ROOT).as_posix() if hit else name
+            if cid not in out.setdefault(key, []):
+                out[key].append(cid)
+    return out
+
+
 SKIP_DIRS = {".git", "node_modules", "build", ".dart_tool", ".gradle", "linux",
              "windows", "macos", "ios", "web", ".venv"}
 
@@ -104,7 +125,14 @@ def resolve(ref):
 
 
 def main():
-    global BASENAMES
+    if "--map" in sys.argv:
+        # path<TAB>C1,C4 — consumed by tool/audit_verify.sh
+        global BASENAMES
+        BASENAMES = index_basenames()
+        for name, claims in sorted(suite_map(BRIEF.read_text()).items()):
+            print(f"{name}\t{','.join(claims)}")
+        return 0
+
     BASENAMES = index_basenames()
 
     text = BRIEF.read_text()
@@ -152,6 +180,27 @@ def main():
                 f"script with a reason."
             )
 
+    # 5. An ambiguous name is qualified.
+    #
+    # `multidevice_test.dart` exists in both protocol/test/ and app/test/,
+    # and the brief cited it bare in one row and qualified in another. A
+    # reader following the bare one opens whichever they find first and
+    # reads the wrong evidence for the claim; so does any tool. Where two
+    # files share a name, the brief has to say which.
+    ambiguous = {n for n, hits in BASENAMES.items() if len(hits) > 1}
+    for cid, _c, _s, ev in rows:
+        pat = r"(?<![/\w])([A-Za-z0-9_]+(?:_test\.dart|\.test\.js|\.dart|\.js))"
+        for name in re.findall(pat, ev):
+            if name in ambiguous:
+                where = ", ".join(
+                    sorted(h.relative_to(ROOT).as_posix() for h in BASENAMES[name]))
+                problems.append(
+                    f"{cid} cites `{name}` without a directory, and that name "
+                    f"exists in more than one place ({where}). A reader "
+                    f"following it reads whichever they find first, which for "
+                    f"this claim may be the wrong evidence entirely."
+                )
+
     # 4. Stated file counts match reality.
     #
     # These numbers were stale by 19 protocol tests, 5 relay tests and 3 app
@@ -183,6 +232,31 @@ def main():
             problems.append(
                 f"AUDIT_SCOPE.md's system table says {m.group(1)} app test "
                 f"files; there are {actual}."
+            )
+
+    # 6. The size of the residual-risk register, where the brief states it.
+    #
+    # Added the day R16 was appended and three documents went on claiming
+    # fifteen. Counts stated in prose are the most reliable thing in a
+    # repository to go stale, which is why four of this script's invariants
+    # are about numbers.
+    tm = ROOT / "docs" / "THREAT_MODEL.md"
+    if tm.exists():
+        rows_r = len(re.findall(r"^\| R\d+ \|", tm.read_text(), re.M))
+        words = {"twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+                 "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+                 "twenty": 20}
+        m = re.search(r"\b([a-z]+)-row residual-risk register", text)
+        if m and words.get(m.group(1)) not in (None, rows_r):
+            problems.append(
+                f"AUDIT_SCOPE.md calls the residual-risk register "
+                f"'{m.group(1)}-row'; THREAT_MODEL.md has {rows_r} rows."
+            )
+        m = re.search(r"\(R1[–-]R(\d+)\)", text)
+        if m and int(m.group(1)) != rows_r:
+            problems.append(
+                f"AUDIT_SCOPE.md cites the register as R1-R{m.group(1)}; it "
+                f"runs to R{rows_r}."
             )
 
     print(f"claims: {len(rows)}   paths checked: {len(paths_in(text))}   "

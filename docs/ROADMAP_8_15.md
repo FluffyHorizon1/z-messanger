@@ -298,9 +298,35 @@ auditing a moving spec wastes the money.
   inclusion" has nothing to attach to. Android rollback is handled by Play;
   desktop rollback is not handled at all, which belongs in the residual-risk
   column rather than behind the word "signed".
-- **14.3 external cryptographic audit** *(the gated 5.2 engagement)* — scope
-  per `AUDIT_SCOPE.md`: handshake, ratchet, PQ mixing, device certs and the
-  enrollment ceremony, KT client. Remediate to zero open high/critical.
+
+- **14.3 external cryptographic audit** *(the package is ready; the engagement
+  is not ours to run)* — scope per `AUDIT_SCOPE.md`: handshake, ratchet, PQ
+  mixing, device certs and the enrollment ceremony. **The KT client named in
+  the original scope does not exist** — `adr/0001` defers the log to phase 11
+  and nothing has triggered it — so it is out of scope rather than quietly
+  reviewed as if present. What was preparable, and is done:
+  - `tool/check_audit_scope.py` makes the brief prove it still describes the
+    repository — every path it names exists, every test suite is cited by some
+    claim or listed as deliberately claiming nothing, ambiguous names are
+    qualified, counts match. It found fourteen problems on its first run,
+    including a working note cited as evidence that does not ship, the
+    clean-room sealed-sender verifier that C4 never cited, and a security
+    property (vault migrations never rewrite a sealed cell) that had been
+    guarded by a test filed under a feature since phase 8. That is now C30.
+  - `tool/audit_verify.sh` runs every verifier in one command and reports by
+    **claim** rather than by suite, naming what it could not run and which
+    claims that leaves unchecked — a green run with `flutter` missing would
+    otherwise hide eleven unverified claims.
+  - A severity rubric anchored to the claims (§8.1), because Critical/High/
+    Medium/Low against an imagined system tells a reviewer nothing: here a
+    finding is Critical because it breaks C1 or C4, not because it was hard
+    to find.
+  - CI now runs `verify_mldsa.py`, which three claims cited as evidence and
+    which had never run automatically.
+
+  Outstanding, and Finnian's to commission: the engagement itself. Phase 15's
+  entry condition is zero open Critical/High, which is what makes this gate
+  real rather than decorative.
 - **14.4 VDP** *(done bar a live submission — `docs/VDP.md`, RFC 9116
   `security.txt` served by the relay, `server/test/security_txt.test.js`)* —
   safe harbour granted in writing, two independent report channels, published

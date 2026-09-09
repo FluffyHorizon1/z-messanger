@@ -193,6 +193,21 @@ derivations themselves).
 
 ## 7. Artifacts and how to run them
 
+Everything below, in one command, reported by claim rather than by suite:
+
+```
+tool/audit_verify.sh            # everything (~6 min)
+tool/audit_verify.sh --quick    # skip the app suite (~1 min)
+tool/audit_verify.sh --list     # which suite backs which claim
+```
+
+It says what it could not run and which claims that leaves unverified, rather
+than passing quietly with a toolchain missing — a green run with `flutter`
+absent would otherwise mean eleven claims went unchecked. The suite‑to‑claim
+mapping is read out of the table in §3, so it cannot drift from this document.
+
+The pieces individually:
+
 ```
 # Protocol library: 147 tests incl. the vector freeze
 cd protocol && dart test
@@ -235,6 +250,40 @@ which is the kind of gap the consistency check exists to stop recurring.
   or broken.
 - A short note on anything in §4 the review did not reach, so we know what
   remains unreviewed.
+
+### 8.1 What each severity means here
+
+Generic severity scales grade findings against an imagined system. Z states
+thirty claims, so severity can be anchored to them: **what a finding lets
+someone do**, not how hard it was to find or how elegant the bug is. A trivial
+one-line mistake that lets the relay read a message is Critical; a beautiful
+piece of cryptanalysis that needs an unlocked device is not.
+
+| | means | examples |
+|---|---|---|
+| **Critical** | Breaks **C1** or **C4**: the relay, its operator, or someone on the network reads content or learns who is talking to whom. Or recovers plaintext from a vault or archive without the passphrase or recovery code (**C11**, **C13**). | key material recoverable from an envelope; a ratchet flaw exposing past messages; a sealed‑sender construction that reveals the sender |
+| **High** | Breaks an identity or verification claim (**C7**, **C8**, **C14**, **C16**, **C17**, **C21**–**C23**, **C30**): a user ends up talking to a party the UI says they are not, a device set can be forged or narrowed, or a verified state survives something that should have cleared it. Or plaintext written to disk anywhere (**C11**). | a device certificate that verifies for a device it does not name; a device list a contact accepts that the account never signed; a safety number that fails to move when the key changes |
+| **Medium** | Degrades a claim without breaking it. Post‑compromise security does not recover as specified (**C6**); a downgrade is possible but detectable; a metadata leak beyond what `THREAT_MODEL.md` admits; a fail‑open where the spec says fail‑closed, reachable only from an unusual state. | a re‑key that silently reuses a generation; a state where a suppressed signature raises nothing |
+| **Low** | A real defect on a narrow path — an unlikely precondition, an attacker position we already assume is rare, or a concession the threat model makes but understates. | an alert that can be delayed but not prevented; a bucket boundary that leaks slightly more than documented |
+| **Informational** | A divergence between spec and implementation with no security consequence, a hardening suggestion, or a residual‑risk row we already publish. | a `PROTOCOL.md` section that describes the code imprecisely |
+
+Three things we would rather you did than not:
+
+* **Grade a documented limit as a finding if you think it is worse than we
+  say.** `THREAT_MODEL.md`'s residual‑risk register (R1–R15) is our estimate,
+  not a settled fact, and "R7 is Medium, not Low, because …" is one of the more
+  useful things a review can return.
+* **Report a claim you could not evaluate.** An unexamined claim looks
+  identical to a confirmed one in the final report, and only you know which
+  it was.
+* **Split a finding rather than round it up.** If one bug is Critical on
+  Android and Low on desktop, two rows are more useful than one argument.
+
+We will fix Critical and High findings before general availability — that is
+phase 15's stated entry condition, and it is the reason this review is gated
+in front of it. Medium and Low are triaged publicly with a decision and a
+reason, including "accepted, and here is why", which then joins the
+residual‑risk register rather than disappearing.
 
 We will fix findings, publish the report and our responses (`ROADMAP.md`
 5.3), and credit the reviewers unless they prefer otherwise. Coordinated
