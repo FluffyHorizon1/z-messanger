@@ -12,8 +12,18 @@ Please report security issues privately, not in public GitHub issues. Open a
 on the repository, or email the maintainer listed on the GitHub profile.
 
 Include what you need to reproduce it and, if you can, the affected version or
-commit. We aim to acknowledge within a few days, agree on a disclosure timeline,
-and credit you in the fix notes unless you'd rather stay anonymous.
+commit.
+
+**`docs/VDP.md` is the full policy**, and the part worth reading before you
+start is the safe harbour: research that follows it is authorised, and we will
+not pursue or support legal action over it. It also states the response targets
+(acknowledge in 5 working days, triage in 10, 90-day coordinated disclosure by
+default — yours to shorten if we go quiet), what we most want broken, what is
+already a documented limit rather than a finding, and that there is no funded
+bounty, because saying otherwise would waste your time.
+
+`https://zmessengers.com/.well-known/security.txt` carries the same contacts in
+machine-readable form.
 
 Especially interested in: anything that lets the relay (or an on-path attacker)
 read message content or reconstruct who is talking to whom, any way to bypass

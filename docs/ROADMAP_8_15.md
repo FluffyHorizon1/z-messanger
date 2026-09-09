@@ -301,8 +301,16 @@ auditing a moving spec wastes the money.
 - **14.3 external cryptographic audit** *(the gated 5.2 engagement)* — scope
   per `AUDIT_SCOPE.md`: handshake, ratchet, PQ mixing, device certs and the
   enrollment ceremony, KT client. Remediate to zero open high/critical.
-- **14.4 VDP** — `security.txt`, safe-harbour disclosure policy, a bounty that
-  actually pays, tested with a live submission.
+- **14.4 VDP** *(done bar a live submission — `docs/VDP.md`, RFC 9116
+  `security.txt` served by the relay, `server/test/security_txt.test.js`)* —
+  safe harbour granted in writing, two independent report channels, published
+  response targets, and an explicit statement that **there is no funded
+  bounty**: Z has no budget, and "rewards at our discretion" when the answer is
+  almost always no wastes the time of the people the policy exists to attract.
+  The `Expires` field is enforced by a test that fails the build once it
+  passes, because an expired security.txt invites reports to an address nobody
+  promises to read. Outstanding: a live submission through both channels, which
+  needs somebody outside to send one.
 - **14.5 published documents** — threat model with an honest residual-risk
   column, `DATA_MAP.md` refreshed for calls and KT, protocol whitepaper.
 

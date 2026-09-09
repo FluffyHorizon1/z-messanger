@@ -775,4 +775,23 @@ for (const [path, html] of [...ROUTES]) {
   if (path !== '/' && !path.endsWith('/')) ROUTES.set(`${path}/`, html);
 }
 
-module.exports = { LANDING_HTML, PRIVACY_HTML, ROUTES, PAGES, STYLE };
+// RFC 9116. Served at /.well-known/security.txt so a researcher who has found
+// something does not have to guess where to send it — the commonest reason a
+// report never arrives is that there was nowhere obvious to put it.
+//
+// `Expires` is mandatory and is a promise that this file is still being
+// looked after. server/test/security_txt.test.js FAILS once it is in the past,
+// so the file cannot quietly rot into a dead contact address.
+const SECURITY_TXT = `# Z (z-messanger) — security contact
+# Policy, scope and safe harbour: https://github.com/FluffyHorizon1/z-messanger/blob/main/docs/VDP.md
+
+Contact: https://github.com/FluffyHorizon1/z-messanger/security/advisories/new
+Contact: mailto:finnianbond@gmail.com
+Expires: 2027-09-09T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://zmessengers.com/.well-known/security.txt
+Policy: https://github.com/FluffyHorizon1/z-messanger/blob/main/docs/VDP.md
+Acknowledgments: https://github.com/FluffyHorizon1/z-messanger/blob/main/docs/VDP.md#thanks
+`;
+
+module.exports = { LANDING_HTML, PRIVACY_HTML, SECURITY_TXT, ROUTES, PAGES, STYLE };

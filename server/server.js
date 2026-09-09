@@ -28,7 +28,7 @@ const http = require('http');
 const https = require('https');
 const { WebSocketServer } = require('ws');
 const { PushSender } = require('./push.js');
-const { ROUTES } = require('./pages.js');
+const { ROUTES, SECURITY_TXT } = require('./pages.js');
 
 // ---------------------------------------------------------------------------
 // Configuration (environment variables)
@@ -562,6 +562,20 @@ function createServer(opts = {}) {
       // Aggregate delivery SLIs only — no per-user data, no content, RAM only.
       res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' });
       res.end(renderMetrics(coord.stats()));
+      return;
+    }
+    // RFC 9116. Both paths: the well-known one is the standard, and the bare
+    // one is where people actually look first. Served as text/plain, so it sits
+    // ahead of the HTML page lookup rather than inside ROUTES.
+    if (
+      req.url === '/.well-known/security.txt' ||
+      req.url === '/security.txt'
+    ) {
+      res.writeHead(200, {
+        'content-type': 'text/plain; charset=utf-8',
+        'cache-control': 'public, max-age=3600',
+      });
+      res.end(SECURITY_TXT);
       return;
     }
     // Static pages (embedded strings — the relay still never touches disk).
