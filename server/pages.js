@@ -14,12 +14,17 @@
 // cannot quietly stop matching the product.
 
 const STYLE = `
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
   :root {
     color-scheme: dark light;
     --bg: #050810; --surface: #0A1220; --surface-alt: #111C2C;
     --accent: #00B4FF; --on-accent: #031626;
     --text: #E9F1F8; --text-dim: #7C91A6; --divider: #15202E;
     --ok: #3DD68C; --warn: #FFB300; --danger: #FF6B70;
+    --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --accent-line: color-mix(in srgb, var(--accent) 34%, transparent);
+    --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
   }
   @media (prefers-color-scheme: light) {
     :root {
@@ -30,83 +35,103 @@ const STYLE = `
     }
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
   body {
     background: var(--bg); color: var(--text);
-    font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--sans); font-size: 16px; line-height: 1.65;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 780px; margin: 0 auto; padding: 28px 24px 64px; }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 40px 22px 96px; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-line); }
+  a:hover { border-bottom-color: var(--accent); }
   nav {
-    display: flex; align-items: center; flex-wrap: wrap; gap: 6px 18px;
-    padding-bottom: 20px; border-bottom: 1px solid var(--divider);
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px;
+    padding-bottom: 22px; border-bottom: 1px solid var(--divider);
   }
   nav .mark {
-    font-weight: 900; font-size: 26px; color: var(--accent);
-    letter-spacing: -1px; margin-right: 6px;
+    font-family: var(--mono); font-weight: 600; font-size: 22px; color: var(--accent);
+    line-height: 1; border: 2px solid var(--accent-line); border-radius: 9px;
+    width: 38px; height: 38px; display: flex; align-items: center;
+    justify-content: center; margin-right: 4px; border-bottom-width: 2px;
   }
-  nav a { color: var(--text-dim); font-size: 14px; }
+  nav .mark:hover { border-color: var(--accent); }
+  nav a { color: var(--text-dim); font-size: 14px; border-bottom: none; }
   nav a:hover, nav a[aria-current] { color: var(--accent); }
-  h1 { font-size: 38px; line-height: 1.15; margin: 26px 0 12px; letter-spacing: -0.5px; }
-  h2 { font-size: 22px; margin: 34px 0 10px; color: var(--accent); }
-  h3 { font-size: 17px; margin: 20px 0 6px; }
+  h1 {
+    font-size: 34px; font-weight: 700; line-height: 1.15;
+    margin: 30px 0 12px; letter-spacing: -0.02em; text-wrap: balance;
+  }
+  h2 {
+    font-size: 20px; font-weight: 600; margin: 38px 0 10px;
+    color: var(--accent); letter-spacing: -0.01em;
+  }
+  h3 { font-size: 16px; font-weight: 600; margin: 20px 0 6px; }
   p, li { color: var(--text-dim); }
   p { margin: 10px 0; }
-  .lead { font-size: 18px; color: var(--text); }
+  .lead { font-size: 18px; color: var(--text); text-wrap: pretty; }
   .muted { color: var(--text-dim); font-size: 14px; }
-  ul { padding-left: 22px; margin: 10px 0; }
+  ul { padding-left: 20px; margin: 10px 0; }
   li { margin: 7px 0; }
-  b, strong { color: var(--text); }
+  b, strong { color: var(--text); font-weight: 600; }
   .card {
     background: var(--surface); border: 1px solid var(--divider);
-    border-radius: 14px; padding: 18px 20px; margin: 14px 0;
+    border-radius: 12px; padding: 18px 20px; margin: 14px 0;
   }
-  .card h3 { margin-top: 0; }
+  .card h3 { margin-top: 0; color: var(--text); }
   .grid { display: grid; gap: 14px; }
   @media (min-width: 640px) { .grid.two { grid-template-columns: 1fr 1fr; } }
-  .btns { display: flex; flex-wrap: wrap; gap: 12px; margin: 22px 0 8px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 8px; }
   .btn {
-    display: inline-block; padding: 12px 20px; border-radius: 10px;
-    background: var(--accent); color: var(--on-accent); font-weight: 700;
+    display: inline-block; padding: 11px 20px; border-radius: 9px;
+    background: var(--accent); color: var(--on-accent);
+    font-weight: 600; font-size: 15px; border-bottom: none;
   }
   .btn.alt {
-    background: var(--surface-alt); color: var(--text);
+    background: transparent; color: var(--text);
     border: 1px solid var(--divider);
   }
-  .btn:hover { text-decoration: none; filter: brightness(1.08); }
+  .btn.alt:hover { border-color: var(--accent-line); }
+  .btn:hover { filter: brightness(1.08); }
   code {
-    background: var(--surface-alt); border-radius: 6px; padding: 2px 7px;
-    font-size: 14px; color: var(--text);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: var(--mono); font-size: 0.88em;
+    background: var(--surface-alt); border: 1px solid var(--divider);
+    border-radius: 5px; padding: 1px 6px; color: var(--text);
   }
   pre {
     background: var(--surface-alt); border: 1px solid var(--divider);
     border-radius: 10px; padding: 14px 16px; margin: 12px 0;
-    overflow-x: auto; font-size: 14px;
+    overflow-x: auto; font-size: 14px; font-family: var(--mono);
   }
-  pre code { background: none; padding: 0; }
+  pre code { background: none; border: none; padding: 0; }
   .steps { counter-reset: s; list-style: none; padding-left: 0; }
   .steps li {
-    counter-increment: s; position: relative; padding-left: 40px; margin: 14px 0;
+    counter-increment: s; position: relative; padding-left: 44px; margin: 16px 0;
   }
   .steps li::before {
-    content: counter(s); position: absolute; left: 0; top: 1px;
-    width: 26px; height: 26px; border-radius: 50%;
-    background: var(--accent); color: var(--on-accent);
-    font-weight: 700; font-size: 14px; text-align: center; line-height: 26px;
+    content: counter(s); position: absolute; left: 0; top: 0;
+    width: 28px; height: 28px; border-radius: 8px;
+    background: var(--accent-soft); color: var(--accent);
+    border: 1px solid var(--accent-line);
+    font-family: var(--mono); font-weight: 600; font-size: 13px;
+    text-align: center; line-height: 26px;
   }
   .yes::before, .no::before { font-weight: 700; margin-right: 8px; }
-  .yes::before { content: "✓"; color: var(--ok); }
-  .no::before  { content: "✕"; color: var(--danger); }
+  .yes::before { content: "\\2713"; color: var(--ok); }
+  .no::before  { content: "\\2715"; color: var(--danger); }
   .note {
-    border-left: 3px solid var(--warn); background: var(--surface);
-    padding: 12px 16px; margin: 16px 0; border-radius: 0 10px 10px 0;
+    border-left: 2px solid var(--warn); background: var(--surface);
+    padding: 12px 16px; margin: 18px 0; border-radius: 0 10px 10px 0;
   }
-  footer { margin-top: 52px; border-top: 1px solid var(--divider); padding-top: 20px; }
+  footer { margin-top: 56px; border-top: 1px solid var(--divider); padding-top: 22px; }
   footer .cols { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-bottom: 14px; }
-  footer a { font-size: 14px; }
-  .logo { font-size: 60px; font-weight: 900; color: var(--accent); line-height: 1; letter-spacing: -3px; }
+  footer a { font-size: 14px; color: var(--text-dim); border-bottom: none; }
+  footer a:hover { color: var(--accent); }
+  .logo {
+    font-family: var(--mono); font-weight: 600; font-size: 46px; color: var(--accent);
+    line-height: 1; border: 2px solid var(--accent-line); border-radius: 14px;
+    width: 76px; height: 76px; display: flex; align-items: center;
+    justify-content: center; margin-bottom: 4px;
+  }
 `;
 
 const RELEASES = 'https://github.com/FluffyHorizon1/z-messanger/releases/latest';
