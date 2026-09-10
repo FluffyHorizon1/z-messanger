@@ -28,7 +28,12 @@ const http = require('http');
 const https = require('https');
 const { WebSocketServer } = require('ws');
 const { PushSender } = require('./push.js');
-const { ROUTES, SECURITY_TXT } = require('./pages.js');
+const {
+  ROUTES,
+  SECURITY_TXT,
+  FAVICON_SVG,
+  FAVICON_ICO,
+} = require('./pages.js');
 
 // ---------------------------------------------------------------------------
 // Configuration (environment variables)
@@ -562,6 +567,26 @@ function createServer(opts = {}) {
       // Aggregate delivery SLIs only — no per-user data, no content, RAM only.
       res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' });
       res.end(renderMetrics(coord.stats()));
+      return;
+    }
+    // The tab icon, in both formats. Served ahead of the HTML lookup because
+    // neither is HTML, and cached hard — the mark changes about as often as
+    // the brand does.
+    if (req.url === '/favicon.svg') {
+      res.writeHead(200, {
+        'content-type': 'image/svg+xml',
+        'cache-control': 'public, max-age=604800',
+      });
+      res.end(FAVICON_SVG);
+      return;
+    }
+    if (req.url === '/favicon.ico') {
+      res.writeHead(200, {
+        'content-type': 'image/x-icon',
+        'cache-control': 'public, max-age=604800',
+        'content-length': FAVICON_ICO.length,
+      });
+      res.end(FAVICON_ICO);
       return;
     }
     // RFC 9116. Both paths: the well-known one is the standard, and the bare

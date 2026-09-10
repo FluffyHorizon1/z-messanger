@@ -249,6 +249,25 @@ test('nothing the site serves carries a personal address', async () => {
   );
 });
 
+test('the tab icon is served in both formats, and every page points at it', async () => {
+  const svg = await get('/favicon.svg');
+  assert.strictEqual(svg.status, 200);
+  assert.ok(svg.type.includes('image/svg+xml'), `favicon.svg served as ${svg.type}`);
+  assert.ok(svg.body.includes('<svg'), 'favicon.svg is not SVG');
+
+  const ico = await get('/favicon.ico');
+  assert.strictEqual(ico.status, 200, 'browsers request /favicon.ico whether or not it is linked');
+  assert.ok(ico.type.includes('image/x-icon'), `favicon.ico served as ${ico.type}`);
+
+  for (const [path] of [['/'], ...PAGES]) {
+    const r = await get(path);
+    assert.ok(
+      r.body.includes('<link rel="icon" href="/favicon.svg"'),
+      `${path} has no tab icon`
+    );
+  }
+});
+
 test('pages are embedded strings — no fs reads in pages.js', async () => {
   const fs = require('fs');
   const src = fs.readFileSync(require.resolve('../pages.js'), 'utf8');

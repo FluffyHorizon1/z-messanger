@@ -171,6 +171,23 @@ const REPO = 'https://github.com/FluffyHorizon1/z-messanger';
 // Every page that is served. The footer is generated from this list, so a page
 // can never be added without becoming reachable, and the ad sitelinks can never
 // point at a path the relay does not answer.
+// The tab icon. Same mark and colours as the app launcher icon, but with a
+// heavier stroke: the launcher glyph covers about three per cent of its tile,
+// which disappears at the 16px a browser tab actually renders. Both formats
+// are embedded, so the relay still reads nothing from disk — SVG for anything
+// modern, and ICO for the browsers and bookmark managers that only ever ask
+// for /favicon.ico.
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<rect width="64" height="64" rx="14" fill="#050810"/>
+<path d="M17 16h30v8L31 40h16v8H17v-8l16-16H17z" fill="#00B4FF"/>
+</svg>
+`;
+
+const FAVICON_ICO = Buffer.from(
+  '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',
+  'base64'
+);
+
 const PAGES = [
   ['/how-it-works', 'How it works'],
   ['/privacy', 'Privacy'],
@@ -206,6 +223,9 @@ const page = (path, title, description, body) => `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="${description}">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="apple-touch-icon" href="/favicon.svg">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#050810">
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F3F7FB">
 <link rel="canonical" href="https://zmessengers.com${path === '/' ? '/' : path}">
@@ -857,4 +877,8 @@ Policy: https://github.com/FluffyHorizon1/z-messanger/blob/main/docs/VDP.md
 Acknowledgments: https://github.com/FluffyHorizon1/z-messanger/blob/main/docs/VDP.md#thanks
 `;
 
-module.exports = { LANDING_HTML, PRIVACY_HTML, SECURITY_TXT, ROUTES, PAGES, STYLE };
+module.exports = {
+  LANDING_HTML, PRIVACY_HTML, SECURITY_TXT,
+  FAVICON_SVG, FAVICON_ICO,
+  ROUTES, PAGES, STYLE,
+};
