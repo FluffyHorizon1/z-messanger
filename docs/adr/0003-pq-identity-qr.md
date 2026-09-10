@@ -182,9 +182,17 @@ message from another. Measured wire sizes:
 | device list, **hybrid**, 1 device | 16 384 |
 | device list, **hybrid**, 2–3 devices | 65 536 |
 
+*Correction (2026‑09‑10): the classical‑list row was inferred from inner
+bytes, not sent through the pipeline. Measured, a classical device list of
+one to four devices is a **4 096**‑bucket envelope — the bucket of a text of
+~190 to ~1 900 characters — and the 1 024 bucket holds only inner messages
+of ~250 bytes or less. See the addendum to `adr/0004` and
+`protocol/test/sealed_bucket_test.dart`. The conclusion below is unchanged:
+a device list is the size of ordinary chat; a hybrid one is not.*
+
 Today a device‑list update is *indistinguishable from an ordinary chat
-message* — both sit in the 1 024 bucket, which is the whole point of the
-bucketing. Hybrid certificates would move it to a bucket almost nothing else
+message* — both sit in the ~~1 024~~ 4 096 bucket, which is the whole point
+of the bucketing. Hybrid certificates would move it to a bucket almost nothing else
 occupies, so the relay would learn **when an account changes its device set**,
 and roughly **how many devices it has**, from envelope size alone.
 
@@ -196,7 +204,7 @@ authentication.
 
 The fix is the same trick this ADR already adopts, applied in‑band: **a device
 list carries the classical certificates plus a per‑device commitment to the PQ
-half**, keeping it in the 1 024 bucket, and the PQ halves travel separately —
+half**, keeping it in ~~the 1 024~~ its bucket, and the PQ halves travel separately —
 where they are just bytes, uncorrelated with a device‑list event. 13.1 should
 settle the exact shape, but it should not ship a device list that announces
 itself by size.

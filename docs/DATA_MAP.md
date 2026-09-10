@@ -85,10 +85,10 @@ dependency-metadata blob in the APK either.
 |---|---|---|
 | A message | Sealed envelope, padded to one of six buckets | Its recipient, its arrival time, its bucket |
 | An attachment | Chunks sealed under a per-file key, padded | Same, per chunk |
-| Your device list | An inner message inside the ratchet, 1 024 bucket | Indistinguishable from a chat message |
+| Your device list | An inner message inside the ratchet, 4 096 bucket | Indistinguishable from a chat message of ~190–1 900 characters |
 | Your post-quantum device-list signature | Its own inner message, 16 384 bucket, on a delayed schedule (`adr/0004`) | A ~16 KB envelope at an unrelated time — see R2 in `THREAT_MODEL.md` |
-| Your post-quantum identity key | An inner message, 4 096 bucket | Indistinguishable from a longer chat message |
-| A read receipt / typing state | Inner message, 1 024 bucket | Same as any short message |
+| Your post-quantum identity key | An inner message, 16 384 bucket, early in a new conversation | A ~16 KB envelope, as a text of 2 000+ characters would be (`adr/0004`, addendum) |
+| A read receipt / typing state | Inner message, 1 024 bucket | Same as any short message (up to ~180 characters) |
 
 ## Erasure
 

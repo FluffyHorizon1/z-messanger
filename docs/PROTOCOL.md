@@ -1261,8 +1261,11 @@ must be hybrid is the account's attestation, and that is the certificate.
 **Distribution is constrained, and the constraint is not obvious.** A hybrid
 certificate is ~3.4 KB. Sealed sender pads envelopes into buckets (§8) so the
 relay cannot tell one kind of message from another, and today a device‑list
-update sits in the 1 024‑byte bucket alongside ordinary chat. Certificates of
-this size move it to 16 384 or 65 536 — buckets almost nothing else occupies —
+update sits in the 4 096‑byte bucket alongside ordinary chat of a few hundred
+characters (measured through the whole pipeline; the 1 024 bucket this
+paragraph first named holds only inner messages of ~250 bytes or less — see
+`adr/0004`, addendum). Certificates of this size move it to 16 384 or 65 536
+— buckets almost nothing else occupies —
 which would tell the relay **when an account changes its device set and
 roughly how many devices it has**, from envelope size alone. That is a new
 leak running opposite to the threats `adr/0001` is about, and it would be
@@ -1474,7 +1477,7 @@ The signature travels as its own inner message, and can be asked for:
 ```
 
 A sender MUST NOT send it with the list. A ~3.3 KB signature does not fit the
-1 024‑byte bucket a device list and ordinary chat share, and no arrangement
+4 096‑byte bucket a device list and ordinary chat share, and no arrangement
 makes it fit; what a separate message buys is that the 16 384‑byte envelope it
 needs is **uncorrelated in time** with a device‑set change. Clients SHOULD
 therefore delay it — the reference client by hours, jittered — and send it

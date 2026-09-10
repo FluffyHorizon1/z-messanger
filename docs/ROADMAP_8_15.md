@@ -212,8 +212,9 @@ forges identities even though it cannot read past traffic.
   certificate, because per-certificate halves do not authenticate the *set* —
   an adversary who can forge Ed25519 presents a subset whose every remaining
   certificate is genuine. It travels as its own message on a delayed,
-  jittered schedule, so the list keeps its 1024-byte padding bucket and the
-  16 KB envelope the signature needs is uncorrelated with a device change.
+  jittered schedule, so the list keeps its ~~1024-byte~~ 4 096-byte padding
+  bucket (rev. 25) and the 16 KB envelope the signature needs is uncorrelated
+  with a device change.
 - **13.2 contact code v3** *(done — `identity_v3.dart`, PROTOCOL §18.2–18.3)* — `zc3.` carrying hybrid account keys and hybrid
   device certs; v2 codes still resolve with a "classical identity" marker.
   **Open problem — now decided: see `adr/0003-pq-identity-qr.md`.** Measured,
@@ -223,7 +224,7 @@ forges identities even though it cannot read past traffic.
   nothing and collapses into trust-on-first-use); the ML-DSA keys travel
   in-band and are checked against it, mismatch being a hard failure. The ADR
   also found that shipping hybrid certs in a device list moves it from the
-  1 024-byte padding bucket to 16 384 or 65 536, telling the relay when an
+  ~~1 024-byte~~ 4 096-byte padding bucket (rev. 25) to 16 384 or 65 536, telling the relay when an
   account changes its device set and roughly how many devices it has — 13.1
   must not ship that.
 - **13.3 safety number v2** *(done — PROTOCOL §18.5, `verification_ux_test.dart`)* — derived from both key halves. A visible, one-time
@@ -735,7 +736,7 @@ direction; the phases, their order and both ordering arguments stand.
    trust-on-first-use, where an attacker present at the first exchange
    substitutes their own ML-DSA key and passes every hybrid check afterwards.
    It is a **commitment**. Separately, hybrid device certs would push a
-   device-list update out of the 1 024-byte bucket that ordinary chat occupies
+   device-list update out of the ~~1 024-byte~~ 4 096-byte bucket (rev. 25) that ordinary chat occupies
    and into one almost nothing else uses — a new metadata leak introduced by a
    phase meant to strengthen authentication, and the opposite direction from
    ADR-0001's T1–T3. Same fix, applied in-band: the list carries commitments,
@@ -811,9 +812,10 @@ direction; the phases, their order and both ordering arguments stand.
 21. **13.1 — distribution changed the shape of the signature** (`adr/0004`).
    §18.4 implied a post-quantum half per certificate. Measuring showed the
    buckets cannot hide 3.3 KB whatever is done — moving the halves out of the
-   list does not put them back in the 1024 bucket, it only decorrelates them
-   in time, and ADR 0003's "16 384 or 65 536" was really 16 384 for one to
-   three devices with the cliff at four. But the deciding argument was not
+   list does not put them back in the ~~1024~~ chat buckets, it only decorrelates them
+   in time, and ADR 0003's "16 384 or 65 536" was ~~really 16 384 for one to
+   three devices with the cliff at four~~ 16 384 for one or two devices with
+   the cliff at three (rev. 25 — that sentence was itself an inference). But the deciding argument was not
    size: **per-certificate halves do not authenticate the set.** Given a
    genuine hybrid list, an adversary who can forge Ed25519 presents a subset
    — classical signature forged, every remaining certificate's post-quantum
@@ -863,3 +865,23 @@ direction; the phases, their order and both ordering arguments stand.
    at the slots' path and writes whether a debug-signed build at the same
    path reproduced the digest into `SHA256SUMS.txt`. `--split-debug-info`
    was tried as a way out and does not remove the URI. The fix is upstream.
+
+25. **§8 buckets — the bucket column in two accepted ADRs was inferred from
+   inner byte counts, and the boundaries are a quarter of what it implied.**
+   ADR 0003's and ADR 0004's size tables read buckets off `sealedBuckets`
+   from inner-message sizes. Between an inner message and its bucket sit the
+   ratchet's 256-byte padding and two layers of base64 in JSON. Sent through
+   the real pipeline, the 1 024 bucket holds one ratchet block — a text of at
+   most ~180 characters, a receipt, a reaction — and a classical device list
+   of any realistic size is a 4 096-bucket envelope, the bucket of a text of
+   ~190 to ~1 900 characters. `pqid` is 16 384, not 4 096. The per-device
+   cliff ADR 0004 put at four devices is at three. Every decision stands —
+   a device list is still the size of ordinary chat, a post-quantum artefact
+   still is not, and nothing in 0004's deciding argument is a size — but
+   six documents (both ADRs, PROTOCOL §18.4 and §18.9, DATA_MAP, this file,
+   AUDIT_SCOPE C23) stated a number that was never measured, one of them
+   under a heading that began "Measured". `protocol/test/sealed_bucket_test.dart`
+   now pins the boundaries the documents quote, and was broken once to
+   check it fires. Found while measuring call signalling shapes for
+   `adr/0005`, which is why that ADR quotes only what the same harness
+   produced.

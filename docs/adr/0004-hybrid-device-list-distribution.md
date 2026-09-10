@@ -153,3 +153,64 @@ mechanism ever exists for another reason**; do not build one for this.
   dependent on each other, which is what this ADR is avoiding.
 * **§18.4's distribution paragraph is superseded** by §18.9. The certificate
   format it specifies is unchanged.
+
+## Addendum (2026‑09‑10) — the bucket column was inferred, not measured
+
+The table under *Measured, before deciding* gives inner‑message byte counts
+and, beside each, a bucket. The byte counts were measured. The buckets were
+read off `sealedBuckets` from those byte counts — and between an inner
+message and its bucket sit the Double Ratchet's 256‑byte padding, a base64
+transport payload wrapped in JSON, the sealed envelope's own JSON, and base64
+again. Sent through that whole pipeline, the way `ChatService._sendInner`
+sends everything (`protocol/test/sealed_bucket_test.dart`, which now pins
+these boundaries), the buckets are:
+
+| shape | inner bytes | bucket |
+|---|---|---|
+| text, `"ok"` | 74 | 1 024 |
+| text, 180 characters | 252 | 1 024 |
+| text, 190 characters | 262 | **4 096** |
+| text, 900 characters | 972 | **4 096** (table above said 1 024) |
+| text, 1 900 characters | 1 972 | 4 096 |
+| text, 2 000 characters | 2 072 | **16 384** |
+| `pqid` (one ML‑DSA public key) | 2 692 | **16 384** (said 4 096) |
+| device list, classical, 1 / 2 / 3 / 4 devices | 489 / 723 / 957 / 1 190 | **4 096** (said 1 024) |
+| device list, hybrid certs inline, 1 device | 4 883 | 16 384 |
+| device list, hybrid certs inline, 2 / 3 devices | 9 544 / 14 205 | **65 536** (said 16 384) |
+| separate message, per‑device `mlsig`, 1 / 2 devices | 4 467 / 8 891 | 16 384 |
+| separate message, per‑device `mlsig`, 3 devices | 13 315 | **65 536** (said 16 384) |
+| one list‑level `dlpq` (any count) | 4 567 | 16 384 |
+
+The rejected shapes were re‑run as fillers of the byte counts recorded above;
+everything else is a real object. Real texts, lists and post‑quantum artefacts
+differ by a few bytes from the original fixtures, which changes no bucket.
+
+What this changes:
+
+* **The 1 024 bucket holds one ratchet block** — an inner message of at most
+  ~250 bytes, which is a text of at most ~180 characters, a receipt, a
+  reaction. A device list has never been in it. **A classical device list is
+  a 4 096‑bucket envelope, which is what every text between ~190 and ~1 900
+  characters is.** The claim this ADR and ADR 0003 rest on — a device‑list
+  update is indistinguishable from an ordinary chat message — holds, for a
+  different bucket than either said.
+* **The cliff is at three devices, not four.** Per‑device signatures cross
+  into 65 536 at the third device, so option (b) leaked a device‑count band at
+  a *lower* count than argued here. The decision is unchanged and slightly
+  strengthened; nothing in *The argument that actually decides it* depends on
+  a size.
+* **`pqid` is a 16 384‑bucket envelope, not 4 096.** It is sent early in a new
+  conversation, so a new contact is marked by one ~16 KB envelope near its
+  start in addition to the periodic `dlpq`. A text of 2 000 characters or more
+  is the same size, so "v3 client" is the most the size says; the *timing*
+  observation is new and is recorded here rather than argued away. R2 in
+  `THREAT_MODEL.md` covers the size.
+* ADR 0003's table, `DATA_MAP.md`'s wire‑shape table, `PROTOCOL.md` §18.4
+  and §18.9, `AUDIT_SCOPE.md` C23 and the roadmap's 13.1/13.2 entries carried
+  the 1 024 figure and are corrected alongside this addendum; R2 in
+  `THREAT_MODEL.md` was true as written and now names both chat buckets.
+
+The rule this repository keeps re‑learning applies to its own decision
+records: an inference offered where a measurement belongs is a bug, and
+this one sat in an *accepted* ADR for two days under a heading that began
+with the word "Measured".
