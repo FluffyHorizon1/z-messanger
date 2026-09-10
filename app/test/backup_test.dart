@@ -15,6 +15,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/archive.dart';
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/models.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -139,6 +140,21 @@ void main() {
         () =>
             alice.messagesByChat[bob.myRid]!.any((m) => m.reactions.isNotEmpty),
         what: "alice sees bob's reaction");
+    // Nothing may still be on its way to Alice when her device is wiped. An
+    // envelope queued at the relay for a device that no longer holds the
+    // session — Bob's delivery receipt for the last message, typically — is
+    // undecryptable after the restore, and the restored device says so with
+    // a system message. That is correct behaviour and a fourth row in a
+    // history that had three, which is not what this test is about. Every
+    // tick in means Bob has nothing left to send.
+    await waitUntil(
+        () => [
+              ...alice.messagesByChat[bob.myRid]!,
+              ...alice.messagesByChat[gid]!,
+            ]
+                .where((m) => m.outgoing)
+                .every((m) => m.status >= MsgStatus.delivered),
+        what: 'every message Alice sent has been delivered');
 
     final beforeDirect = alice.messagesByChat[bob.myRid]!.length;
     final beforeGroup = alice.messagesByChat[gid]!.length;
