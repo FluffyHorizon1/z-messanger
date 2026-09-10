@@ -41,7 +41,7 @@ Either channel, whichever you prefer:
 * a [private security advisory](https://github.com/FluffyHorizon1/z-messanger/security/advisories/new)
   on the repository — preferred, because it keeps the discussion attached to
   the code and lets us credit you automatically;
-* email **finnianbond@gmail.com**.
+* email **support@securedcybersolutions.co.uk**.
 
 There are two on purpose: someone who will not open a GitHub account still has
 somewhere to go, and an address that bounces should not silence everybody.

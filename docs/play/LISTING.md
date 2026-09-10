@@ -70,7 +70,7 @@ Z is for people who think privacy should be the default, not a feature.
 | App or game | App |
 | Category | Communication |
 | Tags | Messenger, Privacy, Encryption |
-| Email (support, shown publicly) | finnianbond@gmail.com |
+| Email (support, shown publicly) | support@securedcybersolutions.co.uk |
 | Website | https://zmessengers.com |
 | Privacy policy URL | https://zmessengers.com/privacy |
 
