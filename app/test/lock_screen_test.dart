@@ -6,6 +6,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:zapp/l10n/app_localizations.dart';
 import 'package:zapp/core/app_lock.dart';
 import 'package:zapp/ui/lock_screen.dart';
 
@@ -41,7 +42,9 @@ void main() {
   testWidgets('prompts on show, reports a cancel, unlocks on retry',
       (tester) async {
     gate.answers.addAll([GateResult.cancelled, GateResult.ok]);
-    await tester.pumpWidget(MaterialApp(home: LockScreen(lock: lock)));
+    await tester.pumpWidget(MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,home: LockScreen(lock: lock)));
     await tester.pumpAndSettle();
     expect(gate.calls, 1, reason: 'prompted as soon as it appeared');
     expect(find.text('Unlock cancelled.'), findsOneWidget);
@@ -59,6 +62,8 @@ void main() {
       (tester) async {
     gate.answers.add(GateResult.failed);
     await tester.pumpWidget(MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
       home: LockScreen(
         lock: lock,
         verifyPassphrase: (p) async => p == 'open sesame',

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/app_localizations.dart';
+
 import 'theme.dart';
 
 /// Shown at launch when the vault is passphrase-protected. The passphrase is
@@ -35,6 +37,7 @@ class _UnlockScreenState extends State<UnlockScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       body: SafeArea(
           child: Center(
@@ -56,7 +59,7 @@ class _UnlockScreenState extends State<UnlockScreen> {
                         height: 1)),
                 const SizedBox(height: 8),
                 Text(
-                  'Enter your passphrase to unlock this device.',
+                  l.unlockPrompt,
                   textAlign: TextAlign.center,
                   style: TextStyle(color: context.z.textSecondary),
                 ),
@@ -68,13 +71,13 @@ class _UnlockScreenState extends State<UnlockScreen> {
                   enabled: !widget.busy,
                   onSubmitted: (_) => _submit(),
                   decoration: InputDecoration(
-                    labelText: 'Passphrase',
+                    labelText: l.unlockPassphraseLabel,
                     suffixIcon: IconButton(
                       // The label states what the control DOES, and changes
                       // with the state, because a screen reader announces it
                       // in place of an icon nobody can see. "Visibility" would
                       // describe the glyph rather than the action.
-                      tooltip: _obscure ? 'Show passphrase' : 'Hide passphrase',
+                      tooltip: _obscure ? l.unlockShowPassphrase : l.unlockHidePassphrase,
                       icon: Icon(
                           _obscure ? Icons.visibility : Icons.visibility_off,
                           color: context.z.textSecondary),
@@ -101,22 +104,19 @@ class _UnlockScreenState extends State<UnlockScreen> {
                           width: 20,
                           height: 20,
                           child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Unlock'),
+                      : Text(l.unlockTitle),
                 ),
                 if (widget.onBiometric != null) ...[
                   const SizedBox(height: 12),
                   OutlinedButton.icon(
                     onPressed: widget.busy ? null : widget.onBiometric,
                     icon: const Icon(Icons.fingerprint),
-                    label: const Text('Use fingerprint / face'),
+                    label: Text(l.unlockUseBiometrics),
                   ),
                 ],
                 const SizedBox(height: 24),
                 Text(
-                  'Your passphrase unlocks the encrypted vault on THIS device '
-                  'only. It is never sent anywhere, and there is no way to '
-                  'recover it — if you forget it, restore your identity from a '
-                  '.zid backup.',
+                  l.unlockFootnote,
                   textAlign: TextAlign.center,
                   style:
                       TextStyle(color: context.z.textSecondary, fontSize: 12),

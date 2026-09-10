@@ -451,8 +451,9 @@ Everything currently externally gated, plus the work to call it 1.0.
   extra-device fan-out is `unawaited` and not in these timings), cold start,
   relay latency under sustained load, and the receive side — which is where
   the skipped-key cache is actually used.
-- **15.4 docs & support & access** *(accessibility and the user docs done;
-  **localization** is what remains — strings are hardcoded English today)*.
+- **15.4 docs & support & access** *(accessibility, user docs and the
+  localization foundation done; the string migration itself is 2 of 14 screens
+  and tracked)*.
 
   `USING_Z.md` is the first document in this repository written for someone
   who is not reading the code: adding people, what a safety number is and what
@@ -470,6 +471,35 @@ Everything currently externally gated, plus the work to call it 1.0.
   an unaudited design, and the fact that nobody outside the project has yet
   rebuilt a release. It ends with what *is* left, precisely, because a claim
   too broad gets someone hurt and a claim too narrow gets ignored.
+
+  **Localization has a foundation and a ratchet, not a finished migration.**
+  There are ~480 hardcoded English strings across thirteen screens, and a
+  large share of them is security wording — the safety-number banners, the
+  "there is no way to recover it" note — where a careless translation
+  misleads somebody. Extracting all of it in one pass at the end of a session
+  would be the wrong way to do it, so what landed is: `flutter_localizations`
+  and `flutter gen-l10n` wired up, `lib/l10n/app_en.arb` with per-string
+  descriptions saying what each one is *for* (translators get the intent, not
+  just the words), and the two pre-account screens migrated end to end as the
+  worked example.
+
+  `tool/check_l10n.py` is what stops it stalling at screen two: a screen
+  listed as migrated must contain **zero** user-visible literals, so it cannot
+  silently regress, and everything else is counted so the remaining work is a
+  number that goes down. It found four strings on its first run — a
+  concatenated multi-line footnote I had put in the ARB and never actually
+  substituted.
+
+  The a11y test also gained an **RTL pass**. Arabic is one of the six locales
+  Z publishes release notes in, and right-to-left breaks in ways nobody sees
+  until somebody tries it — a `Row` that wanted an alignment, an
+  `EdgeInsets.only` that wanted to be directional. Forcing the direction
+  catches those before the strings exist to test with.
+
+  One consequence worth knowing: any test pumping a localized screen must
+  supply `AppLocalizations.localizationsDelegates`, or `AppLocalizations.of`
+  throws. Four suites needed it, including `screenshots_test`, which is how
+  the README's screenshots get rendered.
 
   **Accessibility is done and enforced.** The starting position was worse than
   the entry implies: *zero* `Semantics` widgets and eleven tooltips across

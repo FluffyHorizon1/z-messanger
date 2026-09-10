@@ -29,6 +29,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/app_lock.dart';
 import 'package:zapp/core/vault.dart';
+import 'package:zapp/l10n/app_localizations.dart';
 import 'package:zapp/ui/lock_screen.dart';
 import 'package:zapp/ui/theme.dart';
 import 'package:zapp/ui/onboarding_screen.dart';
@@ -43,13 +44,23 @@ import 'package:zapp/ui/unlock_screen.dart';
 /// The first draft of this file did exactly that and nearly had me changing
 /// the brand colour to fix a bug that was mine. `app/tool/contrast.py` says
 /// every real pair clears AA, in both palettes.
-Widget _host(Widget child, ThemeData theme, {double textScale = 1.0}) =>
+Widget _host(Widget child, ThemeData theme,
+        {double textScale = 1.0, Locale? locale}) =>
     MediaQuery(
       data: MediaQueryData(
         size: const Size(400, 800),
         textScaler: TextScaler.linear(textScale),
       ),
-      child: MaterialApp(theme: theme, home: child),
+      child: MaterialApp(
+        theme: theme,
+        // A screen that reads AppLocalizations needs the delegates, or
+        // `AppLocalizations.of(context)` throws. Any test pumping a localized
+        // screen has to supply them.
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: locale,
+        home: child,
+      ),
     );
 
 /// These screens autofocus a field whose cursor blinks forever, so settle
@@ -122,6 +133,23 @@ void main() {
       await expectLater(tester, meetsGuideline(textContrastGuideline));
 
       handle.dispose();
+    });
+
+    // Arabic is one of the six locales Z publishes release notes in, and a
+    // right-to-left layout breaks in ways nobody sees until somebody tries
+    // it: a Row that should have been a mainAxisAlignment, an EdgeInsets.only
+    // that should have been directional. Forcing the direction catches those
+    // without needing the strings translated first.
+    testWidgets('${entry.key} (${t.key}): lays out right-to-left',
+        (tester) async {
+      await tester.binding.setSurfaceSize(const Size(400, 800));
+      await tester.pumpWidget(Directionality(
+        textDirection: TextDirection.rtl,
+        child: _host(entry.value(), t.value()),
+      ));
+      await _settle(tester);
+      expect(tester.takeException(), isNull,
+          reason: 'this screen threw when laid out right-to-left');
     });
 
     testWidgets('${entry.key} (${t.key}): survives 2x text without overflowing',

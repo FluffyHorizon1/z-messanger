@@ -6,6 +6,8 @@ import 'dart:typed_data';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+
+import 'l10n/app_localizations.dart';
 import 'package:flutter/services.dart'
     show SystemChrome, SystemUiMode, SystemUiOverlayStyle;
 import 'package:provider/provider.dart';
@@ -64,6 +66,11 @@ MaterialApp _shell(
     MaterialApp(
       title: 'Z',
       debugShowCheckedModeBanner: false,
+      // 15.4: strings come from lib/l10n/*.arb. Only the pre-account screens
+      // are migrated so far; the rest are still literals in the widgets and
+      // `tool/check_l10n.py` reports how many remain per file.
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
       theme: ZTheme.light(),
       darkTheme: ZTheme.dark(),
       themeMode: mode,

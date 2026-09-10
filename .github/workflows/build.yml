@@ -86,6 +86,12 @@ jobs:
       # this covers every screen's source for controls that announce nothing.
       - name: Every icon button and image announces something
         run: python3 tool/check_a11y.py
+      # 15.4: the string migration is screen by screen, so this holds the
+      # screens already done to zero hardcoded strings and reports what is
+      # left. A half-migrated file quietly gaining new literals is the way
+      # this kind of work stalls.
+      - name: No migrated screen has regressed to hardcoded strings
+        run: python3 tool/check_l10n.py
       - name: App tests (incl. concurrency regression through the real relay)
         working-directory: app
         run: |

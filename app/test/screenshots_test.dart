@@ -21,6 +21,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart' show FontLoader, MethodChannel;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:zapp/l10n/app_localizations.dart';
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -207,6 +208,8 @@ class _Fixture {
         ],
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
           theme: ZTheme.light(),
           darkTheme: ZTheme.dark(),
           themeMode: mode,

@@ -8,6 +8,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:zapp/l10n/app_localizations.dart';
 import 'package:zapp/core/app_lock.dart';
 import 'package:zapp/ui/lock_screen.dart';
 import 'package:zapp/ui/unlock_screen.dart';
@@ -20,7 +21,9 @@ Widget _host(Widget child) => MediaQuery(
         size: _size,
         padding: EdgeInsets.only(top: 24, bottom: _inset),
       ),
-      child: MaterialApp(home: child),
+      child: MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,home: child),
     );
 
 // Both screens autofocus a text field whose cursor blinks forever, so the

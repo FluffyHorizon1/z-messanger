@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/app_localizations.dart';
+
 import '../core/app_lock.dart';
 import 'theme.dart';
 
@@ -62,22 +64,23 @@ class _LockScreenState extends State<LockScreen> {
       _ctrl.clear();
       widget.lock.markAuthenticated();
     } else {
+      final l = AppLocalizations.of(context);
       setState(() {
         _checking = false;
-        _passError = 'Incorrect passphrase. Try again.';
+        _passError = l.lockIncorrectPassphrase;
       });
     }
   }
 
-  String? _status(AppLock lock) {
+  String? _status(AppLock lock, AppLocalizations l) {
     if (lock.authInFlight) return null;
     return switch (lock.lastResult) {
       null || GateResult.ok => null,
-      GateResult.cancelled => 'Unlock cancelled.',
+      GateResult.cancelled => l.lockCancelled,
       GateResult.failed =>
-        'Could not verify. Try again, or use your passphrase.',
+        l.lockCouldNotVerify,
       GateResult.unavailable =>
-        'No fingerprint, face or device PIN is available on this device.',
+        l.lockNoBiometrics,
     };
   }
 
@@ -87,7 +90,8 @@ class _LockScreenState extends State<LockScreen> {
 
   Widget _build(BuildContext context) {
     final lock = widget.lock;
-    final status = _status(lock);
+    final l = AppLocalizations.of(context);
+    final status = _status(lock, l);
     final canFallback = widget.verifyPassphrase != null;
     return Scaffold(
       backgroundColor: context.z.bg,
@@ -111,7 +115,7 @@ class _LockScreenState extends State<LockScreen> {
                         height: 1)),
                 const SizedBox(height: 8),
                 Text(
-                  'Locked',
+                  l.lockedTitle,
                   textAlign: TextAlign.center,
                   style: TextStyle(color: context.z.textSecondary),
                 ),
@@ -131,14 +135,14 @@ class _LockScreenState extends State<LockScreen> {
                   ),
                   onPressed: lock.authInFlight ? null : _prompt,
                   icon: const Icon(Icons.lock_open),
-                  label: Text(lock.authInFlight ? 'Waiting…' : 'Unlock'),
+                  label: Text(lock.authInFlight ? l.lockWaiting : l.lockUnlock),
                 ),
                 if (canFallback) ...[
                   const SizedBox(height: 12),
                   if (!_showPassphrase)
                     TextButton(
                       onPressed: () => setState(() => _showPassphrase = true),
-                      child: Text('Use passphrase instead',
+                      child: Text(l.lockUsePassphraseInstead,
                           style: TextStyle(color: context.z.textSecondary)),
                     )
                   else ...[
@@ -148,9 +152,9 @@ class _LockScreenState extends State<LockScreen> {
                       obscureText: true,
                       enabled: !_checking,
                       onSubmitted: (_) => _submitPassphrase(),
-                      decoration: const InputDecoration(
-                          labelText: 'Passphrase',
-                          border: OutlineInputBorder()),
+                      decoration: InputDecoration(
+                          labelText: l.unlockPassphraseLabel,
+                          border: const OutlineInputBorder()),
                     ),
                     if (_passError != null)
                       Padding(
@@ -166,7 +170,7 @@ class _LockScreenState extends State<LockScreen> {
                               width: 20,
                               height: 20,
                               child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Text('Unlock with passphrase'),
+                          : Text(l.lockUnlockWithPassphrase),
                     ),
                   ],
                 ],

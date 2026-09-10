@@ -1,0 +1,69 @@
+{
+  "@@locale": "en",
+
+  "unlockTitle": "Unlock",
+  "@unlockTitle": {
+    "description": "Button that submits the typed passphrase on the unlock screen."
+  },
+  "unlockPassphraseLabel": "Passphrase",
+  "@unlockPassphraseLabel": {
+    "description": "Label on the passphrase field."
+  },
+  "unlockPrompt": "Enter your passphrase to unlock this device.",
+  "@unlockPrompt": {
+    "description": "Instruction shown above the passphrase field."
+  },
+  "unlockShowPassphrase": "Show passphrase",
+  "@unlockShowPassphrase": {
+    "description": "Screen-reader label for the reveal control. Says what it DOES, not what the icon looks like."
+  },
+  "unlockHidePassphrase": "Hide passphrase",
+  "@unlockHidePassphrase": {
+    "description": "Screen-reader label for the same control once the passphrase is visible."
+  },
+  "unlockUseBiometrics": "Use fingerprint / face",
+  "@unlockUseBiometrics": {
+    "description": "Offers the biometric path instead of typing."
+  },
+  "unlockFootnote": "Your passphrase unlocks the encrypted vault on THIS device only. It is never sent anywhere, and there is no way to recover it — if you forget it, restore your identity from a .zid backup.",
+  "@unlockFootnote": {
+    "description": "The honest note under the field. 'THIS device' is emphasised deliberately: users assume a passphrase is checked by a server, and it is not. Keep that emphasis when translating."
+  },
+
+  "lockedTitle": "Locked",
+  "@lockedTitle": {
+    "description": "Heading on the screen shown when the app is locked."
+  },
+  "lockUnlock": "Unlock",
+  "@lockUnlock": {
+    "description": "Retries the biometric prompt."
+  },
+  "lockWaiting": "Waiting…",
+  "@lockWaiting": {
+    "description": "Shown while the OS biometric prompt is up."
+  },
+  "lockUsePassphraseInstead": "Use passphrase instead",
+  "@lockUsePassphraseInstead": {
+    "description": "Reveals the passphrase fallback. Only shown when the vault has a passphrase."
+  },
+  "lockUnlockWithPassphrase": "Unlock with passphrase",
+  "@lockUnlockWithPassphrase": {
+    "description": "Submits the passphrase fallback."
+  },
+  "lockCancelled": "Unlock cancelled.",
+  "@lockCancelled": {
+    "description": "The user dismissed the OS prompt."
+  },
+  "lockCouldNotVerify": "Could not verify. Try again, or use your passphrase.",
+  "@lockCouldNotVerify": {
+    "description": "The biometric attempt failed for a reason other than cancellation."
+  },
+  "lockIncorrectPassphrase": "Incorrect passphrase. Try again.",
+  "@lockIncorrectPassphrase": {
+    "description": "The typed passphrase did not open the vault."
+  },
+  "lockNoBiometrics": "No fingerprint, face or device PIN is available on this device.",
+  "@lockNoBiometrics": {
+    "description": "Shown when the device offers no authentication method at all."
+  }
+}
