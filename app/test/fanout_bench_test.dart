@@ -84,12 +84,17 @@ void main() {
     }
   });
 
-  Future<ChatService> makeClient(String name) async {
-    final dir = await Directory.systemTemp.createTemp('z_bench_$name');
-    temps.add(dir);
+  Future<ChatService> makeClient(String name, {Directory? reuse}) async {
+    final dir = reuse ?? await Directory.systemTemp.createTemp('z_bench_$name');
+    if (reuse == null) temps.add(dir);
     final vault = await Vault.open(rootOverride: dir);
-    final identity = await ZIdentity.generate();
-    await vault.kvPut('identity', jsonEncode(identity.toJson()));
+    final existing = await vault.kvGet('identity');
+    final identity = existing != null
+        ? await ZIdentity.fromJson(jsonDecode(existing) as Map<String, Object?>)
+        : await ZIdentity.generate();
+    if (existing == null) {
+      await vault.kvPut('identity', jsonEncode(identity.toJson()));
+    }
     final svc = await ChatService.init(
       vault: vault,
       identity: identity,
@@ -111,6 +116,7 @@ void main() {
   }
 
   final results = <int, double>{};
+  final perceivedMs = <int, double>{};
 
   Future<double> timeGroupSend(ChatService svc, int members) async {
     final rids = <String>[];
@@ -123,11 +129,25 @@ void main() {
     await svc.sendGroupText(gid, 'warm');
 
     const reps = 5;
+
+    // Two different numbers now, and conflating them would be the easy
+    // mistake. Since 15.3 `sendGroupText` RECORDS the fan-out and returns;
+    // the per-recipient work happens on a background drain. So:
+    //
+    //   perceived  what the user waits for — the queue write
+    //   total      the work itself, measured by waiting for the drain
+    //
+    // Before the queue existed these were the same number, and this
+    // benchmark's group table silently started measuring the first while
+    // still being labelled the second.
     final sw = Stopwatch()..start();
     for (var r = 0; r < reps; r++) {
       await svc.sendGroupText(gid, 'message $r');
     }
+    final perceived = sw.elapsedMicroseconds / 1000.0 / reps;
+    await svc.waitForGroupFanout(gid);
     sw.stop();
+    perceivedMs[members] = perceived;
     return sw.elapsedMicroseconds / 1000.0 / reps;
   }
 
@@ -140,11 +160,13 @@ void main() {
     }
 
     // ignore: avoid_print
-    print('\n  members   total ms   ms/member');
+    print('\n  members   perceived   total ms   ms/member');
     for (final n in sizes) {
       final t = results[n]!;
       // ignore: avoid_print
-      print('  ${n.toString().padLeft(7)}   ${t.toStringAsFixed(1).padLeft(8)}'
+      print('  ${n.toString().padLeft(7)}   '
+          '${perceivedMs[n]!.toStringAsFixed(1).padLeft(9)}   '
+          '${t.toStringAsFixed(1).padLeft(8)}'
           '   ${(t / n).toStringAsFixed(2).padLeft(9)}');
     }
 
@@ -358,5 +380,72 @@ void main() {
     // ignore: avoid_print
     print('  1536 (cap)    ${full.toStringAsFixed(2)} ms'
         '   (+${(full - empty).toStringAsFixed(2)} ms per recipient)\n');
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  // The point of moving the cache out of the hot state: a send should cost
+  // the same whether the conversation is holding out-of-order keys or not.
+  // Before the split it did not — at the 1536 cap the cache added ~20 ms per
+  // recipient, because the whole conversation was encoded and sealed each
+  // time. This is the direct demonstration, and it is the one number that
+  // would go back up if the split were undone.
+  test('a send costs the same with a full cache as with an empty one',
+      () async {
+    final dir = await Directory.systemTemp.createTemp('z_bench_cache');
+    temps.add(dir);
+    var svc = await makeClient('cache', reuse: dir);
+    final rid = await addPhantom(svc, 97000);
+    await svc.sendText(rid, 'open the session');
+
+    Future<double> sendCost() async {
+      const reps = 25;
+      final sw = Stopwatch()..start();
+      for (var i = 0; i < reps; i++) {
+        await svc.sendText(rid, 'msg $i');
+      }
+      sw.stop();
+      return sw.elapsedMicroseconds / 1000.0 / reps;
+    }
+
+    final empty = await sendCost();
+
+    // Fill the cache the way a long run of out-of-order arrivals would.
+    final row = (await svc.vault.db
+            .query('conversations', where: 'rid = ?', whereArgs: [rid]))
+        .single;
+    final state =
+        (jsonDecode(await svc.vault.unseal(row['enc_state'] as String)) as Map)
+            .cast<String, Object?>();
+    final sid = (state['sessions'] as Map).keys.first as String;
+    await svc.vault.db.update(
+        'conversations',
+        {
+          'enc_skipped': await svc.vault.seal(jsonEncode({
+            sid: {
+              for (var i = 0; i < 1536; i++)
+                'k$i': base64.encode(List.filled(32, i % 251))
+            }
+          }))
+        },
+        where: 'rid = ?',
+        whereArgs: [rid]);
+    // Restart onto the same vault so the seeded cache is actually loaded —
+    // reloadContacts does not touch conversations.
+    await svc.transport.stop();
+    svc = await makeClient('cache2', reuse: dir);
+
+    final full = await sendCost();
+
+    // ignore: avoid_print
+    print('\n  send with an empty cache : ${empty.toStringAsFixed(2)} ms');
+    // ignore: avoid_print
+    print('  send with 1536 cached    : ${full.toStringAsFixed(2)} ms'
+        '   (${(full - empty).toStringAsFixed(2)} ms difference)\n');
+
+    // Generous, because this container is noisy — but a regression puts ~20 ms
+    // back on every send, which is far outside any noise.
+    expect(full, lessThan(empty + 8),
+        reason: 'a full out-of-order cache made the send '
+            '${(full - empty).toStringAsFixed(1)} ms more expensive. It '
+            'should cost nothing: a send neither reads nor writes it');
   }, timeout: const Timeout(Duration(minutes: 5)));
 }

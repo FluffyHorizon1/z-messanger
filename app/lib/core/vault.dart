@@ -88,7 +88,7 @@ class Vault {
   /// 3 — 8.1c: `forwarded`, which needs a column of its own — a 1:1 text
   ///     row's sealed body is the bare message, with no envelope to put a
   ///     flag in, and inventing one would misparse ordinary text.
-  static const int schemaVersion = 8;
+  static const int schemaVersion = 9;
 
   // Message ids are already stored in the clear (they are the primary key),
   // so `reply_to` — a mid within the same chat — reveals nothing the row
@@ -182,6 +182,19 @@ class Vault {
       // background, which also means a fan-out that does not finish is
       // resumed rather than silently abandoned.
       await db.execute(_createGroupFanout);
+    }
+    if (from < 9) {
+      // 15.3: the ratchet's cache of out-of-order message keys moves out of
+      // `enc_state` into its own cell. It is receive-side state — sending
+      // never reads it — and at its 1536-entry cap it cost about 20 ms per
+      // recipient per message to encode and seal on every SEND, roughly
+      // doubling a group send.
+      //
+      // No data migration: a row written before this keeps its cache inside
+      // `enc_state`, which still loads, and the next receive writes it here.
+      // Nothing is lost in between, because the old location is still read.
+      await db.execute(
+          'ALTER TABLE conversations ADD COLUMN enc_skipped TEXT');
     }
   }
 
@@ -301,6 +314,9 @@ class Vault {
             CREATE TABLE conversations(
               rid TEXT PRIMARY KEY,
               enc_state TEXT NOT NULL,
+              -- The ratchet's out-of-order key cache, kept apart from the hot
+              -- state so a send never pays to re-seal it. See migration 9.
+              enc_skipped TEXT,
               updated_ms INTEGER NOT NULL
             )''');
           await db.execute('''

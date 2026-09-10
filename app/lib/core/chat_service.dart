@@ -340,8 +340,10 @@ class ChatService extends ChangeNotifier {
       final stateJson =
           (jsonDecode(await vault.unseal(r['enc_state'] as String)) as Map)
               .cast<String, Object?>();
-      _convs[rid] = await Conversation.fromJson(identity, stateJson)
+      final conv = await Conversation.fromJson(identity, stateJson)
         ..pqRekeyIntervalMs = _pqRekeyInterval;
+      await _restoreSkipped(conv, r['enc_skipped']);
+      _convs[rid] = conv;
     }
   }
 
@@ -368,19 +370,88 @@ class ChatService extends ChangeNotifier {
     return conv;
   }
 
+  /// Persist a conversation's hot ratchet state — **without** the
+  /// out-of-order key cache, which lives in its own cell (see
+  /// [_saveSkipped]).
+  ///
+  /// This is the send path's cost, and the cache is why it used to be so
+  /// much larger than it needed to be: at its 1536-entry cap, encoding and
+  /// sealing it added ~20 ms per recipient to every message, for state that
+  /// only a RECEIVE can read or change (`docs/PERFORMANCE.md`).
   Future<void> _saveConv(String rid, {DatabaseExecutor? txn}) async {
     final conv = _convs[rid];
     if (conv == null) return;
-    final sealed = await vault.seal(jsonEncode(conv.toJson()));
-    await (txn ?? vault.db).insert(
-        'conversations',
-        {
-          'rid': rid,
-          'enc_state': sealed,
-          'updated_ms': DateTime.now().millisecondsSinceEpoch,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    final sealed =
+        await vault.seal(jsonEncode(conv.toJson(includeSkipped: false)));
+    // An upsert that names the columns it sets, NOT insert-or-replace.
+    //
+    // REPLACE deletes the conflicting row and inserts a new one, so every
+    // column absent from the map comes back NULL — which silently emptied
+    // `enc_skipped` on every send the moment the cache moved there. Nothing
+    // failed at the time; the loss only shows up later as a late message
+    // that will not decrypt. The test for this exists because the first
+    // version of this change had exactly that bug.
+    await (txn ?? vault.db).rawInsert(
+        'INSERT INTO conversations (rid, enc_state, updated_ms) '
+        'VALUES (?, ?, ?) '
+        'ON CONFLICT(rid) DO UPDATE SET enc_state = excluded.enc_state, '
+        'updated_ms = excluded.updated_ms',
+        [rid, sealed, DateTime.now().millisecondsSinceEpoch]);
   }
+
+  /// Persist the out-of-order key cache. Receive path only.
+  ///
+  /// Always written in the SAME transaction as [_saveConv], because the two
+  /// halves have to agree: `nr` advancing without the keys it skipped past
+  /// being stored would silently lose the ability to read those messages
+  /// when they arrive.
+  Future<void> _saveSkipped(String rid, {DatabaseExecutor? txn}) async {
+    final conv = _convs[rid];
+    if (conv == null) return;
+    final skipped = <String, Map<String, String>>{
+      for (final e in conv.sessions.entries)
+        if (e.value.ratchet.skipped.isNotEmpty)
+          e.key: Map<String, String>.from(e.value.ratchet.skipped),
+    };
+    await (txn ?? vault.db).update(
+        'conversations',
+        {'enc_skipped': skipped.isEmpty ? null : await vault.seal(jsonEncode(skipped))},
+        where: 'rid = ?',
+        whereArgs: [rid]);
+  }
+
+  /// Put the cache back into a freshly-loaded conversation.
+  ///
+  /// A row written before schema 9 has its cache inside `enc_state`, where
+  /// `Conversation.fromJson` already picked it up — so a null column is not
+  /// "no keys", it is "the keys came from the old place". Overwriting in
+  /// that case would throw them away, which is why this only ever ADDS.
+  Future<void> _restoreSkipped(Conversation conv, Object? cell) async {
+    if (cell == null) return;
+    final raw = (jsonDecode(await vault.unseal(cell as String)) as Map)
+        .cast<String, Object?>();
+    for (final e in raw.entries) {
+      final session = conv.sessions[e.key];
+      if (session == null) continue; // a session that has since been replaced
+      session.ratchet.skipped
+          .addAll((e.value as Map).cast<String, String>());
+    }
+  }
+
+  /// How many out-of-order keys this conversation is holding, across all its
+  /// sessions. Test seam: the property that matters about the cache is that
+  /// it survives being stored apart from the state it belongs to.
+  @visibleForTesting
+  int debugSkippedKeyCount(String rid) {
+    final conv = _convs[rid];
+    if (conv == null) return 0;
+    var n = 0;
+    for (final s in conv.sessions.values) {
+      n += s.ratchet.skipped.length;
+    }
+    return n;
+  }
+
 
   // ------------------------------------------------------------------
   // Contacts
@@ -1013,6 +1084,8 @@ class ChatService extends ChangeNotifier {
       final conv = await _convFor(c);
       conv.resetSessions();
       await _saveConv(rid);
+      // The sessions are gone; their cached keys would decrypt nothing.
+      await _saveSkipped(rid);
     });
     await _insertSystemMessage(rid, 'Secure session was reset.');
     await _sendInner(c, InnerMessage.hello(newMessageId(), _now()));
@@ -1037,7 +1110,14 @@ class ChatService extends ChangeNotifier {
       {Future<void> Function(Transaction txn)? also}) async {
     await _withLock(contact.rid, () async {
       final conv = await _convFor(contact);
-      final snapshot = jsonEncode(conv.toJson());
+      // Rollback snapshot WITHOUT the out-of-order key cache. A send never
+      // reads or changes that cache, so it does not belong in the thing a
+      // send rolls back to — and encoding it here would have left half the
+      // cost this split was meant to remove (docs/PERFORMANCE.md). The cache
+      // is carried across by hand in the catch block below, from the live
+      // object, which still holds the correct pre-send value precisely
+      // because a send does not touch it.
+      final snapshot = jsonEncode(conv.toJson(includeSkipped: false));
       // v2: if this side owes the peer its post-quantum key offer, it goes
       // out first (silent, ignored by v1 peers).
       final offer = await conv.takePqOfferPayload();
@@ -1067,8 +1147,17 @@ class ChatService extends ChangeNotifier {
           if (also != null) await also(txn);
         });
       } catch (e) {
-        _convs[contact.rid] =
+        final restored =
             await Conversation.fromJson(identity, jsonDecode(snapshot));
+        // Carry the out-of-order keys over from the object being replaced.
+        // Without this the rollback would quietly empty the cache and lose
+        // the ability to decrypt messages already in flight — a silent
+        // message-loss bug hiding inside an error path.
+        for (final e in conv.sessions.entries) {
+          restored.sessions[e.key]?.ratchet.skipped
+              .addAll(e.value.ratchet.skipped);
+        }
+        _convs[contact.rid] = restored;
         rethrow;
       }
     });
@@ -1450,8 +1539,12 @@ class ChatService extends ChangeNotifier {
             : await _sealFor(contact.rid, dec.pqOfferPayload!);
         try {
           await vault.db.transaction((txn) async {
-            // Persist the advanced ratchet before acting on content.
+            // Persist the advanced ratchet before acting on content — and
+            // its skipped-key cache in the SAME transaction, because `nr`
+            // advancing without the keys it stepped over would lose those
+            // messages when they arrive.
             await _saveConv(contact.rid, txn: txn);
+            await _saveSkipped(contact.rid, txn: txn);
             if (offerPayload != null) {
               await txn.insert('outbox', {
                 'id': newMessageId(),

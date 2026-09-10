@@ -257,7 +257,21 @@ class RatchetState {
         skipped: LinkedHashMap.from(skipped),
       );
 
-  Map<String, Object?> toJson() => {
+  /// [includeSkipped] false omits the out-of-order key cache.
+  ///
+  /// The cache is receive-side state: sending never reads it and never
+  /// changes it. It is also unbounded-ish by the standards of a hot path —
+  /// [maxSkippedStored] entries of 32 bytes each — and a caller that persists
+  /// this state on every SEND was paying to encode and seal all of it for no
+  /// reason. Measured at the cap: about 20 ms per recipient per message,
+  /// which roughly doubled the cost of a group send (`docs/PERFORMANCE.md`).
+  ///
+  /// A caller that omits it here is responsible for storing it somewhere and
+  /// putting it back on load. Omitting it and forgetting that loses the
+  /// ability to decrypt messages that arrive late — which is why the default
+  /// is to include it, and why the app's receive path writes both halves in
+  /// one transaction.
+  Map<String, Object?> toJson({bool includeSkipped = true}) => {
         'rk': b64(rootKey),
         'dhsSeed': b64(dhsSeed),
         'dhsPub': b64(dhsPub),
@@ -268,7 +282,7 @@ class RatchetState {
         'nr': nr,
         'pn': pn,
         'ad': b64(ad),
-        'skipped': skipped,
+        if (includeSkipped) 'skipped': skipped,
       };
 
   static RatchetState fromJson(Map<String, Object?> j) => RatchetState(
@@ -282,8 +296,14 @@ class RatchetState {
         nr: (j['nr'] as num).toInt(),
         pn: (j['pn'] as num).toInt(),
         ad: unb64(j['ad'] as String),
-        skipped: LinkedHashMap<String, String>.from(
-            (j['skipped'] as Map).cast<String, String>()),
+        // Absent when the caller stored the cache separately (see toJson).
+        // An empty cache is always SAFE — it costs the ability to decrypt a
+        // late arrival, never correctness — so a missing member reads as
+        // empty rather than throwing.
+        skipped: j['skipped'] == null
+            ? LinkedHashMap<String, String>()
+            : LinkedHashMap<String, String>.from(
+                (j['skipped'] as Map).cast<String, String>()),
       );
 }
 

@@ -84,11 +84,11 @@ class Session {
     PqState? pq,
   }) : pq = pq ?? PqState();
 
-  Map<String, Object?> toJson() => {
+  Map<String, Object?> toJson({bool includeSkipped = true}) => {
         'sid': sid,
         'initiatorRid': initiatorRid,
         'ekPub': b64(ekPub),
-        'ratchet': ratchet.toJson(),
+        'ratchet': ratchet.toJson(includeSkipped: includeSkipped),
         'receivedAny': receivedAny,
         'lastUsedMs': lastUsedMs,
         'pq': pq.toJson(),
@@ -513,11 +513,14 @@ class Conversation {
     _idlePq.copyFrom(PqState());
   }
 
-  Map<String, Object?> toJson() => {
+  Map<String, Object?> toJson({bool includeSkipped = true}) => {
         'them': them.toJson(),
         'outboundSid': outboundSid,
         if (pinnedSid != null) 'pinnedSid': pinnedSid,
-        'sessions': {for (final e in sessions.entries) e.key: e.value.toJson()},
+        'sessions': {
+          for (final e in sessions.entries)
+            e.key: e.value.toJson(includeSkipped: includeSkipped)
+        },
         // The live session's state, also written at this level so a build
         // that predates the per-session split still reads a usable value.
         'pq': pq.toJson(),

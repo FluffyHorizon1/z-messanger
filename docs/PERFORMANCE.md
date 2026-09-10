@@ -133,19 +133,16 @@ A fifty-member group whose conversations are all at the cap would cost roughly
 1. ~~**Do not block the composer on fan-out.**~~ **Done.** See below.
    Measured: a twenty-member send went from ~406 ms to under 250 ms of
    recorded-and-returned, and the bound is now a test.
-2. **Separate the skipped-key cache from the persisted conversation blob**,
-   so a cold cache is not encoded and sealed on every send. This is the +20.7
-   ms above and the largest measured win left.
+2. ~~**Separate the skipped-key cache from the persisted conversation
+   blob.**~~ **Done** — see below. A send with the cache at its 1536-entry cap
+   now costs 2.2 ms more than one with an empty cache, against 20.7 ms before.
 
-   Checked, since it is the obvious objection: the frozen vectors *do* contain
-   `skipped`, and `vectors_test.dart` asserts it — but it asserts the live
-   `RatchetState.skipped` keys against the recorded ones, which is a statement
-   about **which keys the ratchet caches**, not about where they are stored.
-   Moving them to their own table is a storage change, not a protocol one, and
-   the freeze should survive it. It is still a change to the hottest and most
-   security-sensitive path in the app, so it wants its own increment and its
-   own out-of-order-delivery tests rather than being tacked onto a
-   performance pass.
+   The objection worth checking first was the frozen vectors, which *do*
+   contain `skipped` and which `vectors_test.dart` asserts. It turned out to
+   assert the live `RatchetState.skipped` keys against the recorded ones —
+   a statement about **which keys the ratchet caches**, not about where they
+   are stored — so this was a storage change rather than a protocol one, and
+   all 147 protocol tests passed unchanged.
 
 3. **Make the rollback snapshot cheaper.** An earlier version of this document
    called the two serialisations per send "the same state encoded twice". That
@@ -193,6 +190,68 @@ a message sent after one snapshots the reduced membership at queue time, so
 `sendGroupFile` is not queued. Its fan-out carries the encrypted chunk
 payloads per recipient, which for a 24 MB attachment would mean storing them
 again per row. It keeps the synchronous loop and stays on the list above.
+
+### What the numbers look like afterwards
+
+The group table above measured `sendGroupText` returning, and once the fan-out
+was queued rather than performed, that stopped being the same thing. The
+benchmark now reports both, because conflating them would flatter the result:
+
+| members | perceived | total | per member |
+|---:|---:|---:|---:|
+| 2 | 10.0 ms | 104 ms | 52.1 ms |
+| 10 | 17.6 ms | 346 ms | 34.6 ms |
+| 50 | **17.0 ms** | 1 097 ms | 21.9 ms |
+
+**Perceived** is what the user waits for. It is flat in the member count —
+seventeen milliseconds at fifty members, against 1 205 ms before — because all
+the send does is write the queue. **Total** is the work, which has not gone
+anywhere; it just no longer happens while somebody watches.
+
+(These are a noisier run of the same container than the first table; absolute
+values move by a third between runs, shapes do not.)
+
+## The second fix: the out-of-order cache is stored apart from the hot state
+
+Vault schema 9 gives `conversations` an `enc_skipped` cell. The ratchet's
+cache of skipped message keys goes there; `enc_state` no longer carries it.
+A send writes only `enc_state`; a receive writes both, in one transaction,
+because `nr` advancing without the keys it stepped over would lose exactly the
+messages the cache exists to rescue.
+
+Measured, on a conversation holding the full 1 536 keys:
+
+| | |
+|---|---:|
+| send with an empty cache | 20.99 ms |
+| send with 1 536 cached | 23.16 ms |
+| **difference** | **2.16 ms** |
+
+Against **+20.7 ms** before the split. The send cost is now essentially
+independent of how much out-of-order history the conversation is carrying.
+
+### Two things this nearly got wrong
+
+**`INSERT OR REPLACE` empties columns it does not mention.** `_saveConv` used
+it, and REPLACE deletes the conflicting row before inserting — so the moment
+the cache moved to its own column, every send silently set it to NULL. Nothing
+failed at the time. The loss would have surfaced days later as a late message
+that would not decrypt, with no way to trace it back. It is an upsert naming
+its columns now, and there is a test that fails if it goes back.
+
+**The rollback snapshot.** `_sendInner` snapshots the conversation before
+encrypting so it can restore on a write failure. That snapshot was a full
+`toJson()` — cache included — which would have left half the cost in place;
+and simply dropping the cache from it would have emptied the cache on every
+rolled-back send, a message-loss bug hiding inside an error path. The snapshot
+now omits it and the catch block carries the live cache across by hand, which
+is correct precisely because a send never touches it.
+
+### Not done
+
+The remaining items are unchanged: the rollback snapshot is still a full
+encode of everything else, and the outbox writes are still one transaction
+each. Both are small next to what has been taken out.
 
 ## Not measured
 

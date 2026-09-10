@@ -413,7 +413,21 @@ Everything currently externally gated, plus the work to call it 1.0.
   the moment its outbox rows commit; nothing requires the user to watch the
   fan-out finish. That is a UI fix, not a cryptography one.
 
-  **And a latent one worth more than either.** Every send serialises the whole
+  **Both are now fixed.** The fan-out is queued (below), and the skipped-key
+  cache moved to its own cell in vault **schema 9**: a send with the cache at
+  its 1 536-entry cap now costs **2.2 ms** more than one with an empty cache,
+  against 20.7 ms before. All 147 protocol tests passed unchanged — the frozen
+  vectors assert *which* keys the ratchet caches, not where they are stored,
+  so this was a storage change and not a protocol one.
+
+  Two near-misses on the way, both recorded in `PERFORMANCE.md` because both
+  were silent: `INSERT OR REPLACE` empties columns it does not name, so the
+  first version wiped the cache on every send with nothing failing at the
+  time; and the send's rollback snapshot would have either kept the cost or,
+  if the cache were simply dropped from it, emptied the cache on every
+  rolled-back send — a message-loss bug inside an error path.
+
+  **The latent one, as originally found:** Every send serialises the whole
   conversation twice, including the ratchet's cache of skipped message keys
   (cap 1536). Empty in the benchmark, so those numbers are a best case: at the
   cap it adds **+20.7 ms per recipient per send**, roughly doubling the cost,
