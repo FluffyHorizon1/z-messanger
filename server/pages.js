@@ -16,17 +16,17 @@
 const STYLE = `
   :root {
     color-scheme: dark light;
-    --bg: #0C0D10; --surface: #15171C; --surface-alt: #1C1F26;
-    --accent: #FFB300; --on-accent: #000000;
-    --text: #EDEDED; --text-dim: #9AA0AA; --divider: #23262E;
-    --ok: #46A758; --warn: #F5A623; --danger: #F05A5F;
+    --bg: #050810; --surface: #0A1220; --surface-alt: #111C2C;
+    --accent: #00B4FF; --on-accent: #031626;
+    --text: #E9F1F8; --text-dim: #7C91A6; --divider: #15202E;
+    --ok: #3DD68C; --warn: #FFB300; --danger: #FF6B70;
   }
   @media (prefers-color-scheme: light) {
     :root {
-      --bg: #F7F7F4; --surface: #FFFFFF; --surface-alt: #EEEEEA;
-      --accent: #935C00; --on-accent: #FFFFFF;
-      --text: #1B1C1F; --text-dim: #5C6370; --divider: #E1E2E6;
-      --ok: #2A742E; --warn: #9A5B00; --danger: #C1272D;
+      --bg: #F3F7FB; --surface: #FFFFFF; --surface-alt: #E9F1F8;
+      --accent: #006FA8; --on-accent: #FFFFFF;
+      --text: #0A1628; --text-dim: #4E6274; --divider: #D5DEE7;
+      --ok: #1B7036; --warn: #8A5300; --danger: #C1272D;
     }
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -151,8 +151,8 @@ const page = (path, title, description, body) => `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="${description}">
-<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0C0D10">
-<meta name="theme-color" media="(prefers-color-scheme: light)" content="#F7F7F4">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#050810">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#F3F7FB">
 <link rel="canonical" href="https://zmessengers.com${path === '/' ? '/' : path}">
 <meta property="og:title" content="${title}">
 <meta property="og:description" content="${description}">

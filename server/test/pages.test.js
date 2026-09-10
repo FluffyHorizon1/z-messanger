@@ -162,6 +162,25 @@ test('the stylesheet follows the system colour scheme', async () => {
   );
 });
 
+test('the browser chrome colour matches the palette too', async () => {
+  const r = await get('/');
+  // These are hardcoded in the <head> rather than read from the CSS variables,
+  // so the palette test above does not cover them — and they were left on the
+  // previous brand when the app rebranded.
+  const bgDark = /--bg: (#[0-9A-Fa-f]{6});/.exec(STYLE)[1];
+  const bgLight = /--bg: (#[0-9A-Fa-f]{6});/g;
+  const both = [...STYLE.matchAll(/--bg: (#[0-9A-Fa-f]{6});/g)].map((m) => m[1]);
+  assert.strictEqual(both.length, 2, 'expected a dark and a light --bg');
+  assert.ok(
+    r.body.includes(`<meta name="theme-color" media="(prefers-color-scheme: dark)" content="${both[0]}">`),
+    `dark theme-color does not match --bg ${both[0]}`
+  );
+  assert.ok(
+    r.body.includes(`<meta name="theme-color" media="(prefers-color-scheme: light)" content="${both[1]}">`),
+    `light theme-color does not match --bg ${both[1]}`
+  );
+});
+
 test('the site does not claim an audit it has not had', async () => {
   const r = await get('/security');
   assert.ok(/not yet<\/b> had an external security audit/.test(r.body),
