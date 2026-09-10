@@ -63,8 +63,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   Future<void> _create() async {
     final l = AppLocalizations.of(context);
     if (_name.text.trim().isEmpty) {
-      setState(() =>
-          _error = l.onbPickName);
+      setState(() => _error = l.onbPickName);
       return;
     }
     final url = normalizeRelayUrl(_server.text);
@@ -149,8 +148,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-                l.onbRecoveryCodeHelp),
+            Text(l.onbRecoveryCodeHelp),
             const SizedBox(height: 12),
             TextField(
               controller: ctrl,
@@ -221,7 +219,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         height: 1)),
                 const SizedBox(height: 8),
                 Text(
-                  'Zero-trust messaging.\nNo accounts. No phone number. No server storage.',
+                  l.onbTagline,
                   textAlign: TextAlign.center,
                   style: TextStyle(color: context.z.textSecondary, height: 1.5),
                 ),
@@ -230,8 +228,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   controller: _name,
                   decoration: InputDecoration(
                     labelText: l.onbDisplayName,
-                    helperText:
-                        l.onbDisplayNameHelp,
+                    helperText: l.onbDisplayNameHelp,
                   ),
                 ),
                 if (_showDev) ...[
@@ -244,8 +241,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     }),
                     decoration: InputDecoration(
                       labelText: l.onbRelayAddress,
-                      helperText:
-                          l.onbRelayHelp,
+                      helperText: l.onbRelayHelp,
                       helperMaxLines: 2,
                     ),
                   ),

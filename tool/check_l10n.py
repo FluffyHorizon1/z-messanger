@@ -49,6 +49,7 @@ MIGRATED = {
     "chat_screen.dart",
     # No strings of its own; listed so that one added later is caught.
     "theme.dart",
+    "settings_screen.dart",
 }
 
 # Literals that look user-visible and are not.
@@ -70,6 +71,11 @@ ALLOWED = {
 # all fourteen screens, which is too much reach for a word as ordinary as
 # "Unknown": it would stop being flagged in the one place it IS a label.
 ALLOWED_IN = {
+    "settings_screen.dart": {
+        # The shape of a relay URL, shown as a hint in the developer field.
+        # A URL is a URL in every locale.
+        "wss://relay.example.com",
+    },
     "link_device_screen.dart": {
         # NOT a label. This is the value written into a contact's sealed
         # enc_name when the bundle carries no display name, and
@@ -96,11 +102,17 @@ def literals(src: str, name: str = ""):
     # string with an apostrophe in it — "Recording isn't available" — is
     # exactly the one Dart authors write in double quotes; it sat in a screen
     # uncounted. Comment lines are skipped so prose in them is not flagged.
-    for m in re.finditer(r"'([^'\\\n]{3,})'|\"([^\"\\\n]{3,})\"", src):
+    # An escape inside the literal — \' in "device's", \n at a line break —
+    # must not end the match: the first version stopped at any backslash and
+    # so never saw "Z 1.0.0 — zero-trust messenger\n", which had been wrong
+    # for eighteen releases.
+    for m in re.finditer(
+            r"'((?:[^'\\\n]|\\.){3,})'|\"((?:[^\"\\\n]|\\.){3,})\"", src):
         line_start = src.rfind("\n", 0, m.start()) + 1
         if src[line_start:m.start()].lstrip().startswith("//"):
             continue
         v = m.group(1) if m.group(1) is not None else m.group(2)
+        v = v.replace("\\'", "'").replace('\\"', '"').replace("\\n", " ")
         if v in ALLOWED or v in here:
             continue
         if v.startswith("package:") or "/" in v or v.startswith("z/"):

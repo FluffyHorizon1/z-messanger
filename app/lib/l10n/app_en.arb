@@ -1325,5 +1325,332 @@
         "type": "String"
       }
     }
+  },
+  "onbTagline": "Zero-trust messaging.\nNo accounts. No phone number. No server storage.",
+  "@onbTagline": {
+    "description": "The line under the wordmark on the first screen. It is the brand's own claim, in the brand's own words ('No account. No phone number. No server storage.' on the artwork); keep the three short sentences and the line break after the first."
+  },
+  "ok": "OK",
+  "@ok": {
+    "description": "Generic confirm on a dialog with nothing more specific to say."
+  },
+  "stSettings": "Settings",
+  "@stSettings": {
+    "description": "Screen title."
+  },
+  "stProfile": "Profile",
+  "@stProfile": {
+    "description": "Section header. Rendered in capitals by the widget; write it in normal case."
+  },
+  "stDisplayName": "Display name",
+  "@stDisplayName": {
+    "description": "Row label and the title of the dialog that edits it."
+  },
+  "stDisplayNameSaved": "Saved. Share a fresh contact code so new contacts see it.",
+  "@stDisplayNameSaved": {
+    "description": "After renaming. The second sentence is the useful half: the name is baked into the contact code, so existing contacts do not see the change and new ones need a new code."
+  },
+  "stAppearance": "Appearance",
+  "@stAppearance": {
+    "description": "Section header."
+  },
+  "stTheme": "Theme",
+  "@stTheme": {
+    "description": "Row label for the light/dark/system choice."
+  },
+  "stThemeSystem": "System",
+  "@stThemeSystem": {
+    "description": "Theme option: follow the OS. Keep short — three of these share one row."
+  },
+  "stThemeLight": "Light",
+  "@stThemeLight": {
+    "description": "Theme option."
+  },
+  "stThemeDark": "Dark",
+  "@stThemeDark": {
+    "description": "Theme option."
+  },
+  "stConnection": "Connection",
+  "@stConnection": {
+    "description": "Section header."
+  },
+  "stRelay": "Relay",
+  "@stRelay": {
+    "description": "Row label. 'Relay' is the app's word for its server throughout — it relays ciphertext and holds nothing."
+  },
+  "stRelayConnected": "Connected — zero-knowledge link up",
+  "@stRelayConnected": {
+    "description": "Relay status. 'zero-knowledge' is the claim: the link is up and the relay still learns nothing from it."
+  },
+  "stRelayConnecting": "Connecting…",
+  "@stRelayConnecting": {
+    "description": "Relay status."
+  },
+  "stRelayOffline": "Offline",
+  "@stRelayOffline": {
+    "description": "Relay status, with no error to show."
+  },
+  "stRelayOfflineWithError": "Offline ({error})",
+  "@stRelayOfflineWithError": {
+    "description": "Relay status with the last transport error in parentheses.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "stDevices": "Devices",
+  "@stDevices": {
+    "description": "Section header."
+  },
+  "stLinkedDevices": "Linked devices",
+  "@stLinkedDevices": {
+    "description": "Row label, opens the device list."
+  },
+  "stLinkedDevicesHelp": "See the devices on your account, link a new one, or revoke one you no longer use.",
+  "@stLinkedDevicesHelp": {
+    "description": "Under the linked-devices row."
+  },
+  "stNotifications": "Notifications",
+  "@stNotifications": {
+    "description": "Section header."
+  },
+  "stPush": "Push notifications",
+  "@stPush": {
+    "description": "Toggle label."
+  },
+  "stPushHelp": "Wake this device when a message arrives while Z is closed. The alert is content-free — messages are fetched and decrypted only on your device, never inside the notification.",
+  "@stPushHelp": {
+    "description": "What a push notification does and does not carry. 'content-free' and 'never inside the notification' are the privacy claim: the push service sees a wake-up, not a message. A translation that implies the notification shows the message contradicts the design."
+  },
+  "stSecurity": "Security",
+  "@stSecurity": {
+    "description": "Section header."
+  },
+  "stKeystoreUnavailable": "OS keystore unavailable",
+  "@stKeystoreUnavailable": {
+    "description": "Warning row shown when the vault key could not be placed in the system keychain."
+  },
+  "stKeystoreUnavailableHelp": "The vault key is stored in a restricted file instead of the system keychain. Install/enable a keyring (e.g. GNOME Keyring / KWallet on Linux) and re-create your identity for hardware-backed protection.",
+  "@stKeystoreUnavailableHelp": {
+    "description": "What the fallback means and how to leave it. 'GNOME Keyring' and 'KWallet' are product names."
+  },
+  "stWhereMessagesLive": "Where your messages live",
+  "@stWhereMessagesLive": {
+    "description": "Informational row label."
+  },
+  "stWhereMessagesLiveHelp": "Only in this device's encrypted vault (XChaCha20-Poly1305, key in the OS keystore). The relay holds ciphertext in RAM only until delivery, never on disk.",
+  "@stWhereMessagesLiveHelp": {
+    "description": "The storage claim in one sentence each for the device and the relay. 'RAM only until delivery, never on disk' is the relay's whole promise; keep it exact. XChaCha20-Poly1305 is an algorithm name."
+  },
+  "stScreenLock": "Screen lock",
+  "@stScreenLock": {
+    "description": "Toggle label for the biometric/PIN gate on opening the app."
+  },
+  "stScreenLockOnHelp": "Z asks for your fingerprint, face or device PIN when it opens and after {after} in the background.",
+  "@stScreenLockOnHelp": {
+    "description": "Under the toggle when it is on. {after} is a duration such as '1 minute' or '15 minutes'.",
+    "placeholders": {
+      "after": {
+        "type": "String"
+      }
+    }
+  },
+  "stScreenLockOnImmediateHelp": "Z asks for your fingerprint, face or device PIN when it opens and as soon as it goes to the background.",
+  "@stScreenLockOnImmediateHelp": {
+    "description": "Under the toggle when it is on and the lock-after setting is 0 — the sentence for 'immediately', which does not fit the {after} slot in any language."
+  },
+  "stScreenLockOffHelp": "Ask for your fingerprint, face or device PIN to open Z. Messages still arrive while it is locked.",
+  "@stScreenLockOffHelp": {
+    "description": "Under the toggle when it is off. The second sentence pre-empts the worry that a locked app is an offline app."
+  },
+  "stLockAfter": "Lock after",
+  "@stLockAfter": {
+    "description": "Row label and dialog title for how long the app may sit in the background before it locks."
+  },
+  "lockImmediately": "Immediately",
+  "@lockImmediately": {
+    "description": "Lock-after option: lock the moment the app goes to the background."
+  },
+  "stPassphraseOn": "App passphrase — on",
+  "@stPassphraseOn": {
+    "description": "Row label when a passphrase is set."
+  },
+  "stPassphraseOff": "App passphrase — off",
+  "@stPassphraseOff": {
+    "description": "Row label when no passphrase is set."
+  },
+  "stPassphraseOnHelp": "This device asks for your passphrase on launch. Tap to change or remove it.",
+  "@stPassphraseOnHelp": {
+    "description": "Under the passphrase row when one is set."
+  },
+  "stPassphraseOffHelp": "Add a passphrase that unlocks the app on this device. Combined with the device keystore; never sent anywhere.",
+  "@stPassphraseOffHelp": {
+    "description": "Under the passphrase row when none is set. 'never sent anywhere' is the claim to keep."
+  },
+  "stBiometricBound": "Unlock with biometrics — hardware-bound",
+  "@stBiometricBound": {
+    "description": "Toggle label when the biometric key is sealed by secure hardware (Android). 'hardware-bound' is a stronger guarantee than the plain form and the suffix must not be dropped."
+  },
+  "stBiometric": "Unlock with biometrics",
+  "@stBiometric": {
+    "description": "Toggle label when the biometric key is held in the ordinary keystore."
+  },
+  "stBiometricLead": "Open the vault with your fingerprint or face instead of typing the passphrase. ",
+  "@stBiometricLead": {
+    "description": "First sentence of the biometric help, shared by both variants below; note the trailing space, which joins it to the next sentence."
+  },
+  "stBiometricBoundBody": "The key that opens it is sealed by this device's secure hardware and can only be used right after the system prompt — copying the app's data does not reveal it. Re-enrolling a fingerprint or face resets it.",
+  "@stBiometricBoundBody": {
+    "description": "The hardware-bound case. Two facts: the key is unusable without a fresh biometric prompt, and it is invalidated by a biometric change. Both are what 'hardware-bound' means."
+  },
+  "stBiometricUnboundBody": "While this is on, a key derived from your passphrase (never the passphrase itself) sits in this device's keystore — so on THIS device, someone who can break into the keystore no longer needs your passphrase. Turning it off deletes that key.",
+  "@stBiometricUnboundBody": {
+    "description": "The ordinary-keystore case, and it is a warning: convenience here costs something, and the sentence says exactly what. 'never the passphrase itself' and 'no longer needs your passphrase' must both survive."
+  },
+  "stBackup": "Backup",
+  "@stBackup": {
+    "description": "Row label, opens the backup screen."
+  },
+  "stBackupHelp": "Everything — messages, contacts, groups, attachments — encrypted with a recovery code only you hold.",
+  "@stBackupHelp": {
+    "description": "Under the backup row."
+  },
+  "stDeveloper": "Developer",
+  "@stDeveloper": {
+    "description": "Section header."
+  },
+  "stDevMode": "Developer mode",
+  "@stDevMode": {
+    "description": "Toggle label."
+  },
+  "stDevModeHelp": "Reveal the custom relay address, for a self-hosted or test relay. Off by default — Z uses its built-in relay.",
+  "@stDevModeHelp": {
+    "description": "Under the developer toggle."
+  },
+  "stRelayAddress": "Relay address",
+  "@stRelayAddress": {
+    "description": "Row label showing the relay URL in developer mode."
+  },
+  "stRelayUrlTitle": "Relay server URL",
+  "@stRelayUrlTitle": {
+    "description": "Title of the dialog that edits the relay URL."
+  },
+  "stConnect": "Connect",
+  "@stConnect": {
+    "description": "Confirms the relay URL dialog."
+  },
+  "stDangerZone": "Danger zone",
+  "@stDangerZone": {
+    "description": "Section header for the irreversible action."
+  },
+  "stWipe": "Wipe everything",
+  "@stWipe": {
+    "description": "Row label, shown in the danger colour."
+  },
+  "stWipeHelp": "Destroys identity, contacts, messages and keys on this device.",
+  "@stWipeHelp": {
+    "description": "Under the wipe row."
+  },
+  "stWipeTitle": "Wipe everything?",
+  "@stWipeTitle": {
+    "description": "Title of the wipe confirmation."
+  },
+  "stWipeBody": "Your identity, contacts, messages and attachments will be destroyed on this device. Without a .zid backup your identity is unrecoverable — no server has a copy.",
+  "@stWipeBody": {
+    "description": "The last warning before an irreversible wipe. 'no server has a copy' is the design restated as a consequence."
+  },
+  "stWipeAction": "Wipe",
+  "@stWipeAction": {
+    "description": "Confirms the wipe."
+  },
+  "stFooter": "Z — zero-trust messenger\nNo accounts · No analytics · No server storage",
+  "@stFooter": {
+    "description": "Footer under the settings list. Two lines; the second is the brand claim in three parts."
+  },
+  "stScreenLockOn": "Screen lock on. Z will ask before opening.",
+  "@stScreenLockOn": {
+    "description": "After enabling screen lock."
+  },
+  "stScreenLockUnavailable": "Set up a fingerprint, face or device PIN in your system settings first.",
+  "@stScreenLockUnavailable": {
+    "description": "Screen lock could not be enabled because the OS has no credential to gate with."
+  },
+  "stPromptNotCompleted": "Not enabled — the prompt was not completed.",
+  "@stPromptNotCompleted": {
+    "description": "The system biometric prompt was cancelled or failed, so nothing changed."
+  },
+  "stBackupPassphraseTitle": "Backup passphrase",
+  "@stBackupPassphraseTitle": {
+    "description": "Title of the new-passphrase dialog."
+  },
+  "stPassphraseMinLabel": "Passphrase (12+ characters)",
+  "@stPassphraseMinLabel": {
+    "description": "Label on the first passphrase field, stating the minimum."
+  },
+  "stRepeat": "Repeat",
+  "@stRepeat": {
+    "description": "Label on the second passphrase field."
+  },
+  "stPassphraseTooShort": "Use at least 12 characters.",
+  "@stPassphraseTooShort": {
+    "description": "Validation: under the minimum."
+  },
+  "stPassphraseMismatch": "Passphrases do not match.",
+  "@stPassphraseMismatch": {
+    "description": "Validation: the two fields differ."
+  },
+  "stEncryptAndSave": "Encrypt & save",
+  "@stEncryptAndSave": {
+    "description": "Confirms the new passphrase."
+  },
+  "stBiometricOff": "Biometric unlock off — the stored key was deleted.",
+  "@stBiometricOff": {
+    "description": "After disabling biometric unlock. The second half matters: the key is gone, not merely unused."
+  },
+  "stEnterPassphrase": "Enter your passphrase",
+  "@stEnterPassphrase": {
+    "description": "Title of the secret prompt when enabling biometric unlock."
+  },
+  "stBiometricOn": "Biometric unlock on.",
+  "@stBiometricOn": {
+    "description": "After enabling biometric unlock."
+  },
+  "stIncorrectPassphrase": "Incorrect passphrase.",
+  "@stIncorrectPassphrase": {
+    "description": "The typed passphrase did not verify."
+  },
+  "stCouldNotEnable": "Could not enable: {error}",
+  "@stCouldNotEnable": {
+    "description": "Biometric enrolment threw.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "stPassphraseSet": "Passphrase set. You'll be asked for it next launch.",
+  "@stPassphraseSet": {
+    "description": "After setting a passphrase for the first time."
+  },
+  "stChangePassphrase": "Change passphrase",
+  "@stChangePassphrase": {
+    "description": "Sheet action."
+  },
+  "stRemovePassphrase": "Remove passphrase",
+  "@stRemovePassphrase": {
+    "description": "Sheet action."
+  },
+  "stEnterCurrentPassphrase": "Enter current passphrase",
+  "@stEnterCurrentPassphrase": {
+    "description": "Title of the secret prompt before changing or removing."
+  },
+  "stPassphraseChanged": "Passphrase changed.",
+  "@stPassphraseChanged": {
+    "description": "After a change."
+  },
+  "stPassphraseRemoved": "Passphrase removed. The app opens automatically now.",
+  "@stPassphraseRemoved": {
+    "description": "After removal. The second sentence states the consequence plainly."
   }
 }

@@ -1035,4 +1035,267 @@ class AppLocalizationsEn extends AppLocalizations {
   String chatSaveFailed(String error) {
     return 'Save failed: $error';
   }
+
+  @override
+  String get onbTagline =>
+      'Zero-trust messaging.\nNo accounts. No phone number. No server storage.';
+
+  @override
+  String get ok => 'OK';
+
+  @override
+  String get stSettings => 'Settings';
+
+  @override
+  String get stProfile => 'Profile';
+
+  @override
+  String get stDisplayName => 'Display name';
+
+  @override
+  String get stDisplayNameSaved =>
+      'Saved. Share a fresh contact code so new contacts see it.';
+
+  @override
+  String get stAppearance => 'Appearance';
+
+  @override
+  String get stTheme => 'Theme';
+
+  @override
+  String get stThemeSystem => 'System';
+
+  @override
+  String get stThemeLight => 'Light';
+
+  @override
+  String get stThemeDark => 'Dark';
+
+  @override
+  String get stConnection => 'Connection';
+
+  @override
+  String get stRelay => 'Relay';
+
+  @override
+  String get stRelayConnected => 'Connected — zero-knowledge link up';
+
+  @override
+  String get stRelayConnecting => 'Connecting…';
+
+  @override
+  String get stRelayOffline => 'Offline';
+
+  @override
+  String stRelayOfflineWithError(String error) {
+    return 'Offline ($error)';
+  }
+
+  @override
+  String get stDevices => 'Devices';
+
+  @override
+  String get stLinkedDevices => 'Linked devices';
+
+  @override
+  String get stLinkedDevicesHelp =>
+      'See the devices on your account, link a new one, or revoke one you no longer use.';
+
+  @override
+  String get stNotifications => 'Notifications';
+
+  @override
+  String get stPush => 'Push notifications';
+
+  @override
+  String get stPushHelp =>
+      'Wake this device when a message arrives while Z is closed. The alert is content-free — messages are fetched and decrypted only on your device, never inside the notification.';
+
+  @override
+  String get stSecurity => 'Security';
+
+  @override
+  String get stKeystoreUnavailable => 'OS keystore unavailable';
+
+  @override
+  String get stKeystoreUnavailableHelp =>
+      'The vault key is stored in a restricted file instead of the system keychain. Install/enable a keyring (e.g. GNOME Keyring / KWallet on Linux) and re-create your identity for hardware-backed protection.';
+
+  @override
+  String get stWhereMessagesLive => 'Where your messages live';
+
+  @override
+  String get stWhereMessagesLiveHelp =>
+      'Only in this device\'s encrypted vault (XChaCha20-Poly1305, key in the OS keystore). The relay holds ciphertext in RAM only until delivery, never on disk.';
+
+  @override
+  String get stScreenLock => 'Screen lock';
+
+  @override
+  String stScreenLockOnHelp(String after) {
+    return 'Z asks for your fingerprint, face or device PIN when it opens and after $after in the background.';
+  }
+
+  @override
+  String get stScreenLockOnImmediateHelp =>
+      'Z asks for your fingerprint, face or device PIN when it opens and as soon as it goes to the background.';
+
+  @override
+  String get stScreenLockOffHelp =>
+      'Ask for your fingerprint, face or device PIN to open Z. Messages still arrive while it is locked.';
+
+  @override
+  String get stLockAfter => 'Lock after';
+
+  @override
+  String get lockImmediately => 'Immediately';
+
+  @override
+  String get stPassphraseOn => 'App passphrase — on';
+
+  @override
+  String get stPassphraseOff => 'App passphrase — off';
+
+  @override
+  String get stPassphraseOnHelp =>
+      'This device asks for your passphrase on launch. Tap to change or remove it.';
+
+  @override
+  String get stPassphraseOffHelp =>
+      'Add a passphrase that unlocks the app on this device. Combined with the device keystore; never sent anywhere.';
+
+  @override
+  String get stBiometricBound => 'Unlock with biometrics — hardware-bound';
+
+  @override
+  String get stBiometric => 'Unlock with biometrics';
+
+  @override
+  String get stBiometricLead =>
+      'Open the vault with your fingerprint or face instead of typing the passphrase. ';
+
+  @override
+  String get stBiometricBoundBody =>
+      'The key that opens it is sealed by this device\'s secure hardware and can only be used right after the system prompt — copying the app\'s data does not reveal it. Re-enrolling a fingerprint or face resets it.';
+
+  @override
+  String get stBiometricUnboundBody =>
+      'While this is on, a key derived from your passphrase (never the passphrase itself) sits in this device\'s keystore — so on THIS device, someone who can break into the keystore no longer needs your passphrase. Turning it off deletes that key.';
+
+  @override
+  String get stBackup => 'Backup';
+
+  @override
+  String get stBackupHelp =>
+      'Everything — messages, contacts, groups, attachments — encrypted with a recovery code only you hold.';
+
+  @override
+  String get stDeveloper => 'Developer';
+
+  @override
+  String get stDevMode => 'Developer mode';
+
+  @override
+  String get stDevModeHelp =>
+      'Reveal the custom relay address, for a self-hosted or test relay. Off by default — Z uses its built-in relay.';
+
+  @override
+  String get stRelayAddress => 'Relay address';
+
+  @override
+  String get stRelayUrlTitle => 'Relay server URL';
+
+  @override
+  String get stConnect => 'Connect';
+
+  @override
+  String get stDangerZone => 'Danger zone';
+
+  @override
+  String get stWipe => 'Wipe everything';
+
+  @override
+  String get stWipeHelp =>
+      'Destroys identity, contacts, messages and keys on this device.';
+
+  @override
+  String get stWipeTitle => 'Wipe everything?';
+
+  @override
+  String get stWipeBody =>
+      'Your identity, contacts, messages and attachments will be destroyed on this device. Without a .zid backup your identity is unrecoverable — no server has a copy.';
+
+  @override
+  String get stWipeAction => 'Wipe';
+
+  @override
+  String get stFooter =>
+      'Z — zero-trust messenger\nNo accounts · No analytics · No server storage';
+
+  @override
+  String get stScreenLockOn => 'Screen lock on. Z will ask before opening.';
+
+  @override
+  String get stScreenLockUnavailable =>
+      'Set up a fingerprint, face or device PIN in your system settings first.';
+
+  @override
+  String get stPromptNotCompleted =>
+      'Not enabled — the prompt was not completed.';
+
+  @override
+  String get stBackupPassphraseTitle => 'Backup passphrase';
+
+  @override
+  String get stPassphraseMinLabel => 'Passphrase (12+ characters)';
+
+  @override
+  String get stRepeat => 'Repeat';
+
+  @override
+  String get stPassphraseTooShort => 'Use at least 12 characters.';
+
+  @override
+  String get stPassphraseMismatch => 'Passphrases do not match.';
+
+  @override
+  String get stEncryptAndSave => 'Encrypt & save';
+
+  @override
+  String get stBiometricOff =>
+      'Biometric unlock off — the stored key was deleted.';
+
+  @override
+  String get stEnterPassphrase => 'Enter your passphrase';
+
+  @override
+  String get stBiometricOn => 'Biometric unlock on.';
+
+  @override
+  String get stIncorrectPassphrase => 'Incorrect passphrase.';
+
+  @override
+  String stCouldNotEnable(String error) {
+    return 'Could not enable: $error';
+  }
+
+  @override
+  String get stPassphraseSet =>
+      'Passphrase set. You\'ll be asked for it next launch.';
+
+  @override
+  String get stChangePassphrase => 'Change passphrase';
+
+  @override
+  String get stRemovePassphrase => 'Remove passphrase';
+
+  @override
+  String get stEnterCurrentPassphrase => 'Enter current passphrase';
+
+  @override
+  String get stPassphraseChanged => 'Passphrase changed.';
+
+  @override
+  String get stPassphraseRemoved =>
+      'Passphrase removed. The app opens automatically now.';
 }

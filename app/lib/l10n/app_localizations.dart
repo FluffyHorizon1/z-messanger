@@ -1743,6 +1743,474 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Save failed: {error}'**
   String chatSaveFailed(String error);
+
+  /// The line under the wordmark on the first screen. It is the brand's own claim, in the brand's own words ('No account. No phone number. No server storage.' on the artwork); keep the three short sentences and the line break after the first.
+  ///
+  /// In en, this message translates to:
+  /// **'Zero-trust messaging.\nNo accounts. No phone number. No server storage.'**
+  String get onbTagline;
+
+  /// Generic confirm on a dialog with nothing more specific to say.
+  ///
+  /// In en, this message translates to:
+  /// **'OK'**
+  String get ok;
+
+  /// Screen title.
+  ///
+  /// In en, this message translates to:
+  /// **'Settings'**
+  String get stSettings;
+
+  /// Section header. Rendered in capitals by the widget; write it in normal case.
+  ///
+  /// In en, this message translates to:
+  /// **'Profile'**
+  String get stProfile;
+
+  /// Row label and the title of the dialog that edits it.
+  ///
+  /// In en, this message translates to:
+  /// **'Display name'**
+  String get stDisplayName;
+
+  /// After renaming. The second sentence is the useful half: the name is baked into the contact code, so existing contacts do not see the change and new ones need a new code.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved. Share a fresh contact code so new contacts see it.'**
+  String get stDisplayNameSaved;
+
+  /// Section header.
+  ///
+  /// In en, this message translates to:
+  /// **'Appearance'**
+  String get stAppearance;
+
+  /// Row label for the light/dark/system choice.
+  ///
+  /// In en, this message translates to:
+  /// **'Theme'**
+  String get stTheme;
+
+  /// Theme option: follow the OS. Keep short — three of these share one row.
+  ///
+  /// In en, this message translates to:
+  /// **'System'**
+  String get stThemeSystem;
+
+  /// Theme option.
+  ///
+  /// In en, this message translates to:
+  /// **'Light'**
+  String get stThemeLight;
+
+  /// Theme option.
+  ///
+  /// In en, this message translates to:
+  /// **'Dark'**
+  String get stThemeDark;
+
+  /// Section header.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection'**
+  String get stConnection;
+
+  /// Row label. 'Relay' is the app's word for its server throughout — it relays ciphertext and holds nothing.
+  ///
+  /// In en, this message translates to:
+  /// **'Relay'**
+  String get stRelay;
+
+  /// Relay status. 'zero-knowledge' is the claim: the link is up and the relay still learns nothing from it.
+  ///
+  /// In en, this message translates to:
+  /// **'Connected — zero-knowledge link up'**
+  String get stRelayConnected;
+
+  /// Relay status.
+  ///
+  /// In en, this message translates to:
+  /// **'Connecting…'**
+  String get stRelayConnecting;
+
+  /// Relay status, with no error to show.
+  ///
+  /// In en, this message translates to:
+  /// **'Offline'**
+  String get stRelayOffline;
+
+  /// Relay status with the last transport error in parentheses.
+  ///
+  /// In en, this message translates to:
+  /// **'Offline ({error})'**
+  String stRelayOfflineWithError(String error);
+
+  /// Section header.
+  ///
+  /// In en, this message translates to:
+  /// **'Devices'**
+  String get stDevices;
+
+  /// Row label, opens the device list.
+  ///
+  /// In en, this message translates to:
+  /// **'Linked devices'**
+  String get stLinkedDevices;
+
+  /// Under the linked-devices row.
+  ///
+  /// In en, this message translates to:
+  /// **'See the devices on your account, link a new one, or revoke one you no longer use.'**
+  String get stLinkedDevicesHelp;
+
+  /// Section header.
+  ///
+  /// In en, this message translates to:
+  /// **'Notifications'**
+  String get stNotifications;
+
+  /// Toggle label.
+  ///
+  /// In en, this message translates to:
+  /// **'Push notifications'**
+  String get stPush;
+
+  /// What a push notification does and does not carry. 'content-free' and 'never inside the notification' are the privacy claim: the push service sees a wake-up, not a message. A translation that implies the notification shows the message contradicts the design.
+  ///
+  /// In en, this message translates to:
+  /// **'Wake this device when a message arrives while Z is closed. The alert is content-free — messages are fetched and decrypted only on your device, never inside the notification.'**
+  String get stPushHelp;
+
+  /// Section header.
+  ///
+  /// In en, this message translates to:
+  /// **'Security'**
+  String get stSecurity;
+
+  /// Warning row shown when the vault key could not be placed in the system keychain.
+  ///
+  /// In en, this message translates to:
+  /// **'OS keystore unavailable'**
+  String get stKeystoreUnavailable;
+
+  /// What the fallback means and how to leave it. 'GNOME Keyring' and 'KWallet' are product names.
+  ///
+  /// In en, this message translates to:
+  /// **'The vault key is stored in a restricted file instead of the system keychain. Install/enable a keyring (e.g. GNOME Keyring / KWallet on Linux) and re-create your identity for hardware-backed protection.'**
+  String get stKeystoreUnavailableHelp;
+
+  /// Informational row label.
+  ///
+  /// In en, this message translates to:
+  /// **'Where your messages live'**
+  String get stWhereMessagesLive;
+
+  /// The storage claim in one sentence each for the device and the relay. 'RAM only until delivery, never on disk' is the relay's whole promise; keep it exact. XChaCha20-Poly1305 is an algorithm name.
+  ///
+  /// In en, this message translates to:
+  /// **'Only in this device\'s encrypted vault (XChaCha20-Poly1305, key in the OS keystore). The relay holds ciphertext in RAM only until delivery, never on disk.'**
+  String get stWhereMessagesLiveHelp;
+
+  /// Toggle label for the biometric/PIN gate on opening the app.
+  ///
+  /// In en, this message translates to:
+  /// **'Screen lock'**
+  String get stScreenLock;
+
+  /// Under the toggle when it is on. {after} is a duration such as '1 minute' or '15 minutes'.
+  ///
+  /// In en, this message translates to:
+  /// **'Z asks for your fingerprint, face or device PIN when it opens and after {after} in the background.'**
+  String stScreenLockOnHelp(String after);
+
+  /// Under the toggle when it is on and the lock-after setting is 0 — the sentence for 'immediately', which does not fit the {after} slot in any language.
+  ///
+  /// In en, this message translates to:
+  /// **'Z asks for your fingerprint, face or device PIN when it opens and as soon as it goes to the background.'**
+  String get stScreenLockOnImmediateHelp;
+
+  /// Under the toggle when it is off. The second sentence pre-empts the worry that a locked app is an offline app.
+  ///
+  /// In en, this message translates to:
+  /// **'Ask for your fingerprint, face or device PIN to open Z. Messages still arrive while it is locked.'**
+  String get stScreenLockOffHelp;
+
+  /// Row label and dialog title for how long the app may sit in the background before it locks.
+  ///
+  /// In en, this message translates to:
+  /// **'Lock after'**
+  String get stLockAfter;
+
+  /// Lock-after option: lock the moment the app goes to the background.
+  ///
+  /// In en, this message translates to:
+  /// **'Immediately'**
+  String get lockImmediately;
+
+  /// Row label when a passphrase is set.
+  ///
+  /// In en, this message translates to:
+  /// **'App passphrase — on'**
+  String get stPassphraseOn;
+
+  /// Row label when no passphrase is set.
+  ///
+  /// In en, this message translates to:
+  /// **'App passphrase — off'**
+  String get stPassphraseOff;
+
+  /// Under the passphrase row when one is set.
+  ///
+  /// In en, this message translates to:
+  /// **'This device asks for your passphrase on launch. Tap to change or remove it.'**
+  String get stPassphraseOnHelp;
+
+  /// Under the passphrase row when none is set. 'never sent anywhere' is the claim to keep.
+  ///
+  /// In en, this message translates to:
+  /// **'Add a passphrase that unlocks the app on this device. Combined with the device keystore; never sent anywhere.'**
+  String get stPassphraseOffHelp;
+
+  /// Toggle label when the biometric key is sealed by secure hardware (Android). 'hardware-bound' is a stronger guarantee than the plain form and the suffix must not be dropped.
+  ///
+  /// In en, this message translates to:
+  /// **'Unlock with biometrics — hardware-bound'**
+  String get stBiometricBound;
+
+  /// Toggle label when the biometric key is held in the ordinary keystore.
+  ///
+  /// In en, this message translates to:
+  /// **'Unlock with biometrics'**
+  String get stBiometric;
+
+  /// First sentence of the biometric help, shared by both variants below; note the trailing space, which joins it to the next sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Open the vault with your fingerprint or face instead of typing the passphrase. '**
+  String get stBiometricLead;
+
+  /// The hardware-bound case. Two facts: the key is unusable without a fresh biometric prompt, and it is invalidated by a biometric change. Both are what 'hardware-bound' means.
+  ///
+  /// In en, this message translates to:
+  /// **'The key that opens it is sealed by this device\'s secure hardware and can only be used right after the system prompt — copying the app\'s data does not reveal it. Re-enrolling a fingerprint or face resets it.'**
+  String get stBiometricBoundBody;
+
+  /// The ordinary-keystore case, and it is a warning: convenience here costs something, and the sentence says exactly what. 'never the passphrase itself' and 'no longer needs your passphrase' must both survive.
+  ///
+  /// In en, this message translates to:
+  /// **'While this is on, a key derived from your passphrase (never the passphrase itself) sits in this device\'s keystore — so on THIS device, someone who can break into the keystore no longer needs your passphrase. Turning it off deletes that key.'**
+  String get stBiometricUnboundBody;
+
+  /// Row label, opens the backup screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Backup'**
+  String get stBackup;
+
+  /// Under the backup row.
+  ///
+  /// In en, this message translates to:
+  /// **'Everything — messages, contacts, groups, attachments — encrypted with a recovery code only you hold.'**
+  String get stBackupHelp;
+
+  /// Section header.
+  ///
+  /// In en, this message translates to:
+  /// **'Developer'**
+  String get stDeveloper;
+
+  /// Toggle label.
+  ///
+  /// In en, this message translates to:
+  /// **'Developer mode'**
+  String get stDevMode;
+
+  /// Under the developer toggle.
+  ///
+  /// In en, this message translates to:
+  /// **'Reveal the custom relay address, for a self-hosted or test relay. Off by default — Z uses its built-in relay.'**
+  String get stDevModeHelp;
+
+  /// Row label showing the relay URL in developer mode.
+  ///
+  /// In en, this message translates to:
+  /// **'Relay address'**
+  String get stRelayAddress;
+
+  /// Title of the dialog that edits the relay URL.
+  ///
+  /// In en, this message translates to:
+  /// **'Relay server URL'**
+  String get stRelayUrlTitle;
+
+  /// Confirms the relay URL dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect'**
+  String get stConnect;
+
+  /// Section header for the irreversible action.
+  ///
+  /// In en, this message translates to:
+  /// **'Danger zone'**
+  String get stDangerZone;
+
+  /// Row label, shown in the danger colour.
+  ///
+  /// In en, this message translates to:
+  /// **'Wipe everything'**
+  String get stWipe;
+
+  /// Under the wipe row.
+  ///
+  /// In en, this message translates to:
+  /// **'Destroys identity, contacts, messages and keys on this device.'**
+  String get stWipeHelp;
+
+  /// Title of the wipe confirmation.
+  ///
+  /// In en, this message translates to:
+  /// **'Wipe everything?'**
+  String get stWipeTitle;
+
+  /// The last warning before an irreversible wipe. 'no server has a copy' is the design restated as a consequence.
+  ///
+  /// In en, this message translates to:
+  /// **'Your identity, contacts, messages and attachments will be destroyed on this device. Without a .zid backup your identity is unrecoverable — no server has a copy.'**
+  String get stWipeBody;
+
+  /// Confirms the wipe.
+  ///
+  /// In en, this message translates to:
+  /// **'Wipe'**
+  String get stWipeAction;
+
+  /// Footer under the settings list. Two lines; the second is the brand claim in three parts.
+  ///
+  /// In en, this message translates to:
+  /// **'Z — zero-trust messenger\nNo accounts · No analytics · No server storage'**
+  String get stFooter;
+
+  /// After enabling screen lock.
+  ///
+  /// In en, this message translates to:
+  /// **'Screen lock on. Z will ask before opening.'**
+  String get stScreenLockOn;
+
+  /// Screen lock could not be enabled because the OS has no credential to gate with.
+  ///
+  /// In en, this message translates to:
+  /// **'Set up a fingerprint, face or device PIN in your system settings first.'**
+  String get stScreenLockUnavailable;
+
+  /// The system biometric prompt was cancelled or failed, so nothing changed.
+  ///
+  /// In en, this message translates to:
+  /// **'Not enabled — the prompt was not completed.'**
+  String get stPromptNotCompleted;
+
+  /// Title of the new-passphrase dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Backup passphrase'**
+  String get stBackupPassphraseTitle;
+
+  /// Label on the first passphrase field, stating the minimum.
+  ///
+  /// In en, this message translates to:
+  /// **'Passphrase (12+ characters)'**
+  String get stPassphraseMinLabel;
+
+  /// Label on the second passphrase field.
+  ///
+  /// In en, this message translates to:
+  /// **'Repeat'**
+  String get stRepeat;
+
+  /// Validation: under the minimum.
+  ///
+  /// In en, this message translates to:
+  /// **'Use at least 12 characters.'**
+  String get stPassphraseTooShort;
+
+  /// Validation: the two fields differ.
+  ///
+  /// In en, this message translates to:
+  /// **'Passphrases do not match.'**
+  String get stPassphraseMismatch;
+
+  /// Confirms the new passphrase.
+  ///
+  /// In en, this message translates to:
+  /// **'Encrypt & save'**
+  String get stEncryptAndSave;
+
+  /// After disabling biometric unlock. The second half matters: the key is gone, not merely unused.
+  ///
+  /// In en, this message translates to:
+  /// **'Biometric unlock off — the stored key was deleted.'**
+  String get stBiometricOff;
+
+  /// Title of the secret prompt when enabling biometric unlock.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter your passphrase'**
+  String get stEnterPassphrase;
+
+  /// After enabling biometric unlock.
+  ///
+  /// In en, this message translates to:
+  /// **'Biometric unlock on.'**
+  String get stBiometricOn;
+
+  /// The typed passphrase did not verify.
+  ///
+  /// In en, this message translates to:
+  /// **'Incorrect passphrase.'**
+  String get stIncorrectPassphrase;
+
+  /// Biometric enrolment threw.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not enable: {error}'**
+  String stCouldNotEnable(String error);
+
+  /// After setting a passphrase for the first time.
+  ///
+  /// In en, this message translates to:
+  /// **'Passphrase set. You\'ll be asked for it next launch.'**
+  String get stPassphraseSet;
+
+  /// Sheet action.
+  ///
+  /// In en, this message translates to:
+  /// **'Change passphrase'**
+  String get stChangePassphrase;
+
+  /// Sheet action.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove passphrase'**
+  String get stRemovePassphrase;
+
+  /// Title of the secret prompt before changing or removing.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter current passphrase'**
+  String get stEnterCurrentPassphrase;
+
+  /// After a change.
+  ///
+  /// In en, this message translates to:
+  /// **'Passphrase changed.'**
+  String get stPassphraseChanged;
+
+  /// After removal. The second sentence states the consequence plainly.
+  ///
+  /// In en, this message translates to:
+  /// **'Passphrase removed. The app opens automatically now.'**
+  String get stPassphraseRemoved;
 }
 
 class _AppLocalizationsDelegate

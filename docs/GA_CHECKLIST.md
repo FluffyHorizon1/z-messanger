@@ -26,7 +26,7 @@ decision rather than by unfinished work.
 | G6 | Published threat model | ✅ |
 | G7 | Platform completion (Android, iOS, Windows, macOS, Linux) | ❌ **iOS does not exist** |
 | G8 | Accessibility | ✅ for the checks that exist; see the caveat |
-| G9 | Localization | ❌ **13 of 14 screens** |
+| G9 | Localization | ❌ **14 of 14 screens; system messages and a second locale outstanding** |
 
 ---
 
@@ -134,11 +134,10 @@ doing before 1.0 and is not something a test replaces.
 
 The foundation is in — `flutter_localizations`, `gen-l10n`, an ARB with a
 description on every string, and `tool/check_l10n.py` holding migrated screens
-to zero hardcoded literals. **13 of 14 screens are migrated; ~107
-strings remain**, and no locale but English exists.
+to zero hardcoded literals. **14 of 14 screens are migrated; ~0
+strings remain** in them, and no locale but English exists.
 
-What is left in the screens is `settings_screen.dart` (107). After that
-the count that matters moves to the service: `core/chat_service.dart` stores sixteen kinds of English system
+The count that matters has moved to the service: `core/chat_service.dart` stores sixteen kinds of English system
 message into the vault as prose ("You left the group.", "Secure session was
 reset."), and those render verbatim in every locale. They need storing as a
 kind plus parameters and rendering through the ARB — that is the last piece of

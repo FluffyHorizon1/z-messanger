@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/app_localizations.dart';
+import '../l10n/ttl_text.dart';
 import '../core/app_lock.dart';
 import '../core/chat_service.dart';
 import '../core/models.dart';
@@ -41,26 +43,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
-  String _biometricUnlockCopy(AppLock lock) {
-    const lead = 'Open the vault with your fingerprint or face instead of '
-        'typing the passphrase. ';
+  String _biometricUnlockCopy(AppLocalizations l, AppLock lock) {
     final boundNow = lock.settings.biometricUnlock
         ? lock.biometricUnlockBound
         : _boundAvailable;
-    if (boundNow) {
-      return '${lead}The key that opens it is sealed by this device\'s '
-          'secure hardware and can only be used right after the system '
-          'prompt — copying the app\'s data does not reveal it. Re-enrolling '
-          'a fingerprint or face resets it.';
-    }
-    return '${lead}While this is on, a key derived from your passphrase '
-        '(never the passphrase itself) sits in this device\'s keystore — so '
-        'on THIS device, someone who can break into the keystore no longer '
-        'needs your passphrase. Turning it off deletes that key.';
+    return l.stBiometricLead +
+        (boundNow ? l.stBiometricBoundBody : l.stBiometricUnboundBody);
   }
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final svc = context.watch<ChatService>();
     final transport = context.watch<Transport>();
     final push = context.watch<PushService>();
@@ -68,64 +61,66 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = context.watch<AppPrefs>();
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(title: Text(l.stSettings)),
       body: ListView(
         children: [
-          const _SectionHeader('Profile'),
+          _SectionHeader(l.stProfile),
           ListTile(
             leading: const Icon(Icons.badge_outlined),
-            title: const Text('Display name'),
+            title: Text(l.stDisplayName),
             subtitle: Text(svc.displayName),
             onTap: () async {
               final ctrl = TextEditingController(text: svc.displayName);
               final name = await showDialog<String>(
                 context: context,
                 builder: (ctx) => AlertDialog(
-                  title: const Text('Display name'),
+                  title: Text(l.stDisplayName),
                   content: TextField(controller: ctrl, autofocus: true),
                   actions: [
                     TextButton(
                         onPressed: () => Navigator.pop(ctx),
-                        child: const Text('Cancel')),
+                        child: Text(l.cancel)),
                     FilledButton(
                         onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-                        child: const Text('Save')),
+                        child: Text(l.save)),
                   ],
                 ),
               );
               if (name != null && name.isNotEmpty) {
                 await svc.setDisplayName(name);
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                      content: Text(
-                          'Saved. Share a fresh contact code so new contacts see it.')));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(l.stDisplayNameSaved)));
                 }
               }
             },
           ),
-          const _SectionHeader('Appearance'),
+          _SectionHeader(l.stAppearance),
           ListTile(
             leading: Icon(switch (prefs.themeMode) {
               ThemeMode.light => Icons.light_mode_outlined,
               ThemeMode.dark => Icons.dark_mode_outlined,
               ThemeMode.system => Icons.brightness_auto_outlined,
             }),
-            title: const Text('Theme'),
+            title: Text(l.stTheme),
             subtitle: Padding(
               padding: const EdgeInsets.only(top: 8),
               child: SegmentedButton<ThemeMode>(
                 showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(value: ThemeMode.system, label: Text('System')),
-                  ButtonSegment(value: ThemeMode.light, label: Text('Light')),
-                  ButtonSegment(value: ThemeMode.dark, label: Text('Dark')),
+                segments: [
+                  ButtonSegment(
+                      value: ThemeMode.system, label: Text(l.stThemeSystem)),
+                  ButtonSegment(
+                      value: ThemeMode.light, label: Text(l.stThemeLight)),
+                  ButtonSegment(
+                      value: ThemeMode.dark, label: Text(l.stThemeDark)),
                 ],
                 selected: {prefs.themeMode},
                 onSelectionChanged: (s) => prefs.setThemeMode(s.first),
               ),
             ),
           ),
-          const _SectionHeader('Connection'),
+          _SectionHeader(l.stConnection),
           ListTile(
             leading: Icon(
               Icons.cloud_outlined,
@@ -133,31 +128,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ? context.z.ok
                   : context.z.textSecondary,
             ),
-            title: const Text('Relay'),
+            title: Text(l.stRelay),
             subtitle: Text(
               switch (transport.status) {
-                LinkStatus.connected => 'Connected — zero-knowledge link up',
-                LinkStatus.connecting => 'Connecting…',
-                LinkStatus.disconnected =>
-                  'Offline${transport.lastError != null ? ' (${transport.lastError})' : ''}',
+                LinkStatus.connected => l.stRelayConnected,
+                LinkStatus.connecting => l.stRelayConnecting,
+                LinkStatus.disconnected => transport.lastError == null
+                    ? l.stRelayOffline
+                    : l.stRelayOfflineWithError('${transport.lastError}'),
               },
               style: const TextStyle(fontSize: 12),
             ),
           ),
-          const _SectionHeader('Devices'),
+          _SectionHeader(l.stDevices),
           ListTile(
             leading: const Icon(Icons.devices_outlined),
-            title: const Text('Linked devices'),
-            subtitle: const Text(
-              'See the devices on your account, link a new one, or revoke one '
-              'you no longer use.',
-              style: TextStyle(fontSize: 12),
+            title: Text(l.stLinkedDevices),
+            subtitle: Text(
+              l.stLinkedDevicesHelp,
+              style: const TextStyle(fontSize: 12),
             ),
             onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const LinkedDevicesScreen())),
           ),
           if (push.supported) ...[
-            const _SectionHeader('Notifications'),
+            _SectionHeader(l.stNotifications),
             SwitchListTile(
               secondary: Icon(
                 push.enabled
@@ -165,39 +160,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     : Icons.notifications_off_outlined,
                 color: push.enabled ? context.z.ok : context.z.textSecondary,
               ),
-              title: const Text('Push notifications'),
-              subtitle: const Text(
-                'Wake this device when a message arrives while Z is closed. The '
-                'alert is content-free — messages are fetched and decrypted only '
-                'on your device, never inside the notification.',
-                style: TextStyle(fontSize: 12),
+              title: Text(l.stPush),
+              subtitle: Text(
+                l.stPushHelp,
+                style: const TextStyle(fontSize: 12),
               ),
               value: push.enabled,
               activeThumbColor: context.z.accent,
               onChanged: (v) => context.read<PushService>().setEnabled(v),
             ),
           ],
-          const _SectionHeader('Security'),
+          _SectionHeader(l.stSecurity),
           if (svc.vault.usedFallbackKeyStore)
             ListTile(
-              leading: Icon(Icons.warning_amber, color: context.z.accent),
-              title: Text('OS keystore unavailable'),
+              leading: Icon(Icons.warning_amber, color: context.z.warn),
+              title: Text(l.stKeystoreUnavailable),
               subtitle: Text(
-                'The vault key is stored in a restricted file instead of the '
-                'system keychain. Install/enable a keyring (e.g. GNOME '
-                'Keyring / KWallet on Linux) and re-create your identity for '
-                'hardware-backed protection.',
-                style: TextStyle(fontSize: 12),
+                l.stKeystoreUnavailableHelp,
+                style: const TextStyle(fontSize: 12),
               ),
             ),
-          const ListTile(
-            leading: Icon(Icons.storage_outlined),
-            title: Text('Where your messages live'),
+          ListTile(
+            leading: const Icon(Icons.storage_outlined),
+            title: Text(l.stWhereMessagesLive),
             subtitle: Text(
-              'Only in this device\'s encrypted vault (XChaCha20-Poly1305, '
-              'key in the OS keystore). The relay holds ciphertext in RAM '
-              'only until delivery, never on disk.',
-              style: TextStyle(fontSize: 12),
+              l.stWhereMessagesLiveHelp,
+              style: const TextStyle(fontSize: 12),
             ),
           ),
           if (_lockAvailable) ...[
@@ -210,13 +198,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ? context.z.ok
                     : context.z.textSecondary,
               ),
-              title: const Text('Screen lock'),
+              title: Text(l.stScreenLock),
               subtitle: Text(
-                lock.settings.screenLock
-                    ? 'Z asks for your fingerprint, face or device PIN when it '
-                        'opens and after ${_lockAfterLabel(lock.settings.lockAfterSec).toLowerCase()} in the background.'
-                    : 'Ask for your fingerprint, face or device PIN to open Z. '
-                        'Messages still arrive while it is locked.',
+                !lock.settings.screenLock
+                    ? l.stScreenLockOffHelp
+                    : lock.settings.lockAfterSec == 0
+                        ? l.stScreenLockOnImmediateHelp
+                        : l.stScreenLockOnHelp(
+                            _lockAfterLabel(l, lock.settings.lockAfterSec)),
                 style: const TextStyle(fontSize: 12),
               ),
               value: lock.settings.screenLock,
@@ -226,8 +215,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             if (lock.settings.screenLock)
               ListTile(
                 leading: const Icon(Icons.timer_outlined),
-                title: const Text('Lock after'),
-                subtitle: Text(_lockAfterLabel(lock.settings.lockAfterSec),
+                title: Text(l.stLockAfter),
+                subtitle: Text(_lockAfterLabel(l, lock.settings.lockAfterSec),
                     style: const TextStyle(fontSize: 12)),
                 onTap: () => _pickLockAfter(context, lock),
               ),
@@ -241,13 +230,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ? context.z.ok
                   : context.z.textSecondary,
             ),
-            title: Text(svc.vault.hasPassphrase
-                ? 'App passphrase — on'
-                : 'App passphrase — off'),
+            title: Text(
+                svc.vault.hasPassphrase ? l.stPassphraseOn : l.stPassphraseOff),
             subtitle: Text(
               svc.vault.hasPassphrase
-                  ? 'This device asks for your passphrase on launch. Tap to change or remove it.'
-                  : 'Add a passphrase that unlocks the app on this device. Combined with the device keystore; never sent anywhere.',
+                  ? l.stPassphraseOnHelp
+                  : l.stPassphraseOffHelp,
               style: const TextStyle(fontSize: 12),
             ),
             onTap: () => _managePassphrase(context, svc, lock),
@@ -263,10 +251,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     : context.z.textSecondary,
               ),
               title: Text(lock.biometricUnlockBound
-                  ? 'Unlock with biometrics — hardware-bound'
-                  : 'Unlock with biometrics'),
+                  ? l.stBiometricBound
+                  : l.stBiometric),
               subtitle: Text(
-                _biometricUnlockCopy(lock),
+                _biometricUnlockCopy(l, lock),
                 style: const TextStyle(fontSize: 12),
               ),
               value: lock.settings.biometricUnlock,
@@ -275,25 +263,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ListTile(
             leading: const Icon(Icons.enhanced_encryption),
-            title: const Text('Backup'),
-            subtitle: const Text(
-                'Everything — messages, contacts, groups, attachments — '
-                'encrypted with a recovery code only you hold.',
-                style: TextStyle(fontSize: 12)),
-            onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const BackupScreen())),
+            title: Text(l.stBackup),
+            subtitle:
+                Text(l.stBackupHelp, style: const TextStyle(fontSize: 12)),
+            onTap: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const BackupScreen())),
           ),
-          const _SectionHeader('Developer'),
+          _SectionHeader(l.stDeveloper),
           SwitchListTile(
             secondary: Icon(
               svc.devMode ? Icons.code : Icons.code_off,
               color: svc.devMode ? context.z.accent : context.z.textSecondary,
             ),
-            title: const Text('Developer mode'),
-            subtitle: const Text(
-              'Reveal the custom relay address, for a self-hosted or test relay. '
-              'Off by default — Z uses its built-in relay.',
-              style: TextStyle(fontSize: 12),
+            title: Text(l.stDevMode),
+            subtitle: Text(
+              l.stDevModeHelp,
+              style: const TextStyle(fontSize: 12),
             ),
             value: svc.devMode,
             activeThumbColor: context.z.accent,
@@ -302,7 +287,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           if (svc.devMode)
             ListTile(
               leading: const Icon(Icons.dns_outlined),
-              title: const Text('Relay address'),
+              title: Text(l.stRelayAddress),
               subtitle: Text(transport.serverUrl,
                   style: const TextStyle(fontSize: 12)),
               onTap: () async {
@@ -310,7 +295,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 final url = await showDialog<String>(
                   context: context,
                   builder: (ctx) => AlertDialog(
-                    title: const Text('Relay server URL'),
+                    title: Text(l.stRelayUrlTitle),
                     content: TextField(
                       controller: ctrl,
                       autofocus: true,
@@ -320,10 +305,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     actions: [
                       TextButton(
                           onPressed: () => Navigator.pop(ctx),
-                          child: const Text('Cancel')),
+                          child: Text(l.cancel)),
                       FilledButton(
                           onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-                          child: const Text('Connect')),
+                          child: Text(l.stConnect)),
                     ],
                   ),
                 );
@@ -332,21 +317,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 }
               },
             ),
-          const _SectionHeader('Danger zone'),
+          _SectionHeader(l.stDangerZone),
           ListTile(
             leading: Icon(Icons.delete_forever, color: context.z.danger),
-            title: Text('Wipe everything',
-                style: TextStyle(color: context.z.danger)),
-            subtitle: const Text(
-                'Destroys identity, contacts, messages and keys on this device.',
-                style: TextStyle(fontSize: 12)),
+            title: Text(l.stWipe, style: TextStyle(color: context.z.danger)),
+            subtitle: Text(l.stWipeHelp, style: const TextStyle(fontSize: 12)),
             onTap: () => _wipe(context, svc),
           ),
           const SizedBox(height: 24),
           Center(
             child: Text(
-              'Z 1.0.0 — zero-trust messenger\n'
-              'No accounts · No analytics · No server storage',
+              // No version number here: the one that used to be here said
+              // 1.0.0 for eighteen releases. The build's real version needs
+              // package_info_plus, which is a separate change.
+              l.stFooter,
               textAlign: TextAlign.center,
               style: TextStyle(color: context.z.textSecondary, fontSize: 12),
             ),
@@ -357,16 +341,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  static String _lockAfterLabel(int sec) => switch (sec) {
-        0 => 'Immediately',
-        60 => '1 minute',
-        3600 => '1 hour',
-        _ => '${sec ~/ 60} minutes',
-      };
+  /// The same words as the disappearing-messages timer for the same
+  /// durations, plus "Immediately" for zero.
+  static String _lockAfterLabel(AppLocalizations l, int sec) =>
+      sec == 0 ? l.lockImmediately : ttlText(l, sec);
 
   Future<void> _toggleScreenLock(
       BuildContext context, AppLock lock, bool on) async {
     final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
     if (!on) {
       await lock.disableScreenLock();
       return;
@@ -374,24 +357,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final r = await lock.enableScreenLock();
     switch (r) {
       case GateResult.ok:
-        messenger.showSnackBar(const SnackBar(
-            content: Text('Screen lock on. Z will ask before opening.')));
+        messenger.showSnackBar(SnackBar(content: Text(l.stScreenLockOn)));
       case GateResult.unavailable:
-        messenger.showSnackBar(const SnackBar(
-            content: Text('Set up a fingerprint, face or device PIN in your '
-                'system settings first.')));
+        messenger
+            .showSnackBar(SnackBar(content: Text(l.stScreenLockUnavailable)));
       case GateResult.cancelled:
       case GateResult.failed:
-        messenger.showSnackBar(const SnackBar(
-            content: Text('Not enabled — the prompt was not completed.')));
+        messenger.showSnackBar(SnackBar(content: Text(l.stPromptNotCompleted)));
     }
   }
 
   Future<void> _pickLockAfter(BuildContext context, AppLock lock) async {
+    final l = AppLocalizations.of(context);
     final sec = await showDialog<int>(
       context: context,
       builder: (ctx) => SimpleDialog(
-        title: const Text('Lock after'),
+        title: Text(l.stLockAfter),
         children: [
           RadioGroup<int>(
             groupValue: lock.settings.lockAfterSec,
@@ -403,7 +384,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   RadioListTile<int>(
                     value: c,
                     activeColor: context.z.accent,
-                    title: Text(_lockAfterLabel(c)),
+                    title: Text(_lockAfterLabel(l, c)),
                   ),
               ],
             ),
@@ -415,6 +396,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<String?> _newPassphrase(BuildContext context) async {
+    final l = AppLocalizations.of(context);
     final a = TextEditingController();
     final b = TextEditingController();
     String? error;
@@ -422,7 +404,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setState) => AlertDialog(
-          title: const Text('Backup passphrase'),
+          title: Text(l.stBackupPassphraseTitle),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -430,14 +412,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 controller: a,
                 obscureText: true,
                 autofocus: true,
-                decoration: const InputDecoration(
-                    labelText: 'Passphrase (12+ characters)'),
+                decoration: InputDecoration(labelText: l.stPassphraseMinLabel),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: b,
                 obscureText: true,
-                decoration: const InputDecoration(labelText: 'Repeat'),
+                decoration: InputDecoration(labelText: l.stRepeat),
               ),
               if (error != null)
                 Padding(
@@ -449,19 +430,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel')),
+                onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
             FilledButton(
               onPressed: () {
                 if (a.text.length < 12) {
-                  setState(() => error = 'Use at least 12 characters.');
+                  setState(() => error = l.stPassphraseTooShort);
                 } else if (a.text != b.text) {
-                  setState(() => error = 'Passphrases do not match.');
+                  setState(() => error = l.stPassphraseMismatch);
                 } else {
                   Navigator.pop(ctx, a.text);
                 }
               },
-              child: const Text('Encrypt & save'),
+              child: Text(l.stEncryptAndSave),
             ),
           ],
         ),
@@ -472,39 +452,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _toggleBiometricUnlock(
       BuildContext context, ChatService svc, AppLock lock, bool on) async {
     final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
     if (!on) {
       await lock.disableBiometricUnlock();
-      messenger.showSnackBar(const SnackBar(
-          content: Text('Biometric unlock off — the stored key was deleted.')));
+      messenger.showSnackBar(SnackBar(content: Text(l.stBiometricOff)));
       return;
     }
-    final pass = await _askSecret(context, 'Enter your passphrase');
+    final pass = await _askSecret(context, l.stEnterPassphrase);
     if (pass == null || pass.isEmpty) return;
     try {
       final ok = await lock.enrolBiometricUnlock(svc.vault, pass);
       messenger.showSnackBar(SnackBar(
-          content: Text(ok
-              ? 'Biometric unlock on.'
-              : 'Not enabled — the prompt was not completed.')));
+          content: Text(ok ? l.stBiometricOn : l.stPromptNotCompleted)));
     } on WrongPassphraseException {
-      messenger
-          .showSnackBar(const SnackBar(content: Text('Incorrect passphrase.')));
+      messenger.showSnackBar(SnackBar(content: Text(l.stIncorrectPassphrase)));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Could not enable: $e')));
+      messenger.showSnackBar(SnackBar(content: Text(l.stCouldNotEnable('$e'))));
     }
   }
 
   Future<void> _managePassphrase(
       BuildContext context, ChatService svc, AppLock lock) async {
     final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
     if (!svc.vault.hasPassphrase) {
       final pass = await _newPassphrase(context);
       if (pass == null) return;
       await svc.vault.setPassphrase(pass);
       if (mounted) setState(() {});
-      messenger.showSnackBar(const SnackBar(
-          content:
-              Text('Passphrase set. You\'ll be asked for it next launch.')));
+      messenger.showSnackBar(SnackBar(content: Text(l.stPassphraseSet)));
       return;
     }
     // Already set: offer change or remove.
@@ -518,12 +494,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             ListTile(
               leading: Icon(Icons.edit_outlined, color: context.z.accent),
-              title: const Text('Change passphrase'),
+              title: Text(l.stChangePassphrase),
               onTap: () => Navigator.pop(ctx, 'change'),
             ),
             ListTile(
               leading: Icon(Icons.lock_open, color: context.z.danger),
-              title: const Text('Remove passphrase'),
+              title: Text(l.stRemovePassphrase),
               onTap: () => Navigator.pop(ctx, 'remove'),
             ),
           ],
@@ -532,11 +508,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (action == null || !context.mounted) return;
 
-    final current = await _askSecret(context, 'Enter current passphrase');
+    final current = await _askSecret(context, l.stEnterCurrentPassphrase);
     if (current == null) return;
     if (!await svc.vault.verifyPassphrase(current)) {
-      messenger
-          .showSnackBar(const SnackBar(content: Text('Incorrect passphrase.')));
+      messenger.showSnackBar(SnackBar(content: Text(l.stIncorrectPassphrase)));
       return;
     }
 
@@ -547,19 +522,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await svc.vault.setPassphrase(next);
       await lock.onPassphraseChanged(svc.vault, next); // re-key biometrics
       if (mounted) setState(() {});
-      messenger
-          .showSnackBar(const SnackBar(content: Text('Passphrase changed.')));
+      messenger.showSnackBar(SnackBar(content: Text(l.stPassphraseChanged)));
     } else {
       await svc.vault.removePassphrase();
       await lock.onPassphraseRemoved();
       if (mounted) setState(() {});
-      messenger.showSnackBar(const SnackBar(
-          content:
-              Text('Passphrase removed. The app opens automatically now.')));
+      messenger.showSnackBar(SnackBar(content: Text(l.stPassphraseRemoved)));
     }
   }
 
   Future<String?> _askSecret(BuildContext context, String label) {
+    final l = AppLocalizations.of(context);
     final ctrl = TextEditingController();
     return showDialog<String>(
       context: context,
@@ -569,37 +542,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
           controller: ctrl,
           obscureText: true,
           autofocus: true,
-          decoration: const InputDecoration(hintText: 'Passphrase'),
+          decoration: InputDecoration(hintText: l.passphrase),
           onSubmitted: (v) => Navigator.pop(ctx, v),
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, ctrl.text),
-              child: const Text('OK')),
+              child: Text(l.ok)),
         ],
       ),
     );
   }
 
   Future<void> _wipe(BuildContext context, ChatService svc) async {
+    final l = AppLocalizations.of(context);
     final sure = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Wipe everything?'),
-        content: const Text(
-            'Your identity, contacts, messages and attachments will be '
-            'destroyed on this device. Without a .zid backup your identity is '
-            'unrecoverable — no server has a copy.'),
+        title: Text(l.stWipeTitle),
+        content: Text(l.stWipeBody),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
+              child: Text(l.cancel)),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: context.z.danger),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Wipe'),
+            child: Text(l.stWipeAction),
           ),
         ],
       ),
