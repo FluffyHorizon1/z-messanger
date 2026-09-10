@@ -224,6 +224,18 @@ class ChatService extends ChangeNotifier {
     _disposed = true;
     _sweeper?.cancel();
     _devlistTimer?.cancel();
+    _dlvTimer?.cancel();
+    // Receipts still waiting are dropped, not sent. A service being disposed
+    // must not speak: the flush is a full send — lock, ratchet step, vault
+    // transaction — started after the owner has decided the service is over
+    // and usually a line before it closes the vault, so it either fails
+    // against a closed database or writes after the owner thinks nothing
+    // will. (The first version flushed here; backup_test.dart failed on it
+    // for a different reason than was first supposed — see that test's
+    // "every tick in" wait — but the rule stands on its own.) The sender
+    // keeps a grey tick, the same best-effort loss an app killed mid-send
+    // always was.
+    _pendingDlv.clear();
     super.dispose();
   }
 
@@ -1643,12 +1655,8 @@ class ChatService extends ChangeNotifier {
         // E2E delivery receipt. With sealed sender the relay no longer knows
         // whom to notify of delivery, so the recipient tells the sender
         // directly — encrypted, like everything else. Best-effort: if the app
-        // dies mid-send the sender simply keeps a single grey tick.
-        unawaited(_sendInner(
-            contact,
-            InnerMessage(kind: 'dlv', mid: newMessageId(), ts: _now(), data: {
-              'mids': [inner.mid]
-            })).then((_) {}, onError: (_) {}));
+        // dies before it goes out the sender simply keeps a single grey tick.
+        _queueDeliveryReceipt(contact.rid, inner.mid);
       }
       if (inner.kind == 'text' ||
           inner.kind == 'file' ||
@@ -2049,6 +2057,84 @@ class ChatService extends ChangeNotifier {
   void markChatClosed(String rid) {
     if (openChatRid == rid) openChatRid = null;
   }
+
+  // ------------------------------------------------------------------
+  // Delivery receipts, coalesced (15.3)
+  //
+  // A receipt is a full outbound send — ratchet step, seal, transaction —
+  // and the receive-side measurement put it at 10 ms of a 25 ms receive,
+  // every inbound message, holding the same per-conversation lock the next
+  // inbound needs. Fifty messages arriving on reconnect meant fifty sends
+  // in line. The wire format has always carried a LIST of mids, so receipts
+  // for a burst are gathered for a short moment and sent as one. The sender
+  // sees its ticks a few hundred milliseconds later than before; nobody
+  // notices that, and the receiver does a fiftieth of the work.
+  // ------------------------------------------------------------------
+
+  /// rid → mids received and not yet acknowledged to their sender.
+  final Map<String, Set<String>> _pendingDlv = {};
+  Timer? _dlvTimer;
+
+  /// How long a receipt waits for company before it goes out on its own.
+  static const Duration deliveryReceiptWindow = Duration(milliseconds: 300);
+
+  /// Past this many for one sender, the batch goes now — a receipt that
+  /// names hundreds of mids is not what anybody wants either.
+  static const int _dlvBatchMax = 64;
+
+  /// Test seam: hold the window shut so that only the cap can send. Lets a
+  /// test reach the cap deterministically instead of racing the timer.
+  @visibleForTesting
+  bool debugHoldDeliveryReceipts = false;
+
+  void _queueDeliveryReceipt(String rid, String mid) {
+    if (_disposed) return;
+    final pending = _pendingDlv.putIfAbsent(rid, () => {})..add(mid);
+    if (pending.length >= _dlvBatchMax) {
+      unawaited(_flushDeliveryReceipts(only: rid));
+      return;
+    }
+    if (debugHoldDeliveryReceipts) return;
+    _dlvTimer ??= Timer(deliveryReceiptWindow, () {
+      _dlvTimer = null;
+      unawaited(_flushDeliveryReceipts());
+    });
+  }
+
+  /// Send every pending receipt (or [only] one sender's) as one 'dlv' per
+  /// sender. Failures are swallowed: the receipt is best-effort, and a
+  /// sender whose receipt is lost keeps a grey tick, as before.
+  Future<void> _flushDeliveryReceipts({String? only}) async {
+    final rids = only != null ? [only] : _pendingDlv.keys.toList();
+    for (final rid in rids) {
+      final mids = _pendingDlv.remove(rid);
+      if (mids == null || mids.isEmpty) continue;
+      final contact = contacts[rid];
+      if (contact == null) continue;
+      try {
+        await _sendInner(
+            contact,
+            InnerMessage(
+                kind: 'dlv',
+                mid: newMessageId(),
+                ts: _now(),
+                data: {'mids': mids.toList()}));
+      } catch (_) {}
+    }
+  }
+
+  /// Test seam: send whatever receipts are waiting, now, and wait for them.
+  @visibleForTesting
+  Future<void> flushDeliveryReceipts() async {
+    _dlvTimer?.cancel();
+    _dlvTimer = null;
+    await _flushDeliveryReceipts();
+  }
+
+  /// How many receipts are waiting, across all senders. Test seam.
+  @visibleForTesting
+  int get pendingDeliveryReceipts =>
+      _pendingDlv.values.fold(0, (n, s) => n + s.length);
 
   Future<void> _sendReadReceipts(String rid) async {
     final contact = contacts[rid];

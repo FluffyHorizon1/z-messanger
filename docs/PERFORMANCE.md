@@ -302,12 +302,12 @@ to the receiver's inbound path.
 
 ### What one inbound text message cost
 
-| | before | after |
-|---|---:|---:|
-| whole inbound path, in order | **54.7 ms** | **25.2 ms** |
-| a message that arrives early, skipping 20 keys | 53.6 | 33.8 |
-| a late arrival decrypted from the cache | 53.1 | 26.2 |
-| in order, with the cache at its 1536-key cap | 68.0 | 42.5 → *see below* |
+| | before | after the memo | after all three fixes |
+|---|---:|---:|---:|
+| whole inbound path, in order | **54.7 ms** | 25.2 | **16.3 ms** |
+| a message that arrives early, skipping 20 keys | 53.6 | 33.8 | 16.8 |
+| a late arrival decrypted from the cache | 53.1 | 26.2 | 16.6 |
+| in order, with the cache at its 1536-key cap | 68.0 | 42.5 | 16.2 (+0.0 for the cache) |
 
 The ratchet is not where the time goes — creating twenty skipped keys costs
 about what one in-order step does, and a cache hit is a lookup. Attributed,
@@ -323,7 +323,7 @@ one inbound text message, before the fix:
 | **delivery receipt — a full send, which computes the claim again** | **22.0** |
 | dedupe, claim bookkeeping, lock, notify | ~12 |
 
-Two findings.
+Three findings, three fixes, each measured on its own.
 
 **The own-list claim was recomputed on every message, in both directions.**
 `_ownListClaim()` reads `own_list_v`/`own_list_h` from the vault; for an
@@ -355,16 +355,40 @@ untouched means unwritten, changed means written — and the first version of
 that test passed against the old code because it ran with an empty cache
 (null over null); it runs with keys in the cache now.
 
-### What is left, and the next fix
+**The delivery receipt was one full send per inbound message.** After the
+memo a receive was ~25 ms and 10 of it was the receipt: an outbound send of
+a 'dlv' inner, `unawaited`, but holding the same per-conversation lock the
+next inbound needed, so fifty queued messages on reconnect paid fifty sends
+in line. The wire format had always carried a list — `'mids': [...]` — and
+now it is used as one: receipts wait 300 ms for company, or until 64 have
+gathered, and go as a single send; the sender sees its ticks a third of a
+second later than before. `delivery_receipts_test.dart` pins one receipt
+per burst, the cap, and the lone receipt going out on its own. (Its cap
+test passed with the cap removed on the first try — delivering seventy
+messages takes longer than the window, so the timer kept the batch small
+and the cap was never reached. The test now holds the window shut.) Effect:
+receive 25.2 → 16.3 ms, and the receipt's cost, ~9 ms, is paid once per
+burst.
 
-After the memo, a receive is ~25 ms and 10 of it is the delivery receipt:
-one full outbound send per inbound message, `unawaited`, but holding the
-same per-conversation lock the next inbound needs, so a burst of fifty
-queued messages on reconnect pays fifty sends in line. The wire format
-already carries a list — `'mids': [...]` — so coalescing receipts over a
-short window (a few hundred milliseconds) turns that into one send per
-burst. Not done in this pass; it is the next thing here, and it is the same
-shape as the fan-out queue: do the per-message work once per burst.
+### What a receive costs now
+
+| | ms |
+|---|---:|
+| sealed-sender open | 2.6 |
+| message-row transaction | 3.1 |
+| ratchet decrypt | 0.6 |
+| conversation-state seal | 0.3 |
+| own-list claim | 0.0 |
+| dedupe, claim bookkeeping, lock, notify | 1.6 |
+| **whole inbound path** | **16.3** |
+
+Open plus the transaction are two thirds of it, and both are what they
+are: an X25519 agreement and an AEAD to open the envelope, and a sealed
+write. There is no term left of the size any of the three above were.
+
+The send side moved with it: a 1:1 send that was ~22 ms is ~10 ms, since
+`_decorateForWire` computed the same claim. PERFORMANCE.md's earlier
+send-side conclusion is struck through above rather than deleted.
 
 ## Not measured
 

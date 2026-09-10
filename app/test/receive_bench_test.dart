@@ -302,10 +302,11 @@ void main() {
     sw.stop();
     final ownClaim = sw.elapsedMicroseconds / 1000.0 / reps;
 
-    // The delivery receipt. Every inbound text triggers one — an outbound
-    // send of a tiny 'dlv' inner, unawaited, but it takes the same
-    // per-conversation lock the next inbound needs, so a burst of inbound
-    // messages pays for it in line. Timed here as the send it is.
+    // The delivery receipt: an outbound send of a tiny 'dlv' inner. It used
+    // to go out once per inbound message, unawaited but holding the same
+    // per-conversation lock the next inbound needed, so a burst paid for one
+    // per message in line; it is coalesced now, one per burst. Timed here as
+    // the send it is, so the whole-path number can be read against it.
     sw = Stopwatch()..start();
     for (var i = 0; i < reps; i++) {
       await b.sendRawInner(
@@ -326,7 +327,8 @@ void main() {
     // ignore: avoid_print
     print('  own-list claim (per message)  ${ownClaim.toStringAsFixed(2)}');
     // ignore: avoid_print
-    print('  delivery receipt (a full send)  ${receipt.toStringAsFixed(2)}');
+    print('  a delivery receipt, when one goes out (per burst, not per '
+        'message)  ${receipt.toStringAsFixed(2)}');
     // ignore: avoid_print
     print('  sealed-sender open           ${open.toStringAsFixed(2)}');
     // ignore: avoid_print
@@ -334,7 +336,7 @@ void main() {
     // ignore: avoid_print
     print('  whole inbound path           ${whole.toStringAsFixed(2)}');
     // ignore: avoid_print
-    print('  remainder (dedupe, bookkeeping, lock, notify) '
-        '${(whole - open - insert - receipt - ratchet - stateSeal - ownClaim).toStringAsFixed(2)}');
+    print('  remainder (dedupe, claim bookkeeping, lock, notify) '
+        '${(whole - open - insert - ratchet - stateSeal - ownClaim).toStringAsFixed(2)}');
   }, timeout: const Timeout(Duration(minutes: 5)));
 }

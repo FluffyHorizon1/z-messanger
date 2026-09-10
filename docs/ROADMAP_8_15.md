@@ -502,17 +502,21 @@ Everything currently externally gated, plus the work to call it 1.0.
   receipt is taken out — see the next paragraph) and nothing of the size
   any of the three fixes were.
 
-  **Open, and parked rather than shipped:** the delivery receipt is one full
-  send per inbound message, ~10 ms, and holds the same per-conversation lock
-  the next inbound needs. Coalescing receipts over a 300 ms window (the wire
-  format already carries a list of mids) takes a receive to 16.3 ms and was
-  built and tested — and made `backup_test.dart`'s wipe-and-restore case fail
-  intermittently, 6 first attempts in 22 against 0 in 12 on `main`, with a
-  0 ms window clean in 6. The delay is the trigger; the mechanism is not yet
-  caught (sixteen instrumented runs, none failed). It stays on its branch
-  until it is measured, because "probably a late receipt on a replaced
-  session" is an inference, and shipping an inference is how this section
-  acquired its struck-through sentence.
+  ~~**Open, and parked rather than shipped:**~~ **Shipped, once the flake
+  was caught (rev. 26):** the delivery receipt was one full send per inbound
+  message, ~10 ms, holding the same per-conversation lock the next inbound
+  needs. Coalescing receipts over a 300 ms window (the wire format already
+  carries a list of mids) takes a receive to 16.3 ms. It was built, tested —
+  and parked, because it made `backup_test.dart`'s wipe-and-restore case
+  fail intermittently, 6 first attempts in 22 against 0 in 12 on `main`,
+  with a 0 ms window clean in 6, and sixteen instrumented runs had not
+  caught the mechanism. "Probably a late receipt on a replaced session" was
+  an inference, and shipping an inference is how this section acquired its
+  struck-through sentence. Caught from the test side instead: the fourth
+  row in a three-row history was a `decrypt_failed` system message — Bob's
+  receipt for the last message, queued at the relay after the device was
+  wiped, undecryptable after the restore. The test now waits for every tick
+  before the phone is lost; the app was right.
 
   One hypothesis was tested and rejected, recorded because it was worth
   asking: every send fires an unawaited `flushOutbox()`, so a user offline
@@ -852,9 +856,9 @@ direction; the phases, their order and both ordering arguments stand.
    Two of the fixes' first versions were wrong in ways their tests caught
    only after the tests themselves were fixed (an invalidate-before-write
    race; a guard that ran with an empty cache and so could not fire), and
-   a third — coalescing delivery receipts — is parked unshipped because it
+   a third — coalescing delivery receipts — ~~is parked unshipped because it
    made a restore test fail one time in four and the mechanism is not yet
-   caught. The lesson is the one this section keeps re-learning: measure
+   caught~~ was parked until the mechanism was caught (rev. 26). The lesson is the one this section keeps re-learning: measure
    the thing before concluding about it, and the thing listed as unmeasured
    is the thing to measure first.
 
@@ -889,3 +893,25 @@ direction; the phases, their order and both ordering arguments stand.
    check it fires. Found while measuring call signalling shapes for
    `adr/0005`, which is why that ADR quotes only what the same harness
    produced.
+
+26. **15.3 — the receipt flake was the test, and the inference was wrong.**
+   Coalesced delivery receipts were parked (rev. 23) because
+   `backup_test.dart`'s restore case failed one time in four and sixteen
+   instrumented runs had not caught why; the suspected mechanism was a late
+   receipt landing on a replaced session. Instrumenting the *test* instead
+   of the service — a dump of the chat when the count was wrong — caught it
+   on the second run: the extra row was a `decrypt_failed` system message.
+   Bob's receipt for Alice's last message, delayed by the 300 ms window, was
+   queued at the relay after her device was wiped, and the restored device,
+   holding no session, reported an envelope it could not read. Correct
+   behaviour. The dispose-time flush the first version had failed the same
+   assertion, 4 in 6, not the session-convergence story recorded against
+   it. The test now waits until every message Alice sent shows delivered
+   before the phone is lost — Bob has nothing left to send — and the
+   receipts ship: receive 25.2 → 16.3 ms. Two lessons. Instrumentation in
+   the thing under test moves the race; instrument the observer. And a
+   mechanism written down as "suspected" is a to-do, not a finding — this
+   one was recorded in a commit message as if seen. One follow-up worth
+   noting, not done: after a restore, every envelope queued while the
+   device was gone produces its own notice, receipts and typing included;
+   one notice per contact per episode would say the same thing once.

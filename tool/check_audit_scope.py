@@ -54,6 +54,10 @@ UNCITED_OK = {
         "fan-out and reports where the cost goes (docs/PERFORMANCE.md). The "
         "one thing it asserts, that fan-out stays linear, is a design "
         "property rather than a security claim",
+    "app/test/delivery_receipts_test.dart":
+        "that delivery receipts go out once per burst rather than once per "
+        "message — a cost property (docs/PERFORMANCE.md). That a receipt is "
+        "end-to-end encrypted and names only mids is C4's territory",
     "app/test/receive_bench_test.dart":
         "a measurement, not an assertion about behaviour — it times the "
         "inbound path and attributes it (docs/PERFORMANCE.md, 'Receive "
