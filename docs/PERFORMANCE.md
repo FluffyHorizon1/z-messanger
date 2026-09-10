@@ -77,12 +77,36 @@ So roughly three quarters is local. Of that, measured directly:
 | `vault.seal` of one payload | 0.18 ms |
 | **unattributed** | **≈14 ms** |
 
-The unattributed remainder is the rest of the send path: the ratchet step, two
-serialisations of the conversation state (one for the rollback snapshot, one to
-persist), and lock bookkeeping. **It is left unattributed on purpose rather
-than guessed at** — attributing it further is the first step for anyone who
-wants to optimise, and this document should not invent a breakdown it has not
-measured.
+### The remainder, attributed
+
+That was left unattributed on purpose rather than guessed at. It has since
+been measured, and none of the candidates was what the guesses assumed:
+
+| | |
+|---|---:|
+| the transaction as a send actually builds it | 3.94 ms |
+| `SealedEnvelope.seal` | ~2.0 ms |
+| the ratchet step (`conv.encrypt`) | **0.23 ms** |
+| `Conversation.fromJson` (only when a rollback fires) | 0.11 ms |
+| the rollback snapshot (`toJson` + `jsonEncode`) | **0.02 ms** |
+
+The two that were expected to matter — the ratchet and the snapshot — are
+together a quarter of a millisecond. The earlier "one transaction per insert:
+3.25 ms" figure was a *bare* insert, which is not what a send does; the real
+shape is 3.94 ms.
+
+**A hypothesis that turned out to be wrong**, recorded because it was worth
+testing: every send fires an unawaited `flushOutbox()`, so a user offline with
+a growing backlog might pay more per message than one with none — exactly
+backwards, and the sort of thing nobody notices. Measured at 20 queued rows
+against 2 040: **15.25 ms versus 16.97 ms**. A 1.7 ms difference across a
+hundredfold backlog is not a scaling problem.
+
+About 8 ms of a 16 ms offline send is still unaccounted for, spread across
+lock acquisition, the contact lookup, the post-quantum offer check, wire
+decoration and async scheduling. **No single term dominates it**, which is the
+useful finding: there is no further win here of the size the skipped-key cache
+was, and the next person to look should start somewhere else.
 
 ### Batching the writes is not the answer
 
@@ -144,16 +168,19 @@ A fifty-member group whose conversations are all at the cap would cost roughly
    are stored — so this was a storage change rather than a protocol one, and
    all 147 protocol tests passed unchanged.
 
-3. **Make the rollback snapshot cheaper.** An earlier version of this document
-   called the two serialisations per send "the same state encoded twice". That
-   was wrong: `_sendInner` snapshots the conversation *before* `encrypt`, and
-   `_saveConv` persists it *after*, so they are different values and neither is
-   redundant. What is true is that rollback costs a full `jsonEncode` of the
-   ratchet on every send, and it only needs to restore what `encrypt` mutates.
-   Smaller than (2), and fixed for free by it in the common case.
+3. ~~**Make the rollback snapshot cheaper.**~~ **Not worth doing.** Measured
+   at **0.02 ms**. An earlier version of this document reasoned that it "costs
+   a full `jsonEncode` of the ratchet on every send" — true, and irrelevant,
+   because a ratchet without its skipped-key cache is a handful of 32-byte
+   keys and three integers. The third time in this document that an inference
+   stood in for a measurement.
 
-4. **Batch the outbox writes** — but only with a per-recipient rollback story
-   that survives one recipient failing.
+4. **Batch the outbox writes** — still open, still not obviously worth it. The
+   transaction as a send actually builds it (seal, upsert the state, insert
+   the outbox row) measures **3.94 ms** of a ~16 ms offline send, and one
+   transaction spanning fifty recipients still turns one recipient's failure
+   into fifty rolled-back ratchets. The case for it got weaker, not stronger,
+   once the fan-out stopped happening while the user waits.
 
 None of these is a change to the protocol, and none of them is a reason to
 introduce a group key.

@@ -461,10 +461,25 @@ Everything currently externally gated, plus the work to call it 1.0.
   fail the bound; removing the resume-on-start makes the interrupted fan-out
   never drain.
 
+  **The remaining ~14 ms is now attributed**, and it closes the list rather
+  than extending it. The two candidates the earlier write-up assumed mattered
+  — the ratchet step and the rollback snapshot — are together a quarter of a
+  millisecond (0.23 ms and **0.02 ms**). The transaction as a send actually
+  builds it is 3.94 ms. About 8 ms is spread across lock acquisition, the
+  contact lookup, the post-quantum offer check and async scheduling, with **no
+  single term dominating** — so there is no further win here of the size the
+  skipped-key cache was, and the batching item is left open but weaker than
+  when it was written.
+
+  One hypothesis was tested and rejected, recorded because it was worth
+  asking: every send fires an unawaited `flushOutbox()`, so a user offline
+  with a growing backlog might have paid more per message than one with none.
+  At 20 queued rows against 2 040 the difference is 1.7 ms. Not a scaling
+  problem.
+
   Still unmeasured and named as such: real hardware, devices-per-member (the
   extra-device fan-out is `unawaited` and not in these timings), cold start,
-  relay latency under sustained load, and the receive side — which is where
-  the skipped-key cache is actually used.
+  relay latency under sustained load, and the receive side.
 - **15.4 docs & support & access** *(accessibility, user docs and the
   localization foundation done; the string migration itself is 2 of 14 screens
   and tracked)*.

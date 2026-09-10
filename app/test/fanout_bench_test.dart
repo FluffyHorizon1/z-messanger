@@ -33,6 +33,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/chat_service.dart';
@@ -447,5 +448,139 @@ void main() {
         reason: 'a full out-of-order cache made the send '
             '${(full - empty).toStringAsFixed(1)} ms more expensive. It '
             'should cost nothing: a send neither reads nor writes it');
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  // PERFORMANCE.md left ~14 ms of a ~20 ms local send unattributed, on
+  // purpose rather than guessed at. This attributes it. The candidates are
+  // all per-send work on the conversation object: the rollback snapshot, the
+  // ratchet step itself, and the persist encode.
+  test('breakdown: the remaining local cost of a send', () async {
+    final svc = await makeClient('attrib');
+    final rid = await addPhantom(svc, 96000);
+    await svc.sendText(rid, 'open the session');
+    for (var i = 0; i < 5; i++) {
+      await svc.sendText(rid, 'warm $i');
+    }
+
+    final row = (await svc.vault.db
+            .query('conversations', where: 'rid = ?', whereArgs: [rid]))
+        .single;
+    final json = (jsonDecode(await svc.vault.unseal(row['enc_state'] as String))
+            as Map)
+        .cast<String, Object?>();
+    final conv = await Conversation.fromJson(svc.identity, json);
+
+    const reps = 40;
+
+    // 1. The rollback snapshot: toJson + jsonEncode, no seal.
+    var sw = Stopwatch()..start();
+    for (var i = 0; i < reps; i++) {
+      jsonEncode(conv.toJson(includeSkipped: false));
+    }
+    sw.stop();
+    final snapshot = sw.elapsedMicroseconds / 1000.0 / reps;
+
+    // 2. Rebuilding one from JSON — what a rollback actually costs when it
+    //    fires, and a proxy for how much structure is in here.
+    sw = Stopwatch()..start();
+    for (var i = 0; i < 10; i++) {
+      await Conversation.fromJson(svc.identity, json);
+    }
+    sw.stop();
+    final rebuild = sw.elapsedMicroseconds / 1000.0 / 10;
+
+    // 3. The ratchet step on its own.
+    sw = Stopwatch()..start();
+    for (var i = 0; i < reps; i++) {
+      await conv.encrypt(Uint8List.fromList(utf8.encode('a message $i')));
+    }
+    sw.stop();
+    final encrypt = sw.elapsedMicroseconds / 1000.0 / reps;
+
+    // ignore: avoid_print
+    print('\n  rollback snapshot (toJson+encode) : '
+        '${snapshot.toStringAsFixed(2)} ms');
+    // ignore: avoid_print
+    print('  conv.encrypt (the ratchet step)   : '
+        '${encrypt.toStringAsFixed(2)} ms');
+    // 4. The transaction as _sendInner actually builds it: seal the state,
+    //    upsert it, insert the outbox row. The earlier breakdown timed a BARE
+    //    insert, which is not what a send does.
+    final sealedState =
+        await svc.vault.seal(jsonEncode(conv.toJson(includeSkipped: false)));
+    sw = Stopwatch()..start();
+    for (var i = 0; i < reps; i++) {
+      await svc.vault.db.transaction((txn) async {
+        await txn.rawInsert(
+            'INSERT INTO conversations (rid, enc_state, updated_ms) '
+            'VALUES (?, ?, ?) ON CONFLICT(rid) DO UPDATE SET '
+            'enc_state = excluded.enc_state, updated_ms = excluded.updated_ms',
+            ['bench-$i', sealedState, 1]);
+        await txn.insert('outbox', {
+          'id': 'attrib$i',
+          'rid': rid,
+          'payload': 'x' * 1200,
+          'created_ms': 1,
+        });
+      });
+    }
+    sw.stop();
+    final realTxn = sw.elapsedMicroseconds / 1000.0 / reps;
+
+    // ignore: avoid_print
+    print('  Conversation.fromJson (rollback)  : '
+        '${rebuild.toStringAsFixed(2)} ms  (only when one fires)');
+    // ignore: avoid_print
+    print('  the transaction a send really does: '
+        '${realTxn.toStringAsFixed(2)} ms\n');
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  // A hypothesis worth testing rather than asserting: every send fires an
+  // unawaited flushOutbox(), and offline that flush scans an outbox that is
+  // growing. If send cost rises with the size of the backlog, then a user who
+  // has been offline for a while pays more for each message than one who has
+  // not — which is exactly backwards.
+  test('does an unsent backlog make each new send more expensive?', () async {
+    final svc = await makeClient('backlog');
+    final rid = await addPhantom(svc, 95000);
+    await svc.sendText(rid, 'open the session');
+    await svc.transport.stop();
+    await svc.vault.db.delete('outbox');
+
+    Future<double> cost() async {
+      const reps = 20;
+      final sw = Stopwatch()..start();
+      for (var i = 0; i < reps; i++) {
+        await svc.sendText(rid, 'msg $i');
+      }
+      sw.stop();
+      return sw.elapsedMicroseconds / 1000.0 / reps;
+    }
+
+    final small = await cost();
+    final afterSmall =
+        (await svc.vault.db.query('outbox', columns: ['id'])).length;
+
+    // Pad the outbox out to something a few days offline would look like.
+    await svc.vault.db.transaction((txn) async {
+      for (var i = 0; i < 2000; i++) {
+        await txn.insert('outbox', {
+          'id': 'pad$i',
+          'rid': rid,
+          'payload': 'x' * 1200,
+          'created_ms': 1,
+        });
+      }
+    });
+
+    final big = await cost();
+    final afterBig =
+        (await svc.vault.db.query('outbox', columns: ['id'])).length;
+
+    // ignore: avoid_print
+    print('\n  send with ~$afterSmall queued  : ${small.toStringAsFixed(2)} ms');
+    // ignore: avoid_print
+    print('  send with ~$afterBig queued : ${big.toStringAsFixed(2)} ms'
+        '   (${(big - small).toStringAsFixed(2)} ms difference)\n');
   }, timeout: const Timeout(Duration(minutes: 5)));
 }
