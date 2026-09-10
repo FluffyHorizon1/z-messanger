@@ -1,12 +1,20 @@
 import 'package:flutter/material.dart';
 
-/// Z visual language: an amber signal colour on near-black surfaces (dark)
-/// or warm off-white ones (light), high contrast either way.
+/// Z visual language: the brand's signal cyan on deep navy (dark) or on
+/// cool off-white (light), high contrast either way.
+///
+/// The dark palette IS the brand, measured from the brand artwork rather
+/// than approximated: cyan `#00B4FF`, text `#E9F1F8` and `#7C91A6`, the
+/// navy the artwork fades between (`#031626` → `#050810`), and the logo's
+/// dark-teal outline `#04344E` as the quiet accent. The light palette keeps
+/// the same hue and deepens it until it reads as text on white; the brand
+/// cyan itself is 2.4:1 on white, so it cannot be used for text there.
 ///
 /// Every screen reads its colours through `context.z` (see [ZContext]) so the
 /// same widget tree renders correctly in both modes; the palettes below are
 /// the only place a colour value lives. Text/background pairs in each
-/// palette clear WCAG AA (4.5:1) — `tool/contrast.py` checks them.
+/// palette clear WCAG AA (4.5:1) — `app/tool/contrast.py` checks every pair
+/// and runs in CI, and `a11y_test.dart` checks the rendered screens.
 @immutable
 class ZColors extends ThemeExtension<ZColors> {
   /// Scaffold background.
@@ -18,7 +26,7 @@ class ZColors extends ThemeExtension<ZColors> {
   /// Inputs, chips, bubbles' neighbours — one step off [surface].
   final Color surfaceAlt;
 
-  /// The amber signal colour: primary actions, links, emphasis.
+  /// The signal colour: primary actions, links, emphasis.
   final Color accent;
 
   /// A quiet version of [accent] for tracks, borders, disabled emphasis.
@@ -57,40 +65,43 @@ class ZColors extends ThemeExtension<ZColors> {
     required this.divider,
   });
 
-  /// The original Z look.
+  /// The brand, as measured. Navy base, cyan signal, off-white text.
+  /// Warning stays amber — it is the old accent, and it is now free to mean
+  /// "caution" without also meaning "Z".
   static const dark = ZColors(
-    bg: Color(0xFF0C0D10),
-    surface: Color(0xFF15171C),
-    surfaceAlt: Color(0xFF1C1F26),
-    accent: Color(0xFFFFB300),
-    accentDim: Color(0xFF7A5A10),
-    onAccent: Color(0xFF000000),
-    mineBubble: Color(0xFF2A2410),
-    theirsBubble: Color(0xFF1E2128),
-    textPrimary: Color(0xFFEDEDED),
-    textSecondary: Color(0xFF9AA0AA),
-    danger: Color(0xFFF05A5F),
-    ok: Color(0xFF46A758),
-    warn: Color(0xFFF5A623),
-    divider: Color(0xFF23262E),
+    bg: Color(0xFF050810),
+    surface: Color(0xFF0A1220),
+    surfaceAlt: Color(0xFF111C2C),
+    accent: Color(0xFF00B4FF),
+    accentDim: Color(0xFF04344E),
+    onAccent: Color(0xFF031626),
+    mineBubble: Color(0xFF0A2539),
+    theirsBubble: Color(0xFF121B29),
+    textPrimary: Color(0xFFE9F1F8),
+    textSecondary: Color(0xFF7C91A6),
+    danger: Color(0xFFFF6B70),
+    ok: Color(0xFF3DD68C),
+    warn: Color(0xFFFFB300),
+    divider: Color(0xFF15202E),
   );
 
-  /// Warm off-white, with the amber deepened so it still reads as text.
+  /// Cool off-white, the brand navy as ink, and the cyan deepened to
+  /// `#006FA8` so it clears AA as text on white (the brand cyan is 2.4:1).
   static const light = ZColors(
-    bg: Color(0xFFF7F7F4),
+    bg: Color(0xFFF3F7FB),
     surface: Color(0xFFFFFFFF),
-    surfaceAlt: Color(0xFFEEEEEA),
-    accent: Color(0xFF935C00),
-    accentDim: Color(0xFFE8C98A),
+    surfaceAlt: Color(0xFFE9F1F8),
+    accent: Color(0xFF006FA8),
+    accentDim: Color(0xFFBFE7FB),
     onAccent: Color(0xFFFFFFFF),
-    mineBubble: Color(0xFFFFF0C8),
-    theirsBubble: Color(0xFFECEDF0),
-    textPrimary: Color(0xFF1B1C1F),
-    textSecondary: Color(0xFF5C6370),
+    mineBubble: Color(0xFFD8F1FF),
+    theirsBubble: Color(0xFFE6ECF2),
+    textPrimary: Color(0xFF0A1628),
+    textSecondary: Color(0xFF4E6274),
     danger: Color(0xFFC1272D),
-    ok: Color(0xFF2A742E),
-    warn: Color(0xFF9A5B00),
-    divider: Color(0xFFE1E2E6),
+    ok: Color(0xFF1B7036),
+    warn: Color(0xFF8A5300),
+    divider: Color(0xFFD5DEE7),
   );
 
   @override
@@ -172,7 +183,7 @@ class ZTheme {
         secondary: c.accent,
         onSecondary: c.onAccent,
         // M3 "container" roles (segmented buttons, chips, indicators) stay
-        // on the amber scale instead of the Material default purples.
+        // on the brand scale instead of the Material default purples.
         primaryContainer: c.accentDim,
         onPrimaryContainer: c.textPrimary,
         secondaryContainer: c.accentDim,

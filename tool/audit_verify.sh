@@ -95,6 +95,8 @@ run "CI jobs check out what they use" "C25 C26" "." \
     python3 tool/check_workflow.py
 run "every control announces something" "-" "." \
     python3 tool/check_a11y.py
+run "every text/background pair clears WCAG AA" "-" "." \
+    python3 app/tool/contrast.py
 run "no migrated screen regressed to English" "-" "." \
     python3 tool/check_l10n.py
 run "the GA checklist matches the repo" "-" "." \

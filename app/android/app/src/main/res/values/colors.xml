@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The window colour while the Flutter engine starts: the same value as
+         ZColors.light.bg in lib/ui/theme.dart, so the first frame the app
+         draws is the colour that was already on screen. values-night holds
+         the dark one. -->
+    <color name="launch_background">#F3F7FB</color>
+</resources>

@@ -86,6 +86,13 @@ jobs:
       # this covers every screen's source for controls that announce nothing.
       - name: Every icon button and image announces something
         run: python3 tool/check_a11y.py
+      # The palettes are the only place a colour value lives, and every text
+      # colour is checked against every background it can sit on. A brand
+      # change is exactly when a pair slips under 4.5:1 without anyone
+      # noticing; this ran by hand until the brand changed, and now it does
+      # not depend on anyone remembering.
+      - name: Every text/background pair clears WCAG AA
+        run: python3 app/tool/contrast.py
       # 15.4: the string migration is screen by screen, so this holds the
       # screens already done to zero hardcoded strings and reports what is
       # left. A half-migrated file quietly gaining new literals is the way
