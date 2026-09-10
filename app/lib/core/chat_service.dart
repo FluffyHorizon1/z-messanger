@@ -331,6 +331,14 @@ class ChatService extends ChangeNotifier {
     if (notify && was != now) notifyListeners();
   }
 
+  /// Re-read the conversation table from disk, the same way a restart
+  /// does. Tests use it after writing a cell behind the service's back.
+  @visibleForTesting
+  Future<void> reloadConversations() async {
+    _convs.clear();
+    await _loadConversations();
+  }
+
   Future<void> _loadConversations() async {
     final rows = await vault.db.query('conversations');
     for (final r in rows) {
@@ -344,6 +352,17 @@ class ChatService extends ChangeNotifier {
         ..pqRekeyIntervalMs = _pqRekeyInterval;
       await _restoreSkipped(conv, r['enc_skipped']);
       _convs[rid] = conv;
+      // A row from before schema 9 carries its cache inside `enc_state`,
+      // and the next SEND rewrites `enc_state` without it — that is the
+      // point of the split. So between the upgrade and the first receive,
+      // a send followed by a kill loses every in-flight key: the old
+      // location has been emptied and the new one was never written. The
+      // keys are moved to their new home here, at load, before anything
+      // can rewrite the old one. Once, per conversation; afterwards the
+      // cell is non-null and this does nothing.
+      if (r['enc_skipped'] == null && debugSkippedKeyCount(rid) > 0) {
+        await _saveSkipped(rid);
+      }
     }
   }
 
@@ -3561,15 +3580,26 @@ class ChatService extends ChangeNotifier {
   bool debugPauseGroupFanout = false;
 
   /// Record one row per recipient, then drain in the background.
-  Future<void> _queueGroupFanout(Group g, InnerMessage inner) async {
+  ///
+  /// [also] runs inside the same transaction as the rows — the caller's own
+  /// message row goes here, so that the message and the plan to deliver it
+  /// are written together or not at all. Written apart, a kill between the
+  /// two leaves a message on screen as "pending" with nothing queued behind
+  /// it: never sent, and nothing to resume on the next start. The 1:1 path
+  /// has always done this (see [_sendInner]); the group path now does too.
+  Future<void> _queueGroupFanout(Group g, InnerMessage inner,
+      {Future<void> Function(Transaction txn)? also}) async {
     final rids = [
       for (final rid in g.memberRids)
         if (contacts[rid] != null) rid
     ];
-    if (rids.isEmpty) return;
-    final payload = await vault.seal(utf8.decode(inner.toBytes()));
+    // A group with nobody else in it still records the caller's row.
+    if (rids.isEmpty && also == null) return;
+    final payload =
+        rids.isEmpty ? null : await vault.seal(utf8.decode(inner.toBytes()));
     final now = _now();
     await vault.db.transaction((txn) async {
+      if (also != null) await also(txn);
       for (final rid in rids) {
         await txn.insert(
           'group_fanout',
@@ -3584,6 +3614,7 @@ class ChatService extends ChangeNotifier {
         );
       }
     });
+    if (rids.isEmpty) return;
     _fanoutWanted = true;
     unawaited(_drainGroupFanout());
   }
@@ -3613,8 +3644,12 @@ class ChatService extends ChangeNotifier {
           final rid = r['rid'] as String;
           final contact = contacts[rid];
           if (contact == null) {
-            // Left the group, or was deleted while queued. Nothing to send,
-            // and leaving the row would spin forever.
+            // Deleted as a contact while queued. Nothing to send, and
+            // leaving the row would spin forever. (A member who merely LEFT
+            // the group is still a contact and is still served: the message
+            // was sent while they were a member, and that is the ordering
+            // the queue preserves — what was sent before a change reaches
+            // everyone it was sent to; what is sent after does not.)
             await vault.db.delete('group_fanout',
                 where: 'seq = ?', whereArgs: [r['seq']]);
             progressed = true;
@@ -3765,17 +3800,22 @@ class ChatService extends ChangeNotifier {
       if (quoted != null) 'rt': quoted.mid,
       if (forwarded) 'fw': true,
     });
-    await vault.db.insert('messages', {
-      'mid': inner.mid,
-      'rid': gid,
-      'outgoing': 1,
-      'kind': 'gtext',
-      'enc_body': await vault.seal(jsonEncode({'b': body})),
-      'ts_ms': ts,
-      'status': MsgStatus.pending,
-      'expire_at_ms': 0,
-      'reply_to': quoted?.mid,
-      'forwarded': forwarded ? 1 : 0,
+    final encBody = await vault.seal(jsonEncode({'b': body}));
+    // The message row and its fan-out rows land in ONE transaction, so a
+    // message either exists with its delivery plan or does not exist at all.
+    await _queueGroupFanout(g, inner, also: (txn) async {
+      await txn.insert('messages', {
+        'mid': inner.mid,
+        'rid': gid,
+        'outgoing': 1,
+        'kind': 'gtext',
+        'enc_body': encBody,
+        'ts_ms': ts,
+        'status': MsgStatus.pending,
+        'expire_at_ms': 0,
+        'reply_to': quoted?.mid,
+        'forwarded': forwarded ? 1 : 0,
+      });
     });
     _appendLoaded(
         gid,
@@ -3792,7 +3832,6 @@ class ChatService extends ChangeNotifier {
           forwarded: forwarded,
         ));
     notifyListeners();
-    await _queueGroupFanout(g, inner);
     unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
         Future<void>.value());
   }

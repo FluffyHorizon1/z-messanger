@@ -30,7 +30,6 @@
 @Tags(['bench'])
 library;
 
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -185,8 +184,8 @@ void main() {
         '${(perMemberLarge / perMemberSmall).toStringAsFixed(2)}x\n');
 
     expect(perMemberLarge, lessThan(perMemberSmall * 3),
-        reason: 'per-member cost grew ${(perMemberLarge / perMemberSmall)
-            .toStringAsFixed(1)}x between a 5-member and a 50-member group. '
+        reason:
+            'per-member cost grew ${(perMemberLarge / perMemberSmall).toStringAsFixed(1)}x between a 5-member and a 50-member group. '
             'Linear fan-out is the design; worse than linear means a '
             'per-member cost that should have been paid once.');
   }, timeout: const Timeout(Duration(minutes: 10)));
@@ -258,7 +257,6 @@ void main() {
   // to stop making the user wait for it rather than to make it cheaper.
   test('breakdown: the asymmetric operations', () async {
     const reps = 40;
-    final me = await ZIdentity.generate();
     final them = await ZIdentity.generate();
 
     // Sealed sender: one ephemeral X25519 keypair + DH + AEAD per envelope.
@@ -281,7 +279,8 @@ void main() {
       final eph = await x.newKeyPairFromSeed(randomBytes(32));
       await x.sharedSecretKey(
           keyPair: eph,
-          remotePublicKey: SimplePublicKey(them.xPub, type: KeyPairType.x25519));
+          remotePublicKey:
+              SimplePublicKey(them.xPub, type: KeyPairType.x25519));
     }
     sw.stop();
     final perDh = sw.elapsedMicroseconds / 1000.0 / reps;
@@ -351,7 +350,8 @@ void main() {
 
     Future<double> costFor(int n) async {
       final skipped = <String, String>{
-        for (var i = 0; i < n; i++) 'k$i': base64.encode(List.filled(32, i % 251))
+        for (var i = 0; i < n; i++)
+          'k$i': base64.encode(List.filled(32, i % 251))
       };
       final state = {
         'sid': 's' * 22,
@@ -465,9 +465,9 @@ void main() {
     final row = (await svc.vault.db
             .query('conversations', where: 'rid = ?', whereArgs: [rid]))
         .single;
-    final json = (jsonDecode(await svc.vault.unseal(row['enc_state'] as String))
-            as Map)
-        .cast<String, Object?>();
+    final json =
+        (jsonDecode(await svc.vault.unseal(row['enc_state'] as String)) as Map)
+            .cast<String, Object?>();
     final conv = await Conversation.fromJson(svc.identity, json);
 
     const reps = 40;
@@ -578,7 +578,8 @@ void main() {
         (await svc.vault.db.query('outbox', columns: ['id'])).length;
 
     // ignore: avoid_print
-    print('\n  send with ~$afterSmall queued  : ${small.toStringAsFixed(2)} ms');
+    print(
+        '\n  send with ~$afterSmall queued  : ${small.toStringAsFixed(2)} ms');
     // ignore: avoid_print
     print('  send with ~$afterBig queued : ${big.toStringAsFixed(2)} ms'
         '   (${(big - small).toStringAsFixed(2)} ms difference)\n');

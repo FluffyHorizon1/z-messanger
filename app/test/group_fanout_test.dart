@@ -21,10 +21,13 @@
 //   2. Every member still receives the message.
 //   3. A fan-out interrupted part-way is completed on the next start,
 //      and the members already served are not served twice.
+//   4. The message and its fan-out rows are written together or not at all.
+//      Written apart, a kill between the two leaves a message on screen as
+//      "pending" with nothing queued behind it — never sent, and nothing for
+//      criterion 3 to resume.
 @Tags(['integration'])
 library;
 
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -87,8 +90,7 @@ void main() {
     final vault = await Vault.open(rootOverride: d);
     final existing = await vault.kvGet('identity');
     final identity = existing != null
-        ? await ZIdentity.fromJson(
-            jsonDecode(existing) as Map<String, Object?>)
+        ? await ZIdentity.fromJson(jsonDecode(existing) as Map<String, Object?>)
         : await ZIdentity.generate();
     if (existing == null) {
       await vault.kvPut('identity', jsonEncode(identity.toJson()));
@@ -194,5 +196,50 @@ void main() {
     }
     expect((await svc.vault.db.query('group_fanout')).length, 0,
         reason: 'the queue should be empty once drained');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('the message row and its fan-out rows are one transaction', () async {
+    final svc = await makeClient('atomic', offline: true);
+    final rids = [for (var i = 0; i < 3; i++) await addPhantom(svc, 'a$i')];
+    final gid = await svc.createGroup('Three', rids);
+    await svc.waitForGroupFanout(gid);
+    svc.debugPauseGroupFanout = true;
+
+    Future<int> messages() async => (await svc.vault.db.query('messages',
+            where: 'rid = ? AND outgoing = 1', whereArgs: [gid]))
+        .length;
+    Future<int> queued() async =>
+        (await svc.vault.db.query('group_fanout')).length;
+    final m0 = await messages();
+
+    // Refuse the fan-out rows: the message row must not survive on its own.
+    await svc.vault.db
+        .execute('CREATE TRIGGER no_fanout BEFORE INSERT ON group_fanout '
+            'BEGIN SELECT RAISE(ABORT, \'induced\'); END');
+    await expectLater(svc.sendGroupText(gid, 'lost plan'), throwsA(anything));
+    await svc.vault.db.execute('DROP TRIGGER no_fanout');
+    expect(await messages(), m0,
+        reason: 'the message row was committed without its fan-out rows: it '
+            'shows as pending for ever and nothing will ever send it');
+    expect(await queued(), 0);
+
+    // And the other way round: refuse the message row, and no orphan plan
+    // may be left behind to deliver a message that does not exist.
+    await svc.vault.db
+        .execute('CREATE TRIGGER no_message BEFORE INSERT ON messages '
+            'BEGIN SELECT RAISE(ABORT, \'induced\'); END');
+    await expectLater(
+        svc.sendGroupText(gid, 'lost message'), throwsA(anything));
+    await svc.vault.db.execute('DROP TRIGGER no_message');
+    expect(await queued(), 0,
+        reason: 'fan-out rows were committed for a message that was never '
+            'written');
+    expect(await messages(), m0);
+
+    // Nothing induced: both land, and the plan has one row per member.
+    await svc.sendGroupText(gid, 'this one is real');
+    expect(await messages(), m0 + 1);
+    expect(await queued(), rids.length);
+    svc.debugPauseGroupFanout = false;
   }, timeout: const Timeout(Duration(minutes: 3)));
 }

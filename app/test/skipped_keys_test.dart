@@ -20,7 +20,6 @@
 @Tags(['integration'])
 library;
 
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -112,17 +111,20 @@ void main() {
   /// arrivals would, then persist them through the normal receive-side path.
   Future<void> seedCache(ChatService svc, String rid, int n) async {
     final row = (await svc.vault.db
-        .query('conversations', where: 'rid = ?', whereArgs: [rid]))
+            .query('conversations', where: 'rid = ?', whereArgs: [rid]))
         .single;
-    final state = (jsonDecode(await svc.vault.unseal(row['enc_state'] as String))
-            as Map)
-        .cast<String, Object?>();
+    final state =
+        (jsonDecode(await svc.vault.unseal(row['enc_state'] as String)) as Map)
+            .cast<String, Object?>();
     final sid = (state['sessions'] as Map).keys.first as String;
     final skipped = {
-      sid: {for (var i = 0; i < n; i++) 'k$i': base64.encode(List.filled(32, i % 251))}
+      sid: {
+        for (var i = 0; i < n; i++)
+          'k$i': base64.encode(List.filled(32, i % 251))
+      }
     };
-    await svc.vault.db.update(
-        'conversations', {'enc_skipped': await svc.vault.seal(jsonEncode(skipped))},
+    await svc.vault.db.update('conversations',
+        {'enc_skipped': await svc.vault.seal(jsonEncode(skipped))},
         where: 'rid = ?', whereArgs: [rid]);
   }
 
@@ -149,7 +151,8 @@ void main() {
 
     Future<(String, String?)> cells() async {
       final r = (await svc.vault.db
-          .query('conversations', where: 'rid = ?', whereArgs: [rid])).single;
+              .query('conversations', where: 'rid = ?', whereArgs: [rid]))
+          .single;
       return (r['enc_state'] as String, r['enc_skipped'] as String?);
     }
 
@@ -171,9 +174,8 @@ void main() {
     // sealing all of it and the win would be gone, silently and with every
     // other test still green. So the hot state is opened and checked to be
     // free of it.
-    final hot =
-        (jsonDecode(await svc.vault.unseal(stateAfter)) as Map)
-            .cast<String, Object?>();
+    final hot = (jsonDecode(await svc.vault.unseal(stateAfter)) as Map)
+        .cast<String, Object?>();
     for (final session in (hot['sessions'] as Map).values) {
       final ratchet = (session as Map)['ratchet'] as Map;
       expect(ratchet.containsKey('skipped'), isFalse,
@@ -192,16 +194,18 @@ void main() {
     // Rewrite the row the way a pre-9 build left it: cache INSIDE enc_state,
     // and the new column empty.
     final row = (await svc.vault.db
-        .query('conversations', where: 'rid = ?', whereArgs: [rid])).single;
-    final state = (jsonDecode(await svc.vault.unseal(row['enc_state'] as String))
-            as Map)
-        .cast<String, Object?>();
+            .query('conversations', where: 'rid = ?', whereArgs: [rid]))
+        .single;
+    final state =
+        (jsonDecode(await svc.vault.unseal(row['enc_state'] as String)) as Map)
+            .cast<String, Object?>();
     final sessions = (state['sessions'] as Map).cast<String, Object?>();
     final sid = sessions.keys.first;
     final ratchet =
         ((sessions[sid] as Map)['ratchet'] as Map).cast<String, Object?>();
     ratchet['skipped'] = {
-      for (var i = 0; i < 25; i++) 'old$i': base64.encode(List.filled(32, i + 1))
+      for (var i = 0; i < 25; i++)
+        'old$i': base64.encode(List.filled(32, i + 1))
     };
     await svc.vault.db.update(
         'conversations',
@@ -224,5 +228,58 @@ void main() {
     await svc.sendText(rid, 'after the upgrade');
     expect(svc.debugSkippedKeyCount(rid), 25,
         reason: 'a send after the upgrade emptied the cache');
+
+    // In memory is not enough. That send rewrote enc_state WITHOUT the cache
+    // — that is the whole point of the split — so unless something moved the
+    // keys into enc_skipped first, the old location is now empty and the new
+    // one was never written. Kill the app here and the keys are gone.
+    await svc.transport.stop();
+    svc = await open(dir, 'c3', offline: true);
+    expect(svc.debugSkippedKeyCount(rid), 25,
+        reason: 'the first send after upgrading to schema 9 rewrote the old '
+            'location without the cache, and nothing had written the new '
+            'one yet: a restart in that window loses every in-flight key');
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('a failed send rolls the ratchet back without emptying the cache',
+      () async {
+    final dir = await temp('rollback');
+    final svc = await open(dir, 'd', offline: true);
+    final rid = await addPhantom(svc, 'peer');
+    await svc.sendText(rid, 'open the session');
+    await seedCache(svc, rid, 30);
+    // seedCache wrote the cell directly; bring it into the live object the
+    // way a restart would, so the rollback has something to lose.
+    await svc.reloadConversations();
+    expect(svc.debugSkippedKeyCount(rid), 30);
+
+    Future<String> hotState() async => (await svc.vault.db
+            .query('conversations', where: 'rid = ?', whereArgs: [rid]))
+        .single['enc_state'] as String;
+    final stateBefore = await hotState();
+
+    // Make the send's own transaction fail AFTER the ratchet has stepped and
+    // the new state has been written inside it: the message-row insert is
+    // the last thing in that transaction, and a trigger refusing it is
+    // exactly the "vault write failing" the rollback exists for. No seam in
+    // the service is needed for this, and none is added.
+    await svc.vault.db
+        .execute('CREATE TRIGGER induced_failure BEFORE INSERT ON messages '
+            'BEGIN SELECT RAISE(ABORT, \'induced\'); END');
+    await expectLater(svc.sendText(rid, 'this one fails'), throwsA(anything));
+    await svc.vault.db.execute('DROP TRIGGER induced_failure');
+
+    expect(await hotState(), stateBefore,
+        reason: 'the transaction was rolled back, so the stored state must be '
+            'the pre-send one');
+    expect(svc.debugSkippedKeyCount(rid), 30,
+        reason: 'the rollback rebuilt the conversation from a snapshot that '
+            'deliberately omits the cache; the live keys have to be carried '
+            'across by hand, and they were not');
+
+    // And the rolled-back conversation still works: the next send succeeds
+    // and, being a send, still leaves the cache alone.
+    await svc.sendText(rid, 'and this one succeeds');
+    expect(svc.debugSkippedKeyCount(rid), 30);
   }, timeout: const Timeout(Duration(minutes: 2)));
 }
