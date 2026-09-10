@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+import '../l10n/app_localizations.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
@@ -70,6 +72,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
@@ -78,8 +81,8 @@ class _SearchScreenState extends State<SearchScreen> {
           autofocus: true,
           textInputAction: TextInputAction.search,
           onChanged: _onChanged,
-          decoration: const InputDecoration(
-            hintText: 'Search messages…',
+          decoration: InputDecoration(
+            hintText: l.searchHint,
             border: InputBorder.none,
           ),
           style: const TextStyle(fontSize: 16),
@@ -87,7 +90,7 @@ class _SearchScreenState extends State<SearchScreen> {
         actions: [
           if (_controller.text.isNotEmpty)
             IconButton(
-              tooltip: 'Clear search',
+              tooltip: l.searchClear,
               icon: const Icon(Icons.close),
               onPressed: () {
                 _controller.clear();
@@ -96,24 +99,20 @@ class _SearchScreenState extends State<SearchScreen> {
             ),
         ],
       ),
-      body: _body(),
+      body: _body(l),
     );
   }
 
-  Widget _body() {
+  Widget _body(AppLocalizations l) {
     if (_searching) {
       return Center(child: CircularProgressIndicator(color: context.z.accent));
     }
     if (_query.isEmpty) {
-      return const _Hint(
-        icon: Icons.search,
-        text: 'Search your messages. Everything is decrypted on this device '
-            'only for the search — nothing leaves it.',
-      );
+      return _Hint(icon: Icons.search, text: l.searchIntro);
     }
     if (_hits.isEmpty) {
       return _Hint(
-          icon: Icons.search_off, text: 'No messages match “$_query”.');
+          icon: Icons.search_off, text: l.searchNoResults(_query));
     }
     return ListView.separated(
       itemCount: _hits.length,
@@ -132,11 +131,12 @@ class _HitTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final prefix = hit.kind == 'file'
         ? '📎 '
         : (hit.isGroup && !hit.outgoing && hit.senderName != null
-            ? '${hit.senderName}: '
-            : (hit.outgoing ? 'You: ' : ''));
+            ? l.searchSenderPrefix(hit.senderName!)
+            : (hit.outgoing ? l.searchYouPrefix : ''));
     return ListTile(
       leading: CircleAvatar(
         radius: 20,

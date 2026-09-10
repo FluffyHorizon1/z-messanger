@@ -189,6 +189,210 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No fingerprint, face or device PIN is available on this device.'**
   String get lockNoBiometrics;
+
+  /// Screen-reader label for the play control on a voice message.
+  ///
+  /// In en, this message translates to:
+  /// **'Play voice note'**
+  String get voicePlay;
+
+  /// Screen-reader label for the same control while it is playing.
+  ///
+  /// In en, this message translates to:
+  /// **'Pause voice note'**
+  String get voicePause;
+
+  /// Shown when the audio player cannot start. The voice note is intact; only in-app playback is unavailable, so the user is pointed at saving it.
+  ///
+  /// In en, this message translates to:
+  /// **'Playback isn\'t available on this device — save the file instead.'**
+  String get voiceNoPlayback;
+
+  /// Placeholder in the search field.
+  ///
+  /// In en, this message translates to:
+  /// **'Search messages…'**
+  String get searchHint;
+
+  /// Screen-reader label for the control that empties the search field.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear search'**
+  String get searchClear;
+
+  /// Shown before anything is typed. The second half is a security statement and the point of it is that no query reaches a server; keep that meaning.
+  ///
+  /// In en, this message translates to:
+  /// **'Search your messages. Everything is decrypted on this device only for the search — nothing leaves it.'**
+  String get searchIntro;
+
+  /// Empty state. {query} is what the user typed.
+  ///
+  /// In en, this message translates to:
+  /// **'No messages match “{query}”.'**
+  String searchNoResults(String query);
+
+  /// Prefixes a search hit the user sent themselves, in a group thread. Keep the trailing space.
+  ///
+  /// In en, this message translates to:
+  /// **'You: '**
+  String get searchYouPrefix;
+
+  /// Prefixes a search hit sent by someone else in a group thread. Keep the trailing space; the separator may differ by language.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}: '**
+  String searchSenderPrefix(String name);
+
+  /// Screen-reader label for the search control in the app bar.
+  ///
+  /// In en, this message translates to:
+  /// **'Search messages'**
+  String get homeSearch;
+
+  /// Screen-reader label for the create-group control.
+  ///
+  /// In en, this message translates to:
+  /// **'New group'**
+  String get homeNewGroup;
+
+  /// Screen-reader label for the settings control.
+  ///
+  /// In en, this message translates to:
+  /// **'Settings'**
+  String get homeSettings;
+
+  /// Label on the button that opens the add-contact screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Add contact'**
+  String get homeAddContact;
+
+  /// Connection status: connected to the relay. Lower case on purpose — it sits inline in a status row.
+  ///
+  /// In en, this message translates to:
+  /// **'relay linked'**
+  String get relayLinked;
+
+  /// Connection status: still connecting.
+  ///
+  /// In en, this message translates to:
+  /// **'linking…'**
+  String get relayLinking;
+
+  /// Connection status: not connected. Messages still queue locally.
+  ///
+  /// In en, this message translates to:
+  /// **'offline'**
+  String get relayOffline;
+
+  /// Empty state heading on the conversation list.
+  ///
+  /// In en, this message translates to:
+  /// **'No conversations yet'**
+  String get homeEmptyTitle;
+
+  /// Empty state body. 'a channel you trust' is the security point — the codes must not be exchanged over something an attacker controls.
+  ///
+  /// In en, this message translates to:
+  /// **'Exchange contact codes in person or over a channel you trust, then every message is end-to-end encrypted and stored only on your two devices.'**
+  String get homeEmptyBody;
+
+  /// Preview text for a conversation with no messages yet.
+  ///
+  /// In en, this message translates to:
+  /// **'Say hello — the line is encrypted.'**
+  String get chatPreviewEmpty;
+
+  /// Conversation-list preview of a group message from someone else.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}: {body}'**
+  String chatPreviewSender(String name, String body);
+
+  /// Dismisses a banner or alert.
+  ///
+  /// In en, this message translates to:
+  /// **'Dismiss'**
+  String get dismiss;
+
+  /// Confirmation after adding a contact. The second sentence is the nudge to verify; it is advice, not an alarm.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} added. Compare safety numbers when you can.'**
+  String contactAdded(String name);
+
+  /// Tab: show my own contact code. Upper case in the design.
+  ///
+  /// In en, this message translates to:
+  /// **'MY CODE'**
+  String get addMyCode;
+
+  /// Tab: paste a contact code as text.
+  ///
+  /// In en, this message translates to:
+  /// **'PASTE'**
+  String get addPaste;
+
+  /// Tab: scan a contact code with the camera.
+  ///
+  /// In en, this message translates to:
+  /// **'SCAN'**
+  String get addScan;
+
+  /// Explains the code is safe to share. The emphasis on PUBLIC is deliberate — people assume a code is a secret.
+  ///
+  /// In en, this message translates to:
+  /// **'Have your contact scan this QR code, or send them the text code over a channel you trust. Codes contain only PUBLIC keys.'**
+  String get addMyCodeHelp;
+
+  /// Copies my contact code to the clipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy code'**
+  String get addCopyCode;
+
+  /// Confirmation that the code is on the clipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Code copied'**
+  String get addCodeCopied;
+
+  /// Label on the field where a pasted code goes.
+  ///
+  /// In en, this message translates to:
+  /// **'Their contact code'**
+  String get addTheirCode;
+
+  /// Label on the optional local-name field. The name they chose is used if this is blank.
+  ///
+  /// In en, this message translates to:
+  /// **'Name (optional — overrides theirs)'**
+  String get addNameOverride;
+
+  /// Button that checks the code's signature and adds the contact.
+  ///
+  /// In en, this message translates to:
+  /// **'Verify & add'**
+  String get addVerifyAndAdd;
+
+  /// Reassurance under the add button. It is a statement about what the app does, not advice.
+  ///
+  /// In en, this message translates to:
+  /// **'The code\'s signature is checked before the contact is added — a tampered code is rejected.'**
+  String get addSignatureNote;
+
+  /// Instruction on the camera scanning screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Point the camera at their Z code.'**
+  String get addScanPrompt;
+
+  /// Conversation-list preview of an attachment. The paperclip leads in left-to-right scripts; a right-to-left layout may want it after the name, which is why this is a whole string rather than a prefix.
+  ///
+  /// In en, this message translates to:
+  /// **'📎 {name}'**
+  String chatPreviewFile(String name);
 }
 
 class _AppLocalizationsDelegate

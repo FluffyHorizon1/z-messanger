@@ -1,6 +1,5 @@
 {
   "@@locale": "en",
-
   "unlockTitle": "Unlock",
   "@unlockTitle": {
     "description": "Button that submits the typed passphrase on the unlock screen."
@@ -29,7 +28,6 @@
   "@unlockFootnote": {
     "description": "The honest note under the field. 'THIS device' is emphasised deliberately: users assume a passphrase is checked by a server, and it is not. Keep that emphasis when translating."
   },
-
   "lockedTitle": "Locked",
   "@lockedTitle": {
     "description": "Heading on the screen shown when the app is locked."
@@ -65,5 +63,169 @@
   "lockNoBiometrics": "No fingerprint, face or device PIN is available on this device.",
   "@lockNoBiometrics": {
     "description": "Shown when the device offers no authentication method at all."
+  },
+  "voicePlay": "Play voice note",
+  "@voicePlay": {
+    "description": "Screen-reader label for the play control on a voice message."
+  },
+  "voicePause": "Pause voice note",
+  "@voicePause": {
+    "description": "Screen-reader label for the same control while it is playing."
+  },
+  "voiceNoPlayback": "Playback isn't available on this device — save the file instead.",
+  "@voiceNoPlayback": {
+    "description": "Shown when the audio player cannot start. The voice note is intact; only in-app playback is unavailable, so the user is pointed at saving it."
+  },
+  "searchHint": "Search messages…",
+  "@searchHint": {
+    "description": "Placeholder in the search field."
+  },
+  "searchClear": "Clear search",
+  "@searchClear": {
+    "description": "Screen-reader label for the control that empties the search field."
+  },
+  "searchIntro": "Search your messages. Everything is decrypted on this device only for the search — nothing leaves it.",
+  "@searchIntro": {
+    "description": "Shown before anything is typed. The second half is a security statement and the point of it is that no query reaches a server; keep that meaning."
+  },
+  "searchNoResults": "No messages match “{query}”.",
+  "@searchNoResults": {
+    "description": "Empty state. {query} is what the user typed.",
+    "placeholders": {
+      "query": {
+        "type": "String"
+      }
+    }
+  },
+  "searchYouPrefix": "You: ",
+  "@searchYouPrefix": {
+    "description": "Prefixes a search hit the user sent themselves, in a group thread. Keep the trailing space."
+  },
+  "searchSenderPrefix": "{name}: ",
+  "@searchSenderPrefix": {
+    "description": "Prefixes a search hit sent by someone else in a group thread. Keep the trailing space; the separator may differ by language.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "homeSearch": "Search messages",
+  "@homeSearch": {
+    "description": "Screen-reader label for the search control in the app bar."
+  },
+  "homeNewGroup": "New group",
+  "@homeNewGroup": {
+    "description": "Screen-reader label for the create-group control."
+  },
+  "homeSettings": "Settings",
+  "@homeSettings": {
+    "description": "Screen-reader label for the settings control."
+  },
+  "homeAddContact": "Add contact",
+  "@homeAddContact": {
+    "description": "Label on the button that opens the add-contact screen."
+  },
+  "relayLinked": "relay linked",
+  "@relayLinked": {
+    "description": "Connection status: connected to the relay. Lower case on purpose — it sits inline in a status row."
+  },
+  "relayLinking": "linking…",
+  "@relayLinking": {
+    "description": "Connection status: still connecting."
+  },
+  "relayOffline": "offline",
+  "@relayOffline": {
+    "description": "Connection status: not connected. Messages still queue locally."
+  },
+  "homeEmptyTitle": "No conversations yet",
+  "@homeEmptyTitle": {
+    "description": "Empty state heading on the conversation list."
+  },
+  "homeEmptyBody": "Exchange contact codes in person or over a channel you trust, then every message is end-to-end encrypted and stored only on your two devices.",
+  "@homeEmptyBody": {
+    "description": "Empty state body. 'a channel you trust' is the security point — the codes must not be exchanged over something an attacker controls."
+  },
+  "chatPreviewEmpty": "Say hello — the line is encrypted.",
+  "@chatPreviewEmpty": {
+    "description": "Preview text for a conversation with no messages yet."
+  },
+  "chatPreviewSender": "{name}: {body}",
+  "@chatPreviewSender": {
+    "description": "Conversation-list preview of a group message from someone else.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "body": {
+        "type": "String"
+      }
+    }
+  },
+  "dismiss": "Dismiss",
+  "@dismiss": {
+    "description": "Dismisses a banner or alert."
+  },
+  "contactAdded": "{name} added. Compare safety numbers when you can.",
+  "@contactAdded": {
+    "description": "Confirmation after adding a contact. The second sentence is the nudge to verify; it is advice, not an alarm.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "addMyCode": "MY CODE",
+  "@addMyCode": {
+    "description": "Tab: show my own contact code. Upper case in the design."
+  },
+  "addPaste": "PASTE",
+  "@addPaste": {
+    "description": "Tab: paste a contact code as text."
+  },
+  "addScan": "SCAN",
+  "@addScan": {
+    "description": "Tab: scan a contact code with the camera."
+  },
+  "addMyCodeHelp": "Have your contact scan this QR code, or send them the text code over a channel you trust. Codes contain only PUBLIC keys.",
+  "@addMyCodeHelp": {
+    "description": "Explains the code is safe to share. The emphasis on PUBLIC is deliberate — people assume a code is a secret."
+  },
+  "addCopyCode": "Copy code",
+  "@addCopyCode": {
+    "description": "Copies my contact code to the clipboard."
+  },
+  "addCodeCopied": "Code copied",
+  "@addCodeCopied": {
+    "description": "Confirmation that the code is on the clipboard."
+  },
+  "addTheirCode": "Their contact code",
+  "@addTheirCode": {
+    "description": "Label on the field where a pasted code goes."
+  },
+  "addNameOverride": "Name (optional — overrides theirs)",
+  "@addNameOverride": {
+    "description": "Label on the optional local-name field. The name they chose is used if this is blank."
+  },
+  "addVerifyAndAdd": "Verify & add",
+  "@addVerifyAndAdd": {
+    "description": "Button that checks the code's signature and adds the contact."
+  },
+  "addSignatureNote": "The code's signature is checked before the contact is added — a tampered code is rejected.",
+  "@addSignatureNote": {
+    "description": "Reassurance under the add button. It is a statement about what the app does, not advice."
+  },
+  "addScanPrompt": "Point the camera at their Z code.",
+  "@addScanPrompt": {
+    "description": "Instruction on the camera scanning screen."
+  },
+  "chatPreviewFile": "📎 {name}",
+  "@chatPreviewFile": {
+    "description": "Conversation-list preview of an attachment. The paperclip leads in left-to-right scripts; a right-to-left layout may want it after the name, which is why this is a whole string rather than a prefix.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
   }
 }

@@ -34,12 +34,18 @@ UI = ROOT / "app" / "lib" / "ui"
 MIGRATED = {
     "unlock_screen.dart",
     "lock_screen.dart",
+    "voice_widgets.dart",
+    "search_screen.dart",
+    "home_screen.dart",
+    "add_contact_screen.dart",
 }
 
 # Literals that look user-visible and are not.
 ALLOWED = {
     "package:flutter/material.dart", "package:flutter/services.dart",
     "theme.dart", "../core/app_lock.dart",
+    # A paperclip is a paperclip in every locale.
+    "📎 ",
 }
 
 

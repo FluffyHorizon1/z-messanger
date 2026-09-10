@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+
+import '../l10n/app_localizations.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
@@ -17,6 +19,7 @@ class HomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final service = context.watch<ChatService>();
     final transport = context.watch<Transport>();
     final chats = service.chatSummaries();
@@ -37,7 +40,7 @@ class HomeScreen extends StatelessWidget {
         actions: [
           IconButton(
             icon: const Icon(Icons.search),
-            tooltip: 'Search messages',
+            tooltip: l.homeSearch,
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const SearchScreen()),
@@ -45,14 +48,14 @@ class HomeScreen extends StatelessWidget {
           ),
           IconButton(
             icon: const Icon(Icons.group_add_outlined),
-            tooltip: 'New group',
+            tooltip: l.homeNewGroup,
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const CreateGroupScreen()),
             ),
           ),
           IconButton(
-            tooltip: 'Settings',
+            tooltip: l.homeSettings,
             icon: const Icon(Icons.settings_outlined),
             onPressed: () => Navigator.push(
               context,
@@ -87,7 +90,7 @@ class HomeScreen extends StatelessWidget {
       ),
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.person_add_alt_1),
-        label: const Text('Add contact'),
+        label: Text(l.homeAddContact),
         onPressed: () => Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const AddContactScreen()),
@@ -103,10 +106,11 @@ class _StatusDot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final (color, label) = switch (status) {
-      LinkStatus.connected => (context.z.ok, 'relay linked'),
-      LinkStatus.connecting => (context.z.accent, 'linking…'),
-      LinkStatus.disconnected => (context.z.danger, 'offline'),
+      LinkStatus.connected => (context.z.ok, l.relayLinked),
+      LinkStatus.connecting => (context.z.accent, l.relayLinking),
+      LinkStatus.disconnected => (context.z.danger, l.relayOffline),
     };
     return Row(children: [
       Container(
@@ -126,21 +130,20 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(Icons.lock_outline, size: 56, color: context.z.textSecondary),
           SizedBox(height: 16),
-          Text('No conversations yet',
+          Text(l.homeEmptyTitle,
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
           SizedBox(height: 8),
           Padding(
             padding: EdgeInsets.symmetric(horizontal: 48),
             child: Text(
-              'Exchange contact codes in person or over a channel you trust, '
-              'then every message is end-to-end encrypted and stored only on '
-              'your two devices.',
+              l.homeEmptyBody,
               textAlign: TextAlign.center,
               style: TextStyle(color: context.z.textSecondary, height: 1.5),
             ),
@@ -155,13 +158,13 @@ class _ChatTile extends StatelessWidget {
   final ChatSummary summary;
   const _ChatTile({required this.summary});
 
-  String _preview(ChatMessage? m) {
-    if (m == null) return 'Say hello — the line is encrypted.';
+  String _preview(ChatMessage? m, AppLocalizations l) {
+    if (m == null) return l.chatPreviewEmpty;
     return switch (m.kind) {
-      'file' => '📎 ${m.body}',
+      'file' => l.chatPreviewFile(m.body),
       'system' => m.body,
       'gtext' when !m.outgoing && m.senderName != null =>
-        '${m.senderName}: ${m.body}',
+        l.chatPreviewSender(m.senderName!, m.body),
       _ => m.body,
     };
   }
@@ -177,6 +180,7 @@ class _ChatTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final c = summary.contact;
     // The tick tracks the VERIFICATION, not the flag: a contact whose
     // identity was upgraded has a number the user has not compared, and a
@@ -230,7 +234,7 @@ class _ChatTile extends StatelessWidget {
         ],
       ),
       subtitle: Text(
-        _preview(summary.last),
+        _preview(summary.last, l),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(color: context.z.textSecondary),
@@ -276,6 +280,7 @@ class _AccountAlertBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Material(
       color: context.z.danger.withValues(alpha: 0.14),
       child: SafeArea(
@@ -295,7 +300,7 @@ class _AccountAlertBanner extends StatelessWidget {
               ),
               IconButton(
                 icon: const Icon(Icons.close, size: 18),
-                tooltip: 'Dismiss',
+                tooltip: l.dismiss,
                 color: context.z.textSecondary,
                 onPressed: onDismiss,
               ),

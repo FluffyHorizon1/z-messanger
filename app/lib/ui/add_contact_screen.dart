@@ -1,6 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+
+import '../l10n/app_localizations.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
@@ -51,11 +53,10 @@ class _AddContactScreenState extends State<AddContactScreen>
           .read<ChatService>()
           .addContactFromCode(code, alias: _aliasCtrl.text);
       if (!mounted) return;
+      final added = AppLocalizations.of(context).contactAdded(contact.name);
       Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content:
-            Text('${contact.name} added. Compare safety numbers when you can.'),
-      ));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(added)));
     } on FormatException catch (e) {
       setState(() {
         _busy = false;
@@ -73,41 +74,41 @@ class _AddContactScreenState extends State<AddContactScreen>
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Add contact'),
+        title: Text(l.homeAddContact),
         bottom: TabBar(
           controller: _tabs,
           indicatorColor: context.z.accent,
           labelColor: context.z.accent,
           unselectedLabelColor: context.z.textSecondary,
           tabs: [
-            const Tab(text: 'MY CODE'),
-            const Tab(text: 'PASTE'),
-            if (_canScan) const Tab(text: 'SCAN'),
+            Tab(text: l.addMyCode),
+            Tab(text: l.addPaste),
+            if (_canScan) Tab(text: l.addScan),
           ],
         ),
       ),
       body: TabBarView(
         controller: _tabs,
         children: [
-          _myCodeTab(),
-          _pasteTab(),
-          if (_canScan) _scanTab(),
+          _myCodeTab(l),
+          _pasteTab(l),
+          if (_canScan) _scanTab(l),
         ],
       ),
     );
   }
 
-  Widget _myCodeTab() {
+  Widget _myCodeTab(AppLocalizations l) {
     final code = _myCode;
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(
         children: [
           Text(
-            'Have your contact scan this QR code, or send them the text code '
-            'over a channel you trust. Codes contain only PUBLIC keys.',
+            l.addMyCodeHelp,
             textAlign: TextAlign.center,
             style: TextStyle(color: context.z.textSecondary, height: 1.5),
           ),
@@ -140,12 +141,12 @@ class _AddContactScreenState extends State<AddContactScreen>
             const SizedBox(height: 16),
             FilledButton.icon(
               icon: const Icon(Icons.copy),
-              label: const Text('Copy code'),
+              label: Text(l.addCopyCode),
               onPressed: () async {
                 await Clipboard.setData(ClipboardData(text: code));
                 if (!mounted) return;
                 ScaffoldMessenger.of(context)
-                    .showSnackBar(const SnackBar(content: Text('Code copied')));
+                    .showSnackBar(SnackBar(content: Text(l.addCodeCopied)));
               },
             ),
           ],
@@ -154,7 +155,7 @@ class _AddContactScreenState extends State<AddContactScreen>
     );
   }
 
-  Widget _pasteTab() {
+  Widget _pasteTab(AppLocalizations l) {
     return SingleChildScrollView(
       padding: EdgeInsets.fromLTRB(
           24, 24, 24, 24 + MediaQuery.paddingOf(context).bottom),
@@ -165,16 +166,16 @@ class _AddContactScreenState extends State<AddContactScreen>
             controller: _pasteCtrl,
             maxLines: 4,
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-            decoration: const InputDecoration(
-              labelText: 'Their contact code',
+            decoration: InputDecoration(
+              labelText: l.addTheirCode,
               hintText: 'zc1.…',
             ),
           ),
           const SizedBox(height: 16),
           TextField(
             controller: _aliasCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Name (optional — overrides theirs)',
+            decoration: InputDecoration(
+              labelText: l.addNameOverride,
             ),
           ),
           const SizedBox(height: 16),
@@ -195,12 +196,11 @@ class _AddContactScreenState extends State<AddContactScreen>
                     width: 20,
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('Verify & add'),
+                : Text(l.addVerifyAndAdd),
           ),
           const SizedBox(height: 12),
           Text(
-            'The code\'s signature is checked before the contact is added — a '
-            'tampered code is rejected.',
+            l.addSignatureNote,
             style: TextStyle(color: context.z.textSecondary, fontSize: 12),
           ),
         ],
@@ -208,7 +208,7 @@ class _AddContactScreenState extends State<AddContactScreen>
     );
   }
 
-  Widget _scanTab() {
+  Widget _scanTab(AppLocalizations l) {
     return Column(
       children: [
         Expanded(
@@ -231,7 +231,7 @@ class _AddContactScreenState extends State<AddContactScreen>
           padding: EdgeInsets.fromLTRB(
               16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
           child: Text(
-            _error ?? 'Point the camera at their Z code.',
+            _error ?? l.addScanPrompt,
             style: TextStyle(
                 color: _error != null
                     ? context.z.danger

@@ -7,6 +7,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+
+import '../l10n/app_localizations.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 
@@ -62,6 +64,9 @@ class _VoiceNoteBodyState extends State<VoiceNoteBody> {
 
   Future<void> _toggle() async {
     final messenger = ScaffoldMessenger.of(context);
+    // Resolved now, not in the catch block: reading it after an await
+    // would be a BuildContext used across an async gap.
+    final noPlayback = AppLocalizations.of(context).voiceNoPlayback;
     try {
       var p = _player;
       if (p == null) {
@@ -88,14 +93,13 @@ class _VoiceNoteBodyState extends State<VoiceNoteBody> {
       }
     } catch (_) {
       if (mounted) setState(() => _loading = false);
-      messenger.showSnackBar(const SnackBar(
-          content: Text("Playback isn't available on this device — "
-              'save the file instead.')));
+      messenger.showSnackBar(SnackBar(content: Text(noPlayback)));
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final p = _player;
     final total = p?.duration ??
         Duration(seconds: widget.meta.durSec > 0 ? widget.meta.durSec : 1);
@@ -122,7 +126,7 @@ class _VoiceNoteBodyState extends State<VoiceNoteBody> {
                           strokeWidth: 2, color: context.z.accent),
                     )
                   : IconButton(
-                      tooltip: playing ? 'Pause voice note' : 'Play voice note',
+                      tooltip: playing ? l.voicePause : l.voicePlay,
                       padding: EdgeInsets.zero,
                       color: context.z.accent,
                       icon: Icon(playing
