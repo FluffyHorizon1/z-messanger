@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import '../l10n/app_localizations.dart';
 import '../core/chat_service.dart';
 import '../core/models.dart';
 import 'theme.dart';
@@ -42,10 +43,11 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final svc = context.watch<ChatService>();
     final contact = svc.contacts[widget.rid];
     if (contact == null) {
-      return const Scaffold(body: Center(child: Text('Contact removed')));
+      return Scaffold(body: Center(child: Text(l.ciContactRemoved)));
     }
     _load(svc);
 
@@ -71,7 +73,7 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
           const SizedBox(height: 8),
           Center(
             child: Text(
-              'routing id: ${contact.rid.substring(0, 16)}…',
+              l.ciRoutingId(contact.rid.substring(0, 16)),
               style: TextStyle(
                   fontSize: 11,
                   fontFamily: 'monospace',
@@ -88,10 +90,8 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             _Banner(
               tone: context.z.accent,
               icon: Icons.devices_outlined,
-              title: 'Added on ${contact.addedByDevice}',
-              body: 'This contact came from another of your devices, so no '
-                  'code was scanned here. Compare the safety number below '
-                  'before you rely on it.',
+              title: l.ciAddedOnDevice(contact.addedByDevice!),
+              body: l.ciAddedOnDeviceBody,
             ),
             const SizedBox(height: 12),
           ],
@@ -103,7 +103,7 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             _Banner(
               tone: context.z.warn,
               icon: Icons.cloud_off_outlined,
-              title: 'A post-quantum signature never arrived',
+              title: l.ciPqSigMissing,
               body: svc.pqListAlerts[widget.rid]!,
             ),
             const SizedBox(height: 12),
@@ -112,12 +112,8 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             _Banner(
               tone: context.z.danger,
               icon: Icons.gpp_bad_outlined,
-              title: 'Post-quantum key refused',
-              body: 'A post-quantum key arrived for ${contact.name} that does '
-                  'not match the code you scanned, so it was rejected and '
-                  'their identity was NOT upgraded. Either something is '
-                  'broken at their end, or someone is substituting keys. '
-                  'Compare the number below before trusting this chat.',
+              title: l.ciPqRefused,
+              body: l.ciPqRefusedBody(contact.name),
             ),
             const SizedBox(height: 12),
           ],
@@ -131,8 +127,8 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                     children: [
                       Icon(Icons.security, size: 18, color: context.z.accent),
                       const SizedBox(width: 8),
-                      const Text('Safety number',
-                          style: TextStyle(fontWeight: FontWeight.w700)),
+                      Text(l.ciSafetyNumber,
+                          style: const TextStyle(fontWeight: FontWeight.w700)),
                       const Spacer(),
                       _AssurancePill(assurance: contact.assurance),
                     ],
@@ -155,9 +151,7 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                     ),
                   const SizedBox(height: 12),
                   Text(
-                    'Compare these 60 digits with the ones on their device '
-                    '(in person or on a call you trust). If they match, no '
-                    'one is sitting between you — not even the relay.',
+                    l.ciSafetyCompare,
                     style: TextStyle(
                         fontSize: 12,
                         color: context.z.textSecondary,
@@ -165,7 +159,7 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    _assuranceBlurb(contact.assurance),
+                    _assuranceBlurb(l, contact.assurance),
                     style: TextStyle(
                         fontSize: 12,
                         color: context.z.textSecondary,
@@ -176,13 +170,8 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                     Text(
                       svc.deviceAssuranceWith(widget.rid) ==
                               DeviceAssurance.hybrid
-                          ? 'Their device list is signed post-quantum too, so '
-                              'the set of devices you send to cannot be '
-                              'forged or quietly reduced.'
-                          : 'Their device list is signed classically only. '
-                              'That is correct today; the post-quantum '
-                              'signature for it travels separately and may '
-                              'not have arrived yet.',
+                          ? l.ciDevListHybrid
+                          : l.ciDevListClassical,
                       style: TextStyle(
                           fontSize: 12,
                           color: context.z.textSecondary,
@@ -198,7 +187,8 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                   ],
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: Text(_switchLabel(svc.verificationWith(widget.rid))),
+                    title:
+                        Text(_switchLabel(l, svc.verificationWith(widget.rid))),
                     value: svc.verificationWith(widget.rid) ==
                         VerificationState.verified,
                     activeThumbColor: context.z.ok,
@@ -211,26 +201,26 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
           const SizedBox(height: 8),
           ListTile(
             leading: const Icon(Icons.timer_outlined),
-            title: const Text('Disappearing messages'),
+            title: Text(l.ciDisappearing),
             subtitle: Text(describeTtl(contact.ttlSec)),
           ),
           ListTile(
             leading: const Icon(Icons.edit_outlined),
-            title: const Text('Rename'),
+            title: Text(l.ciRename),
             onTap: () async {
               final ctrl = TextEditingController(text: contact.name);
               final name = await showDialog<String>(
                 context: context,
                 builder: (ctx) => AlertDialog(
-                  title: const Text('Rename contact'),
+                  title: Text(l.ciRenameContact),
                   content: TextField(controller: ctrl, autofocus: true),
                   actions: [
                     TextButton(
                         onPressed: () => Navigator.pop(ctx),
-                        child: const Text('Cancel')),
+                        child: Text(l.cancel)),
                     FilledButton(
                         onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-                        child: const Text('Save')),
+                        child: Text(l.save)),
                   ],
                 ),
               );
@@ -241,39 +231,35 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
           ),
           ListTile(
             leading: Icon(Icons.refresh, color: context.z.accent),
-            title: const Text('Reset secure session'),
-            subtitle: const Text(
-                'Start a fresh encryption session (use if messages stop decrypting)'),
+            title: Text(l.ciResetSession),
+            subtitle: Text(l.ciResetSessionHelp),
             onTap: () async {
               await svc.resetSecureSession(widget.rid);
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Secure session reset')));
+                    SnackBar(content: Text(l.ciResetSessionDone)));
               }
             },
           ),
           ListTile(
             leading: Icon(Icons.delete_outline, color: context.z.danger),
-            title: Text('Delete contact & all messages',
+            title: Text(l.ciDeleteContact,
                 style: TextStyle(color: context.z.danger)),
             onTap: () async {
               final sure = await showDialog<bool>(
                 context: context,
                 builder: (ctx) => AlertDialog(
-                  title: const Text('Delete everything?'),
-                  content: const Text(
-                      'This wipes the contact, every message and every '
-                      'attachment from THIS device. There is no server copy '
-                      'to restore from — that is the point.'),
+                  title: Text(l.ciDeleteTitle),
+                  content: Text(l.ciDeleteBody),
                   actions: [
                     TextButton(
                         onPressed: () => Navigator.pop(ctx, false),
-                        child: const Text('Cancel')),
+                        child: Text(l.cancel)),
                     FilledButton(
                         style: FilledButton.styleFrom(
                             backgroundColor: context.z.danger),
                         onPressed: () => Navigator.pop(ctx, true),
-                        child: const Text('Delete')),
+                        child: Text(l.delete)),
                   ],
                 ),
               );
@@ -300,26 +286,17 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
   }
 }
 
-String _assuranceBlurb(IdentityAssurance a) => switch (a) {
-      IdentityAssurance.classical =>
-        'This identity is signed with Ed25519. Their app has not published a '
-            'post-quantum key, so there is nothing further to check.',
-      IdentityAssurance.pendingPostQuantum =>
-        'The code you scanned promised a post-quantum key that has not '
-            'arrived yet. When it does, this number changes ONCE — that is '
-            'the upgrade, not tampering, and you will be asked to compare it '
-            'again. Until then only the Ed25519 half is covered.',
-      IdentityAssurance.hybrid =>
-        'Covers both halves of both identities: Ed25519 and ML-DSA-65. The '
-            'post-quantum key arrived over the encrypted session and matched '
-            'the commitment in the code you scanned.',
+String _assuranceBlurb(AppLocalizations l, IdentityAssurance a) => switch (a) {
+      IdentityAssurance.classical => l.ciBlurbClassical,
+      IdentityAssurance.pendingPostQuantum => l.ciBlurbPending,
+      IdentityAssurance.hybrid => l.ciBlurbHybrid,
     };
 
-String _switchLabel(VerificationState s) => switch (s) {
-      VerificationState.verified => 'Verified',
-      VerificationState.upgradedReverify => 'I have compared it again',
-      VerificationState.changedUnexpectedly => 'I have compared it again',
-      VerificationState.unverified => 'Mark as verified',
+String _switchLabel(AppLocalizations l, VerificationState s) => switch (s) {
+      VerificationState.verified => l.ciSwitchVerified,
+      VerificationState.upgradedReverify => l.ciSwitchComparedAgain,
+      VerificationState.changedUnexpectedly => l.ciSwitchComparedAgain,
+      VerificationState.unverified => l.ciSwitchMarkVerified,
     };
 
 /// Which of the three states (§18.3) this identity is actually in. Shown
@@ -332,13 +309,17 @@ class _AssurancePill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final (label, tone) = switch (assurance) {
-      IdentityAssurance.classical => ('Classical', context.z.textSecondary),
+      IdentityAssurance.classical => (
+          l.ciPillClassical,
+          context.z.textSecondary
+        ),
       IdentityAssurance.pendingPostQuantum => (
-          'Post-quantum pending',
+          l.ciPillPqPending,
           context.z.warn
         ),
-      IdentityAssurance.hybrid => ('Post-quantum', context.z.ok),
+      IdentityAssurance.hybrid => (l.ciPillPq, context.z.ok),
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -364,31 +345,25 @@ class _VerificationNotice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return switch (state) {
       VerificationState.verified => _Banner(
           tone: context.z.ok,
           icon: Icons.verified_user_outlined,
-          title: 'Verified',
-          body: 'This is the number you compared with $name.',
+          title: l.ciNoticeVerified,
+          body: l.ciNoticeVerifiedBody(name),
         ),
       VerificationState.upgradedReverify => _Banner(
           tone: context.z.warn,
           icon: Icons.upgrade,
-          title: 'The number changed — here is why',
-          body: "$name's identity gained a post-quantum key, so the number is "
-              'now derived from both halves. That is an upgrade, and it '
-              'happens once. It is not a sign that anyone tampered with '
-              'anything — but the number you checked before no longer '
-              'applies, so please read this one out and compare it again.',
+          title: l.ciNoticeUpgraded,
+          body: l.ciNoticeUpgradedBody(name),
         ),
       VerificationState.changedUnexpectedly => _Banner(
           tone: context.z.danger,
           icon: Icons.gpp_maybe_outlined,
-          title: 'The number changed and this app cannot explain why',
-          body: 'The number you verified with $name is not the one shown now, '
-              'and this is not the one-time post-quantum upgrade. Do not rely '
-              'on the previous verification. Compare the number below in '
-              'person or on a call you trust before continuing.',
+          title: l.ciNoticeChanged,
+          body: l.ciNoticeChangedBody(name),
         ),
       VerificationState.unverified => const SizedBox.shrink(),
     };

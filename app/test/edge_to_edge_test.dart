@@ -22,8 +22,9 @@ Widget _host(Widget child) => MediaQuery(
         padding: EdgeInsets.only(top: 24, bottom: _inset),
       ),
       child: MaterialApp(
-      localizationsDelegates: AppLocalizations.localizationsDelegates,
-      supportedLocales: AppLocalizations.supportedLocales,home: child),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: child),
     );
 
 // Both screens autofocus a text field whose cursor blinks forever, so the

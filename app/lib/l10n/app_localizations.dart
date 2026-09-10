@@ -1143,6 +1143,228 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Turn on'**
   String get backupAskCodeTurnOn;
+
+  /// Commits an edit made in a dialog. Generic.
+  ///
+  /// In en, this message translates to:
+  /// **'Save'**
+  String get save;
+
+  /// Confirms a destructive action in a dialog. Generic; the dialog above it says what is being deleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get delete;
+
+  /// Shown in place of the whole contact screen when the contact was deleted while the screen was open — a state, not a confirmation of an action the user just took.
+  ///
+  /// In en, this message translates to:
+  /// **'Contact removed'**
+  String get ciContactRemoved;
+
+  /// The first 16 characters of the contact's routing id, shown small under their name for support and debugging. 'routing id' is the protocol's term (§18.7) and is deliberately not translated into a friendlier word: it is the mailbox address, not an account name.
+  ///
+  /// In en, this message translates to:
+  /// **'routing id: {id}…'**
+  String ciRoutingId(String id);
+
+  /// Banner heading. {device} is the name of ANOTHER of the user's own devices, the one that added this contact. Not the contact's device.
+  ///
+  /// In en, this message translates to:
+  /// **'Added on {device}'**
+  String ciAddedOnDevice(String device);
+
+  /// Why a contact the user does not remember adding is present. The second sentence is the actionable half: a linked device can assert a contact with no scan behind it, so the user is asked to do the scan's job themselves.
+  ///
+  /// In en, this message translates to:
+  /// **'This contact came from another of your devices, so no code was scanned here. Compare the safety number below before you rely on it.'**
+  String get ciAddedOnDeviceBody;
+
+  /// Banner heading (§18.9). The body is supplied by the service. Nothing is broken — the wording should read as unfinished, not as failed.
+  ///
+  /// In en, this message translates to:
+  /// **'A post-quantum signature never arrived'**
+  String get ciPqSigMissing;
+
+  /// Banner heading for the serious case: a post-quantum key was offered and rejected. 'refused' is active on purpose — the app did something, rather than something being missing.
+  ///
+  /// In en, this message translates to:
+  /// **'Post-quantum key refused'**
+  String get ciPqRefused;
+
+  /// The most serious message on the screen. Three clauses are load-bearing: the key was REJECTED (nothing unsafe was accepted); the identity was NOT upgraded (so the old guarantees still hold); and substitution is one of two live explanations, stated without deciding which. A translation that softens 'someone is substituting keys' into a generic error leaves the user with no reason to act.
+  ///
+  /// In en, this message translates to:
+  /// **'A post-quantum key arrived for {name} that does not match the code you scanned, so it was rejected and their identity was NOT upgraded. Either something is broken at their end, or someone is substituting keys. Compare the number below before trusting this chat.'**
+  String ciPqRefusedBody(String name);
+
+  /// Heading of the card holding the 60-digit number. This is the app's name for it throughout — keep one term per locale.
+  ///
+  /// In en, this message translates to:
+  /// **'Safety number'**
+  String get ciSafetyNumber;
+
+  /// How to use the number, and what it proves. '60' is fixed by the protocol, not by the locale. 'not even the relay' is the point of the whole screen: the relay is Z's own server, and the number is what makes trusting it unnecessary.
+  ///
+  /// In en, this message translates to:
+  /// **'Compare these 60 digits with the ones on their device (in person or on a call you trust). If they match, no one is sitting between you — not even the relay.'**
+  String get ciSafetyCompare;
+
+  /// Shown when the contact's device list carries a post-quantum signature. 'quietly reduced' names the specific attack — removing a device from the list so a message reaches fewer places than the user believes — and is worth keeping concrete.
+  ///
+  /// In en, this message translates to:
+  /// **'Their device list is signed post-quantum too, so the set of devices you send to cannot be forged or quietly reduced.'**
+  String get ciDevListHybrid;
+
+  /// The same fact in its unfinished state. 'That is correct today' must survive translation: without it this reads as a warning, and it is not one.
+  ///
+  /// In en, this message translates to:
+  /// **'Their device list is signed classically only. That is correct today; the post-quantum signature for it travels separately and may not have arrived yet.'**
+  String get ciDevListClassical;
+
+  /// Row label; the value beneath it is the timer setting.
+  ///
+  /// In en, this message translates to:
+  /// **'Disappearing messages'**
+  String get ciDisappearing;
+
+  /// Row label opening the rename dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Rename'**
+  String get ciRename;
+
+  /// Title of the rename dialog. The name is local to this device and is never sent to the contact or the relay.
+  ///
+  /// In en, this message translates to:
+  /// **'Rename contact'**
+  String get ciRenameContact;
+
+  /// Row label for the session reset.
+  ///
+  /// In en, this message translates to:
+  /// **'Reset secure session'**
+  String get ciResetSession;
+
+  /// When to use the reset. The parenthesis is the only guidance a user has for a control they should almost never touch.
+  ///
+  /// In en, this message translates to:
+  /// **'Start a fresh encryption session (use if messages stop decrypting)'**
+  String get ciResetSessionHelp;
+
+  /// Confirms the reset happened. Past tense: the work is already done.
+  ///
+  /// In en, this message translates to:
+  /// **'Secure session reset'**
+  String get ciResetSessionDone;
+
+  /// Row label, shown in the danger colour. It names both things that go, because deleting a contact elsewhere in most apps does not take the messages.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete contact & all messages'**
+  String get ciDeleteContact;
+
+  /// Title of the delete confirmation.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete everything?'**
+  String get ciDeleteTitle;
+
+  /// The last warning before an irreversible delete. 'THIS device' is capitalised because other linked devices keep their copies. The final clause explains that irrecoverability is the design, not a limitation — the same argument as the backup recovery code.
+  ///
+  /// In en, this message translates to:
+  /// **'This wipes the contact, every message and every attachment from THIS device. There is no server copy to restore from — that is the point.'**
+  String get ciDeleteBody;
+
+  /// What the safety number covers when the contact is classical-only. 'nothing further to check' is reassurance: this is a complete state, not a partial one. Ed25519 is an algorithm name and stays as it is.
+  ///
+  /// In en, this message translates to:
+  /// **'This identity is signed with Ed25519. Their app has not published a post-quantum key, so there is nothing further to check.'**
+  String get ciBlurbClassical;
+
+  /// The pre-emptive explanation of a number that is going to move. This exists so that when it moves, the user has already been told why — 'that is the upgrade, not tampering' is the sentence doing that work, and must not be dropped or softened.
+  ///
+  /// In en, this message translates to:
+  /// **'The code you scanned promised a post-quantum key that has not arrived yet. When it does, this number changes ONCE — that is the upgrade, not tampering, and you will be asked to compare it again. Until then only the Ed25519 half is covered.'**
+  String get ciBlurbPending;
+
+  /// The complete state. 'matched the commitment in the code you scanned' is what distinguishes this from simply having received a key: the scanned code bound it in advance. Ed25519 and ML-DSA-65 are algorithm names.
+  ///
+  /// In en, this message translates to:
+  /// **'Covers both halves of both identities: Ed25519 and ML-DSA-65. The post-quantum key arrived over the encrypted session and matched the commitment in the code you scanned.'**
+  String get ciBlurbHybrid;
+
+  /// Label of the verification toggle when it is on. A control label, not a heading — ciNoticeVerified is the heading with the same English.
+  ///
+  /// In en, this message translates to:
+  /// **'Verified'**
+  String get ciSwitchVerified;
+
+  /// Label of the verification toggle after the number has moved, under BOTH the expected upgrade and the unexplained change. The user is asserting an action they performed, so it stays first-person.
+  ///
+  /// In en, this message translates to:
+  /// **'I have compared it again'**
+  String get ciSwitchComparedAgain;
+
+  /// Label of the verification toggle when nothing has been verified yet.
+  ///
+  /// In en, this message translates to:
+  /// **'Mark as verified'**
+  String get ciSwitchMarkVerified;
+
+  /// Pill beside the safety-number heading. 'Classical' means pre-quantum cryptography, not 'traditional' or 'standard'.
+  ///
+  /// In en, this message translates to:
+  /// **'Classical'**
+  String get ciPillClassical;
+
+  /// Pill for an identity that has promised a post-quantum key and not yet delivered it.
+  ///
+  /// In en, this message translates to:
+  /// **'Post-quantum pending'**
+  String get ciPillPqPending;
+
+  /// Pill for an identity covered by both algorithms. Kept short to fit the pill; the blurb below carries the detail.
+  ///
+  /// In en, this message translates to:
+  /// **'Post-quantum'**
+  String get ciPillPq;
+
+  /// Banner heading confirming a verification still holds. Same English as ciSwitchVerified but this is a heading over a body, not a control label.
+  ///
+  /// In en, this message translates to:
+  /// **'Verified'**
+  String get ciNoticeVerified;
+
+  /// Confirms the number on screen is the one that was checked. Present tense and specific: the guarantee is about THIS number, not about the contact in general.
+  ///
+  /// In en, this message translates to:
+  /// **'This is the number you compared with {name}.'**
+  String ciNoticeVerifiedBody(String name);
+
+  /// Banner heading for the expected, one-time change. The 'here is why' half is what stops the heading reading as an alarm.
+  ///
+  /// In en, this message translates to:
+  /// **'The number changed — here is why'**
+  String get ciNoticeUpgraded;
+
+  /// The benign explanation of a changed safety number — the case a user cannot distinguish from an attack without being told. Both halves must survive: this is not tampering, AND the old verification no longer applies. Dropping the first causes needless alarm; dropping the second lets a stale tick stand. {name} takes an English possessive here; render it however the locale forms one.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s identity gained a post-quantum key, so the number is now derived from both halves. That is an upgrade, and it happens once. It is not a sign that anyone tampered with anything — but the number you checked before no longer applies, so please read this one out and compare it again.'**
+  String ciNoticeUpgradedBody(String name);
+
+  /// Banner heading for the case that is not the known upgrade. It says the app cannot explain rather than naming an attack, because it does not know — an honest 'cannot explain' is what earns the user's attention for the body.
+  ///
+  /// In en, this message translates to:
+  /// **'The number changed and this app cannot explain why'**
+  String get ciNoticeChanged;
+
+  /// The most serious wording on the screen after ciPqRefusedBody. It rules out the innocent explanation explicitly — without that clause the user has no way to tell this apart from ciNoticeUpgradedBody — then gives one instruction. 'in person or on a call you trust' rules out doing it over the channel that may itself be compromised.
+  ///
+  /// In en, this message translates to:
+  /// **'The number you verified with {name} is not the one shown now, and this is not the one-time post-quantum upgrade. Do not rely on the previous verification. Compare the number below in person or on a call you trust before continuing.'**
+  String ciNoticeChangedBody(String name);
 }
 
 class _AppLocalizationsDelegate

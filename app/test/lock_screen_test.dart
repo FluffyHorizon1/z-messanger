@@ -43,8 +43,9 @@ void main() {
       (tester) async {
     gate.answers.addAll([GateResult.cancelled, GateResult.ok]);
     await tester.pumpWidget(MaterialApp(
-      localizationsDelegates: AppLocalizations.localizationsDelegates,
-      supportedLocales: AppLocalizations.supportedLocales,home: LockScreen(lock: lock)));
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: LockScreen(lock: lock)));
     await tester.pumpAndSettle();
     expect(gate.calls, 1, reason: 'prompted as soon as it appeared');
     expect(find.text('Unlock cancelled.'), findsOneWidget);

@@ -26,6 +26,7 @@ import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:zapp/ui/contact_info_screen.dart';
 import 'package:zapp/ui/theme.dart';
+import 'package:zapp/l10n/app_localizations.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -85,6 +86,8 @@ void main() {
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
           theme: ZTheme.light(),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
           home: child,
         ),
       );

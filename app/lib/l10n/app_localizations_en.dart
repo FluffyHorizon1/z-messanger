@@ -644,4 +644,137 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get backupAskCodeTurnOn => 'Turn on';
+
+  @override
+  String get save => 'Save';
+
+  @override
+  String get delete => 'Delete';
+
+  @override
+  String get ciContactRemoved => 'Contact removed';
+
+  @override
+  String ciRoutingId(String id) {
+    return 'routing id: $id…';
+  }
+
+  @override
+  String ciAddedOnDevice(String device) {
+    return 'Added on $device';
+  }
+
+  @override
+  String get ciAddedOnDeviceBody =>
+      'This contact came from another of your devices, so no code was scanned here. Compare the safety number below before you rely on it.';
+
+  @override
+  String get ciPqSigMissing => 'A post-quantum signature never arrived';
+
+  @override
+  String get ciPqRefused => 'Post-quantum key refused';
+
+  @override
+  String ciPqRefusedBody(String name) {
+    return 'A post-quantum key arrived for $name that does not match the code you scanned, so it was rejected and their identity was NOT upgraded. Either something is broken at their end, or someone is substituting keys. Compare the number below before trusting this chat.';
+  }
+
+  @override
+  String get ciSafetyNumber => 'Safety number';
+
+  @override
+  String get ciSafetyCompare =>
+      'Compare these 60 digits with the ones on their device (in person or on a call you trust). If they match, no one is sitting between you — not even the relay.';
+
+  @override
+  String get ciDevListHybrid =>
+      'Their device list is signed post-quantum too, so the set of devices you send to cannot be forged or quietly reduced.';
+
+  @override
+  String get ciDevListClassical =>
+      'Their device list is signed classically only. That is correct today; the post-quantum signature for it travels separately and may not have arrived yet.';
+
+  @override
+  String get ciDisappearing => 'Disappearing messages';
+
+  @override
+  String get ciRename => 'Rename';
+
+  @override
+  String get ciRenameContact => 'Rename contact';
+
+  @override
+  String get ciResetSession => 'Reset secure session';
+
+  @override
+  String get ciResetSessionHelp =>
+      'Start a fresh encryption session (use if messages stop decrypting)';
+
+  @override
+  String get ciResetSessionDone => 'Secure session reset';
+
+  @override
+  String get ciDeleteContact => 'Delete contact & all messages';
+
+  @override
+  String get ciDeleteTitle => 'Delete everything?';
+
+  @override
+  String get ciDeleteBody =>
+      'This wipes the contact, every message and every attachment from THIS device. There is no server copy to restore from — that is the point.';
+
+  @override
+  String get ciBlurbClassical =>
+      'This identity is signed with Ed25519. Their app has not published a post-quantum key, so there is nothing further to check.';
+
+  @override
+  String get ciBlurbPending =>
+      'The code you scanned promised a post-quantum key that has not arrived yet. When it does, this number changes ONCE — that is the upgrade, not tampering, and you will be asked to compare it again. Until then only the Ed25519 half is covered.';
+
+  @override
+  String get ciBlurbHybrid =>
+      'Covers both halves of both identities: Ed25519 and ML-DSA-65. The post-quantum key arrived over the encrypted session and matched the commitment in the code you scanned.';
+
+  @override
+  String get ciSwitchVerified => 'Verified';
+
+  @override
+  String get ciSwitchComparedAgain => 'I have compared it again';
+
+  @override
+  String get ciSwitchMarkVerified => 'Mark as verified';
+
+  @override
+  String get ciPillClassical => 'Classical';
+
+  @override
+  String get ciPillPqPending => 'Post-quantum pending';
+
+  @override
+  String get ciPillPq => 'Post-quantum';
+
+  @override
+  String get ciNoticeVerified => 'Verified';
+
+  @override
+  String ciNoticeVerifiedBody(String name) {
+    return 'This is the number you compared with $name.';
+  }
+
+  @override
+  String get ciNoticeUpgraded => 'The number changed — here is why';
+
+  @override
+  String ciNoticeUpgradedBody(String name) {
+    return '$name\'s identity gained a post-quantum key, so the number is now derived from both halves. That is an upgrade, and it happens once. It is not a sign that anyone tampered with anything — but the number you checked before no longer applies, so please read this one out and compare it again.';
+  }
+
+  @override
+  String get ciNoticeChanged =>
+      'The number changed and this app cannot explain why';
+
+  @override
+  String ciNoticeChangedBody(String name) {
+    return 'The number you verified with $name is not the one shown now, and this is not the one-time post-quantum upgrade. Do not rely on the previous verification. Compare the number below in person or on a call you trust before continuing.';
+  }
 }

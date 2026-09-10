@@ -45,6 +45,7 @@ MIGRATED = {
     "group_screens.dart",
     "link_device_screen.dart",
     "backup_screen.dart",
+    "contact_info_screen.dart",
 }
 
 # Literals that look user-visible and are not.
