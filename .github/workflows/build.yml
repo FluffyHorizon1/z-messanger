@@ -92,6 +92,10 @@ jobs:
       # this kind of work stalls.
       - name: No migrated screen has regressed to hardcoded strings
         run: python3 tool/check_l10n.py
+      # 15.5: the GA checklist must not say READY while a criterion below it
+      # says otherwise — that is the specific way a release checklist misleads.
+      - name: The GA checklist matches the repository
+        run: python3 tool/check_ga.py
       - name: App tests (incl. concurrency regression through the real relay)
         working-directory: app
         run: |

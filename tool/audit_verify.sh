@@ -97,6 +97,8 @@ run "every control announces something" "-" "." \
     python3 tool/check_a11y.py
 run "no migrated screen regressed to English" "-" "." \
     python3 tool/check_l10n.py
+run "the GA checklist matches the repo" "-" "." \
+    python3 tool/check_ga.py
 
 echo
 echo "${bold}1. Protocol library — every cryptographic construction${rst}"

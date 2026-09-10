@@ -525,8 +525,31 @@ Everything currently externally gated, plus the work to call it 1.0.
   reported a 1.71:1 contrast failure. `app/tool/contrast.py` says every real
   pair clears AA in both palettes, and with the real theme installed they all
   pass. Both checks now run in CI and in `audit_verify.sh`.
-- **15.5 GA criteria checklist** — audit ✓, reproducible builds ✓, KT live ✓,
-  backup ✓, multi-device ✓, published threat model ✓.
+- **15.5 GA criteria checklist** *(written — `docs/GA_CHECKLIST.md`; the
+  answer is **NOT READY**, and one criterion needs a decision rather than
+  work)* — nine criteria with their real status. Met: backup and restore,
+  multi-device, published threat model, accessibility (for the checks that
+  exist). Unmet: the audit is not commissioned, iOS does not exist,
+  localization is 2 of 14 screens, and reproducible builds hold as a property
+  but **nobody outside the project has checked** — the one criterion this
+  project structurally cannot self-certify.
+
+  **The finding is G3.** "KT live" was written into the GA criteria at the
+  start of phase 8, and `adr/0001` gates key transparency on *"public launch
+  with an operator committed to durable infrastructure"*. So GA requires KT
+  and KT's trigger is a public launch: a circular dependency that no amount of
+  code resolves. Either 1.0 ships with gossip-based device-list transparency
+  and says so plainly, or the log infrastructure is committed to first and 1.0
+  waits. That is Finnian's call, and the checklist refuses to quietly drop a
+  criterion that was put there for a reason.
+
+  `tool/check_ga.py` keeps the page honest: it fails if a KT client appears
+  while the page says none exists, if `app/ios/` appears while the page says
+  it does not, if the remaining-string count drifts, and — the one that
+  matters — if the summary says READY while any row below is still ❌. Verified
+  by breaking all four. The string-count guard needed fixing first: its regex
+  wanted a space where the prose had a line wrap, so it matched nothing and
+  passed silently, which is worse than no guard at all.
 
 **Exit:** 1.0 shipped on Android, iOS, Windows, macOS and Linux from signed,
 reproducible artefacts.

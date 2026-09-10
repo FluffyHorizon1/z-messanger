@@ -67,6 +67,9 @@ your own server or Fly.io? See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
   with a definition-of-done for each ([visual timeline](docs/roadmap.html)).
 - **[`DEPLOY.md`](DEPLOY.md)** — get the relay online in ~5 minutes (one-click).
 - **[`docs/WINDOWS.md`](docs/WINDOWS.md)** — running Z on Windows.
+- **[`docs/GA_CHECKLIST.md`](docs/GA_CHECKLIST.md)** — what 1.0 requires and
+  where each condition actually stands. Currently **not ready**, with the
+  reasons named.
 - **[`docs/USING_Z.md`](docs/USING_Z.md)** — using Z, for people who are not
   reading the code: adding people, safety numbers, linked devices, groups, and
   a "if something goes wrong" section worth reading *before* it does.
