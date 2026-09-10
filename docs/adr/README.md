@@ -8,4 +8,5 @@ stay in place with their status updated.
 |---|---|---|
 | [0001](0001-key-transparency.md) | Key transparency: device‑list transparency by gossip first, public log later | Accepted 2026‑09‑04 |
 | [0003](0003-pq-identity-qr.md) | Post‑quantum identity: the QR carries a commitment, the ML‑DSA half travels in‑session | Accepted 2026‑09‑07 |
-| [0004](0004-hybrid-device-list-distribution.md) | Post‑quantum device lists: the account signs the LIST, because per‑certificate halves do not authenticate the set | Accepted 2026‑09‑08 |
+| [0004](0004-hybrid-device-list-distribution.md) | Post‑quantum device lists: the account signs the LIST, because per‑certificate halves do not authenticate the set | Accepted 2026‑09‑08 · addendum 2026‑09‑10 (bucket column measured; decision unchanged) |
+| [0005](0005-call-media-path.md) | Calls: direct after accept by default, nothing before accept, relay one switch away — because relaying through the operator's TURN hands it who‑calls‑whom | **Proposed** 2026‑09‑10 — awaiting decision before 12.2 |

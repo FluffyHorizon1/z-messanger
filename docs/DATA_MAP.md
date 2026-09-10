@@ -113,6 +113,9 @@ Named here so this document does not silently go stale as the roadmap moves:
   open decision: peer-to-peer discloses the caller's IP **to the callee**,
   while TURN discloses it **to the operator** instead. Neither is free, the
   choice is not ours to make quietly, and this table gains a row either way.
+  `adr/0005` proposes the answer — direct after accept by default, nothing
+  before accept, relay one switch away — with a table of who sees what on
+  each path; the rows land here when it is accepted.
 * **Key transparency (phase 11, `adr/0001`)** would add a log service holding
   public key material and inclusion proofs — no message content, but a new
   third party with a new view.

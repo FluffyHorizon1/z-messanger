@@ -186,7 +186,11 @@ shipped. Depends on phase 10 because a call has to ring a device, not a person.
   person you are calling**, TURN reveals it to the TURN operator instead. For
   a product whose whole premise is not trusting infrastructure, "your contact
   learns your IP" is the surprising one — so the default and the per-call
-  disclosure both need deciding here, not assumed.
+  disclosure both need deciding here, not assumed. *Proposed in
+  `adr/0005-call-media-path.md` (2026-09-10): direct after accept by default,
+  no address leaves a device before accept, relay one switch away and your
+  switch alone is enough; measured, a raw video SDP offer is a 16 384-bucket
+  envelope, so 12.1 signals in compact JSON. Awaiting decision.*
 
 **Anti-scope:** group calls via an SFU. A mixer that sees who is talking to
 whom is exactly the metadata concentration this design exists to avoid;
