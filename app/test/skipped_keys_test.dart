@@ -16,7 +16,11 @@
 //   2. a send does not rewrite it — and does rewrite the hot state;
 //   3. a vault written BEFORE schema 9, with the cache inside `enc_state`,
 //      still has its keys after loading and after the next send;
-//   4. a failed send rolls the ratchet back without emptying the cache.
+//   4. a failed send rolls the ratchet back without emptying the cache;
+//   5. a receive that leaves the cache untouched does not rewrite it — and
+//      one that changes it does. Re-sealing an unchanged cache on every
+//      receive was the send-side cost moved rather than removed (13.7 ms at
+//      the cap, receive_bench_test.dart).
 @Tags(['integration'])
 library;
 
@@ -281,5 +285,79 @@ void main() {
     // and, being a send, still leaves the cache alone.
     await svc.sendText(rid, 'and this one succeeds');
     expect(svc.debugSkippedKeyCount(rid), 30);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('a receive rewrites the cache only when it changed it', () async {
+    // Two real clients, offline: a's outbox rows are the envelopes the relay
+    // would deliver, handed straight to b's inbound path.
+    final a = await open(await temp('rx_a'), 'a', offline: true);
+    final b = await open(await temp('rx_b'), 'b', offline: true);
+    await a.addContactFromCode(await b.myContactCode());
+    await b.addContactFromCode(await a.myContactCode());
+    final aRid = a.myRid, bRid = b.myRid;
+
+    Future<List<RelayInbound>> fromA() async {
+      final rows = await a.vault.db.query('outbox',
+          where: 'rid = ?', whereArgs: [bRid], orderBy: 'created_ms ASC');
+      await a.vault.db.delete('outbox', where: 'rid = ?', whereArgs: [bRid]);
+      return [
+        for (final r in rows)
+          RelayInbound(
+              id: r['id'] as String,
+              from: '',
+              payload: r['payload'] as String,
+              serverTs: 0)
+      ];
+    }
+
+    Future<String?> cell() async => (await b.vault.db
+            .query('conversations', where: 'rid = ?', whereArgs: [aRid]))
+        .single['enc_skipped'] as String?;
+
+    // Bootstrap both chains.
+    for (var round = 0; round < 2; round++) {
+      await a.sendText(bRid, 'hi $round');
+      for (final m in await fromA()) {
+        await b.debugInbound(m);
+      }
+      await b.sendText(aRid, 'hi back $round');
+    }
+
+    // One that arrives early: two keys are cached, and the cell is written.
+    final empty = await cell();
+    for (var i = 0; i < 3; i++) {
+      await a.sendText(bRid, 'early $i');
+    }
+    final batch = await fromA();
+    await b.debugInbound(batch.last);
+    expect(b.debugSkippedKeyCount(aRid), 2);
+    final withKeys = await cell();
+    expect(withKeys, isNot(empty),
+        reason: 'keys were added to the cache and enc_skipped was not '
+            'rewritten — a restart would lose them');
+
+    // Three NEW messages, in order, with those two keys still cached: the
+    // cache is untouched, so the cell must not move. It has to be non-empty
+    // for this to test anything — sealing is randomised, so re-sealing the
+    // same two keys would produce different bytes and show up here, while
+    // re-sealing an empty cache writes null over null and shows nothing.
+    for (var i = 0; i < 3; i++) {
+      await a.sendText(bRid, 'in order $i');
+    }
+    for (final m in await fromA()) {
+      await b.debugInbound(m);
+    }
+    expect(b.debugSkippedKeyCount(aRid), 2);
+    expect(await cell(), withKeys,
+        reason: 'an in-order receive rewrote enc_skipped although nothing '
+            'in the cache changed — that is the send-side cost moved onto '
+            'every receive');
+
+    // And a late arrival consumes one: the cell changes again.
+    await b.debugInbound(batch.first);
+    expect(b.debugSkippedKeyCount(aRid), 1);
+    expect(await cell(), isNot(withKeys),
+        reason: 'a key was consumed and enc_skipped still holds it — a '
+            'restart would resurrect a key that must never be reused');
   }, timeout: const Timeout(Duration(minutes: 2)));
 }

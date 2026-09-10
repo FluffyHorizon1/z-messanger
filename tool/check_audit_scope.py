@@ -54,6 +54,12 @@ UNCITED_OK = {
         "fan-out and reports where the cost goes (docs/PERFORMANCE.md). The "
         "one thing it asserts, that fan-out stays linear, is a design "
         "property rather than a security claim",
+    "app/test/receive_bench_test.dart":
+        "a measurement, not an assertion about behaviour — it times the "
+        "inbound path and attributes it (docs/PERFORMANCE.md, 'Receive "
+        "side'). The two things it asserts on the way, that an early "
+        "arrival caches one key per message skipped and that late arrivals "
+        "consume them, are covered as claims by skipped_keys_test.dart",
     "app/test/system_text_test.dart":
         "that a stored system message renders in the user's language and a "
         "row from before the change still reads as written — a localization "

@@ -443,6 +443,18 @@ class ChatService extends ChangeNotifier {
         whereArgs: [rid]);
   }
 
+  /// A cheap fingerprint of the out-of-order key cache: per session, how
+  /// many keys and which one was added last. Every change a decrypt can
+  /// make moves it — adding keys appends a new last one, consuming a key
+  /// changes the count, and eviction at the cap only ever happens alongside
+  /// an add — so equal shapes before and after a decrypt mean the cache is
+  /// untouched and need not be re-sealed.
+  String _skippedShape(Conversation conv) => [
+        for (final e in conv.sessions.entries)
+          '${e.key}:${e.value.ratchet.skipped.length}:'
+              '${e.value.ratchet.skipped.isEmpty ? '' : e.value.ratchet.skipped.keys.last}'
+      ].join('|');
+
   /// Put the cache back into a freshly-loaded conversation.
   ///
   /// A row written before schema 9 has its cache inside `enc_state`, where
@@ -1533,6 +1545,7 @@ class ChatService extends ChangeNotifier {
           await _withLock<(int, InnerMessage?)>(contact.rid, () async {
         final conv = await _convFor(contact);
         final snapshot = jsonEncode(conv.toJson()); // for rollback
+        final cacheBefore = _skippedShape(conv);
         final DecryptResult dec;
         try {
           dec = await conv.decrypt(payload);
@@ -1562,7 +1575,14 @@ class ChatService extends ChangeNotifier {
             // advancing without the keys it stepped over would lose those
             // messages when they arrive.
             await _saveConv(contact.rid, txn: txn);
-            await _saveSkipped(contact.rid, txn: txn);
+            // Only when the cache changed. An in-order message — the common
+            // case — neither adds a key nor consumes one, and re-sealing an
+            // unchanged cache cost 13.7 ms per receive at the cap (measured,
+            // receive_bench_test.dart): the same cost 15.3 took off every
+            // send, quietly moved onto every receive.
+            if (_skippedShape(conv) != cacheBefore) {
+              await _saveSkipped(contact.rid, txn: txn);
+            }
             if (offerPayload != null) {
               await txn.insert('outbox', {
                 'id': newMessageId(),
@@ -2591,6 +2611,22 @@ class ChatService extends ChangeNotifier {
   /// client applies before sending. Exists so tests can play a HOSTILE peer —
   /// the receiver's own validation is the security property, and it has to be
   /// exercised by traffic a friendly client would never produce.
+  /// Feed one relay envelope straight into the inbound path, as the
+  /// transport would. Test seam: the receive-side benchmark needs to time
+  /// what happens AFTER the bytes arrive, without a network in the number.
+  @visibleForTesting
+  Future<void> debugInbound(RelayInbound m) => _onInbound(m);
+
+  /// The live conversation object for [rid], or null. Test seam for the
+  /// receive-side benchmark, which times the ratchet step on its own.
+  @visibleForTesting
+  Conversation? debugConversation(String rid) => _convs[rid];
+
+  /// The own-device-list claim every message is stamped with. Test seam for
+  /// the receive-side benchmark, which found it being recomputed per message.
+  @visibleForTesting
+  Future<(int, String)> debugOwnListClaim() => _ownListClaim();
+
   @visibleForTesting
   Future<void> sendRawInner(String rid, InnerMessage inner) async {
     final contact = contacts[rid];
@@ -3071,6 +3107,7 @@ class ChatService extends ChangeNotifier {
       await vault.kvPut(
           'my_devlist_version', '${(await _myDevlistVersion()) + 1}',
           sensitive: false);
+      _forgetOwnListClaim(); // after the writes; see _recordOwnList
     }
     await _initSync();
     await broadcastMyDeviceList(); // tell contacts about the new device
@@ -3202,6 +3239,7 @@ class ChatService extends ChangeNotifier {
     await vault.kvPut(
         'my_devlist_version', '${(await _myDevlistVersion()) + 1}',
         sensitive: false);
+    _forgetOwnListClaim(); // after the writes; see _recordOwnList
     await _initSync();
     await broadcastMyDeviceList();
     notifyListeners();
@@ -4823,18 +4861,50 @@ class ChatService extends ChangeNotifier {
   /// account's device list. A root device records the exact value it signed; a
   /// linked device records what it learned by self-sync; before either, the
   /// baseline is version 1 over the device set this install knows locally.
+  /// The claim this device makes about its own device list: (version,
+  /// fingerprint). Stamped on every outgoing message and compared on every
+  /// inbound one.
+  ///
+  /// Memoised, because the receive-side benchmark found it being recomputed
+  /// per message — twice per inbound text, once for the gossip check and
+  /// once for the delivery receipt's stamp — and for the common case, a
+  /// single-device account that has never signed a list, "recomputed" meant
+  /// eleven vault reads and an Ed25519 signature over its own certificate:
+  /// 13.8 ms alone, ~40 ms under contention. The answer changes only when
+  /// the device list does, and every path that changes it calls
+  /// [_forgetOwnListClaim].
+  (int, String)? _ownClaimMemo;
+
   Future<(int, String)> _ownListClaim() async {
+    final memo = _ownClaimMemo;
+    if (memo != null) return memo;
     final vs = await vault.kvGet('own_list_v');
     final hs = await vault.kvGet('own_list_h');
-    if (vs != null && hs != null) return (int.parse(vs), hs);
+    if (vs != null && hs != null) {
+      return _ownClaimMemo = (int.parse(vs), hs);
+    }
     final v = await _myDevlistVersion();
-    return (v, b64(await deviceListFingerprint(v, await myFullDeviceList())));
+    return _ownClaimMemo =
+        (v, b64(await deviceListFingerprint(v, await myFullDeviceList())));
   }
+
+  void _forgetOwnListClaim() => _ownClaimMemo = null;
+
+  /// Test seam: a test that rewrites the own-list keys in the vault behind
+  /// the service's back (to simulate a device that never learned its list)
+  /// has to say so, or the memo answers for the state it replaced.
+  @visibleForTesting
+  void forgetOwnListClaim() => _forgetOwnListClaim();
 
   Future<void> _recordOwnList(SignedDeviceList list) async {
     await vault.kvPut('own_list_v', '${list.version}', sensitive: false);
     await vault.kvPut('own_list_h', b64(await list.fingerprint()),
         sensitive: false);
+    // AFTER the writes, not before. Forgetting first left a window in which
+    // a send or receive interleaved at an await recomputed the claim from
+    // the old keys and cached it again, and the new list was then never
+    // seen — devlist_distribution_test.dart flaked one run in three on it.
+    _forgetOwnListClaim();
     // The blob itself, so a device that cannot SIGN a list can still hand
     // over the one its account signed. See [_shareableDeviceList].
     await vault.kvPut('own_list_json', jsonEncode(list.toJson()),
@@ -4925,7 +4995,7 @@ class ChatService extends ChangeNotifier {
           sensitive: false);
       await vault.kvPut('my_devlist_version', '${list.version}',
           sensitive: false);
-      await _recordOwnList(list);
+      await _recordOwnList(list); // which forgets the memo after its writes
       await _initSync();
       // Catching up may resolve a pending owner-echo (the normal-update case),
       // or explain an alert already raised while the root was unreachable: if

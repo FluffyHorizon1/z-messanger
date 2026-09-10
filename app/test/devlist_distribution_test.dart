@@ -227,6 +227,7 @@ void main() {
     await a.laptop.vault.kvDelete('own_list_v');
     await a.laptop.vault.kvDelete('own_list_h');
     await a.laptop.vault.kvPut('my_devlist_version', '1', sensitive: false);
+    a.laptop.forgetOwnListClaim(); // the vault was edited behind its back
     expect(await a.laptop.ownDeviceListVersion(), 1);
 
     // Carol's next message reaches the laptop directly with pdl = v2 — newer
@@ -260,6 +261,7 @@ void main() {
     await a.laptop.vault.kvDelete('own_list_v');
     await a.laptop.vault.kvDelete('own_list_h');
     await a.laptop.vault.kvPut('my_devlist_version', '1', sensitive: false);
+    a.laptop.forgetOwnListClaim(); // the vault was edited behind its back
     await a.phone.transport.stop();
 
     await carol.sendText(a.phone.myRid, 'while phone is off');

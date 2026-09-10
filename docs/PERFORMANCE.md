@@ -102,11 +102,23 @@ backwards, and the sort of thing nobody notices. Measured at 20 queued rows
 against 2 040: **15.25 ms versus 16.97 ms**. A 1.7 ms difference across a
 hundredfold backlog is not a scaling problem.
 
-About 8 ms of a 16 ms offline send is still unaccounted for, spread across
+~~About 8 ms of a 16 ms offline send is still unaccounted for, spread across
 lock acquisition, the contact lookup, the post-quantum offer check, wire
 decoration and async scheduling. **No single term dominates it**, which is the
 useful finding: there is no further win here of the size the skipped-key cache
-was, and the next person to look should start somewhere else.
+was, and the next person to look should start somewhere else.~~
+
+**That paragraph was wrong, and the way it was wrong is instructive.** "Wire
+decoration" was one item in a list of five things sharing 8 ms; it was never
+timed on its own. The receive-side measurement below timed it: the own
+device-list claim that `_decorateForWire` stamps on every outgoing message
+cost **13.8 ms** to compute — eleven vault reads and an Ed25519 signature over
+the device's own certificate, redone from scratch every time, for every
+account that has never linked a second device (that is, nearly every
+account). It was the single largest term in a send, larger than the seal and
+the transaction together, and the paragraph above had it filed under "spread
+across". It is memoised now; the 1:1 send it belongs to went from ~22 ms to
+~10 ms. See "Receive side" for the measurement that found it.
 
 ### Batching the writes is not the answer
 
@@ -280,6 +292,80 @@ The remaining items are unchanged: the rollback snapshot is still a full
 encode of everything else, and the outbox writes are still one transaction
 each. Both are small next to what has been taken out.
 
+## Receive side (2026-09-10)
+
+Measured last, and it should have been measured first: it is where the
+out-of-order key cache is *used*, and it turned out to hold the largest
+single cost in the app. `receive_bench_test.dart`, no network — the sender's
+outbox rows are the sealed envelopes the relay would deliver, handed straight
+to the receiver's inbound path.
+
+### What one inbound text message cost
+
+| | before | after |
+|---|---:|---:|
+| whole inbound path, in order | **54.7 ms** | **25.2 ms** |
+| a message that arrives early, skipping 20 keys | 53.6 | 33.8 |
+| a late arrival decrypted from the cache | 53.1 | 26.2 |
+| in order, with the cache at its 1536-key cap | 68.0 | 42.5 → *see below* |
+
+The ratchet is not where the time goes — creating twenty skipped keys costs
+about what one in-order step does, and a cache hit is a lookup. Attributed,
+one inbound text message, before the fix:
+
+| | ms |
+|---|---:|
+| sealed-sender open | 2.9 |
+| ratchet decrypt | 0.6 |
+| conversation-state seal | 0.3 |
+| message-row transaction | 2.7 |
+| **own device-list claim, computed for the gossip check** | **13.8** |
+| **delivery receipt — a full send, which computes the claim again** | **22.0** |
+| dedupe, claim bookkeeping, lock, notify | ~12 |
+
+Two findings.
+
+**The own-list claim was recomputed on every message, in both directions.**
+`_ownListClaim()` reads `own_list_v`/`own_list_h` from the vault; for an
+account that has never signed a device list — any single-device account —
+they are absent, and the fallback rebuilt the claim from scratch: five more
+vault reads (each a miss costs two queries), `AccountIdentity.fromV1`, which
+*signs the device's own certificate with Ed25519*, and a fingerprint. 13.8 ms
+alone; ~40 ms wall time inside the inbound path, waiting behind the delivery
+receipt's own transaction. Every receive did it once for the transparency
+gossip check and once more inside the receipt it sends back; every send did
+it once in `_decorateForWire`. The answer changes only when the device list
+does, and every path that changes it is known, so it is memoised and
+forgotten at those five points — *after* each write, not before: the first
+version forgot first, and a send interleaved between the forget and the
+write recomputed the claim from the old keys and cached it again, which
+`devlist_distribution_test.dart` turned into a one-run-in-three flake until
+the order was fixed (3/3 clean before the memo, 3/3 clean after the fix).
+Effect: receive 54.7 → 25.2 ms, and the receipt (a send) 22.0 → 10.4 ms.
+
+**The cache was re-sealed on every receive whether or not it changed.**
+15.3 moved the cache out of the send path and into its own cell, written by
+the receive transaction — every receive, unconditionally. An in-order
+message, the common case, neither adds a key nor consumes one, so at the cap
+the receive was paying 13.7 ms to seal 1536 keys that had not moved: the
+send-side cost relocated rather than removed. The cache is now re-sealed only
+when a cheap shape check (per session: key count and last key) shows the
+decrypt changed it. `skipped_keys_test.dart` criterion 5 pins both halves —
+untouched means unwritten, changed means written — and the first version of
+that test passed against the old code because it ran with an empty cache
+(null over null); it runs with keys in the cache now.
+
+### What is left, and the next fix
+
+After the memo, a receive is ~25 ms and 10 of it is the delivery receipt:
+one full outbound send per inbound message, `unawaited`, but holding the
+same per-conversation lock the next inbound needs, so a burst of fifty
+queued messages on reconnect pays fifty sends in line. The wire format
+already carries a list — `'mids': [...]` — so coalescing receipts over a
+short window (a few hundred milliseconds) turns that into one send per
+burst. Not done in this pass; it is the next thing here, and it is the same
+shape as the fan-out queue: do the per-message work once per burst.
+
 ## Not measured
 
 Named so this document does not read as more complete than it is:
@@ -293,5 +379,5 @@ Named so this document does not read as more complete than it is:
 * **Cold start** and **relay load profile**, both named in roadmap 15.3. The
   relay's abuse and capacity behaviour is exercised by
   `server/test/load.test.js`; its latency profile under sustained load is not.
-* **Receive-side cost**, which is where the skipped-key cache is actually
-  *used*.
+* ~~**Receive-side cost**, which is where the skipped-key cache is actually
+  *used*.~~ Measured above, and it held the largest cost in the app.
