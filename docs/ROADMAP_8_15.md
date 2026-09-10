@@ -469,11 +469,45 @@ Everything currently externally gated, plus the work to call it 1.0.
   than extending it. The two candidates the earlier write-up assumed mattered
   — the ratchet step and the rollback snapshot — are together a quarter of a
   millisecond (0.23 ms and **0.02 ms**). The transaction as a send actually
-  builds it is 3.94 ms. About 8 ms is spread across lock acquisition, the
+  builds it is 3.94 ms. ~~About 8 ms is spread across lock acquisition, the
   contact lookup, the post-quantum offer check and async scheduling, with **no
   single term dominating** — so there is no further win here of the size the
-  skipped-key cache was, and the batching item is left open but weaker than
+  skipped-key cache was~~, and the batching item is left open but weaker than
   when it was written.
+
+  **The struck-through sentence was wrong** (2.5.4, `PERFORMANCE.md`
+  "Receive side"). The receive side — listed below as unmeasured — was
+  measured last and held the largest cost in the app: the device's own
+  device-list claim, stamped on every outgoing message and checked on every
+  inbound one, was rebuilt from scratch each time for any account that had
+  never linked a second device — eleven vault reads and an Ed25519 signature
+  over its own certificate, 13.8 ms alone and ~40 ms under contention. The
+  send-side write-up had it inside "spread across … no single term
+  dominating", never timed on its own. Memoised (forgotten *after* each write
+  that changes the list — forgetting first raced and flaked a device-list
+  test one run in three), and the skipped-key cache re-sealed only when a
+  receive actually changed it (a cheap shape check; the first test of it ran
+  with an empty cache and passed against the old code, which is exactly the
+  guard-that-never-fires mistake): **a receive went from 54.7 ms to 25.2 ms
+  and a 1:1 send from ~22 ms to ~10 ms.** The receive at the cache's cap no
+  longer pays for the cache at all.
+
+  What is left of a receive is the sealed-sender open and the transaction
+  (~6 ms of ~16 in the benchmark's own remaining number, once the delivery
+  receipt is taken out — see the next paragraph) and nothing of the size
+  any of the three fixes were.
+
+  **Open, and parked rather than shipped:** the delivery receipt is one full
+  send per inbound message, ~10 ms, and holds the same per-conversation lock
+  the next inbound needs. Coalescing receipts over a 300 ms window (the wire
+  format already carries a list of mids) takes a receive to 16.3 ms and was
+  built and tested — and made `backup_test.dart`'s wipe-and-restore case fail
+  intermittently, 6 first attempts in 22 against 0 in 12 on `main`, with a
+  0 ms window clean in 6. The delay is the trigger; the mechanism is not yet
+  caught (sixteen instrumented runs, none failed). It stays on its branch
+  until it is measured, because "probably a late receipt on a replaced
+  session" is an inference, and shipping an inference is how this section
+  acquired its struck-through sentence.
 
   One hypothesis was tested and rejected, recorded because it was worth
   asking: every send fires an unawaited `flushOutbox()`, so a user offline
@@ -483,7 +517,7 @@ Everything currently externally gated, plus the work to call it 1.0.
 
   Still unmeasured and named as such: real hardware, devices-per-member (the
   extra-device fan-out is `unawaited` and not in these timings), cold start,
-  relay latency under sustained load, and the receive side.
+  and relay latency under sustained load. ~~And the receive side.~~
 - **15.4 docs & support & access** *(accessibility, user docs and the
   localization foundation done; the string migration itself is 2 of 14 screens
   and tracked)*.
@@ -799,3 +833,33 @@ direction; the phases, their order and both ordering arguments stand.
    signature; a claim with nothing behind it is asked about before anyone is
    told, because most losses are a dropped connection. Checked by making the
    detection naive and watching the innocent case fail.
+
+23. **15.3 — the receive side, measured last, held the largest cost in the
+   app.** The send-side write-up closed the performance list with "no single
+   term dominates the remaining 8 ms". The receive side, which that write-up
+   listed as unmeasured, was then measured and found `_ownListClaim()` being
+   rebuilt from scratch — eleven vault reads and an Ed25519 signature — on
+   every message in both directions for any single-device account, which is
+   nearly every account. It had been sitting inside "spread across". A
+   receive went from 54.7 ms to 25.2 ms, a send from ~22 to ~10 ms, and
+   the send-side conclusion is struck through in place rather than removed.
+   Two of the fixes' first versions were wrong in ways their tests caught
+   only after the tests themselves were fixed (an invalidate-before-write
+   race; a guard that ran with an empty cache and so could not fire), and
+   a third — coalescing delivery receipts — is parked unshipped because it
+   made a restore test fail one time in four and the mechanism is not yet
+   caught. The lesson is the one this section keeps re-learning: measure
+   the thing before concluding about it, and the thing listed as unmeasured
+   is the thing to measure first.
+
+24. **14.2 — "the parent directory does not matter" was never measured, and
+   it is false.** Every CI slot that agreed built at the same absolute path;
+   the one that differed varied the last component only. Built once at two
+   parents with the same leaf name: different bytes, the whole absolute path
+   embedded. Every content digest published from v2.3.8 to v2.4.7 was
+   unmatchable by its own recipe, and the release APK was not even built at
+   the path the recipe named. The release job now reads the build path out
+   of the APK's own `libapp.so` and prints that; since 2.5.4 it also builds
+   at the slots' path and writes whether a debug-signed build at the same
+   path reproduced the digest into `SHA256SUMS.txt`. `--split-debug-info`
+   was tried as a way out and does not remove the URI. The fix is upstream.
