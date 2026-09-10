@@ -67,6 +67,12 @@ your own server or Fly.io? See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
   with a definition-of-done for each ([visual timeline](docs/roadmap.html)).
 - **[`DEPLOY.md`](DEPLOY.md)** — get the relay online in ~5 minutes (one-click).
 - **[`docs/WINDOWS.md`](docs/WINDOWS.md)** — running Z on Windows.
+- **[`docs/USING_Z.md`](docs/USING_Z.md)** — using Z, for people who are not
+  reading the code: adding people, safety numbers, linked devices, groups, and
+  a "if something goes wrong" section worth reading *before* it does.
+- **[`docs/WHAT_Z_CANNOT_DO.md`](docs/WHAT_Z_CANNOT_DO.md)** — the limits,
+  stated as plainly as the promises. Read it before deciding Z is right for a
+  particular risk.
 - **[`docs/WHITEPAPER.md`](docs/WHITEPAPER.md)** — the design and security
   argument: each claim Z makes, the mechanism behind it, why that mechanism and
   not the obvious alternative, how to check it, and what it does not cover.

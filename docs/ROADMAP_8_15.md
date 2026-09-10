@@ -451,10 +451,25 @@ Everything currently externally gated, plus the work to call it 1.0.
   extra-device fan-out is `unawaited` and not in these timings), cold start,
   relay latency under sustained load, and the receive side — which is where
   the skipped-key cache is actually used.
-- **15.4 docs & support & access** *(accessibility done; docs and
-  localization outstanding)* — user documentation, recovery guidance, an
-  honest "what a compromised endpoint defeats" page, and **localization**
-  (strings are hardcoded English today) all remain.
+- **15.4 docs & support & access** *(accessibility and the user docs done;
+  **localization** is what remains — strings are hardcoded English today)*.
+
+  `USING_Z.md` is the first document in this repository written for someone
+  who is not reading the code: adding people, what a safety number is and what
+  each of its three states actually says on screen, linked devices, why groups
+  have no shared key, and an "if something goes wrong" section covering the
+  five ways people lose access — forgotten passphrase, lost device with a
+  backup, lost device without one, lost recovery code, stolen device. It is
+  meant to be read before it is needed, and it says plainly that a lost
+  identity with no backup is gone, because a support page that implies
+  otherwise is worse than none.
+
+  `WHAT_Z_CANNOT_DO.md` is the "what a compromised endpoint defeats" page the
+  entry asked for, widened to every limit worth stating: the device in your
+  hand, the person you are talking to, a global observer, no account recovery,
+  an unaudited design, and the fact that nobody outside the project has yet
+  rebuilt a release. It ends with what *is* left, precisely, because a claim
+  too broad gets someone hurt and a claim too narrow gets ignored.
 
   **Accessibility is done and enforced.** The starting position was worse than
   the entry implies: *zero* `Semantics` widgets and eleven tooltips across

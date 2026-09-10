@@ -133,10 +133,28 @@ A fifty-member group whose conversations are all at the cap would cost roughly
 1. ~~**Do not block the composer on fan-out.**~~ **Done.** See below.
    Measured: a twenty-member send went from ~406 ms to under 250 ms of
    recorded-and-returned, and the bound is now a test.
-2. **Stop serialising the conversation twice per send.** The rollback snapshot
-   is a full `jsonEncode` of state that is about to be re-encoded anyway.
-3. **Separate the skipped-key cache from the hot ratchet state**, so a cold
-   cache is not re-sealed on every send.
+2. **Separate the skipped-key cache from the persisted conversation blob**,
+   so a cold cache is not encoded and sealed on every send. This is the +20.7
+   ms above and the largest measured win left.
+
+   Checked, since it is the obvious objection: the frozen vectors *do* contain
+   `skipped`, and `vectors_test.dart` asserts it — but it asserts the live
+   `RatchetState.skipped` keys against the recorded ones, which is a statement
+   about **which keys the ratchet caches**, not about where they are stored.
+   Moving them to their own table is a storage change, not a protocol one, and
+   the freeze should survive it. It is still a change to the hottest and most
+   security-sensitive path in the app, so it wants its own increment and its
+   own out-of-order-delivery tests rather than being tacked onto a
+   performance pass.
+
+3. **Make the rollback snapshot cheaper.** An earlier version of this document
+   called the two serialisations per send "the same state encoded twice". That
+   was wrong: `_sendInner` snapshots the conversation *before* `encrypt`, and
+   `_saveConv` persists it *after*, so they are different values and neither is
+   redundant. What is true is that rollback costs a full `jsonEncode` of the
+   ratchet on every send, and it only needs to restore what `encrypt` mutates.
+   Smaller than (2), and fixed for free by it in the common case.
+
 4. **Batch the outbox writes** — but only with a per-recipient rollback story
    that survives one recipient failing.
 
