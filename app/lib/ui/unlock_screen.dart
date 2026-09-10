@@ -70,6 +70,11 @@ class _UnlockScreenState extends State<UnlockScreen> {
                   decoration: InputDecoration(
                     labelText: 'Passphrase',
                     suffixIcon: IconButton(
+                      // The label states what the control DOES, and changes
+                      // with the state, because a screen reader announces it
+                      // in place of an icon nobody can see. "Visibility" would
+                      // describe the glyph rather than the action.
+                      tooltip: _obscure ? 'Show passphrase' : 'Hide passphrase',
                       icon: Icon(
                           _obscure ? Icons.visibility : Icons.visibility_off,
                           color: context.z.textSecondary),

@@ -81,6 +81,11 @@ jobs:
       # catches it on every push instead.
       - name: Every CI job that uses repo files checks one out
         run: python3 tool/check_workflow.py
+      # 15.4: Play assesses accessibility separately from the 3.5 items. The
+      # widget test covers the screens that stand up without a ChatService;
+      # this covers every screen's source for controls that announce nothing.
+      - name: Every icon button and image announces something
+        run: python3 tool/check_a11y.py
       - name: App tests (incl. concurrency regression through the real relay)
         working-directory: app
         run: |

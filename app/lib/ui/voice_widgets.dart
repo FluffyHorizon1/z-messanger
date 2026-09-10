@@ -122,6 +122,7 @@ class _VoiceNoteBodyState extends State<VoiceNoteBody> {
                           strokeWidth: 2, color: context.z.accent),
                     )
                   : IconButton(
+                      tooltip: playing ? 'Pause voice note' : 'Play voice note',
                       padding: EdgeInsets.zero,
                       color: context.z.accent,
                       icon: Icon(playing

@@ -40,6 +40,10 @@ UNCITED_OK = {
         "renders theme screenshots for the README; asserts no security property",
     "app/test/widget_test.dart":
         "Flutter's generated smoke test",
+    "app/test/a11y_test.dart":
+        "accessibility — Flutter's own tap-target, label and contrast "
+        "guidelines on the pre-account screens. A usability property, and "
+        "one Play assesses separately; not a claim about secrecy",
     "app/test/edge_to_edge_test.dart":
         "system-bar insets on Android 15+; a layout property, not a secret-carrying path",
     "app/test/paging_test.dart":

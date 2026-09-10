@@ -649,6 +649,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         IconButton(
+                          tooltip: 'Attach a file',
                           icon: Icon(Icons.attach_file,
                               color: context.z.textSecondary),
                           onPressed: _attach,
@@ -902,6 +903,12 @@ class _MessageRow extends StatelessWidget {
                   children: [
                     for (final emoji in ChatService.quickReactions)
                       IconButton(
+                        // Announced as "React with X", and as selected when it
+                        // is the one already on this message — an emoji glyph
+                        // alone tells a screen-reader user neither.
+                        tooltip: mine.contains(emoji)
+                            ? 'Remove $emoji reaction'
+                            : 'React with $emoji',
                         // The one already on this message reads as selected.
                         style: mine.contains(emoji)
                             ? IconButton.styleFrom(
@@ -1235,7 +1242,10 @@ class _FileBodyState extends State<_FileBody> {
             borderRadius: BorderRadius.circular(8),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 260, maxHeight: 260),
-              child: Image.memory(_imageBytes!, fit: BoxFit.cover),
+              // The file name is the only description we have of an
+              // image we cannot see into; it beats "image".
+              child: Image.memory(_imageBytes!,
+                  fit: BoxFit.cover, semanticLabel: widget.msg.file?.name ?? 'Image'),
             ),
           )
         else

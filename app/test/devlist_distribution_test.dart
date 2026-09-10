@@ -281,6 +281,29 @@ void main() {
 }
 
 /// The laptop needs Carol as a contact to decrypt what she fans to it.
+/// The laptop ends up holding Carol — by scanning her, or because 13.7's
+/// contact propagation got there first.
+///
+/// Since 13.7 a contact added on one of an account's devices is synced to the
+/// others, so this races: if the sync from the phone lands before this call,
+/// `addContactFromCode` throws "already in your contacts". Both outcomes are
+/// correct, and the test does not care which happened — it cares that the
+/// laptop holds Carol afterwards. Masking it with `retry:` made a real
+/// behaviour look like flakiness.
 Future<void> laptopAddsCarol(ChatService laptop, ChatService carol) async {
-  await laptop.addContactFromCode(await carol.myContactCode());
+  final rid = carol.myRid;
+  if (laptop.contacts.containsKey(rid)) return;
+  try {
+    await laptop.addContactFromCode(await carol.myContactCode());
+  } on FormatException catch (e) {
+    // Only the one race is tolerated; anything else is a real failure.
+    if (!e.message.contains('already in your contacts')) rethrow;
+  }
+  final deadline = DateTime.now().add(const Duration(seconds: 20));
+  while (!laptop.contacts.containsKey(rid)) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw StateError('the laptop never came to hold Carol');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+  }
 }

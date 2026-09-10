@@ -451,12 +451,35 @@ Everything currently externally gated, plus the work to call it 1.0.
   extra-device fan-out is `unawaited` and not in these timings), cold start,
   relay latency under sustained load, and the receive side — which is where
   the skipped-key cache is actually used.
-- **15.4 docs & support & access** — user documentation, recovery guidance, an
-  honest "what a compromised endpoint defeats" page. Also the two things
-  missing from this roadmap entirely: **accessibility** (semantics labels and
-  a screen-reader pass on every screen, dynamic type — Play checks this
-  separately from the items cleared in 3.5) and **localization** (strings are
-  hardcoded English today).
+- **15.4 docs & support & access** *(accessibility done; docs and
+  localization outstanding)* — user documentation, recovery guidance, an
+  honest "what a compromised endpoint defeats" page, and **localization**
+  (strings are hardcoded English today) all remain.
+
+  **Accessibility is done and enforced.** The starting position was worse than
+  the entry implies: *zero* `Semantics` widgets and eleven tooltips across
+  sixteen `IconButton`s. A screen-reader user opening the app heard "button"
+  and nothing else in seven places, including the attachment control, the
+  settings control and every quick reaction.
+
+  Two checks, deliberately complementary. `app/test/a11y_test.dart` runs
+  **Flutter's own** guidelines — `androidTapTargetGuideline`,
+  `labeledTapTargetGuideline`, `textContrastGuideline` — plus a 2× dynamic-type
+  pass, across both palettes, on the three screens that stand up without a
+  `ChatService`. Those are not an arbitrary subset: they are the screens a user
+  meets before they have an account. `tool/check_a11y.py` covers the other ten
+  breadth-first by reading source: every `IconButton` has a `tooltip:`, and
+  every `Image` has a `semanticLabel:` or is *explicitly* marked decorative,
+  because "this is decorative" is a decision and saying nothing is an
+  oversight — they should not look alike in the source.
+
+  One finding was mine, not the app's, and is recorded because it nearly cost
+  a brand change: the first draft pumped screens in a bare `MaterialApp`, and
+  `context.z` falls back to the **dark** palette when the theme extension is
+  absent — so the tests painted dark-palette amber on Material's white and
+  reported a 1.71:1 contrast failure. `app/tool/contrast.py` says every real
+  pair clears AA in both palettes, and with the real theme installed they all
+  pass. Both checks now run in CI and in `audit_verify.sh`.
 - **15.5 GA criteria checklist** — audit ✓, reproducible builds ✓, KT live ✓,
   backup ✓, multi-device ✓, published threat model ✓.
 
