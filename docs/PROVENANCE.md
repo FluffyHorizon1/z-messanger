@@ -158,10 +158,12 @@ corrected, and `REPRODUCIBLE_BUILDS.md` carries both the failure and the answer.
 Why that matters here and not only there: provenance and reproducibility answer
 different halves of one question. Provenance says *these bytes came from that
 commit, on that workflow*. Reproducibility says *and you can rebuild them
-yourself*. The second half now holds, on the stated condition that you check
-out into a directory named `z` — so an attestation from this repository is
-something an outsider can independently check, which is what it was always
-supposed to mean.
+yourself*. The second half holds, on the stated condition that you build at
+the same absolute path as the release (each release's `SHA256SUMS.txt` says
+which; this sentence used to say "a directory named `z`", which was an
+unmeasured guess and a wrong one — see `REPRODUCIBLE_BUILDS.md`) — so an
+attestation from this repository is something an outsider can independently
+check, which is what it was always supposed to mean.
 
 The half still missing is that **nobody outside the project has done it**. That
 is the phase-14 exit criterion and it cannot be self-certified.

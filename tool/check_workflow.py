@@ -18,8 +18,14 @@ Two rules, both mechanical:
      cleans the workspace before writing and would delete what was downloaded.
      This one is not hypothetical either: it is the order the fix had to use.
 
-Neither rule is clever. Both are the kind of thing a person is certain they
-will remember and then does not.
+  3. A job that PUBLISHES — creates a release, or attests provenance — must
+     download artifacts by name. An unnamed `download-artifact` takes every
+     artifact of the run, so anything any job uploads becomes a release asset
+     unless somebody remembers to add it to a deny-list. Nobody did for the
+     README screenshots, and twelve releases shipped them.
+
+None of these rules is clever. All are the kind of thing a person is certain
+they will remember and then does not.
 """
 
 import re
@@ -37,6 +43,10 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 
 # Top-level directories that only exist if the repository is checked out.
 TRACKED = ("tool/", "docs/", "protocol/", "app/", "server/", "scripts/")
+
+# Actions whose presence makes a job a publishing job: what it downloads,
+# other people receive.
+PUBLISHERS = ("softprops/action-gh-release", "actions/attest-build-provenance")
 
 
 def uses_repo_files(step) -> str | None:
@@ -108,13 +118,33 @@ def main() -> int:
                     f"first, so it deletes what was just downloaded."
                 )
 
+            publishes = any(
+                isinstance(s.get("uses"), str) and s["uses"].startswith(PUBLISHERS)
+                for s in steps)
+            if publishes:
+                for i, s in enumerate(steps):
+                    uses = s.get("uses")
+                    if not (isinstance(uses, str)
+                            and uses.startswith("actions/download-artifact")):
+                        continue
+                    w = s.get("with") or {}
+                    if not (w.get("name") or w.get("pattern")):
+                        problems.append(
+                            f"{wf.name}: job `{job_name}` publishes, but step "
+                            f"{i} downloads artifacts without a `name` or "
+                            f"`pattern`. That takes EVERY artifact of the run, "
+                            f"so whatever any job uploads becomes a release "
+                            f"asset. Name what the release consists of."
+                        )
+
     print(f"jobs checked: {checked}")
     if problems:
         print(f"\n{len(problems)} problem(s):\n")
         for p in problems:
             print(f"  - {p}")
         return 1
-    print("every job that uses repository files checks one out, in the right order.")
+    print("every job that uses repository files checks one out, in the right order; "
+          "publishing jobs name what they download.")
     return 0
 
 

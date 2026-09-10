@@ -314,12 +314,16 @@ auditing a moving spec wastes the money.
   that `libdartjni.so` was a second unexplained phenomenon (it was the same
   one). Both are kept in `REPRODUCIBLE_BUILDS.md` rather than tidied away.
 
-  So the build path is now part of the recipe — clone into a directory named
-  `z` — the way Debian records `Build-Path`. **R16 is accepted, bounded and
-  documented** rather than open: CI asserts machine-independence, and asserts
-  that a path change moves those two libraries and no others, so the leak
-  cannot spread unnoticed. The real fix is a relative URI, which is upstream
-  work in the Flutter tool.
+  So the build path is now part of the recipe — the same absolute path as the
+  release, which each release states — the way Debian records `Build-Path`.
+  (First written as "clone into a directory named `z`": a third inference
+  recorded as a finding, falsified by measurement on 2026-09-10 — the
+  snapshot embeds the whole absolute path, and every recipe published from
+  v2.3.8 to v2.4.7 was unfollowable. `REPRODUCIBLE_BUILDS.md` has the
+  measurement.) **R16 is accepted, bounded and documented** rather than open:
+  CI asserts machine-independence, and asserts that a path change moves those
+  two libraries and no others, so the leak cannot spread unnoticed. The real
+  fix is a relative URI, which is upstream work in the Flutter tool.
 
   Still outstanding, and not self-certifiable: **a rebuild by someone outside
   the project**, which is phase 14's exit criterion.

@@ -94,20 +94,25 @@ Second build after `flutter clean`, minutes later. Identical.
 ## How to verify a build
 
 ```
-git clone https://github.com/FluffyHorizon1/z-messanger z    # the name matters
-cd z/app
+# <path> is the ABSOLUTE directory the release was built in. Each release's
+# SHA256SUMS.txt states it, read out of the APK itself; on GitHub's runners it
+# is /home/runner/work/z-messanger/z-messanger. Use a container or VM where
+# that path is free.
+git clone https://github.com/FluffyHorizon1/z-messanger <path>
+cd <path>/app
 flutter build apk --release
 python3 ../tool/verify_reproducible.py \
     <ours>.apk build/app/outputs/flutter-apk/app-release.apk
 ```
 
-**Clone into a directory named `z`.** That is not decoration: `libapp.so` and
-`libdartjni.so` embed the absolute build directory, so a checkout named
-anything else reproduces every entry in the APK except those two. The parent
-directory is irrelevant — `~/src/z` and `/tmp/z` agree — it is only the final
-component that reaches the snapshot. Debian pins build paths in `.buildinfo`
-for the same reason; the full account is under
-[The answer: the path, and only the path](#the-answer-the-path-and-only-the-path-2026-09-09).
+**Build at the same absolute path.** That is not decoration: `libapp.so` and
+`libdartjni.so` embed the absolute build directory, so a build anywhere else
+reproduces every entry in the APK except those two. This document used to say
+the *name* of the directory was all that mattered and the parent was
+irrelevant; that was an inference, it was wrong, and the measurement that
+showed it is under
+[The parent directory matters after all](#the-parent-directory-matters-after-all-2026-09-10).
+Debian pins build paths in `.buildinfo` for the same reason.
 
 ### The one-line check
 
@@ -315,13 +320,20 @@ phase was after, and it is now measured rather than hoped for.
 `Build-Path` in `.buildinfo` for exactly this reason, and a great many packages
 are reproducible only at a fixed path. Z's recipe is therefore:
 
-> Check out the repository into a directory named **`z`**, and build from
+> ~~Check out the repository into a directory named **`z`**, and build from
 > `z/app`. The parent directory does not matter; the name does, because it is
-> the last component of the path that reaches the Dart AOT snapshot.
+> the last component of the path that reaches the Dart AOT snapshot.~~
+>
+> **Corrected 2026-09-10:** build at the same **absolute** path as the
+> release, which each release's `SHA256SUMS.txt` states. The struck-through
+> version was never measured — every CI slot that agreed shared the same
+> parent — and when it was measured it failed. See
+> [The parent directory matters after all](#the-parent-directory-matters-after-all-2026-09-10).
 
-A verifier who builds in `~/src/z` and one who builds in `/tmp/z` agree. One
-who builds in `~/src/z-messanger` will differ in six libraries and match in
-everything else, which the comparison tool will tell them precisely.
+~~A verifier who builds in `~/src/z` and one who builds in `/tmp/z` agree.~~
+They do not. One who builds at any path but the release's will differ in
+`libapp.so` and `libdartjni.so` and match in everything else, which the
+comparison tool will tell them precisely.
 
 **The leak is bounded, and the bound is checked.** CI asserts that a path
 change moves `libapp.so` and `libdartjni.so` and *nothing else*; a seventh
@@ -339,11 +351,61 @@ reproducible, at a stated path, verifiably so.
 
 ### What this costs a verifier today
 
-Almost nothing, now that the recipe names the path: check out into a directory
-called `z` and the six libraries match too. A verifier who ignores that and
-builds elsewhere gets everything matching except `libapp.so` and
-`libdartjni.so`, and `tool/verify_reproducible.py` names them, so the outcome
-is a known deviation rather than a mystery.
+A container or VM, because the path is absolute: build at the path the
+release states and the six libraries match too. A verifier who builds anywhere
+else gets everything matching except `libapp.so` and `libdartjni.so`, and
+`tool/verify_reproducible.py` names them, so the outcome is a known deviation
+rather than a mystery. (This paragraph used to say "almost nothing" and
+"a directory called `z`" — the next section is why that was wrong.)
+
+### The parent directory matters after all (2026-09-10)
+
+The section above — "the path, and only the path" — was right that the path
+is the whole story and wrong about which part of the path. It said the parent
+directory was irrelevant and only the final component reached the snapshot.
+Nothing had measured that: slots a, b and d all build at
+`/home/runner/work/z-messanger/z`, so every agreement CI ever saw was between
+builds at the *same absolute path*, and slot c differed in the final
+component and in nothing else. "The parent does not matter" was inferred from
+an experiment that never varied it. That is the third time in this file an
+inference has been written down as a finding, and it is the same mistake each
+time.
+
+The measurement, in the authoring sandbox, same commit, one ABI:
+
+```
+/tmp/p1/zclone/app   flutter build apk --release --target-platform android-arm64
+/tmp/p2/zclone/app   the same
+
+content digest   eedf6481b1147841…   8b9454371f37934d…   DIFFERENT
+differs          lib/arm64-v8a/libapp.so
+                 lib/{arm64-v8a,armeabi-v7a,x86_64}/libdartjni.so
+embedded URI     file:///tmp/p1/zclone/app/.dart_tool/flutter_build/dart_plugin_registrant.dart
+                 file:///tmp/p2/zclone/app/.dart_tool/flutter_build/dart_plugin_registrant.dart
+```
+
+Same leaf name, different parent, different bytes. The snapshot embeds the
+full absolute URI, exactly as the earlier inspection had already shown and the
+prose then reasoned its way past.
+
+Two consequences, both acted on in the same change:
+
+* **The recipe in every release from v2.3.8 to v2.4.7 could not be followed
+  to a match.** It said "a directory named `z`"; the release APK is built at
+  `/home/runner/work/z-messanger/z-messanger` (the `android` job checks out
+  to the default path, not `z`), and even a verifier who used `z` would have
+  needed the runner's parent directories too. The release job now reads the
+  embedded path out of `libapp.so` and prints *that* in `SHA256SUMS.txt`, so
+  the recipe cannot again say one path while the bytes carry another.
+* **The content digest changed form** at the same time: entries are now
+  length-prefixed on their content as well as their name, so the encoding is
+  injective by construction rather than by a CRC argument. Digests published
+  before this are of the earlier form and, for the path reason above, were not
+  matchable anyway. The tool at each tag computes that tag's digest.
+
+What is unchanged: cross-machine reproducibility at one path holds, the leak
+is bounded to two libraries and CI checks the bound, and the proper fix is
+still upstream — a relative URI in the generated registrant.
 
 ## What has NOT been established
 
@@ -387,11 +449,12 @@ than none — it invites people to stop looking.
 ## Exit criterion
 
 Phase 14's exit asks for *"a bit-identical rebuild reproduced by someone
-outside the project"*. The **property** is now established — two machines, one
-path, identical bytes — and the recipe states the one condition that makes it
-hold. What is still missing is the **someone**: nobody outside the project has
-run it. That is not something the project can do for itself, and it should not
-be quietly counted as done.
+outside the project"*. The **property** is established — two machines, one
+absolute path, identical bytes — and the recipe now states that condition
+correctly, which until 2026-09-10 it did not. What is still missing is the
+**someone**: nobody outside the project has run it, and until the correction
+nobody could have succeeded. That is not something the project can do for
+itself, and it should not be quietly counted as done.
 
 Two of the three things that were next are now done: each release publishes a
 **content digest** an outside rebuild can actually match (the signed SHA-256

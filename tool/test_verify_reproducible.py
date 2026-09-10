@@ -21,6 +21,7 @@ import struct
 import sys
 import tempfile
 import zipfile
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from verify_reproducible import content_digest, signing_block  # noqa: E402
@@ -108,6 +109,18 @@ def main():
         # the name is length-prefixed rather than concatenated.
         make_zip(other, [("AndroidManifest.xm", b"l<manifest/>")] + entries[1:])
         check("a shifted name/content boundary does NOT collide",
+              content_digest(plain) != content_digest(other))
+
+        # The mirror image: two entries folded into one whose bytes are the
+        # first entry's content followed by what the second entry contributes
+        # to the stream. Without a content length the stream would read the
+        # same either way and only the CRC would tell them apart.
+        a, b = entries[0], entries[1]
+        folded = (a[1] + struct.pack("<I", len(b[0])) + b[0].encode()
+                  + struct.pack("<IIQ", zipfile.ZIP_DEFLATED,
+                                zlib.crc32(b[1]), len(b[1])) + b[1])
+        make_zip(other, [(a[0], folded)] + entries[2:])
+        check("folding two entries into one does NOT collide",
               content_digest(plain) != content_digest(other))
 
         # Compression method is part of the build's output.

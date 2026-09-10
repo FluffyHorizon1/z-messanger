@@ -512,22 +512,37 @@ jobs:
       - uses: actions/checkout@v4
         with:
           sparse-checkout: tool
+      # Download BY NAME, exactly the four things a release consists of.
+      #
+      # This step used to download every artifact of the run and then delete
+      # the ones it knew it did not want (`rm -rf dist/repro-*`). That is the
+      # wrong shape for a publish step: anything any job uploads becomes a
+      # release asset unless somebody remembers to add it to the deny-list.
+      # Nobody did for `z-screenshots` — the theme screenshots the test job
+      # renders for the README — and every tagged release from v2.3.2 to
+      # v2.4.7 shipped ten PNGs as assets, listed them in SHA256SUMS.txt and
+      # attested them. Harmless, and exactly the kind of accident that is
+      # one artifact rename away from not being harmless.
+      # tool/check_workflow.py now refuses an unnamed download in a job that
+      # publishes.
       - uses: actions/download-artifact@v4
-        with:
-          path: dist
+        with: { name: z-android, path: dist/z-android }
+      - uses: actions/download-artifact@v4
+        with: { name: z-linux-x64, path: dist/z-linux-x64 }
+      - uses: actions/download-artifact@v4
+        with: { name: z-windows-x64, path: dist/z-windows-x64 }
+      - uses: actions/download-artifact@v4
+        with: { name: z-macos, path: dist/z-macos }
       - name: Collect artifacts and compute SHA-256 sums
         run: |
           mkdir -p release
-          # Drop the reproducibility evidence FIRST, before anything is copied.
-          # Those jobs upload an `app-release.apk` of their own, signed with a
-          # throwaway debug key, plus a fingerprint text file. Removing them
-          # after the copy — as this step used to — let a debug-signed APK
-          # land in `release/` under the same name as the real one and clobber
-          # it, and shipped the fingerprints as release assets. It also named
-          # repro-a and repro-b explicitly, so slot c was never removed at all.
+          # Belt and braces: the reproducibility slots are not downloaded any
+          # more, but if one ever is, its debug-signed `app-release.apk` must
+          # not reach `release/` under the real one's name.
           rm -rf dist/repro-*
           find dist -type f -exec cp {} release/ \;
           cd release
+          ls -l
           sha256sum * | tee SHA256SUMS.txt
       # A hash of the signed APK is the one number a verifier CANNOT check:
       # reproducing it needs the release key, which is the whole point of not
@@ -538,24 +553,55 @@ jobs:
       - name: Content digest — the number an outside rebuild can match
         run: |
           cd release
-          if [ -f app-release.apk ]; then
-            d=$(python3 ../tool/verify_reproducible.py --content-digest app-release.apk)
-            {
-              echo "# Content digest of app-release.apk: $d"
-              echo "#"
-              echo "# Unlike the SHA-256 above, this one is reproducible from source."
-              echo "# It covers every zip entry — name, compression, CRC, bytes — and"
-              echo "# not the APK signing block, so a local unsigned rebuild matches it."
-              echo "#"
-              echo "#   git clone https://github.com/FluffyHorizon1/z-messanger z"
-              echo "#   cd z/app && flutter build apk --release"
-              echo "#   python3 ../tool/verify_reproducible.py --content-digest \\"
-              echo "#       build/app/outputs/flutter-apk/app-release.apk"
-              echo "#"
-              echo "# The directory must be named z — see docs/REPRODUCIBLE_BUILDS.md."
-            } >> SHA256SUMS.txt
-            cat SHA256SUMS.txt
+          # Not `if -f ... fi`: the android job is a hard dependency of this
+          # one, so a missing APK is a broken release, not a release without
+          # a digest. A silent skip here would publish without the one number
+          # an outside rebuild can check, and nothing would say so.
+          if [ ! -f app-release.apk ]; then
+            echo "release/app-release.apk is missing; refusing to publish" >&2
+            exit 1
           fi
+          d=$(python3 ../tool/verify_reproducible.py --content-digest app-release.apk)
+          # The build path is part of the recipe, and it is read out of the
+          # artefact rather than written down here, so the recipe cannot say
+          # one path while the bytes carry another. The Dart AOT snapshot in
+          # libapp.so embeds the ABSOLUTE path of one generated file; a
+          # rebuild matches only at that exact path (measured: same source,
+          # same directory name, different parent — different bytes. See
+          # REPRODUCIBLE_BUILDS.md, "The parent directory matters after all").
+          rm -rf /tmp/bp && mkdir /tmp/bp
+          unzip -o -q app-release.apk 'lib/arm64-v8a/libapp.so' -d /tmp/bp
+          uris=$(strings -a /tmp/bp/lib/arm64-v8a/libapp.so \
+                 | grep -oE 'file:///[A-Za-z0-9_./-]+' | sort -u)
+          if [ "$(printf '%s\n' "$uris" | grep -c .)" != "1" ]; then
+            echo "expected exactly one embedded build URI in libapp.so, got:" >&2
+            printf '%s\n' "$uris" >&2
+            exit 1
+          fi
+          # file:///<checkout>/app/.dart_tool/flutter_build/dart_plugin_registrant.dart
+          checkout=${uris#file://}
+          checkout=${checkout%/app/.dart_tool/*}
+          {
+            echo "# Content digest of app-release.apk: $d"
+            echo "#"
+            echo "# Unlike the SHA-256 above, this one is reproducible from source."
+            echo "# It covers every zip entry — name, compression, CRC, size, bytes —"
+            echo "# and not the APK signing block, so an unsigned rebuild matches it,"
+            echo "# PROVIDED it is built at the same absolute path. This one was built at"
+            echo "#"
+            echo "#   $checkout"
+            echo "#"
+            echo "# so, in a container or VM where that path is free:"
+            echo "#"
+            echo "#   git clone https://github.com/FluffyHorizon1/z-messanger $checkout"
+            echo "#   cd $checkout/app && flutter build apk --release"
+            echo "#   python3 ../tool/verify_reproducible.py --content-digest \\"
+            echo "#       build/app/outputs/flutter-apk/app-release.apk"
+            echo "#"
+            echo "# Any other path changes libapp.so and libdartjni.so and nothing else;"
+            echo "# the tool names which. See docs/REPRODUCIBLE_BUILDS.md."
+          } >> SHA256SUMS.txt
+          cat SHA256SUMS.txt
       # 14.2: SLSA build provenance — a signed statement of WHICH commit,
       # WHICH workflow and WHICH runner produced each of these bytes,
       # countersigned into Sigstore's public transparency log. A checksum only

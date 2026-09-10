@@ -45,12 +45,19 @@ this phase is gated at all.
 
 Measured, and the answer is good: two CI runners building the same commit at
 the same checkout path produce byte-identical native libraries, build ids
-included. The build path is part of the recipe — clone into a directory named
-`z` — the way Debian records `Build-Path`, and CI asserts that a path change
-moves exactly two libraries and no others.
+included. The build path is part of the recipe — the same **absolute** path
+as the release, which each release's `SHA256SUMS.txt` states — the way Debian
+records `Build-Path`, and CI asserts that a path change moves exactly two
+libraries and no others.
 
 Each release publishes a **content digest** an outside rebuild can match,
-since the signed SHA-256 never could.
+since the signed SHA-256 never could. **Until 2026-09-10 the recipe beside it
+was wrong** — it said "a directory named `z`", the parent was claimed not to
+matter, and that claim had never been measured. Measured, it fails: the
+snapshot embeds the absolute path. No digest published from v2.3.8 to v2.4.7
+could have been matched by following its own instructions. The release job now
+reads the build path out of the APK and prints that. See
+`REPRODUCIBLE_BUILDS.md`, "The parent directory matters after all".
 
 **What is missing is somebody who is not us.** This is the one criterion the
 project structurally cannot self-certify, and marking it ✅ on our own

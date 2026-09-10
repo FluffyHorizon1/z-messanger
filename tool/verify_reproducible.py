@@ -131,12 +131,20 @@ def content_digest(path: str) -> str:
     h = hashlib.sha256()
     with zipfile.ZipFile(path) as z:
         for info in z.infolist():
-            # Names are length-prefixed so that two adjacent fields cannot be
-            # slid into each other to forge a match.
+            # Every variable-length field is length-prefixed, so the stream
+            # parses one way only and two archives cannot be arranged to hash
+            # alike by sliding a boundary. The first version prefixed the name
+            # and not the content, which left the entry boundary implicit —
+            # nothing exploited it, and CRC checking made it a 2^-32 accident
+            # rather than an attack, but an encoding that is injective by
+            # construction needs no such argument. Digests published before
+            # this change (v2.3.8 – v2.4.7) are of the earlier form; the tool
+            # at each tag computes that tag's own.
             name = info.filename.encode()
             h.update(struct.pack("<I", len(name)))
             h.update(name)
-            h.update(struct.pack("<IQ", info.compress_type, info.CRC))
+            h.update(struct.pack("<IIQ", info.compress_type, info.CRC,
+                                 info.file_size))
             with z.open(info, "r") as f:
                 while chunk := f.read(1 << 20):
                     h.update(chunk)
