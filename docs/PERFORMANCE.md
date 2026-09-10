@@ -130,9 +130,9 @@ A fifty-member group whose conversations are all at the cap would cost roughly
 
 ## What to do, in order
 
-1. **Do not block the composer on fan-out.** The message is durable once
-   committed; show it and let the outbox drain. This removes the user-visible
-   stall entirely and is independent of every other item here.
+1. ~~**Do not block the composer on fan-out.**~~ **Done.** See below.
+   Measured: a twenty-member send went from ~406 ms to under 250 ms of
+   recorded-and-returned, and the bound is now a test.
 2. **Stop serialising the conversation twice per send.** The rollback snapshot
    is a full `jsonEncode` of state that is about to be re-encoded anyway.
 3. **Separate the skipped-key cache from the hot ratchet state**, so a cold
@@ -142,6 +142,39 @@ A fifty-member group whose conversations are all at the cap would cost roughly
 
 None of these is a change to the protocol, and none of them is a reason to
 introduce a group key.
+
+## The first fix: the fan-out is written down before it is performed
+
+Not awaiting would have removed the stall and made something else worse.
+Before this, a fan-out interrupted part-way — the app killed, a vault write
+failing — dropped its remaining recipients **silently and permanently**. With
+a spinner on screen the user at least knew something was in flight; without
+one they would have had no idea a message reached eleven of fifty people.
+
+So the work is recorded before it is done, exactly as the outbox already does
+for delivery. `group_fanout` (vault schema 8) holds one row per (message,
+recipient); the sender writes them all in a single transaction — about 18 ms
+for fifty, against 1 200 ms to perform them — returns, and drains the queue in
+the background. Rows are deleted only after the recipient's outbox row is
+committed, so a kill mid-drain resumes on the next start and the members
+already served are not served twice (`UNIQUE (mid, rid)` makes re-queuing
+idempotent).
+
+A row whose send fails is left in place and retried rather than dropped, and
+the message stays `pending`, which is the truth. Reconnecting kicks a retry,
+because a queue with no trigger would sit until the next group send.
+
+Which operations use it: the **content** ones — group text, reactions, edits,
+delete-for-everyone. Membership changes (create, add, remove, leave) stay
+synchronous: they are rare, the user expects them to take a moment, and their
+ordering carries a security property worth keeping obvious. A message queued
+before a removal is still delivered — it was sent before the removal — while
+a message sent after one snapshots the reduced membership at queue time, so
+**"a member removed before a send never receives it" still holds**.
+
+`sendGroupFile` is not queued. Its fan-out carries the encrypted chunk
+payloads per recipient, which for a 24 MB attachment would mean storing them
+again per row. It keeps the synchronous loop and stays on the list above.
 
 ## Not measured
 

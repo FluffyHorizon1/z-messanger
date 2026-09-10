@@ -88,7 +88,7 @@ class Vault {
   /// 3 — 8.1c: `forwarded`, which needs a column of its own — a 1:1 text
   ///     row's sealed body is the bare message, with no envelope to put a
   ///     flag in, and inventing one would misparse ordinary text.
-  static const int schemaVersion = 7;
+  static const int schemaVersion = 8;
 
   // Message ids are already stored in the clear (they are the primary key),
   // so `reply_to` — a mid within the same chat — reveals nothing the row
@@ -174,7 +174,30 @@ class Vault {
       // added it here, which is what was true of all of them.
       await db.execute('ALTER TABLE contacts ADD COLUMN added_by TEXT');
     }
+    if (from < 8) {
+      // 15.3: the group fan-out queue. A group message costs one ratchet
+      // encryption per recipient, and the sender used to perform all of them
+      // before returning — a fifty-member send blocked the composer for over
+      // a second. It is now recorded here first and worked off in the
+      // background, which also means a fan-out that does not finish is
+      // resumed rather than silently abandoned.
+      await db.execute(_createGroupFanout);
+    }
   }
+
+  /// One row per (message, recipient) still to be encrypted and queued.
+  /// `payload` is the sealed inner message — sealed because it is the message
+  /// body, and this table outlives the send.
+  static const String _createGroupFanout = '''
+            CREATE TABLE group_fanout(
+              seq INTEGER PRIMARY KEY AUTOINCREMENT,
+              mid TEXT NOT NULL,
+              gid TEXT NOT NULL,
+              rid TEXT NOT NULL,
+              payload TEXT NOT NULL,
+              created_ms INTEGER NOT NULL,
+              UNIQUE (mid, rid)
+            )''';
 
   static File _configFile(Directory root) =>
       File(p.join(root.path, 'key.json'));
@@ -323,6 +346,7 @@ class Vault {
               payload TEXT NOT NULL,
               created_ms INTEGER NOT NULL
             )''');
+          await db.execute(_createGroupFanout);
           await db.execute('''
             CREATE TABLE inbox_dedupe(
               from_rid TEXT NOT NULL,

@@ -396,8 +396,8 @@ Everything currently externally gated, plus the work to call it 1.0.
   code-signing certificates, iOS build and App Store submission.
 - **15.2 carry-over hardening** — 7.8c Keychain / Windows Hello binding for the
   desktop vault.
-- **15.3 scale & performance** *(measured — `docs/PERFORMANCE.md`; the fixes
-  it names are not yet made)* — large-vault paging already had a test with a
+- **15.3 scale & performance** *(measured, and the first fix made —
+  `docs/PERFORMANCE.md`)* — large-vault paging already had a test with a
   1.5 s budget for the first page of a 50 000-message thread. Fan-out was the
   open question, because it is the cost someone will one day cite as a reason
   to add a shared group key, and it deserved a number.
@@ -424,6 +424,28 @@ Everything currently externally gated, plus the work to call it 1.0.
   Batching the outbox writes is 8.7× cheaper per insert and is *not* the fix:
   it is ~13% of the cost, and one transaction across fifty recipients turns
   one recipient's failure into fifty rolled-back ratchets.
+
+  **The first fix is made: the fan-out is written down before it is
+  performed.** Not awaiting would have removed the stall and made something
+  worse — an interrupted fan-out used to drop its remaining recipients
+  silently and permanently. `group_fanout` (vault **schema 8**) holds one row
+  per (message, recipient), written in one transaction (~18 ms for fifty
+  against 1 200 ms to perform them); the drain runs in the background, deletes
+  each row only after that recipient's outbox row is committed, and resumes on
+  the next start. `UNIQUE (mid, rid)` makes re-queuing idempotent, so a resumed
+  fan-out does not serve anyone twice.
+
+  Content operations use it — text, reactions, edits, delete-for-everyone.
+  Membership changes stay synchronous, because their ordering carries the
+  security property that a member removed before a send never receives it: a
+  send snapshots membership at queue time, so removal-then-send still excludes
+  them. `sendGroupFile` is not queued — its fan-out carries per-recipient chunk
+  payloads that would have to be stored again per row.
+
+  Both exit criteria are tests, and both were verified by removing the guard:
+  putting the synchronous loop back makes a twenty-member send take 406 ms and
+  fail the bound; removing the resume-on-start makes the interrupted fan-out
+  never drain.
 
   Still unmeasured and named as such: real hardware, devices-per-member (the
   extra-device fan-out is `unawaited` and not in these timings), cold start,

@@ -196,6 +196,11 @@ class ChatService extends ChangeNotifier {
     // failure-swallowing on purpose — a backup is never worth delaying or
     // breaking the app's start over.
     unawaited(svc._runScheduledBackup());
+    // 15.3: a group fan-out that did not finish — the app was killed, or a
+    // vault write failed — is resumed here rather than abandoned. Before the
+    // queue existed there was nothing to resume from: the remaining
+    // recipients were simply lost.
+    unawaited(svc._drainGroupFanout());
     return svc;
   }
 
@@ -1331,6 +1336,11 @@ class ChatService extends ChangeNotifier {
 
   Future<void> _onConnected() async {
     await flushOutbox();
+    // 15.3: a fan-out row that failed its vault write is left in place and
+    // retried rather than dropped. Without a trigger it would sit until the
+    // next group send, so a reconnect — the moment most likely to follow
+    // whatever went wrong — kicks it.
+    unawaited(_drainGroupFanout());
     await _sync?.prime(); // open the sync ratchet deterministically once online
     // 7.7a hardening: on every (re)connect a root re-asserts its newest signed
     // list to its own devices. Cheap, idempotent on the receiving side, and it
@@ -2160,7 +2170,7 @@ class ChatService extends ChangeNotifier {
     final inner = InnerMessage.edit(newMessageId(), now,
         target: mid, body: body, gid: isGroup ? rid : null);
     if (isGroup) {
-      await _fanGroupInner(groups[rid]!, inner);
+      await _queueGroupFanout(groups[rid]!, inner);
     } else {
       await _sendInner(contacts[rid]!, inner);
     }
@@ -2247,7 +2257,7 @@ class ChatService extends ChangeNotifier {
     final inner = InnerMessage.deleteForEveryone(newMessageId(), _now(),
         targets: mine, gid: isGroup ? rid : null);
     if (isGroup) {
-      await _fanGroupInner(groups[rid]!, inner);
+      await _queueGroupFanout(groups[rid]!, inner);
     } else {
       await _sendInner(contacts[rid]!, inner);
     }
@@ -2455,7 +2465,7 @@ class ChatService extends ChangeNotifier {
     final inner = InnerMessage.reaction(newMessageId(), _now(),
         target: mid, emoji: next, gid: isGroup ? rid : null);
     if (isGroup) {
-      await _fanGroupInner(groups[rid]!, inner);
+      await _queueGroupFanout(groups[rid]!, inner);
     } else {
       // _sendInner already fans out to the contact's other devices.
       await _sendInner(contacts[rid]!, inner);
@@ -3432,6 +3442,127 @@ class ChatService extends ChangeNotifier {
         ],
       };
 
+  // ---------------------------------------------------------------- 15.3
+  // Group fan-out: recorded first, performed after.
+  //
+  // A group message costs one ratchet encryption, one seal and one vault
+  // transaction per recipient — about 24 ms each, measured (see
+  // docs/PERFORMANCE.md). Performing all of them before returning made a
+  // fifty-member send block the composer for over a second.
+  //
+  // Merely not awaiting would have traded a visible stall for an invisible
+  // loss: a fan-out interrupted part-way used to drop its remaining
+  // recipients silently and permanently. So the work is written down before
+  // it is done, in one transaction, exactly as the outbox already does for
+  // delivery. Recording fifty rows costs about 18 ms; performing them costs
+  // 1 200 ms; and a queue that survives a kill is worth more than either.
+
+  bool _fanoutDraining = false;
+
+  /// Set when rows are queued while a drain is already running. Without it
+  /// there is a window between the drain's last empty query and its return in
+  /// which new rows land and nothing picks them up until the next send.
+  bool _fanoutWanted = false;
+
+  /// Test hook: hold the queue so an interrupted fan-out can be observed.
+  bool debugPauseGroupFanout = false;
+
+  /// Record one row per recipient, then drain in the background.
+  Future<void> _queueGroupFanout(Group g, InnerMessage inner) async {
+    final rids = [
+      for (final rid in g.memberRids)
+        if (contacts[rid] != null) rid
+    ];
+    if (rids.isEmpty) return;
+    final payload = await vault.seal(utf8.decode(inner.toBytes()));
+    final now = _now();
+    await vault.db.transaction((txn) async {
+      for (final rid in rids) {
+        await txn.insert(
+          'group_fanout',
+          {
+            'mid': inner.mid,
+            'gid': g.gid,
+            'rid': rid,
+            'payload': payload,
+            'created_ms': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+    });
+    _fanoutWanted = true;
+    unawaited(_drainGroupFanout());
+  }
+
+  /// Work the queue off oldest-first, deleting each row only after the
+  /// recipient's outbox row is committed. A row that fails is left in place
+  /// and retried on the next drain rather than dropped — the failures worth
+  /// worrying about here are vault write failures, which are systemic and
+  /// transient, not per-recipient.
+  Future<void> _drainGroupFanout() async {
+    if (_fanoutDraining || debugPauseGroupFanout) return;
+    _fanoutDraining = true;
+    try {
+      while (!debugPauseGroupFanout) {
+        _fanoutWanted = false;
+        final rows = await vault.db.query('group_fanout',
+            orderBy: 'seq ASC', limit: 32);
+        // Empty, but something may have been queued during the query. Only
+        // stop once a pass finds nothing AND nothing arrived while looking.
+        if (rows.isEmpty) {
+          if (_fanoutWanted) continue;
+          return;
+        }
+        var progressed = false;
+        for (final r in rows) {
+          if (debugPauseGroupFanout) return;
+          final rid = r['rid'] as String;
+          final contact = contacts[rid];
+          if (contact == null) {
+            // Left the group, or was deleted while queued. Nothing to send,
+            // and leaving the row would spin forever.
+            await vault.db.delete('group_fanout',
+                where: 'seq = ?', whereArgs: [r['seq']]);
+            progressed = true;
+            continue;
+          }
+          try {
+            final inner = InnerMessage.fromBytes(Uint8List.fromList(
+                utf8.encode(await vault.unseal(r['payload'] as String))));
+            await _sendInner(contact, inner);
+            await vault.db.delete('group_fanout',
+                where: 'seq = ?', whereArgs: [r['seq']]);
+            progressed = true;
+          } catch (e) {
+            // Leave the row. The next drain retries it; the message stays
+            // `pending`, which is the truth.
+            debugPrint('group fan-out to $rid failed, will retry: $e');
+          }
+        }
+        if (!progressed) return; // every row in this page failed; back off
+      }
+    } finally {
+      _fanoutDraining = false;
+    }
+  }
+
+  /// Test helper: settle once the queue for [gid] is empty.
+  @visibleForTesting
+  Future<void> waitForGroupFanout(String gid,
+      {Duration timeout = const Duration(seconds: 60)}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (true) {
+      final rows = await vault.db.query('group_fanout',
+          columns: ['seq'], where: 'gid = ?', whereArgs: [gid], limit: 1);
+      if (rows.isEmpty) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('group fan-out for $gid did not drain');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+  }
+
   Future<void> _fanGroupInner(Group g, InnerMessage inner) async {
     for (final rid in g.memberRids.toList()) {
       final c = contacts[rid];
@@ -3568,7 +3699,7 @@ class ChatService extends ChangeNotifier {
           forwarded: forwarded,
         ));
     notifyListeners();
-    await _fanGroupInner(g, inner);
+    await _queueGroupFanout(g, inner);
     unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
         Future<void>.value());
   }
