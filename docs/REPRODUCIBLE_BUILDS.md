@@ -96,8 +96,8 @@ Second build after `flutter clean`, minutes later. Identical.
 ```
 # <path> is the ABSOLUTE directory the release was built in. Each release's
 # SHA256SUMS.txt states it, read out of the APK itself; on GitHub's runners it
-# is /home/runner/work/z-messanger/z-messanger. Use a container or VM where
-# that path is free.
+# is /home/runner/work/z-messanger/z. Use a container or VM where that path
+# is free.
 git clone https://github.com/FluffyHorizon1/z-messanger <path>
 cd <path>/app
 flutter build apk --release
@@ -401,10 +401,11 @@ Two consequences, both acted on in the same change:
 * **The recipe in every release from v2.3.8 to v2.4.7 could not be followed
   to a match.** It said "a directory named `z`"; the release APK is built at
   `/home/runner/work/z-messanger/z-messanger` (the `android` job checks out
-  to the default path, not `z`), and even a verifier who used `z` would have
-  needed the runner's parent directories too. The release job now reads the
-  embedded path out of `libapp.so` and prints *that* in `SHA256SUMS.txt`, so
-  the recipe cannot again say one path while the bytes carry another.
+  to the default path, not `z` — since corrected: it builds at `…/z`, the
+  slots' path), and even a verifier who used `z` would have needed the
+  runner's parent directories too. The release job now reads the embedded
+  path out of `libapp.so` and prints *that* in `SHA256SUMS.txt`, so the
+  recipe cannot again say one path while the bytes carry another.
 * **The content digest changed form** at the same time: entries are now
   length-prefixed on their content as well as their name, so the encoding is
   injective by construction rather than by a CRC argument. Digests published
@@ -414,6 +415,19 @@ Two consequences, both acted on in the same change:
 What is unchanged: cross-machine reproducibility at one path holds, the leak
 is bounded to two libraries and CI checks the bound, and the proper fix is
 still upstream — a relative URI in the generated registrant.
+
+### The last argued claim, now measured on every tag
+
+"Signing does not disturb the content digest, so an unsigned rebuild matches
+it" was tested against a synthetic signing block and never against the
+release key. With the `android` job building at the slots' path, the release
+job now computes the content digest of the release-signed APK and of slot
+a's debug-signed APK — same commit, same absolute path, different key — and
+writes the answer into `SHA256SUMS.txt`: *"Reproduced independently before
+publishing: yes"* or *"NO — … see the run log"*, with the per-entry
+difference in the log. Reported rather than enforced until it has been seen
+to agree on a real tag; a release note that says "reproducible" and was never
+checked is the overclaim this document exists to prevent.
 
 ## What has NOT been established
 

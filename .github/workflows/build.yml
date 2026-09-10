@@ -125,7 +125,14 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
+      # Checked out to `z` — the same absolute path the reproducibility slots
+      # build at (/home/runner/work/z-messanger/z). libapp.so embeds its
+      # build directory, so a release built anywhere else can never match a
+      # slot's content digest, and the release job below could only argue
+      # that the two agree rather than measure it. Now it measures it.
       - uses: actions/checkout@v4
+        with:
+          path: z
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -135,7 +142,7 @@ jobs:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
       - name: Configure release signing (skipped if secrets absent)
-        working-directory: app/android
+        working-directory: z/app/android
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -154,27 +161,27 @@ jobs:
           else
             echo "No ANDROID_KEYSTORE_BASE64 secret — building debug-signed."
           fi
-      - working-directory: app
+      - working-directory: z/app
         run: |
           flutter pub get
           flutter build apk --release --split-per-abi
           flutter build apk --release
           flutter build appbundle --release
       - name: 16 KB page-size alignment (Play requirement for Android 15+ targets)
-        working-directory: app
+        working-directory: z/app
         run: |
           tool/check_16k.sh build/app/outputs/flutter-apk/app-release.apk
           tool/check_16k.sh build/app/outputs/bundle/release/app-release.aab
       - name: Remove signing material
         if: always()
-        working-directory: app/android
+        working-directory: z/app/android
         run: rm -f app/upload-keystore.jks key.properties
       - uses: actions/upload-artifact@v4
         with:
           name: z-android
           path: |
-            app/build/app/outputs/flutter-apk/*.apk
-            app/build/app/outputs/bundle/release/*.aab
+            z/app/build/app/outputs/flutter-apk/*.apk
+            z/app/build/app/outputs/bundle/release/*.aab
 
   linux:
     name: Linux bundle
@@ -545,6 +552,11 @@ jobs:
         with: { name: z-windows-x64, path: dist/z-windows-x64 }
       - uses: actions/download-artifact@v4
         with: { name: z-macos, path: dist/z-macos }
+      # The reproducibility slot built at the same path, debug-signed. Kept
+      # OUTSIDE dist/ so it can never become a release asset; it is here to
+      # be compared against, nothing else.
+      - uses: actions/download-artifact@v4
+        with: { name: repro-a, path: repro-a }
       - name: Collect artifacts and compute SHA-256 sums
         run: |
           mkdir -p release
@@ -612,6 +624,38 @@ jobs:
             echo "#"
             echo "# Any other path changes libapp.so and libdartjni.so and nothing else;"
             echo "# the tool names which. See docs/REPRODUCIBLE_BUILDS.md."
+          } >> SHA256SUMS.txt
+      # Is the digest above actually reproducible by a build that does not
+      # hold the release key? Until now that was argued: signing does not
+      # touch zip entries, therefore yes. This measures it. Slot a is the
+      # same commit, built at the same absolute path, signed with a throwaway
+      # debug key — if its content digest equals the release APK's, an
+      # outsider following the recipe gets the published number. The answer
+      # is written into SHA256SUMS.txt either way, because a release that
+      # says "reproducible" and was never checked is the overclaim this
+      # project exists to avoid. Reported, not enforced, until it has been
+      # seen to agree on a real tag; the step after this gates on it.
+      - name: Was the digest reproduced by an independently signed build?
+        id: repro
+        run: |
+          cd release
+          ours=$(python3 ../tool/verify_reproducible.py --content-digest app-release.apk)
+          theirs=$(python3 ../tool/verify_reproducible.py --content-digest ../repro-a/app-release.apk)
+          echo "release  $ours"
+          echo "slot a   $theirs"
+          if [ "$ours" = "$theirs" ]; then
+            echo "reproduced=yes" >> "$GITHUB_OUTPUT"
+            note="yes — a debug-signed build of the same commit at the same path produced this digest in CI"
+          else
+            echo "reproduced=no" >> "$GITHUB_OUTPUT"
+            note="NO — a debug-signed build of the same commit at the same path produced $theirs; see the run log"
+            echo "::warning::content digest not reproduced by slot a; per-entry difference follows"
+            python3 ../tool/verify_reproducible.py --ignore-signing-block \
+              app-release.apk ../repro-a/app-release.apk || true
+          fi
+          {
+            echo "#"
+            echo "# Reproduced independently before publishing: $note"
           } >> SHA256SUMS.txt
           cat SHA256SUMS.txt
       # 14.2: SLSA build provenance — a signed statement of WHICH commit,
