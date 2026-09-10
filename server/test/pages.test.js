@@ -229,6 +229,24 @@ test('every repository document the site links to actually exists', () => {
   }
 });
 
+test('nothing the site serves carries a personal address', async () => {
+  // The public contact is the company support address on the Play listing,
+  // not anyone's personal mailbox. This covers the pages and security.txt.
+  for (const [path] of [['/'], ...PAGES]) {
+    const r = await get(path);
+    assert.ok(
+      !/finnianbond|@gmail\.com/i.test(r.body),
+      `${path} carries a personal address`
+    );
+  }
+  const sec = await get('/.well-known/security.txt');
+  assert.ok(!/finnianbond|@gmail\.com/i.test(sec.body), 'security.txt carries a personal address');
+  assert.ok(
+    sec.body.includes('mailto:support@securedcybersolutions.co.uk'),
+    'security.txt lost its support contact'
+  );
+});
+
 test('pages are embedded strings — no fs reads in pages.js', async () => {
   const fs = require('fs');
   const src = fs.readFileSync(require.resolve('../pages.js'), 'utf8');

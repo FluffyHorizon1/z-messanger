@@ -686,7 +686,7 @@ const ABOUT_HTML = page(
 
   <h2>Contact</h2>
   <p>Security reports and everything else:
-  <a href="mailto:finnianbond@gmail.com">finnianbond@gmail.com</a>. If you are
+  <a href="mailto:support@securedcybersolutions.co.uk">support@securedcybersolutions.co.uk</a>. If you are
   reporting a vulnerability, say so in the subject line and we will reply
   before doing anything else.</p>
 `
@@ -774,7 +774,7 @@ const PRIVACY_HTML = page(
   <h2>Changes &amp; contact</h2>
   <p>Material changes to this policy will be published at this address with an
   updated effective date. Questions:
-  <a href="mailto:finnianbond@gmail.com">finnianbond@gmail.com</a>.</p>
+  <a href="mailto:support@securedcybersolutions.co.uk">support@securedcybersolutions.co.uk</a>.</p>
 `
 );
 
@@ -811,7 +811,7 @@ const SECURITY_TXT = `# Z (z-messanger) — security contact
 # Policy, scope and safe harbour: https://github.com/FluffyHorizon1/z-messanger/blob/main/docs/VDP.md
 
 Contact: https://github.com/FluffyHorizon1/z-messanger/security/advisories/new
-Contact: mailto:finnianbond@gmail.com
+Contact: mailto:support@securedcybersolutions.co.uk
 Expires: 2027-09-09T00:00:00.000Z
 Preferred-Languages: en
 Canonical: https://zmessengers.com/.well-known/security.txt
