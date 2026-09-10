@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/system_text.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
@@ -162,7 +163,7 @@ class _ChatTile extends StatelessWidget {
     if (m == null) return l.chatPreviewEmpty;
     return switch (m.kind) {
       'file' => l.chatPreviewFile(m.body),
-      'system' => m.body,
+      'system' => systemText(l, m.body),
       'gtext' when !m.outgoing && m.senderName != null =>
         l.chatPreviewSender(m.senderName!, m.body),
       _ => m.body,

@@ -9,9 +9,9 @@ import 'app_localizations.dart';
 /// evenly falls back to the largest unit that does, which the fixed set of
 /// picker values never needs.
 ///
-/// Pure. The core's `describeTtl` still exists for the English system
-/// messages the service stores; this is the display-side counterpart and
-/// the one screens should use.
+/// Pure. It is also what renders the duration inside a stored system
+/// message ("You set disappearing messages to 5 minutes."), which the
+/// service stores as a number of seconds for exactly this reason.
 String ttlText(AppLocalizations l, int seconds) {
   if (seconds <= 0) return l.ttlOff;
   if (seconds % 604800 == 0) return l.ttlWeeks(seconds ~/ 604800);

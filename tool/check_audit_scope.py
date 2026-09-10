@@ -54,6 +54,11 @@ UNCITED_OK = {
         "fan-out and reports where the cost goes (docs/PERFORMANCE.md). The "
         "one thing it asserts, that fan-out stays linear, is a design "
         "property rather than a security claim",
+    "app/test/system_text_test.dart":
+        "that a stored system message renders in the user's language and a "
+        "row from before the change still reads as written — a localization "
+        "property. The rows themselves are sealed like every other message, "
+        "which is C11's claim, not this test's",
     "server/test/pages.test.js":
         "the landing and privacy pages the relay also serves; security.txt, the "
         "one page that carries a security promise, is C27",

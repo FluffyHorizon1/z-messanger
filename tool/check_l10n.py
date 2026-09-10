@@ -173,8 +173,35 @@ def arb_problems():
     return out
 
 
+SERVICE = ROOT / "app" / "lib" / "core" / "chat_service.dart"
+
+
+def service_problems():
+    """The service must never store a system message as a sentence.
+
+    Sixteen kinds of English were being written into the vault as prose
+    ("You left the group.") and rendered verbatim in every locale. They are
+    stored as a kind now, so every call must pass systemBody(...) — a string
+    literal here is the old mistake coming back, and no screen count would
+    ever show it.
+    """
+    out = []
+    src = SERVICE.read_text(encoding="utf-8")
+    for m in re.finditer(r"_insertSystemMessage\(\s*(.*?)\)\s*;", src, re.S):
+        call = m.group(1)
+        if "systemBody(" in call:
+            continue
+        if call.startswith("String rid"):  # the definition
+            continue
+        line = src.count("\n", 0, m.start()) + 1
+        out.append(f"app/lib/core/chat_service.dart:{line}: _insertSystemMessage "
+                   f"called without systemBody(...). A sentence stored in the "
+                   f"vault is frozen in one language; store a kind.")
+    return out
+
+
 def main() -> int:
-    problems = arb_problems()
+    problems = arb_problems() + service_problems()
     remaining = {}
 
     for path in sorted(UI.glob("*.dart")):

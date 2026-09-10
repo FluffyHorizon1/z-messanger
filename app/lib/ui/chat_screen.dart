@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import 'package:record/record.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/system_text.dart';
 import '../l10n/ttl_text.dart';
 import '../core/chat_service.dart';
 import '../core/file_export.dart';
@@ -735,7 +736,7 @@ class _MessageRow extends StatelessWidget {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 32),
         child: Text(
-          msg.body,
+          systemText(l, msg.body),
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 12, color: context.z.textSecondary),
         ),

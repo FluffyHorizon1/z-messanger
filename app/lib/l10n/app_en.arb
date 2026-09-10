@@ -1652,5 +1652,137 @@
   "stPassphraseRemoved": "Passphrase removed. The app opens automatically now.",
   "@stPassphraseRemoved": {
     "description": "After removal. The second sentence states the consequence plainly."
+  },
+  "sysPqMismatch": "{name}'s post-quantum key does not match the code you scanned. Their identity has not been upgraded — compare safety numbers before trusting this chat.",
+  "@sysPqMismatch": {
+    "description": "System message in the chat when an offered post-quantum key was refused. The same warning the contact screen carries; 'has not been upgraded' and the instruction to compare must survive. {name} takes an English possessive here.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "sysSessionReset": "Secure session was reset.",
+  "@sysSessionReset": {
+    "description": "System message after the user reset the encryption session."
+  },
+  "sysTtlOffYou": "You turned off disappearing messages.",
+  "@sysTtlOffYou": {
+    "description": "System message: the user disabled the timer."
+  },
+  "sysTtlSetYou": "You set disappearing messages to {duration}.",
+  "@sysTtlSetYou": {
+    "description": "System message: the user set the timer. {duration} is already in words, e.g. '5 minutes'.",
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "sysDecryptFailed": "A message could not be decrypted (session reset). Ask them to resend.",
+  "@sysDecryptFailed": {
+    "description": "System message when an inbound message failed to decrypt and the session was reset. The second sentence is the instruction; the parenthesis says what the app did."
+  },
+  "sysTtlOffThem": "{name} turned off disappearing messages.",
+  "@sysTtlOffThem": {
+    "description": "System message: the contact disabled the timer.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "sysTtlSetThem": "{name} set disappearing messages to {duration}.",
+  "@sysTtlSetThem": {
+    "description": "System message: the contact set the timer.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "sysAttachmentDiscarded": "An attachment failed integrity checks and was discarded.",
+  "@sysAttachmentDiscarded": {
+    "description": "System message when an inbound attachment's authentication failed. 'discarded' is deliberate — nothing unverified was kept."
+  },
+  "sysLeftYou": "You left the group.",
+  "@sysLeftYou": {
+    "description": "System message in a group the user left."
+  },
+  "sysCreatedYou": "You created \"{name}\".",
+  "@sysCreatedYou": {
+    "description": "System message: the user created the group. {name} is the group's name, in quotes.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "sysAddedYou": "You added {names}.",
+  "@sysAddedYou": {
+    "description": "System message: the user added members. {names} is a list of names joined for display.",
+    "placeholders": {
+      "names": {
+        "type": "String"
+      }
+    }
+  },
+  "sysRemovedYou": "You removed {name}.",
+  "@sysRemovedYou": {
+    "description": "System message: the user removed a member.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "sysRemovedFrom": "You were removed from \"{name}\".",
+  "@sysRemovedFrom": {
+    "description": "System message: an admin removed the user from the group.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "sysAddedToBy": "{by} added you to \"{name}\".",
+  "@sysAddedToBy": {
+    "description": "System message: {by} (a contact) added the user to the group {name}.",
+    "placeholders": {
+      "by": {
+        "type": "String"
+      },
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "sysMembershipUpdated": "Group membership updated.",
+  "@sysMembershipUpdated": {
+    "description": "System message when the member list changed in a way with no single actor to name."
+  },
+  "sysMemberLeft": "{name} left the group.",
+  "@sysMemberLeft": {
+    "description": "System message: a member left.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "sysAMember": "a member",
+  "@sysAMember": {
+    "description": "Stands in for a member whose name is not known, inside another sentence (lower case, mid-sentence)."
+  },
+  "sysSomeone": "Someone",
+  "@sysSomeone": {
+    "description": "Stands in for an actor whose name is not known, at the start of a sentence."
+  },
+  "sysUnknownMemberLeft": "A member left the group.",
+  "@sysUnknownMemberLeft": {
+    "description": "System message: a member whose name is not known left. A whole sentence rather than sysMemberLeft with a stand-in, because the stand-in would begin the sentence."
   }
 }

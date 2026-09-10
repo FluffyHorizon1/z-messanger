@@ -2211,6 +2211,120 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Passphrase removed. The app opens automatically now.'**
   String get stPassphraseRemoved;
+
+  /// System message in the chat when an offered post-quantum key was refused. The same warning the contact screen carries; 'has not been upgraded' and the instruction to compare must survive. {name} takes an English possessive here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s post-quantum key does not match the code you scanned. Their identity has not been upgraded — compare safety numbers before trusting this chat.'**
+  String sysPqMismatch(String name);
+
+  /// System message after the user reset the encryption session.
+  ///
+  /// In en, this message translates to:
+  /// **'Secure session was reset.'**
+  String get sysSessionReset;
+
+  /// System message: the user disabled the timer.
+  ///
+  /// In en, this message translates to:
+  /// **'You turned off disappearing messages.'**
+  String get sysTtlOffYou;
+
+  /// System message: the user set the timer. {duration} is already in words, e.g. '5 minutes'.
+  ///
+  /// In en, this message translates to:
+  /// **'You set disappearing messages to {duration}.'**
+  String sysTtlSetYou(String duration);
+
+  /// System message when an inbound message failed to decrypt and the session was reset. The second sentence is the instruction; the parenthesis says what the app did.
+  ///
+  /// In en, this message translates to:
+  /// **'A message could not be decrypted (session reset). Ask them to resend.'**
+  String get sysDecryptFailed;
+
+  /// System message: the contact disabled the timer.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} turned off disappearing messages.'**
+  String sysTtlOffThem(String name);
+
+  /// System message: the contact set the timer.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} set disappearing messages to {duration}.'**
+  String sysTtlSetThem(String name, String duration);
+
+  /// System message when an inbound attachment's authentication failed. 'discarded' is deliberate — nothing unverified was kept.
+  ///
+  /// In en, this message translates to:
+  /// **'An attachment failed integrity checks and was discarded.'**
+  String get sysAttachmentDiscarded;
+
+  /// System message in a group the user left.
+  ///
+  /// In en, this message translates to:
+  /// **'You left the group.'**
+  String get sysLeftYou;
+
+  /// System message: the user created the group. {name} is the group's name, in quotes.
+  ///
+  /// In en, this message translates to:
+  /// **'You created \"{name}\".'**
+  String sysCreatedYou(String name);
+
+  /// System message: the user added members. {names} is a list of names joined for display.
+  ///
+  /// In en, this message translates to:
+  /// **'You added {names}.'**
+  String sysAddedYou(String names);
+
+  /// System message: the user removed a member.
+  ///
+  /// In en, this message translates to:
+  /// **'You removed {name}.'**
+  String sysRemovedYou(String name);
+
+  /// System message: an admin removed the user from the group.
+  ///
+  /// In en, this message translates to:
+  /// **'You were removed from \"{name}\".'**
+  String sysRemovedFrom(String name);
+
+  /// System message: {by} (a contact) added the user to the group {name}.
+  ///
+  /// In en, this message translates to:
+  /// **'{by} added you to \"{name}\".'**
+  String sysAddedToBy(String by, String name);
+
+  /// System message when the member list changed in a way with no single actor to name.
+  ///
+  /// In en, this message translates to:
+  /// **'Group membership updated.'**
+  String get sysMembershipUpdated;
+
+  /// System message: a member left.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} left the group.'**
+  String sysMemberLeft(String name);
+
+  /// Stands in for a member whose name is not known, inside another sentence (lower case, mid-sentence).
+  ///
+  /// In en, this message translates to:
+  /// **'a member'**
+  String get sysAMember;
+
+  /// Stands in for an actor whose name is not known, at the start of a sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'Someone'**
+  String get sysSomeone;
+
+  /// System message: a member whose name is not known left. A whole sentence rather than sysMemberLeft with a stand-in, because the stand-in would begin the sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'A member left the group.'**
+  String get sysUnknownMemberLeft;
 }
 
 class _AppLocalizationsDelegate

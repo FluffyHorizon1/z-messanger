@@ -19,6 +19,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/system_messages.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -179,6 +180,27 @@ void main() {
             !(carol.groups[gid]!.memberRids.contains(bobRid)),
         what: 'leave propagates');
     expect(bob.groups[gid]!.left, isTrue);
+
+    // 15.4: what each side wrote down about it is a KIND, not a sentence —
+    // a sentence stored in the vault would be frozen in one language. Bob
+    // has "you left"; Alice has "a member left", with Bob's name attached.
+    String? kindOf(ChatService svc) {
+      final rows = (svc.messagesByChat[gid] ?? const [])
+          .where((m) => m.kind == 'system')
+          .toList();
+      if (rows.isEmpty) return null;
+      final body = jsonDecode(rows.last.body);
+      return body is Map ? body['k'] as String? : 'PROSE: ${rows.last.body}';
+    }
+
+    expect(kindOf(bob), SystemKind.leftYou);
+    expect(kindOf(alice), SystemKind.memberLeft);
+    expect(jsonDecode(alice.messagesByChat[gid]!.last.body)['name'], 'bob');
+    for (final m
+        in alice.messagesByChat[gid]!.where((m) => m.kind == 'system')) {
+      expect(m.body, startsWith('{'),
+          reason: 'a system message stored as prose: ${m.body}');
+    }
 
     // Messages sent after the leave do not reach Bob.
     final bobCountBefore = groupTexts(bob, gid).length;

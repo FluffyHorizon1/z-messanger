@@ -9,6 +9,7 @@ import 'package:z_protocol/z_protocol.dart';
 import 'backup_store.dart';
 import 'device_sync.dart';
 import 'models.dart';
+import 'system_messages.dart';
 import 'relay_url.dart';
 import 'transport.dart';
 import 'vault.dart';
@@ -434,7 +435,10 @@ class ChatService extends ChangeNotifier {
     };
     await (txn ?? vault.db).update(
         'conversations',
-        {'enc_skipped': skipped.isEmpty ? null : await vault.seal(jsonEncode(skipped))},
+        {
+          'enc_skipped':
+              skipped.isEmpty ? null : await vault.seal(jsonEncode(skipped))
+        },
         where: 'rid = ?',
         whereArgs: [rid]);
   }
@@ -452,8 +456,7 @@ class ChatService extends ChangeNotifier {
     for (final e in raw.entries) {
       final session = conv.sessions[e.key];
       if (session == null) continue; // a session that has since been replaced
-      session.ratchet.skipped
-          .addAll((e.value as Map).cast<String, String>());
+      session.ratchet.skipped.addAll((e.value as Map).cast<String, String>());
     }
   }
 
@@ -470,7 +473,6 @@ class ChatService extends ChangeNotifier {
     }
     return n;
   }
-
 
   // ------------------------------------------------------------------
   // Contacts
@@ -1046,11 +1048,8 @@ class ChatService extends ChangeNotifier {
         return false; // shutting down; the next arrival records it
       }
       contact.pqMismatch = true;
-      await _insertSystemMessage(
-          contact.rid,
-          "${contact.name}'s post-quantum key does not match the code you "
-          'scanned. Their identity has not been upgraded — compare safety '
-          'numbers before trusting this chat.');
+      await _insertSystemMessage(contact.rid,
+          systemBody(SystemKind.pqMismatch, {'name': contact.name}));
       return true;
     }
     // Persist FIRST, then update memory. If the write fails the contact stays
@@ -1106,7 +1105,7 @@ class ChatService extends ChangeNotifier {
       // The sessions are gone; their cached keys would decrypt nothing.
       await _saveSkipped(rid);
     });
-    await _insertSystemMessage(rid, 'Secure session was reset.');
+    await _insertSystemMessage(rid, systemBody(SystemKind.sessionReset));
     await _sendInner(c, InnerMessage.hello(newMessageId(), _now()));
     notifyListeners();
   }
@@ -1386,8 +1385,8 @@ class ChatService extends ChangeNotifier {
     await _insertSystemMessage(
         rid,
         seconds == 0
-            ? 'You turned off disappearing messages.'
-            : 'You set disappearing messages to ${describeTtl(seconds)}.');
+            ? systemBody(SystemKind.ttlOffYou)
+            : systemBody(SystemKind.ttlSetYou, {'sec': seconds}));
     await _sendInner(
         contact, InnerMessage.timer(newMessageId(), _now(), seconds));
     notifyListeners();
@@ -1597,8 +1596,8 @@ class ChatService extends ChangeNotifier {
 
     if (status == kUnknownSession) {
       transport.ackReceived(id: m.id, from: m.from);
-      await _insertSystemMessage(contact.rid,
-          'A message could not be decrypted (session reset). Ask them to resend.');
+      await _insertSystemMessage(
+          contact.rid, systemBody(SystemKind.decryptFailed));
       await _sendInner(contact, InnerMessage.hello(newMessageId(), _now()));
       notifyListeners();
       return;
@@ -1753,8 +1752,9 @@ class ChatService extends ChangeNotifier {
         await _insertSystemMessage(
             contact.rid,
             sec == 0
-                ? '${contact.name} turned off disappearing messages.'
-                : '${contact.name} set disappearing messages to ${describeTtl(sec)}.',
+                ? systemBody(SystemKind.ttlOffThem, {'name': contact.name})
+                : systemBody(
+                    SystemKind.ttlSetThem, {'name': contact.name, 'sec': sec}),
             txn: txn);
         break;
 
@@ -1995,8 +1995,8 @@ class ChatService extends ChangeNotifier {
       _updateLoadedFileProgress(row['rid'] as String, fid, total, total, true);
     } catch (_) {
       await vault.db.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
-      await _insertSystemMessage(row['rid'] as String,
-          'An attachment failed integrity checks and was discarded.');
+      await _insertSystemMessage(
+          row['rid'] as String, systemBody(SystemKind.attachmentDiscarded));
     }
     notifyListeners();
   }
@@ -3288,7 +3288,7 @@ class ChatService extends ChangeNotifier {
         if (g != null && !g.left) {
           g.left = true;
           await _saveGroups();
-          await _insertSystemMessage(g.gid, 'You left the group.');
+          await _insertSystemMessage(g.gid, systemBody(SystemKind.leftYou));
         }
       } else {
         await _applyGroupLeave(rid, inner.data);
@@ -3630,8 +3630,8 @@ class ChatService extends ChangeNotifier {
     try {
       while (!debugPauseGroupFanout) {
         _fanoutWanted = false;
-        final rows = await vault.db.query('group_fanout',
-            orderBy: 'seq ASC', limit: 32);
+        final rows =
+            await vault.db.query('group_fanout', orderBy: 'seq ASC', limit: 32);
         // Empty, but something may have been queued during the query. Only
         // stop once a pass finds nothing AND nothing arrived while looking.
         if (rows.isEmpty) {
@@ -3710,7 +3710,8 @@ class ChatService extends ChangeNotifier {
     groups[gid] = g;
     await _saveGroups();
     unread[gid] = 0;
-    await _insertSystemMessage(gid, 'You created "$name".');
+    await _insertSystemMessage(
+        gid, systemBody(SystemKind.createdYou, {'name': name}));
     final inner = InnerMessage(
         kind: 'ginvite',
         mid: newMessageId(),
@@ -3732,8 +3733,11 @@ class ChatService extends ChangeNotifier {
     g.memberRids.addAll(added);
     g.ver += 1;
     await _saveGroups();
-    final names = added.map((r) => contacts[r]?.name ?? 'someone').join(', ');
-    await _insertSystemMessage(gid, 'You added $names.');
+    // Names as a list; the screen joins them the way its locale does. A
+    // missing name is a null, not the word for it.
+    final names = [for (final r in added) contacts[r]?.name];
+    await _insertSystemMessage(
+        gid, systemBody(SystemKind.addedYou, {'names': names}));
     final inner = InnerMessage(
         kind: 'ginvite',
         mid: newMessageId(),
@@ -3755,7 +3759,7 @@ class ChatService extends ChangeNotifier {
     g.ver += 1;
     await _saveGroups();
     await _insertSystemMessage(
-        gid, 'You removed ${contacts[rid]?.name ?? 'a member'}.');
+        gid, systemBody(SystemKind.removedYou, {'name': contacts[rid]?.name}));
     final inner = InnerMessage(
         kind: 'ginvite',
         mid: newMessageId(),
@@ -3777,7 +3781,7 @@ class ChatService extends ChangeNotifier {
     if (g == null || g.left) return;
     g.left = true;
     await _saveGroups();
-    await _insertSystemMessage(gid, 'You left the group.');
+    await _insertSystemMessage(gid, systemBody(SystemKind.leftYou));
     final inner = InnerMessage(
         kind: 'gleave', mid: newMessageId(), ts: _now(), data: {'gid': gid});
     await _fanGroupInner(g, inner);
@@ -4041,7 +4045,8 @@ class ChatService extends ChangeNotifier {
         existing.ver = ver;
         existing.left = true;
         await _saveGroups(txn: txn);
-        await _insertSystemMessage(gid, 'You were removed from "$name".',
+        await _insertSystemMessage(
+            gid, systemBody(SystemKind.removedFrom, {'name': name}),
             txn: txn);
         return;
       }
@@ -4059,12 +4064,16 @@ class ChatService extends ChangeNotifier {
     await _saveGroups(txn: txn);
     unread.putIfAbsent(gid, () => 0);
     if (isNew) {
-      final by = mirroredOwn
-          ? 'You created'
-          : '${contacts[fromRid]?.name ?? 'Someone'} added you to';
-      await _insertSystemMessage(gid, '$by "$name".', txn: txn);
+      await _insertSystemMessage(
+          gid,
+          mirroredOwn
+              ? systemBody(SystemKind.createdYou, {'name': name})
+              : systemBody(SystemKind.addedToBy,
+                  {'by': contacts[fromRid]?.name, 'name': name}),
+          txn: txn);
     } else {
-      await _insertSystemMessage(gid, 'Group membership updated.', txn: txn);
+      await _insertSystemMessage(gid, systemBody(SystemKind.membershipUpdated),
+          txn: txn);
     }
   }
 
@@ -4122,8 +4131,8 @@ class ChatService extends ChangeNotifier {
     if (!g.memberRids.remove(fromRid)) return;
     if (g.iAmAdmin) g.ver += 1; // future invites exclude them
     await _saveGroups(txn: txn);
-    await _insertSystemMessage(
-        gid!, '${contacts[fromRid]?.name ?? 'A member'} left the group.',
+    await _insertSystemMessage(gid!,
+        systemBody(SystemKind.memberLeft, {'name': contacts[fromRid]?.name}),
         txn: txn);
   }
 
@@ -4781,7 +4790,8 @@ class ChatService extends ChangeNotifier {
     for (final rid in contacts.keys.toList()) {
       final a = await vault.kvGet('pql_alert_$rid');
       if (a != null) pqListAlerts[rid] = a;
-      final sent = int.tryParse(await vault.kvGet('dlpq_sent_$rid') ?? '0') ?? 0;
+      final sent =
+          int.tryParse(await vault.kvGet('dlpq_sent_$rid') ?? '0') ?? 0;
       if (sent > 0) _dlpqSent[rid] = sent;
     }
     ownAccountAlert = await vault.kvGet('own_alert');
@@ -5221,15 +5231,6 @@ String _voiceNoteName(String mime) {
 String describeDuration(int seconds) {
   final m = seconds ~/ 60, s = seconds % 60;
   return '$m:${s.toString().padLeft(2, '0')}';
-}
-
-String describeTtl(int seconds) {
-  if (seconds == 0) return 'off';
-  if (seconds < 60) return '$seconds seconds';
-  if (seconds < 3600) return '${seconds ~/ 60} minutes';
-  if (seconds < 86400) return '${seconds ~/ 3600} hours';
-  if (seconds < 604800) return '${seconds ~/ 86400} days';
-  return '${seconds ~/ 604800} weeks';
 }
 
 int? firstIntValue(List<Map<String, Object?>> rows) {

@@ -1298,4 +1298,83 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get stPassphraseRemoved =>
       'Passphrase removed. The app opens automatically now.';
+
+  @override
+  String sysPqMismatch(String name) {
+    return '$name\'s post-quantum key does not match the code you scanned. Their identity has not been upgraded — compare safety numbers before trusting this chat.';
+  }
+
+  @override
+  String get sysSessionReset => 'Secure session was reset.';
+
+  @override
+  String get sysTtlOffYou => 'You turned off disappearing messages.';
+
+  @override
+  String sysTtlSetYou(String duration) {
+    return 'You set disappearing messages to $duration.';
+  }
+
+  @override
+  String get sysDecryptFailed =>
+      'A message could not be decrypted (session reset). Ask them to resend.';
+
+  @override
+  String sysTtlOffThem(String name) {
+    return '$name turned off disappearing messages.';
+  }
+
+  @override
+  String sysTtlSetThem(String name, String duration) {
+    return '$name set disappearing messages to $duration.';
+  }
+
+  @override
+  String get sysAttachmentDiscarded =>
+      'An attachment failed integrity checks and was discarded.';
+
+  @override
+  String get sysLeftYou => 'You left the group.';
+
+  @override
+  String sysCreatedYou(String name) {
+    return 'You created \"$name\".';
+  }
+
+  @override
+  String sysAddedYou(String names) {
+    return 'You added $names.';
+  }
+
+  @override
+  String sysRemovedYou(String name) {
+    return 'You removed $name.';
+  }
+
+  @override
+  String sysRemovedFrom(String name) {
+    return 'You were removed from \"$name\".';
+  }
+
+  @override
+  String sysAddedToBy(String by, String name) {
+    return '$by added you to \"$name\".';
+  }
+
+  @override
+  String get sysMembershipUpdated => 'Group membership updated.';
+
+  @override
+  String sysMemberLeft(String name) {
+    return '$name left the group.';
+  }
+
+  @override
+  String get sysAMember => 'a member';
+
+  @override
+  String get sysSomeone => 'Someone';
+
+  @override
+  String get sysUnknownMemberLeft => 'A member left the group.';
 }

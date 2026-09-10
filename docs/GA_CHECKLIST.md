@@ -26,7 +26,7 @@ decision rather than by unfinished work.
 | G6 | Published threat model | ✅ |
 | G7 | Platform completion (Android, iOS, Windows, macOS, Linux) | ❌ **iOS does not exist** |
 | G8 | Accessibility | ✅ for the checks that exist; see the caveat |
-| G9 | Localization | ❌ **14 of 14 screens; system messages and a second locale outstanding** |
+| G9 | Localization | ❌ **14 of 14 screens; engineering done, no second locale** |
 
 ---
 
@@ -137,16 +137,21 @@ description on every string, and `tool/check_l10n.py` holding migrated screens
 to zero hardcoded literals. **14 of 14 screens are migrated; ~0
 strings remain** in them, and no locale but English exists.
 
-The count that matters has moved to the service: `core/chat_service.dart` stores sixteen kinds of English system
-message into the vault as prose ("You left the group.", "Secure session was
-reset."), and those render verbatim in every locale. They need storing as a
-kind plus parameters and rendering through the ARB — that is the last piece of
-G9's engineering, and `check_l10n.py` does not count it yet.
+The service used to store sixteen kinds of English system message into the
+vault as prose ("You left the group."), which no screen count included and
+which would have read in English in every locale for ever. They are stored
+as a kind and its parameters now (`core/system_messages.dart`) and rendered
+through the ARB when shown (`l10n/system_text.dart`); rows written before
+that read as they were written. `check_l10n.py` refuses a new call that
+stores a sentence.
 
-Z publishes release notes in six locales. Shipping an app in one is a defensible
-1.0 decision, but it should be a decision rather than an oversight, and the
-security wording in particular wants a translator who reads the language rather
-than a machine.
+**The engineering is done: 372 strings, every one with a description, and
+nothing user-visible outside the ARB.** What G9 still lacks is a second
+locale. Z publishes release notes in six; shipping the app in one is a
+defensible 1.0 decision, but it should be a decision rather than an
+oversight, and the security wording in particular wants a translator who
+reads the language rather than a machine. The descriptions were written for
+that translator.
 
 ---
 

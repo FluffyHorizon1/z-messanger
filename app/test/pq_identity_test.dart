@@ -18,9 +18,19 @@ import 'package:zapp/core/archive.dart';
 import 'package:zapp/core/backup_store.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/models.dart';
+import 'package:zapp/core/system_messages.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
+
+/// 15.4: the warning is stored as a kind, not as its English sentence — the
+/// sentence is rendered in the user's language when shown. So the transcript
+/// is searched for the kind.
+bool isMismatchWarning(ChatMessage m) {
+  if (m.kind != 'system' || !m.body.startsWith('{')) return false;
+  final j = jsonDecode(m.body);
+  return j is Map && j['k'] == SystemKind.pqMismatch;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -190,8 +200,7 @@ void main() {
     // scanned.
     await b.sendText(a.myRid, 'is this really you');
     await waitUntil(
-        () => (b.messagesByChat[a.myRid] ?? [])
-            .any((m) => m.body.contains('does not match')),
+        () => (b.messagesByChat[a.myRid] ?? []).any(isMismatchWarning),
         what: 'the mismatch was surfaced');
 
     // Refused: still pending, never upgraded, and the safety number has not
@@ -316,8 +325,7 @@ void main() {
 
     await b.sendText(a.myRid, 'is this really you');
     await waitUntil(
-        () => (b.messagesByChat[a.myRid] ?? [])
-            .any((m) => m.body.contains('does not match')),
+        () => (b.messagesByChat[a.myRid] ?? []).any(isMismatchWarning),
         what: 'the mismatch was surfaced');
     expect(b.contacts[a.myRid]!.pqMismatch, isTrue,
         reason: 'the refusal is state, not just a line in the transcript');
@@ -328,9 +336,8 @@ void main() {
       await b.sendText(a.myRid, 'still there? $i');
       await Future<void>.delayed(const Duration(milliseconds: 400));
     }
-    final warnings = (b.messagesByChat[a.myRid] ?? [])
-        .where((m) => m.body.contains('does not match'))
-        .length;
+    final warnings =
+        (b.messagesByChat[a.myRid] ?? []).where(isMismatchWarning).length;
     expect(warnings, 1, reason: 'said once, and it stays said');
     expect(b.assuranceWith(a.myRid), IdentityAssurance.pendingPostQuantum);
     expect(b.contacts[a.myRid]!.pqPub, isNull);
