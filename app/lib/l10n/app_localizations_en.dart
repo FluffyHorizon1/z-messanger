@@ -695,9 +695,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'Their device list is signed classically only. That is correct today; the post-quantum signature for it travels separately and may not have arrived yet.';
 
   @override
-  String get ciDisappearing => 'Disappearing messages';
-
-  @override
   String get ciRename => 'Rename';
 
   @override
@@ -776,5 +773,266 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String ciNoticeChangedBody(String name) {
     return 'The number you verified with $name is not the one shown now, and this is not the one-time post-quantum upgrade. Do not rely on the previous verification. Compare the number below in person or on a call you trust before continuing.';
+  }
+
+  @override
+  String get disappearingMessages => 'Disappearing messages';
+
+  @override
+  String get you => 'You';
+
+  @override
+  String sizeB(String b) {
+    return '$b B';
+  }
+
+  @override
+  String get chatMicPermission => 'Microphone permission is needed to record.';
+
+  @override
+  String get chatRecordingUnavailable =>
+      'Recording isn\'t available on this device.';
+
+  @override
+  String get chatVoiceTooShort => 'Voice message too short.';
+
+  @override
+  String chatSendFailed(String error) {
+    return 'Send failed: $error';
+  }
+
+  @override
+  String get chatTooFarBack => 'That message is too far back to jump to.';
+
+  @override
+  String get chatEditTitle => 'Edit message';
+
+  @override
+  String get chatEditHint => 'Message';
+
+  @override
+  String get chatEditExpired => 'That message can no longer be edited.';
+
+  @override
+  String get chatDeleteEveryoneTitle => 'Delete for everyone?';
+
+  @override
+  String get chatDeleteEveryoneBody =>
+      'The message is removed here and the other side is asked to remove it too. Anyone who already read it may have kept a copy — no app can undo that.';
+
+  @override
+  String get chatNoForwardTarget => 'No other conversation to forward to.';
+
+  @override
+  String get chatForwardTo => 'Forward to';
+
+  @override
+  String get chatForwarded => 'Forwarded.';
+
+  @override
+  String chatForwardFailed(String error) {
+    return 'Forward failed: $error';
+  }
+
+  @override
+  String chatReactionFailed(String error) {
+    return 'Reaction failed: $error';
+  }
+
+  @override
+  String get ttlOff => 'Off';
+
+  @override
+  String ttlSeconds(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count seconds',
+      one: '1 second',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String ttlMinutes(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count minutes',
+      one: '1 minute',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String ttlHours(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count hours',
+      one: '1 hour',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String ttlDays(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count days',
+      one: '1 day',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String ttlWeeks(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count weeks',
+      one: '1 week',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get chatConversationRemoved => 'Conversation removed';
+
+  @override
+  String chatGroupSubtitle(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count members · end-to-end encrypted',
+      one: '1 member · end-to-end encrypted',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get chatSubVerified => 'end-to-end encrypted · verified';
+
+  @override
+  String get chatSubReverify => 'end-to-end encrypted · re-verify';
+
+  @override
+  String get chatSubNumberChanged => 'end-to-end encrypted · number changed';
+
+  @override
+  String get chatSubEncrypted => 'end-to-end encrypted';
+
+  @override
+  String get chatLeftGroupNotice =>
+      'You are no longer in this group. History stays on this device; no new messages can be sent or received.';
+
+  @override
+  String get chatRecordingHint => 'Recording… sent encrypted, like everything';
+
+  @override
+  String get chatDiscard => 'Discard';
+
+  @override
+  String get chatSendVoice => 'Send voice message';
+
+  @override
+  String get chatAttachFile => 'Attach a file';
+
+  @override
+  String get chatInputHint => 'Encrypted message…';
+
+  @override
+  String get chatReplyHint => 'Reply…';
+
+  @override
+  String get chatRecordVoice => 'Record a voice message';
+
+  @override
+  String get chatForwardedLabel => 'Forwarded';
+
+  @override
+  String get chatYouDeleted => 'You deleted this message';
+
+  @override
+  String get chatTheyDeleted => 'This message was deleted';
+
+  @override
+  String get chatFailedTapRetry => 'Failed to send — tap to retry';
+
+  @override
+  String chatRemoveReaction(String emoji) {
+    return 'Remove $emoji reaction';
+  }
+
+  @override
+  String chatReactWith(String emoji) {
+    return 'React with $emoji';
+  }
+
+  @override
+  String chatReactionChip(String emoji, int count) {
+    return '$emoji $count';
+  }
+
+  @override
+  String get chatReply => 'Reply';
+
+  @override
+  String get chatCopyText => 'Copy text';
+
+  @override
+  String get chatForward => 'Forward';
+
+  @override
+  String get chatEdit => 'Edit';
+
+  @override
+  String get chatDeleteForEveryone => 'Delete for everyone';
+
+  @override
+  String get chatRetrySend => 'Retry send';
+
+  @override
+  String get chatRetryFailed => 'Could not retry this message.';
+
+  @override
+  String get chatDeleteForMe => 'Delete for me';
+
+  @override
+  String get chatSomeone => 'Someone';
+
+  @override
+  String get chatThem => 'Them';
+
+  @override
+  String get chatReplyingToSelf => 'Replying to yourself';
+
+  @override
+  String get chatReplyingToThem => 'Replying to them';
+
+  @override
+  String chatReplyingTo(String name) {
+    return 'Replying to $name';
+  }
+
+  @override
+  String get chatCancelReply => 'Cancel reply';
+
+  @override
+  String get chatMessageUnavailable => 'Message unavailable';
+
+  @override
+  String get chatImage => 'Image';
+
+  @override
+  String get chatSaveDialogTitle => 'Save decrypted copy';
+
+  @override
+  String get chatSavedDecrypted => 'Saved (decrypted copy)';
+
+  @override
+  String chatSaveFailed(String error) {
+    return 'Save failed: $error';
   }
 }

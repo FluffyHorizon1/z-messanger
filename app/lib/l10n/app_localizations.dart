@@ -1222,12 +1222,6 @@ abstract class AppLocalizations {
   /// **'Their device list is signed classically only. That is correct today; the post-quantum signature for it travels separately and may not have arrived yet.'**
   String get ciDevListClassical;
 
-  /// Row label; the value beneath it is the timer setting.
-  ///
-  /// In en, this message translates to:
-  /// **'Disappearing messages'**
-  String get ciDisappearing;
-
   /// Row label opening the rename dialog.
   ///
   /// In en, this message translates to:
@@ -1365,6 +1359,390 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The number you verified with {name} is not the one shown now, and this is not the one-time post-quantum upgrade. Do not rely on the previous verification. Compare the number below in person or on a call you trust before continuing.'**
   String ciNoticeChangedBody(String name);
+
+  /// The feature's name, used wherever it is referred to: the contact-info row, the chat toolbar tooltip and the timer picker's heading. One term per locale.
+  ///
+  /// In en, this message translates to:
+  /// **'Disappearing messages'**
+  String get disappearingMessages;
+
+  /// The user, named as an author or actor — over a quoted message, in a reaction tooltip. Second person, not a name.
+  ///
+  /// In en, this message translates to:
+  /// **'You'**
+  String get you;
+
+  /// A size in bytes, for a file too small to show in KB.
+  ///
+  /// In en, this message translates to:
+  /// **'{b} B'**
+  String sizeB(String b);
+
+  /// Shown when the OS refused microphone access. States the missing permission, not a fault in the app.
+  ///
+  /// In en, this message translates to:
+  /// **'Microphone permission is needed to record.'**
+  String get chatMicPermission;
+
+  /// Shown when starting the recorder threw for any reason other than permission.
+  ///
+  /// In en, this message translates to:
+  /// **'Recording isn\'t available on this device.'**
+  String get chatRecordingUnavailable;
+
+  /// A recording under half a second was discarded as a misfire rather than sent.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice message too short.'**
+  String get chatVoiceTooShort;
+
+  /// A text or voice message could not be queued. {error} is the exception text.
+  ///
+  /// In en, this message translates to:
+  /// **'Send failed: {error}'**
+  String chatSendFailed(String error);
+
+  /// Tapping a quote whose original is beyond the jump window. The message exists; the screen will not scroll to it.
+  ///
+  /// In en, this message translates to:
+  /// **'That message is too far back to jump to.'**
+  String get chatTooFarBack;
+
+  /// Title of the edit dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit message'**
+  String get chatEditTitle;
+
+  /// Hint in the edit dialog's text field.
+  ///
+  /// In en, this message translates to:
+  /// **'Message'**
+  String get chatEditHint;
+
+  /// The edit was refused — too old, or already deleted. Not an error in the app.
+  ///
+  /// In en, this message translates to:
+  /// **'That message can no longer be edited.'**
+  String get chatEditExpired;
+
+  /// Title of the confirmation for a delete that is also requested of the other side.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete for everyone?'**
+  String get chatDeleteEveryoneTitle;
+
+  /// The honest limit of 'delete for everyone'. 'asked to' (not 'made to') and the last sentence are the point: this is a request the other app honours, and nothing recalls what a person already saw. A translation that promises more than that misleads.
+  ///
+  /// In en, this message translates to:
+  /// **'The message is removed here and the other side is asked to remove it too. Anyone who already read it may have kept a copy — no app can undo that.'**
+  String get chatDeleteEveryoneBody;
+
+  /// Forwarding is impossible because this is the user's only conversation.
+  ///
+  /// In en, this message translates to:
+  /// **'No other conversation to forward to.'**
+  String get chatNoForwardTarget;
+
+  /// Heading of the sheet listing conversations to forward into.
+  ///
+  /// In en, this message translates to:
+  /// **'Forward to'**
+  String get chatForwardTo;
+
+  /// Confirms the forward was queued.
+  ///
+  /// In en, this message translates to:
+  /// **'Forwarded.'**
+  String get chatForwarded;
+
+  /// The forward could not be queued.
+  ///
+  /// In en, this message translates to:
+  /// **'Forward failed: {error}'**
+  String chatForwardFailed(String error);
+
+  /// Toggling a reaction could not be queued.
+  ///
+  /// In en, this message translates to:
+  /// **'Reaction failed: {error}'**
+  String chatReactionFailed(String error);
+
+  /// Disappearing-messages timer disabled. Shown as a picker option and as the current setting.
+  ///
+  /// In en, this message translates to:
+  /// **'Off'**
+  String get ttlOff;
+
+  /// A disappearing-messages timer, in seconds.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 second} other{{count} seconds}}'**
+  String ttlSeconds(int count);
+
+  /// A disappearing-messages timer, in minutes.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 minute} other{{count} minutes}}'**
+  String ttlMinutes(int count);
+
+  /// A disappearing-messages timer, in hours.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 hour} other{{count} hours}}'**
+  String ttlHours(int count);
+
+  /// A disappearing-messages timer, in days.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 day} other{{count} days}}'**
+  String ttlDays(int count);
+
+  /// A disappearing-messages timer, in weeks.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 week} other{{count} weeks}}'**
+  String ttlWeeks(int count);
+
+  /// Shown in place of the chat when its contact or group was deleted while the screen was open.
+  ///
+  /// In en, this message translates to:
+  /// **'Conversation removed'**
+  String get chatConversationRemoved;
+
+  /// Under a group's name in the chat header. The count includes the user.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 member · end-to-end encrypted} other{{count} members · end-to-end encrypted}}'**
+  String chatGroupSubtitle(int count);
+
+  /// Under a contact's name when the safety number was compared and still covers the identity shown. 'verified' is a claim about the number the user checked, not about the contact.
+  ///
+  /// In en, this message translates to:
+  /// **'end-to-end encrypted · verified'**
+  String get chatSubVerified;
+
+  /// Under a contact's name after the one-time post-quantum upgrade moved the number: the old tick no longer covers it, and the user is asked to compare again.
+  ///
+  /// In en, this message translates to:
+  /// **'end-to-end encrypted · re-verify'**
+  String get chatSubReverify;
+
+  /// Under a contact's name when the number moved for a reason the app cannot explain. Deliberately neutral; the contact-info screen carries the warning.
+  ///
+  /// In en, this message translates to:
+  /// **'end-to-end encrypted · number changed'**
+  String get chatSubNumberChanged;
+
+  /// Under a contact's name when nothing has been verified.
+  ///
+  /// In en, this message translates to:
+  /// **'end-to-end encrypted'**
+  String get chatSubEncrypted;
+
+  /// Replaces the composer in a group the user left or was removed from.
+  ///
+  /// In en, this message translates to:
+  /// **'You are no longer in this group. History stays on this device; no new messages can be sent or received.'**
+  String get chatLeftGroupNotice;
+
+  /// Beside the timer while a voice note records. The clause after the ellipsis answers the question people ask about voice: yes, this too.
+  ///
+  /// In en, this message translates to:
+  /// **'Recording… sent encrypted, like everything'**
+  String get chatRecordingHint;
+
+  /// Tooltip: throw the recording away without sending.
+  ///
+  /// In en, this message translates to:
+  /// **'Discard'**
+  String get chatDiscard;
+
+  /// Tooltip: stop recording and send.
+  ///
+  /// In en, this message translates to:
+  /// **'Send voice message'**
+  String get chatSendVoice;
+
+  /// Tooltip on the paperclip.
+  ///
+  /// In en, this message translates to:
+  /// **'Attach a file'**
+  String get chatAttachFile;
+
+  /// Hint in the composer. 'Encrypted' is deliberate: the field itself says what happens to what is typed in it.
+  ///
+  /// In en, this message translates to:
+  /// **'Encrypted message…'**
+  String get chatInputHint;
+
+  /// Hint in the composer while replying to a message.
+  ///
+  /// In en, this message translates to:
+  /// **'Reply…'**
+  String get chatReplyHint;
+
+  /// Tooltip on the microphone.
+  ///
+  /// In en, this message translates to:
+  /// **'Record a voice message'**
+  String get chatRecordVoice;
+
+  /// Small label above a bubble whose message was forwarded from elsewhere.
+  ///
+  /// In en, this message translates to:
+  /// **'Forwarded'**
+  String get chatForwardedLabel;
+
+  /// Placeholder body of a message the user deleted for everyone.
+  ///
+  /// In en, this message translates to:
+  /// **'You deleted this message'**
+  String get chatYouDeleted;
+
+  /// Placeholder body of a message the sender deleted for everyone.
+  ///
+  /// In en, this message translates to:
+  /// **'This message was deleted'**
+  String get chatTheyDeleted;
+
+  /// Under a bubble whose send failed permanently. The second half is an instruction.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to send — tap to retry'**
+  String get chatFailedTapRetry;
+
+  /// Tooltip on a quick-reaction button when that emoji is already the user's reaction. Read by screen readers; the glyph alone says nothing.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove {emoji} reaction'**
+  String chatRemoveReaction(String emoji);
+
+  /// Tooltip on a quick-reaction button.
+  ///
+  /// In en, this message translates to:
+  /// **'React with {emoji}'**
+  String chatReactWith(String emoji);
+
+  /// A reaction chip under a bubble when more than one person reacted: the emoji and how many. Order can be swapped for a locale that reads the other way.
+  ///
+  /// In en, this message translates to:
+  /// **'{emoji} {count}'**
+  String chatReactionChip(String emoji, int count);
+
+  /// Message action.
+  ///
+  /// In en, this message translates to:
+  /// **'Reply'**
+  String get chatReply;
+
+  /// Message action: copies the body to the clipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy text'**
+  String get chatCopyText;
+
+  /// Message action.
+  ///
+  /// In en, this message translates to:
+  /// **'Forward'**
+  String get chatForward;
+
+  /// Message action, own messages only.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit'**
+  String get chatEdit;
+
+  /// Message action, own messages only. Opens the confirmation whose body states the limit.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete for everyone'**
+  String get chatDeleteForEveryone;
+
+  /// Action on a failed message.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry send'**
+  String get chatRetrySend;
+
+  /// The retry itself was refused.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not retry this message.'**
+  String get chatRetryFailed;
+
+  /// Action on a failed message: removes the local row only.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete for me'**
+  String get chatDeleteForMe;
+
+  /// A reactor whose name is not known, in a reaction tooltip.
+  ///
+  /// In en, this message translates to:
+  /// **'Someone'**
+  String get chatSomeone;
+
+  /// The other party as author of a quoted message, when the sender's name is not known.
+  ///
+  /// In en, this message translates to:
+  /// **'Them'**
+  String get chatThem;
+
+  /// Reply bar heading when the quoted message is the user's own. A separate string from chatReplyingTo because 'yourself' inflects differently from a name in most languages.
+  ///
+  /// In en, this message translates to:
+  /// **'Replying to yourself'**
+  String get chatReplyingToSelf;
+
+  /// Reply bar heading when the quoted message's sender has no known name.
+  ///
+  /// In en, this message translates to:
+  /// **'Replying to them'**
+  String get chatReplyingToThem;
+
+  /// Reply bar heading. {name} is the quoted message's sender.
+  ///
+  /// In en, this message translates to:
+  /// **'Replying to {name}'**
+  String chatReplyingTo(String name);
+
+  /// Tooltip on the reply bar's close button.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel reply'**
+  String get chatCancelReply;
+
+  /// Quote block whose original message is no longer held.
+  ///
+  /// In en, this message translates to:
+  /// **'Message unavailable'**
+  String get chatMessageUnavailable;
+
+  /// Semantic label for an inline image attachment whose file name is unknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Image'**
+  String get chatImage;
+
+  /// Title of the OS save dialog for an attachment. 'decrypted' is a warning: what leaves the app is plaintext.
+  ///
+  /// In en, this message translates to:
+  /// **'Save decrypted copy'**
+  String get chatSaveDialogTitle;
+
+  /// Confirms the attachment was written outside the app, and repeats that the copy is not encrypted.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved (decrypted copy)'**
+  String get chatSavedDecrypted;
+
+  /// The attachment could not be written.
+  ///
+  /// In en, this message translates to:
+  /// **'Save failed: {error}'**
+  String chatSaveFailed(String error);
 }
 
 class _AppLocalizationsDelegate

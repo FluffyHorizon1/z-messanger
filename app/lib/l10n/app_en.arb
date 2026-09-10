@@ -885,10 +885,6 @@
   "@ciDevListClassical": {
     "description": "The same fact in its unfinished state. 'That is correct today' must survive translation: without it this reads as a warning, and it is not one."
   },
-  "ciDisappearing": "Disappearing messages",
-  "@ciDisappearing": {
-    "description": "Row label; the value beneath it is the timer setting."
-  },
   "ciRename": "Rename",
   "@ciRename": {
     "description": "Row label opening the rename dialog."
@@ -992,6 +988,340 @@
     "description": "The most serious wording on the screen after ciPqRefusedBody. It rules out the innocent explanation explicitly — without that clause the user has no way to tell this apart from ciNoticeUpgradedBody — then gives one instruction. 'in person or on a call you trust' rules out doing it over the channel that may itself be compromised.",
     "placeholders": {
       "name": {
+        "type": "String"
+      }
+    }
+  },
+  "disappearingMessages": "Disappearing messages",
+  "@disappearingMessages": {
+    "description": "The feature's name, used wherever it is referred to: the contact-info row, the chat toolbar tooltip and the timer picker's heading. One term per locale."
+  },
+  "you": "You",
+  "@you": {
+    "description": "The user, named as an author or actor — over a quoted message, in a reaction tooltip. Second person, not a name."
+  },
+  "sizeB": "{b} B",
+  "@sizeB": {
+    "description": "A size in bytes, for a file too small to show in KB.",
+    "placeholders": {
+      "b": {
+        "type": "String"
+      }
+    }
+  },
+  "chatMicPermission": "Microphone permission is needed to record.",
+  "@chatMicPermission": {
+    "description": "Shown when the OS refused microphone access. States the missing permission, not a fault in the app."
+  },
+  "chatRecordingUnavailable": "Recording isn't available on this device.",
+  "@chatRecordingUnavailable": {
+    "description": "Shown when starting the recorder threw for any reason other than permission."
+  },
+  "chatVoiceTooShort": "Voice message too short.",
+  "@chatVoiceTooShort": {
+    "description": "A recording under half a second was discarded as a misfire rather than sent."
+  },
+  "chatSendFailed": "Send failed: {error}",
+  "@chatSendFailed": {
+    "description": "A text or voice message could not be queued. {error} is the exception text.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "chatTooFarBack": "That message is too far back to jump to.",
+  "@chatTooFarBack": {
+    "description": "Tapping a quote whose original is beyond the jump window. The message exists; the screen will not scroll to it."
+  },
+  "chatEditTitle": "Edit message",
+  "@chatEditTitle": {
+    "description": "Title of the edit dialog."
+  },
+  "chatEditHint": "Message",
+  "@chatEditHint": {
+    "description": "Hint in the edit dialog's text field."
+  },
+  "chatEditExpired": "That message can no longer be edited.",
+  "@chatEditExpired": {
+    "description": "The edit was refused — too old, or already deleted. Not an error in the app."
+  },
+  "chatDeleteEveryoneTitle": "Delete for everyone?",
+  "@chatDeleteEveryoneTitle": {
+    "description": "Title of the confirmation for a delete that is also requested of the other side."
+  },
+  "chatDeleteEveryoneBody": "The message is removed here and the other side is asked to remove it too. Anyone who already read it may have kept a copy — no app can undo that.",
+  "@chatDeleteEveryoneBody": {
+    "description": "The honest limit of 'delete for everyone'. 'asked to' (not 'made to') and the last sentence are the point: this is a request the other app honours, and nothing recalls what a person already saw. A translation that promises more than that misleads."
+  },
+  "chatNoForwardTarget": "No other conversation to forward to.",
+  "@chatNoForwardTarget": {
+    "description": "Forwarding is impossible because this is the user's only conversation."
+  },
+  "chatForwardTo": "Forward to",
+  "@chatForwardTo": {
+    "description": "Heading of the sheet listing conversations to forward into."
+  },
+  "chatForwarded": "Forwarded.",
+  "@chatForwarded": {
+    "description": "Confirms the forward was queued."
+  },
+  "chatForwardFailed": "Forward failed: {error}",
+  "@chatForwardFailed": {
+    "description": "The forward could not be queued.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "chatReactionFailed": "Reaction failed: {error}",
+  "@chatReactionFailed": {
+    "description": "Toggling a reaction could not be queued.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "ttlOff": "Off",
+  "@ttlOff": {
+    "description": "Disappearing-messages timer disabled. Shown as a picker option and as the current setting."
+  },
+  "ttlSeconds": "{count, plural, =1{1 second} other{{count} seconds}}",
+  "@ttlSeconds": {
+    "description": "A disappearing-messages timer, in seconds.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "ttlMinutes": "{count, plural, =1{1 minute} other{{count} minutes}}",
+  "@ttlMinutes": {
+    "description": "A disappearing-messages timer, in minutes.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "ttlHours": "{count, plural, =1{1 hour} other{{count} hours}}",
+  "@ttlHours": {
+    "description": "A disappearing-messages timer, in hours.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "ttlDays": "{count, plural, =1{1 day} other{{count} days}}",
+  "@ttlDays": {
+    "description": "A disappearing-messages timer, in days.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "ttlWeeks": "{count, plural, =1{1 week} other{{count} weeks}}",
+  "@ttlWeeks": {
+    "description": "A disappearing-messages timer, in weeks.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "chatConversationRemoved": "Conversation removed",
+  "@chatConversationRemoved": {
+    "description": "Shown in place of the chat when its contact or group was deleted while the screen was open."
+  },
+  "chatGroupSubtitle": "{count, plural, =1{1 member · end-to-end encrypted} other{{count} members · end-to-end encrypted}}",
+  "@chatGroupSubtitle": {
+    "description": "Under a group's name in the chat header. The count includes the user.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "chatSubVerified": "end-to-end encrypted · verified",
+  "@chatSubVerified": {
+    "description": "Under a contact's name when the safety number was compared and still covers the identity shown. 'verified' is a claim about the number the user checked, not about the contact."
+  },
+  "chatSubReverify": "end-to-end encrypted · re-verify",
+  "@chatSubReverify": {
+    "description": "Under a contact's name after the one-time post-quantum upgrade moved the number: the old tick no longer covers it, and the user is asked to compare again."
+  },
+  "chatSubNumberChanged": "end-to-end encrypted · number changed",
+  "@chatSubNumberChanged": {
+    "description": "Under a contact's name when the number moved for a reason the app cannot explain. Deliberately neutral; the contact-info screen carries the warning."
+  },
+  "chatSubEncrypted": "end-to-end encrypted",
+  "@chatSubEncrypted": {
+    "description": "Under a contact's name when nothing has been verified."
+  },
+  "chatLeftGroupNotice": "You are no longer in this group. History stays on this device; no new messages can be sent or received.",
+  "@chatLeftGroupNotice": {
+    "description": "Replaces the composer in a group the user left or was removed from."
+  },
+  "chatRecordingHint": "Recording… sent encrypted, like everything",
+  "@chatRecordingHint": {
+    "description": "Beside the timer while a voice note records. The clause after the ellipsis answers the question people ask about voice: yes, this too."
+  },
+  "chatDiscard": "Discard",
+  "@chatDiscard": {
+    "description": "Tooltip: throw the recording away without sending."
+  },
+  "chatSendVoice": "Send voice message",
+  "@chatSendVoice": {
+    "description": "Tooltip: stop recording and send."
+  },
+  "chatAttachFile": "Attach a file",
+  "@chatAttachFile": {
+    "description": "Tooltip on the paperclip."
+  },
+  "chatInputHint": "Encrypted message…",
+  "@chatInputHint": {
+    "description": "Hint in the composer. 'Encrypted' is deliberate: the field itself says what happens to what is typed in it."
+  },
+  "chatReplyHint": "Reply…",
+  "@chatReplyHint": {
+    "description": "Hint in the composer while replying to a message."
+  },
+  "chatRecordVoice": "Record a voice message",
+  "@chatRecordVoice": {
+    "description": "Tooltip on the microphone."
+  },
+  "chatForwardedLabel": "Forwarded",
+  "@chatForwardedLabel": {
+    "description": "Small label above a bubble whose message was forwarded from elsewhere."
+  },
+  "chatYouDeleted": "You deleted this message",
+  "@chatYouDeleted": {
+    "description": "Placeholder body of a message the user deleted for everyone."
+  },
+  "chatTheyDeleted": "This message was deleted",
+  "@chatTheyDeleted": {
+    "description": "Placeholder body of a message the sender deleted for everyone."
+  },
+  "chatFailedTapRetry": "Failed to send — tap to retry",
+  "@chatFailedTapRetry": {
+    "description": "Under a bubble whose send failed permanently. The second half is an instruction."
+  },
+  "chatRemoveReaction": "Remove {emoji} reaction",
+  "@chatRemoveReaction": {
+    "description": "Tooltip on a quick-reaction button when that emoji is already the user's reaction. Read by screen readers; the glyph alone says nothing.",
+    "placeholders": {
+      "emoji": {
+        "type": "String"
+      }
+    }
+  },
+  "chatReactWith": "React with {emoji}",
+  "@chatReactWith": {
+    "description": "Tooltip on a quick-reaction button.",
+    "placeholders": {
+      "emoji": {
+        "type": "String"
+      }
+    }
+  },
+  "chatReactionChip": "{emoji} {count}",
+  "@chatReactionChip": {
+    "description": "A reaction chip under a bubble when more than one person reacted: the emoji and how many. Order can be swapped for a locale that reads the other way.",
+    "placeholders": {
+      "emoji": {
+        "type": "String"
+      },
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "chatReply": "Reply",
+  "@chatReply": {
+    "description": "Message action."
+  },
+  "chatCopyText": "Copy text",
+  "@chatCopyText": {
+    "description": "Message action: copies the body to the clipboard."
+  },
+  "chatForward": "Forward",
+  "@chatForward": {
+    "description": "Message action."
+  },
+  "chatEdit": "Edit",
+  "@chatEdit": {
+    "description": "Message action, own messages only."
+  },
+  "chatDeleteForEveryone": "Delete for everyone",
+  "@chatDeleteForEveryone": {
+    "description": "Message action, own messages only. Opens the confirmation whose body states the limit."
+  },
+  "chatRetrySend": "Retry send",
+  "@chatRetrySend": {
+    "description": "Action on a failed message."
+  },
+  "chatRetryFailed": "Could not retry this message.",
+  "@chatRetryFailed": {
+    "description": "The retry itself was refused."
+  },
+  "chatDeleteForMe": "Delete for me",
+  "@chatDeleteForMe": {
+    "description": "Action on a failed message: removes the local row only."
+  },
+  "chatSomeone": "Someone",
+  "@chatSomeone": {
+    "description": "A reactor whose name is not known, in a reaction tooltip."
+  },
+  "chatThem": "Them",
+  "@chatThem": {
+    "description": "The other party as author of a quoted message, when the sender's name is not known."
+  },
+  "chatReplyingToSelf": "Replying to yourself",
+  "@chatReplyingToSelf": {
+    "description": "Reply bar heading when the quoted message is the user's own. A separate string from chatReplyingTo because 'yourself' inflects differently from a name in most languages."
+  },
+  "chatReplyingToThem": "Replying to them",
+  "@chatReplyingToThem": {
+    "description": "Reply bar heading when the quoted message's sender has no known name."
+  },
+  "chatReplyingTo": "Replying to {name}",
+  "@chatReplyingTo": {
+    "description": "Reply bar heading. {name} is the quoted message's sender.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "chatCancelReply": "Cancel reply",
+  "@chatCancelReply": {
+    "description": "Tooltip on the reply bar's close button."
+  },
+  "chatMessageUnavailable": "Message unavailable",
+  "@chatMessageUnavailable": {
+    "description": "Quote block whose original message is no longer held."
+  },
+  "chatImage": "Image",
+  "@chatImage": {
+    "description": "Semantic label for an inline image attachment whose file name is unknown."
+  },
+  "chatSaveDialogTitle": "Save decrypted copy",
+  "@chatSaveDialogTitle": {
+    "description": "Title of the OS save dialog for an attachment. 'decrypted' is a warning: what leaves the app is plaintext."
+  },
+  "chatSavedDecrypted": "Saved (decrypted copy)",
+  "@chatSavedDecrypted": {
+    "description": "Confirms the attachment was written outside the app, and repeats that the copy is not encrypted."
+  },
+  "chatSaveFailed": "Save failed: {error}",
+  "@chatSaveFailed": {
+    "description": "The attachment could not be written.",
+    "placeholders": {
+      "error": {
         "type": "String"
       }
     }

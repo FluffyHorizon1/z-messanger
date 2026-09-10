@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/ttl_text.dart';
 import '../core/chat_service.dart';
 import '../core/models.dart';
 import 'theme.dart';
@@ -201,8 +202,8 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
           const SizedBox(height: 8),
           ListTile(
             leading: const Icon(Icons.timer_outlined),
-            title: Text(l.ciDisappearing),
-            subtitle: Text(describeTtl(contact.ttlSec)),
+            title: Text(l.disappearingMessages),
+            subtitle: Text(ttlText(l, contact.ttlSec)),
           ),
           ListTile(
             leading: const Icon(Icons.edit_outlined),

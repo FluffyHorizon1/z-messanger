@@ -10,6 +10,8 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:record/record.dart';
 
+import '../l10n/app_localizations.dart';
+import '../l10n/ttl_text.dart';
 import '../core/chat_service.dart';
 import '../core/file_export.dart';
 import '../core/models.dart';
@@ -134,10 +136,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _startRecording() async {
     final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
     try {
       if (!await _recorder.hasPermission()) {
-        messenger.showSnackBar(const SnackBar(
-            content: Text('Microphone permission is needed to record.')));
+        messenger.showSnackBar(SnackBar(content: Text(l.chatMicPermission)));
         return;
       }
       // Stream raw PCM into memory — the recording never touches disk.
@@ -156,14 +158,15 @@ class _ChatScreenState extends State<ChatScreen> {
         _recElapsedMs = 0;
       });
     } catch (_) {
-      messenger.showSnackBar(const SnackBar(
-          content: Text("Recording isn't available on this device.")));
+      messenger
+          .showSnackBar(SnackBar(content: Text(l.chatRecordingUnavailable)));
     }
   }
 
   Future<void> _stopRecording({required bool send}) async {
     final svc = context.read<ChatService>();
     final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
     _recTimer?.cancel();
     _recTimer = null;
     try {
@@ -176,8 +179,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!send) return;
     // Under half a second of audio is a misfire, not a message.
     if (pcm.length < voiceSampleRate) {
-      messenger.showSnackBar(
-          const SnackBar(content: Text('Voice message too short.')));
+      messenger.showSnackBar(SnackBar(content: Text(l.chatVoiceTooShort)));
       return;
     }
     final wav = wavFromPcm16(pcm);
@@ -190,7 +192,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       _jumpToEnd();
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Send failed: $e')));
+      messenger.showSnackBar(SnackBar(content: Text(l.chatSendFailed('$e'))));
     }
   }
 
@@ -216,6 +218,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _goToQuoted(String mid) async {
     final svc = context.read<ChatService>();
     final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
     if (svc.messagesByChat[widget.rid]?.any((m) => m.mid == mid) ?? false) {
       _flashHighlight(mid);
       return;
@@ -224,30 +227,30 @@ class _ChatScreenState extends State<ChatScreen> {
       _jumpToStart();
       _flashHighlight(mid);
     } else {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('That message is too far back to jump to.')));
+      messenger.showSnackBar(SnackBar(content: Text(l.chatTooFarBack)));
     }
   }
 
   Future<void> _editMessage(ChatMessage msg) async {
+    final l = AppLocalizations.of(context);
     final ctrl = TextEditingController(text: msg.body);
     final next = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Edit message'),
+        title: Text(l.chatEditTitle),
         content: TextField(
           controller: ctrl,
           autofocus: true,
           maxLines: 5,
           minLines: 1,
-          decoration: const InputDecoration(hintText: 'Message'),
+          decoration: InputDecoration(hintText: l.chatEditHint),
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-              child: const Text('Save')),
+              child: Text(l.save)),
         ],
       ),
     );
@@ -256,28 +259,26 @@ class _ChatScreenState extends State<ChatScreen> {
         .read<ChatService>()
         .editMessage(widget.rid, msg.mid, next);
     if (!ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('That message can no longer be edited.')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.chatEditExpired)));
     }
   }
 
   Future<void> _deleteForEveryone(ChatMessage msg) async {
+    final l = AppLocalizations.of(context);
     final sure = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete for everyone?'),
-        content: const Text(
-            'The message is removed here and the other side is asked to '
-            'remove it too. Anyone who already read it may have kept a copy — '
-            'no app can undo that.'),
+        title: Text(l.chatDeleteEveryoneTitle),
+        content: Text(l.chatDeleteEveryoneBody),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
+              child: Text(l.cancel)),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: ctx.z.danger),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete'),
+            child: Text(l.delete),
           ),
         ],
       ),
@@ -289,6 +290,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _forward(ChatMessage msg) async {
     final svc = context.read<ChatService>();
     final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
     final targets = <({String rid, String name, bool group})>[
       for (final g in svc.groups.values)
         if (!g.left && g.gid != widget.rid)
@@ -297,8 +299,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (c.rid != widget.rid) (rid: c.rid, name: c.name, group: false),
     ];
     if (targets.isEmpty) {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('No other conversation to forward to.')));
+      messenger.showSnackBar(SnackBar(content: Text(l.chatNoForwardTarget)));
       return;
     }
     final to = await showModalBottomSheet<String>(
@@ -309,7 +310,7 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-              child: Text('Forward to',
+              child: Text(l.chatForwardTo,
                   style: TextStyle(
                       fontWeight: FontWeight.w700, color: ctx.z.accent)),
             ),
@@ -326,19 +327,21 @@ class _ChatScreenState extends State<ChatScreen> {
     if (to == null) return;
     try {
       await svc.forwardMessage(widget.rid, msg.mid, to);
-      messenger.showSnackBar(const SnackBar(content: Text('Forwarded.')));
+      messenger.showSnackBar(SnackBar(content: Text(l.chatForwarded)));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Forward failed: $e')));
+      messenger
+          .showSnackBar(SnackBar(content: Text(l.chatForwardFailed('$e'))));
     }
   }
 
   Future<void> _react(String mid, String emoji) async {
+    final l = AppLocalizations.of(context);
     try {
       await context.read<ChatService>().toggleReaction(widget.rid, mid, emoji);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Reaction failed: $e')));
+            .showSnackBar(SnackBar(content: Text(l.chatReactionFailed('$e'))));
       }
     }
   }
@@ -346,6 +349,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _send() async {
     final text = _input.text.trim();
     if (text.isEmpty || _sending) return;
+    final l = AppLocalizations.of(context);
     _input.clear();
     final replyTo = _replyTo?.mid;
     setState(() {
@@ -363,7 +367,7 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Send failed: $e')));
+            .showSnackBar(SnackBar(content: Text(l.chatSendFailed('$e'))));
       }
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -411,15 +415,13 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _pickTimer() async {
     final svc = context.read<ChatService>();
+    final l = AppLocalizations.of(context);
     final current = svc.contacts[widget.rid]?.ttlSec ?? 0;
+    // Labelled through the same function that describes the setting
+    // elsewhere, so the picker and the contact screen cannot disagree.
     final options = <(int, String)>[
-      (0, 'Off'),
-      (30, '30 seconds'),
-      (300, '5 minutes'),
-      (3600, '1 hour'),
-      (28800, '8 hours'),
-      (86400, '1 day'),
-      (604800, '1 week'),
+      for (final sec in const [0, 30, 300, 3600, 28800, 86400, 604800])
+        (sec, ttlText(l, sec)),
     ];
     final chosen = await showModalBottomSheet<int>(
       context: context,
@@ -428,10 +430,10 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('Disappearing messages',
-                  style: TextStyle(fontWeight: FontWeight.w700)),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(l.disappearingMessages,
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
             ),
             for (final (sec, label) in options)
               ListTile(
@@ -457,11 +459,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final svc = context.watch<ChatService>();
     final group = svc.groups[widget.rid];
     final contact = svc.contacts[widget.rid];
     if (contact == null && group == null) {
-      return const Scaffold(body: Center(child: Text('Conversation removed')));
+      return Scaffold(body: Center(child: Text(l.chatConversationRemoved)));
     }
     final isGroup = group != null;
     final title = isGroup ? group.name : contact!.name;
@@ -470,14 +473,12 @@ class _ChatScreenState extends State<ChatScreen> {
     // does, and saying "verified" anyway is the claim this phase exists to
     // stop making.
     final subtitle = isGroup
-        ? '${group.memberRids.length + 1} members · end-to-end encrypted'
+        ? l.chatGroupSubtitle(group.memberRids.length + 1)
         : switch (svc.verificationWith(widget.rid)) {
-            VerificationState.verified => 'end-to-end encrypted · verified',
-            VerificationState.upgradedReverify =>
-              'end-to-end encrypted · re-verify',
-            VerificationState.changedUnexpectedly =>
-              'end-to-end encrypted · number changed',
-            VerificationState.unverified => 'end-to-end encrypted',
+            VerificationState.verified => l.chatSubVerified,
+            VerificationState.upgradedReverify => l.chatSubReverify,
+            VerificationState.changedUnexpectedly => l.chatSubNumberChanged,
+            VerificationState.unverified => l.chatSubEncrypted,
           };
     final messages = svc.messagesByChat[widget.rid] ?? [];
 
@@ -544,7 +545,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ? context.z.accent
                     : context.z.textSecondary,
               ),
-              tooltip: 'Disappearing messages',
+              tooltip: l.disappearingMessages,
               onPressed: _pickTimer,
             ),
         ],
@@ -588,8 +589,7 @@ class _ChatScreenState extends State<ChatScreen> {
               child: Padding(
                 padding: EdgeInsets.all(14),
                 child: Text(
-                  'You are no longer in this group. History stays on this '
-                  'device; no new messages can be sent or received.',
+                  l.chatLeftGroupNotice,
                   textAlign: TextAlign.center,
                   style:
                       TextStyle(fontSize: 12, color: context.z.textSecondary),
@@ -609,7 +609,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             fontSize: 15, fontWeight: FontWeight.w600)),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: Text('Recording… sent encrypted, like everything',
+                      child: Text(l.chatRecordingHint,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                               fontSize: 12, color: context.z.textSecondary)),
@@ -617,7 +617,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     IconButton(
                       icon: Icon(Icons.delete_outline,
                           color: context.z.textSecondary),
-                      tooltip: 'Discard',
+                      tooltip: l.chatDiscard,
                       onPressed: () => _stopRecording(send: false),
                     ),
                     const SizedBox(width: 4),
@@ -626,7 +626,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           backgroundColor: context.z.accent,
                           foregroundColor: context.z.onAccent),
                       icon: const Icon(Icons.arrow_upward),
-                      tooltip: 'Send voice message',
+                      tooltip: l.chatSendVoice,
                       onPressed: () => _stopRecording(send: true),
                     ),
                   ],
@@ -649,7 +649,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         IconButton(
-                          tooltip: 'Attach a file',
+                          tooltip: l.chatAttachFile,
                           icon: Icon(Icons.attach_file,
                               color: context.z.textSecondary),
                           onPressed: _attach,
@@ -664,8 +664,8 @@ class _ChatScreenState extends State<ChatScreen> {
                             onSubmitted: (_) => _send(),
                             decoration: InputDecoration(
                               hintText: _replyTo == null
-                                  ? 'Encrypted message…'
-                                  : 'Reply…',
+                                  ? l.chatInputHint
+                                  : l.chatReplyHint,
                               contentPadding: const EdgeInsets.symmetric(
                                   horizontal: 16, vertical: 12),
                             ),
@@ -674,7 +674,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         IconButton(
                           icon: Icon(Icons.mic_none,
                               color: context.z.textSecondary),
-                          tooltip: 'Record a voice message',
+                          tooltip: l.chatRecordVoice,
                           onPressed: _startRecording,
                         ),
                         const SizedBox(width: 4),
@@ -730,6 +730,7 @@ class _MessageRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     if (msg.kind == 'system') {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 32),
@@ -805,7 +806,7 @@ class _MessageRow extends StatelessWidget {
                       Icon(Icons.shortcut,
                           size: 12, color: context.z.textSecondary),
                       const SizedBox(width: 4),
-                      Text('Forwarded',
+                      Text(l.chatForwardedLabel,
                           style: TextStyle(
                               fontSize: 11,
                               fontStyle: FontStyle.italic,
@@ -823,9 +824,7 @@ class _MessageRow extends StatelessWidget {
                             size: 14, color: context.z.textSecondary),
                         const SizedBox(width: 6),
                         Text(
-                          mine
-                              ? 'You deleted this message'
-                              : 'This message was deleted',
+                          mine ? l.chatYouDeleted : l.chatTheyDeleted,
                           style: TextStyle(
                               fontSize: 14,
                               fontStyle: FontStyle.italic,
@@ -869,7 +868,7 @@ class _MessageRow extends StatelessWidget {
               if (failed)
                 Padding(
                   padding: EdgeInsets.only(top: 2),
-                  child: Text('Failed to send — tap to retry',
+                  child: Text(l.chatFailedTapRetry,
                       style: TextStyle(fontSize: 10, color: context.z.danger)),
                 ),
               if (msg.reactions.isNotEmpty)
@@ -888,6 +887,7 @@ class _MessageRow extends StatelessWidget {
   }
 
   void _showActions(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final mine = msg.reactions.where((r) => r.mine).map((r) => r.emoji).toSet();
     showModalBottomSheet<void>(
       context: context,
@@ -907,8 +907,8 @@ class _MessageRow extends StatelessWidget {
                         // is the one already on this message — an emoji glyph
                         // alone tells a screen-reader user neither.
                         tooltip: mine.contains(emoji)
-                            ? 'Remove $emoji reaction'
-                            : 'React with $emoji',
+                            ? l.chatRemoveReaction(emoji)
+                            : l.chatReactWith(emoji),
                         // The one already on this message reads as selected.
                         style: mine.contains(emoji)
                             ? IconButton.styleFrom(
@@ -925,7 +925,7 @@ class _MessageRow extends StatelessWidget {
               ),
             ListTile(
               leading: Icon(Icons.reply, color: ctx.z.accent),
-              title: const Text('Reply'),
+              title: Text(l.chatReply),
               onTap: () {
                 Navigator.pop(ctx);
                 onReply?.call();
@@ -934,7 +934,7 @@ class _MessageRow extends StatelessWidget {
             if (msg.kind != 'file')
               ListTile(
                 leading: Icon(Icons.copy_outlined, color: ctx.z.textSecondary),
-                title: const Text('Copy text'),
+                title: Text(l.chatCopyText),
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: msg.body));
                   Navigator.pop(ctx);
@@ -943,7 +943,7 @@ class _MessageRow extends StatelessWidget {
             if (onForward != null)
               ListTile(
                 leading: Icon(Icons.shortcut, color: ctx.z.textSecondary),
-                title: const Text('Forward'),
+                title: Text(l.chatForward),
                 onTap: () {
                   Navigator.pop(ctx);
                   onForward!();
@@ -953,7 +953,7 @@ class _MessageRow extends StatelessWidget {
             if (msg.outgoing && onEdit != null && msg.kind != 'file')
               ListTile(
                 leading: Icon(Icons.edit_outlined, color: ctx.z.textSecondary),
-                title: const Text('Edit'),
+                title: Text(l.chatEdit),
                 onTap: () {
                   Navigator.pop(ctx);
                   onEdit!();
@@ -962,7 +962,7 @@ class _MessageRow extends StatelessWidget {
             if (msg.outgoing && onDelete != null)
               ListTile(
                 leading: Icon(Icons.delete_outline, color: ctx.z.danger),
-                title: Text('Delete for everyone',
+                title: Text(l.chatDeleteForEveryone,
                     style: TextStyle(color: ctx.z.danger)),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -977,6 +977,7 @@ class _MessageRow extends StatelessWidget {
 
   void _showFailedMenu(BuildContext context) {
     final chat = context.read<ChatService>();
+    final l = AppLocalizations.of(context);
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -986,19 +987,19 @@ class _MessageRow extends StatelessWidget {
             if (msg.kind == 'text')
               ListTile(
                 leading: Icon(Icons.refresh, color: context.z.accent),
-                title: const Text('Retry send'),
+                title: Text(l.chatRetrySend),
                 onTap: () async {
                   Navigator.pop(ctx);
                   final ok = await chat.retryFailedSend(msg.rid, msg.mid);
                   if (!ok && context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content: Text('Could not retry this message.')));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(l.chatRetryFailed)));
                   }
                 },
               ),
             ListTile(
               leading: Icon(Icons.delete_outline, color: context.z.danger),
-              title: const Text('Delete for me'),
+              title: Text(l.chatDeleteForMe),
               onTap: () {
                 Navigator.pop(ctx);
                 chat.deleteMessage(msg.rid, msg.mid);
@@ -1020,6 +1021,7 @@ class _ReactionChips extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final counts = <String, int>{};
     final mine = <String>{};
     final who = <String, List<String>>{};
@@ -1028,7 +1030,7 @@ class _ReactionChips extends StatelessWidget {
       if (r.mine) mine.add(r.emoji);
       who
           .putIfAbsent(r.emoji, () => [])
-          .add(r.mine ? 'You' : (r.senderName ?? 'Someone'));
+          .add(r.mine ? l.you : (r.senderName ?? l.chatSomeone));
     }
     return Padding(
       padding: const EdgeInsets.only(top: 6),
@@ -1055,7 +1057,7 @@ class _ReactionChips extends StatelessWidget {
                     ),
                   ),
                   child: Text(
-                    counts[e]! > 1 ? '$e ${counts[e]}' : e,
+                    counts[e]! > 1 ? l.chatReactionChip(e, counts[e]!) : e,
                     style: const TextStyle(fontSize: 12),
                   ),
                 ),
@@ -1075,7 +1077,14 @@ class _ReplyBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final who = msg.outgoing ? 'yourself' : (msg.senderName ?? 'them');
+    final l = AppLocalizations.of(context);
+    // Three strings, not "Replying to " + a word: "yourself" and a name do
+    // not take the same grammar in most languages.
+    final heading = msg.outgoing
+        ? l.chatReplyingToSelf
+        : (msg.senderName == null
+            ? l.chatReplyingToThem
+            : l.chatReplyingTo(msg.senderName!));
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 6, 12, 0),
       padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
@@ -1091,14 +1100,14 @@ class _ReplyBar extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text('Replying to $who',
+                Text(heading,
                     style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w700,
                         color: context.z.accent)),
                 const SizedBox(height: 2),
                 Text(
-                  msg.kind == 'file' ? '📎 ${msg.body}' : msg.body,
+                  msg.kind == 'file' ? l.chatPreviewFile(msg.body) : msg.body,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style:
@@ -1109,7 +1118,7 @@ class _ReplyBar extends StatelessWidget {
           ),
           IconButton(
             icon: Icon(Icons.close, size: 18, color: context.z.textSecondary),
-            tooltip: 'Cancel reply',
+            tooltip: l.chatCancelReply,
             onPressed: onCancel,
           ),
         ],
@@ -1130,11 +1139,12 @@ class _QuoteBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final q = quote;
     final unavailable = q == null;
     final who = unavailable
-        ? 'Message unavailable'
-        : (q.outgoing ? 'You' : (q.senderName ?? 'Them'));
+        ? l.chatMessageUnavailable
+        : (q.outgoing ? l.you : (q.senderName ?? l.chatThem));
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -1166,7 +1176,7 @@ class _QuoteBlock extends StatelessWidget {
             if (!unavailable) ...[
               const SizedBox(height: 2),
               Text(
-                q.kind == 'file' ? '📎 ${q.preview}' : q.preview,
+                q.kind == 'file' ? l.chatPreviewFile(q.preview) : q.preview,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 12, color: context.z.textSecondary),
@@ -1216,6 +1226,7 @@ class _FileBodyState extends State<_FileBody> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final f = widget.msg.file;
     if (f == null) {
       return Text('…', style: TextStyle(color: context.z.textSecondary));
@@ -1245,7 +1256,8 @@ class _FileBodyState extends State<_FileBody> {
               // The file name is the only description we have of an
               // image we cannot see into; it beats "image".
               child: Image.memory(_imageBytes!,
-                  fit: BoxFit.cover, semanticLabel: widget.msg.file?.name ?? 'Image'),
+                  fit: BoxFit.cover,
+                  semanticLabel: widget.msg.file?.name ?? l.chatImage),
             ),
           )
         else
@@ -1266,7 +1278,7 @@ class _FileBodyState extends State<_FileBody> {
                             fontSize: 14, fontWeight: FontWeight.w600)),
                     Text(
                       f.complete
-                          ? _size(f.size)
+                          ? _size(l, f.size)
                           : 'receiving ${f.gotChunks}/${f.totalChunks}…',
                       style: TextStyle(
                           fontSize: 11, color: context.z.textSecondary),
@@ -1286,7 +1298,7 @@ class _FileBodyState extends State<_FileBody> {
                 foregroundColor: context.z.accent,
               ),
               icon: const Icon(Icons.download, size: 14),
-              label: const Text('Save', style: TextStyle(fontSize: 12)),
+              label: Text(l.save, style: const TextStyle(fontSize: 12)),
               onPressed: () => _save(context, f.fid, f.name),
             ),
           ),
@@ -1294,29 +1306,29 @@ class _FileBodyState extends State<_FileBody> {
     );
   }
 
-  String _size(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+  String _size(AppLocalizations l, int bytes) {
+    if (bytes < 1024) return l.sizeB('$bytes');
+    if (bytes < 1024 * 1024) return l.sizeKb((bytes / 1024).toStringAsFixed(1));
+    return l.sizeMb((bytes / 1024 / 1024).toStringAsFixed(1));
   }
 
   Future<void> _save(BuildContext context, String fid, String name) async {
     final svc = context.read<ChatService>();
     final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
     try {
       final bytes = await svc.readAttachment(fid);
       // Who writes the bytes differs per platform; FileExport knows.
       final path = await FileExport.saveBytes(
-        dialogTitle: 'Save decrypted copy',
+        dialogTitle: l.chatSaveDialogTitle,
         fileName: name,
         bytes: bytes,
       );
       if (path != null) {
-        messenger.showSnackBar(
-            const SnackBar(content: Text('Saved (decrypted copy)')));
+        messenger.showSnackBar(SnackBar(content: Text(l.chatSavedDecrypted)));
       }
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Save failed: $e')));
+      messenger.showSnackBar(SnackBar(content: Text(l.chatSaveFailed('$e'))));
     }
   }
 }
@@ -1330,6 +1342,7 @@ class _DevlistBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Material(
       color: context.z.warn.withValues(alpha: 0.12),
       child: Padding(
@@ -1347,7 +1360,7 @@ class _DevlistBanner extends StatelessWidget {
             ),
             IconButton(
               icon: const Icon(Icons.close, size: 18),
-              tooltip: 'Dismiss',
+              tooltip: l.dismiss,
               color: context.z.textSecondary,
               onPressed: onDismiss,
             ),

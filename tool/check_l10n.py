@@ -46,6 +46,9 @@ MIGRATED = {
     "link_device_screen.dart",
     "backup_screen.dart",
     "contact_info_screen.dart",
+    "chat_screen.dart",
+    # No strings of its own; listed so that one added later is caught.
+    "theme.dart",
 }
 
 # Literals that look user-visible and are not.
@@ -89,8 +92,15 @@ def literals(src: str, name: str = ""):
     """
     here = ALLOWED_IN.get(name, frozenset())
     out = []
-    for m in re.finditer(r"'([^'\\\n]{3,})'", src):
-        v = m.group(1)
+    # Both quote styles. The first version scanned single quotes only, and a
+    # string with an apostrophe in it — "Recording isn't available" — is
+    # exactly the one Dart authors write in double quotes; it sat in a screen
+    # uncounted. Comment lines are skipped so prose in them is not flagged.
+    for m in re.finditer(r"'([^'\\\n]{3,})'|\"([^\"\\\n]{3,})\"", src):
+        line_start = src.rfind("\n", 0, m.start()) + 1
+        if src[line_start:m.start()].lstrip().startswith("//"):
+            continue
+        v = m.group(1) if m.group(1) is not None else m.group(2)
         if v in ALLOWED or v in here:
             continue
         if v.startswith("package:") or "/" in v or v.startswith("z/"):
