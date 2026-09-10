@@ -26,7 +26,7 @@ decision rather than by unfinished work.
 | G6 | Published threat model | ✅ |
 | G7 | Platform completion (Android, iOS, Windows, macOS, Linux) | ❌ **iOS does not exist** |
 | G8 | Accessibility | ✅ for the checks that exist; see the caveat |
-| G9 | Localization | ❌ **8 of 14 screens** |
+| G9 | Localization | ❌ **10 of 14 screens** |
 
 ---
 
@@ -134,8 +134,13 @@ doing before 1.0 and is not something a test replaces.
 
 The foundation is in — `flutter_localizations`, `gen-l10n`, an ARB with a
 description on every string, and `tool/check_l10n.py` holding migrated screens
-to zero hardcoded literals. **8 of 14 screens are migrated; ~361
+to zero hardcoded literals. **10 of 14 screens are migrated; ~250
 strings remain**, and no locale but English exists.
+
+The four left are the four largest — `settings_screen.dart` (107),
+`chat_screen.dart` (76), `contact_info_screen.dart` (67) — which is the usual
+shape of this kind of migration: the small screens go first and the count falls
+slowly at the end.
 
 Z publishes release notes in six locales. Shipping an app in one is a defensible
 1.0 decision, but it should be a decision rather than an oversight, and the

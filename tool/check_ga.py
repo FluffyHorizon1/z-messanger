@@ -72,7 +72,7 @@ def main() -> int:
         for p in sorted((ROOT / "app" / "lib" / "ui").glob("*.dart")):
             if p.name in check_l10n.MIGRATED:
                 continue
-            actual += len(check_l10n.literals(p.read_text()))
+            actual += len(check_l10n.literals(p.read_text(), p.name))
         stated = int(m.group(1))
         # Prose rounds; a drift of more than a handful means a screen landed.
         if abs(stated - actual) > 5:
@@ -80,6 +80,27 @@ def main() -> int:
                 f"GA_CHECKLIST.md says ~{stated} strings remain; there are "
                 f"{actual}. A migrated screen has landed and G9 was not "
                 f"updated."
+            )
+
+    # G9 — the migrated-screen count, stated twice: once in the summary table
+    # and once in the prose. The string count above would not have caught this,
+    # because the two numbers move for different reasons: migrating a small
+    # screen barely dents the string count but always moves the screen count.
+    ui = sorted((ROOT / "app" / "lib" / "ui").glob("*.dart"))
+    sys.path.insert(0, str(ROOT / "tool"))
+    import check_l10n  # noqa: E402
+    done, files = len(check_l10n.MIGRATED), len(ui)
+    stated_counts = re.findall(r"(\d+) of (\d+) screens", text)
+    if not stated_counts:
+        problems.append(
+            "GA_CHECKLIST.md no longer states an 'N of M screens' figure for "
+            "G9, so nothing checks it."
+        )
+    for a, b in stated_counts:
+        if (int(a), int(b)) != (done, files):
+            problems.append(
+                f"GA_CHECKLIST.md says {a} of {b} screens are migrated; "
+                f"check_l10n.MIGRATED lists {done} of {files}."
             )
 
     # The summary must not outrun the rows.

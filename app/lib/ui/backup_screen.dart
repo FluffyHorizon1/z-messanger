@@ -14,6 +14,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+import '../l10n/app_localizations.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -61,11 +63,12 @@ class _BackupScreenState extends State<BackupScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final z = context.z;
     final latest = _latest;
     return Scaffold(
       backgroundColor: z.bg,
-      appBar: AppBar(title: const Text('Backup')),
+      appBar: AppBar(title: Text(l.backupTitle)),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -78,8 +81,8 @@ class _BackupScreenState extends State<BackupScreen> {
                 children: [
                   Text(
                     latest == null
-                        ? 'No backup yet'
-                        : 'Last backup ${_when(latest.takenAt)}',
+                        ? l.backupNoneYet
+                        : l.backupLastTaken(_when(latest.takenAt, l)),
                     style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
@@ -88,11 +91,8 @@ class _BackupScreenState extends State<BackupScreen> {
                   const SizedBox(height: 6),
                   Text(
                     latest == null
-                        ? 'Your messages live only on this device. If you lose '
-                            'it, they are gone — there is no copy on any server.'
-                        : '${_size(latest.bytes)} · kept on this device. Save a '
-                            'copy somewhere else so a lost phone does not take '
-                            'it with them.',
+                        ? l.backupNoneBody
+                        : l.backupExistsBody(_size(latest.bytes, l)),
                     style: TextStyle(fontSize: 13, color: z.textSecondary),
                   ),
                 ],
@@ -106,40 +106,36 @@ class _BackupScreenState extends State<BackupScreen> {
               child: Column(children: [
                 const CircularProgressIndicator(),
                 const SizedBox(height: 12),
-                Text(_stage ?? 'Working…',
+                Text(_stage ?? l.backupWorking,
                     style: TextStyle(color: z.textSecondary)),
               ]),
             )
           else ...[
             ListTile(
               leading: Icon(Icons.enhanced_encryption, color: z.accent),
-              title: const Text('Create a backup'),
-              subtitle: const Text(
-                  'Every message, contact, group and attachment, encrypted '
-                  'with a recovery code only you hold.',
+              title: Text(l.backupCreate),
+              subtitle: Text(
+                  l.backupCreateHelp,
                   style: TextStyle(fontSize: 12)),
               onTap: _createBackup,
             ),
             if (latest != null)
               ListTile(
                 leading: const Icon(Icons.save_alt),
-                title: const Text('Save a copy…'),
-                subtitle: const Text(
-                    'Put the latest backup somewhere off this device.',
+                title: Text(l.backupSaveCopy),
+                subtitle: Text(
+                    l.backupSaveCopyHelp,
                     style: TextStyle(fontSize: 12)),
                 onTap: () => _saveCopy(latest),
               ),
             SwitchListTile(
               secondary: Icon(Icons.schedule,
                   color: _intervalDays > 0 ? z.accent : z.textSecondary),
-              title: const Text('Back up automatically'),
+              title: Text(l.backupAuto),
               subtitle: Text(
                   _intervalDays > 0
-                      ? 'Every $_intervalDays days, using the recovery code '
-                          'you saved. That code is kept on this device to '
-                          'make it possible.'
-                      : 'Off. Turning it on stores your recovery code on this '
-                          'device, so a backup can run without you.',
+                      ? l.backupAutoOnHelp(_intervalDays)
+                      : l.backupAutoOffHelp,
                   style: const TextStyle(fontSize: 12)),
               value: _intervalDays > 0,
               activeThumbColor: z.accent,
@@ -150,14 +146,7 @@ class _BackupScreenState extends State<BackupScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Text(
-              'A backup restores your history onto a new device. It does not '
-              'restore your live conversations — those re-handshake by '
-              'themselves the first time you message someone, and the other '
-              'person sees nothing unusual.\n\n'
-              'The backup never touches the relay. It is encrypted here, on '
-              'this device, and only the recovery code opens it. Lose the '
-              'code and the file cannot be opened by anyone — there is no '
-              'server-side way in, which is the point.',
+              l.backupFootnote,
               style: TextStyle(fontSize: 12, color: z.textSecondary),
             ),
           ),
@@ -171,6 +160,7 @@ class _BackupScreenState extends State<BackupScreen> {
   // ------------------------------------------------------------------
 
   Future<void> _createBackup() async {
+    final l = AppLocalizations.of(context);
     final store = _store;
     if (store == null) return;
     final messenger = ScaffoldMessenger.of(context);
@@ -201,7 +191,7 @@ class _BackupScreenState extends State<BackupScreen> {
     // 3. Write it.
     setState(() {
       _busy = true;
-      _stage = 'Preparing…';
+      _stage = l.backupPreparing;
     });
     try {
       final backup = await store.write(
@@ -209,9 +199,9 @@ class _BackupScreenState extends State<BackupScreen> {
         onProgress: (p) {
           if (!mounted) return;
           setState(() => _stage = switch (p.stage) {
-                'messages' => 'Packing messages…',
-                'attachments' => 'Packing attachments…',
-                _ => 'Finishing…',
+                'messages' => l.backupPackingMessages,
+                'attachments' => l.backupPackingAttachments,
+                _ => l.backupFinishing,
               });
         },
       );
@@ -221,8 +211,8 @@ class _BackupScreenState extends State<BackupScreen> {
         _stage = null;
         _latest = backup;
       });
-      messenger.showSnackBar(const SnackBar(
-          content: Text('Backup created. Save a copy somewhere safe.')));
+      messenger.showSnackBar(SnackBar(
+content: Text(l.backupCreated)));
       await _saveCopy(backup);
     } catch (e) {
       if (!mounted) return;
@@ -230,7 +220,7 @@ class _BackupScreenState extends State<BackupScreen> {
         _busy = false;
         _stage = null;
       });
-      messenger.showSnackBar(SnackBar(content: Text('Backup failed: $e')));
+      messenger.showSnackBar(SnackBar(content: Text(l.backupFailed('$e'))));
     }
   }
 
@@ -238,6 +228,7 @@ class _BackupScreenState extends State<BackupScreen> {
   /// cannot ask for one. Asking the user to type it again also means the
   /// stored copy is the code they actually hold, not one they lost.
   Future<void> _toggleSchedule(bool on) async {
+    final l = AppLocalizations.of(context);
     final sched = _sched;
     if (sched == null) return;
     final messenger = ScaffoldMessenger.of(context);
@@ -245,8 +236,8 @@ class _BackupScreenState extends State<BackupScreen> {
       await sched.disable();
       if (!mounted) return;
       setState(() => _intervalDays = 0);
-      messenger.showSnackBar(const SnackBar(
-          content: Text('Automatic backup off. The stored code was erased.')));
+      messenger.showSnackBar(SnackBar(
+content: Text(l.backupAutoOff)));
       return;
     }
     final typed = await showDialog<String>(
@@ -259,8 +250,8 @@ class _BackupScreenState extends State<BackupScreen> {
       await sched.enable(code: code, everyDays: 7);
       if (!mounted) return;
       setState(() => _intervalDays = 7);
-      messenger.showSnackBar(const SnackBar(
-          content: Text('Z will back up every 7 days with that code.')));
+      messenger.showSnackBar(SnackBar(
+content: Text(l.backupAutoOn)));
     } on FormatException catch (e) {
       if (!mounted) return;
       messenger.showSnackBar(SnackBar(content: Text(e.message)));
@@ -268,35 +259,36 @@ class _BackupScreenState extends State<BackupScreen> {
   }
 
   Future<void> _saveCopy(StoredBackup backup) async {
+    final l = AppLocalizations.of(context);
     final messenger = ScaffoldMessenger.of(context);
     try {
       final path = await BackupStore.handToUser(backup);
       if (path != null) {
-        messenger.showSnackBar(const SnackBar(content: Text('Copy saved.')));
+        messenger.showSnackBar(SnackBar(
+content: Text(l.backupCopySaved)));
       }
     } on SaveTooLargeException {
       // The backup is fine — only the hand-off failed — so say where it is
       // rather than implying the backup did not happen.
       messenger.showSnackBar(SnackBar(
-          content: Text('That backup is too large for this device\'s file '
-              'picker. It is still saved in the app as ${backup.name}.'),
+          content: Text(l.backupTooLargeForPicker(backup.name)),
           duration: const Duration(seconds: 6)));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Could not save: $e')));
+      messenger.showSnackBar(SnackBar(content: Text(l.backupSaveFailed('$e'))));
     }
   }
 
-  static String _size(int b) => b < 1024 * 1024
-      ? '${(b / 1024).toStringAsFixed(0)} KB'
-      : '${(b / 1024 / 1024).toStringAsFixed(1)} MB';
+  static String _size(int b, AppLocalizations l) => b < 1024 * 1024
+      ? l.sizeKb((b / 1024).toStringAsFixed(0))
+      : l.sizeMb((b / 1024 / 1024).toStringAsFixed(1));
 
-  static String _when(DateTime t) {
+  static String _when(DateTime t, AppLocalizations l) {
     final d = DateTime.now().difference(t);
-    if (d.inMinutes < 1) return 'just now';
-    if (d.inHours < 1) return '${d.inMinutes} min ago';
-    if (d.inDays < 1) return '${d.inHours} h ago';
-    if (d.inDays == 1) return 'yesterday';
-    return '${d.inDays} days ago';
+    if (d.inMinutes < 1) return l.timeJustNow;
+    if (d.inHours < 1) return l.timeMinutesAgo(d.inMinutes);
+    if (d.inDays < 1) return l.timeHoursAgo(d.inHours);
+    if (d.inDays == 1) return l.timeYesterday;
+    return l.timeDaysAgo(d.inDays);
   }
 }
 
@@ -307,9 +299,10 @@ class _ShowCodeDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final z = context.z;
     return AlertDialog(
-      title: const Text('Your recovery code'),
+      title: Text(l.backupCodeTitle),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -333,15 +326,12 @@ class _ShowCodeDialog extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Text(
-            'Write this down and keep it somewhere separate from the backup '
-            'file itself. It is the only thing that opens the backup.',
+            l.backupCodeWriteDown,
             style: TextStyle(fontSize: 13, color: z.textPrimary),
           ),
           const SizedBox(height: 8),
           Text(
-            'Nobody can recover it for you — not us, not the relay, not with '
-            'a court order. That is deliberate, and it is the reason nobody '
-            'can be compelled to hand over your messages either.',
+            l.backupCodeNobodyCan,
             style: TextStyle(fontSize: 12, color: z.textSecondary),
           ),
         ],
@@ -349,20 +339,21 @@ class _ShowCodeDialog extends StatelessWidget {
       actions: [
         TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel')),
+            child: Text(l.cancel)),
         TextButton(
           onPressed: () async {
             await Clipboard.setData(ClipboardData(text: code));
             if (context.mounted) {
               ScaffoldMessenger.of(context)
-                  .showSnackBar(const SnackBar(content: Text('Code copied')));
+                  .showSnackBar(SnackBar(
+content: Text(l.codeCopied)));
             }
           },
-          child: const Text('Copy'),
+          child: Text(l.copy),
         ),
         FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('I have written it down')),
+            child: Text(l.backupCodeWritten)),
       ],
     );
   }
@@ -389,6 +380,7 @@ class _ConfirmCodeDialogState extends State<_ConfirmCodeDialog> {
   }
 
   Future<void> _check() async {
+    final l = AppLocalizations.of(context);
     setState(() {
       _checking = true;
       _error = null;
@@ -403,7 +395,7 @@ class _ConfirmCodeDialogState extends State<_ConfirmCodeDialog> {
       if (!same) {
         setState(() {
           _checking = false;
-          _error = 'That is a valid code, but not this one.';
+          _error = l.backupWrongCode;
         });
         return;
       }
@@ -418,16 +410,16 @@ class _ConfirmCodeDialogState extends State<_ConfirmCodeDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final z = context.z;
     return AlertDialog(
-      title: const Text('Type it back'),
+      title: Text(l.backupConfirmTitle),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'So we know it is written down correctly. Capitals, spacing and '
-            'dashes do not matter.',
+            l.backupConfirmBody,
             style: TextStyle(fontSize: 13, color: z.textSecondary),
           ),
           const SizedBox(height: 12),
@@ -449,9 +441,9 @@ class _ConfirmCodeDialogState extends State<_ConfirmCodeDialog> {
       actions: [
         TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Back')),
+            child: Text(l.back)),
         FilledButton(
-            onPressed: _checking ? null : _check, child: const Text('Confirm')),
+            onPressed: _checking ? null : _check, child: Text(l.confirm)),
       ],
     );
   }
@@ -463,37 +455,36 @@ class _AskCodeDialog extends StatelessWidget {
   _AskCodeDialog();
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Your recovery code'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-                'Type the code you saved. It is stored on this device so a '
-                'backup can run on its own — anyone who can already open this '
-                'app could then open your backup files too.',
-                style: TextStyle(fontSize: 13, color: context.z.textSecondary)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _ctrl,
-              autofocus: true,
-              autocorrect: false,
-              textCapitalization: TextCapitalization.characters,
-              style: const TextStyle(fontFamily: 'monospace'),
-              decoration: const InputDecoration(
-                  hintText: 'ZBK-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX'),
-              onSubmitted: (v) => Navigator.pop(context, v),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel')),
-          FilledButton(
-              onPressed: () => Navigator.pop(context, _ctrl.text),
-              child: const Text('Turn on')),
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    return AlertDialog(
+      title: Text(l.backupAskCodeTitle),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(l.backupAskCodeBody,
+              style: TextStyle(fontSize: 13, color: context.z.textSecondary)),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _ctrl,
+            autofocus: true,
+            autocorrect: false,
+            textCapitalization: TextCapitalization.characters,
+            style: const TextStyle(fontFamily: 'monospace'),
+            decoration: const InputDecoration(
+                hintText: 'ZBK-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX'),
+            onSubmitted: (v) => Navigator.pop(context, v),
+          ),
         ],
-      );
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context), child: Text(l.cancel)),
+        FilledButton(
+            onPressed: () => Navigator.pop(context, _ctrl.text),
+            child: Text(l.backupAskCodeTurnOn)),
+      ],
+    );
+  }
 }

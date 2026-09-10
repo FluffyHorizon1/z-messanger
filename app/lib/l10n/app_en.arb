@@ -236,10 +236,6 @@
   "@onbRelayReachable": {
     "description": "Result of a successful connection test."
   },
-  "onbRelayUnreachable": "Check the address and that it shows Live in your host dashboard.",
-  "@onbRelayUnreachable": {
-    "description": "Result of a failed connection test. 'Live' is the wording a hosting dashboard uses; keep it recognisable."
-  },
   "onbPickName": "Pick a display name (only your contacts ever see it).",
   "@onbPickName": {
     "description": "Validation: continue was pressed with no display name. The parenthetical answers the unspoken 'who can see this'."
@@ -443,5 +439,383 @@
         "type": "String"
       }
     }
+  },
+  "linkCompareTitle": "Compare the safety code",
+  "@linkCompareTitle": {
+    "description": "Heading on the pairing confirmation step."
+  },
+  "linkCompareBody": "This exact code must show on BOTH devices:",
+  "@linkCompareBody": {
+    "description": "Instruction above the SAS code. BOTH is emphasised because comparing on one screen proves nothing."
+  },
+  "linkCompareWarn": "If they differ, cancel — someone may be intercepting the link.",
+  "@linkCompareWarn": {
+    "description": "The whole point of the SAS. A mismatch is the machine-in-the-middle case, and the user must be told to stop rather than to retry."
+  },
+  "linkTheyDiffer": "They differ — cancel",
+  "@linkTheyDiffer": {
+    "description": "Rejects the pairing because the codes did not match."
+  },
+  "linkTheyMatch": "They match",
+  "@linkTheyMatch": {
+    "description": "Confirms the codes matched and completes the link."
+  },
+  "linkDone": "Device linked. It now carries your account and contacts.",
+  "@linkDone": {
+    "description": "Success confirmation after linking."
+  },
+  "linkCancelled": "Link cancelled.",
+  "@linkCancelled": {
+    "description": "The pairing was abandoned, by either side."
+  },
+  "linkFailed": "Link failed: {error}",
+  "@linkFailed": {
+    "description": "Pairing failed; {error} is the underlying message.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "linkADevice": "Link a device",
+  "@linkADevice": {
+    "description": "Title of the screen that adds a device, and the action that opens it."
+  },
+  "linkHostHelp": "On the device you want to add, install Z and choose \"Link to an existing account\". It will show a pairing code — enter it here.",
+  "@linkHostHelp": {
+    "description": "Instructions on the existing device. The quoted phrase must match the button label on the other screen."
+  },
+  "linkPairingCode": "Pairing code",
+  "@linkPairingCode": {
+    "description": "Label on the pairing-code field."
+  },
+  "linkDeviceAction": "Link device",
+  "@linkDeviceAction": {
+    "description": "Button that starts pairing from the entered code."
+  },
+  "linkSyncNote": "Live message sync across your devices arrives in a follow-up update; linking establishes the trusted, verified connection now.",
+  "@linkSyncNote": {
+    "description": "Sets expectations: linking works, live sync of new messages does not yet."
+  },
+  "linkToAccount": "Link to an account",
+  "@linkToAccount": {
+    "description": "Title of the screen on the device being added."
+  },
+  "linkJoinHelp": "On your existing device, open Settings → Linked devices → \"Link a device\", then enter the code below.",
+  "@linkJoinHelp": {
+    "description": "Instructions on the new device. The menu path must match the real one."
+  },
+  "copyCode": "Copy code",
+  "@copyCode": {
+    "description": "Copies the shown code to the clipboard."
+  },
+  "relayAddressDev": "Relay address (developer)",
+  "@relayAddressDev": {
+    "description": "Label on the relay field in the developer section."
+  },
+  "relayHelpLink": "Custom or self-hosted relay. Leave as-is for the default zmessengers.com relay.",
+  "@relayHelpLink": {
+    "description": "Help text under the relay field on the linking screen."
+  },
+  "hideDevOptions": "Hide developer options",
+  "@hideDevOptions": {
+    "description": "Collapses the developer section."
+  },
+  "devOptions": "Developer options",
+  "@devOptions": {
+    "description": "Expands the developer section."
+  },
+  "linkStart": "Start linking",
+  "@linkStart": {
+    "description": "Begins pairing from the new device."
+  },
+  "linkRevokeTitle": "Revoke this device?",
+  "@linkRevokeTitle": {
+    "description": "Confirmation dialog title for revoking a linked device."
+  },
+  "linkRevokeBody": "Messages will stop syncing to \"{device}\", and your contacts will no longer deliver to it. This can't be undone — to use that device again you would link it fresh.",
+  "@linkRevokeBody": {
+    "description": "Confirmation body. {device} is the device's id. Irreversibility is the point of the warning.",
+    "placeholders": {
+      "device": {
+        "type": "String"
+      }
+    }
+  },
+  "revoke": "Revoke",
+  "@revoke": {
+    "description": "Confirms revoking a device."
+  },
+  "linkedDevices": "Linked devices",
+  "@linkedDevices": {
+    "description": "Title of the linked-devices list."
+  },
+  "linkNoneYet": "No other devices linked yet.",
+  "@linkNoneYet": {
+    "description": "Empty state on the linked-devices list."
+  },
+  "linkNotRoot": "This is a linked device. Adding or revoking devices is done from your main device — the one that created the account.",
+  "@linkNotRoot": {
+    "description": "Shown on a device that is not the account root. It cannot administer the device list."
+  },
+  "linkRevokeNote": "Each device has its own keys. Revoking one re-signs your device list so your contacts immediately stop trusting it.",
+  "@linkRevokeNote": {
+    "description": "Footnote explaining what revocation does: it is a re-signed list, not a request to a server."
+  },
+  "linkThisDevice": "This device",
+  "@linkThisDevice": {
+    "description": "Marks the row for the device you are holding."
+  },
+  "linkKeyFingerprint": "Key {fingerprint}…",
+  "@linkKeyFingerprint": {
+    "description": "Shows the start of a device's key fingerprint. The ellipsis means it is truncated.",
+    "placeholders": {
+      "fingerprint": {
+        "type": "String"
+      }
+    }
+  },
+  "linkRevokeDevice": "Revoke device",
+  "@linkRevokeDevice": {
+    "description": "Action that revokes the selected device."
+  },
+  "backupTitle": "Backup",
+  "@backupTitle": {
+    "description": "Title of the backup screen."
+  },
+  "backupNoneYet": "No backup yet",
+  "@backupNoneYet": {
+    "description": "Status when no backup has been made."
+  },
+  "backupLastTaken": "Last backup {when}",
+  "@backupLastTaken": {
+    "description": "Status line; {when} is a relative time such as 'yesterday'.",
+    "placeholders": {
+      "when": {
+        "type": "String"
+      }
+    }
+  },
+  "backupNoneBody": "Your messages live only on this device. If you lose it, they are gone — there is no copy on any server.",
+  "@backupNoneBody": {
+    "description": "Shown when there is no backup. It states the consequence plainly because there is no recovery path to fall back on."
+  },
+  "backupExistsBody": "{size} · kept on this device. Save a copy somewhere else so a lost phone does not take it with them.",
+  "@backupExistsBody": {
+    "description": "Shown when a backup exists but may not have been copied off the device. {size} is e.g. '4.2 MB'.",
+    "placeholders": {
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "backupWorking": "Working…",
+  "@backupWorking": {
+    "description": "A backup is being written."
+  },
+  "backupCreate": "Create a backup",
+  "@backupCreate": {
+    "description": "Starts a backup."
+  },
+  "backupCreateHelp": "Every message, contact, group and attachment, encrypted with a recovery code only you hold.",
+  "@backupCreateHelp": {
+    "description": "Explains what goes into a backup and what protects it."
+  },
+  "backupSaveCopy": "Save a copy…",
+  "@backupSaveCopy": {
+    "description": "Exports the latest backup through the platform file picker."
+  },
+  "backupSaveCopyHelp": "Put the latest backup somewhere off this device.",
+  "@backupSaveCopyHelp": {
+    "description": "Why to export: a backup on the lost phone is no backup."
+  },
+  "backupAuto": "Back up automatically",
+  "@backupAuto": {
+    "description": "Toggle for scheduled backups."
+  },
+  "backupAutoOnHelp": "Every {days} days, using the recovery code you saved. That code is kept on this device to make it possible.",
+  "@backupAutoOnHelp": {
+    "description": "Shown when automatic backup is on. The second sentence is the trade-off being accepted.",
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "backupAutoOffHelp": "Off. Turning it on stores your recovery code on this device, so a backup can run without you.",
+  "@backupAutoOffHelp": {
+    "description": "Shown when automatic backup is off, stating what turning it on costs."
+  },
+  "backupFootnote": "A backup restores your history onto a new device. It does not restore your live conversations — those re-handshake by themselves the first time you message someone, and the other person sees nothing unusual.\n\nThe backup never touches the relay. It is encrypted here, on this device, and only the recovery code opens it. Lose the code and the file cannot be opened by anyone — there is no server-side way in, which is the point.",
+  "@backupFootnote": {
+    "description": "The long explanation at the foot of the backup screen. Two paragraphs, separated by a blank line: what a restore does and does not do, then where the encryption happens and what losing the code means. Keep both, and keep 'which is the point' — the irrecoverability is a design choice, not a shortcoming."
+  },
+  "backupPreparing": "Preparing…",
+  "@backupPreparing": {
+    "description": "First stage of writing a backup."
+  },
+  "backupPackingMessages": "Packing messages…",
+  "@backupPackingMessages": {
+    "description": "Progress stage."
+  },
+  "backupPackingAttachments": "Packing attachments…",
+  "@backupPackingAttachments": {
+    "description": "Progress stage."
+  },
+  "backupFinishing": "Finishing…",
+  "@backupFinishing": {
+    "description": "Last stage of writing a backup."
+  },
+  "backupCreated": "Backup created. Save a copy somewhere safe.",
+  "@backupCreated": {
+    "description": "Success confirmation."
+  },
+  "backupFailed": "Backup failed: {error}",
+  "@backupFailed": {
+    "description": "The backup could not be written.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "backupAutoOff": "Automatic backup off. The stored code was erased.",
+  "@backupAutoOff": {
+    "description": "Confirms turning scheduled backups off, and that the stored code is gone with it."
+  },
+  "backupAutoOn": "Z will back up every 7 days with that code.",
+  "@backupAutoOn": {
+    "description": "Confirms turning scheduled backups on."
+  },
+  "backupCopySaved": "Copy saved.",
+  "@backupCopySaved": {
+    "description": "The export through the file picker succeeded."
+  },
+  "backupTooLargeForPicker": "That backup is too large for this device's file picker. It is still saved in the app as {name}.",
+  "@backupTooLargeForPicker": {
+    "description": "The export failed but the backup itself is fine. Says where it is rather than implying it did not happen.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "backupSaveFailed": "Could not save: {error}",
+  "@backupSaveFailed": {
+    "description": "The export failed.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "sizeKb": "{kb} KB",
+  "@sizeKb": {
+    "description": "A file size in kilobytes.",
+    "placeholders": {
+      "kb": {
+        "type": "String"
+      }
+    }
+  },
+  "sizeMb": "{mb} MB",
+  "@sizeMb": {
+    "description": "A file size in megabytes.",
+    "placeholders": {
+      "mb": {
+        "type": "String"
+      }
+    }
+  },
+  "timeJustNow": "just now",
+  "@timeJustNow": {
+    "description": "Relative time, under a minute ago."
+  },
+  "timeMinutesAgo": "{count, plural, =1{1 min ago} other{{count} min ago}}",
+  "@timeMinutesAgo": {
+    "description": "Relative time in minutes.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timeHoursAgo": "{count, plural, =1{1 h ago} other{{count} h ago}}",
+  "@timeHoursAgo": {
+    "description": "Relative time in hours.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timeYesterday": "yesterday",
+  "@timeYesterday": {
+    "description": "Relative time, one day ago."
+  },
+  "timeDaysAgo": "{count, plural, other{{count} days ago}}",
+  "@timeDaysAgo": {
+    "description": "Relative time in days, always two or more.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "backupCodeTitle": "Your recovery code",
+  "@backupCodeTitle": {
+    "description": "Title of the dialog showing a freshly generated recovery code."
+  },
+  "backupCodeWriteDown": "Write this down and keep it somewhere separate from the backup file itself. It is the only thing that opens the backup.",
+  "@backupCodeWriteDown": {
+    "description": "Instruction with the recovery code. 'separate from the backup file' matters: either alone is harmless, together they are the whole history."
+  },
+  "backupCodeNobodyCan": "Nobody can recover it for you — not us, not the relay, not with a court order. That is deliberate, and it is the reason nobody can be compelled to hand over your messages either.",
+  "@backupCodeNobodyCan": {
+    "description": "The second half of the recovery-code warning. It explains WHY irrecoverability is a feature; a translation that makes it sound like an apology loses the point."
+  },
+  "copy": "Copy",
+  "@copy": {
+    "description": "Copies text to the clipboard."
+  },
+  "codeCopied": "Code copied",
+  "@codeCopied": {
+    "description": "Confirms the code is on the clipboard."
+  },
+  "backupCodeWritten": "I have written it down",
+  "@backupCodeWritten": {
+    "description": "Confirms the user has recorded the recovery code, and dismisses the dialog."
+  },
+  "backupWrongCode": "That is a valid code, but not this one.",
+  "@backupWrongCode": {
+    "description": "The typed code is well-formed but is not the code for this backup — so the user has a code, just the wrong one."
+    },
+  "back": "Back",
+  "@back": {
+    "description": "Returns to the previous step of a multi-step dialog without cancelling it. Distinct from cancel, which abandons the whole flow."
+  },
+  "confirm": "Confirm",
+  "@confirm": {
+    "description": "Submits the current step of a dialog. Generic; used where the action is self-evident from the dialog above it."
+  },
+  "backupConfirmTitle": "Type it back",
+  "@backupConfirmTitle": {
+    "description": "Title of the dialog asking the user to re-type the recovery code they were just shown, to prove they recorded it."
+  },
+  "backupConfirmBody": "So we know it is written down correctly. Capitals, spacing and dashes do not matter.",
+  "@backupConfirmBody": {
+    "description": "Explains why the code must be typed back. The second sentence is load-bearing: without it users retype in a panic about exact formatting, and the check is in fact case- and separator-insensitive."
+  },
+  "backupAskCodeTitle": "Your recovery code",
+  "@backupAskCodeTitle": {
+    "description": "Title of the dialog asking for a recovery code the user ALREADY has, in order to turn on automatic backup. The English matches backupCodeTitle but the situation is the opposite one — that dialog hands out a new code, this one asks for an existing one — so a locale that distinguishes giving from asking must render them differently."
+  },
+  "backupAskCodeBody": "Type the code you saved. It is stored on this device so a backup can run on its own — anyone who can already open this app could then open your backup files too.",
+  "@backupAskCodeBody": {
+    "description": "The cost of turning on automatic backup, stated before the user agrees to it. The clause after the dash is the whole warning: storing the code trades some of the backup's independence from the device for convenience. A translation that drops it turns an informed choice into a silent one."
+  },
+  "backupAskCodeTurnOn": "Turn on",
+  "@backupAskCodeTurnOn": {
+    "description": "Confirms turning automatic backup on, using the code just typed."
   }
 }

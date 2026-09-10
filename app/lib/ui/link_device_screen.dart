@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import '../l10n/app_localizations.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -12,15 +14,16 @@ import 'theme.dart';
 
 /// Blocking dialog: the user compares the safety string on both screens.
 Future<bool> confirmSasDialog(BuildContext context, String sas) async {
+  final l = AppLocalizations.of(context);
   final ok = await showDialog<bool>(
     context: context,
     barrierDismissible: false,
     builder: (ctx) => AlertDialog(
-      title: const Text('Compare the safety code'),
+      title: Text(l.linkCompareTitle),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Text('This exact code must show on BOTH devices:'),
+          Text(l.linkCompareBody),
           const SizedBox(height: 18),
           Text(
             sas,
@@ -32,7 +35,7 @@ Future<bool> confirmSasDialog(BuildContext context, String sas) async {
           ),
           const SizedBox(height: 12),
           Text(
-            'If they differ, cancel — someone may be intercepting the link.',
+            l.linkCompareWarn,
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 12, color: context.z.textSecondary),
           ),
@@ -41,10 +44,10 @@ Future<bool> confirmSasDialog(BuildContext context, String sas) async {
       actions: [
         TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('They differ — cancel')),
+            child: Text(l.linkTheyDiffer)),
         FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('They match')),
+            child: Text(l.linkTheyMatch)),
       ],
     ),
   );
@@ -65,6 +68,7 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
   bool _ok = false;
 
   Future<void> _link() async {
+    final l = AppLocalizations.of(context);
     final chat = context.read<ChatService>();
     setState(() {
       _busy = true;
@@ -80,29 +84,28 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
         _busy = false;
         _ok = ok;
         _status = ok
-            ? 'Device linked. It now carries your account and contacts.'
-            : 'Link cancelled.';
+            ? l.linkDone
+            : l.linkCancelled;
       });
     } catch (e) {
       setState(() {
         _busy = false;
-        _status = 'Link failed: $e';
+        _status = l.linkFailed('$e');
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Link a device')),
+      appBar: AppBar(title: Text(l.linkADevice)),
       body: ListView(
         padding: EdgeInsets.fromLTRB(
             24, 24, 24, 24 + MediaQuery.paddingOf(context).bottom),
         children: [
           Text(
-            'On the device you want to add, install Z and choose '
-            '"Link to an existing account". It will show a pairing code — '
-            'enter it here.',
+            l.linkHostHelp,
             style: TextStyle(color: context.z.textSecondary, height: 1.5),
           ),
           const SizedBox(height: 24),
@@ -111,8 +114,8 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
             autofocus: true,
             textCapitalization: TextCapitalization.characters,
             style: const TextStyle(fontFamily: 'monospace', letterSpacing: 2),
-            decoration: const InputDecoration(
-              labelText: 'Pairing code',
+            decoration: InputDecoration(
+              labelText: l.linkPairingCode,
               hintText: 'ABCDE-FGHIJ-…',
             ),
           ),
@@ -129,7 +132,7 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
                     width: 20,
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('Link device'),
+                : Text(l.linkDeviceAction),
           ),
           if (_status != null)
             Padding(
@@ -140,8 +143,7 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
             ),
           const SizedBox(height: 24),
           Text(
-            'Live message sync across your devices arrives in a follow-up '
-            'update; linking establishes the trusted, verified connection now.',
+            l.linkSyncNote,
             style: TextStyle(color: context.z.textSecondary, fontSize: 12),
           ),
         ],
@@ -175,6 +177,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
   }
 
   Future<void> _start() async {
+    final l = AppLocalizations.of(context);
     final n = _initiator;
     if (n == null) return;
     final url = normalizeRelayUrl(_server.text);
@@ -191,7 +194,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
       if (result == null) {
         setState(() {
           _busy = false;
-          _error = 'Link cancelled.';
+          _error = l.linkCancelled;
         });
         return;
       }
@@ -233,23 +236,23 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
     } catch (e) {
       setState(() {
         _busy = false;
-        _error = 'Link failed: $e';
+        _error = l.linkFailed('$e');
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final code = _initiator?.code.text;
     return Scaffold(
-      appBar: AppBar(title: const Text('Link to an account')),
+      appBar: AppBar(title: Text(l.linkToAccount)),
       body: ListView(
         padding: EdgeInsets.fromLTRB(
             24, 24, 24, 24 + MediaQuery.paddingOf(context).bottom),
         children: [
           Text(
-            'On your existing device, open Settings → Linked devices → '
-            '"Link a device", then enter the code below.',
+            l.linkJoinHelp,
             style: TextStyle(color: context.z.textSecondary, height: 1.5),
           ),
           const SizedBox(height: 28),
@@ -269,7 +272,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
             Center(
               child: TextButton.icon(
                 icon: const Icon(Icons.copy, size: 16),
-                label: const Text('Copy code'),
+                label: Text(l.copyCode),
                 onPressed: () => Clipboard.setData(ClipboardData(text: code)),
               ),
             ),
@@ -277,10 +280,9 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
           if (_showDev) ...[
             TextField(
               controller: _server,
-              decoration: const InputDecoration(
-                labelText: 'Relay address (developer)',
-                helperText: 'Custom or self-hosted relay. Leave as-is for the '
-                    'default zmessengers.com relay.',
+              decoration: InputDecoration(
+                labelText: l.relayAddressDev,
+                helperText: l.relayHelpLink,
                 helperMaxLines: 2,
               ),
             ),
@@ -290,7 +292,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
             child: TextButton(
               onPressed: () => setState(() => _showDev = !_showDev),
               child: Text(
-                _showDev ? 'Hide developer options' : 'Developer options',
+                _showDev ? l.hideDevOptions : l.devOptions,
                 style: TextStyle(color: context.z.textSecondary, fontSize: 12),
               ),
             ),
@@ -313,7 +315,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
                     width: 20,
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('Start linking'),
+                : Text(l.linkStart),
           ),
         ],
       ),
@@ -365,24 +367,23 @@ class _LinkedDevicesScreenState extends State<LinkedDevicesScreen> {
   }
 
   Future<void> _remove(DeviceCertificate cert) async {
+    final l = AppLocalizations.of(context);
     final chat = context.read<ChatService>();
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Revoke this device?'),
+        title: Text(l.linkRevokeTitle),
         content: Text(
-          'Messages will stop syncing to "${cert.deviceId}", and your contacts '
-          'will no longer deliver to it. This can\'t be undone — to use that '
-          'device again you would link it fresh.',
+          l.linkRevokeBody(cert.deviceId),
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
+              child: Text(l.cancel)),
           FilledButton(
               style: FilledButton.styleFrom(backgroundColor: context.z.danger),
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Revoke')),
+              child: Text(l.revoke)),
         ],
       ),
     );
@@ -400,8 +401,9 @@ class _LinkedDevicesScreenState extends State<LinkedDevicesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Linked devices')),
+      appBar: AppBar(title: Text(l.linkedDevices)),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
@@ -424,7 +426,7 @@ class _LinkedDevicesScreenState extends State<LinkedDevicesScreen> {
                   Padding(
                     padding: EdgeInsets.symmetric(vertical: 8),
                     child: Text(
-                      'No other devices linked yet.',
+                      l.linkNoneYet,
                       style: TextStyle(
                           color: context.z.textSecondary, fontSize: 13),
                     ),
@@ -438,14 +440,12 @@ class _LinkedDevicesScreenState extends State<LinkedDevicesScreen> {
                       padding: const EdgeInsets.symmetric(vertical: 16),
                     ),
                     icon: const Icon(Icons.add_link),
-                    label: const Text('Link a device'),
+                    label: Text(l.linkADevice),
                     onPressed: _linkNew,
                   )
                 else
                   Text(
-                    'This is a linked device. Adding or revoking devices is '
-                    'done from your main device — the one that created the '
-                    'account.',
+                    l.linkNotRoot,
                     style: TextStyle(
                         color: context.z.textSecondary,
                         fontSize: 13,
@@ -453,8 +453,7 @@ class _LinkedDevicesScreenState extends State<LinkedDevicesScreen> {
                   ),
                 const SizedBox(height: 20),
                 Text(
-                  'Each device has its own keys. Revoking one re-signs your '
-                  'device list so your contacts immediately stop trusting it.',
+                  l.linkRevokeNote,
                   style: TextStyle(
                       color: context.z.textSecondary,
                       fontSize: 12,
@@ -480,6 +479,7 @@ class _DeviceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Card(
       color: context.z.surface,
       margin: const EdgeInsets.only(bottom: 10),
@@ -499,19 +499,19 @@ class _DeviceTile extends StatelessWidget {
                   color: context.z.accent.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(6),
                 ),
-                child: Text('This device',
+                child: Text(l.linkThisDevice,
                     style: TextStyle(fontSize: 11, color: context.z.accent)),
               ),
             ],
           ],
         ),
-        subtitle: Text('Key $fingerprint…',
+        subtitle: Text(l.linkKeyFingerprint(fingerprint),
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
         trailing: onRemove == null
             ? null
             : IconButton(
                 icon: Icon(Icons.delete_outline, color: context.z.danger),
-                tooltip: 'Revoke device',
+                tooltip: l.linkRevokeDevice,
                 onPressed: onRemove,
               ),
       ),

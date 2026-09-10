@@ -406,12 +406,6 @@ abstract class AppLocalizations {
   /// **'Connected — the relay is reachable.'**
   String get onbRelayReachable;
 
-  /// Result of a failed connection test. 'Live' is the wording a hosting dashboard uses; keep it recognisable.
-  ///
-  /// In en, this message translates to:
-  /// **'Check the address and that it shows Live in your host dashboard.'**
-  String get onbRelayUnreachable;
-
   /// Validation: continue was pressed with no display name. The parenthetical answers the unspoken 'who can see this'.
   ///
   /// In en, this message translates to:
@@ -687,6 +681,468 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Could not reach a relay at {url}.\nCheck the address and that it shows Live in your host dashboard.'**
   String onbRelayUnreachableAt(String url);
+
+  /// Heading on the pairing confirmation step.
+  ///
+  /// In en, this message translates to:
+  /// **'Compare the safety code'**
+  String get linkCompareTitle;
+
+  /// Instruction above the SAS code. BOTH is emphasised because comparing on one screen proves nothing.
+  ///
+  /// In en, this message translates to:
+  /// **'This exact code must show on BOTH devices:'**
+  String get linkCompareBody;
+
+  /// The whole point of the SAS. A mismatch is the machine-in-the-middle case, and the user must be told to stop rather than to retry.
+  ///
+  /// In en, this message translates to:
+  /// **'If they differ, cancel — someone may be intercepting the link.'**
+  String get linkCompareWarn;
+
+  /// Rejects the pairing because the codes did not match.
+  ///
+  /// In en, this message translates to:
+  /// **'They differ — cancel'**
+  String get linkTheyDiffer;
+
+  /// Confirms the codes matched and completes the link.
+  ///
+  /// In en, this message translates to:
+  /// **'They match'**
+  String get linkTheyMatch;
+
+  /// Success confirmation after linking.
+  ///
+  /// In en, this message translates to:
+  /// **'Device linked. It now carries your account and contacts.'**
+  String get linkDone;
+
+  /// The pairing was abandoned, by either side.
+  ///
+  /// In en, this message translates to:
+  /// **'Link cancelled.'**
+  String get linkCancelled;
+
+  /// Pairing failed; {error} is the underlying message.
+  ///
+  /// In en, this message translates to:
+  /// **'Link failed: {error}'**
+  String linkFailed(String error);
+
+  /// Title of the screen that adds a device, and the action that opens it.
+  ///
+  /// In en, this message translates to:
+  /// **'Link a device'**
+  String get linkADevice;
+
+  /// Instructions on the existing device. The quoted phrase must match the button label on the other screen.
+  ///
+  /// In en, this message translates to:
+  /// **'On the device you want to add, install Z and choose \"Link to an existing account\". It will show a pairing code — enter it here.'**
+  String get linkHostHelp;
+
+  /// Label on the pairing-code field.
+  ///
+  /// In en, this message translates to:
+  /// **'Pairing code'**
+  String get linkPairingCode;
+
+  /// Button that starts pairing from the entered code.
+  ///
+  /// In en, this message translates to:
+  /// **'Link device'**
+  String get linkDeviceAction;
+
+  /// Sets expectations: linking works, live sync of new messages does not yet.
+  ///
+  /// In en, this message translates to:
+  /// **'Live message sync across your devices arrives in a follow-up update; linking establishes the trusted, verified connection now.'**
+  String get linkSyncNote;
+
+  /// Title of the screen on the device being added.
+  ///
+  /// In en, this message translates to:
+  /// **'Link to an account'**
+  String get linkToAccount;
+
+  /// Instructions on the new device. The menu path must match the real one.
+  ///
+  /// In en, this message translates to:
+  /// **'On your existing device, open Settings → Linked devices → \"Link a device\", then enter the code below.'**
+  String get linkJoinHelp;
+
+  /// Copies the shown code to the clipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy code'**
+  String get copyCode;
+
+  /// Label on the relay field in the developer section.
+  ///
+  /// In en, this message translates to:
+  /// **'Relay address (developer)'**
+  String get relayAddressDev;
+
+  /// Help text under the relay field on the linking screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom or self-hosted relay. Leave as-is for the default zmessengers.com relay.'**
+  String get relayHelpLink;
+
+  /// Collapses the developer section.
+  ///
+  /// In en, this message translates to:
+  /// **'Hide developer options'**
+  String get hideDevOptions;
+
+  /// Expands the developer section.
+  ///
+  /// In en, this message translates to:
+  /// **'Developer options'**
+  String get devOptions;
+
+  /// Begins pairing from the new device.
+  ///
+  /// In en, this message translates to:
+  /// **'Start linking'**
+  String get linkStart;
+
+  /// Confirmation dialog title for revoking a linked device.
+  ///
+  /// In en, this message translates to:
+  /// **'Revoke this device?'**
+  String get linkRevokeTitle;
+
+  /// Confirmation body. {device} is the device's id. Irreversibility is the point of the warning.
+  ///
+  /// In en, this message translates to:
+  /// **'Messages will stop syncing to \"{device}\", and your contacts will no longer deliver to it. This can\'t be undone — to use that device again you would link it fresh.'**
+  String linkRevokeBody(String device);
+
+  /// Confirms revoking a device.
+  ///
+  /// In en, this message translates to:
+  /// **'Revoke'**
+  String get revoke;
+
+  /// Title of the linked-devices list.
+  ///
+  /// In en, this message translates to:
+  /// **'Linked devices'**
+  String get linkedDevices;
+
+  /// Empty state on the linked-devices list.
+  ///
+  /// In en, this message translates to:
+  /// **'No other devices linked yet.'**
+  String get linkNoneYet;
+
+  /// Shown on a device that is not the account root. It cannot administer the device list.
+  ///
+  /// In en, this message translates to:
+  /// **'This is a linked device. Adding or revoking devices is done from your main device — the one that created the account.'**
+  String get linkNotRoot;
+
+  /// Footnote explaining what revocation does: it is a re-signed list, not a request to a server.
+  ///
+  /// In en, this message translates to:
+  /// **'Each device has its own keys. Revoking one re-signs your device list so your contacts immediately stop trusting it.'**
+  String get linkRevokeNote;
+
+  /// Marks the row for the device you are holding.
+  ///
+  /// In en, this message translates to:
+  /// **'This device'**
+  String get linkThisDevice;
+
+  /// Shows the start of a device's key fingerprint. The ellipsis means it is truncated.
+  ///
+  /// In en, this message translates to:
+  /// **'Key {fingerprint}…'**
+  String linkKeyFingerprint(String fingerprint);
+
+  /// Action that revokes the selected device.
+  ///
+  /// In en, this message translates to:
+  /// **'Revoke device'**
+  String get linkRevokeDevice;
+
+  /// Title of the backup screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Backup'**
+  String get backupTitle;
+
+  /// Status when no backup has been made.
+  ///
+  /// In en, this message translates to:
+  /// **'No backup yet'**
+  String get backupNoneYet;
+
+  /// Status line; {when} is a relative time such as 'yesterday'.
+  ///
+  /// In en, this message translates to:
+  /// **'Last backup {when}'**
+  String backupLastTaken(String when);
+
+  /// Shown when there is no backup. It states the consequence plainly because there is no recovery path to fall back on.
+  ///
+  /// In en, this message translates to:
+  /// **'Your messages live only on this device. If you lose it, they are gone — there is no copy on any server.'**
+  String get backupNoneBody;
+
+  /// Shown when a backup exists but may not have been copied off the device. {size} is e.g. '4.2 MB'.
+  ///
+  /// In en, this message translates to:
+  /// **'{size} · kept on this device. Save a copy somewhere else so a lost phone does not take it with them.'**
+  String backupExistsBody(String size);
+
+  /// A backup is being written.
+  ///
+  /// In en, this message translates to:
+  /// **'Working…'**
+  String get backupWorking;
+
+  /// Starts a backup.
+  ///
+  /// In en, this message translates to:
+  /// **'Create a backup'**
+  String get backupCreate;
+
+  /// Explains what goes into a backup and what protects it.
+  ///
+  /// In en, this message translates to:
+  /// **'Every message, contact, group and attachment, encrypted with a recovery code only you hold.'**
+  String get backupCreateHelp;
+
+  /// Exports the latest backup through the platform file picker.
+  ///
+  /// In en, this message translates to:
+  /// **'Save a copy…'**
+  String get backupSaveCopy;
+
+  /// Why to export: a backup on the lost phone is no backup.
+  ///
+  /// In en, this message translates to:
+  /// **'Put the latest backup somewhere off this device.'**
+  String get backupSaveCopyHelp;
+
+  /// Toggle for scheduled backups.
+  ///
+  /// In en, this message translates to:
+  /// **'Back up automatically'**
+  String get backupAuto;
+
+  /// Shown when automatic backup is on. The second sentence is the trade-off being accepted.
+  ///
+  /// In en, this message translates to:
+  /// **'Every {days} days, using the recovery code you saved. That code is kept on this device to make it possible.'**
+  String backupAutoOnHelp(int days);
+
+  /// Shown when automatic backup is off, stating what turning it on costs.
+  ///
+  /// In en, this message translates to:
+  /// **'Off. Turning it on stores your recovery code on this device, so a backup can run without you.'**
+  String get backupAutoOffHelp;
+
+  /// The long explanation at the foot of the backup screen. Two paragraphs, separated by a blank line: what a restore does and does not do, then where the encryption happens and what losing the code means. Keep both, and keep 'which is the point' — the irrecoverability is a design choice, not a shortcoming.
+  ///
+  /// In en, this message translates to:
+  /// **'A backup restores your history onto a new device. It does not restore your live conversations — those re-handshake by themselves the first time you message someone, and the other person sees nothing unusual.\n\nThe backup never touches the relay. It is encrypted here, on this device, and only the recovery code opens it. Lose the code and the file cannot be opened by anyone — there is no server-side way in, which is the point.'**
+  String get backupFootnote;
+
+  /// First stage of writing a backup.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing…'**
+  String get backupPreparing;
+
+  /// Progress stage.
+  ///
+  /// In en, this message translates to:
+  /// **'Packing messages…'**
+  String get backupPackingMessages;
+
+  /// Progress stage.
+  ///
+  /// In en, this message translates to:
+  /// **'Packing attachments…'**
+  String get backupPackingAttachments;
+
+  /// Last stage of writing a backup.
+  ///
+  /// In en, this message translates to:
+  /// **'Finishing…'**
+  String get backupFinishing;
+
+  /// Success confirmation.
+  ///
+  /// In en, this message translates to:
+  /// **'Backup created. Save a copy somewhere safe.'**
+  String get backupCreated;
+
+  /// The backup could not be written.
+  ///
+  /// In en, this message translates to:
+  /// **'Backup failed: {error}'**
+  String backupFailed(String error);
+
+  /// Confirms turning scheduled backups off, and that the stored code is gone with it.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic backup off. The stored code was erased.'**
+  String get backupAutoOff;
+
+  /// Confirms turning scheduled backups on.
+  ///
+  /// In en, this message translates to:
+  /// **'Z will back up every 7 days with that code.'**
+  String get backupAutoOn;
+
+  /// The export through the file picker succeeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy saved.'**
+  String get backupCopySaved;
+
+  /// The export failed but the backup itself is fine. Says where it is rather than implying it did not happen.
+  ///
+  /// In en, this message translates to:
+  /// **'That backup is too large for this device\'s file picker. It is still saved in the app as {name}.'**
+  String backupTooLargeForPicker(String name);
+
+  /// The export failed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not save: {error}'**
+  String backupSaveFailed(String error);
+
+  /// A file size in kilobytes.
+  ///
+  /// In en, this message translates to:
+  /// **'{kb} KB'**
+  String sizeKb(String kb);
+
+  /// A file size in megabytes.
+  ///
+  /// In en, this message translates to:
+  /// **'{mb} MB'**
+  String sizeMb(String mb);
+
+  /// Relative time, under a minute ago.
+  ///
+  /// In en, this message translates to:
+  /// **'just now'**
+  String get timeJustNow;
+
+  /// Relative time in minutes.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 min ago} other{{count} min ago}}'**
+  String timeMinutesAgo(int count);
+
+  /// Relative time in hours.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 h ago} other{{count} h ago}}'**
+  String timeHoursAgo(int count);
+
+  /// Relative time, one day ago.
+  ///
+  /// In en, this message translates to:
+  /// **'yesterday'**
+  String get timeYesterday;
+
+  /// Relative time in days, always two or more.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, other{{count} days ago}}'**
+  String timeDaysAgo(int count);
+
+  /// Title of the dialog showing a freshly generated recovery code.
+  ///
+  /// In en, this message translates to:
+  /// **'Your recovery code'**
+  String get backupCodeTitle;
+
+  /// Instruction with the recovery code. 'separate from the backup file' matters: either alone is harmless, together they are the whole history.
+  ///
+  /// In en, this message translates to:
+  /// **'Write this down and keep it somewhere separate from the backup file itself. It is the only thing that opens the backup.'**
+  String get backupCodeWriteDown;
+
+  /// The second half of the recovery-code warning. It explains WHY irrecoverability is a feature; a translation that makes it sound like an apology loses the point.
+  ///
+  /// In en, this message translates to:
+  /// **'Nobody can recover it for you — not us, not the relay, not with a court order. That is deliberate, and it is the reason nobody can be compelled to hand over your messages either.'**
+  String get backupCodeNobodyCan;
+
+  /// Copies text to the clipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy'**
+  String get copy;
+
+  /// Confirms the code is on the clipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Code copied'**
+  String get codeCopied;
+
+  /// Confirms the user has recorded the recovery code, and dismisses the dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'I have written it down'**
+  String get backupCodeWritten;
+
+  /// The typed code is well-formed but is not the code for this backup — so the user has a code, just the wrong one.
+  ///
+  /// In en, this message translates to:
+  /// **'That is a valid code, but not this one.'**
+  String get backupWrongCode;
+
+  /// Returns to the previous step of a multi-step dialog without cancelling it. Distinct from cancel, which abandons the whole flow.
+  ///
+  /// In en, this message translates to:
+  /// **'Back'**
+  String get back;
+
+  /// Submits the current step of a dialog. Generic; used where the action is self-evident from the dialog above it.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirm'**
+  String get confirm;
+
+  /// Title of the dialog asking the user to re-type the recovery code they were just shown, to prove they recorded it.
+  ///
+  /// In en, this message translates to:
+  /// **'Type it back'**
+  String get backupConfirmTitle;
+
+  /// Explains why the code must be typed back. The second sentence is load-bearing: without it users retype in a panic about exact formatting, and the check is in fact case- and separator-insensitive.
+  ///
+  /// In en, this message translates to:
+  /// **'So we know it is written down correctly. Capitals, spacing and dashes do not matter.'**
+  String get backupConfirmBody;
+
+  /// Title of the dialog asking for a recovery code the user ALREADY has, in order to turn on automatic backup. The English matches backupCodeTitle but the situation is the opposite one — that dialog hands out a new code, this one asks for an existing one — so a locale that distinguishes giving from asking must render them differently.
+  ///
+  /// In en, this message translates to:
+  /// **'Your recovery code'**
+  String get backupAskCodeTitle;
+
+  /// The cost of turning on automatic backup, stated before the user agrees to it. The clause after the dash is the whole warning: storing the code trades some of the backup's independence from the device for convenience. A translation that drops it turns an informed choice into a silent one.
+  ///
+  /// In en, this message translates to:
+  /// **'Type the code you saved. It is stored on this device so a backup can run on its own — anyone who can already open this app could then open your backup files too.'**
+  String get backupAskCodeBody;
+
+  /// Confirms turning automatic backup on, using the code just typed.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn on'**
+  String get backupAskCodeTurnOn;
 }
 
 class _AppLocalizationsDelegate
