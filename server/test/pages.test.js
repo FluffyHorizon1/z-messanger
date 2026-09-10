@@ -53,7 +53,9 @@ test('/ serves the landing page as HTML', async () => {
   const r = await get('/');
   assert.strictEqual(r.status, 200);
   assert.ok(r.type.includes('text/html'));
-  assert.ok(r.body.includes('Zero-trust messaging'), 'landing hero missing');
+  // Assert the hero exists, not its wording — copy changes should not fail
+  // this, but a landing page that lost its headline should.
+  assert.ok(/<h1>[^<]{20,}<\/h1>/.test(r.body), 'landing hero missing');
   assert.ok(r.body.includes('/privacy'), 'privacy link missing');
 });
 

@@ -14,17 +14,20 @@
 // cannot quietly stop matching the product.
 
 const STYLE = `
-  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+  /* No webfont. A request to a third party on a page that says Z collects
+     nothing would be a contradiction, so the type is what the reader already
+     has: a system sans for prose, and the system monospace as the voice of the
+     machine — the mark, the relay frame, anything the software itself says. */
   :root {
     color-scheme: dark light;
     --bg: #050810; --surface: #0A1220; --surface-alt: #111C2C;
     --accent: #00B4FF; --on-accent: #031626;
     --text: #E9F1F8; --text-dim: #7C91A6; --divider: #15202E;
     --ok: #3DD68C; --warn: #FFB300; --danger: #FF6B70;
-    --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    --accent-line: color-mix(in srgb, var(--accent) 34%, transparent);
-    --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
+    --rule: color-mix(in srgb, var(--accent) 26%, transparent);
+    --wash: color-mix(in srgb, var(--accent) 8%, transparent);
   }
   @media (prefers-color-scheme: light) {
     :root {
@@ -38,100 +41,127 @@ const STYLE = `
   html { -webkit-text-size-adjust: 100%; }
   body {
     background: var(--bg); color: var(--text);
-    font-family: var(--sans); font-size: 16px; line-height: 1.65;
+    font-family: var(--sans); font-size: 17px; line-height: 1.6;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 760px; margin: 0 auto; padding: 40px 22px 96px; }
-  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-line); }
-  a:hover { border-bottom-color: var(--accent); }
+  .wrap { max-width: 660px; margin: 0 auto; padding: 32px 22px 96px; }
+  a { color: var(--accent); text-decoration: none; }
+  p a, li a { border-bottom: 1px solid var(--rule); }
+  a:hover { color: var(--accent); }
+  p a:hover, li a:hover { border-bottom-color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+
+  /* Navigation: the mark is set in mono because it is the software's own
+     name for itself, and the links sit on the baseline beside it. */
   nav {
-    display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px;
-    padding-bottom: 22px; border-bottom: 1px solid var(--divider);
+    display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 18px;
+    padding-bottom: 18px; border-bottom: 1px solid var(--divider);
   }
   nav .mark {
-    font-family: var(--mono); font-weight: 600; font-size: 22px; color: var(--accent);
-    line-height: 1; border: 2px solid var(--accent-line); border-radius: 9px;
-    width: 38px; height: 38px; display: flex; align-items: center;
-    justify-content: center; margin-right: 4px; border-bottom-width: 2px;
+    font-family: var(--mono); font-weight: 600; font-size: 19px;
+    color: var(--accent); letter-spacing: 0.06em; margin-right: 8px;
   }
-  nav .mark:hover { border-color: var(--accent); }
-  nav a { color: var(--text-dim); font-size: 14px; border-bottom: none; }
-  nav a:hover, nav a[aria-current] { color: var(--accent); }
+  nav a { color: var(--text-dim); font-size: 13.5px; }
+  nav a:hover, nav a[aria-current] { color: var(--text); }
+  nav a[aria-current] { box-shadow: 0 1px 0 var(--accent); }
+
   h1 {
-    font-size: 34px; font-weight: 700; line-height: 1.15;
-    margin: 30px 0 12px; letter-spacing: -0.02em; text-wrap: balance;
+    font-size: 33px; font-weight: 650; line-height: 1.12;
+    margin: 34px 0 14px; letter-spacing: -0.021em; text-wrap: balance;
   }
   h2 {
-    font-size: 20px; font-weight: 600; margin: 38px 0 10px;
-    color: var(--accent); letter-spacing: -0.01em;
+    font-size: 15px; font-weight: 650; margin: 44px 0 12px;
+    letter-spacing: -0.005em; color: var(--text);
+    padding-top: 14px; border-top: 1px solid var(--divider);
   }
-  h3 { font-size: 16px; font-weight: 600; margin: 20px 0 6px; }
+  h3 { font-size: 16px; font-weight: 650; margin: 22px 0 4px; }
   p, li { color: var(--text-dim); }
-  p { margin: 10px 0; }
-  .lead { font-size: 18px; color: var(--text); text-wrap: pretty; }
+  p { margin: 11px 0; max-width: 62ch; }
+  .lead { font-size: 19px; line-height: 1.5; color: var(--text); text-wrap: pretty; }
   .muted { color: var(--text-dim); font-size: 14px; }
-  ul { padding-left: 20px; margin: 10px 0; }
-  li { margin: 7px 0; }
-  b, strong { color: var(--text); font-weight: 600; }
+  ul { padding-left: 19px; margin: 12px 0; max-width: 62ch; }
+  li { margin: 8px 0; }
+  b, strong { color: var(--text); font-weight: 650; }
+
+  /* The relay frame: the one loud element on the site. Everything the server
+     holds for a message in flight, set as the software would print it. */
+  .frame {
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.75;
+    background: var(--surface); border: 1px solid var(--divider);
+    border-left: 2px solid var(--accent);
+    border-radius: 4px; padding: 16px 18px; margin: 22px 0 10px;
+    overflow-x: auto; color: var(--text-dim);
+  }
+  .frame .k { color: var(--accent); }
+  .frame .v { color: var(--text); }
+  .frame .gone {
+    color: var(--danger); background: color-mix(in srgb, var(--danger) 11%, transparent);
+    padding: 0 5px; border-radius: 3px;
+  }
+  .caption { font-size: 13.5px; color: var(--text-dim); margin: 0 0 4px; }
+
   .card {
     background: var(--surface); border: 1px solid var(--divider);
-    border-radius: 12px; padding: 18px 20px; margin: 14px 0;
+    border-radius: 8px; padding: 16px 18px; margin: 12px 0;
   }
-  .card h3 { margin-top: 0; color: var(--text); }
-  .grid { display: grid; gap: 14px; }
-  @media (min-width: 640px) { .grid.two { grid-template-columns: 1fr 1fr; } }
-  .btns { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 8px; }
+  .card h3 { margin-top: 0; }
+  .card p { margin-bottom: 0; }
+  .grid { display: grid; gap: 12px; }
+  @media (min-width: 620px) { .grid.two { grid-template-columns: 1fr 1fr; } }
+
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; margin: 24px 0 10px; }
   .btn {
-    display: inline-block; padding: 11px 20px; border-radius: 9px;
+    display: inline-block; padding: 11px 18px; border-radius: 7px;
     background: var(--accent); color: var(--on-accent);
-    font-weight: 600; font-size: 15px; border-bottom: none;
+    font-weight: 650; font-size: 15px; border: 1px solid var(--accent);
   }
-  .btn.alt {
-    background: transparent; color: var(--text);
-    border: 1px solid var(--divider);
-  }
-  .btn.alt:hover { border-color: var(--accent-line); }
-  .btn:hover { filter: brightness(1.08); }
+  .btn.alt { background: transparent; color: var(--text); border-color: var(--divider); }
+  .btn.alt:hover { border-color: var(--rule); }
+  .btn:hover { filter: brightness(1.07); }
+
   code {
-    font-family: var(--mono); font-size: 0.88em;
+    font-family: var(--mono); font-size: 0.87em;
     background: var(--surface-alt); border: 1px solid var(--divider);
-    border-radius: 5px; padding: 1px 6px; color: var(--text);
+    border-radius: 4px; padding: 1px 5px; color: var(--text);
   }
   pre {
-    background: var(--surface-alt); border: 1px solid var(--divider);
-    border-radius: 10px; padding: 14px 16px; margin: 12px 0;
-    overflow-x: auto; font-size: 14px; font-family: var(--mono);
+    background: var(--surface); border: 1px solid var(--divider);
+    border-left: 2px solid var(--divider);
+    border-radius: 4px; padding: 14px 16px; margin: 14px 0;
+    overflow-x: auto; font-size: 13.5px; font-family: var(--mono);
+    line-height: 1.7;
   }
   pre code { background: none; border: none; padding: 0; }
+
+  /* Numbers only where the content really is a sequence. */
   .steps { counter-reset: s; list-style: none; padding-left: 0; }
   .steps li {
-    counter-increment: s; position: relative; padding-left: 44px; margin: 16px 0;
+    counter-increment: s; position: relative;
+    padding-left: 34px; margin: 15px 0;
   }
   .steps li::before {
-    content: counter(s); position: absolute; left: 0; top: 0;
-    width: 28px; height: 28px; border-radius: 8px;
-    background: var(--accent-soft); color: var(--accent);
-    border: 1px solid var(--accent-line);
-    font-family: var(--mono); font-weight: 600; font-size: 13px;
-    text-align: center; line-height: 26px;
+    content: counter(s); position: absolute; left: 0; top: 2px;
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+    color: var(--accent);
   }
-  .yes::before, .no::before { font-weight: 700; margin-right: 8px; }
+  .yes::before, .no::before {
+    font-family: var(--mono); font-weight: 600; margin-right: 9px;
+  }
   .yes::before { content: "\\2713"; color: var(--ok); }
   .no::before  { content: "\\2715"; color: var(--danger); }
   .note {
-    border-left: 2px solid var(--warn); background: var(--surface);
-    padding: 12px 16px; margin: 18px 0; border-radius: 0 10px 10px 0;
+    background: var(--wash); border: 1px solid var(--divider);
+    border-left: 2px solid var(--warn);
+    padding: 13px 16px; margin: 20px 0; border-radius: 0 6px 6px 0;
   }
-  footer { margin-top: 56px; border-top: 1px solid var(--divider); padding-top: 22px; }
-  footer .cols { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-bottom: 14px; }
-  footer a { font-size: 14px; color: var(--text-dim); border-bottom: none; }
-  footer a:hover { color: var(--accent); }
-  .logo {
-    font-family: var(--mono); font-weight: 600; font-size: 46px; color: var(--accent);
-    line-height: 1; border: 2px solid var(--accent-line); border-radius: 14px;
-    width: 76px; height: 76px; display: flex; align-items: center;
-    justify-content: center; margin-bottom: 4px;
-  }
+  .note p:first-child { margin-top: 0; }
+  .note p:last-child { margin-bottom: 0; }
+
+  footer { margin-top: 60px; border-top: 1px solid var(--divider); padding-top: 20px; }
+  footer .cols { display: flex; flex-wrap: wrap; gap: 7px 20px; margin-bottom: 14px; }
+  footer a { font-size: 13.5px; color: var(--text-dim); }
+  footer a:hover { color: var(--text); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 `;
 
 const RELEASES = 'https://github.com/FluffyHorizon1/z-messanger/releases/latest';
@@ -195,15 +225,23 @@ const LANDING_HTML = page(
   'Z — zero-trust messenger',
   'Zero-trust end-to-end encrypted messenger. No accounts, no phone number, no server storage.',
   `
-  <div class="logo">Z</div>
-  <h1>Zero-trust messaging.</h1>
-  <p class="lead">No accounts. No phone number. No server storage. Your identity
-  is a key pair made on your device that never leaves it unencrypted, and every
-  message is end-to-end encrypted with a Signal-style double ratchet.</p>
+  <h1>A messenger whose server has nothing worth taking.</h1>
+  <p class="lead">Z has no accounts, no phone numbers and no server-side
+  storage. Here is everything our relay holds while a message of yours is in
+  flight — the whole record, not a summary of it.</p>
+
+  <div class="frame">{ <span class="k">"t"</span>: <span class="v">"msg"</span>,
+  <span class="k">"id"</span>: <span class="v">"01JB7QM4XK2VZP"</span>,
+  <span class="k">"payload"</span>: <span class="v">"zs1.kR9mQx…"</span>,
+  <span class="k">"ts"</span>: <span class="v">1757538142</span> }<br>
+  <span class="gone">no "from" field</span></div>
+  <p class="caption">An identifier, a padded blob it cannot read, a timestamp —
+  held in memory, deleted on delivery. There is no sender field because the
+  relay never learns who sent it, and no account to attach it to.</p>
 
   <div class="btns">
-    <a class="btn" href="/download">Download for Android</a>
-    <a class="btn alt" href="/how-it-works">How it works</a>
+    <a class="btn" href="/download">Get Z</a>
+    <a class="btn alt" href="/how-it-works">See how it works</a>
   </div>
   <p class="muted">On <a href="${PLAY}">Google Play</a>, and as a direct
   download for Android, Windows, macOS and Linux. Every release ships SHA-256
