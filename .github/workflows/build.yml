@@ -93,6 +93,11 @@ jobs:
       # not depend on anyone remembering.
       - name: Every text/background pair clears WCAG AA
         run: python3 app/tool/contrast.py
+      # A test file that lists its exit criteria must have a test for each.
+      # The review that added this found a file promising four and holding
+      # three, with every other guard green.
+      - name: Every stated exit criterion has a test behind it
+        run: python3 tool/check_test_criteria.py
       # 15.4: the string migration is screen by screen, so this holds the
       # screens already done to zero hardcoded strings and reports what is
       # left. A half-migrated file quietly gaining new literals is the way

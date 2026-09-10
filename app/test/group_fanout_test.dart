@@ -19,6 +19,8 @@
 //
 //   1. sendGroupText returns promptly for a large group.
 //   2. Every member still receives the message.
+//      (Criteria 1 and 2 share a test: the timing is only meaningful if the
+//      same send is then shown to have reached everyone.)
 //   3. A fan-out interrupted part-way is completed on the next start,
 //      and the members already served are not served twice.
 //   4. The message and its fan-out rows are written together or not at all.

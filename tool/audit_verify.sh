@@ -97,6 +97,8 @@ run "every control announces something" "-" "." \
     python3 tool/check_a11y.py
 run "every text/background pair clears WCAG AA" "-" "." \
     python3 app/tool/contrast.py
+run "every stated exit criterion has a test" "-" "." \
+    python3 tool/check_test_criteria.py
 run "no migrated screen regressed to English" "-" "." \
     python3 tool/check_l10n.py
 run "the GA checklist matches the repo" "-" "." \

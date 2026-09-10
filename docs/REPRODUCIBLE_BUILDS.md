@@ -122,7 +122,7 @@ signed with a key you do not have and never will. The SHA-256 in
 one number on the release page that an outside rebuild can never match.
 
 So each release also publishes a **content digest**: a hash over every zip
-entry — name, compression method, CRC and bytes — and nothing else. The APK
+entry — name, compression method, CRC, size and bytes — and nothing else. The APK
 signing block is not an entry, so signing does not move it, and an unsigned
 local rebuild of the same commit produces the same value.
 
@@ -142,8 +142,8 @@ That the digest survives signing is not asserted — it is tested.
 block the way `apksigner` does (between the last entry and the central
 directory, offsets rewritten), and checks the digest does not move; it also
 checks the digest *does* move for a changed entry, a reordered archive, a
-different compression method, and a renamed entry whose name/content boundary
-has been slid by one byte.
+different compression method, a renamed entry whose name/content boundary
+has been slid by one byte, and two entries folded into one.
 
 ### Reading a difference
 
@@ -348,6 +348,14 @@ generated file — `.dart_tool/flutter_build/dart_plugin_registrant.dart` —
 referenced by URI. Making that relative is upstream work in the Flutter tool,
 and worth filing there. Until then the recipe above is the honest position:
 reproducible, at a stated path, verifiably so.
+
+One shortcut was tried and does not work, recorded so nobody tries it again:
+`flutter build apk --split-debug-info=…` moves symbols out of the snapshot,
+and the hope was that the source URI went with them. Measured 2026-09-10,
+same commit, `/tmp/p3/zclone`: `libapp.so` still carries
+`file:///tmp/p3/zclone/app/.dart_tool/flutter_build/dart_plugin_registrant.dart`.
+The URI is not debug information; it is the registrant's identity in the
+snapshot.
 
 ### What this costs a verifier today
 
