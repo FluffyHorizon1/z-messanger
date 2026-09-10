@@ -175,4 +175,183 @@ class AppLocalizationsEn extends AppLocalizations {
   String chatPreviewFile(String name) {
     return '📎 $name';
   }
+
+  @override
+  String get onbEnterRelayFirst => 'Enter your relay address first.';
+
+  @override
+  String get onbRelayReachable => 'Connected — the relay is reachable.';
+
+  @override
+  String get onbRelayUnreachable =>
+      'Check the address and that it shows Live in your host dashboard.';
+
+  @override
+  String get onbPickName =>
+      'Pick a display name (only your contacts ever see it).';
+
+  @override
+  String get onbChooseBackup => 'Choose your Z backup';
+
+  @override
+  String get onbNotABackup => 'That file is not a Z backup.';
+
+  @override
+  String get onbRestoreFailed =>
+      'Restore failed: wrong secret, or the file is damaged.';
+
+  @override
+  String get onbRecoveryCode => 'Recovery code';
+
+  @override
+  String get onbRecoveryCodeHelp =>
+      'The 25-character code you saved when you made this backup.';
+
+  @override
+  String get cancel => 'Cancel';
+
+  @override
+  String get onbRestore => 'Restore';
+
+  @override
+  String get onbBackupPassphrase => 'Backup passphrase';
+
+  @override
+  String get passphrase => 'Passphrase';
+
+  @override
+  String get unlock => 'Unlock';
+
+  @override
+  String get onbDisplayName => 'Display name';
+
+  @override
+  String get onbDisplayNameHelp =>
+      'Shared only inside your encrypted contact code';
+
+  @override
+  String get onbRelayAddress => 'Relay address (developer)';
+
+  @override
+  String get onbRelayHelp =>
+      'Custom or self-hosted relay. Leave as-is to use the default zmessengers.com relay.';
+
+  @override
+  String get onbTesting => 'Testing…';
+
+  @override
+  String get onbTestConnection => 'Test connection';
+
+  @override
+  String get onbCreateIdentity => 'Create my identity';
+
+  @override
+  String get onbRestoreFromBackup => 'Restore from a backup';
+
+  @override
+  String get onbLinkExisting => 'Link to an existing account';
+
+  @override
+  String get onbHideDevOptions => 'Hide developer options';
+
+  @override
+  String get onbDevOptions => 'Developer options';
+
+  @override
+  String get onbIdentityNote =>
+      'Your identity is a cryptographic key pair generated on this device. It never leaves it unencrypted.';
+
+  @override
+  String get grpNeedNameAndMember =>
+      'Pick a group name and at least one member.';
+
+  @override
+  String grpCreateFailed(String error) {
+    return 'Could not create: $error';
+  }
+
+  @override
+  String get grpNew => 'New group';
+
+  @override
+  String get grpName => 'Group name';
+
+  @override
+  String get grpNameHelp =>
+      'Members see this name. Messages are end-to-end encrypted to each member individually.';
+
+  @override
+  String get grpAddContactsFirst => 'Add some contacts first.';
+
+  @override
+  String grpCreateWithCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Create group ($count members)',
+      one: 'Create group (1 member)',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get grpAddMembers => 'Add members';
+
+  @override
+  String get add => 'Add';
+
+  @override
+  String get grpLeaveTitle => 'Leave this group?';
+
+  @override
+  String get grpLeaveBody =>
+      'You will stop receiving its messages. Your copy of the history stays on this device.';
+
+  @override
+  String get grpLeave => 'Leave';
+
+  @override
+  String get grpRemoved => 'Group removed';
+
+  @override
+  String get grpNoLongerIn => 'You are no longer in this group';
+
+  @override
+  String grpMemberCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other:
+          '$count members · every message is end-to-end encrypted to each member',
+      one: '1 member · every message is end-to-end encrypted to each member',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get grpYouAdmin => 'You (admin)';
+
+  @override
+  String get grpYou => 'You';
+
+  @override
+  String get grpUnknown => 'Unknown';
+
+  @override
+  String get grpAdmin => 'admin';
+
+  @override
+  String get grpRemoveFromGroup => 'Remove from group';
+
+  @override
+  String get grpLeaveGroup => 'Leave group';
+
+  @override
+  String get grpFootnote =>
+      'Groups have no server-side existence: the relay never learns the group\'s name or member list. Each message is sent as separate end-to-end encrypted copies over your verified 1:1 channels.';
+
+  @override
+  String onbRelayUnreachableAt(String url) {
+    return 'Could not reach a relay at $url.\nCheck the address and that it shows Live in your host dashboard.';
+  }
 }

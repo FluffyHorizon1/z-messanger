@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+
+import '../l10n/app_localizations.dart';
 import 'package:provider/provider.dart';
 
 import '../core/chat_service.dart';
@@ -18,13 +20,14 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   bool _busy = false;
 
   Future<void> _create() async {
+    final l = AppLocalizations.of(context);
     final chat = context.read<ChatService>();
     final nav = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
     final name = _name.text.trim();
     if (name.isEmpty || _selected.isEmpty) {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('Pick a group name and at least one member.')));
+      messenger.showSnackBar(
+          SnackBar(content: Text(l.grpNeedNameAndMember)));
       return;
     }
     setState(() => _busy = true);
@@ -35,18 +38,19 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
           MaterialPageRoute(builder: (_) => ChatScreen(rid: gid)));
     } catch (e) {
       setState(() => _busy = false);
-      messenger.showSnackBar(SnackBar(content: Text('Could not create: $e')));
+      messenger.showSnackBar(SnackBar(content: Text(l.grpCreateFailed('$e'))));
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final chat = context.watch<ChatService>();
     final contacts = chat.contacts.values.toList()
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
     return Scaffold(
-      appBar: AppBar(title: const Text('New group')),
+      appBar: AppBar(title: Text(l.grpNew)),
       body: Column(
         children: [
           Padding(
@@ -54,11 +58,10 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
             child: TextField(
               controller: _name,
               autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Group name',
+              decoration: InputDecoration(
+                labelText: l.grpName,
                 helperText:
-                    'Members see this name. Messages are end-to-end encrypted '
-                    'to each member individually.',
+                    l.grpNameHelp,
                 helperMaxLines: 2,
               ),
             ),
@@ -66,7 +69,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
           Expanded(
             child: contacts.isEmpty
                 ? Center(
-                    child: Text('Add some contacts first.',
+                    child: Text(l.grpAddContactsFirst,
                         style: TextStyle(color: context.z.textSecondary)),
                   )
                 : ListView(
@@ -115,7 +118,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                           height: 20,
                           child: CircularProgressIndicator(strokeWidth: 2))
                       : Text(
-                          'Create group (${_selected.length} member${_selected.length == 1 ? '' : 's'})'),
+                          l.grpCreateWithCount(_selected.length)),
                 ),
               ),
             ),
@@ -136,6 +139,7 @@ class GroupInfoScreen extends StatefulWidget {
 
 class _GroupInfoScreenState extends State<GroupInfoScreen> {
   Future<void> _addMembers(ChatService chat) async {
+    final l = AppLocalizations.of(context);
     final g = chat.groups[widget.gid];
     if (g == null) return;
     final candidates = chat.contacts.values
@@ -148,7 +152,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSt) => AlertDialog(
-          title: const Text('Add members'),
+          title: Text(l.grpAddMembers),
           content: SizedBox(
             width: double.maxFinite,
             child: ListView(
@@ -174,10 +178,10 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           actions: [
             TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancel')),
+                child: Text(l.cancel)),
             FilledButton(
                 onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Add')),
+                child: Text(l.add)),
           ],
         ),
       ),
@@ -188,22 +192,22 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
   }
 
   Future<void> _leave(ChatService chat) async {
+    final l = AppLocalizations.of(context);
     final nav = Navigator.of(context);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Leave this group?'),
-        content: const Text(
-            'You will stop receiving its messages. Your copy of the history '
-            'stays on this device.'),
+        title: Text(l.grpLeaveTitle),
+        content: Text(
+            l.grpLeaveBody),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
+              child: Text(l.cancel)),
           FilledButton(
               style: FilledButton.styleFrom(backgroundColor: context.z.danger),
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Leave')),
+              child: Text(l.grpLeave)),
         ],
       ),
     );
@@ -215,10 +219,11 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final chat = context.watch<ChatService>();
     final g = chat.groups[widget.gid];
     if (g == null) {
-      return const Scaffold(body: Center(child: Text('Group removed')));
+      return Scaffold(body: Center(child: Text(l.grpRemoved)));
     }
     final members = g.memberRids.toList()
       ..sort((a, b) => (chat.contacts[a]?.name ?? '')
@@ -241,9 +246,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           Center(
             child: Text(
               g.left
-                  ? 'You are no longer in this group'
-                  : '${members.length + 1} members · every message is '
-                      'end-to-end encrypted to each member',
+                  ? l.grpNoLongerIn
+                  : l.grpMemberCount(members.length + 1),
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 12, color: context.z.textSecondary),
             ),
@@ -255,7 +259,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
               children: [
                 ListTile(
                   leading: Icon(Icons.person, color: context.z.accent),
-                  title: Text(g.iAmAdmin ? 'You (admin)' : 'You'),
+                  title: Text(g.iAmAdmin ? l.grpYouAdmin : l.grpYou),
                 ),
                 for (final rid in members)
                   ListTile(
@@ -271,13 +275,13 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                     title: Row(
                       children: [
                         Flexible(
-                          child: Text(chat.contacts[rid]?.name ?? 'Unknown',
+                          child: Text(chat.contacts[rid]?.name ?? l.grpUnknown,
                               overflow: TextOverflow.ellipsis),
                         ),
                         if (rid == g.adminRid)
                           Padding(
                             padding: EdgeInsets.only(left: 6),
-                            child: Text('admin',
+                            child: Text(l.grpAdmin,
                                 style: TextStyle(
                                     fontSize: 11,
                                     color: context.z.textSecondary)),
@@ -288,7 +292,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                         ? IconButton(
                             icon: Icon(Icons.person_remove_outlined,
                                 color: context.z.danger, size: 20),
-                            tooltip: 'Remove from group',
+                            tooltip: l.grpRemoveFromGroup,
                             onPressed: () => chat.removeGroupMember(g.gid, rid),
                           )
                         : null,
@@ -300,7 +304,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           if (g.iAmAdmin && !g.left)
             OutlinedButton.icon(
               icon: const Icon(Icons.group_add_outlined),
-              label: const Text('Add members'),
+              label: Text(l.grpAddMembers),
               onPressed: () => _addMembers(chat),
             ),
           const SizedBox(height: 8),
@@ -309,14 +313,12 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
               style:
                   OutlinedButton.styleFrom(foregroundColor: context.z.danger),
               icon: const Icon(Icons.logout),
-              label: const Text('Leave group'),
+              label: Text(l.grpLeaveGroup),
               onPressed: () => _leave(chat),
             ),
           const SizedBox(height: 20),
           Text(
-            'Groups have no server-side existence: the relay never learns the '
-            'group\'s name or member list. Each message is sent as separate '
-            'end-to-end encrypted copies over your verified 1:1 channels.',
+            l.grpFootnote,
             style: TextStyle(
                 fontSize: 12, color: context.z.textSecondary, height: 1.5),
           ),

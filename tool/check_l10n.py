@@ -38,6 +38,8 @@ MIGRATED = {
     "search_screen.dart",
     "home_screen.dart",
     "add_contact_screen.dart",
+    "onboarding_screen.dart",
+    "group_screens.dart",
 }
 
 # Literals that look user-visible and are not.
@@ -46,6 +48,10 @@ ALLOWED = {
     "theme.dart", "../core/app_lock.dart",
     # A paperclip is a paperclip in every locale.
     "📎 ",
+    # The shape of a recovery code, shown as a hint in the field. The format
+    # is fixed by BACKUP.md — 25 Crockford base32 characters in five groups —
+    # so it is the same in every locale and translating it would be wrong.
+    "ZBK-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX",
 }
 
 

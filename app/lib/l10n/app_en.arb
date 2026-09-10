@@ -227,5 +227,221 @@
         "type": "String"
       }
     }
+  },
+  "onbEnterRelayFirst": "Enter your relay address first.",
+  "@onbEnterRelayFirst": {
+    "description": "Validation: the connection test was pressed with an empty address."
+  },
+  "onbRelayReachable": "Connected — the relay is reachable.",
+  "@onbRelayReachable": {
+    "description": "Result of a successful connection test."
+  },
+  "onbRelayUnreachable": "Check the address and that it shows Live in your host dashboard.",
+  "@onbRelayUnreachable": {
+    "description": "Result of a failed connection test. 'Live' is the wording a hosting dashboard uses; keep it recognisable."
+  },
+  "onbPickName": "Pick a display name (only your contacts ever see it).",
+  "@onbPickName": {
+    "description": "Validation: continue was pressed with no display name. The parenthetical answers the unspoken 'who can see this'."
+  },
+  "onbChooseBackup": "Choose your Z backup",
+  "@onbChooseBackup": {
+    "description": "File-picker title when restoring."
+  },
+  "onbNotABackup": "That file is not a Z backup.",
+  "@onbNotABackup": {
+    "description": "The chosen file is not a .zbk or .zid."
+  },
+  "onbRestoreFailed": "Restore failed: wrong secret, or the file is damaged.",
+  "@onbRestoreFailed": {
+    "description": "Restore failed. Deliberately does NOT say which of the two, because saying so would tell an attacker holding the file whether a guess was close."
+  },
+  "onbRecoveryCode": "Recovery code",
+  "@onbRecoveryCode": {
+    "description": "Label on the recovery-code field."
+  },
+  "onbRecoveryCodeHelp": "The 25-character code you saved when you made this backup.",
+  "@onbRecoveryCodeHelp": {
+    "description": "Help text under the recovery-code field."
+  },
+  "cancel": "Cancel",
+  "@cancel": {
+    "description": "Dismisses a dialog without acting."
+  },
+  "onbRestore": "Restore",
+  "@onbRestore": {
+    "description": "Confirms a restore."
+  },
+  "onbBackupPassphrase": "Backup passphrase",
+  "@onbBackupPassphrase": {
+    "description": "Dialog title when the archive is passphrase-protected rather than code-protected."
+  },
+  "passphrase": "Passphrase",
+  "@passphrase": {
+    "description": "Label on a passphrase field."
+  },
+  "unlock": "Unlock",
+  "@unlock": {
+    "description": "Confirms a passphrase entry."
+  },
+  "onbDisplayName": "Display name",
+  "@onbDisplayName": {
+    "description": "Label on the display-name field."
+  },
+  "onbDisplayNameHelp": "Shared only inside your encrypted contact code",
+  "@onbDisplayNameHelp": {
+    "description": "Help text: the name travels in the contact code, not to a server."
+  },
+  "onbRelayAddress": "Relay address (developer)",
+  "@onbRelayAddress": {
+    "description": "Label on the relay field, shown only with developer options open."
+  },
+  "onbRelayHelp": "Custom or self-hosted relay. Leave as-is to use the default zmessengers.com relay.",
+  "@onbRelayHelp": {
+    "description": "Help text under the relay field."
+  },
+  "onbTesting": "Testing…",
+  "@onbTesting": {
+    "description": "The connection test is in flight."
+  },
+  "onbTestConnection": "Test connection",
+  "@onbTestConnection": {
+    "description": "Starts a connection test against the relay address."
+  },
+  "onbCreateIdentity": "Create my identity",
+  "@onbCreateIdentity": {
+    "description": "Primary action: generate a new identity and finish onboarding."
+  },
+  "onbRestoreFromBackup": "Restore from a backup",
+  "@onbRestoreFromBackup": {
+    "description": "Secondary action: restore an existing identity from a .zbk or .zid."
+  },
+  "onbLinkExisting": "Link to an existing account",
+  "@onbLinkExisting": {
+    "description": "Secondary action: become an additional device of an account that already exists."
+  },
+  "onbHideDevOptions": "Hide developer options",
+  "@onbHideDevOptions": {
+    "description": "Collapses the developer section."
+  },
+  "onbDevOptions": "Developer options",
+  "@onbDevOptions": {
+    "description": "Expands the developer section."
+  },
+  "onbIdentityNote": "Your identity is a cryptographic key pair generated on this device. It never leaves it unencrypted.",
+  "@onbIdentityNote": {
+    "description": "Footnote on the onboarding screen. Both halves matter: it is generated here, and it does not leave in the clear."
+  },
+  "grpNeedNameAndMember": "Pick a group name and at least one member.",
+  "@grpNeedNameAndMember": {
+    "description": "Validation on the create-group screen."
+  },
+  "grpCreateFailed": "Could not create: {error}",
+  "@grpCreateFailed": {
+    "description": "Group creation failed; {error} is the underlying message.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "grpNew": "New group",
+  "@grpNew": {
+    "description": "Title of the create-group screen."
+  },
+  "grpName": "Group name",
+  "@grpName": {
+    "description": "Label on the group-name field."
+  },
+  "grpNameHelp": "Members see this name. Messages are end-to-end encrypted to each member individually.",
+  "@grpNameHelp": {
+    "description": "Help text: the name is shared with members, and there is no group key — each member gets their own encrypted copy."
+  },
+  "grpAddContactsFirst": "Add some contacts first.",
+  "@grpAddContactsFirst": {
+    "description": "Empty state: a group needs contacts to invite."
+  },
+  "grpCreateWithCount": "{count, plural, =1{Create group (1 member)} other{Create group ({count} members)}}",
+  "@grpCreateWithCount": {
+    "description": "Create button, with the number of members selected.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "grpAddMembers": "Add members",
+  "@grpAddMembers": {
+    "description": "Opens the add-members screen, and titles it."
+  },
+  "add": "Add",
+  "@add": {
+    "description": "Confirms an addition."
+  },
+  "grpLeaveTitle": "Leave this group?",
+  "@grpLeaveTitle": {
+    "description": "Confirmation dialog title."
+  },
+  "grpLeaveBody": "You will stop receiving its messages. Your copy of the history stays on this device.",
+  "@grpLeaveBody": {
+    "description": "Confirmation dialog body. The second sentence matters: leaving does not delete what you already have."
+  },
+  "grpLeave": "Leave",
+  "@grpLeave": {
+    "description": "Confirms leaving a group."
+  },
+  "grpRemoved": "Group removed",
+  "@grpRemoved": {
+    "description": "Shown after leaving and deleting a group."
+  },
+  "grpNoLongerIn": "You are no longer in this group",
+  "@grpNoLongerIn": {
+    "description": "Subtitle on a group you have left."
+  },
+  "grpMemberCount": "{count, plural, =1{1 member · every message is end-to-end encrypted to each member} other{{count} members · every message is end-to-end encrypted to each member}}",
+  "@grpMemberCount": {
+    "description": "Subtitle on the group screen. The clause after the separator is the design statement: no group key, one encrypted copy per member.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "grpYouAdmin": "You (admin)",
+  "@grpYouAdmin": {
+    "description": "The current user's row in the member list, when they created the group."
+  },
+  "grpYou": "You",
+  "@grpYou": {
+    "description": "The current user's row in the member list."
+  },
+  "grpUnknown": "Unknown",
+  "@grpUnknown": {
+    "description": "A member whose contact record is missing."
+  },
+  "grpAdmin": "admin",
+  "@grpAdmin": {
+    "description": "Badge next to the member who administers the group. Lower case: it sits as a chip, not a sentence."
+  },
+  "grpRemoveFromGroup": "Remove from group",
+  "@grpRemoveFromGroup": {
+    "description": "Removes the selected member."
+  },
+  "grpLeaveGroup": "Leave group",
+  "@grpLeaveGroup": {
+    "description": "Action in the group screen's menu."
+  },
+  "grpFootnote": "Groups have no server-side existence: the relay never learns the group's name or member list. Each message is sent as separate end-to-end encrypted copies over your verified 1:1 channels.",
+  "@grpFootnote": {
+    "description": "Footnote on the group screen. This is the whole group design in three clauses; keep all three."
+  },
+  "onbRelayUnreachableAt": "Could not reach a relay at {url}.\nCheck the address and that it shows Live in your host dashboard.",
+  "@onbRelayUnreachableAt": {
+    "description": "Connection test failed. {url} is the normalised address that was tried. 'Live' is the wording a hosting dashboard uses; keep it recognisable.",
+    "placeholders": {
+      "url": {
+        "type": "String"
+      }
+    }
   }
 }

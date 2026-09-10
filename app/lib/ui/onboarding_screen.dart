@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+
+import '../l10n/app_localizations.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 import '../core/restore.dart';
@@ -32,9 +34,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   String? _testWarn; // amber non-TLS notice
 
   Future<void> _test() async {
+    final l = AppLocalizations.of(context);
     final url = normalizeRelayUrl(_server.text);
     if (url.isEmpty) {
-      setState(() => _error = 'Enter your relay address first.');
+      setState(() => _error = l.onbEnterRelayFirst);
       return;
     }
     setState(() {
@@ -46,22 +49,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     try {
       await RelayClient.probe(url);
       setState(() {
-        _testOk = 'Connected — the relay is reachable.';
+        _testOk = l.onbRelayReachable;
         _testWarn = relayUrlWarning(url);
         _server.text = url; // show the normalized form
       });
     } catch (e) {
-      setState(() => _error = 'Could not reach a relay at $url.\n'
-          'Check the address and that it shows Live in your host dashboard.');
+      setState(() => _error = l.onbRelayUnreachableAt(url));
     } finally {
       setState(() => _testing = false);
     }
   }
 
   Future<void> _create() async {
+    final l = AppLocalizations.of(context);
     if (_name.text.trim().isEmpty) {
       setState(() =>
-          _error = 'Pick a display name (only your contacts ever see it).');
+          _error = l.onbPickName);
       return;
     }
     final url = normalizeRelayUrl(_server.text);
@@ -88,8 +91,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// backup and ask for the matching secret. Nobody should have to know
   /// which kind of file they kept, least of all while replacing a lost phone.
   Future<void> _restore() async {
+    final l = AppLocalizations.of(context);
     final picked = await FilePicker.platform.pickFiles(
-      dialogTitle: 'Choose your Z backup',
+      dialogTitle: l.onbChooseBackup,
       withData: false,
     );
     final path = picked?.files.single.path;
@@ -98,7 +102,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final preview = await Restore.identify(file);
     if (!mounted) return;
     if (preview.kind == BackupKind.unknown) {
-      setState(() => _error = 'That file is not a Z backup.');
+      setState(() => _error = l.onbNotABackup);
       return;
     }
     final secret = preview.kind == BackupKind.archive
@@ -129,23 +133,24 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     } catch (_) {
       setState(() {
         _busy = false;
-        _error = 'Restore failed: wrong secret, or the file is damaged.';
+        _error = l.onbRestoreFailed;
       });
     }
   }
 
   Future<String?> _askRecoveryCode(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final ctrl = TextEditingController();
     return showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Recovery code'),
+        title: Text(l.onbRecoveryCode),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-                'The 25-character code you saved when you made this backup.'),
+            Text(
+                l.onbRecoveryCodeHelp),
             const SizedBox(height: 12),
             TextField(
               controller: ctrl,
@@ -160,34 +165,35 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, ctrl.text),
-              child: const Text('Restore')),
+              child: Text(l.onbRestore)),
         ],
       ),
     );
   }
 
   Future<String?> _askPassphrase(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final ctrl = TextEditingController();
     return showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Backup passphrase'),
+        title: Text(l.onbBackupPassphrase),
         content: TextField(
           controller: ctrl,
           obscureText: true,
           autofocus: true,
-          decoration: const InputDecoration(hintText: 'Passphrase'),
+          decoration: InputDecoration(hintText: l.passphrase),
           onSubmitted: (v) => Navigator.pop(ctx, v),
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, ctrl.text),
-              child: const Text('Unlock')),
+              child: Text(l.unlock)),
         ],
       ),
     );
@@ -195,6 +201,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Scaffold(
       body: SafeArea(
           child: Center(
@@ -221,10 +228,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 const SizedBox(height: 40),
                 TextField(
                   controller: _name,
-                  decoration: const InputDecoration(
-                    labelText: 'Display name',
+                  decoration: InputDecoration(
+                    labelText: l.onbDisplayName,
                     helperText:
-                        'Shared only inside your encrypted contact code',
+                        l.onbDisplayNameHelp,
                   ),
                 ),
                 if (_showDev) ...[
@@ -235,11 +242,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       _testOk = null;
                       _testWarn = null;
                     }),
-                    decoration: const InputDecoration(
-                      labelText: 'Relay address (developer)',
+                    decoration: InputDecoration(
+                      labelText: l.onbRelayAddress,
                       helperText:
-                          'Custom or self-hosted relay. Leave as-is to use the '
-                          'default zmessengers.com relay.',
+                          l.onbRelayHelp,
                       helperMaxLines: 2,
                     ),
                   ),
@@ -252,7 +258,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             height: 16,
                             child: CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.wifi_tethering, size: 18),
-                    label: Text(_testing ? 'Testing…' : 'Test connection'),
+                    label: Text(_testing ? l.onbTesting : l.onbTestConnection),
                   ),
                   if (_testOk != null)
                     Padding(
@@ -296,12 +302,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           width: 20,
                           height: 20,
                           child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Create my identity'),
+                      : Text(l.onbCreateIdentity),
                 ),
                 const SizedBox(height: 12),
                 OutlinedButton(
                   onPressed: _busy ? null : _restore,
-                  child: const Text('Restore from a backup'),
+                  child: Text(l.onbRestoreFromBackup),
                 ),
                 const SizedBox(height: 8),
                 TextButton(
@@ -310,20 +316,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       : () => Navigator.of(context).push(MaterialPageRoute(
                           builder: (_) => NewDeviceLinkScreen(
                               vault: widget.vault, onDone: widget.onDone))),
-                  child: const Text('Link to an existing account'),
+                  child: Text(l.onbLinkExisting),
                 ),
                 TextButton(
                   onPressed: () => setState(() => _showDev = !_showDev),
                   child: Text(
-                    _showDev ? 'Hide developer options' : 'Developer options',
+                    _showDev ? l.onbHideDevOptions : l.onbDevOptions,
                     style:
                         TextStyle(color: context.z.textSecondary, fontSize: 12),
                   ),
                 ),
                 const SizedBox(height: 24),
                 Text(
-                  'Your identity is a cryptographic key pair generated on this device. '
-                  'It never leaves it unencrypted.',
+                  l.onbIdentityNote,
                   textAlign: TextAlign.center,
                   style:
                       TextStyle(color: context.z.textSecondary, fontSize: 12),

@@ -393,6 +393,300 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'📎 {name}'**
   String chatPreviewFile(String name);
+
+  /// Validation: the connection test was pressed with an empty address.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter your relay address first.'**
+  String get onbEnterRelayFirst;
+
+  /// Result of a successful connection test.
+  ///
+  /// In en, this message translates to:
+  /// **'Connected — the relay is reachable.'**
+  String get onbRelayReachable;
+
+  /// Result of a failed connection test. 'Live' is the wording a hosting dashboard uses; keep it recognisable.
+  ///
+  /// In en, this message translates to:
+  /// **'Check the address and that it shows Live in your host dashboard.'**
+  String get onbRelayUnreachable;
+
+  /// Validation: continue was pressed with no display name. The parenthetical answers the unspoken 'who can see this'.
+  ///
+  /// In en, this message translates to:
+  /// **'Pick a display name (only your contacts ever see it).'**
+  String get onbPickName;
+
+  /// File-picker title when restoring.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose your Z backup'**
+  String get onbChooseBackup;
+
+  /// The chosen file is not a .zbk or .zid.
+  ///
+  /// In en, this message translates to:
+  /// **'That file is not a Z backup.'**
+  String get onbNotABackup;
+
+  /// Restore failed. Deliberately does NOT say which of the two, because saying so would tell an attacker holding the file whether a guess was close.
+  ///
+  /// In en, this message translates to:
+  /// **'Restore failed: wrong secret, or the file is damaged.'**
+  String get onbRestoreFailed;
+
+  /// Label on the recovery-code field.
+  ///
+  /// In en, this message translates to:
+  /// **'Recovery code'**
+  String get onbRecoveryCode;
+
+  /// Help text under the recovery-code field.
+  ///
+  /// In en, this message translates to:
+  /// **'The 25-character code you saved when you made this backup.'**
+  String get onbRecoveryCodeHelp;
+
+  /// Dismisses a dialog without acting.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel'**
+  String get cancel;
+
+  /// Confirms a restore.
+  ///
+  /// In en, this message translates to:
+  /// **'Restore'**
+  String get onbRestore;
+
+  /// Dialog title when the archive is passphrase-protected rather than code-protected.
+  ///
+  /// In en, this message translates to:
+  /// **'Backup passphrase'**
+  String get onbBackupPassphrase;
+
+  /// Label on a passphrase field.
+  ///
+  /// In en, this message translates to:
+  /// **'Passphrase'**
+  String get passphrase;
+
+  /// Confirms a passphrase entry.
+  ///
+  /// In en, this message translates to:
+  /// **'Unlock'**
+  String get unlock;
+
+  /// Label on the display-name field.
+  ///
+  /// In en, this message translates to:
+  /// **'Display name'**
+  String get onbDisplayName;
+
+  /// Help text: the name travels in the contact code, not to a server.
+  ///
+  /// In en, this message translates to:
+  /// **'Shared only inside your encrypted contact code'**
+  String get onbDisplayNameHelp;
+
+  /// Label on the relay field, shown only with developer options open.
+  ///
+  /// In en, this message translates to:
+  /// **'Relay address (developer)'**
+  String get onbRelayAddress;
+
+  /// Help text under the relay field.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom or self-hosted relay. Leave as-is to use the default zmessengers.com relay.'**
+  String get onbRelayHelp;
+
+  /// The connection test is in flight.
+  ///
+  /// In en, this message translates to:
+  /// **'Testing…'**
+  String get onbTesting;
+
+  /// Starts a connection test against the relay address.
+  ///
+  /// In en, this message translates to:
+  /// **'Test connection'**
+  String get onbTestConnection;
+
+  /// Primary action: generate a new identity and finish onboarding.
+  ///
+  /// In en, this message translates to:
+  /// **'Create my identity'**
+  String get onbCreateIdentity;
+
+  /// Secondary action: restore an existing identity from a .zbk or .zid.
+  ///
+  /// In en, this message translates to:
+  /// **'Restore from a backup'**
+  String get onbRestoreFromBackup;
+
+  /// Secondary action: become an additional device of an account that already exists.
+  ///
+  /// In en, this message translates to:
+  /// **'Link to an existing account'**
+  String get onbLinkExisting;
+
+  /// Collapses the developer section.
+  ///
+  /// In en, this message translates to:
+  /// **'Hide developer options'**
+  String get onbHideDevOptions;
+
+  /// Expands the developer section.
+  ///
+  /// In en, this message translates to:
+  /// **'Developer options'**
+  String get onbDevOptions;
+
+  /// Footnote on the onboarding screen. Both halves matter: it is generated here, and it does not leave in the clear.
+  ///
+  /// In en, this message translates to:
+  /// **'Your identity is a cryptographic key pair generated on this device. It never leaves it unencrypted.'**
+  String get onbIdentityNote;
+
+  /// Validation on the create-group screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Pick a group name and at least one member.'**
+  String get grpNeedNameAndMember;
+
+  /// Group creation failed; {error} is the underlying message.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not create: {error}'**
+  String grpCreateFailed(String error);
+
+  /// Title of the create-group screen.
+  ///
+  /// In en, this message translates to:
+  /// **'New group'**
+  String get grpNew;
+
+  /// Label on the group-name field.
+  ///
+  /// In en, this message translates to:
+  /// **'Group name'**
+  String get grpName;
+
+  /// Help text: the name is shared with members, and there is no group key — each member gets their own encrypted copy.
+  ///
+  /// In en, this message translates to:
+  /// **'Members see this name. Messages are end-to-end encrypted to each member individually.'**
+  String get grpNameHelp;
+
+  /// Empty state: a group needs contacts to invite.
+  ///
+  /// In en, this message translates to:
+  /// **'Add some contacts first.'**
+  String get grpAddContactsFirst;
+
+  /// Create button, with the number of members selected.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{Create group (1 member)} other{Create group ({count} members)}}'**
+  String grpCreateWithCount(int count);
+
+  /// Opens the add-members screen, and titles it.
+  ///
+  /// In en, this message translates to:
+  /// **'Add members'**
+  String get grpAddMembers;
+
+  /// Confirms an addition.
+  ///
+  /// In en, this message translates to:
+  /// **'Add'**
+  String get add;
+
+  /// Confirmation dialog title.
+  ///
+  /// In en, this message translates to:
+  /// **'Leave this group?'**
+  String get grpLeaveTitle;
+
+  /// Confirmation dialog body. The second sentence matters: leaving does not delete what you already have.
+  ///
+  /// In en, this message translates to:
+  /// **'You will stop receiving its messages. Your copy of the history stays on this device.'**
+  String get grpLeaveBody;
+
+  /// Confirms leaving a group.
+  ///
+  /// In en, this message translates to:
+  /// **'Leave'**
+  String get grpLeave;
+
+  /// Shown after leaving and deleting a group.
+  ///
+  /// In en, this message translates to:
+  /// **'Group removed'**
+  String get grpRemoved;
+
+  /// Subtitle on a group you have left.
+  ///
+  /// In en, this message translates to:
+  /// **'You are no longer in this group'**
+  String get grpNoLongerIn;
+
+  /// Subtitle on the group screen. The clause after the separator is the design statement: no group key, one encrypted copy per member.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 member · every message is end-to-end encrypted to each member} other{{count} members · every message is end-to-end encrypted to each member}}'**
+  String grpMemberCount(int count);
+
+  /// The current user's row in the member list, when they created the group.
+  ///
+  /// In en, this message translates to:
+  /// **'You (admin)'**
+  String get grpYouAdmin;
+
+  /// The current user's row in the member list.
+  ///
+  /// In en, this message translates to:
+  /// **'You'**
+  String get grpYou;
+
+  /// A member whose contact record is missing.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown'**
+  String get grpUnknown;
+
+  /// Badge next to the member who administers the group. Lower case: it sits as a chip, not a sentence.
+  ///
+  /// In en, this message translates to:
+  /// **'admin'**
+  String get grpAdmin;
+
+  /// Removes the selected member.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove from group'**
+  String get grpRemoveFromGroup;
+
+  /// Action in the group screen's menu.
+  ///
+  /// In en, this message translates to:
+  /// **'Leave group'**
+  String get grpLeaveGroup;
+
+  /// Footnote on the group screen. This is the whole group design in three clauses; keep all three.
+  ///
+  /// In en, this message translates to:
+  /// **'Groups have no server-side existence: the relay never learns the group\'s name or member list. Each message is sent as separate end-to-end encrypted copies over your verified 1:1 channels.'**
+  String get grpFootnote;
+
+  /// Connection test failed. {url} is the normalised address that was tried. 'Live' is the wording a hosting dashboard uses; keep it recognisable.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not reach a relay at {url}.\nCheck the address and that it shows Live in your host dashboard.'**
+  String onbRelayUnreachableAt(String url);
 }
 
 class _AppLocalizationsDelegate
