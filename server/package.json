@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js",
-    "bench:latency": "node bench/latency.js"
+    "bench:latency": "node bench/latency.js",
+    "bench:patterns": "node bench/patterns.js"
   },
   "dependencies": {
     "ioredis": "^5.4.1",

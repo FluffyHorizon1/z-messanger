@@ -108,7 +108,11 @@ recipient device so the relay does not learn who sent it.
   it can still observe that a mailbox is active and correlate timing across
   mailboxes; and the mirror to a person's other devices follows every
   message within tens of milliseconds (R19), which is a correlation it does
-  not have to work for. If you need
+  not have to work for. How fast timing alone pays off is measured, not
+  guessed: an operator who keeps timestamps names a group's mailboxes
+  after about eight messages and pairs a person's devices after three, and
+  the delays or dummy traffic that would change that are not ones a
+  messenger can carry ("Timing patterns", below). If you need
   metadata privacy against the operator, run the relay yourself and/or put it
   behind Tor.
 - **A compromised endpoint.** Malware, spyware, or a physically unlocked
@@ -188,10 +192,89 @@ exists, gated on something), *open* (should be closed and is not yet).
 | R15 | Timing and volume correlation by someone watching both ends | A global passive adversary | Z is not an anonymity network and does not claim to be | Tor for the transport, if that is your threat model | accepted |
 | R16 | The shipped APK is reproducible **only at a fixed checkout path**: building in a directory not named `z` changes `libapp.so` and `libdartjni.so` | A verifier who builds somewhere else and reads the mismatch as tampering | The Dart AOT snapshot embeds its absolute build directory as a source URI (`.dart_tool/flutter_build/dart_plugin_registrant.dart`), and the two libraries compiled during the build inherit it. Measured 2026-09-09: two runners at one path are byte-identical, so the **machine is not a variable**; only the path is | The path is stated in the build recipe, as Debian records `Build-Path`. CI asserts machine-independence and asserts that a path change moves those two libraries and no others, so the leak cannot spread unnoticed. `verify_reproducible.py` names what differs, so a verifier who ignores the recipe gets a known deviation rather than a mystery | **accepted** — with the real fix (a relative URI) upstream in the Flutter tool |
 | R17 | Two accounts that add each other are pairable at the relay: each mailbox receives one ~16 KB envelope (the `pqid`, §18.2) within seconds of the other | Relay operator | The ML‑DSA key does not fit the code that bound it (`adr/0003`) and the safety number needs it promptly (§18.5), so it travels in‑band at first contact; the size marks the envelope (`adr/0004`, addendum). Measured 2026‑09‑11, a mutual add sent it twice in each direction — four such envelopes inside one round trip | Now one each way: every reason to send is coalesced into one debounced send that says whether the peer's key is held (`ack`), and a key that arrives with `ack` is not answered (`pq_identity_exchange_test.dart`). The pair itself remains; a mixnet or Tor would hide it, `adr/0004`'s rejected fragmentation would not | accepted |
-| R18 | Group membership is inferable from the fan‑out's timing: one group message reaches every other member's mailbox in one burst, and the same mailboxes burst together every time anyone in the group speaks | Relay operator | Pairwise encryption means N envelopes per message, sent one after another over the sender's socket. Measured (`group_spread_bench_test.dart`, five members, one relay on loopback): the members' copies are relay‑stamped within 64–135 ms of each other, every message. Only a mixnet breaks the pattern, and Z is not one (R15) | Self‑host, or Tor. Spreading the fan‑out over a few seconds was considered and is not done: it delays every group message for everyone and does not survive averaging over a conversation — a relay that keeps a day of timestamps clusters the mailboxes anyway. The trust table said "cannot learn who is in a group" until this was measured; it now says from what | accepted |
-| R19 | A person's devices are groupable from timing: every message their phone sends or receives is mirrored to their laptop at once, and a contact who holds their device list fans out to both in one burst | Relay operator | Self‑sync is what makes several devices one account, and it is immediate by design — a laptop that lags its phone by minutes would be a worse product for a smaller leak. Measured (`device_link_spread_bench_test.dart`, one relay on loopback): the laptop's copy is relay‑stamped 15–22 ms after the contact's when the phone sends, 31–53 ms after the phone's when the contact sends, every message. Linking is loud on its own: a mailbox that has just appeared receives the history replay (7.6b) as 65 536‑bucket envelopes — measured, a 250‑message chat is two of them, plus four 4 096 and one 16 384 for the lists and keys — which nothing but linking produces | Self‑host, or Tor; or one device. Delaying the mirror was considered and rejected for the reason R18 gives: a delay costs every message and does not survive averaging. Per‑device routing ids and sealing still keep the *identity* off the wire — the relay groups two mailboxes, not a name | accepted |
+| R18 | Group membership is inferable from the fan‑out's timing: one group message reaches every other member's mailbox in one burst, and the same mailboxes burst together every time anyone in the group speaks | Relay operator | Pairwise encryption means N envelopes per message, sent one after another over the sender's socket. Measured (`group_spread_bench_test.dart`, five members, one relay on loopback): the members' copies are relay‑stamped within 64–135 ms of each other, every message. Only a mixnet breaks the pattern, and Z is not one (R15) | Self‑host, or Tor. Jitter and cover traffic were measured rather than argued about (16.2, below): with nothing done, a relay that keeps three days of timestamps names a five‑member group's mailboxes after 8 messages. A random delay of up to a minute on every copy makes that 50 at ordinary rates; ten minutes — every group message up to ten minutes late for every recipient — is what it takes to pass the 2 000 messages the study stops at, and a quiet population needs an hour. A thousand dummy deliveries a day per mailbox (~1.4 MB/day) makes 8 into 50 on their own, and pass 2 000 only with ten seconds of delay on top. Neither is done: the pattern adds up with every message and chance does not, so a group that keeps talking beats any option a messenger can carry. The trust table said "cannot learn who is in a group" until this was measured; it now says from what | accepted |
+| R19 | A person's devices are groupable from timing: every message their phone sends or receives is mirrored to their laptop at once, and a contact who holds their device list fans out to both in one burst | Relay operator | Self‑sync is what makes several devices one account, and it is immediate by design — a laptop that lags its phone by minutes would be a worse product for a smaller leak. Measured (`device_link_spread_bench_test.dart`, one relay on loopback): the laptop's copy is relay‑stamped 15–22 ms after the contact's when the phone sends, 31–53 ms after the phone's when the contact sends, every message. Linking is loud on its own: a mailbox that has just appeared receives the history replay (7.6b) as 65 536‑bucket envelopes — measured, a 250‑message chat is two of them, plus four 4 096 and one 16 384 for the lists and keys — which nothing but linking produces | Self‑host, or Tor; or one device. Measured (16.2, below): the mirror makes the two mailboxes co‑activate on every message, so a relay pairs them after 3 — an hour of ordinary use. A random delay of up to a minute on the mirror makes that 30, still under a day; a thousand dummy deliveries a day per device makes it 20 on its own; only ten minutes of delay keeps the pair apart for the three days modelled, and in a quiet population not even that. A laptop ten minutes behind its phone is not the product, so none of it is done. Per‑device routing ids and sealing still keep the *identity* off the wire — the relay groups two mailboxes, not a name | accepted |
 | R20 | Anyone who holds an account's public key can read that account's publish history from the transparency log or a mirror: how many device lists it has published, at which versions, and when | Anyone with the contact code; the log operator additionally learns the public key itself at publish | Labels are `SHA‑256(context ‖ accountEdPub)`, so only a party already holding the key can compute one; a VRF‑blinded label (`adr/0006`, considered and rejected) would hide labels from readers of a *mirror* at the cost of a proof per lookup and a second key, for identifiers that are 256‑bit random and cannot be enumerated. Contacts learn nothing the gossip did not already tell them except timestamps; the sealed value hides the lists themselves from everyone else | Values sealed under a key derived from the account's public key (§19.1) — a mirror sees labels and ciphertext; publish through a durable queue, so timing reflects when the account changed its devices rather than when it was online, only loosely | **accepted** — `adr/0006`, 0001's named cost with the log built |
 | R21 | A sealed envelope's sender is attributable by network address: the anonymous socket it arrives on and the device's authenticated mailbox socket come from the same address, and on a home or office connection an address is as good as a name | Relay operator; anyone at the TLS terminator | Sending sealed envelopes on a connection that never authenticated (16.1, §12.1) removes the identity the relay used to be handed with every send; it cannot remove the address a socket comes from. Carrier‑grade NAT puts many phones behind one address and blunts this; a fixed address does not. Two sockets from one address that open together and stay up together are a pair whether or not either says so | Tor or a VPN in front of the app, which the app does not provide; running the relay yourself; the timing study in 16.2 says what jitter would and would not buy | **accepted** — `adr/0007`; before 16.1 this row would have read "attributable by connection identity", which is worse and was not written down |
+
+### Timing patterns: what a mitigation would buy (16.2)
+
+R18 and R19 record that a group's mailboxes, and a person's devices, light
+up together. Until 16.2 the rows said that spreading the traffic out had
+been considered and rejected because it "does not survive averaging" — an
+argument, not a number. `server/bench/patterns.js` (`npm run
+bench:patterns` in `server/`) puts numbers to it: a seeded simulation of
+600 mailboxes over three days, twenty groups of five among them, every
+mailbox also receiving unrelated one‑to‑one traffic at the rate in the
+column heading, and an attacker who does the obvious thing — for every pair
+of mailboxes, count how often a delivery to one falls within the jitter
+window of a delivery to the other; work out from the two mailboxes'
+delivery counts how often that happens by chance; and flag every pair whose
+count chance cannot explain, at a threshold chosen so that chance accounts
+for at most 5 % of what is flagged. The attacker is told the jitter and
+nothing else — not the group size, not who is in a group. A cell is the
+number of group messages the relay has to have seen before the attacker
+names 95 % of the group's pairs at 95 % precision, in two runs of three.
+The burst spread is the measured one (R18, 100 ms); "cover" is dummy
+deliveries the relay cannot tell from real ones, added to the busy column.
+
+| jitter D | quiet (5/day) | busy (50/day) | busy + cover 100/day | busy + cover 1 000/day |
+|---|---:|---:|---:|---:|
+| none | 8 | 8 | 12 | 50 |
+| 1 s | 8 | 12 | 20 | 120 |
+| 10 s | 8 | 20 | 80 | >2 000 |
+| 1 min | 12 | 50 | 120 | >2 000 |
+| 10 min | 30 | >2 000 | >2 000 | >2 000 |
+| 1 h | >2 000 | >2 000 | >2 000 | >2 000 |
+
+A person's two devices are a group of two that co‑activates on *every*
+message the person sends or receives (R19), so the same question is how
+many messages the person exchanges before the mailboxes are paired — fifty
+such people among the 600, and at fifty messages a day, how long that is:
+
+| mirror jitter D | quiet (5/day) | busy (50/day) | busy + cover 1 000/day |
+|---|---:|---:|---:|
+| none | 2 (1 h) | 3 (1 h) | 20 (10 h) |
+| 1 s | 2 (1 h) | 5 (2 h) | 80 (1.6 d) |
+| 10 s | 3 (1 h) | 12 (6 h) | >2 000 |
+| 1 min | 8 (4 h) | 30 (14 h) | >2 000 |
+| 10 min | 20 (10 h) | >2 000 | >2 000 |
+
+What the tables say:
+
+* **With nothing done, it takes almost nothing.** A relay that keeps three
+  days of timestamps names a group after eight messages and pairs a
+  person's devices after three. The rows were right that the pattern
+  survives averaging; they understated how little averaging it takes.
+* **Jitter buys nothing until it is longer than the gaps in ordinary
+  traffic.** A second or ten seconds move a cell by a factor of two; a
+  minute makes 8 into 50; only ten minutes — every group message up to ten
+  minutes late for every recipient, a laptop up to ten minutes behind its
+  phone — pushes a busy population past the 2 000 messages the study stops
+  at, and a quiet population needs an hour. That is email's delay, and Z
+  is not email.
+* **Cover traffic buys days, not weeks.** A thousand dummy deliveries a day
+  to every mailbox — about 1.4 MB a day per device, sent and received —
+  makes 8 into 50 on its own and passes 2 000 only with ten seconds of
+  jitter on top; for the device pair it turns an hour into ten. A hundred a
+  day (142 KB) is a rounding error.
+* **Patience wins every cell.** A real pair's count grows with every
+  message; a chance pair's count grows with the background, and its spread
+  only with the square root of it. ">2 000" means more than 2 000 messages
+  inside the three days modelled; a relay that watches for a month gets
+  those cells too, later.
+
+The decision is the one the rows already recorded, now with its price on
+it: **no jitter and no cover traffic.** The mitigation that a patient
+operator cannot wait out is not in the table, because it is not a
+mitigation Z can apply — it is a network that hides *which mailbox* a
+delivery reached, which is a mixnet (R15), or a relay that is yours. Both
+were the answer before the study and are the answer after it; the study is
+what lets this document say so with a number rather than a shrug. The
+simulation's chance model was checked against a brute‑force count before
+its table was read — three of the study's own bugs were in that model, and
+each of them had produced a plausible table (`ROADMAP_8_15.md`, revision
+37).
 
 ### What is NOT on this list, and why
 

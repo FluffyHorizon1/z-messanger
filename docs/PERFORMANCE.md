@@ -482,6 +482,25 @@ anonymous link is therefore a sizing rule, not a throughput one: count
 sockets as twice the devices (`SELF_HOSTING.md`). `/health` now reports
 `sockets` beside `connections` so the number sized for is the number seen.
 
+### What jitter and cover traffic would have cost (16.2)
+
+`server/bench/patterns.js` (`npm run bench:patterns`, ~150 s) is not a
+measurement of the relay but of two things that were considered for it and
+not done — delaying each copy of a group message by a random amount, and
+sending every mailbox dummy traffic — against a relay operator who clusters
+mailboxes by when they light up together. The result and the decision are
+in `THREAT_MODEL.md` ("Timing patterns"); the costs, which are this
+document's business, are these. A jitter of D is up to D of added latency
+on every group message for every recipient, and on the mirror to a person's
+own devices, and the study finds nothing under ten minutes worth having.
+Cover traffic at the rate that moves a cell — a thousand dummy deliveries a
+day per device — is about 1.4 MB a day per device in 1 024‑bucket
+envelopes, sent and received, and for the relay one extra envelope per
+device every 86 seconds: 116 a second for ten thousand devices, a twentieth
+of what one relay delivered in the table above, so the relay could carry it;
+the phones' batteries and the operator's patience are the reasons it is not
+sent.
+
 ## The transparency log (2026-09-11)
 
 `kt/bench/proofs.js` (`npm run bench` in `kt/`): a log with one entry per

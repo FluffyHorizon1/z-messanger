@@ -667,15 +667,34 @@ more than one relay that talk to each other.
   R21, written down where the stronger claim used to be. Cost measured:
   two sockets per device; at the same rate, the tail triples past a
   thousand sockets (`PERFORMANCE.md`).
-- **16.2 the pattern study (R18, R19)** — what jittering or delaying the
+- **16.2 the pattern study (R18, R19)** ✅ — what jittering or delaying the
   group fan-out and the device mirror would buy against a relay that
   clusters mailboxes by co-occurrence over many messages, and what cover
-  traffic would cost; ends in a mitigation or a documented "not worth it",
-  with the numbers.
-- **16.3 federation** — `adr/0008`: whether Z should let people on
-  different relays talk (client-to-many-relays, or relay-to-relay), what
-  each operator would learn that one does not today, what the contact code
-  carries, and a decision — build, defer, or reject.
+  traffic would cost. `server/bench/patterns.js` (`npm run bench:patterns`):
+  a seeded simulation, 600 mailboxes over three days, an attacker who
+  counts co-activations per pair and flags what chance cannot explain. The
+  numbers (`THREAT_MODEL.md`, "Timing patterns"): with nothing done a
+  five-member group is named after 8 messages and a person's two devices
+  are paired after 3; a minute of jitter makes those 50 and 30; only ten
+  minutes of delay on every message pushes a busy population past the
+  2 000 messages the study stops at, and a quiet one needs an hour; cover
+  traffic of 1.4 MB a day per device buys days, not weeks; and a patient
+  relay gets every cell eventually, because a real pair's count grows with
+  every message and a chance pair's spread only with the square root. The
+  decision is the documented "not worth it": no jitter, no cover traffic;
+  R18 and R19 now carry the price of the option they reject, and the
+  answer stays a mixnet or your own relay (revision 37 for what the study
+  got wrong on the way).
+- **16.3 federation** ✅ *as a design* — `adr/0008`: if Z ever lets people
+  on different relays talk it is client-to-many-relays — the sender opens an
+  anonymous link to the recipient's relay and nothing travels between
+  relays — with a device-signed relay statement (`rs`, `z-relay-v1:`)
+  carried in codes and device lists as a compatible extension. Shape B
+  (relay-to-relay) puts an extra operator on every envelope and needs a
+  protocol Z does not have; a directory is the thing Z refuses to build.
+  **Not built**: one public relay, and the self-hosted ones serve closed
+  groups; the trigger is a second relay whose users need the first's. The
+  members and context are reserved by the record.
 
 **Exit:** 16.1's claim holds from the relay's side; 16.2 has a number for
 every option it considers and a decision; 16.3 is an accepted or rejected
@@ -1143,3 +1162,34 @@ direction; the phases, their order and both ordering arguments stand.
    remains, R21 — rather than deleted. The rule: **a claim about what a
    party cannot learn has to be checked against every channel that party
    has, not the one the mechanism was designed for.**
+
+37. **The pattern study produced three plausible tables before it produced
+   a true one, and all three were the attacker's null model.** The
+   simulation (16.2, `server/bench/patterns.js`) gives the attacker a
+   chance model — how often two unrelated mailboxes co-activate by
+   accident — and lets it flag what the model cannot explain. Three bugs in
+   that model, in turn: the expectation was rounded to three decimals
+   before it was tallied, which sent every small one to zero, so forty
+   quiet pairs a run passed the threshold "by chance" that the model said
+   was impossible; the fast counting path (bins of the window's width,
+   same-or-adjacent) catches pairs across 3W while the model was told 2W, so
+   the count ran half again above the expectation and half the population
+   was flagged; and the threshold search was capped at 64, so a busy cell
+   in which the attacker needed a count of 80 read as ">2 000". Each
+   produced a table that looked like a result — one in which the quiet
+   column, the easiest for the attacker, read ">2 000" all the way down;
+   one in which every mitigation worked; one in which a minute of jitter
+   was enough at ordinary rates and a person's devices could never be
+   paired — and each would have gone into the threat model with a straight
+   face. What caught them was not reading the tables but checking the
+   model against a brute-force count of the same events before reading
+   them: the measured chance mean against `n_a·n_b·2W/T`. The first
+   suspect for the half was the random generator, which was swapped and
+   later cleared (either one matches the expectation within noise). The
+   rule: **a simulation's null model is checked against brute force before
+   its table is read, because a wrong null model does not produce nonsense
+   — it produces a table.** Two smaller ones: `GROUPS` is a bash variable,
+   so the environment knob is `NGROUPS`; and `pkill -f <pattern>` matches
+   the shell command that contains it and killed the chain that was
+   editing the file, which is why two of the fixes above were applied
+   twice.

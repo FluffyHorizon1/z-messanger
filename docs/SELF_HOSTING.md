@@ -140,9 +140,11 @@ messages.
 
 In the app: onboarding screen, or Settings → Relay server. Use
 `wss://relay.example.com` (TLS) in production. Everyone you talk to must use the
-**same relay** (or a federated set that shares delivery — not part of v1). The
-relay only sees routing hashes and ciphertext, so running your own maximizes
-metadata privacy too.
+**same relay**: federation is designed and not built — if it is, a sender
+will open an anonymous link to the recipient's relay directly and nothing
+will travel between relays (`docs/adr/0008-federation.md`). The relay only
+sees routing hashes and ciphertext, so running your own maximizes metadata
+privacy too.
 
 ## What one relay carries
 
