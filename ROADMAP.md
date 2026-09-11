@@ -13,29 +13,28 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 
 ---
 
-## Where things stand (updated 2026-09-05)
+## Where things stand (updated 2026-09-11)
 
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 Foundation hardening | ✅ done | `durability_test.dart`, `docs/LOAD.md`, retry/delete affordances |
 | 1 Push notifications | ✅ done (1.3 F-Droid flavour dropped with 3.2) | content-free FCM wake; relay push tests |
 | 2 Signed builds | 2.1 + 2.4 ✅ · 2.2/2.3 ⛔ need paid certificates | signed AAB/APK + `SHA256SUMS.txt` on every release |
-| 3 Store distribution | **3.1 ✅ live on Google Play** · 3.4 ✅ · 3.2 dropped · 3.3 ⏳ · **3.5 Play Console recommendations ✅** (16 KB pages, edge-to-edge; bitmap/PiP items assessed) | `docs/play/`, `CONSOLE_RECOMMENDATIONS.md`, `app/tool/check_16k.sh` in CI, `zmessengers.com` landing + privacy page |
+| 3 Store distribution | **3.1 ✅ live on Google Play** · 3.4 ✅ · 3.2 dropped · 3.3 ⏳ · **3.5 Play Console recommendations ✅** (16 KB pages, edge-to-edge; bitmap/PiP items assessed) | the Play listing, `app/tool/check_16k.sh` in CI, `zmessengers.com` landing + privacy page |
 | 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
 | 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
 | 8 Message interactions | **✅ complete** — 8.1a replies · 8.1b reactions · 8.1c edit / delete-for-everyone / forward | `replies_test.dart` (13 cases incl. the group authorship abuse test), `docs/vectors/v1/inner_messages.json`, PROTOCOL §6.4–6.6 |
-| 9–15 | see `docs/ROADMAP_8_15.md` | — |
-| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log deferred) · 7.6 search + history sync + themes ✅ · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
+| 9–15 | see `docs/ROADMAP_8_15.md` — **9, 10, 13, 14, 15 done** except the externally gated items; **11 (public transparency log) in progress** — the log service, its vectors and ADR 0006 are in; the client is next; 12 (calls) waits on ADR 0005 | `docs/GA_CHECKLIST.md` is the live GA answer |
+| 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log: `adr/0006`, in progress) · 7.6 search + history sync + themes ✅ · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
 
-**Next up:** phase 9 (encrypted backup & restore). The full plan for phases
-8–15 — backup, multi-device, key transparency, calls, PQ identity,
-verifiability, GA — is `docs/ROADMAP_8_15.md`; the externally gated items
-(auditor engagement, Play re-upload, desktop certificates, iOS, 7.8c) are
-folded into phases 14 and 15 there.
-Externally gated items resume as soon as their gate clears: Play submission,
-Windows/macOS signing, auditor engagement (5.2), iOS; 7.7b (public transparency
-log) waits for a public launch with durable infrastructure.
+**Next up:** the rest of phase 11 (the transparency-log client, then the
+log going live — `adr/0006` says what "live" means), then phase 12 (calls)
+once ADR 0005 is decided. The full plan for phases 8–15 — backup,
+multi-device, key transparency, calls, PQ identity, verifiability, GA — is
+`docs/ROADMAP_8_15.md`; the externally gated items (auditor engagement,
+desktop certificates, iOS, 7.8c) are folded into phases 14 and 15 there, and
+`docs/GA_CHECKLIST.md` says which are still open and why.
 
 ---
 
@@ -119,8 +118,8 @@ Remove the scary install warnings; make binaries verifiable.
 - **3.4 Direct downloads** ✅ polished on the GitHub Releases page as the fallback
   channel. **DoD:** a simple download landing page.
 - **3.5 Play Console recommendations** ✅ — the items the Console raised on
-  the first upload, each resolved or deliberately declined in
-  `docs/play/CONSOLE_RECOMMENDATIONS.md`: **16 KB page-size alignment**
+  the first upload, each resolved or deliberately declined: **16 KB
+  page-size alignment**
   (required for Android 15+ targets) fixed by moving `mobile_scanner` to
   7.4 (ML Kit 17.3 / CameraX 1.6), with `app/tool/check_16k.sh` verifying
   every 64-bit library in the APK and AAB in CI; **edge-to-edge** enabled

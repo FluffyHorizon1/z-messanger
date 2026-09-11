@@ -1,187 +1,133 @@
-# Z — zero‑trust messenger
+# Z
 
-**No accounts. No phone numbers. No server storage.** Z is an end‑to‑end
-encrypted 1:1 messenger where messages live **only** on the two devices that
-exchanged them. The server is a dumb relay that shuttles opaque ciphertext and
-keeps undelivered messages in RAM only — never on disk.
+**An end‑to‑end encrypted messenger with no accounts, no phone numbers and
+no server that could read anything.** Messages exist only on the devices that
+exchanged them. The relay in between passes opaque ciphertext and holds
+undelivered messages in memory alone — it has no database, keeps no logs of
+content, and cannot read, alter or forge a message. Your address is a hash
+of a key you generate; nobody is registered anywhere.
 
-> Zero trust means you don't have to trust the server to keep your messages
-> private. The relay cannot read, alter, or forge anything. Please read
-> [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) for exactly what that does and
-> does not cover (metadata, endpoints, first‑contact verification).
+<p align="center">
+  <a href="https://play.google.com/store/apps/details?id=com.zmessenger.www"><img alt="Get it on Google Play" src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" height="72"></a>
+</p>
 
-![Two Z desktop clients holding an encrypted conversation](docs/screenshot_conversation.png)
+**Android:** [Z on Google Play](https://play.google.com/store/apps/details?id=com.zmessenger.www).
+**Windows, Linux, macOS:** the [latest release](https://github.com/FluffyHorizon1/z-messanger/releases/latest)
+carries a build for each, with a `SHA256SUMS.txt` you can check against
+[`docs/REPRODUCIBLE_BUILDS.md`](docs/REPRODUCIBLE_BUILDS.md).
 
-## Get running in ~5 minutes
+![Two Z clients holding an encrypted conversation](docs/screenshot_conversation.png)
 
-The only thing you host is the **relay** (a dumb pipe that stores nothing
-readable). Put it on a free cloud tier and you're done — full walkthrough in
-**[`DEPLOY.md`](DEPLOY.md)**.
+## What makes it different
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
+- **Nothing to trust on the server.** The relay sees routing hashes and
+  ciphertext in one of a few padded sizes. Sealed sender hides who sent
+  each message even from the relay. There is no directory, no key server,
+  no metadata store — and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)
+  says exactly what the relay *can* still observe.
+- **Signal‑style cryptography, post‑quantum on top.** X3DH‑style handshake,
+  the Double Ratchet (X25519, HKDF, HMAC) with XChaCha20‑Poly1305, and a
+  hybrid ML‑KEM‑768 layer with periodic re‑keying so recorded traffic stays
+  closed to a future quantum computer. Identities carry an ML‑DSA‑65 half.
+- **Device lists you can check.** Linked devices are signed by your account
+  key, and your contacts cross‑check every list they are handed inside the
+  encrypted channel, so a device quietly added to an account shows up on
+  the screens of the people it talks to.
+- **Everything on the device is encrypted.** An on‑device vault with every
+  sensitive cell sealed under a key in the OS keystore, an optional
+  passphrase (Argon2id), biometric app lock, and encrypted backups you can
+  restore onto a wiped phone with a recovery code.
+- **The ordinary things, done carefully.** Groups, linked devices, voice
+  messages, encrypted attachments, replies, reactions, edits,
+  delete‑for‑everyone, disappearing messages, search — each specified and
+  tested, several with a written argument for why they are safe.
+- **Verifiable.** A frozen protocol specification with machine‑checked test
+  vectors, independent verifiers in CI that share no code with the
+  reference implementation, reproducible Android builds, and a security
+  policy with safe harbour.
 
-1. Push this repo to GitHub (`bash deploy/push-to-github.sh`, or by hand).
-2. Click the button above (or Render → New → Blueprint) → you get a free
-   `wss://z-relay-xxxx.onrender.com` address.
-3. Install the app, paste that address, tap **Test connection**, and message.
+## How it works, briefly
 
-No domain needed — Render/Fly hand you an HTTPS/wss URL automatically. Prefer
-your own server or Fly.io? See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
+1. Your device generates its identity. Nothing is registered anywhere.
+2. You and a contact exchange signed contact codes out of band — a QR code
+   or a pasted string.
+3. A handshake derives a shared secret and the ratchet takes over: every
+   message has its own key, and a compromised key today does not open
+   yesterday's messages or tomorrow's.
+4. Ciphertext goes to the relay addressed to a routing id. The relay holds it
+   in memory until the recipient's device confirms it has it, then drops it.
+5. Both devices keep their copy in an encrypted local vault.
 
-## Highlights
+The long version is [`docs/WHITEPAPER.md`](docs/WHITEPAPER.md); the
+normative one is [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
-- **End‑to‑end encryption** with the Signal‑style **Double Ratchet**
-  (X25519 + HKDF + HMAC), messages sealed with **XChaCha20‑Poly1305**. Forward
-  secrecy and post‑compromise healing on every round trip.
-- **No message storage on any server.** The reference relay is RAM‑only and
-  runs happily with a read‑only filesystem. Restart = clean slate.
-- **No identifiers.** Your address is a hash of your public key. Add contacts
-  by scanning a QR code or pasting a signed contact code.
-- **Encrypted local vault.** On‑device SQLite, every sensitive cell encrypted
-  under a key held in the OS keystore — with an **optional passphrase** (Argon2id)
-  that unlocks the app on this device. The passphrase composes with the keystore
-  and never leaves the device.
-- **Replies, reactions, edits and delete-for-everyone.** A reply quotes from
-  *your* copy of the message, never from anything the sender attached, so
-  nobody can put words in someone's mouth; an edit or a delete is only ever
-  applied to messages the sender actually wrote.
-- **Light and dark.** Follows the system by default; Settings › Appearance
-  overrides it. Both palettes clear WCAG AA contrast (`app/tool/contrast.py`).
-- **App lock.** Fingerprint / face / device PIN to open Z (and again after a
-  chosen time in the background), and optionally to open a passphrase‑protected
-  vault without typing the passphrase — trade‑offs spelled out in
-  `docs/THREAT_MODEL.md`.
-- **Disappearing messages** (per‑chat timer) and **encrypted attachments**
-  (per‑file key delivered inside the ratchet, chunks sealed and hash‑verified).
-- **Safety numbers** to detect machine‑in‑the‑middle key substitution.
-- **Scales out** — run one relay, or many behind a load balancer sharing a
-  RAM‑only Redis (still zero‑knowledge). See `docs/SELF_HOSTING.md`.
-- **One codebase, four targets:** Android, Windows, Linux, macOS (Flutter).
+## Documentation
 
-## Project docs
-
-- **[`docs/REVIEW.md`](docs/REVIEW.md)** — full application review: architecture,
-  what's verified, the bugs found & fixed, and an honest production-readiness
-  assessment.
-- **[`ROADMAP.md`](ROADMAP.md)** — the path to a public launch, week-sized phases
-  with a definition-of-done for each ([visual timeline](docs/roadmap.html)).
-- **[`DEPLOY.md`](DEPLOY.md)** — get the relay online in ~5 minutes (one-click).
-- **[`docs/WINDOWS.md`](docs/WINDOWS.md)** — running Z on Windows.
-- **[`docs/GA_CHECKLIST.md`](docs/GA_CHECKLIST.md)** — what 1.0 requires and
-  where each condition actually stands. Currently **not ready**, with the
-  reasons named.
-- **[`docs/USING_Z.md`](docs/USING_Z.md)** — using Z, for people who are not
-  reading the code: adding people, safety numbers, linked devices, groups, and
-  a "if something goes wrong" section worth reading *before* it does.
-- **[`docs/WHAT_Z_CANNOT_DO.md`](docs/WHAT_Z_CANNOT_DO.md)** — the limits,
-  stated as plainly as the promises. Read it before deciding Z is right for a
-  particular risk.
-- **[`docs/WHITEPAPER.md`](docs/WHITEPAPER.md)** — the design and security
-  argument: each claim Z makes, the mechanism behind it, why that mechanism and
-  not the obvious alternative, how to check it, and what it does not cover.
-  Read this before the spec if you want to know whether the design is sound.
-- **[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)** · **[`docs/PROTOCOL.md`](docs/PROTOCOL.md)** · **[`docs/DATA_MAP.md`](docs/DATA_MAP.md)** · **[`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)** · **[`docs/BUILD.md`](docs/BUILD.md)**
+| Read this | If you want to know |
+|---|---|
+| [`docs/USING_Z.md`](docs/USING_Z.md) | how to use it: adding people, safety numbers, linked devices, groups, and what to do when something looks wrong |
+| [`docs/WHAT_Z_CANNOT_DO.md`](docs/WHAT_Z_CANNOT_DO.md) | the limits, stated as plainly as the promises — read it before relying on Z for a particular risk |
+| [`docs/WHITEPAPER.md`](docs/WHITEPAPER.md) | the design and the security argument: each claim, the mechanism, the alternative not taken, and how to check it |
+| [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | who can learn what, and the residual‑risk register |
+| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) · [`docs/vectors/`](docs/vectors/) | the wire format, frozen and pinned by test vectors |
+| [`docs/adr/`](docs/adr/) | the decisions that shaped the security model, with their reasoning |
+| [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) | running your own relay, and your own transparency log |
+| [`docs/BUILD.md`](docs/BUILD.md) · [`docs/WINDOWS.md`](docs/WINDOWS.md) | building from source |
+| [`docs/REPRODUCIBLE_BUILDS.md`](docs/REPRODUCIBLE_BUILDS.md) · [`docs/PROVENANCE.md`](docs/PROVENANCE.md) | checking that a release is what the source says |
+| [`docs/GA_CHECKLIST.md`](docs/GA_CHECKLIST.md) | what 1.0 requires and where each condition stands |
+| [`SECURITY.md`](SECURITY.md) · [`docs/VDP.md`](docs/VDP.md) | reporting a vulnerability, and the safe harbour for looking |
 
 ## Repository layout
 
 ```
-z-messenger/
-├── protocol/   Pure‑Dart E2E crypto core (identities, X3DH, Double Ratchet,
-│               attachments, relay client) + full test suite incl. a real
-│               end‑to‑end integration test through the Node relay.
-├── server/     Zero‑knowledge, RAM‑only WebSocket relay (Node.js) + tests +
-│               Dockerfile (read‑only fs) + docker‑compose.
-├── app/        Flutter application (Android / Windows / Linux / macOS).
-├── docs/       Threat model, protocol spec, self‑hosting guide, screenshots.
-└── .github/    CI that tests everything and builds installers for all four
-                platforms.
+protocol/   The cryptographic core, pure Dart: identities, handshake, Double
+            Ratchet, post-quantum hybrid, sealed sender, multi-device, groups,
+            attachments — and the test suite, including an end-to-end
+            conversation through the real relay.
+server/     The relay: a zero-knowledge, RAM-only WebSocket server (Node.js),
+            with a read-only-filesystem Dockerfile.
+kt/         The key transparency log: an append-only Merkle log with signed
+            heads, a mirror and witness tool, and the vectors generator.
+app/        The Flutter application: Android, Windows, Linux, macOS.
+docs/       Specification, threat model, whitepaper, guides, decision records.
+tool/       Checks that keep the documents honest about the code; they run in CI.
 ```
 
-## Quick start
-
-### 1. Run a relay
+## Building and testing
 
 ```bash
-cd server
-npm install
-npm start                 # listens on :8080 (ws://)
-# or, provably storage-less, behind a read-only container:
-docker compose up --build
+cd server && npm install && npm test      # the relay
+cd protocol && dart pub get && dart test  # the protocol, incl. a real conversation through the relay
+cd kt && npm test                         # the transparency log
+cd app && flutter pub get && flutter test # the app
 ```
 
-For real use put it behind TLS (`wss://`) — see
-[`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md). A relay is cheap: it holds only
-transient ciphertext in memory.
+`flutter run -d linux` (or `windows`, `macos`, or an attached Android device)
+starts the app from source; on first launch it asks for a display name and a
+relay address. [`docs/BUILD.md`](docs/BUILD.md) has the toolchain versions
+CI uses.
 
-### 2. Build & run the app
+## Running your own relay
 
-```bash
-cd app
-flutter pub get
-flutter run -d linux      # or: windows, macos, or an attached Android device
-```
+The app ships pointed at `wss://zmessengers.com`, and you can point it
+anywhere. A relay is a single Node process that needs no storage, so it runs
+on the smallest instance a host offers — plain Docker, a one‑command VPS
+install with automatic TLS, or a free cloud tier.
+[`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) covers each, along with
+running several relays behind a load balancer and running the transparency
+log.
 
-On first launch, pick a display name and point the app at your relay
-(`ws://localhost:8080` for local testing, `wss://your-relay` in production).
-Share your contact code (Add contact → My code) with someone running Z, add
-theirs, and start messaging. Compare safety numbers to verify no one is in the
-middle.
+## Status
 
-### 3. Install it
-
-**Android:** on Google Play as
-[Z Messenger](https://play.google.com/store/apps/details?id=com.zmessenger.www)
-(`com.zmessenger.www`).
-
-Every push also builds artifacts for all four platforms in CI
-([`.github/workflows/build.yml`](.github/workflows/build.yml)); tagging a
-`vX.Y.Z` release attaches them, with `SHA256SUMS.txt`:
-
-- **Android:** `app-release.apk` (and per‑ABI splits) — the same build Play ships
-- **Linux:** `z-linux-x64.tar.gz` (unpack and run `zapp`)
-- **Windows:** `z-windows-x64.zip` (unzip and run `zapp.exe`)
-- **macOS:** `z-macos.zip` (unzip `Z.app`)
-
-## How it works (short version)
-
-1. Your device generates an Ed25519 + X25519 identity. Nothing is registered
-   anywhere.
-2. You and a contact swap **signed public‑key bundles** out‑of‑band (QR/text).
-3. An **X3DH‑style handshake** derives a shared secret; the **Double Ratchet**
-   takes over, giving every message its own key.
-4. Ciphertext goes to the relay addressed to a **routing id** (a hash). The
-   relay holds it in RAM until the recipient's device fetches it, confirms it
-   persisted locally, and the relay drops it.
-5. Both devices store messages in an **encrypted local vault**. No server ever
-   sees plaintext, names, or files.
-
-Full details in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
-
-## Testing
-
-```bash
-# Relay unit tests (auth, RAM queueing, no-disk-writes assertion, spoofing)
-cd server && npm test
-
-# Protocol tests + a REAL end-to-end conversation through the Node relay
-cd protocol && dart test
-```
-
-The integration test (`protocol/test/relay_integration_test.dart`) spins up the
-actual relay, connects two real protocol clients, and exercises the handshake,
-out‑of‑order delivery, offline RAM‑queueing, delivered receipts, and an
-encrypted attachment — then asserts the relay never saw any plaintext.
-
-## Status & honesty
-
-Z is a complete, working implementation built from well‑studied primitives. It
-has **not** had an independent security audit. It is not affiliated with Signal.
-Do not use it for life‑or‑death threat models without a professional review.
-See the threat model for the residual risks (metadata, endpoint security,
-first‑contact verification).
+Z is a complete, working implementation built from well‑studied primitives,
+with its specification, threat model and test vectors published for review.
+It has **not yet had an independent security audit**;
+[`docs/GA_CHECKLIST.md`](docs/GA_CHECKLIST.md) lists that and the other
+conditions for calling it 1.0, with the honest status of each. Z is not
+affiliated with Signal.
 
 ## License
 
-Proprietary, source-available — see `LICENSE`. You may read, audit, and
-self-host for personal use; commercial use and redistribution need written
-permission.
+Proprietary, source‑available — see [`LICENSE`](LICENSE). You may read,
+audit, and self‑host for personal use; commercial use and redistribution
+need written permission.

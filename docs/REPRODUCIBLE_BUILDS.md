@@ -379,7 +379,7 @@ an experiment that never varied it. That is the third time in this file an
 inference has been written down as a finding, and it is the same mistake each
 time.
 
-The measurement, in the authoring sandbox, same commit, one ABI:
+The measurement, on a development machine, same commit, one ABI:
 
 ```
 /tmp/p1/zclone/app   flutter build apk --release --target-platform android-arm64

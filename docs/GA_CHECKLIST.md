@@ -9,8 +9,9 @@ ship, so the mechanical parts of this one are verified by
 happened; it can check that this file has not drifted from the repository
 around it.
 
-**Status: NOT READY.** Three criteria are unmet, one of them by design
-decision rather than by unfinished work.
+**Status: NOT READY.** Four criteria are unmet — G1 waits on an engagement,
+G3 on the log going live, G7 on iOS, G9 on a second locale — and G2 holds
+but has been checked by nobody outside the project.
 
 ---
 
@@ -20,7 +21,7 @@ decision rather than by unfinished work.
 |---|---|---|
 | G1 | External cryptographic audit, zero open Critical/High | ❌ **not commissioned** |
 | G2 | Reproducible builds, verified by someone outside the project | ⚠️ **property holds, nobody outside has checked** |
-| G3 | Key transparency live | ❌ **not built — and see below** |
+| G3 | Key transparency live | ❌ **log built (`kt/`, `adr/0006`); client and deployment to follow** |
 | G4 | Encrypted backup and restore | ✅ |
 | G5 | Multi-device | ✅ |
 | G6 | Published threat model | ✅ |
@@ -37,7 +38,7 @@ is specified and tested, `tool/audit_verify.sh` reproduces every one in a
 single command, and §8.1 defines severity anchored to those claims rather than
 to a generic scale.
 
-**What is missing is the engagement**, which is Finnian's to commission. Phase
+**What is missing is the engagement**, which is the project's to commission. Phase
 15's entry condition is zero open Critical/High, and that gate is the reason
 this phase is gated at all.
 
@@ -63,28 +64,26 @@ reads the build path out of the APK and prints that. See
 project structurally cannot self-certify, and marking it ✅ on our own
 authority would be the exact overclaim these documents exist to prevent.
 
-### G3 — Key transparency ❌ — and this needs a decision, not work
+### G3 — Key transparency ❌ — built, not yet live
 
-Written into the GA criteria at the start of phase 8; **not built**, and
-deliberately so. `adr/0001-key-transparency.md` defers the public log to phase
-11 and gates it on *"public launch with an operator committed to durable
-infrastructure"* — a Merkle log, an HSM signing key, mirrors and an
-independent witness, all of which are an operating commitment rather than a
-sprint.
+Written into the GA criteria at the start of phase 8 and deferred by
+`adr/0001` until "a public launch with an operator committed to durable
+infrastructure" — which made the criteria circular: GA required the log,
+and the log's trigger was GA. **Resolved by decision in `adr/0006`**: the
+log is run, and 1.0 waits on it.
 
-So the criteria as written contain a circular dependency: **GA requires KT,
-and KT's trigger is a public launch.** One of the two has to give, and it is
-not an engineering call:
+What exists: the service (`kt/` — an RFC 9162 log plus a sparse map under
+one signed head, publish authenticated by the account key, a mirror that
+refuses a fork), PROTOCOL.md §19, the vectors and a second implementation
+that re‑derives them. What does not yet: the client that verifies against
+it, and the deployment.
 
-* ship 1.0 without KT, with gossip-based device-list transparency (which is
-  built, and which `adr/0001` argues is the right first step) — and say so
-  plainly in the release; or
-* commit to running the log infrastructure first, and accept that 1.0 waits
-  on it.
-
-Until that is decided this row cannot be closed by writing code, and pretending
-otherwise would let the checklist quietly drop a criterion that was put there
-for a reason.
+**This row reads ✅ when** the service answers over TLS at its URL, the
+shipped client pins its public key with a witness configured, a mirror run
+by someone other than the operator has verified a head, and the operator's
+own account appears in it — the four lines of `SELF_HOSTING.md` "Running
+the transparency log". `tool/check_ga.py` will refuse the tick while the
+client's pin is a placeholder.
 
 ### G4 — Encrypted backup and restore ✅
 
@@ -109,11 +108,11 @@ for the inventory beneath it, `WHITEPAPER.md` for the argument, and
 ### G7 — Platform completion ❌
 
 Android, Windows, macOS and Linux build and ship. **iOS does not exist** —
-there is no `app/ios/` directory. It is a parallel track with its own agent
-and its own file ownership, and 1.0 "on iOS" is blocked on that track
-delivering.
+there is no `app/ios/` directory. It is separate work with its own file
+ownership (`app/ios/**`, `app/macos/**`, push and app‑lock native code),
+and 1.0 "on iOS" is blocked on it.
 
-Play submission is separately gated on Finnian: the 16 KB page-alignment
+Play submission is separately gated on the maintainer: the 16 KB page-alignment
 blocker is cleared, and the re-upload has not happened.
 
 ### G8 — Accessibility ✅, with a caveat worth stating
@@ -157,10 +156,11 @@ that translator.
 
 ## What would change this page
 
-Three things are Finnian's, not engineering's: commission the audit (G1),
-settle the KT-versus-launch circularity (G3), and decide whether 1.0 ships
-English-only (G9). One is another track's: iOS (G7). One is nobody's to give
-us — an outside rebuild (G2).
+Two things are the maintainer's, not engineering's: commission the audit
+(G1) and deploy the log once the client is in (G3). Two are engineering,
+in progress: the transparency‑log client (G3) and a second locale (G9).
+One is separate work: iOS (G7). One is nobody's to give us — an outside
+rebuild (G2).
 
 The rest is work, and it is counted rather than estimated: `check_l10n.py`
 prints exactly how many strings are left.

@@ -106,6 +106,37 @@ def main() -> int:
     # The summary must not outrun the rows.
     unmet = text.count("❌")
     claims_ready = re.search(r"\*\*Status:\s*READY", text, re.I)
+    # ...and the sentence after it must count the same rows the table does.
+    # The sentence once said "Three criteria are unmet" above a table with
+    # four ❌ rows; this script counted the marks document-wide and checked
+    # READY / NOT READY only. A number in prose that nothing compares to the
+    # rows it summarises is the kind of number that drifts.
+    rows_unmet = sum(
+        1 for line in text.splitlines()
+        if re.match(r"\|\s*G\d+\s*\|", line) and "❌" in line
+    )
+    words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+             "six": 6, "seven": 7, "eight": 8, "nine": 9}
+    m = re.search(r"\*\*Status:\s*NOT READY\.\*\*\s+(\w+) criteria are unmet",
+                  text, re.I)
+    if m:
+        said = words.get(m.group(1).lower())
+        if said is None:
+            problems.append(
+                f"GA_CHECKLIST.md's status sentence says '{m.group(1)} criteria "
+                f"are unmet'; write the number as a word this script knows."
+            )
+        elif said != rows_unmet:
+            problems.append(
+                f"GA_CHECKLIST.md's status sentence says {m.group(1)} criteria "
+                f"are unmet; the table has {rows_unmet} ❌ rows. The sentence is "
+                f"what a reader believes."
+            )
+    elif "NOT READY" in text:
+        problems.append(
+            "GA_CHECKLIST.md's status line is not in the form this script "
+            "reads ('**Status: NOT READY.** <N> criteria are unmet …')."
+        )
     if unmet and claims_ready:
         problems.append(
             f"GA_CHECKLIST.md says READY while {unmet} criteria are marked ❌. "

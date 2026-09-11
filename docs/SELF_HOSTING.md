@@ -60,6 +60,22 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
+## Option C: a free cloud tier
+
+`render.yaml` at the repository root describes the relay for
+[Render](https://render.com): fork the repository, create a **Blueprint**
+from the fork, and Render hands you a `wss://…onrender.com` address in a
+couple of minutes. `deploy/fly.toml` does the same for
+[Fly.io](https://fly.io) (`fly launch`, then `fly deploy`). Both terminate
+TLS for you, so the address is usable in the app as it is; check
+`https://<your host>/health` for `"storage":"ram-only"`.
+
+Render's free tier sleeps after about fifteen minutes without a connection
+and takes ~30 s to wake on the next one. Delivered messages are on the
+devices regardless; only a message in transit at that moment waits for the
+wake. Change `plan: free` to `plan: starter` in `render.yaml` to keep it
+awake.
+
 ## TLS (do this for real use)
 
 Terminate TLS at a reverse proxy and hand the relay plain `ws` on localhost.
@@ -157,7 +173,7 @@ docker compose -f docker-compose.ha.yml up --build --scale relay=3
 That starts Redis (`--save "" --appendonly no` — RAM only), three relay
 instances (`REDIS_URL` set, read‑only filesystem), and an nginx load balancer on
 `:8080` that round‑robins WebSocket upgrades across them (`nginx.ha.conf`). Put
-a TLS proxy in front for `wss://`, or point Render/Fly at the same setup.
+a TLS proxy in front for `wss://`, or point a cloud host at the same setup.
 
 To run your own instances by hand, set `REDIS_URL` (and optionally
 `INSTANCE_ID`) on each `node server.js`, and front them with any WebSocket‑aware

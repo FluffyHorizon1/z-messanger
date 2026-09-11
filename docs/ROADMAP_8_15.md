@@ -358,7 +358,7 @@ auditing a moving spec wastes the money.
   - CI now runs `verify_mldsa.py`, which three claims cited as evidence and
     which had never run automatically.
 
-  Outstanding, and Finnian's to commission: the engagement itself. Phase 15's
+  Outstanding, and the project's to commission: the engagement itself. Phase 15's
   entry condition is zero open Critical/High, which is what makes this gate
   real rather than decorative.
 - **14.4 VDP** *(done bar a live submission — `docs/VDP.md`, RFC 9116
@@ -616,7 +616,7 @@ Everything currently externally gated, plus the work to call it 1.0.
   and KT's trigger is a public launch: a circular dependency that no amount of
   code resolves. Either 1.0 ships with gossip-based device-list transparency
   and says so plainly, or the log infrastructure is committed to first and 1.0
-  waits. That is Finnian's call, and the checklist refuses to quietly drop a
+  waits. That is the maintainer's call, and the checklist refuses to quietly drop a
   criterion that was put there for a reason.
 
   `tool/check_ga.py` keeps the page honest: it fails if a KT client appears

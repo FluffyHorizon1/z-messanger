@@ -30,8 +30,8 @@ dependencies:
   flutter_secure_storage: ^9.2.2
 
   # Contact exchange. mobile_scanner 7.x brings ML Kit 17.3 / CameraX 1.6,
-  # whose native libraries are 16 KB-page aligned (a Play requirement for
-  # Android 15+ targets; docs/play/CONSOLE_RECOMMENDATIONS.md).
+  # whose native libraries are 16 KB-page aligned — a Play requirement for
+  # Android 15+ targets, checked on every build by app/tool/check_16k.sh.
   qr_flutter: ^4.1.0
   mobile_scanner: ^7.4.0
 
