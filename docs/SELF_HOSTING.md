@@ -178,3 +178,105 @@ until acked).
 - **Restarts drop in‑flight messages.** Senders keep them in their device
   outbox and the protocol re‑delivers, but schedule redeploys thoughtfully.
 - **No backups needed.** There is nothing on disk to back up. That's the point.
+
+## Running the transparency log
+
+The log (`kt/`, PROTOCOL.md §19, `adr/0006`) is a second, separate service:
+unlike the relay it **keeps state on disk** — an append‑only file of every
+published device list, which is the whole point — and it has a signing key
+whose public half every client pins. Run it on its own host name
+(`kt.example.com`), behind the same kind of TLS front as the relay.
+
+What it costs: no dependencies, one process, one file. Measured
+(`cd kt && npm run bench`): a publish is ~1.5 ms of CPU, a lookup ~0.1 ms, a
+lookup response ~4 KB at a hundred thousand accounts, and the entries file
+grows by roughly the size of the sealed lists it holds (a few KB per publish).
+
+### 1. Generate the signing key — on the host, once
+
+```bash
+sudo install -d -m 700 /etc/z-kt
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))" | sudo tee /etc/z-kt/seed >/dev/null
+sudo chmod 600 /etc/z-kt/seed
+```
+
+The seed never leaves this file. Back it up **offline** (a lost key means a
+new log; a leaked key means a log whose heads anyone can forge — start a
+new log in either case, with a new key, and ship the new pin). The public
+key is printed when the service starts and is at `GET /kt/v1/pub`; that
+endpoint is for reading it off once, not for clients to trust.
+
+### 2. Run it
+
+**Node directly**, as a system service:
+
+```bash
+sudo install -d -o z-kt -g z-kt /var/lib/z-kt
+sudo cp -r kt /opt/z-kt
+sudo cp kt/deploy/z-kt.service /etc/systemd/system/
+sudo systemctl enable --now z-kt
+journalctl -u z-kt -n 3     # "z-kt: N entries, M labels; public key …"
+```
+
+The unit runs `node server.js` as an unprivileged user with
+`KT_SEED_FILE=/etc/z-kt/seed`, `KT_DATA=/var/lib/z-kt` and `KT_PORT=8085`
+bound to localhost; the reverse proxy below is what the world reaches.
+
+**Docker:**
+
+```bash
+cd kt && docker build -t z-kt .
+docker run -d --name z-kt --restart unless-stopped \
+  -p 127.0.0.1:8085:8085 \
+  -v /etc/z-kt/seed:/etc/z-kt/seed:ro -v z-kt-data:/data \
+  -e KT_SEED_FILE=/etc/z-kt/seed -e KT_DATA=/data z-kt
+```
+
+### 3. TLS
+
+The same Caddy or nginx pattern as the relay, on its own name:
+
+```
+kt.example.com {
+    reverse_proxy 127.0.0.1:8085
+}
+```
+
+Then `curl https://kt.example.com/kt/v1/sth` returns a signed head.
+
+### 4. Back it up
+
+`/var/lib/z-kt/entries.jsonl` is the log. Copy it anywhere; it is
+append‑only and self‑checking (a restart replays and re‑verifies every line,
+and refuses to start on a torn or edited file). A mirror (below) is a live
+backup that also verifies you.
+
+### 5. Run a mirror — ideally, have someone else run one
+
+```bash
+cd kt
+node tools/mirror.js --log https://kt.example.com --pub <base64 public key> --dir /var/lib/z-kt-mirror --every 300
+```
+
+Every five minutes it fetches the head, checks the signature, checks that the
+head extends the last one it verified, fetches the new entries and re‑derives
+both roots. If the log ever signs a history that does not extend what the
+mirror saw — a rewritten entry, a shrunk log, a fork — the mirror prints
+`DIVERGENCE`, keeps the old head, and stops. Give it a key of its own
+(`--witness-seed-env KT_WITNESS_SEED`) and it co‑signs each head it verified
+into `<dir>/sth.json`; serve that file from any static host and it is the
+**witness** clients are configured with. A witness run by the log's own
+operator proves little; the value is in the second party.
+
+### 6. Point clients at it
+
+Clients ship with the log's URL, its public key and the witness URL
+(Settings › Transparency log). A self‑hosted client points at a self‑hosted
+log or at none; the states it shows in each case are in `adr/0006`.
+
+### What "live" means
+
+G3 in `GA_CHECKLIST.md` reads ✅ when: the service answers over TLS at its
+URL; the shipped client pins its public key and has a witness configured;
+a mirror run by someone other than the operator has verified a head; and
+the operator's own account appears in it. Each is one of the steps above.

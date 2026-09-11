@@ -207,7 +207,8 @@ def main():
 
     # 3. Every test file is cited somewhere.
     tests = []
-    for pat in ("protocol/test/*.dart", "app/test/*.dart", "server/test/*.js"):
+    for pat in ("protocol/test/*.dart", "app/test/*.dart", "server/test/*.js",
+                "kt/test/*.js"):
         tests.extend(sorted(ROOT.glob(pat)))
     for t in tests:
         rel = t.relative_to(ROOT).as_posix()

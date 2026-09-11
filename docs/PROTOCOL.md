@@ -15,6 +15,12 @@ is pinned by [`vectors/v2/`](vectors/v2/), verified by the same Dart and Node
 checks plus `protocol/tool/verify_mlkem.py` (kyber‑py, an independent FIPS 203
 implementation).
 
+**§19** specifies the public transparency log (`adr/0006`): a separate
+service that commits to the device‑list versions and fingerprints §3.6
+already gossips, and what a client does with its proofs. It is pinned by
+[`vectors/kt/`](vectors/kt/), reproduced by the log's own tests and
+re‑derived by `kt/tools/verify_vectors.py` from the text alone.
+
 This document is written so that a competent implementer can build an
 interoperable client without reading the Dart source. Where the reference
 implementation makes a choice the wire format does not force (e.g. how ids are
@@ -873,9 +879,10 @@ extension (a new inner kind, say); existing vectors are never changed. Byte
 strings are lowercase hex; wire strings
 (codes, envelopes, payloads) are given verbatim; every random draw the
 reference implementation made is recorded (`random_draws`, `*_seed`, `nonce`)
-so any implementation can replay a vector exactly. See
+so any implementation can replay a vector exactly. `docs/vectors/kt/` pins
+the transparency log (§19.9) on the same terms. See
 [`vectors/README.md`](vectors/README.md) for the file layout and how to run
-the two verifiers. The vectors were produced by `protocol/tool/gen_vectors.dart`
+the verifiers. The vectors were produced by `protocol/tool/gen_vectors.dart`
 with the library's RNG replaced by a seeded splitmix64 DRBG (the standard
 known‑answer‑test technique); production builds have no such hook exposed.
 
@@ -1558,3 +1565,201 @@ and the sender answers a `dlpqreq` with the signature it already holds. Only
 when asking (bounded; the reference client asks three times) has not produced
 it within the grace period is the user told. The list stays `classical`
 throughout: nothing is ever accepted on the strength of a claim.
+
+## 19. The transparency log (7.7b)
+
+*Normative for the log service in `kt/` and for clients that read it. This
+is the second source of the `(version, fingerprint)` facts §3.6 already
+gossips; nothing in §3–§18 changes. Design and rationale: `adr/0006`.*
+
+The log is a separate HTTPS service, not the relay. It commits, per account
+label, to the version and fingerprint of every device list the account has
+published, in an append‑only Merkle tree with a map that pins the latest
+entry per label, under Ed25519‑signed tree heads. Clients verify proofs; they
+never trust an answer. All byte strings in JSON are `b64`; labels in URL
+paths are lowercase hex. Integers are JSON numbers and MUST be below 2⁵³.
+
+### 19.1 Labels and values
+
+```
+label = SHA-256( utf8("z-kt-label-v1:") || accountEdPub )                    32 bytes
+vk    = HKDF-SHA256( ikm = accountEdPub, salt = utf8("z-kt-value-v1"), info = utf8("value"), L = 32 )
+value = nonce || ChaCha20-Poly1305( key = vk, nonce, aad = label, plaintext = listJSON )
+```
+
+`listJSON` is the signed device list of §3.4 in its JSON form; `nonce` is
+12 random bytes; the AEAD tag (16 bytes) is included in `value`. Anyone who
+holds an account's public key — its contacts, and the operator, who learns
+it at publish (§19.6) — can derive `vk` and open the value; a mirror or a
+reader of the log cannot. A value MUST be at least 28 bytes and at most
+262 144 bytes.
+
+### 19.2 The map tree
+
+A sparse Merkle tree of depth 256 over labels. Depth 0 is the root; at depth
+`d` the path branches on bit `d` of the label, bit 0 being the most
+significant bit of byte 0; leaves sit at depth 256.
+
+```
+mapLeaf(label, index, version) = SHA-256( 0x10 || label || u64be(index) || u64be(version) )
+mapNode(left, right)           = SHA-256( 0x11 || left || right )
+empty(256)                     = SHA-256( 0x12 )
+empty(d)                       = mapNode( empty(d+1), empty(d+1) )              for d < 256
+```
+
+The leaf for a label holds the index in the log tree of the label's latest
+entry and that entry's version; a label with no entry is the empty leaf.
+`u64be` is the unsigned 64‑bit big‑endian encoding.
+
+**Map proof.** For a label, the 256 sibling hashes along its path,
+compressed: a 32‑byte `bitmap` in which bit `d` (same bit order as labels)
+is set when the sibling at depth `d` is not `empty(d+1)`, and `siblings`,
+exactly the non‑empty siblings in increasing depth order. The proof carries
+`leaf` = `{index, v}` or `null`. To verify against `mapRoot`:
+
+```
+h = leaf ? mapLeaf(label, leaf.index, leaf.v) : empty(256)
+for d = 255 down to 0:
+    sib = bit(bitmap, d) ? next sibling from the END of siblings : empty(d+1)
+    h   = bit(label, d) == 0 ? mapNode(h, sib) : mapNode(sib, h)
+accept iff h == mapRoot and the number of set bits in bitmap == len(siblings)
+```
+
+A proof with `leaf = null` that verifies is a proof of absence.
+
+### 19.3 The log tree and its leaves
+
+The log tree is RFC 9162 §2.1 over SHA‑256 without change: leaf hash
+`SHA-256(0x00 || input)`, node hash `SHA-256(0x01 || left || right)`, the
+empty tree `SHA-256("")`, the audit path `PATH(m, D[n])` of §2.1.3 and the
+consistency proof `PROOF(m, D[n])` of §2.1.4, verified by the algorithms of
+§2.1.3.2 and §2.1.4.2. `vectors/kt/log_tree.json` reproduces the
+certificate‑transparency‑go reference data.
+
+```
+leafInput = utf8("z-kt-leaf-v1:") || label || u64be(version) || fp || SHA-256(value) || u64be(ts)
+```
+
+`fp` is the §3.6 fingerprint of the list in `value`; `ts` is the log's
+clock at acceptance in milliseconds since the epoch. Entries are numbered
+from 0 in acceptance order; an entry's `index` is its leaf index.
+
+### 19.4 Signed tree heads
+
+```
+sthInput = utf8("z-kt-sth-v1:") || u64be(size) || logRoot || mapRoot || u64be(ts)
+sig      = Ed25519.sign(logSeed, sthInput)
+
+JSON: { "size":n, "logRoot":b64, "mapRoot":b64, "ts":ms, "sig":b64 }
+```
+
+`size` is the number of entries, `logRoot` the log tree's root at that
+size, `mapRoot` the map's root over the latest entry of every label at that
+size. The log MUST sign a new head whenever it grows and SHOULD re‑sign an
+unchanged head at least every ten minutes. The log's public key is
+distributed out of band and pinned by clients; `GET /kt/v1/pub` exists for
+a first look and MUST NOT be used as the pin.
+
+### 19.5 Reading the log — client rules
+
+A client keeps the last head it verified. On each check it MUST:
+
+1. fetch `/kt/v1/sth` and verify `sig` with the pinned key; refuse a head
+   whose `size` is below the held one;
+2. if `size` exceeds the held size, fetch
+   `/kt/v1/consistency?first=<held size>&second=<size>` and verify the proof
+   between the held `logRoot` and the new one; if `size` equals the held
+   size, require both roots to be equal;
+3. if a witness is configured (§19.8), fetch its record, verify the log's
+   signature and the witness's over it, and require it to be consistent with
+   the head: equal roots at equal size, or a verifying consistency proof
+   from the log between the two sizes in either direction;
+4. only then accept the new head and evaluate proofs under it.
+
+A lookup response (§19.7) carries the head its proofs are relative to. A
+client MUST verify the map proof against that head's `mapRoot` and, when an
+entry is present, the entry's `leafInput` hash against `logRoot` through the
+inclusion path at `inclusion.size == sth.size`, and MUST check that the
+map leaf's `index` and `v` equal the entry's. It MUST NOT use an entry whose
+proofs fail. A head served with a lookup that is not the client's held head
+is checked by steps 1–3 before its proofs are used.
+
+A head whose `ts` is more than 24 hours old, or no head at all, is
+**unreachable**; a head or proof that fails any check above is a **log
+fault**. What a client does in each state, per contact, is the table in
+`adr/0006` ("What a client does with each answer") and is normative for the
+reference client; other clients MUST at least refuse to treat an entry as
+confirmed when its proofs fail and MUST NOT accept a head that does not
+extend the one they hold.
+
+### 19.6 Publishing
+
+```
+POST /kt/v1/publish
+{ "acct":b64(accountEdPub), "v":version, "fp":b64(fp), "value":b64(value), "sig":b64(sig) }
+
+sig = Ed25519.sign( accountSeed, utf8("z-kt-publish-v1:") || label || u64be(v) || fp || SHA-256(value) )
+```
+
+The log MUST verify `sig` against `acct`, MUST refuse a `v` that does not
+exceed the version it holds for the label (`409 stale_version`; a label's
+first entry may carry any `v ≥ 1`), MUST refuse a bad signature
+(`403 bad_signature`) and a malformed request (`400 bad_request`) or an
+oversize value (`413 too_large`), and on success appends the entry, updates
+the map, and answers `201 { "index":i, "sth":<head> }` with a head that
+includes it. The log MUST keep `acct` for replay validation and MUST NOT
+serve it. The log does not open the value.
+
+### 19.7 HTTP API
+
+All responses are JSON; error responses are `{ "error":code, "message":text }`.
+
+| method and path | response |
+|---|---|
+| `GET /kt/v1/sth` | the current head (§19.4) |
+| `GET /kt/v1/consistency?first=m&second=n` | `{ "sth", "first":m, "second":n, "proof":[b64…] }` — `PROOF(m, D[n])`; `second` defaults to the head's size |
+| `GET /kt/v1/lookup/<label hex>` | `{ "sth", "map":{ "leaf":{index,v}\|null, "bitmap":b64, "siblings":[b64…] }, "entry":<entry>\|null, "inclusion":{ "index", "size", "path":[b64…] }\|null }` |
+| `GET /kt/v1/history/<label hex>` | `{ "sth", "entries":[ { "entry":<entry>, "inclusion":… } … ] }`, oldest first |
+| `GET /kt/v1/entries?start=i&count=k` | `{ "sth", "start":i, "entries":[<entry>…] }` — `k ≤ 1000`, clipped to the head's size (mirrors) |
+| `POST /kt/v1/publish` | §19.6 |
+| `GET /kt/v1/pub` | `{ "pub":b64 }` — informative |
+| `GET /health` | `{ "size", "labels", "sthTs" }` — informative |
+
+An `<entry>` is `{ "index":i, "label":b64, "v":version, "fp":b64,
+"valueHash":b64, "value":b64, "ts":ms }`; a reader MUST check
+`SHA-256(value) == valueHash` before hashing the leaf. Every proof in a
+response is relative to the `sth` in that response.
+
+### 19.8 Mirrors and witnesses
+
+A mirror holds every entry and the last head it verified. On each sync it
+MUST verify the head's signature; require the head to extend the held one
+(§19.5 steps 1–2); fetch the entries between the two sizes; and re‑derive
+**both** `logRoot` and `mapRoot` from its own copy, refusing the head on any
+mismatch and keeping the old one. A mirror that also publishes
+
+```
+witnessInput = utf8("z-kt-witness-v1:") || sthInput
+{ "sth":<head>, "size":n, "verifiedAt":ms, "witness":{ "pub":b64, "sig":b64(Ed25519.sign(witnessSeed, witnessInput)) } }
+```
+
+is a witness; the record is static JSON and may be served from anywhere. A
+client configured with a witness URL and its public key treats a witness
+record that verifies but is inconsistent with the log's head as a log fault.
+
+### 19.9 Vectors and versioning
+
+`vectors/kt/` pins §19: `log_tree.json` (RFC 9162 against the CT reference
+data), `map_tree.json` (roots after each of fourteen sets, proofs of presence
+and absence, four proofs that must fail), `kt_log.json` (labels, value keys,
+sealed values, publish signatures, leaf inputs, every head, consistency
+proofs, the lookup and history responses as served, a witness record, and
+seven cases that must be refused, including a fork signed by the real log
+key). Alice's first entry seals the §3 `multidevice` vector's real signed
+list, so a client that opens it verifies a list it already knows how to
+verify and must find its fingerprint equal to the entry's. Generated by
+`kt/tools/gen_vectors.js`; reproduced bit‑for‑bit by `kt/test/vectors.test.js`
+and re‑derived by `kt/tools/verify_vectors.py` from this section with no
+shared code. The §14 rule applies: bytes an existing implementation would
+compute differently mean new context strings (`…-v2`), new vector files
+beside the untouched ones, and a new subsection here.

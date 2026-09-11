@@ -102,7 +102,7 @@ C14, C19, C21, C22.
 
 ### G6 — Published threat model ✅
 
-`THREAT_MODEL.md` including a nineteen-row residual-risk register, `DATA_MAP.md`
+`THREAT_MODEL.md` including a twenty-row residual-risk register, `DATA_MAP.md`
 for the inventory beneath it, `WHITEPAPER.md` for the argument, and
 `WHAT_Z_CANNOT_DO.md` for the version a user can act on. Claims C28, C29.
 
