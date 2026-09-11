@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
 
 # Top-level directories that only exist if the repository is checked out.
-TRACKED = ("tool/", "docs/", "protocol/", "app/", "server/", "scripts/")
+TRACKED = ("tool/", "docs/", "protocol/", "app/", "server/", "scripts/", "kt/")
 
 # Actions whose presence makes a job a publishing job: what it downloads,
 # other people receive.

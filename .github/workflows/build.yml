@@ -61,6 +61,16 @@ jobs:
         run: |
           python3 -m pip install --quiet dilithium-py==1.4.0
           python3 protocol/tool/verify_mldsa.py
+      # The transparency log (PROTOCOL.md §19): its own tests, the vector
+      # freeze, and a second implementation of the whole construction
+      # written from the spec with no shared code.
+      - name: Transparency log tests
+        working-directory: kt
+        run: npm test
+      - name: Transparency log vectors vs an independent implementation
+        run: |
+          python3 -m pip install --quiet cryptography
+          python3 kt/tools/verify_vectors.py
       # The audit brief is the first document an external reviewer reads and
       # the one that rots fastest: it names files that get renamed, it misses
       # test suites added after it was written, and it states counts by hand.

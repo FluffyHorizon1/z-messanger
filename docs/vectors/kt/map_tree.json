@@ -1,0 +1,342 @@
+{
+ "suite": "kt_map_tree",
+ "description": "The map tree: a sparse Merkle tree of depth 256 over 32-byte labels. leaf(label, index, version) = SHA-256(0x10 || label || u64be(index) || u64be(version)); node = SHA-256(0x11 || left || right); the empty leaf is SHA-256(0x12) and the empty subtree at depth d is node(empty(d+1), empty(d+1)). Bit d of the label (MSB first) chooses the branch at depth d. A proof is a 32-byte bitmap (bit d set when the sibling at depth d is not the empty subtree) plus those siblings in depth order; a proof of absence ends in the empty leaf. steps[] sets labels in order with the root after each (two are updates); proofs[] are the compressed proofs under the final root for every label and two absent ones; must_refuse[] must fail against that root.",
+ "empty_leaf": "f299791cddd3d6664f6670842812ef6053eb6501bd6282a476bbbf3ee91e750c",
+ "empty_root": "cd79c8a48e07b8bb22867112887b9119fae6c630fde88aef82c0ab4a4a73ed68",
+ "example_leaf_hash": {
+  "label": "2874f80afba09c25443c99b5a2d5b612ca8c863ffd59279c018c79141b44708a",
+  "index": 3,
+  "version": 2,
+  "hash": "945cf272d95a0c20ccff1eca6d7408bae3b3d712deca52b8e7824dc0f7eda1c4"
+ },
+ "steps": [
+  {
+   "label": "2874f80afba09c25443c99b5a2d5b612ca8c863ffd59279c018c79141b44708a",
+   "index": 0,
+   "version": 1,
+   "root_after": "249bd0b73de050b247103acee9b750ccbf358fb29f43db3fc6c6195d89491f0b"
+  },
+  {
+   "label": "e4c4fed1b5299bc57436531da05c8f98b038b3aba2b5be83499923e0987fa3a9",
+   "index": 1,
+   "version": 1,
+   "root_after": "d79f1864f5f32ed8c8c5249a09393b8b7bd6affb5a68f09efb24c4a7eaaa2d70"
+  },
+  {
+   "label": "a8ca5c32752826b2ef3eb08fd82490e5281e814b254f4a533b4650a24f3e6671",
+   "index": 2,
+   "version": 1,
+   "root_after": "8fe35e677c42b997030d30eb15678b86c3158931523c90da837ff035f6810bd0"
+  },
+  {
+   "label": "2874f80afba09c25443c99b5a2d5b612ca8c863ffd59279c018c79141b44708a",
+   "index": 3,
+   "version": 2,
+   "root_after": "f839c7bd38705a64f65ad8dfc0a7d8c06d5fa9af8f4bcfcf8c7aec0e95a24dd3"
+  },
+  {
+   "label": "743cdfc8264f41e76b84123b747af64eae2cba39b4c8c2bb254604701f94fea3",
+   "index": 4,
+   "version": 1,
+   "root_after": "8d0c076434cc8e0985714ee5f2e3de13476ea344dec8d2a8ba895194c2c585a9"
+  },
+  {
+   "label": "92295ad589cbe66d6e37ff999122d7b618bb4b437773f22a987939f44325e716",
+   "index": 5,
+   "version": 1,
+   "root_after": "c0ca984711f78677f57912cfd2decec0c6b6e02ff5e681135058dadbc18433a8"
+  },
+  {
+   "label": "15767e6c66237d8e7326769e9fe1f73b2555f3ea2e0d85ed5f15a25b475ceeb1",
+   "index": 6,
+   "version": 1,
+   "root_after": "bc81c9dd8426060fa5831359b7bb5f2ed1172ddd86ed382054bb25c18685dd44"
+  },
+  {
+   "label": "4d67cb9c29ad57e67a908a87fc08526025065c7bec112a958e5ba3088a69f8d3",
+   "index": 7,
+   "version": 1,
+   "root_after": "5e37e8242e420969ace9d5b83da18d296f164c28a314320f201498502d605ffa"
+  },
+  {
+   "label": "5a522e01c6633cc904cde06e4d28d7c3e119106f9146b44f543257b9cd6d9440",
+   "index": 8,
+   "version": 1,
+   "root_after": "2d9251e57c2bfe10ef73be13dedeca2b028b3b0fdc91eeba76297e44cbee94b7"
+  },
+  {
+   "label": "94d1432ed2fed702fd6677e2cb45578bd1ac5858c00fd0791b0266eb5bcf4cf9",
+   "index": 9,
+   "version": 1,
+   "root_after": "97ce049a5a62b5cfecf51d947d7d8fead27db56ea514f52f6264d998f35d1c87"
+  },
+  {
+   "label": "41cb5dc5ce5c6ea3773e468e575e6022a9a7abe4193b6d506334c9a690b5d3e0",
+   "index": 10,
+   "version": 1,
+   "root_after": "1e29b11af260571142705d1ed6ff81414ab339cc6240747cad5b3596712fc1bb"
+  },
+  {
+   "label": "a93cd763feca41b2247cd768391528ff2ce93907b9eeb96fa6125ee264db6d3b",
+   "index": 11,
+   "version": 1,
+   "root_after": "43b7968e66a9e5ce9828de29303e895ff2c2b9955164651909f8bb97b5ac6069"
+  },
+  {
+   "label": "bcfe4bc1f3322d277dde3a31b6485355b5e9912e16f7f0f307b6b0c34499614c",
+   "index": 12,
+   "version": 1,
+   "root_after": "8f7af2735e19bf29852f4c995c474d7c8f9a3a2986e3eedbd35ac20234a16711"
+  },
+  {
+   "label": "92295ad589cbe66d6e37ff999122d7b618bb4b437773f22a987939f44325e716",
+   "index": 13,
+   "version": 7,
+   "root_after": "c3f6a558e02451cd8d1ef0609b945e423933fe8ea3e202b9447ed02e966c1b96"
+  }
+ ],
+ "final_root": "c3f6a558e02451cd8d1ef0609b945e423933fe8ea3e202b9447ed02e966c1b96",
+ "proofs": [
+  {
+   "label": "2874f80afba09c25443c99b5a2d5b612ca8c863ffd59279c018c79141b44708a",
+   "leaf": {
+    "index": 3,
+    "version": 2
+   },
+   "bitmap": "e000000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "4e981b6fa2dcb7d3f6303d2394c38a26166c203213f2055fd4a8438203cdd1a8",
+    "74c186af1f171c780f51c4c087dba2920da69dbc41c5d69b583c8b840912c7df",
+    "c88776e3d7a9fbfca8b295a43c4426b46c23809717ffcb0b9f1a05d80dc95045"
+   ]
+  },
+  {
+   "label": "e4c4fed1b5299bc57436531da05c8f98b038b3aba2b5be83499923e0987fa3a9",
+   "leaf": {
+    "index": 1,
+    "version": 1
+   },
+   "bitmap": "c000000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "b9173f388a637b7dfeb7757cf152990382602ad8d5a759c415f60a8c6f655f96",
+    "b41d3e6cc8c121eb69753810d538402b13cf750069c99d09685654f656e0610f"
+   ]
+  },
+  {
+   "label": "a8ca5c32752826b2ef3eb08fd82490e5281e814b254f4a533b4650a24f3e6671",
+   "leaf": {
+    "index": 2,
+    "version": 1
+   },
+   "bitmap": "f100000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "b9173f388a637b7dfeb7757cf152990382602ad8d5a759c415f60a8c6f655f96",
+    "1700a388f0a8c315cfeb6e32f6ca822eeacdd5a00bf4a9f7b4104ac668b6be42",
+    "7a31ab2f3f325ba239aa4a1a4932a9d33469d807de76003564aad7fcfede4ee9",
+    "b2754e60f6a1c9670c3e72add0aa8d584966973d846d5a1757a0f2df48a6eee3",
+    "acdcf76869e7b0772d9e30008a15e32b36766f80275bdaceccbf17935e3430b9"
+   ]
+  },
+  {
+   "label": "743cdfc8264f41e76b84123b747af64eae2cba39b4c8c2bb254604701f94fea3",
+   "leaf": {
+    "index": 4,
+    "version": 1
+   },
+   "bitmap": "e000000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "4e981b6fa2dcb7d3f6303d2394c38a26166c203213f2055fd4a8438203cdd1a8",
+    "455a576068c2638ae2d2e32a178cfd4e68e8dcdbfa91f85f5f9b047d93ce58d4",
+    "e87d0d4c7b3f80b35c55ca62592d04cccc95f87e9451b2f2e218cbd06d344813"
+   ]
+  },
+  {
+   "label": "92295ad589cbe66d6e37ff999122d7b618bb4b437773f22a987939f44325e716",
+   "leaf": {
+    "index": 13,
+    "version": 7
+   },
+   "bitmap": "e400000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "b9173f388a637b7dfeb7757cf152990382602ad8d5a759c415f60a8c6f655f96",
+    "1700a388f0a8c315cfeb6e32f6ca822eeacdd5a00bf4a9f7b4104ac668b6be42",
+    "3ad3871e8a4546712545505a202253e0cb169b2aca90be0c7b874f5f66a9c26e",
+    "1885b8e0920da7c1cd558a4e60b0a4f8948a9f9c81a97a7054557061e2632620"
+   ]
+  },
+  {
+   "label": "15767e6c66237d8e7326769e9fe1f73b2555f3ea2e0d85ed5f15a25b475ceeb1",
+   "leaf": {
+    "index": 6,
+    "version": 1
+   },
+   "bitmap": "e000000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "4e981b6fa2dcb7d3f6303d2394c38a26166c203213f2055fd4a8438203cdd1a8",
+    "74c186af1f171c780f51c4c087dba2920da69dbc41c5d69b583c8b840912c7df",
+    "9254d31dfd358c786fb4146f3b72af086b5fa31947558d1491dbabcfe3559a57"
+   ]
+  },
+  {
+   "label": "4d67cb9c29ad57e67a908a87fc08526025065c7bec112a958e5ba3088a69f8d3",
+   "leaf": {
+    "index": 7,
+    "version": 1
+   },
+   "bitmap": "f800000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "4e981b6fa2dcb7d3f6303d2394c38a26166c203213f2055fd4a8438203cdd1a8",
+    "455a576068c2638ae2d2e32a178cfd4e68e8dcdbfa91f85f5f9b047d93ce58d4",
+    "242b8e2ddc20d7dc9c4676816f0c160e1793bc130baf0ed6fb778573925eecb4",
+    "98b8acdd72282d12ddd64c39a119d6ea369e7c46f2e62d4bb88e4a580f7b74bd",
+    "12327d7d528cec7ac50506bf7a7edfc74e42c52992f174f1d97a7e148501b5a9"
+   ]
+  },
+  {
+   "label": "5a522e01c6633cc904cde06e4d28d7c3e119106f9146b44f543257b9cd6d9440",
+   "leaf": {
+    "index": 8,
+    "version": 1
+   },
+   "bitmap": "f000000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "4e981b6fa2dcb7d3f6303d2394c38a26166c203213f2055fd4a8438203cdd1a8",
+    "455a576068c2638ae2d2e32a178cfd4e68e8dcdbfa91f85f5f9b047d93ce58d4",
+    "242b8e2ddc20d7dc9c4676816f0c160e1793bc130baf0ed6fb778573925eecb4",
+    "3dc70836c8a0ee8eb0495aa21a041483a880257830a76cbacc8b9fd153ed9600"
+   ]
+  },
+  {
+   "label": "94d1432ed2fed702fd6677e2cb45578bd1ac5858c00fd0791b0266eb5bcf4cf9",
+   "leaf": {
+    "index": 9,
+    "version": 1
+   },
+   "bitmap": "e400000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "b9173f388a637b7dfeb7757cf152990382602ad8d5a759c415f60a8c6f655f96",
+    "1700a388f0a8c315cfeb6e32f6ca822eeacdd5a00bf4a9f7b4104ac668b6be42",
+    "3ad3871e8a4546712545505a202253e0cb169b2aca90be0c7b874f5f66a9c26e",
+    "1173c31551a5dd8bfd3b154993fad28e61af97a72aed55a8eda1b577542e9b7e"
+   ]
+  },
+  {
+   "label": "41cb5dc5ce5c6ea3773e468e575e6022a9a7abe4193b6d506334c9a690b5d3e0",
+   "leaf": {
+    "index": 10,
+    "version": 1
+   },
+   "bitmap": "f800000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "4e981b6fa2dcb7d3f6303d2394c38a26166c203213f2055fd4a8438203cdd1a8",
+    "455a576068c2638ae2d2e32a178cfd4e68e8dcdbfa91f85f5f9b047d93ce58d4",
+    "242b8e2ddc20d7dc9c4676816f0c160e1793bc130baf0ed6fb778573925eecb4",
+    "98b8acdd72282d12ddd64c39a119d6ea369e7c46f2e62d4bb88e4a580f7b74bd",
+    "7a53325e19d77d52c6fd9f68243ed510518da6a065bd832b2bbc563842fdd1dd"
+   ]
+  },
+  {
+   "label": "a93cd763feca41b2247cd768391528ff2ce93907b9eeb96fa6125ee264db6d3b",
+   "leaf": {
+    "index": 11,
+    "version": 1
+   },
+   "bitmap": "f100000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "b9173f388a637b7dfeb7757cf152990382602ad8d5a759c415f60a8c6f655f96",
+    "1700a388f0a8c315cfeb6e32f6ca822eeacdd5a00bf4a9f7b4104ac668b6be42",
+    "7a31ab2f3f325ba239aa4a1a4932a9d33469d807de76003564aad7fcfede4ee9",
+    "b2754e60f6a1c9670c3e72add0aa8d584966973d846d5a1757a0f2df48a6eee3",
+    "d2f5209e324a83bc9ff6b40aa0961845929c4029122e236ab6ce3d80928345f4"
+   ]
+  },
+  {
+   "label": "bcfe4bc1f3322d277dde3a31b6485355b5e9912e16f7f0f307b6b0c34499614c",
+   "leaf": {
+    "index": 12,
+    "version": 1
+   },
+   "bitmap": "f000000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "b9173f388a637b7dfeb7757cf152990382602ad8d5a759c415f60a8c6f655f96",
+    "1700a388f0a8c315cfeb6e32f6ca822eeacdd5a00bf4a9f7b4104ac668b6be42",
+    "7a31ab2f3f325ba239aa4a1a4932a9d33469d807de76003564aad7fcfede4ee9",
+    "95a372a469bb47cb08b9ac786e80f44285c14a4ca4d0b226484f9d234ae2f1fe"
+   ]
+  },
+  {
+   "label": "9694ef6849fd87a3699bdc0a81116710b0a198d8985e9f24651e6e30f41af5f4",
+   "leaf": null,
+   "bitmap": "e600000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "b9173f388a637b7dfeb7757cf152990382602ad8d5a759c415f60a8c6f655f96",
+    "1700a388f0a8c315cfeb6e32f6ca822eeacdd5a00bf4a9f7b4104ac668b6be42",
+    "3ad3871e8a4546712545505a202253e0cb169b2aca90be0c7b874f5f66a9c26e",
+    "1173c31551a5dd8bfd3b154993fad28e61af97a72aed55a8eda1b577542e9b7e",
+    "760662691b41d2574d2bb6ac98660fad116c38c659c2858f277b06f8c158bc29"
+   ]
+  },
+  {
+   "label": "cd8f49bbf019dfe56cb89239bc73fcdc9b2c2fcd1d5675dbef1aac56c0a6cd0e",
+   "leaf": null,
+   "bitmap": "e000000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "b9173f388a637b7dfeb7757cf152990382602ad8d5a759c415f60a8c6f655f96",
+    "b41d3e6cc8c121eb69753810d538402b13cf750069c99d09685654f656e0610f",
+    "041a8cee16de2b89a49b32588f91820e5c736ae7cfab19d1ee159d8b7cfa8899"
+   ]
+  }
+ ],
+ "must_refuse": [
+  {
+   "label": "2874f80afba09c25443c99b5a2d5b612ca8c863ffd59279c018c79141b44708a",
+   "leaf": {
+    "index": 3,
+    "version": 3
+   },
+   "bitmap": "e000000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "4e981b6fa2dcb7d3f6303d2394c38a26166c203213f2055fd4a8438203cdd1a8",
+    "74c186af1f171c780f51c4c087dba2920da69dbc41c5d69b583c8b840912c7df",
+    "c88776e3d7a9fbfca8b295a43c4426b46c23809717ffcb0b9f1a05d80dc95045"
+   ],
+   "why": "the version is not what the map holds"
+  },
+  {
+   "label": "2874f80afba09c25443c99b5a2d5b612ca8c863ffd59279c018c79141b44708a",
+   "leaf": null,
+   "bitmap": "e000000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "4e981b6fa2dcb7d3f6303d2394c38a26166c203213f2055fd4a8438203cdd1a8",
+    "74c186af1f171c780f51c4c087dba2920da69dbc41c5d69b583c8b840912c7df",
+    "c88776e3d7a9fbfca8b295a43c4426b46c23809717ffcb0b9f1a05d80dc95045"
+   ],
+   "why": "the label is present; an absence proof for it cannot hash to the root"
+  },
+  {
+   "label": "2874f80afba09c25443c99b5a2d5b612ca8c863ffd59279c018c79141b44708a",
+   "leaf": {
+    "index": 3,
+    "version": 2
+   },
+   "bitmap": "e000000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "74c186af1f171c780f51c4c087dba2920da69dbc41c5d69b583c8b840912c7df",
+    "c88776e3d7a9fbfca8b295a43c4426b46c23809717ffcb0b9f1a05d80dc95045"
+   ],
+   "why": "the bitmap announces more siblings than are given"
+  },
+  {
+   "label": "bcfe4bc1f3322d277dde3a31b6485355b5e9912e16f7f0f307b6b0c34499614c",
+   "leaf": null,
+   "bitmap": "f000000000000000000000000000000000000000000000000000000000000000",
+   "siblings": [
+    "83030a0469e983da117d7ddf4473fc67ba34da91a956aa886c6195d6e583a960",
+    "1700a388f0a8c315cfeb6e32f6ca822eeacdd5a00bf4a9f7b4104ac668b6be42",
+    "575110a72ebfe76e0d530d127431bf85568861b973ee1862c3b676c2a5de02b9",
+    "d5bb78737c19a4e7c1e9520c9df50d6e9ca6df373311ca1e21c5efda6b3b29e7"
+   ],
+   "why": "an absence proof made before the label was added, checked against the final root"
+  }
+ ]
+}
