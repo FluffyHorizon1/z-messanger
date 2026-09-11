@@ -39,7 +39,7 @@ recipient device so the relay does not learn who sent it.
 
 | Party | What they can do | What they **cannot** do |
 |-------|------------------|--------------------------|
-| The relay server | See that an opaque blob of a *padded* size was delivered to routing‑id R at time T; hold it in RAM until delivery; see which routing ids are online and when they read their mailbox | Read message text, names, file names or contents; learn **who sent** an envelope (sealed sender); forge or replay messages; recover anything after a restart; learn who is in a group, or which devices are one person's, **from any envelope** (no group id, no membership, no account on the wire — but a group message is one envelope per member sent in one burst, and a person's other devices get their copy in the same burst; the bursts are a pattern: R18, R19) |
+| The relay server | See that an opaque blob of a *padded* size was delivered to routing‑id R at time T; hold it in RAM until delivery; see which routing ids are online and when they read their mailbox; see the **network address** every socket comes from, and that the anonymous socket a sealed envelope arrives on shares an address with some authenticated one (R21) | Read message text, names, file names or contents; learn **who sent** an envelope — not from the envelope (sealed sender) and not from the connection, which never authenticated (§12.1); forge or replay messages; recover anything after a restart; learn who is in a group, or which devices are one person's, **from any envelope** (no group id, no membership, no account on the wire — but a group message is one envelope per member sent in one burst, and a person's other devices get their copy in the same burst; the bursts are a pattern: R18, R19) |
 | A network eavesdropper (with TLS) | See that you connected to a relay | Read anything (TLS + E2E) |
 | A network eavesdropper (without TLS) | See destination routing ids, padded sizes and timing | Read contents or learn senders (still sealed + E2E) |
 | Someone who steals your locked device | Hold encrypted bytes | Read messages without your OS user / keystore credentials (and app passphrase, if set) |
@@ -52,8 +52,15 @@ recipient device so the relay does not learn who sent it.
 
 - **A malicious or compromised relay.** The relay never has keys or
   plaintext. It cannot read, alter, or forge messages, and — with sealed
-  sender — it cannot tell who sent an envelope. This is the core guarantee
-  and it holds even if the operator is hostile or hacked.
+  sender — it is not told who sent an envelope: not by the envelope, and
+  not by the connection it arrived on, which never authenticated (§12.1).
+  Until 16.1 the second half was not true: sealed envelopes were sent on
+  the device's authenticated connection, and a relay process that logged
+  (connection, destination) would have had the graph the envelope withheld
+  — nothing *stored* named a sender, and nothing *running* needed to be
+  told. What the relay still sees is the network address a socket comes
+  from (R21). This is the core guarantee and it holds even if the operator
+  is hostile or hacked, to exactly that extent.
 - **Server‑side data breaches / subpoenas of stored messages.** Nothing at
   rest to seize. Undelivered messages exist only in relay RAM and are wiped
   on delivery or restart. Delivered messages exist only on the devices.
@@ -93,10 +100,13 @@ recipient device so the relay does not learn who sent it.
 
 - **Metadata against the relay operator.** The relay learns *which mailboxes
   receive* traffic, when, and in which of six padded size buckets. Sealed
-  sender removes the *sender* from that view, and per‑device sealing means
-  the relay cannot group a person's devices from any envelope — but it can
-  still observe that a mailbox is active and correlate timing across
-  mailboxes, and the mirror to a person's other devices follows every
+  sender removes the *sender* from that view — from the envelope, and since
+  16.1 from the connection too — and per‑device sealing means the relay
+  cannot group a person's devices from any envelope. But it sees the
+  network address every socket comes from, and a device's anonymous sender
+  socket and its authenticated mailbox socket come from the same one (R21);
+  it can still observe that a mailbox is active and correlate timing across
+  mailboxes; and the mirror to a person's other devices follows every
   message within tens of milliseconds (R19), which is a correlation it does
   not have to work for. If you need
   metadata privacy against the operator, run the relay yourself and/or put it
@@ -181,6 +191,7 @@ exists, gated on something), *open* (should be closed and is not yet).
 | R18 | Group membership is inferable from the fan‑out's timing: one group message reaches every other member's mailbox in one burst, and the same mailboxes burst together every time anyone in the group speaks | Relay operator | Pairwise encryption means N envelopes per message, sent one after another over the sender's socket. Measured (`group_spread_bench_test.dart`, five members, one relay on loopback): the members' copies are relay‑stamped within 64–135 ms of each other, every message. Only a mixnet breaks the pattern, and Z is not one (R15) | Self‑host, or Tor. Spreading the fan‑out over a few seconds was considered and is not done: it delays every group message for everyone and does not survive averaging over a conversation — a relay that keeps a day of timestamps clusters the mailboxes anyway. The trust table said "cannot learn who is in a group" until this was measured; it now says from what | accepted |
 | R19 | A person's devices are groupable from timing: every message their phone sends or receives is mirrored to their laptop at once, and a contact who holds their device list fans out to both in one burst | Relay operator | Self‑sync is what makes several devices one account, and it is immediate by design — a laptop that lags its phone by minutes would be a worse product for a smaller leak. Measured (`device_link_spread_bench_test.dart`, one relay on loopback): the laptop's copy is relay‑stamped 15–22 ms after the contact's when the phone sends, 31–53 ms after the phone's when the contact sends, every message. Linking is loud on its own: a mailbox that has just appeared receives the history replay (7.6b) as 65 536‑bucket envelopes — measured, a 250‑message chat is two of them, plus four 4 096 and one 16 384 for the lists and keys — which nothing but linking produces | Self‑host, or Tor; or one device. Delaying the mirror was considered and rejected for the reason R18 gives: a delay costs every message and does not survive averaging. Per‑device routing ids and sealing still keep the *identity* off the wire — the relay groups two mailboxes, not a name | accepted |
 | R20 | Anyone who holds an account's public key can read that account's publish history from the transparency log or a mirror: how many device lists it has published, at which versions, and when | Anyone with the contact code; the log operator additionally learns the public key itself at publish | Labels are `SHA‑256(context ‖ accountEdPub)`, so only a party already holding the key can compute one; a VRF‑blinded label (`adr/0006`, considered and rejected) would hide labels from readers of a *mirror* at the cost of a proof per lookup and a second key, for identifiers that are 256‑bit random and cannot be enumerated. Contacts learn nothing the gossip did not already tell them except timestamps; the sealed value hides the lists themselves from everyone else | Values sealed under a key derived from the account's public key (§19.1) — a mirror sees labels and ciphertext; publish through a durable queue, so timing reflects when the account changed its devices rather than when it was online, only loosely | **accepted** — `adr/0006`, 0001's named cost with the log built |
+| R21 | A sealed envelope's sender is attributable by network address: the anonymous socket it arrives on and the device's authenticated mailbox socket come from the same address, and on a home or office connection an address is as good as a name | Relay operator; anyone at the TLS terminator | Sending sealed envelopes on a connection that never authenticated (16.1, §12.1) removes the identity the relay used to be handed with every send; it cannot remove the address a socket comes from. Carrier‑grade NAT puts many phones behind one address and blunts this; a fixed address does not. Two sockets from one address that open together and stay up together are a pair whether or not either says so | Tor or a VPN in front of the app, which the app does not provide; running the relay yourself; the timing study in 16.2 says what jitter would and would not buy | **accepted** — `adr/0007`; before 16.1 this row would have read "attributable by connection identity", which is worse and was not written down |
 
 ### What is NOT on this list, and why
 

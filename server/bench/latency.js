@@ -10,7 +10,10 @@
 // per-connection limit (RATE_PER_SEC, 80), sealed-sender envelopes of the
 // 1 024 bucket (1 450 chars, what a short text is on the wire), for T
 // seconds; the latency of each message is the time from `send` to the
-// recipient's `msg` frame, in-process, so no clock skew.
+// recipient's `msg` frame, in-process, so no clock skew. Senders are
+// anonymous connections (they never answer the challenge), as the app's
+// sender link is (§12.1) — so a pair is two sockets, which is what one
+// device costs the relay now.
 //
 // A measurement, not a test. Run it deliberately:
 //
@@ -72,12 +75,15 @@ class Client {
   send(obj) {
     this.ws.send(JSON.stringify(obj));
   }
-  async open() {
+  /// Authenticate (a recipient owns a mailbox) or, with `anonymous`, only
+  /// watch the challenge go by — what the app's sender link does (§12.1).
+  async open({ anonymous = false } = {}) {
     await new Promise((res, rej) => {
       this.ws.once('open', res);
       this.ws.once('error', rej);
     });
     const challenge = await this.next((f) => f.t === 'challenge');
+    if (anonymous) return this;
     const nonce = Buffer.from(challenge.nonce, 'base64');
     const sig = crypto.sign(null, Buffer.concat([AUTH_CONTEXT, nonce]), this.identity.privateKey);
     this.send({ t: 'auth', pub: this.identity.rawPub.toString('base64'), sig: sig.toString('base64') });
@@ -133,7 +139,8 @@ async function main() {
         delivered++;
       }
     }).open();
-    const send = await new Client(port, a, () => {}).open();
+    // Senders are anonymous connections, as the app's are since 16.1.
+    const send = await new Client(port, a, () => {}).open({ anonymous: true });
     pairs.push({ send, recv, to: b.rid, seq: 0 });
   }
 

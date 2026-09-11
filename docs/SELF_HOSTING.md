@@ -150,9 +150,15 @@ Measured on loopback (`docs/PERFORMANCE.md`, "The relay under load"): a
 single Node process delivers ~5 000 sealed envelopes a second across 200
 sockets with a median latency under 2 ms and a 99th percentile under 15 ms,
 and ~2 500 a second across 1 000 sockets at a 99th percentile of ~70 ms,
-losing nothing. A relay for a few thousand people is one small machine; the
-abuse limits below, not throughput, are what to think about. `npm run
-bench:latency` in `server/` reproduces the numbers on your own hardware.
+losing nothing. **Count sockets, not devices: each device holds two** — its
+authenticated mailbox link and the anonymous link it sends sealed envelopes
+on (PROTOCOL §12.1) — and the tail latency follows the socket count: at the
+same ~2 000 envelopes a second, 1 000 sockets give a 99th percentile of ~45
+ms and 2 000 sockets ~160 ms. `/health` reports both (`connections` is
+mailboxes, `sockets` is everything). A relay for a thousand people is one
+small machine; the abuse limits below, not throughput, are what to think
+about. `npm run bench:latency` in `server/` reproduces the numbers on your
+own hardware.
 
 ## Scaling out (high availability)
 

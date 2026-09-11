@@ -290,13 +290,27 @@ def main():
         rows_r = len(re.findall(r"^\| R\d+ \|", tm.read_text(), re.M))
         words = {"twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
                  "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
-                 "twenty": 20}
-        m = re.search(r"\b([a-z]+)-row residual-risk register", text)
-        if m and words.get(m.group(1)) not in (None, rows_r):
-            problems.append(
-                f"AUDIT_SCOPE.md calls the residual-risk register "
-                f"'{m.group(1)}-row'; THREAT_MODEL.md has {rows_r} rows."
-            )
+                 "twenty": 20, "twenty-one": 21, "twenty-two": 22,
+                 "twenty-three": 23, "twenty-four": 24, "twenty-five": 25,
+                 "twenty-six": 26, "twenty-seven": 27, "twenty-eight": 28,
+                 "twenty-nine": 29, "thirty": 30}
+        m = re.search(r"\b([a-z]+(?:-[a-z]+)?)-row residual-risk register", text)
+        if m:
+            said = words.get(m.group(1))
+            # An unknown word used to pass: `words.get(...)` was None and
+            # None was in the allowed pair. The first row past twenty would
+            # have gone unchecked for as long as nobody noticed.
+            if said is None:
+                problems.append(
+                    f"AUDIT_SCOPE.md calls the residual-risk register "
+                    f"'{m.group(1)}-row'; write the number as a word this "
+                    f"script knows."
+                )
+            elif said != rows_r:
+                problems.append(
+                    f"AUDIT_SCOPE.md calls the residual-risk register "
+                    f"'{m.group(1)}-row'; THREAT_MODEL.md has {rows_r} rows."
+                )
         m = re.search(r"\(R1[–-]R(\d+)\)", text)
         if m and int(m.group(1)) != rows_r:
             problems.append(

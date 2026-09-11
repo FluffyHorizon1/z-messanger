@@ -462,6 +462,26 @@ message. For a self-hoster: one small relay carries thousands of messages a
 second with a median under 3 ms; the abuse limits (`load.test.js`), not
 throughput, are what size a deployment.
 
+### Two sockets per device (16.1)
+
+Since sealed envelopes leave on an anonymous connection (PROTOCOL §12.1),
+a device holds two sockets. The bench's pairs were already two sockets each
+(one sending, one receiving), so its senders now simply skip the challenge;
+the question is what a doubled socket count costs at the same message rate.
+Same commit, same ~1 950 envelopes a second, ten seconds:
+
+| sockets (pairs × 2) | p50 | p90 | p99 | max |
+|---:|---:|---:|---:|---:|
+| 500 (250 × 8/s) | 1.3 ms | 4.1 | 46 | 46 |
+| 1 000 (500 × 4/s) | 3.1 ms | 13.1 | 46 | 47 |
+| 2 000 (1 000 × 2/s) | 6.0 ms | 55 | 164 | 166 |
+
+The median doubles with the sockets and the tail triples past a thousand,
+at a rate the process handles comfortably on fewer. The cost of the
+anonymous link is therefore a sizing rule, not a throughput one: count
+sockets as twice the devices (`SELF_HOSTING.md`). `/health` now reports
+`sockets` beside `connections` so the number sized for is the number seen.
+
 ## The transparency log (2026-09-11)
 
 `kt/bench/proofs.js` (`npm run bench` in `kt/`): a log with one entry per

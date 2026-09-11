@@ -626,6 +626,13 @@ sender attribution** (§12), matches acks by envelope id alone, and emits no
 envelope for which they know the recipient device's X25519 key; the unsealed
 forms remain valid for backwards compatibility only.
 
+A sealed envelope withholds the sender from the *frame*; the *connection*
+it is sent on has whatever identity the client gave it. A client that wants
+the relay not to know who sent what therefore sends sealed envelopes on a
+connection that has not authenticated (§12.1), and receives on one that
+has. The relay then holds an address and not an identity for each sealed
+send; what an address is worth is `THREAT_MODEL.md` R21.
+
 ## 9. Multi‑device messaging and self‑sync
 
 From one device's point of view, messaging an account is running one §5
@@ -761,9 +768,23 @@ S→C  { "t":"ready", "id":routingId }                              // then queu
 
 On a bad signature the relay sends `error{bad_auth}` and closes with code
 4001. A second connection for the same routing id replaces the first, which is
-closed with code 4002. Before `ready`, `send` and `push-register` are answered
-with `error{not_authed}`, `recv` and `push-unregister` are ignored, and `ping`
-is answered; a repeated `auth` is ignored.
+closed with code 4002. Before `ready`, `push-register` and a `send` whose
+payload is not sealed are answered with `error{not_authed}`, `recv` and
+`push-unregister` are ignored, and `ping` is answered; a repeated `auth` is
+ignored.
+
+**Anonymous connections** (2026‑09‑11, 16.1 — a relaxation, so a compatible
+extension under §14: a client that authenticates first behaves as before). A
+`send` whose payload begins with `zs1.` is accepted on a connection that has
+never authenticated, rate‑limited like any other frame, and acknowledged
+with `sent` as usual; such a connection owns no mailbox and receives nothing.
+Clients SHOULD send every sealed envelope on a connection of this kind and
+receive on an authenticated one, and MUST NOT fall back to the authenticated
+connection for a sealed envelope when the anonymous one is down — a sealed
+envelope on an authenticated connection is attributable to that connection's
+identity by the relay process (`THREAT_MODEL.md` R21). The relay's `/metrics`
+counts sealed envelopes that arrived on anonymous connections
+(`z_sealed_unattributable_total`).
 
 ### 12.2 Frames after authentication
 

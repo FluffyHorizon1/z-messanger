@@ -63,9 +63,17 @@ device they have what you can see, and no messaging protocol changes that.
 
 ## 3. Claim: the operator cannot tell who is talking to whom
 
-**Mechanism.** Sealed sender. Every envelope is sealed to the recipient device,
-so the sender's identity is inside the ciphertext rather than in the routing
-metadata. Each of an account's devices has its own routing id, so no
+**Mechanism.** Sealed sender, on an anonymous connection. Every envelope is
+sealed to the recipient device, so the sender's identity is inside the
+ciphertext rather than in the routing metadata — and every sealed envelope
+is sent on a connection that never authenticated, so the relay process is
+not handed the sender by the socket either (§12.1). The second half was
+missing until 16.1: sealed envelopes used to leave on the device's
+authenticated connection, which meant nothing *stored* named a sender while
+the running relay could have written down (connection, destination) for
+every send. The claim as it stood then was true of the relay's memory dump
+and false of its operator; it is now true of both, to the extent an address
+allows (R21). Each of an account's devices has its own routing id, so no
 envelope tells the relay that two mailboxes are one person — though the
 mirror that keeps a person's devices in step follows every message within
 tens of milliseconds, and that pattern does (`THREAT_MODEL.md` R19, and R18
@@ -79,13 +87,20 @@ see §6.
 **How to check it.** The relay's source is small and readable; `/health`
 reports `storage: 'ram-only'` and the only `fs` use in `server.js` reads TLS
 material. `docs/DATA_MAP.md` inventories exactly what the relay holds.
+`app/test/anonymous_sender_test.dart` counts, from the relay's own metrics,
+that every sealed envelope a conversation produces arrived on a connection
+the relay could not attribute.
 
-**Not covered.** *Which mailbox receives traffic, when, and in which bucket.*
-Delivering a message requires knowing where to deliver it. Sealed sender
-removes the sender; the recipient cannot be removed without a mixnet, which is
-a different product. If that is your threat model, self-host the relay or front
-it with Tor. This is R1 in the residual-risk register and it is the most
-important limitation in this document.
+**Not covered.** *Which mailbox receives traffic, when, and in which bucket,
+and the network address each socket comes from.* Delivering a message
+requires knowing where to deliver it; accepting a connection requires an
+address to accept it from, and a device's anonymous sender socket and its
+mailbox socket come from the same one (R21). Sealed sender removes the
+sender's identity; the recipient cannot be removed without a mixnet, and the
+address cannot be removed without Tor — both a different product. If that is
+your threat model, self-host the relay or front it with Tor. This is R1 and
+R21 in the residual-risk register and it is the most important limitation in
+this document.
 
 ## 4. Claim: recording today does not pay off tomorrow
 
@@ -299,9 +314,10 @@ The property holds; the independent check has not happened.
 Stated positively, because the gap between what a system does and what people
 assume it does is where harm happens:
 
-* **Not anonymity.** Z is not a mixnet. Someone who can watch both ends can
-  correlate timing and volume — and so can the relay itself, without watching
-  anything but its own deliveries: a group message is one envelope per
+* **Not anonymity.** Z is not a mixnet. The relay sees the address every
+  socket comes from (R21). Someone who can watch both ends can correlate
+  timing and volume — and so can the relay itself, without watching anything
+  but its own deliveries: a group message is one envelope per
   member sent in one burst, measured at 64–135 ms across five members, and
   the same mailboxes burst together every time anyone in the group speaks
   (`THREAT_MODEL.md` R18) — and a person's own devices light up together

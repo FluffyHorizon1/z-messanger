@@ -5,14 +5,25 @@ import 'dart:io';
 import 'identity.dart';
 import 'util.dart';
 
-/// A single authenticated connection to a Z relay.
+/// A single connection to a Z relay — authenticated, to receive from this
+/// device's mailbox; or anonymous ([connectAnonymous]), to send sealed
+/// envelopes from a connection the relay cannot attribute to anyone.
 ///
-/// The relay is untrusted: this client hands it only opaque payloads and an
-/// Ed25519 signature over a random challenge (which reveals nothing but
-/// possession of the key). Reconnection/backoff policy lives in the caller.
+/// The relay is untrusted: this client hands it only opaque payloads and, on
+/// an authenticated connection, an Ed25519 signature over a random challenge
+/// (which reveals nothing but possession of the key). A sealed envelope
+/// (§8) names no sender, but a connection that authenticated has an
+/// identity, and the relay process can attach it to everything that arrives
+/// on that connection — so a client that wants the relay not to know who
+/// sent what sends sealed envelopes on an anonymous connection (§12.1). What
+/// remains attributable is the network address and the timing (R21).
+/// Reconnection/backoff policy lives in the caller.
 class RelayClient {
   final WebSocket _ws;
   final ZIdentity _identity;
+
+  /// True for a connection that saw the challenge and did not answer it.
+  final bool anonymous;
 
   String routingId = '';
   final _ready = Completer<String>();
@@ -32,7 +43,8 @@ class RelayClient {
   /// stream.
   bool _closing = false;
 
-  RelayClient._(this._ws, this._identity, this._onClosed) {
+  RelayClient._(this._ws, this._identity, this._onClosed,
+      {this.anonymous = false}) {
     // dart:io WebSockets are single-subscription: this is the ONE listener,
     // covering both the auth phase and normal operation.
     _ws.listen(_onFrame, onDone: _closed, onError: (_) => _closed());
@@ -92,9 +104,37 @@ class RelayClient {
     }
   }
 
+  /// A connection that never authenticates: usable for [send] of sealed
+  /// envelopes only; it receives nothing and [routingId] stays empty. The
+  /// relay's challenge is awaited (it proves this is a Z relay) and left
+  /// unanswered. [identity] is kept only so the type is one class; it is
+  /// never signed with here.
+  static Future<RelayClient> connectAnonymous(
+    String url,
+    ZIdentity identity, {
+    Duration timeout = const Duration(seconds: 15),
+    void Function()? onClosed,
+  }) async {
+    final ws = await WebSocket.connect(url).timeout(timeout);
+    final client = RelayClient._(ws, identity, onClosed, anonymous: true);
+    try {
+      await client._ready.future.timeout(timeout);
+      return client;
+    } catch (_) {
+      await client.close();
+      rethrow;
+    }
+  }
+
   Future<void> _handleAuth(Map<String, Object?> frame) async {
     switch (frame['t']) {
       case 'challenge':
+        if (anonymous) {
+          // Seen, not answered: the relay has nothing to attach to this
+          // connection.
+          if (!_ready.isCompleted) _ready.complete('');
+          return;
+        }
         final nonce = unb64(frame['nonce'] as String);
         final sig = await _identity.signAuthChallenge(nonce);
         _ws.add(jsonEncode({

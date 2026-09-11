@@ -648,6 +648,41 @@ reproducible artefacts.
 
 ---
 
+## Phase 16 · What the relay can still see, and other relays
+
+Added 2026-09-11, after phase 11. Two threads that were named as "choices"
+rather than planned: what an honest look at the relay's remaining view
+turns up and what, if anything, buys it down; and whether Z should have
+more than one relay that talk to each other.
+
+- **16.1 sender anonymity at the relay, actually** ✅ — the study's first
+  item was a finding, not a measurement: sealed envelopes were sent on the
+  device's authenticated connection, so the relay *process* held the sender
+  of every envelope the *envelope* withheld (`adr/0007`, revision 36). Fixed:
+  the relay accepts sealed sends on a connection that never authenticated,
+  the client holds an anonymous link for them and never falls back to the
+  authenticated one, and the relay's own metrics count that every sealed
+  envelope a conversation produces arrived unattributable
+  (`anonymous_sender_test.dart`). What remains is the network address —
+  R21, written down where the stronger claim used to be. Cost measured:
+  two sockets per device; at the same rate, the tail triples past a
+  thousand sockets (`PERFORMANCE.md`).
+- **16.2 the pattern study (R18, R19)** — what jittering or delaying the
+  group fan-out and the device mirror would buy against a relay that
+  clusters mailboxes by co-occurrence over many messages, and what cover
+  traffic would cost; ends in a mitigation or a documented "not worth it",
+  with the numbers.
+- **16.3 federation** — `adr/0008`: whether Z should let people on
+  different relays talk (client-to-many-relays, or relay-to-relay), what
+  each operator would learn that one does not today, what the contact code
+  carries, and a decision — build, defer, or reject.
+
+**Exit:** 16.1's claim holds from the relay's side; 16.2 has a number for
+every option it considers and a decision; 16.3 is an accepted or rejected
+ADR.
+
+---
+
 ## Ordering rationale
 
 **Why backup (9) before multi-device (10).** Multi-device forces a decision on
@@ -1091,3 +1126,20 @@ direction; the phases, their order and both ordering arguments stand.
    checklist in the same words as G8's: the translation was made
    in-project, and a native reader is the step that remains. It is a
    review, not a blocker.
+
+36. **The relay was being handed the sender by the socket.** Sealed sender
+   removed the sender from the envelope and every document said the relay
+   could not tell who sent one; `send` required an authenticated
+   connection, the client had one connection, and it was authenticated as
+   the device — so `state.rid` sat next to `to` in the handler of every
+   sealed send. True of the relay's memory dump, false of its operator, for
+   as long as sealed sender has existed. Found by reading the relay for
+   16.2 rather than by any test, because every test checked the envelope
+   and the stored entry — the channels the mechanism was designed around —
+   and none asked what else the relay held at that moment. Fixed in 16.1
+   (`adr/0007`): sealed envelopes go on an anonymous connection, the relay
+   accepts them there, and the test that pins it counts from the relay's
+   metrics. The claim was rewritten to what is now true — an address
+   remains, R21 — rather than deleted. The rule: **a claim about what a
+   party cannot learn has to be checked against every channel that party
+   has, not the one the mechanism was designed for.**

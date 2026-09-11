@@ -217,3 +217,52 @@ test('/metrics reports delivery SLIs and counts sealed traffic', async () => {
   );
   assert.ok(res.body.includes('z_delivery_latency_ms_bucket{le="+Inf"}'));
 });
+
+test('a sealed envelope is accepted from a connection that never authenticated — and counted as unattributable', async () => {
+  const before = metric((await get(port, '/metrics')).body, 'z_sealed_unattributable_total') || 0;
+  const b = await mk();
+  // A sender that only ever opens the socket: it sees the challenge and does
+  // not answer it. The relay has no identity to attach to what it sends.
+  const anon = await new Client(port, makeIdentity()).open();
+  clients.push(anon);
+  await anon.next((f) => f.t === 'challenge');
+  anon.send({ t: 'send', id: 'u1', to: b.identity.rid, payload: 'zs1.EEEE' });
+  const ack = await anon.next((f) => f.t === 'sent' && f.id === 'u1');
+  assert.strictEqual(ack.queued, false, 'delivered live');
+  const msg = await b.next((f) => f.t === 'msg' && f.id === 'u1');
+  assert.strictEqual(msg.from, undefined);
+  assert.strictEqual(msg.payload, 'zs1.EEEE');
+  // Queued for an offline recipient works the same way.
+  const offline = makeIdentity();
+  anon.send({ t: 'send', id: 'u2', to: offline.rid, payload: 'zs1.FFFF' });
+  const ack2 = await anon.next((f) => f.t === 'sent' && f.id === 'u2');
+  assert.strictEqual(ack2.queued, true);
+  assert.strictEqual(_internal.queues.get(offline.rid).entries[0].from, null);
+  const after = metric((await get(port, '/metrics')).body, 'z_sealed_unattributable_total');
+  assert.strictEqual(after, before + 2, 'both sends counted as unattributable');
+});
+
+test('an unauthenticated connection cannot send an attributed envelope, receive, or ack', async () => {
+  const b = await mk();
+  const anon = await new Client(port, makeIdentity()).open();
+  clients.push(anon);
+  await anon.next((f) => f.t === 'challenge');
+  anon.send({ t: 'send', id: 'u3', to: b.identity.rid, payload: 'legacy-blob' });
+  const err = await anon.next((f) => f.t === 'error');
+  assert.strictEqual(err.code, 'not_authed', 'an envelope that would be stamped with a sender needs one');
+  await sleep(100);
+  assert.ok(!b.frames.some((f) => f.t === 'msg' && f.id === 'u3'), 'nothing delivered');
+  // A `recv` from an unauthenticated connection is ignored: it cannot own a mailbox.
+  const a = await mk();
+  a.send({ t: 'send', id: 'u4', to: b.identity.rid, payload: 'zs1.GGGG' });
+  await b.next((f) => f.t === 'msg' && f.id === 'u4');
+  anon.send({ t: 'recv', id: 'u4' });
+  await sleep(100);
+  // b still holds the envelope until B acks it: the relay's queue for b was
+  // delivered live, so check that the anonymous ack did not raise the acked
+  // counter.
+  const acked = metric((await get(port, '/metrics')).body, 'z_acked_total');
+  b.send({ t: 'recv', id: 'u4' });
+  await sleep(100);
+  assert.strictEqual(metric((await get(port, '/metrics')).body, 'z_acked_total'), acked + 1, 'only the mailbox owner\'s ack counts');
+});

@@ -56,7 +56,8 @@ material.
 | What | Where | Who can read it | How long |
 |---|---|---|---|
 | Queued ciphertext envelopes | RAM | The operator sees opaque bytes and their padded size — not content, not sender | Until delivered, or until the process restarts |
-| Which routing ids are connected | RAM | Operator | While connected |
+| Which routing ids are connected, and the network address of every socket — the authenticated mailbox socket and the anonymous sender socket a device also holds (§12.1) | RAM | Operator | While connected |
+| That a sealed envelope arrived on an anonymous socket — never which identity sent it | RAM, transiently | Operator; nothing ties the socket to a routing id but its address (R21) | Duration of the send |
 | Which routing id an envelope is addressed to, and when | RAM, transiently | Operator | Duration of delivery |
 | Push tokens (FCM), if push is enabled | RAM | Operator, and Google when a push is sent | Until expiry or restart |
 | Aggregate counters (`/metrics`) | RAM | Anyone who can reach `/metrics` | Until restart |

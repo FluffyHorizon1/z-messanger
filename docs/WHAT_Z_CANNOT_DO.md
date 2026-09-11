@@ -60,9 +60,13 @@ Z is not an anonymity network and does not claim to be.
 
 Someone watching your network sees you connect to a relay. Someone running the
 relay sees which mailbox an envelope is for, how big it is (rounded to one of
-six sizes) and when it arrived. They do not see who sent it or what it says —
-sealed sender and the mailbox-as-a-hash design remove those — and no envelope
-says who you talk to. But the relay sees *when* each mailbox is busy, and
+six sizes) and when it arrived. They are not told who sent it or what it
+says — sealed sender and the mailbox-as-a-hash design remove those, and the
+envelope arrives on a connection that never said whose it is — and no
+envelope says who you talk to. What they do see is the network address it
+came from, and the same address is holding your own mailbox open. On a
+phone network that address is shared with thousands; on your home
+connection it is as good as a name (`THREAT_MODEL.md`, R21). But the relay sees *when* each mailbox is busy, and
 patterns in that are not nothing: the members of a group all receive their
 copy of a message within a fraction of a second of each other, every time,
 and so does each of your own devices. We measured it (`THREAT_MODEL.md`, R18

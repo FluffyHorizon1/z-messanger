@@ -125,6 +125,12 @@ function entryToFrame(entry) {
 const METRICS = {
   enqueuedTotal: 0,
   sealedTotal: 0,
+  // Sealed envelopes that arrived on a connection that never authenticated —
+  // the ones this process could not attribute to a sender even if it wanted
+  // to. A sealed envelope on an AUTHENTICATED connection is attributable by
+  // whoever runs the process (the connection has an identity), which is why
+  // clients send sealed envelopes on a connection of their own (§12.1).
+  sealedUnattributableTotal: 0,
   deliveredLiveTotal: 0,
   ackedTotal: 0,
   latencyBucketsMs: [50, 200, 1000, 5000, 30000],
@@ -151,6 +157,8 @@ function renderMetrics(stats) {
   L.push(`z_enqueued_total ${METRICS.enqueuedTotal}`);
   L.push('# TYPE z_sealed_total counter');
   L.push(`z_sealed_total ${METRICS.sealedTotal}`);
+  L.push('# TYPE z_sealed_unattributable_total counter');
+  L.push(`z_sealed_unattributable_total ${METRICS.sealedUnattributableTotal}`);
   L.push('# TYPE z_delivered_live_total counter');
   L.push(`z_delivered_live_total ${METRICS.deliveredLiveTotal}`);
   L.push('# TYPE z_acked_total counter');
@@ -545,6 +553,7 @@ function createServer(opts = {}) {
   // Tests can inject a fake via opts.pushSender; pass null to force-disable.
   const pushSender = 'pushSender' in opts ? opts.pushSender : PushSender.fromEnv();
 
+  let wssRef = null; // set once the WebSocket server exists, below
   const requestListener = (req, res) => {
     if (req.url === '/health') {
       const s = coord.stats();
@@ -556,6 +565,10 @@ function createServer(opts = {}) {
           instanceId: CFG.instanceId,
           coordinator: coord.name,
           connections: s.connections,
+          // Every socket, authenticated or not: a device holds two since
+          // 16.1 (its mailbox link and its anonymous sender link), and the
+          // socket count is what the relay's tail latency follows.
+          sockets: wssRef ? wssRef.clients.size : s.connections,
           queuedEnvelopes: s.queuedEnvelopes,
           storage: 'ram-only',
           push: pushSender ? 'enabled' : 'disabled',
@@ -636,6 +649,7 @@ function createServer(opts = {}) {
     server: httpServer,
     maxPayload: CFG.maxEnvelopeBytes + 4096,
   });
+  wssRef = wss;
 
   wss.on('connection', (ws) => {
     const state = {
@@ -748,13 +762,21 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
     }
 
     case 'send': {
-      if (!state.authed) {
-        sendJson(ws, { t: 'error', code: 'not_authed' });
-        return;
-      }
       const to = String(frame.to || '');
       const id = String(frame.id || '');
       const payload = String(frame.payload || '');
+      // A sealed envelope needs no authenticated sender — it carries none —
+      // and accepting it only from an authenticated connection would hand
+      // this process exactly the attribution the envelope was built to
+      // withhold. So a connection that never authenticates may send sealed
+      // envelopes (rate-limited like any other), and a client that wants
+      // the relay not to know who sent what uses one. Anything else still
+      // needs the identity it will be stamped with.
+      const anon = payload.startsWith('zs1.');
+      if (!state.authed && !anon) {
+        sendJson(ws, { t: 'error', code: 'not_authed' });
+        return;
+      }
       if (!to || !id || id.length > 64 || !payload) {
         sendJson(ws, { t: 'error', code: 'bad_send', id });
         return;
@@ -767,7 +789,7 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
       // NO sender attribution: the recipient learns the sender only inside the
       // encrypted envelope, so a full copy of this server yields no social
       // graph. Authenticity is enforced end-to-end by the inner ratchet.
-      const anon = payload.startsWith('zs1.');
+      if (anon && !state.authed) METRICS.sealedUnattributableTotal += 1;
       const { queued } = await coord.deliverEnqueue(
         anon ? null : state.rid,
         to,
