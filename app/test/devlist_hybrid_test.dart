@@ -38,7 +38,12 @@ void main() {
     HttpOverrides.global = null;
     final serverDir =
         '${Directory.current.parent.path}${Platform.pathSeparator}server';
-    port = 41000 + DateTime.now().millisecondsSinceEpoch % 20000;
+    // An OS-assigned free port, as group_test.dart does: the clock formula
+    // this replaced gave two suites starting in the same millisecond the
+    // same port, and `flutter test` runs files concurrently.
+    final portProbe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    port = portProbe.port;
+    await portProbe.close();
     relay = await Process.start('node', ['server.js'],
         workingDirectory: serverDir,
         environment: {'PORT': '$port', 'LOG_LEVEL': 'silent'});

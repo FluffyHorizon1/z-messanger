@@ -54,6 +54,17 @@ UNCITED_OK = {
         "fan-out and reports where the cost goes (docs/PERFORMANCE.md). The "
         "one thing it asserts, that fan-out stays linear, is a design "
         "property rather than a security claim",
+    "app/test/device_link_spread_bench_test.dart":
+        "a measurement, not an assertion about behaviour — it stamps a "
+        "linked device's copy of each message as the relay stamps it, "
+        "relative to the contact's copy (THREAT_MODEL.md R19). The one thing "
+        "it asserts, that the copies are a burst, exists so R19 is rewritten "
+        "if the mirror is ever delayed",
+    "app/test/group_spread_bench_test.dart":
+        "a measurement, not an assertion about behaviour — it stamps one "
+        "group message's copies as the relay stamps them and reports the "
+        "spread (THREAT_MODEL.md R18). The one thing it asserts, that the "
+        "copies are a burst, exists so R18 is rewritten if that ever changes",
     "app/test/delivery_receipts_test.dart":
         "that delivery receipts go out once per burst rather than once per "
         "message — a cost property (docs/PERFORMANCE.md). That a receipt is "

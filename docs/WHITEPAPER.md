@@ -65,9 +65,11 @@ device they have what you can see, and no messaging protocol changes that.
 
 **Mechanism.** Sealed sender. Every envelope is sealed to the recipient device,
 so the sender's identity is inside the ciphertext rather than in the routing
-metadata. Each of an account's devices has its own routing id, so the relay
-cannot group a person's devices either. Envelopes are padded into six size
-buckets.
+metadata. Each of an account's devices has its own routing id, so no
+envelope tells the relay that two mailboxes are one person — though the
+mirror that keeps a person's devices in step follows every message within
+tens of milliseconds, and that pattern does (`THREAT_MODEL.md` R19, and R18
+for groups; §9). Envelopes are padded into six size buckets.
 
 **Why buckets and not exact padding.** Padding every envelope to a single large
 size would be cleaner and would cost far more bandwidth than a messenger can
@@ -277,7 +279,13 @@ Stated positively, because the gap between what a system does and what people
 assume it does is where harm happens:
 
 * **Not anonymity.** Z is not a mixnet. Someone who can watch both ends can
-  correlate timing and volume.
+  correlate timing and volume — and so can the relay itself, without watching
+  anything but its own deliveries: a group message is one envelope per
+  member sent in one burst, measured at 64–135 ms across five members, and
+  the same mailboxes burst together every time anyone in the group speaks
+  (`THREAT_MODEL.md` R18) — and a person's own devices light up together
+  the same way, 15–53 ms apart (R19). Sealed sender hides who *sent* each
+  envelope; it does not hide which mailboxes light up together.
 * **Not protection from your contact.** Anyone you message can screenshot it.
   Disappearing messages are a courtesy against accidental retention and are
   described as exactly that.

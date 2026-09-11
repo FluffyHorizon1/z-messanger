@@ -963,3 +963,24 @@ direction; the phases, their order and both ordering arguments stand.
    "not measured" list for the next thing to measure — the same way the
    receive side was found — and it was the same shape as the receipts: a
    send nobody waited for that everybody waited behind.
+
+29. **The trust table said the relay "cannot learn who is in a group". It
+   can, from the pattern.** No group id and no membership travel on the
+   wire, which is what that cell meant; but a group message is one envelope
+   per member sent in one burst, and the same mailboxes burst together every
+   time anyone in the group speaks. Measured (`group_spread_bench_test.dart`,
+   five members, one relay on loopback): the members' copies are
+   relay-stamped within 64–135 ms of each other, every message. The cell now
+   says "from any envelope", R18 records the pattern with the number, and
+   spreading the fan-out was considered and rejected there — it costs every
+   group message a delay and does not survive a relay that averages over a
+   conversation. The threat model already said the relay "can correlate
+   timing across mailboxes" in prose; the table contradicted it in a cell,
+   and a cell is what an auditor reads. The same measurement, made for a
+   person's own devices (`device_link_spread_bench_test.dart`): the laptop's
+   copy is relay-stamped 15–22 ms after the contact's when the phone sends
+   and 31–53 ms after the phone's when the contact sends — so "the relay
+   cannot group a person's devices" (WHITEPAPER §3) was the same
+   overstatement, now qualified the same way, with R19. Two relay tests
+   also stopped deriving their port from the clock (the last two that did;
+   a collision failed a whole file in setUpAll once today).
