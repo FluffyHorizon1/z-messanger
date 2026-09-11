@@ -117,10 +117,20 @@ class InnerMessage {
   /// receiver checks it against the commitment from the scan
   /// (`ContactBundleV3.acceptsPqKey`) and refuses the identity on a mismatch
   /// — a v2 peer simply ignores the unknown kind, as with `pqek`.
-  static InnerMessage pqIdentity(String mid, int ts, Uint8List mlPub) =>
+  ///
+  /// [ack] says the sender already holds the receiver's key, checked against
+  /// its own commitment — so the receiver need not answer in kind. Without
+  /// it the exchange could only complete by each side answering every key
+  /// it received, which is one round trip too many and, measured, sent the
+  /// 16 KB envelope twice in each direction at a mutual add. Omitted when
+  /// false, so a message without it is byte-for-byte what earlier builds
+  /// send and the recorded vector.
+  static InnerMessage pqIdentity(String mid, int ts, Uint8List mlPub,
+          {bool ack = false}) =>
       InnerMessage(kind: 'pqid', mid: mid, ts: ts, data: {
         'alg': 'ML-DSA-65',
         'pk': b64(mlPub),
+        if (ack) 'ack': true,
       });
 
   /// 7.7a device-list removal notice: sent by a contact to a device it just

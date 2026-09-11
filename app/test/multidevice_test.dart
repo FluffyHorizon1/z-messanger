@@ -165,6 +165,17 @@ void main() {
       // rather than waiting on a convergence the protocol never promised.
       await carol.sendText(phone.myRid, 'hi');
       await phone.sendText(carol.myRid, 'hi back');
+      // And let the post-quantum halves land. When the greeting was dropped
+      // the side holding the unmet commitment re-offers its key a moment
+      // after the first traffic, not on it (§18.2, the reference client's
+      // wait), so a test that verifies "immediately" would verify a number
+      // about to move — which the app correctly reports as an upgrade to
+      // re-check, and which is not what these tests are about.
+      await waitUntil(
+          () =>
+              phone.assuranceWith(carol.myRid) == IdentityAssurance.hybrid &&
+              carol.assuranceWith(phone.myRid) == IdentityAssurance.hybrid,
+          what: 'phone and carol hold each other\'s post-quantum keys');
     }
 
     final laptopId = await ZIdentity.generate();

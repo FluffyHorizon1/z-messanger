@@ -917,3 +917,25 @@ direction; the phases, their order and both ordering arguments stand.
    receipts and typing included; it is now one notice per contact per
    episode, with a count, and one hello per burst
    (`restore_notices_test.dart`, `BACKUP.md` §2.2).
+
+27. **§18.2 — the identity exchange sent its 16 KB envelope twice each way,
+   and completed by accident.** Counted from the relay's side in an offline
+   harness, a mutual add queued the ML-DSA key twice in each direction: the
+   volunteering and nudging paths both fired on the same hello, and the nudge
+   fired again on the first envelope of the reply batch with the peer's key
+   one envelope behind it. Worse: the case the nudge exists for — an opening
+   send that vanished because the peer had not added us — completed only
+   because that accidental nudge fired; the answer-in-kind path was gated on
+   "already volunteered", which is precisely the send that had vanished, so
+   with the batch in the other order the exchange never completed. Now
+   every reason to send is one debounced send that says whether the peer's
+   key is held (`ack`, an additive field older clients ignore), a key that
+   arrives with `ack` is not answered, the opening key goes with the hello so
+   the two land in one batch, a re-send waits longer than an answer and
+   much longer on the initiator (its key went with its hello) so two do not cross, and a re-send whose
+   commitment was met while it waited is dropped. One envelope each way, in
+   both cases, in either batch order (`pq_identity_exchange_test.dart`, four
+   criteria, two broken on purpose: ack ignored — 4 where 1 was expected;
+   the nudge never skipped — 2). The pairing signal that remains is R17 in
+   the threat model, which did not exist as a row before because nobody had
+   counted.

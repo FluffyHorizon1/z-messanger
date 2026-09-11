@@ -225,6 +225,12 @@ class ChatService extends ChangeNotifier {
     _sweeper?.cancel();
     _devlistTimer?.cancel();
     _dlvTimer?.cancel();
+    for (final t in _pqTimers.values) {
+      t.cancel();
+    }
+    _pqTimers.clear();
+    _pqPending.clear();
+    _pqDueMs.clear();
     // Receipts still waiting are dropped, not sent. A service being disposed
     // must not speak: the flush is a full send — lock, ratchet step, vault
     // transaction — started after the owner has decided the service is over
@@ -662,7 +668,10 @@ class ChatService extends ChangeNotifier {
     final conv = await _convFor(contact);
     if (conv.isDesignatedInitiator) {
       await _sendInner(contact, InnerMessage.hello(newMessageId(), _now()));
-      await _sendPqIdentity(contact);
+      // With the hello, not a debounce later: the two must reach the peer
+      // in one batch, or their answer to the hello goes out before our key
+      // has landed and says it does not hold it — and earns a second one.
+      if (_pqSent.add(contact.rid)) await _sendPqIdentity(contact);
       // 7.7a hardening: a multi-device account introduces its device set with
       // the hello, so the new contact fans out to every device from the first
       // message. If they have not added us yet this is dropped like the hello;
@@ -997,39 +1006,133 @@ class ChatService extends ChangeNotifier {
   /// know, and `contact.pqCommit` answers the opposite question — whether we
   /// scanned theirs. Volunteering it is safe because a delivered key is only
   /// ever accepted against a commitment (`_onPqIdentity`); one that arrives
-  /// unasked-for is ignored. It costs ~2 KB once per contact, at a moment
-  /// when a burst of traffic between two previously unrelated mailboxes has
-  /// already told the relay a contact was added.
+  /// unasked-for is ignored. It costs ~2 KB of key — a 16 384-bucket
+  /// envelope on the wire, the one size ordinary chat almost never has
+  /// (`adr/0004`, addendum) — once per contact, at a moment when a burst of
+  /// traffic between two previously unrelated mailboxes has already told the
+  /// relay a contact was added.
+  ///
+  /// Once, that is, if it is sent once. Measured (2026-09-11), a mutual add
+  /// sent it TWICE each way: the volunteering path and the nudging path both
+  /// fired on the same hello, and the nudge fired again on the first envelope
+  /// of the reply batch with the peer's key one envelope behind it. Worse,
+  /// the case the nudge exists for — an opening that vanished because the
+  /// peer had not added us yet — completed only because that same accidental
+  /// nudge fired: the answer-in-kind path was gated by "already volunteered",
+  /// which is exactly the send that vanished. So the exchange is now this:
+  ///
+  ///  * an answer — a key arrived without `ack` — goes at once and cancels
+  ///    anything waiting, and any send counts as the once-per-contact offer;
+  ///  * volunteering (on a hello) waits [pqSendDebounce] for the key that
+  ///    usually follows the hello in the same batch, so it becomes an answer
+  ///    instead; a nudge (bounded, while a commitment is unmet) waits longer
+  ///    — and much longer on the designated initiator, whose key went with
+  ///    its hello, so two sides nudging never cross — and either is dropped
+  ///    at the last moment if a send went out meanwhile or (a nudge) the key
+  ///    it was asking for came;
+  ///  * the send carries `ack` when we hold the peer's key, and a key that
+  ///    arrives with `ack` is not answered — the peer has ours.
+  ///
+  /// A mutual add is one 16 KB envelope each way; a vanished opening is
+  /// made good by the peer's first key and our answer to it, whatever order
+  /// the batch arrived in (`pq_identity_exchange_test.dart`).
   ///
   /// Best-effort, like the opening hello.
   final Set<String> _pqSent = {}; // volunteered once per contact per run
   final Map<String, int> _pqNudges = {}; // re-asks while a commitment is unmet
+  final Map<String, int> _pqAnswers = {}; // answers, bounded like nudges
   static const int _maxPqNudges = 3;
+  final Map<String, Set<_PqReason>> _pqPending = {};
+  final Map<String, Timer> _pqTimers = {};
+  final Map<String, int> _pqDueMs = {};
+  final Map<String, int> _pqLastSentMs = {};
 
-  /// [nudge] is for the side that holds a commitment it still cannot check.
-  ///
-  /// The distinction matters because the opening send can vanish: if the peer
-  /// has not added us yet there is no session to decrypt it, so it is dropped
-  /// and "already sent" is a lie. The volunteering path is once per contact —
-  /// enough, and quiet against an older peer that has no post-quantum
-  /// identity to answer with. The nudging path ignores that and re-asks a
-  /// bounded number of times, because the nudger KNOWS something is missing
-  /// and the peer's answer is what completes the exchange.
-  Future<void> _sendPqIdentity(Contact contact, {bool nudge = false}) async {
-    if (nudge) {
-      final n = _pqNudges[contact.rid] ?? 0;
-      if (n >= _maxPqNudges) return;
-      _pqNudges[contact.rid] = n + 1;
-    } else if (!_pqSent.add(contact.rid)) {
-      return;
+  /// How long a volunteered send waits for the key that usually follows a
+  /// hello. A nudge waits twice this on the side that did not open the
+  /// session and twenty times it on the side that did — it sent its key
+  /// with the hello, so its nudge matters only against a peer that never
+  /// answers, and it must not cross the other side's; a send within ten
+  /// times it makes a waiting volunteer or nudge unnecessary.
+  @visibleForTesting
+  Duration pqSendDebounce = const Duration(milliseconds: 500);
+
+  /// True while a send is scheduled for any contact. Test seam.
+  @visibleForTesting
+  bool get pqSendPending => _pqTimers.isNotEmpty;
+
+  /// `pqid` envelopes actually sent. Test seam.
+  @visibleForTesting
+  int debugPqSends = 0;
+
+  /// Registers a reason to send our post-quantum identity to [contact]. An
+  /// answer goes now and cancels anything waiting; volunteering and nudging
+  /// wait, and are dropped at the last moment if a send has gone in the
+  /// meantime or (a nudge) the key it was asking for has arrived. The gates
+  /// are decided here, when the reason arises; what the send says (`ack`)
+  /// is decided when it goes.
+  void _offerPqIdentity(Contact contact, _PqReason why) {
+    if (_disposed) return;
+    final rid = contact.rid;
+    switch (why) {
+      case _PqReason.answer:
+        final n = _pqAnswers[rid] ?? 0;
+        if (n >= _maxPqNudges) return;
+        _pqAnswers[rid] = n + 1;
+        _pqTimers.remove(rid)?.cancel();
+        _pqPending.remove(rid);
+        _pqDueMs.remove(rid);
+        unawaited(_sendPqIdentity(contact).then((_) {}, onError: (_) {}));
+        return;
+      case _PqReason.volunteer:
+        if (!_pqSent.add(rid)) return;
+      case _PqReason.nudge:
+        if ((_pqNudges[rid] ?? 0) >= _maxPqNudges) return;
     }
+    _pqPending.putIfAbsent(rid, () => {}).add(why);
+    final delay = why == _PqReason.volunteer
+        ? pqSendDebounce
+        : pqSendDebounce * (myRid.compareTo(rid) < 0 ? 20 : 2);
+    final due = _now() + delay.inMilliseconds;
+    // A send already scheduled sooner covers this reason; one scheduled
+    // later is brought forward, so a volunteer never waits on a nudge.
+    final pending = _pqTimers[rid];
+    if (pending != null && (_pqDueMs[rid] ?? 0) <= due) return;
+    pending?.cancel();
+    _pqDueMs[rid] = due;
+    _pqTimers[rid] = Timer(delay, () {
+      _pqTimers.remove(rid);
+      _pqDueMs.remove(rid);
+      final reasons = _pqPending.remove(rid) ?? const <_PqReason>{};
+      final now = contacts[rid];
+      if (now == null || _disposed) return;
+      final sentAgo = _now() - (_pqLastSentMs[rid] ?? 0);
+      if (sentAgo < pqSendDebounce.inMilliseconds * 10) {
+        return; // a send went out while this waited; it said everything
+      }
+      if (!reasons.contains(_PqReason.volunteer)) {
+        // A nudge alone. It counts against the bound only when it goes.
+        if (now.pqPub != null) return; // what it was asking for has arrived
+        final n = _pqNudges[rid] ?? 0;
+        if (n >= _maxPqNudges) return;
+        _pqNudges[rid] = n + 1;
+      }
+      unawaited(_sendPqIdentity(now).then((_) {}, onError: (_) {}));
+    });
+  }
+
+  Future<void> _sendPqIdentity(Contact contact) async {
     try {
       final mlPub = await pqAccountPublic();
       if (mlPub == null) return;
+      _pqSent.add(contact.rid); // any send is the once-per-contact offer
+      _pqLastSentMs[contact.rid] = _now();
+      debugPqSends++;
       await _sendInner(
-          contact, InnerMessage.pqIdentity(newMessageId(), _now(), mlPub));
+          contact,
+          InnerMessage.pqIdentity(newMessageId(), _now(), mlPub,
+              ack: contact.pqPub != null));
     } catch (_) {
-      // The next message re-offers it; see _onInbound.
+      // The next reason re-offers it; see _onInbound.
     }
   }
 
@@ -1677,19 +1780,22 @@ class ChatService extends ChangeNotifier {
         try {
           if (await _onPqIdentity(contact, inner)) notifyListeners();
         } catch (_) {}
-        // Answer in kind, so an exchange started by either side completes.
-        unawaited(_sendPqIdentity(contact).then((_) {}, onError: (_) {}));
+        // Answer in kind unless they said they already hold ours — that is
+        // how an exchange started by either side completes, and how one
+        // whose opening send vanished completes too.
+        if (inner.data['ack'] != true) {
+          _offerPqIdentity(contact, _PqReason.answer);
+        }
       }
       if (inner.kind == 'hello') {
-        unawaited(_sendPqIdentity(contact).then((_) {}, onError: (_) {}));
+        _offerPqIdentity(contact, _PqReason.volunteer);
       }
       if (contact.pqCommit != null && contact.pqPub == null) {
         // We hold a commitment we still cannot check. Speaking up is what
-        // prompts them to answer in kind, and it has to bypass the
-        // once-per-contact gate: our own opening send may have been dropped
-        // before either side had a session.
-        unawaited(_sendPqIdentity(contact, nudge: true)
-            .then((_) {}, onError: (_) {}));
+        // prompts them to answer, and it bypasses the once-per-contact gate:
+        // our own opening send may have been dropped before either side had
+        // a session. Bounded, and dropped if the key lands while it waits.
+        _offerPqIdentity(contact, _PqReason.nudge);
       }
       if (inner.kind == 'devlist') {
         await _applyDevlistInner(contact, inner); // M4: learn their devices
@@ -4865,9 +4971,13 @@ class ChatService extends ChangeNotifier {
     // every device on the list, so one send serves the whole account. Once
     // per device-list change, at a moment that has already generated traffic.
     if (persist && appeared.isNotEmpty) {
+      // A new device set: nothing sent so far reached it, so the quiet
+      // period after the last send does not apply either.
       _pqSent.remove(rid);
       _pqNudges.remove(rid);
-      unawaited(_sendPqIdentity(contact).then((_) {}, onError: (_) {}));
+      _pqAnswers.remove(rid);
+      _pqLastSentMs.remove(rid);
+      _offerPqIdentity(contact, _PqReason.volunteer);
     }
   }
 
@@ -4948,8 +5058,11 @@ class ChatService extends ChangeNotifier {
       // which now includes the one that just asked. The once-per-contact gate
       // is cleared first, because that device is newer than our offer — it is
       // asking precisely because it never saw it.
-      _pqSent.remove(contact.rid);
-      unawaited(_sendPqIdentity(contact).then((_) {}, onError: (_) {}));
+      if (inner!.data['ack'] != true) {
+        _pqSent.remove(contact.rid);
+        _pqLastSentMs.remove(contact.rid);
+        _offerPqIdentity(contact, _PqReason.volunteer);
+      }
     }
     if (inner!.kind == 'dlpq') {
       await _onPqListSignature(contact, inner!); // §18.9, extra-device path
@@ -5481,3 +5594,7 @@ int? firstIntValue(List<Map<String, Object?>> rows) {
   final v = rows.first.values.first;
   return v is int ? v : (v is num ? v.toInt() : null);
 }
+
+/// Why a post-quantum identity is being sent (§18.2); see
+/// `ChatService._offerPqIdentity`.
+enum _PqReason { volunteer, nudge, answer }

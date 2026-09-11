@@ -1145,8 +1145,12 @@ The ML‑DSA public key is delivered **inside the ratchet**, as an additive
 inner message (§6):
 
 ```
-{"k":"pqid","mid":…,"ts":…,"alg":"ML-DSA-65","pk":b64(ml_pub)}
+{"k":"pqid","mid":…,"ts":…,"alg":"ML-DSA-65","pk":b64(ml_pub)[,"ack":true]}
 ```
+
+`ack`, when present and true, says the sender already holds the receiver's
+key, checked against its own commitment. It is omitted otherwise, so a
+message without it is byte-for-byte what earlier clients send.
 
 The receiver MUST check `SHA-256("z-pqid-v3:" || pk)` against the `pqc` from
 the scanned code, in constant time, and MUST refuse the identity on a
@@ -1164,10 +1168,25 @@ be exchanged before a session exists. An opening message can also be dropped
 outright — if the peer has not added us yet there is no session to decrypt it
 — so a side holding a commitment it cannot yet check SHOULD re-send its own
 key on inbound traffic, bounded (the reference client: three attempts per
-run), and a side receiving a `pqid` SHOULD answer with its own. Between them
-the exchange completes whichever side spoke first and whether or not the
-opening message survived. Two people who have added each other and then said
-nothing stay classical, correctly and on both sides, until one of them speaks.
+run), and a side receiving a `pqid` **without `ack`** SHOULD answer with its
+own; one **with `ack`** MUST NOT be answered, because the peer has said it
+holds ours. Between them the exchange completes whichever side spoke first
+and whether or not the opening message survived. Two people who have added
+each other and then said nothing stay classical, correctly and on both sides,
+until one of them speaks.
+
+A `pqid` is a 16 384‑bucket envelope (§8) — the one size ordinary chat almost
+never has — so every one sent is a mark on the relay's view, and two mailboxes
+that each receive one within seconds have told the relay they just met
+(`THREAT_MODEL.md` R17). A client SHOULD therefore send it once per reason,
+not once per trigger: the reference client folds every reason that arises
+within half a second — volunteering on a hello, answering a key, re-sending for
+an unmet commitment — into one send that carries `ack` if the peer's key has
+landed by then, sends the opening key *with* the hello so the two arrive in
+one batch, waits longer before a re-send (one second; ten on the side that
+opened the session, whose key went with its hello — so two re-sends do not cross) and drops a re-send whose
+commitment was met while it waited. Measured, a mutual add is one envelope
+each way; before this it was two.
 
 **Multi-device rules.** An account has ONE post-quantum identity, and every
 device of it must reach the same view of every contact, or the safety number
