@@ -407,5 +407,13 @@
   "stKtReset": "Olvidar el historial del registro",
   "stKtResetHelp": "Empezar de nuevo desde la cabecera actual del registro. Solo tras cambiar de registro a propósito, o una vez notificado un fallo.",
   "stKtResetConfirm": "¿Olvidar el historial del registro?",
-  "stKtSave": "Guardar"
+  "stKtSave": "Guardar",
+  "stCryptoBench": "Prueba de rendimiento criptográfico",
+  "stCryptoBenchHelp": "Mide cada primitiva que Z usa, en este dispositivo",
+  "cbRunning": "Midiendo… {n} listas",
+  "cbDone": "Hecho — {n} mediciones",
+  "cbNote": "Cada línea es Dart puro: la app no usa ninguna implementación de la plataforma. La línea de Argon2id es lo que cuesta aquí desbloquear con contraseña. Medianas; el reloj y la temperatura del teléfono las mueven.",
+  "cbCopy": "Copiar como tabla",
+  "cbCopied": "Copiado",
+  "cbAgain": "Repetir"
 }

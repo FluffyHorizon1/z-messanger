@@ -15,6 +15,7 @@ import '../core/push_service.dart';
 import '../core/transport.dart';
 import '../core/vault.dart';
 import 'backup_screen.dart';
+import 'crypto_bench_screen.dart';
 import 'link_device_screen.dart';
 import 'theme.dart';
 
@@ -408,6 +409,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   await svc.setServerUrl(url);
                 }
               },
+            ),
+          if (svc.devMode)
+            ListTile(
+              leading: const Icon(Icons.speed_outlined),
+              title: Text(l.stCryptoBench),
+              subtitle: Text(l.stCryptoBenchHelp,
+                  style: const TextStyle(fontSize: 12)),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                    builder: (_) => const CryptoBenchScreen()),
+              ),
             ),
           _SectionHeader(l.stDangerZone),
           ListTile(

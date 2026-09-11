@@ -2545,6 +2545,54 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Save'**
   String get stKtSave;
+
+  /// Developer-mode row: opens the screen that times every primitive on this device.
+  ///
+  /// In en, this message translates to:
+  /// **'Cryptography benchmark'**
+  String get stCryptoBench;
+
+  /// Subtitle under the benchmark row.
+  ///
+  /// In en, this message translates to:
+  /// **'Time every primitive Z uses, on this device'**
+  String get stCryptoBenchHelp;
+
+  /// Progress line while the benchmark runs; n is how many rows have landed.
+  ///
+  /// In en, this message translates to:
+  /// **'Measuring… {n} done'**
+  String cbRunning(int n);
+
+  /// Progress line once the benchmark has finished.
+  ///
+  /// In en, this message translates to:
+  /// **'Done — {n} measurements'**
+  String cbDone(int n);
+
+  /// Explanatory note above the results.
+  ///
+  /// In en, this message translates to:
+  /// **'Every line is pure Dart: the app wires in no platform implementation. The Argon2id line is what a passphrase unlock costs here. Medians; the phone\'s clock and thermal state move them.'**
+  String get cbNote;
+
+  /// Button: copies the results as a Markdown table.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy as table'**
+  String get cbCopy;
+
+  /// Snackbar after copying.
+  ///
+  /// In en, this message translates to:
+  /// **'Copied'**
+  String get cbCopied;
+
+  /// Button: reruns the benchmark.
+  ///
+  /// In en, this message translates to:
+  /// **'Run again'**
+  String get cbAgain;
 }
 
 class _AppLocalizationsDelegate

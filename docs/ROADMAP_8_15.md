@@ -538,9 +538,13 @@ Everything currently externally gated, plus the work to call it 1.0.
   At 20 queued rows against 2 040 the difference is 1.7 ms. Not a scaling
   problem.
 
-  Still unmeasured and named as such: real hardware, devices-per-member (the
+  Still unmeasured and named as such: ~~real hardware~~, devices-per-member (the
   extra-device fan-out is `unawaited` and not in these timings), cold start,
-  and relay latency under sustained load. ~~And the receive side.~~
+  and relay latency under sustained load. ~~And the receive side.~~ The
+  cryptography itself — every primitive, pure Dart against OpenSSL on the
+  same machine, and a Developer-mode screen that runs the same rows on a
+  phone — was measured last, with the decision not to wire in a platform
+  implementation and the rule for revisiting it (revision 39).
 - **15.4 docs & support & access** *(accessibility, user docs and
   localization done: 14 of 14 screens migrated, and the app ships in English
   and Spanish — revision 35)*.
@@ -1228,3 +1232,36 @@ direction; the phases, their order and both ordering arguments stand.
    **a limit that exists as a setting has to be tested at the setting,
    in every mode the setting applies to** — the byte cap had a row in
    three documents and a test in none.
+
+39. **The last "not measured" item was the cryptography, and measuring it
+   changed the question.** The list had said since 15.3 that all of Z's
+   crypto runs in Dart and that what a platform implementation would buy
+   was "unmeasured and a decision, in that order". `protocol/lib/bench.dart`
+   times every primitive the way Z uses it — medians after a warm-up,
+   through `cryptography` and `pqcrypto` and the protocol's own sealed
+   envelope — and `server/bench/native_crypto.js` runs the classical ones
+   through OpenSSL on the same machine as the stand-in for a platform
+   implementation. Pure Dart, compiled ahead of time, is 5–7× slower than
+   OpenSSL on hashing and the AEAD at a kilobyte, 18–35× on X25519 and
+   Ed25519, 72× on an Ed25519 signature, and 3.4× on Argon2id; the VM's JIT
+   is slower still on most lines and, oddly, faster on the 64 KB AEAD. So
+   the gap is real and large in ratio — and small in what a user does: a
+   sealed envelope is 1.5 ms, a text is one of those plus a quarter of a
+   millisecond of ratchet, and the two places it could add up are a large
+   attachment (about two seconds of AEAD for 25 MB, each way) and the
+   passphrase unlock (128 ms here, a phone's multiple of that). The
+   question stopped being "native or not" and became "what would have to
+   be true on a phone for native to be worth a second dependency and a
+   platform boundary per call": the rule is written in PERFORMANCE.md
+   (unlock past a second, or a 25 MB attachment past five seconds of
+   crypto, on a mid-range phone), and the phone measurement is one tap —
+   Settings → Developer → Cryptography benchmark runs exactly the same
+   rows (`crypto_bench_screen.dart`, the fifteenth screen, migrated on
+   arrival) and copies them as the document's table, so the phone's column
+   is a paste away rather than a guess. Two things worth writing down. The
+   JIT column is what `flutter test` measures and the AOT column is what
+   ships, and they differ by up to 3× on individual lines in both
+   directions — every earlier number in PERFORMANCE.md is a JIT number, and
+   its *shapes* were the point, not its milliseconds. And the post-quantum
+   pair has no platform implementation on Android to move to at all, so
+   the ceiling on what native would buy is lower than the ratios suggest.

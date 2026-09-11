@@ -50,6 +50,7 @@ MIGRATED = {
     # No strings of its own; listed so that one added later is caught.
     "theme.dart",
     "settings_screen.dart",
+    "crypto_bench_screen.dart",
 }
 
 # Literals that look user-visible and are not.
@@ -68,7 +69,7 @@ ALLOWED = {
 }
 
 # Exemptions that are only safe in one file. A global entry hides a literal in
-# all fourteen screens, which is too much reach for a word as ordinary as
+# all fifteen screens, which is too much reach for a word as ordinary as
 # "Unknown": it would stop being flagged in the one place it IS a label.
 ALLOWED_IN = {
     "settings_screen.dart": {

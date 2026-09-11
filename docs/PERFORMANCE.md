@@ -530,17 +530,117 @@ verifying one lookup — parse, head signature, map proof, inclusion — is
 document. A check of four hundred contacts is four hundred HTTPS requests
 every six hours, and that, not the arithmetic, is its cost.
 
+## Cryptography on the device (2026-09-11)
+
+Every cryptographic operation in Z runs in Dart: the `cryptography` package
+without `cryptography_flutter`, so no platform implementation is wired in
+on any platform, and `pqcrypto` for the post-quantum pair, which has no
+platform implementation to wire in. `protocol/tool/crypto_bench.dart`
+(`dart run tool/crypto_bench.dart`, or `dart compile exe` for the AOT
+column, which is what a release build runs) times every primitive the way
+Z uses it, medians after a warm-up; `server/bench/native_crypto.js` (`npm
+run bench:crypto`) runs the classical ones through OpenSSL on the same machine as a stand-in for
+what a platform implementation would cost (Android's is BoringSSL, Apple's
+is corecrypto — compiled code of the same kind). Same machine as every
+other number here.
+
+| primitive | operation | Dart, VM (JIT) | Dart, AOT | OpenSSL | AOT ÷ OpenSSL |
+|---|---|---:|---:|---:|---:|
+| SHA-256 | 1 KB | 23 µs | 14 µs | 2 µs | 7× |
+| SHA-256 | 64 KB | 736 µs | 890 µs | 42 µs | 21× |
+| HMAC-SHA256 | 1 KB | 62 µs | 20 µs | 3 µs | 7× |
+| HKDF-SHA256 | 32 bytes out | 87 µs | 27 µs | 8 µs | 3× |
+| XChaCha20-Poly1305 | seal 1 KB | 192 µs | 47 µs | 9 µs | 5× |
+| XChaCha20-Poly1305 | open 1 KB | 88 µs | 47 µs | 9 µs | 5× |
+| XChaCha20-Poly1305 | seal 64 KB | 2.02 ms | 2.46 ms | 91 µs | 27× |
+| XChaCha20-Poly1305 | open 64 KB | 2.04 ms | 2.43 ms | 39 µs | 62× |
+| X25519 | keygen | 725 µs | 609 µs | 34 µs | 18× |
+| X25519 | shared secret | 711 µs | 605 µs | 34 µs | 18× |
+| Ed25519 | keygen | 1.57 ms | 1.15 ms | 33 µs | 35× |
+| Ed25519 | sign 200 B | 3.16 ms | 2.37 ms | 33 µs | 72× |
+| Ed25519 | verify 200 B | 2.77 ms | 2.48 ms | 98 µs | 25× |
+| ML-KEM-768 | keygen | 1.23 ms | 751 µs | — | — |
+| ML-KEM-768 | encapsulate | 1.67 ms | 809 µs | — | — |
+| ML-KEM-768 | decapsulate (from seed) | 2.96 ms | 1.70 ms | — | — |
+| ML-DSA-65 + Ed25519 | keygen | 8.98 ms | 3.69 ms | — | — |
+| ML-DSA-65 + Ed25519 | sign 200 B | 8.09 ms | 9.04 ms | — | — |
+| ML-DSA-65 + Ed25519 | verify 200 B | 5.56 ms | 4.84 ms | — | — |
+| sealed envelope | seal (1 024 bucket) | 1.88 ms | 1.45 ms | — | — |
+| sealed envelope | open (1 024 bucket) | 1.92 ms | 1.46 ms | — | — |
+| Argon2id | 19 MiB, t=2 (passphrase unlock) | 261 ms | 128 ms | 38 ms | 3.4× |
+
+(The OpenSSL AEAD line is ChaCha20-Poly1305 with a 12-byte nonce; XChaCha20
+adds one HChaCha20 block, a rounding error at these sizes. Argon2id's
+native figure is OpenSSL 3.5 through Python's `cryptography`, since Node
+does not expose it. ML-KEM and ML-DSA have no platform implementation on
+Android at all; on this machine's OpenSSL they exist but neither binding
+exposes them, and they would not be the ones to move anyway.)
+
+What the gap costs, in things a user does. A sealed envelope is 1.5 ms of
+crypto, and a text message is one of them plus a ratchet step (0.23 ms,
+measured above): **crypto is a few milliseconds of the ~10 ms a send
+costs, and it is not the part a user notices**; the vault transaction and
+the wire decoration were. Where it does add up:
+
+* **A group send** is one sealed envelope per member device. Fifty members
+  is ~75 ms of sealing inside a fan-out that takes 1.2 s for other
+  reasons, and no longer blocks the composer at all.
+* **A transparency check** (§19) verifies one Ed25519 signature per
+  contact and one per head: 2.5 ms each in Dart against 0.1 ms native.
+  Four hundred contacts is a second of verification every six hours,
+  against 40 ms. It runs in the background either way.
+* **An attachment** travels in 140 KiB chunks, each encrypted under the
+  file key and then sealed as an envelope of its own — two AEAD passes and
+  one X25519 per chunk. Scaling the 64 KB line, a 25 MB file is ~180
+  chunks and **about two seconds of AEAD in Dart against under a tenth of
+  a second native**, on the send and again on the receive. This is the one
+  a user could see, and the line to read first on a phone.
+* **The passphrase unlock** is one Argon2id: **128 ms here against 38 ms
+  native**, and a phone is slower than this machine by a factor the phone
+  has to tell us — a mid-range phone that is 4× slower on this line makes
+  the passphrase unlock half a second, which is the border of noticeable
+  and well inside acceptable for a step that is meant to be slow.
+
+Absolute numbers on a phone are not in this table because this machine is
+not one. **Settings → Developer → Cryptography benchmark** runs exactly
+these rows on the device and copies them as this table
+(`crypto_bench_screen.dart`; `bench_test.dart` keeps the two in step), so
+the phone's column is one tap and a paste away, and a reader who wants the
+number for their own phone can have it.
+
+**The decision, and the rule for changing it.** Not adopting
+`cryptography_flutter` now. The dependency is a second package from the
+same author, platform channel code on each platform, and a native boundary
+per operation whose own overhead is the first thing a measurement would
+have to subtract at these sizes; what it accelerates on which platform
+has to be read from the package at the version chosen, and it would leave
+the post-quantum pair, the ratchet and everything on Linux and Windows
+exactly where they are. Against that, the table says the per-message cost
+is a few milliseconds and invisible, and the two places the gap could show
+— a large attachment, the passphrase unlock — are bounded and known. The
+rule: **measure on a phone first, with the screen built for it; adopt a
+platform implementation only if the passphrase unlock passes one second
+or a 25 MB attachment passes five seconds of crypto on a mid-range phone
+— longer than its own transfer on a decent connection** — and then for
+those operations, measured before and after. Below
+that, the pure-Dart build keeps its property — one implementation, read
+in one language, the same on every platform — which was the reason it was
+chosen.
+
 ## Not measured
 
 Named so this document does not read as more complete than it is:
 
-* **Real hardware.** Everything here is a desktop test VM. Phone numbers,
+* ~~**Real hardware.** Everything here is a desktop test VM. Phone numbers,
   especially for the asymmetric operations, will differ — and all of the
   crypto runs in Dart (`cryptography` without `cryptography_flutter`), so on
   a phone Ed25519, X25519 and ChaCha20-Poly1305 are software where the
   platform has native implementations. What that costs, and whether the
   dependency is worth its supply-chain surface, is unmeasured and a
-  decision, in that order.
+  decision, in that order.~~ Measured above on 2026-09-11 — pure Dart
+  against OpenSSL on this machine, with the decision and the rule for
+  revisiting it — and the phone's own column is a Developer-mode screen
+  away. The rest of this document is still a desktop VM.
 * ~~**Multiple devices per member.** The fan-out to a contact's extra devices
   happens in `_fanToContactExtras`, which is `unawaited` — it does not block
   the send, and it is not in these timings.~~ Measured on 2026-09-11, and

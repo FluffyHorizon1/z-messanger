@@ -1519,4 +1519,33 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get stKtSave => 'Save';
+
+  @override
+  String get stCryptoBench => 'Cryptography benchmark';
+
+  @override
+  String get stCryptoBenchHelp => 'Time every primitive Z uses, on this device';
+
+  @override
+  String cbRunning(int n) {
+    return 'Measuring… $n done';
+  }
+
+  @override
+  String cbDone(int n) {
+    return 'Done — $n measurements';
+  }
+
+  @override
+  String get cbNote =>
+      'Every line is pure Dart: the app wires in no platform implementation. The Argon2id line is what a passphrase unlock costs here. Medians; the phone\'s clock and thermal state move them.';
+
+  @override
+  String get cbCopy => 'Copy as table';
+
+  @override
+  String get cbCopied => 'Copied';
+
+  @override
+  String get cbAgain => 'Run again';
 }

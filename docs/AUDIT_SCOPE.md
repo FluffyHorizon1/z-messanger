@@ -32,7 +32,7 @@ Three components, one operator‑independent trust story:
 
 | Component | Language / size | Role |
 |---|---|---|
-| `protocol/` (`z_protocol`) | pure Dart, ~5.4 k lines in 18 modules, ~3.7 k lines of tests (160) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader |
+| `protocol/` (`z_protocol`) | pure Dart, ~5.4 k lines in 18 modules, ~3.8 k lines of tests (162) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader |
 | `app/` | Flutter (Dart), core ~10.5 k lines (`lib/core/`), UI ~5.9 k lines, 44 test files (~11.6 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
 | `server/` | Node.js, `server.js` ~990 lines, ~3.1 k lines of tests (66) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics; two‑instance mode via Redis |
 

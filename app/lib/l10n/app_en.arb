@@ -1994,5 +1994,47 @@
   "stKtSave": "Save",
   "@stKtSave": {
     "description": "Dialog confirm button for the log settings."
+  },
+  "stCryptoBench": "Cryptography benchmark",
+  "@stCryptoBench": {
+    "description": "Developer-mode row: opens the screen that times every primitive on this device."
+  },
+  "stCryptoBenchHelp": "Time every primitive Z uses, on this device",
+  "@stCryptoBenchHelp": {
+    "description": "Subtitle under the benchmark row."
+  },
+  "cbRunning": "Measuring… {n} done",
+  "@cbRunning": {
+    "description": "Progress line while the benchmark runs; n is how many rows have landed.",
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "cbDone": "Done — {n} measurements",
+  "@cbDone": {
+    "description": "Progress line once the benchmark has finished.",
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "cbNote": "Every line is pure Dart: the app wires in no platform implementation. The Argon2id line is what a passphrase unlock costs here. Medians; the phone's clock and thermal state move them.",
+  "@cbNote": {
+    "description": "Explanatory note above the results."
+  },
+  "cbCopy": "Copy as table",
+  "@cbCopy": {
+    "description": "Button: copies the results as a Markdown table."
+  },
+  "cbCopied": "Copied",
+  "@cbCopied": {
+    "description": "Snackbar after copying."
+  },
+  "cbAgain": "Run again",
+  "@cbAgain": {
+    "description": "Button: reruns the benchmark."
   }
 }

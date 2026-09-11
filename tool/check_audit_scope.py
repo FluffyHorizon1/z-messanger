@@ -74,6 +74,12 @@ UNCITED_OK = {
         "that delivery receipts go out once per burst rather than once per "
         "message — a cost property (docs/PERFORMANCE.md). That a receipt is "
         "end-to-end encrypted and names only mids is C4's territory",
+    "protocol/test/bench_test.dart":
+        "that the cryptography benchmark keeps producing the rows "
+        "docs/PERFORMANCE.md's 'Cryptography on the device' table names, at "
+        "every scale, in the table form it is quoted in — a measurement's "
+        "harness, not a security claim; the primitives it times are claimed "
+        "by their own rows",
     "app/test/receive_bench_test.dart":
         "a measurement, not an assertion about behaviour — it times the "
         "inbound path and attributes it (docs/PERFORMANCE.md, 'Receive "

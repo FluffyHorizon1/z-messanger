@@ -1535,4 +1535,34 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get stKtSave => 'Guardar';
+
+  @override
+  String get stCryptoBench => 'Prueba de rendimiento criptográfico';
+
+  @override
+  String get stCryptoBenchHelp =>
+      'Mide cada primitiva que Z usa, en este dispositivo';
+
+  @override
+  String cbRunning(int n) {
+    return 'Midiendo… $n listas';
+  }
+
+  @override
+  String cbDone(int n) {
+    return 'Hecho — $n mediciones';
+  }
+
+  @override
+  String get cbNote =>
+      'Cada línea es Dart puro: la app no usa ninguna implementación de la plataforma. La línea de Argon2id es lo que cuesta aquí desbloquear con contraseña. Medianas; el reloj y la temperatura del teléfono las mueven.';
+
+  @override
+  String get cbCopy => 'Copiar como tabla';
+
+  @override
+  String get cbCopied => 'Copiado';
+
+  @override
+  String get cbAgain => 'Repetir';
 }
