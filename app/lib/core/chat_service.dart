@@ -3538,6 +3538,12 @@ class ChatService extends ChangeNotifier {
         'my_devlist_version', '${(await _myDevlistVersion()) + 1}',
         sensitive: false);
     _forgetOwnListClaim(); // after the writes; see _recordOwnList
+    // Whatever was still queued for that device — mirrors, history — is
+    // not delivered to it. Removing it is the statement that it is no longer
+    // mine; the outbox being durable must not turn a link that was down at
+    // the time into a delivery after the fact.
+    await vault.db.delete('outbox',
+        where: 'rid = ?', whereArgs: [await cert.routingId()]);
     await _initSync();
     await broadcastMyDeviceList();
     notifyListeners();
@@ -4965,6 +4971,12 @@ class ChatService extends ChangeNotifier {
       final fp = await list.fingerprint();
       var queued = false;
       for (final r in removed) {
+        // Nothing queued for a dropped device is delivered to it: the list
+        // that dropped it is the account's statement that it is no longer
+        // theirs, and a durable outbox must not deliver after the fact what
+        // a down link happened to hold. The notice below is the one thing
+        // it still gets.
+        await vault.db.delete('outbox', where: 'rid = ?', whereArgs: [r]);
         try {
           final note = InnerMessage.deviceListRemoved(newMessageId(), _now(),
               acct: list.accountEdPub, v: list.version, h: fp);

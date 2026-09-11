@@ -1006,3 +1006,16 @@ direction; the phases, their order and both ordering arguments stand.
    which now returns quietly like `flushOutbox`. The receive side taught
    this section to measure the thing listed as unmeasured first; this was
    the last such thing, and it was the biggest number left.
+
+31. **A durable queue needs a rule for a device that stops existing.** Once
+   the extra-device copy went through the outbox (rev. 28), a message
+   queued for a contact's laptop while the link was down would have been
+   delivered after that laptop was dropped from the contact's list — the
+   direct send it replaced had simply lost it, which was accidentally the
+   safer behaviour for a *revoked* device. Now a list that drops a device
+   discards everything queued for it before queuing the removal notice,
+   and removing one of my own devices discards the self-sync traffic queued
+   for it (`extras_fanout_test.dart` criteria 5 and 6, both fired without
+   the deletes; PROTOCOL §3.6). The lesson is the general one: making a
+   path durable changes what "late" means, and every late case has to be
+   read again.

@@ -435,7 +435,12 @@ and the next launch drains them.
 Named so this document does not read as more complete than it is:
 
 * **Real hardware.** Everything here is a desktop test VM. Phone numbers,
-  especially for the asymmetric operations, will differ.
+  especially for the asymmetric operations, will differ — and all of the
+  crypto runs in Dart (`cryptography` without `cryptography_flutter`), so on
+  a phone Ed25519, X25519 and ChaCha20-Poly1305 are software where the
+  platform has native implementations. What that costs, and whether the
+  dependency is worth its supply-chain surface, is unmeasured and a
+  decision, in that order.
 * ~~**Multiple devices per member.** The fan-out to a contact's extra devices
   happens in `_fanToContactExtras`, which is `unawaited` — it does not block
   the send, and it is not in these timings.~~ Measured on 2026-09-11, and

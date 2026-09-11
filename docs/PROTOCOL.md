@@ -257,7 +257,11 @@ message of kind `dlrm` (§6.2) over the still‑known pairwise session before
 forgetting it. A rogue cannot suppress it: it is sent by the contact, not the
 account. It SHOULD be queued with the same durability as a message — the
 reference client's outbox — since it is sent exactly once and a client whose
-link happens to be down at that moment would otherwise never send it.
+link happens to be down at that moment would otherwise never send it. And
+whatever else was queued for the dropped device MUST be discarded at the same
+moment: a durable queue must not deliver, after the list said otherwise, what
+a down link happened to be holding. The same applies to a root removing one
+of its own devices and the self‑sync traffic queued for it.
 
 **Root discipline.** A root‑holding device MUST self‑sync every new signed
 list to the account's own other devices (§9, envelope `dir:"acct"`) before or

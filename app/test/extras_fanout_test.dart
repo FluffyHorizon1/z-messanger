@@ -29,7 +29,12 @@
 //   3. the removal notice to a device the contact's list dropped is an
 //      outbox row with the link down, not a send that never happened;
 //   4. the post-quantum key offer answered to a contact's extra device is an
-//      outbox row too.
+//      outbox row too;
+//   5. what was queued for a device the contact's list then dropped is not
+//      delivered to it — the durable outbox must not turn a down link into
+//      a delivery after the fact; only the removal notice remains;
+//   6. the same for my own devices: removing one drops what was queued for
+//      it on the self-sync channel.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -258,5 +263,44 @@ void main() {
     expect(rows.where((r) => r['rid'] == laptopRid).length, 1,
         reason: 'a offers its ML-KEM key to the laptop through the outbox — '
             'rows: ${rows.map((r) => r['rid'] == laptopRid ? 'laptop' : r['rid'] == b.myRid ? 'phone' : r['rid']).toList()}');
+  });
+
+  test('a dropped device does not get what was queued for it', () async {
+    final (a, b, laptopRid, _, cert) = await twoDeviceContactFull();
+    await a.sendText(b.myRid, 'queued while the link was down');
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect((await outbox(a)).where((r) => r['rid'] == laptopRid), hasLength(1),
+        reason: "the laptop's copy is waiting for the link");
+
+    // b drops the laptop; a's queue for it is emptied and the notice queued.
+    await b.removeMyDevice(cert);
+    await carry(b, a);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    final toLaptop =
+        (await outbox(a)).where((r) => r['rid'] == laptopRid).toList();
+    expect(toLaptop, hasLength(1), reason: 'the notice, and only the notice');
+    // It is the notice, not the message: opened by the laptop it would say
+    // so, but the cheaper check is that the message row is gone — the notice
+    // was queued AFTER the delete, so it is the newer row.
+    final msgRow = (await outbox(a)).where((r) =>
+        r['rid'] == laptopRid &&
+        (r['created_ms'] as int) < (toLaptop.single['created_ms'] as int));
+    expect(msgRow, isEmpty);
+  });
+
+  test('removing my own device drops what was queued for it', () async {
+    final (_, b, laptopRid, _, cert) = await twoDeviceContactFull();
+    // b has a laptop and its link is down: a message b sends is mirrored to
+    // the laptop through the outbox and waits there.
+    final a2 = await makeClient('a2');
+    await b.addContactFromCode(await a2.myContactCode());
+    await b.sendText(a2.myRid, 'mirrored to my laptop');
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect((await outbox(b)).where((r) => r['rid'] == laptopRid), isNotEmpty,
+        reason: 'the mirror waits for the link');
+
+    await b.removeMyDevice(cert);
+    expect((await outbox(b)).where((r) => r['rid'] == laptopRid), isEmpty,
+        reason: 'a device I removed gets nothing I had queued for it');
   });
 }
