@@ -462,6 +462,35 @@ message. For a self-hoster: one small relay carries thousands of messages a
 second with a median under 3 ms; the abuse limits (`load.test.js`), not
 throughput, are what size a deployment.
 
+## The transparency log (2026-09-11)
+
+`kt/bench/proofs.js` (`npm run bench` in `kt/`): a log with one entry per
+label plus a second entry for a tenth of them, and for each population the
+cost of a publish, a lookup, and what a phone downloads to verify one
+contact. In-process, one machine, so the log's own cost and not the
+network's:
+
+| labels | entries | publish | lookup | map siblings (avg / max) | inclusion path | lookup response |
+|---:|---:|---:|---:|---|---:|---:|
+| 1 000 | 1 101 | 1.1 ms | 0.06 ms | 10 / 13 | 10 | 3.7 KB |
+| 10 000 | 11 001 | 1.3 ms | 0.07 ms | 14 / 16 | 12 | 4.0 KB |
+| 100 000 | 110 001 | 1.4 ms | 0.11 ms | 17 / 19 | 16 | 4.3 KB |
+
+Of each response, 2.2 KB is the sealed device list (a four-device classical
+list, base64); the proofs are the rest. A publish is dominated by two
+256-hash chains in the map (Node's per-call SHA-256 overhead, ~2 µs each)
+and one Ed25519 verification; a lookup by the map walk. A new head after a
+publish costs 0.1 ms at every size. The first version of the map made that
+last figure 104 ms at ten thousand labels (roadmap revision 33); the bench
+is what found it.
+
+On the client (`protocol/tool/kt_verify_bench.dart`, the VM, pure Dart),
+verifying one lookup — parse, head signature, map proof, inclusion — is
+**4.4 ms**, of which the Ed25519 verification is 3.5 and the map proof's
+256 SHA-256 computations 0.6; a phone will differ, as everywhere in this
+document. A check of four hundred contacts is four hundred HTTPS requests
+every six hours, and that, not the arithmetic, is its cost.
+
 ## Not measured
 
 Named so this document does not read as more complete than it is:

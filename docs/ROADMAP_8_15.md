@@ -142,27 +142,41 @@ Gated on a durable-infrastructure operator, since a Merkle log is exactly the
 persistent state the relay refuses to hold — so it ships as a **separate
 service**, not as relay features.
 
-- **11.1 log service** — prefix tree mapping identity → key history anchored in
-  an append-only log tree, signed tree heads, signing key in an HSM/TPM.
-  Deployed independently; the relay stays RAM-only.
-- **11.2 client verification** — every key used for encryption checked by
-  inclusion proof against the current head and consistency proof against the
-  last head seen. **A proof that fails is a hard fail**: no send, not a
-  warning banner. A log that is merely *unreachable* is not the same thing and
-  must not be treated as one — hard-failing on unavailability turns a network
-  block into a kill switch, which is precisely the adversary this is for. On
-  unreachable: proceed against the last known-good head, in a visibly degraded
-  state, and refuse only on mismatch or on a head that cannot be reconciled.
-- **11.3 mirrored heads** — cross-published to a public repo and at least one
-  independent witness, so a forked view is detectable.
-- **11.4 self-monitoring** — background audit of your own log entries ("am I
-  mapped to keys I did not publish?"), with an in-app alert path.
-- **11.5 device authorisation migration** — device-list distribution moves out
-  of 10.4's in-band mechanism into the log, gaining third-party auditability.
-  In-band remains as a fallback for one release.
+- **11.1 log service** ✅ — an RFC 9162 log tree plus a depth-256 sparse map
+  under one signed head (`kt/`, PROTOCOL §19, `adr/0006`), publish
+  authenticated by the account key, an append-only store replayed and
+  re-verified on start, vectors re-derived by a second implementation. The
+  signing key is a file the operator protects (`KT_SEED_FILE`); an HSM is a
+  deployment choice the service does not preclude and does not yet have.
+  Deployed independently; the relay stays RAM-only. **Not yet deployed.**
+- **11.2 client verification** ✅ — every contact's list checked by map proof
+  and inclusion proof against a head that must extend the last one seen. A
+  proof that fails, or a head that does not extend, is a **log fault**: nothing
+  new is trusted, nothing already verified is lost. A conflict between the
+  log and a contact's devices holds what the user says to them. Unreachable
+  is not a fault: in-band verification continues, visibly degraded after a
+  day (`key_transparency_test.dart`).
+- **11.3 mirrored heads** ✅ — `kt/tools/mirror.js` keeps a full copy,
+  refuses any head that does not extend the one it verified (a fork, a
+  shrunk log, entries that do not hash to the head), and co-signs the heads
+  it verified into a witness record the client checks the log against. The
+  "public repo" is any static host for that record; the independent witness
+  is a person, and is one of G3's conditions.
+- **11.4 self-monitoring** ✅ — each check reads the account's own history
+  and alerts on an entry this device neither signed nor learned by self-sync
+  (`key_transparency_test.dart`, the owner's alert).
+- **11.5 device authorisation migration** ✅ *as decided in `adr/0006`, not as
+  written here* — in-band delivery stays primary; the log is a second source
+  of the same facts: a list the log holds and a contact never received is
+  installed from the log, every root publishes its baseline at its first check
+  after upgrading, and the hold on unconfirmed devices begins with an
+  account's own first publish (revision 34).
 
-**Exit:** a simulated malicious key substitution blocks the send in the client;
-a diverging mirror causes refusal; the self-audit alert fires end to end.
+**Exit:** ✅ a simulated malicious key substitution blocks the send in the
+client (the conflict test); a diverging mirror causes refusal (the mirror's
+fork tests, and the client's log-fault test); the self-audit alert fires end
+to end (the owner's alert). **What the phase does not close is G3 itself:
+the log is not deployed.** `adr/0006` says what "live" means.
 
 ---
 
@@ -1033,3 +1047,30 @@ direction; the phases, their order and both ordering arguments stand.
    any shape. The tail follows the socket count, not the message rate.
    PERFORMANCE.md has the table; SELF_HOSTING.md says what it means for
    sizing. The "not measured" list is now real hardware and nothing else.
+
+33. **The transparency log's first map was correct and could not have run.**
+   `kt/lib/smt.js` v1 kept the labels sorted and memoised internal nodes by
+   range, clearing the memo on every set — right in every test, and a head
+   after a publish cost O(N) hashes: 104 ms at ten thousand labels, found
+   by `kt/bench/proofs.js` on its first run, not by the eight tests that
+   passed. The compact tree replaced it (one record per single-label
+   subtree, log N internal nodes on a set, the root free); the same bench
+   also found the log tree's memo growing as N log N by remembering ragged
+   ranges no later proof asks for. A test says a structure is correct; a
+   bench says whether it can be used. Both files say so in their headers.
+
+34. **11.5 was rewritten before it was built, and the ADR says why.** The
+   roadmap's text moved device-list distribution *into* the log with in-band
+   as a one-release fallback. Built that way, a log outage would stop
+   messaging — the kill switch 11.2 forbids in its own words. So in-band
+   stays primary and the log is the check on it and a source when it is
+   ahead (`adr/0006`, "Considered and rejected"). The related rule that
+   took the most deciding: an account with *no* entry never has its devices
+   held, because an older client and an attacker who never publishes look
+   the same, and holding would cut every multi-device contact on an older
+   build off after a day. The protection begins with the account's own
+   first publish, which every root makes at its first check after
+   upgrading — the window closes as clients update, without a flag day.
+   The ADR's table originally read otherwise in one parenthesis; the client
+   and the table now agree, and `key_transparency_test.dart` pins the
+   unlogged case.

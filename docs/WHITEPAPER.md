@@ -200,8 +200,29 @@ ratchet where whoever dropped the envelope cannot strip it, that it *sent* one;
 only a claim with nothing behind it is a problem, and even then it is asked
 about before anyone is told.
 
+**The transparency log** (`adr/0006`, PROTOCOL.md §19). Gossip (§5) makes a
+rogue device visible to the parties who talk to each other; a split view that
+never crosses a conversation the owner is part of is what it cannot see. So
+every device list an account publishes goes to a public, append-only log —
+an RFC 9162 Merkle tree with a map that pins each account's latest entry,
+under one signed head — and every client checks each contact's list against
+it and its own label's history for entries it never issued. What a client
+does with each answer is a table, not a judgement: a list the log confirms
+is confirmed; one the log does not know is an older client; one newer than
+the log's is a source (the client installs it); one the log has not
+confirmed after a day stops delivering to the devices only that list added;
+the same version with a different fingerprint holds messages. The log cannot
+make a client trust anything new — a head that does not extend the last one
+is a fault — and cannot stop what was already verified, so its operator is
+not a kill switch. Values are sealed under a key derived from the account's
+public key: contacts and the operator can read a list; a mirror cannot. The
+service, a mirror that refuses a fork, two verifiers with no shared code and
+the client's six end-to-end states are built; the log itself is not yet
+live (`GA_CHECKLIST.md`, G3).
+
 **How to check it.** `app/test/verification_ux_test.dart` asserts the words on
-the screen, not just the state behind them.
+the screen, not just the state behind them; `app/test/key_transparency_test.dart`
+drives ADR 0006's table against the real log service, one row per test.
 
 ## 7. Claim: the specification is implementable, and the implementation matches it
 
@@ -300,6 +321,10 @@ assume it does is where harm happens:
   machines at a stated checkout path, measured in CI — but no one outside the
   project has checked, and a reproducibility claim verified only by its author
   is a claim about intentions.
+* **Not yet a live transparency log.** The service and the client exist
+  (§6); until the log runs with an independent witness, a device list is
+  checked by your contacts' devices alone. This bullet is removed when
+  `GA_CHECKLIST.md` G3 is ticked.
 
 The full list, with severities and status, is the residual-risk register in
 `docs/THREAT_MODEL.md`.

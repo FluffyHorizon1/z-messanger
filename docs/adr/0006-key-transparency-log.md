@@ -152,10 +152,23 @@ what each costs the user:
 | **unlogged** | absence proof verifies | as before the log: gossip only. A quiet note on the contact screen ("not in the transparency log"); a contact on an older client, or one that has never been online since upgrading |
 | **confirmed** | `v_log = v_ib`, `fp_log = fp_ib` | nothing to show |
 | **log ahead** | `v_log > v_ib` | fetch the entry, open the value, verify the list (§3.4), require its fingerprint to equal `fp_log`, install it — the log is a source (11.5). A value that does not open or verify is a **conflict** |
-| **unconfirmed** | `v_ib > v_log` (or unlogged with `v_ib > 1`) for longer than the **grace period, 24 h** from receipt of the in‑band list | devices that appear **only** in the unconfirmed list stop receiving messages; devices it removed stay removed; the banner says which list is unconfirmed. This is T2 made to cost the attacker something: a rogue device enrolled by a list that never reaches the log goes quiet after a day |
+| **unconfirmed** | `v_ib > v_log` for longer than the **grace period, 24 h** from receipt of the in‑band list | devices that appear **only** in the unconfirmed list stop receiving messages; devices it removed stay removed; the banner says which list is unconfirmed. This is T2 made to cost the attacker something: a rogue device enrolled by a list that never reaches the log goes quiet after a day |
 | **conflict** | same `v`, different `fp`; a log entry whose list does not verify; a log history containing a version the contact's own devices claimed with a different fingerprint | **sends are held**, with the reason, until the next check agrees or the user chooses to send anyway. The hard fail 0001 asked for, applied to the one case that is unambiguously either an attack on that account or a log serving lies about it |
 | **log fault** | a head that does not verify, or does not extend the held one, or disagrees with the witness, or a proof under a good head that fails | trust freezes at the last good head: nothing new is confirmed, sends to already‑confirmed device sets continue, and a persistent alert names the fault with the two heads for reporting. The log cannot make the client trust anything new, and cannot stop what was already verified — it is not a kill switch |
 | **unreachable** | no head within 24 h | sends continue on in‑band verification exactly as before the log; a banner after 24 h says the log has not been reachable since when. The grace period runs regardless: a contact's list that cannot be confirmed for a day is unconfirmed, whether because the account never published or because the log could not be asked — the client cannot tell those apart, and an attacker who could block the log for one victim must not be able to keep a rogue device alive by doing so |
+
+**Why unlogged never holds.** An account with no entry at all could be an
+older client or an attacker who enrolled a device and never published. The
+two cannot be told apart, and holding would cut every multi‑device contact
+still on an older build off from their second device after a day — an alarm
+on ordinary use, which is how alarms stop being read. The protection begins
+with the account's *own* first publish: from then on a list its contacts
+receive without the log seeing it is the unconfirmed case, and the rogue
+device goes quiet. Every root publishes its baseline at its first check
+after upgrading (11.5), so the window closes as clients update, without a
+flag day. A client that wanted to close it by force would have exactly one
+lever — hold unlogged multi‑device accounts — and the day to pull it is the
+day the last older build is gone, not the first day the log exists.
 
 **Self‑monitoring.** Every check also fetches the client's own label's
 history. Any entry whose `(v, fp)` this device neither published nor
@@ -237,8 +250,14 @@ about — a device set that could not be confirmed — and nothing else.
   a rogue device enrolled by an unpublished list has the grace period before
   it goes quiet.
 * `GA_CHECKLIST.md` G3 changes from "needs a decision" to the four‑line
-  definition above, and `tool/check_ga.py` checks that the client's pin is
-  not a placeholder before the row may read ✅.
+  definition above, and `tool/check_ga.py` checks that the client's pin
+  (`defaultKtLogPub` in `app/lib/core/key_transparency.dart`) is not empty
+  before the row may read ✅.
+* 11.5 as the roadmap wrote it — distribution *moving into* the log with
+  in‑band as a one‑release fallback — is not what was built, and on purpose:
+  a log that lists have to pass through is a log whose outage stops
+  messaging, the kill switch 11.2 itself forbids. In‑band delivery stays
+  primary; the log is the check on it and a source when it is ahead.
 * `THREAT_MODEL.md` T1–T3 gain the log as a second detector; T4 and T5 are
   unchanged (a reset is a new label; an exchange the attacker controls is
   out of scope for any log).

@@ -71,6 +71,21 @@ If your contacts start seeing a device you did not add, Z tells them, and it
 tells you. That alert is the whole point of the design, so please do not
 dismiss it as noise.
 
+Where a public transparency log is configured (Settings › Transparency log
+shows whether one is), Z also records every device list your account
+publishes in it, and checks your contacts' lists against it. A contact's
+screen may then say one of a few things. *Confirmed* means the list their
+devices sent you is the one in the log. *Not in the log* means their account
+has never published — an older app, most likely — and nothing changes.
+*Not in the log yet* means a newer list reached you than the log has; if it
+stays that way for a day, the devices only that list added stop getting your
+messages until it appears, and the chat says so. A **disagreement** between
+the log and their devices holds your messages to them until it resolves or
+you choose to send anyway; it is rare and worth a phone call. If the log
+itself misbehaves — shows two different histories — Z says so at the top of
+the chat list and confirms nothing new until you reset it in Settings; your
+conversations continue on the checks that existed before the log.
+
 ## Groups
 
 A group has no shared key. Every message is encrypted separately for every

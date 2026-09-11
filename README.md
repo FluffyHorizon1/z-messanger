@@ -30,9 +30,11 @@ carries a build for each, with a `SHA256SUMS.txt` you can check against
   hybrid ML‑KEM‑768 layer with periodic re‑keying so recorded traffic stays
   closed to a future quantum computer. Identities carry an ML‑DSA‑65 half.
 - **Device lists you can check.** Linked devices are signed by your account
-  key, and your contacts cross‑check every list they are handed inside the
-  encrypted channel, so a device quietly added to an account shows up on
-  the screens of the people it talks to.
+  key, your contacts cross‑check every list they are handed inside the
+  encrypted channel, and the app checks each list against a public
+  transparency log when one is configured — so a device quietly added to an
+  account shows up on the screens of the people it talks to, and cannot stay
+  hidden by being shown to only some of them.
 - **Everything on the device is encrypted.** An on‑device vault with every
   sensitive cell sealed under a key in the OS keystore, an optional
   passphrase (Argon2id), biometric app lock, and encrypted backups you can

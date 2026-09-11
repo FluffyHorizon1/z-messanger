@@ -34,7 +34,9 @@ is encrypted, not merely that the file sits in an encrypted directory.
 | A refused post-quantum key, once one has been refused | `contacts.pq_mismatch` | Same | Until the contact is deleted — deliberately durable |
 | Ratchet state (chain keys) | `conversations.enc_state`, sealed | Same | Rolling; old keys are dropped as chains advance |
 | Message keys held for out-of-order arrivals (cap 1 536) | `conversations.enc_skipped`, sealed | Same | Until the late message arrives, or the cap evicts the oldest |
-| Contacts' device lists and their post-quantum signatures | `kv` keys `cdev_*`, `cdev_pq_*` | Same | Until replaced by a newer version |
+| Contacts' device lists and their post-quantum signatures, and when each list arrived | `kv` keys `cdev_*`, `cdev_pq_*`, `cdev_at_*` | Same | Until replaced by a newer version |
+| The transparency log's last accepted head, any fault, and per contact what the log says (state, the log's version and fingerprint, the confirmed device set, any held devices) | `kv` keys `kt_*`, `ktc_*` | Same | Until the next check replaces it, or the log's history is reset in Settings |
+| Your own published device lists (version → fingerprint) and a publish waiting for the log | `kv` keys `kt_own_known`, `kt_pub_pending` | Same | Life of the install; the pending publish until the log acknowledges it |
 | Undelivered outbound messages | `outbox`, sealed payloads | Same | Until acknowledged by the relay |
 | Group messages still to be encrypted for each member | `group_fanout`, sealed payload | Same | Until every member's copy is queued — survives a restart so a half-finished fan-out resumes |
 | Group membership and metadata | `kv` key `groups`, sealed | Same | Until you leave or delete the group |
@@ -73,9 +75,12 @@ is the intended behaviour rather than a limitation.
 | **Apple (APNs)** | The equivalent of FCM, when the iOS client ships | Same | Same |
 | **The relay host** | Whatever the relay's operator sees, above, plus IP addresses at the TLS layer | Someone has to run the relay | Yes — self-host (`SELF_HOSTING.md`) |
 | **Sigstore / Rekor** | The public transparency-log record of each release attestation. No user data | Provenance is only meaningful if it is public | No, and it should not be — publicity is the point |
+| **The transparency log's operator** (`kt.zmessengers.com`, once live) | At publish: your account's public key, the version and fingerprint of your device list, and the list itself sealed under a key only your contacts can derive. At lookup: which labels this device asks about — its contacts' — and the IP address at the TLS layer. A mirror or witness sees labels and ciphertext only | The log is how a device list handed to one contact and not another becomes visible (`adr/0006`); the operator has to see a publish to accept it | Yes — point Settings › Transparency log at a self-hosted log, or at none (in-band verification only, as before the log) |
 
-The app makes no other network calls. It contacts the relay you configure and,
-if push is on, the platform push service. There is no CDN, no fonts fetched at
+The app makes no other network calls. It contacts the relay you configure,
+the transparency log you configure (HTTPS, a few requests per contact every
+six hours, none when no log is set), and, if push is on, the platform push
+service. There is no CDN, no fonts fetched at
 runtime, no analytics SDK, no advertising identifier, and — since 14.1 — no
 dependency-metadata blob in the APK either.
 
@@ -116,9 +121,9 @@ Named here so this document does not silently go stale as the roadmap moves:
   `adr/0005` proposes the answer — direct after accept by default, nothing
   before accept, relay one switch away — with a table of who sees what on
   each path; the rows land here when it is accepted.
-* **Key transparency (phase 11, `adr/0001`)** would add a log service holding
-  public key material and inclusion proofs — no message content, but a new
-  third party with a new view.
+* **The transparency log is built and not yet live** (`adr/0006`). Its row
+  above describes the view it will have; until it runs, the client is inert
+  and no request is made.
 
 ---
 
