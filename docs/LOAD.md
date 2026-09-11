@@ -14,7 +14,7 @@ drives and the representative numbers from a local run.
 | Concurrent swarm | 60 clients connect + authenticate at once | all reach `ready`; `/health.connections ≥ 60`; RSS growth bounded |
 | Oversize envelope | a payload past `MAX_ENVELOPE_BYTES` (1 MB) | rejected with `too_large`; **the socket keeps working** (a normal send right after is delivered) |
 | Oversize raw frame | a 2 MB raw WebSocket frame (past `maxPayload`) | only the offender's socket is closed; a bystander still receives; `/health` still 200 |
-| Message flood | 600 sends fired instantly from one client | excess is `rate_limited` (token bucket: 80/s, burst 240); the connection is **not** killed |
+| Message flood | 600 sends fired instantly from one client | excess is `rate_limited` (token bucket: 80/s, burst 240; acknowledgements are exempt, so a device draining a backlog is never rate-limited out of emptying it); the connection is **not** killed |
 | Reconnect storm | 100 connect → auth → close cycles | relay stays up; `/health` 200; RSS growth bounded |
 | Queue overflow | 180 envelopes to an **offline** recipient (cap lowered to 100 for the test) | the first 100 are queued and stay queued; the other 80 are each refused with `queue_full`; memory does not grow with the flood, and the flood erases nothing |
 

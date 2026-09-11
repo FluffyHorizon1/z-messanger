@@ -55,7 +55,7 @@ material.
 
 | What | Where | Who can read it | How long |
 |---|---|---|---|
-| Queued ciphertext envelopes, and per mailbox how many and how many bytes (the caps, §12.4) | RAM — or a RAM‑only Redis the instances share, where the byte count is a number beside each list | The operator sees opaque bytes and their padded size — not content, not sender | Until delivered, until expiry, or until the process (or the store) restarts — never evicted to make room |
+| Queued ciphertext envelopes, and per mailbox how many and how many bytes (the caps, §12.4) | RAM — or a RAM‑only Redis the instances share: per mailbox a list of entry keys, a hash of the entries, and their byte count | The operator sees opaque bytes and their padded size — not content, not sender | Until delivered, until expiry, or until the process (or the store) restarts — never evicted to make room |
 | Which routing ids are connected, and the network address of every socket — the authenticated mailbox socket and the anonymous sender socket a device also holds (§12.1) | RAM | Operator | While connected |
 | That a sealed envelope arrived on an anonymous socket — never which identity sent it | RAM, transiently | Operator; nothing ties the socket to a routing id but its address (R21) | Duration of the send |
 | Which routing id an envelope is addressed to, and when | RAM, transiently | Operator | Duration of delivery |

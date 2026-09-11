@@ -166,9 +166,15 @@ own hardware.
 
 For redundancy or higher throughput, run several relay instances behind one
 load balancer. They coordinate through a **RAM‑only Redis** (`REDIS_URL`):
-presence (`presence:{rid}`) and each recipient's pending queue (`q:{rid}`) live
-in Redis, and instances route to each other over Redis pub/sub, so a client can
-land on **any** instance and still reach anyone. Redis holds only the same
+presence (`presence:{rid}`) and each recipient's pending queue (`q:{rid}`, a
+list of entry keys in arrival order; `qe:{rid}`, the entries; `qb:{rid}`,
+their bytes) live in Redis, and instances route to each other over Redis
+pub/sub, so a client can land on **any** instance and still reach anyone.
+A mailbox drains in one list read, one hash read and one small script per
+acknowledgement — five thousand short envelopes in under half a second
+(`docs/PERFORMANCE.md`, "Draining a mailbox"); entries queued by a relay
+older than 2.7.9 are read and removed the way that relay left them, until
+they expire. Redis holds only the same
 opaque ciphertext — run it with no persistence so nothing touches disk.
 
 The repo ships this ready to run:

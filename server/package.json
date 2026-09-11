@@ -12,7 +12,8 @@
     "test": "node --test test/*.test.js",
     "bench:latency": "node bench/latency.js",
     "bench:patterns": "node bench/patterns.js",
-    "bench:crypto": "node bench/native_crypto.js"
+    "bench:crypto": "node bench/native_crypto.js",
+    "bench:drain": "node bench/drain.js"
   },
   "dependencies": {
     "ioredis": "^5.4.1",

@@ -1335,3 +1335,30 @@ direction; the phases, their order and both ordering arguments stand.
    relay's contract — every operation the relay makes at that limit is
    either allowed or refused, and which is a measurement, not a
    recollection.**
+
+42. **Draining a mailbox on the production path was quadratic, and the
+   bench that showed it found a second fault in the way.** In Redis mode
+   every acknowledgement read the recipient's whole mailbox back from the
+   store to find the one entry to remove, so a backlog of two thousand
+   short texts cost 38 seconds and four gigabytes of reads to empty
+   (`server/bench/drain.js`; PERFORMANCE.md, "Draining a mailbox"). The
+   bench hung at five hundred before it could show that, and the reason
+   was the second fault: acknowledgements counted against the per-
+   connection rate limit, so a device acknowledging a backlog as fast as
+   it persisted it had everything past the burst of 240 dropped — the
+   entries stayed queued, and a mailbox of more than 240 could not be
+   emptied in one connection. The queue is now a list of keys with the
+   entries in a hash beside it: a flush is two reads, an acknowledgement
+   one read and one small script, five thousand envelopes empty in under
+   half a second, and reads are twice the mailbox instead of hundreds of
+   times it. Acknowledgements are exempt from the rate limit, which they
+   should always have been — one costs the relay almost nothing and frees
+   memory. A retried send with the same id is now stored once and
+   acknowledged, which the layout made free. Entries a running store still
+   holds from the older relay are read and removed the way it left them
+   until they expire (`drain.test.js`, all three cases). Two rules. **A
+   per-operation cost on the drain path is paid once per envelope in the
+   backlog, so measure it against a backlog, not a message.** And the
+   bench's own artefact — one sender crossing the burst — was the same
+   fault seen from the other side; a benchmark that will not finish is a
+   finding before it is a bug in the benchmark.

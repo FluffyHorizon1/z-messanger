@@ -501,6 +501,45 @@ of what one relay delivered in the table above, so the relay could carry it;
 the phones' batteries and the operator's patience are the reasons it is not
 sent.
 
+## Draining a mailbox (2026-09-11)
+
+`server/bench/drain.js` (`npm run bench:drain`): N envelopes queued for an
+offline recipient in Redis mode — the production path since 2.7.3 — then
+the recipient connects, receives them in one flush and acknowledges each
+as it lands. What the relay asks of the store per acknowledgement is paid N
+times, and that is what the table is about. One instance, loopback, the
+load generator sharing the event loop; `MB read` is the store's own count
+of bytes it sent the relay.
+
+| mailbox | 2.7.8: until empty | MB read | 2.7.9: until empty | MB read |
+|---|---:|---:|---:|---:|
+| 200 × 1 KB | 227 ms | 42.7 (169× the mailbox) | 40 ms | 0.4 (2×) |
+| 500 × 1 KB | 1.85 s | 266 (422×) | 79 ms | 1.1 (2×) |
+| 1 000 × 1 KB | 10.2 s | 1 064 (843×) | — | — |
+| 2 000 × 1 KB | 38.3 s | 4 257 (1 686×) | 235 ms | 4.3 (2×) |
+| 5 000 × 1 KB | — | — | 424 ms | 10.7 (2×) |
+| 500 × 64 KB | — | — | 1.39 s | 62.6 (2×) |
+
+Two things were wrong before, and the bench found the second while looking
+for the first. Every acknowledgement read the *whole* mailbox back from
+the store to find the one entry to remove (`LRANGE`, then a scan), so a
+drain read the mailbox once per envelope — quadratic in the backlog, four
+gigabytes for two thousand short texts. And acknowledgements counted
+against the per-connection rate limit (80 a second, burst 240), so a device
+acknowledging a backlog as fast as it persisted it had everything past the
+burst dropped: those entries stayed queued, and a mailbox of more than 240
+could not be emptied in one connection at all — the 2.7.8 rows past 200
+were measured with the limit lifted, since with it they never finish.
+
+Now the list holds keys and a hash beside it holds the entries
+(`server.js`, the Redis coordinator's header): a flush is one list read
+and one hash read, an acknowledgement one hash read and one small script,
+and acknowledgements are exempt from the rate limit (PROTOCOL §12.4). The
+reads are twice the mailbox — the flush reads each entry once and the
+acknowledgement reads it once more to check the sender — and the time is
+linear. Entries queued by the older relay are read and removed the way it
+left them, until they expire (`drain.test.js`).
+
 ## The transparency log (2026-09-11)
 
 `kt/bench/proofs.js` (`npm run bench` in `kt/`): a log with one entry per

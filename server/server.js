@@ -363,7 +363,17 @@ class MemoryCoordinator {
 // Coordinator: REDIS (horizontal scale across many instances)
 //
 // Presence:  presence:{rid} = instanceId (EX 60, refreshed by heartbeat)
-// Queue:     q:{rid} = Redis LIST of opaque entries, TTL = QUEUE_TTL_HOURS
+// Queue:     q:{rid}  = Redis LIST of entry keys ("m:<id>" for an envelope,
+//            "r:<id>" for a receipt), in arrival order;
+//            qe:{rid} = HASH entry key -> the opaque entry itself.
+//            Both TTL = QUEUE_TTL_HOURS. An acknowledgement is then one HGET
+//            and one small script rather than a read of the whole mailbox:
+//            until 2.7.9 the list held the entries themselves and every ack
+//            read all of them back to find one (bench/drain.js — a mailbox
+//            of two hundred took 170 times its size in reads to drain, and
+//            one of five hundred did not finish). Elements queued by that
+//            relay are still in some stores: an element that begins with
+//            "{" is such an entry and is read and removed the old way.
 // Routing:   each instance subscribes to z:inst:{instanceId}; to deliver to a
 //            socket on another instance we publish {op:'deliver',...} to its
 //            channel. A new login elsewhere publishes {op:'kick'} so the old
@@ -392,43 +402,69 @@ class MemoryCoordinator {
 // Redis will not stop a script that has already written — so the flag
 // states a property the relay was already leaning on. Redis 7 or Valkey.
 //
-// KEYS[1] = q:{rid}, KEYS[2] = qb:{rid}; ARGV = entry JSON, its size, the
-// count cap, the byte cap, the TTL in seconds. Returns 1 if appended, 0 if
-// the queue is full — decided and applied atomically, so two instances
-// pushing at once cannot both squeeze past the cap.
+// KEYS[1] = q:{rid}, KEYS[2] = qe:{rid}, KEYS[3] = qb:{rid}; ARGV = the entry
+// key, the entry JSON, its size, the count cap, the byte cap, the TTL in
+// seconds. Returns 1 if stored, 2 if an entry with that key is already
+// held (a sender retrying after a lost `sent`: nothing is stored twice and
+// the retry is acknowledged), 0 if the queue is full — decided and applied
+// atomically, so two instances pushing at once cannot both squeeze past
+// the cap.
 const REDIS_PUSH_LUA = `#!lua
+if redis.call('HEXISTS', KEYS[2], ARGV[1]) == 1 then return 2 end
 local len = redis.call('LLEN', KEYS[1])
 local bytes = 0
-if len > 0 then bytes = tonumber(redis.call('GET', KEYS[2]) or '0') end
-if len + 1 > tonumber(ARGV[3]) or bytes + tonumber(ARGV[2]) > tonumber(ARGV[4]) then
+if len > 0 then bytes = tonumber(redis.call('GET', KEYS[3]) or '0') end
+if len + 1 > tonumber(ARGV[4]) or bytes + tonumber(ARGV[3]) > tonumber(ARGV[5]) then
   return 0
 end
 redis.call('RPUSH', KEYS[1], ARGV[1])
+redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
 if len == 0 then
-  redis.call('SET', KEYS[2], ARGV[2])
+  redis.call('SET', KEYS[3], ARGV[3])
 else
-  redis.call('INCRBY', KEYS[2], ARGV[2])
+  redis.call('INCRBY', KEYS[3], ARGV[3])
 end
-redis.call('EXPIRE', KEYS[1], ARGV[5])
-redis.call('EXPIRE', KEYS[2], ARGV[5])
+redis.call('EXPIRE', KEYS[1], ARGV[6])
+redis.call('EXPIRE', KEYS[2], ARGV[6])
+redis.call('EXPIRE', KEYS[3], ARGV[6])
 return 1`;
 
-// KEYS as above; ARGV = the exact stored entry, its size. Removes one copy
-// and takes its size off the counter, clamping at zero; an emptied list
-// deletes the counter, and an adjusted one inherits the list's remaining
-// TTL so the counter never outlives the list.
+// KEYS as above; ARGV = the entry key, its size. Removes the entry and takes
+// its size off the counter, clamping at zero; an emptied list deletes all
+// three keys, and an adjusted counter inherits the list's remaining TTL so
+// it never outlives the list. Returns 1 if something was removed.
 const REDIS_REMOVE_LUA = `#!lua flags=allow-oom
+if redis.call('HDEL', KEYS[2], ARGV[1]) == 0 then return 0 end
+redis.call('LREM', KEYS[1], 1, ARGV[1])
+if redis.call('LLEN', KEYS[1]) == 0 then
+  redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+  return 1
+end
+local left = redis.call('DECRBY', KEYS[3], ARGV[2])
+if left < 0 then redis.call('SET', KEYS[3], '0') end
+local ttl = redis.call('TTL', KEYS[1])
+if ttl > 0 then redis.call('EXPIRE', KEYS[3], ttl) end
+return 1`;
+
+// The same removal for an element queued by a relay before 2.7.9: the entry
+// itself sits in the list (ARGV[1] is that exact string) and nowhere else.
+const REDIS_REMOVE_LEGACY_LUA = `#!lua flags=allow-oom
 local n = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if n == 0 then return 0 end
 if redis.call('LLEN', KEYS[1]) == 0 then
-  redis.call('DEL', KEYS[1], KEYS[2])
+  redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
   return n
 end
-local left = redis.call('DECRBY', KEYS[2], ARGV[2])
-if left < 0 then redis.call('SET', KEYS[2], '0') end
+local left = redis.call('DECRBY', KEYS[3], ARGV[2])
+if left < 0 then redis.call('SET', KEYS[3], '0') end
 local ttl = redis.call('TTL', KEYS[1])
-if ttl > 0 then redis.call('EXPIRE', KEYS[2], ttl) end
+if ttl > 0 then redis.call('EXPIRE', KEYS[3], ttl) end
 return n`;
+
+/** The key an entry is held under in qe:{rid} and listed under in q:{rid}. */
+function entryKey(e) {
+  return `${e.kind === 'receipt' ? 'r' : 'm'}:${e.id}`;
+}
 
 /** The size an entry is charged at, computed the same way in both coordinators. */
 function entrySize(e) {
@@ -459,8 +495,9 @@ class RedisCoordinator {
     this.presenceStale = new Set(); // rids whose presence write the store refused
     this.chan = `z:inst:${this.id}`;
     for (const c of [this.cmd, this.sub, this.pub]) c.on('error', () => {});
-    this.cmd.defineCommand('zQueuePush', { numberOfKeys: 2, lua: REDIS_PUSH_LUA });
-    this.cmd.defineCommand('zQueueRemove', { numberOfKeys: 2, lua: REDIS_REMOVE_LUA });
+    this.cmd.defineCommand('zQueuePush', { numberOfKeys: 3, lua: REDIS_PUSH_LUA });
+    this.cmd.defineCommand('zQueueRemove', { numberOfKeys: 3, lua: REDIS_REMOVE_LUA });
+    this.cmd.defineCommand('zQueueRemoveLegacy', { numberOfKeys: 3, lua: REDIS_REMOVE_LEGACY_LUA });
     this.sub.subscribe(this.chan).catch(() => {});
     this.sub.on('message', (_ch, msg) => this._onPub(msg));
   }
@@ -546,16 +583,21 @@ class RedisCoordinator {
   }
 
   /**
-   * Appends; returns false when the recipient's queue is at a cap (see
-   * MemoryCoordinator#_enqueue) and throws a StoreFull when the store itself
-   * has no room — the caller says which to the sender.
+   * Stores an entry; returns false when the recipient's queue is at a cap
+   * (see MemoryCoordinator#_enqueue) and throws a StoreFull when the store
+   * itself has no room — the caller says which to the sender. An entry
+   * already held under the same key is not stored twice: the push is
+   * acknowledged as if it had been, which is what a sender retrying after a
+   * lost `sent` needs.
    */
   async _push(rid, entry) {
     let r;
     try {
       r = await this.cmd.zQueuePush(
         `q:${rid}`,
+        `qe:${rid}`,
         `qb:${rid}`,
+        entryKey(entry),
         JSON.stringify(entry),
         String(entrySize(entry)),
         String(CFG.maxQueueMsgsPerUser),
@@ -566,12 +608,44 @@ class RedisCoordinator {
       if (isStoreFull(e)) throw new StoreFull();
       throw e;
     }
-    return r === 1;
+    return r === 1 || r === 2;
   }
 
-  /** Removes one stored copy of `s` (the exact string) and settles the byte counter. */
-  async _remove(rid, s, entry) {
-    await this.cmd.zQueueRemove(`q:${rid}`, `qb:${rid}`, s, String(entrySize(entry)));
+  /** Removes the entry held under `key` and settles the byte counter. */
+  async _remove(rid, key, entry) {
+    await this.cmd.zQueueRemove(`q:${rid}`, `qe:${rid}`, `qb:${rid}`, key, String(entrySize(entry)));
+  }
+
+  /** Removes an element queued by a relay before 2.7.9 (the entry itself, as the exact stored string). */
+  async _removeLegacy(rid, s, entry) {
+    await this.cmd.zQueueRemoveLegacy(`q:${rid}`, `qe:${rid}`, `qb:${rid}`, s, String(entrySize(entry)));
+  }
+
+  /**
+   * Everything queued for a mailbox, in order: [{key, s, entry}] where `key`
+   * is the entry's key in qe:{rid}, or null for an element a relay before
+   * 2.7.9 queued (then `s` is the stored string itself). One list read and
+   * one hash read, whatever the size.
+   */
+  async _queued(rid) {
+    const elems = await this.cmd.lrange(`q:${rid}`, 0, -1);
+    const keys = elems.filter((x) => !x.startsWith('{'));
+    const bodies = keys.length ? await this.cmd.hmget(`qe:${rid}`, ...keys) : [];
+    const byKey = new Map(keys.map((k, i) => [k, bodies[i]]));
+    const out = [];
+    for (const x of elems) {
+      const legacy = x.startsWith('{');
+      const s = legacy ? x : byKey.get(x);
+      if (s == null) continue; // a key whose body is gone: removed meanwhile
+      let entry;
+      try {
+        entry = JSON.parse(s);
+      } catch {
+        continue;
+      }
+      out.push({ key: legacy ? null : x, s, entry });
+    }
+    return out;
   }
 
   async deliverEnqueue(from, to, id, payload) {
@@ -610,24 +684,32 @@ class RedisCoordinator {
   }
 
   async ack(recipient, from, id) {
-    const key = `q:${recipient}`;
-    const items = await this.cmd.lrange(key, 0, -1);
+    // Sealed envelopes are acked by id alone (the relay never knew a sender);
+    // legacy attributed envelopes still match on (from, id).
+    const matches = (e) => e.kind === 'msg' && e.id === id && (from ? e.from === from : e.from == null);
+    const key = `m:${id}`;
     let removed = null;
-    for (const s of items) {
+    const held = await this.cmd.hget(`qe:${recipient}`, key);
+    if (held != null) {
       let e;
       try {
-        e = JSON.parse(s);
+        e = JSON.parse(held);
       } catch {
-        continue;
+        e = null;
       }
-      if (
-        e.kind === 'msg' &&
-        e.id === id &&
-        (from ? e.from === from : e.from == null)
-      ) {
-        await this._remove(recipient, s, e);
+      if (e && matches(e)) {
+        await this._remove(recipient, key, e);
         removed = e;
-        break;
+      }
+    } else {
+      // Not held by key: either nothing, or an element a relay before 2.7.9
+      // queued, which only a read of the list can find.
+      for (const q of await this._queued(recipient)) {
+        if (q.key === null && matches(q.entry)) {
+          await this._removeLegacy(recipient, q.s, q.entry);
+          removed = q.entry;
+          break;
+        }
       }
     }
     if (!removed) return;
@@ -659,17 +741,12 @@ class RedisCoordinator {
   }
 
   async flush(rid, ws) {
-    const key = `q:${rid}`;
-    const items = await this.cmd.lrange(key, 0, -1);
-    for (const s of items) {
-      let e;
-      try {
-        e = JSON.parse(s);
-      } catch {
-        continue;
+    for (const q of await this._queued(rid)) {
+      sendJson(ws, entryToFrame(q.entry));
+      if (q.entry.kind === 'receipt') {
+        if (q.key === null) await this._removeLegacy(rid, q.s, q.entry);
+        else await this._remove(rid, q.key, q.entry);
       }
-      sendJson(ws, entryToFrame(e));
-      if (e.kind === 'receipt') await this._remove(rid, s, e);
     }
   }
 
@@ -845,25 +922,32 @@ function createServer(opts = {}) {
     sendJson(ws, { t: 'challenge', nonce: state.nonce.toString('base64') });
 
     ws.on('message', (data) => {
-      // Rate limit (synchronous, before any async work).
-      const now = Date.now();
-      state.tokens = Math.min(
-        CFG.rateBurst,
-        state.tokens + ((now - state.lastRefill) / 1000) * CFG.ratePerSec
-      );
-      state.lastRefill = now;
-      if (state.tokens < 1) {
-        sendJson(ws, { t: 'error', code: 'rate_limited' });
-        return;
-      }
-      state.tokens -= 1;
-
       let frame;
       try {
         frame = JSON.parse(data.toString('utf8'));
       } catch {
         sendJson(ws, { t: 'error', code: 'bad_json' });
         return;
+      }
+      // Rate limit (synchronous, before any async work). An acknowledgement
+      // is exempt: a device draining a backlog acks as fast as it persists,
+      // hundreds a second, and an ack costs the relay one hash read and one
+      // small script while it frees memory. Limiting them meant the acks
+      // past the burst were dropped, the entries they named stayed queued,
+      // and a mailbox emptied only over several reconnects — or, at its
+      // cap, never looked empty to its senders.
+      if (frame.t !== 'recv') {
+        const now = Date.now();
+        state.tokens = Math.min(
+          CFG.rateBurst,
+          state.tokens + ((now - state.lastRefill) / 1000) * CFG.ratePerSec
+        );
+        state.lastRefill = now;
+        if (state.tokens < 1) {
+          sendJson(ws, { t: 'error', code: 'rate_limited' });
+          return;
+        }
+        state.tokens -= 1;
       }
       handleFrame(ws, state, coord, frame, pushSender).catch(() => {
         sendJson(ws, { t: 'error', code: 'internal' });

@@ -826,7 +826,12 @@ recipient is offline, the relay sends the token a **content‑free** wake signal
 ### 12.4 Limits
 
 Per connection: a token bucket of `RATE_PER_SEC` (80) frames/s with burst
-`RATE_BURST` (240); excess frames get `error{rate_limited}`. Per recipient
+`RATE_BURST` (240); excess frames get `error{rate_limited}`. A `recv` is
+exempt (2026‑09‑11): a device draining a backlog acknowledges as fast as
+it persists, an acknowledgement costs the relay one small read and one
+small removal, and a limited one was simply dropped — the entry it named
+stayed queued and a mailbox of more than the burst could not be emptied in
+one connection. Per recipient
 queue: `MAX_QUEUE_MSGS_PER_USER` (5000) envelopes and `MAX_QUEUE_BYTES_PER_USER`
 (64 MiB, each envelope charged at its payload length plus 256). A `send`
 that would take the recipient's queue past either cap is **refused** with
