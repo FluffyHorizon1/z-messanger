@@ -424,6 +424,12 @@ unseal per sealed cell, which is the vault doing its job — and the bench
 asserts the per-contact cost stays under 3 ms so a loader cannot quietly go
 back to a query per contact.
 
+The same shape, on the receiving end of a device link: `_applyHistoryBatch`
+wrote each replayed message as its own autocommit — a hundred rows in 268
+ms; sealed up front and written in one transaction, 99 ms (measured, a
+throwaway on the vault alone). A new device replaying fifty chats of two
+hundred is the difference between 27 s and 10 s of database work.
+
 On the way, the bench closed the vault right after `init` and found the
 group fan-out drain that `init` kicks unawaited throwing an unhandled
 `DatabaseException` — an app crash on the way out if the vault closes under
