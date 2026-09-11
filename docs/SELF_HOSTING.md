@@ -128,6 +128,16 @@ In the app: onboarding screen, or Settings → Relay server. Use
 relay only sees routing hashes and ciphertext, so running your own maximizes
 metadata privacy too.
 
+## What one relay carries
+
+Measured on loopback (`docs/PERFORMANCE.md`, "The relay under load"): a
+single Node process delivers ~5 000 sealed envelopes a second across 200
+sockets with a median latency under 2 ms and a 99th percentile under 15 ms,
+and ~2 500 a second across 1 000 sockets at a 99th percentile of ~70 ms,
+losing nothing. A relay for a few thousand people is one small machine; the
+abuse limits below, not throughput, are what to think about. `npm run
+bench:latency` in `server/` reproduces the numbers on your own hardware.
+
 ## Scaling out (high availability)
 
 For redundancy or higher throughput, run several relay instances behind one

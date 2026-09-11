@@ -436,6 +436,32 @@ group fan-out drain that `init` kicks unawaited throwing an unhandled
 it. It swallows that now, as `flushOutbox` already did; the rows are durable
 and the next launch drains them.
 
+## The relay under load (2026-09-11)
+
+`server/bench/latency.js` (`npm run bench:latency`): N sender/recipient
+pairs, each sender at a steady rate under the per-connection limit
+(`RATE_PER_SEC`, 80), sealed-sender envelopes of the 1 024 bucket — 1 450
+characters, what a short text is on the wire — for ten seconds; each
+message's latency is the time from `send` to the recipient's `msg` frame,
+measured in-process. One relay on loopback, one machine, the load generator
+sharing the same Node process and event loop as the relay, so these are
+pessimistic:
+
+| pairs × rate | offered | delivered | p50 | p90 | p99 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| 50 × 20/s | 991/s | 991/s, 0 lost | 0.61 ms | 2.1 | 6.6 | 11.7 |
+| 200 × 10/s | 1 980/s | all | 1.76 | 4.3 | 32.9 | 38.9 |
+| 500 × 5/s (1 000 sockets) | 2 449/s | all | 2.23 | 12.0 | 72.2 | 74.8 |
+| 100 × 50/s | 4 895/s | all | 1.64 | 3.1 | 13.8 | 46.0 |
+
+Nothing was lost at any shape and `/health` showed no queue afterwards. The
+tail grows with the number of sockets more than with the message rate —
+1 000 connections at 2 449/s has a worse p99 than 200 at 4 895/s — which is
+the event loop servicing more sockets per turn, not the relay's own work per
+message. For a self-hoster: one small relay carries thousands of messages a
+second with a median under 3 ms; the abuse limits (`load.test.js`), not
+throughput, are what size a deployment.
+
 ## Not measured
 
 Named so this document does not read as more complete than it is:
@@ -467,10 +493,11 @@ Named so this document does not read as more complete than it is:
   the ones after it much less, because the extra-device session encrypts
   the message once per device but decorates and seals it in one pass.
   Members × devices for groups is still only members here.
-* ~~**Cold start** and~~ **Relay load profile**, named in roadmap 15.3. The
-  relay's abuse and capacity behaviour is exercised by
-  `server/test/load.test.js`; its latency profile under sustained load is not.
-  Cold start is measured below (2026-09-11), and it was linear in the contact
-  count at a rate that would have been seconds on a phone.
+* ~~**Cold start** and **relay load profile**, both named in roadmap 15.3.
+  The relay's abuse and capacity behaviour is exercised by
+  `server/test/load.test.js`; its latency profile under sustained load is
+  not.~~ Both measured on 2026-09-11 — cold start above, and it was linear in
+  the contact count at a rate that would have been seconds on a phone; the
+  relay below.
 * ~~**Receive-side cost**, which is where the skipped-key cache is actually
   *used*.~~ Measured above, and it held the largest cost in the app.

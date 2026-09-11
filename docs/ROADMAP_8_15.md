@@ -1022,3 +1022,14 @@ direction; the phases, their order and both ordering arguments stand.
    the deletes; PROTOCOL §3.6). The lesson is the general one: making a
    path durable changes what "late" means, and every late case has to be
    read again.
+
+32. **15.3 — the relay's latency profile, the other unmeasured item, is
+   measured.** `server/bench/latency.js` runs sender/recipient pairs at a
+   steady rate under the per-connection limit and times each message from
+   `send` to the recipient's frame, in-process. On loopback, one Node
+   process, load generator sharing its event loop: ~1 000/s at p50 0.6 ms
+   and p99 6.6; ~2 000/s at p99 33; ~2 450/s across a thousand sockets at
+   p99 72; ~4 900/s across two hundred sockets at p99 14 — nothing lost at
+   any shape. The tail follows the socket count, not the message rate.
+   PERFORMANCE.md has the table; SELF_HOSTING.md says what it means for
+   sizing. The "not measured" list is now real hardware and nothing else.
