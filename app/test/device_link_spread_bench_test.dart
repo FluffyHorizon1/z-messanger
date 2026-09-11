@@ -15,8 +15,10 @@
 // What it prints, per message: how long after the contact's copy was
 // relay-stamped the laptop's copy was — the phone's mirror when the phone
 // sends; the contact's own fan-out (she holds the device list) when the
-// contact sends. Measured 2026-09-11 (one relay on loopback): see
-// THREAT_MODEL.md R19.
+// contact sends. And, for the link itself, which buckets the new mailbox
+// receives in its first seconds: the history replay is 65 536-bucket
+// envelopes, which nothing but linking produces. Measured 2026-09-11 (one
+// relay on loopback): see THREAT_MODEL.md R19.
 @Tags(['bench'])
 library;
 
@@ -274,4 +276,59 @@ void main() {
     expect(gaps.reduce((a, b) => a > b ? a : b), lessThan(2000),
         reason: 'the mirror follows the contact copy at once: $gaps');
   }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('linking a device is a burst of large envelopes to a new mailbox',
+      () async {
+    // 7.6b replays the newest 200 texts per chat to a newly linked device in
+    // batches of 100 — so linking is visible at the relay as a new mailbox
+    // receiving a run of envelopes in the largest buckets ordinary chat
+    // never uses. Measured here so R19 can say which buckets, and how many,
+    // for a chat of 250 messages.
+    final s = await linkedPair();
+    for (var k = 0; k < 125; k++) {
+      await s.phone.sendText(s.carol.myRid, 'history $k');
+      await s.carol.sendText(s.phone.myRid, 'reply $k');
+    }
+    await waitUntil(
+        () =>
+            (s.phone.messagesByChat[s.carol.myRid] ?? [])
+                .where((m) => m.body.startsWith('reply '))
+                .length ==
+            125,
+        what: 'the phone holds the whole conversation');
+
+    int bucketOf(String sealed) {
+      final raw = base64Url.decode(base64Url.normalize(sealed.substring(4)));
+      return raw.length - 32 - 12 - 16;
+    }
+
+    // The laptop holds Carol (contacts ship with enrollment; here it adds
+    // her) so the replayed history has a chat to land in.
+    await s.laptop.addContactFromCode(await s.carol.myContactCode());
+    final atLaptop = <int>[];
+    final orig = s.laptop.transport.onMessage;
+    s.laptop.transport.onMessage = (m) {
+      atLaptop.add(bucketOf(m.payload));
+      orig?.call(m);
+    };
+    await s.phone.addMyDevice(s.laptopCert);
+    // The loaded chat is one page; count rows, not what a screen shows.
+    var stored = 0;
+    await waitUntil(() {
+      s.laptop.vault.db.rawQuery(
+          'SELECT COUNT(*) AS n FROM messages WHERE rid = ?',
+          [s.carol.myRid]).then((r) => stored = (r.first['n'] as num).toInt());
+      return stored >= 200;
+    }, what: 'history reached the laptop ($stored so far)');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    final histogram = <int, int>{};
+    for (final b in atLaptop) {
+      histogram[b] = (histogram[b] ?? 0) + 1;
+    }
+    // ignore: avoid_print
+    print('linking, 250-message chat: the laptop received '
+        '${atLaptop.length} envelopes — by bucket $histogram');
+    expect(histogram.keys.any((b) => b >= 65536), isTrue,
+        reason: 'history batches are large-bucket envelopes: $histogram');
+  }, timeout: const Timeout(Duration(minutes: 4)));
 }

@@ -981,7 +981,10 @@ direction; the phases, their order and both ordering arguments stand.
    copy is relay-stamped 15–22 ms after the contact's when the phone sends
    and 31–53 ms after the phone's when the contact sends — so "the relay
    cannot group a person's devices" (WHITEPAPER §3) was the same
-   overstatement, now qualified the same way, with R19. The user-facing
+   overstatement, now qualified the same way, with R19 — which also records
+   that linking is loud on its own: the history replay reaches the new
+   mailbox as 65 536-bucket envelopes (two for a 250-message chat, measured),
+   a size nothing but linking produces. The user-facing
    `WHAT_Z_CANNOT_DO.md` and the website's "Groups" and "does not protect
    against" paragraphs said the flat version too ("indistinguishable from
    direct traffic at the relay"; "cannot work out who is talking to whom")
