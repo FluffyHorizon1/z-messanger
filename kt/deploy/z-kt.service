@@ -1,0 +1,28 @@
+# systemd unit for the Z transparency log (docs/SELF_HOSTING.md, "Running the
+# transparency log"). Install to /etc/systemd/system/z-kt.service.
+[Unit]
+Description=Z transparency log
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=z-kt
+Group=z-kt
+WorkingDirectory=/opt/z-kt
+Environment=KT_SEED_FILE=/etc/z-kt/seed
+Environment=KT_DATA=/var/lib/z-kt
+Environment=KT_HOST=127.0.0.1
+Environment=KT_PORT=8085
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=2
+# Nothing here needs more than its data directory.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/z-kt
+
+[Install]
+WantedBy=multi-user.target

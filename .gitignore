@@ -2,6 +2,10 @@
 node_modules/
 npm-debug.log*
 
+# The transparency log's entries and a mirror's copy (kt/server.js, kt/tools/mirror.js)
+kt/data/
+kt/mirror/
+
 # Dart / Flutter
 .dart_tool/
 .packages

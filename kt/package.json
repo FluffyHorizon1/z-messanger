@@ -1,0 +1,16 @@
+{
+  "name": "z-kt",
+  "version": "0.1.0",
+  "description": "Key-transparency log for the Z messenger: an append-only Merkle log plus a sparse Merkle map over device-list fingerprints, signed tree heads, and a mirror/witness tool. No dependencies.",
+  "main": "server.js",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "mirror": "node tools/mirror.js",
+    "bench": "node bench/proofs.js"
+  }
+}
