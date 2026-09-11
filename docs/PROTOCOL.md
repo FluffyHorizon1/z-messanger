@@ -255,7 +255,9 @@ holding the account key issued a list this device never saw — surfaced loudly
 devices it previously held, it sends each dropped device one final inner
 message of kind `dlrm` (§6.2) over the still‑known pairwise session before
 forgetting it. A rogue cannot suppress it: it is sent by the contact, not the
-account.
+account. It SHOULD be queued with the same durability as a message — the
+reference client's outbox — since it is sent exactly once and a client whose
+link happens to be down at that moment would otherwise never send it.
 
 **Root discipline.** A root‑holding device MUST self‑sync every new signed
 list to the account's own other devices (§9, envelope `dir:"acct"`) before or

@@ -939,3 +939,27 @@ direction; the phases, their order and both ordering arguments stand.
    the nudge never skipped — 2). The pairing signal that remains is R17 in
    the threat model, which did not exist as a row before because nobody had
    counted.
+
+28. **M4 — the copy to a contact's other devices held the conversation lock
+   across the network, and vanished when the link was down.**
+   `_fanToContactExtras` was a direct `transport.send` per extra device,
+   awaiting the relay's ack (20 s timeout each) inside the per-conversation
+   lock, so a stalled link froze every send and receive with that contact
+   for as long as it stalled; and with the link down it threw and was
+   swallowed, so the laptop's copy never left us — the contact's phone
+   mirrors what it receives to its siblings, which is the only reason
+   nothing was ever missed. It goes through the durable outbox now, like the
+   primary copy, and the lock covers the ratchet step and the writes only.
+   `extras_fanout_test.dart`: two outbox rows for a two-device contact with
+   the link down (was one); a second message accepted at once with the link
+   stalled (was: a five-second timeout). Two relatives of the same shape
+   went the same way — the 7.7a removal notice to a dropped device, which is
+   the whole of what tells a silently excluded device it was excluded and
+   was a direct send that a down link turned into no notice at all, and the
+   ML-KEM offer to a contact's extra device. All four fired on the old code.
+   The
+   cost is in PERFORMANCE.md, measured: about one extra send's worth for
+   the first extra device, little for the ones after. Found by reading the
+   "not measured" list for the next thing to measure — the same way the
+   receive side was found — and it was the same shape as the receipts: a
+   send nobody waited for that everybody waited behind.

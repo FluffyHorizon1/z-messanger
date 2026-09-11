@@ -4929,6 +4929,7 @@ class ChatService extends ChangeNotifier {
     ];
     if (persist && removed.isNotEmpty) {
       final fp = await list.fingerprint();
+      var queued = false;
       for (final r in removed) {
         try {
           final note = InnerMessage.deviceListRemoved(newMessageId(), _now(),
@@ -4936,13 +4937,20 @@ class ChatService extends ChangeNotifier {
           final fm = await session.encryptFor(r, note.toBytes());
           await _saveExtra(rid);
           if (fm != null) {
-            await transport.send(
-                to: r,
-                id: newMessageId(),
-                payload: await _sealFor(r, fm.payload));
+            // Through the outbox: this notice is the whole of what tells a
+            // silently excluded device it was excluded (T3), and a direct
+            // send with the link down was a notice never sent.
+            await vault.db.insert('outbox', {
+              'id': newMessageId(),
+              'rid': r,
+              'payload': await _sealFor(r, fm.payload),
+              'created_ms': _now(),
+            });
+            queued = true;
           }
         } catch (_) {}
       }
+      if (queued) unawaited(flushOutbox());
     }
     final appeared = [
       for (final r in newRids)
@@ -4990,25 +4998,47 @@ class ChatService extends ChangeNotifier {
   }
 
   /// Fan a just-sent inner message out to a contact's non-primary devices.
+  ///
+  /// Through the durable outbox, like the copy to their primary device — not
+  /// a direct `transport.send`, which this used to be. That had two costs.
+  /// A send while the link was down threw and was swallowed, so the
+  /// contact's laptop simply did not get the message from us (their phone
+  /// mirrors it across when it has it, which is the only reason that was
+  /// never noticed). And it ran INSIDE the per-conversation lock, awaiting
+  /// the relay's ack — up to 20 s per device on a stalled link — while
+  /// every send and receive for that contact queued behind it. The lock now
+  /// covers the ratchet step and the writes; the network is the outbox's.
   Future<void> _fanToContactExtras(String rid, InnerMessage inner) async {
     final s = _contactExtras[rid];
     if (s == null || s.targetRoutingIds.isEmpty) return;
     final contact = contacts[rid];
+    var queued = false;
     await _withLock(rid, () async {
       try {
         if (contact != null) await _decorateForWire(inner, contact);
         final fan = await s.encrypt(inner.toBytes());
+        // Persist the advanced ratchet BEFORE the envelopes exist anywhere,
+        // so a redelivery is still decryptable.
         await _saveExtra(rid);
-        for (final f in fan) {
-          try {
-            await transport.send(
-                to: f.routingId,
-                id: newMessageId(),
-                payload: await _sealFor(f.routingId, f.payload));
-          } catch (_) {}
-        }
+        final now = _now();
+        final rows = [
+          for (final f in fan)
+            {
+              'id': newMessageId(),
+              'rid': f.routingId,
+              'payload': await _sealFor(f.routingId, f.payload),
+              'created_ms': now,
+            }
+        ];
+        await vault.db.transaction((txn) async {
+          for (final r in rows) {
+            await txn.insert('outbox', r);
+          }
+        });
+        queued = rows.isNotEmpty;
       } catch (_) {}
     });
+    if (queued) unawaited(flushOutbox());
   }
 
   /// Inbound from a contact's non-primary device.
@@ -5031,13 +5061,18 @@ class ChatService extends ChangeNotifier {
       } catch (_) {}
     });
     if (offer != null) {
-      // v2: our post-quantum key offer for that device (best effort, like the
-      // rest of the extra-device path).
+      // v2: our post-quantum key offer for that device — through the outbox,
+      // with the durability the primary path gives its offer, so a link that
+      // is down at this moment does not leave that device's session
+      // classical until the next thing it says.
       try {
-        await transport.send(
-            to: fromDeviceRid,
-            id: newMessageId(),
-            payload: await _sealFor(fromDeviceRid, offer!));
+        await vault.db.insert('outbox', {
+          'id': newMessageId(),
+          'rid': fromDeviceRid,
+          'payload': await _sealFor(fromDeviceRid, offer!),
+          'created_ms': _now(),
+        });
+        unawaited(flushOutbox());
       } catch (_) {}
     }
     transport.ackReceived(id: m.id, from: m.from);

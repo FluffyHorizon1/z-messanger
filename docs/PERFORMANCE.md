@@ -396,10 +396,26 @@ Named so this document does not read as more complete than it is:
 
 * **Real hardware.** Everything here is a desktop test VM. Phone numbers,
   especially for the asymmetric operations, will differ.
-* **Multiple devices per member.** The fan-out to a contact's extra devices
+* ~~**Multiple devices per member.** The fan-out to a contact's extra devices
   happens in `_fanToContactExtras`, which is `unawaited` — it does not block
-  the send, and it is not in these timings. Members × devices is the real
-  shape; only members were varied here.
+  the send, and it is not in these timings.~~ Measured on 2026-09-11, and
+  the sentence struck through was true of the send it was part of and false
+  of the next one: the fan-out ran its network sends *inside* the
+  per-conversation lock, awaiting the relay's ack — up to 20 s per device on
+  a stalled link — while every other send and receive for that contact
+  waited. It also threw and was swallowed when the link was down, so the
+  laptop's copy simply did not go from us (the contact's phone mirrors it
+  across, which is why it was never missed). It goes through the durable
+  outbox now, and the lock covers only the ratchet step and the writes
+  (`extras_fanout_test.dart`, every property broken once to see it fire;
+  the 7.7a removal notice and the ML-KEM offer to an extra device were
+  direct sends of the same shape and go through the outbox now too). Cost, offline, twenty messages each, one run: a text to a contact
+  with 0 / 1 / 2 / 3 extra devices takes 14.5 / 24.5 / 28.6 / 27.6 ms until
+  every copy is queued, of which the `sendText` call itself is 13.6 / 16.2 /
+  20.2 / 19.8 ms — the first extra device costs about one more send, and
+  the ones after it much less, because the extra-device session encrypts
+  the message once per device but decorates and seals it in one pass.
+  Members × devices for groups is still only members here.
 * **Cold start** and **relay load profile**, both named in roadmap 15.3. The
   relay's abuse and capacity behaviour is exercised by
   `server/test/load.test.js`; its latency profile under sustained load is not.
