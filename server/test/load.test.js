@@ -248,7 +248,7 @@ test('a reconnect storm leaves the relay healthy', async () => {
     Math.round(((process.memoryUsage().rss - rssBefore) / 1048576) * 10) / 10;
 });
 
-test('an offline recipient queue is bounded by the cap', async () => {
+test('an offline recipient queue is bounded by the cap, and the flood past it is refused rather than evicting', async () => {
   const sender = await new Client(port, makeIdentity())
     .open()
     .then((c) => c.auth());
@@ -264,7 +264,20 @@ test('an offline recipient queue is bounded by the cap', async () => {
     q.entries.length <= QUEUE_CAP,
     `queue grew unbounded: ${q.entries.length} > ${QUEUE_CAP}`
   );
+  // What is queued is the first hundred, untouched by the eighty that came
+  // after them; each of those eighty was told so. A flood therefore cannot
+  // erase what was already accepted for a mailbox — it can only fill it.
+  assert.deepStrictEqual(
+    q.entries.map((e) => e.id),
+    Array.from({ length: QUEUE_CAP }, (_, i) => 'q' + i)
+  );
+  const answers = sender.frames.filter((f) => f.t === 'sent' || f.t === 'error');
+  assert.strictEqual(answers.filter((f) => f.t === 'sent').length, QUEUE_CAP);
+  const refused = answers.filter((f) => f.t === 'error');
+  assert.strictEqual(refused.length, 180 - QUEUE_CAP);
+  assert.ok(refused.every((f) => f.code === 'queue_full' && /^q\d+$/.test(f.id)));
   summary.queueCap = QUEUE_CAP;
   summary.queueLenAfter180Sends = q.entries.length;
+  summary.refusedOf180 = refused.length;
   sender.close();
 });

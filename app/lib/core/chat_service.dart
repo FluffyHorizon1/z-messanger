@@ -81,6 +81,12 @@ class ChatService extends ChangeNotifier implements KtHost {
   Timer? _sweeper;
   bool _flushing = false;
 
+  /// A mailbox the relay reported full (`queue_full`, PROTOCOL §12.4) is
+  /// tried again after this long; the rows wait in the outbox meanwhile.
+  /// Overridable so a test need not wait a minute.
+  Duration outboxRetryDelay = const Duration(seconds: 60);
+  Timer? _outboxRetry;
+
   /// Self-sync across my own linked devices. Null until built; inert when I
   /// have no linked devices, so single-device behaviour is unchanged.
   DeviceSyncService? _sync;
@@ -265,6 +271,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     _disposed = true;
     kt.dispose();
     _sweeper?.cancel();
+    _outboxRetry?.cancel();
     _devlistTimer?.cancel();
     _dlvTimer?.cancel();
     for (final t in _pqTimers.values) {
@@ -1650,13 +1657,24 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> flushOutbox() async {
     if (_flushing || !transport.isConnected) return;
     _flushing = true;
+    // Mailboxes the relay refused this pass as full: their rows stay where
+    // they are, in order, and the pass goes on with everyone else's.
+    final full = <String>{};
     try {
       while (true) {
-        final rows = await vault.db.query('outbox', orderBy: 'seq', limit: 20);
+        final rows = full.isEmpty
+            ? await vault.db.query('outbox', orderBy: 'seq', limit: 20)
+            : await vault.db.query('outbox',
+                where:
+                    'rid NOT IN (${List.filled(full.length, '?').join(',')})',
+                whereArgs: full.toList(),
+                orderBy: 'seq',
+                limit: 20);
         if (rows.isEmpty) break;
         for (final row in rows) {
           final id = row['id'] as String;
           final rid = row['rid'] as String;
+          if (full.contains(rid)) continue; // keep that mailbox's rows in order
           try {
             await transport.send(
                 to: rid, id: id, payload: row['payload'] as String);
@@ -1675,6 +1693,12 @@ class ChatService extends ChangeNotifier implements KtHost {
                   .delete('outbox', where: 'seq = ?', whereArgs: [row['seq']]);
               await vault.db.update('messages', {'status': -1},
                   where: 'mid = ? AND rid = ?', whereArgs: [id, rid]);
+            } else if (e.message.contains('queue_full')) {
+              // That recipient's mailbox at the relay is at its cap
+              // (PROTOCOL §12.4): theirs alone, and temporary — it empties
+              // when they next connect. The row waits, still pending, and
+              // is tried again shortly; nothing else is held up by it.
+              full.add(rid);
             } else {
               return; // connection trouble: retry on next connect
             }
@@ -1689,6 +1713,12 @@ class ChatService extends ChangeNotifier implements KtHost {
       return;
     } finally {
       _flushing = false;
+      if (full.isNotEmpty && !_disposed) {
+        _outboxRetry ??= Timer(outboxRetryDelay, () {
+          _outboxRetry = null;
+          unawaited(flushOutbox());
+        });
+      }
     }
   }
 

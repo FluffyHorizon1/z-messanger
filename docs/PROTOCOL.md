@@ -805,7 +805,8 @@ S→C  { "t":"error", "code":string, "id"?:envelopeId }
 string ≤ `MAX_ENVELOPE_BYTES` (default 1,000,000) characters; the WebSocket
 frame limit is that plus 4096. Error codes: `rate_limited`, `bad_json`,
 `internal`, `bad_auth`, `not_authed`, `bad_send`, `too_large`, `bad_push`,
-`unknown_frame`.
+`unknown_frame`, and — since 2026‑09‑11, a compatible extension under §14 —
+`queue_full` (§12.4), which carries the `id` of the `send` it answers.
 
 **Sealed handling.** A `payload` beginning with `zs1.` is stored and delivered
 with **no** `from` member, is acknowledged with a `recv` that omits `from`,
@@ -826,9 +827,21 @@ recipient is offline, the relay sends the token a **content‑free** wake signal
 Per connection: a token bucket of `RATE_PER_SEC` (80) frames/s with burst
 `RATE_BURST` (240); excess frames get `error{rate_limited}`. Per recipient
 queue: `MAX_QUEUE_MSGS_PER_USER` (5000) envelopes and `MAX_QUEUE_BYTES_PER_USER`
-(64 MiB), oldest dropped first; every entry expires after `QUEUE_TTL_HOURS`
-(72). Multiple relay instances may share queues and presence through Redis;
-the frame protocol is identical.
+(64 MiB, each envelope charged at its payload length plus 256). A `send`
+that would take the recipient's queue past either cap is **refused** with
+`error{queue_full, id}` and nothing is queued for it; what the queue already
+holds is never evicted to make room. The sender keeps the envelope and tries
+again later — the queue empties when the recipient next drains it — and a
+client that does not know the code treats it as it treats any transient
+relay error, which is the right reading. (Until 2026‑09‑11 the relay
+evicted the *oldest* queued envelope instead, silently and after having
+acknowledged it with `sent`, so anyone holding a routing id could erase what
+was queued for it by flooding; a flood now fills a queue and is refused from
+then on, and `/metrics` counts the refusals, `z_refused_total`.) Every entry
+expires after `QUEUE_TTL_HOURS` (72). Multiple relay instances may share
+queues and presence through Redis, where the byte cap is a counter kept
+beside the list and settled in the same atomic script as every push and
+removal; the frame protocol is identical.
 
 ### 12.5 Delivery semantics
 
@@ -838,8 +851,9 @@ the frame protocol is identical.
    safely in the recipient's encrypted local store). On (re)connect the whole
    queue is flushed again, so delivery is **at‑least‑once** and receivers
    deduplicate (§6.4). A client MUST NOT `recv` before persisting.
-3. Undelivered envelopes vanish on expiry, on eviction, or on relay restart.
-   Availability is explicitly not a security property of the relay.
+3. Undelivered envelopes vanish on expiry or on relay restart — never to
+   make room for another envelope (§12.4). Availability is explicitly not a
+   security property of the relay.
 
 ### 12.6 HTTP endpoints (informative)
 

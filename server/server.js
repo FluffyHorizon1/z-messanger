@@ -131,6 +131,10 @@ const METRICS = {
   // whoever runs the process (the connection has an identity), which is why
   // clients send sealed envelopes on a connection of their own (§12.1).
   sealedUnattributableTotal: 0,
+  // Envelopes refused because the recipient's queue was at its cap (count or
+  // bytes). Refused, not dropped: the sender is told, keeps the envelope in
+  // its outbox and retries; nothing already queued is touched.
+  refusedTotal: 0,
   deliveredLiveTotal: 0,
   ackedTotal: 0,
   latencyBucketsMs: [50, 200, 1000, 5000, 30000],
@@ -159,6 +163,8 @@ function renderMetrics(stats) {
   L.push(`z_sealed_total ${METRICS.sealedTotal}`);
   L.push('# TYPE z_sealed_unattributable_total counter');
   L.push(`z_sealed_unattributable_total ${METRICS.sealedUnattributableTotal}`);
+  L.push('# TYPE z_refused_total counter');
+  L.push(`z_refused_total ${METRICS.refusedTotal}`);
   L.push('# TYPE z_delivered_live_total counter');
   L.push(`z_delivered_live_total ${METRICS.deliveredLiveTotal}`);
   L.push('# TYPE z_acked_total counter');
@@ -228,17 +234,27 @@ class MemoryCoordinator {
     return q;
   }
 
+  /**
+   * Appends an entry to a recipient's queue, or refuses it — returns false —
+   * when it would take the queue past either cap. A full queue refuses the
+   * newest envelope rather than evicting the oldest: the sender is told and
+   * keeps the envelope in its outbox, whereas an evicted envelope was already
+   * acknowledged with `sent` and would vanish without anyone knowing. That
+   * also means nobody can erase what is queued for a mailbox by flooding it
+   * (§12.4): a flood fills the queue and is refused from then on, loudly.
+   */
   _enqueue(rid, entry) {
     const q = this._queueFor(rid);
+    if (
+      q.entries.length + 1 > CFG.maxQueueMsgsPerUser ||
+      q.bytes + entry.size > CFG.maxQueueBytesPerUser
+    ) {
+      if (q.entries.length === 0) this.queues.delete(rid);
+      return false;
+    }
     q.entries.push(entry);
     q.bytes += entry.size;
-    while (
-      q.entries.length > CFG.maxQueueMsgsPerUser ||
-      q.bytes > CFG.maxQueueBytesPerUser
-    ) {
-      const dropped = q.entries.shift();
-      q.bytes -= dropped.size;
-    }
+    return true;
   }
 
   _removeEntry(rid, predicate) {
@@ -262,9 +278,12 @@ class MemoryCoordinator {
       ts: Date.now(),
       size: payload.length + 256,
     };
+    if (!this._enqueue(to, entry)) {
+      METRICS.refusedTotal += 1;
+      return { queued: false, refused: true };
+    }
     METRICS.enqueuedTotal += 1;
     if (from == null) METRICS.sealedTotal += 1;
-    this._enqueue(to, entry);
     const target = this.online.get(to);
     const live = target ? sendJson(target, entryToFrame(entry)) : false;
     if (live) METRICS.deliveredLiveTotal += 1;
@@ -294,7 +313,7 @@ class MemoryCoordinator {
     };
     const senderWs = this.online.get(from);
     if (!(senderWs && sendJson(senderWs, entryToFrame(receipt)))) {
-      this._enqueue(from, receipt);
+      this._enqueue(from, receipt); // a full sender queue loses the receipt, not a message
     }
   }
 
@@ -344,9 +363,62 @@ class MemoryCoordinator {
 //            channel. A new login elsewhere publishes {op:'kick'} so the old
 //            instance drops its socket (one active connection per identity).
 //
+// Bytes:     qb:{rid} = the sum of the entries' sizes in q:{rid}, kept beside
+//            the list so the byte cap can be checked without reading it. Both
+//            keys are written in one script and carry the same TTL, so they
+//            expire together; the counter is reset whenever the list is empty
+//            and clamped at zero, so an entry it never counted (one queued by
+//            a relay older than this) cannot leave it wrong for longer than
+//            the list is non-empty.
+//
 // Redis only ever holds the same base64 ciphertext the RAM queue held — no
 // plaintext, no keys. Run Redis RAM-only (--save "" --appendonly no).
 // ---------------------------------------------------------------------------
+
+// KEYS[1] = q:{rid}, KEYS[2] = qb:{rid}; ARGV = entry JSON, its size, the
+// count cap, the byte cap, the TTL in seconds. Returns 1 if appended, 0 if
+// the queue is full — decided and applied atomically, so two instances
+// pushing at once cannot both squeeze past the cap.
+const REDIS_PUSH_LUA = `
+local len = redis.call('LLEN', KEYS[1])
+local bytes = 0
+if len > 0 then bytes = tonumber(redis.call('GET', KEYS[2]) or '0') end
+if len + 1 > tonumber(ARGV[3]) or bytes + tonumber(ARGV[2]) > tonumber(ARGV[4]) then
+  return 0
+end
+redis.call('RPUSH', KEYS[1], ARGV[1])
+if len == 0 then
+  redis.call('SET', KEYS[2], ARGV[2])
+else
+  redis.call('INCRBY', KEYS[2], ARGV[2])
+end
+redis.call('EXPIRE', KEYS[1], ARGV[5])
+redis.call('EXPIRE', KEYS[2], ARGV[5])
+return 1`;
+
+// KEYS as above; ARGV = the exact stored entry, its size. Removes one copy
+// and takes its size off the counter, clamping at zero; an emptied list
+// deletes the counter, and an adjusted one inherits the list's remaining
+// TTL so the counter never outlives the list.
+const REDIS_REMOVE_LUA = `
+local n = redis.call('LREM', KEYS[1], 1, ARGV[1])
+if n == 0 then return 0 end
+if redis.call('LLEN', KEYS[1]) == 0 then
+  redis.call('DEL', KEYS[1], KEYS[2])
+  return n
+end
+local left = redis.call('DECRBY', KEYS[2], ARGV[2])
+if left < 0 then redis.call('SET', KEYS[2], '0') end
+local ttl = redis.call('TTL', KEYS[1])
+if ttl > 0 then redis.call('EXPIRE', KEYS[2], ttl) end
+return n`;
+
+/** The size an entry is charged at, computed the same way in both coordinators. */
+function entrySize(e) {
+  if (typeof e.size === 'number') return e.size;
+  return e.kind === 'receipt' ? 192 : String(e.payload || '').length + 256;
+}
+
 class RedisCoordinator {
   constructor(url, instanceId) {
     const IORedis = require('ioredis');
@@ -357,6 +429,8 @@ class RedisCoordinator {
     this.local = new Map(); // rid -> ws on THIS instance
     this.chan = `z:inst:${this.id}`;
     for (const c of [this.cmd, this.sub, this.pub]) c.on('error', () => {});
+    this.cmd.defineCommand('zQueuePush', { numberOfKeys: 2, lua: REDIS_PUSH_LUA });
+    this.cmd.defineCommand('zQueueRemove', { numberOfKeys: 2, lua: REDIS_REMOVE_LUA });
     this.sub.subscribe(this.chan).catch(() => {});
     this.sub.on('message', (_ch, msg) => this._onPub(msg));
   }
@@ -427,18 +501,33 @@ class RedisCoordinator {
     }
   }
 
+  /** Appends, or returns false when the recipient's queue is at a cap (see MemoryCoordinator#_enqueue). */
   async _push(rid, entry) {
-    const key = `q:${rid}`;
-    await this.cmd.rpush(key, JSON.stringify(entry));
-    await this.cmd.ltrim(key, -CFG.maxQueueMsgsPerUser, -1);
-    await this.cmd.expire(key, CFG.queueTtlHours * 3600);
+    const r = await this.cmd.zQueuePush(
+      `q:${rid}`,
+      `qb:${rid}`,
+      JSON.stringify(entry),
+      String(entrySize(entry)),
+      String(CFG.maxQueueMsgsPerUser),
+      String(CFG.maxQueueBytesPerUser),
+      String(CFG.queueTtlHours * 3600)
+    );
+    return r === 1;
+  }
+
+  /** Removes one stored copy of `s` (the exact string) and settles the byte counter. */
+  async _remove(rid, s, entry) {
+    await this.cmd.zQueueRemove(`q:${rid}`, `qb:${rid}`, s, String(entrySize(entry)));
   }
 
   async deliverEnqueue(from, to, id, payload) {
-    const entry = { kind: 'msg', id, from, payload, ts: Date.now() };
+    const entry = { kind: 'msg', id, from, payload, ts: Date.now(), size: payload.length + 256 };
+    if (!(await this._push(to, entry))) {
+      METRICS.refusedTotal += 1;
+      return { queued: false, refused: true };
+    }
     METRICS.enqueuedTotal += 1;
     if (from == null) METRICS.sealedTotal += 1;
-    await this._push(to, entry);
     const owner = await this.cmd.get(`presence:${to}`);
     let live = false;
     if (owner === this.id) {
@@ -471,7 +560,7 @@ class RedisCoordinator {
         e.id === id &&
         (from ? e.from === from : e.from == null)
       ) {
-        await this.cmd.lrem(key, 1, s);
+        await this._remove(recipient, s, e);
         removed = e;
         break;
       }
@@ -479,7 +568,7 @@ class RedisCoordinator {
     if (!removed) return;
     observeAck(removed);
     if (removed.from == null) return; // sealed: no relay receipt possible
-    const receipt = { kind: 'receipt', id, from: recipient, ts: Date.now() };
+    const receipt = { kind: 'receipt', id, from: recipient, ts: Date.now(), size: 192 };
     const owner = await this.cmd.get(`presence:${from}`);
     if (owner === this.id) {
       const ws = this.local.get(from);
@@ -505,7 +594,7 @@ class RedisCoordinator {
         continue;
       }
       sendJson(ws, entryToFrame(e));
-      if (e.kind === 'receipt') await this.cmd.lrem(key, 1, s);
+      if (e.kind === 'receipt') await this._remove(rid, s, e);
     }
   }
 
@@ -790,12 +879,18 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
       // encrypted envelope, so a full copy of this server yields no social
       // graph. Authenticity is enforced end-to-end by the inner ratchet.
       if (anon && !state.authed) METRICS.sealedUnattributableTotal += 1;
-      const { queued } = await coord.deliverEnqueue(
+      const { queued, refused } = await coord.deliverEnqueue(
         anon ? null : state.rid,
         to,
         id,
         payload
       );
+      if (refused) {
+        // The recipient's queue is at its cap. Told, not dropped: the
+        // sender keeps the envelope and retries once the recipient drains.
+        sendJson(ws, { t: 'error', code: 'queue_full', id });
+        return;
+      }
       sendJson(ws, { t: 'sent', id, queued });
       // Recipient offline and push configured? Fire a content-free wake ping.
       // Best-effort and non-blocking — never delays or fails the send.
@@ -857,6 +952,12 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
 // Entrypoint
 // ---------------------------------------------------------------------------
 if (require.main === module) {
+  if (CFG.maxQueueBytesPerUser < CFG.maxEnvelopeBytes + 256) {
+    log(
+      `MAX_QUEUE_BYTES_PER_USER (${CFG.maxQueueBytesPerUser}) is below one envelope ` +
+        `(MAX_ENVELOPE_BYTES ${CFG.maxEnvelopeBytes} + 256): the largest envelopes will be refused`
+    );
+  }
   const { httpServer } = createServer();
   httpServer.listen(CFG.port, CFG.host, () => {
     log(

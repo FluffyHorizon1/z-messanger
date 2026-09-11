@@ -21,7 +21,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 1 Push notifications | ✅ done (1.3 F-Droid flavour dropped with 3.2) | content-free FCM wake; relay push tests |
 | 2 Signed builds | 2.1 + 2.4 ✅ · 2.2/2.3 ⛔ need paid certificates | signed AAB/APK + `SHA256SUMS.txt` on every release |
 | 3 Store distribution | **3.1 ✅ live on Google Play** · 3.4 ✅ · 3.2 dropped · 3.3 ⏳ · **3.5 Play Console recommendations ✅** (16 KB pages, edge-to-edge; bitmap/PiP items assessed) | the Play listing, `app/tool/check_16k.sh` in CI, `zmessengers.com` landing + privacy page |
-| 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) | `/metrics`, windowed paging, two-relay HA test in CI |
+| 4 Scale & observability | 4.2/4.3/4.4 ✅ · 4.1 dropped (no telemetry by design) · queue caps refuse rather than evict, in RAM and Redis mode alike (R22, `docs/ROADMAP_8_15.md` revision 38) | `/metrics`, windowed paging, two-relay HA test in CI, `server/test/queue_caps.test.js` |
 | 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
 | 8 Message interactions | **✅ complete** — 8.1a replies · 8.1b reactions · 8.1c edit / delete-for-everyone / forward | `replies_test.dart` (13 cases incl. the group authorship abuse test), `docs/vectors/v1/inner_messages.json`, PROTOCOL §6.4–6.6 |

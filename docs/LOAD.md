@@ -16,7 +16,7 @@ drives and the representative numbers from a local run.
 | Oversize raw frame | a 2 MB raw WebSocket frame (past `maxPayload`) | only the offender's socket is closed; a bystander still receives; `/health` still 200 |
 | Message flood | 600 sends fired instantly from one client | excess is `rate_limited` (token bucket: 80/s, burst 240); the connection is **not** killed |
 | Reconnect storm | 100 connect → auth → close cycles | relay stays up; `/health` 200; RSS growth bounded |
-| Queue overflow | 180 envelopes to an **offline** recipient (cap lowered to 100 for the test) | the offline queue is capped at 100 (oldest dropped); memory does not grow with the flood |
+| Queue overflow | 180 envelopes to an **offline** recipient (cap lowered to 100 for the test) | the first 100 are queued and stay queued; the other 80 are each refused with `queue_full`; memory does not grow with the flood, and the flood erases nothing |
 
 ## Representative results (local run)
 
@@ -26,6 +26,7 @@ rssDeltaAfterSwarm:        6.6 MB
 rateLimitedOfFlood:        360     (of 600 fired)
 reconnectCycles:          100      rssDeltaAfterStorm:  2.5 MB
 queueCap:                 100      queueLenAfter180Sends: 100
+refusedOf180:              80
 ```
 
 ## Reading the numbers
@@ -36,9 +37,19 @@ queueCap:                 100      queueLenAfter180Sends: 100
   600 rejected) with the socket left open; an oversized frame closes only the
   offender; an oversized envelope is a clean app-level rejection that leaves the
   socket usable.
-- **Queues can't exhaust RAM.** The per-recipient ring buffer holds at the cap
-  (100 here; `MAX_QUEUE_MSGS_PER_USER` = 5000 in production) and drops oldest,
-  bounded independently by `MAX_QUEUE_BYTES_PER_USER` (64 MB).
+- **Queues can't exhaust RAM, and a flood can't erase a mailbox.** A
+  per-recipient queue holds at its cap (100 here; `MAX_QUEUE_MSGS_PER_USER` =
+  5000 in production, and independently `MAX_QUEUE_BYTES_PER_USER`, 64 MB)
+  and refuses the envelope that would cross it — `error{queue_full}` to the
+  sender, who keeps it and retries — rather than evicting the oldest. It
+  used to evict: a sender who had been told `sent` lost the envelope
+  without anyone knowing, so anyone with a routing id could clear what was
+  queued for it by sending 64 MB of junk. Now the junk fills the queue,
+  everything after it is refused loudly, and the queue clears when its owner
+  next connects (junk fails decryption and is acked away like anything
+  else). The same holds across two instances sharing a Redis, where the
+  byte cap is a counter settled atomically with every push and removal
+  (`queue_caps.test.js`); before, Redis mode enforced only the count.
 
 ## Production knobs (env)
 

@@ -1193,3 +1193,38 @@ direction; the phases, their order and both ordering arguments stand.
    the shell command that contains it and killed the chain that was
    editing the file, which is why two of the fixes above were applied
    twice.
+
+38. **The queue caps evicted, and the two modes did not even agree on
+   which.** A recipient's queue has a count cap and a byte cap. In RAM
+   mode both were enforced by shifting the *oldest* entry out; in Redis
+   mode only the count was (`rpush` + `ltrim`), and a Redis LIST has a
+   length, not a size, so the byte cap was a setting with nothing behind
+   it. Both facts surfaced from the HA deployment: release 2.7.3's
+   Blueprint chose `noeviction` for the store — a full store refuses a
+   send, loudly, rather than evicting a queue whose sender had already
+   been told `sent` — and the commit that chose it wrote down that one
+   sender to one offline recipient could fill the whole store, because the
+   per-mailbox byte cap did not exist there. Reading the RAM path for the
+   fix showed that it had the same flaw one level down: eviction meant
+   anyone holding a routing id could *erase* what was queued for it by
+   sending 64 MB of junk, silently, with every honest sender holding a
+   `sent`. Fixed the way the store was: a `send` that would cross either
+   cap is refused with `error{queue_full, id}` — a compatible extension,
+   §14 — and nothing queued is ever made room for; in Redis mode the byte
+   count is a counter beside the list, settled in the same Lua script as
+   every push and removal so two instances cannot race past the cap,
+   self-healing to zero whenever the list empties (which is also how the
+   entries a running store already held, queued by the older relay
+   without a size, cannot leave it wrong for long). The client keeps a
+   refused envelope pending, lets nothing else in its outbox wait behind
+   it, and retries in a minute; before this it would have stopped its
+   whole flush at the first full mailbox, as it does for any code it does
+   not know. `queue_caps.test.js` (against a real `redis-server`, two
+   instances, and the old-entry transition) and `queue_full_test.dart`
+   (three clients through the real relay) pin it; the flood case in
+   `load.test.js` now asserts the eighty refusals and that the first
+   hundred are untouched. R22 records what remains — a mailbox can be
+   *filled* while its owner is away — and why that is accepted. The rule:
+   **a limit that exists as a setting has to be tested at the setting,
+   in every mode the setting applies to** — the byte cap had a row in
+   three documents and a test in none.

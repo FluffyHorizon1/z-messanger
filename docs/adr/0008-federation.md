@@ -104,7 +104,7 @@ URL the envelope is for. `flushOutbox` groups rows by relay.
   to a code; a `zc3.` code is already at the edge of what scans well
   (`adr/0003`). A QR of a federated code needs one more error‑correction
   step or a smaller `name`. Measured before building, not after.
-* **A new residual risk (R22, when built).** A contact code is now an
+* **A new residual-risk row, when built.** A contact code is now an
   instruction to open a socket to a host the code's author chose. A
   hostile code points a device at a hostile relay, which then learns the
   device's address and that it added this contact — the same thing the
@@ -136,7 +136,7 @@ first's — a self‑hoster who wants to talk to the public relay's users, or
 a second public relay. When it fires, the build is: the statement type and
 its vectors (`protocol/`), the code and list members with a §14 note in
 PROTOCOL.md, the transport pool, the outbox column, the relay‑host prompt
-on adding a contact, R22, and `SELF_HOSTING.md` losing its "same relay"
+on adding a contact, its register row, and `SELF_HOSTING.md` losing its "same relay"
 sentence.
 
 ## Considered and rejected

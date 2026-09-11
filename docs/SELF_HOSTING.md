@@ -121,8 +121,8 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 | `PORT` | `8080` | listen port |
 | `HOST` | `0.0.0.0` | bind address |
 | `MAX_ENVELOPE_BYTES` | `1000000` | max single encrypted frame |
-| `MAX_QUEUE_BYTES_PER_USER` | `67108864` | per‑recipient RAM cap (bytes) |
-| `MAX_QUEUE_MSGS_PER_USER` | `5000` | per‑recipient RAM cap (count) |
+| `MAX_QUEUE_BYTES_PER_USER` | `67108864` | per‑recipient queue cap (bytes); an envelope that would cross it is refused, not made room for |
+| `MAX_QUEUE_MSGS_PER_USER` | `5000` | per‑recipient queue cap (count), likewise |
 | `QUEUE_TTL_HOURS` | `72` | drop undelivered envelopes after this |
 | `SWEEP_INTERVAL_SECONDS` | `60` | expiry sweep cadence |
 | `RATE_PER_SEC` / `RATE_BURST` | `80` / `240` | per‑connection token bucket |
@@ -194,9 +194,18 @@ different `instanceId` from one request to the next, and reports
 It differs from the compose file in one choice: the store is `noeviction`, so
 when it is full a send is refused — the sender's outbox keeps the message and
 retries — rather than a queue being evicted after its sender was already told
-"sent". In Redis mode the relay enforces `MAX_QUEUE_MSGS_PER_USER` but not
-`MAX_QUEUE_BYTES_PER_USER`, so size the instance for the messages you expect
-in flight, not from the per‑user byte cap.
+"sent". The per‑recipient caps work the same way at their own level and in
+both modes: an envelope that would take a mailbox past
+`MAX_QUEUE_MSGS_PER_USER` or `MAX_QUEUE_BYTES_PER_USER` is refused with
+`queue_full`, never made room for (PROTOCOL §12.4). So the store can hold at
+most `mailboxes in use × MAX_QUEUE_BYTES_PER_USER`, and one sender to one
+offline recipient can fill at most one mailbox's cap of it: with the
+defaults, 64 MB of a 256 MB store, which is why the cap is worth lowering on
+a small store (`MAX_QUEUE_BYTES_PER_USER=16777216` leaves room for about
+sixteen full mailboxes in 256 MB). Redis mode enforced only the count until
+2026‑09‑11; the byte counter it keeps beside each list is reset whenever the
+list empties, so nothing queued before that version can leave it wrong for
+longer than that list is non‑empty.
 
 To run your own instances by hand, set `REDIS_URL` (and optionally
 `INSTANCE_ID`) on each `node server.js`, and front them with any WebSocket‑aware
@@ -213,7 +222,10 @@ until acked).
 ## Operational notes
 
 - **Memory** is the only real resource: worst case ≈
-  `active_recipients × MAX_QUEUE_BYTES_PER_USER`. Tune the caps for your box.
+  `active_recipients × MAX_QUEUE_BYTES_PER_USER`, in RAM mode and in Redis
+  mode alike. Tune the caps for your box; keep the byte cap above one
+  envelope (`MAX_ENVELOPE_BYTES` + 256) or the largest envelopes are refused
+  everywhere, which the relay warns about at start.
 - **Restarts drop in‑flight messages.** Senders keep them in their device
   outbox and the protocol re‑delivers, but schedule redeploys thoughtfully.
 - **No backups needed.** There is nothing on disk to back up. That's the point.
