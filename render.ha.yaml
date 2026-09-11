@@ -1,0 +1,56 @@
+# Render.com Blueprint — the Z relay scaled out (SELF_HOSTING.md, "Scaling
+# out"): several relay instances behind Render's own load balancer, sharing
+# presence and the pending queue through a RAM-only Key Value instance
+# (Valkey, Redis-compatible). A client can land on any instance and still
+# reach anyone, and a relay redeploy no longer drops what is queued.
+#
+# Dashboard → New → Blueprint → this repo → Blueprint Path: render.ha.yaml
+# (a separate file so the single-instance Blueprints built from render.yaml
+# are untouched by this one, and vice versa).
+#
+# The Key Value instance holds exactly what process RAM held before: opaque
+# ciphertext, presence, opaque push tokens — never plaintext, never keys.
+# persistenceMode: off keeps it in RAM only; ipAllowList: [] keeps it off the
+# public internet — the instances reach it over Render's private network, so
+# every service here must be in the same region.
+#
+# Free instances cannot run more than one copy, so this costs money: two
+# 0.5 CPU / 512 MB instances plus a 256 MB Key Value — about $24 a month at
+# 2026 prices.
+services:
+  - type: keyvalue
+    name: z-relay-kv
+    plan: 256mb
+    region: frankfurt
+    persistenceMode: "off"      # nothing touches disk
+    # When full, refuse rather than evict: a refused send fails loudly, stays
+    # in the sender's outbox and is retried; an evicted queue is a message the
+    # sender already believes delivered. (docker-compose.ha.yml chooses
+    # allkeys-lru; see SELF_HOSTING.md for the trade-off.)
+    maxmemoryPolicy: noeviction
+    ipAllowList: []             # internal connections only
+
+  - type: web
+    name: z-relay-ha
+    runtime: docker
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    plan: 0.5c-512mb            # "Starter" until August 2026; free cannot scale
+    region: frankfurt           # same as the Key Value, for the internal URL
+    numInstances: 2
+    healthCheckPath: /health
+    # Deploy at release tags from the dashboard (Manual Deploy), not on every
+    # push to main: a relay is a live system, and main moves many times a day.
+    autoDeployTrigger: "off"
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: z-relay-kv
+          property: connectionString
+      - key: LOG_LEVEL
+        value: info
+      - key: QUEUE_TTL_HOURS
+        value: "72"
+      # Render injects PORT and the relay binds it — do not set it.
+      # INSTANCE_ID is deliberately unset: every instance derives its own.

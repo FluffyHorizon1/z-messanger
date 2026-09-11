@@ -181,6 +181,21 @@ instances (`REDIS_URL` set, read‑only filesystem), and an nginx load balancer 
 `:8080` that round‑robins WebSocket upgrades across them (`nginx.ha.conf`). Put
 a TLS proxy in front for `wss://`, or point a cloud host at the same setup.
 
+On Render, `render.ha.yaml` at the repository root is that setup as a
+Blueprint: two relay instances on paid compute (a free instance cannot run
+more than one copy), Render's own load balancer in front, and a Key Value
+instance with persistence off and no public access as the RAM‑only Redis.
+Create it from **New → Blueprint** with the Blueprint Path set to
+`render.ha.yaml`; `/health` then answers `"coordinator":"redis"` with a
+different `instanceId` from one request to the next, and reports
+`queuedEnvelopes` as `-1` because the total is not counted across instances.
+It differs from the compose file in one choice: the store is `noeviction`, so
+when it is full a send is refused — the sender's outbox keeps the message and
+retries — rather than a queue being evicted after its sender was already told
+"sent". In Redis mode the relay enforces `MAX_QUEUE_MSGS_PER_USER` but not
+`MAX_QUEUE_BYTES_PER_USER`, so size the instance for the messages you expect
+in flight, not from the per‑user byte cap.
+
 To run your own instances by hand, set `REDIS_URL` (and optionally
 `INSTANCE_ID`) on each `node server.js`, and front them with any WebSocket‑aware
 load balancer.
