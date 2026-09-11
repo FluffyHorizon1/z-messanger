@@ -988,3 +988,21 @@ direction; the phases, their order and both ordering arguments stand.
    and now say from what, in plain words. Two relay tests also stopped
    deriving their port from the clock (the last two that did; a collision
    failed a whole file in setUpAll once today).
+
+30. **15.3 — cold start was the last thing on the "not measured" list, and
+   it was linear in the contact count at 6 ms each.** 2.5 s for four
+   hundred contacts on a desktop VM, several times that on a phone, before
+   the first screen had anything to show. Every startup loader read its
+   per-contact keys with `kvGet`, which tried the sealed storage class and
+   then the plain one as two queries — fifteen round trips per contact —
+   and unread was a `COUNT` per chat. Now `kvGet` is one query for every
+   read in the app, `init` reads each per-contact key family once by prefix
+   (`Vault.kvScan`), and unread is one `GROUP BY` measured never slower than
+   the per-chat form. 400 contacts: 2 527 → 397 ms; per contact 6.3 → 1.0
+   (`coldstart_bench_test.dart`, PERFORMANCE.md "Cold start";
+   `vault_kv_test.dart` pins the store's semantics, broken once). The bench
+   also caught the group fan-out drain that `init` kicks unawaited throwing
+   unhandled when the vault closes under it — an app crash on the way out —
+   which now returns quietly like `flushOutbox`. The receive side taught
+   this section to measure the thing listed as unmeasured first; this was
+   the last such thing, and it was the biggest number left.

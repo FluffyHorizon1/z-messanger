@@ -390,6 +390,46 @@ The send side moved with it: a 1:1 send that was ~22 ms is ~10 ms, since
 `_decorateForWire` computed the same claim. PERFORMANCE.md's earlier
 send-side conclusion is struck through above rather than deleted.
 
+## Cold start (2026-09-11)
+
+What `ChatService.init` costs against the number of contacts — the time
+between the vault opening and the first screen having anything to show.
+Desktop VM, each contact with a settled session and one message each way,
+`coldstart_bench_test.dart`:
+
+| contacts | before | after |
+|---:|---:|---:|
+| 10 | 120 ms | 73 ms |
+| 100 | 633 ms | 102 ms |
+| 400 | **2 527 ms** (6.3 ms/contact) | **397 ms** (1.0 ms/contact) |
+
+Attributed at 100 contacts before the fix: `_loadDevlistState` 269 ms,
+`_refreshDeviceAssurance` 141, `_computeUnread` 102, `_loadContactDeviceLists`
+66, `_loadConversations` 54, `_loadContacts` 47. Every loader read its
+per-contact keys with `kvGet`, which tried the sealed storage class and then
+the plain one as **two queries** — so a plain value cost two round trips and
+a miss, which most per-contact keys are, cost two as well. Fifteen queries
+per contact at startup, and one `COUNT` per chat for unread on top.
+
+Three changes. `kvGet` is one query (`k IN (?, ?)`) for every read in the
+app. `Vault.kvScan(prefix)` reads a key family in one query, and `init` reads
+every per-contact family once and hands the snapshot to the loaders — six
+queries where there were fifteen per contact. Unread is one `GROUP BY` with
+a correlated subquery on the plain `last_open_` row, measured against one
+`COUNT` per chat: 274 → 0 ms for 400 chats of one message, 238 → 11 ms for
+400 chats of fifty, 33 → 24 ms for 50 chats of a thousand — never slower
+(`vault_kv_test.dart` pins that the two agree). What is left, at 400
+contacts: `_loadContacts` 184 ms and `_loadConversations` 162 ms — one
+unseal per sealed cell, which is the vault doing its job — and the bench
+asserts the per-contact cost stays under 3 ms so a loader cannot quietly go
+back to a query per contact.
+
+On the way, the bench closed the vault right after `init` and found the
+group fan-out drain that `init` kicks unawaited throwing an unhandled
+`DatabaseException` — an app crash on the way out if the vault closes under
+it. It swallows that now, as `flushOutbox` already did; the rows are durable
+and the next launch drains them.
+
 ## Not measured
 
 Named so this document does not read as more complete than it is:
@@ -416,8 +456,10 @@ Named so this document does not read as more complete than it is:
   the ones after it much less, because the extra-device session encrypts
   the message once per device but decorates and seals it in one pass.
   Members × devices for groups is still only members here.
-* **Cold start** and **relay load profile**, both named in roadmap 15.3. The
+* ~~**Cold start** and~~ **Relay load profile**, named in roadmap 15.3. The
   relay's abuse and capacity behaviour is exercised by
   `server/test/load.test.js`; its latency profile under sustained load is not.
+  Cold start is measured below (2026-09-11), and it was linear in the contact
+  count at a rate that would have been seconds on a phone.
 * ~~**Receive-side cost**, which is where the skipped-key cache is actually
   *used*.~~ Measured above, and it held the largest cost in the app.

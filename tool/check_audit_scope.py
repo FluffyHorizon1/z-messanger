@@ -54,6 +54,11 @@ UNCITED_OK = {
         "fan-out and reports where the cost goes (docs/PERFORMANCE.md). The "
         "one thing it asserts, that fan-out stays linear, is a design "
         "property rather than a security claim",
+    "app/test/coldstart_bench_test.dart":
+        "a measurement, not an assertion about behaviour — it times "
+        "ChatService.init against the number of contacts (docs/PERFORMANCE.md, "
+        "'Cold start'). The one thing it asserts, a per-contact budget, is a "
+        "cost property rather than a security claim",
     "app/test/device_link_spread_bench_test.dart":
         "a measurement, not an assertion about behaviour — it stamps a "
         "linked device's copy of each message as the relay stamps it, "

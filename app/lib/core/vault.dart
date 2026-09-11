@@ -193,8 +193,7 @@ class Vault {
       // No data migration: a row written before this keeps its cache inside
       // `enc_state`, which still loads, and the next receive writes it here.
       // Nothing is lost in between, because the old location is still read.
-      await db.execute(
-          'ALTER TABLE conversations ADD COLUMN enc_skipped TEXT');
+      await db.execute('ALTER TABLE conversations ADD COLUMN enc_skipped TEXT');
     }
   }
 
@@ -658,15 +657,60 @@ class Vault {
   }
 
   Future<String?> kvGet(String key) async {
-    for (final prefix in ['s:', 'p:']) {
-      final rows =
-          await db.query('kv', where: 'k = ?', whereArgs: [prefix + key]);
-      if (rows.isNotEmpty) {
-        final v = rows.first['v'] as String;
-        return prefix == 's:' ? await unseal(v) : v;
+    // One query for both storage classes. This used to try 's:' and then
+    // 'p:' as two queries, so every read of a plain value — and every miss,
+    // which is what most per-contact keys are at startup — cost two round
+    // trips; ChatService.init was paying ~15 of them per contact.
+    final rows = await db.query('kv',
+        columns: ['k', 'v'],
+        where: 'k IN (?, ?)',
+        whereArgs: ['s:$key', 'p:$key']);
+    if (rows.isEmpty) return null;
+    // A key present in both classes (should not happen; a rewrite with a
+    // different `sensitive` leaves the other behind) prefers the sealed one,
+    // as the old two-step lookup did.
+    final row = rows.length == 1
+        ? rows.first
+        : rows.firstWhere((r) => (r['k'] as String).startsWith('s:'));
+    final v = row['v'] as String;
+    return (row['k'] as String).startsWith('s:') ? await unseal(v) : v;
+  }
+
+  /// [kvScan] for several prefixes, merged. Startup reads every per-contact
+  /// key this way: one query per prefix instead of one (or two) per contact.
+  Future<Map<String, String>> kvScanMany(List<String> prefixes) async {
+    final out = <String, String>{};
+    for (final p in prefixes) {
+      out.addAll(await kvScan(p));
+    }
+    return out;
+  }
+
+  /// Every key that starts with [prefix], with its value — one query, for
+  /// the startup loops that used to do one (or two) per contact. Keys come
+  /// back without the storage-class marker; sealed values are unsealed.
+  Future<Map<String, String>> kvScan(String prefix) async {
+    final esc = prefix
+        .replaceAll(r'\', r'\\')
+        .replaceAll('%', r'\%')
+        .replaceAll('_', r'\_');
+    final rows = await db.query('kv',
+        columns: ['k', 'v'],
+        where: r"k LIKE ? ESCAPE '\' OR k LIKE ? ESCAPE '\'",
+        whereArgs: ['s:$esc%', 'p:$esc%']);
+    final out = <String, String>{};
+    for (final r in rows) {
+      final k = r['k'] as String;
+      final v = r['v'] as String;
+      final sealed = k.startsWith('s:');
+      final key = k.substring(2);
+      if (sealed) {
+        out[key] = await unseal(v);
+      } else {
+        out.putIfAbsent(key, () => v); // a sealed twin wins, as in kvGet
       }
     }
-    return null;
+    return out;
   }
 
   Future<void> kvDelete(String key) async {

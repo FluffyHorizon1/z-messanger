@@ -173,16 +173,27 @@ class ChatService extends ChangeNotifier {
     );
     await svc._loadContacts();
     await svc._refreshAllVerification();
+    // Cold start read every per-contact key with its own query — fifteen
+    // round trips per contact, 6 ms each contact, 2.5 s for four hundred
+    // (PERFORMANCE.md, "Cold start"). Everything per-contact is read once
+    // here, by prefix, and handed to the loaders.
+    final kv = await vault.kvScanMany([
+      'cdev_', // also cdev_pq_, cdev_ver_, cdev_pq_ver_
+      'cextra_',
+      'pql_alert_',
+      'dlpq_sent_',
+      'cdl_', // cdl_alert_, cdl_claims_
+    ]);
     for (final rid in svc.contacts.keys.toList()) {
-      await svc._refreshDeviceAssurance(rid, notify: false);
+      await svc._refreshDeviceAssurance(rid, notify: false, kv: kv);
     }
     await svc._loadGroups();
     await svc._loadConversations();
     await svc._computeUnread();
     svc.devMode = (await vault.kvGet('dev_mode')) == '1';
     await svc._initSync();
-    await svc._loadContactDeviceLists();
-    await svc._loadDevlistState();
+    await svc._loadContactDeviceLists(kv: kv);
+    await svc._loadDevlistState(kv: kv);
     svc._schedulePqListDelivery(); // §18.9, on its own clock
 
     transport.onMessage = (m) => unawaited(svc._onInbound(m));
@@ -385,16 +396,24 @@ class ChatService extends ChangeNotifier {
     }
   }
 
+  /// Unread counts for every chat, in one query. `last_open_<rid>` has been
+  /// a plain (`p:`) kv row since the first commit, so SQL can read it in a
+  /// correlated subquery; a chat with no row counts everything, as before.
+  /// Measured against one COUNT per chat: 274 → 0 ms for 400 chats of one
+  /// message, 238 → 11 ms for 400 chats of fifty, 33 → 24 ms for 50 chats
+  /// of a thousand — never slower, and the per-chat form is what made cold
+  /// start linear in the contact count (PERFORMANCE.md, "Cold start").
   Future<void> _computeUnread() async {
+    final rows = await vault.db
+        .rawQuery("SELECT m.rid AS rid, COUNT(*) AS n FROM messages m "
+            "WHERE m.outgoing = 0 AND m.kind != 'system' "
+            "AND m.ts_ms > COALESCE((SELECT CAST(v AS INTEGER) FROM kv "
+            "WHERE k = 'p:last_open_' || m.rid), 0) GROUP BY m.rid");
+    final counts = {
+      for (final r in rows) r['rid'] as String: (r['n'] as num).toInt()
+    };
     for (final rid in [...contacts.keys, ...groups.keys]) {
-      final lastOpen =
-          int.tryParse(await vault.kvGet('last_open_$rid') ?? '0') ?? 0;
-      final n = firstIntValue(await vault.db.rawQuery(
-              'SELECT COUNT(*) FROM messages WHERE rid = ? AND outgoing = 0 '
-              'AND ts_ms > ? AND kind != ?',
-              [rid, lastOpen, 'system'])) ??
-          0;
-      unread[rid] = n;
+      unread[rid] = counts[rid] ?? 0;
     }
   }
 
@@ -3987,6 +4006,13 @@ class ChatService extends ChangeNotifier {
         }
         if (!progressed) return; // every row in this page failed; back off
       }
+    } on DatabaseException {
+      // The vault closed under the drain (the app shutting down, or a
+      // service disposed right after init — the reconnect kick runs
+      // unawaited). Nothing is lost: the rows are durable and the next
+      // launch drains them. Fire-and-forget, so do not propagate — an
+      // unhandled error here is an app crash on the way out.
+      return;
     } finally {
       _fanoutDraining = false;
     }
@@ -4735,9 +4761,10 @@ class ChatService extends ChangeNotifier {
   DeviceAssurance deviceAssuranceWith(String rid) =>
       _deviceAssurance[rid] ?? DeviceAssurance.classical;
 
-  Future<void> _refreshDeviceAssurance(String rid, {bool notify = true}) async {
+  Future<void> _refreshDeviceAssurance(String rid,
+      {bool notify = true, Map<String, String>? kv}) async {
     final was = _deviceAssurance[rid];
-    final now = await _computeDeviceAssurance(rid);
+    final now = await _computeDeviceAssurance(rid, kv: kv);
     if (now == DeviceAssurance.classical) {
       _deviceAssurance.remove(rid);
     } else {
@@ -4746,12 +4773,17 @@ class ChatService extends ChangeNotifier {
     if (notify && was != now) notifyListeners();
   }
 
-  Future<DeviceAssurance> _computeDeviceAssurance(String rid) async {
+  /// [kv] is a startup snapshot of the per-contact keys (see `init`); without
+  /// it the two values are read individually.
+  Future<DeviceAssurance> _computeDeviceAssurance(String rid,
+      {Map<String, String>? kv}) async {
     final contact = contacts[rid];
     final mlPub = contact?.pqPub;
     if (contact == null || mlPub == null) return DeviceAssurance.classical;
-    final listJson = await vault.kvGet('cdev_$rid');
-    final sigJson = await vault.kvGet('cdev_pq_$rid');
+    final listJson =
+        kv != null ? kv['cdev_$rid'] : await vault.kvGet('cdev_$rid');
+    final sigJson =
+        kv != null ? kv['cdev_pq_$rid'] : await vault.kvGet('cdev_pq_$rid');
     if (listJson == null || sigJson == null) return DeviceAssurance.classical;
     try {
       final list = SignedDeviceList.fromJson(
@@ -4867,14 +4899,15 @@ class ChatService extends ChangeNotifier {
             d
       ];
 
-  Future<void> _loadContactDeviceLists() async {
+  Future<void> _loadContactDeviceLists({Map<String, String>? kv}) async {
     for (final rid in contacts.keys.toList()) {
-      final devJson = await vault.kvGet('cdev_$rid');
+      final devJson =
+          kv != null ? kv['cdev_$rid'] : await vault.kvGet('cdev_$rid');
       final contact = contacts[rid];
       if (devJson == null || contact == null) continue;
       final list = SignedDeviceList.fromJson(
           (jsonDecode(devJson) as Map).cast<String, Object?>());
-      await _installContactDeviceList(contact, list, persist: false);
+      await _installContactDeviceList(contact, list, persist: false, kv: kv);
     }
   }
 
@@ -4882,7 +4915,7 @@ class ChatService extends ChangeNotifier {
   /// newly-learned devices AND dropping revoked ones, so the fan-out set matches
   /// the list exactly.
   Future<void> _installContactDeviceList(Contact contact, SignedDeviceList list,
-      {required bool persist}) async {
+      {required bool persist, Map<String, String>? kv}) async {
     final rid = contact.rid;
     if (persist) {
       if (base64Encode(list.accountEdPub) != base64Encode(contact.accountEd)) {
@@ -4904,7 +4937,8 @@ class ChatService extends ChangeNotifier {
     final acct = await accountIdentity();
     var session = _contactExtras[rid];
     if (session == null) {
-      final stored = await vault.kvGet('cextra_$rid');
+      final stored =
+          kv != null ? kv['cextra_$rid'] : await vault.kvGet('cextra_$rid');
       session = stored != null
           ? await AccountSession.fromJson(
               acct, (jsonDecode(stored) as Map).cast<String, Object?>())
@@ -5145,12 +5179,13 @@ class ChatService extends ChangeNotifier {
   // ------------------------------------------------------------------
 
   /// Load persisted alerts and per-contact claims at startup.
-  Future<void> _loadDevlistState() async {
+  Future<void> _loadDevlistState({Map<String, String>? kv}) async {
+    Future<String?> get(String key) async =>
+        kv != null ? kv[key] : await vault.kvGet(key);
     for (final rid in contacts.keys.toList()) {
-      final a = await vault.kvGet('pql_alert_$rid');
+      final a = await get('pql_alert_$rid');
       if (a != null) pqListAlerts[rid] = a;
-      final sent =
-          int.tryParse(await vault.kvGet('dlpq_sent_$rid') ?? '0') ?? 0;
+      final sent = int.tryParse(await get('dlpq_sent_$rid') ?? '0') ?? 0;
       if (sent > 0) _dlpqSent[rid] = sent;
     }
     ownAccountAlert = await vault.kvGet('own_alert');
@@ -5162,9 +5197,9 @@ class ChatService extends ChangeNotifier {
           (int.tryParse(ae.substring(0, i)) ?? 0, ae.substring(i + 1));
     }
     for (final rid in contacts.keys.toList()) {
-      final a = await vault.kvGet('cdl_alert_$rid');
+      final a = await get('cdl_alert_$rid');
       if (a != null) contactDevlistAlerts[rid] = a;
-      final c = await vault.kvGet('cdl_claims_$rid');
+      final c = await get('cdl_claims_$rid');
       if (c == null) continue;
       final m = (jsonDecode(c) as Map).cast<String, Object?>();
       _contactClaims[rid] = {
