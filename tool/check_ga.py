@@ -48,6 +48,18 @@ def main() -> int:
             "update it."
         )
 
+    # G9 the other way round: a ✅ needs a second locale file to exist, and
+    # check_l10n.py (run separately) to find it complete.
+    g9_row = next((line for line in text.splitlines()
+                   if re.match(r"\|\s*G9\s*\|", line)), "")
+    arbs = sorted((ROOT / "app" / "lib" / "l10n").glob("app_*.arb"))
+    if "✅" in g9_row and len(arbs) < 2:
+        problems.append(
+            "GA_CHECKLIST.md marks G9 ✅ but app/lib/l10n holds only "
+            f"{len(arbs)} locale file(s). Localised means shipped in more "
+            "than one language."
+        )
+
     # G3, the other way round: the row may not read ✅ while the client
     # ships without a pinned log key. "Live" (adr/0006) includes the client
     # pinning the key; an empty default means no log is configured and the

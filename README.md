@@ -39,6 +39,9 @@ carries a build for each, with a `SHA256SUMS.txt` you can check against
   sensitive cell sealed under a key in the OS keystore, an optional
   passphrase (Argon2id), biometric app lock, and encrypted backups you can
   restore onto a wiped phone with a recovery code.
+- **In English and Spanish.** Every string, including the security wording,
+  in both; the strings are the app's only source of user‑visible text, and a
+  check in CI keeps every locale complete.
 - **The ordinary things, done carefully.** Groups, linked devices, voice
   messages, encrypted attachments, replies, reactions, edits,
   delete‑for‑everyone, disappearing messages, search — each specified and

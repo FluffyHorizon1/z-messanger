@@ -541,9 +541,9 @@ Everything currently externally gated, plus the work to call it 1.0.
   Still unmeasured and named as such: real hardware, devices-per-member (the
   extra-device fan-out is `unawaited` and not in these timings), cold start,
   and relay latency under sustained load. ~~And the receive side.~~
-- **15.4 docs & support & access** *(accessibility, user docs and the
-  localization foundation done; the string migration itself is 2 of 14 screens
-  and tracked)*.
+- **15.4 docs & support & access** *(accessibility, user docs and
+  localization done: 14 of 14 screens migrated, and the app ships in English
+  and Spanish — revision 35)*.
 
   `USING_Z.md` is the first document in this repository written for someone
   who is not reading the code: adding people, what a safety number is and what
@@ -616,28 +616,30 @@ Everything currently externally gated, plus the work to call it 1.0.
   pair clears AA in both palettes, and with the real theme installed they all
   pass. Both checks now run in CI and in `audit_verify.sh`.
 - **15.5 GA criteria checklist** *(written — `docs/GA_CHECKLIST.md`; the
-  answer is **NOT READY**, and one criterion needs a decision rather than
-  work)* — nine criteria with their real status. Met: backup and restore,
-  multi-device, published threat model, accessibility (for the checks that
-  exist). Unmet: the audit is not commissioned, iOS does not exist,
-  localization is 2 of 14 screens, and reproducible builds hold as a property
-  but **nobody outside the project has checked** — the one criterion this
-  project structurally cannot self-certify.
+  answer is **NOT READY**)* — nine criteria with their real status. Met:
+  backup and restore, multi-device, published threat model, accessibility
+  (for the checks that exist), localization (English and Spanish, with a
+  native reader's review named as the caveat). Unmet: the audit is not
+  commissioned, iOS does not exist, the transparency log is built end to end
+  and not deployed, and reproducible builds hold as a property but **nobody
+  outside the project has checked** — the one criterion this project
+  structurally cannot self-certify.
 
-  **The finding is G3.** "KT live" was written into the GA criteria at the
-  start of phase 8, and `adr/0001` gates key transparency on *"public launch
-  with an operator committed to durable infrastructure"*. So GA requires KT
-  and KT's trigger is a public launch: a circular dependency that no amount of
-  code resolves. Either 1.0 ships with gossip-based device-list transparency
-  and says so plainly, or the log infrastructure is committed to first and 1.0
-  waits. That is the maintainer's call, and the checklist refuses to quietly drop a
-  criterion that was put there for a reason.
+  **The finding was G3.** "KT live" was written into the GA criteria at the
+  start of phase 8, and `adr/0001` gated key transparency on *"public launch
+  with an operator committed to durable infrastructure"*. So GA required KT
+  and KT's trigger was a public launch: a circular dependency that no amount
+  of code resolves. It was resolved by decision, in the direction of running
+  the log (`adr/0006`); phase 11 built it, and what remains of G3 is a
+  deployment with four conditions the checklist names.
 
   `tool/check_ga.py` keeps the page honest: it fails if a KT client appears
-  while the page says none exists, if `app/ios/` appears while the page says
-  it does not, if the remaining-string count drifts, and — the one that
-  matters — if the summary says READY while any row below is still ❌. Verified
-  by breaking all four. The string-count guard needed fixing first: its regex
+  while the page says none exists, if G3 is ticked while the client's pinned
+  log key is empty, if G9 is ticked with one locale file, if `app/ios/`
+  appears while the page says it does not, if the migrated-screen count
+  drifts, if the status sentence's number disagrees with the ❌ rows, and —
+  the one that matters — if the summary says READY while any row below is
+  still ❌. Each verified by breaking it. The string-count guard needed fixing first: its regex
   wanted a space where the prose had a line wrap, so it matched nothing and
   passed silently, which is worse than no guard at all.
 
@@ -1074,3 +1076,18 @@ direction; the phases, their order and both ordering arguments stand.
    The ADR's table originally read otherwise in one parenthesis; the client
    and the table now agree, and `key_transparency_test.dart` pins the
    unlogged case.
+
+35. **G9 — the app ships in Spanish, and the guard learned what a second
+   locale can get wrong.** `app_es.arb`: 408 strings, the same claim per
+   string as the English, neutral Spanish in the tú form, "relay" left as
+   the product's own word. The guard that held screens to zero literals
+   now holds every other locale to exactly the English key set with the
+   same placeholders and plural cases — because a missing key does not
+   fail a build, it shows one English sentence among Spanish ones, and a
+   placeholder renamed in one locale is a crash in that locale only; both
+   were broken once to see it fire. `locale_es_test.dart` checks the
+   plurals, the stored system messages rendered in Spanish with their
+   durations, and that no string was copied through. The caveat is on the
+   checklist in the same words as G8's: the translation was made
+   in-project, and a native reader is the step that remains. It is a
+   review, not a blocker.

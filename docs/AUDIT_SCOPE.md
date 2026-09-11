@@ -33,7 +33,7 @@ Three components, one operator‑independent trust story:
 | Component | Language / size | Role |
 |---|---|---|
 | `protocol/` (`z_protocol`) | pure Dart, ~5.4 k lines in 18 modules, ~3.7 k lines of tests (160) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader |
-| `app/` | Flutter (Dart), core ~10.5 k lines (`lib/core/`), UI ~5.9 k lines, 41 test files (~11.2 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
+| `app/` | Flutter (Dart), core ~10.5 k lines (`lib/core/`), UI ~5.9 k lines, 42 test files (~11.3 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
 | `server/` | Node.js, `server.js` ~840 lines, ~2.4 k lines of tests (50) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics; two‑instance mode via Redis |
 
 Every message is encrypted on a device and decrypted only on the recipient
@@ -227,7 +227,7 @@ python3 protocol/tool/verify_mldsa.py
 # claiming nothing, with a reason)
 python3 tool/check_audit_scope.py
 
-# App: 41 test files, most driving real clients through the real relay
+# App: 42 test files, most driving real clients through the real relay
 # (each spawns its own relay process; node must be on PATH)
 cd app && flutter test
 

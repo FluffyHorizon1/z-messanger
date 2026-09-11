@@ -9,9 +9,9 @@ ship, so the mechanical parts of this one are verified by
 happened; it can check that this file has not drifted from the repository
 around it.
 
-**Status: NOT READY.** Four criteria are unmet — G1 waits on an engagement,
-G3 on the log going live, G7 on iOS, G9 on a second locale — and G2 holds
-but has been checked by nobody outside the project.
+**Status: NOT READY.** Three criteria are unmet — G1 waits on an engagement,
+G3 on the log going live, G7 on iOS — and G2 holds but has been checked by
+nobody outside the project.
 
 ---
 
@@ -27,7 +27,7 @@ but has been checked by nobody outside the project.
 | G6 | Published threat model | ✅ |
 | G7 | Platform completion (Android, iOS, Windows, macOS, Linux) | ❌ **iOS does not exist** |
 | G8 | Accessibility | ✅ for the checks that exist; see the caveat |
-| G9 | Localization | ❌ **14 of 14 screens; engineering done, no second locale** |
+| G9 | Localization | ✅ English and Spanish; see the caveat |
 
 ---
 
@@ -137,37 +137,41 @@ breadth-first by source inspection, which catches a narrower class of fault.
 **No screen reader has been run against this app by a person.** That is worth
 doing before 1.0 and is not something a test replaces.
 
-### G9 — Localization ❌
+### G9 — Localization ✅, with a caveat worth stating
 
 The foundation is in — `flutter_localizations`, `gen-l10n`, an ARB with a
-description on every string, and `tool/check_l10n.py` holding migrated screens
-to zero hardcoded literals. **14 of 14 screens are migrated; ~0
-strings remain** in them, and no locale but English exists.
+description on every string, and `tool/check_l10n.py` holding the migrated
+screens — **14 of 14 screens** — to zero hardcoded literals and, now,
+holding every other locale to exactly the English key set with the same
+placeholders and plural cases.
+The service stores its sixteen kinds of system message as a kind and its
+parameters (`core/system_messages.dart`), rendered through the ARB when
+shown, so they read in the user's language too.
 
-The service used to store sixteen kinds of English system message into the
-vault as prose ("You left the group."), which no screen count included and
-which would have read in English in every locale for ever. They are stored
-as a kind and its parameters now (`core/system_messages.dart`) and rendered
-through the ARB when shown (`l10n/system_text.dart`); rows written before
-that read as they were written. `check_l10n.py` refuses a new call that
-stores a sentence.
+**The app ships in two languages: English and Spanish** (`app_es.arb`,
+408 strings, every claim carried across — `locale_es_test.dart` checks the
+plurals, the stored system messages and that no string was copied through
+untranslated). Spanish was chosen because it is the second language Z's
+release notes have been published in since 2.0.
 
-**The engineering is done: 372 strings, every one with a description, and
-nothing user-visible outside the ARB.** What G9 still lacks is a second
-locale. Z publishes release notes in six; shipping the app in one is a
-defensible 1.0 decision, but it should be a decision rather than an
-oversight, and the security wording in particular wants a translator who
-reads the language rather than a machine. The descriptions were written for
-that translator.
+The caveat: **the Spanish was translated in‑project and has not been read
+by a native speaker.** The security wording — the safety‑number notices,
+"there is no way to recover it", the transparency states — is the part
+where a careless translation misleads someone, and it was written with
+that in mind, but a review by someone who lives in the language is the
+step that remains, the way a screen reader run by a person remains for G8.
+It is a review, not a blocker: the criterion is that the app is localised,
+and it is.
 
 ---
 
 ## What would change this page
 
 Two things are the maintainer's, not engineering's: commission the audit
-(G1) and deploy the log (G3 — the client is in). One is engineering, in
-progress: a second locale (G9). One is separate work: iOS (G7). One is
-nobody's to give us — an outside rebuild (G2).
+(G1) and deploy the log (G3 — the client is in). One is separate work: iOS
+(G7). One is nobody's to give us — an outside rebuild (G2). Two want a
+person rather than code and are not blockers: a native reader for the
+Spanish (G9) and a screen reader run by hand (G8).
 
-The rest is work, and it is counted rather than estimated: `check_l10n.py`
-prints exactly how many strings are left.
+`check_l10n.py` keeps the localisation honest: zero literals in any screen,
+and every locale complete.

@@ -80,6 +80,10 @@ UNCITED_OK = {
         "side'). The two things it asserts on the way, that an early "
         "arrival caches one key per message skipped and that late arrivals "
         "consume them, are covered as claims by skipped_keys_test.dart",
+    "app/test/locale_es_test.dart":
+        "the Spanish locale renders: plurals, stored system messages, no "
+        "string copied through untranslated — a localisation property "
+        "(G9), not a security claim",
     "app/test/system_text_test.dart":
         "that a stored system message renders in the user's language and a "
         "row from before the change still reads as written — a localization "

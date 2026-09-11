@@ -173,6 +173,49 @@ def arb_problems():
     return out
 
 
+def translation_problems():
+    """Every other locale carries every English key, and only those.
+
+    Added with the first translation. A missing key does not fail the build:
+    gen-l10n falls back to English for it, so a screen quietly shows one
+    English sentence among Spanish ones — which is how a partial translation
+    ships without anyone noticing. An extra key is a string somebody
+    translated for nothing. A placeholder that differs is a crash at render
+    time in one locale only; a plural case that differs is a sentence that
+    reads wrongly for one count only.
+    """
+    out = []
+    en = json.loads(ARB.read_text(encoding="utf-8"))
+    en_keys = {k for k in en if not k.startswith("@")}
+
+    def shape(s):
+        # Placeholders and plural cases, order-independent.
+        holes = set(re.findall(r"\{([A-Za-z0-9_]+)\}", s))
+        holes |= set(re.findall(r"\{(\w+),\s*plural", s))
+        cases = set(re.findall(r"(=\d+|zero|one|two|few|many|other)\s*\{", s))
+        return holes, cases
+
+    for arb in sorted(ARB.parent.glob("app_*.arb")):
+        if arb == ARB:
+            continue
+        name = f"app/lib/l10n/{arb.name}"
+        data = json.loads(arb.read_text(encoding="utf-8"))
+        keys = {k for k in data if not k.startswith("@")}
+        for k in sorted(en_keys - keys):
+            out.append(f"{name}: \"{k}\" is missing; that screen would show "
+                       f"English for it and nothing would fail.")
+        for k in sorted(keys - en_keys):
+            out.append(f"{name}: \"{k}\" is not in app_en.arb; a string "
+                       f"nobody will ever see.")
+        for k in sorted(en_keys & keys):
+            if shape(en[k]) != shape(data[k]):
+                out.append(f"{name}: \"{k}\" has different placeholders or "
+                           f"plural cases from app_en.arb.")
+            if data[k].strip() == "" and en[k].strip() != "":
+                out.append(f"{name}: \"{k}\" is empty.")
+    return out
+
+
 SERVICE = ROOT / "app" / "lib" / "core" / "chat_service.dart"
 
 
@@ -201,7 +244,7 @@ def service_problems():
 
 
 def main() -> int:
-    problems = arb_problems() + service_problems()
+    problems = arb_problems() + translation_problems() + service_problems()
     remaining = {}
 
     for path in sorted(UI.glob("*.dart")):
