@@ -353,15 +353,22 @@ const HOW_IT_WORKS_HTML = page(
   <h2>Groups, files and voice notes</h2>
   <p>A group has no group key. Each message is encrypted separately to each
   member over the same one-to-one sessions, so group traffic inherits the same
-  forward secrecy and is indistinguishable from direct traffic at the relay.
-  Files and voice notes are encrypted once under a random per-file key that
-  travels inside the conversation, then relayed as fixed-size chunks.</p>
+  forward secrecy and each envelope is indistinguishable from direct traffic
+  at the relay. The <em>burst</em> of them is not: every member's mailbox
+  receives its copy within a fraction of a second, every time, and a relay
+  that keeps timestamps can work out which mailboxes belong together — we
+  measured it, and the threat model says so (R18). Files and voice notes are
+  encrypted once under a random per-file key that travels inside the
+  conversation, then relayed as fixed-size chunks.</p>
 
   <h2>What this does not protect against</h2>
   <p>A compromised device. If someone controls your phone, encryption in
   transit is beside the point — they can read what you can read. Disappearing
   messages and the encrypted vault protect a lost or seized device, not one
-  running someone else's software. We state the limits plainly on the
+  running someone else's software. Timing. The relay never learns who sent an
+  envelope, but it sees when each mailbox is busy, and mailboxes that are
+  always busy together — a group's members, one person's phone and laptop —
+  are groupable from that alone. We state the limits plainly on the
   <a href="/security">security page</a>.</p>
 `
 );

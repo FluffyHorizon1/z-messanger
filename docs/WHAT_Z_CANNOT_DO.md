@@ -60,9 +60,14 @@ Z is not an anonymity network and does not claim to be.
 
 Someone watching your network sees you connect to a relay. Someone running the
 relay sees which mailbox an envelope is for, how big it is (rounded to one of
-six sizes) and when it arrived. They do not see who sent it, what it says, or
-who you talk to — sealed sender and the mailbox-as-a-hash design remove those
-— but they see that *something* happened.
+six sizes) and when it arrived. They do not see who sent it or what it says —
+sealed sender and the mailbox-as-a-hash design remove those — and no envelope
+says who you talk to. But the relay sees *when* each mailbox is busy, and
+patterns in that are not nothing: the members of a group all receive their
+copy of a message within a fraction of a second of each other, every time,
+and so does each of your own devices. We measured it (`THREAT_MODEL.md`, R18
+and R19). A relay that keeps timestamps can work out which mailboxes belong
+together; it still cannot put a name to any of them.
 
 Someone watching **both ends** can correlate timing and volume regardless of
 any of it. That is a property of the internet, not of Z. If being seen to use
@@ -86,8 +91,9 @@ write the recovery code on paper, keep them apart.
 
 ## It cannot stop a relay from refusing to deliver
 
-A hostile or broken relay cannot read your messages, forge them, or work out
-who is talking to whom. It *can* drop them, or go away entirely.
+A hostile or broken relay cannot read your messages or forge them, and no
+envelope tells it who is talking to whom (the timing patterns above are what
+it has instead). It *can* drop them, or go away entirely.
 
 Availability is the one thing you are trusting the relay operator for, which
 is why self-hosting exists and why the address is a setting rather than a

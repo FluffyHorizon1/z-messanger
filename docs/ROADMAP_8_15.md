@@ -981,6 +981,10 @@ direction; the phases, their order and both ordering arguments stand.
    copy is relay-stamped 15–22 ms after the contact's when the phone sends
    and 31–53 ms after the phone's when the contact sends — so "the relay
    cannot group a person's devices" (WHITEPAPER §3) was the same
-   overstatement, now qualified the same way, with R19. Two relay tests
-   also stopped deriving their port from the clock (the last two that did;
-   a collision failed a whole file in setUpAll once today).
+   overstatement, now qualified the same way, with R19. The user-facing
+   `WHAT_Z_CANNOT_DO.md` and the website's "Groups" and "does not protect
+   against" paragraphs said the flat version too ("indistinguishable from
+   direct traffic at the relay"; "cannot work out who is talking to whom")
+   and now say from what, in plain words. Two relay tests also stopped
+   deriving their port from the clock (the last two that did; a collision
+   failed a whole file in setUpAll once today).
