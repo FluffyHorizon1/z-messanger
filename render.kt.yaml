@@ -1,0 +1,49 @@
+# Render.com Blueprint — the Z transparency log (SELF_HOSTING.md, "Running
+# the transparency log", option C; PROTOCOL.md §19; docs/adr/0006).
+#
+# Dashboard → New → Blueprint → this repo → Blueprint Path: render.kt.yaml.
+# Render asks for KT_SEED on the way, because it is marked sync: false — it
+# is the log's signing key, it never goes in this file or in git, and it is
+# generated on your own machine (SELF_HOSTING.md, step 1) and pasted into
+# that one field. Everything else is here.
+#
+# Unlike the relay, the log KEEPS STATE: every published device list, in an
+# append-only file on the disk below. Two things follow from having a disk
+# on Render — the service cannot scale past one instance (a log is one
+# writer anyway) and a deploy restarts it rather than overlapping the old
+# and new copies (a few seconds; clients retry). A free instance cannot
+# carry a disk, so this costs the smallest paid instance plus the disk:
+# about $7 a month plus $0.25/GB at 2026 prices.
+#
+# After the first deploy: read the public key off the service's logs ("z-kt:
+# N entries, M labels; public key …") or GET /kt/v1/pub once; that is what
+# the app is built to pin (KT_LOG_PUB). Then a custom domain
+# (kt.zmessengers.com for the public one; the app's default) on this
+# service's Settings → Custom Domains, the same way as the relay's.
+services:
+  - type: web
+    name: z-kt
+    runtime: docker
+    dockerfilePath: ./kt/Dockerfile
+    dockerContext: ./kt
+    plan: starter               # a disk needs a paid instance
+    region: frankfurt
+    healthCheckPath: /health
+    # Deploy at release tags from the dashboard (Manual Deploy), not on every
+    # push to main: a log is a live system, and main moves many times a day.
+    autoDeployTrigger: "off"
+    disk:
+      name: z-kt-data
+      mountPath: /data          # = KT_DATA; entries.jsonl lives here
+      sizeGB: 1                 # a few KB per publish: room for a few hundred thousand
+    envVars:
+      - key: KT_SEED
+        sync: false             # 64 hex characters, generated on your machine; asked for at creation
+      - key: KT_DATA
+        value: /data
+      - key: KT_PORT
+        value: "10000"          # Render routes to PORT, 10000 by default; bind exactly that
+      - key: KT_HOST
+        value: 0.0.0.0
+      - key: PUBLISH_PER_MIN
+        value: "30"             # per source address (the TLS front's view of it)

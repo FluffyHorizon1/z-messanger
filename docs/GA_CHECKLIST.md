@@ -88,7 +88,11 @@ key (`defaultKtLogPub` in `app/lib/core/key_transparency.dart`, set at build
 time — `tool/check_ga.py` refuses the tick while it is empty) with a witness
 configured; a mirror run by someone other than the operator has verified a
 head; and the operator's own account appears in it. `SELF_HOSTING.md`
-"Running the transparency log" is the runbook, one step per condition.
+"Running the transparency log" is the runbook, one step per condition —
+and since `render.kt.yaml` and `render.kt-witness.yaml`, the log and the
+witness are a Blueprint each: what is left is a key generated on the
+operator's own machine, a domain, a build with the pins, and a second
+person to create the witness's Blueprint under their account.
 Four sentences flip with it: the "not yet live" lines in `WHITEPAPER.md`
 §9, `WHAT_Z_CANNOT_DO.md`, `DATA_MAP.md` "Not yet built", and R7's status
 in `THREAT_MODEL.md`.

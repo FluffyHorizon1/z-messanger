@@ -1,0 +1,53 @@
+# Render.com Blueprint — a WITNESS for a Z transparency log (SELF_HOSTING.md,
+# "Running the transparency log", step 5; PROTOCOL.md §19.5).
+#
+# A witness is a full mirror of the log that verifies every head it is
+# served, co-signs the ones that extend what it has seen, and serves the
+# last one it co-signed at GET /sth.json — the URL clients are given as
+# KT_WITNESS_URL, with the witness's public key as KT_WITNESS_PUB. If the
+# log ever signs a history that does not extend the one the witness holds,
+# the witness stops following it and keeps serving the last honest head,
+# from which the log can no longer produce a consistency proof: that is how
+# every client catches the fork.
+#
+# The value of a witness is that someone OTHER than the log's operator runs
+# it. So this Blueprint is meant to be created under a different account
+# from render.kt.yaml — a friend, a second operator, anyone who will keep a
+# $7 instance up: Dashboard → New → Blueprint → this repo → Blueprint Path:
+# render.kt-witness.yaml. Render asks for the two sync: false values: the
+# log's public key, which the log's operator hands over out of band (typing
+# it here IS the act of pinning), and a seed for the witness's own key,
+# generated on the witness operator's machine:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# The witness's public key appears in /sth.json as witness.pub; give it to
+# the log's operator for the app's KT_WITNESS_PUB.
+#
+# It keeps its own copy of every entry on the disk below, so it can be
+# reloaded and re-verified from nothing but that disk.
+services:
+  - type: web
+    name: z-kt-witness
+    runtime: docker
+    dockerfilePath: ./kt/Dockerfile
+    dockerContext: ./kt
+    dockerCommand: node tools/mirror.js   # the same image as the log, running its mirror
+    plan: starter               # a disk needs a paid instance
+    region: frankfurt
+    healthCheckPath: /health    # 200 even after a divergence — see tools/mirror.js
+    autoDeployTrigger: "off"
+    disk:
+      name: z-kt-witness-data
+      mountPath: /data          # = KT_MIRROR_DIR; entries.jsonl and sth.json
+      sizeGB: 1
+    envVars:
+      - key: KT_LOG_URL
+        value: https://kt.zmessengers.com   # the log to witness; change it for another
+      - key: KT_LOG_PUB
+        sync: false             # the log's public key, base64, from its operator out of band
+      - key: KT_WITNESS_SEED
+        sync: false             # 64 hex characters, generated on the witness operator's machine
+      - key: KT_MIRROR_DIR
+        value: /data
+      - key: KT_EVERY
+        value: "300"            # seconds between checks
+      # PORT is injected by Render; the mirror serves /sth.json and /health on it.

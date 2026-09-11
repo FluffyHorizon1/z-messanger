@@ -19,7 +19,8 @@
  * Run it:
  *   KT_SEED=<64 hex>  KT_DATA=/var/lib/z-kt  KT_PORT=8443  node server.js
  *   KT_SEED_FILE=/etc/z-kt/seed (32 raw bytes or 64 hex) is the alternative
- *   to KT_SEED; KT_EPHEMERAL=1 keeps entries in memory (development only —
+ *   to KT_SEED; PORT is honoured when KT_PORT is unset (a cloud host injects
+ *   it); KT_EPHEMERAL=1 keeps entries in memory (development only —
  *   a restart forgets the log, which is exactly what a log must not do).
  *
  * Abuse: publishes are limited per source address (PUBLISH_PER_MIN, default
@@ -240,7 +241,8 @@ function main() {
   }
   const log = new KtLog({ store, signingKey });
   const { httpServer } = createServer({ log, publishPerMinute: +(process.env.PUBLISH_PER_MIN || 30) });
-  const port = +(process.env.KT_PORT || 8085);
+  // KT_PORT first; then PORT, which cloud hosts inject (render.kt.yaml).
+  const port = +(process.env.KT_PORT || process.env.PORT || 8085);
   const host = process.env.KT_HOST || '127.0.0.1';
   httpServer.listen(port, host, () => {
     console.log(`z-kt: ${log.size} entries, ${log.map.size} labels; public key ${log.publicKey.toString('base64')}`);

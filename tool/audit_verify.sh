@@ -93,6 +93,8 @@ run "reproducibility tool's own tests" "C25" "." \
     python3 tool/test_verify_reproducible.py
 run "CI jobs check out what they use" "C25 C26" "." \
     python3 tool/check_workflow.py
+run "every Blueprint keeps its secrets out of the file" "-" "." \
+    python3 tool/check_blueprints.py
 run "every control announces something" "-" "." \
     python3 tool/check_a11y.py
 run "every text/background pair clears WCAG AA" "-" "." \

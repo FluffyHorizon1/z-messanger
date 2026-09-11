@@ -146,9 +146,11 @@ service**, not as relay features.
   under one signed head (`kt/`, PROTOCOL §19, `adr/0006`), publish
   authenticated by the account key, an append-only store replayed and
   re-verified on start, vectors re-derived by a second implementation. The
-  signing key is a file the operator protects (`KT_SEED_FILE`); an HSM is a
-  deployment choice the service does not preclude and does not yet have.
-  Deployed independently; the relay stays RAM-only. **Not yet deployed.**
+  signing key is a file the operator protects (`KT_SEED_FILE`), or a
+  dashboard secret on a cloud host (`render.kt.yaml`, revision 40); an HSM
+  is a deployment choice the service does not preclude and does not yet
+  have. Deployed independently; the relay stays RAM-only. **Not yet
+  deployed** — but a Blueprint away.
 - **11.2 client verification** ✅ — every contact's list checked by map proof
   and inclusion proof against a head that must extend the last one seen. A
   proof that fails, or a head that does not extend, is a **log fault**: nothing
@@ -160,8 +162,9 @@ service**, not as relay features.
   refuses any head that does not extend the one it verified (a fork, a
   shrunk log, entries that do not hash to the head), and co-signs the heads
   it verified into a witness record the client checks the log against. The
-  "public repo" is any static host for that record; the independent witness
-  is a person, and is one of G3's conditions.
+  "public repo" is any static host for that record — or the mirror itself
+  with `--serve`, which is how `render.kt-witness.yaml` runs it (revision
+  40); the independent witness is a person, and is one of G3's conditions.
 - **11.4 self-monitoring** ✅ — each check reads the account's own history
   and alerts on an entry this device neither signed nor learned by self-sync
   (`key_transparency_test.dart`, the owner's alert).
@@ -1265,3 +1268,36 @@ direction; the phases, their order and both ordering arguments stand.
    its *shapes* were the point, not its milliseconds. And the post-quantum
    pair has no platform implementation on Android to move to at all, so
    the ceiling on what native would buy is lower than the ratios suggest.
+
+40. **G3 was four conditions and an afternoon; now it is four conditions
+   and a few pastes.** The runbook for the log was a systemd unit and a
+   `docker run`, and the witness was "serve `sth.json` from any static
+   host" — true, and the kind of true that keeps a criterion open for
+   months. Two Blueprints beside the relay's: `render.kt.yaml` deploys the
+   log from its image with a persistent disk for the entries file and the
+   signing seed as a dashboard-only secret (`sync: false` — the file that
+   describes the service never holds the key, and the guard refuses a
+   literal); `render.kt-witness.yaml` deploys the *same* image with the
+   mirror as its command, which is why the mirror gained a `--serve` mode
+   (`GET /sth.json`, the co-signed head a client fetches; `GET /health`)
+   and reads every option from the environment. Two decisions on the way.
+   A witness that diverges keeps serving the head it last verified rather
+   than exiting: that head is exactly what a client needs to catch the
+   fork, since the log can no longer produce a consistency proof from it —
+   so `/health` stays 200 with `diverged: true`, because a host that
+   restarted an "unhealthy" witness would only make it reload the same head
+   and diverge again. And the image starts as root for two chores and
+   then drops privileges (`docker-entrypoint.sh`): a mounted volume or a
+   cloud disk arrives owned by root, and a seed file mounted read-only is
+   root's and mode 600 — which means the Docker command the runbook had
+   given since 11.1 could not have read the seed it mounted. Nobody had
+   run it. `tool/check_blueprints.py` holds every `render*.yaml` to no
+   literal secret, a health check, a disk mounted where its data variable
+   points on a plan that can carry one, and quoted `"off"`s; each of those
+   was tried wrong once to see it fire. Not verified here: the image build
+   and the Blueprint creation themselves, which need a daemon and a
+   dashboard; the entrypoint was run as root against a root-owned
+   directory and a root-only seed with the real log behind it, and the
+   witness service against the real log, a fork, and the environment
+   alone. The rule: **a runbook step nobody has executed is a hypothesis
+   with a heading.**

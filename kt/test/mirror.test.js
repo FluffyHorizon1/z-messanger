@@ -306,3 +306,113 @@ test('the command-line tool: exit 0 when the head verifies, 2 on divergence, 1 w
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('the witness service: --serve answers /sth.json and /health, follows the log, is configured from the environment, and keeps serving after a divergence', async () => {
+  const a = account('a');
+  const honest = new KtLog({ store: new MemoryStore(), signingKey: logKey, now });
+  const fork = new KtLog({ store: new MemoryStore(), signingKey: logKey, now });
+  for (let v = 1; v <= 3; v++) {
+    const p = publishFor(a, v);
+    honest.publish(p);
+    fork.publish(p);
+  }
+  fork.publish(publishFor(a, 9)); // the fork: a longer history that shares the first three
+  fork.publish(publishFor(a, 10));
+  const h = await serve(honest);
+  const f = await serve(fork);
+  const dir = tmpdir();
+  const tool = path.join(__dirname, '..', 'tools', 'mirror.js');
+  const witnessSeedHex = crypto.createHash('sha256').update('witness seed').digest('hex');
+  const get = async (url) => {
+    const res = await fetch(url);
+    return { status: res.status, body: await res.json() };
+  };
+  // Start the tool and resolve with the port it announces; collect its
+  // output so a failure has something to say.
+  const start = (args, env) =>
+    new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [tool, ...args], { env: { ...process.env, ...env } });
+      let out = '';
+      let err = '';
+      child.stdout.on('data', (d) => {
+        out += d;
+        const m = out.match(/serving on http:\/\/0\.0\.0\.0:(\d+)/);
+        if (m) resolve({ child, port: +m[1], out: () => out, err: () => err });
+      });
+      child.stderr.on('data', (d) => (err += d));
+      child.on('close', (status) => reject(new Error(`exited ${status} before serving: ${err}`)));
+    });
+  const until = async (pred, what) => {
+    for (let i = 0; i < 100; i++) {
+      if (await pred()) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`timeout: ${what}`);
+  };
+  const stopped = (child) => new Promise((res) => child.on('close', res));
+
+  // ---- configured entirely from the environment, serving on a free port ----
+  const env = {
+    KT_LOG_URL: h.url,
+    KT_LOG_PUB: honest.publicKey.toString('base64'),
+    KT_MIRROR_DIR: dir,
+    KT_WITNESS_SEED: witnessSeedHex,
+    KT_EVERY: '1',
+    PORT: '0', // what a cloud host injects; 0 lets the OS pick, as a test must
+  };
+  const w = await start([], env);
+  try {
+    await until(async () => (await get(`http://127.0.0.1:${w.port}/sth.json`)).status === 200, 'first head served');
+    const rec = (await get(`http://127.0.0.1:${w.port}/sth.json`)).body;
+    assert.equal(rec.size, 3);
+    assert.ok(rec.witness && rec.witness.sig, 'the served head is co-signed');
+    assert.equal(rec.witness.pub, rawPublicKey(witnessKey).toString('base64'));
+    // The record verifies exactly as a client verifies it: the log's own
+    // signature on the head, and the witness's over the same input.
+    const sth = sthFromJson(rec.sth);
+    assert.ok(verifySth(sth, honest.publicKey));
+    assert.ok(verify(rawPublicKey(witnessKey), witnessInput(sth), Buffer.from(rec.witness.sig, 'base64')));
+    const health = (await get(`http://127.0.0.1:${w.port}/health`)).body;
+    assert.equal(health.ok, true);
+    assert.equal(health.size, 3);
+    assert.equal(health.diverged, false);
+    assert.equal(health.log, h.url);
+
+    // It follows the log without being asked.
+    honest.publish(publishFor(a, 4));
+    await until(async () => (await get(`http://127.0.0.1:${w.port}/sth.json`)).body.size === 4, 'the fourth entry reaches the witness');
+
+    // A served head nobody co-signed attests nothing: refused up front.
+    const noKey = spawnSync(process.execPath, [tool, '--serve', '0'], {
+      env: { ...process.env, KT_LOG_URL: h.url, KT_LOG_PUB: env.KT_LOG_PUB, KT_MIRROR_DIR: tmpdir() },
+      encoding: 'utf8',
+    });
+    assert.equal(noKey.status, 1);
+    assert.match(noKey.stderr, /witness key/);
+  } finally {
+    w.child.kill('SIGTERM');
+    await stopped(w.child);
+  }
+
+  // ---- the same directory, pointed at a fork: diverges, keeps serving ----
+  const d = await start(['--log', f.url, '--pub', env.KT_LOG_PUB, '--dir', dir, '--serve', '0', '--every', '1'], { KT_WITNESS_SEED: witnessSeedHex });
+  try {
+    await until(async () => (await get(`http://127.0.0.1:${d.port}/health`)).body.diverged === true, 'the fork is noticed');
+    const health = (await get(`http://127.0.0.1:${d.port}/health`)).body;
+    assert.equal(health.ok, false);
+    assert.match(health.lastError, /does not extend|different roots/);
+    const rec = (await get(`http://127.0.0.1:${d.port}/sth.json`)).body;
+    assert.equal(rec.size, 4, 'the last honest head is what it still serves');
+    assert.match(d.err(), /DIVERGENCE/);
+    assert.match(d.err(), /still serving/);
+    // It is still up, and still says so, a moment later.
+    await new Promise((r) => setTimeout(r, 1200));
+    assert.equal((await get(`http://127.0.0.1:${d.port}/health`)).status, 200);
+  } finally {
+    d.child.kill('SIGTERM');
+    await stopped(d.child);
+    await h.stop();
+    await f.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

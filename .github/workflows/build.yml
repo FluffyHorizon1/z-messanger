@@ -91,6 +91,12 @@ jobs:
       # catches it on every push instead.
       - name: Every CI job that uses repo files checks one out
         run: python3 tool/check_workflow.py
+      # A render*.yaml is applied by clicking. This holds each one to the
+      # things a click cannot undo: no literal secret in a public file, a
+      # health check, a disk mounted where its data variable points on a plan
+      # that can carry one, and "off" quoted so it is not read as false.
+      - name: Every Blueprint keeps its secrets out of the file
+        run: python3 tool/check_blueprints.py
       # 15.4: Play assesses accessibility separately from the 3.5 items. The
       # widget test covers the screens that stand up without a ChatService;
       # this covers every screen's source for controls that announce nothing.
