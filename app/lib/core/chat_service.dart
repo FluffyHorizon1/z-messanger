@@ -81,9 +81,10 @@ class ChatService extends ChangeNotifier implements KtHost {
   Timer? _sweeper;
   bool _flushing = false;
 
-  /// A mailbox the relay reported full (`queue_full`, PROTOCOL §12.4) is
-  /// tried again after this long; the rows wait in the outbox meanwhile.
-  /// Overridable so a test need not wait a minute.
+  /// A mailbox the relay reported full (`queue_full`), or a relay whose
+  /// store is full (`store_full`), PROTOCOL §12.4, is tried again after this
+  /// long; the rows wait in the outbox meanwhile. Overridable so a test need
+  /// not wait a minute.
   Duration outboxRetryDelay = const Duration(seconds: 60);
   Timer? _outboxRetry;
 
@@ -1660,6 +1661,9 @@ class ChatService extends ChangeNotifier implements KtHost {
     // Mailboxes the relay refused this pass as full: their rows stay where
     // they are, in order, and the pass goes on with everyone else's.
     final full = <String>{};
+    // The relay's shared store itself full (`store_full`): nobody's envelope
+    // fits right now, so the pass stops and everything waits for the retry.
+    var storeFull = false;
     try {
       while (true) {
         final rows = full.isEmpty
@@ -1699,6 +1703,13 @@ class ChatService extends ChangeNotifier implements KtHost {
               // when they next connect. The row waits, still pending, and
               // is tried again shortly; nothing else is held up by it.
               full.add(rid);
+            } else if (e.message.contains('store_full')) {
+              // The relay's store has no room for anyone right now
+              // (§12.4). Temporary: it heals as mailboxes drain. Stop this
+              // pass — every row would get the same answer — and let the
+              // retry timer bring it back, rather than the next reconnect.
+              storeFull = true;
+              return;
             } else {
               return; // connection trouble: retry on next connect
             }
@@ -1713,7 +1724,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       return;
     } finally {
       _flushing = false;
-      if (full.isNotEmpty && !_disposed) {
+      if ((full.isNotEmpty || storeFull) && !_disposed) {
         _outboxRetry ??= Timer(outboxRetryDelay, () {
           _outboxRetry = null;
           unawaited(flushOutbox());

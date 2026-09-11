@@ -192,9 +192,15 @@ Create it from **New → Blueprint** with the Blueprint Path set to
 different `instanceId` from one request to the next, and reports
 `queuedEnvelopes` as `-1` because the total is not counted across instances.
 It differs from the compose file in one choice: the store is `noeviction`, so
-when it is full a send is refused — the sender's outbox keeps the message and
-retries — rather than a queue being evicted after its sender was already told
-"sent". The per‑recipient caps work the same way at their own level and in
+when it is full a send is refused — `store_full`, promptly, and the sender's
+outbox keeps the message and retries on its own timer — rather than a queue
+being evicted after its sender was already told "sent". A full store does
+not keep anyone out: logins still succeed, queued envelopes are still
+delivered and acknowledged (reads and removals are allowed when memory is
+short), so the mailboxes that filled it can be drained and it heals by
+itself; `/health` shows `presenceStale` while it lasts and `/metrics`
+counts `z_store_full_total`. This relies on Redis 7 script flags: run
+Redis 7 or newer, or Valkey (the compose file and the Blueprint do). The per‑recipient caps work the same way at their own level and in
 both modes: an envelope that would take a mailbox past
 `MAX_QUEUE_MSGS_PER_USER` or `MAX_QUEUE_BYTES_PER_USER` is refused with
 `queue_full`, never made room for (PROTOCOL §12.4). So the store can hold at

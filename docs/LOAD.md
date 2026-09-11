@@ -50,6 +50,15 @@ refusedOf180:              80
   else). The same holds across two instances sharing a Redis, where the
   byte cap is a counter settled atomically with every push and removal
   (`queue_caps.test.js`); before, Redis mode enforced only the count.
+- **A full store heals rather than deadlocks.** In Redis mode the store
+  itself has a limit (`maxmemory`, `noeviction`). `full_store.test.js`
+  fills a 4 MB store through the relay and checks what happens while it
+  is full: a send is refused within milliseconds as `store_full` with its
+  id (it used to time out, 20 s per envelope); a login still succeeds and
+  still drains its mailbox (it used to fail at the presence write, so
+  nobody could log in — including the one person who could have made
+  room); and once the full mailbox is drained, sends succeed again and
+  the heartbeat repairs presence.
 
 ## Production knobs (env)
 

@@ -805,8 +805,9 @@ S→C  { "t":"error", "code":string, "id"?:envelopeId }
 string ≤ `MAX_ENVELOPE_BYTES` (default 1,000,000) characters; the WebSocket
 frame limit is that plus 4096. Error codes: `rate_limited`, `bad_json`,
 `internal`, `bad_auth`, `not_authed`, `bad_send`, `too_large`, `bad_push`,
-`unknown_frame`, and — since 2026‑09‑11, a compatible extension under §14 —
-`queue_full` (§12.4), which carries the `id` of the `send` it answers.
+`unknown_frame`, and — since 2026‑09‑11, compatible extensions under §14 —
+`queue_full` and `store_full` (§12.4), each carrying the `id` of the `send`
+it answers.
 
 **Sealed handling.** A `payload` beginning with `zs1.` is stored and delivered
 with **no** `from` member, is acknowledged with a `recv` that omits `from`,
@@ -842,6 +843,23 @@ expires after `QUEUE_TTL_HOURS` (72). Multiple relay instances may share
 queues and presence through Redis, where the byte cap is a counter kept
 beside the list and settled in the same atomic script as every push and
 removal; the frame protocol is identical.
+
+**The store itself full** (Redis mode; the reference deployment runs the
+store with `noeviction`, so it refuses writes rather than evicting a queue
+whose sender was told `sent`). A `send` the store has no room for is
+answered `error{store_full, id}`, promptly; the sender keeps the envelope
+and retries later, since the condition is temporary — it ends as mailboxes
+are drained. Everything that reads or frees is still served: a client that
+connects while the store is full still gets `ready` and its queued
+envelopes, and its `recv`s still remove them (the relay's removal script
+is flagged to run when memory is short, and its push script to be refused
+up front — Redis 7 or Valkey). What such a login loses until the store has
+room again is only its presence record, so envelopes for it from another
+instance are queued rather than pushed live until the relay's next
+successful heartbeat write; the instance it is on serves it live from its
+own knowledge regardless. The relay counts refusals of this kind
+(`z_store_full_total`) and reports sockets whose presence write is pending
+(`/health` `presenceStale`).
 
 ### 12.5 Delivery semantics
 

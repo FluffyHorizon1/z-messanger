@@ -135,6 +135,10 @@ const METRICS = {
   // bytes). Refused, not dropped: the sender is told, keeps the envelope in
   // its outbox and retries; nothing already queued is touched.
   refusedTotal: 0,
+  // Sends the shared store refused for want of memory (Redis mode, the
+  // store at maxmemory with noeviction): the sender is told store_full and
+  // retries later; the store heals as recipients drain their mailboxes.
+  storeFullTotal: 0,
   deliveredLiveTotal: 0,
   ackedTotal: 0,
   latencyBucketsMs: [50, 200, 1000, 5000, 30000],
@@ -165,6 +169,8 @@ function renderMetrics(stats) {
   L.push(`z_sealed_unattributable_total ${METRICS.sealedUnattributableTotal}`);
   L.push('# TYPE z_refused_total counter');
   L.push(`z_refused_total ${METRICS.refusedTotal}`);
+  L.push('# TYPE z_store_full_total counter');
+  L.push(`z_store_full_total ${METRICS.storeFullTotal}`);
   L.push('# TYPE z_delivered_live_total counter');
   L.push(`z_delivered_live_total ${METRICS.deliveredLiveTotal}`);
   L.push('# TYPE z_acked_total counter');
@@ -375,11 +381,22 @@ class MemoryCoordinator {
 // plaintext, no keys. Run Redis RAM-only (--save "" --appendonly no).
 // ---------------------------------------------------------------------------
 
+// The store at its own limit (maxmemory, noeviction — render.ha.yaml): Redis
+// refuses every command that could take memory, which is the push below and
+// a presence write, and allows every command that reads or frees, which is
+// a flush, an ack and a removal. The scripts say so explicitly with Redis 7
+// flags: the push carries none and is refused up front when the store is
+// full (no half-applied script); the removal is `allow-oom` because it only
+// frees. Measured on Redis 7.0 before this was written: a script without
+// the flag whose first write is LREM is in fact allowed its later DECRBY —
+// Redis will not stop a script that has already written — so the flag
+// states a property the relay was already leaning on. Redis 7 or Valkey.
+//
 // KEYS[1] = q:{rid}, KEYS[2] = qb:{rid}; ARGV = entry JSON, its size, the
 // count cap, the byte cap, the TTL in seconds. Returns 1 if appended, 0 if
 // the queue is full — decided and applied atomically, so two instances
 // pushing at once cannot both squeeze past the cap.
-const REDIS_PUSH_LUA = `
+const REDIS_PUSH_LUA = `#!lua
 local len = redis.call('LLEN', KEYS[1])
 local bytes = 0
 if len > 0 then bytes = tonumber(redis.call('GET', KEYS[2]) or '0') end
@@ -400,7 +417,7 @@ return 1`;
 // and takes its size off the counter, clamping at zero; an emptied list
 // deletes the counter, and an adjusted one inherits the list's remaining
 // TTL so the counter never outlives the list.
-const REDIS_REMOVE_LUA = `
+const REDIS_REMOVE_LUA = `#!lua flags=allow-oom
 local n = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if n == 0 then return 0 end
 if redis.call('LLEN', KEYS[1]) == 0 then
@@ -419,6 +436,18 @@ function entrySize(e) {
   return e.kind === 'receipt' ? 192 : String(e.payload || '').length + 256;
 }
 
+/** Thrown by a push the store refused for want of memory; answered `store_full`. */
+class StoreFull extends Error {
+  constructor() {
+    super('the store is full');
+  }
+}
+
+/** Redis refusing a write for want of memory ("OOM command not allowed …"). */
+function isStoreFull(e) {
+  return /\bOOM\b/.test(String((e && e.message) || ''));
+}
+
 class RedisCoordinator {
   constructor(url, instanceId) {
     const IORedis = require('ioredis');
@@ -427,6 +456,7 @@ class RedisCoordinator {
     this.sub = new IORedis(url, { maxRetriesPerRequest: 3, lazyConnect: false });
     this.pub = new IORedis(url, { maxRetriesPerRequest: 3, lazyConnect: false });
     this.local = new Map(); // rid -> ws on THIS instance
+    this.presenceStale = new Set(); // rids whose presence write the store refused
     this.chan = `z:inst:${this.id}`;
     for (const c of [this.cmd, this.sub, this.pub]) c.on('error', () => {});
     this.cmd.defineCommand('zQueuePush', { numberOfKeys: 2, lua: REDIS_PUSH_LUA });
@@ -468,13 +498,27 @@ class RedisCoordinator {
       // Kick the socket living on another instance.
       await this.pub.publish(`z:inst:${owner}`, JSON.stringify({ op: 'kick', rid }));
     }
-    await this.cmd.set(`presence:${rid}`, this.id, 'EX', 60);
+    try {
+      await this.cmd.set(`presence:${rid}`, this.id, 'EX', 60);
+    } catch (e) {
+      // A store at its memory limit refuses the presence write. The login
+      // goes ahead anyway: this instance knows the socket, the flush that
+      // follows only reads, and an ack only frees — so the one person who
+      // can make room, the mailbox's owner, is not the one kept out. Until
+      // the heartbeat's next write succeeds, envelopes sent to this mailbox
+      // from another instance are queued rather than pushed live, and the
+      // reconnect flush delivers them. Anything else is a real failure.
+      if (!isStoreFull(e)) throw e;
+      METRICS.storeFullTotal += 1;
+      this.presenceStale.add(rid);
+    }
     return prevLocal;
   }
 
   async unregister(rid, ws) {
     if (this.local.get(rid) === ws) {
       this.local.delete(rid);
+      this.presenceStale.delete(rid);
       const owner = await this.cmd.get(`presence:${rid}`);
       if (owner === this.id) await this.cmd.del(`presence:${rid}`);
     }
@@ -501,17 +545,27 @@ class RedisCoordinator {
     }
   }
 
-  /** Appends, or returns false when the recipient's queue is at a cap (see MemoryCoordinator#_enqueue). */
+  /**
+   * Appends; returns false when the recipient's queue is at a cap (see
+   * MemoryCoordinator#_enqueue) and throws a StoreFull when the store itself
+   * has no room — the caller says which to the sender.
+   */
   async _push(rid, entry) {
-    const r = await this.cmd.zQueuePush(
-      `q:${rid}`,
-      `qb:${rid}`,
-      JSON.stringify(entry),
-      String(entrySize(entry)),
-      String(CFG.maxQueueMsgsPerUser),
-      String(CFG.maxQueueBytesPerUser),
-      String(CFG.queueTtlHours * 3600)
-    );
+    let r;
+    try {
+      r = await this.cmd.zQueuePush(
+        `q:${rid}`,
+        `qb:${rid}`,
+        JSON.stringify(entry),
+        String(entrySize(entry)),
+        String(CFG.maxQueueMsgsPerUser),
+        String(CFG.maxQueueBytesPerUser),
+        String(CFG.queueTtlHours * 3600)
+      );
+    } catch (e) {
+      if (isStoreFull(e)) throw new StoreFull();
+      throw e;
+    }
     return r === 1;
   }
 
@@ -522,7 +576,15 @@ class RedisCoordinator {
 
   async deliverEnqueue(from, to, id, payload) {
     const entry = { kind: 'msg', id, from, payload, ts: Date.now(), size: payload.length + 256 };
-    if (!(await this._push(to, entry))) {
+    let accepted;
+    try {
+      accepted = await this._push(to, entry);
+    } catch (e) {
+      if (!(e instanceof StoreFull)) throw e;
+      METRICS.storeFullTotal += 1;
+      return { queued: false, storeFull: true };
+    }
+    if (!accepted) {
       METRICS.refusedTotal += 1;
       return { queued: false, refused: true };
     }
@@ -530,9 +592,12 @@ class RedisCoordinator {
     if (from == null) METRICS.sealedTotal += 1;
     const owner = await this.cmd.get(`presence:${to}`);
     let live = false;
-    if (owner === this.id) {
-      const ws = this.local.get(to);
-      live = ws ? sendJson(ws, entryToFrame(entry)) : false;
+    const here = this.local.get(to);
+    if (owner === this.id || (!owner && here)) {
+      // This instance's own sockets are authoritative: a presence write the
+      // store refused (register, above) must not turn a live recipient into
+      // an offline one.
+      live = here ? sendJson(here, entryToFrame(entry)) : false;
     } else if (owner) {
       await this.pub.publish(
         `z:inst:${owner}`,
@@ -572,14 +637,24 @@ class RedisCoordinator {
     const owner = await this.cmd.get(`presence:${from}`);
     if (owner === this.id) {
       const ws = this.local.get(from);
-      if (!(ws && sendJson(ws, entryToFrame(receipt)))) await this._push(from, receipt);
+      if (!(ws && sendJson(ws, entryToFrame(receipt)))) await this._pushReceipt(from, receipt);
     } else if (owner) {
       await this.pub.publish(
         `z:inst:${owner}`,
         JSON.stringify({ op: 'deliver', toRid: from, frame: entryToFrame(receipt) })
       );
     } else {
-      await this._push(from, receipt);
+      await this._pushReceipt(from, receipt);
+    }
+  }
+
+  /** A receipt the store cannot hold is lost, not a message; the ack that produced it stands. */
+  async _pushReceipt(rid, receipt) {
+    try {
+      await this._push(rid, receipt);
+    } catch (e) {
+      if (!(e instanceof StoreFull)) throw e;
+      METRICS.storeFullTotal += 1;
     }
   }
 
@@ -602,13 +677,19 @@ class RedisCoordinator {
 
   async heartbeat() {
     for (const rid of this.local.keys()) {
-      await this.cmd.set(`presence:${rid}`, this.id, 'EX', 60);
+      try {
+        await this.cmd.set(`presence:${rid}`, this.id, 'EX', 60);
+        this.presenceStale.delete(rid);
+      } catch (e) {
+        if (!isStoreFull(e)) throw e;
+        this.presenceStale.add(rid);
+      }
     }
   }
 
   stats() {
     // Global totals aren't counted per-instance to stay cheap; report local.
-    return { connections: this.local.size, queuedEnvelopes: -1 };
+    return { connections: this.local.size, queuedEnvelopes: -1, presenceStale: this.presenceStale.size };
   }
 
   async close() {
@@ -659,6 +740,10 @@ function createServer(opts = {}) {
           // socket count is what the relay's tail latency follows.
           sockets: wssRef ? wssRef.clients.size : s.connections,
           queuedEnvelopes: s.queuedEnvelopes,
+          // Redis mode: sockets here whose presence the store refused to
+          // write (it was full); their mail is queued, not pushed, until
+          // the heartbeat's write succeeds. Absent in RAM mode.
+          ...(s.presenceStale !== undefined ? { presenceStale: s.presenceStale } : {}),
           storage: 'ram-only',
           push: pushSender ? 'enabled' : 'disabled',
         })
@@ -879,7 +964,7 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
       // encrypted envelope, so a full copy of this server yields no social
       // graph. Authenticity is enforced end-to-end by the inner ratchet.
       if (anon && !state.authed) METRICS.sealedUnattributableTotal += 1;
-      const { queued, refused } = await coord.deliverEnqueue(
+      const { queued, refused, storeFull } = await coord.deliverEnqueue(
         anon ? null : state.rid,
         to,
         id,
@@ -889,6 +974,13 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
         // The recipient's queue is at its cap. Told, not dropped: the
         // sender keeps the envelope and retries once the recipient drains.
         sendJson(ws, { t: 'error', code: 'queue_full', id });
+        return;
+      }
+      if (storeFull) {
+        // The shared store has no room for anyone's envelope right now.
+        // Told promptly, with the id, so the sender's outbox pauses and
+        // retries rather than waiting out a timeout per envelope.
+        sendJson(ws, { t: 'error', code: 'store_full', id });
         return;
       }
       sendJson(ws, { t: 'sent', id, queued });

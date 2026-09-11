@@ -1301,3 +1301,37 @@ direction; the phases, their order and both ordering arguments stand.
    witness service against the real log, a fork, and the environment
    alone. The rule: **a runbook step nobody has executed is a hypothesis
    with a heading.**
+
+41. **A full store used to lock everyone out, and the fix started by
+   finding out what "full" actually refuses.** The production store runs
+   `noeviction` (2.7.3), so at its memory limit it refuses writes. The
+   master's note on the cutover said what followed: a send threw inside
+   the relay and the client got `error{internal}` with no id, so every
+   send waited out a twenty-second timeout; and a login failed at the
+   presence write, so nobody could connect — not even the owner of the
+   mailbox that needed draining. Before building anything, a real
+   `redis-server` was put at `maxmemory` and every operation the relay
+   makes was tried against it, because the plan in my head had a third
+   failure in it: that 2.7.6's removal script would be refused too, and
+   the store could never drain. It would not have been. Redis refuses
+   `SET`, `INCRBY`, `RPUSH` and any script whose *first* write is one of
+   those, and allows every read, `LREM`, `DEL`, `EXPIRE`, `PUBLISH` — and a
+   script that has already written is allowed to go on writing, so a
+   script whose first write is `LREM` gets its later `DECRBY` too. The
+   relay had been leaning on that rule without knowing it; the scripts now
+   say it out loud with Redis 7 flags (`allow-oom` on the removal, none on
+   the push, which is refused before it runs). The two real failures are
+   fixed: a send the store cannot hold is answered `store_full` with its id
+   in milliseconds and the client's outbox pauses on its own timer rather
+   than the next reconnect; a login whose presence write fails still gets
+   `ready` and its flush, its acks still land, and the heartbeat writes
+   presence once there is room — meanwhile an instance serves its own
+   sockets live from its own knowledge rather than from the store's, which
+   was the right rule anyway. `full_store.test.js` drives it end to end on
+   two instances at 4 MB: refused in under two seconds, a login while full
+   that drains, a drain that heals, a heartbeat that repairs;
+   `store_full_test.dart` watches the client's timer keep knocking through
+   the relay's refusal counter. The rule: **a store's limit is part of the
+   relay's contract — every operation the relay makes at that limit is
+   either allowed or refused, and which is a measurement, not a
+   recollection.**
