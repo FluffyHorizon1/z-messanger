@@ -47,7 +47,7 @@ you and the contact goes through your TURN whatever the other side does.
 | **your TURN operator** | — | your address *and the contact's*, when the call started and ended, how much flowed | your address and the contact's TURN's address, when, how much |
 | **the contact's TURN operator** | — | — | the contact's address and your TURN's address |
 | **your network** (ISP, Wi‑Fi owner, anyone on the path) | the contact's address, and a sustained two‑way UDP flow to it | your TURN's address, and the same flow | the same |
-| **the message relay** | a few sealed envelopes in ordinary buckets — nothing it can name (12.1) | the same | the same |
+| **the message relay** | a few sealed envelopes in ordinary buckets — nothing it can name (12.1); though a ring, an accept and a burst of candidates between two mailboxes inside a second is a rhythm, the way a group's fan‑out is (`THREAT_MODEL.md` R18) | the same | the same |
 
 Three things follow.
 
