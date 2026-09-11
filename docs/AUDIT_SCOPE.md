@@ -32,8 +32,8 @@ Three components, one operator‑independent trust story:
 
 | Component | Language / size | Role |
 |---|---|---|
-| `protocol/` (`z_protocol`) | pure Dart, ~4.7 k lines in 17 modules, ~3.2 k lines of tests (150) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values |
-| `app/` | Flutter (Dart), core ~8.4 k lines (`lib/core/`), UI ~6.0 k lines, 40 test files (~10.8 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
+| `protocol/` (`z_protocol`) | pure Dart, ~5.4 k lines in 18 modules, ~3.7 k lines of tests (160) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader |
+| `app/` | Flutter (Dart), core ~10.5 k lines (`lib/core/`), UI ~5.9 k lines, 41 test files (~11.2 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
 | `server/` | Node.js, `server.js` ~840 lines, ~2.4 k lines of tests (50) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics; two‑instance mode via Redis |
 
 Every message is encrypted on a device and decrypted only on the recipient
@@ -79,7 +79,7 @@ like the review to either confirm or break each one.
 | C28 | What remains after everything built is written down rather than reconstructed: a twenty-row residual-risk register naming who is exposed, why each risk remains, what reduces it, and whether it is accepted, deferred or open — including the ones the recent phases created (the 16 KB post-quantum envelope, suppression of the device-list signature, SLSA L2 rather than L3, no desktop rollback protection). A data map covers every vault column, everything the relay holds, and every third party. | `THREAT_MODEL.md` residual-risk register, `DATA_MAP.md` | Cross-checked against `vault.dart` schema 9 — every `contacts` column appears |
 | C29 | The argument is written down and falsifiable, not only the wire format: `WHITEPAPER.md` states each claim, the mechanism, why that mechanism rather than the obvious alternative, how a reader checks it independently, and what it does not cover — including a section that lists only what Z does **not** claim. Every mechanism it describes cites the normative section and the test, and it names `PROTOCOL.md` as the authority wherever the two disagree, so a discrepancy is a bug in the whitepaper rather than an ambiguity in the protocol. **A disagreement between this document and the code is itself a finding we want.** | `WHITEPAPER.md` | Every claim section resolves to a `PROTOCOL.md` section and a test named in this table (C1–C28); no mechanism is asserted here that is not specified and tested elsewhere |
 | C30 | A vault survives its own history. The schema has moved 1 → 9 across eight phases; a database written by an early build opens on this one with every message present and **every sealed cell byte-identical** — migrations add columns and never rewrite a cell, so no upgrade can quietly re-encrypt (or fail to re-encrypt) stored plaintext. Re-opening an already-migrated vault is a no-op rather than an error, and an archive written at an earlier schema restores while a record type from a *later* one is carried rather than dropped. | `vault.dart` migrations, `BACKUP.md` | `app/test/replies_test.dart` (13, incl. a schema-1 database built by hand and upgraded in place, asserting the stored cells come back unchanged), `app/test/skipped_keys_test.dart` (a pre-schema-9 conversation keeps its out-of-order keys through the upgrade and the first send after it), `app/test/backup_test.dart` (the cross-schema archive cases), `app/test/restore_test.dart` |
-| C31 | The transparency log commits to what accounts publish and cannot show two readers two histories: an RFC 9162 log tree (the certificate‑transparency‑go reference roots reproduced) and a depth‑256 sparse map under one signed head, so "latest" is a proof rather than an answer; a publish is accepted only under the account key's signature and only at a version above the label's last; a mirror re‑derives both roots from the entries and refuses a head that does not extend the one it verified — a fork signed by the real log key included. Every value in the vectors is re‑derived by a second implementation with no shared code. **The client that reads it is the next commit in this series; until it lands and the log is live (`adr/0006`, G3), this row is the service alone.** | §19, `adr/0006` | `kt/test/merkle.test.js` (6, exhaustive to 70 leaves plus the CT reference data), `kt/test/smt.test.js` (8, the fast tree against a slow one on random sets; proofs of presence and absence; five ways a proof must fail), `kt/test/log.test.js` (8, publish authentication, monotonic versions, heads re‑signed on growth and age, a torn or edited store refusing to start, a forked log failing consistency), `kt/test/server.test.js` (3), `kt/test/mirror.test.js` (4 — a fork, a same‑size fork, a shrunk log, an impostor key, entries that do not hash to the head, the command‑line tool's exit codes), `kt/test/vectors.test.js` (4, the freeze) and `kt/tools/verify_vectors.py` (344 values) |
+| C31 | The transparency log commits to what accounts publish and cannot show two readers two histories: an RFC 9162 log tree (the certificate‑transparency‑go reference roots reproduced) and a depth‑256 sparse map under one signed head, so "latest" is a proof rather than an answer; a publish is accepted only under the account key's signature and only at a version above the label's last; a mirror re‑derives both roots from the entries and refuses a head that does not extend the one it verified — a fork signed by the real log key included. Every value in the vectors is re‑derived by a second implementation with no shared code. The client applies `adr/0006`'s table: a proof that fails or a head that does not extend the held one is a fault under which nothing new is trusted and nothing verified is lost; an in‑band list the log has not confirmed for a day stops delivering to the devices only it added; a conflict holds what the user says; the account's own label is monitored for entries it never issued. **Built end to end; the log is not yet live (G3).** | §19, `adr/0006` | `kt/test/merkle.test.js` (6, exhaustive to 70 leaves plus the CT reference data), `kt/test/smt.test.js` (8, the fast tree against a slow one on random sets; proofs of presence and absence; five ways a proof must fail), `kt/test/log.test.js` (8, publish authentication, monotonic versions, heads re‑signed on growth and age, a torn or edited store refusing to start, a forked log failing consistency), `kt/test/server.test.js` (3), `kt/test/mirror.test.js` (4 — a fork, a same‑size fork, a shrunk log, an impostor key, entries that do not hash to the head, the command‑line tool's exit codes), `kt/test/vectors.test.js` (4, the freeze), `kt/tools/verify_vectors.py` (344 values), `protocol/test/transparency_test.dart` (10 — the reader against the same vectors, including Alice's sealed list opening to the v1 `multidevice` vector's signed list with the fingerprint §3.6 computes equal to the leaf's), `app/test/key_transparency_test.dart` (6 — every state of the table against the real service and relay: confirmed, the hold past grace counted in the outbox, installed from the log, conflict with "send anyway" and the owner's alert, a fork and a shrunk log refused then reset, unreachable) |
 
 ## 4. Where we would like the most attention
 
@@ -181,8 +181,8 @@ derivations themselves).
   first round trip are classical (§17.5).
 - A stolen account root is the account until detected; transparency makes
   the enrolment visible, it does not prevent it (§3.6, `adr/0001`).
-- The public transparency log is built (`kt/`, §19, `adr/0006`) and not yet
-  live; the client that verifies against it lands in the same series.
+- The public transparency log is built end to end (`kt/`, §19, `adr/0006`,
+  the client in the app) and not yet live (`GA_CHECKLIST.md` G3).
 - Attachments are not replayed to a newly linked device (the sender does not
   retain per‑file key material); the search index is not persisted (search
   decrypts in memory every time).
@@ -227,7 +227,7 @@ python3 protocol/tool/verify_mldsa.py
 # claiming nothing, with a reason)
 python3 tool/check_audit_scope.py
 
-# App: 40 test files, most driving real clients through the real relay
+# App: 41 test files, most driving real clients through the real relay
 # (each spawns its own relay process; node must be on PATH)
 cd app && flutter test
 
@@ -306,9 +306,11 @@ protocol/lib/src/
   multidevice_session.dart per-device fan-out sessions
   pairing.dart / pairing_relay.dart   enrollment ceremony (SAS) and its relay transport
   relay_client.dart        WebSocket client + challenge/response auth
+  transparency.dart        the transparency log's reader: proofs, heads, lookups, sealed values (§19)
   util.dart                RNG (with the zone-scoped vector override), KDF/padding helpers
 app/lib/core/
   chat_service.dart        orchestrator (see the invariants in its header comment)
+  key_transparency.dart    the log client: checks, holds, publishes, monitors (adr/0006's table)
   device_sync.dart         self-sync envelopes (out/in/ping/acct/acctreq/hist)
   vault.dart               encrypted SQLite vault, keystore, passphrase, blobs
   app_lock.dart            screen lock + biometric unlock (local_auth behind a testable gate; BoundKeyStore)
@@ -318,4 +320,6 @@ app/android/app/src/main/kotlin/com/zmessenger/www/BioKey.kt
   voice.dart               in-memory WAV capture wrapper
   backup.dart              identity backup (.zid)
 server/server.js           the relay
+kt/                        the transparency log: lib/merkle.js (RFC 9162), lib/smt.js (the map),
+                           lib/log.js (leaves, heads, publish), server.js (HTTP), tools/mirror.js
 ```

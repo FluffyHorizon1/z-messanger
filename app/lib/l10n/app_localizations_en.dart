@@ -1386,4 +1386,137 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sysUnknownMemberLeft => 'A member left the group.';
+
+  @override
+  String ktBannerHeld(String name) {
+    return '$name\'s newest device list is not in the transparency log. The devices only that list added are not receiving your messages until it is.';
+  }
+
+  @override
+  String ktBannerConflict(String name) {
+    return 'The transparency log and $name\'s devices disagree about their device list. Your messages to them are held until they agree, or until you choose to send anyway.';
+  }
+
+  @override
+  String get ktSendAnyway => 'Send anyway';
+
+  @override
+  String get ktComposerHeld =>
+      'Messages to this contact are held — see the notice above.';
+
+  @override
+  String homeKtOwnAlert(int v) {
+    return 'A device list you did not issue has been published to the transparency log for your account (version $v). Check your linked devices now.';
+  }
+
+  @override
+  String homeKtFault(String reason) {
+    return 'The transparency log has shown two different histories: $reason. Nothing new is being confirmed. Settings › Transparency log has the details.';
+  }
+
+  @override
+  String homeKtUnreachable(String when) {
+    return 'The transparency log has not been reachable since $when. Device lists are being checked by your contacts\' devices alone in the meantime.';
+  }
+
+  @override
+  String get ciKtTitle => 'Transparency log';
+
+  @override
+  String ciKtConfirmed(int v) {
+    return 'Confirmed: their device list (version $v) is the one in the log.';
+  }
+
+  @override
+  String get ciKtUnlogged =>
+      'Not in the log. This account has never published a device list — an older app, or one that has not been online since updating.';
+
+  @override
+  String ciKtUnconfirmed(int held, int log) {
+    return 'Their newest device list (version $held) is not in the log yet; the log has version $log.';
+  }
+
+  @override
+  String ciKtConflict(int v) {
+    return 'The log holds a different device list at version $v than their devices sent. Messages to them are held.';
+  }
+
+  @override
+  String get ciKtOff => 'No transparency log is configured on this device.';
+
+  @override
+  String get ciKtUnchecked => 'Not checked yet.';
+
+  @override
+  String get stTransparency => 'Transparency log';
+
+  @override
+  String get stKtStatus => 'Status';
+
+  @override
+  String get stKtHealthOff => 'Not configured';
+
+  @override
+  String get stKtHealthUnknown => 'Not checked yet';
+
+  @override
+  String stKtHealthOk(String when, int n) {
+    return 'Verified $when — $n entries';
+  }
+
+  @override
+  String stKtHealthUnreachable(String when) {
+    return 'Unreachable since $when';
+  }
+
+  @override
+  String stKtHealthFault(String reason) {
+    return 'Fault: $reason';
+  }
+
+  @override
+  String get stKtCheckNow => 'Check now';
+
+  @override
+  String get stKtChecked => 'Checked.';
+
+  @override
+  String get stKtLogAddress => 'Log address';
+
+  @override
+  String get stKtLogUrlTitle => 'Transparency log URL';
+
+  @override
+  String get stKtLogKey => 'Log public key';
+
+  @override
+  String get stKtLogKeyTitle => 'Log public key (base64)';
+
+  @override
+  String get stKtWitness => 'Witness address';
+
+  @override
+  String get stKtWitnessTitle => 'Witness record URL';
+
+  @override
+  String get stKtWitnessKey => 'Witness public key';
+
+  @override
+  String get stKtWitnessKeyTitle => 'Witness public key (base64)';
+
+  @override
+  String get stKtNone => 'none';
+
+  @override
+  String get stKtReset => 'Forget the log\'s history';
+
+  @override
+  String get stKtResetHelp =>
+      'Start again from the log\'s current head. Only after changing logs deliberately, or once a fault has been reported.';
+
+  @override
+  String get stKtResetConfirm => 'Forget the log\'s history?';
+
+  @override
+  String get stKtSave => 'Save';
 }

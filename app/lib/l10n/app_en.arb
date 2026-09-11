@@ -1789,5 +1789,210 @@
   "sysUnknownMemberLeft": "A member left the group.",
   "@sysUnknownMemberLeft": {
     "description": "System message: a member whose name is not known left. A whole sentence rather than sysMemberLeft with a stand-in, because the stand-in would begin the sentence."
+  },
+  "ktBannerHeld": "{name}'s newest device list is not in the transparency log. The devices only that list added are not receiving your messages until it is.",
+  "@ktBannerHeld": {
+    "description": "Chat banner (ADR 0006, 'unconfirmed' past the grace period). Not an accusation: the account may simply be on an older app. Says plainly which devices go without messages.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "ktBannerConflict": "The transparency log and {name}'s devices disagree about their device list. Your messages to them are held until they agree, or until you choose to send anyway.",
+  "@ktBannerConflict": {
+    "description": "Chat banner (ADR 0006, 'conflict'). The strongest state: either the account is under attack or the log is lying about it. 'Held' means not sent, not lost.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "ktSendAnyway": "Send anyway",
+  "@ktSendAnyway": {
+    "description": "Button on the conflict banner: lifts the hold for this contact until the state changes."
+  },
+  "ktComposerHeld": "Messages to this contact are held — see the notice above.",
+  "@ktComposerHeld": {
+    "description": "Replaces the message composer while a transparency conflict holds sends."
+  },
+  "homeKtOwnAlert": "A device list you did not issue has been published to the transparency log for your account (version {v}). Check your linked devices now.",
+  "@homeKtOwnAlert": {
+    "description": "Loud alert on the home screen (ADR 0006 self-monitoring): the T1/T2 signal, actionable only by the owner.",
+    "placeholders": {
+      "v": {
+        "type": "int"
+      }
+    }
+  },
+  "homeKtFault": "The transparency log has shown two different histories: {reason}. Nothing new is being confirmed. Settings › Transparency log has the details.",
+  "@homeKtFault": {
+    "description": "Home-screen alert for a log fault (a fork, a head signed by the wrong key, a witness that disagrees). {reason} is the client's short diagnosis, in English, for reporting.",
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "homeKtUnreachable": "The transparency log has not been reachable since {when}. Device lists are being checked by your contacts' devices alone in the meantime.",
+  "@homeKtUnreachable": {
+    "description": "Home-screen notice after a day without the log. Reassuring in tone: messaging works, the extra check is what is missing.",
+    "placeholders": {
+      "when": {
+        "type": "String"
+      }
+    }
+  },
+  "ciKtTitle": "Transparency log",
+  "@ciKtTitle": {
+    "description": "Card heading on the contact screen."
+  },
+  "ciKtConfirmed": "Confirmed: their device list (version {v}) is the one in the log.",
+  "@ciKtConfirmed": {
+    "description": "Contact screen line, the good state.",
+    "placeholders": {
+      "v": {
+        "type": "int"
+      }
+    }
+  },
+  "ciKtUnlogged": "Not in the log. This account has never published a device list — an older app, or one that has not been online since updating.",
+  "@ciKtUnlogged": {
+    "description": "Contact screen line. Neutral: not a warning."
+  },
+  "ciKtUnconfirmed": "Their newest device list (version {held}) is not in the log yet; the log has version {log}.",
+  "@ciKtUnconfirmed": {
+    "description": "Contact screen line while an in-band list waits for the log.",
+    "placeholders": {
+      "held": {
+        "type": "int"
+      },
+      "log": {
+        "type": "int"
+      }
+    }
+  },
+  "ciKtConflict": "The log holds a different device list at version {v} than their devices sent. Messages to them are held.",
+  "@ciKtConflict": {
+    "description": "Contact screen line for a conflict.",
+    "placeholders": {
+      "v": {
+        "type": "int"
+      }
+    }
+  },
+  "ciKtOff": "No transparency log is configured on this device.",
+  "@ciKtOff": {
+    "description": "Contact screen line when the client is inert."
+  },
+  "ciKtUnchecked": "Not checked yet.",
+  "@ciKtUnchecked": {
+    "description": "Contact screen line before the first successful check."
+  },
+  "stTransparency": "Transparency log",
+  "@stTransparency": {
+    "description": "Settings section header."
+  },
+  "stKtStatus": "Status",
+  "@stKtStatus": {
+    "description": "Row label for the log's health."
+  },
+  "stKtHealthOff": "Not configured",
+  "@stKtHealthOff": {
+    "description": "Health value: no log URL or key."
+  },
+  "stKtHealthUnknown": "Not checked yet",
+  "@stKtHealthUnknown": {
+    "description": "Health value before the first check."
+  },
+  "stKtHealthOk": "Verified {when} — {n} entries",
+  "@stKtHealthOk": {
+    "description": "Health value: the last accepted head, when it was accepted and how many entries the log had.",
+    "placeholders": {
+      "when": {
+        "type": "String"
+      },
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "stKtHealthUnreachable": "Unreachable since {when}",
+  "@stKtHealthUnreachable": {
+    "description": "Health value: no head accepted for longer than the threshold.",
+    "placeholders": {
+      "when": {
+        "type": "String"
+      }
+    }
+  },
+  "stKtHealthFault": "Fault: {reason}",
+  "@stKtHealthFault": {
+    "description": "Health value: the log misbehaved; {reason} is the client's diagnosis.",
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "stKtCheckNow": "Check now",
+  "@stKtCheckNow": {
+    "description": "Row action: run a check immediately."
+  },
+  "stKtChecked": "Checked.",
+  "@stKtChecked": {
+    "description": "Snackbar after a manual check."
+  },
+  "stKtLogAddress": "Log address",
+  "@stKtLogAddress": {
+    "description": "Developer-mode row: the log's URL."
+  },
+  "stKtLogUrlTitle": "Transparency log URL",
+  "@stKtLogUrlTitle": {
+    "description": "Dialog title for editing the log URL."
+  },
+  "stKtLogKey": "Log public key",
+  "@stKtLogKey": {
+    "description": "Developer-mode row: the pinned key, base64."
+  },
+  "stKtLogKeyTitle": "Log public key (base64)",
+  "@stKtLogKeyTitle": {
+    "description": "Dialog title for editing the pinned key."
+  },
+  "stKtWitness": "Witness address",
+  "@stKtWitness": {
+    "description": "Developer-mode row: the witness record's URL, or empty."
+  },
+  "stKtWitnessTitle": "Witness record URL",
+  "@stKtWitnessTitle": {
+    "description": "Dialog title for editing the witness URL."
+  },
+  "stKtWitnessKey": "Witness public key",
+  "@stKtWitnessKey": {
+    "description": "Developer-mode row: the witness's key, base64, or empty."
+  },
+  "stKtWitnessKeyTitle": "Witness public key (base64)",
+  "@stKtWitnessKeyTitle": {
+    "description": "Dialog title for editing the witness key."
+  },
+  "stKtNone": "none",
+  "@stKtNone": {
+    "description": "Shown in place of an empty witness address or key."
+  },
+  "stKtReset": "Forget the log's history",
+  "@stKtReset": {
+    "description": "Developer-mode row: discard the accepted head and any fault, and start from the log's current head."
+  },
+  "stKtResetHelp": "Start again from the log's current head. Only after changing logs deliberately, or once a fault has been reported.",
+  "@stKtResetHelp": {
+    "description": "Subtitle for the reset row. A reset is how a fork would be hidden, so the wording discourages it."
+  },
+  "stKtResetConfirm": "Forget the log's history?",
+  "@stKtResetConfirm": {
+    "description": "Confirmation dialog title for the reset."
+  },
+  "stKtSave": "Save",
+  "@stKtSave": {
+    "description": "Dialog confirm button for the log settings."
   }
 }

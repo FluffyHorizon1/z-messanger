@@ -5,8 +5,10 @@ import 'package:provider/provider.dart';
 
 import '../l10n/app_localizations.dart';
 import '../l10n/ttl_text.dart';
+import '../l10n/when_text.dart';
 import '../core/app_lock.dart';
 import '../core/chat_service.dart';
+import '../core/key_transparency.dart';
 import '../core/models.dart';
 import '../core/prefs.dart';
 import '../core/push_service.dart';
@@ -269,6 +271,96 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => Navigator.of(context)
                 .push(MaterialPageRoute(builder: (_) => const BackupScreen())),
           ),
+          // 7.7b (ADR 0006): the transparency log. Everyone sees its health
+          // and can ask for a check; where it is and which key signs it are
+          // developer-mode rows, like the relay address — most people should
+          // never touch them, and a self-hoster needs them.
+          _SectionHeader(l.stTransparency),
+          ListTile(
+            leading: Icon(_ktIcon(svc.kt.health), color: _ktTone(context, svc.kt.health)),
+            title: Text(l.stKtStatus),
+            subtitle: Text(_ktHealthText(context, l, svc.kt),
+                style: const TextStyle(fontSize: 12)),
+          ),
+          if (svc.kt.health != KtHealth.off)
+            ListTile(
+              leading: const Icon(Icons.refresh),
+              title: Text(l.stKtCheckNow),
+              onTap: () async {
+                final messenger = ScaffoldMessenger.of(context);
+                await svc.kt.check();
+                messenger.showSnackBar(SnackBar(content: Text(l.stKtChecked)));
+              },
+            ),
+          if (svc.devMode) ...[
+            ListTile(
+              leading: const Icon(Icons.dns_outlined),
+              title: Text(l.stKtLogAddress),
+              subtitle: Text(svc.kt.config.logUrl.isEmpty ? l.stKtNone : svc.kt.config.logUrl,
+                  style: const TextStyle(fontSize: 12)),
+              onTap: () => _editKt(context, svc, l.stKtLogUrlTitle, svc.kt.config.logUrl,
+                  (v) => KtConfig(
+                      logUrl: v,
+                      logPubB64: svc.kt.config.logPubB64,
+                      witnessUrl: svc.kt.config.witnessUrl,
+                      witnessPubB64: svc.kt.config.witnessPubB64)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.key_outlined),
+              title: Text(l.stKtLogKey),
+              subtitle: Text(svc.kt.config.logPubB64.isEmpty ? l.stKtNone : svc.kt.config.logPubB64,
+                  style: const TextStyle(fontSize: 12)),
+              onTap: () => _editKt(context, svc, l.stKtLogKeyTitle, svc.kt.config.logPubB64,
+                  (v) => KtConfig(
+                      logUrl: svc.kt.config.logUrl,
+                      logPubB64: v,
+                      witnessUrl: svc.kt.config.witnessUrl,
+                      witnessPubB64: svc.kt.config.witnessPubB64)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.verified_outlined),
+              title: Text(l.stKtWitness),
+              subtitle: Text(svc.kt.config.witnessUrl.isEmpty ? l.stKtNone : svc.kt.config.witnessUrl,
+                  style: const TextStyle(fontSize: 12)),
+              onTap: () => _editKt(context, svc, l.stKtWitnessTitle, svc.kt.config.witnessUrl,
+                  (v) => KtConfig(
+                      logUrl: svc.kt.config.logUrl,
+                      logPubB64: svc.kt.config.logPubB64,
+                      witnessUrl: v,
+                      witnessPubB64: svc.kt.config.witnessPubB64)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.key_outlined),
+              title: Text(l.stKtWitnessKey),
+              subtitle: Text(svc.kt.config.witnessPubB64.isEmpty ? l.stKtNone : svc.kt.config.witnessPubB64,
+                  style: const TextStyle(fontSize: 12)),
+              onTap: () => _editKt(context, svc, l.stKtWitnessKeyTitle, svc.kt.config.witnessPubB64,
+                  (v) => KtConfig(
+                      logUrl: svc.kt.config.logUrl,
+                      logPubB64: svc.kt.config.logPubB64,
+                      witnessUrl: svc.kt.config.witnessUrl,
+                      witnessPubB64: v)),
+            ),
+            ListTile(
+              leading: Icon(Icons.history_toggle_off, color: context.z.warn),
+              title: Text(l.stKtReset),
+              subtitle: Text(l.stKtResetHelp, style: const TextStyle(fontSize: 12)),
+              onTap: () async {
+                final ok = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: Text(l.stKtResetConfirm),
+                    content: Text(l.stKtResetHelp),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l.cancel)),
+                      FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text(l.stKtReset)),
+                    ],
+                  ),
+                );
+                if (ok == true) await svc.kt.resetHistory();
+              },
+            ),
+          ],
           _SectionHeader(l.stDeveloper),
           SwitchListTile(
             secondary: Icon(
@@ -339,6 +431,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  static IconData _ktIcon(KtHealth h) => switch (h) {
+        KtHealth.off => Icons.fact_check_outlined,
+        KtHealth.unknown => Icons.fact_check_outlined,
+        KtHealth.ok => Icons.fact_check,
+        KtHealth.unreachable => Icons.cloud_off_outlined,
+        KtHealth.fault => Icons.gpp_bad,
+      };
+
+  static Color _ktTone(BuildContext context, KtHealth h) => switch (h) {
+        KtHealth.ok => context.z.ok,
+        KtHealth.unreachable => context.z.warn,
+        KtHealth.fault => context.z.danger,
+        _ => context.z.textSecondary,
+      };
+
+  static String _ktHealthText(BuildContext context, AppLocalizations l, KeyTransparency kt) =>
+      switch (kt.health) {
+        KtHealth.off => l.stKtHealthOff,
+        KtHealth.unknown => l.stKtHealthUnknown,
+        KtHealth.ok => l.stKtHealthOk(whenText(context, kt.lastOkMs), kt.head?.size ?? 0),
+        KtHealth.unreachable => l.stKtHealthUnreachable(whenText(context, kt.lastOkMs)),
+        KtHealth.fault => l.stKtHealthFault(kt.fault?.reason ?? ''),
+      };
+
+  Future<void> _editKt(BuildContext context, ChatService svc, String title,
+      String current, KtConfig Function(String) update) async {
+    final l = AppLocalizations.of(context);
+    final ctrl = TextEditingController(text: current);
+    final v = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: TextField(controller: ctrl, autofocus: true),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: Text(l.stKtSave)),
+        ],
+      ),
+    );
+    if (v != null) await svc.setKtConfig(update(v));
   }
 
   /// The same words as the disappearing-messages timer for the same

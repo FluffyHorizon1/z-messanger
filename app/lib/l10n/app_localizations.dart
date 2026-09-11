@@ -2325,6 +2325,222 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'A member left the group.'**
   String get sysUnknownMemberLeft;
+
+  /// Chat banner (ADR 0006, 'unconfirmed' past the grace period). Not an accusation: the account may simply be on an older app. Says plainly which devices go without messages.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s newest device list is not in the transparency log. The devices only that list added are not receiving your messages until it is.'**
+  String ktBannerHeld(String name);
+
+  /// Chat banner (ADR 0006, 'conflict'). The strongest state: either the account is under attack or the log is lying about it. 'Held' means not sent, not lost.
+  ///
+  /// In en, this message translates to:
+  /// **'The transparency log and {name}\'s devices disagree about their device list. Your messages to them are held until they agree, or until you choose to send anyway.'**
+  String ktBannerConflict(String name);
+
+  /// Button on the conflict banner: lifts the hold for this contact until the state changes.
+  ///
+  /// In en, this message translates to:
+  /// **'Send anyway'**
+  String get ktSendAnyway;
+
+  /// Replaces the message composer while a transparency conflict holds sends.
+  ///
+  /// In en, this message translates to:
+  /// **'Messages to this contact are held — see the notice above.'**
+  String get ktComposerHeld;
+
+  /// Loud alert on the home screen (ADR 0006 self-monitoring): the T1/T2 signal, actionable only by the owner.
+  ///
+  /// In en, this message translates to:
+  /// **'A device list you did not issue has been published to the transparency log for your account (version {v}). Check your linked devices now.'**
+  String homeKtOwnAlert(int v);
+
+  /// Home-screen alert for a log fault (a fork, a head signed by the wrong key, a witness that disagrees). {reason} is the client's short diagnosis, in English, for reporting.
+  ///
+  /// In en, this message translates to:
+  /// **'The transparency log has shown two different histories: {reason}. Nothing new is being confirmed. Settings › Transparency log has the details.'**
+  String homeKtFault(String reason);
+
+  /// Home-screen notice after a day without the log. Reassuring in tone: messaging works, the extra check is what is missing.
+  ///
+  /// In en, this message translates to:
+  /// **'The transparency log has not been reachable since {when}. Device lists are being checked by your contacts\' devices alone in the meantime.'**
+  String homeKtUnreachable(String when);
+
+  /// Card heading on the contact screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Transparency log'**
+  String get ciKtTitle;
+
+  /// Contact screen line, the good state.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirmed: their device list (version {v}) is the one in the log.'**
+  String ciKtConfirmed(int v);
+
+  /// Contact screen line. Neutral: not a warning.
+  ///
+  /// In en, this message translates to:
+  /// **'Not in the log. This account has never published a device list — an older app, or one that has not been online since updating.'**
+  String get ciKtUnlogged;
+
+  /// Contact screen line while an in-band list waits for the log.
+  ///
+  /// In en, this message translates to:
+  /// **'Their newest device list (version {held}) is not in the log yet; the log has version {log}.'**
+  String ciKtUnconfirmed(int held, int log);
+
+  /// Contact screen line for a conflict.
+  ///
+  /// In en, this message translates to:
+  /// **'The log holds a different device list at version {v} than their devices sent. Messages to them are held.'**
+  String ciKtConflict(int v);
+
+  /// Contact screen line when the client is inert.
+  ///
+  /// In en, this message translates to:
+  /// **'No transparency log is configured on this device.'**
+  String get ciKtOff;
+
+  /// Contact screen line before the first successful check.
+  ///
+  /// In en, this message translates to:
+  /// **'Not checked yet.'**
+  String get ciKtUnchecked;
+
+  /// Settings section header.
+  ///
+  /// In en, this message translates to:
+  /// **'Transparency log'**
+  String get stTransparency;
+
+  /// Row label for the log's health.
+  ///
+  /// In en, this message translates to:
+  /// **'Status'**
+  String get stKtStatus;
+
+  /// Health value: no log URL or key.
+  ///
+  /// In en, this message translates to:
+  /// **'Not configured'**
+  String get stKtHealthOff;
+
+  /// Health value before the first check.
+  ///
+  /// In en, this message translates to:
+  /// **'Not checked yet'**
+  String get stKtHealthUnknown;
+
+  /// Health value: the last accepted head, when it was accepted and how many entries the log had.
+  ///
+  /// In en, this message translates to:
+  /// **'Verified {when} — {n} entries'**
+  String stKtHealthOk(String when, int n);
+
+  /// Health value: no head accepted for longer than the threshold.
+  ///
+  /// In en, this message translates to:
+  /// **'Unreachable since {when}'**
+  String stKtHealthUnreachable(String when);
+
+  /// Health value: the log misbehaved; {reason} is the client's diagnosis.
+  ///
+  /// In en, this message translates to:
+  /// **'Fault: {reason}'**
+  String stKtHealthFault(String reason);
+
+  /// Row action: run a check immediately.
+  ///
+  /// In en, this message translates to:
+  /// **'Check now'**
+  String get stKtCheckNow;
+
+  /// Snackbar after a manual check.
+  ///
+  /// In en, this message translates to:
+  /// **'Checked.'**
+  String get stKtChecked;
+
+  /// Developer-mode row: the log's URL.
+  ///
+  /// In en, this message translates to:
+  /// **'Log address'**
+  String get stKtLogAddress;
+
+  /// Dialog title for editing the log URL.
+  ///
+  /// In en, this message translates to:
+  /// **'Transparency log URL'**
+  String get stKtLogUrlTitle;
+
+  /// Developer-mode row: the pinned key, base64.
+  ///
+  /// In en, this message translates to:
+  /// **'Log public key'**
+  String get stKtLogKey;
+
+  /// Dialog title for editing the pinned key.
+  ///
+  /// In en, this message translates to:
+  /// **'Log public key (base64)'**
+  String get stKtLogKeyTitle;
+
+  /// Developer-mode row: the witness record's URL, or empty.
+  ///
+  /// In en, this message translates to:
+  /// **'Witness address'**
+  String get stKtWitness;
+
+  /// Dialog title for editing the witness URL.
+  ///
+  /// In en, this message translates to:
+  /// **'Witness record URL'**
+  String get stKtWitnessTitle;
+
+  /// Developer-mode row: the witness's key, base64, or empty.
+  ///
+  /// In en, this message translates to:
+  /// **'Witness public key'**
+  String get stKtWitnessKey;
+
+  /// Dialog title for editing the witness key.
+  ///
+  /// In en, this message translates to:
+  /// **'Witness public key (base64)'**
+  String get stKtWitnessKeyTitle;
+
+  /// Shown in place of an empty witness address or key.
+  ///
+  /// In en, this message translates to:
+  /// **'none'**
+  String get stKtNone;
+
+  /// Developer-mode row: discard the accepted head and any fault, and start from the log's current head.
+  ///
+  /// In en, this message translates to:
+  /// **'Forget the log\'s history'**
+  String get stKtReset;
+
+  /// Subtitle for the reset row. A reset is how a fork would be hidden, so the wording discourages it.
+  ///
+  /// In en, this message translates to:
+  /// **'Start again from the log\'s current head. Only after changing logs deliberately, or once a fault has been reported.'**
+  String get stKtResetHelp;
+
+  /// Confirmation dialog title for the reset.
+  ///
+  /// In en, this message translates to:
+  /// **'Forget the log\'s history?'**
+  String get stKtResetConfirm;
+
+  /// Dialog confirm button for the log settings.
+  ///
+  /// In en, this message translates to:
+  /// **'Save'**
+  String get stKtSave;
 }
 
 class _AppLocalizationsDelegate

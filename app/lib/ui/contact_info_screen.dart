@@ -5,6 +5,7 @@ import 'package:z_protocol/z_protocol.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/ttl_text.dart';
 import '../core/chat_service.dart';
+import '../core/key_transparency.dart';
 import '../core/models.dart';
 import 'theme.dart';
 
@@ -118,6 +119,10 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             ),
             const SizedBox(height: 12),
           ],
+          // 7.7b (ADR 0006): where this account stands in the transparency
+          // log. One line in the good and neutral cases; a banner when it
+          // changes what is sent.
+          ..._ktSection(context, l, svc, contact),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -369,6 +374,39 @@ class _VerificationNotice extends StatelessWidget {
       VerificationState.unverified => const SizedBox.shrink(),
     };
   }
+}
+
+List<Widget> _ktSection(
+    BuildContext context, AppLocalizations l, ChatService svc, Contact contact) {
+  final st = svc.kt.statusOf(contact.rid);
+  final String body;
+  Color tone = context.z.textSecondary;
+  IconData icon = Icons.fact_check_outlined;
+  if (svc.kt.health == KtHealth.off) {
+    body = l.ciKtOff;
+  } else if (st == null) {
+    body = l.ciKtUnchecked;
+  } else {
+    switch (st.state) {
+      case KtContactState.confirmed:
+        body = l.ciKtConfirmed(st.logVersion ?? 0);
+        tone = context.z.ok;
+      case KtContactState.unlogged:
+        body = l.ciKtUnlogged;
+      case KtContactState.unconfirmed:
+        body = l.ciKtUnconfirmed(st.heldVersion ?? 0, st.logVersion ?? 0);
+        tone = context.z.warn;
+        icon = Icons.gpp_maybe_outlined;
+      case KtContactState.conflict:
+        body = l.ciKtConflict(st.logVersion ?? 0);
+        tone = context.z.danger;
+        icon = Icons.gpp_bad_outlined;
+    }
+  }
+  return [
+    _Banner(tone: tone, icon: icon, title: l.ciKtTitle, body: body),
+    const SizedBox(height: 12),
+  ];
 }
 
 class _Banner extends StatelessWidget {

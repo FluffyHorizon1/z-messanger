@@ -111,9 +111,17 @@ class AccountSession {
   /// Encrypt once per target device. Returns one payload per mailbox; the
   /// caller sends each to its routing id. Persist this session's state BEFORE
   /// sending (same rule as [Conversation.encrypt]).
-  Future<List<FanoutMessage>> encrypt(Uint8List plaintext, {int? nowMs}) async {
+  ///
+  /// Targets in [except] are skipped entirely — their ratchets do not
+  /// advance — for a device the transparency log has not confirmed
+  /// (PROTOCOL.md §19, ADR 0006's "unconfirmed" state): a message it must
+  /// not receive is not encrypted for it, so nothing is lost or skipped when
+  /// it is confirmed later.
+  Future<List<FanoutMessage>> encrypt(Uint8List plaintext,
+      {int? nowMs, Set<String> except = const {}}) async {
     final out = <FanoutMessage>[];
     for (final e in _convs.entries) {
+      if (except.contains(e.key)) continue;
       // v2: a pending post-quantum offer rides ahead of the message.
       final offer = await e.value.takePqOfferPayload(nowMs: nowMs);
       if (offer != null) out.add(FanoutMessage(e.key, offer));

@@ -21,7 +21,7 @@ but has been checked by nobody outside the project.
 |---|---|---|
 | G1 | External cryptographic audit, zero open Critical/High | ❌ **not commissioned** |
 | G2 | Reproducible builds, verified by someone outside the project | ⚠️ **property holds, nobody outside has checked** |
-| G3 | Key transparency live | ❌ **log built (`kt/`, `adr/0006`); client and deployment to follow** |
+| G3 | Key transparency live | ❌ **built end to end; not deployed** |
 | G4 | Encrypted backup and restore | ✅ |
 | G5 | Multi-device | ✅ |
 | G6 | Published threat model | ✅ |
@@ -64,7 +64,7 @@ reads the build path out of the APK and prints that. See
 project structurally cannot self-certify, and marking it ✅ on our own
 authority would be the exact overclaim these documents exist to prevent.
 
-### G3 — Key transparency ❌ — built, not yet live
+### G3 — Key transparency ❌ — built end to end, not yet live
 
 Written into the GA criteria at the start of phase 8 and deferred by
 `adr/0001` until "a public launch with an operator committed to durable
@@ -74,16 +74,24 @@ log is run, and 1.0 waits on it.
 
 What exists: the service (`kt/` — an RFC 9162 log plus a sparse map under
 one signed head, publish authenticated by the account key, a mirror that
-refuses a fork), PROTOCOL.md §19, the vectors and a second implementation
-that re‑derives them. What does not yet: the client that verifies against
-it, and the deployment.
+refuses a fork), PROTOCOL.md §19 with its vectors and a second
+implementation, the reader in the protocol package, and the client in the
+app — every state in `adr/0006`'s table driven end to end against the real
+service (`key_transparency_test.dart`): confirmed, unconfirmed with the hold
+past the grace period, installed from the log, conflict with the hold and
+"send anyway" and the owner's alert, a fork refused, unreachable degraded.
+Phase 11's three exit conditions each have a test.
 
-**This row reads ✅ when** the service answers over TLS at its URL, the
-shipped client pins its public key with a witness configured, a mirror run
-by someone other than the operator has verified a head, and the operator's
-own account appears in it — the four lines of `SELF_HOSTING.md` "Running
-the transparency log". `tool/check_ga.py` will refuse the tick while the
-client's pin is a placeholder.
+What does not exist: the deployment. **This row reads ✅ when** the service
+answers over TLS at `kt.zmessengers.com`; the shipped client pins its public
+key (`defaultKtLogPub` in `app/lib/core/key_transparency.dart`, set at build
+time — `tool/check_ga.py` refuses the tick while it is empty) with a witness
+configured; a mirror run by someone other than the operator has verified a
+head; and the operator's own account appears in it. `SELF_HOSTING.md`
+"Running the transparency log" is the runbook, one step per condition.
+Four sentences flip with it: the "not yet live" lines in `WHITEPAPER.md`
+§9, `WHAT_Z_CANNOT_DO.md`, `DATA_MAP.md` "Not yet built", and R7's status
+in `THREAT_MODEL.md`.
 
 ### G4 — Encrypted backup and restore ✅
 
@@ -157,10 +165,9 @@ that translator.
 ## What would change this page
 
 Two things are the maintainer's, not engineering's: commission the audit
-(G1) and deploy the log once the client is in (G3). Two are engineering,
-in progress: the transparency‑log client (G3) and a second locale (G9).
-One is separate work: iOS (G7). One is nobody's to give us — an outside
-rebuild (G2).
+(G1) and deploy the log (G3 — the client is in). One is engineering, in
+progress: a second locale (G9). One is separate work: iOS (G7). One is
+nobody's to give us — an outside rebuild (G2).
 
 The rest is work, and it is counted rather than estimated: `check_l10n.py`
 prints exactly how many strings are left.

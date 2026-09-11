@@ -15,6 +15,7 @@ import '../l10n/system_text.dart';
 import '../l10n/ttl_text.dart';
 import '../core/chat_service.dart';
 import '../core/file_export.dart';
+import '../core/key_transparency.dart';
 import '../core/models.dart';
 import '../core/voice.dart';
 import 'contact_info_screen.dart';
@@ -365,6 +366,9 @@ class _ChatScreenState extends State<ChatScreen> {
         await svc.sendText(widget.rid, text, replyTo: replyTo);
       }
       _jumpToEnd();
+    } on KtSendHeldException {
+      // The composer is replaced while a conflict holds sends; a send that
+      // still reached here (a race with the check) is simply not made.
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -558,6 +562,25 @@ class _ChatScreenState extends State<ChatScreen> {
               message: svc.contactDevlistAlerts[widget.rid]!,
               onDismiss: () => svc.acknowledgeContactDevlistAlert(widget.rid),
             ),
+          // 7.7b: what the transparency log says about this contact's device
+          // list, when it says something that changes what is sent (ADR
+          // 0006). A conflict holds messages and offers "send anyway"; an
+          // unconfirmed list past the grace period names the devices that go
+          // without. Neither is dismissable: they are states, not alerts.
+          if (!isGroup && svc.kt.sendsHeld(widget.rid))
+            _KtBanner(
+              tone: context.z.danger,
+              icon: Icons.gpp_bad,
+              message: l.ktBannerConflict(contact!.name),
+              action: l.ktSendAnyway,
+              onAction: () => svc.kt.acknowledgeConflict(widget.rid),
+            )
+          else if (!isGroup && svc.kt.heldRids(widget.rid).isNotEmpty)
+            _KtBanner(
+              tone: context.z.warn,
+              icon: Icons.gpp_maybe,
+              message: l.ktBannerHeld(contact!.name),
+            ),
           Expanded(
             child: ListView.builder(
               controller: _scroll,
@@ -591,6 +614,18 @@ class _ChatScreenState extends State<ChatScreen> {
                 padding: EdgeInsets.all(14),
                 child: Text(
                   l.chatLeftGroupNotice,
+                  textAlign: TextAlign.center,
+                  style:
+                      TextStyle(fontSize: 12, color: context.z.textSecondary),
+                ),
+              ),
+            )
+          else if (!isGroup && svc.kt.sendsHeld(widget.rid))
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Text(
+                  l.ktComposerHeld,
                   textAlign: TextAlign.center,
                   style:
                       TextStyle(fontSize: 12, color: context.z.textSecondary),
@@ -1331,6 +1366,49 @@ class _FileBodyState extends State<_FileBody> {
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(l.chatSaveFailed('$e'))));
     }
+  }
+}
+
+/// The transparency log's strip (7.7b): a state rather than an alert, so it
+/// has no dismiss — a conflict offers "send anyway" instead.
+class _KtBanner extends StatelessWidget {
+  final Color tone;
+  final IconData icon;
+  final String message;
+  final String? action;
+  final VoidCallback? onAction;
+  const _KtBanner(
+      {required this.tone,
+      required this.icon,
+      required this.message,
+      this.action,
+      this.onAction});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: tone.withValues(alpha: 0.12),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, size: 18, color: tone),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(fontSize: 12.5, height: 1.35),
+              ),
+            ),
+            if (action != null) ...[
+              const SizedBox(width: 6),
+              TextButton(onPressed: onAction, child: Text(action!)),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }
 

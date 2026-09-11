@@ -48,6 +48,22 @@ def main() -> int:
             "update it."
         )
 
+    # G3, the other way round: the row may not read ✅ while the client
+    # ships without a pinned log key. "Live" (adr/0006) includes the client
+    # pinning the key; an empty default means no log is configured and the
+    # client is inert, whatever the deployment says.
+    g3_row = next((line for line in text.splitlines()
+                   if re.match(r"\|\s*G3\s*\|", line)), "")
+    client = ROOT / "app" / "lib" / "core" / "key_transparency.dart"
+    if "✅" in g3_row and client.exists():
+        m = re.search(r"'KT_LOG_PUB',\s*defaultValue:\s*'([^']*)'", client.read_text())
+        if m is None or m.group(1).strip() == "":
+            problems.append(
+                "GA_CHECKLIST.md marks G3 ✅ but the client's pinned log key "
+                "(defaultKtLogPub in app/lib/core/key_transparency.dart) is "
+                "empty. A log nobody's client pins is not live."
+            )
+
     # G7 — iOS
     ios = (ROOT / "app" / "ios").exists()
     says_no_ios = "iOS does not exist" in text

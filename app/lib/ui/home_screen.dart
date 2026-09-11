@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
 import '../l10n/system_text.dart';
+import '../l10n/when_text.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../core/chat_service.dart';
+import '../core/key_transparency.dart';
 import '../core/models.dart';
 import '../core/transport.dart';
 import 'add_contact_screen.dart';
@@ -76,6 +78,24 @@ class HomeScreen extends StatelessWidget {
             _AccountAlertBanner(
               message: service.ownAccountAlert!,
               onDismiss: service.acknowledgeOwnAccountAlert,
+            ),
+          // 7.7b (ADR 0006): the log holds a list for this account that this
+          // device never issued — the one finding only the owner can act on.
+          if (service.kt.ownAlert != null)
+            _AccountAlertBanner(
+              message: l.homeKtOwnAlert(service.kt.ownAlert!.version),
+              onDismiss: service.kt.acknowledgeOwnAlert,
+            ),
+          // The log misbehaved. Not dismissable: it stands until the history
+          // is reset in Settings, which is a deliberate act.
+          if (service.kt.health == KtHealth.fault)
+            _AccountAlertBanner(
+              message: l.homeKtFault(service.kt.fault?.reason ?? ''),
+            ),
+          if (service.kt.health == KtHealth.unreachable)
+            _NoticeBanner(
+              message: l.homeKtUnreachable(
+                  whenText(context, service.kt.lastOkMs)),
             ),
           Expanded(
             child: chats.isEmpty
@@ -274,10 +294,40 @@ class _ChatTile extends StatelessWidget {
 /// A serious, dismissible account-level warning shown above the chat list —
 /// used for the 7.7a device-list transparency alerts that concern this
 /// device's own account (a list it never issued, or this device being removed).
+/// A quiet strip for something worth knowing that is not an alarm.
+class _NoticeBanner extends StatelessWidget {
+  final String message;
+  const _NoticeBanner({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: context.z.warn.withValues(alpha: 0.10),
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.cloud_off_outlined, size: 18, color: context.z.warn),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(message,
+                    style: const TextStyle(fontSize: 12, height: 1.35)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _AccountAlertBanner extends StatelessWidget {
   final String message;
-  final VoidCallback onDismiss;
-  const _AccountAlertBanner({required this.message, required this.onDismiss});
+  final VoidCallback? onDismiss;
+  const _AccountAlertBanner({required this.message, this.onDismiss});
 
   @override
   Widget build(BuildContext context) {
@@ -299,12 +349,13 @@ class _AccountAlertBanner extends StatelessWidget {
                   style: const TextStyle(fontSize: 12.5, height: 1.35),
                 ),
               ),
-              IconButton(
-                icon: const Icon(Icons.close, size: 18),
-                tooltip: l.dismiss,
-                color: context.z.textSecondary,
-                onPressed: onDismiss,
-              ),
+              if (onDismiss != null)
+                IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  tooltip: l.dismiss,
+                  color: context.z.textSecondary,
+                  onPressed: onDismiss,
+                ),
             ],
           ),
         ),

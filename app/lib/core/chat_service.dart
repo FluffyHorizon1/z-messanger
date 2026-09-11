@@ -8,6 +8,7 @@ import 'package:z_protocol/z_protocol.dart';
 
 import 'backup_store.dart';
 import 'device_sync.dart';
+import 'key_transparency.dart';
 import 'models.dart';
 import 'system_messages.dart';
 import 'relay_url.dart';
@@ -32,7 +33,7 @@ const int pqRekeyIntervalMs = 7 * 24 * 3600 * 1000;
 ///      is safely inside the local encrypted vault.
 ///   3. Plaintext never touches disk: message bodies, names, metadata and
 ///      attachment bytes are sealed before insert/write.
-class ChatService extends ChangeNotifier {
+class ChatService extends ChangeNotifier implements KtHost {
   final Vault vault;
   final ZIdentity identity;
   final String myRid;
@@ -42,6 +43,21 @@ class ChatService extends ChangeNotifier {
   /// Hidden Developer-mode toggle — reveals the custom-relay option in Settings.
   /// Persisted in the vault; off by default so normal users never see it.
   bool devMode = false;
+
+  /// The transparency log's client (PROTOCOL.md §19, ADR 0006). Inert until a
+  /// log is configured; then it checks every contact's device list against
+  /// the log, publishes this account's, and holds what the log has not
+  /// confirmed. This service is its host: it hands over contacts and the own
+  /// list, installs lists the log serves, and consults it before fanning out.
+  late final KeyTransparency kt;
+
+  /// Inner kinds a transparency conflict holds (ADR 0006): what a person
+  /// says, not what the protocol says on their behalf — receipts, hellos,
+  /// key offers and device lists still flow, so the conflict can resolve.
+  static const Set<String> _ktHeldKinds = {
+    'text', 'file', 'timer', 'react', 'edit', 'del',
+    'gmsg', 'gfile', 'ginvite', 'gleave', 'greact', 'gedit', 'gdel',
+  };
 
   /// 7.5b: the post-quantum re-key interval applied to conversations. Defaults
   /// to [pqRekeyIntervalMs]; tests set a short value. Changing it re-applies to
@@ -163,6 +179,9 @@ class ChatService extends ChangeNotifier {
     required ZIdentity identity,
     required String displayName,
     required Transport transport,
+    KtFetcher? ktFetcher,
+    KtConfig ktConfig = KtConfig.defaults,
+    int Function()? ktNow,
   }) async {
     final svc = ChatService._(
       vault: vault,
@@ -171,6 +190,14 @@ class ChatService extends ChangeNotifier {
       displayName: displayName,
       transport: transport,
     );
+    svc.kt = KeyTransparency(
+      vault: vault,
+      host: svc,
+      fetcher: ktFetcher ?? HttpKtFetcher(),
+      config: ktConfig,
+      now: ktNow,
+    );
+    await svc.kt.load();
     await svc._loadContacts();
     await svc._refreshAllVerification();
     // Cold start read every per-contact key with its own query — fifteen
@@ -203,6 +230,9 @@ class ChatService extends ChangeNotifier {
     svc._sweeper =
         Timer.periodic(const Duration(seconds: 20), (_) => svc._sweep());
     transport.start();
+    // The transparency log: a first check now, then on its own clock. A
+    // no-op until a log is configured.
+    svc.kt.start();
     // 9.5: a scheduled backup, if the user asked for one. Off by default, in
     // which case this costs two key-value reads and stops. Unawaited and
     // failure-swallowing on purpose — a backup is never worth delaying or
@@ -233,6 +263,7 @@ class ChatService extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    kt.dispose();
     _sweeper?.cancel();
     _devlistTimer?.cancel();
     _dlvTimer?.cancel();
@@ -959,8 +990,75 @@ class ChatService extends ChangeNotifier {
     _convs.remove(rid);
     messagesByChat.remove(rid);
     unread.remove(rid);
+    await kt.noteContactRemoved(rid);
     notifyListeners();
   }
+
+  // ------------------------------------------------------------------
+  // 7.7b: the transparency log's host (KtHost). See key_transparency.dart.
+  // ------------------------------------------------------------------
+
+  @override
+  Future<List<KtContactInput>> ktContacts() async {
+    final out = <KtContactInput>[];
+    for (final c in contacts.values.toList()) {
+      SignedDeviceList? held;
+      final stored = await vault.kvGet('cdev_${c.rid}');
+      if (stored != null) {
+        try {
+          held = SignedDeviceList.fromJson(
+              (jsonDecode(stored) as Map).cast<String, Object?>());
+        } catch (_) {}
+      }
+      final (hv, hf) = await _heldClaimFor(c);
+      out.add(KtContactInput(
+        rid: c.rid,
+        accountEdPub: c.accountEd,
+        held: held,
+        heldAtMs: int.tryParse(await vault.kvGet('cdev_at_${c.rid}') ?? ''),
+        heldVersion: hv,
+        heldFpB64: hf,
+        primaryDeviceEdPub: c.bundle.edPub,
+      ));
+    }
+    return out;
+  }
+
+  @override
+  Future<KtOwnInput?> ktOwn() async {
+    final me = await accountIdentity();
+    var listJson = await vault.kvGet('own_list_json');
+    if (listJson == null && me.holdsAccountRoot) {
+      // A root that has never signed a list (one device, version 1) signs
+      // its baseline so the account can be in the log at all: once it is,
+      // a list that adds a device without being published is the
+      // unconfirmed case rather than the unlogged one.
+      listJson = await _signCurrentDeviceList();
+    }
+    final (v, fp) = await _ownListClaim();
+    return KtOwnInput(
+      accountEdPub: me.accountEdPub,
+      version: v,
+      fpB64: fp,
+      listJson: listJson,
+      accountEdSeed: me.accountEdSeed,
+    );
+  }
+
+  @override
+  Future<bool> ktInstallFromLog(String rid, SignedDeviceList list) async {
+    final contact = contacts[rid];
+    if (contact == null) return false;
+    await _installContactDeviceList(contact, list, persist: true);
+    final ver = int.tryParse(await vault.kvGet('cdev_ver_$rid') ?? '0') ?? 0;
+    return ver == list.version;
+  }
+
+  @override
+  void ktChanged() => notifyListeners();
+
+  /// Settings: where the log is. Persisted; takes effect at once.
+  Future<void> setKtConfig(KtConfig c) => kt.setConfig(c);
 
   /// v2: true once this device and [rid] share the ML-KEM secret, i.e. every
   /// message from here on is protected against harvest-now-decrypt-later.
@@ -1272,6 +1370,13 @@ class ChatService extends ChangeNotifier {
   /// index is silently skipped.
   Future<String> _sendInner(Contact contact, InnerMessage inner,
       {Future<void> Function(Transaction txn)? also}) async {
+    // ADR 0006: a conflict between the log and this contact's devices holds
+    // what the user says to them until the next check agrees or the user
+    // chooses to send anyway. The screen disables the composer first; this
+    // is the rule the screen is enforcing.
+    if (_ktHeldKinds.contains(inner.kind) && kt.sendsHeld(contact.rid)) {
+      throw KtSendHeldException(contact.rid);
+    }
     await _withLock(contact.rid, () async {
       final conv = await _convFor(contact);
       // Rollback snapshot WITHOUT the out-of-order key cache. A send never
@@ -4549,7 +4654,20 @@ class ChatService extends ChangeNotifier {
     // of its own account — record it so an echo from a contact carrying a list
     // this device never issued stands out (owner rule).
     await _recordOwnList(list);
-    return jsonEncode(list.toJson());
+    final json = jsonEncode(list.toJson());
+    // 7.7b: the same list goes to the log (ADR 0006), through a durable
+    // queue; a version the log already holds is skipped by the client.
+    final seed = me.accountEdSeed;
+    if (seed != null) {
+      unawaited(kt.publishOwnList(
+        accountEdSeed: seed,
+        accountEdPub: me.accountEdPub,
+        version: list.version,
+        fp: await list.fingerprint(),
+        listJson: json,
+      ));
+    }
+    return json;
   }
 
   /// The account's ML-DSA-65 signature over its own current device list
@@ -4944,6 +5062,8 @@ class ChatService extends ChangeNotifier {
       await vault.kvPut('cdev_$rid', jsonEncode(list.toJson()),
           sensitive: false);
       await vault.kvPut('cdev_ver_$rid', '${list.version}', sensitive: false);
+      // When it arrived: the transparency grace period runs from here.
+      await vault.kvPut('cdev_at_$rid', '${_now()}', sensitive: false);
       // A new list is classical until a signature over THIS version arrives
       // (§18.9); the one we hold, if any, is for an older set.
       await _refreshDeviceAssurance(rid, notify: false);
@@ -5072,7 +5192,9 @@ class ChatService extends ChangeNotifier {
     await _withLock(rid, () async {
       try {
         if (contact != null) await _decorateForWire(inner, contact);
-        final fan = await s.encrypt(inner.toBytes());
+        // A device only an unconfirmed list added gets nothing (ADR 0006):
+        // the hold is what makes a split view cost the attacker something.
+        final fan = await s.encrypt(inner.toBytes(), except: kt.heldRids(rid));
         // Persist the advanced ratchet BEFORE the envelopes exist anywhere,
         // so a redelivery is still decryptable.
         await _saveExtra(rid);
@@ -5193,6 +5315,8 @@ class ChatService extends ChangeNotifier {
           (jsonDecode(inner.data['list'] as String) as Map)
               .cast<String, Object?>());
       await _installContactDeviceList(contact, list, persist: true);
+      // A list that arrived in-band is checked against the log soon.
+      kt.noteContactListChanged(contact.rid);
     } catch (_) {}
   }
 
@@ -5276,8 +5400,11 @@ class ChatService extends ChangeNotifier {
 
   Future<void> _recordOwnList(SignedDeviceList list) async {
     await vault.kvPut('own_list_v', '${list.version}', sensitive: false);
-    await vault.kvPut('own_list_h', b64(await list.fingerprint()),
-        sensitive: false);
+    final fp = b64(await list.fingerprint());
+    await vault.kvPut('own_list_h', fp, sensitive: false);
+    // 7.7b self-monitoring: a list this device signed or learned is one the
+    // log may hold without alarm; any other entry for this account is not.
+    await kt.recordOwnList(list.version, fp);
     // AFTER the writes, not before. Forgetting first left a window in which
     // a send or receive interleaved at an await recomputed the claim from
     // the old keys and cached it again, and the new list was then never
