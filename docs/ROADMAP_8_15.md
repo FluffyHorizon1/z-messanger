@@ -912,6 +912,8 @@ direction; the phases, their order and both ordering arguments stand.
    the thing under test moves the race; instrument the observer. And a
    mechanism written down as "suspected" is a to-do, not a finding — this
    one was recorded in a commit message as if seen. One follow-up worth
-   noting, not done: after a restore, every envelope queued while the
-   device was gone produces its own notice, receipts and typing included;
-   one notice per contact per episode would say the same thing once.
+   noting, ~~not done~~ done in the commit after: after a restore, every
+   envelope queued while the device was gone produced its own notice,
+   receipts and typing included; it is now one notice per contact per
+   episode, with a count, and one hello per burst
+   (`restore_notices_test.dart`, `BACKUP.md` §2.2).

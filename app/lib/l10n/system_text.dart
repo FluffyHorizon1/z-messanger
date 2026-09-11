@@ -38,7 +38,8 @@ String systemText(AppLocalizations l, String body) {
     SystemKind.sessionReset => l.sysSessionReset,
     SystemKind.ttlOffYou => l.sysTtlOffYou,
     SystemKind.ttlSetYou => l.sysTtlSetYou(ttlText(l, n('sec'))),
-    SystemKind.decryptFailed => l.sysDecryptFailed,
+    // `n` arrived with the coalesced notice; rows written before it hold one.
+    SystemKind.decryptFailed => l.sysDecryptFailed(m['n'] == null ? 1 : n('n')),
     SystemKind.ttlOffThem => l.sysTtlOffThem(s('name', l.sysSomeone)),
     SystemKind.ttlSetThem =>
       l.sysTtlSetThem(s('name', l.sysSomeone), ttlText(l, n('sec'))),

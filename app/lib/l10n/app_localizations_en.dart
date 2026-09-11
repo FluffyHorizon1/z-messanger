@@ -1316,8 +1316,17 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get sysDecryptFailed =>
-      'A message could not be decrypted (session reset). Ask them to resend.';
+  String sysDecryptFailed(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other:
+          '$count messages could not be decrypted (session reset). Ask them to resend.',
+      one:
+          'A message could not be decrypted (session reset). Ask them to resend.',
+    );
+    return '$_temp0';
+  }
 
   @override
   String sysTtlOffThem(String name) {

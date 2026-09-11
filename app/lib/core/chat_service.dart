@@ -1628,9 +1628,7 @@ class ChatService extends ChangeNotifier {
 
     if (status == kUnknownSession) {
       transport.ackReceived(id: m.id, from: m.from);
-      await _insertSystemMessage(
-          contact.rid, systemBody(SystemKind.decryptFailed));
-      await _sendInner(contact, InnerMessage.hello(newMessageId(), _now()));
+      await _noteUndecryptable(contact);
       notifyListeners();
       return;
     }
@@ -2983,6 +2981,95 @@ class ChatService extends ChangeNotifier {
       }
     }
   }
+
+  /// An envelope arrived on a session this device does not hold — the
+  /// peer's state predates ours, which is what a restore from backup looks
+  /// like from the other side. Tell the user once per episode, and open a
+  /// fresh session so the next thing they send can be read.
+  ///
+  /// After a restore, EVERYTHING queued at the relay while the device was
+  /// gone arrives like this, one envelope after another: the peer's
+  /// delivery receipts and typing state as much as their messages, and the
+  /// device cannot tell which was which. One notice per envelope made a
+  /// three-row history sprout a column of identical lines saying the same
+  /// thing. So: if the last row of the chat is already this notice, its
+  /// count goes up instead; a message that decrypts ends the episode by
+  /// being a newer row. The hello that re-opens the session goes at most
+  /// once per [helloMinInterval] per contact — one is enough for a burst,
+  /// and a lost one is re-sent by the next stale envelope after the
+  /// interval, which is the self-healing the per-envelope hello had.
+  Future<void> _noteUndecryptable(Contact contact) async {
+    final rid = contact.rid;
+    // Inbound envelopes are handled concurrently; the read-then-write on
+    // the last row has to be one step, or two stale envelopes arriving
+    // together both see no notice and both write one.
+    await _withLock(rid, () => _countUndecryptable(rid));
+    final now = _now();
+    // Checked and set without an await between: a burst sends one hello.
+    if (now - (_helloSentMs[rid] ?? 0) >= helloMinInterval.inMilliseconds) {
+      _helloSentMs[rid] = now;
+      debugHellos++;
+      await _sendInner(contact, InnerMessage.hello(newMessageId(), now));
+    }
+  }
+
+  Future<void> _countUndecryptable(String rid) async {
+    final last = await vault.db.query('messages',
+        columns: ['mid', 'kind', 'enc_body'],
+        where: 'rid = ?',
+        whereArgs: [rid],
+        orderBy: 'ts_ms DESC, rowid DESC',
+        limit: 1);
+    String? mid;
+    int n = 1;
+    if (last.isNotEmpty && last.single['kind'] == 'system') {
+      final body = await vault.unseal(last.single['enc_body'] as String);
+      if (body.startsWith('{')) {
+        try {
+          final j = jsonDecode(body);
+          if (j is Map && j['k'] == SystemKind.decryptFailed) {
+            mid = last.single['mid'] as String;
+            n = ((j['n'] as num?)?.toInt() ?? 1) + 1;
+          }
+        } on FormatException {
+          // an old row holding prose: not ours to count on
+        }
+      }
+    }
+    if (mid == null) {
+      await _insertSystemMessage(
+          rid, systemBody(SystemKind.decryptFailed, {'n': 1}));
+    } else {
+      final body = systemBody(SystemKind.decryptFailed, {'n': n});
+      await vault.db.update('messages', {'enc_body': await vault.seal(body)},
+          where: 'mid = ?', whereArgs: [mid]);
+      final list = messagesByChat[rid];
+      final i = list?.indexWhere((x) => x.mid == mid) ?? -1;
+      if (list != null && i >= 0) {
+        final old = list[i];
+        list[i] = ChatMessage(
+          mid: old.mid,
+          rid: old.rid,
+          outgoing: old.outgoing,
+          kind: old.kind,
+          body: body,
+          ts: old.ts,
+          status: old.status,
+        );
+      }
+    }
+  }
+
+  /// When the last session-reopening hello went to each contact.
+  final Map<String, int> _helloSentMs = {};
+
+  /// How long after a hello the next stale envelope may send another.
+  @visibleForTesting
+  Duration helloMinInterval = const Duration(seconds: 10);
+
+  /// Hellos sent by [_noteUndecryptable]. Test seam.
+  @visibleForTesting
+  int debugHellos = 0;
 
   Future<void> _insertSystemMessage(String rid, String text,
       {DatabaseExecutor? txn}) async {

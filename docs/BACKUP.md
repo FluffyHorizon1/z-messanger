@@ -91,6 +91,20 @@ orderings, because both the session pinning and the PQ roles are decided by
 the rid comparison — a test that ran only one ordering would pass with either
 bug present.
 
+### 2.2 What you see: the envelopes that were waiting
+
+Whatever the relay was holding for the lost device — the peer's messages,
+but also their delivery receipts, reactions and typing state — arrives on
+the restored device on a session it no longer has, and it cannot tell one
+kind from another. It is not silently dropped: the chat shows **"N messages
+could not be decrypted (session reset). Ask them to resend."** — one notice
+per contact per episode, with the count, rather than one line per envelope
+(`app/test/restore_notices_test.dart`). The count is honest about what it
+counts: an envelope, which may have been a receipt. The device also sends the
+peer one *hello* to re‑open the session, at most once every ten seconds for
+that contact, so a burst of stale envelopes does not become a burst of
+hellos and a lost hello is re‑sent by the next one.
+
 ---
 
 ## 3. The recovery code

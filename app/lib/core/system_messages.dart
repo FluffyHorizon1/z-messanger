@@ -16,7 +16,7 @@ abstract final class SystemKind {
   static const sessionReset = 'session_reset';
   static const ttlOffYou = 'ttl_off_you';
   static const ttlSetYou = 'ttl_set_you'; // sec
-  static const decryptFailed = 'decrypt_failed';
+  static const decryptFailed = 'decrypt_failed'; // n? (1 if absent)
   static const ttlOffThem = 'ttl_off_them'; // name
   static const ttlSetThem = 'ttl_set_them'; // name, sec
   static const attachmentDiscarded = 'attachment_discarded';

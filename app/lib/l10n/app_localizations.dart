@@ -2236,11 +2236,11 @@ abstract class AppLocalizations {
   /// **'You set disappearing messages to {duration}.'**
   String sysTtlSetYou(String duration);
 
-  /// System message when an inbound message failed to decrypt and the session was reset. The second sentence is the instruction; the parenthesis says what the app did.
+  /// System message when inbound messages failed to decrypt because this device no longer holds the session (e.g. after a restore from backup) and a fresh one was opened. One notice per episode carries the count. The second sentence is the instruction; the parenthesis says what the app did.
   ///
   /// In en, this message translates to:
-  /// **'A message could not be decrypted (session reset). Ask them to resend.'**
-  String get sysDecryptFailed;
+  /// **'{count, plural, =1{A message could not be decrypted (session reset). Ask them to resend.} other{{count} messages could not be decrypted (session reset). Ask them to resend.}}'**
+  String sysDecryptFailed(int count);
 
   /// System message: the contact disabled the timer.
   ///
