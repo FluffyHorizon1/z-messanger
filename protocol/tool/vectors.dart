@@ -788,6 +788,174 @@ Future<Map<String, Object?>> suiteMultidevice(List<Actor> a) async {
   };
 }
 
+Future<Map<String, Object?>> suiteConnect(List<Actor> a) async {
+  final d = Drbg(0x0019);
+  final code = ConnectCode(d.next(10));
+  check(ConnectCode.parse(code.text).secret.length == 10, 'connect code parse');
+  check(ConnectCode.fromLink(code.link())!.secret[0] == code.secret[0],
+      'connect link round-trip');
+  final rvInput = concatBytes([utf8.encode('z-connect-rendezvous-v1:'), code.secret]);
+  check(await code.rendezvousRoutingId() == base64Url.encode(await refSha256(rvInput)).replaceAll('=', ''),
+      'connect rendezvous');
+
+  // Two v3 identities, each with the contact code the app would put in a QR.
+  final ids = <ConnectIdentity>[];
+  final raw = <Map<String, Object?>>[];
+  for (final (name, tag) in [('Alice', 'inviter'), ('Bob', 'acceptor')]) {
+    final edSeed = d.next(32);
+    final xSeed = d.next(32);
+    final mlSeed = d.next(32);
+    final zid = await ZIdentity.fromSeeds(edSeed: edSeed, xSeed: xSeed);
+    final pq = await HybridKeyPair.fromSeeds(edSeed: edSeed, mlSeed: mlSeed);
+    final bundle =
+        await ContactBundleV3.forIdentity(zid, pq.publicKey, displayName: name);
+    final ci = await ConnectIdentity.fromCode(bundle.encode(), displayName: name);
+    check(eq(ci.accountEdPub, zid.edPub), '$tag account key');
+    check(eq(ci.pqCommit, await refSha256(concatBytes([
+      utf8.encode('z-pqid-v3:'),
+      pq.publicKey.mlPub,
+    ]))), '$tag pq commitment');
+    ids.add(ci);
+    raw.add({
+      'role': tag,
+      'display_name': name,
+      'ed_seed': hex(edSeed),
+      'x_seed': hex(xSeed),
+      'ml_seed': hex(mlSeed),
+      'account_ed_pub': hex(ci.accountEdPub),
+      'pq_commit': hex(ci.pqCommit),
+      'contact_code': ci.contactCode,
+    });
+  }
+  final alice = ids[0], bob = ids[1];
+
+  // Message 1: the inviter's commitment. Clear the draws the seeds above
+  // consumed first, so what `takeDraws` returns is the ceremony's own.
+  d.takeDraws();
+  final inviter = await d.run(() => ConnectInviter.create(me: alice, code: code));
+  final iDraws = d.takeDraws();
+  check(iDraws.length == 1, 'inviter ephemeral draw');
+  final iEphSeed = iDraws[0];
+  final iEphPub = await refXPub(iEphSeed);
+  check(eq(iEphPub, inviter.ephPub), 'inviter ephemeral labelling');
+  final aCode = utf8.encode(alice.contactCode);
+  final commitInputA = concatBytes([
+    utf8.encode('z-connect-commit-v1:'),
+    iEphPub,
+    [(aCode.length >> 8) & 0xff, aCode.length & 0xff],
+    aCode,
+    utf8.encode('Alice'),
+  ]);
+  final commitA = await refSha256(commitInputA);
+  final commitFrame = await inviter.commit();
+  check(base64Encode(commitA) == commitFrame['c'], 'inviter commitment');
+
+  // Message 2: the acceptor answers, committing to itself against a hash.
+  final (reply, acceptor) =
+      await d.run(() => ConnectAcceptor.reply(commitFrame, me: bob));
+  final rDraws = d.takeDraws();
+  check(rDraws.length == 1, 'acceptor ephemeral draw');
+  final rEphSeed = rDraws[0];
+  final rEphPub = await refXPub(rEphSeed);
+  check(base64Encode(rEphPub) == reply['ephx'], 'acceptor ephemeral labelling');
+  final bCode = utf8.encode(bob.contactCode);
+  final commitInputB = concatBytes([
+    utf8.encode('z-connect-commit-v1:'),
+    rEphPub,
+    [(bCode.length >> 8) & 0xff, bCode.length & 0xff],
+    bCode,
+    utf8.encode('Bob'),
+  ]);
+  check(base64Encode(await refSha256(commitInputB)) == reply['c'],
+      'acceptor commitment');
+
+  // Message 3: the inviter's opening, its identity sealed.
+  final dh = await refDh(iEphSeed, rEphPub);
+  final channelKey =
+      await refHkdf(dh, Uint8List(32), utf8.encode('z-connect-channel-v1'), 32);
+  final open = await d.run(() => inviter.open(reply));
+  final openDraws = d.takeDraws();
+  check(openDraws.length == 1, 'inviter seal nonce');
+
+  // Message 4: the acceptor checks, reveals, and both have the session.
+  final (revealB, sessionB) = await d.run(() => acceptor.accept(open));
+  final revealDraws = d.takeDraws();
+  check(revealDraws.length == 1, 'acceptor seal nonce');
+  final sessionA = await inviter.complete(revealB);
+  check(sessionA.sas == sessionB.sas, 'connect agreement');
+  check(eq(sessionA.channelKey, channelKey), 'connect channel key');
+
+  // The SAS, recomputed independently. The two parties are sorted by account
+  // key, so the input — and therefore the string — does not depend on which
+  // of them invited.
+  final aFirst = hex(alice.accountEdPub).compareTo(hex(bob.accountEdPub)) < 0;
+  final lo = aFirst ? alice : bob, hi = aFirst ? bob : alice;
+  final loEph = aFirst ? iEphPub : rEphPub, hiEph = aFirst ? rEphPub : iEphPub;
+  final sasSalt = concatBytes([loEph, hiEph]);
+  final sasInfo = concatBytes([
+    utf8.encode('z-connect-sas-v1'),
+    lo.accountEdPub,
+    lo.pqCommit,
+    hi.accountEdPub,
+    hi.pqCommit,
+  ]);
+  final sasOkm = await refHkdf(dh, sasSalt, sasInfo, 8);
+  var n = 0;
+  for (var i = 0; i < 7; i++) {
+    n = (n << 8) | sasOkm[i];
+  }
+  final digits = (n % 100000000).toString().padLeft(8, '0');
+  final sasText = '${digits.substring(0, 4)} ${digits.substring(4)}';
+  check(sasText == sessionA.sas, 'connect SAS');
+
+  // Each side ends holding the other's code, which its scan path accepts.
+  check(sessionA.peer.contactCode == bob.contactCode, 'inviter learned bob');
+  check(sessionB.peer.contactCode == alice.contactCode, 'acceptor learned alice');
+
+  return {
+    'suite': 'connect',
+    'version': vectorsVersion,
+    'description':
+        'The connect ceremony (PROTOCOL 20): a one-time invite code, a '
+            'rendezvous mailbox derived from it, and four messages in which '
+            'BOTH sides commit before either reveals. The eight-digit '
+            'confirmation string is bound to both account keys and both '
+            'post-quantum commitments in canonical order, so it says what a '
+            'safety-number comparison says; each side reveals its contact '
+            'code sealed under the channel, so one ceremony adds both people.',
+    'connect_code': {
+      'secret': hex(code.secret),
+      'text': code.text,
+      'link': code.link(),
+      'rendezvous_input': hex(rvInput),
+      'rendezvous_routing_id': await code.rendezvousRoutingId(),
+      'relay_context': connectRelayCtx,
+    },
+    'parties': raw,
+    'inviter_ephemeral': {'seed': hex(iEphSeed), 'pub': hex(iEphPub)},
+    'acceptor_ephemeral': {'seed': hex(rEphSeed), 'pub': hex(rEphPub)},
+    'commitments': {
+      'inviter_input': hex(commitInputA),
+      'inviter': hex(commitA),
+      'acceptor_input': hex(commitInputB),
+      'acceptor': hex(await refSha256(commitInputB)),
+    },
+    'frames': {
+      'commit': {'k': 'x1', ...commitFrame},
+      'reply': {'k': 'x2', ...reply},
+      'open': {'k': 'x3', ...open},
+      'reveal': {'k': 'x4', ...revealB},
+    },
+    'dh': hex(dh),
+    'channel_key': hex(channelKey),
+    'sas_salt': hex(sasSalt),
+    'sas_info': hex(sasInfo),
+    'sas_okm': hex(sasOkm),
+    'sas': sasText,
+    'canonical_order': aFirst ? ['inviter', 'acceptor'] : ['acceptor', 'inviter'],
+  };
+}
+
 Future<Map<String, Object?>> suitePairingV2(List<Actor> a) async {
   final d = Drbg(0x0017);
   final code = PairingCode(d.next(10));
@@ -2262,6 +2430,9 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     },
     'pair-v2': {
       'pairing_v2': await suitePairingV2(a),
+    },
+    'connect': {
+      'connect': await suiteConnect(a),
     },
     'backup': {
       'archive': await suiteBackup(),

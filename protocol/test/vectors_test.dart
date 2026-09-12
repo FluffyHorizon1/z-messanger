@@ -47,6 +47,7 @@ void main() {
       ('v1', 'pairing'),
       ('v1', 'inner_messages'),
       ('pair-v2', 'pairing_v2'),
+      ('connect', 'connect'),
       ('v2', 'mlkem768'),
       ('v2', 'pq_ratchet'),
       ('v2', 'pq_rekey'),
@@ -297,6 +298,72 @@ void main() {
       expect(await data.deviceCert.verify(data.accountEdPub), isTrue);
       final installed = await n.installFromData(data);
       expect(installed.holdsAccountRoot, isFalse);
+    });
+
+    test('connect: the recorded ceremony replays, and the string is the pair\'s',
+        () async {
+      final v = readVectors('connect', 'connect');
+      final cc = (v['connect_code'] as Map).cast<String, Object?>();
+      final code = ConnectCode(unhex(cc['secret'] as String));
+      expect(code.text, cc['text']);
+      expect(code.link(), cc['link']);
+      expect(await code.rendezvousRoutingId(), cc['rendezvous_routing_id']);
+      // The link's secret is the printed code's secret: one invite, two
+      // renderings, and the code lives in the fragment.
+      expect(hex(ConnectCode.fromLink(cc['link'] as String)!.secret),
+          cc['secret']);
+
+      final parties = (v['parties'] as List).cast<Map<String, Object?>>();
+      final ids = <ConnectIdentity>[];
+      for (final p in parties) {
+        final ci = await ConnectIdentity.fromCode(p['contact_code'] as String,
+            displayName: p['display_name'] as String?);
+        expect(hex(ci.accountEdPub), p['account_ed_pub']);
+        expect(hex(ci.pqCommit), p['pq_commit']);
+        ids.add(ci);
+      }
+
+      // Replay all four messages from the recorded ephemerals.
+      final frames = (v['frames'] as Map).cast<String, Object?>();
+      final inviter = await runScripted(
+          [unhex((v['inviter_ephemeral'] as Map)['seed'] as String)],
+          () => ConnectInviter.create(me: ids[0], code: code));
+      expect({'k': 'x1', ...await inviter.commit()}, frames['commit']);
+      final (reply, acceptor) = await runScripted(
+          [unhex((v['acceptor_ephemeral'] as Map)['seed'] as String)],
+          () => ConnectAcceptor.reply(
+              (frames['commit'] as Map).cast<String, Object?>()..remove('k'),
+              me: ids[1]));
+      expect(b64(unb64(reply['ephx'] as String)),
+          (frames['reply'] as Map)['ephx']);
+      expect(reply['c'], (frames['reply'] as Map)['c']);
+
+      final open = await inviter.open(reply);
+      final (revealB, sessionB) = await acceptor.accept(open);
+      final sessionA = await inviter.complete(revealB);
+      expect(sessionA.sas, v['sas']);
+      expect(sessionB.sas, v['sas']);
+      expect(hex(sessionA.channelKey), v['channel_key']);
+
+      // Each side ends holding the other's code.
+      expect(sessionA.peer.contactCode, parties[1]['contact_code']);
+      expect(sessionB.peer.contactCode, parties[0]['contact_code']);
+
+      // And the recorded `sas_info` is the canonical order: the two parties
+      // sorted by account key, which is what makes the string a property of
+      // the pair rather than of who invited whom.
+      final order = (v['canonical_order'] as List).cast<String>();
+      final loKey = order.first == 'inviter'
+          ? parties[0]['account_ed_pub']
+          : parties[1]['account_ed_pub'];
+      expect(v['sas_info'] as String,
+          contains(loKey as String),
+          reason: 'the lower account key appears in the input');
+      expect((v['sas_info'] as String).indexOf(loKey),
+          lessThan((v['sas_info'] as String).indexOf(order.first == 'inviter'
+              ? parties[1]['account_ed_pub'] as String
+              : parties[0]['account_ed_pub'] as String)),
+          reason: 'and it appears first');
     });
 
     test('backup archive: the recorded code opens every frame of the file',

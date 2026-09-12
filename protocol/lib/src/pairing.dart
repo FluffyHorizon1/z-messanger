@@ -37,39 +37,6 @@ const String _commitCtxV2 = 'z-pair-commit-v2:';
 final _x = X25519();
 final _aead = Chacha20.poly1305Aead();
 
-const String _b32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-
-String _base32Encode(Uint8List data) {
-  final sb = StringBuffer();
-  var buffer = 0, bits = 0;
-  for (final b in data) {
-    buffer = (buffer << 8) | b;
-    bits += 8;
-    while (bits >= 5) {
-      bits -= 5;
-      sb.write(_b32Alphabet[(buffer >> bits) & 0x1f]);
-    }
-  }
-  if (bits > 0) sb.write(_b32Alphabet[(buffer << (5 - bits)) & 0x1f]);
-  return sb.toString();
-}
-
-Uint8List _base32Decode(String s) {
-  var buffer = 0, bits = 0;
-  final out = <int>[];
-  for (final ch in s.toUpperCase().codeUnits) {
-    final v = _b32Alphabet.indexOf(String.fromCharCode(ch));
-    if (v < 0) continue; // skip separators / whitespace
-    buffer = (buffer << 5) | v;
-    bits += 5;
-    if (bits >= 8) {
-      bits -= 8;
-      out.add((buffer >> bits) & 0xff);
-    }
-  }
-  return Uint8List.fromList(out);
-}
-
 Future<Uint8List> _dh(Uint8List seed, Uint8List remotePub) async {
   final kp = await _x.newKeyPairFromSeed(seed);
   final secret = await _x.sharedSecretKey(
@@ -97,17 +64,10 @@ class PairingCode {
   static PairingCode generate() => PairingCode(randomBytes(10));
 
   /// Grouped, upper-case, easy to read aloud/type (e.g. `ABCDE-FGHIJ-KLMNO-P`).
-  String get text {
-    final raw = _base32Encode(secret);
-    final groups = <String>[];
-    for (var i = 0; i < raw.length; i += 5) {
-      groups.add(raw.substring(i, i + 5 > raw.length ? raw.length : i + 5));
-    }
-    return groups.join('-');
-  }
+  String get text => base32Groups(secret);
 
   static PairingCode parse(String code) {
-    final secret = _base32Decode(code);
+    final secret = base32Decode(code);
     if (secret.length < 8) throw const FormatException('pairing code too short');
     return PairingCode(Uint8List.fromList(secret.sublist(0, 10)));
   }

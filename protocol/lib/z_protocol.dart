@@ -6,6 +6,7 @@ library z_protocol;
 
 export 'src/archive.dart';
 export 'src/attachments.dart';
+export 'src/connect.dart';
 export 'src/identity.dart';
 export 'src/messages.dart';
 export 'src/multidevice.dart';

@@ -32,6 +32,63 @@ Uint8List randomBytes(int n) {
 }
 
 String b64(List<int> bytes) => base64Encode(bytes);
+
+/// A two-byte big-endian length, for prefixing a variable-length field that
+/// is not last in a signed or committed concatenation.
+Uint8List u16be(int n) {
+  if (n < 0 || n > 0xffff) throw ArgumentError('u16be out of range: $n');
+  return Uint8List.fromList([(n >> 8) & 0xff, n & 0xff]);
+}
+
+// RFC 4648 base32 without padding, upper case — the alphabet short codes a
+// person reads aloud or types are rendered in (a pairing code, a connect
+// invite). Lifted verbatim out of `pairing.dart`, where it was private, when
+// a second ceremony needed the same rendering; the frozen v1 pairing vectors
+// are what proves the move changed nothing.
+const String _b32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+String base32Encode(Uint8List data) {
+  final sb = StringBuffer();
+  var buffer = 0, bits = 0;
+  for (final b in data) {
+    buffer = (buffer << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      sb.write(_b32Alphabet[(buffer >> bits) & 0x1f]);
+    }
+  }
+  if (bits > 0) sb.write(_b32Alphabet[(buffer << (5 - bits)) & 0x1f]);
+  return sb.toString();
+}
+
+/// Decodes, skipping anything that is not an alphabet character — so a code
+/// pasted back with its dashes, spaces or a stray newline still parses.
+Uint8List base32Decode(String s) {
+  var buffer = 0, bits = 0;
+  final out = <int>[];
+  for (final ch in s.toUpperCase().codeUnits) {
+    final v = _b32Alphabet.indexOf(String.fromCharCode(ch));
+    if (v < 0) continue;
+    buffer = (buffer << 5) | v;
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      out.add((buffer >> bits) & 0xff);
+    }
+  }
+  return Uint8List.fromList(out);
+}
+
+/// Grouped in fives and joined by dashes: `ABCDE-FGHIJ-KLMNO-P`.
+String base32Groups(Uint8List data) {
+  final raw = base32Encode(data);
+  final groups = <String>[];
+  for (var i = 0; i < raw.length; i += 5) {
+    groups.add(raw.substring(i, i + 5 > raw.length ? raw.length : i + 5));
+  }
+  return groups.join('-');
+}
 Uint8List unb64(String s) => Uint8List.fromList(base64Decode(s));
 
 String b64url(List<int> bytes) => base64UrlEncode(bytes).replaceAll('=', '');

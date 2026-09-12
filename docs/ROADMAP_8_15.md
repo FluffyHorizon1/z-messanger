@@ -1670,3 +1670,55 @@ direction; the phases, their order and both ordering arguments stand.
    which kind you have is not how small the code change is — both of these
    are a few lines — but whether anyone else has already committed to the old
    answer.
+
+49. **Phase 17.1 — the ceremony remote adding needed already existed, and the
+   thing that had to change first was the reason it was not safe to reuse.**
+   Adding a contact in person is a QR code, and the QR *is* the verification:
+   the channel is your eyes. Remotely there was one path — copy your code,
+   send it over a channel you trust, they paste it — and four things wrong
+   with it, the worst being that "a channel you trust" is exactly what
+   someone who has only WhatsApp does not have, and that nothing ends
+   verified.
+
+   Device pairing (§10) is already a one-time code, a rendezvous mailbox
+   derived from it, an ephemeral exchange and a string two people compare,
+   and it needs no relay change at all: a routing id is `SHA-256(ed25519
+   pub)`, so a keypair derived from a shared secret is a mailbox *both* sides
+   can hold, and rendezvous mailboxes queue like any other, which is the
+   whole difference between linking your own two devices and reaching someone
+   three time zones away. So the work was never "design a remote add".
+
+   What had to change is that §10's string is sound for a code on a screen in
+   your hand and not for a code sent over WhatsApp. Three differences, each
+   forced by that:
+
+   *Both sides commit before either reveals.* §10's responder chose its
+   ephemeral after seeing the initiator's, and the ephemerals were the whole
+   input — about 2²⁰ tries to hit a value already read aloud. Here the
+   inviter commits first and the acceptor commits to its own ephemeral **and
+   its own claimed identity** while holding only a hash, so neither can steer
+   the string. A machine-in-the-middle gets one blind guess at eight digits.
+
+   *The string is bound to the identities, not only to the channel.* It
+   covers both account keys and both post-quantum commitments, sorted by
+   account key so it is a property of the pair rather than of who invited
+   whom. That is what makes a confirmed comparison mean what a safety-number
+   comparison means — and therefore what makes marking the contact verified
+   defensible rather than wishful. That last step is a trust-model change, so
+   it is ADR 0009's open question rather than something a builder decides.
+
+   *One ceremony adds both people.* Each side's contact code travels sealed
+   under the channel, in both directions: the same string a QR would have
+   carried, so the receiving side feeds it to the verification path a scan
+   already uses. No second round of copy-and-paste.
+
+   Two smaller things worth recording. The invite's two renderings — the
+   printed `ABCDE-FGHIJ-KLMNO-P` and the `…/i#<code>` link — are computed
+   from one secret in one place, because a link and a code that can drift
+   apart is a bug waiting to be reported as "the code doesn't work"; and the
+   code sits in the **fragment**, which no browser sends to a server, so the
+   site that serves the landing page never receives an invite. And the base32
+   rendering moved from private helpers in `pairing.dart` into `util.dart` so
+   both ceremonies share it — the frozen v1 pairing vectors are what proves
+   the move changed nothing, which is the cheapest possible test of a
+   refactor and the reason the freeze is worth having.
