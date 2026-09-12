@@ -1421,3 +1421,76 @@ direction; the phases, their order and both ordering arguments stand.
    code, the longer it survives being false.** Nothing here changes what
    the relay holds or who can read it; four documents now say so about the
    deployment that exists.
+
+45. **Five releases of relay code written and reviewed by the same
+   session, then read by a stranger.** 2.7.9 to 2.8.2 rewrote the queue,
+   the acknowledgement path, expiry, the flush and the rate limit — and
+   every line of it was written and reviewed in one context, which is
+   exactly the arrangement the builder/pusher split exists to prevent. So
+   the accumulated diff was given to an adversarial review with no memory
+   of writing it. It came back with three findings; all three reproduced,
+   and each was a case of the same thing — **a claim tested at the size
+   that makes it true.**
+
+   *A group's delivery receipts, three sent and one delivered.* An entry's
+   key was `m:<id>` for a message and `r:<id>` for a receipt, and a push
+   that found the key taken discarded the entry and answered `sent`. But an
+   `id` is the sender's choice: one group message is one id sent to every
+   member, and each member's acknowledgement produces a receipt carrying
+   that one id. The first member to acknowledge took the key and the other
+   two receipts were dropped, so a sender in a group of three saw one tick
+   instead of three. Only in Redis mode — the RAM queue appended and kept
+   all three — and no test compared the two coordinators, because each was
+   tested against what it happened to do. A key now carries the party the
+   entry belongs to; where the relay cannot attribute an entry at all (a
+   sealed envelope carries no sender) it keeps up to `ID_SLOTS` of them
+   rather than guessing which duplicate to drop, and the client dedupes on
+   the inner id — which it can read and the relay cannot.
+
+   *Ten acknowledgements, 59 MB.* The 2.7.9 rewrite made the *matching*
+   acknowledgement cheap and left the miss with the old fallback: read the
+   whole mailbox and look. Anything reached it — a device retrying an
+   acknowledgement the relay had already acted on, or a socket sending
+   whatever it liked — and the same release had exempted `recv` from the
+   rate limit, for the good reason that a draining device must not be
+   throttled. Ten unknown ids against a 5.9 MB mailbox pulled **58.6 MB**
+   out of the store in four seconds and were still going. The fallback is
+   gone; an acknowledgement is a fixed, small number of keyed lookups
+   whatever it names (1 436 bytes for the same ten, measured), and the
+   exemption now covers only an acknowledgement that frees an envelope —
+   which is what the exemption was always about.
+
+   *The paged flush did not bound what the document said it bounded.*
+   2.8.1's page was `FLUSH_PAGE` *entries*, and `PERFORMANCE.md` said the
+   relay therefore held "a page plus the mark, about 5 MB". An envelope may
+   be `MAX_ENVELOPE_BYTES`, so a page of 64 is 64 MB: against envelopes
+   that size a paused reader had the relay buffering **4.8 MB**, and every
+   backpressure test had used 64 KB envelopes, where the entry count keeps
+   a page small on its own. The tests passed for a reason unrelated to the
+   claim they were written for. A page is bounded by both now, on the
+   bodies actually read, and the honest figure is the mark plus the one
+   envelope that crossed it.
+
+   Two things came out of the pass that outlast the three fixes.
+   `server/test/parity.test.js` runs one scripted scenario against both
+   coordinators and compares the frames the clients receive, frame for
+   frame — the group receipts, a retry, two senders on one id, a sealed
+   envelope, a full queue, a refused recipient — so a future change that
+   makes the two modes disagree fails a test rather than waiting for a
+   stranger to read the diff. And each new criterion was checked against
+   the *old* code first: criteria 4 and 5 of `flush_backpressure.test.js`
+   report 4.8 MB against the pre-2.8.3 bound and 977 KB against this one,
+   which is the difference between a test and a decoration. The rule:
+   **a test written by whoever wrote the code tends to be sized to the
+   answer, and the size is where the claim hides.** The reviewer had no
+   such incentive, and neither does the parity test.
+
+   The parity test earned its keep before it was committed: it failed one
+   run in three, and the difference was a recipient handed one envelope
+   twice in Redis mode. Not a divergence — `ready` is sent before the
+   mailbox is flushed (so that a client is not kept waiting on a 64 MB
+   backlog to learn it is authenticated), and an envelope that arrives in
+   that window is delivered live *and* picked up by the flush still
+   starting. At-least-once, working as designed, in a window §12.5 had not
+   named. The script now waits for its own flush, and §12.5 names the
+   window.

@@ -807,7 +807,11 @@ frame limit is that plus 4096. Error codes: `rate_limited`, `bad_json`,
 `internal`, `bad_auth`, `not_authed`, `bad_send`, `too_large`, `bad_push`,
 `unknown_frame`, and — since 2026‑09‑11, compatible extensions under §14 —
 `queue_full` and `store_full` (§12.4), each carrying the `id` of the `send`
-it answers.
+it answers. A `payload` over the cap is answered `too_large` whatever else
+is wrong with the frame: it is the one refusal a client must not retry, so
+it is decided before the recipient is looked at. A `to` that is not a
+routing id (43 characters of `b64url`) is `bad_send` — the relay will not
+create a mailbox under a name the protocol cannot have produced.
 
 **Sealed handling.** A `payload` beginning with `zs1.` is stored and delivered
 with **no** `from` member, is acknowledged with a `recv` that omits `from`,
@@ -815,6 +819,20 @@ and produces no `delivered` frame. Any other payload is stamped by the relay
 with the authenticated sender's routing id (`from`), acknowledged with `recv
 {id, from}`, and, once acknowledged, produces a `delivered` receipt routed to
 the sender (queued if offline).
+
+**What an `id` identifies.** An `id` is the sender's choice, so it names an
+entry only together with the party the entry belongs to. Two senders may pick
+one id for one recipient and both envelopes are kept and delivered; one group
+message is one id sent to each member, and each member's acknowledgement
+produces its own `delivered` receipt for the sender, so a sender in a group
+of three receives three. A repeated `send` of an id the sender has already
+used for that recipient is the same envelope arriving twice — a retry after a
+lost `sent` — and is answered `sent` without being queued again. For a sealed
+envelope the relay has nothing to tell a retry from a second envelope that
+happens to share an id, so it keeps both (up to `ID_SLOTS`, 8, per id per
+mailbox, after which a further one is refused `queue_full`) and the client
+drops the duplicate on the inner `mid` (§6.4) — the safe side of a guess the
+relay cannot make.
 
 ### 12.3 Push
 
@@ -826,12 +844,19 @@ recipient is offline, the relay sends the token a **content‑free** wake signal
 ### 12.4 Limits
 
 Per connection: a token bucket of `RATE_PER_SEC` (80) frames/s with burst
-`RATE_BURST` (240); excess frames get `error{rate_limited}`. A `recv` is
-exempt (2026‑09‑11): a device draining a backlog acknowledges as fast as
-it persists, an acknowledgement costs the relay one small read and one
-small removal, and a limited one was simply dropped — the entry it named
-stayed queued and a mailbox of more than the burst could not be emptied in
-one connection. Per recipient
+`RATE_BURST` (240); excess frames get `error{rate_limited}`. A small `recv`
+that **frees an envelope** is exempt (2026‑09‑11): a device draining a
+backlog acknowledges as fast as it persists, such an acknowledgement costs
+the relay one small read and one small removal while returning memory, and a
+limited one was simply dropped — the entry it named stayed queued and a
+mailbox of more than the burst could not be emptied in one connection. A
+`recv` that matches nothing in the sender's own mailbox is charged like any
+other frame (2026‑09‑12): it frees nothing, and the exemption had made a
+flood of them free. The relay counts them (`z_ack_miss_total`). The charge
+is applied after the lookup, so a burst that arrives in one read is charged
+in arrears — the bucket goes into debt and the socket is refused until it
+refills; what the limit bounds for acknowledgements is the rate, not the
+burst. Per recipient
 queue: `MAX_QUEUE_MSGS_PER_USER` (5000) envelopes and `MAX_QUEUE_BYTES_PER_USER`
 (64 MiB, each envelope charged at its payload length plus 256). A `send`
 that would take the recipient's queue past either cap is **refused** with
@@ -881,18 +906,40 @@ own knowledge regardless. The relay counts refusals of this kind
 2. The envelope stays queued until the recipient sends `recv` (meaning it is
    safely in the recipient's encrypted local store). On (re)connect the whole
    queue is flushed again, so delivery is **at‑least‑once** and receivers
-   deduplicate (§6.4). A client MUST NOT `recv` before persisting.
-3. A flush of a large backlog is **paged**: the relay sends `FLUSH_PAGE`
-   (64) entries and waits until the socket has drained below
-   `FLUSH_HIGH_WATER_BYTES` (1 MiB) before the next page, so what it holds
-   for one slow reader is a page plus that mark rather than the whole
-   backlog (up to 64 MiB). Two consequences for a client. A live `msg` may
-   arrive *between* pages, so the flush is not ordered against traffic that
+   deduplicate (§6.4). A client MUST NOT `recv` before persisting. A `recv`
+   that names nothing the mailbox holds is not an error — the relay may
+   already have removed the entry — and is answered with no frame at all.
+   One case of at-least-once is worth naming because it is not obvious:
+   `ready` is sent *before* the mailbox is flushed, so that a client is not
+   kept waiting on a 64 MiB backlog to learn it is authenticated, and an
+   envelope that arrives in that window may be both delivered live and
+   picked up by the flush that is still starting. A client that begins
+   sending the instant it is `ready` should therefore expect a duplicate,
+   as it must for any other redelivery.
+3. A `recv` of an attributed envelope produces a `delivered` receipt for
+   its sender, once, and receipts are per acknowledger: they do not merge or
+   displace one another, so a group message of one id acknowledged by three
+   members gives the sender three `delivered` frames with three different
+   `to` members (see §12.2, "What an `id` identifies"). A receipt for an
+   offline sender is queued like any other entry, and is removed by the
+   flush that delivers it rather than needing an acknowledgement of its own.
+   A receipt the recipient's queue has no room for is dropped rather than
+   refused: it is a tick, not mail.
+4. A flush of a large backlog is **paged**: the relay sends at most
+   `FLUSH_PAGE` (64) entries *or* `FLUSH_HIGH_WATER_BYTES` (1 MiB) of
+   bodies, whichever comes first, and waits until the socket has drained
+   below that mark before continuing — so what it holds for one slow reader
+   is the mark plus the one envelope that crossed it, rather than the whole
+   backlog (up to 64 MiB). Both bounds are needed: an envelope may be
+   `MAX_ENVELOPE_BYTES`, so 64 of them are 64 MB, which is the backlog again
+   (see PERFORMANCE, "What a reconnect costs the relay"). Two consequences
+   for a client. A live `msg` may arrive *between* pages, so the flush is
+   not ordered against traffic that
    arrives during it — which changes nothing a client may rely on, since
    delivery was already at‑least‑once and unordered across reconnects. And
    a flush that is interrupted (the socket closes) simply stops: nothing was
    acknowledged, so the next connection flushes the same queue again.
-4. Undelivered envelopes vanish on expiry or on relay restart — never to
+5. Undelivered envelopes vanish on expiry or on relay restart — never to
    make room for another envelope (§12.4). Availability is explicitly not a
    security property of the relay.
 

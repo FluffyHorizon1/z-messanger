@@ -125,8 +125,9 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 | `MAX_QUEUE_MSGS_PER_USER` | `5000` | per‑recipient queue cap (count), likewise |
 | `QUEUE_TTL_HOURS` | `72` | drop an undelivered envelope this long after the relay accepted it — per envelope, in both modes |
 | `SWEEP_INTERVAL_SECONDS` | `60` | expiry sweep cadence (a flush expires too, before it delivers) |
-| `FLUSH_PAGE` | `64` | entries per page when flushing a backlog to a reconnecting device |
-| `FLUSH_HIGH_WATER_BYTES` | `1048576` | the next page waits until the socket has drained below this |
+| `FLUSH_PAGE` | `64` | entries a flush may send before waiting for the socket to drain |
+| `FLUSH_HIGH_WATER_BYTES` | `1048576` | bytes it may send before waiting — whichever of the two comes first |
+| `ID_SLOTS` | `8` | sealed envelopes that may share one `id` in one mailbox (§12.2) |
 | `RATE_PER_SEC` / `RATE_BURST` | `80` / `240` | per‑connection token bucket |
 | `TLS_CERT` / `TLS_KEY` | — | enable built‑in TLS (paths to PEM) |
 | `LOG_LEVEL` | `info` | `info` logs counts/timing only, never content |
@@ -172,6 +173,13 @@ presence (`presence:{rid}`) and each recipient's pending queue (`q:{rid}`, a
 list of entry keys in arrival order; `qe:{rid}`, the entries; `qb:{rid}`,
 their bytes) live in Redis, and instances route to each other over Redis
 pub/sub, so a client can land on **any** instance and still reach anyone.
+An entry key is `m:<id>:<sender>` for an attributed envelope, `m:<id>` (and
+`m:<id>#1`, …) for a sealed one — which carries no sender to put there —
+and `r:<id>:<who acknowledged>` for a delivery receipt: the party is in the
+key because an `id` is the sender's choice and identifies nothing on its own
+(§12.2). No attribution reaches a key that the entry beside it did not
+already hold, and a sealed envelope's key holds none.
+
 A mailbox drains in one list read, one hash read and one small script per
 acknowledgement — five thousand short envelopes in under half a second
 (`docs/PERFORMANCE.md`, "Draining a mailbox"); entries queued by a relay
@@ -238,12 +246,14 @@ until acked).
 - **Memory** is the only real resource: worst case ≈
   `active_recipients × MAX_QUEUE_BYTES_PER_USER`, in RAM mode and in Redis
   mode alike — plus, per device currently collecting its backlog,
-  `FLUSH_PAGE` entries and `FLUSH_HIGH_WATER_BYTES` in the relay process
-  itself (about 5 MB at the defaults with attachment‑sized envelopes, and
-  it is a *bound*: a device on a slow link no longer holds its whole
-  backlog in the relay's memory while it reads, which on a 512 MB instance
-  was a handful of reconnects away from the whole machine —
-  `docs/PERFORMANCE.md`, "What a reconnect costs the relay"). Tune the caps for your box; keep the byte cap above one
+  `FLUSH_HIGH_WATER_BYTES` plus one envelope in the relay process itself
+  (about 3 MB at the defaults, measured — and it is a *bound*: a device on a
+  slow link no longer holds its whole backlog in the relay's memory while it
+  reads, which on a 512 MB instance was a handful of reconnects away from
+  the whole machine — `docs/PERFORMANCE.md`, "What a reconnect costs the
+  relay"). Raising `FLUSH_PAGE` does not raise that bound; raising
+  `FLUSH_HIGH_WATER_BYTES` raises both it and how much the relay will let
+  one socket buffer. Tune the caps for your box; keep the byte cap above one
   envelope (`MAX_ENVELOPE_BYTES` + 256) or the largest envelopes are refused
   everywhere, which the relay warns about at start.
 - **Restarts drop in‑flight messages.** Senders keep them in their device

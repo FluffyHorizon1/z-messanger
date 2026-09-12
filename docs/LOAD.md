@@ -14,7 +14,7 @@ drives and the representative numbers from a local run.
 | Concurrent swarm | 60 clients connect + authenticate at once | all reach `ready`; `/health.connections ≥ 60`; RSS growth bounded |
 | Oversize envelope | a payload past `MAX_ENVELOPE_BYTES` (1 MB) | rejected with `too_large`; **the socket keeps working** (a normal send right after is delivered) |
 | Oversize raw frame | a 2 MB raw WebSocket frame (past `maxPayload`) | only the offender's socket is closed; a bystander still receives; `/health` still 200 |
-| Message flood | 600 sends fired instantly from one client | excess is `rate_limited` (token bucket: 80/s, burst 240; acknowledgements are exempt, so a device draining a backlog is never rate-limited out of emptying it); the connection is **not** killed |
+| Message flood | 600 sends fired instantly from one client | excess is `rate_limited` (token bucket: 80/s, burst 240; an acknowledgement that frees an envelope is exempt, so a device draining a backlog is never rate-limited out of emptying it — one that frees nothing is charged, `receipts.test.js` criterion 4); the connection is **not** killed |
 | Reconnect storm | 100 connect → auth → close cycles | relay stays up; `/health` 200; RSS growth bounded |
 | Queue overflow | 180 envelopes to an **offline** recipient (cap lowered to 100 for the test) | the first 100 are queued and stay queued; the other 80 are each refused with `queue_full`; memory does not grow with the flood, and the flood erases nothing |
 
@@ -64,22 +64,32 @@ refusedOf180:              80
 
 `MAX_ENVELOPE_BYTES` (1 MB) · `MAX_QUEUE_MSGS_PER_USER` (5000) ·
 `MAX_QUEUE_BYTES_PER_USER` (64 MB) · `QUEUE_TTL_HOURS` (72) ·
-`RATE_PER_SEC` (80) · `RATE_BURST` (240).
+`RATE_PER_SEC` (80) · `RATE_BURST` (240) · `FLUSH_PAGE` (64) ·
+`FLUSH_HIGH_WATER_BYTES` (1 MiB) · `ID_SLOTS` (8).
 
 ## One more shape, in its own file
 
 A device that stops reading mid-flush is the abuse case this harness cannot
 express, because it needs the socket paused rather than the frames refused:
-`flush_backpressure.test.js` pauses a client's TCP socket with a 19 MB
-backlog waiting and watches the relay's own buffered bytes. Before the paged
-flush the relay held 15.1 MB for that one reader; now it holds 320 KB and
-finishes the delivery when the reader resumes (`docs/PERFORMANCE.md`, "What
-a reconnect costs the relay").
+`flush_backpressure.test.js` pauses a client's TCP socket with a backlog
+waiting and watches the relay's own buffered bytes. Before the paged flush
+the relay held 15.1 MB of a 19 MB backlog for that one reader; now it holds
+64 KB, and against envelopes at the cap — where a page counted in entries
+was still 4.8 MB — it holds 977 KB, finishing the delivery when the reader
+resumes (`docs/PERFORMANCE.md`, "What a reconnect costs the relay").
+
+Two more live beside it. `receipts.test.js` covers what an acknowledgement
+costs: ten that match nothing read 1 436 bytes from the store, where the
+fallback they replace read the acknowledger's whole mailbox each time.
+`parity.test.js` runs one scripted scenario against the RAM coordinator and
+the Redis one and compares the frames the clients receive, so the mode
+production runs and the mode most of the suite exercises cannot drift apart
+without a test noticing.
 
 ## Not covered here
 
 Real-network latency and packet-loss behaviour, which wants a deployed
 environment rather than an in-process harness and is tracked separately.
 Multi-instance behaviour is covered by `ha.test.js`, `queue_caps.test.js`,
-`full_store.test.js`, `drain.test.js` and `expiry.test.js`, each against a
-real `redis-server`.
+`full_store.test.js`, `drain.test.js`, `expiry.test.js`, `receipts.test.js`
+and `parity.test.js`, each against a real `redis-server`.

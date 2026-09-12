@@ -8,8 +8,15 @@
 // device on a slow link holds its whole backlog in the relay's memory for as
 // long as it takes to read. The flush now goes out in pages of `FLUSH_PAGE`
 // and waits between them until the socket has drained below
-// `FLUSH_HIGH_WATER_BYTES`, so what the relay holds is one page plus the
-// mark — whatever the backlog.
+// `FLUSH_HIGH_WATER_BYTES`, so what the relay holds is the mark plus the one
+// envelope that crossed it — whatever the backlog.
+//
+// Criteria 1 to 3 were written with 64 KB envelopes, and passed for the wrong
+// reason: FLUSH_PAGE alone kept a page of those small, so they never tested
+// the byte bound they claimed. `MAX_ENVELOPE_BYTES` is 1 MB, and against
+// envelopes that size the relay buffered 58 MB of a 64 MB backlog — a page
+// counted entries, not bytes (roadmap revision 45). Criteria 4 and 5 use
+// envelopes large enough that the count bound alone cannot save them.
 //
 // The caps are lowered here so the bound is small and the test is quick;
 // everything else is the relay's default. The client stops reading by pausing
@@ -23,7 +30,11 @@
 //  2. Redis mode: the same, and the relay reads the entries from the store a
 //     page at a time rather than all at once;
 //  3. a socket that goes away mid-flush ends the flush (nothing is queued
-//     into a dead socket, and the entries stay for the next connection).
+//     into a dead socket, and the entries stay for the next connection);
+//  4. RAM mode, envelopes at the envelope cap: the bound still holds, so it
+//     is the bytes that bound a page and not the entry count;
+//  5. Redis mode: the same, where the sizes are not known until the bodies
+//     are read.
 
 process.env.FLUSH_PAGE = process.env.FLUSH_PAGE || '8';
 process.env.FLUSH_HIGH_WATER_BYTES = process.env.FLUSH_HIGH_WATER_BYTES || '65536';
@@ -43,6 +54,15 @@ const AUTH_CONTEXT = Buffer.from('z-relay-auth-v1:', 'utf8');
 const KB64 = 'zs1.' + 'x'.repeat(64 * 1024 - 4); // sealed-looking: acked by id alone
 const BACKLOG = 300;
 const BOUND = CFG.flushHighWaterBytes + CFG.flushPage * 70 * 1024;
+// Criteria 4 and 5: envelopes at `MAX_ENVELOPE_BYTES`, the size the finding
+// was measured at, and a backlog several times larger than a loopback socket
+// can swallow — otherwise the kernel absorbs the whole flush and no bound is
+// exercised at all. A page of FLUSH_PAGE of these is 8 MB: measured here,
+// the count-only bound leaves 4.8 MB in the relay's socket and the byte
+// bound 1.0 MB.
+const BIG = 'zs1.' + 'x'.repeat(CFG.maxEnvelopeBytes - 4);
+const BIG_N = 16;
+const BIG_BOUND = CFG.flushHighWaterBytes + CFG.maxEnvelopeBytes + 64 * 1024;
 
 function hasRedisServer() {
   return spawnSync('redis-server', ['--version']).status === 0;
@@ -128,15 +148,20 @@ class Client {
   }
 }
 
-/** Fills `rid`'s mailbox with BACKLOG envelopes of 64 KB, from enough senders to stay under the rate limit. */
-async function fill(port, rid) {
+/** Fills `rid`'s mailbox with `n` copies of `payload`, from enough senders to stay under the rate limit. */
+async function fillWith(port, rid, payload, n) {
   const senders = [];
-  for (let i = 0; i < Math.ceil(BACKLOG / 200); i++) senders.push(await new Client(port, makeIdentity()).auth());
-  for (let i = 0; i < BACKLOG; i++) {
-    const r = await senders[i % senders.length].deliver(`m${i}`, rid, KB64);
+  for (let i = 0; i < Math.ceil(n / 200); i++) senders.push(await new Client(port, makeIdentity()).auth());
+  for (let i = 0; i < n; i++) {
+    const r = await senders[i % senders.length].deliver(`m${i}`, rid, payload);
     assert.strictEqual(r.t, 'sent', JSON.stringify(r));
   }
   return senders;
+}
+
+/** Fills `rid`'s mailbox with BACKLOG envelopes of 64 KB. */
+function fill(port, rid) {
+  return fillWith(port, rid, KB64, BACKLOG);
 }
 
 /**
@@ -280,4 +305,81 @@ test('3. a socket that goes away mid-flush ends the flush, and its envelopes wai
   assert.strictEqual(b2.msgs.length, BACKLOG);
   senders.forEach((s) => s.close());
   b2.close();
+});
+
+test('4. RAM: envelopes the size of the cap are bounded by bytes, not by the count', async (t) => {
+  const srv = createServer({ pushSender: null });
+  const port = await freePort();
+  await new Promise((r) => srv.httpServer.listen(port, '127.0.0.1', r));
+  t.after(() => {
+    for (const ws of srv.wss.clients) ws.terminate();
+    srv.httpServer.close();
+  });
+
+  const bob = makeIdentity();
+  const senders = await fillWith(port, bob.rid, BIG, BIG_N);
+
+  const b = new Client(port, bob);
+  await b.auth();
+  b.pause();
+  const peak = await peakBuffered(srv.wss, sleep(2500));
+  assert.ok(
+    peak < BIG_BOUND,
+    `the relay buffered ${(peak / 1048576).toFixed(1)} MB of a ${((BIG_N * BIG.length) / 1048576).toFixed(0)} MB backlog; the bound is ${(BIG_BOUND / 1048576).toFixed(1)} MB and a page of ${CFG.flushPage} of these would be ${((CFG.flushPage * BIG.length) / 1048576).toFixed(0)} MB`
+  );
+  assert.ok(peak > 0, 'the flush did start');
+  t.diagnostic(`peak buffered ${(peak / 1024).toFixed(0)} KB of a ${((BIG_N * BIG.length) / 1048576).toFixed(0)} MB backlog`);
+
+  b.resume();
+  const deadline = Date.now() + 30_000;
+  while (b.msgs.length < BIG_N && Date.now() < deadline) await sleep(50);
+  assert.strictEqual(b.msgs.length, BIG_N, 'every envelope arrived once the reader resumed');
+  assert.deepStrictEqual(
+    b.msgs.map((f) => f.id),
+    Array.from({ length: BIG_N }, (_, i) => `m${i}`),
+    'in order'
+  );
+  senders.forEach((s) => s.close());
+  b.close();
+});
+
+test('5. Redis: the same, where a body’s size is not known until it is read', { skip: SKIP_REDIS && 'redis-server/ioredis unavailable' }, async (t) => {
+  const redisPort = await freePort();
+  const redis = spawn('redis-server', ['--port', String(redisPort), '--save', '', '--appendonly', 'no', '--bind', '127.0.0.1'], { stdio: 'ignore' });
+  await sleep(700);
+  const url = `redis://127.0.0.1:${redisPort}`;
+  const coord = new RedisCoordinator(url, 'instA');
+  const srv = createServer({ coordinator: coord, pushSender: null });
+  const port = await freePort();
+  await new Promise((r) => srv.httpServer.listen(port, '127.0.0.1', r));
+  t.after(async () => {
+    for (const ws of srv.wss.clients) ws.terminate();
+    try {
+      srv.httpServer.close();
+    } catch {}
+    await coord.close();
+    redis.kill('SIGKILL');
+  });
+
+  const bob = makeIdentity();
+  const senders = await fillWith(port, bob.rid, BIG, BIG_N);
+
+  const b = new Client(port, bob);
+  await b.auth();
+  b.pause();
+  const peak = await peakBuffered(srv.wss, sleep(2500));
+  assert.ok(
+    peak < BIG_BOUND,
+    `the relay buffered ${(peak / 1048576).toFixed(1)} MB of a ${((BIG_N * BIG.length) / 1048576).toFixed(0)} MB backlog; the bound is ${(BIG_BOUND / 1048576).toFixed(1)} MB`
+  );
+  assert.ok(peak > 0, 'the flush did start');
+  t.diagnostic(`peak buffered ${(peak / 1024).toFixed(0)} KB of a ${((BIG_N * BIG.length) / 1048576).toFixed(0)} MB backlog`);
+
+  b.resume();
+  const deadline = Date.now() + 60_000;
+  while (b.msgs.length < BIG_N && Date.now() < deadline) await sleep(50);
+  assert.strictEqual(b.msgs.length, BIG_N);
+  assert.deepStrictEqual(b.msgs.map((f) => f.id), Array.from({ length: BIG_N }, (_, i) => `m${i}`), 'in order');
+  senders.forEach((s) => s.close());
+  b.close();
 });

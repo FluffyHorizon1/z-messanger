@@ -149,9 +149,11 @@ test('1. Redis: a mailbox that keeps receiving still expires what has outlived t
   const bob = makeIdentity();
   const stale = CFG.queueTtlMs + 60_000;
 
-  // Three envelopes that have outlived the TTL, written as the relay writes
-  // them, then two fresh ones through the relay itself — which refreshes the
-  // keys' own TTL, the thing that used to keep the old ones alive.
+  // Three envelopes that have outlived the TTL, written in the shape a relay
+  // between 2.7.9 and 2.8.2 wrote (`m:<id>`, no sender in the key), then two
+  // fresh ones through the relay itself — which refreshes the keys' own TTL,
+  // the thing that used to keep the old ones alive. So the mailbox holds both
+  // key shapes at once, which is what a mailbox holds across a deploy.
   const old = ['o1', 'o2', 'o3'];
   for (const id of old) {
     await raw.rpush(`q:${bob.rid}`, `m:${id}`);
@@ -167,8 +169,9 @@ test('1. Redis: a mailbox that keeps receiving still expires what has outlived t
 
   // ---- the sweep: the three old ones go, the two fresh ones stay ----
   await coord.sweep();
-  assert.deepStrictEqual(await raw.lrange(`q:${bob.rid}`, 0, -1), ['m:n1', 'm:n2']);
-  assert.deepStrictEqual((await raw.hkeys(`qe:${bob.rid}`)).sort(), ['m:n1', 'm:n2']);
+  const fresh = [`m:n1:${alice.identity.rid}`, `m:n2:${alice.identity.rid}`];
+  assert.deepStrictEqual(await raw.lrange(`q:${bob.rid}`, 0, -1), fresh);
+  assert.deepStrictEqual((await raw.hkeys(`qe:${bob.rid}`)).sort(), [...fresh].sort());
   assert.strictEqual(Number(await raw.get(`qb:${bob.rid}`)), bytesBefore - 3 * 260, 'the counter lost exactly the expired bytes');
 
   // ---- the flush: Bob receives only what is still fresh ----
@@ -246,6 +249,13 @@ test('3. RAM: the sweep expires per entry and the byte count follows', () => {
   coord.sweep();
   assert.deepStrictEqual(coord.queues.get(rid).entries.map((e) => e.id), ['b']);
   assert.strictEqual(coord.queues.get(rid).bytes, 400, 'the count is recomputed from what is left');
+  // The key index is rebuilt with them. An index that disagreed with the
+  // array would leave an entry nothing can acknowledge and the flush would
+  // keep delivering it: the queue's one invariant, asserted where it is
+  // rebuilt.
+  const q = coord.queues.get(rid);
+  assert.strictEqual(q.keys.size, q.entries.length);
+  assert.deepStrictEqual([...q.keys.values()], q.entries);
   // A mailbox with nothing fresh left is forgotten entirely.
   coord.queues.get(rid).entries[0].ts = Date.now() - CFG.queueTtlMs - 1000;
   coord.sweep();

@@ -77,15 +77,24 @@ class Client {
   }
 }
 
-let httpServer, port;
+let httpServer, wss, port;
 
 test.before(async () => {
-  ({ httpServer } = createServer());
+  ({ httpServer, wss } = createServer());
   await new Promise((res) => httpServer.listen(0, '127.0.0.1', res));
   port = httpServer.address().port;
 });
 
+// A test that fails mid-way never reaches its own close(), and an open socket
+// keeps httpServer.close() waiting forever: a single assertion failure used to
+// hang the whole file instead of reporting. Tear the sockets down first.
 test.after(async () => {
+  for (const c of wss.clients) {
+    try {
+      c.terminate();
+    } catch {}
+  }
+  if (httpServer.closeAllConnections) httpServer.closeAllConnections();
   await new Promise((res) => httpServer.close(res));
 });
 
@@ -169,6 +178,26 @@ test('oversize envelopes are rejected', async () => {
   alice.send({ t: 'send', id: 'big', to: 'whoever', payload: big });
   const err = await alice.next((f) => f.t === 'error' && f.id === 'big');
   assert.strictEqual(err.code, 'too_large');
+  alice.close();
+});
+
+test('a recipient that is not a mailbox is refused, not turned into one', async () => {
+  const alice = new Client(port, makeIdentity());
+  await alice.auth();
+  // Every `to` the protocol sends is a routing id: the base64url of a
+  // SHA-256, 43 characters (PROTOCOL §2.4). Anything else would have had
+  // three store keys created in its name, so it is refused up front.
+  const bad = ['whoever', '', 'a'.repeat(42), 'a'.repeat(44), 'has spaces in it', '../../etc/passwd', `q:${'a'.repeat(41)}`];
+  for (const to of bad) {
+    alice.send({ t: 'send', id: `b-${to.length}-${to.slice(0, 3)}`, to, payload: 'aGk=' });
+    const err = await alice.next((f) => f.t === 'error' || f.t === 'sent');
+    assert.strictEqual(err.code, 'bad_send', `"${to}" was not refused`);
+  }
+  // And a well-formed one is accepted, offline recipient or not.
+  const bob = makeIdentity();
+  alice.send({ t: 'send', id: 'good', to: bob.rid, payload: 'aGk=' });
+  const ok = await alice.next((f) => f.id === 'good');
+  assert.strictEqual(ok.t, 'sent');
   alice.close();
 });
 

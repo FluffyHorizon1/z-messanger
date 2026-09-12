@@ -65,12 +65,12 @@ same opaque form.
 
 | What | Where | Who can read it | How long |
 |---|---|---|---|
-| Queued ciphertext envelopes, and per mailbox how many and how many bytes (the caps, §12.4) | RAM — or a RAM‑only Redis the instances share: per mailbox a list of entry keys, a hash of the entries, and their byte count | The operator sees opaque bytes and their padded size — not content, not sender | Until delivered, until `QUEUE_TTL_HOURS` (72) after the relay accepted **that envelope**, or until the process (or the store) restarts — never evicted to make room |
+| Queued ciphertext envelopes, and per mailbox how many and how many bytes (the caps, §12.4) | RAM — or a RAM‑only Redis the instances share: per mailbox a list of entry keys, a hash of the entries, and their byte count. An attributed envelope's key names its sender, a sealed one's names nobody, and neither key holds anything the entry beside it did not (`SELF_HOSTING.md`, "Scaling out") | The operator sees opaque bytes and their padded size — not content; for a sealed envelope, not the sender either | Until delivered, until `QUEUE_TTL_HOURS` (72) after the relay accepted **that envelope**, or until the process (or the store) restarts — never evicted to make room |
 | Which routing ids are connected, and the network address of every socket — the authenticated mailbox socket and the anonymous sender socket a device also holds (§12.1) | RAM — and, with several instances, *which instance* holds each mailbox's socket, in the store (`presence:{rid}`, 60 s, refreshed while connected) | Operator | While connected; the store's copy expires within a minute of the socket closing |
 | That a sealed envelope arrived on an anonymous socket — never which identity sent it | RAM, transiently | Operator; nothing ties the socket to a routing id but its address (R21) | Duration of the send |
 | Which routing id an envelope is addressed to, and when | RAM, transiently | Operator | Duration of delivery |
 | Push tokens (FCM), if push is enabled | RAM — or the store, so any instance can wake a device (`push:{rid}`) | Operator, and Google when a push is sent | Until expiry (`PUSH_TTL_DAYS`, 30) or a store restart |
-| Aggregate counters (`/metrics`) | RAM, per instance — each instance counts its own work and `/health` reports its own sockets | Anyone who can reach `/metrics` | Until that instance restarts |
+| Aggregate counters (`/metrics`) | RAM, per instance — each instance counts its own work and `/health` reports its own sockets. Counts only: envelopes, refusals of each kind, acknowledgements that matched and that did not (`z_ack_miss_total`), delivery latency buckets — no routing id appears in any of them | Anyone who can reach `/metrics` | Until that instance restarts |
 
 **Not held by the relay at any point:** message content, sender identity
 (sealed sender), display names, group membership, contact lists, any key

@@ -540,6 +540,25 @@ acknowledgement reads it once more to check the sender — and the time is
 linear. Entries queued by the older relay are read and removed the way it
 left them, until they expire (`drain.test.js`).
 
+### The acknowledgement that matches nothing (2026-09-12)
+
+The 2.7.9 change made the *matching* acknowledgement cheap and left a
+fallback for the one that matched nothing: read the whole mailbox and look.
+It was reached by any id the mailbox did not hold — a device retrying an
+acknowledgement the relay had already acted on, or a socket sending
+whatever it liked — and 2.7.9 had just made acknowledgements free of the
+rate limit. Ten such frames against a 5.9 MB mailbox pulled **58.6 MB**
+out of the store in four seconds and were still going.
+
+The fallback is gone. An acknowledgement is now a fixed, small number of
+keyed lookups whatever it names, and an acknowledgement that frees nothing
+is charged to the rate limit after all — the exemption was for the device
+draining a backlog, which frees memory with every frame, and the charge
+lands on the socket that spends lookups on nothing. Measured by
+`server/test/receipts.test.js` (criterion 3): ten unmatched
+acknowledgements against a 12.5 MB mailbox read **1 436 bytes** from the
+store. `z_ack_miss_total` counts them.
+
 ## What a reconnect costs the relay (2026-09-12)
 
 A device that has been away collects a backlog — up to
@@ -549,26 +568,39 @@ because the relay is two 512 MB instances (`render.ha.yaml`) and the device
 is on a phone network.
 
 Measured by `server/test/flush_backpressure.test.js`, which is the only way
-to measure it: a client authenticates with 300 envelopes of 64 KB waiting
-(19 MB), pauses its TCP socket the way a slow link does, and the test reads
-the relay's own `bufferedAmount` for that socket.
+to measure it: a client authenticates with a backlog waiting, pauses its TCP
+socket the way a slow link does, and the test reads the relay's own
+`bufferedAmount` for that socket.
 
-| | relay memory for that one reader | read from the store meanwhile |
-|---|---:|---:|
-| 2.8.0 | **15.1 MB** (the whole backlog, less what the kernel took) | 19 MB (all of it) |
-| 2.8.1 | **320 KB** | 4.0 MB |
+| envelopes | | relay memory for that one reader | read from the store meanwhile |
+|---|---|---:|---:|
+| 300 × 64 KB (19 MB) | 2.8.0 | **15.1 MB** (the whole backlog, less what the kernel took) | 19 MB (all of it) |
+| 300 × 64 KB (19 MB) | 2.8.1 | **320 KB** | 4.0 MB |
+| 300 × 64 KB (19 MB) | 2.8.3 | **64 KB** | 4.0 MB |
+| 16 × 1 MB (15 MB) | 2.8.1 | **4.8 MB** | — |
+| 16 × 1 MB (15 MB) | 2.8.3 | **977 KB** | — |
 
-Before, the flush read the mailbox and wrote every envelope into the socket
-in one pass: the relay held the backlog until the device finished reading
-it, so five such reconnects at once was 75 MB of one instance and a
-hundred was the machine. Now the flush goes out in pages of `FLUSH_PAGE`
-(64) and the next page waits until the socket has drained below
-`FLUSH_HIGH_WATER_BYTES` (1 MiB), in RAM mode and Redis mode alike — so
-the relay holds a page plus the mark, about 5 MB at the defaults with
-attachment-sized envelopes and 320 KB at the test's smaller ones, whatever
-the backlog is. Delivery is unchanged: the paused reader receives all 300
-in order the moment it resumes, and a socket that dies mid-flush leaves the
-mailbox intact for the next connection (nothing was acknowledged).
+Before 2.8.1, the flush read the mailbox and wrote every envelope into the
+socket in one pass: the relay held the backlog until the device finished
+reading it, so five such reconnects at once was 75 MB of one instance and a
+hundred was the machine. The flush now goes out in pages and waits between
+them until the socket has drained below `FLUSH_HIGH_WATER_BYTES` (1 MiB), in
+RAM mode and Redis mode alike.
+
+The second and fourth rows are the same relay, and the difference between
+them is why this section was rewritten. 2.8.1 counted a page in *entries*
+(`FLUSH_PAGE`, 64) and this document claimed the bound was "a page plus the
+mark, about 5 MB at the defaults" — but an envelope may be
+`MAX_ENVELOPE_BYTES` (1 MB), so a page of 64 is 64 MB, and against envelopes
+that size the relay buffered 4.8 MB where the test's 64 KB ones had made it
+look like 320 KB. The tests had all used small envelopes, so they measured
+the entry count and not the bound they claimed (roadmap revision 45). A page
+is now bounded by **both**, and the honest number is the mark plus the one
+envelope that crossed it plus what `drained` leaves in the socket — about
+3 MB at the defaults, 977 KB at the test's settings, whatever the backlog
+is. Delivery is unchanged: the paused reader receives everything in order
+the moment it resumes, and a socket that dies mid-flush leaves the mailbox
+intact for the next connection (nothing was acknowledged).
 
 The store is spared the same way — 4 MB read rather than 19 — because the
 entries are fetched per page rather than for the whole mailbox. That is the

@@ -16,8 +16,9 @@
 //     delivered in their place among new ones, acknowledged, and removed,
 //     and the byte counter and all three keys end where they should;
 //  3. a send repeated with the same id — a sender retrying after a lost
-//     `sent` — is acknowledged and stored once; a receipt for a message id
-//     does not collide with a message of that id.
+//     `sent` — is acknowledged and stored once; and a message and a receipt
+//     carrying one id, from two different parties, are three separate
+//     entries that do not displace each other.
 //
 // Skips itself where `redis-server` or `ioredis` is missing, as ha.test.js does.
 
@@ -236,7 +237,13 @@ test('3. a repeated send is stored once, and a receipt does not collide with a m
   b.send({ t: 'recv', id: 'dup', from: alice.identity.rid });
   await sleep(100);
   assert.strictEqual((await b.deliver('dup', alice.identity.rid, 'eQ==')).t, 'sent');
-  assert.deepStrictEqual((await raw.lrange(`q:${alice.identity.rid}`, 0, -1)).sort(), ['m:dup', 'r:dup']);
+  // Both carry Bob's routing id — he sent the message and he acknowledged
+  // the one Alice sent — and they are distinct keys, so neither displaces
+  // the other even though both are id `dup`.
+  assert.deepStrictEqual(
+    (await raw.lrange(`q:${alice.identity.rid}`, 0, -1)).sort(),
+    [`m:dup:${bob.rid}`, `r:dup:${bob.rid}`]
+  );
   const a2 = await new Client(port, alice.identity).auth();
   const got = [await a2.next((f) => f.t === 'delivered' || f.t === 'msg'), await a2.next((f) => f.t === 'delivered' || f.t === 'msg')];
   assert.deepStrictEqual(got.map((f) => f.t).sort(), ['delivered', 'msg']);
