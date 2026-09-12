@@ -158,7 +158,8 @@ Given all of the above, here is the honest summary of what Z buys you:
 **Your conversations cannot be read by the operator of the service, by anyone
 who compromises it, by anyone on the network between you, or by anyone who
 seizes the server — because none of them ever hold anything but padded
-ciphertext addressed to a hash, and the machine forgets it on restart.** A
+ciphertext addressed to a hash, in memory, deleted on delivery and within
+seventy‑two hours regardless.** A
 recording made today does not become readable when quantum computers arrive.
 An identity cannot be forged, now or later, without breaking two independent
 signature schemes.

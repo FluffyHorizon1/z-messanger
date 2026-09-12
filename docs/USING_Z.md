@@ -174,9 +174,10 @@ for you at that point.
 ### Z will not connect
 
 Check the relay address in Settings → Connection. The default relay holds
-queued ciphertext in memory only and forgets it on restart — so a message that
-was in flight during an outage may need resending. Nothing is lost from your
-device.
+queued ciphertext in memory only, and it is forgotten when that memory
+restarts — so a message that was in flight during an outage may need
+resending, and your app resends it for you from its own outbox. Nothing is
+lost from your device.
 
 You can run your own relay: `SELF_HOSTING.md`. It takes a few minutes and it
 is the honest answer to "why should I trust yours".

@@ -24,7 +24,13 @@ and holds undelivered bytes **in RAM only**.
 
 The relay is deliberately stupid. It has no database, no accounts, no user
 table, and nothing to seize. It knows that a blob of one of six padded sizes
-arrived for a routing id — a hash — at a time, and it forgets on restart.
+arrived for a routing id — a hash — at a time, and it forgets when the
+memory holding it goes. The public deployment runs two instances of it
+behind one address, sharing the pending queue through a key-value store the
+host keeps in RAM with persistence switched off and no public address; that
+makes a relay redeploy stop losing what is in flight, and it is still the
+same opaque bytes in the same volatile memory, held by the same operator on
+the same host (`docs/DATA_MAP.md`).
 
 There is no server-side account, so there is nothing to log into, nothing to
 recover, and no password anywhere. An identity is a keypair on your device.
@@ -86,7 +92,12 @@ see §6.
 
 **How to check it.** The relay's source is small and readable; `/health`
 reports `storage: 'ram-only'` and the only `fs` use in `server.js` reads TLS
-material. `docs/DATA_MAP.md` inventories exactly what the relay holds.
+material. Where several instances share a store, `/health` also names the
+coordinator (`"coordinator":"redis"`) and the store's own configuration is
+in the deployment's Blueprint (`render.ha.yaml`: persistence off, no public
+address), which is in the repository rather than in a screenshot.
+`docs/DATA_MAP.md` inventories exactly what the relay holds, in the process
+and in the store.
 `app/test/anonymous_sender_test.dart` counts, from the relay's own metrics,
 that every sealed envelope a conversation produces arrived on a connection
 the relay could not attribute.

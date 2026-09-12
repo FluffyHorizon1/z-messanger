@@ -13,8 +13,10 @@ An end‑to‑end encrypted messenger — 1:1 and small groups, text, attachment
 and voice notes — across a user's several devices. Messages are encrypted on
 your device and only ever decrypted on your contacts' devices (and your own
 other devices). The server ("relay") is a dumb pipe that shuttles opaque
-ciphertext between mailboxes and holds undelivered ciphertext in RAM only
-until it is delivered or it restarts.
+ciphertext between mailboxes and holds undelivered ciphertext in RAM only —
+its own, or a shared RAM‑only store where a deployment runs several
+instances — until it is delivered, until it expires, or until that memory
+goes.
 
 ## Cryptographic design in one paragraph
 
@@ -39,7 +41,7 @@ recipient device so the relay does not learn who sent it.
 
 | Party | What they can do | What they **cannot** do |
 |-------|------------------|--------------------------|
-| The relay server | See that an opaque blob of a *padded* size was delivered to routing‑id R at time T; hold it in RAM until delivery; see which routing ids are online and when they read their mailbox; see the **network address** every socket comes from, and that the anonymous socket a sealed envelope arrives on shares an address with some authenticated one (R21) | Read message text, names, file names or contents; learn **who sent** an envelope — not from the envelope (sealed sender) and not from the connection, which never authenticated (§12.1); forge or replay messages; recover anything after a restart; learn who is in a group, or which devices are one person's, **from any envelope** (no group id, no membership, no account on the wire — but a group message is one envelope per member sent in one burst, and a person's other devices get their copy in the same burst; the bursts are a pattern: R18, R19) |
+| The relay server | See that an opaque blob of a *padded* size was delivered to routing‑id R at time T; hold it in RAM (its own, or the RAM‑only store its instances share) until delivery or expiry; see which routing ids are online, which instance each is connected to, and when they read their mailbox; see the **network address** every socket comes from, and that the anonymous socket a sealed envelope arrives on shares an address with some authenticated one (R21) | Read message text, names, file names or contents; learn **who sent** an envelope — not from the envelope (sealed sender) and not from the connection, which never authenticated (§12.1); forge or replay messages; recover anything once the memory holding it has restarted — every instance's and the store's, which is what "nothing at rest" means here; learn who is in a group, or which devices are one person's, **from any envelope** (no group id, no membership, no account on the wire — but a group message is one envelope per member sent in one burst, and a person's other devices get their copy in the same burst; the bursts are a pattern: R18, R19) |
 | A network eavesdropper (with TLS) | See that you connected to a relay | Read anything (TLS + E2E) |
 | A network eavesdropper (without TLS) | See destination routing ids, padded sizes and timing | Read contents or learn senders (still sealed + E2E) |
 | Someone who steals your locked device | Hold encrypted bytes | Read messages without your OS user / keystore credentials (and app passphrase, if set) |
@@ -62,8 +64,11 @@ recipient device so the relay does not learn who sent it.
   from (R21). This is the core guarantee and it holds even if the operator
   is hostile or hacked, to exactly that extent.
 - **Server‑side data breaches / subpoenas of stored messages.** Nothing at
-  rest to seize. Undelivered messages exist only in relay RAM and are wiped
-  on delivery or restart. Delivered messages exist only on the devices.
+  rest to seize. Undelivered messages exist only in memory — the relay
+  process's, or the RAM‑only store its instances share (persistence off, no
+  public address, `render.ha.yaml`) — and are wiped on delivery, on expiry
+  (`QUEUE_TTL_HOURS`, 72, per envelope), or when that memory restarts.
+  Delivered messages exist only on the devices.
 - **Passive network surveillance of content.** Contents are end‑to‑end
   encrypted regardless of transport; `wss://` hides the routing metadata from
   the network as well.
@@ -188,7 +193,7 @@ exists, gated on something), *open* (should be closed and is not yet).
 | R11 | Google holds the Play app‑signing key and can sign an APK as Z | Google, or anyone who compels Google | Play App Signing is a condition of distributing through Play | Reproducible builds plus provenance let anyone compare what Play serves against what the source produces — the substitution is detectable, not preventable | accepted |
 | R12 | A push notification tells Google (FCM) that *some* device should wake | Google | Waking a sleeping device requires the platform's push service | Notifications are **contentless** — no text, no sender; the device then fetches from the mailbox as usual, and tokens live in relay RAM and expire | accepted |
 | R13 | A malicious contact can retain, screenshot or leak anything sent to them | Your contact | Nothing cryptographic can prevent it | Disappearing messages are a courtesy against accidental retention, and are described as exactly that | accepted |
-| R14 | A hostile relay can refuse to deliver, or drop queued ciphertext | Relay operator | Availability depends on the relay you choose | Self‑host; the relay cannot read what it drops. (An *honest* relay no longer drops anything to make room — R22) | accepted |
+| R14 | A hostile relay can refuse to deliver, or drop queued ciphertext | Relay operator | Availability depends on the relay you choose | Self‑host; the relay cannot read what it drops. (An *honest* relay no longer drops anything to make room — R22.) Where instances share a store, the store is a second place the same operator can drop the same ciphertext from, and a second thing that must be run without persistence — the same trust, more of its surface: `/health` names the coordinator, and the store's configuration is in the repository's Blueprint rather than in an assurance | accepted |
 | R15 | Timing and volume correlation by someone watching both ends | A global passive adversary | Z is not an anonymity network and does not claim to be | Tor for the transport, if that is your threat model | accepted |
 | R16 | The shipped APK is reproducible **only at a fixed checkout path**: building in a directory not named `z` changes `libapp.so` and `libdartjni.so` | A verifier who builds somewhere else and reads the mismatch as tampering | The Dart AOT snapshot embeds its absolute build directory as a source URI (`.dart_tool/flutter_build/dart_plugin_registrant.dart`), and the two libraries compiled during the build inherit it. Measured 2026-09-09: two runners at one path are byte-identical, so the **machine is not a variable**; only the path is | The path is stated in the build recipe, as Debian records `Build-Path`. CI asserts machine-independence and asserts that a path change moves those two libraries and no others, so the leak cannot spread unnoticed. `verify_reproducible.py` names what differs, so a verifier who ignores the recipe gets a known deviation rather than a mystery | **accepted** — with the real fix (a relative URI) upstream in the Flutter tool |
 | R17 | Two accounts that add each other are pairable at the relay: each mailbox receives one ~16 KB envelope (the `pqid`, §18.2) within seconds of the other | Relay operator | The ML‑DSA key does not fit the code that bound it (`adr/0003`) and the safety number needs it promptly (§18.5), so it travels in‑band at first contact; the size marks the envelope (`adr/0004`, addendum). Measured 2026‑09‑11, a mutual add sent it twice in each direction — four such envelopes inside one round trip | Now one each way: every reason to send is coalesced into one debounced send that says whether the peer's key is held (`ack`), and a key that arrives with `ack` is not answered (`pq_identity_exchange_test.dart`). The pair itself remains; a mixnet or Tor would hide it, `adr/0004`'s rejected fragmentation would not | accepted |
@@ -295,7 +300,11 @@ each of them had produced a plausible table (`ROADMAP_8_15.md`, revision
   statement your own account key signs, and its consistency is checked by the
   people who receive it rather than vouched for by a server.
 - **RAM‑only relay.** The reference relay never writes message data to disk
-  and can run on a read‑only filesystem. A restart is a clean slate.
+  and can run on a read‑only filesystem. Restarting the memory that holds
+  the queue is a clean slate — the process's own, or, where instances share
+  a store to hand a message to whichever one the recipient reached, that
+  store's (run with persistence off, which is a setting the deployment's
+  Blueprint states and an operator must not change).
 - **Sealed sender by default.** Every envelope is sealed to the recipient
   device; the relay matches acknowledgements by envelope id alone and emits
   no delivery receipts — delivery and read receipts are themselves

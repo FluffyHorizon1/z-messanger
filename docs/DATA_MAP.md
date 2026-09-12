@@ -53,19 +53,31 @@ The relay never writes to disk. `storage: 'ram-only'` in `/health` is a claim
 you can check against `server/server.js` — the only `fs` use in it reads TLS
 material.
 
+Since 2026‑09‑11 the public relay is **two instances sharing one RAM‑only
+key‑value store** (`render.ha.yaml`; Valkey with persistence off, reachable
+only on the host's private network, no public address), so "the relay's
+memory" is now two processes' RAM plus the store's. What lives where is in
+the table; what changes for you is retention, not exposure: **a relay
+restart or redeploy no longer loses the queue** — the queue is in the store
+— and a *store* restart is what wipes it. Nothing is written to disk in
+either place, and the store holds exactly the items below, in exactly the
+same opaque form.
+
 | What | Where | Who can read it | How long |
 |---|---|---|---|
 | Queued ciphertext envelopes, and per mailbox how many and how many bytes (the caps, §12.4) | RAM — or a RAM‑only Redis the instances share: per mailbox a list of entry keys, a hash of the entries, and their byte count | The operator sees opaque bytes and their padded size — not content, not sender | Until delivered, until `QUEUE_TTL_HOURS` (72) after the relay accepted **that envelope**, or until the process (or the store) restarts — never evicted to make room |
-| Which routing ids are connected, and the network address of every socket — the authenticated mailbox socket and the anonymous sender socket a device also holds (§12.1) | RAM | Operator | While connected |
+| Which routing ids are connected, and the network address of every socket — the authenticated mailbox socket and the anonymous sender socket a device also holds (§12.1) | RAM — and, with several instances, *which instance* holds each mailbox's socket, in the store (`presence:{rid}`, 60 s, refreshed while connected) | Operator | While connected; the store's copy expires within a minute of the socket closing |
 | That a sealed envelope arrived on an anonymous socket — never which identity sent it | RAM, transiently | Operator; nothing ties the socket to a routing id but its address (R21) | Duration of the send |
 | Which routing id an envelope is addressed to, and when | RAM, transiently | Operator | Duration of delivery |
-| Push tokens (FCM), if push is enabled | RAM | Operator, and Google when a push is sent | Until expiry or restart |
-| Aggregate counters (`/metrics`) | RAM | Anyone who can reach `/metrics` | Until restart |
+| Push tokens (FCM), if push is enabled | RAM — or the store, so any instance can wake a device (`push:{rid}`) | Operator, and Google when a push is sent | Until expiry (`PUSH_TTL_DAYS`, 30) or a store restart |
+| Aggregate counters (`/metrics`) | RAM, per instance — each instance counts its own work and `/health` reports its own sockets | Anyone who can reach `/metrics` | Until that instance restarts |
 
 **Not held by the relay at any point:** message content, sender identity
 (sealed sender), display names, group membership, contact lists, any key
-material, or any log of who talked to whom. A restart loses everything, which
-is the intended behaviour rather than a limitation.
+material, or any log of who talked to whom. Restarting everything loses
+everything, which is the intended behaviour rather than a limitation — and
+with a shared store that now takes restarting the store, not just the
+relay.
 
 ## At third parties
 
@@ -74,7 +86,7 @@ is the intended behaviour rather than a limitation.
 | **Google (FCM)** | That a device with token T should wake. No content, no sender, no conversation | Waking a sleeping Android device requires the platform push service | Yes — push is optional; without it the app fetches when opened |
 | **Google (Play)** | Install/update telemetry Play collects for any app; and Play App Signing holds the key that signs the APK | A condition of distributing through Play | Sideload a release build, verified per `PROVENANCE.md` |
 | **Apple (APNs)** | The equivalent of FCM, when the iOS client ships | Same | Same |
-| **The relay host** | Whatever the relay's operator sees, above, plus IP addresses at the TLS layer | Someone has to run the relay | Yes — self-host (`SELF_HOSTING.md`) |
+| **The relay host** | Whatever the relay's operator sees, above, plus IP addresses at the TLS layer. The public deployment also has the host running the shared store, on its own private network — the same opaque bytes, no persistence, no public address, and the same party, so this is one hosting provider rather than two | Someone has to run the relay, and running more than one instance of it needs somewhere to share the queue | Yes — self-host (`SELF_HOSTING.md`), as one instance or several |
 | **Sigstore / Rekor** | The public transparency-log record of each release attestation. No user data | Provenance is only meaningful if it is public | No, and it should not be — publicity is the point |
 | **The transparency log's operator** (`kt.zmessengers.com`, once live) | At publish: your account's public key, the version and fingerprint of your device list, and the list itself sealed under a key only your contacts can derive. At lookup: which labels this device asks about — its contacts' — and the IP address at the TLS layer. A mirror or witness sees labels and ciphertext only | The log is how a device list handed to one contact and not another becomes visible (`adr/0006`); the operator has to see a publish to accept it | Yes — point Settings › Transparency log at a self-hosted log, or at none (in-band verification only, as before the log) |
 
@@ -103,13 +115,14 @@ dependency-metadata blob in the APK either.
 | One message, everywhere | Delete for everyone | Nothing on honest clients; a malicious client can keep anything it received |
 | A contact and its history | Delete contact | Nothing locally. Their copy is theirs |
 | Everything on this device | Uninstall, or reset identity in Settings | Backups you made yourself; whatever your contacts hold |
-| Your presence on the relay | Stop connecting | Nothing — the relay holds no account and forgets on restart |
+| Your presence on the relay | Stop connecting | Nothing — the relay holds no account, and the record that you were connected expires within a minute |
 
 There is no "delete my account" request to send, because there is no account to
 delete: no server-side record exists to be erased. That is a stronger position
 than a deletion policy, and it is worth stating in those terms when someone
 asks the GDPR question — the lawful-basis conversation is short when the
-processor holds ciphertext addressed to a hash and forgets it on restart.
+processor holds ciphertext addressed to a hash, in memory, and forgets it on
+delivery, on expiry (`QUEUE_TTL_HOURS`, 72), or when that memory goes.
 
 ## Not yet built
 

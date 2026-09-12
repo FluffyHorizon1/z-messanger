@@ -1395,3 +1395,29 @@ direction; the phases, their order and both ordering arguments stand.
    emptied — transitional, and wrong). The rule: **a limit in a document
    is a claim about every mode the code runs in, and the mode nobody
    tests is the one the claim is false in.**
+
+44. **The documents described one process; production had been two since
+   the cutover.** Not a bug — a set of sentences that were true when they
+   were written and became imprecise the day `zmessengers.com` moved to two
+   instances sharing a RAM-only store. The claim that mattered was
+   retention: "the machine forgets it on restart" was in the threat model,
+   the whitepaper, the data map, the user guide, `WHAT_Z_CANNOT_DO` and
+   three places on the website, and with a shared queue a *relay* restart
+   no longer forgets anything — the store's does. That cuts both ways and
+   both halves are worth saying: a redeploy no longer drops what is in
+   flight (better for users), and there is a second piece of memory whose
+   "no persistence" setting has to hold (more surface for the same trust).
+   So the pass says where the bytes are, that the setting is in a
+   Blueprint in the repository rather than in an assurance, and that the
+   host running the store is the host already running the relay — one
+   party, not a new one. R14 gains that sentence; the trust table says
+   "once the memory holding it has restarted — every instance's and the
+   store's, which is what nothing at rest means here"; `DATA_MAP` gains
+   the store column, the presence record's instance and its minute-long
+   life, and per-instance metrics; `AUDIT_SCOPE`'s system table says the
+   Redis path is the one production runs and that a queueing change has to
+   be read in both. The privacy page needed it most and had the weakest
+   version of it, which is the pattern: **the further a claim is from the
+   code, the longer it survives being false.** Nothing here changes what
+   the relay holds or who can read it; four documents now say so about the
+   deployment that exists.

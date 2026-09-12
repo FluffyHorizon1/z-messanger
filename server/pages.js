@@ -347,7 +347,10 @@ const HOW_IT_WORKS_HTML = page(
   is held in memory only, dropped the moment the recipient confirms it, and
   expires within 72 hours regardless.</p>
   <p class="muted">The relay never writes to disk — its code is tested to
-  contain no disk-write calls — so restarting it erases everything it held.</p>
+  contain no disk-write calls. Queued mail lives in memory: the relay's own,
+  or, where a deployment runs more than one copy behind one address, a shared
+  store the host also keeps in memory with saving switched off. Restarting
+  that memory erases everything it held.</p>
   </div>
 
   <h2>Groups, files and voice notes</h2>
@@ -704,7 +707,10 @@ docker compose up -d</code></pre>
   <h2>Worth knowing</h2>
   <ul>
     <li>Queued mail lives in RAM and expires after <code>QUEUE_TTL_HOURS</code>
-    (72 by default); restarting the relay drops it.</li>
+    (72 by default), per envelope. A restart drops it — the relay's own
+    restart on a single instance, or the shared store's where several
+    instances coordinate through one (<code>render.ha.yaml</code>), which is
+    why a relay redeploy there no longer loses what is in flight.</li>
     <li>Rate limits and queue caps are environment variables, so a small host
     stays bounded under load.</li>
     <li><code>/health</code> reports liveness and <code>/metrics</code> exposes
@@ -798,9 +804,12 @@ const PRIVACY_HTML = page(
   and padded to fixed size buckets. Queued ciphertext for offline recipients is
   held <b>in RAM only</b>, is deleted the moment the recipient confirms
   delivery, and expires after at most 72 hours. The relay writes nothing to
-  disk — its code is tested to contain no disk-write calls — so restarting it
-  erases everything it held. Operational logs contain aggregate connection
-  counts only, never message data.</p>
+  disk — its code is tested to contain no disk-write calls. This service runs
+  as two copies behind one address, which share queued mail through a store
+  the host keeps in memory with saving switched off and no public address; the
+  same ciphertext, the same operator, the same host, and nothing written down
+  anywhere. Restarting that memory erases everything it held. Operational logs
+  contain aggregate connection counts only, never message data.</p>
 
   <h2>Push notifications (optional, Android)</h2>
   <p>If you enable push, the app registers an opaque Firebase Cloud Messaging
