@@ -661,7 +661,10 @@ class ChatService extends ChangeNotifier implements KtHost {
     final scanned = await scanContactCode(code);
     final bundle = scanned.classical;
     final rid = await bundle.routingId();
-    if (rid == myRid) {
+    if (_myAccountRids.contains(rid)) {
+      // Mine, whichever of my devices the code names — a linked device
+      // scanning the account's own code would otherwise add the account to
+      // its own contact list.
       throw const FormatException('that is your own contact code');
     }
     if (contacts.containsKey(rid)) {
@@ -799,7 +802,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     final rid = inner.data['rid'];
     final bundleJson = inner.data['bundle'];
     if (rid is! String || bundleJson is! Map) return;
-    if (rid == myRid || contacts.containsKey(rid)) return;
+    if (_myAccountRids.contains(rid) || contacts.containsKey(rid)) return;
     // Everything below is checks; the claim itself is taken under the lock at
     // the end, because a scan of the same code may be in flight here.
     final ContactBundle bundle;
@@ -1783,17 +1786,31 @@ class ChatService extends ChangeNotifier implements KtHost {
     // Self-sync from one of my OWN linked devices takes a separate path.
     final sync = _sync;
     if (sync != null && sync.deviceRoutingIds.contains(from)) {
-      final mirrored = await sync.handleInbound(from, payload);
-      transport.ackReceived(id: m.id, from: m.from);
+      // Store first, acknowledge second — the rule the contact path below
+      // keeps and this one did not. A mirror the relay has been told to
+      // forget must be on this device's disk; if it is not, the message is
+      // gone from everywhere and the advanced sync ratchet makes the
+      // redelivery undecryptable, so a failure rolls the ratchet back and
+      // leaves the envelope with the relay.
+      final r = await sync.handleInbound(from, payload);
+      final mirrored = r.mirrored;
       if (mirrored != null) {
-        if (mirrored.dir == 'contact') {
-          // Carries the sending device, which the sync ratchet authenticates
-          // — so the label on an injected contact cannot itself be forged.
-          await _applyMirroredContact(from, mirrored.inner);
-        } else {
-          await _insertMirrored(mirrored.thread, mirrored.dir, mirrored.inner);
+        try {
+          if (mirrored.dir == 'contact') {
+            // Carries the sending device, which the sync ratchet
+            // authenticates — so the label on an injected contact cannot
+            // itself be forged.
+            await _applyMirroredContact(from, mirrored.inner);
+          } else {
+            await _insertMirrored(
+                mirrored.thread, mirrored.dir, mirrored.inner);
+          }
+        } catch (_) {
+          if (r.snapshot != null) await sync.restore(r.snapshot!);
+          return; // not acknowledged: the relay redelivers
         }
       }
+      transport.ackReceived(id: m.id, from: m.from);
       return;
     }
 
@@ -3098,8 +3115,9 @@ class ChatService extends ChangeNotifier implements KtHost {
       out.putIfAbsent(r['mid'] as String, () => []).add(MessageReaction(
             emoji: emoji,
             senderRid: sender,
-            mine: sender == myRid,
-            senderName: sender == myRid ? null : contacts[sender]?.name,
+            mine: _myAccountRids.contains(sender),
+            senderName:
+                _myAccountRids.contains(sender) ? null : contacts[sender]?.name,
           ));
     }
     return out;
@@ -4486,6 +4504,19 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
   }
 
+  /// Every routing id that is MINE: this install's, plus my account's other
+  /// devices.
+  ///
+  /// Group membership is a property of the account, not of the install. An
+  /// invite carries the member bundle the admin holds for my account, which
+  /// resolves to whichever of my devices they added — normally my primary.
+  /// Comparing that against `myRid` alone therefore answered "no" on every
+  /// linked device, so the first membership change in any group told a
+  /// secondary device it had been removed, and it then dropped the group's
+  /// traffic and refused to send. It also listed my own primary device as a
+  /// member of the group.
+  Set<String> get _myAccountRids => {myRid, ...?_sync?.deviceRoutingIds};
+
   /// Apply a group invite. [fromRid] is the authenticated sender ('' when the
   /// invite is a mirror of my own admin action from my other device).
   Future<void> _applyGroupInvite(String fromRid, Map<String, Object?> data,
@@ -4517,7 +4548,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         continue;
       }
       final rid = await bundle.routingId();
-      if (rid == myRid) {
+      if (_myAccountRids.contains(rid)) {
         includesMe = true;
         continue;
       }
@@ -5271,6 +5302,11 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     InnerMessage? inner;
     String? offer;
+    // The session as it was before the decrypt. Everything this method does
+    // with `inner` below is a store, and the acknowledgement now waits for
+    // all of it; if any of it throws, this is what puts the ratchet back so
+    // the relay's redelivery can be decrypted.
+    final snapshot = jsonEncode(s.toJson());
     await _withLock(rid, () async {
       try {
         final dec = await s.decryptFrom(fromDeviceRid, payload);
@@ -5294,60 +5330,84 @@ class ChatService extends ChangeNotifier implements KtHost {
         unawaited(flushOutbox());
       } catch (_) {}
     }
-    transport.ackReceived(id: m.id, from: m.from);
-    if (inner == null) return;
-    // 7.7a: a removal notice about my own account can ride here too.
-    if (inner!.kind == 'dlrm') {
-      await _handleRemovalNotice(inner!);
+    if (inner == null) {
+      // Nothing decrypted: a redelivery would fail the same way.
+      transport.ackReceived(id: m.id, from: m.from);
+      return;
     }
-    if (inner!.kind == 'pqid') {
+    try {
+      await _dispatchExtraInner(contact, rid, fromDeviceRid, inner!);
+    } catch (_) {
+      // Put the ratchet back and leave the envelope with the relay, exactly
+      // as the primary path does — the alternative is an acknowledged
+      // message that was never stored.
+      _contactExtras[rid] = await AccountSession.fromJson(
+          await accountIdentity(),
+          (jsonDecode(snapshot) as Map).cast<String, Object?>());
+      await _saveExtra(rid);
+      return;
+    }
+    transport.ackReceived(id: m.id, from: m.from);
+  }
+
+  /// The stores an inner message from a contact's non-primary device implies.
+  /// Separated from [_handleExtraInbound] so a failure anywhere in it is one
+  /// catch, before the acknowledgement rather than after it.
+  Future<void> _dispatchExtraInner(Contact contact, String rid,
+      String fromDeviceRid, InnerMessage message) async {
+    final inner = message;
+    // 7.7a: a removal notice about my own account can ride here too.
+    if (inner.kind == 'dlrm') {
+      await _handleRemovalNotice(inner);
+    }
+    if (inner.kind == 'pqid') {
       // §18.2 on the extra-device path. A contact's linked device runs its own
       // sessions and holds its own commitment, so the exchange has to complete
       // here too — otherwise their laptop stays classical while their phone is
       // hybrid, and one account shows two safety numbers.
       try {
-        if (await _onPqIdentity(contact, inner!)) notifyListeners();
+        if (await _onPqIdentity(contact, inner)) notifyListeners();
       } catch (_) {}
       // Answer to the ACCOUNT: `_sendInner` fans to every device on its list,
       // which now includes the one that just asked. The once-per-contact gate
       // is cleared first, because that device is newer than our offer — it is
       // asking precisely because it never saw it.
-      if (inner!.data['ack'] != true) {
+      if (inner.data['ack'] != true) {
         _pqSent.remove(contact.rid);
         _pqLastSentMs.remove(contact.rid);
         _offerPqIdentity(contact, _PqReason.volunteer);
       }
     }
-    if (inner!.kind == 'dlpq') {
-      await _onPqListSignature(contact, inner!); // §18.9, extra-device path
+    if (inner.kind == 'dlpq') {
+      await _onPqListSignature(contact, inner); // §18.9, extra-device path
     }
-    if (inner!.kind == 'devlist') {
-      await _applyDevlistInner(contact, inner!);
-    } else if (inner!.kind == 'text') {
-      await _insertMirrored(rid, 'in', inner!);
-    } else if (inner!.kind == 'gmsg') {
+    if (inner.kind == 'devlist') {
+      await _applyDevlistInner(contact, inner);
+    } else if (inner.kind == 'text') {
+      await _insertMirrored(rid, 'in', inner);
+    } else if (inner.kind == 'gmsg') {
       // A group message sent from one of the contact's other devices carries
       // the same authority as their primary (the cert bound it to the account).
-      await _persistGroupText(contact, inner!, _now());
+      await _persistGroupText(contact, inner, _now());
       notifyListeners();
-    } else if (inner!.kind == 'file' && inner!.data['fid'] is String) {
+    } else if (inner.kind == 'file' && inner.data['fid'] is String) {
       // An attachment offered from the contact's other device: same as a
       // mirrored-in offer — record it, chunks arrive by fid.
-      await _insertMirroredFile(rid, false, inner!);
-    } else if (inner!.kind == 'gfile' && inner!.data['fid'] is String) {
-      await _persistGroupFile(contact, inner!, _now());
+      await _insertMirroredFile(rid, false, inner);
+    } else if (inner.kind == 'gfile' && inner.data['fid'] is String) {
+      await _persistGroupFile(contact, inner, _now());
       notifyListeners();
-      await _tryAssemble(inner!.data['fid'] as String);
-    } else if (inner!.kind == 'ginvite') {
-      await _applyGroupInvite(contact.rid, inner!.data);
+      await _tryAssemble(inner.data['fid'] as String);
+    } else if (inner.kind == 'ginvite') {
+      await _applyGroupInvite(contact.rid, inner.data);
       notifyListeners();
-    } else if (inner!.kind == 'gleave') {
-      await _applyGroupLeave(contact.rid, inner!.data);
+    } else if (inner.kind == 'gleave') {
+      await _applyGroupLeave(contact.rid, inner.data);
       notifyListeners();
     }
     // 7.7a: observe the claim/echo after any devlist install above, so the
     // "held" list this cross-check compares against is current.
-    await _observeDevlistGossip(rid, fromDeviceRid, inner!);
+    await _observeDevlistGossip(rid, fromDeviceRid, inner);
   }
 
   Future<void> _applyDevlistInner(Contact contact, InnerMessage inner) async {

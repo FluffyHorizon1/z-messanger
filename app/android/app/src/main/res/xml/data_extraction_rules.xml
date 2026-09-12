@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (API 31) data extraction. `android:allowBackup="false"` stops
+  cloud backup on every version; device-to-device transfer is governed here
+  and ONLY here, so both sections exclude everything the app writes.
+
+  Why: the vault lives in the app's files directory, which is inside the
+  default Auto Backup set. Nothing in it is safe to copy off the device. The
+  database seals individual CELLS, not its structure, so a copy carries the
+  whole contact graph and every message's direction and timing in the clear —
+  and before Android 9 Auto Backup had no end-to-end encryption at all. A
+  restore is no better: it brings back the wrapped master key without the
+  hardware-backed key that protects the device secret, so the vault cannot be
+  opened and the install is dead.
+
+  Identity moves between devices one way only: the passphrase-protected
+  archive the user exports deliberately (docs/BACKUP.md).
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

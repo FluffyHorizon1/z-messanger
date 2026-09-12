@@ -384,11 +384,21 @@ class _ChatScreenState extends State<ChatScreen> {
     final messenger = ScaffoldMessenger.of(context);
     final picked = await FilePicker.platform.pickFiles(withData: true);
     final f = picked?.files.single;
-    if (f == null) return;
+    if (f == null) {
+      await _clearPickerCache();
+      return;
+    }
     Uint8List? bytes = f.bytes;
     if (bytes == null && f.path != null) {
       bytes = await File(f.path!).readAsBytes();
     }
+    // The picker does not hand over the file the user chose: on Android it
+    // COPIES it into the app's cache directory and returns that, so every
+    // attachment ever sent was left sitting outside the vault, unencrypted,
+    // for as long as the OS kept the cache — surviving the sweeper, the
+    // disappearing-message timer and "reset identity" alike. Drop the copy as
+    // soon as the bytes are in hand, whatever happens next.
+    await _clearPickerCache();
     if (bytes == null) return;
     final mime = _guessMime(f.name);
     try {
@@ -401,6 +411,14 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('$e')));
     }
+  }
+
+  /// Delete the picker's plaintext copies. Best effort: a failure here must
+  /// not stop the send, and the next pick tries again.
+  Future<void> _clearPickerCache() async {
+    try {
+      await FilePicker.platform.clearTemporaryFiles();
+    } catch (_) {}
   }
 
   String _guessMime(String name) {

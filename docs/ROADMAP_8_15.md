@@ -1494,3 +1494,84 @@ direction; the phases, their order and both ordering arguments stand.
    starting. At-least-once, working as designed, in a window §12.5 had not
    named. The script now waits for its own flush, and §12.5 names the
    window.
+
+46. **The client read by strangers: four reviews, six of them real.**
+   Revision 45 took five releases of relay code that had been written and
+   reviewed in one context and gave the diff to a reader with no memory of
+   writing it; three findings came back and all three were real. The same
+   argument applies harder to the client — more code, more releases, and no
+   independent reader had ever looked at it — so four adversarial reviews ran
+   in parallel over the delivery path, the cryptographic core, groups and
+   multi-device, and storage. Twelve P0/P1 findings reproduced. Six were P0,
+   and the pattern in every one is revision 45's: **a claim that was true of
+   the configuration it was tested in and false of the one that ships.**
+
+   *A revoked device of your own account kept reading your mail.* Removing a
+   device rewrote the device list, bumped the version, deleted what was
+   queued for it and told every contact — and left it a target in the
+   persisted self-sync session, which is restored add-only and fanned to in
+   full. A stolen, revoked laptop went on decrypting everything the account
+   sent and received, across restarts, with no symptom; and because the seal
+   keys were rebuilt only for current devices, the mirror to it stopped being
+   sealed, handing the relay the sender it had been built to withhold. The
+   test that should have caught it revoked the account's *only* device, where
+   the sync channel is torn down wholesale and the bug is masked.
+
+   *A linked device was told it had been removed from every group.* Group
+   membership is a property of the account; the code compared the invite's
+   member bundles against `myRid`, which is *this install's* routing id. On
+   the device the tests run on that is the account's; on every linked device
+   it is not, so the first membership change in any group took the removal
+   branch — "You were removed from trip", then silently dropping the group's
+   traffic and refusing to send. The same confusion had three more sites: a
+   linked device could add its own account as a contact, accept its own
+   account as a mirrored contact, and showed its own reactions as someone
+   else's. `_myAccountRids` names the account now, and the four sites use it.
+
+   *Two inbound paths acknowledged an envelope before storing it.* The rule
+   is written down — a client MUST NOT acknowledge before it has persisted —
+   and the contact path keeps it exactly, persisting inside a transaction and
+   rolling the ratchet back from a snapshot if that fails. The self-sync and
+   extra-device paths acknowledged first and stored afterwards, so a process
+   killed in that window lost the message from the relay *and* from the
+   device, with an advanced ratchet making the redelivery undecryptable. Both
+   now store first; `handleInbound` hands back a snapshot and the caller rolls
+   the ratchet back rather than acknowledge something it did not keep.
+
+   *A session that had ended could be re-created by its own opening
+   envelope.* `SK` is a pure function of `(IK_A, IK_B, ek)` and nothing
+   recorded that a session had been retired, so a relay holding a captured
+   opener could replay the first chain's plaintext after an explicit reset —
+   reproduced: three messages read again — and could have a pruned session
+   re-created and then *pinned* by §4's "the peer lost its state" rule,
+   moving outbound traffic onto a session the peer had discarded. Retired ids
+   are recorded now, bounded, and persisted with the conversation.
+
+   *Every attachment ever sent had an unencrypted copy outside the vault.*
+   The file picker does not hand over the file the user chose; it copies it
+   into the app's cache directory and hands over the copy. Nothing deleted
+   it — not the sweeper, not the disappearing-message timer, not "reset
+   identity". The fix is one call, and the test that pins it is a source
+   check rather than a mock, which is what found the *second* call site: the
+   identity-restore picker, whose copy is the archive that with its secret is
+   the whole account.
+
+   *And the platform was backing the vault up to the cloud.* The manifest had
+   never set `android:allowBackup="false"`, so the default put the vault
+   directory in Auto Backup: the database seals cells and not structure, so
+   the copy carried the contact graph and every message's direction and
+   timing in the clear, and before Android 9 that backup had no end-to-end
+   encryption. A restore is no better than the leak — the wrapped master key
+   comes back without the hardware key that protects the device secret, so
+   the vault cannot be opened and the install is dead on every launch.
+
+   Two rules came out of it. The first is the one the Android finding is a
+   pure case of: **a default you never wrote down is a decision you never
+   made**, and the answer is a guard rather than a memory —
+   `tool/check_android_data_safety.py` is the eighth. The second is about
+   where to point a reviewer: every one of these six lives at a *boundary
+   between two identities or two lifetimes* — this install versus the
+   account, the live device list versus the persisted one, the ratchet's
+   state versus the store's, a session that exists versus one that did. The
+   code inside each of those is careful. Nobody had been made to read across
+   them.

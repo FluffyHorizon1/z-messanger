@@ -339,6 +339,24 @@ a peer has shown that it loses sessions, the receiver simply follows whichever
 session it last heard them speak on. Both remain decryptable, each with its
 own post‑quantum secret (§17.1).
 
+**A session that has ended stays ended.** `SK` is a pure function of
+`(IK_A, IK_B, ek)` (§4), so a session's *opening* envelope re‑derives the
+same root key and the same first chain every time it is presented: accepting
+one for an unknown `sid` is how a peer that lost its state is let back in, and
+it is also how a captured envelope could be replayed indefinitely. A client
+therefore **records the session ids it retires** — on an explicit "reset
+secure session" and when a stale session is pruned — and refuses to create a
+session for a recorded id, reporting the envelope as undecryptable rather than
+as an unknown session (there is nothing for the peer to re‑open). Without it,
+a relay holding a captured opener could make the plaintext of that first chain
+arrive again after a reset — the receiver's own duplicate‑suppression window
+(§6.4) is 30 days, so an older capture read as new messages — and could have a
+pruned session re‑created and then *pinned* by the rule above, moving the
+receiver's outbound traffic onto a session the peer had discarded. The record
+is bounded (the oldest ids are dropped; the reference client keeps 64), which
+is years of ordinary use and far longer than any envelope a relay still
+holds (`QUEUE_TTL_HOURS`).
+
 ## 5. Double Ratchet
 
 The Signal Double Ratchet with X25519, HKDF‑SHA256, HMAC‑SHA256 and

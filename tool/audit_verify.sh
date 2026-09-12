@@ -95,6 +95,8 @@ run "CI jobs check out what they use" "C25 C26" "." \
     python3 tool/check_workflow.py
 run "every Blueprint keeps its secrets out of the file" "-" "." \
     python3 tool/check_blueprints.py
+run "Android refuses every automatic copy of its data" "C1" "." \
+    python3 tool/check_android_data_safety.py
 run "every control announces something" "-" "." \
     python3 tool/check_a11y.py
 run "every text/background pair clears WCAG AA" "-" "." \

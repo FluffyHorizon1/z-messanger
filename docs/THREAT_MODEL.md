@@ -99,7 +99,22 @@ recipient device so the relay does not learn who sent it.
 - **Plaintext on disk.** The vault is encrypted per cell; attachments are
   encrypted blobs; voice notes are captured into memory and never written
   unencrypted; search decrypts in memory only; history sync to a new device
-  travels only over the self‑sync ratchet.
+  travels only over the self‑sync ratchet. Two holes in that sentence were
+  found by review on 2026‑09‑12 and closed in 2.8.4, and both were outside
+  the code that was being careful. The file picker does not hand an app the
+  file the user chose — it copies it into the app's cache directory and hands
+  over the copy — so **every attachment ever sent had an unencrypted copy
+  outside the vault**, surviving the sweeper, the disappearing‑message timer
+  and "reset identity" alike; both picker call sites now delete it, and a
+  test refuses a call site that does not. And the app had never set
+  `android:allowBackup="false"`, so the platform default put the whole vault
+  directory in Android's Auto Backup set: the database seals *cells* and not
+  its structure, so the copy carried the contact graph and every message's
+  direction and timing in the clear, and before Android 9 Auto Backup had no
+  end‑to‑end encryption at all. Both opt‑outs (and, for API 31+ device
+  transfer, `dataExtractionRules`) are now set and checked by
+  `tool/check_android_data_safety.py` — a default nobody had written down was
+  how it shipped for eight releases.
 
 ## What Z does **not** protect against (be honest with yourself)
 
@@ -150,7 +165,9 @@ recipient device so the relay does not learn who sent it.
   recipient a failed decryption — sealed sender is deliberately
   unauthenticated at the outer layer.
 - **Endpoint backups you make elsewhere.** A plaintext device backup to some
-  cloud is outside Z's control.
+  cloud is outside Z's control. Z no longer *opts into* one on your behalf:
+  see the on‑disk bullet above. Identity moves between devices one way only,
+  through the archive you export deliberately (`BACKUP.md`).
 - **Lost keys = lost identity.** There is no server account to recover.
   Losing every device without a `.zid` backup means a new identity and
   re‑verifying contacts. That is the cost of having no server custody.

@@ -96,7 +96,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       withData: false,
     );
     final path = picked?.files.single.path;
-    if (path == null) return;
+    if (path == null) {
+      await _clearPickerCache();
+      return;
+    }
+    // That path is the picker's own COPY of the file the user chose, in the
+    // app's cache directory: the restore reads it from there, so it cannot be
+    // dropped until the restore is done — see the `finally` below. An
+    // archive is encrypted, but it is also the one file that, with its
+    // secret, is the whole account, and nothing used to delete the copy.
     final file = File(path);
     final preview = await Restore.identify(file);
     if (!mounted) return;
@@ -134,7 +142,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         _busy = false;
         _error = l.onbRestoreFailed;
       });
+    } finally {
+      await _clearPickerCache();
     }
+  }
+
+  /// Delete the picker's copies of whatever was chosen. Best effort: a
+  /// failure here must not fail the restore.
+  Future<void> _clearPickerCache() async {
+    try {
+      await FilePicker.platform.clearTemporaryFiles();
+    } catch (_) {}
   }
 
   Future<String?> _askRecoveryCode(BuildContext context) {

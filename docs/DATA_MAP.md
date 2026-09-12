@@ -41,6 +41,18 @@ is encrypted, not merely that the file sits in an encrypted directory.
 | Group messages still to be encrypted for each member | `group_fanout`, sealed payload | Same | Until every member's copy is queued — survives a restart so a half-finished fan-out resumes |
 | Group membership and metadata | `kv` key `groups`, sealed | Same | Until you leave or delete the group |
 | Backup archives you create (`.zbk`) | Wherever you saved them | Anyone with the file **and** the recovery code | Until you delete them — Z does not manage their lifetime |
+| A file you attach, or an archive you restore from, as the picker's own copy | The app's cache directory, **unencrypted** — the OS file picker copies the chosen file there and hands the app the copy, which is what it reads | Anyone who can read the app's cache: another process with root, a forensic extraction of an unlocked device | Deleted as soon as the bytes are in hand (both call sites; `client_review_p0_test.dart` criterion 5). Until 2.8.4 nothing deleted it, so every attachment ever sent was still there |
+
+None of the above leaves the device by any automatic route. Android's Auto
+Backup would otherwise copy the whole vault directory to the user's cloud
+account, and on Android 12+ to a new phone by device transfer: the database
+seals individual *cells*, so its structure — every message's direction,
+timing and thread, every contact's routing id — is cleartext in the file, and
+before Android 9 that backup had no end-to-end encryption. The manifest
+refuses both (`allowBackup="false"`, `dataExtractionRules`), and
+`tool/check_android_data_safety.py` refuses a manifest that stops doing so.
+Identity moves between devices one way only: the archive above, which you
+export deliberately.
 
 **Deliberately not stored anywhere:** your contacts' phone numbers or email
 addresses (Z never asks), a password for anything server-side (there is no

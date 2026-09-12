@@ -138,6 +138,25 @@ class Conversation {
   final Map<String, Session> sessions;
   String? outboundSid;
 
+  /// Session ids this conversation has retired — reset, or pruned as stale.
+  ///
+  /// `SK` is a pure function of (IK_A, IK_B, ek), so a session's opening
+  /// envelope re-derives the same root key and the same first chain every
+  /// time it is replayed. Nothing recorded that a session had ended, so a
+  /// relay holding a captured opener could re-create it at will: after an
+  /// explicit "reset secure session" the plaintext of that chain was accepted
+  /// again, and after a stale session was pruned the re-created one could be
+  /// pinned as "the peer lost its state" and take over outbound traffic.
+  /// Remembering the ids closes both. Bounded, oldest first out, because it
+  /// is persisted with the conversation.
+  final List<String> retiredSids;
+
+  /// How many retired ids a conversation keeps. A session is retired by an
+  /// explicit reset or by seven days of disuse, so this is years of ordinary
+  /// use; what falls off the end is older than any envelope the relay still
+  /// holds (`QUEUE_TTL_HOURS`) and older than the app's own replay window.
+  static const int maxRetiredSids = 64;
+
   /// The session the peer was last seen actually using, once they have shown
   /// us they no longer hold the one we were using (see [decrypt]). Null in
   /// the normal case, where [_converge] decides.
@@ -168,8 +187,18 @@ class Conversation {
 
   Conversation._(this.me, this.them, this.myRid, this.theirRid, this.sessions,
       this.outboundSid,
-      {PqState? pq, this.postQuantum = true})
-      : _idlePq = pq ?? PqState();
+      {PqState? pq, this.postQuantum = true, List<String>? retiredSids})
+      : _idlePq = pq ?? PqState(),
+        retiredSids = retiredSids ?? <String>[];
+
+  /// Record a session id as retired, so its opener cannot re-create it.
+  void _retire(String sid) {
+    if (retiredSids.contains(sid)) return;
+    retiredSids.add(sid);
+    while (retiredSids.length > maxRetiredSids) {
+      retiredSids.removeAt(0);
+    }
+  }
 
   static Future<Conversation> create(ZIdentity me, ContactBundle them,
       {bool postQuantum = true}) async {
@@ -405,6 +434,15 @@ class Conversation {
 
     var session = sessions[sid];
     if (session == null) {
+      // A session this conversation has retired is not re-created by its own
+      // opening envelope arriving again — that is a replay, and accepting it
+      // re-derives the chain it ended. Reported as a drop rather than an
+      // unknown session, because there is nothing for the peer to re-open:
+      // an unknown session asks for a `hello`, a retired one asks for
+      // nothing.
+      if (retiredSids.contains(sid)) {
+        throw RatchetDecryptException('retired session');
+      }
       final ekB64 = j['ek'] as String?;
       if (ekB64 == null) throw UnknownSessionException(sid);
       final ekPub = unb64(ekB64);
@@ -500,13 +538,19 @@ class Conversation {
 
   /// Drop sessions unused for [olderThanMs], but never the outbound one.
   void pruneStaleSessions(int nowMs, {int olderThanMs = 7 * 24 * 3600 * 1000}) {
-    sessions.removeWhere(
-        (sid, s) => sid != outboundSid && nowMs - s.lastUsedMs > olderThanMs);
+    sessions.removeWhere((sid, s) {
+      final drop = sid != outboundSid && nowMs - s.lastUsedMs > olderThanMs;
+      if (drop) _retire(sid);
+      return drop;
+    });
   }
 
   /// Wipe all sessions (used for an explicit "reset secure session"). The
   /// post-quantum secret is dropped with them and re-established afresh.
   void resetSessions() {
+    for (final sid in sessions.keys) {
+      _retire(sid);
+    }
     sessions.clear();
     outboundSid = null;
     pinnedSid = null;
@@ -521,6 +565,7 @@ class Conversation {
           for (final e in sessions.entries)
             e.key: e.value.toJson(includeSkipped: includeSkipped)
         },
+        if (retiredSids.isNotEmpty) 'retired': retiredSids,
         // The live session's state, also written at this level so a build
         // that predates the per-session split still reads a usable value.
         'pq': pq.toJson(),
@@ -542,6 +587,9 @@ class Conversation {
     }
     conv.outboundSid = j['outboundSid'] as String?;
     conv.pinnedSid = j['pinnedSid'] as String?;
+    for (final r in (j['retired'] as List? ?? const [])) {
+      conv._retire(r as String);
+    }
     return conv;
   }
 }

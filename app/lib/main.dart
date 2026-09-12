@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io' show Platform;
 import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -38,6 +39,12 @@ void main() {
     // The bar icons' brightness follows the theme: see the AnnotatedRegion
     // in _shell.
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    // Sweep the file picker's cache once at start, for copies an earlier
+    // build left behind: the picker hands over a plaintext copy of every
+    // chosen file in the app's cache directory, and until 2.8.4 nothing ever
+    // deleted it. The attach path clears it per pick (chat_screen.dart);
+    // this is the one-off for what is already there.
+    FilePicker.platform.clearTemporaryFiles().catchError((_) => null);
   }
   runApp(const ZApp());
 }

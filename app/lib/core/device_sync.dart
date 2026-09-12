@@ -50,9 +50,24 @@ class DeviceSyncService {
     if (stored != null) {
       _session = await AccountSession.fromJson(
           account, (jsonDecode(stored) as Map).cast<String, Object?>());
+      // Restoring is add-only, and the stored blob holds whatever the last
+      // run held — including a device revoked since. `encrypt` fans to every
+      // target, so without this a revoked device went on receiving every
+      // mirror, decryptable on its still-live ratchet, across restarts: most
+      // of what revoking a device means is that it stops reading your mail.
+      // Prune before adding, and persist the pruned session, so the removal
+      // survives whether or not a mirror is sent afterwards.
+      var pruned = false;
+      for (final rid in _session!.targetRoutingIds) {
+        if (!_deviceRids.contains(rid)) {
+          _session!.removeTarget(rid);
+          pruned = true;
+        }
+      }
       for (final d in myDevices) {
         await _session!.addTarget(DeviceTarget.fromCert(d));
       }
+      if (pruned) await _save();
     } else {
       _session = await AccountSession.create(
           account, [for (final d in myDevices) DeviceTarget.fromCert(d)]);
@@ -91,6 +106,18 @@ class DeviceSyncService {
       await vault.kvPut('sync_session', jsonEncode(s.toJson()),
           sensitive: false);
     }
+  }
+
+  /// Put the sync ratchet back where [SyncInbound.snapshot] found it, and
+  /// persist that. For a caller whose store of a mirrored message failed: the
+  /// envelope is not acknowledged, so the relay redelivers it, and this is
+  /// what leaves it decryptable when it arrives again.
+  Future<void> restore(String snapshot) async {
+    await _lock.run(() async {
+      _session = await AccountSession.fromJson(
+          account, (jsonDecode(snapshot) as Map).cast<String, Object?>());
+      await _save();
+    });
   }
 
   /// Mirror a message I sent/received in [threadRid] to my other devices.
@@ -155,37 +182,71 @@ class DeviceSyncService {
     }
   }
 
-  /// Decrypt a self-sync payload from one of my devices. Returns the mirrored
-  /// (thread, dir, inner) for the caller to insert, or null if it isn't ours.
-  Future<({String thread, String dir, InnerMessage inner})?> handleInbound(
+  /// Decrypt a self-sync payload from one of my devices.
+  ///
+  /// Returns what was mirrored (null if the payload carried no message) and a
+  /// [SyncInbound.snapshot] of the ratchet as it was BEFORE the decrypt. The
+  /// caller must store the message first and acknowledge the envelope only
+  /// then; if the store fails it passes the snapshot to [restore] and does
+  /// not acknowledge, so the relay's redelivery is still decryptable.
+  ///
+  /// Until 2.8.4 the caller acknowledged here and stored afterwards, so a
+  /// process killed in that window lost the message from the relay AND from
+  /// the device, with an advanced ratchet behind it — the invariant the
+  /// contact path has always kept (`ChatService._onInbound` persists inside a
+  /// transaction and acknowledges after it), on the one path nobody checked.
+  Future<SyncInbound> handleInbound(
       String fromDeviceRid, String payload) async {
     final s = _session;
-    if (s == null || !_deviceRids.contains(fromDeviceRid)) return null;
+    if (s == null || !_deviceRids.contains(fromDeviceRid)) {
+      return const SyncInbound(null, null);
+    }
     String? offer;
-    final mirrored = await _lock.run(() async {
+    final out = await _lock.run(() async {
+      final snapshot = jsonEncode(s.toJson());
       try {
         final dec = await s.decryptFrom(fromDeviceRid, payload);
         await _save();
         offer = dec.pqOfferPayload;
         // v2: a post-quantum key offer from my other device is consumed by
         // the session layer above; it carries no mirrored message.
-        if (InnerMessage.looksLikeKind(dec.plaintext, 'pqek')) return null;
+        if (InnerMessage.looksLikeKind(dec.plaintext, 'pqek')) {
+          return const SyncInbound(null, null);
+        }
         final j =
             jsonDecode(utf8.decode(dec.plaintext)) as Map<String, Object?>;
         final inner =
             InnerMessage.fromBytes(base64Decode(j['inner'] as String));
-        return (
-          thread: j['thread'] as String,
-          dir: j['dir'] as String,
-          inner: inner,
+        return SyncInbound(
+          (
+            thread: j['thread'] as String,
+            dir: j['dir'] as String,
+            inner: inner,
+          ),
+          snapshot,
         );
       } catch (_) {
-        return null;
+        // Undecryptable or malformed: there is nothing to store, and a
+        // redelivery would fail the same way, so the caller acknowledges.
+        return const SyncInbound(null, null);
       }
     });
     if (offer != null) await reliableSend(fromDeviceRid, offer!);
-    return mirrored;
+    return out;
   }
+}
+
+/// The outcome of [DeviceSyncService.handleInbound].
+class SyncInbound {
+  /// What was mirrored, or null if this payload carried no message.
+  final ({String thread, String dir, InnerMessage inner})? mirrored;
+
+  /// The sync ratchet as it was before the decrypt, for
+  /// [DeviceSyncService.restore] if storing [mirrored] fails. Null when there
+  /// is nothing to store and so nothing to roll back.
+  final String? snapshot;
+
+  const SyncInbound(this.mirrored, this.snapshot);
 }
 
 /// Minimal FIFO async mutex so sync ratchet ops never interleave.

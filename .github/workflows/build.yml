@@ -97,6 +97,13 @@ jobs:
       # that can carry one, and "off" quoted so it is not read as false.
       - name: Every Blueprint keeps its secrets out of the file
         run: python3 tool/check_blueprints.py
+      # The platform's default is to copy the app's files to the user's cloud
+      # account, and the vault seals cells rather than structure — so a copy
+      # carries the contact graph in the clear, and a restore cannot be
+      # opened. Both opt-outs are checked because a default nobody wrote down
+      # is how this shipped for eight releases.
+      - name: Android refuses every automatic copy of its data
+        run: python3 tool/check_android_data_safety.py
       # 15.4: Play assesses accessibility separately from the 3.5 items. The
       # widget test covers the screens that stand up without a ChatService;
       # this covers every screen's source for controls that announce nothing.
