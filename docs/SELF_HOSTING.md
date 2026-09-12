@@ -123,8 +123,10 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 | `MAX_ENVELOPE_BYTES` | `1000000` | max single encrypted frame |
 | `MAX_QUEUE_BYTES_PER_USER` | `67108864` | per‑recipient queue cap (bytes); an envelope that would cross it is refused, not made room for |
 | `MAX_QUEUE_MSGS_PER_USER` | `5000` | per‑recipient queue cap (count), likewise |
-| `QUEUE_TTL_HOURS` | `72` | drop undelivered envelopes after this |
-| `SWEEP_INTERVAL_SECONDS` | `60` | expiry sweep cadence |
+| `QUEUE_TTL_HOURS` | `72` | drop an undelivered envelope this long after the relay accepted it — per envelope, in both modes |
+| `SWEEP_INTERVAL_SECONDS` | `60` | expiry sweep cadence (a flush expires too, before it delivers) |
+| `FLUSH_PAGE` | `64` | entries per page when flushing a backlog to a reconnecting device |
+| `FLUSH_HIGH_WATER_BYTES` | `1048576` | the next page waits until the socket has drained below this |
 | `RATE_PER_SEC` / `RATE_BURST` | `80` / `240` | per‑connection token bucket |
 | `TLS_CERT` / `TLS_KEY` | — | enable built‑in TLS (paths to PEM) |
 | `LOG_LEVEL` | `info` | `info` logs counts/timing only, never content |
@@ -235,7 +237,13 @@ until acked).
 
 - **Memory** is the only real resource: worst case ≈
   `active_recipients × MAX_QUEUE_BYTES_PER_USER`, in RAM mode and in Redis
-  mode alike. Tune the caps for your box; keep the byte cap above one
+  mode alike — plus, per device currently collecting its backlog,
+  `FLUSH_PAGE` entries and `FLUSH_HIGH_WATER_BYTES` in the relay process
+  itself (about 5 MB at the defaults with attachment‑sized envelopes, and
+  it is a *bound*: a device on a slow link no longer holds its whole
+  backlog in the relay's memory while it reads, which on a 512 MB instance
+  was a handful of reconnects away from the whole machine —
+  `docs/PERFORMANCE.md`, "What a reconnect costs the relay"). Tune the caps for your box; keep the byte cap above one
   envelope (`MAX_ENVELOPE_BYTES` + 256) or the largest envelopes are refused
   everywhere, which the relay warns about at start.
 - **Restarts drop in‑flight messages.** Senders keep them in their device

@@ -540,6 +540,41 @@ acknowledgement reads it once more to check the sender — and the time is
 linear. Entries queued by the older relay are read and removed the way it
 left them, until they expire (`drain.test.js`).
 
+## What a reconnect costs the relay (2026-09-12)
+
+A device that has been away collects a backlog — up to
+`MAX_QUEUE_BYTES_PER_USER`, 64 MB — and asks for all of it at once when it
+comes back. The question is what the *relay* holds while that device reads,
+because the relay is two 512 MB instances (`render.ha.yaml`) and the device
+is on a phone network.
+
+Measured by `server/test/flush_backpressure.test.js`, which is the only way
+to measure it: a client authenticates with 300 envelopes of 64 KB waiting
+(19 MB), pauses its TCP socket the way a slow link does, and the test reads
+the relay's own `bufferedAmount` for that socket.
+
+| | relay memory for that one reader | read from the store meanwhile |
+|---|---:|---:|
+| 2.8.0 | **15.1 MB** (the whole backlog, less what the kernel took) | 19 MB (all of it) |
+| 2.8.1 | **320 KB** | 4.0 MB |
+
+Before, the flush read the mailbox and wrote every envelope into the socket
+in one pass: the relay held the backlog until the device finished reading
+it, so five such reconnects at once was 75 MB of one instance and a
+hundred was the machine. Now the flush goes out in pages of `FLUSH_PAGE`
+(64) and the next page waits until the socket has drained below
+`FLUSH_HIGH_WATER_BYTES` (1 MiB), in RAM mode and Redis mode alike — so
+the relay holds a page plus the mark, about 5 MB at the defaults with
+attachment-sized envelopes and 320 KB at the test's smaller ones, whatever
+the backlog is. Delivery is unchanged: the paused reader receives all 300
+in order the moment it resumes, and a socket that dies mid-flush leaves the
+mailbox intact for the next connection (nothing was acknowledged).
+
+The store is spared the same way — 4 MB read rather than 19 — because the
+entries are fetched per page rather than for the whole mailbox. That is the
+second half of the drain change above: the flush reads keys once and bodies
+by the page.
+
 ## The transparency log (2026-09-11)
 
 `kt/bench/proofs.js` (`npm run bench` in `kt/`): a log with one entry per

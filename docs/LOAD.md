@@ -66,8 +66,20 @@ refusedOf180:              80
 `MAX_QUEUE_BYTES_PER_USER` (64 MB) · `QUEUE_TTL_HOURS` (72) ·
 `RATE_PER_SEC` (80) · `RATE_BURST` (240).
 
+## One more shape, in its own file
+
+A device that stops reading mid-flush is the abuse case this harness cannot
+express, because it needs the socket paused rather than the frames refused:
+`flush_backpressure.test.js` pauses a client's TCP socket with a 19 MB
+backlog waiting and watches the relay's own buffered bytes. Before the paged
+flush the relay held 15.1 MB for that one reader; now it holds 320 KB and
+finishes the delivery when the reader resumes (`docs/PERFORMANCE.md`, "What
+a reconnect costs the relay").
+
 ## Not covered here
 
-Multi-instance / Redis-coordinated load (roadmap Phase 4.4) and real-network
-latency/packet-loss behaviour. These want a deployed environment rather than an
-in-process harness and are tracked separately.
+Real-network latency and packet-loss behaviour, which wants a deployed
+environment rather than an in-process harness and is tracked separately.
+Multi-instance behaviour is covered by `ha.test.js`, `queue_caps.test.js`,
+`full_store.test.js`, `drain.test.js` and `expiry.test.js`, each against a
+real `redis-server`.

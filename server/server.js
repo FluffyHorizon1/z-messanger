@@ -49,6 +49,11 @@ const CFG = {
     return this.queueTtlHours * 3600 * 1000;
   },
   sweepIntervalMs: intEnv('SWEEP_INTERVAL_SECONDS', 60) * 1000,
+  // A reconnecting device's backlog is flushed in pages, and the next page
+  // waits until the socket has drained below this many bytes: a slow reader
+  // costs the relay one page plus this, never its whole backlog.
+  flushPage: intEnv('FLUSH_PAGE', 64),
+  flushHighWaterBytes: intEnv('FLUSH_HIGH_WATER_BYTES', 1024 * 1024),
   // Push tokens live this long after their last (re)registration, in both
   // coordinators — the privacy policy promises a 30-day cap.
   pushTtlMs: intEnv('PUSH_TTL_DAYS', 30) * 24 * 3600 * 1000,
@@ -107,6 +112,20 @@ function sendJson(ws, obj) {
     return true;
   }
   return false;
+}
+
+/**
+ * Waits until the socket's buffered output is below the high-water mark
+ * (or the socket is gone). A flush of a large backlog calls this between
+ * pages, so what the relay holds for a slow reader is bounded by a page and
+ * the mark rather than by the backlog. Resolves true while the socket is
+ * still open.
+ */
+async function drained(ws) {
+  while (ws.readyState === ws.OPEN && ws.bufferedAmount > CFG.flushHighWaterBytes) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return ws.readyState === ws.OPEN;
 }
 
 function entryToFrame(entry) {
@@ -326,9 +345,14 @@ class MemoryCoordinator {
   async flush(rid, ws) {
     const q = this.queues.get(rid);
     if (!q) return;
-    for (const e of q.entries) sendJson(ws, entryToFrame(e));
-    for (const r of q.entries.filter((e) => e.kind === 'receipt')) {
-      this._removeEntry(rid, (e) => e.seq === r.seq);
+    // A snapshot: acks arriving while a page drains mutate the live array.
+    const entries = q.entries.slice();
+    for (let i = 0; i < entries.length; i += CFG.flushPage) {
+      if (!(await drained(ws))) return;
+      for (const e of entries.slice(i, i + CFG.flushPage)) {
+        sendJson(ws, entryToFrame(e));
+        if (e.kind === 'receipt') this._removeEntry(rid, (x) => x.seq === e.seq);
+      }
     }
   }
 
@@ -448,18 +472,65 @@ return 1`;
 
 // The same removal for an element queued by a relay before 2.7.9: the entry
 // itself sits in the list (ARGV[1] is that exact string) and nowhere else.
+// Its bytes were never added to the counter — that relay kept none — so
+// nothing comes off the counter here. (2.7.9 decremented anyway, which
+// under-counted a mailbox during the transition and so under-enforced its
+// cap; the counter was clamped at zero, and a mailbox that empties resets
+// it, which is why it was only ever a transitional error.)
 const REDIS_REMOVE_LEGACY_LUA = `#!lua flags=allow-oom
 local n = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if n == 0 then return 0 end
 if redis.call('LLEN', KEYS[1]) == 0 then
   redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
-  return n
 end
-local left = redis.call('DECRBY', KEYS[3], ARGV[2])
-if left < 0 then redis.call('SET', KEYS[3], '0') end
-local ttl = redis.call('TTL', KEYS[1])
-if ttl > 0 then redis.call('EXPIRE', KEYS[3], ttl) end
 return n`;
+
+// Per-entry expiry, from the head: KEYS as above; ARGV = the cutoff (ms
+// since the epoch — an entry stamped before it has outlived QUEUE_TTL_HOURS)
+// and how many entries to look at. Entries are in arrival order, so the
+// walk stops at the first one that is still fresh. Handles the entry itself
+// sitting in the list (a relay before 2.7.9) and a key whose body is gone.
+// Returns the number removed. The keys' own TTL still expires a mailbox
+// nothing has been pushed to for QUEUE_TTL_HOURS; this is for the mailbox
+// that keeps receiving, whose refreshed TTL would otherwise hold its oldest
+// entries for as long as anything arrived.
+const REDIS_EXPIRE_LUA = `#!lua flags=allow-oom
+local cutoff = tonumber(ARGV[1])
+local removed = 0
+local bytes = 0
+for i = 1, tonumber(ARGV[2]) do
+  local k = redis.call('LINDEX', KEYS[1], 0)
+  if not k then break end
+  local legacy = string.sub(k, 1, 1) == '{'
+  local s = k
+  if not legacy then s = redis.call('HGET', KEYS[2], k) end
+  if not s then
+    redis.call('LPOP', KEYS[1])
+  else
+    local ok, e = pcall(cjson.decode, s)
+    if not ok or type(e) ~= 'table' or type(e.ts) ~= 'number' or e.ts >= cutoff then break end
+    redis.call('LPOP', KEYS[1])
+    if not legacy then redis.call('HDEL', KEYS[2], k) end
+    local size = e.size
+    if type(size) ~= 'number' then
+      if e.kind == 'receipt' then size = 192 else size = #tostring(e.payload or '') + 256 end
+    end
+    -- A legacy element (the entry itself in the list) was queued by a relay
+    -- that kept no counter, so its bytes were never added to one and must
+    -- not be taken off it.
+    if not legacy then bytes = bytes + size end
+    removed = removed + 1
+  end
+end
+if removed > 0 or redis.call('LLEN', KEYS[1]) == 0 then
+  if redis.call('LLEN', KEYS[1]) == 0 then
+    redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+  else
+    local left = redis.call('DECRBY', KEYS[3], bytes)
+    if left < 0 then redis.call('SET', KEYS[3], '0') end
+  end
+end
+return removed`;
 
 /** The key an entry is held under in qe:{rid} and listed under in q:{rid}. */
 function entryKey(e) {
@@ -498,6 +569,7 @@ class RedisCoordinator {
     this.cmd.defineCommand('zQueuePush', { numberOfKeys: 3, lua: REDIS_PUSH_LUA });
     this.cmd.defineCommand('zQueueRemove', { numberOfKeys: 3, lua: REDIS_REMOVE_LUA });
     this.cmd.defineCommand('zQueueRemoveLegacy', { numberOfKeys: 3, lua: REDIS_REMOVE_LEGACY_LUA });
+    this.cmd.defineCommand('zQueueExpire', { numberOfKeys: 3, lua: REDIS_EXPIRE_LUA });
     this.sub.subscribe(this.chan).catch(() => {});
     this.sub.on('message', (_ch, msg) => this._onPub(msg));
   }
@@ -617,8 +689,8 @@ class RedisCoordinator {
   }
 
   /** Removes an element queued by a relay before 2.7.9 (the entry itself, as the exact stored string). */
-  async _removeLegacy(rid, s, entry) {
-    await this.cmd.zQueueRemoveLegacy(`q:${rid}`, `qe:${rid}`, `qb:${rid}`, s, String(entrySize(entry)));
+  async _removeLegacy(rid, s) {
+    await this.cmd.zQueueRemoveLegacy(`q:${rid}`, `qe:${rid}`, `qb:${rid}`, s);
   }
 
   /**
@@ -706,7 +778,7 @@ class RedisCoordinator {
       // queued, which only a read of the list can find.
       for (const q of await this._queued(recipient)) {
         if (q.key === null && matches(q.entry)) {
-          await this._removeLegacy(recipient, q.s, q.entry);
+          await this._removeLegacy(recipient, q.s);
           removed = q.entry;
           break;
         }
@@ -740,17 +812,59 @@ class RedisCoordinator {
     }
   }
 
+  /** Removes entries at the head of a mailbox that have outlived QUEUE_TTL_HOURS. */
+  async _expire(rid, limit = 1000) {
+    return this.cmd.zQueueExpire(`q:${rid}`, `qe:${rid}`, `qb:${rid}`, String(Date.now() - CFG.queueTtlMs), String(limit));
+  }
+
   async flush(rid, ws) {
-    for (const q of await this._queued(rid)) {
-      sendJson(ws, entryToFrame(q.entry));
-      if (q.entry.kind === 'receipt') {
-        if (q.key === null) await this._removeLegacy(rid, q.s, q.entry);
-        else await this._remove(rid, q.key, q.entry);
+    await this._expire(rid);
+    const elems = await this.cmd.lrange(`q:${rid}`, 0, -1);
+    for (let i = 0; i < elems.length; i += CFG.flushPage) {
+      if (!(await drained(ws))) return;
+      const page = elems.slice(i, i + CFG.flushPage);
+      const keys = page.filter((x) => !x.startsWith('{'));
+      const bodies = keys.length ? await this.cmd.hmget(`qe:${rid}`, ...keys) : [];
+      const byKey = new Map(keys.map((k, j) => [k, bodies[j]]));
+      for (const x of page) {
+        const legacy = x.startsWith('{');
+        const str = legacy ? x : byKey.get(x);
+        if (str == null) continue; // removed meanwhile (an ack landed)
+        let entry;
+        try {
+          entry = JSON.parse(str);
+        } catch {
+          continue;
+        }
+        sendJson(ws, entryToFrame(entry));
+        if (entry.kind === 'receipt') {
+          if (legacy) await this._removeLegacy(rid, str);
+          else await this._remove(rid, x, entry);
+        }
       }
     }
   }
 
-  sweep() {} // Redis key TTL handles expiry.
+  /**
+   * Every SWEEP_INTERVAL_SECONDS: walk the mailboxes and expire what has
+   * outlived QUEUE_TTL_HOURS at the head of each. SCAN, so the store is
+   * never asked for all its keys at once; both instances sweep, which is
+   * harmless — the script is idempotent.
+   */
+  async sweep() {
+    let cursor = '0';
+    do {
+      const [next, keys] = await this.cmd.scan(cursor, 'MATCH', 'q:*', 'COUNT', '200');
+      cursor = next;
+      for (const key of keys) {
+        try {
+          await this._expire(key.slice(2), 200);
+        } catch {
+          // A store that is unreachable for a moment: the next sweep tries again.
+        }
+      }
+    } while (cursor !== '0');
+  }
 
   async heartbeat() {
     for (const rid of this.local.keys()) {
@@ -974,7 +1088,7 @@ function createServer(opts = {}) {
   }, 25_000);
   heartbeat.unref();
 
-  const sweeper = setInterval(() => coord.sweep(), CFG.sweepIntervalMs);
+  const sweeper = setInterval(() => Promise.resolve(coord.sweep()).catch(() => {}), CFG.sweepIntervalMs);
   sweeper.unref();
 
   httpServer.on('close', () => {

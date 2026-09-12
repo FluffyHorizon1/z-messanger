@@ -843,11 +843,19 @@ relay error, which is the right reading. (Until 2026‑09‑11 the relay
 evicted the *oldest* queued envelope instead, silently and after having
 acknowledged it with `sent`, so anyone holding a routing id could erase what
 was queued for it by flooding; a flood now fills a queue and is refused from
-then on, and `/metrics` counts the refusals, `z_refused_total`.) Every entry
-expires after `QUEUE_TTL_HOURS` (72). Multiple relay instances may share
+then on, and `/metrics` counts the refusals, `z_refused_total`.) Multiple relay instances may share
 queues and presence through Redis, where the byte cap is a counter kept
 beside the list and settled in the same atomic script as every push and
 removal; the frame protocol is identical.
+
+**Expiry is per entry**, `QUEUE_TTL_HOURS` (72) from the moment the relay
+accepted it, in both modes: the relay drops what has outlived it from the
+head of each mailbox at every flush and from a sweep every
+`SWEEP_INTERVAL_SECONDS`. In Redis mode until 2026‑09‑12 the lifetime sat on
+the mailbox's keys instead and every new envelope refreshed it, so a mailbox
+that kept *receiving* — an abandoned account whose contacts keep writing —
+held its oldest envelopes for as long as anything arrived, up to the cap.
+A mailbox nothing is pushed to still expires whole, as it did.
 
 **The store itself full** (Redis mode; the reference deployment runs the
 store with `noeviction`, so it refuses writes rather than evicting a queue
@@ -874,7 +882,17 @@ own knowledge regardless. The relay counts refusals of this kind
    safely in the recipient's encrypted local store). On (re)connect the whole
    queue is flushed again, so delivery is **at‑least‑once** and receivers
    deduplicate (§6.4). A client MUST NOT `recv` before persisting.
-3. Undelivered envelopes vanish on expiry or on relay restart — never to
+3. A flush of a large backlog is **paged**: the relay sends `FLUSH_PAGE`
+   (64) entries and waits until the socket has drained below
+   `FLUSH_HIGH_WATER_BYTES` (1 MiB) before the next page, so what it holds
+   for one slow reader is a page plus that mark rather than the whole
+   backlog (up to 64 MiB). Two consequences for a client. A live `msg` may
+   arrive *between* pages, so the flush is not ordered against traffic that
+   arrives during it — which changes nothing a client may rely on, since
+   delivery was already at‑least‑once and unordered across reconnects. And
+   a flush that is interrupted (the socket closes) simply stops: nothing was
+   acknowledged, so the next connection flushes the same queue again.
+4. Undelivered envelopes vanish on expiry or on relay restart — never to
    make room for another envelope (§12.4). Availability is explicitly not a
    security property of the relay.
 

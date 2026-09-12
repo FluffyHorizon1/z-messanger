@@ -1362,3 +1362,36 @@ direction; the phases, their order and both ordering arguments stand.
    bench's own artefact — one sender crossing the burst — was the same
    fault seen from the other side; a benchmark that will not finish is a
    finding before it is a bug in the benchmark.
+
+43. **Two promises the relay was making and one of them was not true.**
+   `QUEUE_TTL_HOURS` is documented per envelope — "undelivered envelopes
+   vanish on expiry" (§12.5), "until delivered, until TTL, or until the
+   store restarts" (DATA_MAP) — and in RAM mode it was, untested. In Redis
+   mode the lifetime sat on the mailbox's *keys* and every new push
+   refreshed it, so a mailbox that kept receiving held its oldest
+   envelopes for as long as anything arrived, up to the cap: an abandoned
+   account whose contacts keep writing is exactly that mailbox, and a
+   seventy-two-hour promise became indefinite for the one case where it
+   mattered most. Expiry is per entry now, from the head, at every flush
+   and from a SCAN-driven sweep. The second promise was never written
+   down, which is why nothing caught it: a reconnecting device asked for
+   its whole backlog and the relay read all of it and wrote all of it into
+   that one socket, so the relay held the backlog — up to the 64 MB cap —
+   until the device finished reading. Measured on a client that pauses its
+   TCP socket with 19 MB waiting: **15.1 MB held for one paused reader**,
+   against 320 KB after. On a 512 MB instance a hundred such reconnects
+   was the machine, and a device on a slow link was the normal case, not
+   the abuse case. The flush is paged now, waiting between pages until the
+   socket drains below a mark, in both modes; the store is spared the same
+   way (4 MB read rather than 19 while the reader is paused). Writing the
+   ordering consequence down in §12.5 was part of the fix: a live envelope
+   can now arrive between pages, which changes nothing a client may rely
+   on — delivery was already at-least-once and unordered across
+   reconnects — but a reader of the protocol should not have to derive
+   that. One thing found on the way: the legacy-entry removal path added
+   in 2.7.9 decremented the byte counter for entries that counter never
+   held, so a mailbox mid-transition under-counted itself and
+   under-enforced its cap (clamped at zero, reset when the mailbox
+   emptied — transitional, and wrong). The rule: **a limit in a document
+   is a claim about every mode the code runs in, and the mode nobody
+   tests is the one the claim is false in.**
