@@ -1617,3 +1617,56 @@ direction; the phases, their order and both ordering arguments stand.
    picked up `MAX_QUEUE_BYTES_PER_USER=16777216` in this pass — at the 64 MB
    default, four full mailboxes fill a 256 MB store, and a full store refuses
    every sender where a mailbox at its own cap refuses only its own.
+
+48. **Two holes of the same shape, and only one of them was safe to close in
+   the same week.** The client review (revision 46) found that neither the
+   pairing SAS nor the device-list signature covered the ratchet key the
+   other party was about to certify. Same mistake, same consequence — a key
+   substituted where the users' own comparison cannot see it — and opposite
+   answers on what to do about it.
+
+   **Pairing was safe to fix immediately, and is fixed** (§10.1). The v1 SAS
+   covered the ephemerals and the new device's *signing* key, while the
+   existing device signed a certificate over the `dx` and `id` it read from
+   an unauthenticated rendezvous frame: a relay rewriting nothing but `dx`
+   left both screens showing the same six digits while the account certified
+   an X25519 key the attacker held. v2 puts a commitment in front — which
+   also closes the separate, milder defect that the responder chose its
+   ephemeral after seeing the initiator's, and could therefore grind a
+   six-digit code it had already read aloud — and puts every certified field
+   into an eight-digit SAS. New contexts, new vectors, v1's text and vectors
+   untouched.
+
+   What made it safe is worth naming, because it is the whole difference
+   between the two: **pairing is a one-off act between two devices one person
+   holds, and its failure mode is visible.** Both devices are theirs to
+   update, nothing is published, no stored value changes, and a version
+   mismatch shows as "update the other device" rather than as silence. A v2
+   host even holds its v1 mailbox open to *recognise* an old peer and refuses
+   to answer it: detect, do not transact.
+
+   **The device list was not, and became ADR 0010 instead.** The naive fix —
+   one new context string over an input that includes `deviceXPub` — breaks
+   two things, and the second is worse than the bug. A v2-signed list does
+   not verify on any installed client, so the moment a user on the new build
+   adds a device, that device is invisible to every contact who has not
+   updated, with nothing on screen to say why. And the 16-byte fingerprint
+   that gossip and the log compare is `SHA-256(signingInput)`, so changing
+   the input changes the value every transparency mechanism compares: a
+   half-upgraded population would raise `changedUnexpectedly` alarms about
+   lists that had not changed. Making a true alarm untrustworthy costs more
+   than a hole that needs an Ed25519 forgery to walk through.
+
+   So 0010 proposes the migration rather than the edit: dual signatures (the
+   post-quantum half over the new input, so a list produced by the new build
+   is already protected while the old signature is still accepted), a
+   per-account version floor so a downgrade cannot be replayed, a fingerprint
+   that follows the format its list was signed under, and the timing
+   argument — **the log is not deployed, so today's fingerprints exist only
+   between clients, and this is the cheapest week the change will ever have.**
+
+   The rule: **a fix that changes bytes other parties have already verified
+   is a migration, and a migration is a decision, not a diff.** The tell for
+   which kind you have is not how small the code change is — both of these
+   are a few lines — but whether anyone else has already committed to the old
+   answer.
