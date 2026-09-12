@@ -1,0 +1,40 @@
+{
+  "suite": "connect_mailboxes",
+  "version": 1,
+  "description": "The transport half of the connect ceremony (PROTOCOL 20): the two throwaway relay identities an invite secret derives, one per role. HKDF-SHA256(secret, salt=\"\", info=\"z-connect-relay-v1:\" || role, 64), split into the Ed25519 seed and then the X25519 seed; the routing id is base64url(SHA-256(ed_pub)) unpadded, as for any identity. Both keypairs are derivable by anyone holding the code, which is what makes the invite a bearer token and why it is one-time and short-lived. Disjoint by context from the code's own rendezvous id and from both pairing rendezvous.",
+  "connect_code": {
+    "secret": "da4d550fe8f4b7c36b20",
+    "text": "3JGVK-D7I6S-34G2Z-A",
+    "relay_context": "z-connect-relay-v1:",
+    "salt": ""
+  },
+  "mailboxes": [
+    {
+      "role": "i",
+      "who": "inviter",
+      "info": "7a2d636f6e6e6563742d72656c61792d76313a69",
+      "okm": "9ad7992c880d7aa093ea322bf91c034f1186a8059f0d661f8b046021f3435da684ec6cb9a436aea7f148a0d3301abea5c5d75a434a0ebf1a11a77d84fa282c48",
+      "ed_seed": "9ad7992c880d7aa093ea322bf91c034f1186a8059f0d661f8b046021f3435da6",
+      "x_seed": "84ec6cb9a436aea7f148a0d3301abea5c5d75a434a0ebf1a11a77d84fa282c48",
+      "ed_pub": "425af715ed5d863a91b0510f4755bb823834b840eb26e49fd6ce940efbd5a3fc",
+      "x_pub": "06df0676000d53ccdd32b6a4a057cdde42cf7e3d18401371435f603d700aef30",
+      "routing_id": "ll_yb11ETNzq91cp5YG-g_OSDKD2SZqPO-ABwu6Uvuo"
+    },
+    {
+      "role": "r",
+      "who": "acceptor",
+      "info": "7a2d636f6e6e6563742d72656c61792d76313a72",
+      "okm": "7820c93598c7c7f71099e68c67b680919b17acc81094425399c2316a4497cfb79101b0ded00eeefb2487c87de6e89bc9568345d38ebdf99620e669a33c248070",
+      "ed_seed": "7820c93598c7c7f71099e68c67b680919b17acc81094425399c2316a4497cfb7",
+      "x_seed": "9101b0ded00eeefb2487c87de6e89bc9568345d38ebdf99620e669a33c248070",
+      "ed_pub": "58bf1145198c09048154eb285903da42e268f3143feaefcb49098fda411a9b10",
+      "x_pub": "6830dc82005cf77eff12e57c9484df0149146b4cdfa045f6eac647ea87e2da03",
+      "routing_id": "M9iUpRv2Zx1LtjE4l-xdMpXMTeNnTm3ONnggf0YdW4o"
+    }
+  ],
+  "distinct_from": {
+    "rendezvous": "tSpXZ5i461c1yvb5C2Fu2MBuA1ibW0Sa6NqkfmuUf-U",
+    "pairing_v1": "KwbM7tDpZL2zQ8JRQnk6bxFyr4MXUvcLEcVahwliv8s",
+    "pairing_v2": "rJ5ZmEThZvWzqgJNOoT5yp9gndEx7OVUN17-EltTyTY"
+  }
+}

@@ -113,9 +113,16 @@ class ConnectCode {
     }
   }
 
-  /// The rendezvous mailbox both sides meet at. Disjoint from a pairing
-  /// code's by context, so a connect code can never address a pairing
-  /// rendezvous or the reverse.
+  /// The single mailbox id this code names, disjoint from a pairing code's by
+  /// context — so a connect code can never address a pairing rendezvous or
+  /// the reverse, which is the property `connect_test.dart` (6) asserts.
+  ///
+  /// Traffic does not go here. The transport (17.2) splits the rendezvous
+  /// into **two** mailboxes, one per role, derived from the same secret under
+  /// [connectRelayCtx] — see `mailboxIdentity`, and `connect/mailboxes.json`
+  /// for the bytes. Two rather than one so that neither side is handed back
+  /// its own frames on the relay's flush, and so the pair the relay sees is
+  /// the shape §20 describes.
   Future<String> rendezvousRoutingId() async => b64url(
       await sha256Bytes(concatBytes([utf8.encode(_rendezvousCtx), secret])));
 }
@@ -220,6 +227,42 @@ class ConnectInviter {
     return ConnectInviter._(code ?? ConnectCode.generate(), me, seed, pub);
   }
 
+  /// Everything needed to pick this ceremony up after the app was closed.
+  ///
+  /// An invite sent at lunchtime may be opened at midnight, so the ceremony
+  /// cannot live only in memory the way device pairing's can — that is the
+  /// whole difference between linking two devices you are holding and
+  /// reaching someone three time zones away (17.2).
+  Map<String, Object?> toJson() => {
+        'code': b64(code.secret),
+        'me': me.contactCode,
+        if (me.displayName != null) 'name': me.displayName,
+        'eph': b64(ephSeed),
+        if (_peerEph != null) 'peerEph': b64(_peerEph!),
+        if (_peerCommitment != null) 'peerC': b64(_peerCommitment!),
+      };
+
+  static Future<ConnectInviter> fromJson(Map<String, Object?> j) async {
+    final me = await ConnectIdentity.fromCode(j['me'] as String,
+        displayName: j['name'] as String?);
+    final seed = unb64(j['eph'] as String);
+    final pub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
+    final out =
+        ConnectInviter._(ConnectCode(unb64(j['code'] as String)), me, seed, pub);
+    final pe = j['peerEph'], pc = j['peerC'];
+    if (pe is String && pc is String) {
+      out._peerEph = unb64(pe);
+      out._peerCommitment = unb64(pc);
+      out._dh = await _dhOf(seed, out._peerEph!);
+      out._channelKey = await _deriveChannelKey(out._dh!);
+    }
+    return out;
+  }
+
+  /// True once [open] has been called, so a resumed run knows where it is.
+  bool get opened => _channelKey != null;
+
   /// Message 1: the commitment, and nothing else.
   Future<Map<String, Object?>> commit() async =>
       {'c': b64(await me._commitment(ephPub))};
@@ -271,6 +314,24 @@ class ConnectAcceptor {
   ConnectAcceptor._(this.me, this._ephSeed, this._ephPub, this._peerCommitment);
 
   Uint8List get ephPub => _ephPub;
+
+  /// As [ConnectInviter.toJson]: the acceptor may also be closed and
+  /// reopened between the inviter's messages.
+  Map<String, Object?> toJson() => {
+        'me': me.contactCode,
+        if (me.displayName != null) 'name': me.displayName,
+        'eph': b64(_ephSeed),
+        'peerC': b64(_peerCommitment),
+      };
+
+  static Future<ConnectAcceptor> fromJson(Map<String, Object?> j) async {
+    final me = await ConnectIdentity.fromCode(j['me'] as String,
+        displayName: j['name'] as String?);
+    final seed = unb64(j['eph'] as String);
+    final pub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
+    return ConnectAcceptor._(me, seed, pub, unb64(j['peerC'] as String));
+  }
 
   /// Message 2: a fresh ephemeral and this side's own commitment, chosen
   /// while holding only a hash of the inviter's — which is what stops either

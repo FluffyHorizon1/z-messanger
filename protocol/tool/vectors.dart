@@ -2405,6 +2405,90 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
   };
 }
 
+/// The two throwaway relay mailboxes an invite derives (§20, 17.2).
+///
+/// Small, and the most silently breakable thing in the ceremony: get this
+/// derivation wrong in a second implementation and both sides authenticate
+/// successfully, listen politely, and never meet. Recomputed here from the
+/// composition — HKDF-SHA256 over the invite secret with an EMPTY salt and
+/// `info = "z-connect-relay-v1:" || role`, 64 bytes split into the Ed25519
+/// and X25519 seeds in that order — rather than by calling the transport.
+///
+/// An empty salt is RFC 5869's "not provided" case: HMAC pads a short key
+/// with zeroes, so it is the same extract as a HashLen run of zeroes.
+Future<Map<String, Object?>> suiteConnectMailboxes() async {
+  final d = Drbg(0x001a);
+  final code = ConnectCode(d.next(10));
+  final mailboxes = <Map<String, Object?>>[];
+  for (final (role, who) in [('i', 'inviter'), ('r', 'acceptor')]) {
+    final info = concatBytes([utf8.encode(connectRelayCtx), utf8.encode(role)]);
+    final okm = await refHkdf(code.secret, Uint8List(0), info, 64);
+    final edSeed = Uint8List.fromList(okm.sublist(0, 32));
+    final xSeed = Uint8List.fromList(okm.sublist(32, 64));
+    final edPub = await refEdPub(edSeed);
+    final xPub = await refXPub(xSeed);
+    final routingId =
+        base64Url.encode(await refSha256(edPub)).replaceAll('=', '');
+
+    final id = await mailboxIdentity(code, role);
+    check(eq(id.edPub, edPub), '$who mailbox ed key');
+    check(eq(id.xPub, xPub), '$who mailbox x key');
+    check(await id.routingId() == routingId, '$who mailbox routing id');
+
+    mailboxes.add({
+      'role': role,
+      'who': who,
+      'info': hex(info),
+      'okm': hex(okm),
+      'ed_seed': hex(edSeed),
+      'x_seed': hex(xSeed),
+      'ed_pub': hex(edPub),
+      'x_pub': hex(xPub),
+      'routing_id': routingId,
+    });
+  }
+
+  // Distinct from each other, from the code's own rendezvous id, and from
+  // either pairing rendezvous the same ten bytes would derive.
+  final rendezvous = await code.rendezvousRoutingId();
+  final pairing = PairingCode(code.secret);
+  final others = {
+    'rendezvous': rendezvous,
+    'pairing_v1': await pairing.rendezvousRoutingId(),
+    'pairing_v2': await pairing.rendezvousRoutingIdV2(),
+  };
+  check(mailboxes[0]['routing_id'] != mailboxes[1]['routing_id'],
+      'the two mailboxes differ');
+  for (final m in mailboxes) {
+    for (final e in others.entries) {
+      check(m['routing_id'] != e.value, 'mailbox vs ${e.key}');
+    }
+  }
+
+  return {
+    'suite': 'connect_mailboxes',
+    'version': vectorsVersion,
+    'description':
+        'The transport half of the connect ceremony (PROTOCOL 20): the two '
+            'throwaway relay identities an invite secret derives, one per '
+            'role. HKDF-SHA256(secret, salt="", info="z-connect-relay-v1:" || '
+            'role, 64), split into the Ed25519 seed and then the X25519 seed; '
+            'the routing id is base64url(SHA-256(ed_pub)) unpadded, as for '
+            'any identity. Both keypairs are derivable by anyone holding the '
+            'code, which is what makes the invite a bearer token and why it '
+            'is one-time and short-lived. Disjoint by context from the '
+            "code's own rendezvous id and from both pairing rendezvous.",
+    'connect_code': {
+      'secret': hex(code.secret),
+      'text': code.text,
+      'relay_context': connectRelayCtx,
+      'salt': '',
+    },
+    'mailboxes': mailboxes,
+    'distinct_from': others,
+  };
+}
+
 Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
   final a = await actors();
   return {
@@ -2433,6 +2517,7 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     },
     'connect': {
       'connect': await suiteConnect(a),
+      'mailboxes': await suiteConnectMailboxes(),
     },
     'backup': {
       'archive': await suiteBackup(),

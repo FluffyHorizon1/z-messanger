@@ -1722,3 +1722,54 @@ direction; the phases, their order and both ordering arguments stand.
    both ceremonies share it — the frozen v1 pairing vectors are what proves
    the move changed nothing, which is the cheapest possible test of a
    refactor and the reason the freeze is worth having.
+
+50. **Phase 17.2 — an invite sent at lunchtime may be opened at midnight, and
+   that one sentence decides the whole shape of the transport.** Pairing's
+   relay layer is a live choreography: two sides online at once, two futures
+   racing to a shared rendezvous, and if either walks away the run is over.
+   It works because the two devices are in the same pair of hands. None of
+   that survives two people in different time zones, so connect's transport
+   is not a coroutine at all — it is a state machine with storage behind it.
+   `step()` connects, does whatever the mailbox makes possible, disconnects;
+   the run is written to JSON after every call and read back before the next.
+   Which is why resumability had to be pushed *down* into 17.1's ceremony
+   classes rather than wrapped around them: a `ConnectInviter` that lives
+   only in memory cannot span a night, however good its cryptography.
+
+   **Two mailboxes rather than one, and a sentence that stopped being true.**
+   A single shared rendezvous hands each side its own frames back on the
+   relay's flush — harmless, and a permanent source of "why am I reading my
+   own commitment". Two mailboxes, one per role, derived from the same secret
+   under one new context, cost nothing and remove the question. But 17.1 had
+   already shipped a `rendezvousRoutingId()` whose comment said "the
+   rendezvous mailbox both sides meet at" — true when it was written, false
+   one wave later. That is the same failure the client review had just found
+   at `PROTOCOL.md:804`, committed again four days after reporting it, which
+   says something about how comments age next to code that is still moving.
+   It is corrected, and the derivation the transport actually uses now has
+   its own vector file (`connect/mailboxes.json`): getting it wrong in a
+   second implementation is the worst kind of bug, because both sides
+   authenticate successfully, listen politely, and never meet.
+
+   **A finished ceremony has to empty its own mailboxes — and the test that
+   proved it passed first time, which is how we knew it proved nothing.** The
+   first version of the transport never acknowledged what it read, and
+   everything was green. Turning the acknowledgements off *after* writing
+   them is what showed what they were for: a second person arriving on a
+   spent invite was answered by the frames still sitting in relay RAM, and
+   got a partial ceremony that aborted on the commitment check. The binding
+   held, which is the right outcome — but relying on it means relying on the
+   last line of defence for something the first line does for free. A
+   completed ceremony now leaves both mailboxes empty, so the 72-hour queue
+   lifetime has no transcript to sit on and no partial ceremony for anyone to
+   start. Both of this phase's load-bearing assertions were shown to bite by
+   breaking the code on purpose; a test written after the code, and passing
+   on its first run, has not yet been shown to test anything.
+
+   **And a claim about the relay was asserted against the relay.** "The relay
+   sees only two ephemeral mailboxes" cannot honestly be checked by reading
+   our own client's intentions — that restates the claim rather than testing
+   it. So the test stands a recording WebSocket between the clients and the
+   relay, about twenty lines of it, and asserts against the bytes that
+   crossed: the two mailbox ids and nothing else, and no routing id, account
+   key, contact code or display name of either party anywhere in the traffic.

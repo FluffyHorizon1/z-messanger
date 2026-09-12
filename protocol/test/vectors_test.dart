@@ -366,6 +366,36 @@ void main() {
           reason: 'and it appears first');
     });
 
+    test('connect: the recorded invite derives both relay mailboxes', () async {
+      final v = readVectors('mailboxes', 'connect');
+      final cc = (v['connect_code'] as Map).cast<String, Object?>();
+      final code = ConnectCode(unhex(cc['secret'] as String));
+      expect(code.text, cc['text']);
+      expect(cc['relay_context'], connectRelayCtx);
+
+      // Get this derivation wrong and both sides authenticate happily, listen
+      // politely, and never meet — so it is pinned byte for byte.
+      final ids = <String>{};
+      for (final m in (v['mailboxes'] as List).cast<Map<String, Object?>>()) {
+        final id = await mailboxIdentity(code, m['role'] as String);
+        expect(hex(id.edSeed), m['ed_seed'], reason: '${m['who']} ed seed');
+        expect(hex(id.xSeed), m['x_seed'], reason: '${m['who']} x seed');
+        expect(hex(id.edPub), m['ed_pub'], reason: '${m['who']} ed key');
+        expect(hex(id.xPub), m['x_pub'], reason: '${m['who']} x key');
+        expect(await id.routingId(), m['routing_id']);
+        ids.add(await id.routingId());
+      }
+      expect(ids.length, 2, reason: 'one mailbox per role, not one shared');
+
+      // And no other id the same ten bytes can derive collides with them.
+      final others = (v['distinct_from'] as Map).cast<String, Object?>();
+      final pairing = PairingCode(code.secret);
+      expect(await code.rendezvousRoutingId(), others['rendezvous']);
+      expect(await pairing.rendezvousRoutingId(), others['pairing_v1']);
+      expect(await pairing.rendezvousRoutingIdV2(), others['pairing_v2']);
+      expect(ids.intersection(others.values.cast<String>().toSet()), isEmpty);
+    });
+
     test('backup archive: the recorded code opens every frame of the file',
         () async {
       final v = readVectors('archive', 'backup');
