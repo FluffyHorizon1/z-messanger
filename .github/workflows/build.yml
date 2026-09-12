@@ -104,6 +104,12 @@ jobs:
       # is how this shipped for eight releases.
       - name: Android refuses every automatic copy of its data
         run: python3 tool/check_android_data_safety.py
+      # The post-deploy check's own tests: it runs the real relay from this
+      # checkout on a free port and must pass, and it must FAIL against a
+      # stub missing one counter — which is what a stale deployment looks
+      # like from outside. No network and no live relay involved.
+      - name: The live-relay check says "behind" only when it is
+        run: python3 tool/test_check_live_relay.py
       # 15.4: Play assesses accessibility separately from the 3.5 items. The
       # widget test covers the screens that stand up without a ChatService;
       # this covers every screen's source for controls that announce nothing.

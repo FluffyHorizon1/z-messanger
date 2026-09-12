@@ -97,6 +97,8 @@ run "every Blueprint keeps its secrets out of the file" "-" "." \
     python3 tool/check_blueprints.py
 run "Android refuses every automatic copy of its data" "C1" "." \
     python3 tool/check_android_data_safety.py
+run "the live-relay check says behind only when it is" "-" "." \
+    python3 tool/test_check_live_relay.py
 run "every control announces something" "-" "." \
     python3 tool/check_a11y.py
 run "every text/background pair clears WCAG AA" "-" "." \

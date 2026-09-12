@@ -52,5 +52,14 @@ services:
         value: info
       - key: QUEUE_TTL_HOURS
         value: "72"
+      # Lowered from the 64 MB default because the store above is 256 MB: at
+      # the default, FOUR full mailboxes fill it, and a full store refuses
+      # every sender (`store_full`) until someone drains one. 16 MB leaves
+      # room for sixteen, which is the trade this deployment wants — a
+      # mailbox that hits its cap refuses new envelopes loudly and the
+      # senders' outboxes retry (PROTOCOL §12.4, R22), whereas a full store
+      # is everyone's problem at once.
+      - key: MAX_QUEUE_BYTES_PER_USER
+        value: "16777216"
       # Render injects PORT and the relay binds it — do not set it.
       # INSTANCE_ID is deliberately unset: every instance derives its own.

@@ -139,6 +139,30 @@ envelopes, and `"storage":"ram-only"`. Point your uptime monitor at it. There
 is deliberately no message‑level logging to monitor — the relay can't see
 messages.
 
+### After a deploy: check that the relay serving is the one you deployed
+
+```bash
+python3 tool/check_live_relay.py https://relay.example.com
+#   ... and for the reference deployment, whose Blueprint it can also check:
+python3 tool/check_live_relay.py https://zmessengers.com --blueprint render.ha.yaml
+```
+
+It reads `/health` and `/metrics` — two GETs, no credential — and compares
+what comes back against the checkout it is run from: every `z_*` metric this
+code emits in every mode must be live, `/health` must answer ok with
+`storage: ram-only`, and in Redis mode `presenceStale` must be present and
+zero. It exits 0 when the serving relay is at least this checkout, 1 when it
+is behind or unhealthy, and 2 when it could not be reached — so it belongs in
+a deploy script as much as at a prompt.
+
+Run it because **a landed `server/` change is not live until someone clicks
+Deploy**, and that click is the only step in the pipeline that leaves no
+record. In the reference deployment (`autoDeployTrigger: "off"`, deliberately)
+six releases of relay work once sat on `main` unserved for four days, and each
+session that noticed worked it out by hand from a counter missing in
+`/metrics`. This is that deduction, in one command, derived from the code
+rather than from a list of version numbers that would go stale itself.
+
 ## Pointing clients at your relay
 
 In the app: onboarding screen, or Settings → Relay server. Use
@@ -255,7 +279,11 @@ until acked).
   `FLUSH_HIGH_WATER_BYTES` raises both it and how much the relay will let
   one socket buffer. Tune the caps for your box; keep the byte cap above one
   envelope (`MAX_ENVELOPE_BYTES` + 256) or the largest envelopes are refused
-  everywhere, which the relay warns about at start.
+  everywhere, which the relay warns about at start. `render.ha.yaml` sets
+  `MAX_QUEUE_BYTES_PER_USER` to 16 MB for exactly this reason: its store is
+  256 MB, and at the 64 MB default four full mailboxes fill it — a full store
+  refuses every sender until someone drains one, where a mailbox at its own
+  cap refuses only its own.
 - **Restarts drop in‑flight messages.** Senders keep them in their device
   outbox and the protocol re‑delivers, but schedule redeploys thoughtfully.
 - **No backups needed.** There is nothing on disk to back up. That's the point.

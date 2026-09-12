@@ -1575,3 +1575,45 @@ direction; the phases, their order and both ordering arguments stand.
    state versus the store's, a session that exists versus one that did. The
    code inside each of those is careful. Nobody had been made to read across
    them.
+
+47. **The only step in the pipeline that left no record.** A landed `server/`
+   change is not live until someone clicks Deploy — `render.ha.yaml` sets
+   `autoDeployTrigger: "off"` deliberately, because a relay is a live system
+   and `main` moves several times a day. Everything else in the chain writes
+   something down: a commit, a guard's output, a release note, a test count.
+   That click does not, and for four days six releases of relay work sat on
+   `main` unserved while the relay answered every health check happily. Three
+   separate sessions noticed, and each of them worked it out the same way by
+   hand: fetch `/metrics`, look for a counter the code emits and the output
+   does not, conclude the deployed build predates it.
+
+   That deduction is now `tool/check_live_relay.py`, and the reason it is
+   worth a tool rather than a note in a runbook is that it derives what to
+   expect **from the code it is run beside** — the `# TYPE` lines
+   `renderMetrics` writes — instead of from a table of version numbers, which
+   is the thing that would go stale next. Two GETs, no credential, and it
+   distinguishes the three answers that matter: behind (exit 1, naming the
+   missing counter and what to click), unreachable (exit 2 — not the same
+   thing), and current.
+
+   Writing it produced two lessons of its own, both from its tests rather
+   than from thinking about it. The first: a naive comparison cries wolf. The
+   relay emits one gauge only in RAM mode (`z_queued_envelopes`, omitted
+   where no instance knows the total) and one histogram whose samples are
+   three differently-named series, so demanding every name the code mentions
+   would have failed against a perfectly current relay. Reading `# TYPE`
+   lines on *both* sides fixes the histogram, and indentation distinguishes
+   the conditional gauge. The second came from running the test suite: the
+   first version compared the live coordinator against `render.ha.yaml`
+   unconditionally, so it failed against a relay built from this checkout and
+   run locally in RAM mode — correct for the public deployment and wrong for
+   every self-hoster, who is the reader `SELF_HOSTING.md` is written for. The
+   Blueprint comparison is opt-in now. **A check that is wrong about a
+   legitimate configuration gets switched off, and then it is not a check.**
+
+   Verified against the live relay while writing this: 11 of 11 metrics
+   present including `z_ack_miss_total` (2.8.3), both instances seen across
+   two calls, `coordinator=redis`, `presenceStale=0`. `render.ha.yaml` also
+   picked up `MAX_QUEUE_BYTES_PER_USER=16777216` in this pass — at the 64 MB
+   default, four full mailboxes fill a 256 MB store, and a full store refuses
+   every sender where a mailbox at its own cap refuses only its own.
