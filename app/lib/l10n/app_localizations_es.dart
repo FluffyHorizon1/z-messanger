@@ -380,6 +380,10 @@ class AppLocalizationsEs extends AppLocalizations {
   String get linkCancelled => 'Vinculación cancelada.';
 
   @override
+  String get linkPeerTooOld =>
+      'El otro dispositivo tiene una versión anterior de Z. Actualízalo y vuelve a emparejar: esta versión no recurrirá al emparejamiento anterior.';
+
+  @override
   String linkFailed(String error) {
     return 'La vinculación falló: $error';
   }

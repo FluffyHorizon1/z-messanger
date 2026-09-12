@@ -46,6 +46,7 @@ void main() {
       ('v1', 'multidevice'),
       ('v1', 'pairing'),
       ('v1', 'inner_messages'),
+      ('pair-v2', 'pairing_v2'),
       ('v2', 'mlkem768'),
       ('v2', 'pq_ratchet'),
       ('v2', 'pq_rekey'),
@@ -244,6 +245,56 @@ void main() {
       expect(hex(data.deviceCert.deviceEdPub), nd['device_ed_pub']);
       expect(await data.deviceCert.verify(data.accountEdPub), isTrue);
       expect(data.contacts.length, 1);
+      final installed = await n.installFromData(data);
+      expect(installed.holdsAccountRoot, isFalse);
+    });
+
+    test('pairing v2: the commitment, the reply and the opening replay exactly',
+        () async {
+      final v = readVectors('pairing_v2', 'pair-v2');
+      final code =
+          PairingCode(unhex((v['pairing_code'] as Map)['secret'] as String));
+      expect(await code.rendezvousRoutingIdV2(),
+          (v['pairing_code'] as Map)['rendezvous_routing_id']);
+      final nd = (v['new_device'] as Map).cast<String, Object?>();
+      final ed = (v['existing_device'] as Map).cast<String, Object?>();
+
+      // NEW device, from the three recorded draws: the commitment it
+      // publishes must be the recorded one, byte for byte.
+      final n = await runScripted([
+        unhex(nd['device_ed_seed'] as String),
+        unhex(nd['device_x_seed'] as String),
+        unhex(nd['eph_seed'] as String),
+      ], () => PairingInitiatorV2.create(code: code, deviceId: 'new-phone'));
+      final commit = await n.commit();
+      expect({'k': 'commit-v2', ...commit}, nd['commit_frame']);
+
+      // EXISTING device, from its recorded ephemeral: the reply, then the
+      // session it derives once the opening arrives.
+      final (reply, pending) = await runScripted(
+          [unhex(ed['eph_seed'] as String)],
+          () => PairingResponderV2.reply(commit));
+      expect({'k': 'reply-v2', ...reply}, ed['reply_frame']);
+      final (open, sessionI) = await n.open(reply);
+      expect({'k': 'open-v2', ...open}, nd['open_frame']);
+      final sessionR = await pending.accept(open);
+      expect(hex(sessionI.channelKey), v['channel_key']);
+      expect(hex(sessionR.channelKey), v['channel_key']);
+      expect(sessionI.sas, v['sas']);
+      expect(sessionR.sas, v['sas']);
+
+      // An opening that does not match the recorded commitment is refused —
+      // the property the recorded commitment exists to make checkable.
+      await expectLater(
+          pending.accept({...open, 'dx': open['ded']}),
+          throwsA(isA<PairingAbort>()));
+
+      // And the recorded enrollment opens, with a certificate over the
+      // ratchet key the recorded SAS covered.
+      final data = await sessionI
+          .openEnrollment(unhex((v['enrollment'] as Map)['sealed'] as String));
+      expect(hex(data.deviceCert.deviceXPub), nd['device_x_pub']);
+      expect(await data.deviceCert.verify(data.accountEdPub), isTrue);
       final installed = await n.installFromData(data);
       expect(installed.holdsAccountRoot, isFalse);
     });

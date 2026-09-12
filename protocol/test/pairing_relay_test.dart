@@ -105,4 +105,89 @@ void main() {
     expect(result.data.contacts.first.displayName, 'Carol');
     expect(result.data.displayName, 'Alice');
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('a new device links over the relay with the v2 ceremony', () async {
+    final url = 'ws://127.0.0.1:$port';
+    final phone = await AccountIdentity.generate();
+    final carol = await AccountIdentity.generate();
+    final code = PairingCode.generate();
+    final desktop = await PairingInitiatorV2.create(code: code);
+
+    String? sasPhone, sasDesktop;
+    final results = await Future.wait([
+      RelayPairing.runNewDeviceV2(
+        relayUrl: url,
+        n: desktop,
+        confirm: (s) async {
+          sasDesktop = s;
+          return true;
+        },
+      ),
+      RelayPairing.runExistingDeviceV2(
+        relayUrl: url,
+        code: code,
+        me: phone,
+        contacts: [carol.toAccountBundle(displayName: 'Carol')],
+        includeAccountRoot: false,
+        displayName: 'Alice',
+        confirm: (s) async {
+          sasPhone = s;
+          return true;
+        },
+      ),
+    ]);
+    final result = results[0] as PairingResult?;
+    final linkedCert = results[1] as DeviceCertificate?;
+
+    expect(result, isNotNull);
+    expect(linkedCert, isNotNull);
+    expect(sasDesktop, sasPhone);
+    expect(sasPhone, matches(RegExp(r'^\d{4} \d{4}$')));
+    // The certificate the host signed binds the ratchet key the two users
+    // compared, which is the whole point of v2 (§10.1).
+    expect(b64(linkedCert!.deviceXPub), b64(desktop.deviceXPub));
+    expect(await linkedCert.verify(phone.accountEdPub), isTrue);
+    expect(b64(result!.account.accountEdPub), b64(phone.accountEdPub));
+    expect(result.data.contacts.length, 1);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('a v2 device meeting a v1 device detects it and refuses to transact',
+      () async {
+    final url = 'ws://127.0.0.1:$port';
+    final phone = await AccountIdentity.generate();
+    final code = PairingCode.generate();
+    // The lagging side is the NEW device here, which is the direction an old
+    // peer is detectable in: it speaks first, so its v1 hello arrives on the
+    // v1 mailbox the v2 host holds open and never answers.
+    final oldDesktop = await PairingInitiator.create(code: code);
+
+    var confirmCalled = false;
+    final hostFut = RelayPairing.runExistingDeviceV2(
+      relayUrl: url,
+      code: code,
+      me: phone,
+      contacts: const [],
+      includeAccountRoot: false,
+      displayName: 'Alice',
+      confirm: (s) async {
+        confirmCalled = true;
+        return true;
+      },
+      timeout: const Duration(seconds: 20),
+    );
+    // The old device runs its v1 ceremony; it will time out, because nothing
+    // answers a v1 hello any more.
+    final oldFut = RelayPairing.runNewDevice(
+      relayUrl: url,
+      n: oldDesktop,
+      confirm: (s) async => true,
+      timeout: const Duration(seconds: 8),
+    ).catchError((_) => null);
+
+    await expectLater(hostFut, throwsA(isA<PairingAbort>()),
+        reason: 'the host recognises an older peer and says so');
+    expect(confirmCalled, isFalse,
+        reason: 'no safety string was ever shown: detect, do not transact');
+    await oldFut;
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }

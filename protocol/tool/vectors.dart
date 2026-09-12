@@ -788,6 +788,193 @@ Future<Map<String, Object?>> suiteMultidevice(List<Actor> a) async {
   };
 }
 
+Future<Map<String, Object?>> suitePairingV2(List<Actor> a) async {
+  final d = Drbg(0x0017);
+  final code = PairingCode(d.next(10));
+  final relayI = await RelayPairing.relayIdentityV2(code, 'i');
+  final relayR = await RelayPairing.relayIdentityV2(code, 'r');
+  final okmI = await refHkdf(
+      code.secret, Uint8List(0), utf8.encode('z-pair-relay-v2:i'), 64);
+  check(eq(okmI.sublist(0, 32), relayI.edSeed), 'v2 relay identity i');
+  check(await relayI.routingId() != await (await RelayPairing.relayIdentity(code, 'i')).routingId(),
+      'v2 mailbox is not the v1 mailbox');
+
+  final me = await d.run(() => AccountIdentity.generate());
+  d.takeDraws();
+  final n = await d.run(
+      () => PairingInitiatorV2.create(code: code, deviceId: 'new-phone'));
+  final nDraws = d.takeDraws();
+  check(nDraws.length == 3 && eq(nDraws[2], n.ephXSeed), 'v2 initiator draws');
+
+  // Message 1: the commitment, over every field the host will certify.
+  final commitInput = concatBytes([
+    utf8.encode('z-pair-commit-v2:'),
+    n.ephXPub,
+    n.deviceEdPub,
+    n.deviceXPub,
+    utf8.encode(n.deviceId),
+  ]);
+  final commitment = await refSha256(commitInput);
+  final commitFrame = await n.commit();
+  check(base64Encode(commitment) == commitFrame['c'], 'v2 commitment');
+
+  // Message 2: the responder answers without having seen the opening.
+  final (reply, pending) = await d.run(() => PairingResponderV2.reply(commitFrame));
+  final rDraws = d.takeDraws();
+  check(rDraws.length == 1, 'v2 responder draws');
+  final rEphSeed = rDraws[0];
+  final rEphPub = await refXPub(rEphSeed);
+  check(base64Encode(rEphPub) == reply['ephx'], 'v2 responder eph labelling');
+
+  // Message 3: the opening, checked against the commitment.
+  final (open, sessionI) = await n.open(reply);
+  final sessionR = await pending.accept(open);
+  check(
+      eq(sessionI.channelKey, sessionR.channelKey) && sessionI.sas == sessionR.sas,
+      'v2 pairing agreement');
+
+  final dh = await refDh(n.ephXSeed, rEphPub);
+  final channelKey =
+      await refHkdf(dh, Uint8List(32), utf8.encode('z-pair-channel-v2'), 32);
+  check(eq(channelKey, sessionI.channelKey), 'v2 channel key');
+  // Role order, not lexicographic: v2's commitment already fixes the roles.
+  final sasSalt = concatBytes([n.ephXPub, rEphPub]);
+  final sasInfo = concatBytes([
+    utf8.encode('z-pair-sas-v2'),
+    n.deviceEdPub,
+    n.deviceXPub,
+    utf8.encode(n.deviceId),
+  ]);
+  final sasOkm = await refHkdf(dh, sasSalt, sasInfo, 8);
+  var sasN = 0;
+  for (var i = 0; i < 7; i++) {
+    sasN = (sasN << 8) | sasOkm[i];
+  }
+  final sasDigits = (sasN % 100000000).toString().padLeft(8, '0');
+  final sasText =
+      '${sasDigits.substring(0, 4)} ${sasDigits.substring(4)}';
+  check(sasText == sessionI.sas, 'v2 SAS');
+
+  // The substitution v1 allowed: the same ceremony with only `dx` changed
+  // must produce a DIFFERENT string, or nothing on the screen would say so.
+  // A literal seed, not a DRBG draw: `next()` records every draw, and this
+  // one is the generator's own arithmetic rather than a protocol random.
+  final attackerXPub = await refXPub(
+      Uint8List.fromList(List<int>.generate(32, (i) => (i * 7 + 3) & 0xff)));
+  final swappedInfo = concatBytes([
+    utf8.encode('z-pair-sas-v2'),
+    n.deviceEdPub,
+    attackerXPub,
+    utf8.encode(n.deviceId),
+  ]);
+  final swappedOkm = await refHkdf(dh, sasSalt, swappedInfo, 8);
+  check(!eq(swappedOkm, sasOkm), 'v2 SAS covers the ratchet key');
+
+  final bobBundle = await AccountBundle.decode(
+      (await a[1].id.bundle(displayName: 'Bob')).encode());
+  final sealed = await d.run(() => sessionR.sealEnrollment(me,
+      contacts: [bobBundle], includeAccountRoot: false, displayName: 'Alice'));
+  final sDraws = d.takeDraws();
+  check(sDraws.length == 1 && eq(sDraws[0], sealed.sublist(0, 12)),
+      'v2 enrollment nonce');
+  final data = await sessionI.openEnrollment(sealed);
+  final installed = await n.installFromData(data);
+  check(eq(installed.deviceEdPub, n.deviceEdPub) && !installed.holdsAccountRoot,
+      'v2 install');
+  final cert = await sessionR.signedPeerCert(me);
+  check(eq(cert.deviceXPub, n.deviceXPub),
+      'the certificate binds the ratchet key the SAS covered');
+  final plaintext = jsonEncode({
+    'acct': base64Encode(me.accountEdPub),
+    'name': 'Alice',
+    'cert': cert.toJson(),
+    'hostcert': me.deviceCert.toJson(),
+    'contacts': [bobBundle.toJson()],
+  });
+  final box = await Chacha20.poly1305Aead().decrypt(
+      SecretBox.fromConcatenation(sealed, nonceLength: 12, macLength: 16),
+      secretKey: SecretKey(channelKey));
+  check(utf8.decode(box) == plaintext, 'v2 enrollment plaintext');
+
+  return {
+    'suite': 'pairing_v2',
+    'version': vectorsVersion,
+    'description':
+        'Device pairing v2 (PROTOCOL 10.1): commitment, reply, opening. The '
+            'initiator commits to its ephemeral AND to every field the host '
+            'will certify before the responder chooses its own ephemeral, and '
+            'the eight-digit SAS covers all of them — so neither side can aim '
+            'the SAS at a value it has already read aloud, and a rendezvous '
+            'frame whose ratchet key was rewritten no longer reads the same '
+            'on both screens.',
+    'pairing_code': {
+      'secret': hex(code.secret),
+      'text': code.text,
+      'rendezvous_input': hex(
+          concatBytes([utf8.encode('z-pair-rendezvous-v2:'), code.secret])),
+      'rendezvous_routing_id': await code.rendezvousRoutingIdV2(),
+    },
+    'relay_identities': {
+      for (final (role, id, okm) in [
+        ('i', relayI, okmI),
+        (
+          'r',
+          relayR,
+          await refHkdf(code.secret, Uint8List(0),
+              utf8.encode('z-pair-relay-v2:r'), 64)
+        ),
+      ])
+        role: {
+          'hkdf_info': 'z-pair-relay-v2:$role',
+          'hkdf_okm': hex(okm),
+          'ed_seed': hex(id.edSeed),
+          'x_seed': hex(id.xSeed),
+          'ed_pub': hex(id.edPub),
+          'routing_id': await id.routingId(),
+        }
+    },
+    'account': {
+      'account_ed_seed': hex(me.accountEdSeed!),
+      'account_ed_pub': hex(me.accountEdPub),
+      'device_x_seed': hex(me.deviceXSeed),
+      'device_id': me.deviceId,
+      'device_cert_json': me.deviceCert.toJson(),
+    },
+    'new_device': {
+      'device_ed_seed': hex(n.deviceEdSeed),
+      'device_x_seed': hex(n.deviceXSeed),
+      'device_ed_pub': hex(n.deviceEdPub),
+      'device_x_pub': hex(n.deviceXPub),
+      'device_id': n.deviceId,
+      'eph_seed': hex(n.ephXSeed),
+      'eph_pub': hex(n.ephXPub),
+      'commit_input': hex(commitInput),
+      'commit_frame': {'k': 'commit-v2', ...commitFrame},
+      'open_frame': {'k': 'open-v2', ...open},
+    },
+    'existing_device': {
+      'eph_seed': hex(rEphSeed),
+      'eph_pub': hex(rEphPub),
+      'reply_frame': {'k': 'reply-v2', ...reply},
+    },
+    'dh': hex(dh),
+    'channel_key': hex(channelKey),
+    'sas_salt': hex(sasSalt),
+    'sas_info': hex(sasInfo),
+    'sas_okm': hex(sasOkm),
+    'sas': sasText,
+    'enrollment': {
+      'new_device_cert_signing_input': hex(DeviceCertificate.signingInput(
+          n.deviceEdPub, n.deviceXPub, n.deviceId)),
+      'new_device_cert_sig': hex(cert.sig),
+      'plaintext': plaintext,
+      'nonce': hex(sealed.sublist(0, 12)),
+      'sealed': hex(sealed),
+      'enroll_frame': {'k': 'enroll-v2', 'blob': base64Encode(sealed)},
+    },
+  };
+}
+
 Future<Map<String, Object?>> suitePairing(List<Actor> a) async {
   final d = Drbg(0x0007);
   final code = PairingCode(d.next(10));
@@ -2072,6 +2259,9 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
       'mldsa65': await suiteMlDsa(),
       'contact_code_v3': await suiteContactCodeV3(),
       'device_cert_v3': await suiteDeviceCertV3(a),
+    },
+    'pair-v2': {
+      'pairing_v2': await suitePairingV2(a),
     },
     'backup': {
       'archive': await suiteBackup(),

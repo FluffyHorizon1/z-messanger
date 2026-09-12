@@ -106,6 +106,7 @@
   "linkDone": "Dispositivo vinculado. Ya lleva tu cuenta y tus contactos.",
   "linkCancelled": "Vinculación cancelada.",
   "linkFailed": "La vinculación falló: {error}",
+  "linkPeerTooOld": "El otro dispositivo tiene una versión anterior de Z. Actualízalo y vuelve a emparejar: esta versión no recurrirá al emparejamiento anterior.",
   "linkADevice": "Vincular un dispositivo",
   "linkHostHelp": "En el dispositivo que quieres añadir, instala Z y elige «Vincular a una cuenta existente». Mostrará un código de emparejamiento: introdúcelo aquí.",
   "linkPairingCode": "Código de emparejamiento",

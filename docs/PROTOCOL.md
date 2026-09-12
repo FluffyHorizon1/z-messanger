@@ -739,6 +739,73 @@ build that predates v3, and a device that receives none MUST behave as a
 classical identity rather than deriving a key of its own.
 `AccountBundleJSON` is `{ "acct", "devs", "name" }` (§3.3 without the wrapper).
 
+**Superseded by §10.1.** The ceremony above is what shipped through 2.8.4 and
+is specified here unchanged, because its vectors are frozen (§14) and a device
+that has not been updated still runs it. It has two weaknesses, and a current
+client will not perform it: see §10.1.
+
+### 10.1 Pairing v2 (current)
+
+Same code, same rendezvous idea, same enrollment payload; a commitment round
+in front, and a wider SAS over more of what is being agreed. Nothing in §10
+computes anything differently — every context string here is new, so the two
+ceremonies share no mailbox, no channel key and no SAS for one code.
+
+Why, precisely. In §10 the existing device chooses its ephemeral **after**
+seeing the new device's, and the two ephemerals are the whole input to the
+SAS — so whoever speaks in the existing device's place can search ephemerals
+until the six digits come out at a value already read aloud (about 2²⁰ tries).
+And §10's SAS covers the ephemerals and `deviceEdPub` only, while the existing
+device signs a certificate over the `dx` and `id` it read from an
+*unauthenticated* rendezvous frame: a relay that rewrites nothing but `dx`
+leaves **both screens showing the same six digits** while the host certifies
+an X25519 key the attacker holds, at the real device's routing id. The new
+device's own install then fails and the poisoned certificate stays in the
+account's device list.
+
+```
+rendezvous    = b64url( SHA256( utf8("z-pair-rendezvous-v2:") || secret ) )     // informative
+relayIdentityV2(role) : okm = HKDF( ikm = secret, salt = ∅, info = utf8("z-pair-relay-v2:" || role), L = 64 )
+                        edSeed = okm[0..32], xSeed = okm[32..64];   role ∈ { "i" (new), "r" (existing) }
+
+commit (new → existing) : { "k":"commit-v2", "c":b64(commitment) }
+commitment = SHA256( utf8("z-pair-commit-v2:") || ephPub_N || deviceEdPub || deviceXPub || utf8(deviceId) )
+reply  (existing → new) : { "k":"reply-v2", "ephx":b64(ephPub_E) }
+open   (new → existing) : { "k":"open-v2", "ephx":b64(ephPub_N), "ded":b64(deviceEdPub), "dx":b64(deviceXPub), "id":deviceId }
+dh         = X25519(eph_N, ephPub_E) = X25519(eph_E, ephPub_N)
+channelKey = HKDF( ikm = dh, salt = 0x00×32, info = utf8("z-pair-channel-v2"), L = 32 )
+sasBytes   = HKDF( ikm = dh, salt = ephPub_N || ephPub_E,
+                   info = utf8("z-pair-sas-v2") || deviceEdPub || deviceXPub || utf8(deviceId), L = 8 )
+n          = u56be(sasBytes[0..7]);   SAS = decimal(n mod 10^8) zero-padded to 8, shown as "dddd dddd"
+enroll (existing → new) : { "k":"enroll-v2", "blob":b64(sealed) }      // sealed and enrollment exactly as §10
+```
+
+The salt is the two ephemerals in **role order** (new device first), not
+lexicographic order: the commitment already fixes which side is which, so
+there is no symmetric case left to canonicalise. `deviceId` is
+variable-length and therefore last in the `info`, so the concatenation is
+unambiguous. `n` is taken from **seven** bytes because the modulo of a 31-bit
+value by 10⁸ is visibly biased, and the extra width is the point.
+
+Rules:
+
+1. The existing device MUST refuse an `open-v2` whose recomputed commitment
+   does not match the `c` it answered, and MUST abort — not continue at
+   reduced assurance. Nothing but a substitution produces a mismatch.
+2. Neither side may derive or display the SAS before the opening: the
+   existing device has only a hash when it chooses its ephemeral.
+3. Every field the certificate binds — `deviceEdPub`, `deviceXPub`,
+   `deviceId` — is in the SAS input, so a substitution of any of them is
+   visible as different digits on the two screens.
+4. A v2 client transacts only on v2 mailboxes. It MAY hold its v1 mailbox
+   open in order to *recognise* an older peer (a v1 `hello` arriving there)
+   and say so, and MUST NOT answer it: detecting an old peer must not turn
+   into completing the old ceremony.
+5. Both users MUST compare the SAS before the existing device sends
+   `enroll-v2`, and the new device MUST check the certificate as in §10.
+
+Vectors: [`vectors/pair-v2/`](vectors/pair-v2/). §10's remain untouched.
+
 ## 11. Groups
 
 A group is **pairwise fan‑out over the existing 1:1 sessions**: there is no

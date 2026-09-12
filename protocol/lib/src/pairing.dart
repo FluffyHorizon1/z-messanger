@@ -25,6 +25,15 @@ const String _rendezvousCtx = 'z-pair-rendezvous-v1:';
 const String _channelCtx = 'z-pair-channel-v1';
 const String _sasCtx = 'z-pair-sas-v1';
 
+// v2 (§10.1). Disjoint context strings, so nothing existing computes anything
+// differently and a v1 implementation cannot be talked into a v2 ceremony or
+// the reverse: the two run on different rendezvous mailboxes and derive
+// different keys from the same code.
+const String _rendezvousCtxV2 = 'z-pair-rendezvous-v2:';
+const String _channelCtxV2 = 'z-pair-channel-v2';
+const String _sasCtxV2 = 'z-pair-sas-v2';
+const String _commitCtxV2 = 'z-pair-commit-v2:';
+
 final _x = X25519();
 final _aead = Chacha20.poly1305Aead();
 
@@ -106,6 +115,11 @@ class PairingCode {
   /// The relay mailbox both sides use to find each other.
   Future<String> rendezvousRoutingId() async => b64url(await sha256Bytes(
       concatBytes([utf8.encode(_rendezvousCtx), secret])));
+
+  /// The same for a v2 ceremony (§10.1) — a different mailbox from the same
+  /// code, so a v2 device and a v1 device never meet at all.
+  Future<String> rendezvousRoutingIdV2() async => b64url(await sha256Bytes(
+      concatBytes([utf8.encode(_rendezvousCtxV2), secret])));
 }
 
 /// What the new device ends up installing.
@@ -250,6 +264,211 @@ Future<String> _deriveSas(
   return '${digits.substring(0, 3)} ${digits.substring(3)}';
 }
 
+/// Thrown when the ceremony cannot go on: the peer is on another version, or
+/// the opening did not match the commitment. Never a reason to fall back.
+class PairingAbort implements Exception {
+  final String message;
+  const PairingAbort(this.message);
+  @override
+  String toString() => 'PairingAbort: $message';
+}
+
+/// The bytes the initiator commits to in v2, and reveals afterwards.
+///
+/// Everything the responder will later act on is in here: the ephemeral the
+/// SAS is derived from, and the three device fields the responder signs a
+/// certificate over. `deviceId` is variable-length and therefore last, so the
+/// concatenation is unambiguous.
+Future<Uint8List> _commitmentV2(
+    Uint8List ephXPub, Uint8List deviceEdPub, Uint8List deviceXPub, String deviceId) {
+  return sha256Bytes(concatBytes([
+    utf8.encode(_commitCtxV2),
+    ephXPub,
+    deviceEdPub,
+    deviceXPub,
+    utf8.encode(deviceId),
+  ]));
+}
+
+/// v2 SAS: eight digits, over both ephemerals AND the device fields.
+///
+/// Two things are different from v1, and each closes something that was
+/// exploitable.
+///
+/// The ephemerals are in ROLE order (initiator then responder) rather than
+/// lexicographic order, because v2's commitment already fixes which side is
+/// which; there is no symmetric case left to canonicalise.
+///
+/// And `deviceXPub` and `deviceId` are in the input. v1's SAS covered the
+/// ephemerals and `deviceEdPub` only, while the responder signed a
+/// certificate over the `dx` and `id` it read from an unauthenticated
+/// rendezvous frame — so a relay that rewrote nothing but `dx` left BOTH
+/// screens showing the same six digits while the host certified an X25519 key
+/// the attacker held, at the real device's routing id. Every field the
+/// certificate binds is now a field the two users compare.
+///
+/// Eight digits, and taken from seven bytes rather than four: the modulo of a
+/// 31-bit value by 10^8 is visibly biased, and the point of the extra width is
+/// to make a guess expensive.
+Future<String> _deriveSasV2(Uint8List dh, Uint8List ephI, Uint8List ephR,
+    Uint8List deviceEdPub, Uint8List deviceXPub, String deviceId) async {
+  final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 8);
+  final k = await hkdf.deriveKey(
+    secretKey: SecretKey(dh),
+    nonce: concatBytes([ephI, ephR]),
+    info: concatBytes([
+      utf8.encode(_sasCtxV2),
+      deviceEdPub,
+      deviceXPub,
+      utf8.encode(deviceId),
+    ]),
+  );
+  final b = await k.extractBytes();
+  var n = 0;
+  for (var i = 0; i < 7; i++) {
+    n = (n << 8) | b[i];
+  }
+  final digits = (n % 100000000).toString().padLeft(8, '0');
+  return '${digits.substring(0, 4)} ${digits.substring(4)}';
+}
+
+Future<Uint8List> _deriveChannelKeyV2(Uint8List dh) async {
+  final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
+  final k = await hkdf.deriveKey(
+    secretKey: SecretKey(dh),
+    nonce: Uint8List(32),
+    info: utf8.encode(_channelCtxV2),
+  );
+  return Uint8List.fromList(await k.extractBytes());
+}
+
+/// NEW device, v2 (§10.1): commit, then open.
+///
+/// The reason for the extra round trip is that v1 let the responder choose its
+/// ephemeral AFTER seeing the initiator's, which is the whole input to the
+/// SAS — so a responder (or anyone who could speak in its place) could search
+/// ephemerals until the SAS came out at a value it had already read aloud.
+/// Six digits is about a million tries. Here the initiator publishes a hash
+/// first and reveals nothing until the responder has committed to its own
+/// ephemeral by sending it.
+class PairingInitiatorV2 {
+  final PairingCode code;
+  final Uint8List deviceEdSeed, deviceXSeed, deviceEdPub, deviceXPub;
+  final String deviceId;
+  final Uint8List ephXSeed, ephXPub;
+
+  PairingInitiatorV2._(this.code, this.deviceEdSeed, this.deviceXSeed,
+      this.deviceEdPub, this.deviceXPub, this.deviceId, this.ephXSeed,
+      this.ephXPub);
+
+  static Future<PairingInitiatorV2> create(
+      {PairingCode? code, String? deviceId}) async {
+    final edSeed = randomBytes(32);
+    final xSeed = randomBytes(32);
+    final ephSeed = randomBytes(32);
+    final edPub =
+        Uint8List.fromList((await (await Ed25519().newKeyPairFromSeed(edSeed))
+                .extractPublicKey())
+            .bytes);
+    final xPub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(xSeed)).extractPublicKey()).bytes);
+    final ephPub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(ephSeed)).extractPublicKey()).bytes);
+    return PairingInitiatorV2._(
+      code ?? PairingCode.generate(),
+      edSeed, xSeed, edPub, xPub,
+      deviceId ?? b64url(randomBytes(9)),
+      ephSeed, ephPub,
+    );
+  }
+
+  /// Message 1: the commitment, and nothing else. The relay and the responder
+  /// learn nothing from it that they could grind against.
+  Future<Map<String, Object?>> commit() async => {
+        'c': b64(await _commitmentV2(ephXPub, deviceEdPub, deviceXPub, deviceId)),
+      };
+
+  /// Message 3, with the session it derives: the opening, sent only after the
+  /// responder's reply is in hand.
+  Future<(Map<String, Object?>, PairingSession)> open(
+      Map<String, Object?> responderReply) async {
+    final theirEph = unb64(responderReply['ephx'] as String);
+    final dh = await _dh(ephXSeed, theirEph);
+    final session = PairingSession(
+      channelKey: await _deriveChannelKeyV2(dh),
+      sas: await _deriveSasV2(
+          dh, ephXPub, theirEph, deviceEdPub, deviceXPub, deviceId),
+    );
+    return (
+      {
+        'ephx': b64(ephXPub),
+        'ded': b64(deviceEdPub),
+        'dx': b64(deviceXPub),
+        'id': deviceId,
+      },
+      session,
+    );
+  }
+
+  /// Same as v1: adopt the account this enrollment describes.
+  Future<AccountIdentity> installFromData(EnrollmentData d) =>
+      _installFromData(d, deviceEdSeed, deviceXSeed, deviceEdPub, deviceXPub,
+          deviceId);
+}
+
+/// EXISTING device, v2. Holds its ephemeral and the commitment it answered,
+/// so the opening can be checked against what was promised.
+class PairingResponderV2 {
+  final Uint8List _ephSeed, _ephPub, _commitment;
+  PairingResponderV2._(this._ephSeed, this._ephPub, this._commitment);
+
+  Uint8List get ephXPub => _ephPub;
+
+  /// Message 2: answer a commitment with a fresh ephemeral. This side cannot
+  /// know what it is committing against, which is the point.
+  static Future<(Map<String, Object?>, PairingResponderV2)> reply(
+      Map<String, Object?> commit) async {
+    final c = commit['c'];
+    if (c is! String) throw const PairingAbort('malformed commitment');
+    final commitment = unb64(c);
+    if (commitment.length != 32) {
+      throw const PairingAbort('malformed commitment');
+    }
+    final ephSeed = randomBytes(32);
+    final ephPub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(ephSeed)).extractPublicKey()).bytes);
+    return (
+      {'ephx': b64(ephPub)},
+      PairingResponderV2._(ephSeed, ephPub, commitment),
+    );
+  }
+
+  /// Message 3: check the opening against the commitment, then derive the
+  /// session. A mismatch ABORTS — it is not a reason to carry on at reduced
+  /// assurance, because the only thing that produces one is someone changing
+  /// what the initiator said.
+  Future<PairingSession> accept(Map<String, Object?> open) async {
+    final theirEph = unb64(open['ephx'] as String);
+    final deviceEdPub = unb64(open['ded'] as String);
+    final deviceXPub = unb64(open['dx'] as String);
+    final deviceId = open['id'] as String;
+    final expected =
+        await _commitmentV2(theirEph, deviceEdPub, deviceXPub, deviceId);
+    if (!constantTimeEquals(expected, _commitment)) {
+      throw const PairingAbort('the opening does not match the commitment');
+    }
+    final dh = await _dh(_ephSeed, theirEph);
+    return PairingSession(
+      channelKey: await _deriveChannelKeyV2(dh),
+      sas: await _deriveSasV2(
+          dh, theirEph, _ephPub, deviceEdPub, deviceXPub, deviceId),
+      peerDeviceEdPub: deviceEdPub,
+      peerDeviceXPub: deviceXPub,
+      peerDeviceId: deviceId,
+    );
+  }
+}
+
 /// NEW device. Generates its permanent device keys and a pairing ephemeral.
 class PairingInitiator {
   final PairingCode code;
@@ -309,22 +528,37 @@ class PairingInitiator {
 
   /// Build the local identity from already-opened enrollment data. Verifies the
   /// certificate is for OUR device keys and signed by the account we joined.
-  Future<AccountIdentity> installFromData(EnrollmentData data) async {
-    final okKeys = _eq(data.deviceCert.deviceEdPub, deviceEdPub) &&
-        _eq(data.deviceCert.deviceXPub, deviceXPub);
-    if (!okKeys || !await data.deviceCert.verify(data.accountEdPub)) {
-      throw const FormatException('enrollment certificate did not verify');
-    }
-    return AccountIdentity.fromEnrollment(
-      accountEdPub: data.accountEdPub,
-      accountEdSeed: data.accountEdSeed,
-      accountMlPub: data.accountMlPub,
-      deviceEdSeed: deviceEdSeed,
-      deviceXSeed: deviceXSeed,
-      deviceId: deviceId,
-      deviceCert: data.deviceCert,
-    );
+  Future<AccountIdentity> installFromData(EnrollmentData data) =>
+      _installFromData(
+          data, deviceEdSeed, deviceXSeed, deviceEdPub, deviceXPub, deviceId);
+}
+
+/// Shared by both ceremonies: adopt the account an enrollment describes, after
+/// checking the certificate in it is for THIS device's keys and verifies under
+/// the account key it claims. Identical for v1 and v2 — the enrollment payload
+/// did not change, only how the channel carrying it was agreed.
+Future<AccountIdentity> _installFromData(
+  EnrollmentData data,
+  Uint8List deviceEdSeed,
+  Uint8List deviceXSeed,
+  Uint8List deviceEdPub,
+  Uint8List deviceXPub,
+  String deviceId,
+) async {
+  final okKeys = _eq(data.deviceCert.deviceEdPub, deviceEdPub) &&
+      _eq(data.deviceCert.deviceXPub, deviceXPub);
+  if (!okKeys || !await data.deviceCert.verify(data.accountEdPub)) {
+    throw const FormatException('enrollment certificate did not verify');
   }
+  return AccountIdentity.fromEnrollment(
+    accountEdPub: data.accountEdPub,
+    accountEdSeed: data.accountEdSeed,
+    accountMlPub: data.accountMlPub,
+    deviceEdSeed: deviceEdSeed,
+    deviceXSeed: deviceXSeed,
+    deviceId: deviceId,
+    deviceCert: data.deviceCert,
+  );
 }
 
 /// EXISTING device. Consumes the new device's hello and produces the reply +

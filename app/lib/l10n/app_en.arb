@@ -468,6 +468,10 @@
   "@linkCancelled": {
     "description": "The pairing was abandoned, by either side."
   },
+  "linkPeerTooOld": "The other device is running an older version of Z. Update it, then pair again \u2014 this version will not fall back to the older pairing.",
+  "@linkPeerTooOld": {
+    "description": "Shown when the peer speaks the v1 pairing ceremony. The load-bearing clause is the refusal to fall back: the older ceremony's safety code can be guessed at, so detecting an old peer must not turn into completing the old ceremony."
+  },
   "linkFailed": "Link failed: {error}",
   "@linkFailed": {
     "description": "Pairing failed; {error} is the underlying message.",

@@ -728,6 +728,12 @@ abstract class AppLocalizations {
   /// **'Link cancelled.'**
   String get linkCancelled;
 
+  /// Shown when the peer speaks the v1 pairing ceremony. The load-bearing clause is the refusal to fall back: the older ceremony's safety code can be guessed at, so detecting an old peer must not turn into completing the old ceremony.
+  ///
+  /// In en, this message translates to:
+  /// **'The other device is running an older version of Z. Update it, then pair again — this version will not fall back to the older pairing.'**
+  String get linkPeerTooOld;
+
   /// Pairing failed; {error} is the underlying message.
   ///
   /// In en, this message translates to:

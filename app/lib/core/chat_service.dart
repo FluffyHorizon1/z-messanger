@@ -3531,7 +3531,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     // while the phone handed out hybrid ones (§18).
     final acct = await accountIdentity();
     final myMl = await pqAccountPublic();
-    final linked = await RelayPairing.runExistingDevice(
+    final linked = await RelayPairing.runExistingDeviceV2(
       relayUrl: transport.serverUrl,
       code: PairingCode.parse(code),
       me: myMl == null ? acct : acct.withAccountMlPub(myMl),

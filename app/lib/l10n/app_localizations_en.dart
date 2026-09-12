@@ -375,6 +375,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get linkCancelled => 'Link cancelled.';
 
   @override
+  String get linkPeerTooOld =>
+      'The other device is running an older version of Z. Update it, then pair again — this version will not fall back to the older pairing.';
+
+  @override
   String linkFailed(String error) {
     return 'Link failed: $error';
   }

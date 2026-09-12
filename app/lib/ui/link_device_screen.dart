@@ -165,7 +165,7 @@ class NewDeviceLinkScreen extends StatefulWidget {
 
 class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
   final _server = TextEditingController(text: defaultRelayUrl);
-  PairingInitiator? _initiator;
+  PairingInitiatorV2? _initiator;
   bool _busy = false;
   bool _showDev = false;
   String? _error;
@@ -173,7 +173,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
   @override
   void initState() {
     super.initState();
-    PairingInitiator.create().then((n) => setState(() => _initiator = n));
+    PairingInitiatorV2.create().then((n) => setState(() => _initiator = n));
   }
 
   Future<void> _start() async {
@@ -186,7 +186,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
       _error = null;
     });
     try {
-      final result = await RelayPairing.runNewDevice(
+      final result = await RelayPairing.runNewDeviceV2(
         relayUrl: url,
         n: n,
         confirm: (sas) => confirmSasDialog(context, sas),
@@ -233,6 +233,14 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
         );
       }
       await widget.onDone();
+    } on PairingAbort {
+      // The other device speaks the older ceremony, whose safety code can be
+      // guessed at (§10.1). Say so and stop: falling back would hand back
+      // exactly the assurance v2 exists to replace.
+      setState(() {
+        _busy = false;
+        _error = l.linkPeerTooOld;
+      });
     } catch (e) {
       setState(() {
         _busy = false;
