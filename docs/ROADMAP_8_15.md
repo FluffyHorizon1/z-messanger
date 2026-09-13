@@ -2918,3 +2918,41 @@ direction; the phases, their order and both ordering arguments stand.
    the guard rather than on the comparison.
 
    **A comparison that can pass without comparing anything is not one.**
+
+80. **A v3 contact code that would not decode became a classical one.**
+   `ConnectIdentity.fromCode` was a try-v3/catch-`FormatException` ladder of
+   its own, and the fallback — `ContactBundle.decode` — does not read `pqc`,
+   `acct` or `cert` at all. So any malformed v3 member quietly produced an
+   identity anchored on the **device** key with a commitment of 32 zero bytes.
+
+   What makes that worse than a downgrade is what the digits are for. Both
+   sides degrade the same way, so the derived string agrees; the humans
+   compare eight digits that MATCH; and `confirm()` then records the contact
+   as verified — over an identity the comparison never covered. The contact
+   is added by re-scanning the same string through `scanContactCode`, which
+   has refused these codes since v3 shipped, so the stored record could be
+   account-anchored while the number that "verified" it was the device's. And
+   the account's later post-quantum identity is then guaranteed to be read as
+   a key substitution, which is the alarm firing at the wrong person.
+
+   `_carriesV3Members` exists precisely to route these codes to a refusal.
+   `fromCode` was the one identity-reading path that did not use it, so the
+   two could disagree about what a code IS. They now share one rule:
+   `fromCode` goes through `scanContactCode`, and a code that carries a v3
+   member and fails to decode raises rather than falling back. A genuinely
+   classical code — one carrying no v3 member at all — still reads as the
+   classical identity, because that is a supported thing rather than a
+   degrade, and the test says so separately.
+
+   The second half is a type error that was not an exception. `j['ed'] as
+   String` on a code with `pqc` and no `ed` throws a `TypeError`, which is an
+   `Error` — so it escaped every `on FormatException` between the decode and
+   the ceremony, including the one that turns a bad reveal into a
+   `ConnectAbort`, and came out raw with the invite left unspent. The members
+   are read as values and checked by name, and the construction is wrapped:
+   the named checks say which member is wrong, and the wrapper is what makes
+   "nothing here throws an `Error`" true for the cases nobody enumerated.
+   Measured, with the named checks removed, the wrapper still converts it.
+
+   **Two paths that read the same identity must not be able to disagree
+   about what it is.**

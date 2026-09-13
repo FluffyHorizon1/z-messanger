@@ -264,15 +264,42 @@ class ContactBundleV3 {
             'a legacy record cannot anchor a code to an account');
       }
     }
-    final b = ContactBundleV3(
-      edPub: unb64(j['ed'] as String),
-      xPub: unb64(j['x'] as String),
-      bindingSig: unb64(j['sig'] as String),
-      pqCommit: unb64(pqc),
-      displayName: j['name'] as String?,
-      declaredAccountEdPub: acctEd,
-      deviceCert: deviceCert,
-    );
+    // A member of the wrong TYPE must be a malformed code, not a `TypeError`.
+    // A cast in an expression throws an Error rather than an Exception, so it
+    // escapes every `on FormatException` between here and the caller —
+    // including the one that turns a bad reveal into a `ConnectAbort` — and
+    // comes out of the ceremony raw, leaving the invite unspent. A code with
+    // `pqc` and no `ed` was exactly that.
+    //
+    // Two mechanisms, deliberately. The named checks below say which member
+    // is wrong, which is what an operator or a user reads. The `catch` around
+    // the construction is what makes the PROPERTY true — "nothing here throws
+    // an Error" — for the cases nobody enumerated, and it is load-bearing
+    // rather than tidy: with the named checks removed, it is what still turns
+    // the cast into a `FormatException` (measured).
+    final ed = j['ed'], x = j['x'], sig = j['sig'], name = j['name'];
+    if (ed is! String || x is! String || sig is! String) {
+      throw const FormatException('the code is missing a key or its signature');
+    }
+    if (name != null && name is! String) {
+      throw const FormatException('malformed display name');
+    }
+    final ContactBundleV3 b;
+    try {
+      b = ContactBundleV3(
+        edPub: unb64(ed),
+        xPub: unb64(x),
+        bindingSig: unb64(sig),
+        pqCommit: unb64(pqc),
+        displayName: name as String?,
+        declaredAccountEdPub: acctEd,
+        deviceCert: deviceCert,
+      );
+    } on FormatException {
+      rethrow;
+    } catch (_) {
+      throw const FormatException('corrupt contact code');
+    }
     if (b.edPub.length != 32 || b.xPub.length != 32) {
       throw const FormatException('bad key length');
     }

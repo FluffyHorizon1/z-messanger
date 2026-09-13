@@ -175,19 +175,37 @@ class ConnectIdentity {
   static final Uint8List _noPq = Uint8List(32);
 
   /// Read the identity out of a contact code.
+  ///
+  /// Through `scanContactCode`, so this and a scan cannot disagree about what
+  /// a code IS. Until 2026-09-14 this was a try-v3/catch-`FormatException`
+  /// ladder of its own, and the fallback did not read `pqc`, `acct` or
+  /// `cert` at all — so any malformed v3 member (a stale certificate, a
+  /// stripped commitment, a truncated account key) quietly produced an
+  /// identity anchored on the DEVICE key with a commitment of 32 zero bytes.
+  ///
+  /// That is worse than it sounds, because of what the digits are for. Both
+  /// sides degrade the same way, so `_deriveSas` agrees, the humans compare
+  /// eight digits that match, and the app records the contact as verified —
+  /// over an identity the comparison never covered. `scanContactCode` has
+  /// refused these codes since v3 shipped (`_carriesV3Members` exists for
+  /// exactly this), and the contact is added by re-scanning the same string,
+  /// so the record could be account-anchored while the number that "verified"
+  /// it was the device's. The two paths now share one rule.
   static Future<ConnectIdentity> fromCode(String contactCode,
       {String? displayName}) async {
-    try {
-      final v3 = await ContactBundleV3.decode(contactCode);
+    final scanned = await scanContactCode(contactCode);
+    final v3 = scanned.v3;
+    if (v3 != null) {
       return ConnectIdentity._(
           contactCode, displayName ?? v3.displayName, v3.accountEdPub, v3.pqCommit);
-    } on FormatException {
-      // A classical code: no post-quantum commitment to bind, and by §3.5 the
-      // device in it *is* the account.
-      final b = await ContactBundle.decode(contactCode);
-      return ConnectIdentity._(
-          contactCode, displayName ?? b.displayName, b.edPub, _noPq);
     }
+    // A genuinely classical code — one that carries no v3 member at all. No
+    // post-quantum commitment to bind, and by §3.5 the device in it *is* the
+    // account. A code that carries one and fails to decode does not reach
+    // here; it raises, which is the whole change.
+    final b = scanned.classical;
+    return ConnectIdentity._(
+        contactCode, displayName ?? b.displayName, b.edPub, _noPq);
   }
 
   /// The bytes a commitment covers: this side's ephemeral and everything it
@@ -492,9 +510,16 @@ Future<ConnectIdentity> _openReveal(
   }
   final code = j['code'];
   if (code is! String) throw const ConnectAbort('reveal carries no code');
+  final name = j['name'];
+  if (name != null && name is! String) {
+    throw const ConnectAbort('reveal carries a malformed name');
+  }
   try {
-    return await ConnectIdentity.fromCode(code, displayName: j['name'] as String?);
+    return await ConnectIdentity.fromCode(code, displayName: name as String?);
   } on FormatException catch (e) {
+    // A code the ceremony cannot read is an abort, never a weaker identity:
+    // the invite is spent and the pair start again, which costs a minute and
+    // is the only answer that cannot be steered.
     throw ConnectAbort('reveal carries an unusable contact code: ${e.message}');
   }
 }
