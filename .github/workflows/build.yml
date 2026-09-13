@@ -91,6 +91,12 @@ jobs:
       # catches it on every push instead.
       - name: Every CI job that uses repo files checks one out
         run: python3 tool/check_workflow.py
+      # The release job's own shell is reachable only from a pushed tag, so
+      # until now its first execution was always the most expensive moment to
+      # find a mistake in it. This runs those steps — read out of this file,
+      # so there is one copy — against a staged release, on every push.
+      - name: The release job's shell, on a staged release
+        run: python3 tool/dry_run_release.py
       # A render*.yaml is applied by clicking. This holds each one to the
       # things a click cannot undo: no literal secret in a public file, a
       # health check, a disk mounted where its data variable points on a plan
@@ -416,9 +422,21 @@ jobs:
               "$(readelf -n "$f" 2>/dev/null | awk '/Build ID/{print $3}')"
           done | tee "$GITHUB_WORKSPACE/fingerprint-${{ matrix.slot }}.txt"
           echo "--- embedded absolute build paths in libapp.so ---"
-          strings -a x/lib/arm64-v8a/libapp.so \
-            | grep -oE 'file:///[A-Za-z0-9_./-]+' | sort -u | head \
+          uris=$(strings -a x/lib/arm64-v8a/libapp.so \
+                 | grep -oE 'file:///[A-Za-z0-9_./-]+' | sort -u)
+          printf '%s\n' "$uris" \
             | tee -a "$GITHUB_WORKSPACE/fingerprint-${{ matrix.slot }}.txt"
+          # The release job refuses to publish unless there is EXACTLY one,
+          # because the recipe it prints names that path and a second one
+          # would make the recipe wrong. That assertion used to be reachable
+          # only from a pushed tag — the most expensive moment to discover a
+          # build now embeds two paths, because the version number is already
+          # spent. It is evaluated here too, on every push, so a tag is never
+          # the first time it runs.
+          if [ "$(printf '%s\n' "$uris" | grep -c .)" != "1" ]; then
+            echo "expected exactly one embedded build URI in libapp.so" >&2
+            exit 1
+          fi
       # Stage both files in ONE flat directory before uploading. Given two
       # paths, upload-artifact roots the archive at their least common
       # ancestor and preserves the tree below it — so the previous version put
@@ -593,6 +611,20 @@ jobs:
           # more, but if one ever is, its debug-signed `app-release.apk` must
           # not reach `release/` under the real one's name.
           rm -rf dist/repro-*
+          # The copy FLATTENS: every artefact's tree collapses into one
+          # directory, so two files anywhere under dist/ that share a
+          # basename would silently become one release asset, and
+          # SHA256SUMS.txt would list the survivor as though nothing had
+          # happened. Nothing produces a collision today; the android job
+          # uploads a glob (`*.apk`, `*.aab`), so one build flag is all it
+          # would take. Refuse instead.
+          dupes=$(find dist -type f -printf '%f\n' | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "two artefacts share a name and would collapse into one:" >&2
+            printf '%s\n' "$dupes" >&2
+            find dist -type f | sort >&2
+            exit 1
+          fi
           find dist -type f -exec cp {} release/ \;
           cd release
           ls -l

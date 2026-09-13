@@ -141,7 +141,8 @@ bit of app content fails the job, which was checked by flipping one.
 | Reproducible build, same machine and path | measured (14.1) |
 | Reproducible build, across runners | **measured, and it holds** (2026-09-09) — at a fixed checkout path; see `REPRODUCIBLE_BUILDS.md` |
 | Reproducible build, across checkout paths | no — two libraries embed the build path (R16, accepted, bounded and documented) |
-| SLSA provenance on release artefacts | **still not exercised** — the first tagged build reached the release job and died two steps before it (see below) |
+| The release job's own shell | **exercised** — `tool/dry_run_release.py` runs those steps, read out of `build.yml` so there is one copy, against a staged release, on every push (see below) |
+| SLSA provenance on release artefacts | **still not exercised** — Sigstore needs a real OIDC token from a real runner, so this one step waits on a tag |
 | Sigstore keyless signing + Rekor log | via `actions/attest-build-provenance` |
 | SLSA Build L3 | not reached; L2. See above |
 | Updater verifying provenance | no updater exists |
@@ -167,6 +168,40 @@ check, which is what it was always supposed to mean.
 
 The half still missing is that **nobody outside the project has done it**. That
 is the phase-14 exit criterion and it cannot be self-certified.
+
+## The release job's shell runs now, without a tag
+
+The steps that collect the artefacts, compute the content digest and compare
+it against an independently signed build were reachable only from a pushed
+tag. So their first execution was always going to be the moment a version
+number had already been spent — which is exactly how the 2026-09-09 failure
+below happened, and it cost a tag to learn one line.
+
+`tool/dry_run_release.py` reads those step bodies **out of
+`.github/workflows/build.yml`** rather than restating them — one copy, so the
+two cannot drift — stages a workspace shaped like a tagged run's, and executes
+them. Five passes, because what a release job does when everything is fine is
+the least interesting thing about it:
+
+| | what must happen |
+|---|---|
+| a normal release | every asset listed, a content digest published, the recipe naming the path the bytes were built at, and the agreement of the reproducibility slot recorded |
+| the slot disagrees | say so in `SHA256SUMS.txt` and in the job output, and **still publish** — a disagreement is a finding to state, not a reason to withhold a release |
+| the APK is missing | refuse, loudly. A silent skip would publish without the one number an outside rebuild can check, and nothing would say so |
+| two embedded build paths | refuse. The recipe names one path; a second would make it wrong |
+| two artefacts share a name | refuse. The copy into `release/` flattens, so a collision would publish one of them and list it as though nothing had been lost |
+
+The last two were found by writing this. Neither was reachable before: the
+"exactly one build path" assertion existed only in the release job, so a tag
+was the first time it was ever evaluated — it is asserted in the
+`reproducible` job now, on every push — and nothing checked for a name
+collision at all, though the android job uploads a glob and one build flag
+(`--split-per-abi`) would produce one.
+
+What this does **not** do is attest anything. Sigstore mints its signing
+material from a short-lived OIDC token that only a real GitHub runner can be
+issued, so `actions/attest-build-provenance` remains the single step a tag has
+to exercise. Everything it depends on now runs on every push.
 
 ## What the first tagged build found (2026-09-09)
 

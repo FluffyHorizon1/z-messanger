@@ -1876,3 +1876,45 @@ direction; the phases, their order and both ordering arguments stand.
    exactly what `group_fanout` holds, and the rule has to ask both. The test
    that caught it stages the real case — one member's mailbox full, against a
    relay started with a small cap — rather than the convenient one.
+
+53. **The release job's shell had never run, and two of its assertions had
+   never been evaluated at all.** C26 said "the attestation path has still
+   never executed", which was true and understated: the three steps *before*
+   the attestation — collecting the artefacts, computing the content digest,
+   comparing it against an independently signed build — are reachable only
+   from a pushed tag. Their first execution was always going to be the moment
+   a version number had already been spent, and that is not a theory: the
+   first tagged build died in that job on a missing `actions/checkout`, one
+   line, one tag.
+
+   `tool/dry_run_release.py` reads those step bodies **out of the workflow
+   file** rather than restating them — one copy, so a drift between the dry
+   run and the real job is not possible — stages a workspace shaped like a
+   tagged run's, and executes them. It runs on every push.
+
+   Writing it found the two things worth having. The release job refuses to
+   publish unless `libapp.so` carries **exactly one** embedded build path,
+   because the recipe it prints names that path and a second would make the
+   recipe wrong — and that assertion lived nowhere else, so a tag was the
+   first and only place it would ever be evaluated. It is asserted in the
+   `reproducible` job now, on every push. And the copy that assembles
+   `release/` **flattens** every artefact's tree into one directory, so two
+   files sharing a basename would silently become one asset and
+   `SHA256SUMS.txt` would list the survivor as though nothing had been lost.
+   Nothing produces a collision today; the android job uploads a glob, so one
+   build flag would. It refuses now.
+
+   The general shape, which is the same one as revision 45 and the client
+   review: **a step that only a rare event can reach is a step nobody has
+   read closely**, because reading it closely has never been rewarded. The
+   five passes are deliberately about what the job does when something is
+   wrong — a slot that disagrees must be stated and still published, a
+   missing APK must be refused loudly rather than skipped quietly — because
+   what a release job does when everything is fine is the least interesting
+   thing about it.
+
+   What is still a design rather than evidence is the signature itself.
+   Sigstore mints its signing material from a short-lived OIDC token that
+   only a real runner can be issued, so `actions/attest-build-provenance` is
+   the one step a tag has to exercise. Everything it depends on now runs
+   without one.
