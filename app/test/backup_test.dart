@@ -158,6 +158,9 @@ void main() {
 
     final beforeDirect = alice.messagesByChat[bob.myRid]!.length;
     final beforeGroup = alice.messagesByChat[gid]!.length;
+    Set<String> midsOf(Iterable<ChatMessage> ms) => {for (final m in ms) m.mid};
+    final directMids = midsOf(alice.messagesByChat[bob.myRid]!);
+    final groupMids = midsOf(alice.messagesByChat[gid]!);
     final aliceIdentity = alice.identity;
 
     // Take the backup.
@@ -200,9 +203,27 @@ void main() {
     await revived.loadMessages(gid);
 
     // History is back, with its 8.1 structure intact.
-    expect(revived.messagesByChat[bob.myRid]!.length, beforeDirect,
-        reason: 'restored direct history');
-    expect(revived.messagesByChat[gid]!.length, beforeGroup);
+    //
+    // Asserted by IDENTITY rather than by count. A restored device
+    // re-handshakes, so an envelope queued for the old session — a receipt
+    // in flight when the phone was lost — is undecryptable afterwards and
+    // becomes a system notice saying so. That is correct behaviour and it is
+    // not restored history: this device wrote it, after the restore, about
+    // something that happened to it. The wait above makes it unlikely and a
+    // loaded machine makes it likely again, which is the wrong thing for
+    // this assertion to rest on. So: every message that was there is back,
+    // and anything extra is a notice of exactly that kind.
+    void assertRestored(String rid, Set<String> was, String what) {
+      final now = revived.messagesByChat[rid]!;
+      expect(midsOf(now), containsAll(was), reason: what);
+      expect(
+          now.where((m) => !was.contains(m.mid)).map((m) => m.kind).toSet(),
+          isNot(contains(isNot('system'))),
+          reason: '$what: the only additions are this device\'s own notices');
+    }
+
+    assertRestored(bob.myRid, directMids, 'restored direct history');
+    assertRestored(gid, groupMids, 'restored group history');
     expect(revived.contacts[bob.myRid]?.name, 'Bob');
     expect(revived.groups[gid]?.name, 'Field team');
     final reply = revived.messagesByChat[bob.myRid]!
