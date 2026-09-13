@@ -1110,7 +1110,7 @@ strings are lowercase hex; wire strings
 (codes, envelopes, payloads) are given verbatim; every random draw the
 reference implementation made is recorded (`random_draws`, `*_seed`, `nonce`)
 so any implementation can replay a vector exactly. `docs/vectors/kt/` pins
-the transparency log (§19.9) on the same terms. See
+the transparency log (§19.10) on the same terms. See
 [`vectors/README.md`](vectors/README.md) for the file layout and how to run
 the verifiers. The vectors were produced by `protocol/tool/gen_vectors.dart`
 with the library's RNG replaced by a seeded splitmix64 DRBG (the standard
@@ -1914,7 +1914,7 @@ A client keeps the last head it verified. On each check it MUST:
    `/kt/v1/consistency?first=<held size>&second=<size>` and verify the proof
    between the held `logRoot` and the new one; if `size` equals the held
    size, require both roots to be equal;
-3. if a witness is configured (§19.8), fetch its record, verify the log's
+3. if a witness is configured (§19.9), fetch its record, verify the log's
    signature and the witness's over it, and require it to be consistent with
    the head: equal roots at equal size, or a verifying consistency proof
    from the log between the two sizes in either direction;
@@ -1974,7 +1974,29 @@ An `<entry>` is `{ "index":i, "label":b64, "v":version, "fp":b64,
 `SHA-256(value) == valueHash` before hashing the leaf. Every proof in a
 response is relative to the `sth` in that response.
 
-### 19.8 Mirrors and witnesses
+### 19.8 Self-monitoring by the account the entries are about
+
+An account MUST check its own label, and MUST judge **the authenticated
+`latest` from the lookup** by the same rule it applies to every history
+entry: a `(version, fingerprint)` this account did not issue is an alert.
+
+Judging only the history is not enough, and this is not hypothetical — it is
+what the client did until 2026‑09‑13. The history response is a list the log
+volunteers, an **empty one is not a fault** (an account that has never
+published legitimately has one), and nothing else in the check raises an
+alert. So a log that answers the head honestly, answers the lookup honestly
+with a rogue `(version, fingerprint)` — signed, proved, and served to every
+reader as current — and simply leaves that entry out of the history was
+believed in full and said nothing to the account it was about. The lookup is
+the one answer the log cannot shade: it is what the log is serving, under its
+signature and its proof.
+
+A device that does not hold the account root judges only versions it has
+seen: it learns lists by self-sync and may skip versions, so a version it
+never saw is not evidence. A version it HAS seen, carrying a different
+fingerprint, is a contradiction on any device.
+
+### 19.9 Mirrors and witnesses
 
 A mirror holds every entry and the last head it verified. On each sync it
 MUST verify the head's signature; require the head to extend the held one
@@ -1991,7 +2013,7 @@ is a witness; the record is static JSON and may be served from anywhere. A
 client configured with a witness URL and its public key treats a witness
 record that verifies but is inconsistent with the log's head as a log fault.
 
-### 19.9 Vectors and versioning
+### 19.10 Vectors and versioning
 
 `vectors/kt/` pins §19: `log_tree.json` (RFC 9162 against the CT reference
 data), `map_tree.json` (roots after each of fourteen sets, proofs of presence

@@ -929,7 +929,23 @@ class KeyTransparency {
         );
       }
     }
-    // Self-monitoring: every entry in our history must be one we know.
+    // Self-monitoring, on the AUTHENTICATED latest first.
+    //
+    // `latest` is proved to be what the log is serving for this label, and
+    // until now it was read only to decide whether to publish. Everything
+    // that could raise an alert lived in the walk over the history response
+    // below — and an empty history is not a fault, because an account that
+    // has never published legitimately has one. So a log that served a
+    // correct head, a correct lookup naming a version and fingerprint this
+    // device never issued, and `entries: []` was believed in full and said
+    // nothing: the rogue publish was authenticated, displayed to the reader
+    // as current, and hidden from its owner. That is the exact failure
+    // `adr/0006` says the log exists to make impossible.
+    if (latest != null) {
+      await _judgeOwnEntry(latest.version, b64(latest.fp), own);
+      if (ownAlert != null) return;
+    }
+    // And then every entry in our history must be one we know.
     final hj = await _getJson(_url('/kt/v1/history/${_hex(label)}'));
     if (hj == null) {
       await _fail();
@@ -946,7 +962,6 @@ class KeyTransparency {
       return;
     }
     if (!await _adopt(hh, logPub)) return;
-    final first = _firstKnownV;
     for (final item in (hj['entries'] as List? ?? const [])) {
       KtEntry e;
       try {
@@ -958,25 +973,37 @@ class KeyTransparency {
         await _setFault('history for this account could not be read');
         return;
       }
-      // Versions before this device knew the account are before its time —
-      // a linked device joins mid-history.
-      if (first != null && e.version < first) continue;
-      final known = _knownOwn[e.version];
-      final fp = b64(e.fp);
-      if (known == fp) continue;
-      if (known == null && own.accountEdSeed == null) {
-        // A linked device learns lists by self-sync and can skip versions
-        // (v4 to v6 while it was off), so a version it never saw is not
-        // evidence; only the root, which signs every list, can say an
-        // unknown version is one it did not issue. A KNOWN version with
-        // another fingerprint is a contradiction on any device.
-        continue;
-      }
-      if (ownAlert == null || ownAlert!.version != e.version || ownAlert!.fpB64 != fp) {
-        ownAlert = KtOwnAlert(version: e.version, fpB64: fp, atMs: now());
-        await vault.kvPut('kt_own_alert', jsonEncode(ownAlert!.toJson()), sensitive: false);
-      }
+      await _judgeOwnEntry(e.version, b64(e.fp), own);
+      if (ownAlert != null) return;
+    }
+  }
+
+  /// Is (version, fp) something this account issued? Raise the alert if not.
+  ///
+  /// One judgement, used for the authenticated `latest` AND for every history
+  /// entry, because having it in only one of those places is how a log got to
+  /// serve a rogue current value with an empty history and be believed.
+  Future<void> _judgeOwnEntry(int version, String fp, KtOwnInput own) async {
+    // Versions before this device knew the account are before its time — a
+    // linked device joins mid-history.
+    final first = _firstKnownV;
+    if (first != null && version < first) return;
+    final known = _knownOwn[version];
+    if (known == fp) return;
+    if (known == null && own.accountEdSeed == null) {
+      // A linked device learns lists by self-sync and can skip versions (v4
+      // to v6 while it was off), so a version it never saw is not evidence;
+      // only the root, which signs every list, can say an unknown version is
+      // one it did not issue. A KNOWN version with another fingerprint is a
+      // contradiction on any device.
       return;
+    }
+    if (ownAlert == null ||
+        ownAlert!.version != version ||
+        ownAlert!.fpB64 != fp) {
+      ownAlert = KtOwnAlert(version: version, fpB64: fp, atMs: now());
+      await vault.kvPut('kt_own_alert', jsonEncode(ownAlert!.toJson()),
+          sensitive: false);
     }
   }
 

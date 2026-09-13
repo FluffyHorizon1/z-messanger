@@ -19,7 +19,9 @@
 //  6. an unreachable log degrades to in-band verification.
 @Tags(['integration'])
 library;
-
+//  7. a log that answers everything correctly EXCEPT that it leaves the
+//     rogue entry out of the history is still caught: the authenticated
+//     `latest` is judged too, not only what the history volunteers.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -67,6 +69,7 @@ void main() {
   final temps = <Directory>[];
   final services = <ChatService>[];
   final extraProcesses = <Process>[];
+  final proxies = <HttpServer>[];
 
   Future<Process> startLog(int port, {Uint8List? seed}) async {
     final p = await Process.start('node', ['server.js'],
@@ -105,6 +108,9 @@ void main() {
     log.kill();
     for (final p in extraProcesses) {
       p.kill();
+    }
+    for (final s in proxies) {
+      await s.close(force: true);
     }
     for (final d in temps) {
       if (d.existsSync()) d.deleteSync(recursive: true);
@@ -399,5 +405,96 @@ void main() {
     alice.kt.unreachableAfter = const Duration(hours: 24);
     await alice.kt.check();
     expect(alice.kt.health, KtHealth.ok);
+  });
+
+  test('7. a log that omits the rogue entry from its history is still caught',
+      () async {
+    // The failure this closes. `latest` is PROVED to be what the log serves
+    // for this label, and it was read only to decide whether to publish;
+    // everything that could raise an alert lived in the walk over the history
+    // response. An empty history is not a fault — an account that has never
+    // published legitimately has one — so a log that answered the head and
+    // the lookup honestly and simply left the entry out of the history was
+    // believed in full, and said nothing. The rogue value was authenticated,
+    // served to every reader as current, and hidden from its owner.
+    final honestPort = await freePort();
+    extraProcesses.add(await startLog(honestPort));
+    await waitHealthy(honestPort);
+
+    // A proxy in front of it that forwards everything unchanged except the
+    // history, which it empties. Nothing here forges anything: the head and
+    // the lookup are the real log's, signed by the real key.
+    final proxyPort = await freePort();
+    final proxy = await HttpServer.bind(InternetAddress.loopbackIPv4, proxyPort);
+    proxies.add(proxy);
+    proxy.listen((req) async {
+      final upstream = Uri.parse('http://127.0.0.1:$honestPort${req.uri}');
+      try {
+        if (req.method == 'POST') {
+          final body = await utf8.decoder.bind(req).join();
+          final r = await (await HttpClient().postUrl(upstream)
+                ..headers.contentType = ContentType.json
+                ..write(body))
+              .close();
+          final out = await utf8.decoder.bind(r).join();
+          req.response.statusCode = r.statusCode;
+          req.response.headers.contentType = ContentType.json;
+          req.response.write(out);
+          await req.response.close();
+          return;
+        }
+        final r = await (await HttpClient().getUrl(upstream)).close();
+        var out = await utf8.decoder.bind(r).join();
+        if (req.uri.path.startsWith('/kt/v1/history/')) {
+          final j = (jsonDecode(out) as Map).cast<String, Object?>();
+          j['entries'] = <Object?>[]; // the one lie
+          out = jsonEncode(j);
+        }
+        req.response.statusCode = r.statusCode;
+        req.response.headers.contentType = ContentType.json;
+        req.response.write(out);
+        await req.response.close();
+      } catch (_) {
+        try {
+          req.response.statusCode = 502;
+          await req.response.close();
+        } catch (_) {}
+      }
+    });
+
+    final ben = await start('ben7', config: cfg(port: proxyPort));
+    await ben.kt.check();
+    expect(ben.kt.ownAlert, isNull, reason: 'nothing wrong yet');
+
+    // Someone holding Ben's account seed publishes a list he never issued.
+    final acct = await ben.accountIdentity();
+    final fakeFp = Uint8List.fromList(List<int>.filled(16, 0x77));
+    final req = await ktPublishRequest(
+        accountEdSeed: acct.accountEdSeed!,
+        version: 9,
+        fp: fakeFp,
+        value: await ktSealValue(
+            acct.accountEdPub, utf8.encode('{"not":"his list"}')));
+    final post = await (await HttpClient()
+            .postUrl(Uri.parse('http://127.0.0.1:$honestPort/kt/v1/publish'))
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode(req)))
+        .close();
+    expect(post.statusCode, 201);
+    await post.drain<void>();
+
+    // The history says nothing. The lookup cannot: it is what the log is
+    // serving, and it is signed.
+    final h = await (await HttpClient().getUrl(Uri.parse(
+            'http://127.0.0.1:$proxyPort/kt/v1/history/${[for (final b in await ktLabel(acct.accountEdPub)) b.toRadixString(16).padLeft(2, '0')].join()}')))
+        .close();
+    final hj = jsonDecode(await utf8.decoder.bind(h).join()) as Map;
+    expect((hj['entries'] as List), isEmpty, reason: 'the log volunteers nothing');
+
+    await ben.kt.check();
+    expect(ben.kt.ownAlert, isNotNull,
+        reason: 'the authenticated latest is judged, not only the history');
+    expect(ben.kt.ownAlert!.version, 9);
+    expect(ben.kt.ownAlert!.fpB64, b64(fakeFp));
   });
 }

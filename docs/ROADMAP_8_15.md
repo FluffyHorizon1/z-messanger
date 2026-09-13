@@ -2023,3 +2023,29 @@ direction; the phases, their order and both ordering arguments stand.
    The rows go with their message, including when a disappearing-message
    timer fires. A message that vanishes but leaves behind a record of who
    received it and when has not vanished.
+
+57. **The log's self-monitoring judged the list the log volunteered, and not
+   the answer it could not shade.** `adr/0006`'s whole argument for a
+   transparency log is that an operator cannot quietly serve one reader a
+   different answer from everybody else — and the account's own check is what
+   turns that into a detection. The check fetched two things: a **lookup**,
+   which proves the `(version, fingerprint)` the log is serving as current,
+   and a **history**, which is a list the log volunteers. It read the lookup
+   only to decide whether to publish, and raised alerts solely while walking
+   the history.
+
+   An empty history is not a fault — an account that has never published
+   legitimately has one. So a log that answered the head honestly, answered
+   the lookup honestly with a rogue entry it had signed and proved, and
+   simply left that entry out of the history was believed in full and said
+   nothing to the account it was about. Every reader saw the rogue value as
+   current. Its owner saw nothing. That is precisely the failure the log was
+   built to make impossible, achieved by omission rather than by forgery.
+
+   The judgement is one method now and both callers use it, because having
+   it in only one of the two places is exactly how this happened. **The test
+   for it does not forge anything**: it runs the real log, publishes a real
+   rogue entry under the account key, and puts a proxy in front that
+   forwards every byte unchanged except for emptying `entries` — one lie,
+   the cheapest one an operator could tell, and the only one that used to
+   work.
