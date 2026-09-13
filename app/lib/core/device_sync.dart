@@ -103,8 +103,13 @@ class DeviceSyncService {
   Future<void> _save() async {
     final s = _session;
     if (s != null) {
-      await vault.kvPut('sync_session', jsonEncode(s.toJson()),
-          sensitive: false);
+      // Sealed, like everything else in the vault. This was
+      // `sensitive: false` until 2026-09-14 — a plain SQLite cell holding
+      // `RatchetState.toJson()` for every one of this account's own devices:
+      // root key, ratchet seed, both chain keys and the cached skipped
+      // message keys. The mirror carries every message this phone sends or
+      // receives, so reading `z.db` was reading the account.
+      await vault.kvPut('sync_session', jsonEncode(s.toJson()));
     }
   }
 

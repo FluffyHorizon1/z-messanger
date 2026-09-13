@@ -43,18 +43,21 @@ void main() {
 
   test('plain, sealed and missing keys read back through one query', () async {
     final v = await open();
-    await v.kvPut('plain_one', 'p1', sensitive: false);
+    // Real keys: which keys may be plain is `Vault.plainKeys`' to say now,
+    // and a made-up one is refused rather than quietly stored in the clear
+    // (`plaintext_keys_test.dart`).
+    await v.kvPut('dev_mode', 'p1', sensitive: false);
     await v.kvPut('sealed_one', 's1');
-    expect(await v.kvGet('plain_one'), 'p1');
+    expect(await v.kvGet('dev_mode'), 'p1');
     expect(await v.kvGet('sealed_one'), 's1');
     expect(await v.kvGet('absent'), isNull);
     // The stored form is what the class says it is.
     final rows = await v.db.query('kv', orderBy: 'k');
-    expect(rows.map((r) => r['k']), ['p:plain_one', 's:sealed_one']);
+    expect(rows.map((r) => r['k']), ['p:dev_mode', 's:sealed_one']);
     expect(rows.last['v'], isNot('s1'), reason: 'sealed on disk');
     // Overwriting keeps the class of the write, and reads still resolve.
-    await v.kvPut('plain_one', 'p2', sensitive: false);
-    expect(await v.kvGet('plain_one'), 'p2');
+    await v.kvPut('dev_mode', 'p2', sensitive: false);
+    expect(await v.kvGet('dev_mode'), 'p2');
     await v.db.close();
   });
 
@@ -64,9 +67,11 @@ void main() {
     await v.kvPut('cdev_a', 'A', sensitive: false);
     await v.kvPut('cdev_b', 'B', sensitive: false);
     await v.kvPut('cdev_pq_a', 'PQ', sensitive: false);
-    await v.kvPut('cdevXa', 'not this one', sensitive: false); // 'X' where
-    // the prefix has '_': a LIKE wildcard would have matched it
-    await v.kvPut('other_a', 'no', sensitive: false);
+    // 'X' where the prefix has '_': a LIKE wildcard would have matched it.
+    // Sealed, because it is not a key `Vault.plainKeys` allows in the clear
+    // and the escape it is here to prove works the same in either class.
+    await v.kvPut('cdevXa', 'not this one');
+    await v.kvPut('other_a', 'no');
     await v.kvPut('cdev_sealed', 'S'); // sealed rows come back unsealed too
     final scan = await v.kvScan('cdev_');
     expect(scan, {

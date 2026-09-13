@@ -5639,8 +5639,9 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> _saveExtra(String rid) async {
     final s = _contactExtras[rid];
     if (s != null) {
-      await vault.kvPut('cextra_$rid', jsonEncode(s.toJson()),
-          sensitive: false);
+      // Sealed: this is a live ratchet with a contact's non-primary
+      // devices, same as `sync_session` (see `Vault.plainKeys`).
+      await vault.kvPut('cextra_\$rid', jsonEncode(s.toJson()));
     }
   }
 

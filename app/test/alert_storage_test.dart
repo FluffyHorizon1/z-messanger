@@ -184,19 +184,23 @@ void main() {
   test('4. a value rewritten sealed leaves no unsealed copy', () async {
     final dir = await tempDir('four');
     final vault = await Vault.open(rootOverride: dir);
-    await vault.kvPut('a_name', 'Dana Whitfield', sensitive: false);
+    // A key the plain class allows, so that the transition under test is the
+    // one being tested rather than the refusal that now guards it
+    // (`plaintext_keys_test.dart`).
+    const key = 'cdev_dana';
+    await vault.kvPut(key, 'Dana Whitfield', sensitive: false);
     expect(rawDb(dir), contains('Dana Whitfield'));
 
-    await vault.kvPut('a_name', 'Dana Whitfield'); // sealed this time
-    expect(await vault.kvGet('a_name'), 'Dana Whitfield');
+    await vault.kvPut(key, 'Dana Whitfield'); // sealed this time
+    expect(await vault.kvGet(key), 'Dana Whitfield');
     expect(rawDb(dir), isNot(contains('Dana Whitfield')),
         reason: 'the cleartext row went with the rewrite; it used to stay '
             'for the life of the vault, correct to every reader and '
             'invisible to all of them');
     final rows = await vault.db
-        .query('kv', columns: ['k'], where: "k LIKE '%a\\_name' ESCAPE '\\'");
+        .query('kv', columns: ['k'], where: "k LIKE '%cdev\\_dana' ESCAPE '\\'");
     expect(rows, hasLength(1), reason: 'one row, not one of each class');
-    expect(rows.single['k'], 's:a_name');
+    expect(rows.single['k'], 's:$key');
     await vault.db.close();
   });
 }

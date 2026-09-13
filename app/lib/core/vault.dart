@@ -459,8 +459,32 @@ class Vault {
       ),
     );
     await _sweepOrphans(db, filesDir);
-    return Vault._(db, root, filesDir, SecretKey(masterKeyBytes),
+    final vault = Vault._(db, root, filesDir, SecretKey(masterKeyBytes),
         masterKeyBytes, deviceSecret, fallback, hasPass);
+    await vault._resealStrays();
+    return vault;
+  }
+
+  /// Seal anything in the plain class that [plainKeys] does not allow there.
+  ///
+  /// A vault written before the list existed holds `sync_session` and every
+  /// `cextra_<rid>` in the clear — the ratchet state, which is the whole
+  /// point of the vault. Changing the call sites fixes the next write; this
+  /// fixes the ones already on disk, and it is general rather than a
+  /// migration for those two keys, so a key that should never have been
+  /// plain is put right whatever it was.
+  ///
+  /// `kvPut` removes the other storage class's row, so the cleartext goes
+  /// with the rewrite rather than sitting beside the sealed copy.
+  Future<void> _resealStrays() async {
+    final rows = await db.query('kv', columns: ['k', 'v']);
+    for (final r in rows) {
+      final k = r['k'] as String;
+      if (!k.startsWith('p:')) continue;
+      final key = k.substring(2);
+      if (mayBePlain(key)) continue;
+      await kvPut(key, r['v'] as String);
+    }
   }
 
   /// Everything that outlived the message it belonged to.
@@ -820,7 +844,61 @@ class Vault {
   // Simple encrypted kv
   // ------------------------------------------------------------------
 
+  /// The key families that may be written to the `kv` table **unsealed**,
+  /// each one a deliberate exception with a reason.
+  ///
+  /// `sensitive: false` is an opt-out of the sealing this vault's first
+  /// paragraph promises, and it was being used as a performance note. Two of
+  /// those opt-outs were the double-ratchet state itself — `sync_session`
+  /// (the mirror to this account's own devices, which carries every message
+  /// the phone sends or receives) and `cextra_<rid>` (the sessions with a
+  /// contact's non-primary devices). Both serialise `RatchetState.toJson()`:
+  /// the root key, the ratchet private seed, both chain keys and the cached
+  /// skipped message keys, base64, in a plain SQLite file. Anyone who read
+  /// `z.db` without the vault key could decrypt that traffic and forge
+  /// mirrors back into the user's own devices.
+  ///
+  /// So the exception is declared here rather than at the call site. A key
+  /// not on this list cannot be written unsealed at all — [kvPut] throws —
+  /// and anything already in the plain class that is not on it is re-sealed
+  /// when the vault opens. One list, checked in one place, instead of a
+  /// judgement made separately at thirty call sites.
+  static const Set<String> plainKeys = {
+    // Where this device connects and how it identifies itself locally.
+    'server_url', 'device_id', 'dev_mode', 'push_enabled',
+    // Backup schedule (the recovery CODE is sealed; these are its timings).
+    'backup_interval_days', 'backup_last_ms',
+    // This account's own device list and the alerts about it. A device list
+    // is public by construction: it is signed and handed to every contact.
+    'my_devices', 'my_devlist_version',
+    'own_list_v', 'own_list_h', 'own_list_json', 'own_list_mlsig',
+    'own_alert', 'own_alert_echo', 'removed_alert',
+    // The transparency log's own state: heads, faults and timings, all of
+    // which the log serves publicly to anyone who asks it.
+    'kt_config', 'kt_own_first_v', 'kt_own_known', 'kt_pub_pending',
+    'kt_last_fail_ms', 'kt_fault', 'kt_head', 'kt_last_ok_ms',
+    'kt_witness_ok_ms', 'kt_pub_done',
+  };
+
+  /// Per-contact families of the same, keyed by routing id — and a routing id
+  /// is already plaintext in every table beside this one.
+  static const List<String> plainPrefixes = [
+    'cdev_', // a contact's device list, its version and when it arrived
+    'cdl_alert_', 'cdl_claims_', // the kind of a device-list alert, and claims
+    'dlpq_sent_', 'pql_alert_', // the post-quantum list signature (§18.9)
+    'ktc_', // what the log says about this contact
+    'last_open_', // when this conversation was last opened
+  ];
+
+  static bool mayBePlain(String key) =>
+      plainKeys.contains(key) ||
+      plainPrefixes.any((p) => key.startsWith(p) && key.length > p.length);
+
   Future<void> kvPut(String key, String value, {bool sensitive = true}) async {
+    if (!sensitive && !mayBePlain(key)) {
+      throw ArgumentError.value(
+          key, 'key', 'is not declared in Vault.plainKeys; it must be sealed');
+    }
     final v = sensitive ? await seal(value) : value;
     // The other storage class's row goes, if there is one. A key rewritten
     // from plain to sealed used to leave the plain copy exactly where it

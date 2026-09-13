@@ -2490,3 +2490,39 @@ direction; the phases, their order and both ordering arguments stand.
    **A rate limit is a claim about who is asking. Ours was keyed on an answer
    that was the same for everyone, and nobody checked what it was keyed on
    until the log filled up.**
+
+70. **Full ratchet state, written to disk unsealed.** `vault.dart` opens by
+   saying what it is: *every sensitive value (message bodies, names, contact
+   bundles, session state, file metadata) is encrypted cell-by-cell with
+   XChaCha20-Poly1305 under the master key before it touches SQLite*. Two
+   `kvPut` calls passed `sensitive: false`, and between them they held the
+   session state.
+
+   `sync_session` is the self-sync ratchet with this account's own devices,
+   and the mirror carries every message the phone sends or receives.
+   `cextra_<rid>` is the ratchets with each contact's non-primary devices.
+   Both serialise `RatchetState.toJson()`: `rk`, `dhsSeed`, `cks`, `ckr` and
+   the cached `skipped` message keys. Base64, in a plain SQLite file. Anyone
+   who read `z.db` without the vault key could decrypt that traffic and forge
+   mirrors back into the user's own devices. C11 — "plaintext never touches
+   disk" — was false as published, and by the project's own severity scale
+   that is High.
+
+   The repair is not two call sites. `sensitive: false` was being used as a
+   performance note, and "may this be plain?" was a judgement made thirty
+   times, at the moment of writing, by whoever was there. It is a **declared
+   list** now — exact keys and per-contact prefixes, each with its reason —
+   that `kvPut` enforces by throwing, and that `Vault.open` applies to what is
+   already on disk: anything in the plain class that is not on the list is
+   sealed as the vault opens, and the cleartext goes with the rewrite rather
+   than sitting beside the sealed copy, because `kvPut` removes the other
+   storage class's row (67's fix, doing the work it was written for).
+
+   The test the review asked for is the one that closes the class rather than
+   the instance: drive an app through a message, a reply, a reaction, an
+   attachment, a group, a relay change and a device id, then assert that
+   **no** plaintext key survives that the list does not name. The two keys are
+   the bug. The list is the fix.
+
+   **A vault that decides cell by cell whether to seal is a vault whose
+   guarantee is a habit.**
