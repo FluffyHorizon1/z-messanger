@@ -84,6 +84,13 @@ test('unknown paths 404 with the plain relay banner', async () => {
 
 const { PAGES, ROUTES, STYLE } = require('../pages.js');
 
+// Every path that serves a full page, including the ones deliberately absent
+// from PAGES (and therefore from the nav and footer): /i is reached from an
+// invite link, never by browsing, but it is still a public page and the
+// site-wide sweeps below must cover it.
+const UNLISTED = ['/i'];
+const ALL_PAGES = ['/', ...PAGES.map(([path]) => path), ...UNLISTED];
+
 test('every page in the site list is served as HTML, with nav and footer', async () => {
   for (const [path, label] of PAGES) {
     const r = await get(path);
@@ -109,7 +116,7 @@ test('trailing-slash forms answer too (a sitelink must not 404 on a slash)', asy
 
 test('every internal link on every page resolves to a served route', async () => {
   const seen = new Set();
-  for (const [path] of [['/'], ...PAGES]) {
+  for (const path of ALL_PAGES) {
     const r = await get(path);
     for (const m of r.body.matchAll(/href="(\/[^"#]*)"/g)) {
       const target = m[1];
@@ -208,7 +215,7 @@ test('the download page routes Android to the live Play listing', async () => {
 });
 
 test('no page claims the Play listing is still pending', async () => {
-  for (const [path] of [['/'], ...PAGES]) {
+  for (const path of ALL_PAGES) {
     const r = await get(path);
     assert.ok(
       !/(Play listing|listing) is in preparation|Play listing coming soon/i.test(r.body),
@@ -234,7 +241,7 @@ test('every repository document the site links to actually exists', () => {
 test('nothing the site serves carries a personal address', async () => {
   // The public contact is the company support address on the Play listing,
   // not anyone's personal mailbox. This covers the pages and security.txt.
-  for (const [path] of [['/'], ...PAGES]) {
+  for (const path of ALL_PAGES) {
     const r = await get(path);
     assert.ok(
       !/finnianbond|@gmail\.com/i.test(r.body),
@@ -259,7 +266,7 @@ test('the tab icon is served in both formats, and every page points at it', asyn
   assert.strictEqual(ico.status, 200, 'browsers request /favicon.ico whether or not it is linked');
   assert.ok(ico.type.includes('image/x-icon'), `favicon.ico served as ${ico.type}`);
 
-  for (const [path] of [['/'], ...PAGES]) {
+  for (const path of ALL_PAGES) {
     const r = await get(path);
     assert.ok(
       r.body.includes('<link rel="icon" href="/favicon.svg"'),
@@ -351,3 +358,91 @@ test('pages are embedded strings — no fs reads in pages.js', async () => {
   assert.ok(!src.includes('readFile'), 'pages.js must not read files');
   assert.ok(!src.includes('writeFile'), 'pages.js must not write files');
 });
+
+// ---------------------------------------------------------------------------
+// 17.4 — the page an invite link lands on when Z is not installed yet.
+//
+// The invite is the part of the link after the `#`, which no browser sends to
+// a server. That is the whole reason this page can exist without weakening
+// anything: it is served identically to everyone and cannot know an invite
+// exists. Three criteria from the phase plan, one test each.
+
+const PLAY_URL = 'https://play.google.com/store/apps/details?id=com.zmessenger.www';
+
+test('17.4 (1): /i and /i/ both serve the invite page, like every other route',
+  async () => {
+    for (const path of ['/i', '/i/']) {
+      const r = await get(path);
+      assert.strictEqual(r.status, 200, `${path} did not serve`);
+      assert.ok(r.type.includes('text/html'), `${path} is not HTML`);
+      assert.ok(/<h1>[^<]{20,}<\/h1>/.test(r.body), `${path} has no headline`);
+      assert.ok(r.body.includes('<nav>'), `${path} has no nav`);
+      assert.ok(r.body.includes('<footer>'), `${path} has no footer`);
+      assert.ok(/<meta name="description" content="[^"]{40,}">/.test(r.body),
+        `${path} has no usable meta description`);
+    }
+    // Both forms are the same page, and the canonical points at the bare one
+    // so a shared invite link cannot split its own indexing.
+    const bare = await get('/i');
+    const slashed = await get('/i/');
+    assert.strictEqual(slashed.body, bare.body);
+    assert.ok(
+      bare.body.includes('<link rel="canonical" href="https://zmessengers.com/i">'),
+      'no canonical URL'
+    );
+  });
+
+test('17.4 (2): nothing on the site can read an invite fragment, and the relay never reflects one',
+  async () => {
+    // No page has a script, so no page can read location.hash — asserted over
+    // every route rather than just /i, because the guarantee is only worth
+    // having if it cannot be lost by someone adding a script elsewhere later.
+    for (const [path, html] of ROUTES) {
+      assert.ok(!/<script/i.test(html), `${path} has a script tag`);
+      assert.ok(!/\son[a-z]+=/i.test(html), `${path} has an inline event handler`);
+      assert.ok(!/javascript:/i.test(html), `${path} has a javascript: URL`);
+      assert.ok(
+        !/location\.hash|document\.location|window\.location/i.test(html),
+        `${path} mentions the location object`
+      );
+    }
+    // And nothing about a request comes back in a response, so a fragment
+    // forged into the path by hand — the one way it could reach the relay at
+    // all — is not echoed into a page, a header or an error.
+    for (const forged of ['/i%23SECRETCODE', '/i?c=SECRETCODE', '/SECRETCODE']) {
+      const r = await get(forged);
+      assert.ok(!r.body.includes('SECRETCODE'), `${forged} was reflected in the body`);
+    }
+    const missed = await get('/i%23SECRETCODE');
+    assert.strictEqual(missed.status, 404);
+    assert.strictEqual(
+      missed.body,
+      'Z relay. Zero-knowledge, RAM-only. Connect via WebSocket.\n',
+      'the 404 body must be a constant: anything built from the request could carry an invite'
+    );
+  });
+
+test('17.4 (3): the invite page links to Play and to how-it-works, and the route text stays unique',
+  async () => {
+    const r = await get('/i');
+    assert.ok(r.body.includes(PLAY_URL), 'no link to the Play listing');
+    assert.ok(r.body.includes('href="/how-it-works"'), 'no link to how-it-works');
+    assert.ok(/trademarks of Google\s+LLC/.test(r.body),
+      'Play trademark attribution missing');
+
+    // Google Ads refuses two sitelinks with the same text, and the nav and
+    // footer are generated from PAGES — so a duplicate label or path there is
+    // an ad disapproval waiting to happen.
+    const labels = PAGES.map(([, label]) => label);
+    const paths = PAGES.map(([path]) => path);
+    assert.strictEqual(new Set(labels).size, labels.length, 'duplicate route text in PAGES');
+    assert.strictEqual(new Set(paths).size, paths.length, 'duplicate route path in PAGES');
+
+    // /i is not one of them: an invite is something you were sent, not a place
+    // to browse to, and a sitelink pointing at it would be meaningless.
+    assert.ok(!paths.includes('/i'), '/i must not be in the site navigation');
+    for (const path of ['/', ...paths]) {
+      const page = await get(path);
+      assert.ok(!page.body.includes('href="/i"'), `${path} links to /i`);
+    }
+  });

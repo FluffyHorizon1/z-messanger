@@ -95,9 +95,6 @@ UNCITED_OK = {
         "row from before the change still reads as written — a localization "
         "property. The rows themselves are sealed like every other message, "
         "which is C11's claim, not this test's",
-    "server/test/pages.test.js":
-        "the landing and privacy pages the relay also serves; security.txt, the "
-        "one page that carries a security promise, is C27",
 }
 
 

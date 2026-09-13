@@ -892,6 +892,44 @@ function androidAssetLinks(raw) {
   )}\n`;
 }
 
+const INVITE_HTML = page(
+  '/i',
+  'Someone invited you to Z',
+  'You have been invited to Z, a messenger with no account and no phone number. Install it, open the invite again, and the app finishes adding your contact.',
+  `
+  <h1>Someone invited you to Z</h1>
+  <p class="lead">Z is a messenger with no account, no phone number and a
+  relay that holds nothing. Install it, open this link again, and the app
+  finishes adding whoever invited you.</p>
+
+  <div class="btns">
+    <a class="btn" href="${PLAY}">Get Z — Google Play</a>
+    <a class="btn alt" href="${RELEASES}">Android (APK)</a>
+  </div>
+  <p class="muted">Android 7.0 or newer. Windows, macOS and Linux builds are
+  on the <a href="/download">download page</a>.</p>
+
+  <h2>This page never received your invite</h2>
+  <p>The invite is the part of the link after the <code>#</code>. Browsers do
+  not send that part to a server — it reached your device and stopped there.
+  So this page is the same page everyone gets: it cannot tell that an invite
+  exists, or who sent it. That is not a promise we are asking you to take on
+  trust; it is how the web works, and your browser's network tab will show
+  you the request that was made.</p>
+
+  <h2>What happens when you open it in the app</h2>
+  <p>The invite works once and then expires. Finishing it shows you and the
+  person who invited you the same eight-digit number: read it to each other,
+  and if it matches, nobody was in the middle — not us, not the network, not
+  whoever could see the message that carried the link. If it does not match,
+  the app's only offer is to stop.
+  <a href="/how-it-works">How it works</a>.</p>
+  <p class="muted">Nobody invited you? <a href="/download">Install Z</a> and
+  you can invite someone yourself. Google Play and the Google Play logo are
+  trademarks of Google LLC.</p>
+`
+);
+
 // path → html, used by the server's request listener and by the tests.
 const ROUTES = new Map([
   ['/', LANDING_HTML],
@@ -906,6 +944,7 @@ const ROUTES = new Map([
   ['/devices', DEVICES_HTML],
   ['/backup', BACKUP_HTML],
   ['/about', ABOUT_HTML],
+  ['/i', INVITE_HTML],
 ]);
 
 // Trailing-slash forms answer identically, so a sitelink cannot 404 on a
