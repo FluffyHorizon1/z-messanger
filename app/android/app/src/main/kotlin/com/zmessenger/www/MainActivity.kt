@@ -21,6 +21,12 @@ class MainActivity : FlutterFragmentActivity() {
         // 17.3b: invite links. The intent that launched us is remembered
         // BEFORE the channel is attached, because Dart asks for it when it is
         // ready rather than being pushed one it cannot yet handle.
+        // 17.9: the system share sheet, for handing an invite over in
+        // whatever the two people already use.
+        val share = ShareText(this)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ShareText.CHANNEL)
+            .setMethodCallHandler { call, result -> share.handle(call, result) }
+
         deeplink.remember(intent)
         deeplink.attach(
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, Deeplink.CHANNEL)

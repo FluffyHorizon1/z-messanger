@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 import '../core/connect_invites.dart';
+import '../core/share_text.dart';
 import '../l10n/app_localizations.dart';
+import '../l10n/remaining_text.dart';
 import 'theme.dart';
 
 /// The CONNECT tab (17.3): adding someone you cannot stand next to.
@@ -66,6 +69,20 @@ class _ConnectTabState extends State<ConnectTab> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(AppLocalizations.of(context).connectCopied)));
+  }
+
+  /// Hand the invite to whatever the two people already use.
+  ///
+  /// Where there is no share sheet — every platform but Android today — the
+  /// link goes to the clipboard and the message says so, rather than a button
+  /// that sometimes does nothing.
+  Future<void> _share(String link) async {
+    if (await ShareText.share(link)) return;
+    await Clipboard.setData(ClipboardData(text: link));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content:
+            Text(AppLocalizations.of(context).connectSharedToClipboard)));
   }
 
   @override
@@ -166,6 +183,22 @@ class _ConnectTabState extends State<ConnectTab> {
           ? l.connectConfirmTitle
           : (invite.mine ? l.connectPending : l.connectPendingOpened),
     };
+    // What is left of the 24 hours (§20, R23).
+    //
+    // `progress` only moves when something pumps, so an invite that ran out
+    // while nobody was looking still reads `waiting` — the clock is what
+    // decides whether it is still worth handing to anyone, not the last thing
+    // the relay said. The row is shown for any unanswered invite (and says
+    // "Expired" when it is), and the renderings below are shown only while it
+    // is LIVE: an invite that has been answered, has run out, or was stopped
+    // is a bearer token that no longer works, and leaving it on screen to be
+    // copied is an invitation to send it to somebody.
+    final left = Duration(
+        milliseconds: invite.createdMs +
+            connectInviteLifetime.inMilliseconds -
+            DateTime.now().millisecondsSinceEpoch);
+    final unanswered = invite.progress == ConnectProgress.waiting;
+    final live = unanswered && left > Duration.zero;
     return Card(
       margin: const EdgeInsets.only(top: 12),
       color: context.z.surfaceAlt,
@@ -179,7 +212,19 @@ class _ConnectTabState extends State<ConnectTab> {
                     color: invite.progress == ConnectProgress.waiting
                         ? context.z.textSecondary
                         : context.z.warn)),
-            if (invite.mine) ...[
+            if (unanswered) ...[
+              const SizedBox(height: 4),
+              // The one number a person needs to decide whether to send it
+              // again. "Pending" said nothing about which hour of the 24 it
+              // was in.
+              Text(remainingText(l, left),
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: left.inHours < 1
+                          ? context.z.warn
+                          : context.z.textSecondary)),
+            ],
+            if (invite.mine && live) ...[
               const SizedBox(height: 12),
               Text(l.connectLinkLabel,
                   style: TextStyle(
@@ -195,6 +240,16 @@ class _ConnectTabState extends State<ConnectTab> {
                       fontFamily: 'monospace',
                       fontSize: 16,
                       letterSpacing: 1.5)),
+              const SizedBox(height: 10),
+              Text(l.connectQrLabel,
+                  style: TextStyle(
+                      fontSize: 12, color: context.z.textSecondary)),
+              const SizedBox(height: 6),
+              // The third rendering of the SAME secret — the link, verbatim,
+              // so a photograph of the screen is the same bearer token the
+              // link is and not a second one. White quiet zone regardless of
+              // theme: a scanner needs the contrast, not the palette.
+              Center(child: InviteQr(link: invite.link)),
               const SizedBox(height: 6),
               Text(l.connectSameSecret,
                   style: TextStyle(
@@ -203,6 +258,11 @@ class _ConnectTabState extends State<ConnectTab> {
               Wrap(
                 spacing: 8,
                 children: [
+                  FilledButton.icon(
+                    icon: const Icon(Icons.ios_share, size: 18),
+                    onPressed: () => _share(invite.link),
+                    label: Text(l.connectShareSheet),
+                  ),
                   OutlinedButton.icon(
                     icon: const Icon(Icons.link, size: 18),
                     onPressed: () => _copy(invite.link),
@@ -359,4 +419,27 @@ class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
       ),
     );
   }
+}
+
+/// The invite as a QR: the link, verbatim, and nothing else.
+///
+/// A wrapper rather than a bare [QrImageView] for two reasons. It keeps the
+/// white quiet zone in one place — a scanner needs the contrast whatever the
+/// theme is doing — and it exposes [link], because what a test needs to know
+/// about this widget is precisely that the thing encoded is the link and not
+/// a second secret, and `QrImageView` keeps its data private.
+class InviteQr extends StatelessWidget {
+  const InviteQr({super.key, required this.link});
+
+  /// Exactly what the QR encodes.
+  final String link;
+
+  @override
+  Widget build(BuildContext context) => QrImageView(
+        data: link,
+        version: QrVersions.auto,
+        size: 180,
+        backgroundColor: const Color(0xFFFFFFFF),
+        padding: const EdgeInsets.all(8),
+      );
 }

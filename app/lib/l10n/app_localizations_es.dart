@@ -1708,4 +1708,39 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get relayInsecureUseAnyway => 'Conectar de todos modos';
+
+  @override
+  String connectExpiresHours(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'quedan $count horas',
+      one: 'queda 1 hora',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String connectExpiresMinutes(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'quedan $count minutos',
+      one: 'queda 1 minuto',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get connectExpiresSoon => 'Queda menos de un minuto';
+
+  @override
+  String get connectQrLabel => 'Como código QR';
+
+  @override
+  String get connectShareSheet => 'Compartir';
+
+  @override
+  String get connectSharedToClipboard =>
+      'Aquí no hay menú de compartir: el enlace se copió al portapapeles.';
 }

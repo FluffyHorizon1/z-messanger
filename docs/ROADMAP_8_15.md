@@ -2303,3 +2303,45 @@ direction; the phases, their order and both ordering arguments stand.
    **The strongest thing here is the confirmation nobody can route around, and
    the reason it exists is that the weakest thing was a notice beside a button
    nobody presses.**
+
+65. **What the invite card was missing (17.9).** An invite is a bearer token
+   for 24 hours (§20, R23), and the card that showed it said "Pending". Not
+   which hour of the 24: the one number a person needs in order to decide
+   whether to send it again was the one number the screen did not have. It
+   also went on offering the link, the code and a copy button for an invite
+   that had run out — a token that no longer works, still sitting there to be
+   copied and sent to somebody.
+
+   The card now says how long is left, rounded **down** so it never promises
+   more time than it has, and says "Expired" rather than counting past zero.
+   The clock decides that, not `progress`: `progress` only moves when
+   something pumps, so an invite that ran out while nobody was looking still
+   reads `waiting`, and it is the 24 hours that determine whether it is worth
+   handing to anyone. Once it is answered or over, every rendering goes and
+   only "Discard" remains.
+
+   Two new ways to hand it over. A **QR** of the link — the third rendering of
+   the same one secret, encoding the link verbatim, so a photograph of the
+   screen is the same bearer token rather than a second one, with the quiet
+   zone kept white regardless of theme because a scanner needs the contrast.
+   And the system **share sheet**, on a channel of its own
+   (`ShareText.kt` → `z/share`), because "it is on the clipboard now" leaves
+   the person to find their messaging app and paste into the right
+   conversation themselves. Text only and `createChooser` every time: an
+   invite is a bearer token, so a subject line would put a second copy of it
+   in a mail header and a notification preview for nothing, and a default
+   share target would quietly become where every invite goes. Where there is
+   no share sheet — every platform but Android today — the link goes to the
+   clipboard and the message says so, rather than a button that sometimes
+   does nothing.
+
+   The QR does cut slightly against R23: a token that is easier to broadcast
+   is easier to broadcast to the wrong person. It stays because the alternative
+   for "show this to someone on a video call" is reading out twenty
+   characters, and the one-time-and-24-hours line sits directly beneath it.
+
+   `InviteQr` is a named widget rather than a bare `QrImageView` for one
+   reason worth recording: `QrImageView` keeps its data private, and what a
+   test needs to know about that widget is precisely that the thing encoded is
+   the link and not a second secret. **A property nothing can assert is a
+   property nobody is keeping.**

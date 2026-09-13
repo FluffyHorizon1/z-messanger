@@ -2160,5 +2160,31 @@
     }
   },
   "relayInsecureUseAnyway": "Connect anyway",
-  "@relayInsecureUseAnyway": {"description": "Button that accepts the cleartext relay and continues. Deliberately not the default action."}
+  "@relayInsecureUseAnyway": {"description": "Button that accepts the cleartext relay and continues. Deliberately not the default action."},
+  "connectExpiresHours": "{count, plural, =1{1 hour left} other{{count} hours left}}",
+  "@connectExpiresHours": {
+    "description": "How long an invite has before it stops working, in whole hours. Rounded DOWN, so it never promises more time than there is.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "connectExpiresMinutes": "{count, plural, =1{1 minute left} other{{count} minutes left}}",
+  "@connectExpiresMinutes": {
+    "description": "How long an invite has before it stops working, in whole minutes, for the last hour of its life. Rounded down.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "connectExpiresSoon": "Less than a minute left",
+  "@connectExpiresSoon": {"description": "Shown for the last minute of an invite's life, when a number of minutes would read as zero."},
+  "connectQrLabel": "As a QR code",
+  "@connectQrLabel": {"description": "Label above the invite rendered as a QR code. The third rendering of the same one secret, not a second invite."},
+  "connectShareSheet": "Share",
+  "@connectShareSheet": {"description": "Button that hands the invite link to the system share sheet — a message, an email, whatever the device offers."},
+  "connectSharedToClipboard": "No share sheet here — the link is on the clipboard instead.",
+  "@connectSharedToClipboard": {"description": "Shown when the platform has no share sheet, so the link was copied instead. Says which happened rather than failing silently."}
 }

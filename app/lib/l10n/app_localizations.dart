@@ -2833,6 +2833,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Connect anyway'**
   String get relayInsecureUseAnyway;
+
+  /// How long an invite has before it stops working, in whole hours. Rounded DOWN, so it never promises more time than there is.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 hour left} other{{count} hours left}}'**
+  String connectExpiresHours(int count);
+
+  /// How long an invite has before it stops working, in whole minutes, for the last hour of its life. Rounded down.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 minute left} other{{count} minutes left}}'**
+  String connectExpiresMinutes(int count);
+
+  /// Shown for the last minute of an invite's life, when a number of minutes would read as zero.
+  ///
+  /// In en, this message translates to:
+  /// **'Less than a minute left'**
+  String get connectExpiresSoon;
+
+  /// Label above the invite rendered as a QR code. The third rendering of the same one secret, not a second invite.
+  ///
+  /// In en, this message translates to:
+  /// **'As a QR code'**
+  String get connectQrLabel;
+
+  /// Button that hands the invite link to the system share sheet — a message, an email, whatever the device offers.
+  ///
+  /// In en, this message translates to:
+  /// **'Share'**
+  String get connectShareSheet;
+
+  /// Shown when the platform has no share sheet, so the link was copied instead. Says which happened rather than failing silently.
+  ///
+  /// In en, this message translates to:
+  /// **'No share sheet here — the link is on the clipboard instead.'**
+  String get connectSharedToClipboard;
 }
 
 class _AppLocalizationsDelegate
