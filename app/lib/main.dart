@@ -17,6 +17,7 @@ import 'package:z_protocol/z_protocol.dart';
 import 'core/app_lock.dart';
 import 'core/chat_service.dart';
 import 'core/connect_invites.dart';
+import 'core/deep_links.dart';
 import 'core/prefs.dart';
 import 'core/push_service.dart';
 import 'core/relay_url.dart';
@@ -129,6 +130,8 @@ class _BootstrapperState extends State<Bootstrapper>
     with WidgetsBindingObserver {
   Vault? _vault;
   ChatService? _service;
+  ConnectInvites? _invites;
+  DeepLinks? _links;
   PushService? _push;
   AppLock? _appLock;
   AppPrefs? _prefs;
@@ -314,9 +317,17 @@ class _BootstrapperState extends State<Bootstrapper>
     // Push (Android): registers this device's wake token with the relay.
     final push = PushService(transport: transport, vault: vault);
     unawaited(push.init());
+    // Connect invites (17.3) and the links that carry them (17.3b). Started
+    // here rather than in a provider so an invite tapped while the app was
+    // closed is picked up as soon as there is a service to hand it to.
+    final invites = ConnectInvites(service);
+    final links = DeepLinks(invites);
+    unawaited(links.start());
     setState(() {
       _vault = vault;
       _service = service;
+      _invites = invites;
+      _links = links;
       _push = push;
       _locked = false;
       _needsOnboarding = false;
@@ -404,11 +415,12 @@ class _BootstrapperState extends State<Bootstrapper>
         ChangeNotifierProvider<PushService>.value(value: _push!),
         ChangeNotifierProvider<AppLock>.value(value: lock!),
         ChangeNotifierProvider<AppPrefs>.value(value: _prefs!),
-        // Pending connect invites (17.3). Built from the service rather than
-        // held beside it: an invite is a ceremony against this account's
-        // identity and this device's relay, and both live there.
-        ChangeNotifierProvider<ConnectInvites>(
-            create: (_) => ConnectInvites(service)),
+        // Pending connect invites (17.3), and the deep links that open them.
+        // Both are made in _startService, beside the service they run
+        // against, so a link tapped while the app was closed is handled as
+        // soon as there is anything to handle it with.
+        ChangeNotifierProvider<ConnectInvites>.value(value: _invites!),
+        Provider<DeepLinks>.value(value: _links!),
       ],
       child: _shell(mode: mode, home: const HomeScreen(), overlay: overlay),
     );

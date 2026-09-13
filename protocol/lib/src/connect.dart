@@ -56,6 +56,9 @@ const String connectRelayCtx = 'z-connect-relay-v1:';
 /// Where a `/i#…` invite link points by default.
 const String connectLinkHost = 'zmessengers.com';
 
+/// RFC 4648 base32, as code units — what [ConnectCode.parse] will accept.
+final Set<int> _b32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.codeUnits.toSet();
+
 final _x = X25519();
 final _aead = Chacha20.poly1305Aead();
 
@@ -88,7 +91,24 @@ class ConnectCode {
 
   String get text => base32Groups(secret);
 
+  /// A printed code back into its ten bytes.
+  ///
+  /// [base32Decode] skips whatever it does not recognise, which is right for
+  /// something read down a phone line — dashes, spaces, the wrong case — and
+  /// wrong for deciding whether a string IS a code. Any URL, and most
+  /// sentences, contain enough letters between the punctuation to make ten
+  /// bytes; a public entry point that turns those into invites (17.3b: any
+  /// app on the device can send a VIEW intent) would fill the user's list
+  /// with ceremonies nobody can answer. So the separators are named, and
+  /// anything else is a refusal rather than a character to skip.
   static ConnectCode parse(String code) {
+    for (final ch in code.toUpperCase().codeUnits) {
+      const separators = [0x2D, 0x20, 0x09, 0x0A, 0x0D]; // - space tab nl cr
+      if (separators.contains(ch)) continue;
+      if (!_b32Chars.contains(ch)) {
+        throw const FormatException('not a connect code');
+      }
+    }
     final b = base32Decode(code);
     if (b.length < 10) throw const FormatException('connect code too short');
     return ConnectCode(Uint8List.fromList(b.sublist(0, 10)));

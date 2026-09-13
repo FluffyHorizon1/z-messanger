@@ -852,6 +852,46 @@ const PRIVACY_HTML = page(
 `
 );
 
+/**
+ * Digital Asset Links for Android App Links (17.3b).
+ *
+ * With this file served at /.well-known/assetlinks.json, Android verifies the
+ * link on install and opens https://zmessengers.com/i#<code> straight in the
+ * app; without it the user gets a chooser, which still works but asks a
+ * question nobody should have to answer to accept an invite.
+ *
+ * The fingerprint is NOT in this repository, and not because it is secret —
+ * it is published in this very file — but because it belongs to the Play App
+ * Signing key, which only the account holder can read out of the Play
+ * Console. It arrives as ANDROID_CERT_SHA256 (comma-separated for a key
+ * rotation, which needs both listed at once); with it unset the route is not
+ * served at all, which is the honest answer: an unverifiable claim about
+ * which app owns these links is worse than no claim.
+ *
+ * Returns null when there is nothing to say.
+ */
+function androidAssetLinks(raw) {
+  const prints = String(raw || '')
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(s));
+  if (prints.length === 0) return null;
+  return `${JSON.stringify(
+    [
+      {
+        relation: ['delegate_permission/common.handle_all_urls'],
+        target: {
+          namespace: 'android_app',
+          package_name: 'com.zmessenger.www',
+          sha256_cert_fingerprints: prints,
+        },
+      },
+    ],
+    null,
+    2
+  )}\n`;
+}
+
 // path → html, used by the server's request listener and by the tests.
 const ROUTES = new Map([
   ['/', LANDING_HTML],
@@ -896,5 +936,5 @@ Acknowledgments: https://github.com/FluffyHorizon1/z-messanger/blob/main/docs/VD
 module.exports = {
   LANDING_HTML, PRIVACY_HTML, SECURITY_TXT,
   FAVICON_SVG, FAVICON_ICO,
-  ROUTES, PAGES, STYLE,
+  ROUTES, PAGES, STYLE, androidAssetLinks,
 };

@@ -268,6 +268,83 @@ test('the tab icon is served in both formats, and every page points at it', asyn
   }
 });
 
+// ---------------------------------------------------------------------------
+// 17.3b — Digital Asset Links, so an invite link opens the app rather than a
+// chooser. The fingerprint is not in this repository: it belongs to the Play
+// App Signing key, which only the account holder can read out of the Play
+// Console, so it arrives as ANDROID_CERT_SHA256. Everything about the shape
+// of the answer is testable without knowing the value.
+
+const { androidAssetLinks } = require('../pages.js');
+const FAKE_PRINT = new Array(32).fill('AB').join(':');
+
+test('assetlinks: nothing is claimed until a fingerprint is configured',
+  async () => {
+    delete process.env.ANDROID_CERT_SHA256;
+    const r = await get('/.well-known/assetlinks.json');
+    assert.strictEqual(r.status, 404,
+      'an unverifiable claim about which app owns these links is worse than none');
+    assert.strictEqual(androidAssetLinks(undefined), null);
+    assert.strictEqual(androidAssetLinks(''), null);
+    // Anything that is not a 32-byte colon-separated hex fingerprint is not
+    // one, and half a file is worse than no file: Android rejects the lot.
+    for (const junk of ['not a fingerprint', 'AA:BB', FAKE_PRINT.slice(0, -1)]) {
+      assert.strictEqual(androidAssetLinks(junk), null, junk);
+    }
+  });
+
+test('assetlinks: with a fingerprint it is the file Android expects',
+  async () => {
+    process.env.ANDROID_CERT_SHA256 = FAKE_PRINT.toLowerCase();
+    try {
+      const r = await get('/.well-known/assetlinks.json');
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.type.includes('application/json'), `served as ${r.type}`);
+      const j = JSON.parse(r.body);
+      assert.ok(Array.isArray(j) && j.length === 1);
+      assert.deepStrictEqual(j[0].relation,
+        ['delegate_permission/common.handle_all_urls']);
+      assert.strictEqual(j[0].target.namespace, 'android_app');
+      assert.strictEqual(j[0].target.package_name, 'com.zmessenger.www');
+      // Upper case, as Android publishes it, whatever case it was configured in.
+      assert.deepStrictEqual(j[0].target.sha256_cert_fingerprints, [FAKE_PRINT]);
+
+      // A key rotation needs both listed at once, or every install on the old
+      // key stops verifying the day the new one ships.
+      const other = new Array(32).fill('CD').join(':');
+      const two = JSON.parse(androidAssetLinks(`${FAKE_PRINT}, ${other}`));
+      assert.deepStrictEqual(two[0].target.sha256_cert_fingerprints,
+        [FAKE_PRINT, other]);
+    } finally {
+      delete process.env.ANDROID_CERT_SHA256;
+    }
+  });
+
+test('assetlinks: the app link it authorises is the one the manifest claims',
+  () => {
+    // Two files, one claim, in different languages and different repositories'
+    // worth of tooling. If they drift, the link silently opens a chooser.
+    const fs = require('fs');
+    const path = require('path');
+    const manifest = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'app', 'android', 'app', 'src', 'main',
+        'AndroidManifest.xml'),
+      'utf8'
+    );
+    assert.ok(manifest.includes('android:host="zmessengers.com"'),
+      'the manifest does not claim zmessengers.com');
+    assert.ok(manifest.includes('android:pathPrefix="/i"'),
+      'the manifest does not claim /i');
+    assert.ok(manifest.includes('android:autoVerify="true"'),
+      'without autoVerify the assetlinks file is never fetched');
+    const pkg = JSON.parse(androidAssetLinks(FAKE_PRINT))[0].target.package_name;
+    assert.ok(manifest.includes(`package="${pkg}"`) ||
+      fs.readFileSync(
+        path.join(__dirname, '..', '..', 'app', 'android', 'app', 'build.gradle.kts'),
+        'utf8').includes(pkg),
+      `nothing in the Android build declares ${pkg}`);
+  });
+
 test('pages are embedded strings — no fs reads in pages.js', async () => {
   const fs = require('fs');
   const src = fs.readFileSync(require.resolve('../pages.js'), 'utf8');

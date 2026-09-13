@@ -217,6 +217,37 @@ void main() {
       expect(b64(bobSession.peer.accountEdPub), b64(mallory.accountEdPub));
     });
 
+    test('a code is base32 and nothing else — a URL is not ten bytes of luck',
+        () async {
+      // base32Decode skips what it does not recognise, which is right for a
+      // code read down a phone line and wrong for deciding whether a string
+      // IS one: every URL has enough letters between its punctuation to make
+      // ten bytes. The app has a public entry point for these now (any app
+      // on the device can send it a VIEW intent), so the separators are
+      // named and everything else is a refusal.
+      final code = ConnectCode.generate();
+      for (final ok in [
+        code.text,
+        code.text.toLowerCase(),
+        code.text.replaceAll('-', ' '),
+        code.text.replaceAll('-', ''),
+      ]) {
+        expect(b64(ConnectCode.parse(ok).secret), b64(code.secret),
+            reason: 'people paste what they were sent: "$ok"');
+      }
+      for (final not in [
+        'https://zmessengers.com/',
+        'https://example.com/anything/at/all',
+        'hello, world!',
+        'zc1.notaninvite',
+        '',
+        'ABCDE', // base32, and far too little of it
+      ]) {
+        expect(() => ConnectCode.parse(not), throwsFormatException,
+            reason: '"$not" is not a connect code');
+      }
+    });
+
     test('6. a connect code and a pairing code address different rendezvous',
         () async {
       final secret = Uint8List.fromList(List<int>.generate(10, (i) => i * 11));

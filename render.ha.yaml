@@ -61,5 +61,16 @@ services:
       # is everyone's problem at once.
       - key: MAX_QUEUE_BYTES_PER_USER
         value: "16777216"
+      # The Play App Signing certificate fingerprint (SHA-256, colon-separated
+      # upper-case hex), read out of Play Console -> Setup -> App integrity.
+      # It is public — it is published verbatim at
+      # /.well-known/assetlinks.json — but it is not in this repository
+      # because only the account holder can read it, and a placeholder would
+      # be a claim about which app owns zmessengers.com/i that nobody could
+      # check. Unset, the route 404s and an invite link opens a chooser
+      # instead of the app; set, Android verifies it on install. Two values,
+      # comma-separated, during a key rotation.
+      - key: ANDROID_CERT_SHA256
+        sync: false
       # Render injects PORT and the relay binds it — do not set it.
       # INSTANCE_ID is deliberately unset: every instance derives its own.

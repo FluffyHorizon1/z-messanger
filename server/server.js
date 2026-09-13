@@ -30,6 +30,7 @@ const { WebSocketServer } = require('ws');
 const { PushSender } = require('./push.js');
 const {
   ROUTES,
+  androidAssetLinks,
   SECURITY_TXT,
   FAVICON_SVG,
   FAVICON_ICO,
@@ -1249,6 +1250,21 @@ function createServer(opts = {}) {
       });
       res.end(SECURITY_TXT);
       return;
+    }
+    // Android App Links (17.3b). Read at request time, not at start-up, so
+    // setting the fingerprint is a restart of the service rather than a
+    // redeploy of the code — and so its absence is a 404 rather than an
+    // empty claim.
+    if (req.url === '/.well-known/assetlinks.json') {
+      const body = androidAssetLinks(process.env.ANDROID_CERT_SHA256);
+      if (body) {
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'public, max-age=3600',
+        });
+        res.end(body);
+        return;
+      }
     }
     // Static pages (embedded strings — the relay still never touches disk).
     // Every public path lives in pages.js ROUTES, so a page cannot be added
