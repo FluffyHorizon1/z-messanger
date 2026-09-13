@@ -212,6 +212,19 @@ const METRICS = {
   // store at maxmemory with noeviction): the sender is told store_full and
   // retries later; the store heals as recipients drain their mailboxes.
   storeFullTotal: 0,
+  // Envelopes handed to another instance over pub/sub. Not counted as
+  // delivered live, because this instance cannot see whether they were:
+  // the gap between this and z_delivered_live_total is the traffic whose
+  // delivery depends on a presence record being true.
+  crossInstanceTotal: 0,
+  // Mailboxes re-flushed because a connected socket had made no progress
+  // on one for a whole interval. Anything but zero means a live push was
+  // lost — a stale presence record, or an instance that went away between
+  // the publish and the frame — and the pass below is what recovers it.
+  reflushedTotal: 0,
+  // Presence refreshes that failed for a reason other than the store being
+  // full. One of these used to abort the whole pass, silently.
+  presenceRefreshFailedTotal: 0,
   // Sends refused because too many mailboxes were being CREATED at once.
   // Counted apart from the line above because it means something different
   // to an operator: the store is not full, and what was refused was a first
@@ -267,6 +280,12 @@ function renderMetrics(stats) {
   L.push(`z_refused_total ${METRICS.refusedTotal}`);
   L.push('# TYPE z_store_full_total counter');
   L.push(`z_store_full_total ${METRICS.storeFullTotal}`);
+  L.push('# TYPE z_cross_instance_total counter');
+  L.push(`z_cross_instance_total ${METRICS.crossInstanceTotal}`);
+  L.push('# TYPE z_reflushed_total counter');
+  L.push(`z_reflushed_total ${METRICS.reflushedTotal}`);
+  L.push('# TYPE z_presence_refresh_failed_total counter');
+  L.push(`z_presence_refresh_failed_total ${METRICS.presenceRefreshFailedTotal}`);
   L.push('# TYPE z_new_mailbox_refused_total counter');
   L.push(`z_new_mailbox_refused_total ${METRICS.newMailboxRefusedTotal}`);
   L.push('# TYPE z_presence_deferred_total counter');
@@ -571,6 +590,14 @@ class MemoryCoordinator {
       if (e.kind === 'receipt') this._removeKey(rid, e.key);
     }
   }
+
+  /**
+   * Nothing to do in one process: a live delivery here is the return value
+   * of `sendJson` against a socket this object holds, so `queued` is already
+   * the truth and no push can have been lost on the way to another instance.
+   * Present so that the two coordinators answer the same calls.
+   */
+  async reflushStalled() {}
 
   sweep() {
     const cutoff = Date.now() - CFG.queueTtlMs;
@@ -930,6 +957,10 @@ class RedisCoordinator {
     this.local = new Map(); // rid -> ws on THIS instance
     this.presenceStale = new Set(); // rids whose presence write the store refused
     this.sweeping = false;
+    this.beating = false;
+    this.reflushing = false;
+    /** rid -> mailbox length at the last re-flush check, for the pass below. */
+    this.lastMailboxLen = new Map();
     // Per instance, like the rate limiter beside it. A flood arrives on one
     // socket and therefore one instance; a flood spread across N instances
     // gets N times the allowance, which is a bounded and stated degradation
@@ -1119,7 +1150,35 @@ class RedisCoordinator {
         `z:inst:${owner}`,
         JSON.stringify({ op: 'deliver', toRid: to, frame: entryToFrame(entry) })
       );
-      live = true; // best-effort; entry stays queued until acked either way
+      METRICS.crossInstanceTotal += 1;
+      // And `live` stays false, which is the correction.
+      //
+      // It used to be set true here, on the strength of the publish having
+      // resolved — which says Redis accepted the PUBLISH, and nothing about
+      // whether the instance named by `presence:` still holds a socket for
+      // this recipient. The receiving side drops the frame silently when it
+      // does not (`_onPub`), and answers nobody. So a presence record that
+      // was stale by even a second produced `queued: false` — the sender
+      // told it went live, no wake push fired because that is gated on
+      // `queued`, and the envelope sat in the store until the recipient
+      // happened to reconnect. Nothing re-flushed a socket that was already
+      // connected, so "until they reconnect" could be the full
+      // QUEUE_TTL_HOURS: three days, invisible to everyone.
+      //
+      // Saying `queued: true` here is not a lie in the other direction: the
+      // envelope IS held, and stays held until it is acknowledged, exactly
+      // as the frame's comment in §12.2 describes. The live push is an
+      // optimisation on top of that, and this instance cannot see whether
+      // it happened. The wake push it now allows is correct in the case
+      // that matters — the recipient is not really there — and harmless in
+      // the case that it is, being content-free and going to a device that
+      // is already awake.
+      //
+      // The alternative, an acknowledgement back over pub/sub with a
+      // timeout, would put a second round trip on the hot path of every
+      // cross-instance send to recover one bit that no client reads: the
+      // Dart client discards it (`transport.dart`), and the only consumer
+      // is the wake push decided here.
     }
     if (live) METRICS.deliveredLiveTotal += 1;
     return { queued: !live };
@@ -1272,16 +1331,107 @@ class RedisCoordinator {
     }
   }
 
+  /**
+   * Refresh this instance's presence for every socket it holds.
+   *
+   * One rid at a time, and a failure costs that rid rather than the pass.
+   * Until 2026-09-14 anything that was not an out-of-memory error was
+   * rethrown out of the loop — a reset connection, a timeout, ioredis
+   * running out of its three retries — and the call site swallows it
+   * (`.catch(() => {})`), so every rid after the failing one went
+   * unrefreshed with nothing said. Presence then expired at 60 s against
+   * this 25 s refresh, the other instance began queueing their mail instead
+   * of pushing it, and the envelope sat there: findings 16 and 19 of the
+   * review are the same outage seen from two ends.
+   *
+   * `sweep` had this right already — a per-item catch and a re-entrancy
+   * guard — and this is the same shape. The guard matters here too: with
+   * many sockets a pass of sequential round trips can outlast the 25 s
+   * interval, and passes that overlap pile up rather than degrade.
+   */
   async heartbeat() {
-    for (const rid of this.local.keys()) {
-      try {
-        await this.cmd.set(`presence:${rid}`, this.id, 'EX', 60);
-        this.presenceStale.delete(rid);
-      } catch (e) {
-        if (!isStoreFull(e)) throw e;
-        METRICS.presenceDeferredTotal += 1;
-        this.presenceStale.add(rid);
+    if (this.beating) return;
+    this.beating = true;
+    try {
+      for (const rid of this.local.keys()) {
+        try {
+          await this.cmd.set(`presence:${rid}`, this.id, 'EX', 60);
+          this.presenceStale.delete(rid);
+        } catch (e) {
+          if (isStoreFull(e)) {
+            METRICS.presenceDeferredTotal += 1;
+          } else {
+            // Not the store being full: the store being unreachable, or
+            // slow. Counted apart, because it means something different to
+            // an operator — nothing is wrong with the data, something is
+            // wrong with the connection — and because it was invisible.
+            METRICS.presenceRefreshFailedTotal += 1;
+          }
+          this.presenceStale.add(rid);
+        }
       }
+    } finally {
+      this.beating = false;
+    }
+  }
+
+  /**
+   * Deliver again to a socket that is connected and is not being drained.
+   *
+   * `flush` was called from exactly one place — the `auth` case, right after
+   * `ready` — so the only way a queued envelope reached a connected device
+   * was for that device to reconnect. A live push that went nowhere (a stale
+   * presence record, an instance that went away between the publish and the
+   * frame) therefore waited for a reconnect that a healthy client has no
+   * reason to make, and the floor was QUEUE_TTL_HOURS: three days, with the
+   * sender told `sent` and nothing anywhere saying otherwise.
+   *
+   * The signal is a mailbox that is not EMPTYING, not a mailbox that is
+   * full. A device draining a backlog holds a non-empty mailbox for as long
+   * as that takes and is working perfectly; one whose length has not moved
+   * across a whole interval, while its socket is right here, is one whose
+   * mail is not arriving. So the check is one `LLEN` per local socket per
+   * pass — the same shape and cadence as the presence refresh beside it —
+   * and only a length that has not changed since the last pass costs a
+   * flush.
+   *
+   * That makes the worst case a re-delivery per mailbox per interval, which
+   * the client already handles: delivery is at-least-once and dedupe is by
+   * envelope id (§12.5). Doing nothing was the other option, and it is what
+   * three days of invisible mail looked like.
+   */
+  async reflushStalled(flushTo) {
+    if (this.reflushing) return;
+    this.reflushing = true;
+    try {
+      for (const [rid, ws] of this.local) {
+        let len;
+        try {
+          len = await this.cmd.llen(`q:${rid}`);
+        } catch {
+          continue; // the next pass asks again
+        }
+        const before = this.lastMailboxLen.get(rid);
+        if (len === 0) {
+          this.lastMailboxLen.delete(rid);
+          continue;
+        }
+        this.lastMailboxLen.set(rid, len);
+        if (before !== len) continue; // it is moving: the client is draining
+        METRICS.reflushedTotal += 1;
+        try {
+          await flushTo(rid, ws);
+        } catch {
+          // A socket that has gone, or a store that is unreachable for a
+          // moment. Either way the next pass tries again.
+        }
+      }
+      // Rids that are no longer connected here stop being remembered.
+      for (const rid of this.lastMailboxLen.keys()) {
+        if (!this.local.has(rid)) this.lastMailboxLen.delete(rid);
+      }
+    } finally {
+      this.reflushing = false;
     }
   }
 
@@ -1525,9 +1675,19 @@ function createServer(opts = {}) {
   const sweeper = setInterval(() => Promise.resolve(coord.sweep()).catch(() => {}), CFG.sweepIntervalMs);
   sweeper.unref();
 
+  // And on the same cadence, deliver again to any socket that is connected
+  // and whose mailbox has not moved since the last pass — a live push that
+  // went nowhere. `flush` is otherwise reached only from `auth`, so before
+  // this the recovery for a lost push was the recipient reconnecting.
+  const reflusher = setInterval(() => {
+    Promise.resolve(coord.reflushStalled((rid, ws) => coord.flush(rid, ws))).catch(() => {});
+  }, CFG.sweepIntervalMs);
+  reflusher.unref();
+
   httpServer.on('close', () => {
     clearInterval(heartbeat);
     clearInterval(sweeper);
+    clearInterval(reflusher);
     coord.close().catch(() => {});
   });
 

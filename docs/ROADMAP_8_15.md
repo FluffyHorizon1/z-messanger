@@ -2755,3 +2755,59 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A record that keeps only what its writer chose is not evidence about
    its writer.**
+
+76. **A message the relay said it had delivered, that nobody had.** Three
+   defects compound into one outage, and the review found them from two ends.
+
+   The presence refresh rethrew anything that was not an out-of-memory error
+   out of its loop, and the call site swallows it — so one reset connection
+   left every remaining socket's presence unrefreshed with nothing said.
+   Presence expires at 60 s against a 25 s refresh, so the window is real.
+
+   A cross-instance delivery was then counted **live** because the `PUBLISH`
+   resolved. That says the message bus accepted it, and nothing about whether
+   the instance named by `presence:` still holds a socket for the recipient;
+   the receiving side drops the frame silently when it does not, and answers
+   nobody. So the sender was told `queued: false` — and the wake push, which
+   is gated on `queued`, did not fire either.
+
+   And `flush` was called from exactly one place, the `auth` case. The only
+   recovery for a live push that went nowhere was the recipient reconnecting,
+   which a healthy connected client has no reason to do. The floor was
+   `QUEUE_TTL_HOURS`: **three days** of mail that the sender, the relay and
+   the recipient all believed had arrived.
+
+   `queued: true` is the honest answer for a cross-instance send. It is not a
+   lie in the other direction — the envelope is held until it is acknowledged
+   either way — and the wake push it now allows is right in the case that
+   matters and harmless in the other, being content-free and going to a
+   device that is already awake. The alternative, an acknowledgement back
+   over pub/sub with a timeout, would put a second round trip on the hot path
+   of every cross-instance send to recover one bit that **no client reads**:
+   the Dart client discards it, and the only consumer is the wake push.
+
+   The recovery is a re-flush, and the signal is a mailbox that is not
+   EMPTYING rather than one that is full. A device working through a backlog
+   holds a non-empty mailbox for as long as that takes and is working
+   perfectly; one whose length has not moved across a whole interval, while
+   its socket is right here, is one whose mail is not arriving. One `LLEN`
+   per local socket per pass — the same shape and cadence as the presence
+   refresh beside it — and only a length that has not changed costs a flush.
+
+   `z_cross_instance_total`, `z_reflushed_total` and
+   `z_presence_refresh_failed_total` make all three visible. The gap between
+   the first and `z_delivered_live_total` is the traffic whose delivery
+   depends on a presence record being true; anything but zero on the second
+   means a live push was lost; the third used to be an exception that aborted
+   a pass in silence.
+
+   Two bugs in the test harness had to be fixed before any of this could be
+   observed, and both are worth recording. The clone of `ha.test.js`'s client
+   never removes a timed-out waiter, which is harmless until a test **expects**
+   a timeout — then the dead waiter sits in front, matches the frame when it
+   finally arrives, resolves a promise nobody holds, and the frame is
+   consumed. And presence is written at `auth` as well as by the refresh, so a
+   failed refresh cannot be seen in the key's value at all; the keys have to
+   be cleared first for the pass to be the only writer.
+
+   **A publish is not a delivery, and nothing was checking.**

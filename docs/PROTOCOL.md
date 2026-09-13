@@ -978,6 +978,17 @@ relay cannot make.
 recipient is offline, the relay sends the token a **content‑free** wake signal
 ("you have mail"): no sender, no id, no payload. Retired tokens are deleted.
 
+A relay that runs as several instances MUST NOT report `queued:false` on the
+strength of having handed an envelope to another instance: the publish says
+the message bus accepted it, not that a socket received it, and the instance
+that sent it cannot see the difference. `queued:true` is correct there — the
+envelope is held until it is acknowledged either way — and it is what makes
+the wake signal fire in the case where the recipient turns out not to be
+connected after all. Such a relay MUST also deliver again, on its own, to a
+socket it holds whose mailbox has stopped emptying; without that, an envelope
+whose live push was lost waits for the recipient to reconnect, which a
+connected client has no reason to do, and the floor is `QUEUE_TTL_HOURS`.
+
 ### 12.4 Limits
 
 Per connection: a token bucket of `RATE_PER_SEC` (80) frames/s with burst
