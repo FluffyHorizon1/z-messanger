@@ -37,7 +37,8 @@ import 'vault.dart';
 /// inert — `tool/check_ga.py` refuses G3 a tick while it is empty.
 const String defaultKtLogUrl =
     String.fromEnvironment('KT_LOG_URL', defaultValue: 'https://kt.zmessengers.com');
-const String defaultKtLogPub = String.fromEnvironment('KT_LOG_PUB', defaultValue: '');
+const String defaultKtLogPub = String.fromEnvironment('KT_LOG_PUB',
+    defaultValue: '7nyv9LNKMfr9u3QrfSRUBsP+g/jZapwI3uxfklIU7xA=');
 const String defaultKtWitnessUrl = String.fromEnvironment('KT_WITNESS_URL', defaultValue: '');
 const String defaultKtWitnessPub = String.fromEnvironment('KT_WITNESS_PUB', defaultValue: '');
 
