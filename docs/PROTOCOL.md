@@ -1993,8 +1993,8 @@ All responses are JSON; error responses are `{ "error":code, "message":text }`.
 | `GET /kt/v1/sth` | the current head (§19.4) |
 | `GET /kt/v1/consistency?first=m&second=n` | `{ "sth", "first":m, "second":n, "proof":[b64…] }` — `PROOF(m, D[n])`; `second` defaults to the head's size |
 | `GET /kt/v1/lookup/<label hex>` | `{ "sth", "map":{ "leaf":{index,v}\|null, "bitmap":b64, "siblings":[b64…] }, "entry":<entry>\|null, "inclusion":{ "index", "size", "path":[b64…] }\|null }` |
-| `GET /kt/v1/history/<label hex>` | `{ "sth", "entries":[ { "entry":<entry>, "inclusion":… } … ] }`, oldest first |
-| `GET /kt/v1/entries?start=i&count=k` | `{ "sth", "start":i, "entries":[<entry>…] }` — `k ≤ 1000`, clipped to the head's size (mirrors) |
+| `GET /kt/v1/history/<label hex>?start=i&count=k` | `{ "sth", "start":i, "total":n, "entries":[ { "entry":<entry>, "inclusion":… } … ] }`, oldest first — `n` is how many versions the label has |
+| `GET /kt/v1/entries?start=i&count=k` | `{ "sth", "start":i, "total":n, "entries":[<entry>…] }` — `k ≤ 1000`, clipped to the head's size (mirrors); `n` is the head's size |
 | `POST /kt/v1/publish` | §19.6 |
 | `GET /kt/v1/pub` | `{ "pub":b64 }` — informative |
 | `GET /health` | `{ "size", "labels", "sthTs" }` — informative |
@@ -2003,6 +2003,15 @@ An `<entry>` is `{ "index":i, "label":b64, "v":version, "fp":b64,
 "valueHash":b64, "value":b64, "ts":ms }`; a reader MUST check
 `SHA-256(value) == valueHash` before hashing the leaf. Every proof in a
 response is relative to the `sth` in that response.
+
+The two paging routes are bounded in bytes as well as by `count`, because a
+value may be 256 KiB and the count alone therefore bounds nothing: a log MUST
+NOT serve more than a stated budget in one response, MUST serve at least one
+entry when the range it was asked for is non-empty, and MUST report `total`.
+A reader that has not seen `total` entries MUST ask again from where the page
+stopped rather than treat the page as the whole — and a log that stops short
+is not by itself a fault, because §19.8's judgement of the authenticated
+`latest` is what an incomplete history cannot defeat.
 
 ### 19.8 Self-monitoring by the account the entries are about
 

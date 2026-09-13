@@ -10,7 +10,8 @@
  *   GET  /kt/v1/sth                          the current signed tree head
  *   GET  /kt/v1/consistency?first=&second=   PROOF(first, D[second]); second defaults to the head's size
  *   GET  /kt/v1/lookup/<label hex>           head + map proof + latest entry + inclusion proof
- *   GET  /kt/v1/history/<label hex>          head + every entry for the label, each with an inclusion proof
+ *   GET  /kt/v1/history/<label hex>          head + a page of the label's entries, each with an inclusion
+ *                                            proof, plus `total`; ?start=&count= page it
  *   GET  /kt/v1/entries?start=&count=        head + a page of entries (mirrors); count ≤ 1000
  *   POST /kt/v1/publish                      {acct, v, fp, value, sig} → {index, sth} — see lib/log.js
  *   GET  /kt/v1/pub                          the log's public key (for a first pin; clients ship it)
@@ -30,9 +31,16 @@
  * per-address gate is only per-CLIENT when KT_CLIENT_IP_HEADER names a
  * header something in front is known to set; behind an unconfigured proxy
  * every request shares one address, which is why the total gate exists and
- * why it is the one that stops a flood. Reads are cheap (a lookup is under a
- * millisecond at a hundred thousand labels) and are left to the reverse
- * proxy in front.
+ * why it is the one that stops a flood. A lookup is cheap — under a
+ * millisecond at a hundred thousand labels — but the two paging routes were
+ * not, and saying "reads are left to the reverse proxy" was the mistake: a
+ * value may be 256 KiB, so `?count=1000` was ~333 MB in one string and
+ * `/kt/v1/history/<label>` had no count at all, which made every label a
+ * fixed URL that returns everything it has ever published, repeatable, and
+ * `cache-control: no-store` means nothing in front absorbs the repeat. Both
+ * are now bounded in BYTES (MAX_PAGE_BYTES) as well as by count, because the
+ * size of an entry is chosen by whoever published it, and both report
+ * `total` so a reader can tell a page from the whole.
  */
 
 const http = require('http');
@@ -53,6 +61,21 @@ const {
 
 const MAX_BODY = 400 * 1024;
 const MAX_PAGE = 1000;
+/**
+ * The most a read route will put in one response.
+ *
+ * `count` alone never bounded these. A value may be 256 KiB, so 1 000 entries
+ * is ~333 MB built as one `JSON.stringify` string, and `/kt/v1/history/<label>`
+ * took no count at all — every version a label had ever published, at a fixed
+ * URL, repeatable by anyone, behind `cache-control: no-store` so nothing in
+ * front absorbs a repeat. That is the second half of a publish flood: the
+ * flood does not only grow the log, it mints a permanent way to ask for all
+ * of it at once.
+ *
+ * 4 MiB is far above any honest page — a device list is a few KB, so this is
+ * hundreds of them — and far below what hurts.
+ */
+const MAX_PAGE_BYTES = 4 * 1024 * 1024;
 
 function json(res, status, body, extra = {}) {
   const text = JSON.stringify(body);
@@ -247,9 +270,14 @@ function createServer({
         if (p.startsWith('/kt/v1/history/')) {
           const label = parseLabel(p.slice('/kt/v1/history/'.length));
           if (!label) return fail(res, 400, 'bad_request', 'a label is 64 hex characters');
-          const r = log.history(label);
+          const start = intParam(url.searchParams.get('start'), 0);
+          const count = intParam(url.searchParams.get('count'), MAX_PAGE);
+          if (Number.isNaN(start) || Number.isNaN(count) || count < 1) return fail(res, 400, 'bad_request', 'start >= 0 and count >= 1');
+          const r = log.history(label, { start, count: Math.min(count, MAX_PAGE), maxBytes: MAX_PAGE_BYTES });
           return json(res, 200, {
             sth: sthToJson(r.sth),
+            start: r.start,
+            total: r.total,
             entries: r.entries.map((x) => ({ entry: entryToJson(x.entry), inclusion: inclusionToJson(x.inclusion) })),
           });
         }
@@ -257,8 +285,8 @@ function createServer({
           const start = intParam(url.searchParams.get('start'), 0);
           const count = intParam(url.searchParams.get('count'), 100);
           if (Number.isNaN(start) || Number.isNaN(count) || count < 1) return fail(res, 400, 'bad_request', 'start >= 0 and count >= 1');
-          const r = log.range(start, Math.min(count, MAX_PAGE));
-          return json(res, 200, { sth: sthToJson(r.sth), start, entries: r.entries.map(entryToJson) });
+          const r = log.range(start, Math.min(count, MAX_PAGE), { maxBytes: MAX_PAGE_BYTES });
+          return json(res, 200, { sth: sthToJson(r.sth), start, total: r.total, entries: r.entries.map(entryToJson) });
         }
         return fail(res, 404, 'not_found', 'no such route');
       }
@@ -371,7 +399,7 @@ function main() {
   process.on('SIGTERM', stop);
 }
 
-module.exports = { createServer, RateLimiter, MAX_BODY, MAX_PAGE };
+module.exports = { createServer, RateLimiter, MAX_BODY, MAX_PAGE, MAX_PAGE_BYTES };
 
 if (require.main === module) {
   try {

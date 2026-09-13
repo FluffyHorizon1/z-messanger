@@ -514,26 +514,76 @@ class KtLog {
     };
   }
 
-  /** Every entry for a label, oldest first, each with its inclusion proof under the returned head. */
-  history(label) {
+  /**
+   * How many of `indices`, taken in order from the front, fit in `maxBytes` —
+   * at least one, so a page is never empty while there is something to serve.
+   *
+   * The estimate costs nothing: `valueAt.len` is the length of the line the
+   * entry was written as, which is the served form plus `acct` and minus the
+   * proof, and both of those are small beside a sealed list. So the number of
+   * entries is decided BEFORE any value is read back, and the ones that do not
+   * fit are never fetched from disk at all. Reading them first and trimming
+   * afterwards would have done the expensive half of the work anyway, which is
+   * the half that hurts: `withValue` is a synchronous read per entry.
+   *
+   * A memory store keeps its values, so there is nothing to estimate from and
+   * nothing to save; the value's own length is exact there.
+   */
+  _fit(indices, maxBytes) {
+    if (!Number.isFinite(maxBytes)) return indices.length;
+    let bytes = 0;
+    for (let n = 0; n < indices.length; n++) {
+      const e = this.entries[indices[n]];
+      bytes += e.valueAt ? e.valueAt.len : servedBytes(e);
+      if (bytes > maxBytes) return Math.max(1, n);
+    }
+    return indices.length;
+  }
+
+  /**
+   * A page of a label's history, oldest first, each entry with its inclusion
+   * proof under the returned head, and `total` — how many the label has.
+   *
+   * `total` is the point of the paging rather than a convenience. This route
+   * is what an account's own device walks to find a version it did not issue
+   * (`adr/0006`), so a page that simply stopped would be a log able to hide an
+   * entry by being too big to serve — the same failure as an empty `entries`,
+   * reached by a different road. A reader that can see `total` can tell a page
+   * from the whole, and ask for the rest.
+   */
+  history(label, { start = 0, count = Infinity, maxBytes = Infinity } = {}) {
     const sth = this.sth();
-    const idx = this.byLabel.get(label.toString('hex')) || [];
+    const all = this.byLabel.get(label.toString('hex')) || [];
+    if (!Number.isInteger(start) || start < 0) {
+      throw new PublishError(400, 'bad_request', 'start must be >= 0');
+    }
+    if (count !== Infinity && (!Number.isInteger(count) || count < 1)) {
+      throw new PublishError(400, 'bad_request', 'count must be >= 1');
+    }
+    const wanted = all.slice(start, count === Infinity ? undefined : start + count);
+    const idx = wanted.slice(0, this._fit(wanted, maxBytes));
     return {
       sth,
+      start,
+      total: all.length,
       entries: idx.map((i) => ({ entry: this.withValue(this.entries[i]), inclusion: this._inclusion(i, sth.size) })),
     };
   }
 
   /** A page of entries for a mirror; [start, start + count) clipped to the head's size. */
-  range(start, count) {
+  range(start, count, { maxBytes = Infinity } = {}) {
     const sth = this.sth();
     if (!Number.isInteger(start) || start < 0 || !Number.isInteger(count) || count < 1) {
       throw new PublishError(400, 'bad_request', 'start must be >= 0 and count >= 1');
     }
     const end = Math.min(sth.size, start + count);
+    const wanted = [];
+    for (let i = start; i < end; i++) wanted.push(i);
+    const idx = wanted.slice(0, this._fit(wanted, maxBytes));
     return {
       sth,
-      entries: this.entries.slice(start, Math.max(start, end)).map((e) => this.withValue(e)),
+      total: sth.size,
+      entries: idx.map((i) => this.withValue(this.entries[i])),
     };
   }
 
@@ -543,6 +593,16 @@ class KtLog {
 }
 
 // --- JSON encodings shared by the server, the mirror and the tests --------------
+
+/**
+ * Roughly what an entry costs in a response: the sealed value in base64 plus
+ * the fixed fields around it. Only used where there is no stored line to
+ * measure — a memory store — and only to decide how many to serve, so a close
+ * estimate is enough and an estimate that errs large is the safe direction.
+ */
+function servedBytes(e) {
+  return Math.ceil((e.value ? e.value.length : 0) / 3) * 4 + 256;
+}
 
 /** The public form of an entry: never `acct`. */
 function entryToJson(e) {

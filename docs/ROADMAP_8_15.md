@@ -2583,3 +2583,49 @@ direction; the phases, their order and both ordering arguments stand.
 
    **"It heals" was true of the case somebody had in mind and false of the
    cheaper one nobody had.**
+
+72. **A read route with no byte cap is a permanent way to ask for the whole
+   log.** `count` never bounded these. A value may be 256 KiB, so
+   `/kt/v1/entries?count=1000` was ~333 MB built as one `JSON.stringify`
+   string, and `/kt/v1/history/<label>` took no count at all: every version a
+   label had ever published, at a fixed URL, repeatable by anyone, and behind
+   `cache-control: no-store` so nothing in front absorbs the repeat.
+
+   This is the second half of the publish flood (entry 69). The flood does
+   not only grow the log — on a 1 GB disk it can put ~2,900 maximum-size
+   entries under **one label if it likes**, which mints a fixed URL that
+   returns a gigabyte, permanently, to anyone who asks.
+
+   So both routes are bounded in **bytes** as well as by count, and the bound
+   is decided before any value is read back. `valueAt.len` — the length of
+   the line the entry was written as — is already known from the replay, so
+   the number of entries that fit is a sum over lengths the log already has,
+   and the entries that do not fit are never fetched off disk at all. Capping
+   after assembly would have done the expensive half of the work anyway:
+   `withValue` is a synchronous read per entry.
+
+   Two properties had to survive it, and each is a bug if it does not.
+
+   A page is **never empty while the head says there is something there**.
+   `kt/lib/mirror.js` treats a page with no entries as divergence and
+   poisons itself permanently, so "too big to serve" cannot be an answer; a
+   single entry over the budget is served alone. That floor is unreachable
+   over HTTP while a value is capped at 256 KiB and the budget is 4 MiB, so
+   it is asserted against the library with a budget of one byte — the day
+   either constant moves, it is what stops the cap becoming a fork.
+
+   And both routes report **`total`**, which is the point of the paging
+   rather than a convenience. `/history` is what an account's own device
+   walks to find a version it did not issue, so a page that simply stopped
+   would be a log able to hide an entry by being too big to serve — the same
+   failure as the empty `entries` array that §19.8 exists to defeat, reached
+   by a different road. The client pages until it has seen `total`.
+
+   What it must **not** do is treat a short page as a log fault. `fault` is
+   sticky and suppresses every later check — including the judgement of the
+   authenticated `latest`, which is the alarm an incomplete history cannot
+   defeat. A first draft of the client did raise a fault there, and the test
+   that catches a log omitting a rogue entry from its history failed: the
+   log could have switched its own monitoring off by serving one short page.
+
+   **A cap that a reader cannot tell from the whole is a place to hide.**

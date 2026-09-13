@@ -946,35 +946,62 @@ class KeyTransparency {
       if (ownAlert != null) return;
     }
     // And then every entry in our history must be one we know.
-    final hj = await _getJson(_url('/kt/v1/history/${_hex(label)}'));
-    if (hj == null) {
-      await _fail();
-      return;
-    }
-    KtTreeHead hh;
-    try {
-      hh = KtTreeHead.fromJson((hj['sth'] as Map).cast<String, Object?>());
-    } on KtVerifyException catch (e) {
-      await _setFault('history for this account: ${e.reason}');
-      return;
-    } catch (_) {
-      await _setFault('history for this account could not be read');
-      return;
-    }
-    if (!await _adopt(hh, logPub)) return;
-    for (final item in (hj['entries'] as List? ?? const [])) {
-      KtEntry e;
+    //
+    // Read as pages, because the log may answer with one. A version this
+    // device did not issue is what this walk exists to find, so stopping
+    // early would be a log able to hide an entry by serving a short page —
+    // the same failure as the empty `entries` above, reached by a different
+    // road. The page says how many the label has in total, and we keep asking
+    // until we have seen them all; a page that carries nothing new, or a
+    // `total` that shrinks under us, is a log that is not answering the
+    // question, which is a fault rather than a clean bill.
+    var start = 0;
+    var total = -1;
+    while (true) {
+      final hj = await _getJson(_url('/kt/v1/history/${_hex(label)}?start=$start'));
+      if (hj == null) {
+        await _fail();
+        return;
+      }
+      KtTreeHead hh;
       try {
-        e = await ktVerifyHistoryItem((item as Map).cast<String, Object?>(), head: hh, label: label);
-      } on KtVerifyException catch (err) {
-        await _setFault('history for this account: ${err.reason}');
+        hh = KtTreeHead.fromJson((hj['sth'] as Map).cast<String, Object?>());
+      } on KtVerifyException catch (e) {
+        await _setFault('history for this account: ${e.reason}');
         return;
       } catch (_) {
         await _setFault('history for this account could not be read');
         return;
       }
-      await _judgeOwnEntry(e.version, b64(e.fp), own);
-      if (ownAlert != null) return;
+      if (!await _adopt(hh, logPub)) return;
+      final items = hj['entries'] as List? ?? const [];
+      // An older log served no `total`; then one response is the whole
+      // history and this loop runs once, exactly as it did before.
+      final t = hj['total'];
+      total = t is int ? t : start + items.length;
+      for (final item in items) {
+        KtEntry e;
+        try {
+          e = await ktVerifyHistoryItem((item as Map).cast<String, Object?>(), head: hh, label: label);
+        } on KtVerifyException catch (err) {
+          await _setFault('history for this account: ${err.reason}');
+          return;
+        } catch (_) {
+          await _setFault('history for this account could not be read');
+          return;
+        }
+        await _judgeOwnEntry(e.version, b64(e.fp), own);
+        if (ownAlert != null) return;
+      }
+      start += items.length;
+      // A log that stops short is NOT a fault, and the difference matters.
+      // `fault` is sticky and suppresses every later check, the judgement of
+      // the authenticated `latest` above included — so a log that wanted to
+      // stop being watched could do it by serving one short page. What a log
+      // refuses to show is already covered, and covered better: `latest` is
+      // map-proven under a signed head and is judged before this walk runs,
+      // which is why an empty history says nothing here.
+      if (items.isEmpty || start >= total) return;
     }
   }
 
