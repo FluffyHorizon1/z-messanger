@@ -552,13 +552,36 @@ class KeyTransparency {
   }
 
   /// A contact's held list changed (installed in-band): re-check it soon.
-  void noteContactListChanged(String rid) {
+  ///
+  /// [stillPresent] is the routing ids the NEW list contains. A hold is kept
+  /// for every device still on the list and dropped only for devices the new
+  /// list actually removes.
+  ///
+  /// This used to clear the hold and restart the grace unconditionally, and
+  /// that made the one cost `adr/0006` imposes on T2 avoidable by repetition.
+  /// An attacker holding a contact's account root enrols a rogue device and
+  /// never publishes it; after 24 hours the rogue is held and stops receiving;
+  /// the attacker re-signs the same device set as a fresh list and delivers
+  /// it, the hold drops the instant it arrives, and the grace starts again.
+  /// Every 23 hours, for ever, and the device the log never saw keeps reading
+  /// messages. The list that "changed" did not remove it — it re-asserted it,
+  /// which is the opposite of a reason to trust it again.
+  /// [stillPresent] is required rather than defaulted: a caller that forgot
+  /// it would silently clear every hold, which is the bug this parameter
+  /// exists to fix, and a default would leave that one edit away.
+  void noteContactListChanged(String rid,
+      {required Set<String> stillPresent}) {
     final s = contacts[rid];
     if (s != null) {
-      // A new in-band list restarts the grace, and clears a hold made for
-      // the previous one until the log has been asked about this one.
-      s.unconfirmedSinceMs = null;
-      s.heldRids = {};
+      final kept = {
+        for (final r in s.heldRids)
+          if (stillPresent.contains(r)) r
+      };
+      // The grace restarts only when the hold is actually released. A list
+      // that keeps a held device keeps its clock too, or re-sending would buy
+      // another 24 hours of grace for the same device.
+      if (kept.isEmpty) s.unconfirmedSinceMs = null;
+      s.heldRids = kept;
       unawaited(_saveContact(rid));
     }
     _dirty.add(rid);

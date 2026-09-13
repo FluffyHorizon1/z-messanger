@@ -263,6 +263,85 @@ void main() {
     expect(alice.kt.heldRids(ben.myRid), isEmpty);
   });
 
+  test('re-sending the same list does not release a hold, and does not buy grace',
+      () async {
+    // The one cost ADR 0006 imposes on T2 used to be avoidable by
+    // repetition. An attacker holding Ben's account root enrols a rogue
+    // device and never publishes it; after the grace the rogue is held and
+    // stops receiving; the attacker re-signs the SAME device set as a fresh
+    // list and delivers it in-band, the hold drops the instant it arrives,
+    // and the grace starts again. Every 23 hours, for ever.
+    //
+    // The list that "changed" did not remove the rogue — it re-asserted it,
+    // which is the opposite of a reason to trust it again.
+    final (alice, ben) = await pair('alice10', 'ben10');
+    await alice.kt.check();
+    await ben.kt.check();
+    // Ben's log client goes quiet: the list he signs reaches Alice in-band
+    // and never the log, which is the split-view shape (T2) the hold exists
+    // to cost the attacker something for.
+    ben.kt.config = KtConfig.off;
+    final acct = await ben.accountIdentity();
+    final rogue = await ZIdentity.generate();
+    final cert = await acct.signDeviceCert(
+        deviceEdPub: rogue.edPub, deviceXPub: rogue.xPub, deviceId: 'rogue');
+    await ben.addMyDevice(cert);
+    await heldVersion(alice, ben.myRid, 2);
+    // Two checks, as test 2 does: the first records when the list went
+    // unconfirmed, the second measures the grace against it.
+    alice.kt.grace = const Duration(hours: 24);
+    await alice.kt.check();
+    alice.kt.grace = Duration.zero;
+    await alice.kt.check();
+    final rogueRid = await rogue.routingId();
+    expect(alice.kt.heldRids(ben.myRid), {rogueRid}, reason: 'held to begin with');
+    final since = alice.kt.statusOf(ben.myRid)!.unconfirmedSinceMs;
+    expect(since, isNotNull);
+
+    // The re-assertion: a fresh, genuinely signed list with the rogue still
+    // on it. Nothing about it is forged — that is why the old code believed
+    // it.
+    alice.kt.noteContactListChanged(ben.myRid, stillPresent: {rogueRid, ben.myRid});
+    expect(alice.kt.heldRids(ben.myRid), {rogueRid},
+        reason: 'a list that still contains the device keeps its hold');
+    expect(alice.kt.statusOf(ben.myRid)!.unconfirmedSinceMs, since,
+        reason: 'and does not restart the grace, or re-sending would buy 24 hours');
+
+    // And a list the install REFUSED must not clear it either. Ben sends a
+    // device list signed by somebody else's account: `_installContactDeviceList`
+    // returns early on the account-key check, so nothing was installed — and
+    // the log used to be told a new list had arrived all the same, which made
+    // "send a list the device will throw away" another way to buy 24 hours.
+    // Ben's own list, with its signature corrupted: `list.verify()` fails, so
+    // `_installContactDeviceList` returns without installing anything.
+    final held = jsonDecode(
+            (await alice.vault.kvGet('cdev_${ben.myRid}'))!)
+        as Map<String, Object?>;
+    final sigBytes = base64Decode(held['sig'] as String);
+    sigBytes[0] ^= 0xff;
+    held['sig'] = base64Encode(sigBytes);
+    await ben.debugSendRawInner(
+        alice.myRid,
+        InnerMessage(
+            kind: 'devlist',
+            mid: newMessageId(),
+            ts: DateTime.now().millisecondsSinceEpoch,
+            data: {'list': jsonEncode(held)}));
+    await Future<void>.delayed(const Duration(seconds: 2));
+    expect(alice.kt.heldRids(ben.myRid), {rogueRid},
+        reason: 'a list that was refused says nothing about the hold');
+    expect(alice.kt.statusOf(ben.myRid)!.unconfirmedSinceMs, since,
+        reason: 'nor about the grace');
+
+    // A list that actually DROPS the rogue releases it, which is the whole
+    // point of the hold being per-device.
+    alice.kt.noteContactListChanged(ben.myRid, stillPresent: {ben.myRid});
+    expect(alice.kt.heldRids(ben.myRid), isEmpty,
+        reason: 'the device the new list removed is no longer held');
+    expect(alice.kt.statusOf(ben.myRid)!.unconfirmedSinceMs, isNull,
+        reason: 'and the clock restarts once there is nothing being held');
+  });
+
   test('a list the log holds and the contact never received is installed from the log (11.5)', () async {
     final (alice, ben) = await pair('alice3', 'ben3');
     await alice.kt.check();

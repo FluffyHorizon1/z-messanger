@@ -5573,17 +5573,20 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// Verify (on receipt), store, and reconcile a contact's device list — adding
   /// newly-learned devices AND dropping revoked ones, so the fan-out set matches
   /// the list exactly.
-  Future<void> _installContactDeviceList(Contact contact, SignedDeviceList list,
+  /// Returns whether a persisted install actually happened — a refusal here
+  /// must not look like an acceptance to the caller, because the caller tells
+  /// the transparency log a new list arrived and that resets a hold.
+  Future<bool> _installContactDeviceList(Contact contact, SignedDeviceList list,
       {required bool persist, Map<String, String>? kv}) async {
     final rid = contact.rid;
     if (persist) {
       if (base64Encode(list.accountEdPub) != base64Encode(contact.accountEd)) {
-        return; // not signed by this contact's account key
+        return false; // not signed by this contact's account key
       }
-      if (!await list.verify()) return;
+      if (!await list.verify()) return false;
       final storedVer =
           int.tryParse(await vault.kvGet('cdev_ver_$rid') ?? '0') ?? 0;
-      if (list.version < storedVer) return; // stale replay
+      if (list.version < storedVer) return false; // stale replay
       await vault.kvPut('cdev_$rid', jsonEncode(list.toJson()),
           sensitive: false);
       await vault.kvPut('cdev_ver_$rid', '${list.version}', sensitive: false);
@@ -5688,6 +5691,16 @@ class ChatService extends ChangeNotifier implements KtHost {
       _pqLastSentMs.remove(rid);
       _offerPqIdentity(contact, _PqReason.volunteer);
     }
+    return true;
+  }
+
+  /// The routing ids of every device in a list.
+  Future<Set<String>> _routingIdsOf(SignedDeviceList list) async {
+    final out = <String>{};
+    for (final d in list.devices) {
+      out.add(await d.routingId());
+    }
+    return out;
   }
 
   Future<void> _saveExtra(String rid) async {
@@ -5869,9 +5882,18 @@ class ChatService extends ChangeNotifier implements KtHost {
       final list = SignedDeviceList.fromJson(
           (jsonDecode(inner.data['list'] as String) as Map)
               .cast<String, Object?>());
-      await _installContactDeviceList(contact, list, persist: true);
-      // A list that arrived in-band is checked against the log soon.
-      kt.noteContactListChanged(contact.rid);
+      if (!await _installContactDeviceList(contact, list, persist: true)) {
+        // Refused: not this account's list, or not verifiable, or a replay of
+        // a version already held. It said nothing, so the log is told nothing
+        // — a refused list used to reset the transparency hold and restart
+        // the grace all the same, which made "send a list the device will
+        // throw away" a way to keep a held device alive.
+        return;
+      }
+      // A list that arrived in-band is checked against the log soon, and the
+      // devices it still contains keep whatever hold they were under.
+      kt.noteContactListChanged(contact.rid,
+          stillPresent: await _routingIdsOf(list));
     } catch (_) {}
   }
 

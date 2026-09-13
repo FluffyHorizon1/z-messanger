@@ -2988,3 +2988,38 @@ direction; the phases, their order and both ordering arguments stand.
 
    **Every other field in that record is checked. This one was taken on
    trust because it arrived beside them.**
+
+82. **A hold released by the thing it was holding.** `noteContactListChanged`
+   cleared `unconfirmedSinceMs` and `heldRids` unconditionally, so the one
+   cost `adr/0006` imposes on T2 was avoidable by repetition.
+
+   An attacker holding a contact's account root enrols a rogue device and
+   never publishes it. After 24 hours the rogue is held and stops receiving.
+   The attacker then re-signs **the same device set** as a fresh list and
+   delivers it in-band: the hold drops the instant it arrives and the grace
+   starts again. Every 23 hours, for ever, and the device the log has never
+   seen keeps reading messages.
+
+   The list that "changed" did not remove the rogue — it re-asserted it,
+   which is the opposite of a reason to trust it again. So the hold is now
+   kept for every device the new list still contains and released only for
+   the ones it drops, and the grace clock restarts only when the hold is
+   actually released, since otherwise re-sending buys another 24 hours for
+   the same device.
+
+   `stillPresent` is a required parameter rather than a defaulted one. A
+   default would leave the original bug one forgotten argument away, and the
+   caller already has the parsed list in scope — it was discarding it at the
+   call boundary.
+
+   The second half was not in the review. `noteContactListChanged` ran even
+   when the install had been **refused**: `_installContactDeviceList` returns
+   early for a list that is not this account's, that does not verify, or that
+   replays an older version, and it returned `void`, so the caller could not
+   tell a refusal from an acceptance and told the log a new list had arrived
+   either way. "Send a list the device will throw away" was a second way to
+   clear the hold, and it did not even need the account root. It returns
+   `bool` now, and the test corrupts a signature to reach it.
+
+   **The hold has to survive the arrival of another list, or it holds
+   nothing.**
