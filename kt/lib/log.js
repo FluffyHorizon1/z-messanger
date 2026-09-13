@@ -61,6 +61,7 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 
 const { sha256, hashLeaf, MerkleLog } = require('./merkle.js');
 const { SparseMerkleMap, u64be } = require('./smt.js');
@@ -314,14 +315,78 @@ class FileStore {
     return Buffer.from(JSON.parse(buf.toString('utf8')).val, 'base64');
   }
 
-  /** Appends the entry and returns the byte range of the line it wrote. */
+  /**
+   * Appends the entry and returns the byte range of the line it wrote — or
+   * writes nothing at all and throws.
+   *
+   * `fs.writeSync` may write a PREFIX and return how much, without throwing.
+   * Measured: a single 1 MiB write returned 65536. Until 2026-09-14 the
+   * return value was ignored, and the consequences were the whole of it:
+   * `append` returned a byte range for bytes that were never written, the
+   * caller carried on and mutated both trees, the client was answered 201
+   * with a head signed over an entry that is not on disk — and the NEXT
+   * start died on "a torn write?" for ever, because the following append
+   * took its offset from the file's size and spliced itself onto the
+   * unterminated line. One short write, and the log never opens again.
+   *
+   * So: write until it is all written, and on anything short or throwing,
+   * truncate back to where the file began and throw. `publish` appends
+   * before it touches the trees, so a throw here leaves the log exactly as
+   * it was and the sender is told 500 rather than 201.
+   *
+   * The clean ENOSPC path was always safe. It is the silent partial write
+   * that was fatal, which is why the fix is the return value and not a
+   * bigger try/catch.
+   */
   append(entry) {
+    const fresh = this.fd === null && !fs.existsSync(this.file);
     if (this.fd === null) this.fd = fs.openSync(this.file, 'a');
     const off = fs.fstatSync(this.fd).size;
     const line = Buffer.from(JSON.stringify(entryToStored(entry)) + '\n', 'utf8');
-    fs.writeSync(this.fd, line);
-    fs.fsyncSync(this.fd);
+    let put = 0;
+    try {
+      while (put < line.length) {
+        const n = fs.writeSync(this.fd, line, put, line.length - put);
+        // A zero-byte write that does not throw would spin here for ever;
+        // it is a broken fd, and saying so beats hanging the process.
+        if (!(n > 0)) throw new Error(`${this.file}: wrote ${put + n} of ${line.length} bytes`);
+        put += n;
+      }
+      fs.fsyncSync(this.fd);
+    } catch (e) {
+      // Leave the file as it was found. A half-written line is not a smaller
+      // log, it is a log that cannot be opened.
+      try {
+        fs.ftruncateSync(this.fd, off);
+        fs.fsyncSync(this.fd);
+      } catch {}
+      throw e;
+    }
+    // The first append is also the file's creation, and fsyncing a file does
+    // not make the directory entry that names it durable. Without this, a
+    // machine that lost power after the very first publish came back with no
+    // file at all — and `readAll` reads a missing file as an empty log
+    // (ENOENT returns nothing), so it would have started signing a fresh
+    // history with the production key. Once per file, not once per append.
+    if (fresh) this._syncDir();
     return { off, len: line.length - 1 };
+  }
+
+  /** fsync the directory holding the file, so its name is durable too. */
+  _syncDir() {
+    let dfd;
+    try {
+      dfd = fs.openSync(path.dirname(this.file), 'r');
+    } catch {
+      return; // not every platform lets a directory be opened; the file is still synced
+    }
+    try {
+      fs.fsyncSync(dfd);
+    } catch {
+      // EINVAL on filesystems that do not support it — nothing to do about it here.
+    } finally {
+      fs.closeSync(dfd);
+    }
   }
 
   close() {

@@ -454,6 +454,27 @@ the log. Copy it anywhere; it is append‑only and self‑checking (a restart
 replays and re‑verifies every line, and refuses to start on a torn or
 edited file). A mirror (below) is a live backup that also verifies you.
 
+A publish writes its whole line or none of it: since 2026‑09‑14 the append
+loops until every byte is written and truncates back to where the line began
+if it cannot, so a failure is a `500` to the sender and an unchanged file
+rather than a log that never opens again. It also fsyncs the directory when
+it creates the file, because fsyncing a file does not make the name that
+finds it durable.
+
+A file an older build tore — a last line that starts and never finishes — is
+what `tools/repair.js` is for. Stop the log first; then
+
+```
+node tools/repair.js /var/lib/z-kt/entries.jsonl          # say what it would do
+node tools/repair.js /var/lib/z-kt/entries.jsonl --write  # do it
+```
+
+It removes the bytes after the file's last newline, keeps them in a
+`.partial-…` file beside it, and says whether the log opens afterwards. It
+will **not** touch anything else: damage inside a complete line is refused
+by name, because dropping whole entries to make a log start is a rewrite of
+the history rather than a repair — that case needs the backup or the mirror.
+
 ### 5. Run a witness — and have someone else run it
 
 A witness is a full mirror of the log that co‑signs every head it has

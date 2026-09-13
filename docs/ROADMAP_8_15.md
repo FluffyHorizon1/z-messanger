@@ -2629,3 +2629,46 @@ direction; the phases, their order and both ordering arguments stand.
    log could have switched its own monitoring off by serving one short page.
 
    **A cap that a reader cannot tell from the whole is a place to hide.**
+
+73. **A write that only half happened, reported as a success.**
+   `fs.writeSync` may write a PREFIX and return how much, without throwing.
+   Measured: one `writeSync` of a 1 MiB buffer returned **65536** and raised
+   nothing. `FileStore.append` ignored that number.
+
+   Everything after it followed: `append` returned a byte range for bytes
+   that were never written, `publish` carried on and mutated both trees, and
+   the client was answered `201` with a signed head committing to an entry
+   the log does not hold. Then the next start died on "a torn write?" — for
+   ever, because the following append takes its offset from the file's size
+   and splices itself onto the unterminated line. One short write and the
+   log never opens again, with nothing in `kt/tools/` to get it back.
+
+   The clean `ENOSPC` path was always safe: it threw, and `publish` appends
+   before it touches the trees, so a throw left the log exactly as it was.
+   It was the SILENT partial write that was fatal — which is why the fix is
+   the return value rather than a wider try/catch.
+
+   So the append loops until every byte is written, and on anything short or
+   throwing truncates back to where the line began and rethrows. Both halves
+   are tested, and they are different halves: a short write the kernel will
+   finish on the next call must be finished (the common case, and the one
+   that used to corrupt), while a short write followed by a full disk must
+   leave the file byte-for-byte as it was.
+
+   It also fsyncs the **directory** when it creates the file. Fsyncing a
+   file does not make the directory entry naming it durable, and the first
+   append is also the creation — so a machine that lost power there came
+   back with no file, which `readAll` reads as an empty log (`ENOENT` yields
+   nothing) and would then have begun signing a fresh history with the
+   production key. Once per file, not once per append.
+
+   `kt/tools/repair.js` is the way back from a file an older build tore. It
+   drops the bytes after the last newline, keeps them beside the file, says
+   whether the log opens afterwards, and writes nothing unless asked. It
+   refuses damage inside a complete line: dropping whole entries to make a
+   log start is a rewrite of the history, not a repair.
+
+   The mirror's own writer had the same defect and is fixed with it.
+
+   **A partial line is not a smaller log; it is a log that cannot be
+   opened.**

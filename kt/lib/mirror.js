@@ -187,11 +187,29 @@ class Mirror {
     }
     // Verified: persist the new entries, then the head.
     if (sth.size > from) {
-      const lines = this.entries.slice(from).map((e) => JSON.stringify(entryToJson(e)) + '\n').join('');
+      const lines = Buffer.from(this.entries.slice(from).map((e) => JSON.stringify(entryToJson(e)) + '\n').join(''), 'utf8');
       const fd = fs.openSync(this.entriesFile, 'a');
+      const at = fs.fstatSync(fd).size;
       try {
-        fs.writeSync(fd, lines);
+        // The same partial-write rule as the log's own append, and for the
+        // same reason: `fs.writeSync` may write a prefix and return how much
+        // without throwing, and a mirror whose file ends mid-line cannot be
+        // loaded again (`_load` parses every line). Write it all or leave
+        // the file as it was; the head below is only written after this, so
+        // a mirror that throws here re-fetches the same entries next time.
+        let put = 0;
+        while (put < lines.length) {
+          const n = fs.writeSync(fd, lines, put, lines.length - put);
+          if (!(n > 0)) throw new Error(`${this.entriesFile}: wrote ${put + n} of ${lines.length} bytes`);
+          put += n;
+        }
         fs.fsyncSync(fd);
+      } catch (e) {
+        try {
+          fs.ftruncateSync(fd, at);
+          fs.fsyncSync(fd);
+        } catch {}
+        throw e;
       } finally {
         fs.closeSync(fd);
       }
