@@ -112,6 +112,14 @@ void main() {
   test('a burst of inbound messages is acknowledged with one receipt',
       () async {
     final (a, b) = await pair();
+    // The window is a 300 ms wall-clock timer started by the FIRST inbound,
+    // and delivering twelve takes a good part of that on a busy machine: if
+    // it fires mid-loop the batch goes out early and the count below is the
+    // stragglers rather than the burst. This failed a full-suite run at 2
+    // (ten had already gone). Holding the window shut is what the test
+    // meant all along — that receipts do not go one per message — and the
+    // timer itself has its own test below.
+    b.debugHoldDeliveryReceipts = true;
     const n = 12;
     for (var i = 0; i < n; i++) {
       await a.sendText(b.myRid, 'burst $i');
@@ -124,6 +132,7 @@ void main() {
         reason: 'a receipt went out per message; they should be waiting '
             'for the window');
 
+    b.debugHoldDeliveryReceipts = false;
     await b.flushDeliveryReceipts();
     expect(b.pendingDeliveryReceipts, 0);
     expect(await outboxRows(b, a.myRid), 1,
