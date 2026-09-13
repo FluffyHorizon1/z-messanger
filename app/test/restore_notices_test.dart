@@ -172,11 +172,20 @@ void main() {
     expect(a.messagesByChat[b.myRid]!.last.body, 'there you are',
         reason: 'the session re-opened and the reply was read');
 
+    // Whatever the first episode ended up counting. A receipt or a
+    // device-list message left over from the old session lands in it too,
+    // and how many do is a question about what was in flight rather than
+    // about the rule under test — which is that the count stops once a
+    // message has decrypted. Asserting the number rather than that it stopped
+    // made this fail on a loaded machine at 2 where 1 was written.
+    final firstBefore = notices(a, b.myRid).single['n'];
+
     // A straggler from the old session, delivered late: a new episode.
     await a.debugInbound(stale[1]);
     final all = notices(a, b.myRid);
     expect(all, hasLength(2));
-    expect(all.first['n'], 1, reason: 'the old notice was not raised');
+    expect(all.first['n'], firstBefore,
+        reason: 'the old notice was raised after a message had decrypted');
     expect(all.last['n'], 1);
     expect(a.messagesByChat[b.myRid]!.last.body, contains('decrypt_failed'));
   });
