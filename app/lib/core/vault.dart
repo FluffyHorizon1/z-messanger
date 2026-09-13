@@ -88,7 +88,7 @@ class Vault {
   /// 3 — 8.1c: `forwarded`, which needs a column of its own — a 1:1 text
   ///     row's sealed body is the bare message, with no envelope to put a
   ///     flag in, and inventing one would misparse ordinary text.
-  static const int schemaVersion = 9;
+  static const int schemaVersion = 10;
 
   // Message ids are already stored in the clear (they are the primary key),
   // so `reply_to` — a mid within the same chat — reveals nothing the row
@@ -194,6 +194,33 @@ class Vault {
       // `enc_state`, which still loads, and the next receive writes it here.
       // Nothing is lost in between, because the old location is still read.
       await db.execute('ALTER TABLE conversations ADD COLUMN enc_skipped TEXT');
+    }
+    if (from < 10) {
+      // 17-review: the relay envelope id stops being the message id.
+      //
+      // A group send is one InnerMessage fanned to N members, and the outbox
+      // row carried the inner `mid` as its id — so N envelopes went to N
+      // mailboxes carrying one identical id, which is a membership
+      // correlator that needs none of R18's timing analysis. The id is now
+      // fresh per row (PROTOCOL §12.2 always said it was "unrelated to
+      // `mid`"), so the message a row belongs to has to be written down.
+      //
+      // `thread_rid` is where the MESSAGE row lives — the group id for a
+      // group send, the contact for a 1:1 — which is not the mailbox the
+      // envelope goes to, and conflating the two is why a group message's
+      // status never reached `sent`.
+      for (final column in const ['mid TEXT', 'thread_rid TEXT']) {
+        await db.execute('ALTER TABLE outbox ADD COLUMN $column');
+      }
+      // Backfill exactly the rows the old convention applied to: one whose
+      // id matches a pending outgoing message to the same party. Offer and
+      // chunk rows already carried a fresh id and are left alone rather than
+      // given a mid that names nothing.
+      await db.execute('''
+        UPDATE outbox SET mid = id, thread_rid = rid
+        WHERE EXISTS (SELECT 1 FROM messages m
+                      WHERE m.mid = outbox.id AND m.rid = outbox.rid
+                        AND m.outgoing = 1)''');
     }
   }
 
@@ -359,7 +386,15 @@ class Vault {
               id TEXT NOT NULL,
               rid TEXT NOT NULL,
               payload TEXT NOT NULL,
-              created_ms INTEGER NOT NULL
+              created_ms INTEGER NOT NULL,
+              -- The message this envelope carries, and the thread its row
+              -- lives in. Both null for an envelope that is not a message
+              -- (a key offer, a file chunk). `id` is the ENVELOPE id and is
+              -- fresh per row: it is what the relay sees, and a group send
+              -- that reused one id across the fan-out told the relay the
+              -- membership (PROTOCOL §12.2).
+              mid TEXT,
+              thread_rid TEXT
             )''');
           await db.execute(_createGroupFanout);
           await db.execute('''

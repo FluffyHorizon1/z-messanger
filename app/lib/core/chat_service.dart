@@ -1379,8 +1379,13 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// decrypt on the same ratchet (which would reuse a message index / key).
   /// If persistence fails, the in‑memory ratchet is rolled back so no send
   /// index is silently skipped.
+  /// [threadRid] is where the MESSAGE row lives — a group id for a group
+  /// send, the contact otherwise. It is not the mailbox the envelope goes to
+  /// ([contact]'s), and the two were conflated: a group message's status
+  /// update looked for its row under the member's rid, matched nothing, and
+  /// left a grey clock for ever.
   Future<String> _sendInner(Contact contact, InnerMessage inner,
-      {Future<void> Function(Transaction txn)? also}) async {
+      {Future<void> Function(Transaction txn)? also, String? threadRid}) async {
     // ADR 0006: a conflict between the log and this contact's devices holds
     // what the user says to them until the next check agrees or the user
     // chooses to send anyway. The screen disables the composer first; this
@@ -1419,7 +1424,16 @@ class ChatService extends ChangeNotifier implements KtHost {
             });
           }
           await txn.insert('outbox', {
-            'id': inner.mid,
+            // The ENVELOPE id, which the relay sees — fresh per row, as
+            // PROTOCOL §12.2 has always specified. It used to be the inner
+            // `mid`, so a group send handed the relay one identical id
+            // addressed to every member's mailbox: membership, deterministic,
+            // needing none of R18's timing analysis. And because the mid is
+            // plaintext to every member, any one of them could hand the
+            // operator a mid and get the recipient set back.
+            'id': newMessageId(),
+            'mid': inner.mid,
+            'thread_rid': threadRid ?? contact.rid,
             'rid': contact.rid,
             'payload': payload,
             'created_ms': _now(),
@@ -1687,11 +1701,7 @@ class ChatService extends ChangeNotifier implements KtHost {
                 to: rid, id: id, payload: row['payload'] as String);
             await vault.db
                 .delete('outbox', where: 'seq = ?', whereArgs: [row['seq']]);
-            final n = await vault.db.update(
-                'messages', {'status': MsgStatus.sent},
-                where: 'mid = ? AND rid = ? AND outgoing = 1 AND status = ?',
-                whereArgs: [id, rid, MsgStatus.pending]);
-            if (n > 0) _updateLoadedStatus(rid, id, MsgStatus.sent);
+            await _markSentIfLast(row);
           } on RelayException catch (e) {
             if (e.message.contains('too_large') ||
                 e.message.contains('bad_send')) {
@@ -2315,18 +2325,52 @@ class ChatService extends ChangeNotifier implements KtHost {
     notifyListeners();
   }
 
-  Future<void> _onDelivered(DeliveredReceipt r) async {
-    final n = await vault.db.update('messages', {'status': MsgStatus.delivered},
-        where: 'mid = ? AND outgoing = 1 AND status < ?',
-        whereArgs: [r.id, MsgStatus.delivered]);
-    if (n > 0) {
-      for (final entry in messagesByChat.entries) {
-        _updateLoadedStatus(entry.key, r.id, MsgStatus.delivered,
-            onlyUpgrade: true);
-      }
-      notifyListeners();
-    }
+  /// Mark a message `sent` once the LAST envelope carrying it has gone.
+  ///
+  /// A 1:1 message is one envelope, so this is the moment it leaves. A group
+  /// message is one envelope per member: reporting `sent` on the first would
+  /// claim the message had left while some members' copies were still queued
+  /// behind a stalled mailbox, which is the sort of small lie a status icon
+  /// exists not to tell.
+  Future<void> _markSentIfLast(Map<String, Object?> row) async {
+    final mid = row['mid'] as String?;
+    if (mid == null) return; // a key offer or a file chunk: no status to move
+    final thread = row['thread_rid'] as String? ?? row['rid'] as String;
+    final left = firstIntValue(await vault.db.rawQuery(
+            'SELECT COUNT(*) FROM outbox WHERE mid = ? AND thread_rid = ?',
+            [mid, thread])) ??
+        0;
+    if (left > 0) return;
+    // A group's copies are queued one member at a time, so an empty outbox
+    // is not the same as a finished fan-out: the first member's envelope can
+    // be sent and deleted before the second has been queued at all, and an
+    // outbox count alone would call that "sent". What is still to be queued
+    // is exactly what `group_fanout` holds.
+    final planned = firstIntValue(await vault.db.rawQuery(
+            'SELECT COUNT(*) FROM group_fanout WHERE mid = ?', [mid])) ??
+        0;
+    if (planned > 0) return;
+    final n = await vault.db.update('messages', {'status': MsgStatus.sent},
+        where: 'mid = ? AND rid = ? AND outgoing = 1 AND status = ?',
+        whereArgs: [mid, thread, MsgStatus.pending]);
+    if (n > 0) _updateLoadedStatus(thread, mid, MsgStatus.sent);
   }
+
+  /// The relay's own delivery receipt. Deliberately does not move a status.
+  ///
+  /// [DeliveredReceipt.id] is an ENVELOPE id, and this client's envelope ids
+  /// are fresh per row and mean nothing outside the relay (PROTOCOL §12.2).
+  /// Reading one as a message id was only ever right while the two were the
+  /// same string — which is the thing that told the relay who was in a group
+  /// — and it was unscoped by conversation, so any id a peer could guess
+  /// flipped whatever it matched.
+  ///
+  /// Nothing is lost by ignoring it: the relay sends this frame only for an
+  /// envelope whose sender it knows, and every envelope this client sends is
+  /// sealed and leaves on a connection that never authenticated (§12.1), so
+  /// it cannot produce one. Delivery is the peer's own `dlv` message, sent
+  /// inside the ratchet and naming the mids it is about.
+  Future<void> _onDelivered(DeliveredReceipt r) async {}
 
   // ------------------------------------------------------------------
   // Read receipts & chat lifecycle
@@ -4174,7 +4218,9 @@ class ChatService extends ChangeNotifier implements KtHost {
           try {
             final inner = InnerMessage.fromBytes(Uint8List.fromList(
                 utf8.encode(await vault.unseal(r['payload'] as String))));
-            await _sendInner(contact, inner);
+            // The message row lives under the GROUP, not under the member
+            // whose mailbox this envelope is addressed to.
+            await _sendInner(contact, inner, threadRid: r['gid'] as String);
             await vault.db.delete('group_fanout',
                 where: 'seq = ?', whereArgs: [r['seq']]);
             progressed = true;
@@ -4217,7 +4263,9 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> _fanGroupInner(Group g, InnerMessage inner) async {
     for (final rid in g.memberRids.toList()) {
       final c = contacts[rid];
-      if (c != null) await _sendInner(c, inner);
+      // One message, N envelopes, N mailboxes — and now N distinct envelope
+      // ids. The message row is the group's, not the member's.
+      if (c != null) await _sendInner(c, inner, threadRid: g.gid);
     }
   }
 
@@ -4482,7 +4530,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     for (final rid in g.memberRids.toList()) {
       final c = contacts[rid];
       if (c == null) continue;
-      await _sendInner(c, inner, also: (txn) async {
+      await _sendInner(c, inner, threadRid: g.gid, also: (txn) async {
         for (final p in chunkPayloads) {
           await txn.insert('outbox', {
             'id': newMessageId(),

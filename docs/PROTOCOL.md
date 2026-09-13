@@ -886,7 +886,14 @@ S→C  { "t":"error", "code":string, "id"?:envelopeId }
 ```
 
 `envelopeId` is 1–64 characters, chosen by the sender (*implementation note:*
-`b64url` of 16 random bytes; it is unrelated to `mid`). `payload` is an opaque
+`b64url` of 16 random bytes). It MUST be **fresh for every envelope**, and in
+particular MUST NOT be the `mid` of the message inside it. One inner message
+addressed to several mailboxes — a group fan‑out, or a mirror to your own
+devices — is several envelopes, and reusing one id across them hands the relay
+the recipient set directly, with none of the timing analysis R18 describes;
+worse, a `mid` is plaintext to every member, so any one of them could name a
+message to the operator and be told who else received it. This was the rule
+from the start and the client broke it until 2026‑09‑13. `payload` is an opaque
 string ≤ `MAX_ENVELOPE_BYTES` (default 1,000,000) characters; the WebSocket
 frame limit is that plus 4096. Error codes: `rate_limited`, `bad_json`,
 `internal`, `bad_auth`, `not_authed`, `bad_send`, `too_large`, `bad_push`,

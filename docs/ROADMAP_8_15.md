@@ -1839,3 +1839,40 @@ direction; the phases, their order and both ordering arguments stand.
    contact list is refused rather than quietly re-verified: the digits would
    support it, but the revealed bundle need not be the one already held, so it
    is another decision.
+
+52. **The relay was told who was in every group, by the client, in the one
+   field nobody thought of as a field.** A group message is one inner message
+   fanned to N members over N pairwise ratchets — N envelopes, N mailboxes,
+   one socket. The outbox row carried the message's own `mid` as its relay
+   envelope id, so all N envelopes arrived bearing one identical string. That
+   is the recipient set, handed over outright, with none of the timing
+   analysis R18 spends two paragraphs on. Worse in kind: a `mid` is plaintext
+   to every member, so any one of them could name a message to the operator
+   and be told retroactively who else had received it.
+
+   `PROTOCOL.md` §12.2 had said the envelope id was "unrelated to `mid`" since
+   the protocol was written, and `THREAT_MODEL.md`'s relay row said membership
+   could not be learned "from any envelope". Both were right; the client
+   simply did not do it. **A rule stated once in a specification and never
+   asserted anywhere is a rule that holds only while nobody needs it to.** The
+   fix is four characters at the insert (`newMessageId()`), and the test that
+   pins it reads the ids off the relay rather than off our own intentions —
+   because the claim is about what the relay receives, and asserting it
+   against the sending code is the claim restated.
+
+   **The same confusion had a visible half nobody connected to it.** A group
+   message's status update looked for its row under the *member's* routing id
+   while the row lives under the *group's*, so it matched nothing, every time,
+   and a group message kept a grey clock for ever. One conflation — the
+   mailbox an envelope goes to, and the thread the message belongs to — with
+   one symptom the relay could see and one the user could. The outbox now
+   carries both.
+
+   **And the fix had a race the test found before a user could.** Marking a
+   message sent when no envelope remains for it looks right and is not: a
+   group's copies are queued one member at a time, so the first member's
+   envelope can be sent and deleted before the second has been queued at all,
+   and an outbox count alone calls that "sent". What is still to be queued is
+   exactly what `group_fanout` holds, and the rule has to ask both. The test
+   that caught it stages the real case — one member's mailbox full, against a
+   relay started with a small cap — rather than the convenient one.
