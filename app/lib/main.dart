@@ -16,6 +16,7 @@ import 'package:z_protocol/z_protocol.dart';
 
 import 'core/app_lock.dart';
 import 'core/chat_service.dart';
+import 'core/connect_invites.dart';
 import 'core/prefs.dart';
 import 'core/push_service.dart';
 import 'core/relay_url.dart';
@@ -403,6 +404,11 @@ class _BootstrapperState extends State<Bootstrapper>
         ChangeNotifierProvider<PushService>.value(value: _push!),
         ChangeNotifierProvider<AppLock>.value(value: lock!),
         ChangeNotifierProvider<AppPrefs>.value(value: _prefs!),
+        // Pending connect invites (17.3). Built from the service rather than
+        // held beside it: an invite is a ceremony against this account's
+        // identity and this device's relay, and both live there.
+        ChangeNotifierProvider<ConnectInvites>(
+            create: (_) => ConnectInvites(service)),
       ],
       child: _shell(mode: mode, home: const HomeScreen(), overlay: overlay),
     );

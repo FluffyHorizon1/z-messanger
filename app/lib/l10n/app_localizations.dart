@@ -2599,6 +2599,192 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Run again'**
   String get cbAgain;
+
+  /// Tab: invite someone you cannot meet in person. Upper case in the design, like the other three tabs.
+  ///
+  /// In en, this message translates to:
+  /// **'CONNECT'**
+  String get addConnect;
+
+  /// Explains the CONNECT tab. 'even one you do not trust' is the load-bearing clause: it is what makes this different from pasting a code, and the reason the digit comparison exists.
+  ///
+  /// In en, this message translates to:
+  /// **'For someone you cannot stand next to. Send them a one-time invite over any channel — even one you do not trust — then compare eight digits to prove nobody was in the middle.'**
+  String get connectIntro;
+
+  /// Button: generate a one-time invite to send to someone.
+  ///
+  /// In en, this message translates to:
+  /// **'Create an invite'**
+  String get connectCreate;
+
+  /// Heading above the field where an invite someone sent you is pasted.
+  ///
+  /// In en, this message translates to:
+  /// **'Open an invite'**
+  String get connectOpenTitle;
+
+  /// Label of the field that accepts either rendering of an invite.
+  ///
+  /// In en, this message translates to:
+  /// **'Invite link or code'**
+  String get connectOpenField;
+
+  /// Button: start the ceremony for the invite that was just pasted.
+  ///
+  /// In en, this message translates to:
+  /// **'Open'**
+  String get connectOpen;
+
+  /// Copies the invite link to the clipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy link'**
+  String get connectShareLink;
+
+  /// Copies the printed invite code to the clipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy code'**
+  String get connectShareCode;
+
+  /// Confirmation that the invite is on the clipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Copied'**
+  String get connectCopied;
+
+  /// Label above the invite rendered as a URL.
+  ///
+  /// In en, this message translates to:
+  /// **'Link'**
+  String get connectLinkLabel;
+
+  /// Label above the invite rendered as letters to read aloud.
+  ///
+  /// In en, this message translates to:
+  /// **'Code'**
+  String get connectCodeLabel;
+
+  /// Says the two renderings are one secret, so nobody sends both thinking they are separate steps.
+  ///
+  /// In en, this message translates to:
+  /// **'The link and the code are the same invite. Send whichever suits the channel.'**
+  String get connectSameSecret;
+
+  /// The invite's two limits. Both are load-bearing: the invite is a bearer token until it is used, so whoever opens it first is who you will be connected to.
+  ///
+  /// In en, this message translates to:
+  /// **'Works once, and expires after 24 hours.'**
+  String get connectOneTime;
+
+  /// State of an invite that has been created but not yet answered.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for them to open it'**
+  String get connectPending;
+
+  /// State of an invite that has been opened and is part-way through the exchange.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for them'**
+  String get connectPendingOpened;
+
+  /// State of an invite older than 24 hours. It will not be completed.
+  ///
+  /// In en, this message translates to:
+  /// **'Expired'**
+  String get connectExpired;
+
+  /// State of an invite that was stopped because something did not check out.
+  ///
+  /// In en, this message translates to:
+  /// **'Refused'**
+  String get connectAborted;
+
+  /// Removes a pending invite from the list.
+  ///
+  /// In en, this message translates to:
+  /// **'Discard'**
+  String get connectDiscard;
+
+  /// Asks the relay whether anything has arrived for the pending invites yet.
+  ///
+  /// In en, this message translates to:
+  /// **'Check now'**
+  String get connectCheck;
+
+  /// Shown when there are no pending invites.
+  ///
+  /// In en, this message translates to:
+  /// **'No invites waiting.'**
+  String get connectNoInvites;
+
+  /// Heading of the screen shown when both sides have revealed and the eight digits are ready.
+  ///
+  /// In en, this message translates to:
+  /// **'Compare these digits'**
+  String get connectConfirmTitle;
+
+  /// Explains what the comparison proves. 'exactly the same' and the list of who is excluded are both load-bearing: the whole value of the ceremony is in this step being done properly.
+  ///
+  /// In en, this message translates to:
+  /// **'Read these eight digits to {name} on a call, or in person. They must see exactly the same. If they do, nobody is in the middle — not the relay, not the network, not whoever could see the message that carried the invite.'**
+  String connectConfirmBody(Object name);
+
+  /// Button: the two people read the same digits. Adds the contact as verified.
+  ///
+  /// In en, this message translates to:
+  /// **'They match'**
+  String get connectMatch;
+
+  /// Button: add the contact now and compare later. The contact is added unverified.
+  ///
+  /// In en, this message translates to:
+  /// **'We have not compared yet'**
+  String get connectNotYet;
+
+  /// Button: the digits differed. Nothing is added and the invite is stopped.
+  ///
+  /// In en, this message translates to:
+  /// **'They do not match'**
+  String get connectMismatch;
+
+  /// Confirmation after a matched comparison.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} added and verified'**
+  String connectAdded(Object name);
+
+  /// Confirmation after adding without comparing. The 'but not verified' half must survive translation: it is the honest state, and the user needs to know the tick is missing.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} added, but not verified'**
+  String connectAddedUnverified(Object name);
+
+  /// Explains what an unverified contact means and where to fix it. Shown after adding without comparing.
+  ///
+  /// In en, this message translates to:
+  /// **'Nobody compared the digits, so this contact is unverified. Compare safety numbers from their chat whenever you can.'**
+  String get connectUnverifiedNote;
+
+  /// Confirmation after a mismatch. Must be unambiguous that no contact exists.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopped. Nothing was added.'**
+  String get connectStopped;
+
+  /// Explains a mismatch and what to do. 'Do not try the same invite again' is load-bearing: a retry would meet the same attacker.
+  ///
+  /// In en, this message translates to:
+  /// **'If the digits differ, someone is relaying between you. Do not try the same invite again — make a new one and send it another way.'**
+  String get connectMismatchWarning;
+
+  /// Heading above the list of invites that have been created or opened and are not finished yet.
+  ///
+  /// In en, this message translates to:
+  /// **'Invites in flight'**
+  String get connectPendingTitle;
 }
 
 class _AppLocalizationsDelegate

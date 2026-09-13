@@ -1552,4 +1552,107 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get cbAgain => 'Run again';
+
+  @override
+  String get addConnect => 'CONNECT';
+
+  @override
+  String get connectIntro =>
+      'For someone you cannot stand next to. Send them a one-time invite over any channel — even one you do not trust — then compare eight digits to prove nobody was in the middle.';
+
+  @override
+  String get connectCreate => 'Create an invite';
+
+  @override
+  String get connectOpenTitle => 'Open an invite';
+
+  @override
+  String get connectOpenField => 'Invite link or code';
+
+  @override
+  String get connectOpen => 'Open';
+
+  @override
+  String get connectShareLink => 'Copy link';
+
+  @override
+  String get connectShareCode => 'Copy code';
+
+  @override
+  String get connectCopied => 'Copied';
+
+  @override
+  String get connectLinkLabel => 'Link';
+
+  @override
+  String get connectCodeLabel => 'Code';
+
+  @override
+  String get connectSameSecret =>
+      'The link and the code are the same invite. Send whichever suits the channel.';
+
+  @override
+  String get connectOneTime => 'Works once, and expires after 24 hours.';
+
+  @override
+  String get connectPending => 'Waiting for them to open it';
+
+  @override
+  String get connectPendingOpened => 'Waiting for them';
+
+  @override
+  String get connectExpired => 'Expired';
+
+  @override
+  String get connectAborted => 'Refused';
+
+  @override
+  String get connectDiscard => 'Discard';
+
+  @override
+  String get connectCheck => 'Check now';
+
+  @override
+  String get connectNoInvites => 'No invites waiting.';
+
+  @override
+  String get connectConfirmTitle => 'Compare these digits';
+
+  @override
+  String connectConfirmBody(Object name) {
+    return 'Read these eight digits to $name on a call, or in person. They must see exactly the same. If they do, nobody is in the middle — not the relay, not the network, not whoever could see the message that carried the invite.';
+  }
+
+  @override
+  String get connectMatch => 'They match';
+
+  @override
+  String get connectNotYet => 'We have not compared yet';
+
+  @override
+  String get connectMismatch => 'They do not match';
+
+  @override
+  String connectAdded(Object name) {
+    return '$name added and verified';
+  }
+
+  @override
+  String connectAddedUnverified(Object name) {
+    return '$name added, but not verified';
+  }
+
+  @override
+  String get connectUnverifiedNote =>
+      'Nobody compared the digits, so this contact is unverified. Compare safety numbers from their chat whenever you can.';
+
+  @override
+  String get connectStopped => 'Stopped. Nothing was added.';
+
+  @override
+  String get connectMismatchWarning =>
+      'If the digits differ, someone is relaying between you. Do not try the same invite again — make a new one and send it another way.';
+
+  @override
+  String get connectPendingTitle => 'Invites in flight';
 }

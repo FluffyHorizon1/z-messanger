@@ -1569,4 +1569,107 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get cbAgain => 'Repetir';
+
+  @override
+  String get addConnect => 'CONECTAR';
+
+  @override
+  String get connectIntro =>
+      'Para alguien con quien no puedes quedar en persona. Envíale una invitación de un solo uso por cualquier canal — incluso uno en el que no confíes — y después comparad ocho dígitos para demostrar que nadie estaba en medio.';
+
+  @override
+  String get connectCreate => 'Crear una invitación';
+
+  @override
+  String get connectOpenTitle => 'Abrir una invitación';
+
+  @override
+  String get connectOpenField => 'Enlace o código de invitación';
+
+  @override
+  String get connectOpen => 'Abrir';
+
+  @override
+  String get connectShareLink => 'Copiar enlace';
+
+  @override
+  String get connectShareCode => 'Copiar código';
+
+  @override
+  String get connectCopied => 'Copiado';
+
+  @override
+  String get connectLinkLabel => 'Enlace';
+
+  @override
+  String get connectCodeLabel => 'Código';
+
+  @override
+  String get connectSameSecret =>
+      'El enlace y el código son la misma invitación. Envía el que mejor le vaya al canal.';
+
+  @override
+  String get connectOneTime => 'Funciona una sola vez y caduca a las 24 horas.';
+
+  @override
+  String get connectPending => 'Esperando a que la abran';
+
+  @override
+  String get connectPendingOpened => 'Esperando a la otra persona';
+
+  @override
+  String get connectExpired => 'Caducada';
+
+  @override
+  String get connectAborted => 'Rechazada';
+
+  @override
+  String get connectDiscard => 'Descartar';
+
+  @override
+  String get connectCheck => 'Comprobar ahora';
+
+  @override
+  String get connectNoInvites => 'No hay invitaciones pendientes.';
+
+  @override
+  String get connectConfirmTitle => 'Comparad estos dígitos';
+
+  @override
+  String connectConfirmBody(Object name) {
+    return 'Léele estos ocho dígitos a $name por teléfono o en persona. Tiene que ver exactamente los mismos. Si es así, nadie está en medio: ni el relé, ni la red, ni quien pudiera ver el mensaje que llevaba la invitación.';
+  }
+
+  @override
+  String get connectMatch => 'Coinciden';
+
+  @override
+  String get connectNotYet => 'Todavía no los hemos comparado';
+
+  @override
+  String get connectMismatch => 'No coinciden';
+
+  @override
+  String connectAdded(Object name) {
+    return '$name añadido y verificado';
+  }
+
+  @override
+  String connectAddedUnverified(Object name) {
+    return '$name añadido, pero sin verificar';
+  }
+
+  @override
+  String get connectUnverifiedNote =>
+      'Nadie comparó los dígitos, así que este contacto está sin verificar. Compara los números de seguridad desde su chat en cuanto puedas.';
+
+  @override
+  String get connectStopped => 'Detenido. No se añadió nada.';
+
+  @override
+  String get connectMismatchWarning =>
+      'Si los dígitos no coinciden, alguien está retransmitiendo entre vosotros. No vuelvas a usar la misma invitación: crea otra y mándala por otra vía.';
+
+  @override
+  String get connectPendingTitle => 'Invitaciones en curso';
 }

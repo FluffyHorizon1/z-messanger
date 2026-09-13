@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/chat_service.dart';
+import 'connect_tab.dart';
 import 'theme.dart';
 
 class AddContactScreen extends StatefulWidget {
@@ -33,7 +34,9 @@ class _AddContactScreenState extends State<AddContactScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: _canScan ? 3 : 2, vsync: this);
+    // CONNECT is fourth and last: the three that came before it are for a
+    // code you can hand over, and this one is for when you cannot.
+    _tabs = TabController(length: _canScan ? 4 : 3, vsync: this);
     _loadMyCode();
   }
 
@@ -87,6 +90,7 @@ class _AddContactScreenState extends State<AddContactScreen>
             Tab(text: l.addMyCode),
             Tab(text: l.addPaste),
             if (_canScan) Tab(text: l.addScan),
+            Tab(text: l.addConnect),
           ],
         ),
       ),
@@ -96,6 +100,7 @@ class _AddContactScreenState extends State<AddContactScreen>
           _myCodeTab(l),
           _pasteTab(l),
           if (_canScan) _scanTab(l),
+          const ConnectTab(),
         ],
       ),
     );

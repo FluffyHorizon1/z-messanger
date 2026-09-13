@@ -41,6 +41,7 @@ MIGRATED = {
     "search_screen.dart",
     "home_screen.dart",
     "add_contact_screen.dart",
+    "connect_tab.dart",
     "onboarding_screen.dart",
     "group_screens.dart",
     "link_device_screen.dart",
