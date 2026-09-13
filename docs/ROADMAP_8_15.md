@@ -2103,3 +2103,42 @@ direction; the phases, their order and both ordering arguments stand.
    three of them went through green CI. **A count is evidence about the
    document, not about the system, and this one was inflated by 10% before
    anybody read it.**
+
+60. **Delete removed the row and kept the file.** `deleteMessage` — "delete
+   for me", the button that means *get this off my phone* — deleted the
+   `messages` row and the delivery receipts and stopped. For an attachment
+   that left everything: the `files` row, which holds the name the user gave
+   the file and the key its blob is sealed under; the blob; any chunks not
+   yet drained; and the reactions. Nothing in the app could reach any of it
+   afterwards and nothing ever collected it, so it stayed for the life of the
+   vault.
+
+   The way out was worse than the way it sat there. `BackupArchive.export`
+   walks `files` directly rather than through `messages` — on purpose, so a
+   file whose message row was lost is still recoverable — which makes that
+   table the archive's definition of what exists. So a photo the user deleted
+   was written into **every archive taken afterwards, under the filename they
+   deleted it by**, and an archive is the one artefact this design expects to
+   be handed to somebody.
+
+   The other three deletion paths — `_tombstone`, the disappearing-message
+   sweeper and removing a contact — all destroyed the blob, the row and the
+   chunks already. This one was the odd one out, and it is the only one a
+   user reaches deliberately.
+
+   Fixed in one transaction, with the blob unlinked after the commit rather
+   than before it: a blob unlinked ahead of a transaction that then fails
+   leaves a message pointing at nothing, while this way round the worst case
+   is a blob whose key has already been destroyed. `Vault.open` now sweeps
+   rows no message names and blobs no row names — what earlier builds
+   orphaned, and what a crash between `writeBlob` and the transaction that
+   records it leaves. The vault also sets `PRAGMA secure_delete`, which the
+   bundled SQLite already defaults on: a pin, not a fix, so that a property
+   worth having does not depend on a dependency's default surviving its next
+   bump. Written down as such, in the code and in the claim.
+
+   R28 records what none of this reaches: flash does not overwrite in place,
+   so a page a wear‑levelling controller retired is beyond anything above the
+   filesystem. Sealing is what makes that ciphertext, and factory reset is
+   the platform's job. **"Deleted" in an app means removed from the store it
+   controls; saying more than that would be a claim about hardware.**

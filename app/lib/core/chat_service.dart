@@ -3750,11 +3750,44 @@ class ChatService extends ChangeNotifier implements KtHost {
   }
 
   /// Remove a single message from this device (local only).
+  ///
+  /// Everything the message brought with it goes too. This used to delete the
+  /// `messages` row and the delivery receipts and stop there, which left the
+  /// `files` row — holding the attachment's NAME and the key its blob is
+  /// sealed under — the blob itself, any chunks still undrained, and the
+  /// reactions. None of it was reachable from the UI afterwards and nothing
+  /// ever collected it, so it simply stayed; and since [BackupArchive.export]
+  /// walks `files` directly rather than through `messages`, a photo the user
+  /// deleted went on being written into every archive taken after it, under
+  /// the filename they deleted it by. The other three deletion paths
+  /// ([_tombstone], the disappearing-message [_sweep], and removing a
+  /// contact) already did this correctly; this one was the odd one out.
   Future<void> deleteMessage(String rid, String mid) async {
-    await vault.db.delete('messages',
-        where: 'rid = ? AND mid = ?', whereArgs: [rid, mid]);
-    await vault.db.delete('delivery',
-        where: 'thread_rid = ? AND mid = ?', whereArgs: [rid, mid]);
+    String? fid;
+    await vault.db.transaction((txn) async {
+      final rows = await txn.query('messages',
+          columns: ['fid'],
+          where: 'rid = ? AND mid = ?',
+          whereArgs: [rid, mid],
+          limit: 1);
+      if (rows.isEmpty) return;
+      fid = rows.first['fid'] as String?;
+      if (fid != null) {
+        await txn.delete('files', where: 'fid = ?', whereArgs: [fid]);
+        await txn.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
+      }
+      await txn.delete('reactions',
+          where: 'rid = ? AND mid = ?', whereArgs: [rid, mid]);
+      await txn.delete('delivery',
+          where: 'thread_rid = ? AND mid = ?', whereArgs: [rid, mid]);
+      await txn.delete('messages',
+          where: 'rid = ? AND mid = ?', whereArgs: [rid, mid]);
+    });
+    // After the commit, not before: a blob unlinked ahead of a transaction
+    // that then fails leaves a message pointing at nothing. This way round
+    // the worst case is a blob whose key has already been destroyed, which
+    // is unreadable noise — and `Vault` sweeps it on the next open anyway.
+    if (fid != null) await vault.deleteBlob(fid!);
     messagesByChat[rid]?.removeWhere((m) => m.mid == mid);
     notifyListeners();
   }

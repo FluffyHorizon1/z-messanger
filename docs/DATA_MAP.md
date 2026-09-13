@@ -21,8 +21,8 @@ is encrypted, not merely that the file sits in an encrypted directory.
 
 | What | Where | Who can read it | How long |
 |---|---|---|---|
-| Message bodies, attachment metadata, reactions | `messages`, `files` — sealed cells | You, once the OS user and any passphrase are unlocked | Until deleted, or until a disappearing-message timer fires |
-| Attachment bytes | Files on disk, encrypted under a per-file key held in the vault | Same | Until deleted with the message |
+| Message bodies, attachment metadata, reactions | `messages`, `files` — sealed cells | You, once the OS user and any passphrase are unlocked | Until deleted, or until a disappearing-message timer fires. Until 2026‑09‑13 "delete for me" removed the `messages` row alone, so the attachment's row — its name and the key its blob is sealed under — the blob, its chunks and the reactions stayed for the life of the vault |
+| Attachment bytes | Files on disk, encrypted under a per-file key held in the vault | Same | Until deleted with the message. A vault sweeps anything orphaned by an earlier build, or by a crash between writing a blob and recording it, when it opens |
 | Your identity keys (Ed25519, X25519 seeds) | `kv`, sealed | Same | Life of the install, or until an identity reset |
 | Your account's post-quantum seed (32 bytes, ML-DSA) | `kv` key `pq_seed`, sealed | Same | Same |
 | Contacts: keys, display name, routing id, when added | `contacts.enc_bundle`, `contacts.enc_name` (both sealed), `contacts.rid`, `contacts.created_ms` | Same | Until the contact is deleted |
@@ -126,6 +126,7 @@ dependency-metadata blob in the APK either.
 
 | To remove | Do this | What survives |
 |---|---|---|
+| One message, on this device | Delete for me | Nothing in the vault: the row, the attachment's row, its blob, its chunks, the reactions and the delivery receipts all go together, and a backup taken afterwards does not carry them. What the storage hardware retains is R28 |
 | One message, everywhere | Delete for everyone | Nothing on honest clients; a malicious client can keep anything it received |
 | A contact and its history | Delete contact | Nothing locally. Their copy is theirs |
 | Everything on this device | Uninstall, or reset identity in Settings | Backups you made yourself; whatever your contacts hold |

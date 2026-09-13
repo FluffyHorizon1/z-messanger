@@ -228,6 +228,15 @@ leaves the device.
 | `reaction` | rid, mid, sender, emoji, timestamp |
 | `file` | attachment metadata; the bytes follow in `kind = 1` frames |
 
+Attachments are read from the `files` table directly — every row with
+`complete = 1` — rather than by walking `messages` and following each `fid`.
+That is deliberate (a file whose message row was lost should still be
+recoverable) and it means the table is the archive's definition of what
+exists. Until 2026‑09‑13 "delete for me" left the row behind, so every
+archive taken after a deletion carried the deleted attachment under the name
+it was deleted by; the delete path now removes the row, and a vault sweeps
+rows no message names when it opens (`app/test/delete_message_test.dart`).
+
 **Forward and backward compatibility.** A reader skips record types it does not
 know and fields it does not know, and missing fields take their column
 defaults. So an archive written at schema 1 restores onto a current build (the

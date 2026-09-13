@@ -345,6 +345,24 @@ class Vault {
       p.join(root.path, 'z.db'),
       options: OpenDatabaseOptions(
         version: schemaVersion,
+        // Freed pages are overwritten instead of being left with their old
+        // contents. A deleted message's BODY is sealed, but its `mid`, `rid`
+        // and timestamp are columns in the clear, so a page left behind still
+        // says that a message existed in that conversation at that moment —
+        // and the sealed body is right there for anyone who later gets the
+        // master key. `delete` is supposed to be the end of it.
+        //
+        // The SQLite that `sqlite3_flutter_libs` bundles is already compiled
+        // with this on (`PRAGMA secure_delete` reads 1 before this line), so
+        // today it changes nothing. It is here to PIN it: the property the
+        // vault needs should not be a dependency's default that a version
+        // bump can quietly drop. `delete_message_test.dart` asserts the
+        // effect — a deleted row's id is not left in the file — which is what
+        // would notice if both this and the default went away.
+        //
+        // Per-connection, so it is set on every open, and in `onConfigure`
+        // because the migration below deletes rows.
+        onConfigure: (db) => db.execute('PRAGMA secure_delete = ON'),
         onUpgrade: _migrate,
         onCreate: (db, v) async {
           await db.execute('''
@@ -440,8 +458,66 @@ class Vault {
         },
       ),
     );
+    await _sweepOrphans(db, filesDir);
     return Vault._(db, root, filesDir, SecretKey(masterKeyBytes),
         masterKeyBytes, deviceSecret, fallback, hasPass);
+  }
+
+  /// Everything that outlived the message it belonged to.
+  ///
+  /// Until 2026-09-13 `ChatService.deleteMessage` removed the `messages` row
+  /// and nothing else, so an attachment's row — which holds its NAME and the
+  /// key its blob is sealed under — survived the delete, as did the blob, the
+  /// undrained chunks, and the reactions. Backups walk `files` directly, so a
+  /// deleted photo went on being exported into every archive taken after it,
+  /// under its original filename.
+  ///
+  /// The delete path is fixed; this clears what earlier builds left, and
+  /// catches the crash window between [writeBlob] and the transaction that
+  /// records it. Rows first, then the blobs no row names any more.
+  static Future<void> _sweepOrphans(Database db, Directory filesDir) async {
+    const orphanClause = '''
+        NOT EXISTS (SELECT 1 FROM messages m
+                    WHERE m.mid = files.mid AND m.rid = files.rid)''';
+    await db.delete('files', where: orphanClause);
+    await db.rawDelete(
+        'DELETE FROM chunks WHERE fid NOT IN (SELECT fid FROM files)');
+    await db.rawDelete('''
+        DELETE FROM reactions WHERE NOT EXISTS
+          (SELECT 1 FROM messages m
+           WHERE m.mid = reactions.mid AND m.rid = reactions.rid)''');
+    await db.rawDelete('''
+        DELETE FROM delivery WHERE NOT EXISTS
+          (SELECT 1 FROM messages m
+           WHERE m.mid = delivery.mid AND m.rid = delivery.thread_rid)''');
+
+    // Blobs no `files` row names. Named by fid, so the set of live names is
+    // one query; anything else in there is not reachable by any code path.
+    try {
+      final live = {
+        for (final r in await db.query('files', columns: ['fid']))
+          '${r['fid']}.bin'
+      };
+      for (final e in filesDir.listSync()) {
+        if (e is! File) continue;
+        final name = p.basename(e.path);
+        if (!name.endsWith('.bin') || live.contains(name)) continue;
+        try {
+          final len = e.lengthSync();
+          e.writeAsBytesSync(Uint8List(len), flush: true);
+        } catch (_) {}
+        try {
+          e.deleteSync();
+        } catch (_) {}
+      }
+    } catch (_) {
+      // A missing or unreadable files directory is not a reason to refuse to
+      // open the vault.
+    }
+
+    // No VACUUM: `secure_delete` has zeroed the pages these deletes freed, so
+    // rebuilding the file would reclaim disk and nothing else — and a vault
+    // rebuild at every app start is not a price worth paying for that.
   }
 
   // ------------------------------------------------------------------
