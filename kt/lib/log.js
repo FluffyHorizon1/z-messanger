@@ -199,6 +199,11 @@ class PublishError extends Error {
 /** Entries in memory only — tests, and the `kt/server.js --ephemeral` flag. */
 class MemoryStore {
   *readAll() {}
+  /** Nothing to come back to, so nothing to check on the way in. */
+  readHead() {
+    return null;
+  }
+  writeHead() {}
   /** No file, so nothing can be re-read: a memory entry keeps its value. */
   append() {
     return null;
@@ -224,6 +229,7 @@ class FileStore {
    */
   constructor(file, { chunkBytes = REPLAY_CHUNK } = {}) {
     this.file = file;
+    this.headFile = `${file}.head.json`;
     this.chunkBytes = chunkBytes;
     this.fd = null;
     this.readFd = null;
@@ -372,6 +378,72 @@ class FileStore {
     return { off, len: line.length - 1 };
   }
 
+  /**
+   * The last head this log signed, or null if it has never written one.
+   *
+   * It sits beside the entries and is what stops a log that has LOST some of
+   * them from signing a smaller history as though it were the whole of it.
+   * Read raw: it is checked against the replayed tree by `KtLog`, which is
+   * the only thing that can say whether it is consistent.
+   */
+  readHead() {
+    let text;
+    try {
+      text = fs.readFileSync(this.headFile, 'utf8');
+    } catch (e) {
+      if (e.code === 'ENOENT') return null;
+      throw e;
+    }
+    let j;
+    try {
+      j = JSON.parse(text);
+    } catch {
+      throw new Error(`${this.headFile}: not JSON — the log will not start against a head it cannot read`);
+    }
+    return {
+      size: j.size,
+      logRoot: Buffer.from(j.logRoot, 'base64'),
+      mapRoot: Buffer.from(j.mapRoot, 'base64'),
+      ts: j.ts,
+      sig: Buffer.from(j.sig, 'base64'),
+    };
+  }
+
+  /**
+   * Records a head, durably, by writing a new file and renaming it over the
+   * old one — so a reader sees the old head or the new one and never half of
+   * either. Called before the publish that produced it is acknowledged.
+   */
+  writeHead(head) {
+    const tmp = `${this.headFile}.tmp`;
+    const text = JSON.stringify(
+      {
+        size: head.size,
+        logRoot: head.logRoot.toString('base64'),
+        mapRoot: head.mapRoot.toString('base64'),
+        ts: head.ts,
+        sig: head.sig.toString('base64'),
+      },
+      null,
+      2
+    );
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      const buf = Buffer.from(text + '\n', 'utf8');
+      let put = 0;
+      while (put < buf.length) {
+        const n = fs.writeSync(fd, buf, put, buf.length - put);
+        if (!(n > 0)) throw new Error(`${tmp}: wrote ${put + n} of ${buf.length} bytes`);
+        put += n;
+      }
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, this.headFile);
+    this._syncDir();
+  }
+
   /** fsync the directory holding the file, so its name is durable too. */
   _syncDir() {
     let dfd;
@@ -435,7 +507,7 @@ class KtLog {
    * @param {number} [o.resignMs]            how old an unchanged head may get before it is re-signed
    * @param {() => number} [o.now]           the clock (tests)
    */
-  constructor({ store, signingKey, resignMs = 10 * 60 * 1000, now = Date.now }) {
+  constructor({ store, signingKey, resignMs = 10 * 60 * 1000, now = Date.now, minSize = 0 }) {
     this.store = store;
     this.signingKey = signingKey;
     this.publicKey = rawPublicKey(signingKey);
@@ -449,6 +521,70 @@ class KtLog {
     this.byLabel = new Map();
     this._sth = null;
     for (const e of store.readAll()) this._apply(e, true);
+    this._checkAgainstLastHead(minSize);
+  }
+
+  /**
+   * Refuse to sign a history smaller than the one already signed.
+   *
+   * Replay used to believe whatever was on disk. Truncate the file at a line
+   * boundary and the log starts cleanly and signs a valid head at the shorter
+   * size — and the realistic way to do that is not an attacker. `KT_DATA`
+   * pointing where the disk did not mount makes the log come up at size 0
+   * with `/health` answering 200, and it begins signing a brand-new history
+   * with the production key. Restoring yesterday's snapshot does the same
+   * thing more quietly. Every client holding a head then enters permanent
+   * log-fault, which is the state `adr/0006` reserves for a log caught
+   * forking — correctly, since that is what this is.
+   *
+   * Two floors, because they fail differently.
+   *
+   * The head file catches a log that lost entries while keeping its data
+   * directory: a truncation, a restored snapshot, a half-copied file. It is
+   * exact — the replayed tree must reproduce the root that head committed to
+   * at that size, so a file of the right length with the wrong contents is
+   * caught too.
+   *
+   * `minSize` catches the case the head file cannot, which is the whole
+   * directory going missing: an unmounted disk takes `head.json` with it, so
+   * a floor that lives in the environment is the only one left standing. It
+   * is a floor and not an expected size, so it stays true as the log grows
+   * and an operator sets it once.
+   */
+  _checkAgainstLastHead(minSize) {
+    const size = this.entries.length;
+    if (size < minSize) {
+      throw new Error(
+        `the log replayed ${size} entries but KT_MIN_SIZE says at least ${minSize}: ` +
+          'refusing to sign a smaller history than the one this deployment is known to have ' +
+          '(a data directory that did not mount looks exactly like this)'
+      );
+    }
+    const last = this.store.readHead();
+    if (!last) return;
+    if (size < last.size) {
+      throw new Error(
+        `the log replayed ${size} entries but its last signed head covers ${last.size}: ` +
+          'refusing to sign a smaller history than one it has already signed'
+      );
+    }
+    if (!this.tree.rootAt(last.size).equals(last.logRoot)) {
+      throw new Error(
+        `the log's entries do not reproduce the root of its last signed head at size ${last.size}: ` +
+          'the file is not a prefix of the history this key has already committed to'
+      );
+    }
+  }
+
+  /**
+   * Signs a head and records it, before the publish that produced it is
+   * acknowledged. On the way back up this is what a later start is held to,
+   * so it has to reach the disk before the sender is told `201` — a head
+   * promised to a client and not written down is exactly the gap the check
+   * above exists to close.
+   */
+  _recordHead() {
+    this.store.writeHead(this.sth());
   }
 
   get size() {
@@ -537,6 +673,7 @@ class KtLog {
     }
     const entry = { index: this.entries.length, label, version, fp, valueHash, value, acct, ts: this.now() };
     this._apply(entry, false);
+    this._recordHead();
     return entry;
   }
 

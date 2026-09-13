@@ -461,6 +461,24 @@ rather than a log that never opens again. It also fsyncs the directory when
 it creates the file, because fsyncing a file does not make the name that
 finds it durable.
 
+Beside it is `entries.jsonl.head.json`: the last head the log signed,
+written before the publish that produced it was answered. On the way back up
+the log refuses to start unless the entries it replays reproduce that head's
+root at that size — so a truncated file, a restored snapshot or a
+half-finished copy is refused rather than signed as a smaller history. **Back
+both files up together**; a copy of the entries without the head is a log
+that will start and a copy of the head without the entries is one that will
+not, and the second is the safer of the two.
+
+That check cannot see the failure most likely to happen, which is why
+`KT_MIN_SIZE` exists. If `KT_DATA` points where the disk did not mount, the
+head file goes missing with the entries: the log comes up at size 0, `/health`
+answers 200, and it starts signing a brand-new history with the production
+key — which every client holding a head reads as a fork, permanently. Set
+`KT_MIN_SIZE` to a size the log has comfortably passed and it refuses to
+start instead. It is a floor rather than an expected size, so it stays true
+as the log grows; raise it when convenient. `0` disables it.
+
 A file an older build tore — a last line that starts and never finishes — is
 what `tools/repair.js` is for. Stop the log first; then
 

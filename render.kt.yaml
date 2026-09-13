@@ -46,6 +46,21 @@ services:
         sync: false             # 64 hex characters, generated on your machine; asked for at creation
       - key: KT_DATA
         value: /data
+      # Refuse to start if fewer than this many entries replay.
+      #
+      # The log records its last signed head beside its entries and will not
+      # sign a smaller history than that head covers — but a disk that does
+      # not mount takes the head file with it, and then the log comes up at
+      # size 0, /health answers 200, and it begins signing a brand-new
+      # history with the production key. Every client holding a head reads
+      # that as a fork, which is permanent.
+      #
+      # This is the floor that survives a lost disk, because it is not on it.
+      # It is a floor, not an expected size, so it stays true as the log
+      # grows: set it once to a size the log has comfortably passed, and
+      # raise it when convenient. 0 disables the check.
+      - key: KT_MIN_SIZE
+        value: "1"
       - key: KT_PORT
         value: "10000"          # Render routes to PORT, 10000 by default; bind exactly that
       - key: KT_HOST

@@ -19,6 +19,9 @@
  *
  * Run it:
  *   KT_SEED=<64 hex>  KT_DATA=/var/lib/z-kt  KT_PORT=8443  node server.js
+ *   KT_MIN_SIZE=<n> refuses to start if fewer than n entries replay — the
+ *   floor for a data directory that did not mount, which the head file
+ *   beside the entries cannot catch because it goes missing with them
  *   KT_SEED_FILE=/etc/z-kt/seed (32 raw bytes or 64 hex) is the alternative
  *   to KT_SEED; PORT is honoured when KT_PORT is unset (a cloud host injects
  *   it); KT_EPHEMERAL=1 keeps entries in memory (development only —
@@ -374,7 +377,15 @@ function main() {
     fs.mkdirSync(dir, { recursive: true });
     store = new FileStore(path.join(dir, 'entries.jsonl'));
   }
-  const log = new KtLog({ store, signingKey });
+  // A floor that lives in the environment rather than on the disk, because
+  // the failure it is for is the disk going missing: an unmounted KT_DATA
+  // takes the head file with it, and a log that comes up empty and starts
+  // signing a fresh history with the production key puts every client that
+  // holds a head into permanent fault. Set it once to a size the log has
+  // passed; it is a floor, so it stays true as the log grows.
+  const minSize = Number(process.env.KT_MIN_SIZE || 0);
+  if (!Number.isInteger(minSize) || minSize < 0) throw new Error('KT_MIN_SIZE must be a non-negative integer');
+  const log = new KtLog({ store, signingKey, minSize });
   const { httpServer } = createServer({
     log,
     publishPerMinute: +(process.env.PUBLISH_PER_MIN || 30),

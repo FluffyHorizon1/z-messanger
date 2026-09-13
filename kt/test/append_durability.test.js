@@ -34,6 +34,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { sha256 } = require('../lib/merkle.js');
 const {
   KtLog,
   FileStore,
@@ -164,24 +165,32 @@ test('the first line is durable by its name as well as its bytes', (t) => {
   // production key rather than refusing.
   const dir = tmpdir(t);
   const file = path.join(dir, 'entries.jsonl');
-  const real = fs.fsyncSync;
-  const synced = [];
-  fs.fsyncSync = (fd) => {
-    synced.push(fd);
-    return real(fd);
+  // Driven against the store rather than through `publish`, because
+  // recording a head writes a second file and syncs the directory for that
+  // too — which is right, and would hide what this is about: whether
+  // APPENDING syncs the directory, and whether it does it once.
+  const store = new FileStore(file);
+  t.after(() => store.close());
+  const real = FileStore.prototype._syncDir;
+  let dirSyncs = 0;
+  FileStore.prototype._syncDir = function patched() {
+    dirSyncs += 1;
+    return real.call(this);
   };
   t.after(() => {
-    fs.fsyncSync = real;
+    FileStore.prototype._syncDir = real;
   });
 
-  const log = new KtLog({ store: new FileStore(file), signingKey: logKey });
-  t.after(() => log.close());
-  log.publish(publishFor(account('first'), 1));
-  const afterFirst = synced.length;
-  assert.ok(afterFirst >= 2, `the file and its directory: ${afterFirst} fsyncs`);
-  log.publish(publishFor(account('second'), 1));
-  assert.equal(synced.length, afterFirst + 1, 'and the directory only once, not once per append');
-  fs.fsyncSync = real;
+  const entry = (name, v, i) => {
+    const acct = account(name);
+    const p = publishFor(acct, v);
+    return { index: i, label: labelFor(p.acct), version: v, fp: p.fp, valueHash: sha256(p.value), value: p.value, acct: p.acct, ts: 1 };
+  };
+  store.append(entry('first', 1, 0));
+  assert.equal(dirSyncs, 1, 'the file was created, so its name was made durable');
+  store.append(entry('second', 1, 1));
+  assert.equal(dirSyncs, 1, 'and only then — not once per append');
+  FileStore.prototype._syncDir = real;
 });
 
 test('a file an older build tore is repairable, and only at the tail', (t) => {

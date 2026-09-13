@@ -2672,3 +2672,39 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A partial line is not a smaller log; it is a log that cannot be
    opened.**
+
+74. **A shortened file is not a damaged log; it is a smaller one, signed by
+   the real key.** Replay believed whatever was on disk. Truncate
+   `entries.jsonl` at a line boundary and the log starts cleanly and `sth()`
+   returns a valid signed head at the shorter size — every self-consistency
+   check passes, because they are all about a line rather than about the
+   history.
+
+   The realistic trigger is not an attacker. `KT_DATA` pointing where the
+   Render disk did not mount makes the log come up at **size 0** with
+   `/health` answering 200, and it begins signing a brand-new history with
+   the production key. Restoring yesterday's snapshot does the same thing
+   more quietly. Every client holding a head then enters permanent log-fault
+   — which is the state `adr/0006` reserves for a log caught forking, and is
+   the correct reading, because that is what this is.
+
+   So the log records the head it signs, beside its entries, before the
+   publish that produced it is acknowledged; and on the way back up it
+   refuses to start unless the replayed tree reproduces that head's root at
+   that size. Not the entry count: the root, so a file of the right length
+   with the wrong contents is refused too.
+
+   Two floors, because they fail differently. The head file catches a log
+   that lost entries while keeping its directory — a truncation, a restored
+   snapshot, a half-copied file. It cannot catch the directory itself going
+   missing, because it goes with it; that is what `KT_MIN_SIZE` is for, a
+   floor that lives in the environment rather than on the disk. It is a
+   floor and not an expected size, so it stays true as the log grows and an
+   operator sets it once.
+
+   Neither stops somebody who can write the data directory from removing
+   both, and the documents say so rather than implying a guarantee that is
+   really a tripwire. What they stop is every way this happens by accident,
+   which is every way it has happened.
+
+   **A log with nothing to be held to will sign whatever it finds.**
