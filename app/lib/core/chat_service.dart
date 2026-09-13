@@ -23,6 +23,14 @@ const int maxAttachmentBytes = 24 * 1024 * 1024; // fits relay RAM queue caps
 /// offering side re-offers on the next message sent after this elapses.
 const int pqRekeyIntervalMs = 7 * 24 * 3600 * 1000;
 
+/// How long an unanswered initial ML-KEM offer waits before it is repeated
+/// (PROTOCOL §17.4, R27). Six hours: long enough that a peer who is simply
+/// offline is not chased, short enough that a conversation does not spend
+/// days classical because one envelope was never delivered. The retry rides
+/// the next message sent, like the re-key offer, so a silent conversation
+/// costs nothing.
+const int pqOfferRetryMs = 6 * 3600 * 1000;
+
 /// The orchestrator: owns contacts, protocol conversations, the message
 /// store, the outbox, attachments, receipts and disappearing messages.
 ///
@@ -64,10 +72,22 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// every open conversation.
   int get pqRekeyInterval => _pqRekeyInterval;
   int _pqRekeyInterval = pqRekeyIntervalMs;
+
   set pqRekeyInterval(int ms) {
     _pqRekeyInterval = ms;
     for (final c in _convs.values) {
       c.pqRekeyIntervalMs = ms;
+    }
+  }
+
+  /// As [pqRekeyInterval], for the retry of an initial offer nobody answered
+  /// (PROTOCOL §17.4). Tests set a short value.
+  int get pqOfferRetry => _pqOfferRetry;
+  int _pqOfferRetry = pqOfferRetryMs;
+  set pqOfferRetry(int ms) {
+    _pqOfferRetry = ms;
+    for (final c in _convs.values) {
+      c.pqOfferRetryMs = ms;
     }
   }
 
@@ -418,7 +438,8 @@ class ChatService extends ChangeNotifier implements KtHost {
           (jsonDecode(await vault.unseal(r['enc_state'] as String)) as Map)
               .cast<String, Object?>();
       final conv = await Conversation.fromJson(identity, stateJson)
-        ..pqRekeyIntervalMs = _pqRekeyInterval;
+        ..pqRekeyIntervalMs = _pqRekeyInterval
+        ..pqOfferRetryMs = _pqOfferRetry;
       await _restoreSkipped(conv, r['enc_skipped']);
       _convs[rid] = conv;
       // A row from before schema 9 carries its cache inside `enc_state`,
@@ -460,7 +481,8 @@ class ChatService extends ChangeNotifier implements KtHost {
     var conv = _convs[contact.rid];
     if (conv == null) {
       conv = await Conversation.create(identity, contact.bundle)
-        ..pqRekeyIntervalMs = _pqRekeyInterval;
+        ..pqRekeyIntervalMs = _pqRekeyInterval
+        ..pqOfferRetryMs = _pqOfferRetry;
       _convs[contact.rid] = conv;
     }
     return conv;

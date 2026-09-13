@@ -1220,9 +1220,23 @@ No unauthenticated capability flag exists. The offer is inside the ratchet
 (a v1 peer discards it as an unknown kind and nothing else changes); the
 ciphertext is sent only by a party that has received an offer, and `pq:1`
 only by a party that holds `K`. Hence v2↔v1 in either direction stays exactly
-v1, and an active network attacker cannot force a downgrade: the offer is
-encrypted and authenticated, `pqct` is in the AAD, and stripping either only
-produces an authentication failure. A v2 implementation MAY be run with the
+v1, and an active network attacker cannot force a downgrade **by tampering**:
+the offer is encrypted and authenticated, `pqct` is in the AAD, and stripping
+either only produces an authentication failure.
+
+Withholding is a different attack and this paragraph used to answer it as
+though it were the same one. A relay need not modify anything to stop an
+offer arriving — it can decline to deliver the envelope, which every relay can
+always do and which is indistinguishable, from both ends, from a peer who was
+briefly offline. The initial offer was made once per session and never again,
+so one undelivered envelope left that conversation classical for its whole
+life, on both sides, with nothing to show it. A client therefore MUST repeat
+an unanswered initial offer after a bounded interval, and MUST repeat the
+**same** encapsulation key (regenerated from the persisted seed) rather than a
+fresh one, so that a late answer to the first copy still establishes. §18.2
+already required this of the identity offer; it belongs here for the same
+reason. The re-key offer of §17.7 is a different mechanism and is not a
+substitute: it only runs once the secret is established. A v2 implementation MAY be run with the
 extension disabled; it then behaves as v1 (this is how the v1 vectors are
 regenerated).
 

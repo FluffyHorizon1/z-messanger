@@ -179,6 +179,25 @@ class Conversation {
   /// the interval elapses (no traffic → nothing to protect → no re-key).
   int pqRekeyIntervalMs = 0;
 
+  /// How long an unanswered INITIAL post-quantum offer waits before it is
+  /// made again. 0 disables the retry (what the frozen v2 vectors use).
+  ///
+  /// §17.4 says an active attacker cannot force a downgrade, and reasons
+  /// about *tampering*: the offer is inside the ratchet, `pqct` is in the
+  /// AAD, and stripping either only produces an authentication failure. True,
+  /// and beside the point — a relay does not have to strip anything. It can
+  /// simply **not deliver** the one envelope that carried the offer, which is
+  /// a thing every relay can always do (R14, R22). The offer was made once
+  /// per session and never again, so one withheld envelope left that
+  /// conversation classical for its whole life, silently, on both sides.
+  ///
+  /// The retry repeats the SAME encapsulation key, regenerated from the
+  /// persisted seed: a retry is not a re-key, and a late answer to the first
+  /// offer must still be usable. §18 got this right for `pqid` — the
+  /// identity offer is re-made for several reasons — and the same reasoning
+  /// was never carried back to `pqek`.
+  int pqOfferRetryMs = 0;
+
   /// Whether this side takes part in the v2 post-quantum upgrade. Off, the
   /// conversation behaves exactly as protocol v1 (it neither offers nor
   /// accepts ML-KEM keys, but still interoperates with v2 peers, which then
@@ -332,6 +351,21 @@ class Conversation {
         ..lastRekeyMs = now;
       final offer = InnerMessage.pqOffer(newMessageId(), now, ek);
       return _encryptOn(session, offer.toBytes(), nowMs: nowMs);
+    }
+    // The offer was made and has not been answered. One envelope the relay
+    // never delivered must not cost this conversation its post-quantum layer
+    // for good — see [pqOfferRetryMs]. The key is regenerated from the seed
+    // rather than replaced, so this is the same offer said again and an
+    // answer to either copy still decapsulates.
+    if (!pq.established &&
+        existing != null &&
+        pqOfferRetryMs > 0 &&
+        existing.pq.dkSeed != null &&
+        now - existing.pq.lastRekeyMs >= pqOfferRetryMs) {
+      final (ek, _) = pqKeyPairFromSeed(existing.pq.dkSeed!);
+      existing.pq.lastRekeyMs = now;
+      final offer = InnerMessage.pqOffer(newMessageId(), now, ek);
+      return _encryptOn(existing, offer.toBytes(), nowMs: nowMs);
     }
     // 7.5b re-key offer: established, an interval is set and due, and no offer
     // for a higher generation is already outstanding.

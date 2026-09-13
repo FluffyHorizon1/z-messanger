@@ -1960,3 +1960,33 @@ direction; the phases, their order and both ordering arguments stand.
    flusher's timing rather than the behaviour. It counts what arrives in the
    linked device's mailbox now. **A test that cannot fail is worse than no
    test, because it is also a claim.**
+
+55. **"An active attacker cannot force a downgrade" answered the wrong
+   attack.** §17.4's argument is about tampering: the ML-KEM offer is inside
+   the ratchet, `pqct` is in the AAD, stripping either only produces an
+   authentication failure. Every word of that is true, and none of it is
+   about the attack that works. A relay does not have to modify anything —
+   it can decline to deliver the one envelope that carried the offer, which
+   every relay can always do and which looks, from both ends, exactly like a
+   peer who was briefly offline. **Nothing authenticates an envelope that
+   never arrives.**
+
+   The offer was made once per session and never again, so that single
+   dropped envelope left the conversation classical for its whole life, on
+   both sides, with nothing on either screen to say so. An unanswered offer
+   is now repeated after a bounded interval, and repeated as the **same**
+   encapsulation key regenerated from the persisted seed — a retry is not a
+   re-key, and an answer to the first copy turning up late must still
+   establish. The periodic re-key is no substitute: it only runs once the
+   secret exists, which is precisely the state the attack prevents.
+
+   §18 had already learned this. The identity offer (`pqid`) is re-made for
+   several reasons, with a debounce and an `ack` flag, because somebody
+   thought about what happens when one is lost. The same reasoning was never
+   carried back thirty sections to `pqek`, and the document's confident
+   sentence is part of why: **a claim that sounds like it covers the case
+   stops anyone checking whether it does.** The paragraph now says which
+   attack each half answers, and R27 records what is left — a delay rather
+   than a downgrade, and the fact that nothing on screen distinguishes a
+   classical session from a hybrid one, because the assurance badge reports
+   the identity's state and not the session's.
