@@ -100,6 +100,11 @@ function norm(f) {
   if (f.from !== undefined) out.from = who(f.from);
   if (f.to !== undefined) out.to = who(f.to);
   if (f.payload !== undefined) out.payload = f.payload;
+  // `queued` is compared now. It was left out, so the two implementations
+  // were free to disagree about whether an envelope had been handed to a
+  // live socket — which is exactly where they did disagree: the Redis path
+  // reported a cross-instance publish as a live delivery.
+  if (f.queued !== undefined) out.queued = f.queued;
   // A sealed envelope's frame has no `from` at all, which is the whole
   // point of it: mark that, so the comparison would notice attribution
   // appearing in one mode and not the other.
@@ -176,8 +181,13 @@ class Client {
  * checks against the transcript.
  */
 async function script(port, log) {
-  const alice = await new Client(port, ALICE).auth();
-  const bob = await new Client(port, BOB).auth();
+  // `port` may be one port, or a function naming one per identity — the
+  // two-instance run splits the clients across instances, and a reconnection
+  // must land on the same one so the transcript is the same script rather
+  // than a different one with kicks in it.
+  const P = (who) => (typeof port === 'function' ? port(who) : port);
+  const alice = await new Client(P('alice'), ALICE).auth();
+  const bob = await new Client(P('bob'), BOB).auth();
 
   // --- live delivery, an acknowledgement, and the receipt it produces ---
   assert.strictEqual((await alice.deliver('m1', BOB.rid, 'aGVsbG8=')).t, 'sent');
@@ -197,7 +207,7 @@ async function script(port, log) {
   await sleep(150);
 
   // --- two senders, one id, one recipient: neither displaces the other ---
-  const carol = await new Client(port, CAROL).auth();
+  const carol = await new Client(P('carol'), CAROL).auth();
   assert.strictEqual((await alice.deliver('same', BOB.rid, 'YQ==')).t, 'sent');
   assert.strictEqual((await carol.deliver('same', BOB.rid, 'Yg==')).t, 'sent');
   await bob.next((f) => f.t === 'msg' && f.id === 'same' && f.from === ALICE.rid);
@@ -227,7 +237,7 @@ async function script(port, log) {
   for (const id of queued) {
     assert.strictEqual((await alice.deliver(id, DAVE.rid, 'ZA==')).t, 'sent');
   }
-  const dave = await new Client(port, DAVE).auth();
+  const dave = await new Client(P('dave'), DAVE).auth();
   for (const id of queued) await dave.next((f) => f.t === 'msg' && f.id === id);
   for (const id of queued) await dave.ack(id, ALICE.rid);
   for (const id of queued) await alice.next((f) => f.t === 'delivered' && f.id === id);
@@ -244,7 +254,7 @@ async function script(port, log) {
 
   // --- a group: three members acknowledge one id, the sender is offline ---
   const members = [BOB, CAROL, DAVE];
-  const conns = [bob, carol, await new Client(port, DAVE).auth()];
+  const conns = [bob, carol, await new Client(P('dave'), DAVE).auth()];
   for (const m of members) {
     assert.strictEqual((await alice.deliver('g1', m.rid, 'Zw==')).t, 'sent');
   }
@@ -252,7 +262,7 @@ async function script(port, log) {
   alice.close();
   await sleep(250);
   for (const c of conns) await c.ack('g1', ALICE.rid);
-  const back = await new Client(port, ALICE).auth();
+  const back = await new Client(P('alice'), ALICE).auth();
   await sleep(500);
 
   log.set('alice', alice.log.concat(back.log));
@@ -315,9 +325,54 @@ const COVERS = [
   ['a full queue', (all) => all.filter((f) => f.code === 'queue_full').length === 3],
 ];
 
+/**
+ * The same script again, with the clients split across TWO instances sharing
+ * one store — which is what the public deployment runs, and what nothing
+ * compared until now: `runRedis` above uses a single instance, so every
+ * cross-instance path (presence between instances, the kick, `deliver` over
+ * pub/sub) was outside the comparison entirely.
+ */
+async function runRedisPair() {
+  const redisPort = await freePort();
+  const redis = spawn('redis-server', ['--port', String(redisPort), '--save', '', '--appendonly', 'no', '--bind', '127.0.0.1'], { stdio: 'ignore' });
+  await sleep(700);
+  const url = `redis://127.0.0.1:${redisPort}`;
+  const coords = [new RedisCoordinator(url, 'instA'), new RedisCoordinator(url, 'instB')];
+  const srvs = coords.map((coordinator) => createServer({ coordinator, pushSender: null }));
+  const ports = [];
+  for (const srv of srvs) {
+    const port = await freePort();
+    await new Promise((r) => srv.httpServer.listen(port, '127.0.0.1', r));
+    ports.push(port);
+  }
+  // Alice and Carol on one, Bob and Dave on the other, so every message
+  // between the pairs the script uses crosses instances.
+  const on = { alice: 0, carol: 0, bob: 1, dave: 1 };
+  const log = new Map();
+  try {
+    await script((who) => ports[on[who] ?? 0], log);
+  } finally {
+    for (const srv of srvs) {
+      for (const ws of srv.wss.clients) ws.terminate();
+      try {
+        srv.httpServer.close();
+      } catch {}
+    }
+    for (const c of coords) await c.close();
+    redis.kill('SIGKILL');
+  }
+  return log;
+}
+
 let runs = null;
 function both() {
-  if (!runs) runs = (async () => ({ memory: await runMemory(), redis: await runRedis() }))();
+  if (!runs) {
+    runs = (async () => ({
+      memory: await runMemory(),
+      redis: await runRedis(),
+      pair: await runRedisPair(),
+    }))();
+  }
   return runs;
 }
 
@@ -343,3 +398,50 @@ test('2. and the script exercised the paths it claims', { skip: SKIP && 'redis-s
     }
   }
 });
+
+test(
+  '3. and the same script across two instances, which is what the deployment runs',
+  { skip: SKIP && 'redis-server/ioredis unavailable' },
+  async (t) => {
+    const { memory, pair } = await both();
+    assert.deepStrictEqual([...pair.keys()].sort(), [...memory.keys()].sort(), 'the same clients');
+
+    // Everything a client can observe must be the same as in one process —
+    // every message, every receipt, every refusal, in the same order — with
+    // ONE exception, which is the point of the test.
+    let crossed = 0;
+    for (const who of memory.keys()) {
+      const a = memory.get(who);
+      const b = pair.get(who);
+      assert.strictEqual(b.length, a.length, `${who} saw a different number of frames`);
+      for (let i = 0; i < a.length; i++) {
+        if (a[i].t === 'sent' && a[i].queued === false && b[i].queued === true) {
+          // The exception: a send that crossed instances. One process hands
+          // the envelope to the recipient's socket and knows it; the other
+          // instance publishes it and cannot see whether a socket received
+          // it, so it says the envelope is held — which it is, until it is
+          // acknowledged. Reporting `false` there was a guess presented as
+          // a fact, and it suppressed the wake push with it.
+          crossed += 1;
+          assert.deepStrictEqual({ ...b[i], queued: false }, a[i], `${who}: frame ${i} differs by more than queued`);
+          continue;
+        }
+        assert.deepStrictEqual(b[i], a[i], `${who} saw a different frame ${i} across two instances`);
+      }
+    }
+    assert.ok(crossed > 0, 'the split put no send across an instance boundary: the comparison proves nothing');
+    t.diagnostic(`${crossed} sends crossed instances and were reported held rather than delivered`);
+  }
+);
+
+test(
+  '4. and the two-instance run exercised the same paths',
+  { skip: SKIP && 'redis-server/ioredis unavailable' },
+  async () => {
+    const { pair } = await both();
+    const all = [...pair.values()].flat();
+    for (const [what, ok] of COVERS) {
+      assert.ok(ok(all), `two instances: the transcript shows no ${what}`);
+    }
+  }
+);

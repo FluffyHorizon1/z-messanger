@@ -2888,3 +2888,33 @@ direction; the phases, their order and both ordering arguments stand.
    conversation, which is what the field is for.
 
    **A field that is feedback to one sender is surveillance from another.**
+
+79. **The parity test compared one instance against one instance.** It runs
+   one scripted transcript against both coordinators and compares the frames
+   the clients receive, frame for frame — which is the right idea, and was
+   structurally blind to the deployment it exists to protect. `runRedis`
+   built a single `RedisCoordinator`, so presence between instances, the
+   kick, and `deliver` over pub/sub were outside the comparison entirely.
+   And the normaliser dropped `queued` before comparing, so the two
+   implementations were free to disagree about whether an envelope had been
+   handed to a live socket — which is precisely where they did disagree.
+
+   So `queued` joins the comparison, and the script runs a third time with
+   the clients split across two instances sharing one store, every message
+   between them crossing the boundary.
+
+   The interesting part is what that run is allowed to differ on. Everything
+   a client can observe must be identical to one process — every message,
+   every receipt, every refusal, in order — with one exception: a send that
+   crossed instances says `queued: true` where one process says `false`,
+   because the instance that published it cannot see whether a socket
+   received it. The test asserts the difference is exactly that, frame by
+   frame, and **fails if no send crossed an instance at all** — otherwise a
+   split that quietly stopped splitting would make the comparison pass by
+   comparing nothing, which is the failure mode of every test like this.
+
+   Confirmed by restoring the bug: with a cross-instance publish counted
+   live again, the two runs agree, `crossed` is zero, and the test fails on
+   the guard rather than on the comparison.
+
+   **A comparison that can pass without comparing anything is not one.**
