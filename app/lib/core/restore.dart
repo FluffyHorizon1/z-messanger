@@ -23,6 +23,7 @@ import 'package:z_protocol/z_protocol.dart';
 
 import 'archive.dart';
 import 'backup.dart';
+import 'relay_url.dart';
 import 'vault.dart';
 
 /// What the user handed us.
@@ -128,7 +129,9 @@ class Restore {
         final s = await BackupArchive.import(
             vault: vault, file: file, code: code, onProgress: onProgress);
         if (serverUrl != null && serverUrl.isNotEmpty) {
-          await vault.kvPut('server_url', serverUrl, sensitive: false);
+          // The user typed this one into the restore screen and was asked
+          // about it there, like the two screens that create an account.
+          await setRelayUrl(vault, serverUrl, acceptedInsecure: true);
         }
         return RestoreSummary(
           kind: kind,
@@ -154,7 +157,7 @@ class Restore {
     await vault.kvPut('identity', jsonEncode(idJson));
     await vault.kvPut('display_name', restored['name'] as String? ?? 'Me');
     if (serverUrl != null && serverUrl.isNotEmpty) {
-      await vault.kvPut('server_url', serverUrl, sensitive: false);
+      await setRelayUrl(vault, serverUrl, acceptedInsecure: true);
     }
     var contacts = 0;
     for (final c in (restored['contacts'] as List?) ?? const []) {

@@ -1680,4 +1680,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String alertDlPqMissing(String name) {
     return '$name\'s app says it sent the post-quantum signature for its device list, and it has not arrived. Their device list is still verified classically, which works today but is what a future quantum adversary could forge. Something on the network may be removing it.';
   }
+
+  @override
+  String get relayInsecureTitle => 'This relay is not using TLS';
+
+  @override
+  String relayInsecureBody(String url) {
+    return '$url is a plain ws:// address, so anyone on the network between you and it can see which mailbox you are collecting from and how often — the pattern of who you talk to, though never what you say. Message contents stay end-to-end encrypted whatever the transport. Use wss:// for any relay that is not on your own network.';
+  }
+
+  @override
+  String get relayInsecureUseAnyway => 'Connect anyway';
 }

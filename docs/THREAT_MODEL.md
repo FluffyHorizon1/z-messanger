@@ -71,7 +71,10 @@ recipient device so the relay does not learn who sent it.
   Delivered messages exist only on the devices.
 - **Passive network surveillance of content.** Contents are end‑to‑end
   encrypted regardless of transport; `wss://` hides the routing metadata from
-  the network as well.
+  the network as well. The app will not connect to a public `ws://` relay
+  without asking first, in as many words, and it will not adopt one at all on
+  the say‑so of a restored backup — from 2026‑09‑13; until then, three of the
+  four places that accepted a relay address said nothing about it.
 - **Message tampering, replay and sender forgery.** Every message is
   authenticated (AEAD with the ratchet header as associated data); the relay
   no longer attributes a sender, so authenticity rests entirely on the inner

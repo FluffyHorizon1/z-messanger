@@ -9,6 +9,7 @@ import 'package:z_protocol/z_protocol.dart';
 
 import '../core/chat_service.dart';
 import '../core/relay_url.dart';
+import 'relay_warning.dart';
 import '../core/vault.dart';
 import 'theme.dart';
 
@@ -181,6 +182,8 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
     final n = _initiator;
     if (n == null) return;
     final url = normalizeRelayUrl(_server.text);
+    if (!await confirmInsecureRelay(context, url)) return;
+    if (!mounted) return;
     setState(() {
       _busy = true;
       _error = null;
@@ -207,7 +210,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
           }));
       await widget.vault.kvPut('account', jsonEncode(acct.toJson()));
       await widget.vault.kvPut('display_name', result.data.displayName ?? 'Me');
-      await widget.vault.kvPut('server_url', url, sensitive: false);
+      await setRelayUrl(widget.vault, url, acceptedInsecure: true);
       // Remember the device that linked us, so our messages mirror back to it.
       await widget.vault.kvPut(
           'my_devices', jsonEncode([result.data.hostDeviceCert.toJson()]),

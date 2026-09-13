@@ -2265,3 +2265,41 @@ direction; the phases, their order and both ordering arguments stand.
 
    **The vault's documentation said names were sealed. Nobody had checked
    whether that was a description or an intention.**
+
+64. **A relay that isn't TLS, and one button that said so.** Four things wrote
+   `server_url`: onboarding, linking a device, the developer-mode field in
+   Settings, and a restored archive's own `meta` record. Exactly one of them
+   ever mentioned that a `ws://` address is not TLS — a notice that appeared
+   beside a "Test" button, which nobody has to press. So three of the four,
+   plus the one that takes its answer from a **file**, dialled a cleartext
+   public relay without a word.
+
+   What that costs is not the messages. Those are end-to-end encrypted
+   whatever the transport, and the app has always said so. It is the routing
+   metadata — which mailbox, how much, how often — which is precisely what the
+   rest of this design spends its effort on: sealed sender, per-device routing
+   ids, padding buckets, three register rows (R15, R18, R19) about what a
+   relay can still infer from timing. Handing all of it to anyone on the path
+   because a URL was typed with one `s` missing is not a trade anybody made.
+
+   One funnel now. `setRelayUrl` refuses a public `ws://` address unless the
+   caller says a human was asked and agreed; the three screens ask, with
+   "Connect anyway" deliberately not the default and a dismissed dialog
+   counting as no. A restored archive's address is refused outright rather
+   than confirmed — a backup is a file, and the question "do you accept this?"
+   has no useful answer when the thing asking is a document (the same
+   reasoning as 61's file ids).
+
+   Local, LAN and `.local` addresses connect with no question at all, which is
+   what `cleartextTrafficPermitted` in the manifest is for and why it stays
+   true: a private range cannot be written as a domain-config exception, and
+   there is nobody on that path to hide from.
+
+   `tool/check_relay_url.py` holds it: only `relay_url.dart` may write
+   `server_url`, and only the five callers listed there — each with its reason
+   — may say the user agreed. The manifest comment used to describe the whole
+   policy; it now says which half it is.
+
+   **The strongest thing here is the confirmation nobody can route around, and
+   the reason it exists is that the weakest thing was a notice beside a button
+   nobody presses.**

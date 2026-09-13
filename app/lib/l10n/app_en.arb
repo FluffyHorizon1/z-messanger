@@ -2147,5 +2147,18 @@
         "type": "String"
       }
     }
-  }
+  },
+  "relayInsecureTitle": "This relay is not using TLS",
+  "@relayInsecureTitle": {"description": "Title of the dialog shown before connecting to a public relay address that begins ws:// rather than wss://."},
+  "relayInsecureBody": "{url} is a plain ws:// address, so anyone on the network between you and it can see which mailbox you are collecting from and how often \u2014 the pattern of who you talk to, though never what you say. Message contents stay end-to-end encrypted whatever the transport. Use wss:// for any relay that is not on your own network.",
+  "@relayInsecureBody": {
+    "description": "Body of the dialog shown before connecting to a public ws:// relay, and the same notice beside the Test button. Both halves are load-bearing: the metadata IS exposed, and the contents are NOT. Do not soften either into the other. {url} is the normalized address.",
+    "placeholders": {
+      "url": {
+        "type": "String"
+      }
+    }
+  },
+  "relayInsecureUseAnyway": "Connect anyway",
+  "@relayInsecureUseAnyway": {"description": "Button that accepts the cleartext relay and continues. Deliberately not the default action."}
 }

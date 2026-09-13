@@ -1,3 +1,5 @@
+import 'vault.dart';
+
 /// The relay every install dials by default, so a new user types nothing to get
 /// started. It can be overridden from the hidden Developer-mode settings for a
 /// custom or self-hosted relay. The service must actually be served here
@@ -52,10 +54,43 @@ bool isSecureOrLocalRelay(String normalizedUrl) {
   return false;
 }
 
-/// A short human explanation when a relay URL isn't secure. Null if fine.
-String? relayUrlWarning(String normalizedUrl) {
-  if (isSecureOrLocalRelay(normalizedUrl)) return null;
-  return 'This relay isn\'t using TLS. It works, but a public relay should use '
-      'wss:// so on-path observers can\'t see who you\'re talking to. '
-      '(Message contents stay end-to-end encrypted regardless.)';
+/// What happened when something tried to set the relay URL.
+enum RelayUrlOutcome {
+  /// Written.
+  saved,
+
+  /// A public `ws://` address, and nobody had agreed to it. Not written.
+  insecureRefused,
+
+  /// Nothing to write.
+  empty,
+}
+
+/// The one way the relay URL gets written.
+///
+/// There were four: onboarding, linking a device, the developer-mode field in
+/// Settings, and a restored archive's own `meta` record. Exactly one of them
+/// ever mentioned that a `ws://` address is not TLS, and it was a *notice*
+/// beside a "Test" button nobody has to press — so three of the four, plus
+/// the one that takes its answer from a FILE, dialled a cleartext public
+/// relay without a word.
+///
+/// Contents are end-to-end encrypted either way; what cleartext gives an
+/// on-path observer is the routing metadata — which mailbox, how much, how
+/// often — which is exactly what the rest of this design spends its effort
+/// on. Cleartext to a local or LAN address stays free of charge, because
+/// that is what it is for and there is no one on that path to hide from.
+///
+/// [acceptedInsecure] is the user having been asked and having said yes. No
+/// caller may pass it because it is convenient; `tool/check_relay_url.py`
+/// refuses any other writer of `server_url`.
+Future<RelayUrlOutcome> setRelayUrl(Vault vault, String raw,
+    {bool acceptedInsecure = false}) async {
+  final url = normalizeRelayUrl(raw);
+  if (url.isEmpty) return RelayUrlOutcome.empty;
+  if (!isSecureOrLocalRelay(url) && !acceptedInsecure) {
+    return RelayUrlOutcome.insecureRefused;
+  }
+  await vault.kvPut('server_url', url, sensitive: false);
+  return RelayUrlOutcome.saved;
 }

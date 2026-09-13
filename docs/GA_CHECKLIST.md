@@ -157,12 +157,15 @@ doing before 1.0 and is not something a test replaces.
 
 The foundation is in — `flutter_localizations`, `gen-l10n`, an ARB with a
 description on every string, and `tool/check_l10n.py` holding the migrated
-screens — **16 of 16 screens** — to zero hardcoded literals and, now,
+screens — **17 of 17 screens** — to zero hardcoded literals and, now,
 holding every other locale to exactly the English key set with the same
 placeholders and plural cases.
 The service stores its sixteen kinds of system message as a kind and its
 parameters (`core/system_messages.dart`), rendered through the ARB when
-shown, so they read in the user's language too.
+shown, so they read in the user's language too — and, since 2026‑09‑13, the
+five device‑list banners as well, which had been built as English sentences by
+the service and handed to two migrated screens, where the check could not see
+them.
 
 **The app ships in two languages: English and Spanish** (`app_es.arb`,
 408 strings, every claim carried across — `locale_es_test.dart` checks the

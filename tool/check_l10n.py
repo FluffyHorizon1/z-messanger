@@ -52,6 +52,9 @@ MIGRATED = {
     "theme.dart",
     "settings_screen.dart",
     "crypto_bench_screen.dart",
+    # The cleartext-relay confirmation. Its words come from the ARB; listed
+    # so that a literal added to it later is caught.
+    "relay_warning.dart",
 }
 
 # Literals that look user-visible and are not.

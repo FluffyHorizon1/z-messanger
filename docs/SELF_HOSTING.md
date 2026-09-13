@@ -166,7 +166,11 @@ rather than from a list of version numbers that would go stale itself.
 ## Pointing clients at your relay
 
 In the app: onboarding screen, or Settings → Relay server. Use
-`wss://relay.example.com` (TLS) in production. Everyone you talk to must use the
+`wss://relay.example.com` (TLS) in production — a plain `ws://` address for
+anything that is not on your own network now asks for confirmation first, and
+names what it costs (the routing metadata, never the contents). A `ws://`
+address on localhost, a private range or a `.local` name connects without a
+word, because that is what cleartext is for. Everyone you talk to must use the
 **same relay**: federation is designed and not built — if it is, a sender
 will open an anonymous link to the recipient's relay directly and nothing
 will travel between relays (`docs/adr/0008-federation.md`). The relay only

@@ -2815,6 +2815,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{name}\'s app says it sent the post-quantum signature for its device list, and it has not arrived. Their device list is still verified classically, which works today but is what a future quantum adversary could forge. Something on the network may be removing it.'**
   String alertDlPqMissing(String name);
+
+  /// Title of the dialog shown before connecting to a public relay address that begins ws:// rather than wss://.
+  ///
+  /// In en, this message translates to:
+  /// **'This relay is not using TLS'**
+  String get relayInsecureTitle;
+
+  /// Body of the dialog shown before connecting to a public ws:// relay, and the same notice beside the Test button. Both halves are load-bearing: the metadata IS exposed, and the contents are NOT. Do not soften either into the other. {url} is the normalized address.
+  ///
+  /// In en, this message translates to:
+  /// **'{url} is a plain ws:// address, so anyone on the network between you and it can see which mailbox you are collecting from and how often — the pattern of who you talk to, though never what you say. Message contents stay end-to-end encrypted whatever the transport. Use wss:// for any relay that is not on your own network.'**
+  String relayInsecureBody(String url);
+
+  /// Button that accepts the cleartext relay and continues. Deliberately not the default action.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect anyway'**
+  String get relayInsecureUseAnyway;
 }
 
 class _AppLocalizationsDelegate

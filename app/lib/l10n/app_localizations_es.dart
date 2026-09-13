@@ -1697,4 +1697,15 @@ class AppLocalizationsEs extends AppLocalizations {
   String alertDlPqMissing(String name) {
     return 'La aplicación de $name dice que envió la firma poscuántica de su lista de dispositivos, y no ha llegado. Su lista de dispositivos sigue verificándose de forma clásica, lo cual funciona hoy pero es lo que un adversario cuántico futuro podría falsificar. Puede que algo en la red la esté eliminando.';
   }
+
+  @override
+  String get relayInsecureTitle => 'Este relay no usa TLS';
+
+  @override
+  String relayInsecureBody(String url) {
+    return '$url es una dirección ws:// sin cifrar, así que cualquiera en la red entre tú y ese servidor puede ver de qué buzón recibes y con qué frecuencia: el patrón de con quién hablas, aunque nunca lo que dices. El contenido de los mensajes sigue cifrado de extremo a extremo sea cual sea el transporte. Usa wss:// para cualquier relay que no esté en tu propia red.';
+  }
+
+  @override
+  String get relayInsecureUseAnyway => 'Conectar de todos modos';
 }

@@ -28,6 +28,7 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import 'relay_url.dart';
 import 'vault.dart';
 
 /// Progress while exporting or importing, for a UI that must not look frozen
@@ -411,8 +412,16 @@ class BackupArchive {
           switch (r['t']) {
             case 'meta':
               await kv('display_name', r['name'] as String? ?? 'Me');
-              if (r['server'] is String) {
-                await kv('server_url', r['server'] as String);
+              // The relay address the archive was taken against. An archive
+              // is a file, and a file can come from anywhere, so this one is
+              // held to the rule a typed address is held to: a public `ws://`
+              // relay is not adopted on the say-so of a document. `ws://` on
+              // the local network still is, because that is what a restore
+              // onto a LAN deployment needs and there is nobody on that path.
+              final server = r['server'];
+              if (server is String) {
+                final url = normalizeRelayUrl(server);
+                if (isSecureOrLocalRelay(url)) await kv('server_url', url);
               }
             case 'identity':
               await kv('identity', jsonEncode(r['identity']));

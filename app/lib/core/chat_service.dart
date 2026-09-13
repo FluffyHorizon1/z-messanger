@@ -3744,11 +3744,20 @@ class ChatService extends ChangeNotifier implements KtHost {
     notifyListeners();
   }
 
-  Future<void> setServerUrl(String url) async {
-    final normalized = normalizeRelayUrl(url);
-    await vault.kvPut('server_url', normalized, sensitive: false);
-    await transport.setServer(normalized);
+  /// Point this device at a different relay.
+  ///
+  /// Through [setRelayUrl], like every other writer of `server_url`: a public
+  /// `ws://` address is refused unless [acceptedInsecure] says the user was
+  /// asked and agreed. Returns what happened, so a caller that did not ask
+  /// can say so rather than silently doing nothing.
+  Future<RelayUrlOutcome> setServerUrl(String url,
+      {bool acceptedInsecure = false}) async {
+    final outcome =
+        await setRelayUrl(vault, url, acceptedInsecure: acceptedInsecure);
+    if (outcome != RelayUrlOutcome.saved) return outcome;
+    await transport.setServer(normalizeRelayUrl(url));
     notifyListeners();
+    return outcome;
   }
 
   Future<void> setDevMode(bool v) async {

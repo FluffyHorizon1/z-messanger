@@ -139,6 +139,12 @@ jobs:
       # this kind of work stalls.
       - name: No migrated screen has regressed to hardcoded strings
         run: python3 tool/check_l10n.py
+      # 17-review: four places wrote the relay address and one of them
+      # mentioned that ws:// is not TLS — in a notice beside a button nobody
+      # has to press. They go through one function now, and this holds it
+      # there.
+      - name: The relay address is written in one place
+        run: python3 tool/check_relay_url.py
       # 15.5: the GA checklist must not say READY while a criterion below it
       # says otherwise — that is the specific way a release checklist misleads.
       - name: The GA checklist matches the repository

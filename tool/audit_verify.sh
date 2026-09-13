@@ -109,6 +109,8 @@ run "every stated exit criterion has a test" "-" "." \
     python3 tool/check_test_criteria.py
 run "no migrated screen regressed to English" "-" "." \
     python3 tool/check_l10n.py
+run "the relay address is written in one place" "-" "." \
+    python3 tool/check_relay_url.py
 run "the GA checklist matches the repo" "-" "." \
     python3 tool/check_ga.py
 

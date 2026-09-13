@@ -9,6 +9,7 @@ import 'package:z_protocol/z_protocol.dart';
 
 import '../core/restore.dart';
 import '../core/relay_url.dart';
+import 'relay_warning.dart';
 import '../core/vault.dart';
 import 'link_device_screen.dart';
 import 'theme.dart';
@@ -50,7 +51,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       await RelayClient.probe(url);
       setState(() {
         _testOk = l.onbRelayReachable;
-        _testWarn = relayUrlWarning(url);
+        _testWarn = isSecureOrLocalRelay(url) ? null : l.relayInsecureBody(url);
         _server.text = url; // show the normalized form
       });
     } catch (e) {
@@ -67,6 +68,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       return;
     }
     final url = normalizeRelayUrl(_server.text);
+    // Asked before anything is created, so a "no" costs nothing.
+    if (!await confirmInsecureRelay(context, url)) return;
+    if (!mounted) return;
     setState(() {
       _busy = true;
       _error = null;
@@ -75,7 +79,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       final identity = await ZIdentity.generate();
       await widget.vault.kvPut('identity', jsonEncode(identity.toJson()));
       await widget.vault.kvPut('display_name', _name.text.trim());
-      await widget.vault.kvPut('server_url', url, sensitive: false);
+      await setRelayUrl(widget.vault, url, acceptedInsecure: true);
       await widget.onDone();
     } catch (e) {
       setState(() {
@@ -116,6 +120,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         ? await _askRecoveryCode(context)
         : await _askPassphrase(context);
     if (secret == null || secret.isEmpty) return;
+    if (!mounted) return;
+    if (!await confirmInsecureRelay(
+        context, normalizeRelayUrl(_server.text))) {
+      return;
+    }
+    if (!mounted) return;
     setState(() {
       _busy = true;
       _error = null;

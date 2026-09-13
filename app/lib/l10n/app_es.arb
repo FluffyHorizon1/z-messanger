@@ -452,5 +452,8 @@
   "alertDlRollback": "La lista de dispositivos de {name} retrocedió una versión. Puede que uno de sus dispositivos esté reproduciendo una lista antigua: confírmalo con esa persona.",
   "alertDlUnconfirmed": "Los dispositivos de {name} no confirman la lista de dispositivos que recibió este dispositivo. Puede que uno de los suyos no sea suyo: confírmalo con esa persona antes de continuar.",
   "alertDlMissingUpdate": "La lista de dispositivos de {name} cambió, pero la actualización nunca llegó. No se pudo verificar su nuevo dispositivo.",
-  "alertDlPqMissing": "La aplicación de {name} dice que envió la firma poscuántica de su lista de dispositivos, y no ha llegado. Su lista de dispositivos sigue verificándose de forma clásica, lo cual funciona hoy pero es lo que un adversario cuántico futuro podría falsificar. Puede que algo en la red la esté eliminando."
+  "alertDlPqMissing": "La aplicación de {name} dice que envió la firma poscuántica de su lista de dispositivos, y no ha llegado. Su lista de dispositivos sigue verificándose de forma clásica, lo cual funciona hoy pero es lo que un adversario cuántico futuro podría falsificar. Puede que algo en la red la esté eliminando.",
+  "relayInsecureTitle": "Este relay no usa TLS",
+  "relayInsecureBody": "{url} es una dirección ws:// sin cifrar, así que cualquiera en la red entre tú y ese servidor puede ver de qué buzón recibes y con qué frecuencia: el patrón de con quién hablas, aunque nunca lo que dices. El contenido de los mensajes sigue cifrado de extremo a extremo sea cual sea el transporte. Usa wss:// para cualquier relay que no esté en tu propia red.",
+  "relayInsecureUseAnyway": "Conectar de todos modos"
 }

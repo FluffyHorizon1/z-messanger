@@ -12,6 +12,8 @@ import '../core/key_transparency.dart';
 import '../core/models.dart';
 import '../core/prefs.dart';
 import '../core/push_service.dart';
+import '../core/relay_url.dart';
+import 'relay_warning.dart';
 import '../core/transport.dart';
 import '../core/vault.dart';
 import 'backup_screen.dart';
@@ -406,7 +408,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 );
                 if (url != null && url.isNotEmpty) {
-                  await svc.setServerUrl(url);
+                  if (!context.mounted) return;
+                  if (!await confirmInsecureRelay(
+                      context, normalizeRelayUrl(url))) {
+                    return;
+                  }
+                  await svc.setServerUrl(url, acceptedInsecure: true);
                 }
               },
             ),
