@@ -24,6 +24,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:z_protocol/z_protocol.dart';
 
@@ -65,9 +66,18 @@ class ArchiveIncompleteException implements Exception {
 }
 
 class BackupArchive {
-  /// Attachment bytes are written in chunks of this size, so neither export
-  /// nor import ever holds a whole large file — let alone the whole archive —
-  /// in memory.
+  /// Attachment bytes travel in frames of this size, so neither direction
+  /// ever holds the archive in memory.
+  ///
+  /// What each direction DOES hold is one attachment, and that is a floor
+  /// rather than a choice: a blob is sealed as a single AEAD message at rest
+  /// (`Vault.writeBlob`), so producing one means having the whole plaintext
+  /// and opening one means the same. The app's cap (24 MiB) is therefore the
+  /// peak, and `BACKUP.md` says so rather than promising otherwise.
+  ///
+  /// Import used to hold *all* of them — every attachment in the archive
+  /// accumulated in a `BytesBuilder` and written only after the terminator.
+  /// See [import]; `restore_memory_test.dart` measures it.
   static const int blobChunkBytes = 256 * 1024;
 
   // ------------------------------------------------------------------
@@ -314,6 +324,30 @@ class BackupArchive {
     required RecoveryCode code,
     void Function(ArchiveProgress)? onProgress,
   }) async {
+    // Attachment bytes go to a spill file each, not to memory.
+    //
+    // They used to go into a `Map<String, BytesBuilder>` drained only after
+    // the terminator, so an import held EVERY attachment in the archive at
+    // once: a vault with two hundred photographs was two hundred photographs
+    // of heap on a phone, and the failure mode is the OS killing the app in
+    // the middle of the one operation a user runs when they have already
+    // lost the device. `BACKUP.md` promised the opposite in as many words.
+    //
+    // Declared out here so the `finally` can clean them up whatever happens:
+    // a failed import must not leave an archive's attachments lying about
+    // outside the vault's own files directory.
+    //
+    // A fid is `b64url(12 random bytes)` and is refused at the door when it
+    // is not (§7), which is what makes it safe to use as a file name here.
+    // `RandomAccessFile.writeFrom`, not an `IOSink`: a sink's `add` queues
+    // the bytes and returns, so writing 80 MiB through one without awaiting a
+    // flush holds 80 MiB in the sink instead of in a BytesBuilder. Measured:
+    // the first version of this fix moved the memory and did not remove it.
+    final spillDir = Directory(p.join(vault.root.path, 'restore-spill'));
+    final spills = <String, RandomAccessFile>{};
+    File spillFile(String fid) => File(p.join(spillDir.path, fid));
+    await spillDir.create(recursive: true);
+
     final raf = await file.open();
     try {
       final headerLine = await _readHeaderLine(raf);
@@ -326,7 +360,6 @@ class BackupArchive {
       var messages = 0, contacts = 0, groups = 0, attachments = 0;
       var sawEnd = false;
       var records = 0;
-      final blobs = <String, BytesBuilder>{};
       final fileMeta = <String, Map<String, Object?>>{};
 
       await vault.db.transaction((txn) async {
@@ -360,7 +393,9 @@ class BackupArchive {
             // record that carries a path instead is dropped rather than
             // restored -- the rest of the archive still comes back.
             if (!isWellFormedFid(fid)) continue;
-            (blobs[fid] ??= BytesBuilder()).add(bytes);
+            final out = spills[fid] ??=
+                await spillFile(fid).open(mode: FileMode.writeOnly);
+            await out.writeFrom(bytes);
             continue;
           }
           final r =
@@ -453,12 +488,20 @@ class BackupArchive {
         if (!sawEnd) throw ArchiveIncompleteException();
 
         // Attachments last: the bytes are re-sealed under THIS device's vault
-        // key, with fresh per-file key material.
+        // key, with fresh per-file key material. One at a time -- a blob is a
+        // single AEAD message at rest, so sealing one means holding one, and
+        // the largest attachment in the archive is the whole cost.
+        for (final out in spills.values) {
+          await out.flush();
+          await out.close();
+        }
+        spills.clear();
         for (final entry in fileMeta.entries) {
           final fid = entry.key;
           final meta = entry.value;
-          final bytes = blobs[fid]?.takeBytes();
-          if (bytes == null) continue;
+          final spill = spillFile(fid);
+          if (!spill.existsSync()) continue; // a record with no bytes
+          final bytes = await spill.readAsBytes();
           final keyInfo = await vault.writeBlob(fid, bytes);
           await txn.insert(
               'files',
@@ -494,6 +537,14 @@ class BackupArchive {
       );
     } finally {
       await raf.close();
+      for (final out in spills.values) {
+        try {
+          await out.close();
+        } catch (_) {}
+      }
+      try {
+        if (spillDir.existsSync()) spillDir.deleteSync(recursive: true);
+      } catch (_) {}
     }
   }
 

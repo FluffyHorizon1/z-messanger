@@ -28,7 +28,7 @@ user‑supplied storage that the client writes finished ciphertext into.
 |---|---|
 | Unlock | 120‑bit recovery code → Argon2id → one 256‑bit archive key |
 | Frames | XChaCha20‑Poly1305, one per record or attachment chunk |
-| Streaming | Neither export nor import ever holds the archive, or a whole attachment, in memory |
+| Streaming | Neither direction ever holds the archive in memory: it is read and written frame by frame, 256 KiB at a time. Each direction does hold **one attachment**, which is a floor rather than a choice — a blob is sealed as a single AEAD message at rest, so producing one means having the whole plaintext and opening one means the same. The app's 24 MiB attachment cap is therefore the peak. Until 2026‑09‑13 this row promised that not even one attachment was held, and import held *every* attachment in the archive at once (`restore_memory_test.dart`) |
 | Integrity | Every frame is bound to its index and to this archive's header; the file ends with a terminator |
 | Reference | `protocol/lib/src/archive.dart` (format), `app/lib/core/archive.dart` (contents) |
 | Vectors | [`vectors/backup/archive.json`](vectors/backup/archive.json) |
@@ -199,7 +199,17 @@ reordered, duplicated, dropped, or lifted into another file without the tag
 failing.
 
 An attachment chunk's body is `uint8 idLen ‖ fid ‖ bytes`, written in 256 KiB
-pieces, so a large file never has to be materialised whole on either side.
+pieces, so the FILE never has to be materialised whole *on the wire or in the
+archive*. Both ends still materialise one plaintext attachment at a time to
+seal or open it, because a blob at rest is one AEAD message; the frames bound
+what the format holds, not what the AEAD needs. An importer writes each
+attachment's frames to a spill file as they arrive and seals them into the
+vault one at a time afterwards.
+
+`fid` is `b64url(12 random bytes)` (PROTOCOL §7) and an importer **MUST**
+refuse a record or frame whose `fid` is not, exactly as a receiver refuses an
+offer that carries one: the value names a file on disk, and an archive is a
+file that can have come from anywhere.
 
 ### 4.4 Terminator
 

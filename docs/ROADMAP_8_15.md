@@ -2183,3 +2183,44 @@ direction; the phases, their order and both ordering arguments stand.
 
    **§7 had specified the shape all along. A rule in the document that no
    code reads is a comment.**
+
+62. **A restore that held the whole backup.** `BACKUP.md` has had a row called
+   Streaming since phase 9, and it said: *neither export nor import ever holds
+   the archive, or a whole attachment, in memory*. The format is built for the
+   first half — frames, a nonce unique by construction from the frame index,
+   256 KiB attachment pieces — and export does walk one attachment at a time.
+
+   Import accumulated every attachment in the archive in a
+   `Map<String, BytesBuilder>` and wrote none of them until the terminator had
+   been read. A vault with two hundred photographs restored by holding two
+   hundred photographs. The failure mode is the OS killing the app part-way
+   through the one operation a person runs when they have already lost the
+   device, and it gets likelier the more history there is: the backups that
+   matter most were the ones this handled worst.
+
+   Each attachment's frames now go to a spill file as they arrive, and are
+   sealed into the vault one at a time afterwards — with the spill directory
+   removed whatever the outcome, because an archive's attachments sitting in a
+   directory of their own, outside the vault's `files/`, is the same leak by
+   another route and one nothing would ever collect. The spill is named by
+   `fid`, which is only safe because 61 made a malformed one impossible.
+
+   Two things the first attempt got wrong, both found by measuring rather than
+   reasoning. Writing the spill through an `IOSink` moved the memory instead
+   of removing it — `add` queues and returns, so 80 MiB went through the sink
+   and stayed there; it is a `RandomAccessFile.writeFrom` now. And most of
+   what remained was `writeBlob` building its output as `<int>[...cipherText,
+   ...mac]`: a growable `List<int>` at eight bytes an element that doubles its
+   way up, so writing a 2 MiB blob churned tens of megabytes. That one is on
+   the path of **every attachment received**, not just restores. Exact-size
+   typed buffers now, there and in `sealFrame` and `blobPayload`.
+
+   One attachment at a time is a floor rather than a choice: a blob at rest is
+   a single AEAD message, so producing one means having its whole plaintext.
+   The row now says that instead. Peak RSS around an import is measured
+   against an export of the same vault — export has always been one at a time,
+   so the yardstick is the machine's own and there is no constant to go stale:
+   0.5–0.7 of the export with the fix, 1.5 with the accumulation.
+
+   **A claim in a document is a claim about code, and this one had been true
+   of only half of it since the day it was written.**

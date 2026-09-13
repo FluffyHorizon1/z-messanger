@@ -120,7 +120,15 @@ class ZArchive {
         secretKey: key,
         nonce: _nonce(noncePrefix, index),
         aad: _aad(header, index));
-    return Uint8List.fromList([...box.cipherText, ...box.mac.bytes]);
+    // Exact-size typed buffer rather than a spread into a growable
+    // `List<int>`, which costs eight bytes an element and doubles as it
+    // grows: this runs once per 256 KiB attachment frame.
+    final ct = box.cipherText;
+    final mac = box.mac.bytes;
+    final out = Uint8List(ct.length + mac.length);
+    out.setRange(0, ct.length, ct);
+    out.setRange(ct.length, out.length, mac);
+    return out;
   }
 
   /// Opens one frame, returning its kind and body. Throws [FormatException]
@@ -153,7 +161,11 @@ class ZArchive {
   static Uint8List blobPayload(String fid, List<int> bytes) {
     final id = utf8.encode(fid);
     if (id.length > 255) throw const FormatException('file id too long');
-    return Uint8List.fromList([id.length, ...id, ...bytes]);
+    final out = Uint8List(1 + id.length + bytes.length);
+    out[0] = id.length;
+    out.setRange(1, 1 + id.length, id);
+    out.setRange(1 + id.length, out.length, bytes);
+    return out;
   }
 
   static (String fid, Uint8List bytes) parseBlobPayload(Uint8List payload) {

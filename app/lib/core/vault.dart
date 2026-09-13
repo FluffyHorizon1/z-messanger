@@ -771,9 +771,18 @@ class Vault {
     final nonce = zp.randomBytes(24);
     final box =
         await _aead.encrypt(bytes, secretKey: SecretKey(key), nonce: nonce);
-    final f = blobFile(fid);
-    await f
-        .writeAsBytes(<int>[...box.cipherText, ...box.mac.bytes], flush: true);
+    // Joined into a typed buffer of exactly the right size, not a spread
+    // into a growable `List<int>`: that boxes-by-int-slot at eight bytes an
+    // element and doubles its way there, so sealing a 24 MiB attachment cost
+    // a few hundred megabytes of churn to write 24. It is on the path of
+    // every attachment received, and it was what a restore's memory was
+    // actually going to.
+    final ct = box.cipherText;
+    final mac = box.mac.bytes;
+    final out = Uint8List(ct.length + mac.length);
+    out.setRange(0, ct.length, ct);
+    out.setRange(ct.length, out.length, mac);
+    await blobFile(fid).writeAsBytes(out, flush: true);
     return {'k': zp.b64(key), 'n': zp.b64(nonce)};
   }
 
