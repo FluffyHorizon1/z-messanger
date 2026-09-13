@@ -842,8 +842,18 @@ sealed to each of their devices), so group traffic inherits the forward secrecy,
 post‑compromise healing and sender authenticity of §5, and the relay cannot
 tell group messages from direct ones.
 
-* `gid` is a string beginning with `g` (*implementation note:* `"g" ||
-  b64url(12 random bytes)`). The creator is the **admin** for the group's life.
+* `gid` is `"g" || b64url(12 random bytes)` — the letter `g` and exactly
+  sixteen characters of the base64url alphabet. A receiver **MUST** refuse a
+  `ginvite` whose `gid` is not that shape, because the id is chosen by the
+  sender and is also the **thread key**: an implementation that files messages
+  under it, and decides that a conversation is a group by looking it up, is
+  letting a contact name the thread. A routing id is 43 base64url characters,
+  so the two cannot collide — but only if the shape is checked. The reference
+  client checked nothing here until 2026‑09‑13, and a contact could send a
+  `ginvite` naming ANOTHER contact's routing id and take that conversation
+  over: its title and membership became the inviter's to choose, and every
+  warning drawn only for a 1:1 stopped being drawn. The creator is the
+  **admin** for the group's life.
 * `ginvite` carries the full member list (verified `zc1.` bundles plus display
   names) at membership version `ver`. A receiver accepts a `ginvite` for a
   known group only from the admin and only with `ver` strictly greater than

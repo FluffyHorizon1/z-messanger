@@ -4392,10 +4392,21 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> _loadGroups() async {
     final s = await vault.kvGet('groups');
     if (s == null) return;
+    var dropped = false;
     for (final j in (jsonDecode(s) as List)) {
       final g = Group.fromJson((j as Map).cast<String, Object?>());
+      // A group written by a build that accepted any string as a group id
+      // (before 2026-09-13) may be one a contact planted to take over
+      // another contact's conversation — see [_applyGroupInvite]. It goes
+      // rather than being shown: the thread underneath it is the real one,
+      // and an honest group can be made again in two taps.
+      if (!isWellFormedGid(g.gid)) {
+        dropped = true;
+        continue;
+      }
       groups[g.gid] = g;
     }
+    if (dropped) await _saveGroups();
   }
 
   /// Persist all groups. Matches the vault's sensitive-kv format so it can be
@@ -4585,7 +4596,7 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   /// Create a group with [memberRids] (existing contacts) and invite them.
   Future<String> createGroup(String name, List<String> memberRids) async {
-    final gid = 'g${b64url(randomBytes(12))}';
+    final gid = newGroupId();
     final g = Group(
       gid: gid,
       name: name,
@@ -4886,7 +4897,23 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> _applyGroupInvite(String fromRid, Map<String, Object?> data,
       {DatabaseExecutor? txn, bool mirroredOwn = false}) async {
     final gid = data['gid'] as String?;
-    if (gid == null || gid.isEmpty) return;
+    if (gid == null || !isWellFormedGid(gid)) return;
+    // A group id is also the THREAD KEY: messages are filed under it, and a
+    // chat is a group when `groups[rid]` exists. Until 2026-09-13 any
+    // non-empty string was accepted here, so a contact could send a
+    // `ginvite` naming ANOTHER contact's routing id and take that
+    // conversation over — its title became the group's name, its members
+    // became whoever the invite listed, and every banner the chat screen
+    // draws only for a 1:1 (the device-list warning, the transparency log's
+    // conflict, the disappearing-messages control) silently stopped being
+    // drawn. The send is still refused by the service, so what the victim
+    // saw was messages not going, with the explanation gone.
+    //
+    // §11's shape is what makes that impossible: a routing id is 43
+    // base64url characters, a group id is `g` and sixteen more. The explicit
+    // refusal below is belt and braces — it is the property that matters, so
+    // it is written down rather than left to be deduced from two lengths.
+    if (contacts.containsKey(gid) || gid == myRid) return;
     final name = data['name'] as String? ?? 'Group';
     final ver = (data['ver'] as num?)?.toInt() ?? 1;
     final existing = groups[gid];

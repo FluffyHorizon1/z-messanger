@@ -2345,3 +2345,49 @@ direction; the phases, their order and both ordering arguments stand.
    test needs to know about that widget is precisely that the thing encoded is
    the link and not a second secret. **A property nothing can assert is a
    property nobody is keeping.**
+
+66. **A group id is also a thread key, and the sender chose it.** §11 says a
+   group id is `"g" || b64url(12 random bytes)`. The client generated exactly
+   that and accepted anything: `_applyGroupInvite` took any non-empty string.
+
+   The id is not a label. It is the key messages are filed under
+   (`messages.rid`), and the chat screen decides what a conversation **is** by
+   looking it up — `groups[rid] != null` means group. A routing id is 43
+   base64url characters and a group id is seventeen, so they can only collide
+   if nobody checks. Nobody checked. Measured with three real clients through
+   a real relay, before the fix:
+
+       GROUPS=[D5R9H30EV96KmLg6SV70gu69yv_rXPOYJbz4Kfmhf8k]
+       HIJACKED=true name=Alice (verified)
+       THREAD=[null:the real Alice,
+               null:{"k":"added_to_by","by":"Mallory","name":"Alice (verified)"},
+               Mallory:transfer the money to this account]
+
+   Alice's conversation, with Alice's real message still in it, retitled to
+   whatever Mallory typed and subtitled "2 members".
+
+   What it is and is not, exactly. The injected message carries Mallory's
+   name and a system message says she added you, so it is not a clean
+   impersonation of Alice. What Mallory gets is the thread's **title and
+   membership**, and the disappearance of every banner the chat screen draws
+   only for a 1:1 — the device-list warning about Alice, the transparency
+   log's conflict hold, the disappearing-messages control. The send is still
+   refused by the service (`kt.sendsHeld` is checked in `_sendInner`, not only
+   on screen), so a victim under an active key-substitution attack gets
+   messages that do not go and no explanation of why. That is the worst of
+   both halves and it is a third party's to arrange.
+
+   The shape is checked now, at the one place a group can be created from the
+   wire, together with an explicit refusal of any id that is already a
+   contact's — belt and braces, because the property that matters is "a group
+   never shadows a conversation" and it should be written down rather than
+   deduced from two string lengths. `newGroupId` and `isWellFormedGid` live
+   together in `protocol/`, so the generator and the check cannot drift. A
+   group an older build accepted is dropped when the vault opens, and the
+   conversation underneath it comes back.
+
+   R29 records what remains: any contact can still put you in a group, name
+   it, and name its other members. That is inherent to pairwise fan-out with
+   no shared key, the members it adds arrive unverified, and leaving is one
+   tap. **The thing worth preventing was not an unwanted group. It was a group
+   that could pretend to be a conversation.**

@@ -236,3 +236,20 @@ class InnerMessage {
 
 /// Generates a collision-resistant message/envelope id (base64url, 16 bytes).
 String newMessageId() => b64url(randomBytes(16));
+
+/// A group id, as PROTOCOL.md §11 defines one: `"g" || b64url(12 random
+/// bytes)`, so `g` followed by sixteen characters of the base64url alphabet.
+String newGroupId() => 'g${b64url(randomBytes(12))}';
+
+final RegExp _gidShape = RegExp(r'^g[A-Za-z0-9_-]{16}$');
+
+/// True if [s] is a group id as §11 defines one.
+///
+/// A RECEIVER's check, and the important one. A `gid` arrives in a `ginvite`
+/// chosen by whoever sent it, and it is also the THREAD KEY: the client files
+/// messages under it, and a chat is a group if there is a group with that
+/// key. A routing id is 43 characters and a group id is 17 beginning with
+/// `g`, so the two cannot collide — unless nobody checks, in which case a
+/// contact can name ANOTHER contact's routing id as their group's id and take
+/// over that conversation's identity.
+bool isWellFormedGid(String s) => _gidShape.hasMatch(s);
