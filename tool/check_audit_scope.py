@@ -212,6 +212,29 @@ def main():
                 f"rather than leaving the cell blank."
             )
 
+    # 2b. No two rows state the same claim.
+    #
+    # Phase 17 added its work to this table four times by copying the row
+    # above and appending one more citation, so C32-C35 were one claim under
+    # four numbers — and each copy restated the "not yet built" sentence the
+    # copy before it had already replaced, so the table contradicted itself
+    # as well as repeating itself. A brief that says it makes 35 claims and
+    # makes 32 is the wrong document to hand an auditor. Extend the row that
+    # already makes the claim; a genuinely new claim says something new.
+    seen = {}
+    for cid, claim, _s, _e in rows:
+        key = " ".join(claim.split())
+        if key in seen:
+            problems.append(
+                f"{cid} states the same claim as {seen[key]}, word for word. "
+                f"New evidence for a claim already in the table belongs in "
+                f"that row's evidence cell, not in a second row with a new "
+                f"number: the count at the top of this table is what tells a "
+                f"reader how many distinct things are being claimed."
+            )
+        else:
+            seen[key] = cid
+
     # 3. Every test file is cited somewhere.
     tests = []
     for pat in ("protocol/test/*.dart", "app/test/*.dart", "server/test/*.js",

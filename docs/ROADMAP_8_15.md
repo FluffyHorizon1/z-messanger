@@ -2079,3 +2079,27 @@ direction; the phases, their order and both ordering arguments stand.
    convention, and it failed silently — the message simply stayed pending
    for ever. **Separating two things that were one leaves as many readers as
    there were uses, and the compiler finds none of them.**
+
+59. **Four controls, one claim.** The audit brief's claims table grew from 32
+   rows to 35 during phase 17 without gaining a single new claim. Each of
+   17.3, 17.3b and 17.4 added its evidence by copying the row above,
+   appending one more citation and taking the next free number, so C32–C35
+   were the same 563-character paragraph four times over. Worse, each copy
+   also carried a *stale* version of the sentence at the end: 17.3 replaced
+   "the trust-model half is proposed and not yet built" with "a confirmed
+   comparison sets `verified_sn`" because it had just built it, and 17.4's
+   copy quietly reverted to "not yet built" — so the table contradicted
+   itself about whether shipped code exists, and dropped the two app suites
+   17.3b had cited.
+
+   One row now, with the union of the citations and the built form of the
+   sentence. The prose under the table has said "thirty-two claims" all
+   along and was never wrong; the table drifted away from it.
+
+   `check_audit_scope.py` refuses two rows that state the same claim word for
+   word. It already checked that every cited file exists, that ids are
+   contiguous, that no cell is empty and that every test file is cited
+   somewhere — none of which notices a row copied wholesale, which is why
+   three of them went through green CI. **A count is evidence about the
+   document, not about the system, and this one was inflated by 10% before
+   anybody read it.**
