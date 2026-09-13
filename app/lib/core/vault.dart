@@ -749,19 +749,36 @@ class Vault {
 
   /// Writes [bytes] encrypted under a fresh random key; returns the key
   /// material to stash inside an encrypted DB cell.
+  /// The path a blob lives at, refusing any [fid] that is not one.
+  ///
+  /// A file id is chosen by whoever SENT the offer (PROTOCOL §7) and arrives
+  /// as an ordinary inner field; it was used unchecked as a filename here, so
+  /// `../..`, a leading `/` or a Windows drive letter named a path outside
+  /// this directory — and `p.join` drops its base entirely when the second
+  /// part is absolute. The shape check belongs at the door (`ChatService`
+  /// refuses a malformed offer, a malformed chunk and a malformed archive
+  /// record), and it belongs here as well, so that a future caller who
+  /// forgets cannot put it back.
+  File blobFile(String fid) {
+    if (!zp.isWellFormedFid(fid)) {
+      throw ArgumentError.value(fid, 'fid', 'not a file id (PROTOCOL §7)');
+    }
+    return File(p.join(filesDir.path, '$fid.bin'));
+  }
+
   Future<Map<String, String>> writeBlob(String fid, Uint8List bytes) async {
     final key = zp.randomBytes(32);
     final nonce = zp.randomBytes(24);
     final box =
         await _aead.encrypt(bytes, secretKey: SecretKey(key), nonce: nonce);
-    final f = File(p.join(filesDir.path, '$fid.bin'));
+    final f = blobFile(fid);
     await f
         .writeAsBytes(<int>[...box.cipherText, ...box.mac.bytes], flush: true);
     return {'k': zp.b64(key), 'n': zp.b64(nonce)};
   }
 
   Future<Uint8List> readBlob(String fid, Map<String, Object?> keyInfo) async {
-    final f = File(p.join(filesDir.path, '$fid.bin'));
+    final f = blobFile(fid);
     final raw = await f.readAsBytes();
     final ct = raw.sublist(0, raw.length - 16);
     final mac = raw.sublist(raw.length - 16);
@@ -773,7 +790,12 @@ class Vault {
   }
 
   Future<void> deleteBlob(String fid) async {
-    final f = File(p.join(filesDir.path, '$fid.bin'));
+    // A blob whose id is malformed cannot have been written by `writeBlob`,
+    // so there is nothing of ours at that path and nothing to delete. Older
+    // vaults may carry such a row from before the check; the row goes, the
+    // path is left alone.
+    if (!zp.isWellFormedFid(fid)) return;
+    final f = blobFile(fid);
     if (await f.exists()) {
       // Best-effort overwrite before unlink (not guaranteed on flash/COW
       // filesystems, but cheap defense in depth).

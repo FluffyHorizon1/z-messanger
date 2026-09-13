@@ -32,6 +32,21 @@ const String _fileAadContext = 'z-file-v1:';
 
 final _aead = Xchacha20.poly1305Aead();
 
+/// The shape PROTOCOL.md §7 gives a file id: `b64url(12 random bytes)`, which
+/// is exactly sixteen characters of the base64url alphabet and nothing else.
+///
+/// This is a RECEIVER's check. The id is chosen by whoever sends the offer
+/// and is carried in an ordinary inner field, so "it is one of ours" is an
+/// assumption about a peer rather than a fact — and a client that treats it
+/// as a name (a filename, a directory entry, a key in a store) is trusting a
+/// string a contact wrote. `..`, a leading `/`, a drive letter and a path
+/// separator are all valid Dart strings and none of them is a file id.
+final RegExp _fidShape = RegExp(r'^[A-Za-z0-9_-]{16}$');
+
+/// True if [s] is a file id as §7 defines one. Anything else is not a file
+/// this protocol produced, whatever else it may be.
+bool isWellFormedFid(String s) => _fidShape.hasMatch(s);
+
 class FileKeyMaterial {
   final String fid; // public chunk-routing id (random, meaningless)
   final Uint8List fk; // 32-byte file key (E2E-protected)

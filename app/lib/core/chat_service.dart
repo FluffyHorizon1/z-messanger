@@ -2202,6 +2202,13 @@ class ChatService extends ChangeNotifier implements KtHost {
       DatabaseExecutor txn, String threadRid, InnerMessage inner, int now,
       {int expireAt = 0, String? senderName, String? senderRid}) async {
     final fid = inner.data['fid'] as String;
+    // §7 says a file id is `b64url(12 random bytes)`. The SENDER picks it, so
+    // that is a rule this side has to enforce rather than assume: it names
+    // the blob's file on disk, and `../..`, a leading `/` and `C:` are all
+    // strings a contact can put in an inner field. Refused like any other
+    // malformed inner message — nothing stored, no placeholder, no alarm,
+    // because an honest client cannot produce one.
+    if (!isWellFormedFid(fid)) return;
     final name = inner.data['name'] as String? ?? 'file';
     final voice = inner.data['voice'] == true;
     final durSec = (inner.data['dur'] as num?)?.toInt() ?? 0;
@@ -2309,6 +2316,14 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   Future<void> _onChunk(
       RelayInbound m, FileChunk chunk, String from, String payload) async {
+    // A chunk names its own fid, from outside the ratchet, so this is the
+    // least trustworthy string the client handles. One that is not a file id
+    // (§7) can belong to no offer this device will ever accept, so holding
+    // it would be storing junk under a name that is itself the attack.
+    if (!isWellFormedFid(chunk.fid)) {
+      transport.ackReceived(id: m.id, from: m.from);
+      return;
+    }
     final offer = await vault.db.query('files',
         columns: ['total_chunks', 'complete'],
         where: 'fid = ?',
@@ -2604,6 +2619,20 @@ class ChatService extends ChangeNotifier implements KtHost {
         contact,
         InnerMessage(
             kind: 'dlv', mid: newMessageId(), ts: _now(), data: {'mids': mids}));
+  }
+
+  /// Test seam: send [inner] to [rid] exactly as given.
+  ///
+  /// A well-behaved sender builds its own messages and so never produces the
+  /// ones the receiver's rules exist for. This stands in for a peer running
+  /// modified code — the only kind that can — so that those rules can be
+  /// tested against what they are actually meant to refuse rather than
+  /// against what this client happens to emit.
+  @visibleForTesting
+  Future<void> debugSendRawInner(String rid, InnerMessage inner) async {
+    final contact = contacts[rid];
+    if (contact == null) return;
+    await _sendInner(contact, inner);
   }
 
   /// Test seam: send whatever receipts are waiting, now, and wait for them.

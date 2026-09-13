@@ -622,6 +622,19 @@ file's `name`, `mime`, `size`, `chunks` and `sha256` (of the plaintext file,
 `size` and the whole‑file SHA‑256, and only then surfaces the file. The
 reference app caps attachments at 24 MiB.
 
+A receiver **MUST** refuse an offer or a chunk whose `fid` is not exactly
+sixteen characters of the base64url alphabet (`[A-Za-z0-9_-]{16}`), which is
+what `b64url(12 random bytes)` produces and the only thing this protocol ever
+produces. The `fid` is chosen by the **sender** and carried in an ordinary
+field, so "it is one of ours" is an assumption about a peer rather than a
+fact — and an implementation that uses it as a *name* (a filename, a
+directory entry, a key in a store) is naming something on a contact's
+instruction. `..`, a leading `/` and a drive letter are all valid strings and
+none of them is a file id. The reference client refused nothing here until
+2026‑09‑13 and used the value as `files/$fid.bin`, so a contact could choose
+where on the device an attachment landed; the rule was already written above,
+and only the receiver never read it.
+
 ## 8. Sealed sender
 
 Without this layer the relay learns the sender of every envelope (from the

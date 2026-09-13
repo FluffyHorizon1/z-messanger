@@ -97,6 +97,12 @@ void main() {
 
   /// A chunk envelope, as anyone who knows a routing id can build one: the
   /// wire shape is public and nothing in it is signed.
+  ///
+  /// The ids are the shape §7 specifies (`file_id_test.dart` covers the ones
+  /// that are not, which are refused before they are held). Matching a shape
+  /// costs an attacker nothing, so the cap below is what actually bounds a
+  /// flood and this test must not be allowed to pass because of the other
+  /// check.
   String junkChunk(String fid, int idx) => base64Encode(utf8.encode(jsonEncode({
         'v': 1,
         't': 'f',
@@ -123,7 +129,8 @@ void main() {
         await sender.send(
             to: rid,
             id: newMessageId(),
-            payload: junkChunk(fid ?? 'fid-$i', fid == null ? 0 : i));
+            payload: junkChunk(
+                fid ?? b64url(randomBytes(12)), fid == null ? 0 : i));
       } on RelayException {
         await Future<void>.delayed(const Duration(seconds: 1));
       }

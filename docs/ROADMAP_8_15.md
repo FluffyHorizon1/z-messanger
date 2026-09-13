@@ -2142,3 +2142,44 @@ direction; the phases, their order and both ordering arguments stand.
    filesystem. Sealing is what makes that ciphertext, and factory reset is
    the platform's job. **"Deleted" in an app means removed from the store it
    controls; saying more than that would be a claim about hardware.**
+
+61. **The sender chose the filename.** An attachment's `fid` is what §7 calls
+   an opaque chunk-routing id: `b64url(12 random bytes)`, sixteen characters,
+   meaningless. It is also what the receiver names the blob's *file* by —
+   `files/$fid.bin` — and it arrives in an ordinary inner field that the
+   **sender** filled in.
+
+   Nothing checked it. `../escaped` is a valid Dart string; so is
+   `/z-absolute-escape`, and `p.join` discards its base entirely when the
+   second part is absolute, so an absolute id was an absolute path. A contact
+   could therefore choose where on the device an attachment landed, and a
+   `.bin` file written outside the vault directory is one `Vault.wipe` —
+   "reset identity", the button that means *everything goes* — walks straight
+   past. `deleteBlob` pointed the same arbitrary name at a zero-and-unlink.
+
+   Be exact about the size of it: the bytes are not the attacker's, because
+   `writeBlob` seals them under a fresh random key, so what lands is
+   ciphertext. What they get is the **place**, plus a delete primitive aimed
+   the same way, both suffixed `.bin`. That is a real capability and a modest
+   one, and calling it either more or less than that would be wrong.
+
+   The pre-fix test run names the file it finds: `<vault>/escaped.bin`, put
+   there by a contact sending one offer and one chunk, both otherwise
+   perfect — real key material, a real encrypted chunk, the real SHA-256 of
+   the real bytes. The only wrong thing in the exchange is the id.
+
+   Enforced now at every door an id arrives through — the offer, the chunk,
+   an archive record — and in `Vault` itself, which throws rather than
+   accepts, so a future caller who forgets cannot bring it back. The check
+   lives in `protocol/`, next to the generator, because the two have to agree.
+
+   Two notes against over-reading the fix. Matching the shape costs an
+   attacker nothing, so this does not replace the flood cap (54): a
+   well-formed unexplained chunk is still held, and `file_id_test.dart`
+   asserts that it is, so nobody later decides one check covers both.
+   `chunk_flood_test.dart` used `fid-$i` for its junk and would have passed
+   for the new reason instead of the old one; it now floods with well-formed
+   ids.
+
+   **§7 had specified the shape all along. A rule in the document that no
+   code reads is a comment.**

@@ -354,6 +354,12 @@ class BackupArchive {
           );
           if (kind == ZArchive.kindBlob) {
             final (fid, bytes) = ZArchive.parseBlobPayload(payload);
+            // The same rule as an inbound offer: a file id is `b64url(12
+            // random bytes)` (§7) and an archive is a file that may have come
+            // from anywhere. The id names the blob's file on disk, so a
+            // record that carries a path instead is dropped rather than
+            // restored -- the rest of the archive still comes back.
+            if (!isWellFormedFid(fid)) continue;
             (blobs[fid] ??= BytesBuilder()).add(bytes);
             continue;
           }
@@ -437,8 +443,10 @@ class BackupArchive {
                   },
                   conflictAlgorithm: ConflictAlgorithm.replace);
             case 'file':
+              final fid = r['fid'];
+              if (fid is! String || !isWellFormedFid(fid)) break;
               attachments++;
-              fileMeta[r['fid'] as String] = r;
+              fileMeta[fid] = r;
           }
         }
 

@@ -274,9 +274,13 @@ void main() {
 
     // Exactly what the old `deleteMessage` left: a `files` row, its blob, its
     // chunks, a reaction and a receipt, with no message naming any of them.
-    const fid = 'orphan-fid';
+    // Real file ids: §7 says sixteen base64url characters and `Vault` now
+    // refuses anything else (`file_id_test.dart`), so a test that plants an
+    // orphan has to plant one that could really have been written.
+    final fid = b64url(randomBytes(12));
     const mid = 'ZZorphanMIDZZ';
     const rid = 'orphan-rid';
+    final strayFid = b64url(randomBytes(12));
     final keyInfo = await vault.writeBlob(
         fid, Uint8List.fromList(List<int>.filled(1024, 9)));
     await vault.db.insert('files', {
@@ -302,7 +306,7 @@ void main() {
         'delivery', {'mid': mid, 'thread_rid': rid, 'from_rid': 'x', 'at_ms': 1});
     // A blob nothing ever named at all — the crash window between writeBlob
     // and the transaction that records it.
-    await vault.writeBlob('stray-fid', Uint8List.fromList([1, 2, 3]));
+    await vault.writeBlob(strayFid, Uint8List.fromList([1, 2, 3]));
     await vault.db.close();
 
     final reopened = await Vault.open(rootOverride: dir);
@@ -314,7 +318,7 @@ void main() {
     expect(File('${reopened.filesDir.path}/$fid.bin').existsSync(), isFalse,
         reason: 'and so is its blob');
     expect(
-        File('${reopened.filesDir.path}/stray-fid.bin').existsSync(), isFalse,
+        File('${reopened.filesDir.path}/$strayFid.bin').existsSync(), isFalse,
         reason: 'and a blob no row ever named');
 
     // The other half: a deleted row does not leave its plaintext columns on a
