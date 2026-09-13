@@ -228,18 +228,36 @@ test('a sealed envelope is accepted from a connection that never authenticated �
   await anon.next((f) => f.t === 'challenge');
   anon.send({ t: 'send', id: 'u1', to: b.identity.rid, payload: 'zs1.EEEE' });
   const ack = await anon.next((f) => f.t === 'sent' && f.id === 'u1');
-  assert.strictEqual(ack.queued, false, 'delivered live');
+  // Delivered live — and the anonymous sender is not told so. Until
+  // 2026-09-14 this read `queued: false`, which is the relay answering
+  // "that person is online, now" to anyone who has ever seen a contact
+  // code: one 60-byte sealed envelope a minute to a routing id is a 24/7
+  // activity timeline for someone with no relationship to its owner.
+  // THREAT_MODEL grants presence to the relay operator (R1), not to the
+  // internet. The delivery itself is unaffected, below.
+  assert.strictEqual(ack.queued, true, 'an anonymous sender is told nothing about the recipient');
   const msg = await b.next((f) => f.t === 'msg' && f.id === 'u1');
   assert.strictEqual(msg.from, undefined);
   assert.strictEqual(msg.payload, 'zs1.EEEE');
-  // Queued for an offline recipient works the same way.
+  // Queued for an offline recipient looks EXACTLY the same from here, which
+  // is the point: the two cases are what the oracle told apart.
   const offline = makeIdentity();
   anon.send({ t: 'send', id: 'u2', to: offline.rid, payload: 'zs1.FFFF' });
   const ack2 = await anon.next((f) => f.t === 'sent' && f.id === 'u2');
   assert.strictEqual(ack2.queued, true);
+  const shape = (f) => ({ ...f, id: undefined });
+  assert.deepStrictEqual(shape(ack2), shape(ack), 'online and offline are indistinguishable to an anonymous sender');
   assert.strictEqual(_internal.queues.get(offline.rid).entries[0].from, null);
+  // An authenticated sender still gets the real answer about its own
+  // conversation, which is what the field is for.
+  const auth = await mk();
+  auth.send({ t: 'send', id: 'u5', to: b.identity.rid, payload: 'zs1.GGGG' });
+  assert.strictEqual((await auth.next((f) => f.t === 'sent' && f.id === 'u5')).queued, false);
   const after = metric((await get(port, '/metrics')).body, 'z_sealed_unattributable_total');
-  assert.strictEqual(after, before + 2, 'both sends counted as unattributable');
+  // Two, not three: the third went on an AUTHENTICATED socket, and a sealed
+  // envelope sent there is attributable to that connection's identity by the
+  // relay process — which is R21, and why clients send them anonymously.
+  assert.strictEqual(after, before + 2, 'only the anonymous sends counted as unattributable');
 });
 
 test('an unauthenticated connection cannot send an attributed envelope, receive, or ack', async () => {

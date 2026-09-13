@@ -69,6 +69,11 @@ const CFG = {
   // Push tokens live this long after their last (re)registration, in both
   // coordinators — the privacy policy promises a 30-day cap.
   pushTtlMs: intEnv('PUSH_TTL_DAYS', 30) * 24 * 3600 * 1000,
+  // How many exempt acknowledgements one socket may have in the store at
+  // once. The exemption is about a device draining its own backlog, which
+  // does so a page at a time (FLUSH_PAGE, 64), so this is generous for the
+  // case it exists for and a bound on the case it does not.
+  ackInFlight: intEnv('ACK_IN_FLIGHT', 256),
   ratePerSec: intEnv('RATE_PER_SEC', 80),
   rateBurst: intEnv('RATE_BURST', 240),
   // How many mailboxes may be CREATED a minute, across all senders.
@@ -1631,6 +1636,7 @@ function createServer(opts = {}) {
       nonce: crypto.randomBytes(32),
       tokens: CFG.rateBurst,
       lastRefill: Date.now(),
+      acksInFlight: 0,
     };
     ws.zAlive = true;
 
@@ -1676,14 +1682,37 @@ function createServer(opts = {}) {
       // one bounded lookup while freeing memory, so those stay free; an
       // acknowledgement that is large, or that names nothing the mailbox
       // holds, is charged like any other frame.
-      const smallAck = frame.t === 'recv' && data.length <= 512;
+      //
+      // The exemption bounds the RATE and not the number in flight, and
+      // that distinction was the hole. The debit happens in the `.then()`,
+      // so every acknowledgement that arrives in one read passes the gate
+      // before any of them is charged: fifty thousand small frames in one
+      // burst issued their lookups — up to two hundred and ten store calls
+      // each on a miss — before the bucket moved at all.
+      //
+      // Charging them synchronously instead would break the thing the
+      // exemption exists for, because a device draining a backlog really
+      // does acknowledge faster than the bucket refills, and that is
+      // correct behaviour that frees memory. So what is bounded is how many
+      // may be in the store AT ONCE: past that, an acknowledgement is
+      // charged like any other frame and the gate above refuses the rest
+      // unread. A client draining a paged flush has about `FLUSH_PAGE` in
+      // flight, far below this, and is untouched.
+      const smallAck = frame.t === 'recv' && data.length <= 512 && state.acksInFlight < CFG.ackInFlight;
       if (!smallAck) state.tokens -= 1;
+      if (smallAck) state.acksInFlight += 1;
       handleFrame(ws, state, coord, frame, pushSender)
         .then((free) => {
-          if (smallAck && free !== true) state.tokens -= 1;
+          if (smallAck) {
+            state.acksInFlight -= 1;
+            if (free !== true) state.tokens -= 1;
+          }
         })
         .catch(() => {
-          if (smallAck) state.tokens -= 1;
+          if (smallAck) {
+            state.acksInFlight -= 1;
+            state.tokens -= 1;
+          }
           sendJson(ws, { t: 'error', code: 'internal' });
         });
     });
@@ -1818,7 +1847,23 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
         sendJson(ws, { t: 'error', code: 'store_full', id });
         return;
       }
-      sendJson(ws, { t: 'sent', id, queued });
+      // What the SENDER is told, which is not always what the relay knows.
+      //
+      // `queued` is `!live`, so on an authenticated socket it is ordinary
+      // feedback about one's own conversation. On a connection that never
+      // authenticated it is something else: anyone who has ever seen a
+      // contact code can send a 60-byte sealed envelope to that routing id
+      // from an anonymous socket and read `queued:false` as "that person is
+      // online, now". Once a minute is a 24/7 activity timeline for someone
+      // with no relationship to them at all. THREAT_MODEL grants presence to
+      // the relay operator (R1); it does not grant it to the internet.
+      //
+      // So an anonymous sender is told the envelope is held, always. It
+      // costs that sender nothing real — the Dart client discards the value,
+      // and clients send every sealed envelope this way (§12.1) — and the
+      // push decision below still uses what actually happened, so a wake
+      // ping does not start firing for recipients who are connected.
+      sendJson(ws, { t: 'sent', id, queued: state.authed ? queued : true });
       // Recipient offline and push configured? Fire a content-free wake ping.
       // Best-effort and non-blocking — never delays or fails the send.
       if (queued && pushSender) {
@@ -1860,11 +1905,28 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
 
     case 'recv': {
       if (!state.authed) return false;
+      const ackId = String(frame.id || '');
+      const ackFrom = String(frame.from || '');
+      // The same bounds `send` puts on the same two fields, for the same
+      // reason: both become store keys. `send` caps `id` at 64 characters
+      // and requires `to` to be the shape of a routing id; `recv` checked
+      // neither, so a throwaway keypair and 1 MB `id`s made the ack script
+      // build nine ~1 MB keys and issue nine HGETs inside one blocking Lua
+      // call — about 9 MB of hashing per frame, at 80 frames a second, on
+      // the store every mailbox shares. An unbounded `from` was worse in
+      // kind than in size: in RAM mode it names the mailbox a receipt is
+      // enqueued to, so it could create one under any string at all.
+      //
+      // Refused by being ignored, not by an error: §12.5.2 says an
+      // acknowledgement that names nothing the mailbox holds is answered
+      // with no frame, and a client must not be able to tell the two apart.
+      if (!ackId || ackId.length > 64) return false;
+      if (ackFrom && !ROUTING_ID.test(ackFrom)) return false;
       // `from` absent/empty = a sealed envelope being acked by id alone.
       // The answer says whether anything was removed: the rate limiter
       // charges for an acknowledgement that names nothing, since that is
       // the one that costs a search.
-      const freed = await coord.ack(state.rid, String(frame.from || ''), String(frame.id || ''));
+      const freed = await coord.ack(state.rid, ackFrom, ackId);
       if (!freed) METRICS.ackMissTotal += 1;
       return freed;
     }

@@ -2839,3 +2839,52 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A message that says what to close, but not which one, closes the wrong
    one eventually.**
+
+78. **Three ways the relay answered a question it had not been asked.**
+
+   **The `queued` flag was a presence oracle.** It is `!live`, so on an
+   authenticated socket it is ordinary feedback about one's own conversation.
+   On a connection that never authenticated it is something else: anyone who
+   has ever seen a contact code sends a 60-byte sealed envelope to that
+   routing id and reads `queued:false` as "that person is online, now". Once
+   a minute is a 24/7 activity timeline for someone with no relationship to
+   them at all. `THREAT_MODEL.md` grants presence to the relay operator (R1);
+   it does not grant it to the internet. An anonymous sender is now told the
+   envelope is held, always — which costs that sender nothing real, since the
+   client discards the value and sends every sealed envelope this way — while
+   the wake push still decides on what actually happened, so it does not
+   start firing for recipients who are connected.
+
+   **`recv` bounded neither of the fields that become store keys**, though
+   `send` bounds both. A throwaway keypair and 1 MB `id`s made the
+   acknowledgement script build nine ~1 MB keys and issue nine `HGET`s inside
+   one blocking Lua call — about 9 MB of hashing per frame, at 80 frames a
+   second, on the store every mailbox shares. An unbounded `from` was worse
+   in kind than in size: in RAM mode it names the mailbox a receipt is
+   enqueued to, so it could create one under any string at all. The refusal
+   has to be *silence*, because §12.5.2 says an acknowledgement that names
+   nothing is answered with no frame — a client must not be able to tell a
+   refused frame from an entry that had already gone.
+
+   **The exemption for small acknowledgements bounded the rate and not the
+   number in flight.** The debit happens after the lookup, so every
+   acknowledgement arriving in one read passed the gate before any was
+   charged: fifty thousand in one burst issued their lookups — up to two
+   hundred and ten store calls each on a miss — before the bucket moved.
+   Charging them synchronously would break what the exemption is *for*, since
+   a device draining a backlog really does acknowledge faster than the bucket
+   refills and that is correct behaviour which frees memory. So what is
+   bounded is how many may be in the store at once (`ACK_IN_FLIGHT`, 256);
+   past that they are charged like any other frame and the gate refuses the
+   rest unread. A device draining a paged flush has about `FLUSH_PAGE` (64)
+   outstanding, so the case the exemption exists for never meets the bound.
+
+   One test had to change rather than be added, and it is the interesting
+   one: `sealed.test.js` asserted `queued: false` for an anonymous sealed
+   send delivered live. That assertion *was* the oracle, written down and
+   guarded. It now asserts the opposite — that the online and offline cases
+   are indistinguishable from an anonymous socket — and that an
+   authenticated sender still gets the real answer about its own
+   conversation, which is what the field is for.
+
+   **A field that is feedback to one sender is surveillance from another.**

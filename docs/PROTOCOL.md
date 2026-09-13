@@ -901,6 +901,12 @@ extension under §14: a client that authenticates first behaves as before). A
 `send` whose payload begins with `zs1.` is accepted on a connection that has
 never authenticated, rate‑limited like any other frame, and acknowledged
 with `sent` as usual; such a connection owns no mailbox and receives nothing.
+That `sent` always reports `queued:true`, whatever became of the envelope: on
+an authenticated connection `queued` is feedback about one's own
+conversation, but on this one it would say whether a routing id is online
+**now** — to anyone who has ever seen that contact code, for the price of one
+sealed envelope a minute. A relay MUST NOT distinguish the two cases to a
+sender it cannot identify.
 Clients SHOULD send every sealed envelope on a connection of this kind and
 receive on an authenticated one, and MUST NOT fall back to the authenticated
 connection for a sealed envelope when the anonymous one is down — a sealed
@@ -1004,7 +1010,14 @@ flood of them free. The relay counts them (`z_ack_miss_total`). The charge
 is applied after the lookup, so a burst that arrives in one read is charged
 in arrears — the bucket goes into debt and the socket is refused until it
 refills; what the limit bounds for acknowledgements is the rate, not the
-burst. Per recipient
+burst — so a relay MUST ALSO bound how many exempt acknowledgements one
+connection may have outstanding at once (`ACK_IN_FLIGHT`, 256) and charge
+beyond that. Without it the rate is bounded and the burst is not: every
+acknowledgement arriving in one read passes the gate before any of them is
+charged, and one that matches nothing is the most expensive frame the relay
+serves. The bound is well above what a device draining a paged flush has
+outstanding (`FLUSH_PAGE`, 64), which is the case the exemption exists for.
+Per recipient
 queue: `MAX_QUEUE_MSGS_PER_USER` (5000) envelopes and `MAX_QUEUE_BYTES_PER_USER`
 (64 MiB, each envelope charged at its payload length plus 256). A `send`
 that would take the recipient's queue past either cap is **refused** with
@@ -1057,6 +1070,11 @@ own knowledge regardless. The relay counts refusals of this kind
    deduplicate (§6.4). A client MUST NOT `recv` before persisting. A `recv`
    that names nothing the mailbox holds is not an error — the relay may
    already have removed the entry — and is answered with no frame at all.
+   A relay MUST apply to `recv` the same bounds it applies to `send` on the
+   two fields that become store keys — `id` at 64 characters, `from` the
+   shape of a routing id — and MUST refuse a frame that breaks them the same
+   silent way, so a client cannot tell a refused acknowledgement from one
+   whose entry had already gone.
    One case of at-least-once is worth naming because it is not obvious:
    `ready` is sent *before* the mailbox is flushed, so that a client is not
    kept waiting on a 64 MiB backlog to learn it is authenticated, and an
