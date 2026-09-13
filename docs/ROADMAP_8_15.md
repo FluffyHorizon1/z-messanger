@@ -1773,3 +1773,69 @@ direction; the phases, their order and both ordering arguments stand.
    relay, about twenty lines of it, and asserts against the bytes that
    crossed: the two mailbox ids and nothing else, and no routing id, account
    key, contact code or display name of either party anywhere in the traffic.
+
+51. **Phase 17 finished — the tab, the tap, the page, and the one decision a
+   builder should not have made alone.** 17.1 built the ceremony and 17.2 the
+   transport; what was left was everything a person actually touches, and it
+   turned out to be where the interesting mistakes were.
+
+   **"Confirmed" and "not confirmed" are three states, not two.** The plan
+   said the comparison either passes or it does not. Building the screen made
+   it obvious that *nobody compared the digits* and *the digits did not match*
+   must never be the same button: the first is trust-on-first-use, which is
+   exactly what the paste flow has always been and is fine as long as the app
+   says so; the second means somebody is relaying between the two people, and
+   the only honest offer is to stop. So there are three buttons, the middle
+   one adds the contact unverified and names that state on screen, and the
+   third adds nothing and spends the invite — because a retry would meet
+   whoever produced the mismatch. R25 is the row that says so.
+
+   **A confirmed comparison sets `verified_sn`, and that was not ours to
+   decide.** ADR 0009 held it open on purpose. The argument for yes is that
+   the eight digits cover both account keys and both post-quantum commitments
+   in canonical order — the same facts a safety-number comparison establishes,
+   in a different encoding, over a channel where the two people recognise each
+   other. So the tick means what it means everywhere else, and what gets
+   recorded is the pair's own safety number, so every reader of that column
+   works on one kind of evidence rather than two. It is written in one method
+   with the reasoning next to it and the single line to remove if the answer
+   is ever no.
+
+   **Two meanings on one enum value, on the one button that must never be
+   reachable twice.** The comparison panel first hid itself when the run
+   reached `ConnectProgress.done`. But `done` means the CEREMONY is over —
+   true the moment both sides reveal — and says nothing about whether anybody
+   has looked at the digits. Depending on how many poll rounds it took, the
+   panel either vanished before the user could answer or stayed up with a live
+   "they match" button after they had. A separate `answered` flag now says
+   what it means. The lesson is not about enums: it is that a value named for
+   one lifecycle gets reused for another because the word fits, and the place
+   it does damage is the one screen where the second press must be impossible.
+
+   **A lenient parser at a public entry point.** `base32Decode` skips what it
+   does not recognise, which is right for a code read down a phone line and
+   wrong for deciding whether a string *is* one. Every URL has enough letters
+   between its punctuation to make ten bytes, so `ConnectCode.parse` turned
+   `https://zmessengers.com/` into a perfectly good invite. Harmless in a
+   paste field; not harmless once any app on the device can hand the same
+   function a VIEW intent. The separators are named now. Leniency and
+   validation are different jobs and the same function had been doing both.
+
+   **The landing page's best feature is what it cannot do.** An invite is
+   `…/i#<code>`, and the fragment is never sent to a server, so the page is
+   identical for every visitor and cannot tell that an invite exists. The page
+   says so, and says it is checkable in the reader's own network tab rather
+   than asking for trust. The test asserts it over every route on the site —
+   no script, no inline handler, no mention of the location object anywhere —
+   because a guarantee that can be lost by adding a script to some other page
+   later is not much of a guarantee.
+
+   **What is deliberately unfinished.** The Android app link needs
+   `/.well-known/assetlinks.json` with the Play App Signing fingerprint, which
+   is public but readable only from the Play Console. The route serves nothing
+   until `ANDROID_CERT_SHA256` is set, because an unverifiable claim about
+   which app owns those links is worse than no claim; until then an invite
+   opens a chooser, which works. And connecting to somebody already in the
+   contact list is refused rather than quietly re-verified: the digits would
+   support it, but the revealed bundle need not be the one already held, so it
+   is another decision.

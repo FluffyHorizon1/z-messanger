@@ -1,7 +1,8 @@
 # ADR 0009 — Adding a contact you cannot stand next to
 
-**Status:** **Proposed** 2026‑09‑12 — the ceremony is built (17.1); the UI,
-the landing page and the trust-model consequence are not ·
+**Status:** **Accepted** (2026‑09‑13) — the ceremony (17.1), its transport
+(17.2), the CONNECT tab (17.3), the deep link (17.3b), the landing page (17.4)
+and `PROTOCOL.md` §20 are built ·
 **Roadmap:** Phase 17 · **Decides:** how two people who cannot meet add each
 other, what a confirmed comparison is then worth, and what is deliberately
 left out.
@@ -146,14 +147,65 @@ Out of scope permanently, not for this phase.
   settle. The public invite in particular must never share a button with a
   one‑time invite, because the two have opposite properties.
 
-## Status note
+## What was built, rather than what was planned
 
-17.1 — the ceremony, its seven exit criteria and its vectors — is built and
-shipped in this patch. What this ADR is still *proposing* is the trust‑model
-half: that a confirmed eight‑digit comparison sets `verified_sn`. The
-ceremony is useful without that (it adds both people in one step over a
-channel that need not be trusted); the verified state is what makes it worth
-building, and it is a decision for whoever owns the trust model rather than
-for whoever writes the ceremony. This record moves to **Accepted** with
-"what was built rather than what was planned" when 17.3 lands, in the pattern
-0006 set.
+Recorded on acceptance, in the pattern 0006 set: the differences are small but
+each one is a thing a reader of the Decision above would otherwise get wrong.
+
+* **The transport uses two mailboxes, not one.** The Decision says
+  "rendezvous", singular. A single shared mailbox hands each side its own
+  frames back on the relay's flush, so the ceremony derives one per role from
+  the same secret under `z-connect-relay-v1:` (§20.5). `rendezvousRoutingId`
+  survives as the code's single identifier, where no traffic goes; it is what
+  demonstrates that a connect code and a pairing code name different
+  mailboxes, and its own doc comment had to be corrected once the transport
+  landed, because "the mailbox both sides meet at" stopped being true a wave
+  after it was written.
+* **A completed ceremony empties its own mailboxes.** Not in the Decision, and
+  it should have been: without it the four frames sit in relay RAM for
+  `QUEUE_TTL_HOURS`, where a party who later obtains the code replays them
+  into a partial ceremony. The commitment binding makes that abort rather than
+  succeed, which is the right outcome and the wrong line of defence to be
+  relying on.
+* **The lifetime is enforced by both clients, from their own clocks.** The
+  acceptor cannot know when an invite was made, so it bounds the invite from
+  when it was handed the code; the inviter's copy is what bounds it properly.
+  Neither tells the relay, which is what keeps expiry a client rule rather
+  than a property of the store.
+* **Three ways out of the comparison, not two.** "Confirmed" and "not
+  confirmed" turned out to be three states, because *nobody compared* and
+  *they did not match* must not be the same button: the first adds the contact
+  unverified and says so, the second adds nothing at all and spends the invite
+  (§20.6, R25).
+* **Connecting to somebody already in the contact list is refused**, and left
+  for the user to discard. Using this ceremony to verify an *existing* contact
+  remotely is a good feature and the digits would support it, but the revealed
+  bundle need not be the one already held, so it is another decision and not
+  this one.
+* **The Android app link is not finished here.** The intent filter and the
+  intake are built; Android verifies an app link against
+  `/.well-known/assetlinks.json`, which carries the Play App Signing
+  fingerprint — public, but readable only from the Play Console. The relay
+  serves that route only when `ANDROID_CERT_SHA256` is set and 404s
+  otherwise, because a claim about which app owns those links that nobody can
+  check is worse than no claim. Until it is set, an invite link opens a
+  chooser.
+
+## The trust-model half, decided
+
+A confirmed comparison **sets `verified_sn`**, and the value recorded is the
+pair's own safety number.
+
+The argument is that the eight digits cover both account Ed25519 keys and both
+post-quantum commitments in canonical order (§20.4) — the same facts a
+safety-number comparison establishes, in a different encoding — and are
+compared over a channel where the two people recognise each other, which is
+the same assumption a safety-number comparison makes. So the tick means here
+what it means everywhere else, and recording the safety number itself rather
+than the digits keeps `_classifyVerification`, the badge and the prompt
+working on one kind of evidence instead of two.
+
+What this does not claim: that a completed ceremony is worth anything on its
+own. It proves that whoever answered the invite holds the keys they revealed,
+and nothing about who that is — which is why §20.6 makes the comparison a
+separate, named step with an honest way to skip it.

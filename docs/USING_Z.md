@@ -29,6 +29,50 @@ all: they cannot read anything, impersonate you, or find out who else you talk
 to. What matters is that the code you *scan* is really theirs, which is what
 the safety number is for.
 
+If you cannot get in the same room, use **CONNECT** instead of sending your
+code — it is below, and it ends with the two of you verified rather than
+hoping.
+
+## Adding someone you cannot meet
+
+The CONNECT tab is for the person who is three time zones away, or just not in
+the room. It works like this:
+
+1. You tap **Create an invite**. Z shows one invite in two forms — a link and
+   a code — and they are the same thing, so send whichever suits the channel.
+2. You send it however you can. WhatsApp, SMS, email, a work chat. **It does
+   not have to be a channel you trust**, which is the whole point.
+3. They open it. If Z is installed, tapping the link opens the app; otherwise
+   the link shows a page telling them where to get Z, and they open it again
+   afterwards. They can also paste either form into their own CONNECT tab.
+4. Both screens show the same **eight digits**. Get on a call, or say them in
+   person, and compare. If they match, you are added to each other and both
+   of you are verified — no safety number to read out afterwards.
+
+Why the digits matter: anyone who sees the invite before your friend does can
+answer it, and Z has no way to tell. What they cannot do is show the right
+eight digits on your friend's screen. An impostor in the middle produces two
+*different* strings, and the comparison is what catches it.
+
+So:
+
+* **They match** — you are added and verified. Done.
+* **We have not compared yet** — you are added, and Z says plainly that the
+  contact is unverified. You can compare safety numbers later from the chat.
+  This is no worse than pasting codes, which is what it replaces; it is just
+  honest about it.
+* **They do not match** — Z stops, and adds nobody. Do not try the same invite
+  again: make a new one and send it another way.
+
+An invite **works once** and **expires after 24 hours**. If it went to the
+wrong place, or you are not sure who opened it, discard it and make another —
+they cost nothing.
+
+The link is `https://zmessengers.com/i#…`, and the part after the `#` is the
+invite. Browsers never send that part to a website, so the page it points at
+never receives your invite and cannot know one exists. You can check that in
+your browser's own network tab.
+
 ## The safety number, and when it changes
 
 Open a contact and you will see a safety number — a string of digits derived

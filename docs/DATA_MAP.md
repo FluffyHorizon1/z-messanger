@@ -40,6 +40,7 @@ is encrypted, not merely that the file sits in an encrypted directory.
 | Undelivered outbound messages | `outbox`, sealed payloads | Same | Until acknowledged by the relay |
 | Group messages still to be encrypted for each member | `group_fanout`, sealed payload | Same | Until every member's copy is queued — survives a restart so a half-finished fan-out resumes |
 | Group membership and metadata | `kv` key `groups`, sealed | Same | Until you leave or delete the group |
+| Connect invites in flight: the invite secret, this side's ephemeral, and what the ceremony has learned so far | `kv` key `connect_invites`, sealed | Same | Until the ceremony is answered or the invite is discarded — an answered one is removed rather than kept, and nothing records that an invite ever existed |
 | Backup archives you create (`.zbk`) | Wherever you saved them | Anyone with the file **and** the recovery code | Until you delete them — Z does not manage their lifetime |
 | A file you attach, or an archive you restore from, as the picker's own copy | The app's cache directory, **unencrypted** — the OS file picker copies the chosen file there and hands the app the copy, which is what it reads | Anyone who can read the app's cache: another process with root, a forensic extraction of an unlocked device | Deleted as soon as the bytes are in hand (both call sites; `client_review_p0_test.dart` criterion 5). Until 2.8.4 nothing deleted it, so every attachment ever sent was still there |
 

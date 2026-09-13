@@ -1971,3 +1971,222 @@ and re‑derived by `kt/tools/verify_vectors.py` from this section with no
 shared code. The §14 rule applies: bytes an existing implementation would
 compute differently mean new context strings (`…-v2`), new vector files
 beside the untouched ones, and a new subsection here.
+
+## 20. Connecting without meeting (17)
+
+*Normative. A fourth way to add a contact, beside the QR, the paste and the
+device‑pairing ceremony of §10. Nothing in §3–§19 changes: no new frame type,
+no relay change, and the contact this produces is the same `zc1.`/`zc3.`
+bundle a scan produces. Design and the trust‑model decision: `adr/0009`.*
+
+In person, adding someone is a QR code and **the QR is the verification**: the
+channel is your eyes. Remotely there was one path — copy your code, send it
+over a channel you trust, they paste it — which is one‑directional, hands out
+a permanent identifier, and ends unverified. Its security advice ("a channel
+you trust") is exactly what someone who has only WhatsApp does not have.
+
+This section specifies a **one‑time invite** and a four‑message ceremony that
+assumes the channel carrying the invite is hostile. Both sides commit before
+either reveals, the confirmation string is bound to the identities being
+exchanged rather than only to the channel, and one run adds both people.
+
+### 20.1 Context strings
+
+All disjoint from `z-pair-*` (§10), so an invite can never address a pairing
+rendezvous or the reverse:
+
+```
+z-connect-rendezvous-v1:   the code's own mailbox id (see 20.2)
+z-connect-relay-v1:        the two per-role transport mailboxes (20.5)
+z-connect-commit-v1:       what each side commits to (20.3)
+z-connect-channel-v1       the channel key (20.3)
+z-connect-sas-v1           the eight digits (20.4)
+```
+
+### 20.2 The invite
+
+Ten random bytes, in two renderings computed from one secret:
+
+```
+text  = base32Groups(secret)                    e.g. ABCDE-FGHIJ-KLMNO-P
+link  = "https://" || host || "/i#" || base32(secret)     (no group dashes)
+```
+
+`host` defaults to `zmessengers.com` and is part of the deployment, not of the
+protocol: a self‑hosted relay serves its own landing page and its links carry
+its own host, and a client MUST accept an invite whatever host precedes the
+fragment. The code lives in the URL **fragment**, which no browser transmits,
+so the site serving that page never receives an invite and cannot know one
+exists.
+
+A parser MUST accept the text with or without its group dashes, in either
+case, and with spaces; it MUST reject anything containing a character that is
+neither base32 nor a separator. (`base32Decode` skips what it does not
+recognise, which is right for a code read aloud and wrong for deciding
+whether a string *is* one: every URL has enough letters between its
+punctuation to make ten bytes.)
+
+`rendezvousRoutingId = b64url(SHA-256("z-connect-rendezvous-v1:" || secret))`
+is the code's single identifier and is where **no traffic goes**; it exists so
+that a connect code and a pairing code demonstrably name different mailboxes.
+The transport splits the rendezvous in two — see 20.5.
+
+### 20.3 The four messages
+
+`me` is the party's own contact code (§2.4 / §18.7) and the display name it
+will be labelled with. `eph` is a fresh X25519 key pair, per ceremony.
+
+```
+commit(me, eph) = SHA-256( "z-connect-commit-v1:" || eph.pub
+                           || u16be(len(code)) || code || name )
+
+1. inviter  -> acceptor : c  = commit(inviter,  ephI)
+2. acceptor -> inviter  : ephA.pub , c = commit(acceptor, ephA)
+3. inviter  -> acceptor : ephI.pub , seal(channelKey, inviter's code + name)
+4. acceptor -> inviter  : seal(channelKey, acceptor's code + name)
+
+dh          = X25519(ephI, ephA)
+channelKey  = HKDF(secret = dh, salt = 32 zero bytes,
+                   info = "z-connect-channel-v1", 32)
+```
+
+The commitment is length‑prefixed on the code because the code is variable and
+is not last; the name is last.
+
+```
+seal(k, m) = nonce || ChaCha20-Poly1305(key = k, nonce = nonce, plaintext = m)
+             nonce  = 12 random bytes; the AEAD's 16-byte tag is appended
+             m      = UTF-8 JSON: {"code": "<zc1./zc3. code>", "name": "…"}
+                      "name" is omitted when there is none
+```
+
+On the wire each message is a JSON object with `k` naming which it is and
+every byte string in `b64`:
+
+```
+x1  {"k":"x1","c":   <32 bytes>}
+x2  {"k":"x2","ephx":<32 bytes>,"c":<32 bytes>}
+x3  {"k":"x3","ephx":<32 bytes>,"blob":<sealed>}
+x4  {"k":"x4","blob":<sealed>}
+```
+
+A field of the wrong length, missing, or not decodable is an abort, not a
+value to work around.
+
+Each side MUST check the other's reveal against the commitment it received:
+the acceptor checks message 3's identity and ephemeral against the commitment
+in message 1, and the inviter checks message 4's against the commitment in
+message 2. A mismatch MUST abort — not continue at reduced assurance. An abort is
+final for that invite: a retry would meet whoever produced the mismatch.
+
+Both sides commit before either reveals. §10's responder chose its ephemeral
+after seeing the initiator's, which is why §10's six digits are grindable
+(about 2²⁰ tries at a value already read aloud) and these eight are not: with
+both sides committed, a machine in the middle gets one blind guess.
+
+### 20.4 The confirmation string
+
+Eight digits, over **both identities and both ephemerals**, with the parties
+in canonical order by account key so the string is a property of the pair
+rather than of who invited whom:
+
+```
+lo, hi      = the two parties ordered by accountEdPub (lexicographic)
+okm         = HKDF(secret = dh,
+                   salt = ephLo.pub || ephHi.pub,
+                   info = "z-connect-sas-v1" || lo.accountEdPub || lo.pqCommit
+                                             || hi.accountEdPub || hi.pqCommit,
+                   8)
+digits      = (first 7 bytes of okm, big-endian) mod 10^8, zero-padded to 8
+sas         = digits[0..4] || " " || digits[4..8]
+```
+
+`pqCommit` is the account's post‑quantum commitment (§18.2), or 32 zero bytes
+for a classical identity that has none — zeroes rather than absence so the
+input is fixed length, and so a classical identity and a post‑quantum one for
+the same key read differently, which is correct: they are different identities
+to confirm. Every field is fixed length, so the concatenation is unambiguous.
+
+Seven bytes, not four: the modulo of a 31‑bit value by 10⁸ is visibly biased,
+and the width is the point.
+
+Because the string covers both account keys and both post‑quantum commitments,
+a confirmed comparison establishes what a safety‑number comparison (§2.5,
+§18.5) establishes. A client that records the confirmation therefore records
+the pair's **safety number** as the verified value, so every reader of that
+value treats a connect‑verified contact identically to a scanned one
+(`adr/0009`).
+
+### 20.5 Carrying it over the relay
+
+The two people are not online together — an invite sent at lunchtime may be
+opened at midnight — so the ceremony is store‑and‑forward, not a live
+handshake. Each side derives **two** throwaway relay identities from the
+invite secret, one per role, and posts to the other's:
+
+```
+okm         = HKDF(secret = invite secret, salt = "" (empty),
+                   info = "z-connect-relay-v1:" || role, 64)
+                   role = "i" (inviter) | "r" (acceptor)
+edSeed      = okm[0..32]      xSeed = okm[32..64]
+routingId   = b64url(SHA-256(edPub))          — as for any identity (§2.2)
+```
+
+An empty salt is RFC 5869's "not provided" case. Two mailboxes rather than
+one so neither side is handed its own frames back on the relay's flush.
+Nothing in the relay changes: a routing id is `SHA-256(ed25519 pub)`, so a key
+pair derived from a shared secret is a mailbox both sides can hold, and these
+queue and expire like any other (§12, `QUEUE_TTL_HOURS`).
+
+Each message of 20.3 is one ordinary envelope, sent authenticated as the
+sending mailbox, with the JSON object as its payload and an envelope id of
+`z-connect-c1`..`c4` respectively. A side that has not yet had an answer MAY
+re-post its message; the relay dedupes an attributed envelope on (id, sender),
+so a retry costs nothing and leaves one envelope. Anyone holding the invite
+holds both mailbox key pairs — that is what makes the invite a bearer token
+(R23), and why it is one‑time and short‑lived.
+
+A client MUST acknowledge (§12.3) every ceremony envelope it has consumed, and
+MUST acknowledge whatever remains in its mailbox once the ceremony completes.
+Otherwise the transcript stays in relay RAM for the queue lifetime, where a
+party who later obtains the code can replay it.
+
+An invite's lifetime is **24 hours** and is enforced by the clients, not by
+the relay: it is well inside `QUEUE_TTL_HOURS`, and the relay is never told.
+A client MUST refuse to act on an invite past its lifetime even when the
+mailbox still holds the envelope, and MUST refuse a second attempt on an
+invite that has been spent — completed, abandoned, or aborted.
+
+The relay therefore sees a pair of ephemeral mailboxes exchange four envelopes
+and go quiet. Neither ties to an account; the pair and its timing are visible,
+as R1/R17/R18 already describe for ordinary traffic (R24).
+
+### 20.6 What a client must show
+
+Normative for the user‑facing half, because the ceremony's value is entirely
+in the comparison being done properly:
+
+* both renderings of an invite MUST come from one secret, and a client MUST
+  accept either back;
+* a client MUST NOT treat "the ceremony completed" as "the contact is
+  verified". A completed ceremony proves that whoever answered the invite
+  holds the keys they revealed, and nothing about who that is;
+* on a confirmed comparison the contact is added verified (20.4);
+* skipping the comparison MUST add the contact **unverified** and say so —
+  this is trust‑on‑first‑use over whatever channel carried the link (R25);
+* a **mismatch** MUST offer no path that ends with a contact, and MUST spend
+  the invite.
+
+### 20.7 Vectors
+
+`vectors/connect/` pins this section: `connect.json` (the code and both its
+renderings, the rendezvous id, two v3 identities, both ephemerals, both
+commitment inputs, all four frames, the DH, the channel key, the SAS salt,
+info, okm and digits, and the canonical order) and `mailboxes.json` (the two
+per‑role transport mailboxes an invite derives, with the HKDF info and okm and
+the resulting routing ids, and their distinctness from the code's rendezvous
+id and from both pairing rendezvous). Generated by `protocol/tool/vectors.dart`
+and replayed by `protocol/test/vectors_test.dart`. The §14 rule applies:
+bytes an existing implementation would compute differently mean new context
+strings (`…-v2`), new vector files beside the untouched ones, and a new
+subsection here.
