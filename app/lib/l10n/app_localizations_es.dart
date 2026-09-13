@@ -1672,4 +1672,29 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get connectPendingTitle => 'Invitaciones en curso';
+
+  @override
+  String alertDlConflict(String name) {
+    return 'Los dispositivos de $name no coinciden sobre su lista de dispositivos. Puede que uno de ellos no sea suyo: confírmalo con esa persona antes de continuar.';
+  }
+
+  @override
+  String alertDlRollback(String name) {
+    return 'La lista de dispositivos de $name retrocedió una versión. Puede que uno de sus dispositivos esté reproduciendo una lista antigua: confírmalo con esa persona.';
+  }
+
+  @override
+  String alertDlUnconfirmed(String name) {
+    return 'Los dispositivos de $name no confirman la lista de dispositivos que recibió este dispositivo. Puede que uno de los suyos no sea suyo: confírmalo con esa persona antes de continuar.';
+  }
+
+  @override
+  String alertDlMissingUpdate(String name) {
+    return 'La lista de dispositivos de $name cambió, pero la actualización nunca llegó. No se pudo verificar su nuevo dispositivo.';
+  }
+
+  @override
+  String alertDlPqMissing(String name) {
+    return 'La aplicación de $name dice que envió la firma poscuántica de su lista de dispositivos, y no ha llegado. Su lista de dispositivos sigue verificándose de forma clásica, lo cual funciona hoy pero es lo que un adversario cuántico futuro podría falsificar. Puede que algo en la red la esté eliminando.';
+  }
 }

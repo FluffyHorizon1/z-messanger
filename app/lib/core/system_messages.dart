@@ -33,3 +33,54 @@ abstract final class SystemKind {
 /// The stored form of a system message.
 String systemBody(String kind, [Map<String, Object?> params = const {}]) =>
     jsonEncode({'k': kind, ...params});
+
+/// A device-list alert — the banner on a chat, and the one on a contact's
+/// screen — stored the same way and for the same reason: a kind, never a
+/// sentence.
+///
+/// These were worse than a frozen sentence. Every one of them named the
+/// contact ("Dana's devices disagree about their device list"), and they were
+/// written to the `kv` table with `sensitive: false`, so a display name sat
+/// in the database in the clear next to the routing id that identifies whose
+/// it is — in a vault whose own documentation says that names are among the
+/// things encrypted cell by cell. And the screens that show them are both on
+/// `check_l10n.py`'s migrated list, which is a promise that they hold no
+/// user-visible English; they held a paragraph of it, handed to them by the
+/// service at run time where the check cannot see it.
+///
+/// The name is not stored at all now. The screen has the contact.
+abstract final class DevlistAlertKind {
+  /// Their devices disagree about their own device list.
+  static const conflict = 'dl_conflict';
+
+  /// Their list went backwards a version — an old list replayed.
+  static const rollback = 'dl_rollback';
+
+  /// None of their devices confirms the list this device was handed.
+  static const unconfirmed = 'dl_unconfirmed';
+
+  /// A device claims a newer list and the update never arrived.
+  static const missingUpdate = 'dl_missing_update';
+
+  /// §18.9: the post-quantum signature was claimed and never arrived.
+  static const pqSignatureMissing = 'dl_pq_missing';
+}
+
+/// The stored form of a device-list alert.
+String devlistAlertBody(String kind) => jsonEncode({'k': kind});
+
+/// True if [stored] is a device-list alert this build wrote.
+///
+/// Anything else is an alert written as English prose by a build before
+/// 2026-09-13. Those are dropped rather than shown: the sentence carries a
+/// contact's name in the clear, which is the thing being fixed, and the check
+/// that raised it raises it again on its next pass if it is still true.
+bool isDevlistAlertBody(String stored) {
+  if (!stored.startsWith('{')) return false;
+  try {
+    final d = jsonDecode(stored);
+    return d is Map && d['k'] is String;
+  } on FormatException {
+    return false;
+  }
+}

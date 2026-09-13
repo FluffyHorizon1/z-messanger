@@ -23,9 +23,12 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/system_messages.dart';
 import 'package:zapp/core/models.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
+import 'package:zapp/l10n/alert_text.dart';
+import 'package:zapp/l10n/app_localizations_en.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 void main() {
@@ -204,7 +207,15 @@ void main() {
     await waitUntil(() => alice.pqListAlerts[ben.myRid] != null,
         timeout: const Duration(seconds: 40),
         what: 'alice is told the signature never arrives');
-    expect(alice.pqListAlerts[ben.myRid], contains('post-quantum'));
+    // A kind, not a sentence: the name is not what is stored (the screen
+    // supplies it), and the words are chosen in the reader's language when
+    // the banner is drawn.
+    expect(alice.pqListAlerts[ben.myRid],
+        devlistAlertBody(DevlistAlertKind.pqSignatureMissing));
+    expect(
+        devlistAlertText(AppLocalizationsEn(),
+            alice.pqListAlerts[ben.myRid]!, 'Ben'),
+        allOf(contains('post-quantum'), contains('Ben')));
     expect(alice.deviceAssuranceWith(ben.myRid), DeviceAssurance.classical,
         reason: 'and nothing was accepted on the strength of the claim');
   }, timeout: const Timeout(Duration(minutes: 3)));

@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import 'package:record/record.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/alert_text.dart';
 import '../l10n/system_text.dart';
 import '../l10n/ttl_text.dart';
 import '../core/chat_service.dart';
@@ -577,7 +578,10 @@ class _ChatScreenState extends State<ChatScreen> {
         children: [
           if (!isGroup && svc.contactDevlistAlerts[widget.rid] != null)
             _DevlistBanner(
-              message: svc.contactDevlistAlerts[widget.rid]!,
+              // The service stores a kind; the name is supplied here, from
+              // the contact, and was never written to the vault unsealed.
+              message: devlistAlertText(
+                  l, svc.contactDevlistAlerts[widget.rid]!, contact!.name),
               onDismiss: () => svc.acknowledgeContactDevlistAlert(widget.rid),
             ),
           // 7.7b: what the transparency log says about this contact's device

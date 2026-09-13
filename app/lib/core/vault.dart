@@ -822,6 +822,14 @@ class Vault {
 
   Future<void> kvPut(String key, String value, {bool sensitive = true}) async {
     final v = sensitive ? await seal(value) : value;
+    // The other storage class's row goes, if there is one. A key rewritten
+    // from plain to sealed used to leave the plain copy exactly where it
+    // was: `kvGet` preferred the sealed one and every reader saw the right
+    // value, so the old cleartext simply sat in the database for the life of
+    // the vault. Sealing something that was written in the clear is a thing
+    // worth being able to do, and it has to mean the cleartext is gone.
+    await db.delete('kv',
+        where: 'k = ?', whereArgs: [(sensitive ? 'p:' : 's:') + key]);
     await db.insert('kv', {'k': (sensitive ? 's:' : 'p:') + key, 'v': v},
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
@@ -836,9 +844,9 @@ class Vault {
         where: 'k IN (?, ?)',
         whereArgs: ['s:$key', 'p:$key']);
     if (rows.isEmpty) return null;
-    // A key present in both classes (should not happen; a rewrite with a
-    // different `sensitive` leaves the other behind) prefers the sealed one,
-    // as the old two-step lookup did.
+    // A key present in both classes prefers the sealed one, as the old
+    // two-step lookup did. `kvPut` removes the other class's row, so this is
+    // now only reachable for a vault written before it did.
     final row = rows.length == 1
         ? rows.first
         : rows.firstWhere((r) => (r['k'] as String).startsWith('s:'));

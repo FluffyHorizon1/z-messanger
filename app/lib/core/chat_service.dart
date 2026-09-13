@@ -5252,13 +5252,13 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     if (DateTime.now().difference(since) < devlistGrace) return;
     if (pqListAlerts.containsKey(rid)) return;
-    final msg = '${contact.name}\'s app says it sent the post-quantum '
-        'signature for its device list, and it has not arrived. Their device '
-        'list is still verified classically, which works today but is what a '
-        'future quantum adversary could forge. Something on the network may '
-        'be removing it.';
-    pqListAlerts[rid] = msg;
-    await vault.kvPut('pql_alert_$rid', msg, sensitive: false);
+    // A kind, not the sentence. The sentence named the contact, and this
+    // value is written unsealed next to a routing id that says whose name it
+    // is; the screen has the contact and supplies the name when it renders
+    // (`DevlistAlertKind`).
+    final body = devlistAlertBody(DevlistAlertKind.pqSignatureMissing);
+    pqListAlerts[rid] = body;
+    await vault.kvPut('pql_alert_$rid', body, sensitive: false);
     notifyListeners();
   }
 
@@ -5786,7 +5786,18 @@ class ChatService extends ChangeNotifier implements KtHost {
         kv != null ? kv[key] : await vault.kvGet(key);
     for (final rid in contacts.keys.toList()) {
       final a = await get('pql_alert_$rid');
-      if (a != null) pqListAlerts[rid] = a;
+      // An alert written by a build before 2026-09-13 is an English sentence
+      // with the contact's name in it, stored unsealed. It is removed rather
+      // than shown, because the name is the defect. The cost is that this
+      // one clears on upgrade: [_observePqListClaim] raises it again the next
+      // time that contact claims a signature this device does not hold and
+      // the grace period passes, which is a delay rather than a loss — and
+      // the alternative is keeping the name on disk to preserve a banner.
+      if (a != null && isDevlistAlertBody(a)) {
+        pqListAlerts[rid] = a;
+      } else if (a != null) {
+        await vault.kvDelete('pql_alert_$rid');
+      }
       final sent = int.tryParse(await get('dlpq_sent_$rid') ?? '0') ?? 0;
       if (sent > 0) _dlpqSent[rid] = sent;
     }
@@ -5800,7 +5811,13 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     for (final rid in contacts.keys.toList()) {
       final a = await get('cdl_alert_$rid');
-      if (a != null) contactDevlistAlerts[rid] = a;
+      if (a != null && isDevlistAlertBody(a)) {
+        contactDevlistAlerts[rid] = a;
+      } else if (a != null) {
+        // As above; this one is re-raised by the next device-list check,
+        // which runs on `devlistGrace`.
+        await vault.kvDelete('cdl_alert_$rid');
+      }
       final c = await get('cdl_claims_$rid');
       if (c == null) continue;
       final m = (jsonDecode(c) as Map).cast<String, Object?>();
@@ -6070,7 +6087,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     if (conflict != null) {
       _pendingContact.remove(rid);
-      await _setContactAlert(rid, _conflictMsg(contact.name, conflict));
+      await _setContactAlert(rid, _conflictMsg(conflict));
       return;
     }
 
@@ -6085,12 +6102,9 @@ class ChatService extends ChangeNotifier implements KtHost {
         _pendingContact.remove(rid);
         await _setContactAlert(
             rid,
-            maxV < heldV
-                ? "${contact.name}'s devices don't confirm the device list "
-                    'this device was given. One of their devices may not be '
-                    'theirs — check with them before continuing.'
-                : "${contact.name}'s device list changed but the update never "
-                    'arrived. Their new device could not be verified.');
+            devlistAlertBody(maxV < heldV
+                ? DevlistAlertKind.unconfirmed
+                : DevlistAlertKind.missingUpdate));
       } else {
         _scheduleDevlistRecheck();
       }
@@ -6197,16 +6211,9 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
   }
 
-  String _conflictMsg(String name, String kind) {
-    switch (kind) {
-      case 'rollback':
-        return "$name's device list went backwards a version. One of their "
-            'devices may be replaying an old list — check with them.';
-      default:
-        return "$name's devices disagree about their device list. One of them "
-            'may not be theirs — check with them before continuing.';
-    }
-  }
+  String _conflictMsg(String kind) => devlistAlertBody(kind == 'rollback'
+      ? DevlistAlertKind.rollback
+      : DevlistAlertKind.conflict);
 
   /// The version of the device list this device believes is current for its OWN
   /// account. Exposed for diagnostics and tests.

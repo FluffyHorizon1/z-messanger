@@ -1655,4 +1655,29 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get connectPendingTitle => 'Invites in flight';
+
+  @override
+  String alertDlConflict(String name) {
+    return '$name\'s devices disagree about their device list. One of them may not be theirs — check with them before continuing.';
+  }
+
+  @override
+  String alertDlRollback(String name) {
+    return '$name\'s device list went backwards a version. One of their devices may be replaying an old list — check with them.';
+  }
+
+  @override
+  String alertDlUnconfirmed(String name) {
+    return '$name\'s devices don\'t confirm the device list this device was given. One of their devices may not be theirs — check with them before continuing.';
+  }
+
+  @override
+  String alertDlMissingUpdate(String name) {
+    return '$name\'s device list changed but the update never arrived. Their new device could not be verified.';
+  }
+
+  @override
+  String alertDlPqMissing(String name) {
+    return '$name\'s app says it sent the post-quantum signature for its device list, and it has not arrived. Their device list is still verified classically, which works today but is what a future quantum adversary could forge. Something on the network may be removing it.';
+  }
 }

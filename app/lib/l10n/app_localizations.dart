@@ -2785,6 +2785,36 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Invites in flight'**
   String get connectPendingTitle;
+
+  /// Banner on a chat when a contact's own devices give inconsistent answers about their device list. 'may not be theirs' is the load-bearing clause: it says an extra device may belong to somebody else. {name} takes an English possessive here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s devices disagree about their device list. One of them may not be theirs — check with them before continuing.'**
+  String alertDlConflict(String name);
+
+  /// Banner on a chat when a contact's device list regressed to an older version, which an honest client never does. 'replaying an old list' must survive: it names the attack. {name} takes an English possessive here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s device list went backwards a version. One of their devices may be replaying an old list — check with them.'**
+  String alertDlRollback(String name);
+
+  /// Banner on a chat when none of a contact's devices will confirm the device list this phone holds for them — a split view. 'this device was given' means the reader's own phone. {name} takes an English possessive here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s devices don\'t confirm the device list this device was given. One of their devices may not be theirs — check with them before continuing.'**
+  String alertDlUnconfirmed(String name);
+
+  /// Banner on a chat when a contact's device claims a newer device list than this phone holds and the list itself never came. 'could not be verified' must survive: the new device is not being trusted. {name} takes an English possessive here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s device list changed but the update never arrived. Their new device could not be verified.'**
+  String alertDlMissingUpdate(String name);
+
+  /// Banner on a contact's screen when the post-quantum signature over their device list was claimed inside the ratchet and never delivered (PROTOCOL 18.9). Both halves must survive: nothing is broken today, and a future quantum adversary is what it protects against. {name} takes an English possessive here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s app says it sent the post-quantum signature for its device list, and it has not arrived. Their device list is still verified classically, which works today but is what a future quantum adversary could forge. Something on the network may be removing it.'**
+  String alertDlPqMissing(String name);
 }
 
 class _AppLocalizationsDelegate

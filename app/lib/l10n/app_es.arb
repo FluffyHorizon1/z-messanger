@@ -447,5 +447,10 @@
   "connectUnverifiedNote": "Nadie comparó los dígitos, así que este contacto está sin verificar. Compara los números de seguridad desde su chat en cuanto puedas.",
   "connectStopped": "Detenido. No se añadió nada.",
   "connectMismatchWarning": "Si los dígitos no coinciden, alguien está retransmitiendo entre vosotros. No vuelvas a usar la misma invitación: crea otra y mándala por otra vía.",
-  "connectPendingTitle": "Invitaciones en curso"
+  "connectPendingTitle": "Invitaciones en curso",
+  "alertDlConflict": "Los dispositivos de {name} no coinciden sobre su lista de dispositivos. Puede que uno de ellos no sea suyo: confírmalo con esa persona antes de continuar.",
+  "alertDlRollback": "La lista de dispositivos de {name} retrocedió una versión. Puede que uno de sus dispositivos esté reproduciendo una lista antigua: confírmalo con esa persona.",
+  "alertDlUnconfirmed": "Los dispositivos de {name} no confirman la lista de dispositivos que recibió este dispositivo. Puede que uno de los suyos no sea suyo: confírmalo con esa persona antes de continuar.",
+  "alertDlMissingUpdate": "La lista de dispositivos de {name} cambió, pero la actualización nunca llegó. No se pudo verificar su nuevo dispositivo.",
+  "alertDlPqMissing": "La aplicación de {name} dice que envió la firma poscuántica de su lista de dispositivos, y no ha llegado. Su lista de dispositivos sigue verificándose de forma clásica, lo cual funciona hoy pero es lo que un adversario cuántico futuro podría falsificar. Puede que algo en la red la esté eliminando."
 }

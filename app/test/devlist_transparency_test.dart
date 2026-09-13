@@ -21,6 +21,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/system_messages.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -281,6 +282,27 @@ void main() {
     await waitUntil(() => s.carol.contactDevlistAlerts[s.accountRid] != null);
     expect(s.carol.contactDevlistAlerts[s.accountRid], isNotNull,
         reason: 'Carol did not flag the contradictory device list');
+    // What she flagged it WITH: a kind, and no name. The sentence this used
+    // to be put the contact's display name into the `kv` table unsealed
+    // (`alert_storage_test.dart`), so the end-to-end check is that the real
+    // alert, raised by the real path, is not prose.
+    expect(isDevlistAlertBody(s.carol.contactDevlistAlerts[s.accountRid]!),
+        isTrue,
+        reason: 'the alert is stored as a kind: '
+            '${s.carol.contactDevlistAlerts[s.accountRid]}');
+    final carolDb = utf8.decode(
+        File('${s.carol.vault.root.path}/z.db').readAsBytesSync(),
+        allowMalformed: true);
+    for (final prose in const [
+      'devices disagree',
+      'went backwards a version',
+      "don't confirm the device list",
+      'the update never arrived',
+    ]) {
+      expect(carolDb, isNot(contains(prose)),
+          reason: 'the banner prose — which carried the contact\'s display '
+              'name — is not in the database: found "$prose"');
+    }
     // 3. Carol's receipt back to the phone echoes v3 — a list the root never
     //    issued and cannot explain: after the grace period the root alerts.
     await waitUntil(() => s.phone.ownAccountAlert != null,

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import '../l10n/alert_text.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/ttl_text.dart';
 import '../core/chat_service.dart';
@@ -106,7 +107,8 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
               tone: context.z.warn,
               icon: Icons.cloud_off_outlined,
               title: l.ciPqSigMissing,
-              body: svc.pqListAlerts[widget.rid]!,
+              body: devlistAlertText(
+                  l, svc.pqListAlerts[widget.rid]!, contact.name),
             ),
             const SizedBox(height: 12),
           ],

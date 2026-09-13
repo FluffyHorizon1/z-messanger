@@ -2224,3 +2224,44 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A claim in a document is a claim about code, and this one had been true
    of only half of it since the day it was written.**
+
+63. **A contact's name, written into the database in the clear.** The
+   device-list banners — "Dana's devices disagree about their device list",
+   "Dana's app says it sent the post-quantum signature" — were stored as their
+   finished English sentences, in the `kv` table, with `sensitive: false`. So
+   a display name sat in the database unencrypted, beside the routing id that
+   says exactly whose name it is, in a vault whose own documentation opens
+   with: *every sensitive value (message bodies, **names**, contact bundles,
+   session state, file metadata) is encrypted cell-by-cell before it touches
+   SQLite*.
+
+   The same sentences were a second problem. `chat_screen.dart` and
+   `contact_info_screen.dart` are both on `check_l10n.py`'s migrated list,
+   which is a promise that they carry no user-visible English — and they
+   rendered a paragraph of it, handed to them by the service at run time,
+   where the check cannot see it. A Spanish user got the banner in English.
+
+   One change answers both, and it is the one `system_messages.dart` has
+   described since phase 10 for system messages: store the KIND, never the
+   sentence. `{"k":"dl_conflict"}`. The name is not stored at all — the screen
+   has the contact — and the words are chosen in the reader's language when
+   the banner is drawn. Five ARB keys in both locales, each with a description
+   naming its load-bearing clause.
+
+   An alert an older build wrote is **dropped** when the app next opens,
+   rather than shown as it is (which is what system messages do with old
+   rows). The difference is that the sentence is the defect: keeping it on
+   screen would mean keeping the name on disk. The cost is a banner that
+   clears on upgrade and comes back at the next check, which for the
+   device-list alerts is `devlistGrace` and for the post-quantum one is the
+   contact's next claim.
+
+   Underneath, the same defect in general: `kvPut` wrote the new storage
+   class and left the old one, so a key rewritten from plain to sealed kept
+   its cleartext row for the life of the vault — correct to every reader,
+   because `kvGet` prefers the sealed one, and therefore invisible to all of
+   them. Sealing something that was written in the clear has to mean the
+   cleartext is gone.
+
+   **The vault's documentation said names were sealed. Nobody had checked
+   whether that was a description or an intention.**
