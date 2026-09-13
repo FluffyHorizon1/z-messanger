@@ -481,6 +481,12 @@ function entryToStored(e) {
     val: e.value.toString('base64'),
     acct: e.acct.toString('base64'),
     ts: e.ts,
+    // The account's own signature over this publish. Kept for the same
+    // reason `acct` is kept — to validate a replay — and never served, for
+    // the same reason too (§19.6). Without it a replay could check only
+    // things the writer of the line also chose, and "the log accepted this
+    // under the account key" was a fact that existed for one moment in RAM.
+    sig: e.sig.toString('base64'),
   };
 }
 
@@ -494,6 +500,11 @@ function entryFromStored(j) {
     value: Buffer.from(j.val, 'base64'),
     acct: Buffer.from(j.acct, 'base64'),
     ts: j.ts,
+    // Explicitly null when absent rather than decoded: `Buffer.from(undefined,
+    // 'base64')` is an empty buffer, not an error, so a line written before
+    // signatures were stored would otherwise arrive as a signature of length
+    // zero and be reported as a forgery instead of as what it is.
+    sig: typeof j.sig === 'string' ? Buffer.from(j.sig, 'base64') : null,
   };
 }
 
@@ -520,6 +531,8 @@ class KtLog {
     /** label hex → indices, ascending */
     this.byLabel = new Map();
     this._sth = null;
+    /** Index of the first entry that carried a signature, or null. */
+    this._signedFrom = null;
     for (const e of store.readAll()) this._apply(e, true);
     this._checkAgainstLastHead(minSize);
   }
@@ -577,6 +590,50 @@ class KtLog {
   }
 
   /**
+   * The publish signature, re-checked on the way in — from the file as well
+   * as from the wire.
+   *
+   * Until 2026-09-14 the signature was verified once, at HTTP time, and then
+   * dropped: the stored line kept `acct` but not `sig`, and a replay checked
+   * only `labelFor(acct) == label` and `sha256(value) == valueHash`. Both of
+   * those are computed from fields the writer of the line also chose, so
+   * anything that could write the file could forge an entry for any account
+   * — take a victim's `acct` out of the file, seal a device list under
+   * `HKDF(acctPub)`, append one line at a higher version, and the log starts
+   * normally and serves the forgery as that account's latest, with a valid
+   * map proof. Nothing downstream could tell, because `acct` and `sig` are
+   * never served.
+   *
+   * It costs one Ed25519 verify per entry at replay and no extra I/O at all:
+   * the signed bytes are `label ‖ version ‖ fp ‖ valueHash`, every one of
+   * them already in the line, and none of them the value — so this does not
+   * undo the work that stopped replay from holding values.
+   *
+   * The boundary for lines written before signatures were stored is DERIVED
+   * rather than recorded, which is better than a number in a file that can
+   * be edited by whoever is being defended against. The rule is that a log
+   * never goes back: an entry without a signature is accepted only while no
+   * earlier entry had one. So a log whose file predates this build replays
+   * exactly as before, the first signed publish closes the door behind it,
+   * and appending an unsigned line after that — the forgery — is refused by
+   * the entry that precedes it rather than by anything about itself.
+   */
+  _checkSignature(entry) {
+    if (!entry.sig) {
+      if (this._signedFrom !== null) {
+        throw new Error(
+          `entry ${entry.index}: no signature, though entry ${this._signedFrom} and every one after it has one ` +
+            '(a log does not go back to unsigned entries; this line was appended by something that is not the log)'
+        );
+      }
+      return;
+    }
+    const ok = verify(entry.acct, publishInput(entry), entry.sig);
+    if (!ok) throw new Error(`entry ${entry.index}: the signature is not the account key's over this publish`);
+    if (this._signedFrom === null) this._signedFrom = entry.index;
+  }
+
+  /**
    * Signs a head and records it, before the publish that produced it is
    * acknowledged. On the way back up this is what a later start is held to,
    * so it has to reach the disk before the sender is told `201` — a head
@@ -615,6 +672,7 @@ class KtLog {
     }
     if (!labelFor(entry.acct).equals(entry.label)) throw new Error(`entry ${entry.index}: label does not match account`);
     if (!sha256(entry.value).equals(entry.valueHash)) throw new Error(`entry ${entry.index}: value hash does not match value`);
+    this._checkSignature(entry);
     const prev = this.latest(entry.label);
     if (prev && !(entry.version > prev.version)) {
       throw new Error(`entry ${entry.index}: version ${entry.version} does not exceed ${prev.version}`);
@@ -671,7 +729,7 @@ class KtLog {
     if (prev && !(version > prev.version)) {
       throw new PublishError(409, 'stale_version', `the log holds version ${prev.version} for this label; ${version} does not exceed it`);
     }
-    const entry = { index: this.entries.length, label, version, fp, valueHash, value, acct, ts: this.now() };
+    const entry = { index: this.entries.length, label, version, fp, valueHash, value, acct, sig: req.sig, ts: this.now() };
     this._apply(entry, false);
     this._recordHead();
     return entry;

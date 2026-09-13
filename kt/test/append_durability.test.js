@@ -184,7 +184,7 @@ test('the first line is durable by its name as well as its bytes', (t) => {
   const entry = (name, v, i) => {
     const acct = account(name);
     const p = publishFor(acct, v);
-    return { index: i, label: labelFor(p.acct), version: v, fp: p.fp, valueHash: sha256(p.value), value: p.value, acct: p.acct, ts: 1 };
+    return { index: i, label: labelFor(p.acct), version: v, fp: p.fp, valueHash: sha256(p.value), value: p.value, acct: p.acct, sig: p.sig, ts: 1 };
   };
   store.append(entry('first', 1, 0));
   assert.equal(dirSyncs, 1, 'the file was created, so its name was made durable');

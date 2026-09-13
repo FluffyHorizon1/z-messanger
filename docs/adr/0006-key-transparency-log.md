@@ -104,7 +104,10 @@ sig = Ed25519(accountSeed, "z-kt-publish-v1:" || label || u64be(v) || fp || SHA-
 The log verifies the signature against `acct`, requires `v` to exceed the
 version it holds for the label (the first entry may carry any version, since
 an account that reached version 7 before the log existed publishes 7), and
-keeps `acct` in its own store but never serves it. It does **not** open the
+keeps `acct` and the publish signature in its own store but serves
+neither — both so that a replay re-establishes what the wire check
+established, instead of re-checking only the fields whoever wrote the
+record also chose. It does **not** open the
 value or check that it matches `(v, fp)`: only the account key can publish
 under a label, so a value that disagrees with its own fingerprint is a lie
 the account told about itself, detectable by every reader who can open it

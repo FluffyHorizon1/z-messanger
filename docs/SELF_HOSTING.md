@@ -450,9 +450,26 @@ Option C: Render terminates TLS; there is nothing to do. Either way,
 ### 4. Back it up
 
 `/var/lib/z-kt/entries.jsonl` (or `/data/entries.jsonl` on the disk) is
-the log. Copy it anywhere; it is append‑only and self‑checking (a restart
-replays and re‑verifies every line, and refuses to start on a torn or
-edited file). A mirror (below) is a live backup that also verifies you.
+the log. Copy it anywhere; it is append‑only and self‑checking: a restart
+replays every line and re‑verifies the **account's own signature** over it,
+so a torn file, an edited one, or a line appended by anything that is not
+the log is refused rather than served. A mirror (below) is a live backup
+that also verifies you.
+
+Before 2026‑09‑14 that sentence was not true, and which half was missing is
+worth saying: the signature was checked once, when the publish arrived, and
+then dropped. What a replay re‑checked was that the label matched the
+account and the hash matched the value — both computed from fields whoever
+wrote the line also chose. So anyone who could write this file could forge
+an entry for any account in it, and nothing downstream could tell, because
+`acct` and `sig` are never served.
+
+What that buys is tamper evidence **on this disk**, not a property a third
+party gains: a mirror still cannot check a publish signature, because it is
+never given the account key to check it against (§19.6). And somebody who
+can write the directory can still remove the entries and the head together
+and start over — `KT_MIN_SIZE` is the floor for that, and a mirror run by
+somebody else is the real answer.
 
 A publish writes its whole line or none of it: since 2026‑09‑14 the append
 loops until every byte is written and truncates back to where the line began

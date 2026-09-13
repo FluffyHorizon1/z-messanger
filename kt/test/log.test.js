@@ -294,11 +294,37 @@ test('the file store: replayed on start to the same heads; a torn or shortened f
   // A line removed: indices no longer sequential.
   fs.writeFileSync(file, [lines[0], lines[2], ''].join('\n'));
   assert.throws(() => new KtLog({ store: new FileStore(file), signingKey: logKey, now }), /where 1 was expected/);
-  // A version that went backwards.
+  // A version edited in the file. Since 2026-09-14 this is caught by the
+  // signature rather than by the ordering rule — earlier, and for a better
+  // reason: the account did not sign THIS publish, whatever order it is in.
   const k = JSON.parse(lines[2]);
   k.v = 1;
   fs.writeFileSync(file, [lines[0], lines[1], JSON.stringify(k), ''].join('\n'));
+  assert.throws(() => new KtLog({ store: new FileStore(file), signingKey: logKey, now }), /signature is not the account key's/);
+  // The ordering rule still has its own case: a publish the account really
+  // did sign, at a version the log has already passed, appended by hand.
+  const stale = publishFor(b, 2); // b is at 3 in this file
+  const staleLine = JSON.stringify({
+    i: 3,
+    label: labelFor(stale.acct).toString('base64'),
+    v: stale.version,
+    fp: stale.fp.toString('base64'),
+    vh: sha256(stale.value).toString('base64'),
+    val: stale.value.toString('base64'),
+    acct: stale.acct.toString('base64'),
+    ts: 1,
+    sig: stale.sig.toString('base64'),
+  });
+  fs.writeFileSync(file, text + staleLine + '\n');
   assert.throws(() => new KtLog({ store: new FileStore(file), signingKey: logKey, now }), /does not exceed/);
+  // And an unsigned line appended after signed ones is refused by the log
+  // not going back, which is what a forger's line looks like.
+  const forged = JSON.parse(lines[2]);
+  forged.i = 3;
+  forged.v = 9;
+  delete forged.sig;
+  fs.writeFileSync(file, text + JSON.stringify(forged) + '\n');
+  assert.throws(() => new KtLog({ store: new FileStore(file), signingKey: logKey, now }), /no signature/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

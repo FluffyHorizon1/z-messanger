@@ -2708,3 +2708,50 @@ direction; the phases, their order and both ordering arguments stand.
    which is every way it has happened.
 
    **A log with nothing to be held to will sign whatever it finds.**
+
+75. **The publish signature was verified once, in RAM, and then dropped.**
+   `entryToStored` kept `acct` and not `sig`, so a replay could check only
+   `labelFor(acct) == label` and `sha256(value) == valueHash` — both computed
+   from fields whoever wrote the line also chose.
+
+   So anything that could write the file could forge an entry for any account
+   in it. Take a victim's `acct` out of the file, seal a device list under
+   `HKDF(acctPub)` — the sealing key is derived from the account's PUBLIC
+   key, because the log must not be able to open a value — append one line at
+   a higher version, and the log starts normally and serves the forgery as
+   that account's latest with a valid map proof. Nothing downstream can tell,
+   because §19.6 says `acct` is never served, and neither is `sig`.
+
+   It also made `SELF_HOSTING.md`'s "refuses to start on a torn or edited
+   file" false in the half that matters, which is the sentence an operator
+   reads before deciding the file is safe to copy around.
+
+   The signature is stored and re-verified at replay. It costs one Ed25519
+   verify per entry and **no extra I/O at all**: the signed bytes are
+   `label ‖ version ‖ fp ‖ valueHash`, every one already in the line and none
+   of them the value — so it does not undo entry 68's work, which was to stop
+   replay holding values.
+
+   The boundary for lines written before this is **derived, not recorded**.
+   A number in a file would be a number editable by exactly whoever is being
+   defended against. The rule instead is that a log never goes back: an entry
+   with no signature is accepted only while no earlier entry had one. A file
+   that predates the change replays as before, the first signed publish
+   closes the door behind it, and the forgery — an unsigned line appended
+   after signed ones — is refused by the entry that precedes it rather than
+   by anything about itself. The live log's existing entries are grandfathered
+   without a migration, and nothing had to be re-signed.
+
+   It composes with entry 74 rather than duplicating it. Appending is now
+   refused by the signature; truncating and rewriting is refused by the head
+   floor, since the replayed tree must reproduce the recorded root at the
+   recorded size and the leaf covers every field of every entry below it.
+   What is left is replacing the whole directory, which neither can see —
+   `KT_MIN_SIZE` is the floor for that, and a witness run by somebody else is
+   the real answer. R7 says so now; it had described the operator's power as
+   split views alone, which was an understatement.
+
+   The leaf does not cover `sig`, so no root, head or vector moved.
+
+   **A record that keeps only what its writer chose is not evidence about
+   its writer.**

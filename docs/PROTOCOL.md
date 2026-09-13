@@ -1981,8 +1981,12 @@ first entry may carry any `v ≥ 1`), MUST refuse a bad signature
 (`403 bad_signature`) and a malformed request (`400 bad_request`) or an
 oversize value (`413 too_large`), and on success appends the entry, updates
 the map, and answers `201 { "index":i, "sth":<head> }` with a head that
-includes it. The log MUST keep `acct` for replay validation and MUST NOT
-serve it. The log does not open the value.
+includes it. The log MUST keep `acct` **and `sig`** for replay validation
+and MUST NOT serve either; it MUST re-verify `sig` against `acct` when it
+replays an entry from its own store, and MUST NOT accept a stored entry with
+no `sig` once it has accepted one that has a `sig`. A store that keeps only
+the fields whoever wrote a record also chose can be appended to by anything
+that can write it. The log does not open the value.
 
 ### 19.7 HTTP API
 
