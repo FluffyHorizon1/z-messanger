@@ -88,7 +88,7 @@ class Vault {
   /// 3 — 8.1c: `forwarded`, which needs a column of its own — a 1:1 text
   ///     row's sealed body is the bare message, with no envelope to put a
   ///     flag in, and inventing one would misparse ordinary text.
-  static const int schemaVersion = 10;
+  static const int schemaVersion = 11;
 
   // Message ids are already stored in the clear (they are the primary key),
   // so `reply_to` — a mid within the same chat — reveals nothing the row
@@ -222,11 +222,38 @@ class Vault {
                       WHERE m.mid = outbox.id AND m.rid = outbox.rid
                         AND m.outgoing = 1)''');
     }
+    if (from < 11) {
+      // 17-review: who has confirmed each outgoing message.
+      //
+      // A delivery receipt used to set `status = delivered` and nothing else,
+      // so a GROUP message went to the double tick when the FIRST member
+      // confirmed — a tick that says "they have it" while four people have
+      // not. One row per (message, confirmer) is what "delivered" needs in
+      // order to mean what the icon means.
+      //
+      // No backfill: an existing message keeps the status it has (the tick
+      // never moves backwards), and this table fills from the next receipt.
+      await db.execute(_createDelivery);
+    }
   }
 
   /// One row per (message, recipient) still to be encrypted and queued.
   /// `payload` is the sealed inner message — sealed because it is the message
   /// body, and this table outlives the send.
+  /// One row per (outgoing message, the party that confirmed it).
+  ///
+  /// A 1:1 message has one confirmer and the row is barely worth keeping; a
+  /// group message has as many as it has members, and without them the tick
+  /// is drawn from the first to answer.
+  static const String _createDelivery = '''
+            CREATE TABLE delivery(
+              mid TEXT NOT NULL,
+              thread_rid TEXT NOT NULL,
+              from_rid TEXT NOT NULL,
+              at_ms INTEGER NOT NULL,
+              PRIMARY KEY (mid, thread_rid, from_rid)
+            )''';
+
   static const String _createGroupFanout = '''
             CREATE TABLE group_fanout(
               seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -397,6 +424,7 @@ class Vault {
               thread_rid TEXT
             )''');
           await db.execute(_createGroupFanout);
+          await db.execute(_createDelivery);
           await db.execute('''
             CREATE TABLE inbox_dedupe(
               from_rid TEXT NOT NULL,

@@ -1016,6 +1016,8 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     await vault.db.delete('files', where: 'rid = ?', whereArgs: [rid]);
     await vault.db.delete('messages', where: 'rid = ?', whereArgs: [rid]);
+    await vault.db
+        .delete('delivery', where: 'thread_rid = ?', whereArgs: [rid]);
     await vault.db.delete('outbox', where: 'rid = ?', whereArgs: [rid]);
     await vault.db.delete('conversations', where: 'rid = ?', whereArgs: [rid]);
     await vault.db.delete('contacts', where: 'rid = ?', whereArgs: [rid]);
@@ -2115,17 +2117,16 @@ class ChatService extends ChangeNotifier implements KtHost {
         break;
 
       case 'dlv':
-        // E2E delivery receipt (replaces the relay's receipt under sealed
-        // sender): mark those outgoing messages delivered, wherever they live.
+        // E2E delivery receipt (it replaces the relay's receipt under sealed
+        // sender). "Wherever they live" is what this used to say and used to
+        // do, and it was two mistakes in one line: a mid is plaintext to
+        // every member of a group, so ANY contact could name one and flip
+        // whatever it matched — including a 1:1 message to somebody else —
+        // and a group message went to the double tick on the FIRST member's
+        // receipt, a tick that says "they have it" while four people do not.
         final dlvMids = (inner.data['mids'] as List?)?.cast<String>() ?? [];
         for (final mid in dlvMids) {
-          await txn.update('messages', {'status': MsgStatus.delivered},
-              where: 'mid = ? AND outgoing = 1 AND status < ?',
-              whereArgs: [mid, MsgStatus.delivered]);
-          for (final e in messagesByChat.entries) {
-            _updateLoadedStatus(e.key, mid, MsgStatus.delivered,
-                onlyUpgrade: true);
-          }
+          await _recordDelivery(txn, contact, mid);
         }
         break;
 
@@ -2157,6 +2158,14 @@ class ChatService extends ChangeNotifier implements KtHost {
 
       case 'gleave':
         await _applyGroupLeave(contact.rid, inner.data, txn: txn);
+        final leftGid = inner.data['gid'];
+        if (leftGid is String) {
+          // One fewer person the tick is waiting for. Outside the
+          // transaction is wrong for atomicity and right for deadlock: this
+          // reads and writes `messages` on its own connection.
+          unawaited(Future<void>.microtask(
+              () => _reevaluateGroupDelivery(leftGid)));
+        }
         break;
 
       case 'hello':
@@ -2557,6 +2566,24 @@ class ChatService extends ChangeNotifier implements KtHost {
                 data: {'mids': mids.toList()}));
       } catch (_) {}
     }
+  }
+
+  /// Test seam: claim delivery of [mids] to [rid], whatever this device has
+  /// actually received.
+  ///
+  /// It stands in for an attacker, who is likewise not bound by the queue
+  /// this client keeps: a `mid` is plaintext to every member of a group, and
+  /// the receipt is an ordinary inner message anyone can construct. The
+  /// receiver's scoping is what makes the claim worthless, and that is what
+  /// the test using this checks.
+  @visibleForTesting
+  Future<void> debugClaimDelivery(String rid, List<String> mids) async {
+    final contact = contacts[rid];
+    if (contact == null) return;
+    await _sendInner(
+        contact,
+        InnerMessage(
+            kind: 'dlv', mid: newMessageId(), ts: _now(), data: {'mids': mids}));
   }
 
   /// Test seam: send whatever receipts are waiting, now, and wait for them.
@@ -3397,6 +3424,88 @@ class ChatService extends ChangeNotifier implements KtHost {
     list.add(msg);
   }
 
+  /// Re-decide the tick on this group's undelivered messages.
+  ///
+  /// "Delivered when every current member has confirmed" is a rule about a
+  /// set that shrinks. Evaluating it only when a receipt ARRIVES would leave
+  /// a message waiting for ever on somebody who has left — which is a worse
+  /// lie than the one this replaced, because it never resolves. So membership
+  /// changes ask the question again.
+  Future<void> _reevaluateGroupDelivery(String gid) async {
+    final g = groups[gid];
+    if (g == null || g.memberRids.isEmpty) return;
+    final marks = List.filled(g.memberRids.length, '?').join(',');
+    final pending = await vault.db.query('messages',
+        columns: ['mid'],
+        where: 'rid = ? AND outgoing = 1 AND status < ?',
+        whereArgs: [gid, MsgStatus.delivered]);
+    for (final row in pending) {
+      final mid = row['mid'] as String;
+      final have = firstIntValue(await vault.db.rawQuery(
+              'SELECT COUNT(DISTINCT from_rid) FROM delivery '
+              'WHERE mid = ? AND thread_rid = ? AND from_rid IN ($marks)',
+              [mid, gid, ...g.memberRids])) ??
+          0;
+      if (have < g.memberRids.length) continue;
+      await vault.db.update('messages', {'status': MsgStatus.delivered},
+          where: 'mid = ? AND rid = ? AND outgoing = 1 AND status < ?',
+          whereArgs: [mid, gid, MsgStatus.delivered]);
+      _updateLoadedStatus(gid, mid, MsgStatus.delivered, onlyUpgrade: true);
+    }
+  }
+
+  /// Record that [contact] has confirmed [mid], and move the tick only if
+  /// everyone the message was addressed to has now done so.
+  ///
+  /// Scoped to threads this contact is a party to — their own, and the groups
+  /// they are in. A receipt naming a message in any other thread is a claim
+  /// about somebody else's conversation and is simply not theirs to make.
+  Future<void> _recordDelivery(
+      DatabaseExecutor txn, Contact contact, String mid) async {
+    final threads = <String>[
+      contact.rid,
+      for (final g in groups.values)
+        if (!g.left && g.memberRids.contains(contact.rid)) g.gid,
+    ];
+    final marks = List.filled(threads.length, '?').join(',');
+    final rows = await txn.query('messages',
+        columns: ['rid'],
+        where: 'mid = ? AND rid IN ($marks) AND outgoing = 1 AND status < ?',
+        whereArgs: [mid, ...threads, MsgStatus.delivered]);
+    if (rows.isEmpty) return; // not theirs to confirm, or already delivered
+    final thread = rows.first['rid'] as String;
+
+    await txn.insert(
+        'delivery',
+        {
+          'mid': mid,
+          'thread_rid': thread,
+          'from_rid': contact.rid,
+          'at_ms': _now(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore);
+
+    // A 1:1 message is delivered when its one recipient says so. A group
+    // message is delivered when every CURRENT member has — a member who has
+    // left is no longer someone the tick is waiting for, which is the only
+    // rule that cannot leave a message waiting for ever.
+    final group = groups[thread];
+    if (group != null) {
+      final need = group.memberRids.length;
+      final have = firstIntValue(await txn.rawQuery(
+              'SELECT COUNT(DISTINCT from_rid) FROM delivery '
+              'WHERE mid = ? AND thread_rid = ? AND from_rid IN '
+              '(${List.filled(group.memberRids.length, '?').join(',')})',
+              [mid, thread, ...group.memberRids])) ??
+          0;
+      if (need == 0 || have < need) return;
+    }
+    await txn.update('messages', {'status': MsgStatus.delivered},
+        where: 'mid = ? AND rid = ? AND outgoing = 1 AND status < ?',
+        whereArgs: [mid, thread, MsgStatus.delivered]);
+    _updateLoadedStatus(thread, mid, MsgStatus.delivered, onlyUpgrade: true);
+  }
+
   void _updateLoadedStatus(String rid, String mid, int status,
       {bool onlyUpgrade = false}) {
     final list = messagesByChat[rid];
@@ -3558,6 +3667,12 @@ class ChatService extends ChangeNotifier implements KtHost {
       await vault.db.delete('reactions',
           where: 'rid = ? AND mid = ?',
           whereArgs: [r['rid'] as String, r['mid'] as String]);
+      // Who confirmed a message goes with the message. A disappearing
+      // message that leaves a row saying who received it and when has not
+      // disappeared.
+      await vault.db.delete('delivery',
+          where: 'thread_rid = ? AND mid = ?',
+          whereArgs: [r['rid'] as String, r['mid'] as String]);
     }
     await vault.db.delete('messages',
         where: 'expire_at_ms > 0 AND expire_at_ms <= ?', whereArgs: [now]);
@@ -3618,6 +3733,8 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> deleteMessage(String rid, String mid) async {
     await vault.db.delete('messages',
         where: 'rid = ? AND mid = ?', whereArgs: [rid, mid]);
+    await vault.db.delete('delivery',
+        where: 'thread_rid = ? AND mid = ?', whereArgs: [rid, mid]);
     messagesByChat[rid]?.removeWhere((m) => m.mid == mid);
     notifyListeners();
   }
@@ -4446,6 +4563,8 @@ class ChatService extends ChangeNotifier implements KtHost {
     // Tell the removed member too, so their app marks the group as left.
     final removed = contacts[rid];
     if (removed != null) await _sendInner(removed, inner);
+    // The tick is no longer waiting for them.
+    await _reevaluateGroupDelivery(gid);
     unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
         Future<void>.value());
     notifyListeners();

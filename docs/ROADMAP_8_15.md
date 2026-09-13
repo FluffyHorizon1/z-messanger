@@ -1990,3 +1990,36 @@ direction; the phases, their order and both ordering arguments stand.
    than a downgrade, and the fact that nothing on screen distinguishes a
    classical session from a hybrid one, because the assurance badge reports
    the identity's state and not the session's.
+
+56. **A delivery tick was two claims, and the client checked neither.** The
+   receipt handler marked a message delivered "wherever they live" — its own
+   comment, and an exact description of the bug. A `mid` is plaintext to
+   everyone who received the message, so in a group every member holds every
+   member's ids; with no thread scope, **any contact could name any id and
+   flip whatever it matched**, including a one-to-one message in a
+   conversation they were not part of. The read-receipt handler two cases
+   above it was scoped correctly, which is the tell: the rule was known and
+   one path did not follow it.
+
+   And a group message reached the double tick on the *first* member's
+   receipt — a tick that says "they have it" while four people do not. Patch
+   13 had made the relay send one receipt per member and said so in its
+   notes; the client went on collapsing them into the first, so the
+   improvement was real and invisible.
+
+   Both come from the same missing idea: **a receipt is a claim, and a
+   sender has to decide what each party is allowed to claim.** A receipt from
+   P for message M counts only if M is outgoing in a thread P is a party to.
+   A group message is delivered when every current member has confirmed, one
+   row per (message, member), which is also the only version of "delivered"
+   the icon already means.
+
+   The rule is about a set that shrinks, and that is the part the test
+   caught. Evaluating it only when a receipt *arrives* leaves a message
+   waiting for ever on somebody who has left — a worse failure than the one
+   it replaces, because it never resolves. Membership changes ask the
+   question again.
+
+   The rows go with their message, including when a disappearing-message
+   timer fires. A message that vanishes but leaves behind a record of who
+   received it and when has not vanished.

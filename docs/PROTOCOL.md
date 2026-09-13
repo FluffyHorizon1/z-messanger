@@ -576,6 +576,21 @@ sends `dlv{mids:[mid]}` back over the same pairwise session (best effort). This
 replaces the relay's `delivered` frame, which sealed sender (§8) makes
 impossible. `read` is sent when the user views the message.
 
+A receipt is a claim, and a sender MUST bound what each party may claim. A
+`mid` is plaintext to everyone who received the message, so in a group every
+member holds every member's ids; a sender that acts on a receipt without
+checking the thread lets any contact mark any of its outgoing messages —
+including one in a conversation that party is not in — delivered. So a receipt
+from party P for message M counts only if M is outgoing in a thread P is a
+party to: P's own pairwise thread, or a group P is currently in.
+
+For a group message, "delivered" means **every** member, not the first to
+answer: the sender records one confirmation per (message, member) and moves
+the state only when the current membership has all confirmed. Membership
+shrinks, so this is re-evaluated when a member is removed or leaves —
+otherwise a message waits for ever on somebody who is gone, which is a worse
+failure than the one it replaces because it never resolves.
+
 ### 6.4 Deduplication
 
 Delivery is at‑least‑once (§12.5). Receivers MUST deduplicate on
