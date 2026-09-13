@@ -910,9 +910,16 @@ worse, a `mid` is plaintext to every member, so any one of them could name a
 message to the operator and be told who else received it. This was the rule
 from the start and the client broke it until 2026‑09‑13. `payload` is an opaque
 string ≤ `MAX_ENVELOPE_BYTES` (default 1,000,000) characters; the WebSocket
-frame limit is that plus 4096. Error codes: `rate_limited`, `bad_json`,
-`internal`, `bad_auth`, `not_authed`, `bad_send`, `too_large`, `bad_push`,
-`unknown_frame`, and — since 2026‑09‑11, compatible extensions under §14 —
+frame limit is that plus 4096. Only four error codes carry `id`, because only those four are refusals OF an
+envelope: `too_large`, `bad_send`, `queue_full` and `store_full`. The rest
+refuse a frame before, or regardless of, what it names. A client MUST
+therefore treat an error without an `id` as refusing whatever it has in
+flight, rather than waiting for one it can match: a connection processes
+frames in order, and a send left pending on an unmatched refusal stalls every
+message behind it until its own timeout. Error codes: `rate_limited`,
+`bad_json`, `internal`, `bad_auth`, `not_authed`, `bad_send`, `too_large`,
+`bad_push`, `unknown_frame`, and — since 2026‑09‑11, compatible extensions
+under §14 —
 `queue_full` and `store_full` (§12.4), each carrying the `id` of the `send`
 it answers. A `payload` over the cap is answered `too_large` whatever else
 is wrong with the frame: it is the one refusal a client must not retry, so

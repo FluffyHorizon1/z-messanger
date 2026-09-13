@@ -1705,6 +1705,9 @@ class ChatService extends ChangeNotifier implements KtHost {
     // The relay's shared store itself full (`store_full`): nobody's envelope
     // fits right now, so the pass stops and everything waits for the retry.
     var storeFull = false;
+    // The relay asked this connection to slow down: not one mailbox's
+    // problem and not a reason to wait for a reconnect.
+    var rateLimited = false;
     try {
       while (true) {
         final rows = full.isEmpty
@@ -1729,11 +1732,20 @@ class ChatService extends ChangeNotifier implements KtHost {
           } on RelayException catch (e) {
             if (e.message.contains('too_large') ||
                 e.message.contains('bad_send')) {
-              // Permanent rejection: drop and surface failure.
+              // Permanent rejection: drop and surface failure. The message
+              // is named by the row's own `mid` and `thread_rid`, not by the
+              // envelope id and the mailbox — those were the same string
+              // until the envelope id was separated from it, and this line
+              // was the one place that still read them as one.
               await vault.db
                   .delete('outbox', where: 'seq = ?', whereArgs: [row['seq']]);
-              await vault.db.update('messages', {'status': -1},
-                  where: 'mid = ? AND rid = ?', whereArgs: [id, rid]);
+              final failedMid = row['mid'] as String?;
+              if (failedMid != null) {
+                final thread = row['thread_rid'] as String? ?? rid;
+                await vault.db.update('messages', {'status': -1},
+                    where: 'mid = ? AND rid = ?', whereArgs: [failedMid, thread]);
+                _updateLoadedStatus(thread, failedMid, -1);
+              }
             } else if (e.message.contains('queue_full')) {
               // That recipient's mailbox at the relay is at its cap
               // (PROTOCOL §12.4): theirs alone, and temporary — it empties
@@ -1746,6 +1758,14 @@ class ChatService extends ChangeNotifier implements KtHost {
               // pass — every row would get the same answer — and let the
               // retry timer bring it back, rather than the next reconnect.
               storeFull = true;
+              return;
+            } else if (e.message.contains('rate_limited')) {
+              // This connection is being told to slow down, which is about
+              // the sender and not about any one mailbox. Stop the pass and
+              // come back on the retry timer: waiting for the next
+              // *reconnect*, as this used to, can be a very long time on a
+              // link that is working perfectly well.
+              rateLimited = true;
               return;
             } else {
               return; // connection trouble: retry on next connect
@@ -1761,7 +1781,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       return;
     } finally {
       _flushing = false;
-      if ((full.isNotEmpty || storeFull) && !_disposed) {
+      if ((full.isNotEmpty || storeFull || rateLimited) && !_disposed) {
         _outboxRetry ??= Timer(outboxRetryDelay, () {
           _outboxRetry = null;
           unawaited(flushOutbox());

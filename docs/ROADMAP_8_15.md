@@ -2049,3 +2049,33 @@ direction; the phases, their order and both ordering arguments stand.
    forwards every byte unchanged except for emptying `entries` — one lie,
    the cheapest one an operator could tell, and the only one that used to
    work.
+
+58. **One refusal, twenty seconds of a stopped outbox.** The relay names the
+   envelope in exactly four of its refusals — `too_large`, `bad_send`,
+   `queue_full`, `store_full` — because only those four are refusals *of an
+   envelope*. The rest refuse a frame before, or regardless of, what it
+   names. The client matched errors to sends by id and dropped the ones
+   without, so the sender's future sat until its twenty-second timeout with
+   `_flushing` held for the whole of it, and every message behind it waited.
+
+   The code that does this most is `rate_limited`, which is not an edge case:
+   it is what a relay says to a client that has just come back online with a
+   backlog — precisely when the outbox matters most. And the old handler's
+   answer to it, `return; // retry on next connect`, waits for a *reconnect*
+   on a link that is working perfectly well and has no reason to drop.
+
+   A connection processes frames in order, so an unattributed refusal is
+   about what was just sent; failing every outstanding send with it is the
+   conservative reading and costs nothing, because each row is still in the
+   durable outbox and the relay dedupes a retry on (id, sender). `§12.2` now
+   says which refusals name an envelope and what a client must do with the
+   ones that do not, because "match the error to the send" is the obvious
+   implementation and it is wrong.
+
+   The same patch fixes a line the envelope-id change (52) missed: a
+   permanently refused envelope marked failed `WHERE mid = <envelope id> AND
+   rid = <mailbox>`, which was right only while those were the same two
+   strings as the message and its thread. It was the last reader of the old
+   convention, and it failed silently — the message simply stayed pending
+   for ever. **Separating two things that were one leaves as many readers as
+   there were uses, and the compiler finds none of them.**

@@ -196,7 +196,31 @@ class RelayClient {
         break;
       case 'error':
         final id = frame['id'] as String?;
-        if (id != null) {
+        if (id == null) {
+          // Only four of the relay's refusals name the envelope they are
+          // about (§12.2): `too_large`, `bad_send`, `queue_full`,
+          // `store_full`. The rest — `rate_limited` above all, and
+          // `bad_json`, `internal`, `bad_auth`, `not_authed`,
+          // `unknown_frame` — arrive with nothing to match a send against,
+          // and used to leave the sender's future pending until its
+          // twenty-second timeout, holding the outbox flush for all of it.
+          //
+          // A connection processes frames in order, so an unattributed
+          // refusal is about what was just sent. Failing every outstanding
+          // send with it is the conservative reading and costs nothing that
+          // matters: each row is still in the durable outbox, and the relay
+          // dedupes a retry on (id, sender), so re-sending is idempotent.
+          final pending = _sendAcks.values.toList();
+          _sendAcks.clear();
+          for (final c in pending) {
+            if (!c.isCompleted) {
+              c.completeError(
+                  RelayException(frame['code'] as String? ?? 'refused'));
+            }
+          }
+          break;
+        }
+        {
           _sendAcks
               .remove(id)
               ?.completeError(RelayException(frame['code'] as String? ?? '?'));
