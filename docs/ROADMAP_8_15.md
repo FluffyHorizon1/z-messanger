@@ -2410,3 +2410,43 @@ direction; the phases, their order and both ordering arguments stand.
 
    Checked at the fourth door now, with the same two lines. **A rule enforced
    at three of four doors is a rule with a door.**
+
+68. **The log held the whole of itself, twice.** `FileStore.readAll` read
+   `entries.jsonl` into one JavaScript string, and `KtLog._apply` kept every
+   entry — `value` included — in `this.entries` for the life of the process.
+   So a replay's peak was the file plus a parsed copy of it, and the resident
+   set afterwards was a multiple of the file rather than a function of the
+   number of entries. At the 256 KiB value cap one entry was 256 KiB of memory
+   for ever, and the trees need none of it: they commit to `leafHash`, and a
+   hash is 32 bytes.
+
+   Two ways that ends a live log, and the review found it with days on the
+   clock. On a 512 MB instance the ceiling is tens of megabytes of file, after
+   which the process OOMs during replay on **every** start — permanently,
+   because the file it cannot read is the file it must read to start. And a
+   file past V8's ~512 MB string limit cannot be read at all by this reader,
+   which made the 1 GB disk it is deployed on more than twice the largest file
+   its own code could open. `render.kt.yaml` said "a few KB per publish" and
+   nothing about either.
+
+   A fixed read window with a carried remainder has a peak of one chunk plus
+   the longest line whatever the file weighs; an entry keeps the byte range of
+   its own line instead of its value, and serving one is a read rather than a
+   residency. Measured, on a 16 MiB file carrying 12 MiB of values: **0.6 MiB
+   retained**, against 12.7 MiB holding them and 16.2 MiB to read one entry
+   the old way.
+
+   Measuring it took two corrections worth keeping. `heapUsed` reports 0.1 MiB
+   either way, because a `value` is a Buffer and a Buffer over a few kilobytes
+   lives outside V8's heap — a measurement that cannot fail. And without a
+   forced collection the number is dominated by the garbage from parsing
+   sixteen megabytes of JSON, not by what is kept. Retention is what survives
+   a collection, counted in heap **and** external.
+
+   What is not in this patch, and is the operator's: raising the instance so
+   RAM matches the disk, and a disk and heap alarm. What is still the dominant
+   remaining term: `/history` and `/entries` have no byte cap (review finding
+   8), so a page of a thousand entries now hydrates values that used to be
+   resident — the same bytes, moved from a permanent cost to a per-request
+   one. **A component that cannot start is worse than one that is slow, and
+   the file that stops it starting is the file it exists to keep.**

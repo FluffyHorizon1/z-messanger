@@ -35,7 +35,12 @@ services:
     disk:
       name: z-kt-data
       mountPath: /data          # = KT_DATA; entries.jsonl lives here
-      sizeGB: 1                 # a few KB per publish: room for a few hundred thousand
+      # A publish is up to 341 KB on disk (the 256 KiB value cap, base64 in
+      # JSON), so 1 GB is ~2,900 max-size entries and a few hundred thousand
+      # ordinary ones. The reader streams the file and holds no value in
+      # memory, so the disk is the only bound; it was not always, and the
+      # comment here used to say "a few KB per publish" and nothing else.
+      sizeGB: 1
     envVars:
       - key: KT_SEED
         sync: false             # 64 hex characters, generated on your machine; asked for at creation

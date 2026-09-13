@@ -48,6 +48,15 @@
  * Storage: an append-only line-per-entry file, fsynced per publish, replayed
  * on start; a corrupted or shortened file fails the start rather than
  * serving a tree the previous head did not commit to.
+ *
+ * Memory: what the log holds is a function of the NUMBER of entries, not of
+ * their size or the file's. Replay reads a fixed window at a time and an
+ * entry keeps the byte range of its own line rather than its value, which is
+ * read back when something serves it. Until 2026-09-13 neither was true —
+ * the file arrived as one JavaScript string and every value stayed resident
+ * for the life of the process — which put a 512 MB instance's ceiling at
+ * tens of megabytes of file and made a file past V8's ~512 MB string limit
+ * unreadable by the only code that reads it. `test/log_memory.test.js`.
  */
 
 const crypto = require('crypto');
@@ -188,59 +197,139 @@ class PublishError extends Error {
 
 /** Entries in memory only — tests, and the `kt/server.js --ephemeral` flag. */
 class MemoryStore {
-  readAll() {
-    return [];
+  *readAll() {}
+  /** No file, so nothing can be re-read: a memory entry keeps its value. */
+  append() {
+    return null;
   }
-  append() {}
+  readValue() {
+    throw new Error('a memory store has nothing to re-read');
+  }
   close() {}
 }
 
+/** How much of the file is read at a time while replaying. */
+const REPLAY_CHUNK = 1 << 20;
+
 /** One JSON line per entry, appended and fsynced. */
 class FileStore {
-  constructor(file) {
+  /**
+   * [chunkBytes] is how much of the file is read at a time while replaying.
+   * It is a parameter only so that a test can make it small enough to put a
+   * line either side of a window boundary, and one line across it, on a file
+   * small enough to read: a value is capped at 256 KiB, so at the real
+   * window no line can ever be longer than a chunk, and the case a carried
+   * remainder exists for would otherwise never be exercised.
+   */
+  constructor(file, { chunkBytes = REPLAY_CHUNK } = {}) {
     this.file = file;
+    this.chunkBytes = chunkBytes;
     this.fd = null;
+    this.readFd = null;
   }
 
-  readAll() {
-    let text;
+  /**
+   * Every entry, in order, as a generator — and each one carries `valueAt`,
+   * the byte range of its own line, so the log can drop the value and fetch
+   * it again when somebody actually asks for it.
+   *
+   * This read the whole file into one JavaScript string until 2026-09-13.
+   * Two things were wrong with that and both are fatal rather than untidy.
+   * The string is a second copy of the file on the heap before a single
+   * entry exists, on top of the array of parsed entries it becomes; and a
+   * file past V8's ~512 MB string ceiling cannot be read at all, ever, by a
+   * process that has no other way in — which made the 1 GB disk the log is
+   * deployed on more than twice the largest file its own reader could open.
+   *
+   * A fixed window with a carried remainder has neither property: peak is
+   * one chunk plus the longest line, whatever the file's size.
+   */
+  *readAll() {
+    let fd;
     try {
-      text = fs.readFileSync(this.file, 'utf8');
+      fd = fs.openSync(this.file, 'r');
     } catch (e) {
-      if (e.code === 'ENOENT') return [];
+      if (e.code === 'ENOENT') return;
       throw e;
     }
-    const entries = [];
-    const lines = text.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (line === '') {
-        // Only the final newline may be missing content; a blank line inside
-        // the file is a torn write.
-        if (i !== lines.length - 1) throw new Error(`${this.file}: blank line ${i + 1}`);
-        continue;
+    try {
+      const buf = Buffer.allocUnsafe(this.chunkBytes);
+      let rest = Buffer.alloc(0);
+      let restAt = 0; // byte offset of `rest` within the file
+      let at = 0; // bytes consumed from the file
+      let line = 0;
+      let eof = false;
+      while (!eof) {
+        const n = fs.readSync(fd, buf, 0, this.chunkBytes, at);
+        at += n;
+        eof = n === 0;
+        rest = rest.length === 0 ? buf.subarray(0, n) : Buffer.concat([rest, buf.subarray(0, n)]);
+        let from = 0;
+        for (;;) {
+          const nl = rest.indexOf(0x0a, from);
+          if (nl < 0) break;
+          const off = restAt + from;
+          const len = nl - from;
+          line += 1;
+          if (len === 0) throw new Error(`${this.file}: blank line ${line}`);
+          yield this._parse(rest.subarray(from, nl), line, off, len);
+          from = nl + 1;
+        }
+        // Whatever follows the last newline is the start of the next line.
+        rest = Buffer.from(rest.subarray(from));
+        restAt += from;
+        if (eof && rest.length !== 0) {
+          // A final line with no newline is a torn write: the fsync that
+          // would have followed it never happened.
+          throw new Error(`${this.file}: line ${line + 1} has no newline (a torn write?)`);
+        }
       }
-      let j;
-      try {
-        j = JSON.parse(line);
-      } catch {
-        throw new Error(`${this.file}: line ${i + 1} is not JSON (a torn write?)`);
-      }
-      entries.push(entryFromStored(j));
+    } finally {
+      fs.closeSync(fd);
     }
-    return entries;
   }
 
+  _parse(bytes, line, off, len) {
+    let j;
+    try {
+      j = JSON.parse(bytes.toString('utf8'));
+    } catch {
+      throw new Error(`${this.file}: line ${line} is not JSON (a torn write?)`);
+    }
+    const e = entryFromStored(j);
+    e.valueAt = { off, len };
+    return e;
+  }
+
+  /** The value of the entry whose line occupies [off, off + len). */
+  readValue({ off, len }) {
+    if (this.readFd === null) this.readFd = fs.openSync(this.file, 'r');
+    const buf = Buffer.allocUnsafe(len);
+    let got = 0;
+    while (got < len) {
+      const n = fs.readSync(this.readFd, buf, got, len - got, off + got);
+      if (n === 0) throw new Error(`${this.file}: entry at ${off} is shorter than ${len} bytes`);
+      got += n;
+    }
+    return Buffer.from(JSON.parse(buf.toString('utf8')).val, 'base64');
+  }
+
+  /** Appends the entry and returns the byte range of the line it wrote. */
   append(entry) {
     if (this.fd === null) this.fd = fs.openSync(this.file, 'a');
-    fs.writeSync(this.fd, JSON.stringify(entryToStored(entry)) + '\n');
+    const off = fs.fstatSync(this.fd).size;
+    const line = Buffer.from(JSON.stringify(entryToStored(entry)) + '\n', 'utf8');
+    fs.writeSync(this.fd, line);
     fs.fsyncSync(this.fd);
+    return { off, len: line.length - 1 };
   }
 
   close() {
-    if (this.fd !== null) {
-      fs.closeSync(this.fd);
-      this.fd = null;
+    for (const f of ['fd', 'readFd']) {
+      if (this[f] !== null) {
+        fs.closeSync(this[f]);
+        this[f] = null;
+      }
     }
   }
 }
@@ -301,6 +390,18 @@ class KtLog {
     return this.entries.length;
   }
 
+  /**
+   * The entry with its value, read back from the store if it is not resident.
+   *
+   * Everything that SERVES an entry goes through this; everything that
+   * verifies one uses the hash, which is resident. A memory-backed log keeps
+   * its values and this is a no-op for it.
+   */
+  withValue(entry) {
+    if (!entry || entry.value) return entry;
+    return { ...entry, value: this.store.readValue(entry.valueAt) };
+  }
+
   /** The latest entry for a label, or null. */
   latest(label) {
     const idx = this.byLabel.get(label.toString('hex'));
@@ -317,7 +418,14 @@ class KtLog {
     if (prev && !(entry.version > prev.version)) {
       throw new Error(`entry ${entry.index}: version ${entry.version} does not exceed ${prev.version}`);
     }
-    if (!replaying) this.store.append(entry);
+    if (!replaying) entry.valueAt = this.store.append(entry);
+    // The value has done its work: it has been hashed, checked against the
+    // hash the signature covers, and written down. Holding it is what made
+    // the resident set a multiple of the file rather than a function of the
+    // number of entries — at the 256 KiB cap, one entry was 256 KiB of heap
+    // for the life of the process, and the trees need none of it. What stays
+    // is where to find it again.
+    if (entry.valueAt) entry.value = null;
     this.tree.append(leafHashOf(entry));
     this.map.set(entry.label, entry.index, entry.version);
     this.entries.push(entry);
@@ -383,7 +491,7 @@ class KtLog {
   lookup(label) {
     const sth = this.sth();
     const map = this.map.proof(label);
-    const entry = map.leaf ? this.entries[map.leaf.index] : null;
+    const entry = map.leaf ? this.withValue(this.entries[map.leaf.index]) : null;
     return {
       sth,
       map,
@@ -398,7 +506,7 @@ class KtLog {
     const idx = this.byLabel.get(label.toString('hex')) || [];
     return {
       sth,
-      entries: idx.map((i) => ({ entry: this.entries[i], inclusion: this._inclusion(i, sth.size) })),
+      entries: idx.map((i) => ({ entry: this.withValue(this.entries[i]), inclusion: this._inclusion(i, sth.size) })),
     };
   }
 
@@ -409,7 +517,10 @@ class KtLog {
       throw new PublishError(400, 'bad_request', 'start must be >= 0 and count >= 1');
     }
     const end = Math.min(sth.size, start + count);
-    return { sth, entries: this.entries.slice(start, Math.max(start, end)) };
+    return {
+      sth,
+      entries: this.entries.slice(start, Math.max(start, end)).map((e) => this.withValue(e)),
+    };
   }
 
   close() {
