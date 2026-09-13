@@ -1935,7 +1935,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (inner != null) {
       if ((inner.kind == 'file' || inner.kind == 'gfile') &&
           inner.data['fid'] is String) {
-        await _tryAssemble(inner.data['fid'] as String);
+        await _offerLanded(inner.data['fid'] as String);
       }
       if (openChatRid == contact.rid &&
           (inner.kind == 'text' || inner.kind == 'file')) {
@@ -2240,12 +2240,74 @@ class ChatService extends ChangeNotifier implements KtHost {
         senderName: contact.name, senderRid: contact.rid);
   }
 
+  /// How many chunks may be held for an offer this device has not seen.
+  ///
+  /// A chunk is the one inbound thing with no sender to hold responsible: it
+  /// travels outside the ratchet, sealed under its own file key, and its MAC
+  /// is checkable only with key material that arrives in the OFFER. So until
+  /// the offer is here, a chunk is a bag of bytes addressed to this mailbox
+  /// by anybody who knows the routing id — which is anybody holding the
+  /// contact code, and that code is meant to be handed out.
+  ///
+  /// They cannot simply be refused: they legitimately arrive before the offer
+  /// (they are sent as sidecars, and the relay does not promise an order).
+  /// So they are held, and the holding is bounded — oldest first out, which
+  /// is the right direction because the offer that explains a chunk arrives
+  /// within moments of it or not at all.
+  static const int maxHeldChunks = 256;
+
   Future<void> _onChunk(
       RelayInbound m, FileChunk chunk, String from, String payload) async {
+    final offer = await vault.db.query('files',
+        columns: ['total_chunks', 'complete'],
+        where: 'fid = ?',
+        whereArgs: [chunk.fid]);
+    final known = offer.isNotEmpty;
+
+    if (known) {
+      // An offer arrived over the ratchet, so this fid is one a contact
+      // really sent. Its shape still bounds what may be stored under it: an
+      // index outside the offer's range is not a chunk of this file, and a
+      // file already assembled needs nothing more.
+      if ((offer.first['complete'] as int) == 1) {
+        transport.ackReceived(id: m.id, from: m.from);
+        return;
+      }
+      final total = offer.first['total_chunks'] as int;
+      if (chunk.index < 0 || chunk.index >= total) {
+        transport.ackReceived(id: m.id, from: m.from);
+        return;
+      }
+    }
+
     await vault.db.insert(
         'chunks', {'fid': chunk.fid, 'idx': chunk.index, 'payload': payload},
         conflictAlgorithm: ConflictAlgorithm.ignore);
     transport.ackReceived(id: m.id, from: m.from);
+
+    if (!known) {
+      // Held, not trusted, and trimmed to the cap rather than checked against
+      // it: envelopes arrive concurrently, so a check-then-insert overshoots
+      // by however many are in flight, and a cap that is only approximately a
+      // cap is the kind of bound an attacker sends faster at. Trimming after
+      // the fact is exact whatever the concurrency, under a lock so a burst
+      // does not run it once per envelope. Oldest out first: the offer that
+      // explains a chunk arrives within moments of it or not at all.
+      //
+      // Nothing is fanned to my other devices while a chunk is in this state
+      // — an unexplained chunk must not become N envelopes this device emits
+      // on a stranger's behalf. That happens when the offer lands and
+      // explains it (see [_fanHeldChunks]).
+      await _withLock('held-chunks', () async {
+        await vault.db.rawDelete(
+            'DELETE FROM chunks WHERE rowid IN (SELECT rowid FROM chunks '
+            'WHERE fid NOT IN (SELECT fid FROM files) '
+            'ORDER BY rowid DESC LIMIT -1 OFFSET ?)',
+            [maxHeldChunks]);
+      });
+      return; // nothing to assemble and nothing to relay yet
+    }
+
     // Relay a contact's chunk to my own other devices so the attachment lands
     // there too. Skip chunks that were themselves relayed from one of my
     // devices (matched on the OPENED sender), so the fan-out can't loop.
@@ -2254,6 +2316,20 @@ class ChatService extends ChangeNotifier implements KtHost {
       unawaited(sync.fanChunk(payload));
     }
     await _tryAssemble(chunk.fid);
+  }
+
+  /// Relay to my own other devices every chunk already stored for [fid].
+  ///
+  /// Called once, when the offer lands. Chunks that arrive AFTER it are fanned
+  /// one at a time by [_onChunk], so nothing is relayed twice.
+  Future<void> _fanHeldChunks(String fid) async {
+    final sync = _sync;
+    if (sync == null) return;
+    final rows = await vault.db.query('chunks',
+        columns: ['payload'], where: 'fid = ?', whereArgs: [fid]);
+    for (final r in rows) {
+      unawaited(sync.fanChunk(r['payload'] as String));
+    }
   }
 
   /// Assemble [fid] if the offer and every chunk are present. Serialized per
@@ -2265,6 +2341,14 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// sees `complete = 1` and returns.
   Future<void> _tryAssemble(String fid) =>
       _withLock('assemble:$fid', () => _tryAssembleLocked(fid));
+
+  /// An offer has arrived: whatever was held for it is explained now, so
+  /// relay it onward (which [_onChunk] deliberately would not do while it was
+  /// unexplained) and then assemble.
+  Future<void> _offerLanded(String fid) async {
+    await _fanHeldChunks(fid);
+    await _tryAssemble(fid);
+  }
 
   Future<void> _tryAssembleLocked(String fid) async {
     final rows =
@@ -3911,7 +3995,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         if (c != null) {
           await _persistGroupFile(c, inner, inner.ts);
           notifyListeners();
-          await _tryAssemble(inner.data['fid'] as String);
+          await _offerLanded(inner.data['fid'] as String);
         }
       }
       return;
@@ -4058,7 +4142,7 @@ class ChatService extends ChangeNotifier implements KtHost {
           ),
         ));
     notifyListeners();
-    await _tryAssemble(fid); // sidecar chunks may already be here
+    await _offerLanded(fid); // sidecar chunks may already be here
   }
 
   // ------------------------------------------------------------------
@@ -5445,7 +5529,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     } else if (inner.kind == 'gfile' && inner.data['fid'] is String) {
       await _persistGroupFile(contact, inner, _now());
       notifyListeners();
-      await _tryAssemble(inner.data['fid'] as String);
+      await _offerLanded(inner.data['fid'] as String);
     } else if (inner.kind == 'ginvite') {
       await _applyGroupInvite(contact.rid, inner.data);
       notifyListeners();

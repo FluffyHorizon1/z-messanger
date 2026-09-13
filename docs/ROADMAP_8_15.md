@@ -1918,3 +1918,45 @@ direction; the phases, their order and both ordering arguments stand.
    only a real runner can be issued, so `actions/attest-build-provenance` is
    the one step a tag has to exercise. Everything it depends on now runs
    without one.
+
+54. **A file chunk is the one inbound thing with nobody to hold
+   responsible, and it was being stored unconditionally and relayed
+   onward.** Everything else that arrives is either inside the ratchet (so
+   the sender is authenticated before a byte of it is believed) or is a
+   mirror from one of the account's own devices (so the sync ratchet
+   authenticates it). A chunk is neither: it travels outside the ratchet,
+   sealed under a file key that arrives in the **offer**, so until the offer
+   is here there is nothing to check it against. Its MAC cannot be verified;
+   its `fid` names nothing; its sender is whoever knows the routing id, and
+   the routing id is derivable from the contact code, which the app tells
+   people to hand out — "someone who copies it can add you, **and that is
+   all**".
+
+   It was not all. Every chunk was stored, at any index, under any fid,
+   however many arrived — and then **relayed to every linked device**, so a
+   stranger's junk became N envelopes the victim's own phone emitted on
+   their behalf. Nothing ever swept a chunk whose offer never came.
+
+   Three changes, and the middle one is the one that matters. Unexplained
+   chunks are **held** rather than refused, because they legitimately arrive
+   before their offer — the holding is capped and oldest-out-first, since an
+   offer arrives within moments of its chunks or not at all. Nothing
+   unexplained is **relayed**, which removes the amplification entirely: the
+   fan happens when the offer lands and explains what was held. And once an
+   offer names a fid, its shape bounds what may be stored under it — an
+   index outside the range is not a chunk of that file.
+
+   **A cap enforced before the insert is not a cap.** The first version
+   counted, evicted if at the limit, then inserted — and the test flooded it
+   to 260 against a limit of 256, because envelopes arrive concurrently and
+   a check-then-act overshoots by however many are in flight. An attacker
+   reading that code would simply send faster. Trimming *after* the insert,
+   under a lock, is exact whatever the concurrency.
+
+   And the test for the amplification passed for the wrong reason twice
+   before it passed for the right one: first against an account with no
+   linked device, where the fan-out has nowhere to go and the assertion is
+   vacuous; then by counting the outbox, which drains, so it measured the
+   flusher's timing rather than the behaviour. It counts what arrives in the
+   linked device's mailbox now. **A test that cannot fail is worse than no
+   test, because it is also a claim.**
