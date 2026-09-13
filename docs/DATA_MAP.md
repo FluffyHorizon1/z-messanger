@@ -102,7 +102,7 @@ relay.
 | **Apple (APNs)** | The equivalent of FCM, when the iOS client ships | Same | Same |
 | **The relay host** | Whatever the relay's operator sees, above, plus IP addresses at the TLS layer. The public deployment also has the host running the shared store, on its own private network — the same opaque bytes, no persistence, no public address, and the same party, so this is one hosting provider rather than two | Someone has to run the relay, and running more than one instance of it needs somewhere to share the queue | Yes — self-host (`SELF_HOSTING.md`), as one instance or several |
 | **Sigstore / Rekor** | The public transparency-log record of each release attestation. No user data | Provenance is only meaningful if it is public | No, and it should not be — publicity is the point |
-| **The transparency log's operator** (`kt.zmessengers.com`, once live) | At publish: your account's public key, the version and fingerprint of your device list, and the list itself sealed under a key only your contacts can derive. At lookup: which labels this device asks about — its contacts' — and the IP address at the TLS layer. A mirror or witness sees labels and ciphertext only | The log is how a device list handed to one contact and not another becomes visible (`adr/0006`); the operator has to see a publish to accept it | Yes — point Settings › Transparency log at a self-hosted log, or at none (in-band verification only, as before the log) |
+| **The transparency log's operator** (`kt.zmessengers.com`) | At publish: your account's public key, the version and fingerprint of your device list, and the list itself sealed under a key only your contacts can derive. At lookup: which labels this device asks about — its contacts' — and the IP address at the TLS layer. A mirror or witness sees labels and ciphertext only | The log is how a device list handed to one contact and not another becomes visible (`adr/0006`); the operator has to see a publish to accept it | Yes — point Settings › Transparency log at a self-hosted log, or at none (in-band verification only, as before the log) |
 
 The app makes no other network calls. It contacts the relay you configure,
 the transparency log you configure (HTTPS, a few requests per contact every
@@ -150,9 +150,6 @@ Named here so this document does not silently go stale as the roadmap moves:
   `adr/0005` proposes the answer — direct after accept by default, nothing
   before accept, relay one switch away — with a table of who sees what on
   each path; the rows land here when it is accepted.
-* **The transparency log is built and not yet live** (`adr/0006`). Its row
-  above describes the view it will have; until it runs, the client is inert
-  and no request is made.
 
 ---
 

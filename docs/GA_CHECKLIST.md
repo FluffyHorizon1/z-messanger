@@ -10,7 +10,7 @@ happened; it can check that this file has not drifted from the repository
 around it.
 
 **Status: NOT READY.** Three criteria are unmet — G1 waits on an engagement,
-G3 on the log going live, G7 on iOS — and G2 holds but has been checked by
+G3 on a witness outside the project, G7 on iOS — and G2 holds but has been checked by
 nobody outside the project.
 
 ---
@@ -21,7 +21,7 @@ nobody outside the project.
 |---|---|---|
 | G1 | External cryptographic audit, zero open Critical/High | ❌ **not commissioned** |
 | G2 | Reproducible builds, verified by someone outside the project | ⚠️ **property holds, nobody outside has checked** |
-| G3 | Key transparency live | ❌ **built end to end; not deployed** |
+| G3 | Key transparency live | ❌ **deployed and pinned; nobody outside witnesses it** |
 | G4 | Encrypted backup and restore | ✅ |
 | G5 | Multi-device | ✅ |
 | G6 | Published threat model | ✅ |
@@ -64,7 +64,7 @@ reads the build path out of the APK and prints that. See
 project structurally cannot self-certify, and marking it ✅ on our own
 authority would be the exact overclaim these documents exist to prevent.
 
-### G3 — Key transparency ❌ — built end to end, not yet live
+### G3 — Key transparency ❌ — live and pinned, not yet witnessed
 
 Written into the GA criteria at the start of phase 8 and deferred by
 `adr/0001` until "a public launch with an operator committed to durable
@@ -82,20 +82,32 @@ past the grace period, installed from the log, conflict with the hold and
 "send anyway" and the owner's alert, a fork refused, unreachable degraded.
 Phase 11's three exit conditions each have a test.
 
-What does not exist: the deployment. **This row reads ✅ when** the service
-answers over TLS at `kt.zmessengers.com`; the shipped client pins its public
-key (`defaultKtLogPub` in `app/lib/core/key_transparency.dart`, set at build
-time — `tool/check_ga.py` refuses the tick while it is empty) with a witness
-configured; a mirror run by someone other than the operator has verified a
-head; and the operator's own account appears in it. `SELF_HOSTING.md`
-"Running the transparency log" is the runbook, one step per condition —
-and since `render.kt.yaml` and `render.kt-witness.yaml`, the log and the
-witness are a Blueprint each: what is left is a key generated on the
-operator's own machine, a domain, a build with the pins, and a second
-person to create the witness's Blueprint under their account.
-Four sentences flip with it: the "not yet live" lines in `WHITEPAPER.md`
-§9, `WHAT_Z_CANNOT_DO.md`, `DATA_MAP.md` "Not yet built", and R7's status
-in `THREAT_MODEL.md`.
+**Deployed on 2026-09-13.** The service answers over TLS at
+`kt.zmessengers.com`; `/kt/v1/pub` returns the same key as `defaultKtLogPub`
+in `app/lib/core/key_transparency.dart`, and the live signed head verifies
+under it.
+
+**This row reads ✅ when all four of these hold:**
+
+| # | Condition | State |
+|---|---|---|
+| 1 | The service answers over TLS at `kt.zmessengers.com` | ✅ |
+| 2 | The shipped client pins its public key, with a witness configured | pinned ✅; `defaultKtWitnessUrl` and `defaultKtWitnessPub` are still empty, so the witness half is not |
+| 3 | A mirror run by someone other than the operator has verified a head | ❌ — needs a second person |
+| 4 | The operator's own account appears in it | the maintainer's to confirm from Settings › Transparency log |
+
+`SELF_HOSTING.md` "Running the transparency log" is the runbook, one step
+per condition, and since `render.kt.yaml` and `render.kt-witness.yaml` the
+log and the witness are a Blueprint each. What is left is the second person:
+a witness Blueprint under somebody else's account, `KT_WITNESS_SEED`
+generated on their machine, and the two witness values in the build.
+
+Until then the log is trusted on one point rather than checked — it is asked
+to show every reader the same history, and nothing outside this project
+confirms that it does. The same statement lives in `WHITEPAPER.md` §6 and
+§9, `WHAT_Z_CANNOT_DO.md`, `DATA_MAP.md`'s log row, `AUDIT_SCOPE.md` C31 and
+its residual list, and `THREAT_MODEL.md` R7; all were corrected on
+2026-09-13 when the log went live, and R7 closes when this row does.
 
 ### G4 — Encrypted backup and restore ✅
 
@@ -172,7 +184,8 @@ and it is.
 ## What would change this page
 
 Two things are the maintainer's, not engineering's: commission the audit
-(G1) and deploy the log (G3 — the client is in). One is separate work: iOS
+(G1) and find somebody to run the witness (G3 — the log is deployed and the
+client pins it). One is separate work: iOS
 (G7). One is nobody's to give us — an outside rebuild (G2). Two want a
 person rather than code and are not blockers: a native reader for the
 Spanish (G9) and a screen reader run by hand (G8).

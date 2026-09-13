@@ -149,3 +149,31 @@ failure is a visible "update the other device" rather than a silent
 unreachability. This one is the opposite: the code change is small and the
 migration decides whether it is safe. The working rule for exactly this case — the ADR is written before the build so the build
 has something to disagree with.
+
+## Addendum, 2026-09-13 — option 4's window has closed
+
+The log went live at `kt.zmessengers.com` on 2026-09-13 and began accepting
+publishes the same day. "Nothing is published yet" — the premise of
+**option 4** above, and of the grounds on which *"do nothing until the log is
+live"* was rejected — is no longer true, and "the cheapest week this change
+will ever have" was the week before this one.
+
+The text above is left as written. An ADR that edits its own arguments once
+they expire is a record of nothing, and the argument was sound when it was
+made; what changed is the world, on a date worth being able to read off the
+page.
+
+What this does to the decision: it raises the cost of every option that
+changes the fingerprint, because a changed fingerprint is now a republish
+and a migration of the log's own history and any mirror, as option 4 said it
+would be. It does not close the decision, and it is not an argument for
+doing nothing — the migration only gets more expensive from here, so the
+case for deciding soon is stronger than it was, not weaker.
+
+One caution for whoever takes it. The consequences above propose judging
+"how far the population has moved" from `PROVENANCE.md`'s Play figures.
+Do not substitute the log's label count for them: publishing is
+permissionless by design, and the rate limit meant to bound it
+(`kt/server.js:181`) is keyed on a source address the origin never sees
+behind Cloudflare and Render, so the number of labels in the log is not a
+number of users.

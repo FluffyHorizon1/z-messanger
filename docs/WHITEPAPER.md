@@ -243,8 +243,12 @@ is a fault — and cannot stop what was already verified, so its operator is
 not a kill switch. Values are sealed under a key derived from the account's
 public key: contacts and the operator can read a list; a mirror cannot. The
 service, a mirror that refuses a fork, two verifiers with no shared code and
-the client's six end-to-end states are built; the log itself is not yet
-live (`GA_CHECKLIST.md`, G3).
+the client's six end-to-end states are built, and since 2026-09-13 the log
+runs at `kt.zmessengers.com` under the key the shipped client pins. What it
+does not have is a second party: no mirror or witness outside this project
+co-signs its head, so a log that served one reader a different head from
+another's would not be caught by either — each sees a consistent history of
+its own. G3 stays ❌ on that (`GA_CHECKLIST.md`).
 
 **How to check it.** `app/test/verification_ux_test.dart` asserts the words on
 the screen, not just the state behind them; `app/test/key_transparency_test.dart`
@@ -348,9 +352,11 @@ assume it does is where harm happens:
   machines at a stated checkout path, measured in CI — but no one outside the
   project has checked, and a reproducibility claim verified only by its author
   is a claim about intentions.
-* **Not yet a live transparency log.** The service and the client exist
-  (§6); until the log runs with an independent witness, a device list is
-  checked by your contacts' devices alone. This bullet is removed when
+* **Not yet a witnessed transparency log.** The log runs and the client
+  pins it (§6), so a device list handed to one contact and not another is
+  recorded where both can look. What is missing is the second party: nobody
+  outside this project co-signs the log's head, so on that one point the log
+  is trusted rather than checked. This bullet is removed when
   `GA_CHECKLIST.md` G3 is ticked.
 
 The full list, with severities and status, is the residual-risk register in

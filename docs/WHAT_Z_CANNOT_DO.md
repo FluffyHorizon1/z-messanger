@@ -114,15 +114,16 @@ nobody interfered when you exchanged codes. Verifying takes a minute and it is
 the only step that closes that gap.
 
 Key transparency (`docs/adr/0006-key-transparency-log.md`) catches some of
-this automatically once the public log is running: every device list an
-account publishes is recorded where any contact can check it, and a device
-added behind your back cannot stay hidden from the people you talk to. It
-does **not** catch an exchange the attacker controlled from the start — a
-substituted code is a different identity, with its own honest-looking
-history — so the safety number remains the check for that, and it only
-works if someone looks at it. The log's service and the app's checks are
-built; until the log is live (`docs/GA_CHECKLIST.md`, G3) the check is your
-contacts' devices alone.
+this automatically: every device list an account publishes is recorded where
+any contact can check it, and a device added behind your back cannot stay
+hidden from the people you talk to. It does **not** catch an exchange the
+attacker controlled from the start — a substituted code is a different
+identity, with its own honest-looking history — so the safety number remains
+the check for that, and it only works if someone looks at it. The log is
+running and the app checks device lists against it. What it does not have
+yet is anyone outside the project co-signing what it says
+(`docs/GA_CHECKLIST.md`, G3) — the part that would catch the log itself
+misbehaving rather than the accounts in it.
 
 ## It has not been audited
 
