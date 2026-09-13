@@ -113,6 +113,12 @@ your threat model, self-host the relay or front it with Tor. This is R1 and
 R21 in the residual-risk register and it is the most important limitation in
 this document.
 
+The same applies to the connect ceremony's shape (§6): the relay sees a pair
+of mailboxes exchange four envelopes and go quiet. Neither ties to an
+account, and nothing in the exchange carries a routing id, an account key or
+a name in the clear — but two mailboxes talking to each other is traffic, and
+R1 covers it as it covers everything else (R24).
+
 ## 4. Claim: recording today does not pay off tomorrow
 
 **Mechanism.** Since protocol v2, an ML-KEM-768 (FIPS 203) shared secret is
@@ -225,6 +231,45 @@ build, which is how an alarm stops being read. So a sender states, inside the
 ratchet where whoever dropped the envelope cannot strip it, that it *sent* one;
 only a claim with nothing behind it is a problem, and even then it is asked
 about before anyone is told.
+
+**Verifying without meeting** (`adr/0009`, PROTOCOL.md §20). In person the
+QR *is* the verification: the channel is your eyes. Remotely there was one
+path — send someone your contact code and have them paste it — which runs one
+way, hands out a permanent identifier, and ends unverified. Its security
+advice, "use a channel you trust", is exactly what somebody who has only
+WhatsApp does not have. So the remote path assumes the channel carrying the
+invite is hostile.
+
+An invite is ten random bytes, one-time and good for 24 hours, rendered as a
+short code or as a link whose secret sits in the URL **fragment** — which no
+browser transmits, so the site serving that page never receives an invite and
+cannot know one exists. Four store-and-forward messages follow, through two
+throwaway mailboxes derived from the invite secret, so the two people never
+have to be online at the same time and the relay needs no new frame and no
+change. Both sides commit to their identity *and* their ephemeral key before
+either reveals; a reveal that does not match its commitment aborts, and the
+invite is spent rather than retried into whoever produced the mismatch. Then
+the two people compare eight digits over a channel where they recognise each
+other — a voice call, usually.
+
+Two properties are the whole of it. The digits are computed over both account
+keys and both post-quantum commitments rather than only over the channel, so
+a confirmed comparison establishes what comparing a safety number
+establishes — and the client records it *as* the safety number, so nothing
+downstream treats a connect-verified contact as a lesser kind. And because
+both sides are committed before either reveals, a machine in the middle gets
+one blind guess at eight digits rather than a search: the older pairing
+ceremony let the second party pick its ephemeral after seeing the first's,
+which made its six digits grindable at about 2²⁰ tries, and both ceremonies
+now put the commitment first (§10.1).
+
+What it does not do is make the comparison happen. A completed ceremony
+proves that whoever answered the invite holds the keys they revealed, and
+nothing at all about who that is — so skipping the comparison adds the
+contact unverified and says so on the screen, and a mismatch offers no path
+that ends with a contact. The invite is a bearer token until it is spent,
+which is the cost of a channel the design refuses to assume is private
+(R23–R25).
 
 **The transparency log** (`adr/0006`, PROTOCOL.md §19). Gossip (§5) makes a
 rogue device visible to the parties who talk to each other; a split view that
@@ -370,7 +415,7 @@ The full list, with severities and status, is the residual-risk register in
 | what is and is not protected, and what is left over | `THREAT_MODEL.md` |
 | every claim, and where it is tested | `AUDIT_SCOPE.md` |
 | what data exists and who sees it | `DATA_MAP.md` |
-| why a design is what it is | `adr/` — 0001 key transparency, 0003 the QR problem, 0004 device-list signatures |
+| why a design is what it is | `adr/` — 0001 key transparency, 0003 the QR problem, 0004 device-list signatures, 0009 connecting without meeting |
 | how to check the binary | `REPRODUCIBLE_BUILDS.md`, `PROVENANCE.md` |
 | how to report something | `VDP.md` — safe harbour, and no legal threats |
 
