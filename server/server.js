@@ -71,6 +71,30 @@ const CFG = {
   pushTtlMs: intEnv('PUSH_TTL_DAYS', 30) * 24 * 3600 * 1000,
   ratePerSec: intEnv('RATE_PER_SEC', 80),
   rateBurst: intEnv('RATE_BURST', 240),
+  // How many mailboxes may be CREATED a minute, across all senders.
+  //
+  // The per-mailbox caps bound what one recipient can be made to hold; they
+  // cannot bound how many recipients exist, and `to` is checked only for the
+  // SHAPE of a routing id (43 base64url characters) because the relay has no
+  // way to know which hashes name a real identity — nor should it. A sealed
+  // envelope may be sent on a connection that never authenticated (§12.1),
+  // by design. So 400 random strings and a few seconds filled a 256 MB
+  // `noeviction` store, every real send got `store_full`, and it did NOT
+  // heal the way R22 says: nobody owns those mailboxes, so nobody will ever
+  // drain them, and the floor is QUEUE_TTL_HOURS — three days.
+  //
+  // Creating a mailbox is the asymmetry. An honest one belongs to somebody
+  // who will connect and empty it; a flood's never drain. A rate on
+  // creations bounds the attack without bounding anybody's conversation,
+  // needs no counter shared between instances to be correct, and cannot
+  // drift the way a count of live mailboxes does against a TTL that deletes
+  // them without telling anyone.
+  newMailboxPerMin: intEnv('NEW_MAILBOX_PER_MIN', 120),
+  // The whole RAM queue's ceiling in single-instance mode. The Redis path
+  // has the store's own `noeviction` limit to refuse against; this one had
+  // nothing at all, so the answer to the same flood was an OOM kill instead
+  // of the documented refusal.
+  maxStoreBytes: intEnv('MAX_STORE_BYTES', 192 * 1024 * 1024),
   tlsCert: process.env.TLS_CERT || null,
   tlsKey: process.env.TLS_KEY || null,
   logLevel: process.env.LOG_LEVEL || 'info', // 'silent' | 'info'
@@ -188,6 +212,13 @@ const METRICS = {
   // store at maxmemory with noeviction): the sender is told store_full and
   // retries later; the store heals as recipients drain their mailboxes.
   storeFullTotal: 0,
+  // Sends refused because too many mailboxes were being CREATED at once.
+  // Counted apart from the line above because it means something different
+  // to an operator: the store is not full, and what was refused was a first
+  // envelope to an address nothing had been sent to yet. Ordinary traffic
+  // never touches it, so anything but zero is either a flood or a limit set
+  // too low for the deployment's rate of first contacts.
+  newMailboxRefusedTotal: 0,
   // Presence writes the store refused for want of memory. Counted apart
   // from the sends above: one is mail a sender must retry, the other is a
   // login that went ahead anyway and heals at the next heartbeat.
@@ -236,6 +267,8 @@ function renderMetrics(stats) {
   L.push(`z_refused_total ${METRICS.refusedTotal}`);
   L.push('# TYPE z_store_full_total counter');
   L.push(`z_store_full_total ${METRICS.storeFullTotal}`);
+  L.push('# TYPE z_new_mailbox_refused_total counter');
+  L.push(`z_new_mailbox_refused_total ${METRICS.newMailboxRefusedTotal}`);
   L.push('# TYPE z_presence_deferred_total counter');
   L.push(`z_presence_deferred_total ${METRICS.presenceDeferredTotal}`);
   L.push('# TYPE z_delivered_live_total counter');
@@ -263,6 +296,41 @@ function renderMetrics(stats) {
 // Behaviourally identical to the original single-process relay: this is what
 // the unit tests exercise, and what a lone Render/Fly instance uses.
 // ---------------------------------------------------------------------------
+/**
+ * How many mailboxes may be created a minute, across every sender.
+ *
+ * A token bucket, per instance. Deliberately not a count of live mailboxes
+ * shared between instances: that number drifts the moment a TTL deletes a
+ * queue without running the code that would decrement it, and a bound that
+ * drifts upward is a bound that eventually refuses everybody. A rate has no
+ * state to be wrong about.
+ */
+class NewMailboxGate {
+  constructor(perMinute = CFG.newMailboxPerMin, now = Date.now) {
+    this.perMinute = perMinute;
+    this.now = now;
+    this.tokens = perMinute;
+    this.at = now();
+  }
+  /** True if a mailbox may be created right now. */
+  take() {
+    const t = this.now();
+    this.tokens = Math.min(this.perMinute, this.tokens + ((t - this.at) / 60000) * this.perMinute);
+    this.at = t;
+    if (this.tokens < 1) return false;
+    this.tokens -= 1;
+    return true;
+  }
+  /**
+   * Gives back a token spent on a push that turned out to land in a mailbox
+   * that already existed. Spending first and refunding after is what keeps
+   * two pushes in flight at once from both spending the last allowance.
+   */
+  refund() {
+    this.tokens = Math.min(this.perMinute, this.tokens + 1);
+  }
+}
+
 class MemoryCoordinator {
   constructor() {
     /** routingId -> live socket */
@@ -272,6 +340,9 @@ class MemoryCoordinator {
     /** routingId -> {token, platform, ts} — opaque FCM tokens, RAM only */
     this.pushTokens = new Map();
     this.seq = 0;
+    /** Bytes held across every queue: this store's own `noeviction` limit. */
+    this.bytes = 0;
+    this.newMailbox = new NewMailboxGate();
   }
 
   get name() {
@@ -330,6 +401,16 @@ class MemoryCoordinator {
    * (§12.4): a flood fills the queue and is refused from then on, loudly.
    */
   _enqueue(rid, entry) {
+    // A mailbox that does not exist yet is the expensive one to create, and
+    // the only one a flood needs. Charged before anything is allocated.
+    if (!this.queues.has(rid) && !this.newMailbox.take()) {
+      METRICS.newMailboxRefusedTotal += 1;
+      throw new StoreFull();
+    }
+    if (this.bytes + entry.size > CFG.maxStoreBytes) {
+      METRICS.storeFullTotal += 1;
+      throw new StoreFull();
+    }
     const q = this._queueFor(rid);
     const base = entryKey(entry);
     let key = base;
@@ -357,6 +438,7 @@ class MemoryCoordinator {
     q.entries.push(entry);
     q.keys.set(key, entry);
     q.bytes += entry.size;
+    this.bytes += entry.size;
     return true;
   }
 
@@ -370,6 +452,7 @@ class MemoryCoordinator {
     const idx = q.entries.indexOf(entry);
     if (idx !== -1) q.entries.splice(idx, 1);
     q.bytes -= entry.size;
+    this.bytes = Math.max(0, this.bytes - entry.size);
     if (q.entries.length === 0) this.queues.delete(rid);
     return entry;
   }
@@ -384,9 +467,20 @@ class MemoryCoordinator {
       ts: Date.now(),
       size: payload.length + 256,
     };
-    if (!this._enqueue(to, entry)) {
-      METRICS.refusedTotal += 1;
-      return { queued: false, refused: true };
+    try {
+      if (!this._enqueue(to, entry)) {
+        METRICS.refusedTotal += 1;
+        return { queued: false, refused: true };
+      }
+    } catch (e) {
+      // The store has no room, or too many mailboxes are being created at
+      // once. Told promptly and with the id, as the Redis path does, so the
+      // sender's outbox pauses and retries rather than waiting out a
+      // timeout per envelope (PROTOCOL §12.4). Until 2026-09-14 this
+      // coordinator had no such refusal at all and answered the same flood
+      // with an OOM kill.
+      if (e instanceof StoreFull) return { queued: false, storeFull: true };
+      throw e;
     }
     METRICS.enqueuedTotal += 1;
     if (from == null) METRICS.sealedTotal += 1;
@@ -425,7 +519,14 @@ class MemoryCoordinator {
     };
     const senderWs = this.online.get(from);
     if (!(senderWs && sendJson(senderWs, entryToFrame(receipt)))) {
-      this._enqueue(from, receipt); // a full sender queue loses the receipt, not a message
+      // A full sender queue loses the receipt, not a message — and so does a
+      // full store: a receipt is best-effort, and the sender keeps a grey
+      // tick rather than the relay refusing an acknowledgement over it.
+      try {
+        this._enqueue(from, receipt);
+      } catch (e) {
+        if (!(e instanceof StoreFull)) throw e;
+      }
     }
     return true;
   }
@@ -539,11 +640,13 @@ class MemoryCoordinator {
 //
 // KEYS[1] = q:{rid}, KEYS[2] = qe:{rid}, KEYS[3] = qb:{rid}; ARGV = the entry
 // key, the entry JSON, its size, the count cap, the byte cap, the TTL in
-// seconds, how many slots may share an id, and whether an entry already at
-// the key is this entry arriving twice (entryDedupes). Returns 1 if stored
-// or already held, 0 if the queue is full or the id has no free slot —
-// decided and applied atomically, so two instances pushing at once cannot
-// both squeeze past the cap.
+// seconds, how many slots may share an id, whether an entry already at the
+// key is this entry arriving twice (entryDedupes), and whether this instance
+// still has allowance to create a mailbox (NewMailboxGate). Returns 1 if
+// stored or already held, 2 if storing it created the mailbox, 0 if the queue
+// is full or the id has no free slot, and -1 if it would have created a
+// mailbox and was not allowed to — each decided and applied atomically, so
+// two instances pushing at once cannot both squeeze past the cap.
 const REDIS_PUSH_LUA = `#!lua
 -- Two entries can want one key. Where the relay can attribute the entry the
 -- key carries the party (entryKey), so an occupied key is a retry and
@@ -564,6 +667,12 @@ else
   end
 end
 local len = redis.call('LLEN', KEYS[1])
+-- An empty list is a mailbox that does not exist yet, which is the only kind
+-- a flood needs and the only kind nobody will ever drain. Decided here rather
+-- than by asking first: the script already knows, so admission costs no extra
+-- round trip, and no mailbox can be created between the question and the
+-- write. -1 says the send was refused for that reason and nothing else.
+if len == 0 and ARGV[9] == '0' then return -1 end
 local bytes = 0
 if len > 0 then bytes = tonumber(redis.call('GET', KEYS[3]) or '0') end
 if len + 1 > tonumber(ARGV[4]) or bytes + tonumber(ARGV[3]) > tonumber(ARGV[5]) then
@@ -579,6 +688,9 @@ end
 redis.call('EXPIRE', KEYS[1], ARGV[6])
 redis.call('EXPIRE', KEYS[2], ARGV[6])
 redis.call('EXPIRE', KEYS[3], ARGV[6])
+-- 2 rather than 1 when this call is what created the mailbox, so the instance
+-- knows to keep the token it spent.
+if len == 0 then return 2 end
 return 1`;
 
 // KEYS as above; ARGV = the entry key, its size. Removes the entry and takes
@@ -818,6 +930,12 @@ class RedisCoordinator {
     this.local = new Map(); // rid -> ws on THIS instance
     this.presenceStale = new Set(); // rids whose presence write the store refused
     this.sweeping = false;
+    // Per instance, like the rate limiter beside it. A flood arrives on one
+    // socket and therefore one instance; a flood spread across N instances
+    // gets N times the allowance, which is a bounded and stated degradation
+    // rather than a shared counter that drifts every time a TTL deletes a
+    // mailbox without telling anybody.
+    this.newMailbox = new NewMailboxGate();
     this.chan = `z:inst:${this.id}`;
     for (const c of [this.cmd, this.sub, this.pub]) c.on('error', () => {});
     this.cmd.defineCommand('zQueuePush', { numberOfKeys: 3, lua: REDIS_PUSH_LUA });
@@ -914,13 +1032,23 @@ class RedisCoordinator {
   /**
    * Stores an entry; returns false when the recipient's queue is at a cap
    * (see MemoryCoordinator#_enqueue) and throws a StoreFull when the store
-   * itself has no room — the caller says which to the sender. An attributed
+   * itself has no room, or when the entry would have created a mailbox and
+   * too many were being created at once — the caller says which to the
+   * sender, and both are told as `store_full`, which a client pauses and
+   * retries on rather than treating as final. An attributed
    * entry already held under its key is not stored twice: the push is
    * acknowledged as if it had been, which is what a sender retrying after a
    * lost `sent` needs. A sealed one takes the next free slot instead
    * (entryDedupes).
    */
   async _push(rid, entry) {
+    // The same admission rule as the memory path, and the same reasoning:
+    // creating a mailbox is what a flood needs and what nobody drains. The
+    // decision travels WITH the push instead of ahead of it — the script
+    // already knows whether the list is empty — so an ordinary send costs
+    // exactly what it cost before, and no mailbox can appear between a
+    // lookup and the write that would have been told about it.
+    const fresh = this.newMailbox.take();
     let r;
     try {
       r = await this.cmd.zQueuePush(
@@ -934,13 +1062,22 @@ class RedisCoordinator {
         String(CFG.maxQueueBytesPerUser),
         String(CFG.queueTtlHours * 3600),
         String(CFG.idSlots),
-        entryDedupes(entry) ? '1' : '0'
+        entryDedupes(entry) ? '1' : '0',
+        fresh ? '1' : '0'
       );
     } catch (e) {
+      if (fresh) this.newMailbox.refund();
       if (isStoreFull(e)) throw new StoreFull();
       throw e;
     }
-    return r === 1;
+    if (r === -1) {
+      METRICS.newMailboxRefusedTotal += 1;
+      throw new StoreFull();
+    }
+    // 2 means this push created the mailbox and the token is spent; anything
+    // else went into one that already existed, so the allowance goes back.
+    if (r !== 2 && fresh) this.newMailbox.refund();
+    return r === 1 || r === 2;
   }
 
   /** Removes the entry held under `key` and settles the byte counter. */

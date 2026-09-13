@@ -22,4 +22,22 @@ services:
         value: info
       - key: QUEUE_TTL_HOURS
         value: "72"
+      # The whole RAM queue's ceiling. This instance keeps its mailboxes in
+      # the process, so this is what stands between a flood and an OOM kill:
+      # past it, sends are refused as `store_full` — which clients pause and
+      # retry on — instead of the container being killed and every connected
+      # device dropped. Keep it well under the plan's memory (512 MB on free
+      # and starter): the rest is sockets, buffers and the runtime.
+      - key: MAX_STORE_BYTES
+        value: "201326592"
+      # How many mailboxes may be CREATED a minute, across all senders. A
+      # sealed envelope may be sent to any well-shaped routing id from a
+      # connection that never authenticated (PROTOCOL §12.1), so a flood of
+      # mailboxes nobody owns is the cheap way to fill the ceiling above —
+      # and nobody ever drains them, so the only floor is QUEUE_TTL_HOURS.
+      # Creating one is therefore what is limited, not filling one. Real
+      # first-contacts refused by it retry, so a brief refusal costs a delay
+      # rather than a message.
+      - key: NEW_MAILBOX_PER_MIN
+        value: "120"
       # Render injects PORT automatically and the relay binds it — do not set it.

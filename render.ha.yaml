@@ -61,6 +61,18 @@ services:
       # is everyone's problem at once.
       - key: MAX_QUEUE_BYTES_PER_USER
         value: "16777216"
+      # How many mailboxes may be CREATED a minute, per instance, across all
+      # senders. The per-mailbox caps above bound what one recipient can be
+      # made to hold; they cannot bound how many recipients exist, and a
+      # sealed envelope may be sent to any well-shaped routing id from a
+      # connection that never authenticated (§12.1). A flood's mailboxes have
+      # no owner, so nobody ever drains them and the only floor is the 72-hour
+      # TTL — which is why creating one is the thing that is rate-limited
+      # rather than filling one. Raise it only if real first-contacts are
+      # being refused; they retry on `store_full`, so a brief refusal costs a
+      # delay rather than a message.
+      - key: NEW_MAILBOX_PER_MIN
+        value: "120"
       # The Play App Signing certificate fingerprint (SHA-256, colon-separated
       # upper-case hex), read out of Play Console -> Setup -> App integrity.
       # It is public — it is published verbatim at

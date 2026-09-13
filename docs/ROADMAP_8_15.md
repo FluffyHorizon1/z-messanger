@@ -2526,3 +2526,60 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A vault that decides cell by cell whether to seal is a vault whose
    guarantee is a habit.**
+
+71. **Anyone could fill the store with mailboxes nobody would ever drain.**
+   `to` is checked for the shape of a routing id — 43 base64url characters —
+   and nothing else, because the relay has no way to know which hashes name a
+   real identity and is not supposed to; and a sealed envelope may be sent on
+   a connection that never authenticated (§12.1), by design. So four hundred
+   random strings and a few seconds filled a 256 MB `noeviction` store, every
+   real send afterwards got `store_full`, and the deployment was down.
+
+   R22 said a full store heals. It does — for the case it was written about.
+   Healing means the owner connects and drains their mailbox, and a mailbox
+   addressed to a routing id nobody holds **has no owner**. Nothing would ever
+   drain those, so the floor was `QUEUE_TTL_HOURS`: three days. The cheap
+   variant is many tiny mailboxes, which also defeats the sweeper, one round
+   trip each.
+
+   The per-mailbox caps cannot express this — they bound what one recipient
+   can be made to hold, and the attack is in how many recipients there are.
+   What can express it is the asymmetry: an honest mailbox belongs to somebody
+   who will connect and empty it, and a flood's never do. So **creating** a
+   mailbox is rate-limited across all senders (`NEW_MAILBOX_PER_MIN`), which
+   bounds the flood without bounding anybody's conversation.
+
+   A rate rather than a count of live mailboxes, deliberately. A count shared
+   between instances drifts upward the moment a TTL deletes a queue without
+   running the code that would decrement it, and a bound that drifts upward
+   eventually refuses everybody. A rate has no state to be wrong about, and a
+   flood arrives on one socket and therefore one instance; spread across N
+   instances it gets N times the allowance, which is a bounded and stated
+   degradation rather than a wrong number.
+
+   On the Redis path the decision lives inside the push script rather than in
+   a lookup before it. The script already reads the mailbox's length to check
+   the caps, so an empty list is a mailbox that does not exist yet and it can
+   refuse in the same round trip: an ordinary send costs exactly what it cost
+   before, and no mailbox can be created between asking whether one exists and
+   writing to it. The instance spends its token before the call and takes it
+   back when the push turns out to have landed in a mailbox that was already
+   there — so ordinary traffic cannot eat the budget for creating mailboxes,
+   which would be a relay that stopped anyone starting a conversation whenever
+   it was busy. The first version of this asked `EXISTS` first, and that
+   version was both racy between instances and a round trip per send forever
+   to catch a flood that lasts seconds.
+
+   The refusal is `store_full`, which §12.4 says to pause and retry on —
+   not `queue_full`, which would be a claim about a recipient's cap and a lie
+   about a mailbox that does not exist. An honest first message to a
+   brand-new contact during a flood is delayed, not lost.
+
+   And `MemoryCoordinator` has a ceiling at last (`MAX_STORE_BYTES`). It had
+   no global bound of any kind, so the single-instance deployment answered the
+   same flood with an OOM kill rather than the documented refusal — the two
+   coordinators disagreeing about the one thing the protocol tells a client
+   how to handle.
+
+   **"It heals" was true of the case somebody had in mind and false of the
+   cheaper one nobody had.**

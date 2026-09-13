@@ -123,6 +123,8 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 | `MAX_ENVELOPE_BYTES` | `1000000` | max single encrypted frame |
 | `MAX_QUEUE_BYTES_PER_USER` | `67108864` | per‑recipient queue cap (bytes); an envelope that would cross it is refused, not made room for |
 | `MAX_QUEUE_MSGS_PER_USER` | `5000` | per‑recipient queue cap (count), likewise |
+| `MAX_STORE_BYTES` | `201326592` | the whole RAM queue's ceiling in single‑instance mode — past it a send is refused as `store_full` rather than the process being killed. Redis mode refuses against the store's own `maxmemory` instead |
+| `NEW_MAILBOX_PER_MIN` | `120` | how many mailboxes may be **created** a minute, per instance, across all senders. Sending into one that already exists is never charged to it |
 | `QUEUE_TTL_HOURS` | `72` | drop an undelivered envelope this long after the relay accepted it — per envelope, in both modes |
 | `SWEEP_INTERVAL_SECONDS` | `60` | expiry sweep cadence (a flush expires too, before it delivers) |
 | `FLUSH_PAGE` | `64` | entries a flush may send before waiting for the socket to drain |
@@ -244,7 +246,26 @@ delivered and acknowledged (reads and removals are allowed when memory is
 short), so the mailboxes that filled it can be drained and it heals by
 itself; `/health` shows `presenceStale` while it lasts and `/metrics`
 counts `z_store_full_total`. This relies on Redis 7 script flags: run
-Redis 7 or newer, or Valkey (the compose file and the Blueprint do). The per‑recipient caps work the same way at their own level and in
+Redis 7 or newer, or Valkey (the compose file and the Blueprint do).
+
+That healing has a precondition worth stating, because until 2026‑09‑14 it
+was assumed rather than held: healing means the owner of a full mailbox
+connects and drains it, and **a mailbox addressed to a routing id nobody
+holds has no owner**. `to` is checked for the shape of a routing id and
+nothing else — the relay cannot know which hashes name a real identity, and
+is not supposed to — so anyone could fill the store with mailboxes that
+would never drain, and the only floor was `QUEUE_TTL_HOURS`. Creating a
+mailbox is therefore rate‑limited across all senders
+(`NEW_MAILBOX_PER_MIN`), which bounds that without bounding anybody's
+conversation: sending into a mailbox that already exists is never charged to
+the limit, so the allowance is spent only by first contacts. A send refused
+by it is told `store_full` and retried, so an honest first message during a
+flood is late rather than lost, and `z_new_mailbox_refused_total` counts
+them — a number that stays at zero in ordinary use and is worth an alert.
+Single‑instance mode had no global bound at all and answered the same flood
+with an OOM kill; it now refuses at `MAX_STORE_BYTES`.
+
+The per‑recipient caps work the same way at their own level and in
 both modes: an envelope that would take a mailbox past
 `MAX_QUEUE_MSGS_PER_USER` or `MAX_QUEUE_BYTES_PER_USER` is refused with
 `queue_full`, never made room for (PROTOCOL §12.4). So the store can hold at
@@ -272,8 +293,9 @@ until acked).
 ## Operational notes
 
 - **Memory** is the only real resource: worst case ≈
-  `active_recipients × MAX_QUEUE_BYTES_PER_USER`, in RAM mode and in Redis
-  mode alike — plus, per device currently collecting its backlog,
+  `active_recipients × MAX_QUEUE_BYTES_PER_USER`, capped in RAM mode by
+  `MAX_STORE_BYTES` and in Redis mode by the store's own `maxmemory` — plus,
+  per device currently collecting its backlog,
   `FLUSH_HIGH_WATER_BYTES` plus one envelope in the relay process itself
   (about 3 MB at the defaults, measured — and it is a *bound*: a device on a
   slow link no longer holds its whole backlog in the relay's memory while it
