@@ -336,3 +336,44 @@ test(
     for (const c of clients) c.close();
   }
 );
+
+test(
+  '5. a kick that has been overtaken does not close the socket that replaced it',
+  { skip: NO_REDIS && 'redis-server/ioredis unavailable' },
+  async (t) => {
+    const { coordA, coordB, portA, portB } = await twoInstances(t);
+    const bob = makeIdentity();
+
+    // Bob on A. Then Bob on B — B kicks A, correctly.
+    const onA1 = await new Client(portA, bob).auth();
+    await sleep(150);
+    const onB = await new Client(portB, bob).auth();
+    await sleep(250);
+    assert.strictEqual(coordA.local.has(bob.rid), false, 'the first socket was kicked');
+
+    // Now Bob moves back to A, and B's kick for the FIRST move is delivered
+    // late — after the new socket is already welcomed. This is the whole
+    // bug: the message names an rid and nothing else, so the old code closed
+    // whatever was there and deleted the entry, disconnecting a client
+    // immediately after `ready` and leaving `presence:` naming an instance
+    // with no socket.
+    const onA2 = await new Client(portA, bob).auth();
+    await sleep(250);
+    assert.ok(coordA.local.has(bob.rid), 'the new socket is registered');
+    const held = coordA.local.get(bob.rid);
+
+    const stale = JSON.stringify({ op: 'kick', rid: bob.rid, token: held.zReg - 1 });
+    coordA._onPub(stale);
+    assert.strictEqual(coordA.local.get(bob.rid), held, 'the overtaken kick was ignored');
+    assert.strictEqual(held.readyState, 1, 'and the socket is open');
+
+    // A kick that is genuinely newer still closes it — the guard is an
+    // ordering, not an exemption.
+    coordA._onPub(JSON.stringify({ op: 'kick', rid: bob.rid, token: held.zReg + 1 }));
+    assert.strictEqual(coordA.local.has(bob.rid), false, 'a newer registration still wins');
+
+    onA1.close();
+    onB.close();
+    onA2.close();
+  }
+);

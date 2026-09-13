@@ -2811,3 +2811,31 @@ direction; the phases, their order and both ordering arguments stand.
    be cleared first for the pass to be the only writer.
 
    **A publish is not a delivery, and nothing was checking.**
+
+77. **A kick that names an rid and nothing else closes whoever is there
+   now.** The message one instance sends another to drop a replaced socket
+   carried `{op:'kick', rid}` — no socket identity, no ordering — so the
+   receiving instance closed whatever it held for that rid AT THE MOMENT THE
+   KICK ARRIVED, and deleted the entry either way.
+
+   A client moving A→B→A is the case that breaks. B's kick for the A→B move
+   can arrive after the move back, and it then closes the socket that has
+   just been welcomed — immediately after `ready`, so the client reconnects
+   and can re-enter the same race. The unconditional delete was the worse
+   half: it left `presence:{rid}` naming an instance with no socket, so the
+   other one published deliveries into a channel that dropped them — entry
+   76's failure, reached from here.
+
+   The store is the only clock two instances share, so the order comes from
+   it: one `INCR` per registration, carried in the kick, and a kick is acted
+   on only when the socket it finds is older than the registration that sent
+   it. A registration whose `INCR` the store refused keeps 0 and is closed by
+   any kick, which is exactly the old behaviour — the right way to degrade,
+   since a store under memory pressure must not stop people logging in, and
+   `register` already takes that view of the presence write beside it.
+
+   The kick path had **no test at all** before this: nothing in the suite
+   opened a second connection for one identity, on either coordinator.
+
+   **A message that says what to close, but not which one, closes the wrong
+   one eventually.**

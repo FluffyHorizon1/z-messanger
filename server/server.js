@@ -995,6 +995,15 @@ class RedisCoordinator {
       if (ws) sendJson(ws, m.frame);
     } else if (m.op === 'kick') {
       const ws = this.local.get(m.rid);
+      // Only a socket OLDER than the registration that sent the kick. A
+      // kick that has been overtaken names a socket this instance no longer
+      // holds, and acting on it would close the one that replaced it and
+      // then delete the entry, leaving presence naming an instance with no
+      // socket. A kick with no token is from an instance that predates this
+      // (or one whose store refused the counter): treated as newer, which
+      // is what it used to do unconditionally.
+      const token = typeof m.token === 'number' ? m.token : Infinity;
+      if (ws && (ws.zReg || 0) >= token) return;
       if (ws) {
         try {
           ws.close(4002, 'replaced by new connection');
@@ -1002,16 +1011,43 @@ class RedisCoordinator {
       }
       this.local.delete(m.rid);
       this.presenceStale.delete(m.rid);
+      this.lastMailboxLen.delete(m.rid);
     }
   }
 
   async register(rid, ws) {
+    // A number every registration in the deployment can be ordered by.
+    //
+    // A kick used to say only which rid to close, so the instance receiving
+    // it closed whatever it held for that rid AT THE MOMENT IT ARRIVED and
+    // deleted the entry either way. A client moving A→B→A is the case that
+    // breaks: B's kick for the A→B move can arrive after the move back, and
+    // it then closes the socket that has just been welcomed — immediately
+    // after `ready`, so the client reconnects and can re-enter the same
+    // race. The deletion was worse than the close, because it also left
+    // `presence:{rid}` naming an instance with no socket, so the other one
+    // published deliveries into a channel that dropped them.
+    //
+    // The store is the only clock two instances share, so the order comes
+    // from it. A registration that could not get one keeps 0: a kick then
+    // closes it, which is exactly the old behaviour, and that is the right
+    // way to degrade — a store under memory pressure must not stop people
+    // logging in, and `register` already takes that view of the presence
+    // write below.
+    let token = 0;
+    try {
+      token = await this.cmd.incr('z:reg');
+    } catch (e) {
+      if (!isStoreFull(e)) throw e;
+    }
+    ws.zReg = token;
     const prevLocal = this.local.get(rid);
     this.local.set(rid, ws);
     const owner = await this.cmd.get(`presence:${rid}`);
     if (owner && owner !== this.id) {
-      // Kick the socket living on another instance.
-      await this.pub.publish(`z:inst:${owner}`, JSON.stringify({ op: 'kick', rid }));
+      // Kick the socket living on another instance — the one that was there
+      // before this registration, which is what the token names.
+      await this.pub.publish(`z:inst:${owner}`, JSON.stringify({ op: 'kick', rid, token }));
     }
     try {
       await this.cmd.set(`presence:${rid}`, this.id, 'EX', 60);
