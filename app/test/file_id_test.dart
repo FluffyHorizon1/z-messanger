@@ -30,7 +30,10 @@
 //     else;
 //  4. the vault refuses such an id itself, so a caller that forgets cannot
 //     bring it back — and an ordinary attachment still sends, assembles,
-//     backs up and restores unchanged.
+//     backs up and restores unchanged;
+//  5. and the second door: an offer from a contact's LINKED device takes a
+//     different path into the same tables, and that path was not checked
+//     when the rule was written.
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -373,5 +376,76 @@ void main() {
     }
     expect(assembled, isTrue,
         reason: 'an ordinary attachment still arrives and assembles');
+  });
+
+  test('5. an offer from a contact\'s linked device is held to the same rule',
+      () async {
+    // A contact with two devices. Their laptop's offers arrive through
+    // `_dispatchExtraInner`, not through the handler the rule was written in,
+    // and the same fid ends up in the same `files` table.
+    final victimDir = await tempDir('five_v');
+    final victim = await start(victimDir, 'Victim');
+    final mallory = await start(await tempDir('five_m'), 'Mallory');
+    await waitUntil(
+        () => victim.transport.isConnected && mallory.transport.isConnected,
+        what: 'connected');
+    await victim.addContactFromCode(await mallory.myContactCode());
+    await mallory.addContactFromCode(await victim.myContactCode());
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+
+    // Mallory enrolls a laptop and tells the victim about it, the ordinary
+    // way: a signed device certificate on her own device list.
+    final account = await mallory.accountIdentity();
+    final laptopId = await ZIdentity.generate();
+    final laptopCert = await account.signDeviceCert(
+        deviceEdPub: laptopId.edPub,
+        deviceXPub: laptopId.xPub,
+        deviceId: 'laptop');
+    final laptopDir = await tempDir('five_l');
+    final laptopVault = await Vault.open(rootOverride: laptopDir);
+    await laptopVault.kvPut('identity', jsonEncode(laptopId.toJson()));
+    await laptopVault.kvPut(
+        'account',
+        jsonEncode((await AccountIdentity.fromEnrollment(
+          accountEdPub: account.accountEdPub,
+          deviceEdSeed: laptopId.edSeed,
+          deviceXSeed: laptopId.xSeed,
+          deviceId: 'laptop',
+          deviceCert: laptopCert,
+        ))
+            .toJson()));
+    await laptopVault.kvPut(
+        'my_devices', jsonEncode([account.deviceCert.toJson()]),
+        sensitive: false);
+    final laptop = await ChatService.init(
+        vault: laptopVault,
+        identity: laptopId,
+        displayName: 'Mallory laptop',
+        transport:
+            Transport(identity: laptopId, serverUrl: 'ws://127.0.0.1:$port'));
+    live.add(laptop);
+    await waitUntil(() => laptop.transport.isConnected, what: 'laptop up');
+    await mallory.addMyDevice(laptopCert);
+    await laptop.addContactFromCode(await victim.myContactCode());
+    await Future<void>.delayed(const Duration(seconds: 2));
+
+    final before = (await victim.vault.db.query('files')).length;
+    await laptop.debugSendRawInner(
+        victim.myRid,
+        InnerMessage(kind: 'file', mid: newMessageId(), ts: 1, data: {
+          'fid': '../escaped-through-the-laptop',
+          'name': 'invoice.pdf',
+          'size': 10,
+          'mime': 'application/pdf',
+          'sha256': '',
+          'fk': b64(Uint8List(32)),
+          'fn': b64(Uint8List(16)),
+          'chunks': 1,
+        }));
+    await Future<void>.delayed(const Duration(seconds: 2));
+
+    expect((await victim.vault.db.query('files')).length, before,
+        reason: 'the second door is the same door');
+    expect(strayBins(victimDir), isEmpty);
   });
 }

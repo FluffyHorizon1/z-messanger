@@ -2391,3 +2391,22 @@ direction; the phases, their order and both ordering arguments stand.
    no shared key, the members it adds arrive unverified, and leaving is one
    tap. **The thing worth preventing was not an unwanted group. It was a group
    that could pretend to be a conversation.**
+
+67. **A rule's second door.** 61 made a malformed file id impossible at three
+   places: the offer handler, the chunk handler, and an archive record. There
+   was a fourth. An offer from a contact's **linked device** arrives through
+   `_dispatchExtraInner` — a different path into the same tables — and it was
+   not checked there, because the rule was written while reading the other
+   one.
+
+   What got through was less than it sounds, and the reason is worth keeping:
+   `Vault.blobFile` throws on a malformed id, so nothing was ever written
+   where it should not be. The defence in depth that 61 added "so a future
+   caller who forgets cannot reintroduce it" caught a caller that already had.
+   What it could not catch was the row: a `files` entry and a message
+   placeholder under an id nothing can ever complete, in a thread, for ever —
+   and no sweep collects those, because the message row they belong to is
+   real.
+
+   Checked at the fourth door now, with the same two lines. **A rule enforced
+   at three of four doors is a rule with a door.**

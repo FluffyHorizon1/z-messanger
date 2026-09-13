@@ -4301,7 +4301,15 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> _insertMirroredFile(
       String rid, bool outgoing, InnerMessage inner) async {
     final fid = inner.data['fid'] as String?;
-    if (fid == null) return;
+    // The same rule as [_persistFileOffer], because this is the same offer
+    // arriving through a different door: a contact's LINKED device sends its
+    // attachment offers here rather than there (`_dispatchExtraInner`), and
+    // that door was not checked when the rule was written. `Vault.blobFile`
+    // refuses to write a blob under a malformed id, so nothing was ever put
+    // where it should not be — what got through was a `files` row and a
+    // message placeholder under an id nothing can ever complete, which no
+    // sweep collects because the message row it belongs to is real.
+    if (fid == null || !isWellFormedFid(fid)) return;
     final name = inner.data['name'] as String? ?? 'file';
     final total = (inner.data['chunks'] as num?)?.toInt() ?? 0;
     final voice = inner.data['voice'] == true;
