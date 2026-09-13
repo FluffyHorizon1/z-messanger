@@ -50,5 +50,19 @@ services:
         value: "10000"          # Render routes to PORT, 10000 by default; bind exactly that
       - key: KT_HOST
         value: 0.0.0.0
+      # Three gates. The per-address one is the TLS front's view of the
+      # address, which behind Cloudflare is Cloudflare — one bucket for the
+      # whole internet unless KT_CLIENT_IP_HEADER below says otherwise, which
+      # is why the total gate exists and is the one that stops a flood.
       - key: PUBLISH_PER_MIN
-        value: "30"             # per source address (the TLS front's view of it)
+        value: "30"             # per source address
+      - key: PUBLISH_PER_MIN_TOTAL
+        value: "120"            # every publish, whatever the source
+      - key: PUBLISH_PER_ACCT_PER_DAY
+        value: "20"             # per account key, charged after the signature verifies
+      # Set this to cf-connecting-ip ONLY once the service is reachable solely
+      # through Cloudflare. A forwarded address is the caller's to choose
+      # unless something in front overwrites it, and a limiter keyed on a
+      # value the caller picks is worse than one keyed on a value they cannot.
+      - key: KT_CLIENT_IP_HEADER
+        value: ""               # empty: use the socket's address

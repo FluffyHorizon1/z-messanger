@@ -437,10 +437,14 @@ class KtLog {
   }
 
   /**
-   * Accept a publish request (buffers, not base64: the server decodes).
-   * Returns the new entry. Throws PublishError with an HTTP status.
+   * Everything [publish] refuses, without accepting anything.
+   *
+   * Separated so a caller can find out whether a request is genuine before
+   * spending anything on it — the per-account rate limit in `server.js` is
+   * charged here, and charging it any earlier would let an unsigned request
+   * naming somebody else's account spend that account's budget.
    */
-  publish({ acct, version, fp, value, sig }) {
+  checkPublish({ acct, version, fp, value, sig }) {
     if (!Buffer.isBuffer(acct) || acct.length !== 32) throw new PublishError(400, 'bad_request', 'acct must be a 32-byte Ed25519 public key');
     if (!Number.isInteger(version) || version < 1 || version > Number.MAX_SAFE_INTEGER) throw new PublishError(400, 'bad_request', 'v must be a positive integer');
     if (!Buffer.isBuffer(fp) || fp.length !== 16) throw new PublishError(400, 'bad_request', 'fp must be 16 bytes');
@@ -452,6 +456,16 @@ class KtLog {
     if (!verify(acct, publishInput({ label, version, fp, valueHash }), sig)) {
       throw new PublishError(403, 'bad_signature', 'the publish is not signed by the account key');
     }
+    return { label, valueHash };
+  }
+
+  /**
+   * Accept a publish request (buffers, not base64: the server decodes).
+   * Returns the new entry. Throws PublishError with an HTTP status.
+   */
+  publish(req) {
+    const { label, valueHash } = this.checkPublish(req);
+    const { acct, version, fp, value } = req;
     const prev = this.latest(label);
     if (prev && !(version > prev.version)) {
       throw new PublishError(409, 'stale_version', `the log holds version ${prev.version} for this label; ${version} does not exceed it`);

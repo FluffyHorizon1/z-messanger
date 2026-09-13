@@ -303,7 +303,30 @@ whose public half every client pins. Run it on its own host name
 What it costs: no dependencies, one process, one file. Measured
 (`cd kt && npm run bench`): a publish is ~1.5 ms of CPU, a lookup ~0.1 ms, a
 lookup response ~4 KB at a hundred thousand accounts, and the entries file
-grows by roughly the size of the sealed lists it holds (a few KB per publish).
+grows by roughly the size of the sealed lists it holds (a few KB per publish,
+up to 341 KB at the 256 KiB value cap). What the **process** holds is a
+function of the number of entries and not of their size or the file's: replay
+reads a fixed window at a time and an entry keeps the byte range of its own
+line rather than its value. Size the disk for the entries; size the memory
+for how many accounts you expect, not how much they publish.
+
+**Publishing is limited three ways, and the defaults assume a hostile
+internet**, because the log accepts a signature from any Ed25519 key and
+generating keys is free:
+
+| `PUBLISH_PER_MIN_TOTAL` | 120 | every publish, whatever the source. The gate that stops a flood — a flood uses many accounts, so a per‑account limit does not see one |
+| `PUBLISH_PER_MIN` | 30 | per source address. Only per‑**client** if `KT_CLIENT_IP_HEADER` is set (below); otherwise the TLS front is the address and this is one bucket for everybody |
+| `PUBLISH_PER_ACCT_PER_DAY` | 20 | per account key, charged only once the signature verifies, so nobody can spend an account's budget but that account |
+
+`KT_CLIENT_IP_HEADER` (e.g. `cf-connecting-ip`) is empty by default and should
+stay empty until the service is reachable **only** through the proxy that sets
+it. A forwarded address is the caller's to choose unless something in front
+overwrites it, and a limiter keyed on a value the caller picks is worse than
+one keyed on a value they cannot.
+
+The public deployment ran for a day with the per‑address gate keyed on the
+proxy's address and nothing else: 3,853 entries from 3,579 distinct account
+keys in about a hundred minutes, against a nominal thirty a minute.
 
 Three ways to run it, then one witness, then the client. The four conditions
 under which the log counts as live are at the end; the Blueprints exist so

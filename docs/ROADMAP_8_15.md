@@ -2450,3 +2450,43 @@ direction; the phases, their order and both ordering arguments stand.
    resident — the same bytes, moved from a permanent cost to a per-request
    one. **A component that cannot start is worse than one that is slow, and
    the file that stops it starting is the file it exists to keep.**
+
+69. **The limiter was keyed on a value that is the same for the whole
+   internet.** `kt/server.js` limited publishes per source address, and the
+   address was `req.socket.remoteAddress` — which behind Cloudflare → Render
+   is the proxy, on every request. A gate meant to bind one client bound
+   everybody together at one bucket, which is to say it bound nothing.
+   Measured on the day the log went live: 35–175 publishes a minute against a
+   nominal 30, and 3,853 entries from 3,579 distinct account keys in about a
+   hundred minutes, while the relay beside it saw four envelopes.
+
+   Keying on the signed `acct` instead is the obvious repair and it is **not
+   sufficient**, which is the part worth being exact about: the flood used
+   3,579 different accounts, and a per-account limit lets every one of them
+   through. Ed25519 keys are free. A log's disk is not.
+
+   Three gates now. A **total** rate, whatever the source — the one that
+   actually stops a flood, and the only one that works when there is no
+   trusted header to identify a client with. The **per-address** rate that
+   existed, now genuinely per-client when `KT_CLIENT_IP_HEADER` names a
+   header something in front is known to set — empty by default, because a
+   forwarded address is the caller's to choose unless something overwrites
+   it, and a limiter keyed on a value the caller picks is worse than one keyed
+   on a value they cannot. And a **per-account** daily ceiling, charged only
+   after the signature verifies, so nobody can spend an account's budget but
+   that account: `checkPublish` was split out of `publish` for exactly that
+   ordering.
+
+   Both cheap gates run **before** the body is read. Moving the limit after
+   the parse, which keying on `acct` appears to require, would have traded a
+   limiter that bound nothing for a limiter that bound nothing until after a
+   400 KB read.
+
+   The buckets are capped and drop the least recently seen. A limiter keyed on
+   something an attacker can mint is a map an attacker can grow, and a limiter
+   that costs more memory the harder it is pushed is not a limit — which is
+   the same sentence as 68, arrived at from the other direction.
+
+   **A rate limit is a claim about who is asking. Ours was keyed on an answer
+   that was the same for everyone, and nobody checked what it was keyed on
+   until the log filled up.**

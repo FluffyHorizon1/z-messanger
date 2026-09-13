@@ -163,7 +163,7 @@ test('publishes are limited per address; reads are not', async () => {
   }
   // The bucket refills at the stated rate.
   let t = 0;
-  const rl = new RateLimiter(3, () => t);
+  const rl = new RateLimiter(3, { now: () => t });
   assert.ok(rl.take('a') && rl.take('a') && rl.take('a'));
   assert.ok(!rl.take('a'));
   assert.ok(rl.take('b'), 'another address has its own bucket');
