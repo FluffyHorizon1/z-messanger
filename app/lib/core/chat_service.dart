@@ -859,6 +859,47 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     final pqc = inner.data['pqc'];
     final pqk = inner.data['pqk'];
+    final Uint8List? commit = pqc is String ? unb64(pqc) : null;
+    // The post-quantum key is checked against the commitment before it is
+    // installed, exactly as `_onPqIdentity` checks one that arrives in-band.
+    //
+    // Everything above this line is a check — the routing id re-derived from
+    // the bundle, the bundle's own signature, §18.7's certificate rules — and
+    // then `pqk` was taken straight into `Contact.pqPub`, whose doc-comment
+    // says in as many words that it is never set from an unverified source,
+    // because its being non-null is what `assurance` reports as hybrid. The
+    // sender chooses `pqc` and `pqk` together, so a self-consistent pair
+    // passed: one compromised linked device — no account root, well inside
+    // the T1/T2 model — mirrors a contact with a commitment of its own
+    // choosing and the matching key, and the receiving device shows hybrid
+    // assurance and a safety number over a key the contact never published.
+    //
+    // A mismatch is recorded the way the in-band path records it: no key, and
+    // `pq_mismatch` set, so the state is durable and the user is told once
+    // rather than on every arrival.
+    Uint8List? pqPub;
+    var pqMismatch = false;
+    if (pqk is String && commit != null) {
+      try {
+        final candidate = HybridPublicKey(
+            edPub: acct ?? bundle.edPub, mlPub: unb64(pqk));
+        final scanned = ContactBundleV3(
+          edPub: acct ?? bundle.edPub,
+          xPub: bundle.xPub,
+          bindingSig: bundle.bindingSig,
+          pqCommit: commit,
+        );
+        if (await scanned.acceptsPqKey(candidate)) {
+          pqPub = candidate.mlPub;
+        } else {
+          pqMismatch = true;
+        }
+      } catch (_) {
+        // A key of the wrong length is not a usable key, and not evidence of
+        // anything either: the commitment stands and the contact waits for a
+        // key that matches it.
+      }
+    }
     final contact = Contact(
       rid: rid,
       bundle: bundle,
@@ -866,10 +907,11 @@ class ChatService extends ChangeNotifier implements KtHost {
           ? (inner.data['name'] as String).trim()
           : (bundle.displayName ?? 'Unknown'),
       createdMs: _now(),
-      pqCommit: pqc is String ? unb64(pqc) : null,
-      pqPub: pqk is String ? unb64(pqk) : null,
+      pqCommit: commit,
+      pqPub: pqPub,
       accountEdPub: acct,
       deviceCert: cert,
+      pqMismatch: pqMismatch,
       addedByDevice: await _myDeviceLabel(fromDeviceRid),
     );
     final row = {
@@ -882,6 +924,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
       if (contact.pqPub != null)
         'enc_pq_pub': await vault.seal(b64(contact.pqPub!)),
+      if (pqMismatch) 'pq_mismatch': 1,
       if (acct != null) 'acct_ed': b64(acct),
       if (cert != null) 'dev_cert': jsonEncode(cert.toJson()),
       'added_by': contact.addedByDevice,
@@ -912,7 +955,10 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// records an honest client never would; nothing in the app calls it.
   @visibleForTesting
   Future<void> debugAssertContactToMyDevices(
-      {required String rid, required ContactBundle bundle}) async {
+      {required String rid,
+      required ContactBundle bundle,
+      Uint8List? pqCommit,
+      Uint8List? pqPub}) async {
     await _sync?.mirror(
         threadRid: '',
         dir: 'contact',
@@ -920,7 +966,15 @@ class ChatService extends ChangeNotifier implements KtHost {
           kind: 'cadd',
           mid: newMessageId(),
           ts: _now(),
-          data: {'rid': rid, 'bundle': bundle.toJson(), 'name': 'asserted'},
+          data: {
+            'rid': rid,
+            'bundle': bundle.toJson(),
+            'name': 'asserted',
+            // What a compromised linked device would choose: the receiving
+            // side must not take either on trust.
+            if (pqCommit != null) 'pqc': b64(pqCommit),
+            if (pqPub != null) 'pqk': b64(pqPub),
+          },
         ));
   }
 

@@ -2956,3 +2956,35 @@ direction; the phases, their order and both ordering arguments stand.
 
    **Two paths that read the same identity must not be able to disagree
    about what it is.**
+
+81. **A contact's post-quantum key, installed because a device said so.**
+   Everything else about a mirrored contact is checked: the routing id is
+   re-derived from the bundle, the bundle's own signature is verified, and
+   §18.7's certificate rules are re-applied rather than trusted. Then `pqk`
+   was taken straight out of the message and written into `Contact.pqPub` —
+   whose own doc-comment says it is never set from an unverified source,
+   because its being non-null is what `assurance` reports as hybrid.
+
+   The sender chooses `pqc` and `pqk` together, so a self-consistent pair
+   passed every check there was. One compromised linked device — no account
+   root, so well inside the T1/T2 model — mirrors a contact with a commitment
+   of its own and the key that matches it, and the receiving device shows
+   hybrid assurance and a safety number over a key the contact never
+   published. `acceptsPqKey` existed, with a doc-comment saying a false is
+   not a retryable failure, and had exactly one production caller.
+
+   It has two now, and the mismatch is recorded the way `_onPqIdentity`
+   records one: no key installed, `pq_mismatch` set durably, the commitment
+   left standing so the contact can still reach hybrid when a key that
+   matches it arrives.
+
+   Two things about the test are worth keeping. The seam that mirrors a
+   contact between devices could not express the attack at all — it sent only
+   `rid`, `bundle` and `name`, so `pqc` and `pqk` had to be added to it
+   before the bug could be written down. And the honest case is its own test
+   rather than the second half of the refusal: each mirror is one
+   fire-and-forget message over the relay, and two in flight in one test was
+   flaky one run in three.
+
+   **Every other field in that record is checked. This one was taken on
+   trust because it arrived beside them.**

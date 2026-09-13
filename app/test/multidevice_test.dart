@@ -515,6 +515,78 @@ void main() {
         reason: 'and the tick it earned is untouched');
   }, timeout: const Timeout(Duration(minutes: 3)));
 
+  test('a mirrored post-quantum key is checked against its commitment',
+      () async {
+    // Everything else about a mirrored contact is checked: the routing id is
+    // re-derived from the bundle, the bundle's own signature is verified, and
+    // §18.7's certificate rules are re-applied rather than trusted. Then the
+    // post-quantum key was taken straight out of the message and installed —
+    // and `Contact.pqPub`'s own doc-comment says it is never set from an
+    // unverified source, because its being non-null is what `assurance`
+    // reports as hybrid.
+    //
+    // The sender chooses BOTH `pqc` and `pqk`, so a self-consistent pair
+    // passed. A compromised linked device — no account root, so well inside
+    // the T1/T2 model — mirrors a contact with a commitment of its own and
+    // the key that matches it, and the receiving device shows hybrid
+    // assurance and a safety number over a key the contact never published.
+    final s = await linkedPair();
+    await s.phone.addMyDevice(s.laptopCert);
+
+    final victim = await ZIdentity.generate();
+    final victimRid = await (await victim.bundle()).routingId();
+    final real = await HybridKeyPair.generate();
+    final attacker = await HybridKeyPair.generate();
+
+    // The commitment the contact really published, with the attacker's key
+    // beside it: this is the substitution the commitment exists to catch.
+    await s.laptop.debugAssertContactToMyDevices(
+      rid: victimRid,
+      bundle: await victim.bundle(displayName: 'Victim'),
+      pqCommit: await real.publicKey.pqCommitment(),
+      pqPub: attacker.publicKey.mlPub,
+    );
+    await waitUntil(() => s.phone.contacts.containsKey(victimRid),
+        what: 'the mirrored contact arrives');
+
+    final got = s.phone.contacts[victimRid]!;
+    expect(got.pqPub, isNull,
+        reason: 'a key that does not match the commitment is not installed');
+    expect(got.pqMismatch, isTrue,
+        reason: 'and the refusal is durable, as the in-band path records it');
+    expect(s.phone.assuranceWith(victimRid), isNot(IdentityAssurance.hybrid),
+        reason: 'so the identity does not read as post-quantum');
+    expect(got.pqCommit, isNotNull, reason: 'the commitment still stands');
+
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a mirrored post-quantum key that DOES match is installed', () async {
+    // The other half: the check is a check, not a refusal of the mechanism.
+    // Its own test rather than a second half of the one above, because each
+    // mirror is one fire-and-forget message over the relay and two in one
+    // test is two things that can be in flight at once.
+    final s = await linkedPair();
+    await s.phone.addMyDevice(s.laptopCert);
+
+    final honest = await ZIdentity.generate();
+    final honestRid = await (await honest.bundle()).routingId();
+    final pq = await HybridKeyPair.generate();
+    await s.laptop.debugAssertContactToMyDevices(
+      rid: honestRid,
+      bundle: await honest.bundle(displayName: 'Honest'),
+      pqCommit: await pq.publicKey.pqCommitment(),
+      pqPub: pq.publicKey.mlPub,
+    );
+    await waitUntil(() => s.phone.contacts.containsKey(honestRid),
+        what: 'the honest mirrored contact arrives');
+
+    final got = s.phone.contacts[honestRid]!;
+    expect(got.pqPub, pq.publicKey.mlPub,
+        reason: 'a key that matches its commitment is installed');
+    expect(got.pqMismatch, isFalse);
+    expect(s.phone.assuranceWith(honestRid), IdentityAssurance.hybrid);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
   test('a routing id that does not match the key it carries is dropped',
       () async {
     // Insert-only is not enough on its own: a rogue device could still add a
