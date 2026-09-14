@@ -50,6 +50,21 @@ ACCEPTORS = {
 
 def main():
     problems = []
+
+    # An exemption for a file that no longer exists is not harmless: it is a
+    # name in a list that reads like a reviewed decision, and the reviewed
+    # decision is about a path nothing resolves to. `relay_url.dart` itself is
+    # read below and would raise if it were gone, which is what keeps the
+    # scan from being vacuous; nothing was checking these five.
+    for rel in sorted(ACCEPTORS):
+        if not (LIB / rel).exists():
+            problems.append(
+                f"{rel} is listed in ACCEPTORS and does not exist. Either the "
+                f"screen moved, in which case the exemption now covers "
+                f"nothing and its replacement is unexamined, or it is gone "
+                f"and the entry is a decision about a file nobody can read."
+            )
+
     for path in sorted(LIB.rglob("*.dart")):
         rel = path.relative_to(LIB).as_posix()
         text = path.read_text(encoding="utf-8")

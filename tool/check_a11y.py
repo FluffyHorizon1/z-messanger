@@ -24,6 +24,13 @@ Two rules, both chosen because they are unambiguous in source:
      same in the source.
 
 Exit 0 if every control announces something.
+
+Both rules are regexes over source, so both have the failure mode every
+pattern-based check has: one that matches nothing prints the same thing as
+one that matched and was satisfied. `main` refuses when the scan read no
+files, and when it found no `IconButton` in a UI whose every screen has an
+app bar. Demonstrated by emptying `app/lib/ui`, where this reported
+"every icon button and image announces something" over zero files.
 """
 
 import re
@@ -54,8 +61,10 @@ def line_of(text: str, idx: int) -> int:
 def main() -> int:
     problems = []
     checked = {"IconButton": 0, "Image": 0}
+    files = 0
 
     for path in sorted(UI.rglob("*.dart")):
+        files += 1
         src = path.read_text()
         rel = path.relative_to(ROOT).as_posix()
 
@@ -83,7 +92,29 @@ def main() -> int:
                     f"one."
                 )
 
-    print(f"IconButton: {checked['IconButton']}   Image: {checked['Image']}")
+    print(f"dart files read: {files}   "
+          f"IconButton: {checked['IconButton']}   Image: {checked['Image']}")
+
+    # Both rules are patterns over source, and a pattern that matches nothing
+    # produces exactly the output of a pattern that matched and was satisfied.
+    # These two floors are what tell the difference.
+    if files == 0:
+        print(f"{UI.relative_to(ROOT)}: no .dart files at all, so both rules "
+              f"below ran over nothing. The screens moved, or this is not a "
+              f"checkout — either way fix the check before trusting it.",
+              file=sys.stderr)
+        return 1
+    if checked["IconButton"] == 0:
+        print(f"{UI.relative_to(ROOT)}: not one IconButton in {files} files. "
+              f"Every screen here has an app bar, so this is the pattern no "
+              f"longer matching — a wrapper widget, or a rename — not the app "
+              f"running out of buttons. A rule that matches nothing passes "
+              f"silently for ever.", file=sys.stderr)
+        return 1
+    # `Image` gets no floor on purpose: the app ships exactly one, and a check
+    # that fails when an app legitimately has no images is a check that asks
+    # for a decorative one to be added.
+
     if problems:
         print(f"\n{len(problems)} problem(s):\n")
         for p in problems:

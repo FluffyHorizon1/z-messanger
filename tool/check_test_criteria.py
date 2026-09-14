@@ -16,6 +16,14 @@ calls. One test may legitimately cover two criteria; when it does, the header
 says so in words — "criteria 1 and 2 share a test" — and the shortfall is
 allowed by exactly that many. Anything subtler than counting would need a
 convention nobody would keep.
+
+Which makes this a check that depends entirely on a convention holding, and
+so on a pattern matching: if the leading comment block stops being `//` — a
+switch to `///`, a licence header, a formatter — `header_of` returns nothing,
+every file is skipped, and it prints "every stated exit criterion has a test
+behind it" having read none. `main` refuses when either test directory is
+missing or empty, and when no file states criteria at all. Demonstrated by
+emptying a directory before it was changed.
 """
 
 import re
@@ -42,6 +50,17 @@ def header_of(src: str) -> str:
 
 def main() -> int:
     problems, checked = [], 0
+    # Every directory this names must exist and hold tests. Without this the
+    # two are interchangeable: `app/test` renamed leaves `protocol/test`
+    # producing a healthy-looking count, and the half that vanished is the
+    # half nobody is told about.
+    for d in TEST_DIRS:
+        if not d.is_dir() or not any(d.glob("*.dart")):
+            print(f"{d.relative_to(ROOT)}: no test files here, so every "
+                  f"criterion stated in them went unchecked. This check reads "
+                  f"two directories and cannot tell you about one it cannot "
+                  f"find.", file=sys.stderr)
+            return 1
     for d in TEST_DIRS:
         for p in sorted(d.glob("*.dart")):
             src = p.read_text(encoding="utf-8")
@@ -63,6 +82,13 @@ def main() -> int:
                     f"which two criteria share one."
                 )
     print(f"test files stating criteria: {checked}")
+    if checked == 0:
+        print("not one test file states exit criteria, so this compared "
+              "nothing and said so as though it were good news. The header "
+              "convention this reads (`//   1. ...` in the leading comment "
+              "block) has changed — fix the check before trusting it.",
+              file=sys.stderr)
+        return 1
     if problems:
         print(f"\n{len(problems)} problem(s):\n")
         for x in problems:

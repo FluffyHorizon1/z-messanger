@@ -3197,3 +3197,48 @@ direction; the phases, their order and both ordering arguments stand.
 
    **Every one of these reported success while measuring nothing, which is
    the only kind of failure a guard can have that nobody notices.**
+
+87. **Three more of the same, found by measuring the guards instead of
+    reading them.**
+
+   Entry 86 fixed four guards that could be made to check nothing. The claim
+   that the rest were sound was going to be written from having read them.
+   Reading them was wrong: emptying `app/lib/ui` and running the other five
+   showed **three** printing success over nothing.
+
+   **`check_a11y.py`** reported "every icon button and image announces
+   something" with zero files read. Both its rules are regexes over source,
+   and a regex that matches nothing produces character for character the
+   output of one that matched and was satisfied. It refuses now when the scan
+   read no files, and when it found **no `IconButton` at all** — every screen
+   here has an app bar, so zero means the pattern stopped matching, which is
+   what a wrapper widget or a rename does. Demonstrated both ways, including
+   by renaming `IconButton` to `ZIconButton` across the app: 46 files read, 0
+   matched, refused. `Image` deliberately gets no floor, because the app
+   ships exactly one and a check that fails when an app has no images is a
+   check asking for a decorative one to be added.
+
+   **`check_test_criteria.py`** is a check whose whole subject is a
+   convention — a numbered list in a leading `//` block — so it fails the
+   moment the convention shifts, and fails silently. Changing `//` to `///`
+   across both test directories took it to "test files stating criteria: 0"
+   and "every stated exit criterion has a test behind it". It also read two
+   directories and could not tell you about one it had lost: renaming
+   `app/test` left `protocol/test` producing a healthy-looking count. Both
+   refused now, separately, because they are different failures.
+
+   **`check_relay_url.py`** was not vacuous — it reads `relay_url.dart`
+   directly and would raise if that file went — but nothing checked its
+   `ACCEPTORS`, the five files allowed to say the user agreed to a cleartext
+   relay. An entry for a file that no longer exists is worse than no entry:
+   it reads like a reviewed decision, about a path nothing resolves to.
+   Renaming `onboarding_screen.dart` now fails twice — the stale exemption,
+   and the new name claiming an acceptance nobody reviewed.
+
+   `check_ga.py` and `check_android_data_safety.py` were put through the same
+   test and refused correctly: the first cross-checks its screen count
+   against `check_l10n.MIGRATED`, the second returns 1 on a missing manifest.
+
+   **The difference between a guard that works and a guard that reports on
+   nothing is not visible in its output. It is only visible if you break the
+   thing it watches and check that it notices.**
