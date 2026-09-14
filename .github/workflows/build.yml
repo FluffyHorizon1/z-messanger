@@ -15,6 +15,16 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only by default. Only `release` needs more, and it says so itself.
+#
+# Without this, every job ran with the repository's default token — including
+# `test`, which runs `npm install`, `dart pub get`, `flutter pub get` and
+# three `pip install`s, each of which executes install-time code from a
+# third-party registry. A job that only needs to read a checkout should not
+# be holding a token that can write to the repository.
+permissions:
+  contents: read
+
 env:
   FLUTTER_VERSION: '3.44.7'
 
@@ -44,7 +54,7 @@ jobs:
         run: |
           npm install
           npm test
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -83,6 +93,13 @@ jobs:
       # and DATA_MAP.md, which had not landed yet — a check that fails the
       # moment it arrives is one people learn to skip. Both landed in the
       # commit that re-enabled this, and it reports zero problems.
+      # PyYAML is a real dependency of three checks below, and this job used
+      # to rely on the runner image happening to ship it: all three printed a
+      # friendly line and exited 0 when it was missing, so the whole set
+      # could go green having read nothing. They now exit 1 instead, which
+      # makes this line load-bearing rather than tidy.
+      - name: Install PyYAML (three checks below read YAML)
+        run: python3 -m pip install --quiet PyYAML
       - name: Audit brief still describes this repository
         run: python3 tool/check_audit_scope.py
       # The content digest published with each release rests on one claim:
@@ -187,7 +204,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -252,7 +269,7 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/google-chrome*
           sudo apt-get update || true
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libsecret-1-dev liblzma-dev
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -278,7 +295,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -323,7 +340,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -423,7 +440,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -765,7 +782,7 @@ jobs:
         with:
           subject-path: 'release/*'
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: release/*
           generate_release_notes: true

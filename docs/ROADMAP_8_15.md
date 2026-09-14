@@ -3109,3 +3109,46 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A message that cannot be sent to one member must not be a message that
    cannot be sent to anyone.**
+
+85. **Three guards that reported on nothing, and a token nobody needed.**
+
+   `check_workflow.py`, `check_blueprints.py` and `dry_run_release.py` each
+   read YAML, and each began with a `try: import yaml / except ImportError:
+   print(...); sys.exit(0)`. The workflow installs `kyber-py`,
+   `dilithium-py` and `cryptography` and **never PyYAML** — it relied on the
+   runner image happening to ship it. With `yaml` unimportable all three
+   print a friendly line, exit 0, and `audit_verify.sh` counts them as
+   passes and prints "Every suite passed". `dry_run_release.py` is the only
+   thing that exercises the release job before a tag is pushed, so it
+   becomes a no-op at exactly the moment it matters.
+
+   They exit 1 now and say what they could not check, and the `test` job
+   installs PyYAML — which makes that line load-bearing rather than tidy.
+   Verified in both directions: with the import broken, the three refuse
+   here and the same three printed "skipping" on `origin/main`.
+
+   **The actions are pinned.** `softprops/action-gh-release@v2` ran inside
+   `release`, whose permissions grant `contents: write`, `id-token: write`
+   and `attestations: write`; `subosito/flutter-action@v2` ran in six jobs.
+   A tag is a pointer its owner can move, so whoever controlled either `v2`
+   held a token that can publish a release and mint a Sigstore attestation
+   saying this repository produced bytes it did not. Both are now 40-hex
+   commits with the version beside them — resolved from the repositories and
+   checked against the commit each names (`1a44944`, "Simplify extraction of
+   zip files", 2026-03-25; `3bb1273`, "release 2.6.2", 2026-04-11), because
+   a pin nobody verified is a number that looks like evidence.
+
+   **And the workflow declares `permissions: contents: read`.** Only
+   `release` had a block, so every other job ran with the repository's
+   default token — including `test`, which runs `npm install`,
+   `dart pub get`, `flutter pub get` and four `pip install`s. That is
+   install-time code from four third-party registries, holding a token it
+   has no use for.
+
+   `check_workflow.py` gains both as rules, because the fix without the rule
+   lasts until the next person adds a step. Each was checked by breaking it:
+   unpinning one action names the job and the step; removing the top-level
+   block names what the default token reaches.
+
+   **A check that passes when its dependency is missing is not a weaker
+   check. It is not a check.**

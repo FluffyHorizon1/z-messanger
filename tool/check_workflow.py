@@ -24,6 +24,21 @@ Two rules, both mechanical:
      unless somebody remembers to add it to a deny-list. Nobody did for the
      README screenshots, and twelve releases shipped them.
 
+  4. A third-party action — anything not under `actions/` — is pinned to a
+     40-character commit SHA, not to a tag. A tag is a pointer its owner can
+     move: whoever controls `v2` controls what runs here. That mattered most
+     in `release`, which holds `contents: write`, `id-token: write` and
+     `attestations: write` — a token that can publish a release and mint a
+     Sigstore attestation saying this repository produced bytes it did not.
+     The version stays beside the pin as a comment, because a SHA alone tells
+     a reader nothing about what it is.
+
+  5. The workflow declares top-level `permissions`. Without one every job
+     gets the repository's default token, including the job that runs
+     `npm install`, `dart pub get`, `flutter pub get` and three
+     `pip install`s — install-time code from third-party registries, holding
+     a token it has no use for.
+
 None of these rules is clever. All are the kind of thing a person is certain
 they will remember and then does not.
 """
@@ -32,11 +47,25 @@ import re
 import sys
 from pathlib import Path
 
+SHA40 = re.compile(r"[0-9a-f]{40}")
+
 try:
     import yaml
 except ImportError:
-    print("PyYAML not installed; skipping workflow check")
-    sys.exit(0)
+    # Not a skip. A check that goes green when its dependency is missing is
+    # a check that reports on nothing, and this one is read as evidence:
+    # `audit_verify.sh` prints "Every suite passed" with it in the list, and
+    # CI shows a tick. Until 2026-09-14 all three of the YAML-reading guards
+    # did exactly that, and the workflow never installed PyYAML — it relied
+    # on the runner image happening to ship it, which is a dependency nobody
+    # declared and nobody would notice losing.
+    print(
+        "PyYAML is not installed, so this cannot check every CI job that uses repo files checks one out.\n"
+        "Install it (python3 -m pip install PyYAML) — a green run without it "
+        "would mean nothing.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -72,6 +101,17 @@ def main() -> int:
 
     for wf in sorted(WORKFLOWS.glob("*.y*ml")):
         doc = yaml.safe_load(wf.read_text())
+        # Rule 5: a default that is never written down is the one that is
+        # wrong when nobody is looking.
+        top = doc.get("permissions")
+        if top is None:
+            problems.append(
+                f"{wf.name}: no top-level `permissions:`, so every job runs "
+                f"with the repository's default token — including the one "
+                f"that installs packages from four registries. Declare the "
+                f"least it needs (`contents: read`) and let a job that needs "
+                f"more say so itself."
+            )
         for job_name, job in (doc.get("jobs") or {}).items():
             steps = job.get("steps") or []
             checked += 1
@@ -117,6 +157,22 @@ def main() -> int:
                     f"checking out. `actions/checkout` cleans the workspace "
                     f"first, so it deletes what was just downloaded."
                 )
+
+            for i, s in enumerate(steps):
+                uses = s.get("uses")
+                if not isinstance(uses, str) or uses.startswith("actions/"):
+                    continue
+                ref = uses.split("@", 1)[1] if "@" in uses else ""
+                if not SHA40.fullmatch(ref):
+                    problems.append(
+                        f"{wf.name}: job `{job_name}` step {i} uses "
+                        f"`{uses}`, which is not pinned to a commit. A tag is "
+                        f"a pointer its owner can move, so whoever controls "
+                        f"`{ref or 'that ref'}` controls what runs here — and "
+                        f"in a publishing job that is a token which can cut a "
+                        f"release. Pin the 40-hex commit and keep the version "
+                        f"as a trailing comment."
+                    )
 
             publishes = any(
                 isinstance(s.get("uses"), str) and s["uses"].startswith(PUBLISHERS)

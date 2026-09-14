@@ -31,8 +31,20 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    print("PyYAML not installed; skipping blueprint check")
-    sys.exit(0)
+    # Not a skip. A check that goes green when its dependency is missing is
+    # a check that reports on nothing, and this one is read as evidence:
+    # `audit_verify.sh` prints "Every suite passed" with it in the list, and
+    # CI shows a tick. Until 2026-09-14 all three of the YAML-reading guards
+    # did exactly that, and the workflow never installed PyYAML — it relied
+    # on the runner image happening to ship it, which is a dependency nobody
+    # declared and nobody would notice losing.
+    print(
+        "PyYAML is not installed, so this cannot check every Blueprint keeps its secrets out of the file.\n"
+        "Install it (python3 -m pip install PyYAML) — a green run without it "
+        "would mean nothing.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 ROOT = Path(__file__).resolve().parent.parent
 
