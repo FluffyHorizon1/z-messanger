@@ -147,8 +147,13 @@ void main() {
         transport: transport));
   }
 
+  // 60 seconds, not 25. A wait returns the moment its condition holds, so a
+  // larger budget costs a healthy run nothing; what it buys is a loaded CI
+  // runner the room to finish a delivery it would otherwise be cut off in.
+  // Three attempts of this file's tests were lost to a 25-second budget on a
+  // tag whose code was unchanged, and the same tag passed on a re-run.
   Future<void> waitUntil(bool Function() cond,
-      {Duration timeout = const Duration(seconds: 25)}) async {
+      {Duration timeout = const Duration(seconds: 60)}) async {
     final deadline = DateTime.now().add(timeout);
     while (!cond()) {
       if (DateTime.now().isAfter(deadline)) {
@@ -305,9 +310,8 @@ void main() {
     }
     // 3. Carol's receipt back to the phone echoes v3 — a list the root never
     //    issued and cannot explain: after the grace period the root alerts.
-    await waitUntil(() => s.phone.ownAccountAlert != null,
-        timeout: const Duration(seconds: 25));
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+    await waitUntil(() => s.phone.ownAccountAlert != null);
+  }, timeout: const Timeout(Duration(minutes: 4)), retry: 1);
 
   test('exclusion (b): a rogue list that drops the honest device is caught',
       () async {
@@ -343,7 +347,7 @@ void main() {
     await s.phone.sendText(s.carol.myRid, 'still me');
     await waitUntil(() => s.carol.contactDevlistAlerts[s.accountRid] != null);
     expect(s.carol.contactDevlistAlerts[s.accountRid], isNotNull);
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 4)), retry: 1);
 
   test('control: an honest device added and distributed to all raises nothing',
       () async {
@@ -376,5 +380,5 @@ void main() {
     expect(s.phone.ownAccountAlert, isNull);
     expect(s.carol.contactDevlistAlerts[s.accountRid], isNull,
         reason: 'false contact alarm on an honest update');
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 4)), retry: 1);
 }

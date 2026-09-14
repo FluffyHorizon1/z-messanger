@@ -21,22 +21,37 @@
 // what the at-rest format cannot give.
 //
 // The measurement here is process RSS around the call, which is a blunt
-// instrument — so the fixture is deliberately lopsided: 40 attachments of
-// 2 MiB. The old code had to hold 80 MiB (a `BytesBuilder` that has doubled
-// its way there holds rather more); the new code holds one 2 MiB file. A
-// threshold anywhere between those two separates them, and 32 MiB is not
-// close to either.
+// instrument — so the fixture is deliberately lopsided: 30 attachments of
+// 2 MiB. The old code had to hold all 60 MiB (a `BytesBuilder` that has
+// doubled its way there holds rather more); the new code holds one 2 MiB
+// file. The yardstick is an EXPORT of the same vault, which has always
+// walked one at a time, so there is no absolute constant here to go stale.
+//
+// How blunt: peak RSS growth is the live set PLUS whatever garbage the VM
+// has not collected yet, and both directions stream the whole archive
+// through the process — roughly twice its size in short-lived allocations —
+// while holding one attachment. So the number is dominated by when the VM
+// last grew its heap, not by what is held. Three CI runs of identical code
+// reported export 39.1 / 57.2 / 32.6 MiB and import 30.6 / 29.0 / 58.1: the
+// export, which is beyond doubt one-at-a-time, once measured 0.95 of the
+// whole archive. Criterion 1 is therefore tagged `bench` — `dart_test.yaml`
+// already says a measurement must not let a busy machine turn a number into
+// a red build, and it is the behavioural criteria below that hold the line
+// in CI. Run it with:
+//
+//     flutter test --run-skipped --tags bench test/restore_memory_test.dart
 //
 // Criteria, each a test below:
-//  1. importing an archive whose attachments total 80 MiB does not grow the
-//     process by anything like 80 MiB;
-//  2. exporting the same vault does not either — the half that was already
-//     true, now asserted, because the claim covers both directions;
-//  3. every attachment still restores byte for byte, with its metadata, and
-//     an archive of many is still one import;
-//  4. the bytes are on disk while it happens and nowhere afterwards: the
-//     spill directory is gone when the import returns, and gone when an
-//     import throws part-way through.
+//  1. (bench) importing the archive does not grow the process by more than
+//     exporting it does — the half this fix changed, measured;
+//  2. the bytes are on disk while it happens and nowhere afterwards: every
+//     attachment's bytes are in the spill directory during the import, the
+//     directory is gone when the import returns, and gone when an import
+//     throws part-way through. This is what a return to accumulating in
+//     memory fails, and it does not depend on an instrument;
+//  3. a failed import leaves nothing behind either;
+//  4. every attachment still restores byte for byte, with its metadata, and
+//     an archive of many is still one import.
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -174,14 +189,20 @@ void main() {
         'import ${mib(importGrew)} MiB, archive ${totalMiB()} MiB');
     expect(importGrew, lessThan(exportGrew),
         reason: 'import grew ${mib(importGrew)} MiB against export\'s '
-            '${mib(exportGrew)}. Measured on this box: 0.49 and 0.72 of the '
-            'export with the fix, 1.52 with the attachments accumulated in '
-            'memory instead');
+            '${mib(exportGrew)}. Measured on a quiet box: 0.49 and 0.72 of '
+            'the export with the fix, 1.5 with the attachments accumulated '
+            'in memory instead. On a busy one either figure can reach the '
+            'archive size on its own — see the note at the top of this '
+            'file before reading a ratio as a regression');
     expect(importGrew, lessThan(attachmentCount * attachmentBytes),
         reason: 'and nothing like the ${totalMiB()} MiB in the archive: '
-            '${mib(importGrew)} MiB. Accumulating them measured 78.6');
+            '${mib(importGrew)} MiB. Accumulating them measured 0.98 of the '
+            'archive');
     await fresh.db.close();
-  }, timeout: long);
+    // A measurement, not an assertion about behaviour: skipped by default,
+    // like every other `bench` in this suite. Criterion 2 is the one that
+    // fails if the attachments go back into memory.
+  }, timeout: long, tags: ['bench']);
 
   test('2. the bytes are on disk while it happens, and gone when it is done',
       () async {
@@ -206,9 +227,11 @@ void main() {
     await BackupArchive.import(vault: fresh, file: file, code: code);
     await ticker.cancel();
 
-    expect(sawSpilled, greaterThan(0),
-        reason: 'the attachment bytes were written to disk as they arrived, '
-            'not accumulated in the process');
+    expect(sawSpilled, attachmentCount,
+        reason: 'every attachment\'s bytes were written to disk as they '
+            'arrived, not accumulated in the process: the spill directory '
+            'holds all $attachmentCount of them at once while the import '
+            'seals them one at a time, and held $sawSpilled');
     expect(spill.existsSync(), isFalse,
         reason: 'and the spill directory does not outlive the import');
     expect(

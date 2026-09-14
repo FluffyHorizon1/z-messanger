@@ -18,6 +18,13 @@
 //     new is confirmed, and resetting the history recovers;
 //  6. an unreachable log degrades to in-band verification.
 @Tags(['integration'])
+// Every test here pairs two clients through a real relay and then waits on
+// a log round trip; 30 seconds (60 with the tag above) is not room for
+// that on a loaded CI runner, and two of these were lost to it on a tag
+// whose code was unchanged, both passing on the re-run. Two minutes is
+// what `devlist_transparency_test.dart` already gives the same shape of
+// test.
+@Timeout(Duration(minutes: 2))
 library;
 //  7. a log that answers everything correctly EXCEPT that it leaves the
 //     rogue entry out of the history is still caught: the authenticated
@@ -447,7 +454,9 @@ void main() {
     await alice.kt.check();
     expect(alice.kt.statusOf(ben.myRid)!.state, KtContactState.conflict);
     expect(alice.kt.sendsHeld(ben.myRid), isFalse);
-  });
+    // The longest round trip in the file, and the one observed to lose the
+    // race with a loaded runner.
+  }, retry: 2);
 
   test('a head that does not extend the accepted one is a log fault; resetting the history recovers', () async {
     // A log of its own for this pair, so the sizes are known exactly.
