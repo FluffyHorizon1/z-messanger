@@ -412,12 +412,45 @@ success (a failure leaves the state untouched).
    dhs = fresh X25519 pair
    (rootKey, cks) = KDF_RK(rootKey, X25519(dhsSeed, dhrPub))
    ```
+2b. Else if `header.n < nr` — the same chain, at a number this chain has
+   already passed, and step 1 found no key for it — the message is one this
+   session has consumed: the relay redelivering an envelope whose
+   acknowledgement never arrived, or a replay. An implementation MUST report
+   this **distinguishably** from a decryption failure and MUST NOT continue:
+   deriving from `ckr` would produce the key for `nr`, not for `header.n`, and
+   fail authentication indistinguishably from a chain that has genuinely
+   diverged. The two want opposite answers from the client (§6.5), which is
+   why the wire carries no flag for it and the receiver decides.
 3. Skip to `header.n` on the receiving chain (step 4), then
    `(mk, ckr) = KDF_CK(ckr); nr += 1`, decrypt, unpad.
 4. *Skip(until)*: if `ckr = ∅`, do nothing. Reject if `until − nr > 512`.
    While `nr < until`: `(mk, ckr) = KDF_CK(ckr)`, store `mk` in `skipped` under
    `b64(dhrPub) || "|" || decimal(nr)`, `nr += 1`. `skipped` holds at most
    1536 keys; the oldest are evicted first.
+
+### 5.4a What a client does when a decrypt fails
+
+A receiver MUST distinguish three outcomes, because they are three different
+things and were one until 2026‑09‑14:
+
+* **An unknown session** — the peer is speaking on a session this device does
+  not hold. Acknowledge the envelope (a redelivery would fail the same way),
+  tell the user once per episode, and send a `hello`: it carries a fresh
+  ratchet public key, the peer ratchets onto it, and their next message lands
+  on a chain this side can derive.
+* **A chain that no longer agrees** (step 3 fails to authenticate). The same
+  answer. This is repairable and it is the case that, left silent, ends the
+  conversation: nothing on screen, nothing sent, and a peer who believes every
+  message arrived.
+* **A message already consumed** (step 2b). Acknowledge it and say nothing.
+  There is nothing to repair, and a phone killed between processing an
+  envelope and acknowledging it is ordinary — a warning that fires then is a
+  warning nobody believes.
+
+The notice and the `hello` MUST be coalesced: one notice per episode carrying
+a count, and at most one `hello` per interval (the reference client uses 60
+seconds). Anything that can put an envelope in the mailbox can therefore cost
+the receiver one row and one `hello` per interval, and no more.
 
 ### 5.5 Transport payload
 

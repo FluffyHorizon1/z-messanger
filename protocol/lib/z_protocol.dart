@@ -33,6 +33,7 @@ export 'src/ratchet.dart'
         RatchetHeader,
         RatchetMessage,
         RatchetDecryptException,
+        RatchetReplayException,
         PqState,
         ratchetEncrypt,
         ratchetDecrypt,

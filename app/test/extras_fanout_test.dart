@@ -35,6 +35,22 @@
 //      a delivery after the fact; only the removal notice remains;
 //   6. the same for my own devices: removing one drops what was queued for
 //      it on the self-sync channel.
+//
+// Two more, from the 2026-09-14 review. Everything above is about the SEND
+// to a contact's other device. The receive from one had a single
+// `catch (_) {}` over the decrypt, the session store and the parse, and
+// acknowledged afterwards either way — so the two failures that want
+// opposite answers got the same one, silence:
+//
+//   7. a chain that no longer agrees with that device's is reported, once,
+//      with the hello that repairs it — it used to be an acknowledged
+//      envelope, no row and no repair, so a contact's laptop went quiet for
+//      good;
+//   8. a session store that FAILS loses nothing: the envelope is left with
+//      the relay and the ratchet put back, so the redelivery decrypts and the
+//      message lands. It used to advance the ratchet in memory, fail to write
+//      it down, and acknowledge — the relay forgetting a message that was
+//      never stored, on a session that had moved on.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -44,6 +60,21 @@ import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
+
+/// A link that records what was acknowledged. Leaving an envelope with the
+/// relay is half of what a failed store must do, and it is not observable
+/// from the message list: without this a test that redelivers by hand passes
+/// whether or not the acknowledgement went out — which is exactly what
+/// happened the first time criterion 8 was written.
+class AckSpy extends Transport {
+  AckSpy({required super.identity}) : super(serverUrl: 'ws://127.0.0.1:1');
+  final acked = <String>[];
+  @override
+  void ackReceived({required String id, required String from}) {
+    acked.add(id);
+    super.ackReceived(id: id, from: from);
+  }
+}
 
 /// A link that looks up but never answers: every send waits for ever.
 class StalledTransport extends Transport {
@@ -263,6 +294,131 @@ void main() {
     expect(rows.where((r) => r['rid'] == laptopRid).length, 1,
         reason: 'a offers its ML-KEM key to the laptop through the outbox — '
             'rows: ${rows.map((r) => r['rid'] == laptopRid ? 'laptop' : r['rid'] == b.myRid ? 'phone' : r['rid']).toList()}');
+  });
+
+  /// Like `carry`, but hands back what it delivered, so a test can deliver
+  /// the same envelope twice — which is what the relay does when it never
+  /// saw an acknowledgement.
+  Future<List<RelayInbound>> carryKeep(ChatService from, ChatService to) async {
+    final rows = await from.vault.db.query('outbox',
+        where: 'rid = ?', whereArgs: [to.myRid], orderBy: 'seq');
+    await from.vault.db
+        .delete('outbox', where: 'rid = ?', whereArgs: [to.myRid]);
+    final envelopes = [
+      for (final r in rows)
+        RelayInbound(
+            id: r['id'] as String,
+            from: '',
+            payload: r['payload'] as String,
+            serverTs: DateTime.now().millisecondsSinceEpoch)
+    ];
+    for (final e in envelopes) {
+      await to.debugInbound(e);
+    }
+    return envelopes;
+  }
+
+  /// Close [s] and open the same vault again, as a restart does. It is also
+  /// the only way to change the account session a contact's extra devices
+  /// use: it is built at init from `cextra_<rid>`, which is exactly the key
+  /// that was being written with a literal `$` in its name until 2026-09-14,
+  /// so before that fix this helper could not have worked either.
+  Future<ChatService> reopen(ChatService s, ZIdentity id, String name) async {
+    final root = s.vault.root;
+    s.dispose();
+    await s.transport.stop();
+    final vault = await Vault.open(rootOverride: root);
+    final next = await ChatService.init(
+      vault: vault,
+      identity: id,
+      displayName: name,
+      transport: Transport(identity: id, serverUrl: 'ws://127.0.0.1:1'),
+    );
+    services.add(next);
+    return next;
+  }
+
+  test("a contact's laptop whose chain has desynced is reported, and repaired",
+      () async {
+    final aId = await ZIdentity.generate();
+    var (a, b, _, laptopId, cert) = await twoDeviceContactFull(aIdentity: aId);
+    final lt = await runLaptop(b, laptopId, cert);
+    await lt.addContactFromCode(await a.myContactCode());
+    await lt.sendText(a.myRid, 'from the laptop');
+    await carry(lt, a);
+    await a.loadMessages(b.myRid);
+    expect(a.messagesByChat[b.myRid]!.last.body, 'from the laptop');
+
+    // Desync a's session with the laptop: the chain exists and no longer
+    // derives the same keys. The account session holds one conversation per
+    // extra device, and it is read at init — so this is written to the vault
+    // and a is restarted, which is also how a stale stored session reaches a
+    // running client in the field.
+    final stored = jsonDecode(await a.vault.kvGet('cextra_${b.myRid}') ?? '{}')
+        as Map<String, Object?>;
+    var changed = 0;
+    for (final conv in ((stored['convs'] as Map?) ?? {}).values) {
+      for (final session in ((conv as Map)['sessions'] as Map).values) {
+        final ratchet = (session as Map)['ratchet'] as Map;
+        if (ratchet['ckr'] != null) {
+          ratchet['ckr'] = base64.encode(List<int>.filled(32, 7));
+          changed++;
+        }
+      }
+    }
+    expect(changed, greaterThan(0), reason: 'there was a chain to desync');
+    await a.vault.kvPut('cextra_${b.myRid}', jsonEncode(stored));
+
+    a = await reopen(a, aId, 'a');
+    await a.loadMessages(b.myRid);
+    final rows = a.messagesByChat[b.myRid]!.length;
+    final hellosBefore = a.debugHellos;
+
+    await lt.sendText(a.myRid, 'and this one cannot be read');
+    await carry(lt, a);
+
+    expect(a.messagesByChat[b.myRid]!.length, rows + 1,
+        reason: 'the notice, where there used to be nothing at all');
+    expect(a.messagesByChat[b.myRid]!.last.body, contains('decrypt_failed'));
+    expect(a.debugHellos, hellosBefore + 1,
+        reason: 'the hello goes to the account and reaches every device on it');
+  });
+
+  test('a session store that fails leaves the envelope with the relay',
+      () async {
+    final spy = AckSpy(identity: await ZIdentity.generate());
+    final (a, b, _, laptopId, cert) =
+        await twoDeviceContactFull(transport: spy);
+    final lt = await runLaptop(b, laptopId, cert);
+    await lt.addContactFromCode(await a.myContactCode());
+    await lt.sendText(a.myRid, 'first, so the session is settled');
+    await carry(lt, a);
+    await a.loadMessages(b.myRid);
+    final rows = a.messagesByChat[b.myRid]!.length;
+
+    // The disk refuses while the next one is processed.
+    a.debugFailExtraStore = true;
+    await lt.sendText(a.myRid, 'written down or not at all');
+    final envelopes = await carryKeep(lt, a);
+    expect(envelopes, isNotEmpty);
+    expect(a.messagesByChat[b.myRid]!.length, rows,
+        reason: 'nothing was stored, which is the point');
+    expect(a.debugHellos, 0,
+        reason: 'a disk that refused is not a chain that disagreed');
+    expect(spy.acked, isNot(contains(envelopes.single.id)),
+        reason: 'and the relay still holds it: an acknowledged envelope that '
+            'was never stored is a message gone for good');
+
+    // The relay saw no acknowledgement, so it delivers again — onto the
+    // session that was put back. Without the rollback the advanced ratchet
+    // cannot read it and the message is gone for good.
+    a.debugFailExtraStore = false;
+    for (final e in envelopes) {
+      await a.debugInbound(e);
+    }
+    expect(a.messagesByChat[b.myRid]!.last.body, 'written down or not at all');
+    expect(spy.acked, contains(envelopes.single.id),
+        reason: 'and now it may be forgotten');
   });
 
   test('a dropped device does not get what was queued for it', () async {

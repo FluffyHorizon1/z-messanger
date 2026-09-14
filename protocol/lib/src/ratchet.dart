@@ -215,6 +215,28 @@ class RatchetDecryptException implements Exception {
   String toString() => 'RatchetDecryptException: $message';
 }
 
+/// A message at a position on the current receiving chain this session has
+/// already moved past, with no held key for it.
+///
+/// A subtype, so every `on RatchetDecryptException` handler still catches it
+/// and nothing that does not care has to change.
+///
+/// It is a distinct case because the two things it covers — the relay
+/// redelivering an envelope whose acknowledgement was lost, and an attacker
+/// replaying one — are indistinguishable here AND identical in consequence:
+/// we consumed this message once, its key is gone, and there is nothing to
+/// repair. That matters to the caller. A plain [RatchetDecryptException]
+/// means the chain itself no longer agrees with the peer's, which IS
+/// repairable and, left silent, ends the conversation; a caller that treats
+/// the two alike either says nothing when a conversation has died, or cries
+/// "could not be decrypted" every time a phone is killed between processing
+/// an envelope and acknowledging it. Before 2026-09-14 it said nothing.
+class RatchetReplayException extends RatchetDecryptException {
+  RatchetReplayException(super.message);
+  @override
+  String toString() => 'RatchetReplayException: $message';
+}
+
 class RatchetState {
   Uint8List rootKey;
   Uint8List dhsSeed; // our current ratchet private seed
@@ -508,6 +530,14 @@ Future<Uint8List> _decryptInner(
   if (!sameDh) {
     await _skipMessageKeys(s, msg.header.pn); // finish the previous chain
     await _dhRatchetStep(s, msg.header.dhPub);
+  } else if (msg.header.n < s.nr) {
+    // Same chain, a number this chain is already past, and step 1 found no
+    // held key for it — so this is a message we consumed. Deriving from `ckr`
+    // would produce the key for `nr`, not for `n`, and fail authentication
+    // indistinguishably from a chain that has genuinely diverged. Say which
+    // it is instead: see [RatchetReplayException].
+    throw RatchetReplayException(
+        'message ${msg.header.n} on a chain already at ${s.nr}');
   }
 
   // 3. Skip forward within the current receiving chain if needed.

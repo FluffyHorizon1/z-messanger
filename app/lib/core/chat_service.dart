@@ -238,6 +238,9 @@ class ChatService extends ChangeNotifier implements KtHost {
       'dlpq_sent_',
       'cdl_', // cdl_alert_, cdl_claims_
     ]);
+    // One row written by every build before 2026-09-14, under a key with a
+    // literal `$` in its name; see `_saveExtra`. It is nobody's session.
+    unawaited(vault.kvDelete(r'cextra_$rid'));
     for (final rid in svc.contacts.keys.toList()) {
       await svc._refreshDeviceAssurance(rid, notify: false, kv: kv);
     }
@@ -1941,7 +1944,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     // so they cannot interleave with a concurrent send on the same ratchet.
     // Post-processing (ack, assembly, read receipts, session-reset hello) runs
     // AFTER the lock releases, because it may itself re-enter the lock.
-    const int kOk = 0, kUnknownSession = 1, kDropped = 2;
+    const int kOk = 0, kUnknownSession = 1, kDropped = 2, kReplay = 3;
     int status;
     InnerMessage? inner;
 
@@ -1958,8 +1961,21 @@ class ChatService extends ChangeNotifier implements KtHost {
           // Their session predates our state (e.g. we restored from backup).
           await _saveConv(contact.rid);
           return (kUnknownSession, null);
+        } on RatchetReplayException {
+          // A message this chain is already past: the relay redelivering an
+          // envelope whose acknowledgement was lost, or somebody replaying
+          // one. Either way we consumed it once and there is nothing to
+          // repair, so it is acknowledged in silence. This arm comes first
+          // because it is a subtype of the one below.
+          _convs[contact.rid] =
+              await Conversation.fromJson(identity, jsonDecode(snapshot));
+          return (kReplay, null);
         } on RatchetDecryptException {
-          // Corrupt / replay: restore state and drop.
+          // The chain no longer agrees with the peer's. Restore state, drop
+          // the envelope — and tell somebody: this used to fall through to
+          // the acknowledgement below with no row, no count and no hello, so
+          // a desync made the conversation simply stop. Nothing on screen,
+          // nothing sent, and the peer believing every message arrived.
           _convs[contact.rid] =
               await Conversation.fromJson(identity, jsonDecode(snapshot));
           return (kDropped, null);
@@ -2019,14 +2035,21 @@ class ChatService extends ChangeNotifier implements KtHost {
       return;
     }
 
-    if (status == kUnknownSession) {
+    if (status == kUnknownSession || status == kDropped) {
+      // Both are "we cannot read this and a redelivery would fail the same
+      // way", so both acknowledge; the difference is only in what went wrong,
+      // and `_noteUndecryptable` coalesces a burst into one row and one hello
+      // either way. The hello is the repair: it carries a new ratchet public
+      // key, the peer steps on it, and their next message lands on a chain
+      // this side can derive.
       transport.ackReceived(id: m.id, from: m.from);
       await _noteUndecryptable(contact);
       notifyListeners();
       return;
     }
 
-    // Processed (or a benign drop/duplicate): the relay may forget the envelope.
+    // Processed, or a duplicate the chain has already passed: the relay may
+    // forget the envelope.
     transport.ackReceived(id: m.id, from: m.from);
     unawaited(flushOutbox()); // a queued v2 key offer, if any, goes out now
 
@@ -5783,12 +5806,36 @@ class ChatService extends ChangeNotifier implements KtHost {
     return out;
   }
 
+  /// A test seam: the store this method performs fails for real only when
+  /// the disk is full or the database is gone, and the behaviour that depends
+  /// on it — the ratchet put back, the envelope left with the relay — is the
+  /// whole of finding 20. Building that world for real means breaking the
+  /// vault under a live service, which is how a case ends up untested. It
+  /// was.
+  @visibleForTesting
+  bool debugFailExtraStore = false;
+
   Future<void> _saveExtra(String rid) async {
+    if (debugFailExtraStore) {
+      throw StateError('debugFailExtraStore: the extra-device session store');
+    }
     final s = _contactExtras[rid];
     if (s != null) {
       // Sealed: this is a live ratchet with a contact's non-primary
       // devices, same as `sync_session` (see `Vault.plainKeys`).
-      await vault.kvPut('cextra_\$rid', jsonEncode(s.toJson()));
+      //
+      // The `$` was escaped here and interpolated at both read sites, so
+      // every contact's session was written to one key literally named
+      // `cextra_$rid` and no launch ever found one. Nothing was lost by it —
+      // the account session is rebuilt from the contact's device
+      // certificates, and a message in flight across a restart, out of order
+      // or not, still decrypted when this was measured — but `_saveExtra`
+      // did not do the one thing it exists to do, and every caller was
+      // written believing it did. It is fixed in the same change as the
+      // notice-and-hello above, on purpose: a stored session that has gone
+      // stale is only safe to start restoring once a device whose chain
+      // disagrees says so and repairs itself.
+      await vault.kvPut('cextra_$rid', jsonEncode(s.toJson()));
     }
   }
 
@@ -5842,8 +5889,7 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> _handleExtraInbound(
       String rid, String fromDeviceRid, String payload, RelayInbound m) async {
     final contact = contacts[rid];
-    final s = _contactExtras[rid];
-    if (contact == null || s == null) {
+    if (contact == null || _contactExtras[rid] == null) {
       transport.ackReceived(id: m.id, from: m.from);
       return;
     }
@@ -5853,15 +5899,77 @@ class ChatService extends ChangeNotifier implements KtHost {
     // with `inner` below is a store, and the acknowledgement now waits for
     // all of it; if any of it throws, this is what puts the ratchet back so
     // the relay's redelivery can be decrypted.
-    final snapshot = jsonEncode(s.toJson());
+    //
+    // Taken INSIDE the lock, and the session read inside it too. Both used to
+    // be read before it, so two envelopes from the same account arriving
+    // together snapshotted the same pre-state and the second one's rollback
+    // undid the first one's success.
+    String snapshot = '';
+    // What happened, decided per step rather than by one `catch (_) {}` over
+    // the decrypt, the save and the parse. Those three want three different
+    // answers and used to get one: silence, followed by an acknowledgement.
+    const int kOk = 0, kUndecryptable = 1, kReplay = 2, kUnpersisted = 3;
+    int outcome = kOk;
     await _withLock(rid, () async {
+      final s = _contactExtras[rid];
+      if (s == null) {
+        outcome = kReplay; // nothing to do, and nothing to report
+        return;
+      }
+      snapshot = jsonEncode(s.toJson());
+      final DecryptResult dec;
       try {
-        final dec = await s.decryptFrom(fromDeviceRid, payload);
+        dec = await s.decryptFrom(fromDeviceRid, payload);
+      } on RatchetReplayException {
+        // Already consumed: the relay redelivering, or a replay. Nothing to
+        // repair, so nothing is said. The subtype arm comes first.
+        await _restoreExtra(rid, snapshot);
+        outcome = kReplay;
+        return;
+      } on RatchetDecryptException {
+        await _restoreExtra(rid, snapshot);
+        outcome = kUndecryptable;
+        return;
+      } on UnknownSessionException {
+        // Their device's session predates ours; nothing advanced.
+        outcome = kUndecryptable;
+        return;
+      }
+      try {
         await _saveExtra(rid);
+      } catch (_) {
+        // The ratchet advanced and could not be written down. This is the
+        // case the single catch swallowed: it left the advanced session in
+        // memory, unsaved, and then acknowledged — so the relay forgot a
+        // message that was never stored, on a session that had moved on.
+        await _restoreExtra(rid, snapshot);
+        outcome = kUnpersisted;
+        return;
+      }
+      try {
         inner = InnerMessage.fromBytes(dec.plaintext);
-        offer = dec.pqOfferPayload;
-      } catch (_) {}
+      } on FormatException {
+        // Authenticated bytes this build cannot parse — a newer peer, or a
+        // peer bug. The ratchet is saved and a redelivery would parse no
+        // better, so it is acknowledged: `inner` stays null below.
+        return;
+      }
+      offer = dec.pqOfferPayload;
     });
+    if (outcome == kUnpersisted) {
+      // Leave the envelope with the relay. It is redelivered onto the session
+      // that is now back in memory, and the store is attempted again.
+      return;
+    }
+    if (outcome == kUndecryptable) {
+      transport.ackReceived(id: m.id, from: m.from);
+      // A contact's linked device whose chain no longer agrees with ours. The
+      // hello goes to the ACCOUNT and fans out to every device on its list,
+      // including this one, so it is the repair here too.
+      await _noteUndecryptable(contact);
+      notifyListeners();
+      return;
+    }
     if (offer != null) {
       // v2: our post-quantum key offer for that device — through the outbox,
       // with the durability the primary path gives its offer, so a link that
@@ -5878,7 +5986,8 @@ class ChatService extends ChangeNotifier implements KtHost {
       } catch (_) {}
     }
     if (inner == null) {
-      // Nothing decrypted: a redelivery would fail the same way.
+      // A replay, or plaintext this build cannot parse. Either way a
+      // redelivery would end here too.
       transport.ackReceived(id: m.id, from: m.from);
       return;
     }
@@ -5888,13 +5997,23 @@ class ChatService extends ChangeNotifier implements KtHost {
       // Put the ratchet back and leave the envelope with the relay, exactly
       // as the primary path does — the alternative is an acknowledged
       // message that was never stored.
-      _contactExtras[rid] = await AccountSession.fromJson(
-          await accountIdentity(),
-          (jsonDecode(snapshot) as Map).cast<String, Object?>());
-      await _saveExtra(rid);
+      await _restoreExtra(rid, snapshot, persist: true);
       return;
     }
     transport.ackReceived(id: m.id, from: m.from);
+  }
+
+  /// Put [rid]'s account session back to [snapshot].
+  ///
+  /// [persist] only when the advanced state reached the disk: after a failed
+  /// decrypt it never did, and writing the same bytes back would be a write
+  /// per undecryptable envelope for no change.
+  Future<void> _restoreExtra(String rid, String snapshot,
+      {bool persist = false}) async {
+    _contactExtras[rid] = await AccountSession.fromJson(
+        await accountIdentity(),
+        (jsonDecode(snapshot) as Map).cast<String, Object?>());
+    if (persist) await _saveExtra(rid);
   }
 
   /// The stores an inner message from a contact's non-primary device implies.

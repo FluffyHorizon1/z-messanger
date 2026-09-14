@@ -172,12 +172,41 @@ void main() {
       expect(utf8.decode((await bobConv.decrypt(good)).plaintext), 'secret');
     });
 
-    test('replayed envelopes are rejected (used keys are gone)', () async {
+    test('replayed envelopes are rejected, and say that is what they are',
+        () async {
       final (_, __, aliceConv, bobConv) = await pair();
       final p = await aliceConv.encrypt(utf8b('once'));
       await bobConv.decrypt(p);
-      expect(() => bobConv.decrypt(p),
-          throwsA(isA<RatchetDecryptException>()));
+      // The subtype matters to the caller. The relay redelivering an envelope
+      // whose acknowledgement was lost lands here, and it is not evidence of
+      // anything: a client that treats it like a chain which has diverged
+      // tells its user "a message could not be decrypted" every time a phone
+      // is killed between processing an envelope and acknowledging it.
+      expect(() => bobConv.decrypt(p), throwsA(isA<RatchetReplayException>()));
+    });
+
+    test('a chain that has diverged is NOT reported as a replay', () async {
+      final (_, bob, aliceConv, bobConv) = await pair();
+      await bobConv.decrypt(await aliceConv.encrypt(utf8b('start')));
+      // Bob keeps the session and loses the chain — the case a client must
+      // act on, because it is repairable and, unreported, it is the end of
+      // the conversation.
+      final j = bobConv.toJson();
+      for (final session in (j['sessions'] as Map).values) {
+        final ratchet = (session as Map)['ratchet'] as Map;
+        if (ratchet['ckr'] != null) {
+          ratchet['ckr'] = base64Encode(Uint8List(32)..[0] = 9);
+        }
+      }
+      // Bob's own identity: rebuilding his session under Alice's would fail
+      // the AEAD for a different reason entirely and the test would pass
+      // without ever exercising the chain.
+      final desynced = await Conversation.fromJson(bob, j);
+      final next = await aliceConv.encrypt(utf8b('are you there'));
+      expect(
+          () => desynced.decrypt(next),
+          throwsA(allOf(isA<RatchetDecryptException>(),
+              isNot(isA<RatchetReplayException>()))));
     });
 
     test('state serialization round-trip mid-conversation', () async {

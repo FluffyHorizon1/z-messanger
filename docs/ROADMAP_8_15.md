@@ -3378,3 +3378,65 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A guard that reads one of the four things a claim rests on is a guard
    for one-quarter of the claim, reported as the whole.**
+
+91. **The two silent drops: a conversation that stops, and a message
+    acknowledged but never stored.**
+
+   Both were left ⚠️ by the review because `chat_service.dart` had drifted.
+   Both were still there, and the first was reproduced before anything was
+   changed: desync the receiving chain, send three messages, and the receiver
+   records **0 rows, 0 notices, 0 hellos**. The conversation is over, with
+   nothing on screen and a sender who believes every message arrived.
+
+   **21.** `kUnknownSession` acknowledges, writes one notice per episode and
+   sends a `hello`. `kDropped` — the same envelope, a chain that has diverged
+   rather than a session that is missing — restored the ratchet and fell
+   through to the acknowledgement with none of that. It takes the same path
+   now, and the repair is measured rather than asserted: the peer's next
+   message arrives.
+
+   **But not for every failed decrypt, which is what the review's fix said.**
+   Written that way it fires on an ordinary redelivery: the relay holds an
+   envelope until it is acknowledged, and a phone killed between processing
+   one and acknowledging it is not an event — the ratchet has moved past that
+   message and the decrypt fails exactly as a desync does. Measured with the
+   naive fix in place: a "could not be decrypted" notice and a `hello` for a
+   message that had already been read. So the ratchet says which it is:
+   `RatchetReplayException`, thrown when the message sits at a number on the
+   current chain that `nr` has already passed and no held key matches — a
+   subtype, so every existing handler still catches it. PROTOCOL §5.4 step 2b
+   and the new §5.4a carry the rule.
+
+   **20.** `_handleExtraInbound` had one `catch (_) {}` over the decrypt, the
+   session store and the parse, and acknowledged afterwards either way. Three
+   failures, three different right answers, one wrong one. A store that threw
+   left the advanced ratchet in memory, unwritten, and told the relay to
+   forget the message. Each has its own arm now: a decrypt failure restores
+   and reports; a store failure restores and does **not** acknowledge; an
+   unparseable inner from an authenticated peer is acknowledged in silence.
+   The snapshot and the session are also read INSIDE the lock — they were
+   read before it, so two envelopes from one account arriving together
+   snapshotted the same pre-state and the second one's rollback undid the
+   first one's success.
+
+   **Found while fixing it:** `_saveExtra` wrote to `'cextra_\$rid'` — an
+   escaped `$` — while both read sites interpolate. Every contact's
+   extra-device session went to one key literally named `cextra_$rid` and no
+   launch ever found one. Measured before claiming: nothing is lost by it, the
+   account session is rebuilt from the contact's device certificates and a
+   message in flight across a restart still decrypted, in order or out of it.
+   But `_saveExtra` did not do the one thing it exists to do, `DATA_MAP.md`
+   describes a per-contact sealed key that was never written, and every caller
+   was written believing otherwise. Fixed here on purpose rather than alone: a
+   stored session that has gone stale is only safe to start restoring once a
+   device whose chain disagrees says so and repairs itself, which is the rest
+   of this entry. The junk row is deleted when a vault opens.
+
+   Four criteria added to two existing suites, each mutation-checked — and
+   one of those mutations passed at first. "A failed store acknowledges
+   anyway" broke nothing, because the test redelivered by hand and the
+   acknowledgement is invisible in a message list. It is asserted against a
+   transport that records them now.
+
+   **Three outcomes that look identical from the outside want opposite
+   answers: say nothing, say it once, or say nothing and keep the envelope.**

@@ -19,6 +19,22 @@
 //      interval sends another, so a lost hello is not the end of the story;
 //   4. a notice written by an older build, with no count, still renders as
 //      one message.
+//
+// Two more, from the 2026-09-14 review. The notice above is raised when the
+// SESSION is missing; a chain that exists and no longer agrees with the
+// peer's took a different branch, which restored the ratchet, acknowledged
+// the envelope and said nothing at all. A desync therefore made a
+// conversation simply stop: no row, no count, no hello, and the peer
+// believing every message had arrived.
+//
+//   5. a receiving chain that no longer agrees with the peer's produces the
+//      same one notice and one hello, and the hello repairs it — the next
+//      message from the peer arrives;
+//   6. an envelope the relay redelivers after its acknowledgement was lost
+//      is acknowledged again in silence: no notice and no hello. This is the
+//      reason 5 is not simply "notify on every failed decrypt" — a phone
+//      killed between processing an envelope and acknowledging it is
+//      ordinary, and a warning that fires then is a warning nobody believes.
 import 'dart:convert';
 import 'dart:io';
 
@@ -210,6 +226,77 @@ void main() {
     await a.debugInbound(stale[2]);
     expect(a.debugHellos, 2);
     expect(notices(a, b.myRid).single['n'], 3);
+  });
+
+  /// A chain that exists and disagrees: not a missing session, which is what
+  /// every test above uses. The receiving chain key is replaced, which is
+  /// what a desync IS — the peer's sending chain and ours no longer derive
+  /// the same message keys.
+  Future<void> desyncReceivingChain(ChatService a, String peerRid) async {
+    final row = (await a.vault.db
+            .query('conversations', where: 'rid = ?', whereArgs: [peerRid]))
+        .single;
+    final j = jsonDecode(await a.vault.unseal(row['enc_state'] as String))
+        as Map<String, Object?>;
+    var changed = 0;
+    for (final session in (j['sessions'] as Map).values) {
+      final ratchet = (session as Map)['ratchet'] as Map;
+      if (ratchet['ckr'] != null) {
+        ratchet['ckr'] = base64.encode(List<int>.filled(32, 7));
+        changed++;
+      }
+    }
+    expect(changed, greaterThan(0), reason: 'there was a chain to desync');
+    await a.vault.db.update(
+        'conversations', {'enc_state': await a.vault.seal(jsonEncode(j))},
+        where: 'rid = ?', whereArgs: [peerRid]);
+    await a.reloadConversations();
+  }
+
+  test('a desynced chain is a notice and a hello, and the hello repairs it',
+      () async {
+    final (a, b) = await settledPair();
+    await a.loadMessages(b.myRid);
+    final before = a.messagesByChat[b.myRid]!.length;
+    await desyncReceivingChain(a, b.myRid);
+
+    for (var i = 0; i < 3; i++) {
+      await b.sendText(a.myRid, 'are you there $i');
+    }
+    await carry(b, a);
+
+    // Before the fix: 0 rows, 0 notices, 0 hellos — for ever.
+    expect(a.messagesByChat[b.myRid]!.length, before + 1,
+        reason: 'one notice for three envelopes');
+    expect(notices(a, b.myRid).single['n'], 3);
+    expect(a.debugHellos, 1);
+
+    // And it is a repair, not just a report: the hello carries a new ratchet
+    // key, b steps on it, and b's next message lands.
+    await carry(a, b);
+    await b.sendText(a.myRid, 'after the hello');
+    await carry(b, a);
+    expect(a.messagesByChat[b.myRid]!.last.body, 'after the hello');
+  });
+
+  test('an envelope redelivered after a lost acknowledgement says nothing',
+      () async {
+    final (a, b) = await settledPair();
+    await a.loadMessages(b.myRid);
+    await b.sendText(a.myRid, 'once');
+    final envelope = (await drainOutbox(b, a.myRid)).single;
+
+    await a.debugInbound(envelope);
+    final rows = a.messagesByChat[b.myRid]!.length;
+    expect(a.messagesByChat[b.myRid]!.last.body, 'once');
+
+    // The relay never saw the acknowledgement, so it delivers it again. The
+    // ratchet has moved past this message and its key is gone, so the decrypt
+    // fails exactly as a desync does — and it is not one.
+    await a.debugInbound(envelope);
+    expect(a.messagesByChat[b.myRid]!.length, rows, reason: 'no second row');
+    expect(notices(a, b.myRid), isEmpty);
+    expect(a.debugHellos, 0);
   });
 
   test('a notice from an older build, with no count, renders as one message',
