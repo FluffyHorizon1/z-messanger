@@ -12,9 +12,11 @@
 #   tool/audit_verify.sh --quick      skip the app suite (~1 minute)
 #   tool/audit_verify.sh --list       what would run, and what each backs
 #
-# Exit code is 0 only if every suite passed. Anything else means at least one
-# claim in the brief is currently unsupported by this working tree, which is a
-# finding regardless of whose fault it is.
+# Exit codes: 0 every suite ran and passed; 1 a suite failed, which means a
+# claim in the brief is currently unsupported by this working tree and is a
+# finding regardless of whose fault it is; 2 everything that ran passed but
+# something was skipped, so some claims are simply unverified — which is what
+# `--quick` always produces, since it does not run the app suite.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -116,6 +118,16 @@ run "the GA checklist matches the repo" "-" "." \
 
 echo
 echo "${bold}1. Protocol library — every cryptographic construction${rst}"
+# The protocol's integration tests START THE RELAY, so its dependencies have
+# to exist before they run — not in section 2, where they used to be
+# installed. In a fresh clone that ordering meant the first run reported
+# "protocol/ dart test FAIL … relay did not start" and the second run passed,
+# which is the worst possible first impression of the one command the brief
+# tells an external reviewer to use.
+if have npm && [ ! -d server/node_modules ]; then
+  echo "  ${dim}installing the relay's dependencies (the protocol suite starts it)${rst}"
+  ( cd server && npm install --silent >/dev/null 2>&1 )
+fi
 if have dart; then
   run "protocol/ dart test" "$(claims_for '^protocol/test/')" "protocol" \
       dart test --reporter=compact
@@ -130,6 +142,16 @@ if have node && have npm; then
   run "server/ npm test" "$(claims_for '^server/test/')" "server" npm test --silent
 else
   skip "server/ npm test" "C1 C4 C12 C27" "node/npm not on PATH"
+fi
+
+echo
+echo "${bold}2b. The transparency log${rst}"
+echo "${dim}   Sixty tests back C31 and none of them ran in this command${rst}"
+echo "${dim}   until 2026-09-14 — the one command the brief points at.${rst}"
+if have node && have npm; then
+  run "kt/ npm test" "$(claims_for '^kt/test/')" "kt" npm test --silent
+else
+  skip "kt/ npm test" "C31" "node/npm not on PATH"
 fi
 
 echo
@@ -215,7 +237,12 @@ if [ "$SKIPPED" = 1 ]; then
   echo "${ylw}Everything that ran passed, but some suites were skipped.${rst}"
   echo "The claims they back are unverified in this run — see the 'backs'"
   echo "column above for which ones."
-  exit 0
+  # Exit 2, not 0. The header of this script says the exit code is 0 only if
+  # every suite passed, and a suite that did not run did not pass — so
+  # exiting 0 here made this script's own most important sentence false.
+  # 2 rather than 1 so a partial run is distinguishable from a failing one:
+  # `--quick` skips the app suite deliberately and now says so in its status.
+  exit 2
 fi
 COUNT=$(printf '%s\n' "$RAN_CLAIMS" | grep -c .)
 TOTAL=$(printf '%s\n' "$ALL_CLAIMS" | grep -c .)

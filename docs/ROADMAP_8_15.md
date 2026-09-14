@@ -3152,3 +3152,48 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A check that passes when its dependency is missing is not a weaker
    check. It is not a check.**
+
+86. **Four guards that could be made to check nothing, and each was.**
+
+   **`check_l10n.py`** found the ARB's keys with a regex anchored at `^  "` —
+   exactly two spaces — and every check in that function walks the list it
+   produced. Re-indenting the file emptied the list, so the duplicate-key
+   check, the description check and the unused-key check all passed over
+   nothing while the script went on reporting that no screen had regressed.
+   Demonstrated: the same duplicated key is reported at two spaces and
+   invisible at three, and an editor's "format document" does it. A looser
+   regex was the same bug with a wider tolerance — it matched the nested keys
+   inside `@meta` blocks — so the parser decides now, with duplicates caught
+   by `object_pairs_hook`, which is exact and does not care about layout.
+
+   **`app/tool/contrast.py`** matched the palette constructor by name, as the
+   literal `ZColors`. Renaming the class — which is what a rebrand does —
+   matched nothing, the loop ran zero times, and it printed "all pairs clear
+   WCAG AA" and exited 0 having compared no colours. Matching any
+   constructor is not the fix on its own, since a theme with no palettes
+   would still "pass": what makes it a check is refusing when the palettes
+   the app actually references are not among what it found, and refusing
+   when a colour it names is missing from one.
+
+   **`check_audit_scope.py`** asked whether a test file's name appeared
+   anywhere in the brief. A sentence *disclaiming* the suite satisfies that
+   as well as a citation does. It asks the evidence cells now, and says so
+   when a file is mentioned in the prose but cited by nothing.
+
+   **`audit_verify.sh` exited 0 when suites were skipped**, contradicting its
+   own header — which says the exit code is 0 only if every suite passed, and
+   a suite that did not run did not pass. It exits 2 now, distinct from a
+   failure, which is what `--quick` always produces since it does not run the
+   app suite.
+
+   Two more things about that script, found while fixing it rather than in
+   the review. It **never ran the `kt/` suite at all** — sixty tests backing
+   C31, absent from the one command the brief points an external reviewer at.
+   And in a fresh clone its **first run failed and its second passed**: the
+   protocol suite starts the relay, and the relay's dependencies were
+   installed in a later section, so the first impression of the reproduction
+   command was `protocol/ dart test FAIL … relay did not start`. Both fixed
+   and both measured on a clone made for the purpose.
+
+   **Every one of these reported success while measuring nothing, which is
+   the only kind of failure a guard can have that nobody notices.**

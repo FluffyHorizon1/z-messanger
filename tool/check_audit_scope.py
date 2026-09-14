@@ -235,7 +235,15 @@ def main():
         else:
             seen[key] = cid
 
-    # 3. Every test file is cited somewhere.
+    # 3. Every test file is cited by a claim's EVIDENCE.
+    #
+    # This used to ask whether the filename appeared anywhere in the
+    # document, which a sentence disclaiming the suite satisfies just as well
+    # as a citation — "`foo_test.dart` is not evidence for anything here"
+    # passes it. Demonstrated in the 2026-09-13 review. The brief's whole
+    # purpose is that a claim names what backs it, so the question is whether
+    # the file appears in an evidence cell, and that is what is asked now.
+    evidence = "\n".join(ev for _cid, _c, _s, ev in rows)
     tests = []
     for pat in ("protocol/test/*.dart", "app/test/*.dart", "server/test/*.js",
                 "kt/test/*.js"):
@@ -244,11 +252,13 @@ def main():
         rel = t.relative_to(ROOT).as_posix()
         if rel in UNCITED_OK:
             continue
-        if t.name not in text:
+        if t.name not in evidence:
+            where = " (it is mentioned in the prose, which is not a citation)" \
+                if t.name in text else ""
             problems.append(
-                f"{rel} is not cited by any claim. Either it guards something "
-                f"the brief should claim, or it belongs in UNCITED_OK in this "
-                f"script with a reason."
+                f"{rel} is not cited by any claim's evidence{where}. Either "
+                f"it guards something the brief should claim, or it belongs "
+                f"in UNCITED_OK in this script with a reason."
             )
 
     # 5. An ambiguous name is qualified.

@@ -145,15 +145,42 @@ def arb_problems():
     out = []
     raw = ARB.read_text(encoding="utf-8")
 
-    # Parsed JSON cannot show a duplicate — the second silently replaces the
-    # first — so the keys are counted in the text.
-    keys = re.findall(r'^  "(?!@)([A-Za-z0-9_]+)"\s*:', raw, re.M)
-    for key, n in collections.Counter(keys).items():
-        if n > 1:
-            out.append(f"app/lib/l10n/app_en.arb: \"{key}\" is defined {n} "
-                       f"times; the last one silently wins.")
+    # A duplicate key: the second silently replaces the first, so a parsed
+    # document cannot show one. It is caught during parsing instead.
+    #
+    # This was a regex anchored at `^  "` — exactly two spaces — and every
+    # check in this function walks the list it produced, so re-indenting the
+    # file emptied the list and the duplicate check, the description check
+    # and the unused-key check all passed over nothing while the script went
+    # on reporting that all was well. Demonstrated before it was changed: the
+    # same duplicated key is reported at two spaces and invisible at three.
+    # An editor's "format document" would have done it.
+    #
+    # A looser regex would have been the same bug with a wider tolerance —
+    # it matched the nested keys inside `@meta` blocks too. The parser knows
+    # the structure, so it is what decides both the key list and the
+    # duplicates, and neither depends on how the file is laid out.
+    dups: list[str] = []
 
-    data = json.loads(raw)
+    def _pairs(items):
+        seen: dict[str, object] = {}
+        for k, v in items:
+            if k in seen:
+                dups.append(k)
+            seen[k] = v
+        return seen
+
+    data = json.loads(raw, object_pairs_hook=_pairs)
+    for key, n in collections.Counter(dups).items():
+        out.append(f"app/lib/l10n/app_en.arb: \"{key}\" is defined "
+                   f"{n + 1} times; the last one silently wins.")
+    keys = [k for k in data if not k.startswith("@")]
+    if not keys:
+        out.append(
+            "app/lib/l10n/app_en.arb: no keys at all, so every check below "
+            "would pass over nothing. A check that finds nothing must say so "
+            "rather than agree."
+        )
     for key in keys:
         meta = data.get(f"@{key}")
         if not isinstance(meta, dict) or not meta.get("description"):
