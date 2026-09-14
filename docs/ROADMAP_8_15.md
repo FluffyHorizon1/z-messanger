@@ -2978,13 +2978,19 @@ direction; the phases, their order and both ordering arguments stand.
    left standing so the contact can still reach hybrid when a key that
    matches it arrives.
 
-   Two things about the test are worth keeping. The seam that mirrors a
+   Three things about the test are worth keeping. The seam that mirrors a
    contact between devices could not express the attack at all — it sent only
    `rid`, `bundle` and `name`, so `pqc` and `pqk` had to be added to it
-   before the bug could be written down. And the honest case is its own test
+   before the bug could be written down. The honest case is its own test
    rather than the second half of the refusal: each mirror is one
    fire-and-forget message over the relay, and two in flight in one test was
-   flaky one run in three.
+   flaky one run in three. And both live in a file of their own rather than
+   in `multidevice_test.dart`, because each starts a linked pair, that file
+   shares one relay across every test in it, and adding them there made an
+   unrelated test in it time out under full-suite load about one run in
+   three — measured, not guessed: the file went from nine tests to eleven and
+   the same neighbour failed three times. A test that makes its neighbours
+   flaky is a test in the wrong file.
 
    **Every other field in that record is checked. This one was taken on
    trust because it arrived beside them.**
