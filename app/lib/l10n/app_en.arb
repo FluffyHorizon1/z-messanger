@@ -1820,6 +1820,14 @@
       }
     }
   },
+  "ktBannerGroupHeld": "{count, plural, =1{Messages to {names} are held: the transparency log disagrees with their device list, so this message has not reached them.} other{Messages to {names} are held: the transparency log disagrees with their device lists, so this message has not reached them.}}",
+  "@ktBannerGroupHeld": {
+    "description": "Group chat banner: the named members are in transparency conflict, so the message did not reach them.",
+    "placeholders": {
+      "names": { "type": "String" },
+      "count": { "type": "int" }
+    }
+  },
   "ktSendAnyway": "Send anyway",
   "@ktSendAnyway": {
     "description": "Button on the conflict banner: lifts the hold for this contact until the state changes."

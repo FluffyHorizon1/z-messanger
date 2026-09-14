@@ -1409,6 +1409,19 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String ktBannerGroupHeld(String names, int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other:
+          'Messages to $names are held: the transparency log disagrees with their device lists, so this message has not reached them.',
+      one:
+          'Messages to $names are held: the transparency log disagrees with their device list, so this message has not reached them.',
+    );
+    return '$_temp0';
+  }
+
+  @override
   String get ktSendAnyway => 'Send anyway';
 
   @override

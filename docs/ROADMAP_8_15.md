@@ -3066,3 +3066,40 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A key written by one class and deleted by a list in another is a key
    that survives "delete everything".**
+
+84. **A conflict that stopped a group and told nobody.** Every transparency
+   banner on the chat screen was gated on the chat **not** being a group, and
+   the kinds a conflict holds include every group kind (`gmsg`, `gfile`,
+   `ginvite`, `gleave`, `gedit`, `gdel`). So a group message to a member in
+   conflict threw per member inside the fan-out drain, which caught it and
+   left the row — and `_markSentIfLast` counts every queued row, so the
+   message stayed `pending` for **every** member. No banner, no composer
+   notice, and no way to answer it: "send anyway" existed only on the 1:1
+   screen, and a group member's private chat is not somewhere the user has
+   any reason to go.
+
+   The second-order failure is what made it an outage rather than a
+   confusion. The drain reads a page of 32 rows ordered by `seq` and read it
+   **from the head every time**. Once 32 held rows accumulated there — 32
+   group messages to that one member, or fewer spread across several groups —
+   the page was permanently full of rows that could not be sent, so no group
+   message to **any** member of **any** group was delivered at all.
+
+   So the drain keeps a cursor and steps past what it cannot send, ending a
+   sweep when the query comes back empty and starting another only if
+   something actually went. The rows stay queued rather than being dropped,
+   so answering the conflict delivers them instead of losing them; the group
+   screen names the members and offers the same "send anyway" the 1:1 screen
+   has always had; and the held kinds are skipped rather than attempted,
+   which is an optimisation — the `KtSendHeldException` arm behind it is what
+   makes the behaviour right, and the mutation proving that is the one that
+   removed both.
+
+   The loop wanted care. A sweep that skipped rows and sent nothing must
+   **stop**: restarting because it skipped something is an infinite loop,
+   since the rows it skipped are exactly the ones it will skip again. The
+   first version of this did that, in a background drain, and the fix is the
+   `sentThisSweep` flag rather than a comment about it.
+
+   **A message that cannot be sent to one member must not be a message that
+   cannot be sent to anyone.**

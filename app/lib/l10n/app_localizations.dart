@@ -2360,6 +2360,12 @@ abstract class AppLocalizations {
   /// **'The transparency log and {name}\'s devices disagree about their device list. Your messages to them are held until they agree, or until you choose to send anyway.'**
   String ktBannerConflict(String name);
 
+  /// Group chat banner: the named members are in transparency conflict, so the message did not reach them.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{Messages to {names} are held: the transparency log disagrees with their device list, so this message has not reached them.} other{Messages to {names} are held: the transparency log disagrees with their device lists, so this message has not reached them.}}'**
+  String ktBannerGroupHeld(String names, int count);
+
   /// Button on the conflict banner: lifts the hold for this contact until the state changes.
   ///
   /// In en, this message translates to:

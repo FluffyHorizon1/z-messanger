@@ -603,6 +603,28 @@ class _ChatScreenState extends State<ChatScreen> {
               icon: Icons.gpp_maybe,
               message: l.ktBannerHeld(contact!.name),
             ),
+          // The group's version of the same state. Every banner above is
+          // gated on this NOT being a group, and the kinds a conflict holds
+          // include every group kind — so a group message to a member in
+          // conflict stayed pending for everyone with nothing on screen to
+          // say why, and no way to answer it: "send anyway" lives on the 1:1
+          // screen, and a group member's 1:1 chat is not somewhere the user
+          // has any reason to go.
+          if (isGroup && svc.groupSendsHeldFor.isNotEmpty)
+            _KtBanner(
+              tone: context.z.danger,
+              icon: Icons.gpp_bad,
+              message: l.ktBannerGroupHeld(
+                  svc.groupSendsHeldNames.join(', '),
+                  svc.groupSendsHeldNames.length),
+              action: l.ktSendAnyway,
+              onAction: () async {
+                for (final rid in svc.groupSendsHeldFor.toList()) {
+                  await svc.kt.acknowledgeConflict(rid);
+                }
+                await svc.retryGroupFanout();
+              },
+            ),
           Expanded(
             child: ListView.builder(
               controller: _scroll,

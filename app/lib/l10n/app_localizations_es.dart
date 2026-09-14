@@ -1424,6 +1424,19 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String ktBannerGroupHeld(String names, int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other:
+          'Los mensajes para $names están retenidos: el registro de transparencia no coincide con sus listas de dispositivos, así que este mensaje no les ha llegado.',
+      one:
+          'Los mensajes para $names están retenidos: el registro de transparencia no coincide con su lista de dispositivos, así que este mensaje no le ha llegado.',
+    );
+    return '$_temp0';
+  }
+
+  @override
   String get ktSendAnyway => 'Enviar de todos modos';
 
   @override

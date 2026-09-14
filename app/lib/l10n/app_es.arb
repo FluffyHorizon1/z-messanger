@@ -383,6 +383,14 @@
   "sysUnknownMemberLeft": "Un miembro salió del grupo.",
   "ktBannerHeld": "La lista de dispositivos más reciente de {name} no está en el registro de transparencia. Los dispositivos que solo esa lista añadió no reciben tus mensajes hasta que aparezca.",
   "ktBannerConflict": "El registro de transparencia y los dispositivos de {name} no coinciden sobre su lista de dispositivos. Tus mensajes para esta persona quedan retenidos hasta que coincidan, o hasta que elijas enviar de todos modos.",
+  "ktBannerGroupHeld": "{count, plural, =1{Los mensajes para {names} están retenidos: el registro de transparencia no coincide con su lista de dispositivos, así que este mensaje no le ha llegado.} other{Los mensajes para {names} están retenidos: el registro de transparencia no coincide con sus listas de dispositivos, así que este mensaje no les ha llegado.}}",
+  "@ktBannerGroupHeld": {
+    "description": "Group chat banner: the named members are in transparency conflict, so the message did not reach them.",
+    "placeholders": {
+      "names": { "type": "String" },
+      "count": { "type": "int" }
+    }
+  },
   "ktSendAnyway": "Enviar de todos modos",
   "ktComposerHeld": "Los mensajes a este contacto están retenidos; mira el aviso de arriba.",
   "homeKtOwnAlert": "Se ha publicado en el registro de transparencia una lista de dispositivos de tu cuenta que tú no emitiste (versión {v}). Revisa ahora tus dispositivos vinculados.",

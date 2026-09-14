@@ -4571,17 +4571,65 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// and retried on the next drain rather than dropped — the failures worth
   /// worrying about here are vault write failures, which are systemic and
   /// transient, not per-recipient.
+  /// Try the queue again now — after a conflict has been answered, the rows
+  /// that were skipped are sendable and there is no reason to wait for a
+  /// reconnect or the next send.
+  Future<void> retryGroupFanout() => _drainGroupFanout();
+
+  /// Members a group fan-out could not be sent to because the transparency
+  /// log is in conflict with their device list.
+  ///
+  /// The 1:1 screen has said this since ADR 0006 shipped — a banner, and a
+  /// "send anyway". The group screen said nothing at all: every KT banner was
+  /// gated on the chat not being a group, while the held kinds include every
+  /// group kind. So a group message to a conflicted member stayed pending for
+  /// everyone, with no explanation on screen and no way to answer it.
+  Set<String> groupSendsHeldFor = const {};
+
+  /// The names behind [groupSendsHeldFor], for the screen.
+  List<String> get groupSendsHeldNames => [
+        for (final rid in groupSendsHeldFor) contacts[rid]?.name ?? rid
+      ]..sort();
+
   Future<void> _drainGroupFanout() async {
     if (_fanoutDraining || debugPauseGroupFanout) return;
     _fanoutDraining = true;
     try {
+      // A cursor over the queue, and whether this sweep of it achieved
+      // anything. A sweep that skipped rows and sent nothing must STOP —
+      // restarting on the strength of having skipped something is an
+      // infinite loop, since the rows it skipped are exactly the ones it
+      // will skip again.
+      var after = 0;
+      var sentThisSweep = false;
+      // Members a pass could not send to because of a transparency conflict.
+      // Shown on the group screen, which had no way to say so at all.
+      final heldMembers = <String>{};
       while (!debugPauseGroupFanout) {
         _fanoutWanted = false;
-        final rows =
-            await vault.db.query('group_fanout', orderBy: 'seq ASC', limit: 32);
+        // Past `after`, not from the start. A row that cannot be sent yet —
+        // a member in a transparency conflict — stays queued, and reading
+        // from the head every time meant 32 such rows hid every row behind
+        // them: no group message to ANY member could be delivered while one
+        // member was in conflict. The cursor steps over what this pass
+        // cannot do and comes back to it on the next one.
+        final rows = await vault.db.query('group_fanout',
+            where: 'seq > ?', whereArgs: [after], orderBy: 'seq ASC', limit: 32);
         // Empty, but something may have been queued during the query. Only
         // stop once a pass finds nothing AND nothing arrived while looking.
         if (rows.isEmpty) {
+          if (after > 0) {
+            // The end of the queue, reached by stepping over rows that could
+            // not be sent. Sweep again from the front only if something DID
+            // go this time — a skipped row may now be behind a sent one —
+            // and otherwise stop, because nothing has changed and nothing
+            // will until a conflict is answered or a contact reconnects.
+            final again = sentThisSweep || _fanoutWanted;
+            after = 0;
+            sentThisSweep = false;
+            if (again) continue;
+            return;
+          }
           if (_fanoutWanted) continue;
           return;
         }
@@ -4602,6 +4650,25 @@ class ChatService extends ChangeNotifier implements KtHost {
             progressed = true;
             continue;
           }
+          if (kt.sendsHeld(rid)) {
+            // A transparency conflict with this member. Retrying is what a
+            // temporary failure deserves and this is not one: the conflict
+            // is sticky until the user answers it, so the row would spin for
+            // ever, and — because `_markSentIfLast` counts every queued row
+            // — the message would stay `pending` for EVERY member, with no
+            // banner on a group screen to say why.
+            //
+            // Worse, the drain reads a page of 32 ordered by `seq` and stops
+            // when a whole page fails, so once 32 held rows accumulated at
+            // the head no group message to anybody was delivered at all.
+            //
+            // So it is skipped rather than attempted: the row stays, so
+            // answering the conflict delivers it, and it does not count
+            // towards progress or towards what the message is still waiting
+            // for.
+            heldMembers.add(rid);
+            continue;
+          }
           try {
             final inner = InnerMessage.fromBytes(Uint8List.fromList(
                 utf8.encode(await vault.unseal(r['payload'] as String))));
@@ -4611,13 +4678,26 @@ class ChatService extends ChangeNotifier implements KtHost {
             await vault.db.delete('group_fanout',
                 where: 'seq = ?', whereArgs: [r['seq']]);
             progressed = true;
+          } on KtSendHeldException {
+            // The check above raced with a conflict appearing. Same answer.
+            heldMembers.add(rid);
           } catch (e) {
             // Leave the row. The next drain retries it; the message stays
             // `pending`, which is the truth.
             debugPrint('group fan-out to $rid failed, will retry: $e');
           }
         }
-        if (!progressed) return; // every row in this page failed; back off
+        if (progressed) {
+          sentThisSweep = true;
+        }
+        if (!setEquals(heldMembers, groupSendsHeldFor)) {
+          groupSendsHeldFor = Set.unmodifiable(heldMembers);
+          notifyListeners();
+        }
+        // Step past this page either way: a row that could not be sent must
+        // not hide the rows behind it, which may be for members who are
+        // fine. The sweep ends when the query comes back empty.
+        after = rows.last['seq'] as int;
       }
     } on DatabaseException {
       // The vault closed under the drain (the app shutting down, or a

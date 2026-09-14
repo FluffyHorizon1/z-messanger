@@ -200,6 +200,88 @@ void main() {
         reason: 'the queue should be empty once drained');
   }, timeout: const Timeout(Duration(minutes: 3)));
 
+  test('5. one member in transparency conflict does not wedge every group',
+      () async {
+    // Every KT banner on the chat screen is gated on the chat NOT being a
+    // group, and the kinds a conflict holds include every group kind. So a
+    // group message to a member in conflict threw per-member inside the
+    // drain, which caught it and left the row — and `_markSentIfLast` counts
+    // every queued row, so the message stayed `pending` for EVERY member,
+    // with nothing on screen to say why and no way to answer it.
+    //
+    // The second-order failure is the one that made it an outage rather than
+    // a confusion: the drain reads a page of 32 ordered by `seq` and used to
+    // read it from the head every time. Once 32 held rows accumulated there,
+    // no group message to ANY member of ANY group was delivered at all.
+    final svc = await makeClient('wedged', offline: true);
+    final held = await addPhantom(svc, 'held');
+    final fine = await addPhantom(svc, 'fine');
+    final gid = await svc.createGroup('Two', [held, fine]);
+    await svc.waitForGroupFanout(gid);
+
+    // That member goes into conflict, which holds what the user says to them.
+    svc.kt.debugForceConflict(held);
+    expect(svc.kt.sendsHeld(held), isTrue);
+
+    // A baseline: creating the group already fanned an invite out to each
+    // member, and a key offer may have gone with it. What this test is about
+    // is the forty sends below, so count from here.
+    final fineBefore = await outboxCount(svc, fine);
+    final heldBefore = await outboxCount(svc, held);
+
+    // Forty group messages: more than the page of 32, so the old drain would
+    // have had nothing but held rows in view.
+    for (var i = 0; i < 40; i++) {
+      await svc.sendGroupText(gid, 'm$i');
+    }
+    // Poll rather than call once: a drain is already running in the
+    // background (every send kicks one) and the guard makes a second call
+    // return immediately, so a single `retryGroupFanout` proves nothing
+    // about when it finished.
+    Future<int> queuedFor(String rid) async => (await svc.vault.db
+            .query('group_fanout', where: 'rid = ?', whereArgs: [rid]))
+        .length;
+    final deadline = DateTime.now().add(const Duration(seconds: 60));
+    while (await queuedFor(fine) > 0 && DateTime.now().isBefore(deadline)) {
+      await svc.retryGroupFanout();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+
+    // The member who is fine received every one of them — which is what a
+    // page permanently full of held rows prevented.
+    expect(await queuedFor(fine), 0,
+        reason: 'envelopes for the member in good standing were still queued '
+            'behind the held ones');
+    expect(await outboxCount(svc, fine), fineBefore + 40,
+        reason: 'every group message reached the member who is fine');
+
+    // The held member's rows are still there, so answering the conflict
+    // delivers them rather than losing them.
+    final stillHeld = await svc.vault.db
+        .query('group_fanout', where: 'rid = ?', whereArgs: [held]);
+    expect(stillHeld, hasLength(40), reason: 'kept, not dropped');
+    expect(await outboxCount(svc, held), heldBefore,
+        reason: 'and nothing was sent to them while the conflict stood');
+
+    // And the screen can say so, naming them — which is the whole of what a
+    // group chat had no way to do.
+    expect(svc.groupSendsHeldFor, {held});
+    expect(svc.groupSendsHeldNames, ['held']);
+
+    // "Send anyway", as the 1:1 screen has always offered: the conflict is
+    // acknowledged and the queue drains.
+    await svc.kt.acknowledgeConflict(held);
+    final d2 = DateTime.now().add(const Duration(seconds: 60));
+    while (await queuedFor(held) > 0 && DateTime.now().isBefore(d2)) {
+      await svc.retryGroupFanout();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    expect(await queuedFor(held), 0,
+        reason: 'answering the conflict sends what was waiting');
+    expect(await outboxCount(svc, held), heldBefore + 40,
+        reason: 'every message that was waiting goes, none lost');
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
   test('the message row and its fan-out rows are one transaction', () async {
     final svc = await makeClient('atomic', offline: true);
     final rids = [for (var i = 0; i < 3; i++) await addPhantom(svc, 'a$i')];

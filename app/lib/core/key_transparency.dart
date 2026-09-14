@@ -500,6 +500,24 @@ class KeyTransparency {
     unawaited(check());
   }
 
+  /// Put a contact into conflict without a log disagreeing with anything.
+  ///
+  /// A test seam: reaching this state for real needs a log serving one thing
+  /// and a contact asserting another, which `key_transparency_test.dart` does
+  /// against the real service. What the group fan-out needs to be tested
+  /// against is the STATE, and building the world twice to get to it is how
+  /// a case ends up untested — which this one was.
+  @visibleForTesting
+  void debugForceConflict(String rid) {
+    contacts[rid] = KtContactStatus(
+      state: KtContactState.conflict,
+      checkedAtMs: now(),
+      detail: 'forced by a test',
+    );
+    unawaited(_saveContact(rid));
+    host.ktChanged();
+  }
+
   /// "Send anyway" for a conflict: sends resume until the state changes.
   Future<void> acknowledgeConflict(String rid) async {
     final s = contacts[rid];
