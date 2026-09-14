@@ -92,7 +92,7 @@ under it.
 | # | Condition | State |
 |---|---|---|
 | 1 | The service answers over TLS at `kt.zmessengers.com` | ✅ |
-| 2 | The shipped client pins its public key, with a witness configured | pinned ✅; `defaultKtWitnessUrl` and `defaultKtWitnessPub` are still empty, so the witness half is not |
+| 2 | The shipped client pins its public key, with a witness configured | pinned ✅; `defaultKtWitnessUrl` and `defaultKtWitnessPub` are still empty, so the witness half is not. `check_ga.py` now reads all four, not `KT_LOG_PUB` alone |
 | 3 | A mirror run by someone other than the operator has verified a head | ❌ — needs a second person |
 | 4 | The operator's own account appears in it | the maintainer's to confirm from Settings › Transparency log |
 
@@ -101,6 +101,19 @@ per condition, and since `render.kt.yaml` and `render.kt-witness.yaml` the
 log and the witness are a Blueprint each. What is left is the second person:
 a witness Blueprint under somebody else's account, `KT_WITNESS_SEED`
 generated on their machine, and the two witness values in the build.
+
+**The two witness values go into `app/lib/core/key_transparency.dart`, beside
+the log's, and not onto a build command.** This was open; the evidence
+settles it. `reproducible` rebuilds the release APK four ways and compares,
+and `REPRODUCIBLE_BUILDS.md` asks an outsider to do the same for G2 — neither
+passes a `--dart-define`, so a value supplied on one build line is a value
+the rebuild cannot reproduce, and G2 would fail on a difference nobody could
+see by reading the repository. It is also what keeps five `flutter build`
+lines across four platform jobs in step: a constant in one file cannot ship
+on Android and not on Windows, which is exactly what "no build passes any
+`--dart-define`" made possible while looking fine. `check_ga.py` refuses a
+transparency value on any build command, and refuses this row a ✅ while any
+of the four defaults is empty.
 
 Until then the log is trusted on one point rather than checked — it is asked
 to show every reader the same history, and nothing outside this project

@@ -579,9 +579,15 @@ would only make it reload the same head and diverge again.
 
 Clients ship with the log's URL and public key and the witness's URL and
 public key: `KT_LOG_URL`, `KT_LOG_PUB`, `KT_WITNESS_URL` (the `/sth.json`
-URL) and `KT_WITNESS_PUB` (`witness.pub` from that file) at build time
-(`--dart-define`, or the defaults in `app/lib/core/key_transparency.dart`),
-and Settings › Transparency log on a device that uses another. A
+URL) and `KT_WITNESS_PUB` (`witness.pub` from that file) at build time, and
+Settings › Transparency log on a device that uses another.
+
+For **your own** builds either works: `--dart-define=KT_LOG_PUB=…` or the
+defaults in `app/lib/core/key_transparency.dart`. For **Z's own releases**
+only the second does, and `check_ga.py` enforces it — the `reproducible` job
+and every outside rebuild (`REPRODUCIBLE_BUILDS.md`) build with no defines,
+so a value on a build command is one the rebuild cannot reproduce, and a
+value on a build command can be given to Android and not to Windows. A
 self‑hosted client points at a self‑hosted log or at none; the states it
 shows in each case are in `adr/0006`.
 

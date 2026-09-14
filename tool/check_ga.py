@@ -60,21 +60,75 @@ def main() -> int:
             "than one language."
         )
 
-    # G3, the other way round: the row may not read ✅ while the client
-    # ships without a pinned log key. "Live" (adr/0006) includes the client
-    # pinning the key; an empty default means no log is configured and the
-    # client is inert, whatever the deployment says.
+    # G3, the other way round: the row may not read ✅ while the client ships
+    # without all four transparency values. "Live" (adr/0006) includes the
+    # client pinning the log's key AND holding a witness it can check it
+    # against; an empty default means that half is not configured and the
+    # client is inert in it, whatever the deployment says.
+    #
+    # This read `KT_LOG_PUB` alone, which is how a build could ship with no
+    # witness at all — or with one on Android and not on Windows — and pass
+    # every guard in the repository. The witness is condition 2 of G3's own
+    # four-row table; nothing was reading it.
     g3_row = next((line for line in text.splitlines()
                    if re.match(r"\|\s*G3\s*\|", line)), "")
     client = ROOT / "app" / "lib" / "core" / "key_transparency.dart"
     if "✅" in g3_row and client.exists():
-        m = re.search(r"'KT_LOG_PUB',\s*defaultValue:\s*'([^']*)'", client.read_text())
-        if m is None or m.group(1).strip() == "":
+        src = client.read_text()
+        for name, what in (
+            ("KT_LOG_URL", "the log's address"),
+            ("KT_LOG_PUB", "the log's public key"),
+            ("KT_WITNESS_URL", "the witness's record URL"),
+            ("KT_WITNESS_PUB", "the witness's public key"),
+        ):
+            m = re.search(
+                rf"String\.fromEnvironment\(\s*'{name}'\s*,\s*defaultValue:\s*'([^']*)'",
+                src, re.S)
+            if m is None or m.group(1).strip() == "":
+                problems.append(
+                    f"GA_CHECKLIST.md marks G3 ✅ but {what} ({name}) is empty "
+                    f"in app/lib/core/key_transparency.dart. A log nobody's "
+                    f"client pins is not live, and a witness nobody's client "
+                    f"holds is not a witness."
+                )
+
+    # And the values live in the SOURCE, not in a build command.
+    #
+    # Not a style preference. `reproducible` rebuilds the release APK four
+    # ways and compares, PROVENANCE.md asks an outsider to do the same, and
+    # neither passes any `--dart-define` — so a value supplied on one build
+    # command is a value the rebuild cannot reproduce, and G2 fails on a
+    # difference nobody can see by reading the repository. It is also the only
+    # thing that keeps five `flutter build` lines across four platform jobs
+    # from drifting: a constant in one file cannot ship on Android and not on
+    # Windows.
+    wf = ROOT / ".github" / "workflows" / "build.yml"
+    if not wf.exists():
+        problems.append(
+            ".github/workflows/build.yml is missing, so the rule below — that "
+            "no build passes a transparency value on the command line — was "
+            "checked against nothing."
+        )
+    else:
+        wf_text = wf.read_text()
+        if "flutter build" not in wf_text:
             problems.append(
-                "GA_CHECKLIST.md marks G3 ✅ but the client's pinned log key "
-                "(defaultKtLogPub in app/lib/core/key_transparency.dart) is "
-                "empty. A log nobody's client pins is not live."
+                ".github/workflows/build.yml contains no `flutter build`, so "
+                "this check has nothing to judge. Fix the check before "
+                "trusting it."
             )
+        for i, line in enumerate(wf_text.splitlines(), 1):
+            if "--dart-define" in line and "KT_" in line:
+                problems.append(
+                    f".github/workflows/build.yml:{i} passes a transparency "
+                    f"value as a --dart-define. The `reproducible` job and "
+                    f"every outside rebuild (PROVENANCE.md) build without it, "
+                    f"so the artifact they produce is not the one shipped — "
+                    f"and a value in a build command can be given to one "
+                    f"platform and not another. Put it in "
+                    f"app/lib/core/key_transparency.dart, where there is one "
+                    f"copy and every job gets it."
+                )
 
     # G7 — iOS
     ios = (ROOT / "app" / "ios").exists()

@@ -3344,3 +3344,37 @@ direction; the phases, their order and both ordering arguments stand.
    Six tests, each mutation-checked. **A signature checked against a key that
    arrived beside it is not a second opinion. It is the same opinion, in a
    second envelope.**
+
+90. **The guard that was going to prove the witness shipped read one value of
+    four.**
+
+   `check_ga.py` refuses G3 a ✅ while the client's pinned log key is empty.
+   It read `KT_LOG_PUB` and nothing else — so a build that shipped **no
+   witness at all**, or a witness on Android and not on Windows, passed every
+   guard in the repository while G3's own four-row table names the witness as
+   condition 2. It reads all four now (`KT_LOG_URL`, `KT_LOG_PUB`,
+   `KT_WITNESS_URL`, `KT_WITNESS_PUB`) and names which one is missing.
+
+   **And it settles where those values live**, which was an open decision:
+   in `app/lib/core/key_transparency.dart`, beside the log's, never on a
+   build command. Not a preference — the `reproducible` job builds the
+   release APK four ways and compares, and `REPRODUCIBLE_BUILDS.md` asks an
+   outsider to do the same for G2, and **neither passes a `--dart-define`**.
+   A value supplied on one build line is therefore a value no rebuild can
+   reproduce, and G2 would fail on a difference nobody could find by reading
+   the repository. It is also the only thing keeping five `flutter build`
+   lines across four platform jobs in step: a constant in one file cannot
+   ship on one platform and not another. `check_ga.py` refuses any `KT_`
+   `--dart-define` in `build.yml` and says why.
+
+   Both rules are anchored, because an absence-check is the easiest kind of
+   check to make vacuous: the workflow must exist and must contain a
+   `flutter build`, or the check refuses rather than passing over nothing —
+   entry 87's lesson, applied to the guard written the same week.
+
+   Mutation-checked three ways: G3 marked ✅ names both empty witness values;
+   a `--dart-define=KT_WITNESS_PUB=…` on the APK build names the line; the
+   workflow removed names itself.
+
+   **A guard that reads one of the four things a claim rests on is a guard
+   for one-quarter of the claim, reported as the whole.**
