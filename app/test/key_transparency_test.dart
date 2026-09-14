@@ -22,6 +22,9 @@ library;
 //  7. a log that answers everything correctly EXCEPT that it leaves the
 //     rogue entry out of the history is still caught: the authenticated
 //     `latest` is judged too, not only what the history volunteers.
+//  8. a test process contacts a log on loopback and no other: the defaults
+//     name the production log, and every test that builds a ChatService
+//     gets them.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -35,6 +38,38 @@ import 'package:zapp/core/models.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
+
+/// A host with nothing in it: criterion 8 is about whether a request is made
+/// at all, so there is nothing for the check to walk.
+class _EmptyHost implements KtHost {
+  @override
+  Future<List<KtContactInput>> ktContacts() async => const [];
+  @override
+  Future<KtOwnInput?> ktOwn() async => null;
+  @override
+  Future<bool> ktInstallFromLog(String rid, SignedDeviceList list) async =>
+      false;
+  @override
+  void ktChanged() {}
+}
+
+/// Counts what reached the network. Every answer is a failure, so a check
+/// that DOES run cannot accidentally look like a check that was refused.
+class _CountingFetcher implements KtFetcher {
+  final List<Uri> gets = [];
+  final List<Uri> posts = [];
+  @override
+  Future<KtResponse> get(Uri url) async {
+    gets.add(url);
+    return KtResponse(500, '{}');
+  }
+
+  @override
+  Future<KtResponse> post(Uri url, String jsonBody) async {
+    posts.add(url);
+    return KtResponse(500, '{}');
+  }
+}
 
 Future<int> freePort() async {
   final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
@@ -575,5 +610,47 @@ void main() {
         reason: 'the authenticated latest is judged, not only the history');
     expect(ben.kt.ownAlert!.version, 9);
     expect(ben.kt.ownAlert!.fpB64, b64(fakeFp));
+  });
+
+  test('8. a test process contacts a log on loopback and no other', () async {
+    // The build-time defaults name the production log, and a test that builds
+    // a ChatService gets them unless it says otherwise — which all but this
+    // file did. That meant live lookups against kt.zmessengers.com from every
+    // run, and publishes into it, because a test identity is a fresh account
+    // root whose baseline list `ktOwn()` signs on demand. It also made the
+    // suite depend on a network round trip: a check in flight overwrites a
+    // contact status a test set on purpose.
+    final dir = await Directory.systemTemp.createTemp('z_kt_guard');
+    addTearDown(() => dir.delete(recursive: true).catchError((_) => dir));
+    final vault = await Vault.open(rootOverride: dir);
+
+    KeyTransparency ktWith(String url, _CountingFetcher f) => KeyTransparency(
+          vault: vault,
+          host: _EmptyHost(),
+          fetcher: f,
+          config: KtConfig(logUrl: url, logPubB64: b64(Uint8List(32))),
+        );
+
+    // The production log, named exactly as the shipped defaults name it.
+    final live = _CountingFetcher();
+    final toLive = ktWith('https://kt.zmessengers.com', live);
+    toLive.start();
+    await toLive.check();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(live.gets, isEmpty,
+        reason: 'a test must not read from the production transparency log');
+    expect(live.posts, isEmpty,
+        reason: 'and must certainly not publish into it — an entry in an '
+            'append-only log cannot be taken back');
+    toLive.dispose();
+
+    // Loopback is the exemption, and it has to actually work: this file's
+    // other seven criteria are driven against a log on 127.0.0.1.
+    final local = _CountingFetcher();
+    final toLocal = ktWith('http://127.0.0.1:1', local);
+    await toLocal.check();
+    expect(local.gets, isNotEmpty,
+        reason: 'a loopback log is what a test SHOULD be talking to');
+    toLocal.dispose();
   });
 }

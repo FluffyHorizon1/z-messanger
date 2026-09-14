@@ -359,6 +359,42 @@ class KeyTransparency {
   /// How soon after a contact's list changes it is re-checked.
   Duration recheckDelay = const Duration(seconds: 30);
 
+  /// True inside `flutter test`, which sets this for every test process.
+  static final bool _inFlutterTest =
+      Platform.environment.containsKey('FLUTTER_TEST');
+
+  /// Under `flutter test`, a log that is not on loopback is not contacted.
+  ///
+  /// A test that builds a `ChatService` gets the build-time defaults unless
+  /// it says otherwise, and since the log key was pinned those defaults name
+  /// the **production** log. So every test that built one was doing live
+  /// lookups against `kt.zmessengers.com` — and publishing to it: a test
+  /// identity is a fresh account root, `ktOwn()` signs its baseline list on
+  /// demand, so `canPublish` is true and `_checkOwn` publishes. That is one
+  /// permanent label in an append-only log per test client, per run, from CI
+  /// and from every developer's machine.
+  ///
+  /// It also made the suite's results depend on a network round trip.
+  /// `_checkContacts` ends in `contacts[c.rid] = next`, which replaces a
+  /// status wholesale — including one a test set deliberately. A check still
+  /// in flight from `start()` when `group_fanout_test` forced a transparency
+  /// conflict wiped that conflict part-way through the test, and rows that
+  /// should have been held were sent instead. On a fast machine the check
+  /// finished first and the test passed; on a loaded runner talking to a
+  /// loaded log it did not, which is why that test failed only in CI.
+  ///
+  /// Loopback is exempt because that is what a test SHOULD be talking to:
+  /// `key_transparency_test.dart` runs `kt/server.js` on 127.0.0.1 and
+  /// drives it, and is unaffected by this.
+  bool get _offLimitsInTest {
+    if (!_inFlutterTest) return false;
+    final host = Uri.tryParse(config.logUrl.trim())?.host ?? '';
+    return !(host.isEmpty ||
+        host == 'localhost' ||
+        host == '127.0.0.1' ||
+        host == '::1');
+  }
+
   KtTreeHead? head;
   KtFault? fault;
   KtOwnAlert? ownAlert;
@@ -463,6 +499,7 @@ class KeyTransparency {
   /// Start the periodic check; the first runs at once.
   void start() {
     _timer?.cancel();
+    if (_offLimitsInTest) return;
     _timer = Timer.periodic(checkEvery, (_) => unawaited(check()));
     unawaited(check());
   }
@@ -633,7 +670,7 @@ class KeyTransparency {
   }
 
   Future<void> _checkOnce({Set<String>? only}) async {
-    if (!config.enabled) return;
+    if (!config.enabled || _offLimitsInTest) return;
     final logPub = config.logPub!;
     _dirty.removeAll(only ?? const {});
     if (fault == null) {
@@ -1088,7 +1125,7 @@ class KeyTransparency {
 
   Future<void> _flushPublishOnce() async {
     final req = _pendingPublish;
-    if (req == null || !config.enabled) return;
+    if (req == null || !config.enabled || _offLimitsInTest) return;
     try {
       KtResponse r;
       try {
