@@ -48,6 +48,10 @@ jobs:
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
+          # Without this every job downloads the SDK afresh, and a failed
+          # download fails the job before a line of code has run. That is
+          # what exit 35 (curl, SSL connect) was.
+          cache: true
       - name: Protocol + integration tests (through the real relay)
         working-directory: protocol
         run: |
@@ -153,7 +157,12 @@ jobs:
         working-directory: app
         run: |
           flutter pub get
-          flutter test
+          # --concurrency=1: the heavy files each start a relay and several
+          # clients, and the runner has few cores. Running them at once is
+          # what made unrelated tests time out on a loaded machine while
+          # passing alone. Serialising costs wall time and buys a signal
+          # that means something.
+          flutter test --concurrency=1
       - name: Theme screenshots (light + dark, rendered by screenshots_test.dart)
         uses: actions/upload-artifact@v4
         with:
@@ -182,6 +191,10 @@ jobs:
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
+          # Without this every job downloads the SDK afresh, and a failed
+          # download fails the job before a line of code has run. That is
+          # what exit 35 (curl, SSL connect) was.
+          cache: true
       - name: Configure release signing (skipped if secrets absent)
         working-directory: z/app/android
         env:
@@ -243,6 +256,10 @@ jobs:
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
+          # Without this every job downloads the SDK afresh, and a failed
+          # download fails the job before a line of code has run. That is
+          # what exit 35 (curl, SSL connect) was.
+          cache: true
       - working-directory: app
         run: |
           flutter pub get
@@ -265,6 +282,10 @@ jobs:
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
+          # Without this every job downloads the SDK afresh, and a failed
+          # download fails the job before a line of code has run. That is
+          # what exit 35 (curl, SSL connect) was.
+          cache: true
       - working-directory: app
         run: |
           flutter pub get
@@ -306,6 +327,10 @@ jobs:
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
+          # Without this every job downloads the SDK afresh, and a failed
+          # download fails the job before a line of code has run. That is
+          # what exit 35 (curl, SSL connect) was.
+          cache: true
       - working-directory: app
         run: |
           flutter pub get
@@ -402,6 +427,10 @@ jobs:
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
+          # Without this every job downloads the SDK afresh, and a failed
+          # download fails the job before a line of code has run. That is
+          # what exit 35 (curl, SSL connect) was.
+          cache: true
       - name: Build release APK
         working-directory: ${{ matrix.dir }}/app
         env:
