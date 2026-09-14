@@ -525,6 +525,25 @@ consistency proof from it. A witness run by the log's own operator proves
 little; the value is in the second party, which is why the Blueprint is
 written to be created under someone else's account.
 
+`DIVERGENCE` is permanent, so it is reserved for what the log **signed**. A
+dropped connection, an HTTP 502, a cache serving an empty page — those are
+ordinary errors: the witness logs them, keeps its head, and tries again at
+the next interval. This matters more than it sounds. A witness that cries
+fork whenever a packet is lost is worse than no witness at all, because the
+first real fork is then dismissed as another one of those, and the whole
+point of the thing is that the one time it speaks, somebody believes it. If
+you see `DIVERGENCE`, the log signed a head that does not extend what this
+witness verified, and that is not something a network can cause.
+
+A witness also repairs itself after an unclean stop. It writes the new
+entries and fsyncs them, then puts the head in place, so a machine that dies
+between the two leaves entries no head covers. On the next start it says how
+many bytes it dropped and fetches them again — those entries sit above the
+last head it verified, so nothing it has attested to is touched. The
+opposite case, a file with **fewer** entries than the head, it refuses: those
+are under a root the log signed, and no witness may invent them. That needs
+the file back from a backup, or a fresh directory and a resync.
+
 **As a command:**
 
 ```bash

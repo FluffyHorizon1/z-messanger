@@ -3242,3 +3242,65 @@ direction; the phases, their order and both ordering arguments stand.
    **The difference between a guard that works and a guard that reports on
    nothing is not visible in its output. It is only visible if you break the
    thing it watches and check that it notices.**
+
+88. **The witness cried fork when a packet was lost, and could not open its
+    own directory after an unclean stop.**
+
+   Two faults in `kt/lib/mirror.js`, both about the difference between a log
+   that misbehaved and a network that did — which is the whole value of a
+   witness, because a witness is believed exactly once.
+
+   **A dropped connection mid-pagination was reported as a fork.** `sync`
+   appended each page to the trees as it arrived, and only a `Divergence` set
+   `poisoned`. An ordinary error — a socket hang-up, a 502 — left `entries`
+   ahead of both the disk and the last verified head, and the NEXT sync asked
+   the log to prove consistency from a size this mirror had never had a head
+   for. The log cannot, so it printed `the head of size 15 does not extend the
+   head of size 12` and latched: in `--serve` mode the witness stops following
+   the log for ever and serves a stale head, from one dropped connection.
+   Reproduced at both ends: on a first sync, where `this.head` is still null,
+   it was not even a divergence but `TypeError: Cannot read properties of null
+   (reading 'logRoot')`.
+
+   The fix is a rule rather than a patch: **nothing is appended until every
+   page has been fetched.** Rewinding is not an option — the log tree, the
+   sparse map and the version index all mutate, and rebuilding them measured
+   **7.3 s at 7,000 entries and 65 s at 50,000**, so a rollback on every
+   network blip would have been a worse bug than the one being fixed. The
+   cost of fetching first is holding the delta twice for the length of the
+   fetch, and the delta is on its way into `entries` regardless.
+
+   The same rule covers the commit: a failed write to `entries.jsonl` or to
+   `sth.json` rereads the directory instead of carrying state no head covers.
+   The old comment claimed a mirror that threw there would "re-fetch the same
+   entries next time" — it would not, for exactly the reason above, and a
+   comment asserting the opposite of what the code does is worse than none.
+
+   **And `DIVERGENCE` is now reserved for what the log signed.** A consistency
+   object with the wrong fields and a page with no entries used to poison the
+   mirror permanently; both are what a cache, a captive portal or an error
+   page produces, and neither says anything about what the log signed. They
+   are ordinary errors now and the mirror tries again. Entries that fail to
+   reproduce the signed roots, a version that goes backwards, a value that
+   does not match its commitment: those still poison, because the log is
+   answerable for them.
+
+   **The crash window left a directory nothing could open.** `sync` fsyncs the
+   entries and then renames `sth.json` into place, so a machine that dies
+   between the two leaves entries the stored head does not cover — and `load`
+   refused it, for ever, with no repair path: `head size 9, 13 entries on
+   disk`. The head is read first now, because it is signed and it is the
+   authority on how many lines count; the surplus is truncated and the tool
+   says how many bytes it dropped. Nothing is lost and nothing is rewritten:
+   those lines sit ABOVE the last head the mirror verified, so they are part
+   of no history it has attested to, and the next sync fetches and re-verifies
+   them against a signed root. That is precisely why `tools/repair.js` refuses
+   to do the same to the LOG's own file — there a dropped line is history the
+   log has signed, and a tool that trims it rewrites what a log exists to fix.
+   The opposite direction, fewer entries than the head, still refuses: those
+   are under a signed root and cannot be re-derived from the directory.
+
+   Five tests, each mutation-checked by putting the old behaviour back.
+
+   **A witness that cries fork on packet loss is worse than no witness,
+   because the first real fork is then dismissed as another one of those.**

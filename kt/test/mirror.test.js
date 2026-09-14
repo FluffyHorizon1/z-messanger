@@ -253,6 +253,200 @@ test('a log that serves a consistent head but entries that do not hash to it is 
   }
 });
 
+test('a dropped connection mid-pagination is not a fork: the mirror stays where it was and the next sync catches up', async () => {
+  const accts = [account('a'), account('b'), account('c')];
+  const log = new KtLog({ store: new MemoryStore(), signingKey: logKey, now });
+  for (let i = 0; i < 9; i++) log.publish(publishFor(accts[i % 3], Math.floor(i / 3) + 1));
+  const server = await serve(log);
+  const dir = tmpdir();
+  try {
+    let pages = 0;
+    let dropAt = 2; // the second page of entries, so one page is already in hand
+    const flaky = async (url) => {
+      if (url.includes('/kt/v1/entries?')) {
+        pages += 1;
+        if (pages === dropAt) throw new Error('socket hang up');
+      }
+      const res = await fetch(url, { headers: { accept: 'application/json' } });
+      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+      return res.json();
+    };
+
+    // ---- the first sync ever: there is no head to fall back to ----
+    const m = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, pageSize: 3, fetchJson: flaky, now }).load();
+    await assert.rejects(m.sync(), (e) => !(e instanceof Divergence) && /socket hang up/.test(e.message));
+    assert.equal(m.entries.length, 0, 'nothing was appended: a page in hand is not a page believed');
+    assert.equal(m.head, null);
+    assert.ok(!m.poisoned, 'a dropped connection is not evidence of a fork');
+    assert.ok(!fs.existsSync(path.join(dir, 'sth.json')));
+    dropAt = -1;
+    assert.deepEqual(await m.sync().then((r) => [r.from, r.to]), [0, 9]);
+
+    // ---- an established mirror: the same drop, with a head to keep ----
+    for (let i = 9; i < 15; i++) log.publish(publishFor(accts[i % 3], Math.floor(i / 3) + 1));
+    pages = 0;
+    dropAt = 2;
+    await assert.rejects(m.sync(), (e) => !(e instanceof Divergence) && /socket hang up/.test(e.message));
+    assert.equal(m.entries.length, 9, 'still exactly the head it last verified');
+    assert.equal(m.head.size, 9);
+    assert.ok(!m.poisoned);
+    dropAt = -1;
+    // Without the fix this is `the head of size 15 does not extend the head of
+    // size 12` and `poisoned` latches: in --serve mode the witness stops
+    // following the log for ever, from one dropped connection.
+    assert.deepEqual(await m.sync().then((r) => [r.from, r.to]), [9, 15]);
+    assert.ok(m.tree.root.equals(log.tree.root));
+    assert.ok(m.map.root.equals(log.map.root));
+  } finally {
+    await server.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a malformed response is an ordinary error, not a divergence: a fork is something the log signed', async () => {
+  const a = account('a');
+  const log = new KtLog({ store: new MemoryStore(), signingKey: logKey, now });
+  for (let v = 1; v <= 4; v++) log.publish(publishFor(a, v));
+  const server = await serve(log);
+  const dir = tmpdir();
+  try {
+    // An empty page, which is what a cache or an error page in front of the
+    // log produces. The head it served is perfectly well signed.
+    const empty = async (url) => {
+      const j = await (await fetch(url, { headers: { accept: 'application/json' } })).json();
+      if (url.includes('/kt/v1/entries?')) return { entries: [] };
+      return j;
+    };
+    const m = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, fetchJson: empty, now }).load();
+    await assert.rejects(m.sync(), (e) => !(e instanceof Divergence) && /served no entries/.test(e.message));
+    assert.ok(!m.poisoned, 'poisoning is permanent, so it is reserved for signed evidence');
+    // And it recovers on its own once the path is honest again.
+    const good = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, now }).load();
+    assert.deepEqual(await good.sync().then((r) => [r.from, r.to]), [0, 4]);
+
+    // A consistency proof of the wrong shape, once the mirror has a head.
+    log.publish(publishFor(a, 5));
+    const wrongShape = async (url) => {
+      const j = await (await fetch(url, { headers: { accept: 'application/json' } })).json();
+      if (url.includes('/kt/v1/consistency')) return { first: 1, second: 2, proof: [] };
+      return j;
+    };
+    const m2 = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, fetchJson: wrongShape, now }).load();
+    await assert.rejects(m2.sync(), (e) => !(e instanceof Divergence) && /wrong shape/.test(e.message));
+    assert.ok(!m2.poisoned);
+    assert.equal(m2.entries.length, 4, 'and it kept the head it had');
+  } finally {
+    await server.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the crash window: entries fsynced and the head not yet renamed loads again, and the surplus is dropped', async () => {
+  const accts = [account('a'), account('b'), account('c')];
+  const log = new KtLog({ store: new MemoryStore(), signingKey: logKey, now });
+  for (let i = 0; i < 9; i++) log.publish(publishFor(accts[i % 3], Math.floor(i / 3) + 1));
+  const server = await serve(log);
+  const dir = tmpdir();
+  const entriesFile = path.join(dir, 'entries.jsonl');
+  const sthFile = path.join(dir, 'sth.json');
+  try {
+    const m = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, now }).load();
+    await m.sync();
+    const headAt9 = fs.readFileSync(sthFile);
+    for (let i = 9; i < 13; i++) log.publish(publishFor(accts[i % 3], Math.floor(i / 3) + 1));
+    await m.sync();
+    const bytesAt13 = fs.statSync(entriesFile).size;
+    // `sync` fsyncs the entries and only then renames sth.json into place. A
+    // machine that dies between the two leaves exactly this.
+    fs.writeFileSync(sthFile, headAt9);
+
+    const again = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, now }).load();
+    assert.equal(again.entries.length, 9, 'the stored head is the authority on how many lines count');
+    assert.equal(again.head.size, 9);
+    assert.ok(again.repaired > 0, 'and it says how much it dropped');
+    assert.ok(fs.statSync(entriesFile).size < bytesAt13, 'the surplus is gone from the file, not just from memory');
+    // The repair is a repair, not a decision retaken on every start.
+    const third = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, now }).load();
+    assert.equal(third.repaired, 0);
+    assert.deepEqual(await again.sync().then((r) => [r.from, r.to]), [9, 13]);
+
+    // The other direction is not repairable and still refuses: those entries
+    // are under a root the log signed.
+    const good = fs.readFileSync(entriesFile, 'utf8').split('\n').filter(Boolean);
+    fs.writeFileSync(entriesFile, good.slice(0, 11).join('\n') + '\n');
+    assert.throws(() => new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, now }).load(),
+                  /head size 13, 11 entries on disk/);
+  } finally {
+    await server.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a head that cannot be written leaves the mirror on the head it last verified', async () => {
+  const accts = [account('a'), account('b'), account('c')];
+  const log = new KtLog({ store: new MemoryStore(), signingKey: logKey, now });
+  for (let i = 0; i < 6; i++) log.publish(publishFor(accts[i % 3], Math.floor(i / 3) + 1));
+  const server = await serve(log);
+  const dir = tmpdir();
+  try {
+    const m = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, now }).load();
+    await m.sync();
+    assert.equal(m.head.size, 6);
+    for (let i = 6; i < 12; i++) log.publish(publishFor(accts[i % 3], Math.floor(i / 3) + 1));
+    // A directory where the temporary file has to go. Every write to it fails,
+    // which is a stand-in for the disk that is full or the mount that went
+    // read-only — after the entries have already been fsynced.
+    fs.mkdirSync(path.join(dir, 'sth.json.tmp'));
+    await assert.rejects(m.sync(), (e) => !(e instanceof Divergence));
+    assert.equal(m.head.size, 6, 'the head in memory is the one on disk');
+    assert.equal(m.entries.length, 6, 'and memory holds nothing the head does not cover');
+    assert.equal(m.record().size, 6);
+    fs.rmdirSync(path.join(dir, 'sth.json.tmp'));
+    // Without the recovery this is a consistency proof from size 12 against a
+    // head of size 6, which the log cannot give: a fork, reported by a mirror
+    // whose only problem was a write that failed.
+    assert.deepEqual(await m.sync().then((r) => [r.from, r.to]), [6, 12]);
+    assert.ok(m.tree.root.equals(log.tree.root));
+  } finally {
+    await server.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a recovery that cannot read the directory refuses to build on what is left', async () => {
+  const accts = [account('a'), account('b'), account('c')];
+  const log = new KtLog({ store: new MemoryStore(), signingKey: logKey, now });
+  for (let i = 0; i < 6; i++) log.publish(publishFor(accts[i % 3], Math.floor(i / 3) + 1));
+  const server = await serve(log);
+  const dir = tmpdir();
+  const sthFile = path.join(dir, 'sth.json');
+  try {
+    const m = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, now }).load();
+    await m.sync();
+    for (let i = 6; i < 12; i++) log.publish(publishFor(accts[i % 3], Math.floor(i / 3) + 1));
+
+    // The recovery path itself fails: the directory it wants to re-read is
+    // not readable. Memory is then neither the old state nor a new one, and
+    // the only safe thing is to refuse until it is.
+    const goodHead = fs.readFileSync(sthFile);
+    fs.writeFileSync(sthFile, '{ not json');
+    m._recover();
+    assert.ok(m.needsReload);
+    await assert.rejects(m.sync());
+    assert.ok(m.needsReload, 'and it is still true, because nothing was fixed');
+    assert.equal(fs.readFileSync(path.join(dir, 'entries.jsonl'), 'utf8').split('\n').filter(Boolean).length, 6,
+                 'and it appended nothing to a file it could not account for');
+
+    fs.writeFileSync(sthFile, goodHead);
+    assert.deepEqual(await m.sync().then((r) => [r.from, r.to]), [6, 12]);
+    assert.ok(!m.needsReload);
+    assert.ok(m.tree.root.equals(log.tree.root));
+  } finally {
+    await server.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('the command-line tool: exit 0 when the head verifies, 2 on divergence, 1 when unreachable', async () => {
   const a = account('a');
   const publishes = [];

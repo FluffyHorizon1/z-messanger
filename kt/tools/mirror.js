@@ -179,6 +179,12 @@ async function main() {
     console.error(`mirror: ${e.message}`);
     return 1;
   }
+  if (mirror.repaired > 0) {
+    // Said out loud. A directory that quietly repairs itself on every start
+    // is a directory something is wrong with, and the operator should be the
+    // one deciding whether a machine that keeps dying mid-commit is fine.
+    console.log(`mirror: dropped ${mirror.repaired} byte(s) of entries the stored head of size ${mirror.head.size} does not cover — a commit that did not finish; they will be fetched again and re-verified`);
+  }
 
   const state = { diverged: false, verifiedAt: null, lastSyncAt: null, lastError: null };
   let server = null;
