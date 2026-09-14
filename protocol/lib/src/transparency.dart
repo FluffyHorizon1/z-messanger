@@ -632,13 +632,24 @@ class KtWitnessRecord {
     );
   }
 
-  /// Both signatures: the log's over the head, the witness's over the head.
-  /// [expectedWitnessPub], when given, must be the record's key.
-  Future<bool> verify(Uint8List logPub, {Uint8List? expectedWitnessPub}) async {
-    if (expectedWitnessPub != null &&
-        !constantTimeEquals(expectedWitnessPub, witnessPub)) {
-      return false;
-    }
+  /// Both signatures: the log's over the head, the witness's over the head,
+  /// under the key the caller pinned.
+  ///
+  /// [expectedWitnessPub] is REQUIRED, and not optional-with-a-default,
+  /// because the parameter it replaced was `Uint8List?` and a caller that
+  /// passed nothing got a check with no assurance in it: the record carries
+  /// its own `witness.pub`, so verifying the co-signature against that key
+  /// only establishes that whoever served the record could sign it. The log's
+  /// own operator can do that. A witness is worth something precisely because
+  /// its key was pinned by somebody who is not the log, and a signature
+  /// checked against a key that arrived beside it is not a second opinion —
+  /// it is the same opinion, in a second envelope.
+  ///
+  /// So the pin is the argument. There is no way to ask this question without
+  /// answering "against whose key?" first.
+  Future<bool> verify(Uint8List logPub,
+      {required Uint8List expectedWitnessPub}) async {
+    if (!constantTimeEquals(expectedWitnessPub, witnessPub)) return false;
     if (!await head.verify(logPub)) return false;
     return _verify(witnessPub, ktWitnessInput(head), witnessSig);
   }

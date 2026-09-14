@@ -3304,3 +3304,43 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A witness that cries fork on packet loss is worse than no witness,
    because the first real fork is then dismissed as another one of those.**
+
+89. **A witness accepted with no pinned key, which is a check that appears to
+    run.**
+
+   `KtConfig.hasWitness` was `witnessUrl.trim().isNotEmpty` — the address
+   alone — and `KtWitnessRecord.verify` took `Uint8List? expectedWitnessPub`
+   and skipped the comparison when it was null. So a self-hoster who set a
+   witness address and left the key empty got a check that fetches, verifies
+   two signatures, sets `witnessOkMs` and shows a tick, with **zero**
+   assurance in it: with no pinned key to compare against, the co-signature
+   was verified against `witness.pub` from inside the record, which
+   establishes only that whoever answered the address could sign. The log's
+   own operator can do that. The single thing a witness is for — that it is
+   somebody else — was the thing not being checked.
+
+   Three changes, because one of them alone leaves the hole reachable:
+
+   * `expectedWitnessPub` is **required** and non-nullable. There is no way
+     left to ask the question without answering "against whose key?" first.
+     The protocol test asserted `expect(await rec.verify(logPub), isTrue)` —
+     the bug written down as an expectation — and now asserts the pin.
+   * `hasWitness` requires an address AND a key that parses to 32 bytes. A
+     half-set pair is not consulted at all: no request is made, so a client
+     that was carrying one does not even tell that address it exists.
+   * `setConfig` **refuses** a half-set pair, with the reason as an l10n key
+     so core does not decide what language the user reads. Settings edits the
+     address and the key on one screen for the same reason — two rows cannot
+     express the rule, and editing them one at a time means passing through
+     exactly the bad state to reach a good one.
+
+   Found while writing the test: `_offLimitsInTest`, the guard that stops a
+   test process talking to the production log, judged only the log's address.
+   The witness's was unjudged — invisible today because
+   `defaultKtWitnessUrl` is empty, and a live grenade the moment a build
+   defines one, since every test that stands up a ChatService would poll a
+   stranger's server on a timer. It judges both now, and criterion 6 holds it.
+
+   Six tests, each mutation-checked. **A signature checked against a key that
+   arrived beside it is not a second opinion. It is the same opinion, in a
+   second envelope.**

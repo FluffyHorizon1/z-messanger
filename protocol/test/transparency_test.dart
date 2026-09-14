@@ -355,13 +355,16 @@ void main() {
       final rec = KtWitnessRecord.fromJson(obj(jsonDecode(w['record_json'] as String)));
       expect(rec.witnessPub, hx(w['witness_pub']));
       expect(ktWitnessInput(rec.head), hx(w['witness_input']));
-      expect(await rec.verify(logPub), isTrue);
+      // `expectedWitnessPub` used to be optional, and this line used to read
+      // `expect(await rec.verify(logPub), isTrue)` — the bug written down as
+      // an expectation. A record verified against the key it carries says
+      // only that whoever served it could sign it.
       expect(await rec.verify(logPub, expectedWitnessPub: rec.witnessPub), isTrue);
       expect(await rec.verify(logPub, expectedWitnessPub: bobPub), isFalse);
-      expect(await rec.verify(bobPub), isFalse);
+      expect(await rec.verify(bobPub, expectedWitnessPub: rec.witnessPub), isFalse);
       final other = KtWitnessRecord(
           head: heads[2], witnessPub: rec.witnessPub, witnessSig: rec.witnessSig, verifiedAt: rec.verifiedAt);
-      expect(await other.verify(logPub), isFalse);
+      expect(await other.verify(logPub, expectedWitnessPub: rec.witnessPub), isFalse);
     });
   });
 }

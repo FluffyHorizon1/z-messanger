@@ -1533,13 +1533,29 @@ class AppLocalizationsEs extends AppLocalizations {
   String get stKtLogKeyTitle => 'Clave pública del registro (base64)';
 
   @override
-  String get stKtWitness => 'Dirección del testigo';
+  String get stKtWitness => 'Testigo';
 
   @override
   String get stKtWitnessTitle => 'URL del registro del testigo';
 
   @override
-  String get stKtWitnessKey => 'Clave pública del testigo';
+  String get stKtWitnessEdit => 'Testigo';
+
+  @override
+  String get stKtWitnessHelp =>
+      'Un testigo es una dirección y la clave que fijas para ella. Ambas, o ninguna: una dirección sola permitiría que quien responda firme junto al registro con una clave que nunca elegiste.';
+
+  @override
+  String get stKtWitnessNeedsKey =>
+      'Esa dirección necesita una clave. Sin ella, quien responda coincide con el registro usando una clave que nunca fijaste, y la comprobación no significa nada.';
+
+  @override
+  String get stKtWitnessNeedsUrl =>
+      'Esa clave necesita una dirección. Por sí sola nunca se usa.';
+
+  @override
+  String get stKtWitnessBadKey =>
+      'Una clave de testigo son 32 bytes, escritos en base64.';
 
   @override
   String get stKtWitnessKeyTitle => 'Clave pública del testigo (base64)';

@@ -585,6 +585,16 @@ and Settings › Transparency log on a device that uses another. A
 self‑hosted client points at a self‑hosted log or at none; the states it
 shows in each case are in `adr/0006`.
 
+**The witness address and its key go in together, and a client with one and
+not the other has no witness.** Setting `KT_WITNESS_URL` and leaving
+`KT_WITNESS_PUB` empty used to give a check that appears in the app, shows a
+tick, and has nothing behind it: with no key to compare against, the
+co‑signature was checked against the key inside the record, so whoever
+answers that address — the log's own operator included — agrees with the log
+using a key nobody chose. The client now ignores a half‑set pair outright
+and Settings refuses to save one, which is why they are edited on one screen
+rather than two.
+
 ### What "live" means
 
 G3 in `GA_CHECKLIST.md` reads ✅ when: the service answers over TLS at its

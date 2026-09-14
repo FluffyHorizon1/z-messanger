@@ -1979,17 +1979,33 @@
   "@stKtLogKeyTitle": {
     "description": "Dialog title for editing the pinned key."
   },
-  "stKtWitness": "Witness address",
+  "stKtWitness": "Witness",
   "@stKtWitness": {
-    "description": "Developer-mode row: the witness record's URL, or empty."
+    "description": "Developer-mode row: the witness's address and pinned key, or empty."
   },
   "stKtWitnessTitle": "Witness record URL",
   "@stKtWitnessTitle": {
-    "description": "Dialog title for editing the witness URL."
+    "description": "Label of the URL field in the witness dialog."
   },
-  "stKtWitnessKey": "Witness public key",
-  "@stKtWitnessKey": {
-    "description": "Developer-mode row: the witness's key, base64, or empty."
+  "stKtWitnessEdit": "Witness",
+  "@stKtWitnessEdit": {
+    "description": "Title of the dialog that edits the witness address and key together."
+  },
+  "stKtWitnessHelp": "A witness is an address and the key you pin for it. Both, or neither — an address alone would let whoever answers it co-sign with a key you never chose.",
+  "@stKtWitnessHelp": {
+    "description": "Explains in the witness dialog why the two fields are saved together. The security wording matters: this is the reason the pair cannot be half-set."
+  },
+  "stKtWitnessNeedsKey": "That address needs a key. Without one, whoever answers it agrees with the log using a key you never pinned, and the check means nothing.",
+  "@stKtWitnessNeedsKey": {
+    "description": "Refusal shown when a witness URL is given with no key. States the consequence rather than the rule."
+  },
+  "stKtWitnessNeedsUrl": "That key needs an address. On its own it is never used.",
+  "@stKtWitnessNeedsUrl": {
+    "description": "Refusal shown when a witness key is given with no URL."
+  },
+  "stKtWitnessBadKey": "A witness key is 32 bytes, written in base64.",
+  "@stKtWitnessBadKey": {
+    "description": "Refusal shown when the witness key is not a 32-byte base64 value."
   },
   "stKtWitnessKeyTitle": "Witness public key (base64)",
   "@stKtWitnessKeyTitle": {

@@ -320,29 +320,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       witnessUrl: svc.kt.config.witnessUrl,
                       witnessPubB64: svc.kt.config.witnessPubB64)),
             ),
+            // One row for the pair. They were two, and two rows cannot express
+            // the rule: an address with no key is not a weaker witness but a
+            // check with nothing behind it, and editing them one at a time
+            // means passing through exactly that state to reach a good one.
             ListTile(
               leading: const Icon(Icons.verified_outlined),
               title: Text(l.stKtWitness),
-              subtitle: Text(svc.kt.config.witnessUrl.isEmpty ? l.stKtNone : svc.kt.config.witnessUrl,
+              subtitle: Text(
+                  svc.kt.config.witnessUrl.isEmpty && svc.kt.config.witnessPubB64.isEmpty
+                      ? l.stKtNone
+                      : [svc.kt.config.witnessUrl, svc.kt.config.witnessPubB64].join('\n'),
                   style: const TextStyle(fontSize: 12)),
-              onTap: () => _editKt(context, svc, l.stKtWitnessTitle, svc.kt.config.witnessUrl,
-                  (v) => KtConfig(
-                      logUrl: svc.kt.config.logUrl,
-                      logPubB64: svc.kt.config.logPubB64,
-                      witnessUrl: v,
-                      witnessPubB64: svc.kt.config.witnessPubB64)),
-            ),
-            ListTile(
-              leading: const Icon(Icons.key_outlined),
-              title: Text(l.stKtWitnessKey),
-              subtitle: Text(svc.kt.config.witnessPubB64.isEmpty ? l.stKtNone : svc.kt.config.witnessPubB64,
-                  style: const TextStyle(fontSize: 12)),
-              onTap: () => _editKt(context, svc, l.stKtWitnessKeyTitle, svc.kt.config.witnessPubB64,
-                  (v) => KtConfig(
-                      logUrl: svc.kt.config.logUrl,
-                      logPubB64: svc.kt.config.logPubB64,
-                      witnessUrl: svc.kt.config.witnessUrl,
-                      witnessPubB64: v)),
+              onTap: () => _editWitness(context, svc),
             ),
             ListTile(
               leading: Icon(Icons.history_toggle_off, color: context.z.warn),
@@ -493,6 +483,83 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (v != null) await svc.setKtConfig(update(v));
+  }
+
+  /// The witness address and its pinned key, edited and saved together.
+  ///
+  /// `KeyTransparencyService.setConfig` refuses a half-set pair, and this
+  /// dialog exists so that refusal is never a dead end: the fields go in
+  /// together, the reason comes back in the user's own language, and the
+  /// dialog stays open with what they typed.
+  Future<void> _editWitness(BuildContext context, ChatService svc) async {
+    final l = AppLocalizations.of(context);
+    final url = TextEditingController(text: svc.kt.config.witnessUrl);
+    final key = TextEditingController(text: svc.kt.config.witnessPubB64);
+    String? error;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: Text(l.stKtWitnessEdit),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(l.stKtWitnessHelp, style: const TextStyle(fontSize: 12)),
+                const SizedBox(height: 12),
+                TextField(
+                    controller: url,
+                    autofocus: true,
+                    decoration: InputDecoration(labelText: l.stKtWitnessTitle)),
+                const SizedBox(height: 8),
+                TextField(
+                    controller: key,
+                    decoration: InputDecoration(labelText: l.stKtWitnessKeyTitle)),
+                if (error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(error!,
+                      style: TextStyle(fontSize: 12, color: ctx.z.danger)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
+            FilledButton(
+              onPressed: () async {
+                final next = KtConfig(
+                  logUrl: svc.kt.config.logUrl,
+                  logPubB64: svc.kt.config.logPubB64,
+                  witnessUrl: url.text.trim(),
+                  witnessPubB64: key.text.trim(),
+                );
+                try {
+                  await svc.setKtConfig(next);
+                  if (ctx.mounted) Navigator.pop(ctx);
+                } on KtConfigInvalid catch (e) {
+                  setLocal(() => error = _witnessReason(l, e.reason));
+                }
+              },
+              child: Text(l.stKtSave),
+            ),
+          ],
+        ),
+      ),
+    );
+    url.dispose();
+    key.dispose();
+  }
+
+  static String _witnessReason(AppLocalizations l, String reason) {
+    switch (reason) {
+      case 'urlWithoutKey':
+        return l.stKtWitnessNeedsKey;
+      case 'keyWithoutUrl':
+        return l.stKtWitnessNeedsUrl;
+      default:
+        return l.stKtWitnessBadKey;
+    }
   }
 
   /// The same words as the disappearing-messages timer for the same

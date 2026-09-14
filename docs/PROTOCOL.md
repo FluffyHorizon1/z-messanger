@@ -1974,9 +1974,13 @@ A client keeps the last head it verified. On each check it MUST:
    between the held `logRoot` and the new one; if `size` equals the held
    size, require both roots to be equal;
 3. if a witness is configured (§19.9), fetch its record, verify the log's
-   signature and the witness's over it, and require it to be consistent with
-   the head: equal roots at equal size, or a verifying consistency proof
-   from the log between the two sizes in either direction;
+   signature and the witness's over it **against the witness key this client
+   pinned**, and require it to be consistent with the head: equal roots at
+   equal size, or a verifying consistency proof from the log between the two
+   sizes in either direction. A witness is an address AND a key: a client
+   holding one without the other MUST treat it as no witness and MUST NOT
+   fetch the record, because a co‑signature checked against the key carried
+   inside the record establishes only that whoever served it could sign it;
 4. only then accept the new head and evaluate proofs under it.
 
 A lookup response (§19.7) carries the head its proofs are relative to. A
@@ -2084,6 +2088,20 @@ witnessInput = utf8("z-kt-witness-v1:") || sthInput
 is a witness; the record is static JSON and may be served from anywhere. A
 client configured with a witness URL and its public key treats a witness
 record that verifies but is inconsistent with the log's head as a log fault.
+Both values or neither: the record names its own signer, so a client that
+has not pinned the key is not checking a second opinion but the same one in
+a second envelope, and the log's own operator can serve it.
+
+A mirror MUST distinguish what the log SIGNED from what the network did.
+Refusing a head is permanent — a witness that has refused stops following
+the log — so it MUST be reached only on a signature, a consistency proof or
+a root that fails. A response that is unreachable, malformed, or empty where
+the head says entries exist is a transport failure: the mirror keeps its
+head, records the error and retries. A mirror MUST NOT apply any part of a
+fetch it has not completed and verified, and MUST NOT leave state beyond the
+last head it accepted: after an incomplete sync its next one begins from
+that head, and entries persisted without the head that covers them are
+discarded on load.
 
 ### 19.10 Vectors and versioning
 

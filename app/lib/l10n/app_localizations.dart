@@ -2516,23 +2516,47 @@ abstract class AppLocalizations {
   /// **'Log public key (base64)'**
   String get stKtLogKeyTitle;
 
-  /// Developer-mode row: the witness record's URL, or empty.
+  /// Developer-mode row: the witness's address and pinned key, or empty.
   ///
   /// In en, this message translates to:
-  /// **'Witness address'**
+  /// **'Witness'**
   String get stKtWitness;
 
-  /// Dialog title for editing the witness URL.
+  /// Label of the URL field in the witness dialog.
   ///
   /// In en, this message translates to:
   /// **'Witness record URL'**
   String get stKtWitnessTitle;
 
-  /// Developer-mode row: the witness's key, base64, or empty.
+  /// Title of the dialog that edits the witness address and key together.
   ///
   /// In en, this message translates to:
-  /// **'Witness public key'**
-  String get stKtWitnessKey;
+  /// **'Witness'**
+  String get stKtWitnessEdit;
+
+  /// Explains in the witness dialog why the two fields are saved together. The security wording matters: this is the reason the pair cannot be half-set.
+  ///
+  /// In en, this message translates to:
+  /// **'A witness is an address and the key you pin for it. Both, or neither — an address alone would let whoever answers it co-sign with a key you never chose.'**
+  String get stKtWitnessHelp;
+
+  /// Refusal shown when a witness URL is given with no key. States the consequence rather than the rule.
+  ///
+  /// In en, this message translates to:
+  /// **'That address needs a key. Without one, whoever answers it agrees with the log using a key you never pinned, and the check means nothing.'**
+  String get stKtWitnessNeedsKey;
+
+  /// Refusal shown when a witness key is given with no URL.
+  ///
+  /// In en, this message translates to:
+  /// **'That key needs an address. On its own it is never used.'**
+  String get stKtWitnessNeedsUrl;
+
+  /// Refusal shown when the witness key is not a 32-byte base64 value.
+  ///
+  /// In en, this message translates to:
+  /// **'A witness key is 32 bytes, written in base64.'**
+  String get stKtWitnessBadKey;
 
   /// Dialog title for editing the witness key.
   ///

@@ -1517,13 +1517,29 @@ class AppLocalizationsEn extends AppLocalizations {
   String get stKtLogKeyTitle => 'Log public key (base64)';
 
   @override
-  String get stKtWitness => 'Witness address';
+  String get stKtWitness => 'Witness';
 
   @override
   String get stKtWitnessTitle => 'Witness record URL';
 
   @override
-  String get stKtWitnessKey => 'Witness public key';
+  String get stKtWitnessEdit => 'Witness';
+
+  @override
+  String get stKtWitnessHelp =>
+      'A witness is an address and the key you pin for it. Both, or neither — an address alone would let whoever answers it co-sign with a key you never chose.';
+
+  @override
+  String get stKtWitnessNeedsKey =>
+      'That address needs a key. Without one, whoever answers it agrees with the log using a key you never pinned, and the check means nothing.';
+
+  @override
+  String get stKtWitnessNeedsUrl =>
+      'That key needs an address. On its own it is never used.';
+
+  @override
+  String get stKtWitnessBadKey =>
+      'A witness key is 32 bytes, written in base64.';
 
   @override
   String get stKtWitnessKeyTitle => 'Witness public key (base64)';

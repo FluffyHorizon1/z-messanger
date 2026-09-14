@@ -42,6 +42,16 @@ const String defaultKtLogPub = String.fromEnvironment('KT_LOG_PUB',
 const String defaultKtWitnessUrl = String.fromEnvironment('KT_WITNESS_URL', defaultValue: '');
 const String defaultKtWitnessPub = String.fromEnvironment('KT_WITNESS_PUB', defaultValue: '');
 
+/// A configuration that cannot be saved. [reason] is an l10n key, not a
+/// sentence: this is core, and core does not decide what language the user
+/// reads. The screen that catches it renders the word.
+class KtConfigInvalid implements Exception {
+  final String reason;
+  KtConfigInvalid(this.reason);
+  @override
+  String toString() => 'KtConfigInvalid($reason)';
+}
+
 /// Where the log is and which key signs it. Persisted in the vault under
 /// `kt_config`; absent, the build-time defaults apply.
 class KtConfig {
@@ -69,7 +79,31 @@ class KtConfig {
   Uint8List? get logPub => _key(logPubB64);
   Uint8List? get witnessPub => _key(witnessPubB64);
   bool get enabled => logUrl.trim().isNotEmpty && logPub != null;
-  bool get hasWitness => witnessUrl.trim().isNotEmpty;
+
+  /// A witness is an address AND a key this device pinned.
+  ///
+  /// This used to be the address alone. A self-hoster who set a witness URL
+  /// and left the key empty got a check that appears in the UI, sets
+  /// `witnessOkMs`, and has zero assurance in it: with no key to compare
+  /// against, the co-signature was verified against the key inside the record
+  /// itself, so whoever answers that URL — the log's own operator included —
+  /// co-signs agreement with any head the log serves. The point of a witness
+  /// is that it is somebody else; a key that arrived with the answer is not
+  /// somebody else.
+  bool get hasWitness => witnessUrl.trim().isNotEmpty && witnessPub != null;
+
+  /// Why this configuration cannot be saved, or null. Half a witness is not
+  /// a weaker witness, so it is refused rather than quietly ignored — being
+  /// quietly ignored is how somebody ends up believing they have one.
+  String? get witnessProblem {
+    final hasUrl = witnessUrl.trim().isNotEmpty;
+    final hasKey = witnessPubB64.trim().isNotEmpty;
+    if (!hasUrl && !hasKey) return null;
+    if (hasUrl && !hasKey) return 'urlWithoutKey';
+    if (!hasUrl && hasKey) return 'keyWithoutUrl';
+    if (witnessPub == null) return 'keyNotValid';
+    return null;
+  }
 
   static Uint8List? _key(String b) {
     if (b.trim().isEmpty) return null;
@@ -386,13 +420,20 @@ class KeyTransparency {
   /// Loopback is exempt because that is what a test SHOULD be talking to:
   /// `key_transparency_test.dart` runs `kt/server.js` on 127.0.0.1 and
   /// drives it, and is unaffected by this.
+  ///
+  /// The WITNESS address is judged by the same rule. It was not, and the
+  /// omission was invisible only because `defaultKtWitnessUrl` is still empty:
+  /// the moment a build defines one, every test that stands up a ChatService
+  /// would have asked a stranger's server for a record on a timer, which is
+  /// the whole of what this guard exists to stop.
   bool get _offLimitsInTest {
     if (!_inFlutterTest) return false;
-    final host = Uri.tryParse(config.logUrl.trim())?.host ?? '';
-    return !(host.isEmpty ||
-        host == 'localhost' ||
-        host == '127.0.0.1' ||
-        host == '::1');
+    return !(_loopbackOrEmpty(config.logUrl) && _loopbackOrEmpty(config.witnessUrl));
+  }
+
+  static bool _loopbackOrEmpty(String url) {
+    final host = Uri.tryParse(url.trim())?.host ?? '';
+    return host.isEmpty || host == 'localhost' || host == '127.0.0.1' || host == '::1';
   }
 
   KtTreeHead? head;
@@ -511,6 +552,12 @@ class KeyTransparency {
   }
 
   Future<void> setConfig(KtConfig c) async {
+    // The refusal lives here, not only in the screen that edits it: a
+    // half-configured witness is the one configuration that looks like
+    // protection and is not, and a UI is the wrong place to keep the only
+    // copy of that rule.
+    final problem = c.witnessProblem;
+    if (problem != null) throw KtConfigInvalid(problem);
     config = c;
     await vault.kvPut('kt_config', jsonEncode(c.toJson()), sensitive: false);
     host.ktChanged();
@@ -786,7 +833,11 @@ class KeyTransparency {
     } on KtVerifyException {
       return true;
     }
-    if (!await rec.verify(logPub, expectedWitnessPub: config.witnessPub)) return true;
+    // `hasWitness` is what got us here, and it is false unless the key parses
+    // to 32 bytes, so this is a pinned comparison every time it runs.
+    if (!await rec.verify(logPub, expectedWitnessPub: config.witnessPub!)) {
+      return true;
+    }
     witnessOkMs = now();
     await vault.kvPut('kt_witness_ok_ms', '$witnessOkMs', sensitive: false);
     if (rec.head.size == fresh.size) {
