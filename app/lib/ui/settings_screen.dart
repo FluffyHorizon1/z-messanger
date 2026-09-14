@@ -729,10 +729,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     );
-    if (sure == true) {
-      await svc.wipeEverything();
-      exit(0); // relaunch lands on onboarding with a clean vault
+    if (sure != true) return;
+    if (!context.mounted) return;
+    // The biometric entry first: its pass key lives in the platform keystore
+    // and its Keystore alias lives outside this app's files, so neither goes
+    // when the vault's directory does. Read before the awaits below, so the
+    // context is not used across them.
+    final lock = context.read<AppLock>();
+    try {
+      await lock.disableBiometricUnlock();
+    } catch (_) {
+      // Best effort: the key itself is deleted by the wipe below, which is
+      // the part that must not be skipped.
     }
+    try {
+      await svc.wipeEverything();
+    } catch (e) {
+      // It did not all go, and the process must NOT end here: saying "wiped"
+      // and exiting while `z.db` is still on disk is the one outcome this
+      // screen must never produce.
+      if (!context.mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(l.stWipeFailedTitle),
+          content: Text(l.stWipeFailedBody),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx), child: Text(l.ok)),
+          ],
+        ),
+      );
+      return;
+    }
+    exit(0); // relaunch lands on onboarding with a clean vault
   }
 }
 

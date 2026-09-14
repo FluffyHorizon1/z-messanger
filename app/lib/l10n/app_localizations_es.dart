@@ -1236,6 +1236,13 @@ class AppLocalizationsEs extends AppLocalizations {
       'Destruye la identidad, los contactos, los mensajes y las claves de este dispositivo.';
 
   @override
+  String get stWipeFailedTitle => 'No se pudo eliminar todo';
+
+  @override
+  String get stWipeFailedBody =>
+      'Parte de tus datos sigue en este dispositivo, así que no se informó nada como borrado. Cierra la aplicación, asegúrate de que no esté en ejecución e inténtalo de nuevo, o desinstala la aplicación, lo que elimina sus archivos.';
+
+  @override
   String get stWipeTitle => '¿Borrar todo?';
 
   @override

@@ -304,6 +304,9 @@ bool lockDue(
     nowMs - backgroundedAtMs >= lockAfterSec * 1000;
 
 class AppLock extends ChangeNotifier {
+  /// Must appear in [Vault.secretStorageKeys]; a test asserts it, because a
+  /// key this class writes and the wipe does not know about is a key that
+  /// survives "delete everything".
   static const passKeyStorageKey = 'z_bio_passkey';
 
   final Directory root;

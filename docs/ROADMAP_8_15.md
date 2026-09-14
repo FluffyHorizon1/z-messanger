@@ -3023,3 +3023,46 @@ direction; the phases, their order and both ordering arguments stand.
 
    **The hold has to survive the arrival of another list, or it holds
    nothing.**
+
+83. **"Wipe everything" left the key that unlocks the vault, and said it had
+   not.** Three faults, each of the kind that looks like it works.
+
+   The storage handle in `wipe()` was built **without**
+   `AndroidOptions(encryptedSharedPreferences: true)`, which every write site
+   passes. Under flutter_secure_storage 9.x that is a different backing
+   store, so the delete asked the wrong place, found nothing there, and
+   reported no error.
+
+   `z_bio_passkey` was not in the list at all. It is the raw Argon2id output
+   of the user's passphrase — the thing that opens the vault — written by
+   `AppLock` and deleted by nothing but `disableBiometricUnlock`, which the
+   wipe path never called. Its Keystore alias was left too.
+
+   And the shredding overwrite shared one `try` with the delete, so a file
+   whose overwrite failed was never deleted either: the worst case, since it
+   is exactly the file something else is holding open. Every per-file failure
+   was swallowed, `wipe()` returned normally, and the screen then called
+   `exit(0)` — so a `z.db` that could not be removed stayed on disk while the
+   user had been told the device was clean.
+
+   The keys are one list now, `Vault.secretStorageKeys`, and the test checks
+   it against the **writers** rather than against a second copy of itself:
+   every `z_`-prefixed literal in the two files that talk to secure storage
+   must appear in it. A list kept in step by hand is the bug that lost
+   `z_bio_passkey` in the first place.
+
+   `wipe()` throws if anything is left, the screen says so and does not end
+   the process, and the biometric entry is torn down first — its pass key
+   and its Keystore alias both live outside the vault's directory, so neither
+   goes when that directory does.
+
+   One honest gap, recorded rather than papered over: the separation of the
+   overwrite from the delete cannot be measured here. Provoking it needs a
+   write to fail while a delete succeeds, and this sandbox and CI both run as
+   **root** — which ignores the read-only bit, while the immutable attribute
+   refuses the delete as well. Removing the separation fails no test, and the
+   test says so in as many words rather than implying coverage it does not
+   have.
+
+   **A key written by one class and deleted by a list in another is a key
+   that survives "delete everything".**

@@ -1556,6 +1556,14 @@
   "@stWipeHelp": {
     "description": "Under the wipe row."
   },
+  "stWipeFailedTitle": "Some of it could not be deleted",
+  "@stWipeFailedTitle": {
+    "description": "Dialog title shown when a full wipe left files behind."
+  },
+  "stWipeFailedBody": "Part of your data is still on this device, so nothing was reported as wiped. Close the app, make sure it is not running, and try again — or delete the app, which removes its files with it.",
+  "@stWipeFailedBody": {
+    "description": "Dialog body shown when a full wipe left files behind: what the user can do about it."
+  },
   "stWipeTitle": "Wipe everything?",
   "@stWipeTitle": {
     "description": "Title of the wipe confirmation."

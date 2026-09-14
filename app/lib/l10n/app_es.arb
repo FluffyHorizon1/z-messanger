@@ -330,6 +330,14 @@
   "stDangerZone": "Zona de peligro",
   "stWipe": "Borrar todo",
   "stWipeHelp": "Destruye la identidad, los contactos, los mensajes y las claves de este dispositivo.",
+  "stWipeFailedTitle": "No se pudo eliminar todo",
+  "@stWipeFailedTitle": {
+    "description": "Dialog title shown when a full wipe left files behind."
+  },
+  "stWipeFailedBody": "Parte de tus datos sigue en este dispositivo, así que no se informó nada como borrado. Cierra la aplicación, asegúrate de que no esté en ejecución e inténtalo de nuevo, o desinstala la aplicación, lo que elimina sus archivos.",
+  "@stWipeFailedBody": {
+    "description": "Dialog body shown when a full wipe left files behind: what the user can do about it."
+  },
   "stWipeTitle": "¿Borrar todo?",
   "stWipeBody": "Tu identidad, contactos, mensajes y adjuntos se destruirán en este dispositivo. Sin una copia .zid tu identidad es irrecuperable: ningún servidor tiene una copia.",
   "stWipeAction": "Borrar",

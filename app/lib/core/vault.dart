@@ -975,22 +975,52 @@ class Vault {
     }
   }
 
-  /// Destroys everything: database, attachments, master key.
+  /// Destroys everything: database, attachments, keys.
+  ///
+  /// Throws if anything is left behind. It used to report success whatever
+  /// happened, and the screen calling it then ended the process — so a file
+  /// that could not be removed left `key.json` or `z.db` on disk while the
+  /// user had been told their device was clean.
+  ///
+  /// Three things were wrong beyond that, and each is the kind that looks
+  /// like it works:
+  ///
+  ///   * the storage handle was built WITHOUT
+  ///     `AndroidOptions(encryptedSharedPreferences: true)`, which every
+  ///     write site passes. Under flutter_secure_storage 9.x that is a
+  ///     different backing store, so the delete asked the wrong place and
+  ///     succeeded at finding nothing there;
+  ///   * `z_bio_passkey` — the raw Argon2id output of the user's passphrase,
+  ///     which is what unlocks the vault — was not in the list at all;
+  ///   * and the overwrite and the delete shared one `try`, so a file whose
+  ///     overwrite failed was never even deleted.
   Future<void> wipe() async {
     await db.close();
-    const storage = FlutterSecureStorage();
-    for (final k in ['z_device_secret', 'z_master_key']) {
+    // The same handle every write site uses. A delete against a different
+    // backing store removes nothing and reports no error.
+    const storage = FlutterSecureStorage(
+      aOptions: AndroidOptions(encryptedSharedPreferences: true),
+    );
+    for (final k in secretStorageKeys) {
       try {
         await storage.delete(key: k);
-      } catch (_) {}
+      } catch (_) {
+        // Keep going: the remaining keys still have to be tried, and what is
+        // left is checked below rather than inferred from this.
+      }
     }
     if (await root.exists()) {
       for (final entity in root.listSync(recursive: true).reversed) {
+        // Overwrite and delete are separate: a file that cannot be
+        // overwritten must still be deleted, and sharing one `try` meant the
+        // opposite.
         try {
           if (entity is File) {
             final len = entity.lengthSync();
             entity.writeAsBytesSync(Uint8List(len > 0 ? len : 0), flush: true);
           }
+        } catch (_) {}
+        try {
           entity.deleteSync();
         } catch (_) {}
       }
@@ -998,5 +1028,24 @@ class Vault {
         await root.delete(recursive: true);
       } catch (_) {}
     }
+    // Say so if it did not work. The caller ends the process on the strength
+    // of this returning.
+    if (await root.exists()) {
+      final left = root.listSync(recursive: true).length;
+      throw StateError(
+          'wipe left $left item(s) under ${root.path}: the device is not clean');
+    }
   }
+
+  /// Every key this app puts in the platform's secure storage.
+  ///
+  /// One list, because a wipe that names them one at a time is a wipe that
+  /// forgets one: `z_bio_passkey` was written by `AppLock` and deleted by
+  /// nothing, and it is the passphrase's Argon2id output — the thing that
+  /// unlocks the vault.
+  static const secretStorageKeys = <String>[
+    'z_device_secret',
+    'z_master_key',
+    'z_bio_passkey',
+  ];
 }

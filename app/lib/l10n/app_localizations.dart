@@ -2078,6 +2078,18 @@ abstract class AppLocalizations {
   /// **'Destroys identity, contacts, messages and keys on this device.'**
   String get stWipeHelp;
 
+  /// Dialog title shown when a full wipe left files behind.
+  ///
+  /// In en, this message translates to:
+  /// **'Some of it could not be deleted'**
+  String get stWipeFailedTitle;
+
+  /// Dialog body shown when a full wipe left files behind: what the user can do about it.
+  ///
+  /// In en, this message translates to:
+  /// **'Part of your data is still on this device, so nothing was reported as wiped. Close the app, make sure it is not running, and try again — or delete the app, which removes its files with it.'**
+  String get stWipeFailedBody;
+
   /// Title of the wipe confirmation.
   ///
   /// In en, this message translates to:
