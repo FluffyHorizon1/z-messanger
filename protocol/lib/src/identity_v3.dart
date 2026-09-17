@@ -349,15 +349,29 @@ class ContactBundleV3 {
         'sig': b64(bindingSig),
         'pqc': b64(pqCommit),
         'name': displayName,
+        // The account anchor, if this code has one — the same `acct`/`cert`
+        // pair `encode`/`decode` carry. Dropping it here (the 2026-09-14
+        // review's finding 43) meant a persisted account-anchored bundle came
+        // back device-anchored: `accountEdPub` fell to `edPub`, so a code that
+        // adds the person by their laptop degraded to adding the laptop.
+        if (declaredAccountEdPub != null) 'acct': b64(declaredAccountEdPub!),
+        if (deviceCert != null) 'cert': deviceCert!.toJson(),
       };
 
-  static ContactBundleV3 fromJson(Map<String, Object?> j) => ContactBundleV3(
-        edPub: unb64(j['ed'] as String),
-        xPub: unb64(j['x'] as String),
-        bindingSig: unb64(j['sig'] as String),
-        pqCommit: unb64(j['pqc'] as String),
-        displayName: j['name'] as String?,
-      );
+  static ContactBundleV3 fromJson(Map<String, Object?> j) {
+    final acct = j['acct'], cert = j['cert'];
+    return ContactBundleV3(
+      edPub: unb64(j['ed'] as String),
+      xPub: unb64(j['x'] as String),
+      bindingSig: unb64(j['sig'] as String),
+      pqCommit: unb64(j['pqc'] as String),
+      displayName: j['name'] as String?,
+      declaredAccountEdPub: acct == null ? null : unb64(acct as String),
+      deviceCert: cert == null
+          ? null
+          : DeviceCertificate.fromJson((cert as Map).cast<String, Object?>()),
+    );
+  }
 }
 
 /// The result of scanning any Z contact code, whatever its version.

@@ -116,6 +116,24 @@ abstract class AppLocalizations {
   /// **'Enter your passphrase to unlock this device.'**
   String get unlockPrompt;
 
+  /// Unlock-screen error: the stored biometric pass key is stale (the passphrase changed without re-enrolling), so biometric unlock was turned off.
+  ///
+  /// In en, this message translates to:
+  /// **'Biometric unlock is out of date — enter your passphrase, then turn it on again in Settings.'**
+  String get unlockBiometricStale;
+
+  /// Unlock-screen error: the device's biometric hardware key was invalidated (fingerprints or face re-enrolled), so biometric unlock is off.
+  ///
+  /// In en, this message translates to:
+  /// **'Your fingerprints or face changed, so biometric unlock was reset. Enter your passphrase, then turn it on again in Settings.'**
+  String get unlockBiometricInvalidated;
+
+  /// Full-screen message when the app cannot start at all. {detail} is a raw diagnostic (an exception), shown untranslated.
+  ///
+  /// In en, this message translates to:
+  /// **'Z could not start:\n{detail}'**
+  String startupFailed(String detail);
+
   /// Screen-reader label for the reveal control. Says what it DOES, not what the icon looks like.
   ///
   /// In en, this message translates to:
@@ -667,6 +685,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Remove from group'**
   String get grpRemoveFromGroup;
+
+  /// Title of the confirmation before removing a group member.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove member?'**
+  String get grpRemoveTitle;
+
+  /// The warning before removing a group member. {name} is the member's display name. The change is signed and fanned out to every member.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} will be removed from the group for everyone, and cannot be added back without a new invitation. There is no undo.'**
+  String grpRemoveBody(String name);
+
+  /// Confirm button on the remove-member dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove'**
+  String get grpRemoveConfirm;
 
   /// Action in the group screen's menu.
   ///
@@ -1261,6 +1297,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Secure session reset'**
   String get ciResetSessionDone;
+
+  /// Title of the confirmation before resetting the secure session with a contact.
+  ///
+  /// In en, this message translates to:
+  /// **'Reset secure session?'**
+  String get ciResetTitle;
+
+  /// The warning before resetting a session: it is destructive (in-flight messages for the old chain become undecryptable) and should be rare.
+  ///
+  /// In en, this message translates to:
+  /// **'This throws away the current encryption session with this contact. Anything already on its way that hasn\'t arrived yet may be lost. Only do this if messages have stopped decrypting.'**
+  String get ciResetBody;
+
+  /// Confirm button on the reset-session dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Reset'**
+  String get ciResetConfirm;
 
   /// Row label, shown in the danger colour. It names both things that go, because deleting a contact elsewhere in most apps does not take the messages.
   ///
@@ -2395,6 +2449,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The transparency log has not been reachable since {when}. Device lists are being checked by your contacts\' devices alone in the meantime.'**
   String homeKtUnreachable(String when);
+
+  /// Loud owner-account alarm (T1/T2): the account's own device list went backwards a version, signed by a device holding the account key. {sent} is the version received, {held} the higher version this device already holds.
+  ///
+  /// In en, this message translates to:
+  /// **'Your main device published an older device list (v{sent}) than this device already holds (v{held}). The newer list was signed by another device holding your account key. If that wasn\'t you, reset your identity now.'**
+  String homeOwnOlderList(int sent, int held);
+
+  /// Loud owner-account alarm: a contact holds a device list for this account that this device never issued.
+  ///
+  /// In en, this message translates to:
+  /// **'A contact was given a device list for your account that this device never issued. A device holding your account key may have enrolled another device. If that wasn\'t you, reset your identity now.'**
+  String get homeOwnUnissued;
+
+  /// Loud owner-account alarm (T3): a contact told this device it was removed from its own account's device list. {v} is the device-list version that removed it.
+  ///
+  /// In en, this message translates to:
+  /// **'This device was removed from your account (device list v{v}). If you did not do this, your account key may be compromised — reset your identity.'**
+  String homeRemovedDevice(int v);
 
   /// Card heading on the contact screen.
   ///

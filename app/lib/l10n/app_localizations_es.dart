@@ -19,6 +19,19 @@ class AppLocalizationsEs extends AppLocalizations {
       'Introduce tu frase de contraseña para desbloquear este dispositivo.';
 
   @override
+  String get unlockBiometricStale =>
+      'El desbloqueo biométrico está obsoleto: introduce tu frase de contraseña y vuelve a activarlo en Ajustes.';
+
+  @override
+  String get unlockBiometricInvalidated =>
+      'Tus huellas o tu rostro cambiaron, así que el desbloqueo biométrico se restableció. Introduce tu frase de contraseña y vuelve a activarlo en Ajustes.';
+
+  @override
+  String startupFailed(String detail) {
+    return 'Z no pudo iniciarse:\n$detail';
+  }
+
+  @override
   String get unlockShowPassphrase => 'Mostrar la frase de contraseña';
 
   @override
@@ -342,6 +355,17 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get grpRemoveFromGroup => 'Quitar del grupo';
+
+  @override
+  String get grpRemoveTitle => '¿Quitar al miembro?';
+
+  @override
+  String grpRemoveBody(String name) {
+    return '$name será quitado del grupo para todos y no podrá volver a añadirse sin una nueva invitación. No se puede deshacer.';
+  }
+
+  @override
+  String get grpRemoveConfirm => 'Quitar';
 
   @override
   String get grpLeaveGroup => 'Salir del grupo';
@@ -719,6 +743,16 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get ciResetSessionDone => 'Sesión segura restablecida';
+
+  @override
+  String get ciResetTitle => '¿Restablecer la sesión segura?';
+
+  @override
+  String get ciResetBody =>
+      'Esto descarta la sesión de cifrado actual con este contacto. Lo que ya esté en camino y aún no haya llegado podría perderse. Hazlo solo si los mensajes han dejado de descifrarse.';
+
+  @override
+  String get ciResetConfirm => 'Restablecer';
 
   @override
   String get ciDeleteContact => 'Eliminar contacto y todos los mensajes';
@@ -1456,6 +1490,20 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String homeKtUnreachable(String when) {
     return 'El registro de transparencia no responde desde $when. Mientras tanto, las listas de dispositivos las comprueban solo los dispositivos de tus contactos.';
+  }
+
+  @override
+  String homeOwnOlderList(int sent, int held) {
+    return 'Tu dispositivo principal publicó una lista de dispositivos más antigua (v$sent) que la que este dispositivo ya tiene (v$held). La lista más reciente fue firmada por otro dispositivo que tiene la clave de tu cuenta. Si no fuiste tú, restablece tu identidad ahora.';
+  }
+
+  @override
+  String get homeOwnUnissued =>
+      'A un contacto se le entregó una lista de dispositivos de tu cuenta que este dispositivo nunca emitió. Puede que un dispositivo con la clave de tu cuenta haya inscrito otro dispositivo. Si no fuiste tú, restablece tu identidad ahora.';
+
+  @override
+  String homeRemovedDevice(int v) {
+    return 'Este dispositivo fue eliminado de tu cuenta (lista de dispositivos v$v). Si no lo hiciste tú, puede que la clave de tu cuenta esté comprometida: restablece tu identidad.';
   }
 
   @override

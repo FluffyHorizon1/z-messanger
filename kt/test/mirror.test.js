@@ -710,3 +710,41 @@ test('the witness service: --serve answers /sth.json and /health, follows the lo
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a corrupt head is a clear error, not a raw SyntaxError or "entries without a head" (finding 43)', async () => {
+  const log = new KtLog({ store: new MemoryStore(), signingKey: logKey, now });
+  const accts = [account('x'), account('y')];
+  for (let i = 0; i < 4; i++) log.publish(publishFor(accts[i % 2], Math.floor(i / 2) + 1));
+  const server = await serve(log);
+  const dir = tmpdir();
+  try {
+    const m = new Mirror({ dir, logUrl: server.url + '/', logPub: log.publicKey, pageSize: 2, now }).load();
+    await m.sync();
+    const sthFile = path.join(dir, 'sth.json');
+    const good = fs.readFileSync(sthFile, 'utf8');
+    assert.doesNotThrow(() => JSON.parse(good), 'the durable write produced valid JSON');
+
+    // A torn / corrupt head: valid file, invalid JSON. Before the fix this
+    // rethrew a raw SyntaxError (no `.code`), and deleting it then threw
+    // "entries without a head" — a dead end. Now it names the situation.
+    fs.writeFileSync(sthFile, '{ "sth": { "size": 4, ');
+    let err;
+    try {
+      new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, now }).load();
+    } catch (e) {
+      err = e;
+    }
+    assert.ok(err, 'a corrupt head must not load silently');
+    assert.match(err.message, /does not parse/);
+    assert.doesNotMatch(err.message, /entries without a head/);
+    assert.ok(!(err instanceof SyntaxError), 'not a raw SyntaxError');
+
+    // With a valid head back, it loads and agrees again.
+    fs.writeFileSync(sthFile, good);
+    const again = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, now }).load();
+    assert.equal(again.entries.length, 4);
+  } finally {
+    await server.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

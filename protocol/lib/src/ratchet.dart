@@ -501,8 +501,18 @@ Future<Uint8List> _decryptInner(
     if (seed == null || pq.offerGen != hg) {
       throw RatchetDecryptException('pq ciphertext but no pending key');
     }
-    final newK =
-        pqDecapsulate(seed, ct); // wrong ct → pseudorandom k → MAC fails
+    // A ciphertext of the right length but wrong content decapsulates to a
+    // pseudorandom key and fails the MAC below — a RatchetDecryptException. A
+    // ciphertext of the WRONG length makes `pqDecapsulate` throw an
+    // ArgumentError (an Error, not the documented exception); a malformed
+    // header could carry one, so it is turned into the drop it should be
+    // (finding 42).
+    final Uint8List newK;
+    try {
+      newK = pqDecapsulate(seed, ct);
+    } on ArgumentError {
+      throw RatchetDecryptException('malformed pq ciphertext');
+    }
     if (pq.k != null) {
       pq.oldGen = pq.gen; // retain the outgoing generation across the crossover
       pq.oldK = pq.k;

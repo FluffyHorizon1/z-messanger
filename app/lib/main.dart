@@ -139,7 +139,7 @@ class _BootstrapperState extends State<Bootstrapper>
   bool _needsOnboarding = false;
   bool _locked = false; // vault exists but needs a passphrase
   bool _biometricOffered = false; // biometric unlock is on: offer the prompt
-  String? _unlockError;
+  UnlockError? _unlockError;
   bool _unlocking = false;
   Object? _fatal;
 
@@ -243,9 +243,7 @@ class _BootstrapperState extends State<Bootstrapper>
         setState(() {
           _unlocking = false;
           _biometricOffered = false;
-          _unlockError =
-              'Biometric unlock is out of date — enter your passphrase, then '
-              'turn it on again in Settings.';
+          _unlockError = const BiometricStale();
         });
       }
     } on BiometricKeyInvalidatedException {
@@ -254,17 +252,14 @@ class _BootstrapperState extends State<Bootstrapper>
         setState(() {
           _unlocking = false;
           _biometricOffered = false;
-          _unlockError =
-              'Your fingerprints or face changed, so biometric unlock was '
-              'reset. Enter your passphrase, then turn it on again in '
-              'Settings.';
+          _unlockError = const BiometricInvalidated();
         });
       }
     } catch (e) {
       if (mounted) {
         setState(() {
           _unlocking = false;
-          _unlockError = '$e';
+          _unlockError = UnexpectedUnlockError('$e');
         });
       }
     }
@@ -297,12 +292,12 @@ class _BootstrapperState extends State<Bootstrapper>
     } on WrongPassphraseException {
       setState(() {
         _unlocking = false;
-        _unlockError = 'Incorrect passphrase. Try again.';
+        _unlockError = const WrongPassphrase();
       });
     } catch (e) {
       setState(() {
         _unlocking = false;
-        _unlockError = '$e';
+        _unlockError = UnexpectedUnlockError('$e');
       });
     }
   }
@@ -361,18 +356,21 @@ class _BootstrapperState extends State<Bootstrapper>
         mode: mode,
         // Builder: the palette lives in the MaterialApp below this widget.
         home: Builder(
-          builder: (ctx) => Scaffold(
-            body: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  'Z could not start:\n$_fatal',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: ctx.z.danger),
+          builder: (ctx) {
+            final l = AppLocalizations.of(ctx);
+            return Scaffold(
+              body: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    l.startupFailed('$_fatal'),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: ctx.z.danger),
+                  ),
                 ),
               ),
-            ),
-          ),
+            );
+          },
         ),
       );
     }

@@ -12,6 +12,23 @@
   "@unlockPrompt": {
     "description": "Instruction shown above the passphrase field."
   },
+  "unlockBiometricStale": "Biometric unlock is out of date — enter your passphrase, then turn it on again in Settings.",
+  "@unlockBiometricStale": {
+    "description": "Unlock-screen error: the stored biometric pass key is stale (the passphrase changed without re-enrolling), so biometric unlock was turned off."
+  },
+  "unlockBiometricInvalidated": "Your fingerprints or face changed, so biometric unlock was reset. Enter your passphrase, then turn it on again in Settings.",
+  "@unlockBiometricInvalidated": {
+    "description": "Unlock-screen error: the device's biometric hardware key was invalidated (fingerprints or face re-enrolled), so biometric unlock is off."
+  },
+  "startupFailed": "Z could not start:\n{detail}",
+  "@startupFailed": {
+    "description": "Full-screen message when the app cannot start at all. {detail} is a raw diagnostic (an exception), shown untranslated.",
+    "placeholders": {
+      "detail": {
+        "type": "String"
+      }
+    }
+  },
   "unlockShowPassphrase": "Show passphrase",
   "@unlockShowPassphrase": {
     "description": "Screen-reader label for the reveal control. Says what it DOES, not what the icon looks like."
@@ -422,6 +439,23 @@
   "grpRemoveFromGroup": "Remove from group",
   "@grpRemoveFromGroup": {
     "description": "Removes the selected member."
+  },
+  "grpRemoveTitle": "Remove member?",
+  "@grpRemoveTitle": {
+    "description": "Title of the confirmation before removing a group member."
+  },
+  "grpRemoveBody": "{name} will be removed from the group for everyone, and cannot be added back without a new invitation. There is no undo.",
+  "@grpRemoveBody": {
+    "description": "The warning before removing a group member. {name} is the member's display name. The change is signed and fanned out to every member.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "grpRemoveConfirm": "Remove",
+  "@grpRemoveConfirm": {
+    "description": "Confirm button on the remove-member dialog."
   },
   "grpLeaveGroup": "Leave group",
   "@grpLeaveGroup": {
@@ -908,6 +942,18 @@
   "ciResetSessionDone": "Secure session reset",
   "@ciResetSessionDone": {
     "description": "Confirms the reset happened. Past tense: the work is already done."
+  },
+  "ciResetTitle": "Reset secure session?",
+  "@ciResetTitle": {
+    "description": "Title of the confirmation before resetting the secure session with a contact."
+  },
+  "ciResetBody": "This throws away the current encryption session with this contact. Anything already on its way that hasn't arrived yet may be lost. Only do this if messages have stopped decrypting.",
+  "@ciResetBody": {
+    "description": "The warning before resetting a session: it is destructive (in-flight messages for the old chain become undecryptable) and should be rare."
+  },
+  "ciResetConfirm": "Reset",
+  "@ciResetConfirm": {
+    "description": "Confirm button on the reset-session dialog."
   },
   "ciDeleteContact": "Delete contact & all messages",
   "@ciDeleteContact": {
@@ -1860,6 +1906,31 @@
     "placeholders": {
       "when": {
         "type": "String"
+      }
+    }
+  },
+  "homeOwnOlderList": "Your main device published an older device list (v{sent}) than this device already holds (v{held}). The newer list was signed by another device holding your account key. If that wasn't you, reset your identity now.",
+  "@homeOwnOlderList": {
+    "description": "Loud owner-account alarm (T1/T2): the account's own device list went backwards a version, signed by a device holding the account key. {sent} is the version received, {held} the higher version this device already holds.",
+    "placeholders": {
+      "sent": {
+        "type": "int"
+      },
+      "held": {
+        "type": "int"
+      }
+    }
+  },
+  "homeOwnUnissued": "A contact was given a device list for your account that this device never issued. A device holding your account key may have enrolled another device. If that wasn't you, reset your identity now.",
+  "@homeOwnUnissued": {
+    "description": "Loud owner-account alarm: a contact holds a device list for this account that this device never issued."
+  },
+  "homeRemovedDevice": "This device was removed from your account (device list v{v}). If you did not do this, your account key may be compromised — reset your identity.",
+  "@homeRemovedDevice": {
+    "description": "Loud owner-account alarm (T3): a contact told this device it was removed from its own account's device list. {v} is the device-list version that removed it.",
+    "placeholders": {
+      "v": {
+        "type": "int"
       }
     }
   },

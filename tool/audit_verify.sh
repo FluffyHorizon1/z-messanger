@@ -5,7 +5,7 @@
 # An external reviewer's first hour should not be spent discovering that this
 # project needs four toolchains, that two of the verifiers are Python packages
 # nobody mentioned pinning, and that a green "147 tests passed" says nothing
-# about which of the thirty claims it just backed. This script runs everything
+# about which of the thirty-six claims it just backed. This script runs everything
 # and reports the result the way the brief is organised — by claim.
 #
 #   tool/audit_verify.sh              everything (~6 minutes)
@@ -205,7 +205,7 @@ echo
 
 # Which claims did nothing in this run touch? Some have no test suite at all —
 # reproducibility, provenance and the published documents are evidenced by CI
-# runs and by prose. Saying "all thirty claims are backed" when four of them
+# runs and by prose. Saying "all thirty-six claims are backed" when four of them
 # were never going to be is exactly the overclaim this script exists to catch
 # elsewhere, so it is spelled out instead.
 ALL_CLAIMS=$(grep -oE '^\| C[0-9]+' docs/AUDIT_SCOPE.md | tr -d '| ' | sort -u -V)

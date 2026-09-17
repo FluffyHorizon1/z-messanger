@@ -520,6 +520,17 @@ class MemoryCoordinator {
     this.seq = 0;
     /** Bytes held across every queue: this store's own `noeviction` limit. */
     this.bytes = 0;
+    /**
+     * Envelopes held across every queue, kept in step with `bytes` at the
+     * same three sites. `stats()` used to recompute this by walking every
+     * live mailbox, and `stats()` runs on every unauthenticated `/health`
+     * and `/metrics` and on every authentication — O(mailboxes) each, ~10 ms
+     * at 200k mailboxes, an unauthenticated cost anyone could impose (the
+     * 2026-09-14 review's finding 43). Now it is a counter. A drift here only
+     * misreports a metric (admission uses `bytes` and the per-mailbox caps),
+     * and `heldEnvelopes()` recomputes it so a test can catch one.
+     */
+    this.count = 0;
     this.newMailbox = new NewMailboxGate();
     this.seen = new SeenMailboxes();
   }
@@ -583,11 +594,13 @@ class MemoryCoordinator {
    * is the only record of what this queue was charged.
    */
   _retain(rid, q, kept) {
+    const removed = q.entries.length - kept.length;
     q.entries = kept;
     q.keys = new Map(kept.map((e) => [e.key, e]));
     const was = q.bytes;
     q.bytes = kept.reduce((sum, e) => sum + e.size, 0);
     this.bytes = Math.max(0, this.bytes - (was - q.bytes));
+    this.count = Math.max(0, this.count - Math.max(0, removed));
     if (kept.length === 0) this.queues.delete(rid);
   }
 
@@ -604,6 +617,14 @@ class MemoryCoordinator {
   heldBytes() {
     let n = 0;
     for (const q of this.queues.values()) n += q.bytes;
+    return n;
+  }
+
+  /** The counterpart to `heldBytes` for the envelope count: recomputed by
+   * walking the queues, so a test can catch `this.count` drifting from it. */
+  heldEnvelopes() {
+    let n = 0;
+    for (const q of this.queues.values()) n += q.entries.length;
     return n;
   }
 
@@ -658,6 +679,7 @@ class MemoryCoordinator {
     q.keys.set(key, entry);
     q.bytes += entry.size;
     this.bytes += entry.size;
+    this.count += 1;
     // Accepted, and only now: see `SeenMailboxes.touch`. Every other exit
     // from this method is a refusal, and a refusal must leave no trace.
     this.seen.touch(rid);
@@ -675,6 +697,7 @@ class MemoryCoordinator {
     if (idx !== -1) q.entries.splice(idx, 1);
     q.bytes -= entry.size;
     this.bytes = Math.max(0, this.bytes - entry.size);
+    this.count = Math.max(0, this.count - 1);
     if (q.entries.length === 0) this.queues.delete(rid);
     return entry;
   }
@@ -817,11 +840,9 @@ class MemoryCoordinator {
   async heartbeat() {}
 
   stats() {
-    let n = 0;
-    for (const q of this.queues.values()) n += q.entries.length;
     return {
       connections: this.online.size,
-      queuedEnvelopes: n,
+      queuedEnvelopes: this.count,
       // What MAX_STORE_BYTES is actually checked against. Reported because
       // the accumulator drifting away from what is held is exactly the
       // failure that used to be invisible: `queuedEnvelopes: 0` beside a full

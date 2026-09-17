@@ -199,28 +199,42 @@ class RelayClient {
       unawaited(_handleAuth(frame));
       return;
     }
+    // Read every field by type, never by a raw cast. A frame is a relay's
+    // word, and a relay (buggy, or hostile toward a client it has drawn in)
+    // can put a number where a string belongs; a raw `as String` there throws
+    // a `TypeError` inside this stream callback, which is not caught by the
+    // `jsonDecode` guard above and takes down the connection (finding 42). A
+    // wrong-typed field makes the frame drop instead.
+    String? str(String key) => frame[key] is String ? frame[key] as String : null;
+    int intOr0(String key) => frame[key] is num ? (frame[key] as num).toInt() : 0;
     switch (frame['t']) {
       case 'msg':
+        final id = str('id'), payload = str('payload');
+        // No id or no payload: there is nothing deliverable here.
+        if (id == null || payload == null) break;
         _messages.add(RelayInbound(
-          id: frame['id'] as String,
+          id: id,
           // Sealed-sender envelopes arrive with no sender: the relay never
           // knew one. The sender is learned inside the encrypted envelope.
-          from: frame['from'] as String? ?? '',
-          payload: frame['payload'] as String,
-          serverTs: (frame['ts'] as num?)?.toInt() ?? 0,
+          from: str('from') ?? '',
+          payload: payload,
+          serverTs: intOr0('ts'),
         ));
         break;
       case 'sent':
-        _sendAcks.remove(frame['id'] as String)?.complete();
+        final id = str('id');
+        if (id != null) _sendAcks.remove(id)?.complete();
         break;
       case 'delivered':
+        final id = str('id');
+        if (id == null) break;
         _delivered.add(DeliveredReceipt(
-          id: frame['id'] as String,
-          to: frame['to'] as String? ?? '',
+          id: id,
+          to: str('to') ?? '',
         ));
         break;
       case 'error':
-        final id = frame['id'] as String?;
+        final id = str('id');
         if (id == null) {
           // Only four of the relay's refusals name the envelope they are
           // about (§12.2): `too_large`, `bad_send`, `queue_full`,
@@ -240,7 +254,7 @@ class RelayClient {
           for (final c in pending) {
             if (!c.isCompleted) {
               c.completeError(
-                  RelayException(frame['code'] as String? ?? 'refused'));
+                  RelayException(str('code') ?? 'refused'));
             }
           }
           break;
@@ -248,7 +262,7 @@ class RelayClient {
         {
           _sendAcks
               .remove(id)
-              ?.completeError(RelayException(frame['code'] as String? ?? '?'));
+              ?.completeError(RelayException(str('code') ?? '?'));
         }
         break;
       default:

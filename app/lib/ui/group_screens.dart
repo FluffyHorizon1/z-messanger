@@ -293,7 +293,36 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                             icon: Icon(Icons.person_remove_outlined,
                                 color: context.z.danger, size: 20),
                             tooltip: l.grpRemoveFromGroup,
-                            onPressed: () => chat.removeGroupMember(g.gid, rid),
+                            // Removing a member is signed and fanned out to
+                            // everyone with no undo; ask first, as every other
+                            // destructive action does (the 2026-09-14 review's
+                            // finding 41).
+                            onPressed: () async {
+                              final name =
+                                  chat.contacts[rid]?.name ?? l.grpUnknown;
+                              final sure = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: Text(l.grpRemoveTitle),
+                                  content: Text(l.grpRemoveBody(name)),
+                                  actions: [
+                                    TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, false),
+                                        child: Text(l.cancel)),
+                                    FilledButton(
+                                        style: FilledButton.styleFrom(
+                                            backgroundColor: context.z.danger),
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, true),
+                                        child: Text(l.grpRemoveConfirm)),
+                                  ],
+                                ),
+                              );
+                              if (sure == true) {
+                                await chat.removeGroupMember(g.gid, rid);
+                              }
+                            },
                           )
                         : null,
                   ),

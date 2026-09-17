@@ -69,6 +69,41 @@ abstract final class DevlistAlertKind {
 /// The stored form of a device-list alert.
 String devlistAlertBody(String kind) => jsonEncode({'k': kind});
 
+/// The two loudest banners on the home screen — the owner's own-account
+/// alarms — stored the same way and for the same reason: a kind and its
+/// version numbers, never a sentence.
+///
+/// These were the last two account alerts written as finished English prose
+/// into `kv` with `sensitive: false`: frozen in the language the app spoke
+/// that day, so a Spanish user read them in English, and rendered by
+/// `home_screen.dart` — on `check_l10n.py`'s migrated list, a promise it holds
+/// no English — from a string the service handed it at run time where the
+/// check cannot see it (the 2026-09-14 review's finding 38, the pair the
+/// 2026-09-13 device-list fix missed). Unlike the device-list alerts these
+/// carry no contact name, only device-list versions, which are public by
+/// construction, so nothing here was secret; the fix is the localisation, and
+/// the words are chosen in the reader's language when the banner is drawn
+/// (`lib/l10n/account_alert_text.dart`). Rows an earlier build wrote as prose
+/// are shown as they are.
+abstract final class OwnAlertKind {
+  /// T1/T2: the account's own main device published a device list at a
+  /// version BELOW one this device already holds, signed by another device
+  /// holding the account key. Params: `sent`, `held`.
+  static const olderList = 'own_older';
+
+  /// A contact was handed a device list for this account that this device
+  /// never issued. No params.
+  static const unissued = 'own_unissued';
+
+  /// T3: this device was told by a contact that it was removed from its own
+  /// account's device list. Param: `v` (the list version).
+  static const removed = 'own_removed';
+}
+
+/// The stored form of an own-account alert.
+String ownAlertBody(String kind, [Map<String, Object?> params = const {}]) =>
+    jsonEncode({'k': kind, ...params});
+
 /// True if [stored] is a device-list alert this build wrote.
 ///
 /// Anything else is an alert written as English prose by a build before

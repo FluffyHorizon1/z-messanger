@@ -381,8 +381,18 @@ class BackupArchive {
         // Everything below runs inside this transaction, so every write must
         // go through `txn`: reaching for `vault.db` (as `vault.kvPut` does)
         // deadlocks against the lock the transaction already holds.
-        Future<void> kv(String k, String v) async =>
-            txn.insert('kv', {'k': 's:$k', 'v': await vault.seal(v)},
+        // Most restored values are sensitive and sealed. A few keys are
+        // declared plain (`Vault.plainKeys`) and the live app stores them
+        // plain — `server_url` among them; writing it through the sealing
+        // branch put a restored address under `s:server_url` sealed, which
+        // `kvGet` still reads but which no other write produces, so a
+        // restored vault did not match the schema (the 2026-09-14 review's
+        // finding 35). Honour the class here, so the restore path and the
+        // live path store the same key the same way.
+        Future<void> kv(String k, String v) async => Vault.mayBePlain(k)
+            ? txn.insert('kv', {'k': 'p:$k', 'v': v},
+                conflictAlgorithm: ConflictAlgorithm.replace)
+            : txn.insert('kv', {'k': 's:$k', 'v': await vault.seal(v)},
                 conflictAlgorithm: ConflictAlgorithm.replace);
 
         while (true) {

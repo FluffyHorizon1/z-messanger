@@ -242,6 +242,30 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             title: Text(l.ciResetSession),
             subtitle: Text(l.ciResetSessionHelp),
             onTap: () async {
+              // Resetting throws away every ratchet session with the contact
+              // and the skipped-message keys, and anything the relay still
+              // holds for the old chain can never be decrypted — as
+              // destructive as the actions below it, and until now the only
+              // one that asked nothing before doing it (the 2026-09-14
+              // review's finding 40).
+              final sure = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: Text(l.ciResetTitle),
+                  content: Text(l.ciResetBody),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: Text(l.cancel)),
+                    FilledButton(
+                        style: FilledButton.styleFrom(
+                            backgroundColor: context.z.danger),
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: Text(l.ciResetConfirm)),
+                  ],
+                ),
+              );
+              if (sure != true) return;
               await svc.resetSecureSession(widget.rid);
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(

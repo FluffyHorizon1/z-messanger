@@ -205,7 +205,26 @@ class Mirror {
     fs.mkdirSync(this.dir, { recursive: true });
     this.repaired = 0;
     try {
-      const j = JSON.parse(fs.readFileSync(this.sthFile, 'utf8'));
+      const raw = fs.readFileSync(this.sthFile, 'utf8');
+      let j;
+      try {
+        j = JSON.parse(raw);
+      } catch (e) {
+        // The head file exists but does not parse. With the durable write in
+        // `sync` below (temp file, fsync, atomic rename, dir fsync) a crash
+        // there can no longer leave a torn head; a head that is unreadable
+        // anyway is corruption this mirror cannot verify against, and it will
+        // NOT silently discard the entries it was trusted to keep (a mirror is
+        // the history the log might lose — G3). It says so, distinctly from
+        // the honest no-head case below, which a `SyntaxError` (no `.code`)
+        // used to fall into as a raw rethrow with no context.
+        throw new Error(
+          `${this.sthFile}: the stored head does not parse (${e.message}). ` +
+            `It is the head this mirror verified against; restore it from a ` +
+            `backup, or re-initialise the mirror from the log if its history ` +
+            `is safe elsewhere.`
+        );
+      }
       this.head = sthFromJson(j.sth);
     } catch (e) {
       if (e.code !== 'ENOENT') throw e;
@@ -487,9 +506,30 @@ class Mirror {
       };
     }
     try {
+      // Durable and atomic, the way the log writes its own head (`log.js`
+      // `atomicWrite`): write a temp file, fsync it, rename over the real one,
+      // then fsync the directory so the rename is on disk too. `writeFileSync`
+      // + `renameSync` did neither, so a crash could leave `sth.json` torn or
+      // the rename un-flushed — the head unreadable while the entries stood
+      // (the 2026-09-14 review's finding 43).
       const tmp = `${this.sthFile}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(record, null, 2) + '\n');
+      const buf = Buffer.from(JSON.stringify(record, null, 2) + '\n', 'utf8');
+      const fd = fs.openSync(tmp, 'w');
+      try {
+        let put = 0;
+        while (put < buf.length) {
+          const n = fs.writeSync(fd, buf, put, buf.length - put);
+          if (!(n > 0)) {
+            throw new Error(`${tmp}: wrote ${put + n} of ${buf.length} bytes`);
+          }
+          put += n;
+        }
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
       fs.renameSync(tmp, this.sthFile);
+      this._syncDir();
     } catch (e) {
       // The entries are on disk and the head is not: the crash window, reached
       // without a crash. `load` drops the surplus, which is what `_recover`
@@ -499,6 +539,23 @@ class Mirror {
     }
     this.head = sth;
     return { from, to: sth.size, head: sth };
+  }
+
+  /** fsync the directory holding sth.json, so the rename onto it is durable. */
+  _syncDir() {
+    let dfd;
+    try {
+      dfd = fs.openSync(path.dirname(this.sthFile), 'r');
+    } catch {
+      return; // not every platform lets a directory be opened; the file is synced
+    }
+    try {
+      fs.fsyncSync(dfd);
+    } catch {
+      // EINVAL on filesystems that do not support it — nothing to do here.
+    } finally {
+      fs.closeSync(dfd);
+    }
   }
 
   /** The spool is nothing until it is committed; afterwards it is nothing again. */

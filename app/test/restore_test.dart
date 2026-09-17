@@ -78,6 +78,15 @@ void main() {
     expect(summary.messages, 1);
     expect(await target.kvGet('display_name'), 'Archived');
     expect(await target.kvGet('server_url'), 'wss://relay.example');
+    // server_url is a declared-plain key, and the restore path must store it
+    // in that class, the way the live app does — not sealed under s:, which
+    // kvGet would still read but no other write produces (the 2026-09-14
+    // review's finding 35 side effect). Look at the raw rows.
+    final urlRows = await target.db.query('kv',
+        columns: ['k'], where: 'k IN (?, ?)',
+        whereArgs: ['p:server_url', 's:server_url']);
+    expect(urlRows.map((r) => r['k']), ['p:server_url'],
+        reason: 'stored plain, and only plain');
     await target.db.close();
   });
 

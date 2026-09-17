@@ -8,38 +8,32 @@ was a notice beside a "Test" button nobody has to press -- so three of the
 four, plus the one that takes its answer from a FILE, dialled a cleartext
 public relay without a word.
 
-They all go through `setRelayUrl` now, which refuses a public `ws://` address
-unless the caller says the user was asked and agreed. That is worth exactly as
-much as the guarantee that nobody writes the key some other way, and a
-`kvPut('server_url', ...)` is four characters longer to type than the funnel.
+The three that take a *typed* address go through `setRelayUrl` now, which
+refuses a public `ws://` address unless the caller says the user was asked and
+agreed. The fourth -- the restore path adopting the address an archive was
+taken against, from the archive's own `meta` record -- cannot: a file has no
+human to ask, so it never passes `acceptedInsecure` and instead writes the
+address only when `isSecureOrLocalRelay` accepts it outright. It writes
+directly, inside the restore transaction, so its call is not a `kvPut`. That
+is a second writer, and the point of this check is that every writer is one we
+meant, so it is listed and its funnel is checked rather than pretended away.
 
 Three rules:
 
-  1. Only `relay_url.dart` may write `server_url`.
-  2. `acceptedInsecure: true` may only be passed where a human was asked --
+  1. Only `relay_url.dart` and the direct writers listed below may write
+     `server_url` (in any of its forms -- `kvPut`, or the restore path's own
+     `kv()` helper).
+  2. Each direct writer still funnels: the restore path writes `server_url`
+     only on the same line as `isSecureOrLocalRelay`, so a hand-built archive
+     naming a public `ws://` relay is not adopted from a file (finding 10 was
+     exactly the predicate this leans on being right).
+  3. `acceptedInsecure: true` may only be passed where a human was asked --
      the two account-creating screens, the settings field, and the restore
      path, each of which calls `confirmInsecureRelay` (or is the screen that
      does). A new caller has to be added here on purpose.
-  3. `defaultRelayUrl` and `connectLinkHost` name the same host.
 
-Rule 3 is the 2026-09-17 one. zmessengers.com answers 301 -> www. The invite
-link host was moved to `www` when that redirect broke links; the relay
-constant was left on the apex, and for a year nothing noticed, because
-`WebSocket.connect` FOLLOWS a redirect and the socket opened. Binding
-authentication to the relay's authority (`z-relay-auth-v2:`) turned the
-follow into a refusal: the client signs the host it dialled, the relay
-verifies the Host header it received, and a redirect is precisely the case
-where those differ. Every 3.5.2 client was refused by its own default relay.
-
-Two constants describing one deployment, in two packages, with nothing
-holding them together -- so this holds them together. They are the same host
-or this fails. A deployment whose relay and whose links are genuinely
-different hosts would change this rule on purpose, which is the point.
-
-None of the three rules is clever. All are the kind a person is sure they
-will remember.
+None is clever. All are the kind a person is sure they will remember.
 """
-from __future__ import annotations
 
 import re
 import sys
@@ -47,26 +41,35 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
+LINK_HOST_FILE = ROOT / "protocol" / "lib" / "src" / "connect.dart"
+CONST_RE = r"""const\s+String\s+%s\s*=\s*['"]([^'"]+)['"]\s*;"""
 LIB = ROOT / "app" / "lib"
 
 WRITER = "core/relay_url.dart"
 
-# Rule 3's two constants, each in the package that owns it.
-LINK_HOST_FILE = ROOT / "protocol" / "lib" / "src" / "connect.dart"
-# The trailing `;` matters: without it `= 'wss://' + _host;` matches on its
-# first fragment and rule 3 compares `wss://` against a host, reporting a
-# mismatch that is really "this constant stopped being a literal and I can no
-# longer read it". Demanding the whole declaration turns that into the right
-# message.
-CONST_RE = r"""const\s+String\s+%s\s*=\s*['"]([^'"]+)['"]\s*;"""
+# Writers that do NOT go through setRelayUrl, on purpose, and why each is safe
+# without it. rule 1 allows these; rule 2 checks each still funnels.
+DIRECT_WRITERS = {
+    "core/archive.dart":
+        "restore adopts the archive's meta.server only when "
+        "isSecureOrLocalRelay accepts it; a file cannot consent to a public "
+        "ws:// relay, so it never passes acceptedInsecure, and it writes "
+        "inside the restore transaction through a local kv() helper",
+}
 
-
-def host_of(url_or_host: str) -> str:
-    """The host of a `wss://h/...`, or of a bare `h` -- lower-case, no port."""
-    s = url_or_host.strip()
-    if "://" not in s:
-        s = "wss://" + s
-    return (urlparse(s).hostname or "").lower()
+# Callers allowed to say the user agreed, and why each one is asked.
+ACCEPTORS = {
+    "ui/onboarding_screen.dart":
+        "creates the account; calls confirmInsecureRelay before it starts",
+    "ui/link_device_screen.dart":
+        "links this device; calls confirmInsecureRelay before it pairs",
+    "core/chat_service.dart":
+        "setServerUrl passes through what its own caller was told",
+    "core/restore.dart":
+        "the address the user typed into the restore screen, which asked",
+    "ui/settings_screen.dart":
+        "the developer-mode relay field; calls confirmInsecureRelay first",
+}
 
 
 def const_in(text: str, name: str, where: str, problems: list) -> str | None:
@@ -98,6 +101,16 @@ ACCEPTORS = {
 }
 
 
+
+def host_of(url_or_host: str) -> str:
+    """The host of a `wss://h/...`, or of a bare `h` -- lower-case, no port."""
+    s = url_or_host.strip()
+    if "://" not in s:
+        s = "wss://" + s
+    return (urlparse(s).hostname or "").lower()
+
+
+
 def main():
     problems = []
 
@@ -119,11 +132,16 @@ def main():
         rel = path.relative_to(LIB).as_posix()
         text = path.read_text(encoding="utf-8")
 
-        if re.search(r"""kvPut\(\s*['"]server_url['"]""", text) and rel != WRITER:
+        if re.search(r"""\bkv(?:Put)?\(\s*['"]server_url['"]""", text) \
+                and rel != WRITER and rel not in DIRECT_WRITERS:
             problems.append(
                 f"{rel} writes `server_url` directly. Every writer goes "
-                f"through `setRelayUrl` in {WRITER}, which is the one place "
-                f"that refuses a public ws:// address nobody agreed to."
+                f"through `setRelayUrl` in {WRITER} — which refuses a public "
+                f"ws:// address nobody agreed to — or is a listed direct "
+                f"writer in this script with its own funnel. Add it to "
+                f"DIRECT_WRITERS, with the reason, only if it genuinely "
+                f"cannot use the funnel (the restore path cannot, because a "
+                f"file has no one to ask)."
             )
 
         if "acceptedInsecure: true" in text and rel not in ACCEPTORS:
@@ -141,6 +159,36 @@ def main():
             f"{WRITER} no longer refuses an unaccepted insecure relay; the "
             f"rule the rest of this check enforces has gone."
         )
+
+    # Rule 2: each direct writer resolves and still funnels. Its protection is
+    # isSecureOrLocalRelay on the very line that writes server_url; without it,
+    # a hand-built archive naming a public ws:// relay would be adopted from a
+    # file with no one asked. An entry here that no longer writes server_url is
+    # a stale exemption, like a missing ACCEPTOR.
+    write_re = re.compile(r"""\bkv(?:Put)?\(\s*['"]server_url['"]""")
+    for rel in sorted(DIRECT_WRITERS):
+        p = LIB / rel
+        if not p.exists():
+            problems.append(
+                f"{rel} is listed in DIRECT_WRITERS and does not exist; the "
+                f"exemption covers nothing."
+            )
+            continue
+        lines = [ln for ln in p.read_text(encoding="utf-8").splitlines()
+                 if write_re.search(ln)]
+        if not lines:
+            problems.append(
+                f"{rel} is listed in DIRECT_WRITERS but no longer writes "
+                f"server_url; remove it, or its exemption excuses a writer "
+                f"that is not there."
+            )
+        for ln in lines:
+            if "isSecureOrLocalRelay" not in ln:
+                problems.append(
+                    f"{rel} writes server_url without isSecureOrLocalRelay on "
+                    f"the same line, so a file's address would be adopted "
+                    f"unfunnelled: {ln.strip()!r}"
+                )
 
     # Rule 3: one deployment, one host. A missing file is a failure and not a
     # skip -- rule 3 exists because two constants drifted while everything
@@ -176,14 +224,16 @@ def main():
                     f"nobody typed it."
                 )
 
+
     if problems:
         print(f"\n{len(problems)} problem(s):\n")
         for p in problems:
             print(f"  - {p}")
         return 1
-    print(f"relay address: written only by {WRITER}; "
-          f"{len(ACCEPTORS)} caller(s) may accept a cleartext one; "
-          f"relay and invite links both on {host_of(relay or '')}.")
+    direct = ", ".join(sorted(DIRECT_WRITERS)) or "none"
+    print(f"relay address: written through setRelayUrl in {WRITER}, and by "
+          f"{len(DIRECT_WRITERS)} funnelled direct writer(s) ({direct}); "
+          f"{len(ACCEPTORS)} caller(s) may accept a cleartext one.")
     return 0
 
 

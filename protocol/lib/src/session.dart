@@ -463,7 +463,12 @@ class Conversation {
     if (j['v'] != 1 || j['t'] != 'r') {
       throw RatchetDecryptException('unsupported payload type');
     }
-    final sid = j['sid'] as String;
+    // A wrong-typed field is a malformed payload, not a `TypeError`: an Error
+    // escapes the caller's `on RatchetDecryptException`, and one such escape
+    // (finding 42) left `chat_service` returning without acknowledging, so a
+    // single malformed envelope wedged the mailbox slot for the queue TTL.
+    final sid = j['sid'];
+    if (sid is! String) throw RatchetDecryptException('malformed payload');
     var created = false;
 
     var session = sessions[sid];
@@ -487,12 +492,24 @@ class Conversation {
       created = true;
     }
 
-    final msg = RatchetMessage(
-      header: RatchetHeader.fromJson((j['h'] as Map).cast<String, Object?>()),
-      nonce: unb64(j['n'] as String),
-      cipherText: unb64(j['ct'] as String),
-      mac: unb64(j['mac'] as String),
-    );
+    // The wire fields, all fixed-width base64 or a header object. A wrong
+    // type, a short field or bad base64 is a malformed payload — the catch
+    // turns any Error the casts and `unb64` throw into the documented
+    // exception, the way `identity_v3.dart` does for a contact code.
+    final RatchetMessage msg;
+    try {
+      final h = j['h'];
+      if (h is! Map) throw const FormatException('header');
+      msg = RatchetMessage(
+        header: RatchetHeader.fromJson(h.cast<String, Object?>()),
+        nonce: unb64(j['n'] as String),
+        cipherText: unb64(j['ct'] as String),
+        mac: unb64(j['mac'] as String),
+      );
+    } catch (e) {
+      if (e is RatchetDecryptException) rethrow;
+      throw RatchetDecryptException('malformed payload');
+    }
     final plain = await ratchetDecrypt(session.ratchet, msg, pq: session.pq);
     session.receivedAny = true;
     session.lastUsedMs = nowMs ?? DateTime.now().millisecondsSinceEpoch;

@@ -4052,3 +4052,96 @@ direction; the phases, their order and both ordering arguments stand.
     nobody who chose an address, and exactly once.
 
     **A redirect is invisible until something signs the name on the door.**
+102. **The twenty smaller ones, and what a P2 is for.**
+
+   The 2026-09-14 review's twenty P2s, findings 24–43, in its suggested
+   order — the guards first, because every fix below is verified through
+   them.
+
+   *Guards and CI honesty (24, 25, 26, 35).* `check_16k.sh` skipped the
+   zip-alignment half of the 16 KB check in silence when `zipalign` was not
+   found and still printed the success line — the ELF half's floor, missing
+   from this one; an APK with no `zipalign` now refuses. A comment in
+   `build.yml` claimed "the step after this gates on it" of a reproducibility
+   result that nothing reads — and PROVENANCE says a disagreeing slot is
+   published anyway, so the gate was not only absent but wrong; the comment
+   now says what is true. `check_audit_scope`'s `UNCITED_OK` carried a path
+   (`widget_test.dart`) that no longer existed, excusing a file that could be
+   recreated unreviewed; every entry is checked to resolve now, as
+   `check_relay_url` checks its own. And `check_relay_url` itself: rule 1 was
+   a regex for `kvPut('server_url'`, and the restore path writes the address
+   through its own `kv()` helper, so the guard reported "written only by
+   relay_url.dart" while a second writer existed — the archive, whose only
+   protection is finding 10's predicate. The guard sees both writers now and
+   checks the archive still funnels through `isSecureOrLocalRelay`; and the
+   restored address, which was stored sealed under `s:` where every other
+   write stores it plain, is stored in its declared class.
+
+   *The counting (27–34).* Eight numbers a reader is handed as proof and can
+   check in a minute: the claim count (thirty → thirty-six), the register
+   size (already thirty-three by earlier work), the two suite sizes the brief
+   gave two ways each (now the real 209 and 113), `server.js`'s line count
+   (~1 570 → ~2 280), the ADR count (three → nine), the vault schema in
+   `DATA_MAP` (9 → 11), and PROVENANCE's account of the reproducibility
+   experiment, which still described a two-way build the four-slot matrix
+   replaced and contradicted its own status table forty lines down. A number
+   nobody checks is a number nobody should believe; `check_audit_scope`
+   enforces the ones it can, and the rest are correct now.
+
+   *Tests that asserted nothing (36, 37).* The a11y RTL test wrapped a
+   `Directionality` above the `MaterialApp`, so the WidgetsApp inside supplied
+   its own from the resolved locale and the screen rendered left-to-right —
+   the test was not about RTL at all. It forces the direction below that
+   boundary now, asserts the screen is genuinely RTL, and checks the layout is
+   the mirror of the LTR one, so an `EdgeInsets.only(left:)` that should have
+   been directional is caught. The deep-link and connect-invite tests promised
+   in prose that opening an invite fetches nothing — the fragment is the whole
+   secret — and asserted nothing about it; they install a recording
+   `HttpOverrides` now and prove no HTTP client is constructed, so an
+   `HttpClient().getUrl` added to `ConnectInvites.open` fails them both.
+
+   *Hard-coded English (38, 39).* The two loudest owner-account banners were
+   built as English sentences in `chat_service` and stored in `kv` as prose,
+   and `home_screen` — on `check_l10n`'s migrated list — rendered them from a
+   string the service handed it at run time, where the check cannot see it, so
+   a Spanish user read them in English. They are stored as a kind and their
+   versions now and rendered through the ARB, the same shape the 2026-09-13
+   device-list fix used and the pair it missed. The launch-time unlock errors
+   were the same, built in `main.dart` above the `MaterialApp` where
+   `AppLocalizations` is out of scope; they are a typed `UnlockError` the
+   screen localises, and `check_l10n` scans `main.dart` now, held to zero.
+
+   *Unconfirmed destructive taps (40, 41).* "Reset secure session" threw away
+   every ratchet session with a contact — and everything the relay still held
+   for the old chain — on one tap, and an admin removed a group member, signed
+   and fanned out to everyone with no undo, on one icon tap. Every other
+   destructive action in the app asks first; these two do now.
+
+   *Parse before trust (42, 43).* A cast in an expression throws a `TypeError`,
+   an Error, not an Exception, so it escapes every `on RatchetDecryptException`
+   the caller holds. One such escape was the worst of these: a malformed inner
+   message from an authenticated contact — anything a peer's client puts inside
+   a validly-encrypted envelope — threw past every catch in `_onInbound`, which
+   returned WITHOUT acknowledging, so the relay redelivered it until the queue
+   TTL and, the vault write never having run, a restart re-decrypted the stale
+   chain and failed the same way, for good. `InnerMessage.fromBytes`,
+   `session.decrypt` and the post-quantum decapsulation all throw the
+   documented exception now, and a malformed inner is a drop that acknowledges
+   and keeps the validly advanced ratchet. The five smaller ones with it: a
+   pairing code one to three bytes short said `RangeError` instead of "too
+   short"; a retried send dropped its disappearing timer, reply quote and
+   forwarded flag; a persisted account-anchored contact bundle round-tripped
+   as device-anchored, losing the account it was about; the witness mirror
+   wrote its head with no fsync and had no repair path for a corrupt one (it
+   writes durably now, the way the log does, and names a corrupt head rather
+   than dead-ending on "entries without a head"); and `stats()` walked every
+   live mailbox on every unauthenticated `/health`, `/metrics` and
+   authentication — ~10 ms at 200k mailboxes, a cost anyone could impose — and
+   is an O(1) counter now.
+
+   Protocol 209 (was 204); relay 113 (112); kt 78 (77); app 71 test files
+   (66), 190 unit / 108 integration. Fourteen mutations across the twenty,
+   each caught by the criterion written for it.
+
+   **A P2 is a claim the review believed, checked, and found the code did not
+   keep — smaller only in blast radius.**

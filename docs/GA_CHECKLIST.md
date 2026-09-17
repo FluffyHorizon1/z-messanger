@@ -33,7 +33,7 @@ nobody outside the project.
 
 ### G1 — External cryptographic audit ❌
 
-The *package* is ready: `AUDIT_SCOPE.md` states thirty claims with where each
+The *package* is ready: `AUDIT_SCOPE.md` states thirty-six claims with where each
 is specified and tested, `tool/audit_verify.sh` reproduces every one in a
 single command, and §8.1 defines severity anchored to those claims rather than
 to a generic scale.

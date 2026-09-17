@@ -44,13 +44,23 @@ fi
 case "$artifact" in
   *.apk)
     zipalign="$(ls "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/opt/android-sdk}}"/build-tools/*/zipalign 2>/dev/null | sort -V | tail -1 || true)"
-    if [ -n "$zipalign" ]; then
-      if "$zipalign" -c -P 16 4 "$artifact" >/dev/null; then
-        echo "ok        zip entries 16 KB aligned (zipalign -P 16)"
-      else
-        echo "UNALIGNED zip entries (zipalign -c -P 16 4 failed)"
-        bad=$((bad + 1))
-      fi
+    # An APK's uncompressed libraries must be 16 KB aligned in the zip too,
+    # and only zipalign says whether they are. If it cannot be found the
+    # check has read nothing about zip alignment, so it must refuse rather
+    # than fall through to the success line and report the blocker cleared
+    # (the ELF half has the same floor at `checked -eq 0`; this half did
+    # not, so a runner without build-tools passed the APK silently —
+    # GA_CHECKLIST G8's 16 KB row would be green having tested one of two
+    # things).
+    if [ -z "$zipalign" ]; then
+      echo "zipalign not found (looked under ANDROID_HOME/ANDROID_SDK_ROOT/opt/android-sdk build-tools); cannot verify zip 16 KB alignment of $artifact" >&2
+      exit 1
+    fi
+    if "$zipalign" -c -P 16 4 "$artifact" >/dev/null; then
+      echo "ok        zip entries 16 KB aligned (zipalign -P 16)"
+    else
+      echo "UNALIGNED zip entries (zipalign -c -P 16 4 failed)"
+      bad=$((bad + 1))
     fi
     ;;
 esac

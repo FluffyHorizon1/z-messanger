@@ -746,8 +746,14 @@ jobs:
       # outsider following the recipe gets the published number. The answer
       # is written into SHA256SUMS.txt either way, because a release that
       # says "reproducible" and was never checked is the overclaim this
-      # project exists to avoid. Reported, not enforced, until it has been
-      # seen to agree on a real tag; the step after this gates on it.
+      # project exists to avoid. Reported, not enforced: the steps after this
+      # carry no `if:` on `steps.repro.outputs.reproduced`, and PROVENANCE.md
+      # (the "what a release records" table) says why — a disagreeing slot is
+      # a finding to state in SHA256SUMS.txt and publish anyway, not a reason
+      # to withhold a release. `reproduced` is written for the run log and any
+      # future gate; nothing reads it today. (An earlier comment here claimed
+      # the next step gated on it, which was never true and would contradict
+      # that policy.)
       - name: Was the digest reproduced by an independently signed build?
         id: repro
         run: |

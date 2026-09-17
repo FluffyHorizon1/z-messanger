@@ -56,6 +56,23 @@ import 'package:zapp/ui/theme.dart';
 
 typedef Person = ({ChatService svc, Vault vault, ConnectInvites invites});
 
+/// An `HttpOverrides` that lets nothing construct an HTTP client and counts the
+/// attempts. Opening an invite parses a fragment the browser never sent to a
+/// server; the point of criterion 2 is that consuming it touches no network at
+/// all, so under this override the open must complete having created zero
+/// clients. If a future edit adds an `HttpClient().getUrl(...)` to
+/// `ConnectInvites.open` — leaking the fragment (the whole bearer secret) to
+/// the landing host — the construction throws here and the test fails, where
+/// before nothing watched (the 2026-09-14 review's finding 37).
+class _NoNetwork extends HttpOverrides {
+  int created = 0;
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    created++;
+    throw const SocketException('consuming an invite must touch no network');
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   // The widget binding replaces HttpClient with one that answers 400 to
@@ -254,7 +271,21 @@ void main() {
     final maker = await person('Maker');
     final invite = await maker.invites.create();
 
-    final opened = await offline.invites.open(invite.link);
+    // Consume the link with all network construction forbidden and counted, so
+    // "no network is touched to consume it" is asserted, not merely asserted in
+    // prose. `open` makes no request, so nothing is constructed.
+    final net = _NoNetwork();
+    final previous = HttpOverrides.current;
+    HttpOverrides.global = net;
+    final PendingInvite opened;
+    try {
+      opened = await offline.invites.open(invite.link);
+    } finally {
+      HttpOverrides.global = previous;
+    }
+    expect(net.created, 0,
+        reason: 'consuming the invite constructed no HTTP client — the '
+            'fragment never left the device');
     expect(b64(opened.run.code.secret), b64(invite.run.code.secret),
         reason: 'the code in the fragment is what the ceremony runs on');
     expect(opened.mine, isFalse);

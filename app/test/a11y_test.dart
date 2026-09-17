@@ -45,7 +45,7 @@ import 'package:zapp/ui/unlock_screen.dart';
 /// the brand colour to fix a bug that was mine. `app/tool/contrast.py` says
 /// every real pair clears AA, in both palettes.
 Widget _host(Widget child, ThemeData theme,
-        {double textScale = 1.0, Locale? locale}) =>
+        {double textScale = 1.0, Locale? locale, TextDirection? forceDir}) =>
     MediaQuery(
       data: MediaQueryData(
         size: const Size(400, 800),
@@ -59,6 +59,16 @@ Widget _host(Widget child, ThemeData theme,
         localizationsDelegates: AppLocalizations.localizationsDelegates,
         supportedLocales: AppLocalizations.supportedLocales,
         locale: locale,
+        // A Directionality wrapped ABOVE this MaterialApp does nothing: the
+        // WidgetsApp inside inserts its own from the resolved locale, and the
+        // home subtree renders under that. To force a direction on the screen
+        // it has to go through `builder`, which wraps the home BELOW that
+        // boundary. Without this, the RTL test below rendered LTR and asserted
+        // nothing (the 2026-09-14 review's finding 36).
+        builder: forceDir == null
+            ? null
+            : (context, child) =>
+                Directionality(textDirection: forceDir, child: child!),
         home: child,
       ),
     );
@@ -69,6 +79,32 @@ Future<void> _settle(WidgetTester tester) async {
   for (var i = 0; i < 6; i++) {
     await tester.pump(const Duration(milliseconds: 100));
   }
+}
+
+/// The horizontal centre of every laid-out text and icon, grouped by a key
+/// that is stable across a re-pump (the text, or the icon's code point) so the
+/// same element can be compared in LTR and RTL. Lists are sorted, so duplicate
+/// keys still compare as a set. Used by the RTL test to check the layout is a
+/// true mirror rather than merely exception-free.
+Map<String, List<double>> _elementCentresX(WidgetTester tester) {
+  final out = <String, List<double>>{};
+  void grab(Iterable<Element> els, String Function(Widget) key) {
+    for (final e in els) {
+      final ro = e.renderObject;
+      if (ro is RenderBox && ro.attached && ro.hasSize && ro.size.width > 0) {
+        (out[key(e.widget)] ??= [])
+            .add(ro.localToGlobal(ro.size.center(Offset.zero)).dx);
+      }
+    }
+  }
+
+  grab(find.byType(Text).evaluate(), (w) => 'text:${(w as Text).data ?? ''}');
+  grab(find.byType(Icon).evaluate(),
+      (w) => 'icon:${(w as Icon).icon?.codePoint}');
+  for (final v in out.values) {
+    v.sort();
+  }
+  return out;
 }
 
 class _AlwaysOkGate implements BiometricGate {
@@ -139,17 +175,52 @@ void main() {
     // right-to-left layout breaks in ways nobody sees until somebody tries
     // it: a Row that should have been a mainAxisAlignment, an EdgeInsets.only
     // that should have been directional. Forcing the direction catches those
-    // without needing the strings translated first.
+    // without needing the strings translated first — but only if the force
+    // actually reaches the screen, which through `_host`'s builder it now does
+    // (finding 36: the old wrap sat above the MaterialApp and the screen
+    // rendered LTR, so nothing here was about RTL at all).
     testWidgets('${entry.key} (${t.key}): lays out right-to-left',
         (tester) async {
       await tester.binding.setSurfaceSize(const Size(400, 800));
-      await tester.pumpWidget(Directionality(
-        textDirection: TextDirection.rtl,
-        child: _host(entry.value(), t.value()),
-      ));
+
+      // First the honest layout, to mirror against.
+      await tester.pumpWidget(
+          _host(entry.value(), t.value(), forceDir: TextDirection.ltr));
+      await _settle(tester);
+      final ltr = _elementCentresX(tester);
+
+      await tester.pumpWidget(
+          _host(entry.value(), t.value(), forceDir: TextDirection.rtl));
       await _settle(tester);
       expect(tester.takeException(), isNull,
           reason: 'this screen threw when laid out right-to-left');
+
+      // The force reached the screen: an element below the MaterialApp is
+      // genuinely in RTL. A mutation that moves the Directionality back above
+      // `_host` fails here.
+      expect(Directionality.of(tester.element(find.byType(Scaffold).first)),
+          TextDirection.rtl,
+          reason: 'the screen is not actually laid out right-to-left');
+
+      // And it is the LTR layout mirrored: every text and icon sits where its
+      // reflection across the 400px width should be. An `EdgeInsets.only(left:)`
+      // that should have been `EdgeInsetsDirectional.only(start:)` leaves its
+      // child on the same side in both directions, so it lands where the
+      // mirror is not — which is what this catches, without translated
+      // strings (the glyphs, and so the widths, are identical both ways).
+      final rtl = _elementCentresX(tester);
+      expect(rtl.keys.toSet(), ltr.keys.toSet(),
+          reason: 'the same elements are present both ways');
+      for (final k in ltr.keys) {
+        final expected = [for (final x in ltr[k]!) 400.0 - x]..sort();
+        final actual = rtl[k]!;
+        expect(actual, hasLength(expected.length), reason: k);
+        for (var i = 0; i < actual.length; i++) {
+          expect((actual[i] - expected[i]).abs(), lessThan(1.5),
+              reason:
+                  '$k is not mirrored under RTL — a non-directional inset?');
+        }
+      }
     });
 
     testWidgets('${entry.key} (${t.key}): survives 2x text without overflowing',

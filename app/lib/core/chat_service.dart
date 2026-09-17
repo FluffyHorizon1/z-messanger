@@ -136,11 +136,16 @@ class ChatService extends ChangeNotifier implements KtHost {
   final Map<String, String> contactDevlistAlerts = {};
 
   /// Loud alert to the owner: a contact was given a device list for MY account
-  /// that this device never issued (T1/T2). Null when clear.
+  /// that this device never issued, or the account's own list went backwards
+  /// (T1/T2). Null when clear. Holds the STORED form — an `OwnAlertKind` and
+  /// its versions (`ownAlertBody`), not a sentence; `home_screen.dart` renders
+  /// it in the reader's language through `account_alert_text.dart` (finding
+  /// 38). A value an older build wrote is the English sentence and is shown as
+  /// it is.
   String? ownAccountAlert;
 
   /// This device was told by a contact that it was removed from its own
-  /// account's device list (T3). Null when clear.
+  /// account's device list (T3). Null when clear. The stored form, as above.
   String? removedDeviceAlert;
 
   /// Latest claim each of a contact's devices has made about that account's
@@ -2005,6 +2010,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     // Post-processing (ack, assembly, read receipts, session-reset hello) runs
     // AFTER the lock releases, because it may itself re-enter the lock.
     const int kOk = 0, kUnknownSession = 1, kDropped = 2, kReplay = 3;
+    const int kMalformed = 4;
     int status;
     InnerMessage? inner;
 
@@ -2041,7 +2047,25 @@ class ChatService extends ChangeNotifier implements KtHost {
           return (kDropped, null);
         }
 
-        final parsed = InnerMessage.fromBytes(dec.plaintext);
+        // The envelope decrypted, so the ratchet has validly advanced; the
+        // plaintext inside can still be garbage — a peer's buggy or hostile
+        // client can put anything in a well-encrypted envelope. Parsing it
+        // used to be an unguarded `as String` OUTSIDE both try/catch blocks
+        // here, so a wrong-typed field threw a `TypeError` that fell through
+        // to the outer catch, which returns WITHOUT acknowledging: the relay
+        // then redelivered the same envelope until the queue TTL, and — since
+        // the vault write never ran — every launch decrypted the stale chain
+        // and failed the same way, wedging that mailbox slot for good (finding
+        // 42). Now a malformed inner is a drop that acknowledges. The ratchet
+        // is NOT rolled back — the decryption was valid — so it is persisted
+        // and this envelope is not decrypted again.
+        final InnerMessage parsed;
+        try {
+          parsed = InnerMessage.fromBytes(dec.plaintext);
+        } on FormatException {
+          await _saveConv(contact.rid);
+          return (kMalformed, null);
+        }
         final now = _now();
         // v2: hearing from the peer for the first time triggers this side's
         // post-quantum key offer; it is queued with the same durability as
@@ -2095,9 +2119,11 @@ class ChatService extends ChangeNotifier implements KtHost {
       return;
     }
 
-    if (status == kUnknownSession || status == kDropped) {
-      // Both are "we cannot read this and a redelivery would fail the same
-      // way", so both acknowledge; the difference is only in what went wrong,
+    if (status == kUnknownSession ||
+        status == kDropped ||
+        status == kMalformed) {
+      // All three are "we cannot use this and a redelivery would fail the same
+      // way", so all acknowledge; the difference is only in what went wrong,
       // and `_noteUndecryptable` coalesces a burst into one row and one hello
       // either way. The hello is the repair: it carries a new ratchet public
       // key, the peer steps on it, and their next message lands on a chain
@@ -3352,6 +3378,20 @@ class ChatService extends ChangeNotifier implements KtHost {
   @visibleForTesting
   Future<void> debugInbound(RelayInbound m) => _onInbound(m);
 
+  /// Encrypt arbitrary bytes to [rid] through the established conversation and
+  /// seal them as a sealed-sender envelope, persisting the advanced ratchet.
+  /// Test seam for finding 42: a peer's client can put anything inside a
+  /// validly-encrypted envelope, and this crafts one whose inner PLAINTEXT is
+  /// malformed so a test can prove the receiver acknowledges it rather than
+  /// wedging the mailbox slot. Returns the transport payload.
+  @visibleForTesting
+  Future<String> debugSealRaw(String rid, Uint8List plaintext) async {
+    final conv = await _convFor(contacts[rid]!);
+    final payload = await _sealFor(rid, await conv.encrypt(plaintext));
+    await _saveConv(rid);
+    return payload;
+  }
+
   /// The disappearing-message sweep, on demand: tests assert what it removes
   /// rather than wait twenty seconds for the timer that normally runs it.
   @visibleForTesting
@@ -3925,7 +3965,19 @@ class ChatService extends ChangeNotifier implements KtHost {
         where: 'rid = ? AND mid = ?', whereArgs: [rid, mid]);
     _updateLoadedStatus(rid, mid, MsgStatus.pending);
     notifyListeners();
-    await _sendInner(contact, InnerMessage.text(mid, _now(), body));
+    // Rebuild the message the row records, not a bare one: retrying used to
+    // send `InnerMessage.text(mid, _now(), body)`, dropping the disappearing
+    // timer, the reply quote and the forwarded flag, and moving the timestamp
+    // to now — so a retried disappearing message never disappeared, a reply
+    // lost its quote, and a forward stopped being marked one (the 2026-09-14
+    // review's finding 43). The row holds all of it.
+    final ts = (row['ts_ms'] as int?) ?? _now();
+    final expireAt = (row['expire_at_ms'] as int?) ?? 0;
+    final ttlSec = expireAt > 0 ? ((expireAt - ts) / 1000).round() : 0;
+    final inner = InnerMessage.text(mid, ts, body,
+        ttlSec: ttlSec, replyTo: row['reply_to'] as String?);
+    if ((row['forwarded'] as int?) == 1) inner.data['fw'] = true;
+    await _sendInner(contact, inner);
     return true;
   }
 
@@ -6367,11 +6419,8 @@ class ChatService extends ChangeNotifier implements KtHost {
         // so the newer list this device holds was signed by someone else
         // holding the account key — the split-view attacker answering this
         // device's own request, or a device enrolled behind the root's back.
-        ownAccountAlert ??=
-            'Your main device sent an older device list (v${list.version}) '
-            'than this device already holds (v$knownV). The newer list was '
-            'signed by another device holding your account key. If that '
-            "wasn't you, reset your identity now.";
+        ownAccountAlert ??= ownAlertBody(OwnAlertKind.olderList,
+            {'sent': list.version, 'held': knownV});
         await vault.kvPut('own_alert', ownAccountAlert!, sensitive: false);
         notifyListeners();
         return;
@@ -6551,11 +6600,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       if (consistent) {
         _pendingOwnerEcho.remove(key);
       } else if (now.difference(ec.seen) >= devlistGrace) {
-        ownAccountAlert ??=
-            'A contact was given a device list for your account that this '
-            'device never issued. A device holding your account key may have '
-            "enrolled another device. If that wasn't you, reset your identity "
-            'now.';
+        ownAccountAlert ??= ownAlertBody(OwnAlertKind.unissued);
         await vault.kvPut('own_alert', ownAccountAlert!, sensitive: false);
         // Remember the strongest echo behind the alert, so that if my root
         // later proves it honest (its answer makes the echo consistent) the
@@ -6594,10 +6639,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       final me = await accountIdentity();
       if (acctB64 != b64(me.accountEdPub)) return; // not about my account
       final v = (inner.data['v'] as num?)?.toInt() ?? 0;
-      removedDeviceAlert =
-          'This device was removed from your account (device list v$v). If you '
-          'did not do this, your account key may be compromised — reset your '
-          'identity.';
+      removedDeviceAlert = ownAlertBody(OwnAlertKind.removed, {'v': v});
       await vault.kvPut('removed_alert', removedDeviceAlert!, sensitive: false);
       notifyListeners();
     } catch (_) {

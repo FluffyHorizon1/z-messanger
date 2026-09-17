@@ -122,11 +122,34 @@ word "signed".
 
 ## Reproducibility in CI
 
-`.github/workflows/build.yml` builds the same commit twice, on two separate
-runner VMs, in two differently-named checkout directories, and compares them
-with `tool/verify_reproducible.py --ignore-signing-block`. This is the
-cross-machine check `REPRODUCIBLE_BUILDS.md` could not perform in a container
-with two cores.
+`.github/workflows/build.yml` builds the same commit **four ways** and
+compares them — a matrix that separates the three inputs a two-way build
+conflated. An earlier version here built twice "on two separate runner VMs in
+two differently-named checkout directories" and compared the pair, which
+changed the machine and the path at once and so could not say which of them a
+difference came from; the status table below already recorded that across-path
+builds do *not* match, so that prose was describing a comparison that was
+expected to fail. The matrix now is:
+
+- **a** and **b** — the same commit at the same checkout path (`z`) on two
+  separate runner VMs. They must fingerprint **identically** (every `.so`'s
+  SHA-256 and build-id): the machine is not a variable.
+- **c** — the same commit at a deliberately much longer checkout path. It is
+  expected to differ from **a**, but **only** in `libapp.so` and
+  `libdartjni.so`, the two libraries that embed the absolute build path; a
+  third differing library fails the job. That is R16, bounded and measured.
+- **d** — the same commit at path `z` but under a different timezone
+  (Australia/Eucla, UTC+08:45 — a quarter-hour offset no rounding hides) and
+  locale (`fr_FR.UTF-8`). It must fingerprint identically to **a**: timezone
+  and locale do not reach the build. These were the last inputs nobody had
+  checked, since every other slot shares UTC and `en_US.UTF-8`.
+
+The fingerprints are compared first (cheap, and decisive in the first ten
+seconds); then the full APKs with `tool/verify_reproducible.py
+--ignore-signing-block` — **a** vs **b** must match, and **a** vs **c** is run
+too but expected to differ, reported rather than gated, because the bound is
+already checked on the fingerprints. This is the cross-machine check
+`REPRODUCIBLE_BUILDS.md` could not perform in a container with two cores.
 
 The comparison ignores the APK signing block for a reason that is about keys,
 not the build: a machine that has never signed an Android build generates its
@@ -141,6 +164,7 @@ bit of app content fails the job, which was checked by flipping one.
 | Reproducible build, same machine and path | measured (14.1) |
 | Reproducible build, across runners | **measured, and it holds** (2026-09-09) — at a fixed checkout path; see `REPRODUCIBLE_BUILDS.md` |
 | Reproducible build, across checkout paths | no — two libraries embed the build path (R16, accepted, bounded and documented) |
+| Reproducible build, across timezone and locale | **measured, and it holds** — slot d builds under Australia/Eucla + `fr_FR.UTF-8` and fingerprints identically to slot a |
 | The release job's own shell | **exercised** — `tool/dry_run_release.py` runs those steps, read out of `build.yml` so there is one copy, against a staged release, on every push (see below) |
 | SLSA provenance on release artefacts | **still not exercised** — Sigstore needs a real OIDC token from a real runner, so this one step waits on a tag |
 | Sigstore keyless signing + Rekor log | via `actions/attest-build-provenance` |

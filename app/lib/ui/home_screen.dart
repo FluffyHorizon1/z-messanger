@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/account_alert_text.dart';
 import '../l10n/system_text.dart';
 import '../l10n/when_text.dart';
 import 'package:intl/intl.dart';
@@ -71,12 +72,12 @@ class HomeScreen extends StatelessWidget {
         children: [
           if (service.removedDeviceAlert != null)
             _AccountAlertBanner(
-              message: service.removedDeviceAlert!,
+              message: removedDeviceAlertText(l, service.removedDeviceAlert!),
               onDismiss: service.acknowledgeRemovedDeviceAlert,
             ),
           if (service.ownAccountAlert != null)
             _AccountAlertBanner(
-              message: service.ownAccountAlert!,
+              message: ownAccountAlertText(l, service.ownAccountAlert!),
               onDismiss: service.acknowledgeOwnAccountAlert,
             ),
           // 7.7b (ADR 0006): the log holds a list for this account that this

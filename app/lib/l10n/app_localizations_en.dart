@@ -18,6 +18,19 @@ class AppLocalizationsEn extends AppLocalizations {
   String get unlockPrompt => 'Enter your passphrase to unlock this device.';
 
   @override
+  String get unlockBiometricStale =>
+      'Biometric unlock is out of date — enter your passphrase, then turn it on again in Settings.';
+
+  @override
+  String get unlockBiometricInvalidated =>
+      'Your fingerprints or face changed, so biometric unlock was reset. Enter your passphrase, then turn it on again in Settings.';
+
+  @override
+  String startupFailed(String detail) {
+    return 'Z could not start:\n$detail';
+  }
+
+  @override
   String get unlockShowPassphrase => 'Show passphrase';
 
   @override
@@ -338,6 +351,17 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get grpRemoveFromGroup => 'Remove from group';
+
+  @override
+  String get grpRemoveTitle => 'Remove member?';
+
+  @override
+  String grpRemoveBody(String name) {
+    return '$name will be removed from the group for everyone, and cannot be added back without a new invitation. There is no undo.';
+  }
+
+  @override
+  String get grpRemoveConfirm => 'Remove';
 
   @override
   String get grpLeaveGroup => 'Leave group';
@@ -713,6 +737,16 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get ciResetSessionDone => 'Secure session reset';
+
+  @override
+  String get ciResetTitle => 'Reset secure session?';
+
+  @override
+  String get ciResetBody =>
+      'This throws away the current encryption session with this contact. Anything already on its way that hasn\'t arrived yet may be lost. Only do this if messages have stopped decrypting.';
+
+  @override
+  String get ciResetConfirm => 'Reset';
 
   @override
   String get ciDeleteContact => 'Delete contact & all messages';
@@ -1441,6 +1475,20 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String homeKtUnreachable(String when) {
     return 'The transparency log has not been reachable since $when. Device lists are being checked by your contacts\' devices alone in the meantime.';
+  }
+
+  @override
+  String homeOwnOlderList(int sent, int held) {
+    return 'Your main device published an older device list (v$sent) than this device already holds (v$held). The newer list was signed by another device holding your account key. If that wasn\'t you, reset your identity now.';
+  }
+
+  @override
+  String get homeOwnUnissued =>
+      'A contact was given a device list for your account that this device never issued. A device holding your account key may have enrolled another device. If that wasn\'t you, reset your identity now.';
+
+  @override
+  String homeRemovedDevice(int v) {
+    return 'This device was removed from your account (device list v$v). If you did not do this, your account key may be compromised — reset your identity.';
   }
 
   @override

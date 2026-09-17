@@ -4,6 +4,41 @@ import '../l10n/app_localizations.dart';
 
 import 'theme.dart';
 
+/// Why the unlock screen is showing an error.
+///
+/// The bootstrapper raises these above the `MaterialApp`, where
+/// `AppLocalizations` is not in scope, so it cannot build the sentence — it
+/// says which case it is, and the words are chosen here, where the reader's
+/// language is known (the 2026-09-14 review's finding 39: these were built as
+/// English in `main.dart`, and `check_l10n.py` never scanned `main.dart`, so a
+/// Spanish user met the passphrase and biometric errors in English).
+sealed class UnlockError {
+  const UnlockError();
+}
+
+/// The passphrase did not unwrap the vault.
+class WrongPassphrase extends UnlockError {
+  const WrongPassphrase();
+}
+
+/// The stored biometric pass key is stale (the passphrase changed without
+/// re-enrolling); biometric unlock has been turned off.
+class BiometricStale extends UnlockError {
+  const BiometricStale();
+}
+
+/// The hardware key was invalidated (fingerprints or face re-enrolled);
+/// biometric unlock is off.
+class BiometricInvalidated extends UnlockError {
+  const BiometricInvalidated();
+}
+
+/// Anything else — carries a raw diagnostic that has no translated form.
+class UnexpectedUnlockError extends UnlockError {
+  final String detail;
+  const UnexpectedUnlockError(this.detail);
+}
+
 /// Shown at launch when the vault is passphrase-protected. The passphrase is
 /// combined with the device keystore secret to unwrap the local vault key; it
 /// never leaves the device and is never sent to any server. With biometric
@@ -13,7 +48,7 @@ class UnlockScreen extends StatefulWidget {
   final Future<void> Function(String passphrase) onUnlock;
   final Future<void> Function()? onBiometric;
   final bool busy;
-  final String? error;
+  final UnlockError? error;
   const UnlockScreen(
       {super.key,
       required this.onUnlock,
@@ -34,6 +69,16 @@ class _UnlockScreenState extends State<UnlockScreen> {
     if (p.isEmpty) return;
     widget.onUnlock(p);
   }
+
+  /// The error in the reader's language. `WrongPassphrase` reuses the app-lock
+  /// overlay's own string; the biometric cases have their own; the unexpected
+  /// case shows its raw diagnostic, which has no translation.
+  String _errorText(AppLocalizations l, UnlockError e) => switch (e) {
+        WrongPassphrase() => l.lockIncorrectPassphrase,
+        BiometricStale() => l.unlockBiometricStale,
+        BiometricInvalidated() => l.unlockBiometricInvalidated,
+        UnexpectedUnlockError(:final detail) => detail,
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -88,7 +133,7 @@ class _UnlockScreenState extends State<UnlockScreen> {
                 if (widget.error != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
-                    child: Text(widget.error!,
+                    child: Text(_errorText(l, widget.error!),
                         style: TextStyle(color: context.z.danger)),
                   ),
                 const SizedBox(height: 20),

@@ -279,7 +279,9 @@ void main() {
     //    devices; the laptop holds v3 from "the root" — an honest root never
     //    regresses, so the laptop flags the newer list as signed by someone else.
     await waitUntil(() => s.laptop.ownAccountAlert != null);
-    expect(s.laptop.ownAccountAlert, contains('older device list'),
+    // Stored as a kind and its versions, not a sentence (finding 38); the
+    // words are chosen in the reader's language when the banner is drawn.
+    expect(jsonDecode(s.laptop.ownAccountAlert!)['k'], OwnAlertKind.olderList,
         reason: 'the laptop did not flag the contradicting root sync');
     // 2. The phone speaks with its true (v2) claim; Carol sees device #1
     //    contradict the v3 list it was handed (a rollback on that device).

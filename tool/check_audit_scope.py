@@ -38,8 +38,6 @@ BRIEF = ROOT / "docs" / "AUDIT_SCOPE.md"
 UNCITED_OK = {
     "app/test/screenshots_test.dart":
         "renders theme screenshots for the README; asserts no security property",
-    "app/test/widget_test.dart":
-        "Flutter's generated smoke test",
     "app/test/a11y_test.dart":
         "accessibility — Flutter's own tap-target, label and contrast "
         "guidelines on the pre-account screens. A usability property, and "
@@ -95,6 +93,20 @@ UNCITED_OK = {
         "row from before the change still reads as written — a localization "
         "property. The rows themselves are sealed like every other message, "
         "which is C11's claim, not this test's",
+    "app/test/account_alert_text_test.dart":
+        "that the two owner-account banners are stored as a kind and its "
+        "version numbers rather than an English sentence, and render in the "
+        "reader's language — a localisation property (G9) guarded by "
+        "check_l10n. The stored form carries only device-list versions, which "
+        "are public by construction, so there is no secret here for C11",
+    "app/test/unlock_error_test.dart":
+        "that the launch-time unlock errors render in the reader's language "
+        "from a typed error rather than English built in main.dart — a "
+        "localisation property (G9), not a security claim",
+    "app/test/destructive_confirm_test.dart":
+        "that resetting a secure session and removing a group member ask "
+        "before they act, as every other destructive action does — a "
+        "confirmation-UX property, not a claim about secrecy",
 }
 
 
@@ -234,6 +246,25 @@ def main():
             )
         else:
             seen[key] = cid
+
+    # 2c. Every UNCITED_OK entry resolves to a file that exists.
+    #
+    # This list reads like a set of reviewed decisions — each name a test
+    # somebody looked at and judged to back no public claim. An entry for a
+    # file that no longer exists is a decision about nothing: it can only
+    # excuse a real file into which that path is later recreated, silently,
+    # without the review the exemption implies. `widget_test.dart` (Flutter's
+    # generated smoke test, deleted long ago) sat here unresolved and nothing
+    # noticed. `check_relay_url.py` applies the same floor to its ACCEPTORS
+    # list, and says why there.
+    for rel in sorted(UNCITED_OK):
+        if not (ROOT / rel).exists():
+            problems.append(
+                f"{rel} is in UNCITED_OK and does not exist. Either the test "
+                f"moved — in which case the exemption now covers nothing and "
+                f"its replacement is unexamined — or it is gone and the entry "
+                f"is a decision about a file nobody can read. Remove it."
+            )
 
     # 3. Every test file is cited by a claim's EVIDENCE.
     #

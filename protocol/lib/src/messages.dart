@@ -70,14 +70,43 @@ class InnerMessage {
         ...data,
       })));
 
+  /// Parse a decrypted inner message.
+  ///
+  /// This runs on plaintext that has already been authenticated by the
+  /// ratchet, so it is not an attacker's direct input — but a peer's client
+  /// (buggy, or hostile toward its own contact) can put anything inside a
+  /// validly-encrypted envelope. A raw `as String` on a field that is a number
+  /// throws a `TypeError`, an Error, not an Exception: it escapes every `on
+  /// FormatException`/`on RatchetDecryptException` the caller has, and the
+  /// 2026-09-14 review's finding 42 traced it to `chat_service` returning
+  /// without acknowledging, so one malformed inner message wedged the mailbox
+  /// slot for the whole queue TTL. Every field is type-checked, and anything
+  /// wrong is a [FormatException] the caller can catch — the same shape
+  /// `identity_v3.dart` uses for a contact code.
   static InnerMessage fromBytes(Uint8List bytes) {
-    final j = jsonDecode(utf8.decode(bytes)) as Map<String, Object?>;
-    final known = {'k', 'mid', 'ts', 'ttl'};
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(bytes));
+    } catch (_) {
+      throw const FormatException('inner message is not JSON');
+    }
+    if (decoded is! Map) {
+      throw const FormatException('inner message is not an object');
+    }
+    final j = decoded.cast<String, Object?>();
+    final k = j['k'], mid = j['mid'], ts = j['ts'], ttl = j['ttl'];
+    if (k is! String || mid is! String || ts is! num) {
+      throw const FormatException('inner message is missing a required field');
+    }
+    if (ttl != null && ttl is! num) {
+      throw const FormatException('inner message ttl is not a number');
+    }
+    const known = {'k', 'mid', 'ts', 'ttl'};
     return InnerMessage(
-      kind: j['k'] as String,
-      mid: j['mid'] as String,
-      ts: (j['ts'] as num).toInt(),
-      ttlSec: ((j['ttl'] as num?) ?? 0).toInt(),
+      kind: k,
+      mid: mid,
+      ts: ts.toInt(),
+      ttlSec: (ttl as num?)?.toInt() ?? 0,
       data: {
         for (final e in j.entries)
           if (!known.contains(e.key)) e.key: e.value

@@ -33,6 +33,21 @@ import 'package:zapp/core/deep_links.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 
+/// An `HttpOverrides` that forbids and counts HTTP-client construction. The
+/// fragment carries the whole invite secret, and the file's promise is that
+/// consuming it reaches the landing host not at all; under this override,
+/// opening an invite must complete having constructed nothing. An
+/// `HttpClient().getUrl(...)` added to `ConnectInvites.open` would leak the
+/// fragment and is what this catches (the 2026-09-14 review's finding 37).
+class _NoNetwork extends HttpOverrides {
+  int created = 0;
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    created++;
+    throw const SocketException('opening an invite must touch no network');
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -103,6 +118,28 @@ void main() {
         reason: 'the ceremony runs on the code from the fragment');
     expect(invites.invites.single.mine, isFalse);
     await links.dispose();
+  });
+
+  test('1b. opening an invite fetches nothing — the fragment never leaves the '
+      'device', () async {
+    // The whole secret is in the fragment of a www.zmessengers.com link. This
+    // pins the header's promise: consuming it constructs no HTTP client, so the
+    // landing host is never asked and never learns an invite exists. Under the
+    // guard, `open` completes and creates zero clients; an outbound fetch added
+    // to `ConnectInvites.open` would throw here.
+    final code = ConnectCode.generate();
+    final net = _NoNetwork();
+    final previous = HttpOverrides.current;
+    HttpOverrides.global = net;
+    try {
+      await invites.open(code.link(host: 'www.zmessengers.com'));
+    } finally {
+      HttpOverrides.global = previous;
+    }
+    expect(net.created, 0,
+        reason: 'opening the invite constructed no HTTP client');
+    expect(invites.invites, hasLength(1));
+    expect(b64(invites.invites.single.run.code.secret), b64(code.secret));
   });
 
   test('2. a link arriving while the app is running is handled too', () async {

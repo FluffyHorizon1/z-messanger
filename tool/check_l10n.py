@@ -30,6 +30,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 UI = ROOT / "app" / "lib" / "ui"
+# main.dart lives at lib/ root, not lib/ui, so the screen glob never saw it —
+# yet it renders user-visible text: the launch-time unlock errors and the
+# fatal-start screen. It is held to zero literals, the same as a migrated
+# screen (the 2026-09-14 review's finding 39: the unlock passphrase and
+# biometric errors were built as English here, unseen by this check, so a
+# Spanish user met them in English).
+MAIN = ROOT / "app" / "lib" / "main.dart"
 ARB = ROOT / "app" / "lib" / "l10n" / "app_en.arb"
 
 # Screens whose strings live in lib/l10n/*.arb. Add a name here when it is
@@ -313,6 +320,22 @@ def main() -> int:
                 )
         elif found:
             remaining[path.name] = len(found)
+
+    # main.dart, held to zero the same way — see MAIN above.
+    if not MAIN.exists():
+        problems.append(
+            "app/lib/main.dart is missing — this check scans it for hardcoded "
+            "user-visible strings and cannot with the file gone."
+        )
+    else:
+        for line, v in literals(MAIN.read_text(), MAIN.name):
+            problems.append(
+                f"app/lib/{MAIN.name}:{line}: hardcoded string: \"{v[:60]}\". "
+                f"main.dart renders user-visible text (the unlock errors, the "
+                f"fatal-start screen); add it to lib/l10n/app_en.arb and use "
+                f"AppLocalizations, or list it in ALLOWED in this script if it "
+                f"never reaches a user."
+            )
 
     done = len(MIGRATED)
     total_files = len(list(UI.glob("*.dart")))

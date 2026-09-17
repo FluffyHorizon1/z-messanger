@@ -68,7 +68,14 @@ class PairingCode {
 
   static PairingCode parse(String code) {
     final secret = base32Decode(code);
-    if (secret.length < 8) throw const FormatException('pairing code too short');
+    // The bound has to match the sublist below, not sit two bytes under it: a
+    // code that decodes to 8 or 9 bytes passed `< 8` and then threw a
+    // `RangeError` on `sublist(0, 10)` instead of the intended "too short"
+    // FormatException (the 2026-09-14 review's finding 43; `connect.dart`
+    // parses with the right `< 10`).
+    if (secret.length < 10) {
+      throw const FormatException('pairing code too short');
+    }
     return PairingCode(Uint8List.fromList(secret.sublist(0, 10)));
   }
 
