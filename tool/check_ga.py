@@ -73,6 +73,19 @@ def main() -> int:
     g3_row = next((line for line in text.splitlines()
                    if re.match(r"\|\s*G3\s*\|", line)), "")
     client = ROOT / "app" / "lib" / "core" / "key_transparency.dart"
+    # A guard gated on `client.exists()` is a guard an ordinary refactor
+    # turns off: move the file and the four-value check below runs zero
+    # times while G3 stays ✅. That was this line until 2026-09-17, one
+    # release after the four-value check was added to close the same shape
+    # of hole — the check read more values and was still gated on a path
+    # that could vanish. `build.yml` below already had it right.
+    if "✅" in g3_row and not client.exists():
+        problems.append(
+            f"GA_CHECKLIST.md marks G3 ✅ but {client.relative_to(ROOT)} is "
+            f"not where this check reads the four transparency values from. "
+            f"If the file moved, move this check with it; a guard that "
+            f"cannot find its subject must refuse, not agree."
+        )
     if "✅" in g3_row and client.exists():
         src = client.read_text()
         for name, what in (

@@ -282,6 +282,24 @@ def main() -> int:
     problems = arb_problems() + translation_problems() + service_problems()
     remaining = {}
 
+    # Every name in MIGRATED is a file that exists, or the rule it names
+    # holds nothing. Renaming `search_screen.dart` to `search_view.dart`
+    # dropped it out of the set by name: its literals were counted as
+    # "remaining" and the guard said "no migrated screen has regressed" with
+    # a hardcoded string sitting in a screen that had been migrated — and
+    # `done = len(MIGRATED)` still said 17, so check_ga.py's "N of M screens"
+    # matched GA_CHECKLIST too. The same rule check_relay_url.py applies to
+    # its ACCEPTORS, for the same reason: an entry naming a file that is not
+    # there is a reviewed decision about nothing.
+    for name in sorted(MIGRATED):
+        if not (UI / name).exists():
+            problems.append(
+                f"app/lib/ui/{name} is listed in MIGRATED and does not exist. "
+                f"If the screen was renamed, rename it here too — until then "
+                f"it is no longer held to zero literals and a regression in "
+                f"it passes this check."
+            )
+
     for path in sorted(UI.glob("*.dart")):
         found = literals(path.read_text(), path.name)
         if path.name in MIGRATED:

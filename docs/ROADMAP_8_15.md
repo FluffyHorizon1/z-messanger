@@ -3604,3 +3604,46 @@ direction; the phases, their order and both ordering arguments stand.
    five ways. kt 68 (was 65).
 
    **Every limit was sensible on its own. The failure was in the product.**
+
+94. **Four guards a refactor could switch off — the same shape, one release
+    after five others were fixed for it.**
+
+   Entries 86 and 87 gave five scripts a floor: a check that reads nothing
+   must refuse rather than agree. Four more had the shape and were missed,
+   and two of them were mine from the same week. Each was demonstrated by
+   moving the thing it watches:
+
+   * **`check_ga.py`** gated the four-value witness check on
+     `client.exists()`. Mark G3 ✅, move `key_transparency.dart` into a
+     subdirectory — an ordinary refactor — and it printed "GA_CHECKLIST.md
+     matches the repository". The four-value check was added in 3.4.1 to
+     close exactly this shape, and was still gated on a path that could
+     vanish. The line below it, for `build.yml`, already did it right.
+   * **`check_l10n.py`** counted the MIGRATED *set*, not the files. Rename
+     `search_screen.dart` to `search_view.dart` with a hardcoded literal in
+     it: "no migrated screen has regressed", and `check_ga.py`'s "17 of 17"
+     still matched GA_CHECKLIST. Every name in MIGRATED must now exist —
+     `check_relay_url.py` applies the same rule to ACCEPTORS, for the same
+     reason.
+   * **`check_workflow.py`** had no floor on jobs checked: `build.yml` moved
+     out of `.github/workflows/` gave "jobs checked: 0" and "every job that
+     uses repository files checks one out". Reachable from a job with
+     `sparse-checkout: tool`, the release job's own pattern. It is the guard
+     C25 and C26 cite.
+   * **`check_blueprints.py`** globbed `render*.yaml` at the root only, and
+     zero matches exited 0. The likelier case than the total one:
+     `render.kt-witness.yaml` moved under `deploy/` — SELF_HOSTING tells
+     operators to type the Blueprint Path by hand, so it costs nothing —
+     with `KT_WITNESS_SEED: value: <literal>` in it, and the guard reported
+     "blueprints checked: 3" and exit 0. The four Blueprints the documents
+     point people at are named now, found with either extension wherever
+     they sit, and a missing one is a finding. Renaming all four to `.yml`
+     now reports "blueprints checked: 4" — correct, where it reported 0.
+
+   Two of these were in patches I delivered on the 14th, in the same pass
+   that added the floors to the other five. A rule applied to five scripts
+   and not the other two is a rule applied by hand, and the review found the
+   two.
+
+   **A floor is not something a guard has. It is something every guard has,
+   or it is a pattern somebody will forget once.**

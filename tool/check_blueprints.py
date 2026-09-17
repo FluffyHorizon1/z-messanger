@@ -21,6 +21,18 @@ handful of properties a wrong click cannot undo:
 
 Written with render.kt.yaml and render.kt-witness.yaml, when a log with a
 signing key joined the relay in the set of things a Blueprint can create.
+
+Which Blueprints, and where, is not left to a glob. The first version matched
+`render*.yaml` at the repository root and only there, and zero matches exited
+0 — so renaming the four to `.yml` reported `blueprints checked: 0` and
+success, and the likelier case, moving `render.kt-witness.yaml` under
+`deploy/` because SELF_HOSTING tells operators to type the Blueprint Path by
+hand, would have left `KT_WITNESS_SEED: value: <literal>` in a public file
+with the guard reporting `blueprints checked: 3` and exit 0. Keeping a secret
+out of a public file is the one thing this script exists for. So the four
+Blueprints the documents point people at are NAMED here, found wherever
+they are, and missing is a failure; anything else that looks like a
+Blueprint is checked too.
 """
 from __future__ import annotations
 
@@ -129,12 +141,44 @@ def check(path: Path) -> list[str]:
     return problems
 
 
+# The Blueprints SELF_HOSTING.md tells people to create. A rename or a move
+# does not take one out of this check; deleting one is a finding.
+EXPECTED = ("render.yaml", "render.ha.yaml", "render.kt.yaml", "render.kt-witness.yaml")
+
+# Directories that are not the repository's own files.
+PRUNE = {"node_modules", ".git", "build", ".dart_tool", ".gradle", "Pods"}
+
+
+def blueprints() -> list[Path]:
+    """Every render*.yaml or .yml under the repository, wherever it sits."""
+    out = []
+    for f in ROOT.rglob("render*.y*ml"):
+        if any(part in PRUNE for part in f.relative_to(ROOT).parts):
+            continue
+        out.append(f)
+    return sorted(out)
+
+
 def main() -> int:
-    files = sorted(ROOT.glob("render*.yaml"))
+    files = blueprints()
     problems: list[str] = []
+    stems = {f.name: f for f in files}
+    for name in EXPECTED:
+        # Found by name with either extension, anywhere.
+        alt = name[:-len(".yaml")] + ".yml"
+        if name not in stems and alt not in stems:
+            problems.append(
+                f"{name} is not anywhere in the repository. SELF_HOSTING.md "
+                f"points operators at it; if it moved, it was found wherever "
+                f"it went, so this means it is gone."
+            )
     for f in files:
         problems.extend(check(f))
     print(f"blueprints checked: {len(files)}")
+    if not files:
+        # Unreachable while EXPECTED holds, and kept anyway: a floor that
+        # depends on another check is a floor that goes when it does.
+        problems.append("no Blueprints found at all; the check ran over nothing.")
     if problems:
         print(f"\n{len(problems)} problem(s):\n")
         for p in problems:

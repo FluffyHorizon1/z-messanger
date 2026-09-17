@@ -194,6 +194,18 @@ def main() -> int:
                         )
 
     print(f"jobs checked: {checked}")
+    # The floor every sibling had and this one did not: an absent or empty
+    # workflows directory yields zero jobs, and all five rules pass having
+    # read nothing. Reachable, not hypothetical — a job with
+    # `sparse-checkout: tool`, the release job's own pattern, running this
+    # guard gets a green tick over nothing, and this is the guard C25 and C26
+    # cite. Fixed 2026-09-17, one release after floors went into five other
+    # scripts and not this one.
+    if checked == 0:
+        print(f"{WORKFLOWS.relative_to(ROOT)}: no workflow jobs at all, so "
+              f"every rule above ran over nothing. Fix the check before "
+              f"trusting it.", file=sys.stderr)
+        return 1
     if problems:
         print(f"\n{len(problems)} problem(s):\n")
         for p in problems:
