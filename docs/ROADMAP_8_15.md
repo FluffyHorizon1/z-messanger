@@ -3857,3 +3857,44 @@ direction; the phases, their order and both ordering arguments stand.
    six, each caught by the criterion written for it.
 
    **A claim in a document is a test nobody wrote yet.**
+
+99. **Nine uploads at once, and a client that waits five minutes for an
+    answer.** Two consecutive tagged releases died in the publish step on
+    2026-09-17 with nothing wrong in the repository. 3.4.9: GitHub's own
+    error page came back mid-upload. 3.5.0: `Headers Timeout Error` — the
+    arm64 APK's body had been sent in full and GitHub took more than five
+    minutes to answer, which is where undici gives up; the two larger files
+    finished after the step had already failed, because their bodies were
+    still streaming when the timer would have started. GitHub's upload path
+    ran at roughly 150 KB/s a stream all afternoon, on runners in two Azure
+    regions.
+
+    What the pinned `softprops/action-gh-release` (v2.6.2) actually does was
+    read off its source rather than its README, because it decides what a
+    failure leaves behind: it creates a non-prerelease as a **draft**,
+    uploads every file with `Promise.all`, and publishes only once all of
+    them resolve. So neither failure published a half-release — 3.5.0 sat as
+    a draft with eight of nine assets — but a re-run re-sends every byte, and
+    on a re-run the action cannot find a draft by tag, so it creates a
+    duplicate, lists recent releases, keeps the older one (the one with
+    assets) and deletes the empty duplicate. A log that says "Creating new
+    GitHub release" and then "Using release N instead of duplicate draft" on
+    a re-run is that, working.
+
+    The publish is three invocations now, a draft until the last: the
+    checksums and desktop bundles, the three split APKs, the two largest
+    files. Each of the two heavy stages gets one more attempt on failure with
+    the SAME files and the default overwrite — an upload the client gave up
+    on can leave an asset of the right name in `starter` state, and a retry
+    that skipped existing names would publish around it. A stage that fails
+    twice fails the job and the draft waits for a re-run. Every stage names
+    its files and fails if one is missing, so a renamed artefact is a red
+    job rather than a release without it.
+
+    Verified by the two guards that own this job: `check_workflow.py` (nine
+    jobs, every publisher still names what it downloads) and
+    `dry_run_release.py` (19/19 — it rehearses the `run:` bodies, which did
+    not change). The publish steps themselves cannot be rehearsed without a
+    tag; the first tagged release after this lands is the test.
+
+    **Fewer things in flight, and hold the door until the last one is in.**
