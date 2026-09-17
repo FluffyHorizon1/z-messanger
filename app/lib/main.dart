@@ -24,6 +24,7 @@ import 'core/relay_url.dart';
 import 'core/transport.dart';
 import 'core/vault.dart';
 import 'ui/home_screen.dart';
+import 'ui/invite_link_watcher.dart';
 import 'ui/lock_screen.dart';
 import 'ui/onboarding_screen.dart';
 import 'ui/theme.dart';
@@ -169,6 +170,14 @@ class _BootstrapperState extends State<Bootstrapper>
     if (state == AppLifecycleState.resumed) {
       _service?.transport.nudge();
       _service?.flushOutbox();
+      // Pending connect invites poll only while the app is in front (17.3):
+      // each round is a throwaway identity connecting to the relay, which is
+      // not worth doing from the background for a ceremony nobody is
+      // looking at.
+      _invites?.resume();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      _invites?.pause();
       // Came back to an app that was already locked (the prompt had been
       // dismissed before leaving): ask again. A lock that was just applied
       // by onLifecycle prompts itself when its screen appears.
@@ -323,6 +332,9 @@ class _BootstrapperState extends State<Bootstrapper>
     final invites = ConnectInvites(service);
     final links = DeepLinks(invites);
     unawaited(links.start());
+    // The app is in front when this runs: start carrying whatever survived
+    // the restart, and keep doing so until it leaves the foreground.
+    invites.resume();
     setState(() {
       _vault = vault;
       _service = service;
@@ -422,7 +434,10 @@ class _BootstrapperState extends State<Bootstrapper>
         ChangeNotifierProvider<ConnectInvites>.value(value: _invites!),
         Provider<DeepLinks>.value(value: _links!),
       ],
-      child: _shell(mode: mode, home: const HomeScreen(), overlay: overlay),
+      child: _shell(
+          mode: mode,
+          home: const InviteLinkWatcher(child: HomeScreen()),
+          overlay: overlay),
     );
   }
 }

@@ -33,6 +33,23 @@ class DeepLinks {
   /// show the ceremony; nothing here navigates on its own.
   Stream<PendingInvite> get opened => _opened.stream;
 
+  /// The link-opened invite no screen has shown yet, if any.
+  ///
+  /// The launch intent is drained by [start], which the app calls before any
+  /// screen exists to listen to [opened] — a broadcast stream drops what
+  /// nobody is listening for. So the most recent one is also kept here until
+  /// a screen takes it. Until 2026-09-17 nothing consumed either: a tapped
+  /// link put an invite in the vault and the app opened on the home screen as
+  /// if nothing had happened.
+  PendingInvite? _unshown;
+
+  /// Hands over the invite waiting to be shown, once.
+  PendingInvite? takeUnshown() {
+    final i = _unshown;
+    _unshown = null;
+    return i;
+  }
+
   /// The last link that was handed over and refused, for a screen that wants
   /// to say why nothing happened.
   String? lastRejected;
@@ -75,7 +92,16 @@ class DeepLinks {
     try {
       final invite = await _invites.open(url);
       lastRejected = null;
+      _unshown = invite;
       if (!_opened.isClosed) _opened.add(invite);
+      // Carry it forward at once. Opening records the invite and touches no
+      // network; this is the ceremony's first round for this side — the same
+      // connect-read-leave a "Check now" does — and without it a link-opened
+      // invite sat at "waiting" until somebody found the tab. Awaited, so a
+      // caller that is about to tear down (a test, a closing app) is not
+      // left with a round in flight; the platform side does not wait on the
+      // reply to `link`, and nothing waits on [start].
+      await _invites.pump();
       return invite;
     } on FormatException {
       // Already open, or no longer usable. The tab shows what is pending, so

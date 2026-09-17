@@ -27,7 +27,17 @@
 //     with a contact, and the invite is spent so it cannot be retried into
 //     the same attacker;
 //  6. every new string is in both ARBs, with a description that names the
-//     load-bearing clause.
+//     load-bearing clause;
+//  7. the ceremony carries itself: with the app in front, neither person
+//     presses anything and both reach the digits — until 2026-09-17 the only
+//     thing that ran a round was the tab opening or "Check now", so two
+//     people had to press it alternately, in the right order, four times;
+//  8. two rounds asked for at once are one round: a second pump joins the
+//     one in flight, because two steps on one run can pick two ephemerals,
+//     the relay keeps one and the run the other, and the invite is spent on
+//     a mismatch nobody produced;
+//  9. a relay that cannot be reached is said so on the card, and the invite
+//     is kept for the next try rather than read as "waiting for them".
 import 'dart:convert';
 import 'dart:io';
 
@@ -83,6 +93,7 @@ void main() {
 
   tearDownAll(() async {
     for (final p in live) {
+      p.invites.pause();
       await p.svc.transport.stop();
       await p.vault.db.close();
     }
@@ -93,22 +104,28 @@ void main() {
   });
 
   Future<Person> open(Directory dir, ZIdentity id, String name,
-      {String? url}) async {
+      {String? url, Duration? pollEvery}) async {
     final vault = await Vault.open(rootOverride: dir);
     await vault.kvPut('identity', jsonEncode(id.toJson()));
     final transport =
         Transport(identity: id, serverUrl: url ?? 'ws://127.0.0.1:$port');
     final svc = await ChatService.init(
         vault: vault, identity: id, displayName: name, transport: transport);
-    final person = (svc: svc, vault: vault, invites: ConnectInvites(svc));
+    final person = (
+      svc: svc,
+      vault: vault,
+      invites: ConnectInvites(svc,
+          pollEvery: pollEvery ?? ConnectInvites.defaultPollEvery)
+    );
     live.add(person);
     return person;
   }
 
-  Future<Person> person(String name, {String? url}) async {
+  Future<Person> person(String name, {String? url, Duration? pollEvery}) async {
     final dir = await Directory.systemTemp.createTemp('z_ci_');
     temps.add(dir);
-    return open(dir, await ZIdentity.generate(), name, url: url);
+    return open(dir, await ZIdentity.generate(), name,
+        url: url, pollEvery: pollEvery);
   }
 
   /// The app being killed and relaunched: nothing in memory survives.
@@ -374,6 +391,95 @@ void main() {
     expect(find.textContaining('Nothing was added'), findsOneWidget);
     await drain(t);
   }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('7. the ceremony carries itself: nobody presses anything', () async {
+    // Both apps are in front, and neither person touches the tab again after
+    // the first tap. Fast poll so the test is not a minute of waiting.
+    const fast = Duration(milliseconds: 400);
+    final alice = await person('Alice', pollEvery: fast);
+    final bob = await person('Bob', pollEvery: fast);
+    alice.invites.resume();
+    bob.invites.resume();
+
+    final invite = await alice.invites.create();
+    await bob.invites.open(invite.link);
+
+    // No pump() from here on. The two polls carry it: x1, x2, x3, x4. Five
+    // rounds of a second and a half each on a quiet machine; the budget is
+    // for the loaded CI runner, not for this one.
+    final deadline = DateTime.now().add(const Duration(seconds: 120));
+    while (DateTime.now().isBefore(deadline) &&
+        !(alice.invites.invites.any((i) => i.sas != null) &&
+            bob.invites.invites.any((i) => i.sas != null))) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    alice.invites.pause();
+    bob.invites.pause();
+
+    final a = alice.invites.invites.single, b = bob.invites.invites.single;
+    expect(a.sas, isNotNull, reason: 'the inviter reached the digits unaided');
+    expect(b.sas, a.sas, reason: 'and so did the acceptor, the same digits');
+    expect(a.lastFailure, isNull);
+    expect(b.lastFailure, isNull);
+    expect(a.progress, ConnectProgress.confirm);
+    expect(b.progress, ConnectProgress.confirm);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('8. two rounds asked for at once are one round', () async {
+    final alice = await person('Alice');
+    final bob = await person('Bob');
+    final invite = await alice.invites.create();
+    await alice.invites.pump(); // x1 is in Bob's mailbox
+    await bob.invites.open(invite.link);
+
+    // The poll and the button, in the same instant: the second call is the
+    // first call's future, not a second step on the same run.
+    final one = bob.invites.pump();
+    final two = bob.invites.pump();
+    expect(identical(one, two), isTrue,
+        reason: 'a pump asked for while one is in flight joins it');
+    await Future.wait([one, two]);
+    // And a pump asked for AFTER it finished is a new one.
+    final three = bob.invites.pump();
+    expect(identical(three, one), isFalse);
+    await three;
+
+    await danceTo(alice, bob);
+    final a = alice.invites.invites.single, b = bob.invites.invites.single;
+    expect(b.progress, isNot(ConnectProgress.aborted),
+        reason: 'one ephemeral was chosen, so the reveal opened');
+    expect(a.sas, isNotNull);
+    expect(b.sas, a.sas);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  testWidgets('9. a relay that cannot be reached is said so, and the invite kept',
+      (t) async {
+    late Person alice;
+    await t.runAsync(
+        () async => alice = await person('Alice', url: 'ws://127.0.0.1:1'));
+    await t.pumpWidget(tab(alice, const ConnectTab()));
+    await t.pumpAndSettle();
+
+    await t.tap(find.text('Create an invite'));
+    // The tab pumps behind the tap; the socket is refused at once.
+    await settleUntil(t, () => find.textContaining('keep trying').evaluate().isNotEmpty);
+
+    final invite = alice.invites.invites.single;
+    expect(invite.lastFailure, isNotNull,
+        reason: 'the refusal was recorded rather than swallowed');
+    expect(invite.progress, ConnectProgress.waiting,
+        reason: 'and it is not a fact about the invite, which is kept');
+    expect(find.textContaining('Could not reach the relay'), findsOneWidget,
+        reason: 'the card says why, not only "waiting for them"');
+    expect(find.text('Waiting for them to open it'), findsOneWidget,
+        reason: 'the state line is still the state, not the failure');
+    // The invite is still on offer: a refused round is not an expired token.
+    expect(
+        find.byWidgetPredicate(
+            (w) => w is SelectableText && w.data == invite.link),
+        findsOneWidget);
+    await drain(t);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('6. every new string is in both locales, with a description', () async {
     final root = Directory.current.path;

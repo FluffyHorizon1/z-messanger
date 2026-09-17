@@ -13,7 +13,11 @@ import 'connect_tab.dart';
 import 'theme.dart';
 
 class AddContactScreen extends StatefulWidget {
-  const AddContactScreen({super.key});
+  const AddContactScreen({super.key, this.connect = false});
+
+  /// Open on the CONNECT tab: an invite has just arrived by link, and the
+  /// person wants to see it, not to be shown their own code.
+  final bool connect;
 
   @override
   State<AddContactScreen> createState() => _AddContactScreenState();
@@ -36,7 +40,9 @@ class _AddContactScreenState extends State<AddContactScreen>
     super.initState();
     // CONNECT is fourth and last: the three that came before it are for a
     // code you can hand over, and this one is for when you cannot.
-    _tabs = TabController(length: _canScan ? 4 : 3, vsync: this);
+    final tabs = _canScan ? 4 : 3;
+    _tabs = TabController(
+        length: tabs, vsync: this, initialIndex: widget.connect ? tabs - 1 : 0);
     _loadMyCode();
   }
 

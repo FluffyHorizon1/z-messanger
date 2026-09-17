@@ -2756,6 +2756,12 @@ abstract class AppLocalizations {
   /// **'Check now'**
   String get connectCheck;
 
+  /// Shown under a pending invite when the last attempt to carry it forward failed (the relay could not be reached, or refused a step). The invite is kept and retried on its own; load-bearing clause: it says the app will keep trying, so the person does not discard a working invite. {reason} is the failure the relay or the network reported, in English.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not reach the relay — will keep trying. ({reason})'**
+  String connectLastFailure(String reason);
+
   /// Shown when there are no pending invites.
   ///
   /// In en, this message translates to:

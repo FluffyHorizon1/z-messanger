@@ -224,6 +224,14 @@ class _ConnectTabState extends State<ConnectTab> {
                           ? context.z.warn
                           : context.z.textSecondary)),
             ],
+            if (live && invite.lastFailure != null) ...[
+              const SizedBox(height: 4),
+              // Why the last round did not happen. "Waiting for them" was
+              // the only thing this card ever said, including when the relay
+              // had refused every step since the invite was made.
+              Text(l.connectLastFailure(invite.lastFailure!),
+                  style: TextStyle(fontSize: 12, color: context.z.warn)),
+            ],
             if (invite.mine && live) ...[
               const SizedBox(height: 12),
               Text(l.connectLinkLabel,

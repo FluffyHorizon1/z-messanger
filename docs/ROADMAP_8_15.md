@@ -3496,3 +3496,61 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A counter that only goes up is a store that only fills; a gate charged
    for the wrong event is a gate on the wrong thing.**
+
+93. **An invite that waited for somebody to press a button, and a link that
+    opened a web page.** "The feature where you generate a code to give to
+    someone doesn't work." It did not, and for two reasons that look like one
+    from the outside.
+
+    **Nothing carried the ceremony forward.** §20 is four messages through
+    two mailboxes, and each side can only act on what the other has already
+    posted, so it takes two or three rounds per side. The only thing that ran
+    a round was the CONNECT tab opening, or its "Check now" button. So two
+    people had to press "Check now" alternately, in the right order, four
+    times — and an invite opened by tapping a link was never pumped at all:
+    `DeepLinks.handle` recorded it in the vault, nothing listened to the
+    stream it announced it on, and the app came up on the home screen as if
+    nothing had been tapped. `connect_invite_test.dart` criterion 3 said "the
+    ceremony finishes without Alice touching anything" over a helper called
+    `danceTo` that pumped both sides by hand. The test was doing the app's
+    job.
+
+    `ConnectInvites` polls now, every twenty seconds while the app is in front
+    and anything is pending (`resume`/`pause` from the app lifecycle; a test
+    that never calls `resume` sees no timer it did not ask for). A link-opened
+    invite is pumped at once and held for the first screen to ask, and a
+    watcher inside the `MaterialApp` opens Add contact on the CONNECT tab.
+
+    **Two rounds at once spend the invite.** A poll beside a button makes
+    overlap ordinary, and two steps on one run are not merely wasteful: the
+    acceptor's step picks an ephemeral and posts it, two of them pick two, the
+    relay keeps the first and the run keeps the second, so the inviter opens
+    against one key and this side checks against the other, the reveal does
+    not open, and the invite is spent on a mismatch nobody produced. `pump`
+    is serialised: a second call joins the one in flight.
+
+    **Every failure read "Waiting for them".** `pump` caught everything with
+    `catch (_)` and continued, so a relay that refused every step since the
+    invite was made, or one that was never reachable, looked exactly like a
+    friend who had not opened the link yet. The reason is on the invite now,
+    and on the card, and the invite is kept.
+
+    **And the link never reached the app.** Live, `zmessengers.com` answers
+    301 to `www.`, and `/.well-known/assetlinks.json` is 404 because
+    `ANDROID_CERT_SHA256` was never set. Three places in this repository said
+    that without the file "the user gets a chooser, which works". On Android
+    12 and later there is no chooser: an unverified `https` filter is never
+    offered, the link opens in the browser, and the `/i` page offered no way
+    into the app. The page now says what to do (copy the address, paste it
+    under "I have an invite"); the manifest lists `www.` beside the apex; and
+    the comments say what verification actually needs — the file fetched from
+    the exact host in the link, with a 200, not through a redirect. Setting
+    the fingerprint is an operator action; so is the redirect, which the apex
+    cannot verify through.
+
+    Four criteria added across two suites, each mutation-checked. app 273
+    (was 269) with `store_full_test` unrun here for want of a Redis;
+    protocol and server unchanged.
+
+    **A ceremony that needs a human to press "next" four times is a
+    ceremony that does not happen.**

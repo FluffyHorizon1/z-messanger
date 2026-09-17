@@ -16,7 +16,11 @@
 //  2. a link arriving while the app is running is handled the same way;
 //  3. anything that is not an invite is ignored in silence, and a platform
 //     with no deep links at all (desktop, or a test) starts cleanly;
-//  4. the same invite arriving twice opens one ceremony, not two.
+//  4. the same invite arriving twice opens one ceremony, not two;
+//  5. an invite that arrived by link is carried forward at once and handed
+//     to the UI to show — until 2026-09-17 it was written to the vault and
+//     nothing else happened: no round, no screen, the app came up on the
+//     home screen as if nothing had been tapped.
 import 'dart:convert';
 import 'dart:io';
 
@@ -171,6 +175,40 @@ void main() {
     // And the printed rendering of the same secret is the same invite.
     expect(await links.handle(code.text), isNull);
     expect(invites.invites, hasLength(1));
+    await links.dispose();
+  });
+
+  test('5. an opened link is carried forward at once, and handed to the UI',
+      () async {
+    final code = ConnectCode.generate();
+    initial = code.link();
+    final links = DeepLinks(invites, channel: channel);
+    expect(links.takeUnshown(), isNull);
+    await links.start();
+
+    final invite = invites.invites.single;
+    // The first round ran without anybody opening the tab. There is no relay
+    // on port 1, so what it recorded is the refusal — the point is that it
+    // ran, and that the refusal is on the invite rather than swallowed.
+    expect(invite.lastFailure, isNotNull,
+        reason: 'the ceremony was stepped as soon as the link was opened');
+    expect(invite.progress, ConnectProgress.waiting,
+        reason: 'a refused round leaves the invite where it was');
+
+    // The launch intent is drained before any screen exists to listen, so
+    // the invite is held for the first screen that asks — once.
+    expect(identical(links.takeUnshown(), invite), isTrue);
+    expect(links.takeUnshown(), isNull, reason: 'handed over exactly once');
+
+    // A link arriving later, with a screen listening, is both told and held.
+    final later = <PendingInvite>[];
+    final sub = links.opened.listen(later.add);
+    final second = ConnectCode.generate();
+    await push(second.link());
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(later, hasLength(1));
+    expect(identical(links.takeUnshown(), later.single), isTrue);
+    await sub.cancel();
     await links.dispose();
   });
 }

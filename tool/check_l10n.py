@@ -55,6 +55,9 @@ MIGRATED = {
     # The cleartext-relay confirmation. Its words come from the ARB; listed
     # so that a literal added to it later is caught.
     "relay_warning.dart",
+    # Shows an invite that arrived by link. No strings of its own; listed so
+    # that one added later is caught.
+    "invite_link_watcher.dart",
 }
 
 # Literals that look user-visible and are not.

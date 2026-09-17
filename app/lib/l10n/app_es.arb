@@ -456,6 +456,8 @@
   "connectAborted": "Rechazada",
   "connectDiscard": "Descartar",
   "connectCheck": "Comprobar ahora",
+  "connectLastFailure": "No se pudo contactar con el relay; se seguirá intentando. ({reason})",
+  "@connectLastFailure": {"description": "Shown under a pending invite when the last attempt to carry it forward failed (the relay could not be reached, or refused a step). The invite is kept and retried on its own; load-bearing clause: it says the app will keep trying, so the person does not discard a working invite. {reason} is the failure the relay or the network reported, in English.", "placeholders": {"reason": {"type": "String"}}},
   "connectNoInvites": "No hay invitaciones pendientes.",
   "connectConfirmTitle": "Comparad estos dígitos",
   "connectConfirmBody": "Léele estos ocho dígitos a {name} por teléfono o en persona. Tiene que ver exactamente los mismos. Si es así, nadie está en medio: ni el relé, ni la red, ni quien pudiera ver el mensaje que llevaba la invitación.",

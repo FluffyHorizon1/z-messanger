@@ -857,8 +857,11 @@ const PRIVACY_HTML = page(
  *
  * With this file served at /.well-known/assetlinks.json, Android verifies the
  * link on install and opens https://zmessengers.com/i#<code> straight in the
- * app; without it the user gets a chooser, which still works but asks a
- * question nobody should have to answer to accept an invite.
+ * app. Without it there is no chooser on Android 12 or later: an unverified
+ * https filter is never offered, the link opens in the browser, and the /i
+ * page below is what the person sees — so that page tells them how to hand
+ * the invite to the app by hand. Verification also needs the file fetched
+ * from the exact host in the link with a 200, not through a redirect.
  *
  * The fingerprint is NOT in this repository, and not because it is secret —
  * it is published in this very file — but because it belongs to the Play App
@@ -908,6 +911,12 @@ const INVITE_HTML = page(
   </div>
   <p class="muted">Android 7.0 or newer. Windows, macOS and Linux builds are
   on the <a href="/download">download page</a>.</p>
+
+  <h2>Already have Z, and it did not open?</h2>
+  <p>Copy this page's address, open Z, go to <strong>Add contact →
+  CONNECT</strong>, paste it into <strong>I have an invite</strong> and tap
+  Open. The invite is the part after the <code>#</code>; Z reads it from the
+  link and never sends it anywhere.</p>
 
   <h2>This page never received your invite</h2>
   <p>The invite is the part of the link after the <code>#</code>. Browsers do

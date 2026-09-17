@@ -170,7 +170,7 @@ doing before 1.0 and is not something a test replaces.
 
 The foundation is in — `flutter_localizations`, `gen-l10n`, an ARB with a
 description on every string, and `tool/check_l10n.py` holding the migrated
-screens — **17 of 17 screens** — to zero hardcoded literals and, now,
+screens — **18 of 18 screens** — to zero hardcoded literals and, now,
 holding every other locale to exactly the English key set with the same
 placeholders and plural cases.
 The service stores its sixteen kinds of system message as a kind and its

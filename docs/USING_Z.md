@@ -44,8 +44,14 @@ the room. It works like this:
    not have to be a channel you trust**, which is the whole point.
 3. They open it. If Z is installed, tapping the link opens the app; otherwise
    the link shows a page telling them where to get Z, and they open it again
-   afterwards. They can also paste either form into their own CONNECT tab.
-4. Both screens show the same **eight digits**. Get on a call, or say them in
+   afterwards. They can also paste either form into their own CONNECT tab —
+   and if the link opened in a browser even though Z is installed, that is
+   the way in: copy the address and paste it under **I have an invite**.
+4. From here neither of you has to do anything. While Z is open it carries
+   the invite forward on its own, a step every twenty seconds or so, and
+   "Check now" only hurries it. An invite the other person has not opened yet
+   says so; one they have opened says it is waiting for them.
+5. Both screens show the same **eight digits**. Get on a call, or say them in
    person, and compare. If they match, you are added to each other and both
    of you are verified — no safety number to read out afterwards.
 

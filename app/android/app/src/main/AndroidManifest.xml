@@ -46,18 +46,27 @@
                  intact in the intent, so an invite reaches the app without
                  zmessengers.com ever learning that one exists.
 
-                 autoVerify makes this an App Link rather than a chooser, and
-                 Android checks it against
-                 https://zmessengers.com/.well-known/assetlinks.json — which
-                 the relay serves only once ANDROID_CERT_SHA256 is set to the
-                 Play App Signing fingerprint. Until then the filter still
-                 works; the user is simply asked which app to open it with. -->
+                 autoVerify makes this an App Link, and Android checks it
+                 against /.well-known/assetlinks.json on EACH host below —
+                 fetched directly, with a 200: a host that redirects (as the
+                 apex does to www today) cannot verify. The relay serves the
+                 file only once ANDROID_CERT_SHA256 is set to the Play App
+                 Signing fingerprint. Until a host verifies, Android 12 and
+                 later never offer this app for its links at all — there is
+                 no chooser; the link opens in the browser, and the /i page
+                 tells the person to paste the invite into the CONNECT tab
+                 instead. Both hosts are listed so a link that was opened in
+                 a browser, redirected, and copied back out still reaches the
+                 app once verification is in place. -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="https"
                       android:host="zmessengers.com"
+                      android:pathPrefix="/i"/>
+                <data android:scheme="https"
+                      android:host="www.zmessengers.com"
                       android:pathPrefix="/i"/>
             </intent-filter>
         </activity>

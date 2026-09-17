@@ -1649,6 +1649,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get connectCheck => 'Check now';
 
   @override
+  String connectLastFailure(String reason) {
+    return 'Could not reach the relay — will keep trying. ($reason)';
+  }
+
+  @override
   String get connectNoInvites => 'No invites waiting.';
 
   @override
