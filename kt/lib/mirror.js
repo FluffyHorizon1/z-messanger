@@ -62,11 +62,34 @@ const {
   sthFromJson,
   entryToJson,
   entryFromJson,
+  EntryShapeError,
   verifySth,
   witnessInput,
   sign,
   rawPublicKey,
 } = require('./log.js');
+
+/** How much of the entries file is read at a time while replaying. */
+const REPLAY_WINDOW = 1024 * 1024;
+
+/**
+ * The part of an entry the trees need: everything `leafHashOf` and the map
+ * read, and nothing else. The value is on disk; keeping it in memory as well
+ * is what made a witness cost the size of its file.
+ */
+function leafOf(e) {
+  return { index: e.index, label: e.label, version: e.version, fp: e.fp, valueHash: e.valueHash, ts: e.ts };
+}
+
+/** Write every byte or throw: `fs.writeSync` may write a prefix and return. */
+function writeAll(fd, bytes, name) {
+  let put = 0;
+  while (put < bytes.length) {
+    const n = fs.writeSync(fd, bytes, put, bytes.length - put);
+    if (!(n > 0)) throw new Error(`${name}: wrote ${put + n} of ${bytes.length} bytes`);
+    put += n;
+  }
+}
 
 class Divergence extends Error {
   constructor(message, detail = {}) {
@@ -102,6 +125,8 @@ class Mirror {
     this.now = now;
     this.entriesFile = path.join(dir, 'entries.jsonl');
     this.sthFile = path.join(dir, 'sth.json');
+    /** where a sync spools the pages it has fetched, before any is believed */
+    this.spoolFile = path.join(dir, 'entries.jsonl.incoming');
     this.tree = new MerkleLog();
     this.map = new SparseMerkleMap();
     this.entries = [];
@@ -152,22 +177,61 @@ class Mirror {
     }
     const want = this.head ? this.head.size : 0;
 
-    // Read bytes, not text: the offset a truncation uses has to be a byte
-    // offset, and a character count is only the same number until it isn't.
-    let raw = Buffer.alloc(0);
+    // A sync that died between spooling a delta and committing it leaves the
+    // spool behind. It was never verified, so it is nothing.
     try {
-      raw = fs.readFileSync(this.entriesFile);
+      fs.unlinkSync(this.spoolFile);
     } catch (e) {
       if (e.code !== 'ENOENT') throw e;
     }
-    let at = 0;
-    while (this.entries.length < want && at < raw.length) {
-      const nl = raw.indexOf(0x0a, at);
-      if (nl === -1) break; // a torn last line: it is not a whole entry
-      const line = raw.subarray(at, nl);
-      at = nl + 1;
-      if (line.length === 0) continue;
-      this._append(entryFromJson(JSON.parse(line.toString('utf8'))));
+
+    // The file is read a window at a time and an entry keeps its leaf
+    // fields, not its value — the two things `kt/lib/log.js` fixed for the
+    // log on 2026-09-13 and this file did not get until 2026-09-17. It read
+    // the whole file into one buffer and kept every sealed value in
+    // `this.entries` for the life of the process: measured on a 16 MiB
+    // directory, 12.5 MiB retained where the log's replay retains 0.5. A
+    // witness on a starter instance mirroring a log whose file has passed
+    // instance memory then OOMs on `load()`, permanently, because the file
+    // it cannot read is the file it must read to start.
+    let at = 0; // bytes consumed by the lines that count
+    let fileSize = 0;
+    let fd = null;
+    try {
+      fd = fs.openSync(this.entriesFile, 'r');
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+    }
+    if (fd !== null) {
+      try {
+        fileSize = fs.fstatSync(fd).size;
+        const buf = Buffer.allocUnsafe(REPLAY_WINDOW);
+        let rest = Buffer.alloc(0);
+        let restAt = 0;
+        let read = 0;
+        let done = false;
+        while (!done && this.entries.length < want) {
+          const n = fs.readSync(fd, buf, 0, REPLAY_WINDOW, read);
+          read += n;
+          if (n === 0) break;
+          rest = rest.length === 0 ? Buffer.from(buf.subarray(0, n)) : Buffer.concat([rest, buf.subarray(0, n)]);
+          let from = 0;
+          while (this.entries.length < want) {
+            const nl = rest.indexOf(0x0a, from);
+            if (nl < 0) break;
+            const line = rest.subarray(from, nl);
+            from = nl + 1;
+            at = restAt + from;
+            if (line.length === 0) continue;
+            this._append(leafOf(entryFromJson(JSON.parse(line.toString('utf8')))));
+          }
+          rest = Buffer.from(rest.subarray(from));
+          restAt += from;
+          done = n < REPLAY_WINDOW && rest.length === 0;
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
     }
 
     if (this.head) {
@@ -178,22 +242,22 @@ class Mirror {
           `rebuilt from this directory — restore the file, or delete the directory and ` +
           `mirror the log from the start.`);
       }
-      if (at < raw.length) {
+      if (at < fileSize) {
         // The crash window. Drop the surplus and fsync, so this is a repair
         // and not a decision taken again on every start.
-        this.repaired = raw.length - at;
-        const fd = fs.openSync(this.entriesFile, 'r+');
+        this.repaired = fileSize - at;
+        const wfd = fs.openSync(this.entriesFile, 'r+');
         try {
-          fs.ftruncateSync(fd, at);
-          fs.fsyncSync(fd);
+          fs.ftruncateSync(wfd, at);
+          fs.fsyncSync(wfd);
         } finally {
-          fs.closeSync(fd);
+          fs.closeSync(wfd);
         }
       }
       if (!this.tree.root.equals(this.head.logRoot) || !this.map.root.equals(this.head.mapRoot)) {
         throw new Error(`${this.dir}: the entries on disk do not hash to the stored head`);
       }
-    } else if (raw.length !== 0) {
+    } else if (fileSize !== 0) {
       // No head means nothing here has ever been verified, so there is no
       // authority to repair against. Refusing is the only honest answer.
       throw new Error(`${this.dir}: entries without a head`);
@@ -272,8 +336,17 @@ class Mirror {
         // that nothing is mutated while a network can still interrupt.
         // The cost is holding the delta twice for the length of the fetch,
         // and the delta is on its way into `this.entries` regardless.
+        // Fetched pages go to a spool file, one page at a time, and what
+        // memory keeps is the leaf fields: a first sync of a 1 GB log used
+        // to hold the whole delta in `fetched`, values included, which
+        // together with `load` reading the file whole was finding 19 — a
+        // witness that cannot start on the instance the Blueprint gives it.
+        // The spool is nothing until every page is in hand and both roots
+        // have matched; a fetch that fails or a divergence just deletes it.
         const fetched = [];
+        const spool = fs.openSync(this.spoolFile, 'w');
         let next = from;
+        try {
         while (next < sth.size) {
           const count = Math.min(this.pageSize, sth.size - next);
           const page = await this.fetchJson(`${this.logUrl}/kt/v1/entries?start=${next}&count=${count}`);
@@ -281,20 +354,37 @@ class Mirror {
             // Rule A again: an empty page is a broken response, not a fork.
             throw new Error(`the log served no entries from ${next} though its head says ${sth.size}`);
           }
+          const lines = [];
           for (const j of page.entries) {
             if (next >= sth.size) break;
             let e;
             try {
               e = entryFromJson(j);
             } catch (err) {
-              // Not shape: `entryFromJson` checks that the value hashes to
-              // the commitment carried beside it. That is content the log is
-              // answerable for.
+              // Two different things come out of `entryFromJson`, and the
+              // comment here used to claim it was one. A malformed element —
+              // `null`, a short label, a missing field — is what a cache or
+              // an error page produces and is rule A's transport failure: an
+              // ordinary error, and the mirror asks again. A value that does
+              // not hash to its commitment is content the log served under a
+              // head it signed, and that is a divergence. Until 2026-09-17
+              // both were `Divergence`, so a proxy could stop a witness
+              // following the log for ever with one bad element — the thing
+              // 3.3.9 was released to stop.
+              if (err instanceof EntryShapeError) {
+                throw new Error(`entry ${next} from ${this.logUrl} is malformed: ${err.message}`);
+              }
               throw new Divergence(`entry ${next}: ${err.message}`);
             }
-            fetched.push(e);
+            lines.push(JSON.stringify(entryToJson(e)) + '\n');
+            fetched.push(leafOf(e));
             next++;
           }
+          writeAll(spool, Buffer.from(lines.join(''), 'utf8'), this.spoolFile);
+        }
+        fs.fsyncSync(spool);
+        } finally {
+          fs.closeSync(spool);
         }
         for (const e of fetched) this._append(e);
         if (!this.tree.root.equals(sth.logRoot)) throw new Divergence(`the entries do not hash to the signed log root at size ${sth.size}`, { from, to: sth.size });
@@ -302,6 +392,7 @@ class Mirror {
       }
     } catch (e) {
       if (e instanceof Divergence) this.poisoned = true;
+      this._dropSpool();
       throw e;
     }
     // Verified: persist the new entries, then the head. Either both land or
@@ -309,19 +400,25 @@ class Mirror {
     // `load` repairs that case now — and, in the running process, memory
     // holding entries no head covers, which is rule B's whole subject.
     if (sth.size > from) {
-      const lines = Buffer.from(this.entries.slice(from).map((e) => JSON.stringify(entryToJson(e)) + '\n').join(''), 'utf8');
+      // The spool holds exactly the lines that were verified. Copy it onto
+      // the end of the entries file a window at a time — never the whole
+      // delta in memory — and only then drop it.
       const fd = fs.openSync(this.entriesFile, 'a');
       const at = fs.fstatSync(fd).size;
+      let src = null;
       try {
+        src = fs.openSync(this.spoolFile, 'r');
         // The same partial-write rule as the log's own append, and for the
         // same reason: `fs.writeSync` may write a prefix and return how much
         // without throwing, and a mirror whose file ends mid-line cannot be
         // loaded again. Write it all or leave the file as it was.
-        let put = 0;
-        while (put < lines.length) {
-          const n = fs.writeSync(fd, lines, put, lines.length - put);
-          if (!(n > 0)) throw new Error(`${this.entriesFile}: wrote ${put + n} of ${lines.length} bytes`);
-          put += n;
+        const buf = Buffer.allocUnsafe(REPLAY_WINDOW);
+        let off = 0;
+        for (;;) {
+          const n = fs.readSync(src, buf, 0, REPLAY_WINDOW, off);
+          if (n === 0) break;
+          writeAll(fd, buf.subarray(0, n), this.entriesFile);
+          off += n;
         }
         fs.fsyncSync(fd);
       } catch (e) {
@@ -329,7 +426,9 @@ class Mirror {
           fs.ftruncateSync(fd, at);
           fs.fsyncSync(fd);
         } catch {}
+        if (src !== null) fs.closeSync(src);
         fs.closeSync(fd);
+        this._dropSpool();
         // The comment here used to say the entries would simply be re-fetched
         // next time. They would not: `from` is `this.entries.length`, which
         // this sync has already advanced, so the next one asked for a
@@ -337,7 +436,9 @@ class Mirror {
         this._recover();
         throw e;
       }
+      fs.closeSync(src);
       fs.closeSync(fd);
+      this._dropSpool();
     }
     const record = { sth: sthToJson(sth), verifiedAt: this.now(), size: sth.size };
     if (this.witnessKey) {
@@ -359,6 +460,13 @@ class Mirror {
     }
     this.head = sth;
     return { from, to: sth.size, head: sth };
+  }
+
+  /** The spool is nothing until it is committed; afterwards it is nothing again. */
+  _dropSpool() {
+    try {
+      fs.unlinkSync(this.spoolFile);
+    } catch {}
   }
 
   /**

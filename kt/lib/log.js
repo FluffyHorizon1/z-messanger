@@ -910,17 +910,38 @@ function entryToJson(e) {
   };
 }
 
+/**
+ * An entry whose SHAPE is wrong: a field missing, the wrong type, the wrong
+ * length. Distinct from an entry whose content is wrong, because a caller
+ * that follows a log has to treat the two differently — a malformed element
+ * is what a cache, a proxy or an error page produces, and says nothing about
+ * what the log signed; a value that does not hash to its commitment is
+ * content the log is answerable for. `kt/lib/mirror.js` poisoned itself
+ * permanently on both until 2026-09-17 because this function threw one
+ * kind of Error for either.
+ */
+class EntryShapeError extends Error {}
+
 function entryFromJson(j) {
-  const e = {
-    index: j.index,
-    label: b64(j.label, 32),
-    version: j.v,
-    fp: b64(j.fp, 16),
-    valueHash: b64(j.valueHash, 32),
-    value: b64(j.value),
-    ts: j.ts,
-  };
-  if (!Number.isInteger(e.index) || !Number.isInteger(e.version) || !Number.isInteger(e.ts)) throw new Error('entry: bad integers');
+  if (!j || typeof j !== 'object') throw new EntryShapeError('entry: not an object');
+  let e;
+  try {
+    e = {
+      index: j.index,
+      label: b64(j.label, 32),
+      version: j.v,
+      fp: b64(j.fp, 16),
+      valueHash: b64(j.valueHash, 32),
+      value: b64(j.value),
+      ts: j.ts,
+    };
+  } catch (err) {
+    throw new EntryShapeError(`entry: ${err.message}`);
+  }
+  if (!Number.isInteger(e.index) || !Number.isInteger(e.version) || !Number.isInteger(e.ts)) {
+    throw new EntryShapeError('entry: bad integers');
+  }
+  // Shape is right; this is the content check, and it is the log's fault.
   if (!sha256(e.value).equals(e.valueHash)) throw new Error('entry: value hash does not match value');
   return e;
 }
@@ -974,6 +995,7 @@ function b64(s, len) {
 }
 
 module.exports = {
+  EntryShapeError,
   MAX_VALUE_BYTES,
   KtLog,
   PublishError,

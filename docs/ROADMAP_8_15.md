@@ -3647,3 +3647,47 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A floor is not something a guard has. It is something every guard has,
    or it is a pattern somebody will forget once.**
+
+95. **The witness, twice more: a bad element poisoned it, and its file was
+    its memory.**
+
+   Both in `kt/lib/mirror.js`, both in code from entry 88, both found by the
+   review three days later.
+
+   **16.** The catch around `entryFromJson` said "not shape: this checks that
+   the value hashes to its commitment, which is content the log is answerable
+   for" — and converted everything to `Divergence`. The comment was wrong
+   about its own callee: `entryFromJson` throws for a short label, a missing
+   field, a non-integer index, and `null` as readily as for a hash mismatch.
+   So a proxy or a cache serving one malformed element stopped a witness
+   following the log for ever — the exact failure 3.3.9 was released to
+   stop, with rule A written above it. `entryFromJson` now throws
+   `EntryShapeError` for shape and a plain error for content; the mirror
+   treats the first as transport and the second as divergence. Four mangled
+   pages and one swapped value, each asserted.
+
+   **19.** `load()` read the whole file into one buffer and `_append` kept
+   every sealed value in `this.entries` for the life of the process — the two
+   things the log fixed for itself on 2026-09-13 (`log_memory.test.js`) and
+   the mirror never got. And `sync()` held the whole delta in an array before
+   appending, which on a first sync is the whole log. Measured on a 16 MiB
+   directory: **12.1 MiB retained** where the log retains 0.5. A witness on
+   the starter instance the Blueprint gives it OOMs on `load()` once the
+   log's file passes instance memory, permanently, because the file it cannot
+   read is the file it must read to start — and the witness is what G3
+   condition 3 asks somebody else to run.
+
+   Now: the file is replayed a window at a time; an entry keeps its leaf
+   fields (`leafHashOf` never needed the value); and a sync spools fetched
+   pages to `entries.jsonl.incoming`, one page in memory at a time, then
+   copies the spool onto the entries file a window at a time. Rule B holds
+   as before — nothing is believed until every page is in hand and both
+   roots match — and the spool is deleted on any failure and on the next
+   `load()`. Measured: **a sync retains 0.07 MiB and a load 0.57 MiB of a
+   16 MiB file.** The assertion is a fraction of the file, not a constant,
+   so it cannot go stale against the fixture.
+
+   kt 69 (was 68).
+
+   **A comment that describes what a callee ought to do is a comment about
+   a different function.**

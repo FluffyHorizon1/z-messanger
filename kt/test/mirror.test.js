@@ -324,6 +324,40 @@ test('a malformed response is an ordinary error, not a divergence: a fork is som
     const good = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, now }).load();
     assert.deepEqual(await good.sync().then((r) => [r.from, r.to]), [0, 4]);
 
+    // An entries page whose elements are malformed: `null`, a missing
+    // field, a short label, a non-integer index. Each is what a cache or an
+    // error page produces, and each poisoned the mirror permanently until
+    // 2026-09-17 — the review's finding 16, and the thing 3.3.9 had been
+    // released to stop. The comment on the catch claimed `entryFromJson`
+    // only threw for content; it threw for shape too, and both became
+    // `Divergence`.
+    const mangle = (how) => async (url) => {
+      const j = await (await fetch(url, { headers: { accept: 'application/json' } })).json();
+      if (url.includes('/kt/v1/entries?')) {
+        const e = j.entries[0];
+        if (how === 'null') j.entries[0] = null;
+        if (how === 'missing') delete e.valueHash;
+        if (how === 'short') e.label = Buffer.alloc(8).toString('base64');
+        if (how === 'float') e.index = 0.5;
+      }
+      return j;
+    };
+    for (const how of ['null', 'missing', 'short', 'float']) {
+      const m = new Mirror({ dir: tmpdir(), logUrl: server.url, logPub: log.publicKey, fetchJson: mangle(how), now }).load();
+      await assert.rejects(m.sync(), (e) => !(e instanceof Divergence) && /malformed/.test(e.message), `a page mangled by '${how}' is a transport failure`);
+      assert.ok(!m.poisoned, `and '${how}' did not poison the mirror`);
+    }
+    // Whereas a value that does not hash to its commitment IS the log's
+    // fault, and still is one.
+    const swappedValue = async (url) => {
+      const j = await (await fetch(url, { headers: { accept: 'application/json' } })).json();
+      if (url.includes('/kt/v1/entries?')) j.entries[0].value = Buffer.alloc(40).toString('base64');
+      return j;
+    };
+    const bad = new Mirror({ dir: tmpdir(), logUrl: server.url, logPub: log.publicKey, fetchJson: swappedValue, now }).load();
+    await assert.rejects(bad.sync(), (e) => e instanceof Divergence && /value hash/.test(e.message));
+    assert.ok(bad.poisoned);
+
     // A consistency proof of the wrong shape, once the mirror has a head.
     log.publish(publishFor(a, 5));
     const wrongShape = async (url) => {
@@ -441,6 +475,72 @@ test('a recovery that cannot read the directory refuses to build on what is left
     assert.deepEqual(await m.sync().then((r) => [r.from, r.to]), [6, 12]);
     assert.ok(!m.needsReload);
     assert.ok(m.tree.root.equals(log.tree.root));
+  } finally {
+    await server.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The witness has to survive the log's success too. `log_memory.test.js`
+// holds the LOG to a fraction of its file; until 2026-09-17 the mirror read
+// its file whole and kept every sealed value in memory for the life of the
+// process, and its first sync held the whole delta in an array besides. So a
+// witness on the starter instance the Blueprint gives it OOMs on `load()`
+// once the log's file passes instance memory — permanently, since the file
+// it cannot read is the file it must read to start. Review finding 19; the
+// witness is what G3 condition 3 asks somebody else to run. Measured with
+// the values kept: 12.1 MiB retained of a 16.0 MiB delta. With the fix: a
+// sync retains 0.07 MiB and a load 0.57 MiB.
+const v8 = require('node:v8');
+const vm = require('node:vm');
+v8.setFlagsFromString('--expose_gc');
+const gc = vm.runInNewContext('gc');
+v8.setFlagsFromString('--no-expose_gc');
+function retained() {
+  gc();
+  gc();
+  const m = process.memoryUsage();
+  return m.heapUsed + m.external;
+}
+
+test('a mirror retains a fraction of its file, on load and across a sync', async () => {
+  // 64 entries of 192 KiB: ~12 MiB of values, ~16 MiB on disk. Lopsided on
+  // purpose — the cost being measured is per byte of value, not per entry.
+  const log = new KtLog({ store: new MemoryStore(), signingKey: logKey, now });
+  const a = account('big');
+  for (let v = 1; v <= 64; v++) {
+    const value = sealValue(a.pub, crypto.randomBytes(192 * 1024 - 28));
+    log.publish(makePublish(a.key, { version: v, fp: crypto.randomBytes(16), value }));
+  }
+  const server = await serve(log);
+  const dir = tmpdir();
+  try {
+    // A first sync: the whole log is the delta.
+    const before = retained();
+    const m = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, pageSize: 8, now }).load();
+    await m.sync();
+    const afterSync = retained() - before;
+    const onDisk = fs.statSync(path.join(dir, 'entries.jsonl')).size;
+    assert.ok(onDisk > 12 * 1024 * 1024, `the file is ${onDisk} bytes`);
+    assert.ok(m.tree.root.equals(log.tree.root));
+    assert.ok(!fs.existsSync(path.join(dir, 'entries.jsonl.incoming')), 'the spool is gone once committed');
+    assert.ok(
+      afterSync < onDisk / 8,
+      `a sync of a ${(onDisk / 1048576).toFixed(1)} MiB delta retained ${(afterSync / 1048576).toFixed(1)} MiB`
+    );
+
+    // A fresh load of the same directory, which is what a restart does.
+    const beforeLoad = retained();
+    const again = new Mirror({ dir, logUrl: server.url, logPub: log.publicKey, now }).load();
+    const afterLoad = retained() - beforeLoad;
+    assert.equal(again.entries.length, 64);
+    assert.ok(again.tree.root.equals(log.tree.root), 'and it still hashes to the same head');
+    assert.ok(
+      afterLoad < onDisk / 8,
+      `a load of a ${(onDisk / 1048576).toFixed(1)} MiB file retained ${(afterLoad / 1048576).toFixed(1)} MiB`
+    );
+    // Values are on disk, not in memory: nothing an entry keeps is the value.
+    for (const e of again.entries) assert.equal(e.value, undefined);
   } finally {
     await server.stop();
     fs.rmSync(dir, { recursive: true, force: true });
