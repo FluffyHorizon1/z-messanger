@@ -125,8 +125,11 @@ function main(argv) {
 
   // And say whether it worked, which is the only answer the operator wants.
   // A throwaway key: replaying checks the file, and nothing here is served.
+  // `verifyHead: false`, because the head is signed by the real key and this
+  // tool does not have it; whether the head is the log's own is the log's
+  // question, at its next start.
   try {
-    const log = new KtLog({ store: new FileStore(file), signingKey: privateKeyFromSeed(Buffer.alloc(32, 1)) });
+    const log = new KtLog({ store: new FileStore(file), signingKey: privateKeyFromSeed(Buffer.alloc(32, 1)), verifyHead: false });
     console.log(`It opens: ${log.size} entries, ${log.map.size} labels.`);
     log.close();
     return 0;

@@ -71,6 +71,8 @@ const LEAF_CONTEXT = Buffer.from('z-kt-leaf-v1:', 'utf8');
 const STH_CONTEXT = Buffer.from('z-kt-sth-v1:', 'utf8');
 const PUBLISH_CONTEXT = Buffer.from('z-kt-publish-v1:', 'utf8');
 const WITNESS_CONTEXT = Buffer.from('z-kt-witness-v1:', 'utf8');
+/** Local to the log's own head file: never on the wire, never a protocol input. */
+const BOUNDARY_CONTEXT = Buffer.from('z-kt-signed-from-v1:', 'utf8');
 const VALUE_SALT = Buffer.from('z-kt-value-v1', 'utf8');
 const VALUE_INFO = Buffer.from('value', 'utf8');
 
@@ -121,6 +123,11 @@ function leafInput({ label, version, fp, valueHash, ts }) {
 
 function leafHashOf(entry) {
   return hashLeaf(leafInput(entry));
+}
+
+/** What the log signs to record its own signature boundary in its head file. */
+function boundaryInput(signedFrom) {
+  return Buffer.concat([BOUNDARY_CONTEXT, u64be(signedFrom)]);
 }
 
 function sthInput({ size, logRoot, mapRoot, ts }) {
@@ -422,13 +429,20 @@ class FileStore {
     } catch {
       throw new Error(`${this.headFile}: not JSON — the log will not start against a head it cannot read`);
     }
-    return {
+    const head = {
       size: j.size,
       logRoot: Buffer.from(j.logRoot, 'base64'),
       mapRoot: Buffer.from(j.mapRoot, 'base64'),
       ts: j.ts,
       sig: Buffer.from(j.sig, 'base64'),
     };
+    // The boundary, if this head has one. Absent from heads written before
+    // 2026-09-17; `KtLog` records one on the next start.
+    if (j.signedFrom !== undefined) {
+      head.signedFrom = j.signedFrom;
+      head.signedFromSig = Buffer.from(j.signedFromSig || '', 'base64');
+    }
+    return head;
   }
 
   /**
@@ -445,6 +459,9 @@ class FileStore {
         mapRoot: head.mapRoot.toString('base64'),
         ts: head.ts,
         sig: head.sig.toString('base64'),
+        ...(head.signedFrom !== undefined
+          ? { signedFrom: head.signedFrom, signedFromSig: head.signedFromSig.toString('base64') }
+          : {}),
       },
       null,
       2
@@ -540,12 +557,18 @@ class KtLog {
    * @param {number} [o.resignMs]            how old an unchanged head may get before it is re-signed
    * @param {() => number} [o.now]           the clock (tests)
    */
-  constructor({ store, signingKey, resignMs = 10 * 60 * 1000, now = Date.now, minSize = 0 }) {
+  constructor({ store, signingKey, resignMs = 10 * 60 * 1000, now = Date.now, minSize = 0, verifyHead = true }) {
     this.store = store;
     this.signingKey = signingKey;
     this.publicKey = rawPublicKey(signingKey);
     this.resignMs = resignMs;
     this.now = now;
+    /**
+     * Whether the head beside the file must be this key's. The log itself
+     * always requires it; `tools/repair.js` opens a file with a throwaway
+     * key to ask only whether it parses, and says so.
+     */
+    this.verifyHead = verifyHead;
     this.tree = new MerkleLog();
     this.map = new SparseMerkleMap();
     /** @type {object[]} entries by index */
@@ -596,7 +619,29 @@ class KtLog {
       );
     }
     const last = this.store.readHead();
-    if (!last) return;
+    if (!last) {
+      // No head: a new log, or a file from before the head existed
+      // (2026-09-13), or a head somebody removed. KT_MIN_SIZE is the floor
+      // for the last of those, as `head_floor.test.js` (5) has it; the
+      // boundary below is adopted from the file — at its first signed entry
+      // if it has one, else at its current size — and written down, so this
+      // is the last start at which the file gets to say. What that leaves
+      // is stated in C31: a file with NO signed entry and no head is one
+      // start away from adopting whatever is in it. The first signed publish
+      // closes that too, because the derived rule refuses an unsigned line
+      // after a signed one whatever the head says.
+      this._boundary = this._signedFrom === null ? size : this._signedFrom;
+      if (size > 0) {
+        console.warn(`z-kt: ${size} entries and no head file — recording one; unsigned entries are accepted below ${this._boundary} only`);
+      }
+      // Written at size 0 too. A fresh deployment used to have no head until
+      // its first publish, and until then a hand-written unsigned line was
+      // adopted on the next start as though the log had made it. With a head
+      // at size 0 the boundary is 0 from the first start, and nothing
+      // unsigned is ever accepted.
+      this._recordHead();
+      return;
+    }
     if (size < last.size) {
       throw new Error(
         `the log replayed ${size} entries but its last signed head covers ${last.size}: ` +
@@ -608,6 +653,53 @@ class KtLog {
         `the log's entries do not reproduce the root of its last signed head at size ${last.size}: ` +
           'the file is not a prefix of the history this key has already committed to'
       );
+    }
+    if (!this.verifyHead) {
+      // A tool asking whether the file parses. The head's signatures are the
+      // log's business, at its next start.
+      return;
+    }
+    // The head is this key's, or it is not a head. A root is something the
+    // writer of the file can compute, so a head that matched the file's root
+    // was not proof of anything until 2026-09-17: a head written by whoever
+    // could write the file could lower the floor the head exists to hold.
+    if (!verifySth(last, this.publicKey)) {
+      throw new Error(
+        `the head beside this file is not signed by this log's key ` +
+          '(a different KT_SEED, or a head somebody else wrote): refusing to start against it'
+      );
+    }
+    // The boundary: the index from which every entry must carry a signature.
+    // RECORDED in the head, under the log's key, rather than derived from
+    // the file — because a boundary derived from the file being defended is
+    // set by whoever can write that file. Until 2026-09-17 it was derived:
+    // an unsigned line was accepted while no earlier line had a signature,
+    // which held for any pre-3.4.1 file and for every fresh deployment until
+    // its first real publish. Reproduced: a fresh log, one hand-written
+    // unsigned line naming a victim's public account key, and `lookup`
+    // served it as the victim's authenticated latest with proofs that
+    // verified under a head signed by the real log key.
+    if (last.signedFrom === undefined) {
+      // A head from before the boundary existed. Adopt one now, at the first
+      // signed entry if there is one, else at the current size — and write
+      // it, so it is recorded before anything else can be appended.
+      this._boundary = this._signedFrom === null ? size : this._signedFrom;
+      this._recordHead();
+    } else {
+      if (!verify(rawPublicKey(this.signingKey), boundaryInput(last.signedFrom), last.signedFromSig)) {
+        throw new Error(`${'head.json'}: the signature boundary is not signed by this log's key — refusing a boundary the log did not set`);
+      }
+      this._boundary = last.signedFrom;
+      // Every unsigned entry sits below the boundary, or the file has a line
+      // the log did not write.
+      for (const e of this.entries) {
+        if (!e.sig && e.index >= this._boundary) {
+          throw new Error(
+            `entry ${e.index}: no signature at or past the recorded boundary ${this._boundary} ` +
+              '(this line was appended by something that is not the log)'
+          );
+        }
+      }
     }
   }
 
@@ -642,6 +734,9 @@ class KtLog {
    */
   _checkSignature(entry) {
     if (!entry.sig) {
+      if (this._boundary !== undefined && entry.index >= this._boundary) {
+        throw new Error(`entry ${entry.index}: no signature at or past the recorded boundary ${this._boundary}`);
+      }
       if (this._signedFrom !== null) {
         throw new Error(
           `entry ${entry.index}: no signature, though entry ${this._signedFrom} and every one after it has one ` +
@@ -663,7 +758,11 @@ class KtLog {
    * above exists to close.
    */
   _recordHead() {
-    this.store.writeHead(this.sth());
+    const head = { ...this.sth() };
+    if (this._boundary === undefined) this._boundary = this._signedFrom === null ? this.entries.length : this._signedFrom;
+    head.signedFrom = this._boundary;
+    head.signedFromSig = sign(this.signingKey, boundaryInput(this._boundary));
+    this.store.writeHead(head);
   }
 
   get size() {

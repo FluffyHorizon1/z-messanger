@@ -15,10 +15,19 @@
 // file" false in the way that matters, which is the sentence an operator
 // reads before deciding the file is safe to copy around.
 //
-// The boundary for lines written before signatures were stored is DERIVED,
-// not recorded: a log never goes back, so an entry with no signature is
-// accepted only while no earlier entry had one. A number in a file would be
-// a number editable by whoever is being defended against.
+// The boundary for lines written before signatures were stored was DERIVED,
+// not recorded: a log never goes back, so an entry with no signature was
+// accepted only while no earlier entry had one — on the reasoning that a
+// number in a file would be a number editable by whoever is being defended
+// against. The 2026-09-14 review's finding 15 showed what that left open: a
+// boundary derived from the file is set by the file, so a FRESH deployment,
+// and a pre-3.4.1 file until its first signed publish, accepted a
+// hand-written unsigned line naming a victim's public account key and served
+// it as their authenticated latest under a head signed by the real log key.
+// The boundary is now recorded in the head file, signed under the log's key
+// with its own context, and a head is written at the very first start — so a
+// fresh log's boundary is 0 before anything can be appended. The derived
+// rule stays as a second check.
 //
 // What is asserted below:
 //   1. the forgery the reviewer performed, performed again — and refused;
@@ -27,7 +36,17 @@
 //   3. a file written before signatures were stored still opens, and the
 //      first signed publish closes the door behind it;
 //   4. `sig` is never served, like `acct`;
-//   5. and the leaf is unchanged, so no root, head or vector moves.
+//   5. and the leaf is unchanged, so no root, head or vector moves;
+//   6. the fresh-deployment forgery: an unsigned line hand-appended to a log
+//      that has never published is refused at the next start, because the
+//      first start recorded a boundary of 0;
+//   7. a legacy file adopts its boundary at its first start and writes it
+//      down, so an unsigned line appended AFTER that start is refused even
+//      though no signed entry precedes it — the case the derived rule could
+//      not see;
+//   8. the boundary cannot be moved by editing the head: a rewritten
+//      `signedFrom` fails its signature, and a head signed by another key is
+//      not this log's head at all.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -209,4 +228,80 @@ test('4. the signature is kept and never served; 5. the leaf does not move', (t)
   const withSig = leafHashOf(entry);
   const withoutSig = leafHashOf({ ...entry, sig: null });
   assert.ok(withSig.equals(withoutSig), 'the leaf is what it was');
+});
+
+test('6. a fresh deployment refuses a hand-written unsigned line', (t) => {
+  const dir = tmpdir(t);
+  const file = path.join(dir, 'entries.jsonl');
+  // The first start of a log that has never published. It used to leave no
+  // head behind, and until its first real publish the boundary came from the
+  // file — the reviewer's case A, reproduced: the forgery served as the
+  // victim's latest with proofs that verified under the real log key.
+  const fresh = open(file)();
+  assert.equal(fresh.size, 0);
+  fresh.close();
+  assert.equal(JSON.parse(fs.readFileSync(`${file}.head.json`, 'utf8')).signedFrom, 0);
+
+  const victim = account('victim');
+  const value = sealValue(victim.pub, Buffer.from('{"devices":["ATTACKER"]}', 'utf8'));
+  fs.writeFileSync(file, storedLine({ index: 0, acct: victim.pub, version: 9999, fp: Buffer.alloc(16, 0xaa), value }) + '\n');
+  assert.throws(open(file), /no signature at or past the recorded boundary 0/);
+});
+
+test('7. a legacy file adopts its boundary once and then holds it', (t) => {
+  const dir = tmpdir(t);
+  const file = path.join(dir, 'entries.jsonl');
+  const a = account('legacy');
+  const p1 = publishFor(a, 1);
+  fs.writeFileSync(file, storedLine({ index: 0, acct: p1.acct, version: 1, fp: p1.fp, value: p1.value }) + '\n');
+
+  // Its first start after the upgrade: opens, adopts a boundary at its
+  // current size, and writes the head. The same thing the previous build did
+  // for the live log on 2026-09-17.
+  const first = open(file)();
+  assert.equal(first.size, 1);
+  first.close();
+  const head = JSON.parse(fs.readFileSync(`${file}.head.json`, 'utf8'));
+  assert.equal(head.signedFrom, 1, 'the one unsigned line is below the boundary; nothing else may be');
+
+  // The reviewer's case B: no signed entry precedes the forgery, so the
+  // derived rule has nothing to refuse it with. The recorded one does.
+  const value = sealValue(a.pub, Buffer.from('{"devices":["ATTACKER"]}', 'utf8'));
+  fs.appendFileSync(file, storedLine({ index: 1, acct: a.pub, version: 8, fp: Buffer.alloc(16, 0xbb), value }) + '\n');
+  assert.throws(open(file), /no signature at or past the recorded boundary 1/);
+});
+
+test('8. the boundary cannot be moved by editing the head', (t) => {
+  const dir = tmpdir(t);
+  const file = path.join(dir, 'entries.jsonl');
+  const log = open(file)();
+  log.publish(publishFor(account('a'), 1));
+  log.close();
+  const headFile = `${file}.head.json`;
+  const good = JSON.parse(fs.readFileSync(headFile, 'utf8'));
+
+  // Moving the boundary up would let unsigned lines below it in. The number
+  // is signed under the log's key with its own context, so a moved number
+  // fails its signature.
+  fs.writeFileSync(headFile, JSON.stringify({ ...good, signedFrom: 5 }));
+  assert.throws(open(file), /boundary is not signed by this log's key/);
+
+  // And a whole head somebody else signed — same size, same roots, their key
+  // — is not this log's head. Until 2026-09-17 a head only had to match the
+  // file's root, which whoever wrote the file could compute, so the floor
+  // it holds could be lowered by rewriting it.
+  const other = privateKeyFromSeed(crypto.createHash('sha256').update('somebody else').digest());
+  const forgedLog = new KtLog({ store: new FileStore(file), signingKey: other, verifyHead: false });
+  forgedLog.close();
+  const theirs = forgedLog.sth();
+  fs.writeFileSync(
+    headFile,
+    JSON.stringify({
+      ...good,
+      sig: theirs.sig.toString('base64'),
+      ts: theirs.ts,
+      signedFromSig: good.signedFromSig,
+    })
+  );
+  assert.throws(open(file), /not signed by this log's key/);
 });

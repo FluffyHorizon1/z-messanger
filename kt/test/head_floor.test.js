@@ -90,7 +90,14 @@ test('1. the head reaches the disk before the publish is answered', (t) => {
   const file = path.join(dir, 'entries.jsonl');
   const log = new KtLog({ store: new FileStore(file), signingKey: logKey });
   t.after(() => log.close());
-  assert.equal(fs.existsSync(`${file}.head.json`), false, 'nothing signed, nothing recorded');
+  // A head from the very first start, at size 0. This used to be "nothing
+  // signed, nothing recorded", and the gap it left was the window in which a
+  // fresh deployment accepted a hand-written unsigned line (review 2026-09-14,
+  // finding 15): with no head, the boundary was taken from the file. The
+  // empty head records a boundary of 0 before anything can be appended.
+  const first = JSON.parse(fs.readFileSync(`${file}.head.json`, 'utf8'));
+  assert.equal(first.size, 0);
+  assert.equal(first.signedFrom, 0, 'every entry must be signed, from the first');
 
   log.publish(publishFor(account('alice'), 1));
   const rec = JSON.parse(fs.readFileSync(`${file}.head.json`, 'utf8'));

@@ -529,13 +529,28 @@ it creates the file, because fsyncing a file does not make the name that
 finds it durable.
 
 Beside it is `entries.jsonl.head.json`: the last head the log signed,
-written before the publish that produced it was answered. On the way back up
-the log refuses to start unless the entries it replays reproduce that head's
-root at that size — so a truncated file, a restored snapshot or a
-half-finished copy is refused rather than signed as a smaller history. **Back
-both files up together**; a copy of the entries without the head is a log
-that will start and a copy of the head without the entries is one that will
-not, and the second is the safer of the two.
+written before the publish that produced it was answered — and, since
+2026‑09‑17, at the very first start, at size 0. On the way back up the log
+refuses to start unless the head is signed by its own key and the entries it
+replays reproduce that head's root at that size — so a truncated file, a
+restored snapshot, a half-finished copy or a head somebody else wrote is
+refused rather than signed as a smaller history. **Back both files up
+together**; a copy of the entries without the head is a log that will start
+and a copy of the head without the entries is one that will not, and the
+second is the safer of the two.
+
+The head also records the **signature boundary**: the index from which every
+entry must carry the account's publish signature. Lines written before
+2026‑09‑14 carry none, and the boundary used to be derived from the file —
+an unsigned line was accepted while no earlier line was signed. That let a
+fresh deployment, or a pre‑3.4.1 file until its first signed publish, accept
+a hand‑written unsigned line naming any account's public key and serve it as
+that account's latest under a head the real key signed. The boundary is
+recorded now, signed under the log's key with its own context, and a fresh
+log records 0 before anything can be appended. A file with entries and no
+head adopts its boundary at its first start and writes it down — the one
+start at which the file gets to say, which is what `KT_MIN_SIZE` and a copy
+of the head are for.
 
 That check cannot see the failure most likely to happen, which is why
 `KT_MIN_SIZE` exists. If `KT_DATA` points where the disk did not mount, the

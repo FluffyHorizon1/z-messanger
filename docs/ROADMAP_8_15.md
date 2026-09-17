@@ -3691,3 +3691,40 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A comment that describes what a callee ought to do is a comment about
    a different function.**
+
+96. **A boundary derived from the file is set by whoever writes the file.**
+
+   Entry 84 stored the publish signature and re-checked it at replay, and
+   derived the boundary for lines written before that — "an unsigned entry is
+   accepted while no earlier entry had one" — on the reasoning that a number
+   in a file is a number editable by whoever is being defended against. The
+   review's finding 15 turned that reasoning around: a boundary derived from
+   the file *is* a number the file's writer sets. Reproduced two ways. A fresh
+   deployment: one hand-written unsigned line naming a victim's public
+   account key, and `lookup` served it as the victim's authenticated latest,
+   inclusion and map proofs verifying under a head signed by the real log
+   key. A pre-3.4.1 file, which is every line on the production disk: the
+   same, until its first signed publish. The live log was inside that window
+   from 2026-09-14 until it next published.
+
+   The boundary is recorded now, in the head file, signed under the log's key
+   with its own context (`z-kt-signed-from-v1:`, local, never on the wire).
+   A head is written at the very first start, at size 0, so a fresh log's
+   boundary is 0 before anything can be appended — the head used to appear
+   only with the first publish, and that gap was the window. A file with
+   entries and no head adopts its boundary once and writes it down; what that
+   leaves is stated in C31 and SELF_HOSTING, and `KT_MIN_SIZE` and a copy of
+   the head are the answer to it. The derived rule stays as a second check.
+
+   Found on the way: the head's own signature was never verified at start.
+   The floor checked that the file reproduced the head's root — which the
+   writer of the file can compute — so a head somebody else wrote could lower
+   the floor the head exists to hold. It is verified under the log's key now,
+   and `tools/repair.js`, which opens a file with a throwaway key to ask only
+   whether it parses, says so with `verifyHead: false`.
+
+   Three criteria added to `stored_signature.test.js`, each mutation-checked
+   four ways.
+
+   **The thing being defended cannot be the thing that says where the
+   defence begins.**
