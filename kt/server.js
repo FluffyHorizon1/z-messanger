@@ -27,23 +27,34 @@
  *   it); KT_EPHEMERAL=1 keeps entries in memory (development only —
  *   a restart forgets the log, which is exactly what a log must not do).
  *
- * Abuse: publishes pass three gates — a total rate (PUBLISH_PER_MIN_TOTAL,
- * default 120), a per-address rate (PUBLISH_PER_MIN, default 30) and a
- * per-account daily ceiling (PUBLISH_PER_ACCT_PER_DAY, default 20, charged
- * only once the signature verifies) — and bodies are capped at 400 KB. The
- * per-address gate is only per-CLIENT when KT_CLIENT_IP_HEADER names a
- * header something in front is known to set; behind an unconfigured proxy
- * every request shares one address, which is why the total gate exists and
- * why it is the one that stops a flood. A lookup is cheap — under a
- * millisecond at a hundred thousand labels — but the two paging routes were
- * not, and saying "reads are left to the reverse proxy" was the mistake: a
- * value may be 256 KiB, so `?count=1000` was ~333 MB in one string and
+ * Abuse: publishes pass four gates — a per-address rate (PUBLISH_PER_MIN,
+ * default 30), a total rate (PUBLISH_PER_MIN_TOTAL, default 120), a
+ * per-account daily ceiling (PUBLISH_PER_ACCT_PER_DAY, default 20) and a
+ * first-publish rate for accounts the log has never held
+ * (PUBLISH_NEW_ACCOUNTS_PER_MIN, default 10). Every one is charged after
+ * the signature verifies and only by a publish that is written: nothing
+ * unsigned can spend them and nothing refused does, because a gate that a
+ * request could spend is a gate that everybody shares behind an
+ * unconfigured proxy, and one bucket for the internet that junk can empty
+ * is a switch that stops publishing. What a request that publishes nothing
+ * can cost is bounded instead: bodies at 400 KB, bodies being read at once
+ * at KT_MAX_PUBLISH_IN_FLIGHT (default 256), and a request at the server's
+ * timeout. The per-address gate is only per-CLIENT when KT_CLIENT_IP_HEADER
+ * names a header something in front is known to set; behind an unconfigured
+ * proxy every request shares one address, which is why the total gate
+ * exists and why it is the one that stops a flood. A lookup is cheap — under a millisecond at a
+ * hundred thousand labels — but the two paging routes were not, and saying
+ * "reads are left to the reverse proxy" was the mistake: a value may be
+ * 256 KiB, so `?count=1000` was ~333 MB in one string and
  * `/kt/v1/history/<label>` had no count at all, which made every label a
  * fixed URL that returns everything it has ever published, repeatable, and
  * `cache-control: no-store` means nothing in front absorbs the repeat. Both
- * are now bounded in BYTES (MAX_PAGE_BYTES) as well as by count, because the
- * size of an entry is chosen by whoever published it, and both report
- * `total` so a reader can tell a page from the whole.
+ * are bounded in BYTES (MAX_PAGE_BYTES; MAX_HISTORY_PAGE_BYTES) as well as
+ * by count, because the size of an entry is chosen by whoever published it,
+ * and both report `total` so a reader can tell a page from the whole; the
+ * mirrors' route is budgeted per minute besides (READ_BYTES_PER_MIN, per
+ * address; READ_BYTES_PER_MIN_TOTAL), and the two answers that never change
+ * — a page below the head, a consistency proof — say a cache may hold them.
  */
 
 const http = require('http');
@@ -81,17 +92,52 @@ const MAX_PAGE = 1000;
  * hundreds of them — and far below what hurts.
  */
 const MAX_PAGE_BYTES = 4 * 1024 * 1024;
+/**
+ * A page of one label's history is smaller, and the reason is who asks for
+ * it. `/kt/v1/entries` is how a mirror pages a whole log through, and it is
+ * budgeted (below); `/kt/v1/history/<label>` is what every client walks for
+ * its OWN label on every check, and a route a client's check depends on is
+ * never refused by a budget somebody else spent — behind a front that sets
+ * no client-address header, "somebody else" is everybody. So what bounds
+ * this route is the cost of one request: 256 KiB is the bound, at most a
+ * few milliseconds to build, and an honest label never fills it — twenty
+ * versions of a fifty-device list are 300 KB, two pages. A label that does
+ * fill it is one whose owner published two hundred maximum-size versions,
+ * and it pays a page at a time like everyone else.
+ */
+const MAX_HISTORY_PAGE_BYTES = 256 * 1024;
 
 function json(res, status, body, extra = {}) {
   const text = JSON.stringify(body);
+  const bytes = Buffer.byteLength(text);
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
-    'content-length': Buffer.byteLength(text),
+    'content-length': bytes,
     'cache-control': 'no-store',
     ...extra,
   });
   res.end(text);
+  return bytes;
 }
+
+/**
+ * A page of entries below the head, or a consistency proof between two
+ * sizes, is the same answer for as long as the log exists — so a cache in
+ * front can hold it. Sixty seconds, not for ever: the page carries the head
+ * it was served under and its `total`, and a reader that has already asked
+ * the log for its head is unaffected by an older one riding along (the
+ * mirror hashes the entries and compares roots; the app takes only the
+ * proof from a consistency answer). An EMPTY page is not marked: it is what
+ * a request past the head gets, and a cache holding one for a minute would
+ * hand it to the next mirror that asks from there. Everything else stays
+ * `no-store` — a lookup and a history are relative to the head they were
+ * served under, and the head moves.
+ *
+ * The header is the log's half. A CDN in front caches a JSON route only
+ * when told to (Cloudflare: a cache rule for the two paths, honouring the
+ * origin's TTL); SELF_HOSTING.md says so.
+ */
+const CACHEABLE = { 'cache-control': 'public, max-age=60' };
 
 function fail(res, status, code, message) {
   json(res, status, { error: code, message });
@@ -152,6 +198,33 @@ class RateLimiter {
     if (b) b.tokens = Math.min(this.perWindow, b.tokens + 1);
   }
   take(key) {
+    return this.takeN(key, 1);
+  }
+  /** Whether a take would succeed now. Spends nothing. */
+  open(key) {
+    return this.takeN(key, 0);
+  }
+  /**
+   * How long until the bucket is open again, in milliseconds; 0 when it is.
+   * What a 429 puts in `retry-after`, so a well-behaved reader waits exactly
+   * as long as it must and no longer.
+   */
+  waitMs(key) {
+    if (!(this.perWindow > 0)) return this.windowMs; // a limit of nothing: a window, not for ever
+    const b = this.buckets.get(key);
+    if (!b) return 0;
+    const tokens = Math.min(this.perWindow, b.tokens + ((this.now() - b.at) / this.windowMs) * this.perWindow);
+    if (tokens >= 1) return 0;
+    return Math.ceil(((1 - tokens) / this.perWindow) * this.windowMs);
+  }
+  /**
+   * Spend [n] tokens: allowed while the bucket holds at least one, and the
+   * bucket may go negative by what the request actually cost. That is the
+   * right shape for a BYTE budget, where the size is only known once the
+   * response is built: the request that crosses zero is served, and the
+   * bucket stays shut until the window has refilled the debt.
+   */
+  takeN(key, n) {
     const t = this.now();
     let b = this.buckets.get(key);
     if (!b) {
@@ -168,7 +241,7 @@ class RateLimiter {
     b.tokens = Math.min(this.perWindow, b.tokens + ((t - b.at) / this.windowMs) * this.perWindow);
     b.at = t;
     if (b.tokens < 1) return false;
-    b.tokens -= 1;
+    b.tokens -= n;
     return true;
   }
   /** Forget idle keys so the map does not grow with every visitor ever. */
@@ -216,6 +289,10 @@ function createServer({
   newAccountsPerMinute = 10,
   maxValueBytes = 32 * 1024,
   minFreeBytes = 64 * 1024 * 1024,
+  readBytesPerMinute = 32 * 1024 * 1024,
+  readBytesPerMinuteTotal = 128 * 1024 * 1024,
+  maxPublishInFlight = 256,
+  requestTimeoutMs = 60_000,
   clientIpHeader = null,
   now = Date.now,
   statfs = fs.statfsSync,
@@ -271,11 +348,43 @@ function createServer({
     now,
   });
   const newAccounts = new RateLimiter(newAccountsPerMinute, { now });
+  // Reads of `/kt/v1/entries`, in bytes: per address and in total. A page is
+  // bounded at MAX_PAGE_BYTES and nothing bounded how often one could be
+  // asked for: a 46-byte request returned 3.9 MiB — measured, 89,000:1 —
+  // blocked the event loop for 43 ms building it, and four clients asking
+  // together took an ordinary lookup from 0.7 ms to 172 ms. The budget is
+  // charged by what a response actually weighed, and a reader over it is
+  // told 429 with `retry-after` before anything is built; the mirror waits
+  // that long and asks again, so a first sync of a large log paces itself
+  // at the budget rather than failing.
+  //
+  // Only that route. The ones a client's check depends on — the head, a
+  // consistency proof, a lookup, its own label's history — are bounded by
+  // what one request can cost (a head; a proof; one entry with its proofs;
+  // MAX_HISTORY_PAGE_BYTES) and are never refused by a budget, because
+  // behind a front that sets no client-address header every reader is one
+  // address, and a budget shared with an attacker is a switch the attacker
+  // holds: eight page requests a minute would have refused every client's
+  // check for the rest of it, which is a cheaper denial than the one being
+  // fixed. Mirrors share that switch and retry; clients do not. `/health`,
+  // `/sth` and `/pub` are not charged either: an uptime monitor and a client
+  // checking the head are not what this is for.
+  const reads = new RateLimiter(readBytesPerMinute, { now });
+  const readsTotal = new RateLimiter(readBytesPerMinuteTotal, { now });
+  // Publish bodies being read right now. Bounded, because a body is up to
+  // MAX_BODY in memory while it arrives and a client decides how slowly it
+  // arrives: at the default, 256 × 400 KB is the most a thousand open
+  // trickling POSTs can hold. Not a rate — a request that finishes frees it
+  // in milliseconds — so junk cannot spend it; only sockets held open can,
+  // and the request timeout below lets go of those.
+  let inFlight = 0;
   const sweeper = setInterval(() => {
     limiter.sweep();
     total.sweep();
     perAccount.sweep();
     newAccounts.sweep();
+    reads.sweep();
+    readsTotal.sweep();
   }, 60000);
 
   /** Disk state for the floor and for /health; null where there is no disk. */
@@ -296,7 +405,19 @@ function createServer({
   }
   sweeper.unref();
 
-  const httpServer = http.createServer(async (req, res) => {
+  // How long a request may take to arrive, whole. A publish body is at most
+  // 400 KB, so a minute is generous on any link that can reach the log at
+  // all; what it bounds is a socket held open with a body that never ends,
+  // which is the one thing that can occupy `maxPublishInFlight`. Node
+  // enforces it on a timer, so the interval is set with it: a held socket
+  // is let go of within the timeout plus one interval.
+  const httpServer = http.createServer(
+    {
+      headersTimeout: Math.min(30_000, requestTimeoutMs),
+      requestTimeout: requestTimeoutMs,
+      connectionsCheckingInterval: Math.max(100, Math.min(30_000, requestTimeoutMs)),
+    },
+    async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
     try {
@@ -324,7 +445,7 @@ function createServer({
           if (Number.isNaN(first) || Number.isNaN(second)) return fail(res, 400, 'bad_request', 'first and second are non-negative integers');
           if (second > sth.size) return fail(res, 400, 'bad_request', `second exceeds the head's size ${sth.size}`);
           const proof = log.consistency(first, second);
-          return json(res, 200, { sth: sthToJson(sth), first, second, proof: proof.map((h) => h.toString('base64')) });
+          return json(res, 200, { sth: sthToJson(sth), first, second, proof: proof.map((h) => h.toString('base64')) }, CACHEABLE);
         }
         if (p.startsWith('/kt/v1/lookup/')) {
           const label = parseLabel(p.slice('/kt/v1/lookup/'.length));
@@ -343,7 +464,7 @@ function createServer({
           const start = intParam(url.searchParams.get('start'), 0);
           const count = intParam(url.searchParams.get('count'), MAX_PAGE);
           if (Number.isNaN(start) || Number.isNaN(count) || count < 1) return fail(res, 400, 'bad_request', 'start >= 0 and count >= 1');
-          const r = log.history(label, { start, count: Math.min(count, MAX_PAGE), maxBytes: MAX_PAGE_BYTES });
+          const r = log.history(label, { start, count: Math.min(count, MAX_PAGE), maxBytes: MAX_HISTORY_PAGE_BYTES });
           return json(res, 200, {
             sth: sthToJson(r.sth),
             start: r.start,
@@ -355,8 +476,25 @@ function createServer({
           const start = intParam(url.searchParams.get('start'), 0);
           const count = intParam(url.searchParams.get('count'), 100);
           if (Number.isNaN(start) || Number.isNaN(count) || count < 1) return fail(res, 400, 'bad_request', 'start >= 0 and count >= 1');
+          // The budget, checked before anything is built and charged after
+          // by what was actually sent. Both buckets must be open; a 429
+          // says how long until the fuller one is.
+          const readKey = clientKey(req, clientIpHeader);
+          if (!reads.open(readKey) || !readsTotal.open('all')) {
+            const wait = Math.max(reads.waitMs(readKey), readsTotal.waitMs('all'));
+            res.setHeader('retry-after', String(Math.max(1, Math.ceil(wait / 1000))));
+            return fail(res, 429, 'rate_limited', `at most ${readBytesPerMinute} bytes of entries a minute from one address and ${readBytesPerMinuteTotal} in total`);
+          }
           const r = log.range(start, Math.min(count, MAX_PAGE), { maxBytes: MAX_PAGE_BYTES });
-          return json(res, 200, { sth: sthToJson(r.sth), start, total: r.total, entries: r.entries.map(entryToJson) });
+          const bytes = json(
+            res,
+            200,
+            { sth: sthToJson(r.sth), start, total: r.total, entries: r.entries.map(entryToJson) },
+            r.entries.length > 0 ? CACHEABLE : {}
+          );
+          reads.takeN(readKey, bytes);
+          readsTotal.takeN('all', bytes);
+          return undefined;
         }
         return fail(res, 404, 'not_found', 'no such route');
       }
@@ -368,16 +506,35 @@ function createServer({
         if (d && d.full) {
           return fail(res, 503, 'log_full', `the log's disk has less than ${minFreeBytes} bytes free; publishing is paused until it is grown`);
         }
-        // Before the body is read, both cheap gates: a 400 KB read is not
-        // free, and moving the limit after the parse would have traded a
-        // limiter that bound nothing for a limiter that bound nothing until
-        // after the expensive part.
-        if (!total.take('all')) {
-          return fail(res, 429, 'rate_limited', `at most ${publishPerMinuteTotal} publishes a minute in total`);
+        // No gate before the body. There used to be two, and the reason
+        // there are none is the reason finding 17 existed: a gate charged
+        // before the signature is a gate junk can spend, and behind a front
+        // that sets no client-address header the address gate was one
+        // bucket for everybody — thirty one-byte POSTs a minute from
+        // anywhere, no account, no signature, emptied it for every genuine
+        // publisher (measured: 30 junk requests, all 400, then a correctly
+        // signed publish refused 429, log size 0, at half a request a
+        // second). Moving only that gate would have left the total gate,
+        // which everybody shares by construction, as the same switch at two
+        // requests a second. So every gate counts PUBLISHES, none counts
+        // requests, and what a request that publishes nothing can cost is
+        // bounded another way: MAX_BODY bounds the read, `maxPublishInFlight`
+        // bounds how many bodies are being read at once (memory, against a
+        // client that opens a thousand and trickles), and the server's
+        // request timeout bounds how long one can be held open. A raw flood
+        // of junk past those is what the front is for, as it is for every
+        // HTTP service; what it cannot do any more is stop publishing.
+        if (inFlight >= maxPublishInFlight) {
+          res.setHeader('retry-after', '1');
+          return fail(res, 503, 'busy', `${maxPublishInFlight} publishes are already being read`);
         }
-        const key = clientKey(req, clientIpHeader);
-        if (!limiter.take(key)) return fail(res, 429, 'rate_limited', `at most ${publishPerMinute} publishes a minute from one address`);
-        const body = await readBody(req, MAX_BODY);
+        inFlight += 1;
+        let body;
+        try {
+          body = await readBody(req, MAX_BODY);
+        } finally {
+          inFlight -= 1;
+        }
         let j;
         try {
           j = JSON.parse(body.toString('utf8'));
@@ -393,41 +550,51 @@ function createServer({
           value: field('value'),
           sig: field('sig'),
         };
-        // Checked BEFORE the per-account gate is charged: an unsigned request
-        // naming somebody else's account must not be able to spend their
-        // budget, and the only thing that tells the two apart is the
-        // signature. `publish` checks again — it is responsible for its own
-        // input and one more Ed25519 verify is microseconds.
+        // Checked BEFORE any gate is charged: an unsigned request naming
+        // somebody else's account must not be able to spend their budget,
+        // and the only thing that tells the two apart is the signature.
+        // `publish` checks again — it is responsible for its own input and
+        // one more Ed25519 verify is microseconds.
         log.checkPublish(req_);
         // This log's own cap, under the protocol's. Checked after the
-        // signature like the per-account gate, so what it refuses is a real
-        // account's oversized list and not a stranger's guess at one.
+        // signature like the gates, so what it refuses is a real account's
+        // oversized list and not a stranger's guess at one.
         if (req_.value.length > maxValueBytes) {
           return fail(res, 413, 'too_large', `this log accepts values of at most ${maxValueBytes} bytes`);
         }
-        if (!perAccount.take(req_.acct.toString('base64'))) {
-          return fail(
-            res,
-            429,
-            'rate_limited',
-            `at most ${publishPerAccountPerDay} publishes a day for one account`
-          );
-        }
+        // The gates. Each is charged only if the publish happens: a refusal
+        // by a later gate, or a write that fails, gives back everything
+        // taken before it — so what a bucket counts is publishes, exactly,
+        // and a signature that costs nothing to make buys nothing it did not
+        // write. The order only decides which refusal is named.
+        const taken = [];
+        /** Take from [lim], or answer 429 and give back what was taken. */
+        const gate = (lim, k, message) => {
+          if (lim.take(k)) {
+            taken.push([lim, k]);
+            return true;
+          }
+          for (const [l, kk] of taken) l.refund(kk);
+          res.setHeader('retry-after', String(Math.max(1, Math.ceil(lim.waitMs(k) / 1000))));
+          fail(res, 429, 'rate_limited', message);
+          return false;
+        };
+        const key = clientKey(req, clientIpHeader);
+        const acctKey = req_.acct.toString('base64');
         // First contact costs a token; an account the log already holds
-        // costs nothing here. `hasLabel` reads the index accepted publishes
+        // costs nothing there. `hasLabel` reads the index accepted publishes
         // build, so a refused publish cannot make an account look known.
         const fresh = !log.hasLabel(labelFor(req_.acct));
-        if (fresh && !newAccounts.take('all')) {
-          perAccount.refund(req_.acct.toString('base64'));
-          return fail(res, 429, 'rate_limited', `at most ${newAccountsPerMinute} new accounts a minute`);
-        }
+        if (!gate(limiter, key, `at most ${publishPerMinute} publishes a minute from one address`)) return undefined;
+        if (!gate(total, 'all', `at most ${publishPerMinuteTotal} publishes a minute in total`)) return undefined;
+        if (!gate(perAccount, acctKey, `at most ${publishPerAccountPerDay} publishes a day for one account`)) return undefined;
+        if (fresh && !gate(newAccounts, 'all', `at most ${newAccountsPerMinute} new accounts a minute`)) return undefined;
         let entry;
         try {
           entry = log.publish(req_);
         } catch (e) {
           // Nothing was written, so nothing was spent.
-          perAccount.refund(req_.acct.toString('base64'));
-          if (fresh) newAccounts.refund('all');
+          for (const [l, kk] of taken) l.refund(kk);
           throw e;
         }
         return json(res, 201, { index: entry.index, sth: sthToJson(log.sth()) });
@@ -490,6 +657,9 @@ function main() {
     newAccountsPerMinute: +(process.env.PUBLISH_NEW_ACCOUNTS_PER_MIN || 10),
     maxValueBytes: +(process.env.KT_MAX_VALUE_BYTES || 32 * 1024),
     minFreeBytes: +(process.env.KT_MIN_FREE_BYTES || 64 * 1024 * 1024),
+    readBytesPerMinute: +(process.env.READ_BYTES_PER_MIN || 32 * 1024 * 1024),
+    readBytesPerMinuteTotal: +(process.env.READ_BYTES_PER_MIN_TOTAL || 128 * 1024 * 1024),
+    maxPublishInFlight: +(process.env.KT_MAX_PUBLISH_IN_FLIGHT || 256),
     clientIpHeader: (process.env.KT_CLIENT_IP_HEADER || '').trim().toLowerCase() || null,
   });
   // KT_PORT first; then PORT, which cloud hosts inject (render.kt.yaml).
@@ -509,7 +679,7 @@ function main() {
   process.on('SIGTERM', stop);
 }
 
-module.exports = { createServer, RateLimiter, MAX_BODY, MAX_PAGE, MAX_PAGE_BYTES };
+module.exports = { createServer, RateLimiter, MAX_BODY, MAX_PAGE, MAX_PAGE_BYTES, MAX_HISTORY_PAGE_BYTES };
 
 if (require.main === module) {
   try {

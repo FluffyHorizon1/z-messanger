@@ -393,6 +393,10 @@ class KeyTransparency {
   /// How soon after a contact's list changes it is re-checked.
   Duration recheckDelay = const Duration(seconds: 30);
 
+  /// How soon a publish the log answered "not now" (429) or could not take
+  /// (5xx) is tried again — not at the next check, six hours off.
+  Duration publishRetryDelay = const Duration(minutes: 1);
+
   /// True inside `flutter test`, which sets this for every test process.
   static final bool _inFlutterTest =
       Platform.environment.containsKey('FLUTTER_TEST');
@@ -453,6 +457,7 @@ class KeyTransparency {
 
   Timer? _timer;
   Timer? _recheck;
+  Timer? _publishRetry;
   final Set<String> _dirty = {};
   Future<void>? _running;
   bool _disposed = false;
@@ -549,6 +554,7 @@ class KeyTransparency {
     _disposed = true;
     _timer?.cancel();
     _recheck?.cancel();
+    _publishRetry?.cancel();
   }
 
   Future<void> setConfig(KtConfig c) async {
@@ -1185,7 +1191,7 @@ class KeyTransparency {
         await _fail();
         return;
       }
-      if (r.status == 201 || (r.status >= 400 && r.status < 500)) {
+      if (r.status == 201 || (r.status >= 400 && r.status < 500 && r.status != 429)) {
         // Accepted; or the log already holds this or a newer version (409 —
         // the history check says whether that is ours); or malformed, which
         // a retry will not fix. In every case the queue is cleared.
@@ -1197,7 +1203,20 @@ class KeyTransparency {
           await vault.kvPut('kt_pub_done', '${req['v']}|${req['fp']}', sensitive: false);
         }
       } else {
-        await _fail();
+        // 429 is a gate (PROTOCOL §19.7): the log said not now, not no. It
+        // was read as a 4xx until 2026-09-17 and the publish was dropped —
+        // to be re-queued by the next check, six hours later, if the log
+        // still lacked it — which turned a minute's refusal into six hours
+        // without the list in the log, exactly the delay ADR 0006's grace
+        // period charges the account's contacts for. The log being at
+        // capacity is not the log being unreachable, so it is not a
+        // failure either; a 5xx is both kept and counted. Either way the
+        // publish stays queued and is tried again soon.
+        if (r.status != 429) await _fail();
+        _publishRetry?.cancel();
+        if (!_disposed) {
+          _publishRetry = Timer(publishRetryDelay, () => unawaited(_flushPublish()));
+        }
       }
     } catch (_) {
       // A flush must not take a check down.

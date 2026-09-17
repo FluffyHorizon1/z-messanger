@@ -23,7 +23,26 @@
 //      hide an entry by being too big to serve;
 //   3. a page is never empty while there is something to serve, because the
 //      mirror treats an empty page as divergence and poisons itself;
-//   4. and `/history` pages the same way, with `start`.
+//   4. and `/history` pages the same way, with `start` — at a quarter of the
+//      size, because it is the page every client walks for its own label;
+//   5. and — the 2026-09-14 review's finding 18 — the RATE at which the
+//      mirrors' page can be asked for is bounded too, in bytes a minute per
+//      address and in total, because a page bounded at four megabytes that
+//      could be asked for at will was a 46-byte request returning 3.9 MiB
+//      (measured, 89,000:1) with nothing in front able to absorb a repeat. A
+//      reader over the budget is told 429 with `retry-after` before anything
+//      is built. What is NOT charged is as much the point: the head, the
+//      key, health, a consistency proof, a lookup and a label's history are
+//      never refused by a budget, because behind a front that sets no
+//      client-address header every reader is one address, and a budget an
+//      attacker can spend on a route a client's check depends on is a
+//      cheaper denial than the one being fixed;
+//   6. the two answers that never change — a page below the head, a
+//      consistency proof — say a cache may hold them; an empty page, a
+//      lookup, a history and the head do not;
+//   7. and the mirror's fetch waits out a 429 for as long as `retry-after`
+//      says and asks again, so a first sync of a large log paces itself at
+//      the budget instead of failing every five minutes for ever.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -40,7 +59,8 @@ const {
   rawPublicKey,
   MAX_VALUE_BYTES,
 } = require('../lib/log.js');
-const { createServer, MAX_PAGE_BYTES } = require('../server.js');
+const { createServer, MAX_PAGE_BYTES, MAX_HISTORY_PAGE_BYTES } = require('../server.js');
+const { makeFetchJson, retryAfterMs } = require('../lib/mirror.js');
 
 const fs = require('fs');
 const os = require('os');
@@ -60,14 +80,21 @@ function bigPublish(acct, v, bytes) {
   return makePublish(acct.key, { version: v, fp, value });
 }
 
-async function start(log) {
-  const { httpServer } = createServer({ log });
+async function start(log, opts = {}) {
+  const { httpServer } = createServer({ log, ...opts });
   await new Promise((res) => httpServer.listen(0, '127.0.0.1', res));
   const base = `http://127.0.0.1:${httpServer.address().port}`;
   return {
+    port: httpServer.address().port,
     get: async (p) => {
       const r = await fetch(base + p);
-      return { status: r.status, bytes: Buffer.byteLength(await r.clone().text()), body: await r.json() };
+      return {
+        status: r.status,
+        bytes: Buffer.byteLength(await r.clone().text()),
+        body: await r.json(),
+        cache: r.headers.get('cache-control'),
+        retryAfter: r.headers.get('retry-after'),
+      };
     },
     stop: async () => {
       httpServer.closeAllConnections();
@@ -175,8 +202,10 @@ test('history pages too, and says how many versions it has', async (t) => {
     const hex = alice.label.toString('hex');
     const first = await s.get(`/kt/v1/history/${hex}`);
     assert.equal(first.status, 200);
-    // 4. bounded, and the reader can tell.
-    assert.ok(first.bytes <= MAX_PAGE_BYTES + 512 * 1024, `${first.bytes} bytes`);
+    // 4. bounded — at the history page's own, smaller, size, plus the one
+    // entry that is always served — and the reader can tell.
+    assert.ok(MAX_HISTORY_PAGE_BYTES < MAX_PAGE_BYTES / 4, 'a history page is a fraction of an entries page');
+    assert.ok(first.bytes <= MAX_HISTORY_PAGE_BYTES + 512 * 1024, `${first.bytes} bytes`);
     assert.equal(first.body.total, 20, "the label's versions, not the log's size");
     assert.equal(first.body.start, 0);
     assert.ok(first.body.entries.length < 20 && first.body.entries.length >= 1);
@@ -230,4 +259,150 @@ test('a memory store is bounded too, where there is no line to measure', async (
   } finally {
     await s.stop();
   }
+});
+
+test('5. the entries page is budgeted in bytes a minute, per address and in total; nothing a client needs is', async (t) => {
+  const log = fileLog(t);
+  const a = account('reader');
+  for (let v = 1; v <= 12; v++) log.publish(bigPublish(a, v, 8 * 1024));
+  const hex = a.label.toString('hex');
+  // A budget three and a half pages deep at this page size. The fourth
+  // page is served — the request that crosses zero is, by design, because
+  // the size is only known once the response is built — and leaves the
+  // bucket half a page in debt; the fifth is refused, and told how long
+  // until the debt has refilled. The clock is frozen so the arithmetic is
+  // exact, and then moved by hand to check that `retry-after` was honest.
+  const probe = await start(log);
+  const pageBytes = (await probe.get('/kt/v1/entries?start=0&count=4')).bytes;
+  await probe.stop();
+  const budget = Math.round(pageBytes * 3.5);
+  const debt = 4 * pageBytes - budget;
+  const waitMs = Math.ceil(((1 + debt) / budget) * 60_000);
+  const retryAfter = Math.ceil(waitMs / 1000);
+  assert.ok(retryAfter >= 8 && retryAfter <= 9, `half a page of a 3.5-page minute is ${retryAfter} s`);
+  let frozen = Date.now();
+  const s = await start(log, { readBytesPerMinute: budget, now: () => frozen });
+  try {
+    let served = 0;
+    let refused = null;
+    for (let i = 0; i < 8; i++) {
+      const r = await s.get('/kt/v1/entries?start=0&count=4');
+      if (r.status === 200) served += 1;
+      else {
+        assert.equal(r.status, 429);
+        assert.equal(r.body.error, 'rate_limited');
+        assert.equal(Number(r.retryAfter), retryAfter, 'told exactly how long the debt takes to refill');
+        refused = i;
+        break;
+      }
+    }
+    assert.equal(served, 4, 'the budget is what it says, and the crossing request is served');
+    assert.equal(refused, 4, 'and the one after it is refused before it is built');
+
+    // Everything a client's check touches still answers, with the entries
+    // budget spent: the head, the key, health, a consistency proof, a
+    // lookup, and the label's history. This is the property that makes the
+    // budget safe to ship behind a front that sets no client-address header
+    // — where every reader is one address and the budget is one budget.
+    assert.equal((await s.get('/kt/v1/sth')).status, 200);
+    assert.equal((await s.get('/kt/v1/pub')).status, 200);
+    assert.equal((await s.get('/health')).status, 200);
+    assert.equal((await s.get('/kt/v1/consistency?first=2&second=12')).status, 200);
+    assert.equal((await s.get(`/kt/v1/lookup/${hex}`)).status, 200);
+    const h = await s.get(`/kt/v1/history/${hex}`);
+    assert.equal(h.status, 200);
+    assert.equal(h.body.total, 12, 'the whole history is reachable while the page budget is spent');
+
+    // The budget refills with the clock, and `retry-after` was honest: a
+    // second short is still refused, the second it named is served.
+    frozen += (retryAfter - 1) * 1000;
+    assert.equal((await s.get('/kt/v1/entries?start=0&count=4')).status, 429, 'a second early is still in debt');
+    frozen += 1000;
+    assert.equal((await s.get('/kt/v1/entries?start=0&count=4')).status, 200, 'served again once the debt has refilled');
+  } finally {
+    await s.stop();
+  }
+
+  // The total: a second address does not get a budget of its own past it.
+  // Addresses are told apart by a header here, as they are behind a proxy
+  // that sets one; without the header the two below would be one address
+  // anyway, which is the point the doc makes.
+  const t2 = await start(log, {
+    readBytesPerMinute: pageBytes * 100,
+    readBytesPerMinuteTotal: pageBytes * 2,
+    clientIpHeader: 'x-test-ip',
+    now: () => frozen,
+  });
+  try {
+    const port = t2.port;
+    const as = async (ip) => (await fetch(`http://127.0.0.1:${port}/kt/v1/entries?start=0&count=4`, { headers: { 'x-test-ip': ip } })).status;
+    assert.equal(await as('10.0.0.1'), 200);
+    assert.equal(await as('10.0.0.2'), 200);
+    assert.equal(await as('10.0.0.3'), 429, 'the log has served what it will this minute, whoever asks');
+    assert.equal(await as('10.0.0.1'), 429);
+    assert.equal((await t2.get(`/kt/v1/lookup/${hex}`)).status, 200, 'and a lookup is still not what it bounds');
+  } finally {
+    await t2.stop();
+  }
+});
+
+test('6. what a cache in front may hold: a page below the head and a consistency proof, nothing that moves', async (t) => {
+  const log = fileLog(t);
+  const a = account('cached');
+  for (let v = 1; v <= 12; v++) log.publish(bigPublish(a, v, 1024));
+  const hex = a.label.toString('hex');
+  const c = await start(log);
+  try {
+    assert.equal((await c.get('/kt/v1/entries?start=0&count=2')).cache, 'public, max-age=60', 'a page below the head is the same page for ever');
+    assert.equal((await c.get('/kt/v1/entries?start=10&count=100')).cache, 'public, max-age=60', 'a short page at the head is a prefix of every later one');
+    assert.equal((await c.get('/kt/v1/entries?start=12&count=100')).cache, 'no-store', 'an empty page is what the next request past the head must not be handed');
+    assert.equal((await c.get('/kt/v1/consistency?first=2&second=12')).cache, 'public, max-age=60');
+    assert.equal((await c.get('/kt/v1/sth')).cache, 'no-store', 'the head moves');
+    assert.equal((await c.get(`/kt/v1/lookup/${hex}`)).cache, 'no-store', 'a lookup is relative to the head it was served under');
+    assert.equal((await c.get(`/kt/v1/history/${hex}`)).cache, 'no-store', 'so is a history');
+    assert.equal((await c.get('/kt/v1/entries?start=x')).cache, 'no-store', 'an error is never cached');
+  } finally {
+    await c.stop();
+  }
+});
+
+test("7. the mirror's fetch waits out a 429 for as long as retry-after says, and gives up after a bounded number", async () => {
+  // A log that says "not yet" twice, then answers.
+  const waits = [];
+  const sleep = async (ms) => waits.push(ms);
+  const answers = [
+    { ok: false, status: 429, headers: new Headers({ 'retry-after': '7' }) },
+    { ok: false, status: 429, headers: new Headers({ 'retry-after': '3' }) },
+    { ok: true, status: 200, headers: new Headers(), json: async () => ({ entries: [1] }) },
+  ];
+  let calls = 0;
+  const fetchImpl = async () => answers[calls++];
+  const fetchJson = makeFetchJson({ fetch: fetchImpl, sleep });
+  assert.deepEqual(await fetchJson('http://log/kt/v1/entries?start=0&count=500'), { entries: [1] });
+  assert.equal(calls, 3, 'asked until answered');
+  assert.deepEqual(waits, [7000, 3000], 'and waited exactly what it was told, each time');
+
+  // A retry-after it cannot read is a second; a huge one is bounded; nothing
+  // waits less than a second, so a log that says 0 is not polled in a loop.
+  assert.equal(retryAfterMs(null), 1000);
+  assert.equal(retryAfterMs('soon'), 1000);
+  assert.equal(retryAfterMs('0'), 1000);
+  assert.equal(retryAfterMs('2.2'), 3000);
+  assert.equal(retryAfterMs('86400'), 60_000);
+
+  // Any other status is the error it always was, at once.
+  const notFound = makeFetchJson({ fetch: async () => ({ ok: false, status: 404, headers: new Headers() }), sleep });
+  await assert.rejects(notFound('http://log/x'), /HTTP 404/);
+
+  // And a 429 that never lifts is given up on after `retries` waits — the
+  // sync fails as a transport error and the next scheduled one starts over,
+  // rather than a socket held open for ever.
+  let asked = 0;
+  const never = makeFetchJson({
+    fetch: async () => (asked++, { ok: false, status: 429, headers: new Headers({ 'retry-after': '1' }) }),
+    sleep: async () => {},
+    retries: 3,
+  });
+  await assert.rejects(never('http://log/x'), /HTTP 429/);
+  assert.equal(asked, 4, 'the first ask and three retries');
 });

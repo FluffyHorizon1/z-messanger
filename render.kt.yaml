@@ -79,10 +79,16 @@ services:
         value: "10000"          # Render routes to PORT, 10000 by default; bind exactly that
       - key: KT_HOST
         value: 0.0.0.0
-      # Three gates. The per-address one is the TLS front's view of the
+      # Four gates. The per-address one is the TLS front's view of the
       # address, which behind Cloudflare is Cloudflare — one bucket for the
       # whole internet unless KT_CLIENT_IP_HEADER below says otherwise, which
-      # is why the total gate exists and is the one that stops a flood.
+      # is why the total gate exists and is the one that stops a flood. Every
+      # gate is charged once the signature verifies and only by a publish
+      # that is written, so nothing unsigned and nothing refused can spend a
+      # bucket that, here, everybody shares (until 2026-09-17 thirty one-byte
+      # POSTs a minute from anywhere stopped every genuine publish). What
+      # junk can cost is bounded by the body cap, KT_MAX_PUBLISH_IN_FLIGHT
+      # below and the request timeout; a raw flood past those is Cloudflare's.
       - key: PUBLISH_PER_MIN
         value: "30"             # per source address
       - key: PUBLISH_PER_MIN_TOTAL
@@ -106,6 +112,25 @@ services:
       # well above this.
       - key: KT_MIN_FREE_BYTES
         value: "67108864"       # 64 MiB
+      # Publish bodies being read at once: the bound on what sockets held
+      # open with a body that never ends can hold in memory (256 × 400 KB),
+      # since no gate counts requests any more. Not a rate; a request that
+      # finishes frees its slot in milliseconds.
+      - key: KT_MAX_PUBLISH_IN_FLIGHT
+        value: "256"
+      # Reads. The mirrors' page (/kt/v1/entries) is budgeted in bytes a
+      # minute, per address and in total, and answers 429 with retry-after
+      # over it — the witness waits and asks again. Nothing a client's check
+      # uses is budgeted: the head, a proof, a lookup and a label's history
+      # are bounded by the size of one answer instead, because with the
+      # header below empty every reader is one address and a budget shared
+      # with an attacker would be a switch the attacker holds. A page of
+      # entries and a consistency proof say a cache may hold them for a
+      # minute; a Cloudflare cache rule for those two paths makes it so.
+      - key: READ_BYTES_PER_MIN
+        value: "33554432"       # 32 MiB — eight full pages — per address
+      - key: READ_BYTES_PER_MIN_TOTAL
+        value: "134217728"      # 128 MiB, whoever asks
       # Set this to cf-connecting-ip ONLY once the service is reachable solely
       # through Cloudflare. A forwarded address is the caller's to choose
       # unless something in front overwrites it, and a limiter keyed on a

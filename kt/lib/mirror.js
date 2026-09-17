@@ -98,11 +98,50 @@ class Divergence extends Error {
   }
 }
 
-async function defaultFetchJson(url) {
-  const res = await fetch(url, { headers: { accept: 'application/json' } });
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  return res.json();
+/**
+ * The longest a 429 can make one page wait, and how many times one page is
+ * asked for before the sync is given up. The log's budget refills a page in
+ * seconds; sixty is a `retry-after` from something else in front, and past
+ * that the right move is the next scheduled sync, not a socket held open.
+ */
+const RETRY_AFTER_MAX_MS = 60_000;
+const RETRIES_PER_PAGE = 20;
+
+/**
+ * A fetch that honours `retry-after`. The log budgets `/kt/v1/entries` in
+ * bytes a minute and answers 429 when a reader is over it, saying how long
+ * until it is not; a first sync of a large log is over it by design after a
+ * few pages, and a mirror that took a 429 for a failure would drop the pages
+ * it had, sync again five minutes later, and never finish. So it waits, as
+ * long as it is told, and asks again — a bounded number of times, then the
+ * sync fails like any other transport error and the next one starts over.
+ * Every other status is what it was: an error, this sync's.
+ *
+ * `fetch` and `sleep` are injectable so the waiting can be tested without
+ * waiting.
+ */
+function makeFetchJson({ fetch: fetchImpl = fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), retries = RETRIES_PER_PAGE } = {}) {
+  return async function fetchJson(url) {
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetchImpl(url, { headers: { accept: 'application/json' } });
+      if (res.ok) return res.json();
+      if (res.status === 429 && attempt < retries) {
+        await sleep(retryAfterMs(res.headers.get('retry-after')));
+        continue;
+      }
+      throw new Error(`${url}: HTTP ${res.status}`);
+    }
+  };
 }
+
+/** `retry-after` in milliseconds: delta-seconds, bounded; a second when absent or unreadable. */
+function retryAfterMs(header) {
+  const s = Number(header);
+  if (!Number.isFinite(s) || s < 1) return 1000;
+  return Math.min(RETRY_AFTER_MAX_MS, Math.ceil(s) * 1000);
+}
+
+const defaultFetchJson = makeFetchJson();
 
 class Mirror {
   /**
@@ -494,4 +533,4 @@ class Mirror {
   }
 }
 
-module.exports = { Mirror, Divergence };
+module.exports = { Mirror, Divergence, makeFetchJson, retryAfterMs };

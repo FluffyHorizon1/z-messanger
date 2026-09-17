@@ -54,7 +54,24 @@
 //   7. this log accepts values only up to its own cap, well under the
 //      protocol's 256 KiB, because a real device list is a kilobyte and the
 //      cap is what sets entries-per-gigabyte; the cap cannot be set above
-//      the protocol's maximum.
+//      the protocol's maximum;
+//   8. the address gate is spent only by a publish that happens. It used to
+//      be charged before the body was read, and behind a front with no
+//      client-address header the address is everybody — so thirty one-byte
+//      POSTs a minute from anywhere emptied the per-address bucket for every
+//      genuine publisher (finding 17: measured, all 400, then a signed
+//      publish 429, at half a request a second). It is taken after the
+//      signature now, and given back when the publish is refused after it —
+//      by the account's daily ceiling, by the new-account gate — because a
+//      shared address must not be spendable with signatures either, and a
+//      signature costs nothing. The total gate — which everybody shares by
+//      construction, so moving only the address gate would have left it as
+//      the same switch at two requests a second — counts publishes now too;
+//   9. and what a request that publishes nothing can cost is bounded some
+//      other way, since no gate counts requests any more: bodies being read
+//      at once are capped, which sockets held open can occupy and a request
+//      that finishes never does, because a rate is a switch and a bound on
+//      concurrency is not.
 'use strict';
 
 const test = require('node:test');
@@ -119,7 +136,7 @@ async function start(opts = {}, { store = new MemoryStore() } = {}) {
     httpServer.closeAllConnections();
     await new Promise((res) => httpServer.close(res));
   };
-  return { log, post, get, stop };
+  return { log, post, get, stop, base };
 }
 
 test('1. a flood of fresh accounts from one address is stopped', async () => {
@@ -272,10 +289,11 @@ test('5. a first publish for a new account is charged; a known account is not', 
     await s.stop();
   }
 
-  // A publish that fails after the tokens are taken gives them back. One
-  // token in the allowance; the first fresh account's write fails; the next
-  // fresh account is accepted — which is only possible if the refund happened.
-  const s2 = await start({ newAccountsPerMinute: 1, publishPerMinute: 1000, publishPerMinuteTotal: 1000 });
+  // A publish that fails after the tokens are taken gives them back — the
+  // new-account token and the address token both. One of each in the
+  // allowance; the first fresh account's write fails; the next fresh
+  // account is accepted — which is only possible if both refunds happened.
+  const s2 = await start({ newAccountsPerMinute: 1, publishPerMinute: 1, publishPerMinuteTotal: 1000 });
   try {
     const realPublish = s2.log.publish.bind(s2.log);
     s2.log.publish = () => {
@@ -286,9 +304,10 @@ test('5. a first publish for a new account is charged; a known account is not', 
     assert.equal(s2.log.hasLabel(doomed.label), false, 'nothing was written');
     s2.log.publish = realPublish;
     assert.equal((await s2.post(publishJson(account('next'), 1))).status, 201,
-      'the token the failed write took was given back');
-    assert.equal((await s2.post(publishJson(account('after'), 1))).status, 429,
-      'and only that one — the allowance is one');
+      'the tokens the failed write took were given back');
+    const after = await s2.post(publishJson(account('after'), 1));
+    assert.equal(after.status, 429, 'and only those — each allowance is one');
+    assert.match(after.body.message, /from one address/, 'the address gate is the first of the two to say so');
   } finally {
     await s2.stop();
   }
@@ -355,4 +374,143 @@ test('7. the log accepts values only up to its own cap, under the protocol maxim
     () => createServer({ log: new KtLog({ store: new MemoryStore(), signingKey: logKey }), maxValueBytes: MAX_VALUE_BYTES + 1 }),
     /maxValueBytes/
   );
+});
+
+test('8. the address gate is spent only by a publish that happens', async () => {
+  // The shipped shape: no client-address header, so one address for all.
+  const s = await start({ publishPerMinute: 30, publishPerMinuteTotal: 1000 });
+  try {
+    for (let i = 0; i < 30; i++) {
+      const r = await fetch(`${s.base}/kt/v1/publish`, { method: 'POST', body: 'x' });
+      assert.equal(r.status, 400);
+    }
+    assert.equal((await s.post(publishJson(account('genuine'), 1))).status, 201,
+      'thirty junk requests did not spend the address the genuine one shares');
+    // A well-formed request with a bad signature is junk too.
+    const bad = publishJson(account('forger'), 1);
+    bad.sig = Buffer.alloc(64, 7).toString('base64');
+    for (let i = 0; i < 30; i++) assert.equal((await s.post(bad)).status, 403);
+    assert.equal((await s.post(publishJson(account('genuine-2'), 1))).status, 201);
+  } finally {
+    await s.stop();
+  }
+  // Signed and refused is not a publish either. Four accepted publishes
+  // fill this address; the refusals in between — an account past its day,
+  // five minted accounts past the new-account gate — leave it alone, and
+  // the FIFTH accepted one is what the address refuses. Every gate below
+  // the address is charged after it, so a refusal there gives the address
+  // its token back; the count the address ends on is the count of publishes
+  // that happened, exactly.
+  const r = await start({ publishPerMinute: 4, publishPerMinuteTotal: 1000, newAccountsPerMinute: 2, publishPerAccountPerDay: 2 });
+  try {
+    const a = account('first');
+    const b = account('second');
+    assert.equal((await r.post(publishJson(a, 1))).status, 201, 'one');
+    assert.equal((await r.post(publishJson(b, 1))).status, 201, 'two — and the new-account gate is now spent');
+    assert.equal((await r.post(publishJson(a, 2))).status, 201, 'three');
+    const ceiling = await r.post(publishJson(a, 3));
+    assert.equal(ceiling.status, 429);
+    assert.match(ceiling.body.message, /a day for one account/, "the account's own ceiling, and the address token goes back");
+    for (let i = 0; i < 5; i++) {
+      const refused = await r.post(publishJson(account(`minted-${i}`), 1));
+      assert.equal(refused.status, 429);
+      assert.match(refused.body.message, /new accounts/, 'the new-account gate, and the address token goes back');
+    }
+    assert.equal((await r.post(publishJson(b, 2))).status, 201, 'four: six refusals spent nothing');
+    const fifth = await r.post(publishJson(b, 3));
+    assert.equal(fifth.status, 429);
+    assert.match(fifth.body.message, /from one address/, 'the address gate, spent by exactly the four publishes that happened');
+    assert.equal(r.log.size, 4);
+  } finally {
+    await r.stop();
+  }
+  // Nor the total gate, which everybody shares by construction: moving only
+  // the address gate would have left this one as the same switch at two
+  // requests a second. Junk at the total's rate, then a genuine publish.
+  const t = await start({ publishPerMinute: 1000, publishPerMinuteTotal: 5 });
+  try {
+    for (let i = 0; i < 50; i++) await fetch(`${t.base}/kt/v1/publish`, { method: 'POST', body: 'x' });
+    assert.equal((await t.post(publishJson(account('after-junk'), 1))).status, 201, 'fifty junk requests spent nothing of the total');
+    // And five publishes that happened spend it, junk or no junk in between.
+    for (let i = 1; i < 5; i++) assert.equal((await t.post(publishJson(account(`filler-${i}`), 1))).status, 201);
+    for (let i = 0; i < 50; i++) await fetch(`${t.base}/kt/v1/publish`, { method: 'POST', body: 'x' });
+    const sixth = await t.post(publishJson(account('sixth'), 1));
+    assert.equal(sixth.status, 429);
+    assert.match(sixth.body.message, /in total/);
+    assert.equal(t.log.size, 5);
+  } finally {
+    await t.stop();
+  }
+});
+
+test('9. what a request that publishes nothing can cost is bounded: bodies being read at once', async () => {
+  // No gate counts requests any more, so the cost of junk has to be bounded
+  // some other way. A body is up to MAX_BODY in memory while it arrives, and
+  // the sender decides how slowly: a thousand POSTs that never finish would
+  // be a thousand buffers. Two may be in flight here; a third is told 503
+  // busy at once, before anything is read; and the moment one finishes —
+  // as junk, refused — the slot is free again. A rate would have been a
+  // switch (criterion 8); a bound on concurrency is spent only by sockets
+  // held open, which a request that finishes never is.
+  const net = require('node:net');
+  const s = await start({ maxPublishInFlight: 2 });
+  try {
+    const port = Number(new URL(s.base).port);
+    const open = (bytes) =>
+      new Promise((resolve, reject) => {
+        const sock = net.connect(port, '127.0.0.1', () => {
+          sock.write(`POST /kt/v1/publish HTTP/1.1\r\nhost: x\r\ncontent-length: ${bytes}\r\ncontent-type: application/json\r\n\r\n{`);
+          resolve(sock);
+        });
+        sock.on('error', reject);
+      });
+    const finish = (sock) =>
+      new Promise((resolve) => {
+        let text = '';
+        sock.on('data', (d) => {
+          text += d.toString();
+          if (/\r\n\r\n/.test(text)) {
+            sock.destroy();
+            resolve(Number(text.match(/^HTTP\/1\.1 (\d+)/)[1]));
+          }
+        });
+        sock.end('x'.repeat(9)); // completes the declared length; not JSON
+      });
+    // Two bodies, each announced as ten bytes and one byte sent.
+    const a = await open(10);
+    const b = await open(10);
+    await new Promise((r) => setTimeout(r, 100));
+    const third = await s.post(publishJson(account('third'), 1));
+    assert.equal(third.status, 503, 'a third body is not read while two are being read');
+    assert.equal(third.body.error, 'busy');
+    // A read is not what this bounds.
+    assert.equal((await s.get('/kt/v1/sth')).status, 200);
+    // The two finish — as junk, so as 400s — and the slots are free.
+    assert.equal(await finish(a), 400);
+    assert.equal(await finish(b), 400);
+    assert.equal((await s.post(publishJson(account('after'), 1))).status, 201, 'the slot a finished request held is free, whatever it was');
+  } finally {
+    await s.stop();
+  }
+  // A body that never finishes is let go of by the request timeout, and
+  // its slot with it: one slot, one socket that sends a byte and stops.
+  const t = await start({ maxPublishInFlight: 1, requestTimeoutMs: 400 });
+  try {
+    const port = Number(new URL(t.base).port);
+    const held = await new Promise((resolve, reject) => {
+      const sock = net.connect(port, '127.0.0.1', () => {
+        sock.write('POST /kt/v1/publish HTTP/1.1\r\nhost: x\r\ncontent-length: 10\r\n\r\n{');
+        resolve(sock);
+      });
+      sock.on('error', reject);
+    });
+    held.on('error', () => {});
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal((await t.post(publishJson(account('waiting'), 1))).status, 503, 'the one slot is held');
+    await new Promise((r) => setTimeout(r, 900));
+    assert.equal((await t.post(publishJson(account('waiting'), 1))).status, 201, 'and given up on, so the slot is free without the sender doing anything');
+    held.destroy();
+  } finally {
+    await t.stop();
+  }
 });

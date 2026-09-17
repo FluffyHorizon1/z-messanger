@@ -2072,7 +2072,7 @@ All responses are JSON; error responses are `{ "error":code, "message":text }`.
 | `GET /kt/v1/entries?start=i&count=k` | `{ "sth", "start":i, "total":n, "entries":[<entry>…] }` — `k ≤ 1000`, clipped to the head's size (mirrors); `n` is the head's size |
 | `POST /kt/v1/publish` | §19.6 |
 | `GET /kt/v1/pub` | `{ "pub":b64 }` — informative |
-| `GET /health` | `{ "size", "labels", "sthTs" }` — informative |
+| `GET /health` | `{ "size", "labels", "sthTs", "diskBytes", "diskFreeBytes", "full" }` — informative |
 
 An `<entry>` is `{ "index":i, "label":b64, "v":version, "fp":b64,
 "valueHash":b64, "value":b64, "ts":ms }`; a reader MUST check
@@ -2087,6 +2087,19 @@ A reader that has not seen `total` entries MUST ask again from where the page
 stopped rather than treat the page as the whole — and a log that stops short
 is not by itself a fault, because §19.8's judgement of the authenticated
 `latest` is what an incomplete history cannot defeat.
+
+A log MAY answer `429` with a `retry-after` header (delta‑seconds) on
+`/kt/v1/entries` when a reader is over a byte budget, and a mirror MUST treat
+that as "not yet" rather than as a failure of the sync: wait as long as it
+says (bounded), then ask for the same page again. A log MUST NOT refuse the
+routes a client's check depends on — the head, a consistency proof, a lookup,
+a label's history — on a budget that other readers can spend, because behind
+a front that sets no client address every reader shares one; those routes
+are bounded by the size of one answer instead. A page of entries below the
+head and a consistency proof between two sizes are immutable and MAY carry
+`cache-control: public`; a reader MUST NOT rely on the `sth` or `total`
+carried in such a page being current, and a log MUST NOT mark an empty page
+cacheable, since it is what a request past the head receives.
 
 ### 19.8 Self-monitoring by the account the entries are about
 
@@ -2135,7 +2148,8 @@ Refusing a head is permanent — a witness that has refused stops following
 the log — so it MUST be reached only on a signature, a consistency proof or
 a root that fails. A response that is unreachable, malformed, or empty where
 the head says entries exist is a transport failure: the mirror keeps its
-head, records the error and retries. A mirror MUST NOT apply any part of a
+head, records the error and retries; a `429` is a wait (§19.7), and only
+becomes a transport failure after a bounded number of them. A mirror MUST NOT apply any part of a
 fetch it has not completed and verified, and MUST NOT leave state beyond the
 last head it accepted: after an incomplete sync its next one begins from
 that head, and entries persisted without the head that covers them are

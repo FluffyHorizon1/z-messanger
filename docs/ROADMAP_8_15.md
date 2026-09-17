@@ -3728,3 +3728,56 @@ direction; the phases, their order and both ordering arguments stand.
 
    **The thing being defended cannot be the thing that says where the
    defence begins.**
+
+97. **A gate that a request can spend is a switch that everybody shares.**
+
+   Findings 17 and 18 of the 2026-09-14 review, and they are one finding
+   from two sides. Publishing: the per-address gate was taken before the
+   body, and behind the shipped front — no client-address header, so the
+   TLS front is everybody's address — thirty one-byte POSTs a minute from
+   anywhere, with no account and no signature, emptied it for every genuine
+   publisher. Reproduced: thirty junk requests, all 400, then a correctly
+   signed publish refused 429, log size 0, at half a request a second. The
+   review's fix was to charge that gate after the signature; doing only that
+   would have left the total gate, which everybody shares by construction,
+   as the same switch at two requests a second. So every publish gate now
+   counts publishes and none counts requests: each is taken after the
+   signature verifies and given back when a later gate refuses or the write
+   fails, and a signature that costs nothing to make buys nothing it did
+   not write. What a request that publishes nothing can cost is bounded
+   instead — the body cap, `KT_MAX_PUBLISH_IN_FLIGHT` on bodies being read
+   at once (memory, against sockets held open and trickling; not a rate,
+   so junk cannot spend it), and the server's request timeout, which lets
+   go of a body that never ends. A raw flood past those is the front's, as
+   for any HTTP service; what it can no longer do is stop publishing.
+
+   Reads: a 48-byte request for a page of entries returned 3.9 MiB, 85 000:1,
+   stalling the event loop for 74 ms, as often as anyone liked, behind
+   `no-store`. The obvious fix — a byte budget on every read route — was
+   built first and taken out again, because it repeats the finding: behind
+   the shipped front every reader is one address, and eight page requests a
+   minute would have refused every client's lookup for the rest of it, a
+   cheaper denial than the one being closed. So the budget is on the
+   mirrors' page only (`READ_BYTES_PER_MIN` per address,
+   `READ_BYTES_PER_MIN_TOTAL`), refused with `retry-after` before anything
+   is built, and the mirror waits exactly that long and asks again, so a
+   first sync of a large log paces itself rather than failing every five
+   minutes for ever. The routes a client's check depends on are never
+   refused by a budget: what bounds them is the size of one answer, and a
+   page of a label's history is a quarter of the size it was. A page below
+   the head and a consistency proof say a cache may hold them; the empty
+   page does not, since it is what a request past the head receives.
+
+   And the client: a 429 was read as any other 4xx — "malformed, a retry
+   will not fix" — and the queued publish was dropped, to be queued again
+   by the next check six hours later. A minute's refusal cost six hours
+   without the list in the log, which is the delay ADR 0006's grace period
+   charges the account's contacts for. It is kept and tried again in a
+   minute now, and a log at capacity is not counted as unreachable.
+
+   R31 records what remains: honest capacity, and the header that makes any
+   per-address gate per-client. kt 77 (was 72); app +1 file (2).
+   Twenty-seven mutations across the log, the mirror and the client, each
+   caught by the criterion written for it.
+
+   **The obvious fix for a shared switch is often a second shared switch.**

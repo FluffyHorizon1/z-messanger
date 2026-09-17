@@ -389,6 +389,9 @@ generating keys is free:
 | `PUBLISH_NEW_ACCOUNTS_PER_MIN` | 10 | first publishes from accounts the log has never held, in total. Charged after the signature and only for a label the index does not have — and the index is built by accepted publishes, so a refused first publish leaves the account unknown |
 | `KT_MAX_VALUE_BYTES` | 32768 | what this log accepts; at most the protocol's 262 144. Sets entries‑per‑gigabyte |
 | `KT_MIN_FREE_BYTES` | 67108864 | below this much free space, publishes are refused `503 log_full` and reads continue. `/health` still answers 200 with `full: true`, so a host's health check does not restart a log whose only problem is a disk it cannot grow |
+| `KT_MAX_PUBLISH_IN_FLIGHT` | 256 | publish bodies being read at once; a further one is told `503 busy` before anything is read. Not a rate — a request that finishes frees its slot in milliseconds — so it bounds memory (256 × 400 KB) against sockets held open, which the request timeout (a minute) then lets go of |
+| `READ_BYTES_PER_MIN` | 33554432 | bytes of `/kt/v1/entries` a minute from one address (32 MiB — eight full pages). Over it, `429` with `retry-after`, before anything is built. Per‑client only with `KT_CLIENT_IP_HEADER`; otherwise one budget for every reader, mirrors included |
+| `READ_BYTES_PER_MIN_TOTAL` | 134217728 | the same, for the whole log (128 MiB — four readers' worth). The bound on the log's own CPU and egress whoever asks |
 
 `KT_CLIENT_IP_HEADER` (e.g. `cf-connecting-ip`) is empty by default and should
 stay empty until the service is reachable **only** through the proxy that sets
@@ -398,7 +401,51 @@ one keyed on a value they cannot.
 
 The public deployment ran for a day with the per‑address gate keyed on the
 proxy's address and nothing else: 3,853 entries from 3,579 distinct account
-keys in about a hundred minutes, against a nominal thirty a minute.
+keys in about a hundred minutes, against a nominal thirty a minute. And until
+2026‑09‑17 that gate and the total were charged before the body was read, so
+behind the shipped front — one address for everybody — thirty one‑byte POSTs
+a minute from anywhere, with no account and no signature, stopped every
+genuine publish for the rest of the minute (measured: thirty junk requests,
+all 400, then a correctly signed publish refused 429, at half a request a
+second); moving the address gate alone would have left the total, which
+everybody shares by construction, as the same switch at two requests a
+second. **Every gate now counts publishes and none counts requests**: each is
+taken after the signature verifies and given back if a later gate refuses or
+the write fails, so a signature that costs nothing to make buys nothing it
+did not write, and junk buys nothing at all. What a request that publishes
+nothing can cost is bounded instead — the body at 400 KB, bodies being read
+at once at `KT_MAX_PUBLISH_IN_FLIGHT`, and a request at the server's timeout
+— and a raw flood past those is what the front is for, as for any HTTP
+service; what it can no longer do is stop publishing.
+
+**Reads are bounded by what one request can cost, and the mirrors' page by
+the minute besides.** A page of entries is at most 4 MiB, a page of one
+label's history 256 KiB, a lookup one entry with its proofs (~7 KB for an
+ordinary list), a consistency proof a few hundred bytes. `/kt/v1/entries` —
+the route a mirror pages a whole log through, and the only one that answers
+a fifty‑byte request with megabytes (measured before the budget: 3.9 MiB in
+176 ms, 85 000:1, stalling the event loop for 74 ms, as often as anyone
+liked) — is budgeted per address and in total, and a reader over it is told
+`429` with `retry-after` before anything is built; the mirror waits exactly
+that long and asks again, so a first sync of a large log paces itself at the
+budget rather than failing every `KT_EVERY` for ever. The routes a client's
+check depends on — the head, a consistency proof, a lookup, its own label's
+history — are **never refused by a budget**, on purpose: without the client
+address header every reader is one address, and a budget an attacker could
+spend on a route a client needs would be a cheaper denial than the one
+this closes. What bounds those routes is the size of one answer. Without the
+header, the per‑address read budget is one budget for every reader, your
+witness included: an attacker spending it delays the witness's sync (it
+retries) and touches no client.
+
+A page of entries below the head and a consistency proof are the same answer
+for as long as the log exists, and say so: `cache-control: public,
+max-age=60`. That is the log's half. A CDN in front caches a JSON route only
+when told to — on Cloudflare, a cache rule for `/kt/v1/entries*` and
+`/kt/v1/consistency*` that honours the origin's TTL — and then a repeat of
+the same page never reaches the log at all. Everything else stays
+`no-store`: a lookup and a history are relative to the head they were served
+under, and the head moves.
 
 Three ways to run it, then one witness, then the client. The four conditions
 under which the log counts as live are at the end; the Blueprints exist so
