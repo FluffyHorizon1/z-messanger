@@ -107,6 +107,10 @@ UNCITED_OK = {
         "that resetting a secure session and removing a group member ask "
         "before they act, as every other destructive action does — a "
         "confirmation-UX property, not a claim about secrecy",
+    "app/test/dead_controls_test.dart":
+        "that the contact screen's disappearing-messages row opens the timer "
+        "picker rather than sitting dead — a control-wiring property, not a "
+        "claim about secrecy",
 }
 
 

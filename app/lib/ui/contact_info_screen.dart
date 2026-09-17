@@ -8,6 +8,7 @@ import '../l10n/ttl_text.dart';
 import '../core/chat_service.dart';
 import '../core/key_transparency.dart';
 import '../core/models.dart';
+import 'disappearing_timer.dart';
 import 'theme.dart';
 
 class ContactInfoScreen extends StatefulWidget {
@@ -211,6 +212,10 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             leading: const Icon(Icons.timer_outlined),
             title: Text(l.disappearingMessages),
             subtitle: Text(ttlText(l, contact.ttlSec)),
+            // Opens the same picker as the chat screen's timer icon; this row
+            // used to be the only one here with no onTap, a read-only display
+            // between three interactive rows.
+            onTap: () => pickDisappearingTimer(context, widget.rid),
           ),
           ListTile(
             leading: const Icon(Icons.edit_outlined),

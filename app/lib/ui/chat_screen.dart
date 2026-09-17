@@ -13,11 +13,11 @@ import 'package:record/record.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/alert_text.dart';
 import '../l10n/system_text.dart';
-import '../l10n/ttl_text.dart';
 import '../core/chat_service.dart';
 import '../core/file_export.dart';
 import '../core/key_transparency.dart';
 import '../core/models.dart';
+import 'disappearing_timer.dart';
 import '../core/voice.dart';
 import 'contact_info_screen.dart';
 import 'group_screens.dart';
@@ -437,49 +437,7 @@ class _ChatScreenState extends State<ChatScreen> {
     };
   }
 
-  Future<void> _pickTimer() async {
-    final svc = context.read<ChatService>();
-    final l = AppLocalizations.of(context);
-    final current = svc.contacts[widget.rid]?.ttlSec ?? 0;
-    // Labelled through the same function that describes the setting
-    // elsewhere, so the picker and the contact screen cannot disagree.
-    final options = <(int, String)>[
-      for (final sec in const [0, 30, 300, 3600, 28800, 86400, 604800])
-        (sec, ttlText(l, sec)),
-    ];
-    final chosen = await showModalBottomSheet<int>(
-      context: context,
-      backgroundColor: context.z.surface,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(l.disappearingMessages,
-                  style: const TextStyle(fontWeight: FontWeight.w700)),
-            ),
-            for (final (sec, label) in options)
-              ListTile(
-                leading: Icon(
-                  sec == current
-                      ? Icons.radio_button_checked
-                      : Icons.radio_button_off,
-                  color: sec == current
-                      ? context.z.accent
-                      : context.z.textSecondary,
-                ),
-                title: Text(label),
-                onTap: () => Navigator.pop(ctx, sec),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (chosen != null && chosen != current) {
-      await svc.setDisappearingTimer(widget.rid, chosen);
-    }
-  }
+  Future<void> _pickTimer() => pickDisappearingTimer(context, widget.rid);
 
   @override
   Widget build(BuildContext context) {
@@ -1011,6 +969,19 @@ class _MessageRow extends StatelessWidget {
                 onReply?.call();
               },
             ),
+            // Save is the only way to get a file (or a voice note) off the
+            // device where the inline player cannot play it — desktop has no
+            // audio backend. It had no entry here, so the player's own "save
+            // the file instead" notice pointed at nothing.
+            if (msg.kind == 'file' && (msg.file?.complete ?? false))
+              ListTile(
+                leading: Icon(Icons.download_outlined, color: ctx.z.accent),
+                title: Text(l.save),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  saveAttachment(context, msg.file!.fid, msg.file!.name);
+                },
+              ),
             if (msg.kind != 'file')
               ListTile(
                 leading: Icon(Icons.copy_outlined, color: ctx.z.textSecondary),
@@ -1392,24 +1363,34 @@ class _FileBodyState extends State<_FileBody> {
     return l.sizeMb((bytes / 1024 / 1024).toStringAsFixed(1));
   }
 
-  Future<void> _save(BuildContext context, String fid, String name) async {
-    final svc = context.read<ChatService>();
-    final messenger = ScaffoldMessenger.of(context);
-    final l = AppLocalizations.of(context);
-    try {
-      final bytes = await svc.readAttachment(fid);
-      // Who writes the bytes differs per platform; FileExport knows.
-      final path = await FileExport.saveBytes(
-        dialogTitle: l.chatSaveDialogTitle,
-        fileName: name,
-        bytes: bytes,
-      );
-      if (path != null) {
-        messenger.showSnackBar(SnackBar(content: Text(l.chatSavedDecrypted)));
-      }
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(l.chatSaveFailed('$e'))));
+  Future<void> _save(BuildContext context, String fid, String name) =>
+      saveAttachment(context, fid, name);
+}
+
+/// Decrypt an attachment and hand it to the platform's save dialog. Top-level
+/// so both the file card's own Save button and the message action sheet (for a
+/// voice note, whose inline player cannot play on a desktop without an audio
+/// backend) reach the one path — the action sheet had no Save item, so the
+/// "save the file instead" notice pointed at nothing (the 2026-09-14 review
+/// sweep's finding).
+Future<void> saveAttachment(
+    BuildContext context, String fid, String name) async {
+  final svc = context.read<ChatService>();
+  final messenger = ScaffoldMessenger.of(context);
+  final l = AppLocalizations.of(context);
+  try {
+    final bytes = await svc.readAttachment(fid);
+    // Who writes the bytes differs per platform; FileExport knows.
+    final path = await FileExport.saveBytes(
+      dialogTitle: l.chatSaveDialogTitle,
+      fileName: name,
+      bytes: bytes,
+    );
+    if (path != null) {
+      messenger.showSnackBar(SnackBar(content: Text(l.chatSavedDecrypted)));
     }
+  } catch (e) {
+    messenger.showSnackBar(SnackBar(content: Text(l.chatSaveFailed('$e'))));
   }
 }
 

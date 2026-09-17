@@ -40,7 +40,8 @@ dependencies:
 
   # Voice messages (7.4): capture + inline playback. `record`'s Linux impl is
   # pure Dart and just_audio has no Linux native code, so the desktop CI
-  # builds are unaffected; platforms without support degrade to a file card.
+  # builds are unaffected; where playback is unsupported the player shows a
+  # notice and the message menu's Save action takes the note off the device.
   record: ^7.1.1
   just_audio: ^0.10.6
 

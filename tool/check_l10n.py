@@ -45,6 +45,7 @@ MIGRATED = {
     "unlock_screen.dart",
     "lock_screen.dart",
     "voice_widgets.dart",
+    "disappearing_timer.dart",
     "search_screen.dart",
     "home_screen.dart",
     "add_contact_screen.dart",
