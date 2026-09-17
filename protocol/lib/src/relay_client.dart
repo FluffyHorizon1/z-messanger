@@ -22,6 +22,9 @@ class RelayClient {
   final WebSocket _ws;
   final ZIdentity _identity;
 
+  /// The relay this connection dialled, as the authentication names it.
+  final String _authority;
+
   /// True for a connection that saw the challenge and did not answer it.
   final bool anonymous;
 
@@ -33,7 +36,7 @@ class RelayClient {
   // never lost even if the app wires up its listener a beat later.
   final _messages = StreamController<RelayInbound>();
   final _delivered = StreamController<DeliveredReceipt>();
-  final _sendAcks = <String, Completer<bool>>{};
+  final _sendAcks = <String, Completer<void>>{};
   final void Function()? _onClosed;
   Timer? _pinger;
 
@@ -43,7 +46,7 @@ class RelayClient {
   /// stream.
   bool _closing = false;
 
-  RelayClient._(this._ws, this._identity, this._onClosed,
+  RelayClient._(this._ws, this._identity, this._onClosed, this._authority,
       {this.anonymous = false}) {
     // dart:io WebSockets are single-subscription: this is the ONE listener,
     // covering both the auth phase and normal operation.
@@ -74,7 +77,16 @@ class RelayClient {
       await for (final data
           in ws.timeout(timeout, onTimeout: (sink) => sink.close())) {
         final frame = jsonDecode(data as String) as Map<String, Object?>;
-        if (frame['t'] == 'challenge') return; // it's a Z relay
+        if (frame['t'] == 'challenge') {
+          // It is a Z relay — and one this client can authenticate to, or
+          // the test says so now rather than the first connection later.
+          if (frame['auth'] != 2) {
+            throw RelayException(
+                'relay too old: it does not bind authentication to its '
+                'address; update the relay');
+          }
+          return;
+        }
         throw RelayException('unexpected first frame from server');
       }
       throw RelayException('server closed connection without a challenge');
@@ -94,7 +106,7 @@ class RelayClient {
     void Function()? onClosed,
   }) async {
     final ws = await WebSocket.connect(url).timeout(timeout);
-    final client = RelayClient._(ws, identity, onClosed);
+    final client = RelayClient._(ws, identity, onClosed, relayAuthority(url));
     try {
       await client._ready.future.timeout(timeout);
       return client;
@@ -116,7 +128,7 @@ class RelayClient {
     void Function()? onClosed,
   }) async {
     final ws = await WebSocket.connect(url).timeout(timeout);
-    final client = RelayClient._(ws, identity, onClosed, anonymous: true);
+    final client = RelayClient._(ws, identity, onClosed, relayAuthority(url), anonymous: true);
     try {
       await client._ready.future.timeout(timeout);
       return client;
@@ -135,10 +147,25 @@ class RelayClient {
           if (!_ready.isCompleted) _ready.complete('');
           return;
         }
+        // Only the bound form is ever signed: a v1 signature obtained by
+        // any relay this device talks to would authenticate it at every
+        // other, and a client that would fall back to v1 on request could
+        // be asked to by exactly the relay that wants the signature. A relay
+        // that does not verify v2 says so by not advertising it, and gets a
+        // reason rather than a signature.
+        if (frame['auth'] != 2) {
+          if (!_ready.isCompleted) {
+            _ready.completeError(RelayException(
+                'relay too old: it does not bind authentication to its '
+                'address; update the relay'));
+          }
+          return;
+        }
         final nonce = unb64(frame['nonce'] as String);
-        final sig = await _identity.signAuthChallenge(nonce);
+        final sig = await _identity.signAuthChallengeV2(nonce, _authority);
         _ws.add(jsonEncode({
           't': 'auth',
+          'v': 2,
           'pub': b64(_identity.edPub),
           'sig': b64(sig),
         }));
@@ -184,9 +211,7 @@ class RelayClient {
         ));
         break;
       case 'sent':
-        _sendAcks
-            .remove(frame['id'] as String)
-            ?.complete(!(frame['queued'] as bool? ?? false));
+        _sendAcks.remove(frame['id'] as String)?.complete();
         break;
       case 'delivered':
         _delivered.add(DeliveredReceipt(
@@ -231,14 +256,18 @@ class RelayClient {
     }
   }
 
-  /// Sends an opaque envelope. Resolves true if delivered to a live socket,
-  /// false if queued in relay RAM for later. Throws on relay rejection.
-  Future<bool> send({
+  /// Sends an opaque envelope. Resolves once the relay has accepted it —
+  /// held until the recipient acknowledges it — and throws on rejection.
+  /// It used to resolve to whether the recipient had a socket open at that
+  /// moment, which is presence: the relay stopped saying on 2026-09-17
+  /// (finding 12), and nothing here ever needed it — delivery is the peer's
+  /// own receipt inside the ratchet (§15.3).
+  Future<void> send({
     required String to,
     required String id,
     required String payload,
   }) {
-    final completer = Completer<bool>();
+    final completer = Completer<void>();
     _sendAcks[id] = completer;
     _send({'t': 'send', 'id': id, 'to': to, 'payload': payload});
     return completer.future.timeout(const Duration(seconds: 20), onTimeout: () {

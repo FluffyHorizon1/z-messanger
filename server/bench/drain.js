@@ -21,7 +21,10 @@ const { createServer, RedisCoordinator, routingIdFromPub } = require('../server.
 
 const N = +(process.env.N || 2000);
 const KB = +(process.env.KB || 1);
-const AUTH_CONTEXT = Buffer.from('z-relay-auth-v1:', 'utf8');
+// The bound form (PROTOCOL §12.1): the relay's authority — what was dialled,
+// as the Host header says it — under the signature with the nonce.
+const AUTH_CONTEXT = Buffer.from('z-relay-auth-v2:', 'utf8');
+const authority = (ws) => Buffer.from(new URL(ws.url).host.toLowerCase().replace(/:(80|443)$/, ''), 'utf8');
 
 function freePort() {
   return new Promise((res) => {
@@ -45,8 +48,8 @@ function connect(port, id) {
     ws.on('message', (d) => {
       const f = JSON.parse(d.toString());
       if (f.t === 'challenge') {
-        const sig = crypto.sign(null, Buffer.concat([AUTH_CONTEXT, Buffer.from(f.nonce, 'base64')]), id.privateKey);
-        ws.send(JSON.stringify({ t: 'auth', pub: id.rawPub.toString('base64'), sig: sig.toString('base64') }));
+        const sig = crypto.sign(null, Buffer.concat([AUTH_CONTEXT, authority(ws), Buffer.from(f.nonce, 'base64')]), id.privateKey);
+        ws.send(JSON.stringify({ t: 'auth', v: 2, pub: id.rawPub.toString('base64'), sig: sig.toString('base64') }));
       } else if (f.t === 'ready') resolve(c);
       else if (f.t === 'msg') {
         c.msgs.push(f);

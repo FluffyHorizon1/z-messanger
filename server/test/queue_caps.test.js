@@ -26,7 +26,10 @@ const WebSocket = require('ws');
 
 const { createServer, RedisCoordinator, routingIdFromPub, _internal } = require('../server.js');
 
-const AUTH_CONTEXT = Buffer.from('z-relay-auth-v1:', 'utf8');
+// The bound form (PROTOCOL §12.1): the relay's authority — what was dialled,
+// as the Host header says it — under the signature with the nonce.
+const AUTH_CONTEXT = Buffer.from('z-relay-auth-v2:', 'utf8');
+const authority = (ws) => Buffer.from(new URL(ws.url).host.toLowerCase().replace(/:(80|443)$/, ''), 'utf8');
 const BIG = 'x'.repeat(2000); // charged at 2 256 bytes: two fit under 5 000, a third does not
 const SMALL = 'eA=='; // charged at 260
 
@@ -110,11 +113,12 @@ class Client {
     const ch = await this.next((f) => f.t === 'challenge');
     const sig = crypto.sign(
       null,
-      Buffer.concat([AUTH_CONTEXT, Buffer.from(ch.nonce, 'base64')]),
+      Buffer.concat([AUTH_CONTEXT, authority(this.ws), Buffer.from(ch.nonce, 'base64')]),
       this.identity.privateKey
     );
     this.send({
       t: 'auth',
+      v: 2,
       pub: this.identity.rawPub.toString('base64'),
       sig: sig.toString('base64'),
     });
@@ -200,7 +204,7 @@ test('RAM: the envelope that would cross a cap is refused, and nothing queued be
   assert.strictEqual(_internal.queues.get(bob.rid).bytes, 2000 + 256);
   const m4 = await a.deliver('m4', bob.rid, BIG);
   assert.strictEqual(m4.t, 'sent');
-  assert.strictEqual(m4.queued, false); // Bob is online: handed to his socket
+  assert.strictEqual(m4.queued, true); // whether Bob was online is not Alice's to know (finding 12) — that he got it is:
   assert.strictEqual((await b.next((f) => f.t === 'msg' && f.id === 'm4')).id, 'm4');
 
   a.close();

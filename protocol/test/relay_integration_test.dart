@@ -72,12 +72,13 @@ void main() {
     final sub = bobNet.messages.listen(inbox.add);
 
     final m1 = InnerMessage.text(newMessageId(), 1, 'hello over the wire');
-    final live = await aliceNet.send(
+    // Accepted, and nothing more: whether Bob is online is not something the
+    // relay tells a sender (finding 12); that he got it is shown below.
+    await aliceNet.send(
       to: bobRid,
       id: m1.mid,
       payload: await aliceConv.encrypt(m1.toBytes()),
     );
-    expect(live, isTrue); // bob online -> not queued
 
     await _until(() => inbox.length == 1);
     final got = inbox.removeAt(0);
@@ -112,9 +113,8 @@ void main() {
     for (var i = 0; i < 3; i++) {
       final m = InnerMessage.text(newMessageId(), 10 + i, 'offline $i');
       queuedIds.add(m.mid);
-      final wasLive = await aliceNet.send(
+      await aliceNet.send(
           to: bobRid, id: m.mid, payload: await aliceConv.encrypt(m.toBytes()));
-      expect(wasLive, isFalse); // relay reports RAM-queued
     }
 
     // Bob reconnects and receives all three, in order.

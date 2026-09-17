@@ -1,0 +1,169 @@
+{
+  "suite": "relay_auth_v2",
+  "version": 1,
+  "description": "Relay authentication bound to the relay: Ed25519 over utf8(\"z-relay-auth-v2:\") || utf8(authority) || nonce, where the authority is the dialled host, lower-case, with the port only when it is not the default for the scheme. A relay derives the same authority from the Host header.",
+  "relay_auth_v2": [
+    {
+      "identity": "alice",
+      "url": "wss://zmessengers.com",
+      "host_header": "zmessengers.com",
+      "authority": "zmessengers.com",
+      "challenge_frame": {
+        "t": "challenge",
+        "nonce": "MSoPhRN0BTYWhLVau6PPcFy2t4/L3dHxbJfEvhOl82o=",
+        "auth": 2
+      },
+      "nonce": "312a0f85137405361684b55abba3cf705cb6b78fcbddd1f16c97c4be13a5f36a",
+      "signed_message": "7a2d72656c61792d617574682d76323a7a6d657373656e676572732e636f6d312a0f85137405361684b55abba3cf705cb6b78fcbddd1f16c97c4be13a5f36a",
+      "sig": "fdee0ab11f2ec0c904da95b7b4700aedae8214be305ba376acb4e765f2f2276b2576ec5254f325e379198cea44f438a34c75217bd7b001afa18889d9d6c3360b",
+      "auth_frame": {
+        "t": "auth",
+        "v": 2,
+        "pub": "S7Z13k9jdqthc3Az1wFWDkQ0vh1nNlYq4puINbdjzSQ=",
+        "sig": "/e4KsR8uwMkE2pW3tHAK7a6CFL4wW6N2rLTnZfLyJ2slduxSVPMl43kZjOpE9DijTHUhe9ewAa+hiInZ1sM2Cw=="
+      },
+      "ready_frame": {
+        "t": "ready",
+        "id": "pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc"
+      }
+    },
+    {
+      "identity": "bob",
+      "url": "wss://Relay.Example.net:443",
+      "host_header": "relay.example.net",
+      "authority": "relay.example.net",
+      "challenge_frame": {
+        "t": "challenge",
+        "nonce": "cClBWMUf6nq9TmLAnXmcVz+H93uwn9qKWlNb/p+Q5xg=",
+        "auth": 2
+      },
+      "nonce": "70294158c51fea7abd4e62c09d799c573f87f77bb09fda8a5a535bfe9f90e718",
+      "signed_message": "7a2d72656c61792d617574682d76323a72656c61792e6578616d706c652e6e657470294158c51fea7abd4e62c09d799c573f87f77bb09fda8a5a535bfe9f90e718",
+      "sig": "8b36c0477058ccc4e9656dd229272372b8c499245773a86a501ac1d11c743fd3fb89cea1ce73ca9949d2e0471f42d97573c9625c8a08bdc10a5e63700c846b01",
+      "auth_frame": {
+        "t": "auth",
+        "v": 2,
+        "pub": "ADoRIVFV9NRFqmMCtF+XkHm/O04IfJiWhw4JirZ5zMk=",
+        "sig": "izbAR3BYzMTpZW3SKScjcrjEmSRXc6hqUBrB0Rx0P9P7ic6hznPKmUnS4EcfQtl1c8liXIoIvcEKXmNwDIRrAQ=="
+      },
+      "ready_frame": {
+        "t": "ready",
+        "id": "dJimNfkvJl2ZeprzsyMTx_NoLdpaiutQVPLQhcKGA54"
+      }
+    },
+    {
+      "identity": "alice",
+      "url": "ws://192.168.1.50:8080",
+      "host_header": "192.168.1.50:8080",
+      "authority": "192.168.1.50:8080",
+      "challenge_frame": {
+        "t": "challenge",
+        "nonce": "mwUs2rK+uk5GsKjhgEvReHu1233ZoaTOmlElAj/ehVE=",
+        "auth": 2
+      },
+      "nonce": "9b052cdab2beba4e46b0a8e1804bd1787bb5db7dd9a1a4ce9a5125023fde8551",
+      "signed_message": "7a2d72656c61792d617574682d76323a3139322e3136382e312e35303a383038309b052cdab2beba4e46b0a8e1804bd1787bb5db7dd9a1a4ce9a5125023fde8551",
+      "sig": "9b2f442debb667e5775a98dab22c33c0a027d8a3c9db70c299a5064739ee4a808e32391eefef7704da42648fccc26eb391f19afa2694a3e04aa5c64aa14d0400",
+      "auth_frame": {
+        "t": "auth",
+        "v": 2,
+        "pub": "S7Z13k9jdqthc3Az1wFWDkQ0vh1nNlYq4puINbdjzSQ=",
+        "sig": "my9ELeu2Z+V3WpjasiwzwKAn2KPJ23DCmaUGRznuSoCOMjke7+93BNpCZI/Mwm6zkfGa+iaUo+BKpcZKoU0EAA=="
+      },
+      "ready_frame": {
+        "t": "ready",
+        "id": "pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc"
+      }
+    },
+    {
+      "identity": "bob",
+      "url": "ws://[::1]:8080",
+      "host_header": "[::1]:8080",
+      "authority": "[::1]:8080",
+      "challenge_frame": {
+        "t": "challenge",
+        "nonce": "E1oxPPgShWLY1FStebeHW+RN/Cs95RVAaK1jFxYzgbU=",
+        "auth": 2
+      },
+      "nonce": "135a313cf8128562d8d454ad79b7875be44dfc2b3de5154068ad6317163381b5",
+      "signed_message": "7a2d72656c61792d617574682d76323a5b3a3a315d3a38303830135a313cf8128562d8d454ad79b7875be44dfc2b3de5154068ad6317163381b5",
+      "sig": "87b4b95ff7bcda300a5c3e90373259a87d3df21903780172d2232a094e9e6c84ffbd42b9262c544beaa6bffd134fe6c77b289f8dad381e073250b9f146e13c0d",
+      "auth_frame": {
+        "t": "auth",
+        "v": 2,
+        "pub": "ADoRIVFV9NRFqmMCtF+XkHm/O04IfJiWhw4JirZ5zMk=",
+        "sig": "h7S5X/e82jAKXD6QNzJZqH098hkDeAFy0iMqCU6ebIT/vUK5JixUS+qmv/0TT+bHeyifja04HgcyULnxRuE8DQ=="
+      },
+      "ready_frame": {
+        "t": "ready",
+        "id": "dJimNfkvJl2ZeprzsyMTx_NoLdpaiutQVPLQhcKGA54"
+      }
+    },
+    {
+      "identity": "alice",
+      "url": "wss://z-relay-x.onrender.com/",
+      "host_header": "z-relay-x.onrender.com",
+      "authority": "z-relay-x.onrender.com",
+      "challenge_frame": {
+        "t": "challenge",
+        "nonce": "+vzJekHhPXi+t7br+8Gz16k3vNuT4LbqpwnJ7nNPH6A=",
+        "auth": 2
+      },
+      "nonce": "fafcc97a41e13d78beb7b6ebfbc1b3d7a937bcdb93e0b6eaa709c9ee734f1fa0",
+      "signed_message": "7a2d72656c61792d617574682d76323a7a2d72656c61792d782e6f6e72656e6465722e636f6dfafcc97a41e13d78beb7b6ebfbc1b3d7a937bcdb93e0b6eaa709c9ee734f1fa0",
+      "sig": "a36c428faf35a5b8c365fd3b539d95bfe787188c7f482ea5913912ff12b1b270d151e210d2180df1f3e9036cccecb79ac2681a77c3c0f04cf6e4392935834203",
+      "auth_frame": {
+        "t": "auth",
+        "v": 2,
+        "pub": "S7Z13k9jdqthc3Az1wFWDkQ0vh1nNlYq4puINbdjzSQ=",
+        "sig": "o2xCj681pbjDZf07U52Vv+eHGIx/SC6lkTkS/xKxsnDRUeIQ0hgN8fPpA2zM7Leawmgad8PA8Ez25DkpNYNCAw=="
+      },
+      "ready_frame": {
+        "t": "ready",
+        "id": "pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc"
+      }
+    }
+  ],
+  "normalization": [
+    {
+      "url": "wss://zmessengers.com",
+      "host_header": "zmessengers.com",
+      "authority": "zmessengers.com"
+    },
+    {
+      "url": "wss://Relay.Example.net:443",
+      "host_header": "relay.example.net",
+      "authority": "relay.example.net"
+    },
+    {
+      "url": "ws://192.168.1.50:8080",
+      "host_header": "192.168.1.50:8080",
+      "authority": "192.168.1.50:8080"
+    },
+    {
+      "url": "ws://[::1]:8080",
+      "host_header": "[::1]:8080",
+      "authority": "[::1]:8080"
+    },
+    {
+      "url": "wss://z-relay-x.onrender.com/",
+      "host_header": "z-relay-x.onrender.com",
+      "authority": "z-relay-x.onrender.com"
+    },
+    {
+      "url": "ws://relay.example:80",
+      "host_header": "relay.example",
+      "authority": "relay.example"
+    },
+    {
+      "url": "wss://RELAY.EXAMPLE",
+      "host_header": "RELAY.EXAMPLE",
+      "authority": "relay.example"
+    },
+    {
+      "url": "wss://relay.example:8443",
+      "host_header": "relay.example:8443",
+      "authority": "relay.example:8443"
+    }
+  ]
+}

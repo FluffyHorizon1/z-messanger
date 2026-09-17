@@ -3898,3 +3898,97 @@ direction; the phases, their order and both ordering arguments stand.
     tag; the first tagged release after this lands is the test.
 
     **Fewer things in flight, and hold the door until the last one is in.**
+100. **A signature says whose key answered, not whose question it was.**
+
+   The 2026-09-14 review's protocol and relay findings — 9, 12, 13, 14 —
+   each reproduced against 3.5.0 before it was touched.
+
+   *13.* Authenticating to a relay was an Ed25519 signature over
+   `"z-relay-auth-v1:" ‖ nonce`, and nothing in it named the relay. So a
+   relay the user was induced to connect to — a pasted address, an invite,
+   a machine in the middle of a `ws://` address — could open its own socket
+   to the honest relay, hand the honest relay's nonce to the user as its own
+   challenge, and replay the answer: authenticated as that device there,
+   with the `ready` flush and everything queued from then on, able to
+   acknowledge it away. Reproduced with two relays and one forwarded nonce:
+   the second relay drained the first's mailbox. The signature now covers
+   the relay's authority — the host the client dialled, lower-case, the
+   port only when it is not the default, which is exactly the client's own
+   `Host` header — and the relay verifies against the header it received
+   (`nginx.ha.conf` forwards `$http_host`, not `$host`, which would have
+   stripped the port; `RELAY_AUTHORITIES` for a front that rewrites it).
+   The client takes the authority from what it dialled and never from the
+   challenge, since a relay that could name the authority could name the
+   honest one; it signs only the bound form, and a relay whose challenge
+   does not advertise it gets a reason ("relay too old") rather than a v1
+   signature, because a client that would fall back on request could be
+   asked to by exactly the relay that wants the signature. The relay still
+   accepts v1 for the clients that predate this, counts each one
+   (`z_auth_v1_total`), and `RELAY_AUTH_V1=off` closes it once that count
+   stays at zero — the operator's call, since it locks older installs out
+   of receiving. R33 records the window; frozen vectors in
+   `vectors/relay-auth-v2/`; `auth_binding.test.js` performs the replay and
+   shows it refused, `relay_auth_test.dart` shows the client producing no
+   v1 signature for a relay that asks for one, and signing for nothing the
+   challenge names. **The relay must be deployed before the app reaches
+   anyone**: a client from here on cannot receive from a relay without the
+   bound form.
+
+   *12.* 3.4.9 closed the presence oracle for anonymous senders and left it
+   open for authenticated ones, on the premise that an authenticated sender
+   was asking about its own conversation. An identity costs one
+   `generateKeyPair`, so the premise held for nobody: a key nobody had ever
+   heard of authenticated, sent 60 bytes to a routing id from a contact
+   code, and read `queued:false` — that person is online, now — once a
+   minute, for ever. Nor can a relay tell a relationship from a stranger: a
+   sealed envelope names no sender, and an attributed one from a stranger is
+   acknowledged away by the recipient's client like anything else, which
+   would make the stranger a relationship. So `sent` says `queued:true` to
+   every sender, always — which is true: the envelope is held until it is
+   acknowledged, whether or not a socket took it — and `send()` returns
+   nothing; delivery is the peer's receipt inside the ratchet (§15.3), and
+   the push decision still uses what actually happened. The field stays in
+   the frame for older clients, at the one value that says nothing.
+
+   *14.* The shipped compose file ran the store `allkeys-lru`, which at
+   `maxmemory` evicts whole keys: a mailbox's hash of bodies could go while
+   its list of keys stayed, and the flush's `if (str == null) continue` was
+   all that happened — the sender had been told `sent`, the envelope was
+   gone, the key was skipped at every login, the bytes were never settled,
+   and no number said so; every "never evicted" in `PROTOCOL`, `DATA_MAP`
+   and R22 was false for anyone who ran the documented command line.
+   Reproduced by deleting a body under a listed key. `noeviction` now, as
+   the Blueprint always was; and the relay is no longer silent in front of a
+   store that evicts anyway: a listed key whose body is gone is counted in
+   `z_body_missing_total` — in the flush and in the expiry sweep, the two
+   places it surfaces — and dropped, once, so the same loss is counted once
+   rather than at every login. Anything but a trickle there says the store
+   is misconfigured, and `SELF_HOSTING` says so.
+
+   *9.* The v2 pairing commitment and safety string hash
+   `ephXPub ‖ deviceEdPub ‖ deviceXPub ‖ deviceId`, the variable-length
+   field last so the concatenation is unambiguous — provided the three
+   before it are exactly 32 bytes, which nothing checked. A relay carrying
+   the opening moved the last byte of `dx` onto the front of `id` (an
+   X25519 key's last byte is below 0x80, so the move always encodes):
+   the same bytes, the same commitment, the same eight digits on both
+   screens, and the host certified a 31-byte ratchet key that every contact
+   then refused — the account's device list broken for good by whoever
+   carried one frame. Reproduced: the shifted opening accepted, the two
+   safety strings equal. Every fixed-width field of every frame, in both
+   ceremonies, is now exactly its width or an abort for the width — by
+   message, so the test knows the width refused it and not the commitment —
+   and a device id is non-empty and at most 64 characters; a wrong type or
+   bad base64 is an abort, never a type error. The hash inputs are
+   unchanged, so a 3.5.0 phone and a 3.5.1 laptop still show each other
+   the same digits; §10.1 rule 6 states the requirement the concatenation
+   always had.
+
+   Protocol 204 (was 198); relay 112 (was 106). Fourteen mutations across
+   the pairing, the client and the relay, each caught by the criterion
+   written for it — two of them only after the criterion was sharpened:
+   the id bound, which the commitment would have refused for it, and a
+   client that let the challenge name the authority, which no test had
+   asked it not to.
+
+   **A signature says whose key answered, not whose question it was.**

@@ -48,7 +48,10 @@ const WebSocket = require('ws');
 
 const { createServer, RedisCoordinator, CFG, routingIdFromPub } = require('../server.js');
 
-const AUTH_CONTEXT = Buffer.from('z-relay-auth-v1:', 'utf8');
+// The bound form (PROTOCOL §12.1): the relay's authority — what was dialled,
+// as the Host header says it — under the signature with the nonce.
+const AUTH_CONTEXT = Buffer.from('z-relay-auth-v2:', 'utf8');
+const authority = (ws) => Buffer.from(new URL(ws.url).host.toLowerCase().replace(/:(80|443)$/, ''), 'utf8');
 // 64 KB payloads: a backlog of 300 is ~19 MB, against a bound of
 // 8 × 64 KB + 64 KB ≈ 590 KB.
 const KB64 = 'zs1.' + 'x'.repeat(64 * 1024 - 4); // sealed-looking: acked by id alone
@@ -125,8 +128,8 @@ class Client {
   }
   async auth() {
     const ch = await this.next((f) => f.t === 'challenge');
-    const sig = crypto.sign(null, Buffer.concat([AUTH_CONTEXT, Buffer.from(ch.nonce, 'base64')]), this.identity.privateKey);
-    this.send({ t: 'auth', pub: this.identity.rawPub.toString('base64'), sig: sig.toString('base64') });
+    const sig = crypto.sign(null, Buffer.concat([AUTH_CONTEXT, authority(this.ws), Buffer.from(ch.nonce, 'base64')]), this.identity.privateKey);
+    this.send({ t: 'auth', v: 2, pub: this.identity.rawPub.toString('base64'), sig: sig.toString('base64') });
     await this.next((f) => f.t === 'ready');
     return this;
   }

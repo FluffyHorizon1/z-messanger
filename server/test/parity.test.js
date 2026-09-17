@@ -43,7 +43,10 @@ const WebSocket = require('ws');
 
 const { createServer, RedisCoordinator, CFG, routingIdFromPub } = require('../server.js');
 
-const AUTH_CONTEXT = Buffer.from('z-relay-auth-v1:', 'utf8');
+// The bound form (PROTOCOL §12.1): the relay's authority — what was dialled,
+// as the Host header says it — under the signature with the nonce.
+const AUTH_CONTEXT = Buffer.from('z-relay-auth-v2:', 'utf8');
+const authority = (ws) => Buffer.from(new URL(ws.url).host.toLowerCase().replace(/:(80|443)$/, ''), 'utf8');
 
 function hasRedisServer() {
   return spawnSync('redis-server', ['--version']).status === 0;
@@ -150,8 +153,8 @@ class Client {
   }
   async auth() {
     const ch = await this.next((f) => f.t === 'challenge');
-    const sig = crypto.sign(null, Buffer.concat([AUTH_CONTEXT, Buffer.from(ch.nonce, 'base64')]), this.identity.privateKey);
-    this.send({ t: 'auth', pub: this.identity.rawPub.toString('base64'), sig: sig.toString('base64') });
+    const sig = crypto.sign(null, Buffer.concat([AUTH_CONTEXT, authority(this.ws), Buffer.from(ch.nonce, 'base64')]), this.identity.privateKey);
+    this.send({ t: 'auth', v: 2, pub: this.identity.rawPub.toString('base64'), sig: sig.toString('base64') });
     await this.next((f) => f.t === 'ready');
     // The relay sends `ready` and *then* flushes the mailbox, because a
     // client should not wait on a 64 MB backlog to be told it is
@@ -414,30 +417,29 @@ test(
     assert.deepStrictEqual([...pair.keys()].sort(), [...memory.keys()].sort(), 'the same clients');
 
     // Everything a client can observe must be the same as in one process —
-    // every message, every receipt, every refusal, in the same order — with
-    // ONE exception, which is the point of the test.
-    let crossed = 0;
+    // every message, every receipt, every refusal, in the same order. There
+    // used to be one permitted exception: a send that crossed instances
+    // was reported `queued: true` where one process said `false`, because
+    // the instance that publishes an envelope cannot see whether a socket
+    // received it. Since 2026-09-17 `sent` says `queued: true` to every
+    // sender on every relay — whether the recipient has a socket open is
+    // presence, which is the operator's and not the sender's (finding 12)
+    // — so the exception is gone and the transcripts are simply identical.
+    let sends = 0;
     for (const who of memory.keys()) {
       const a = memory.get(who);
       const b = pair.get(who);
       assert.strictEqual(b.length, a.length, `${who} saw a different number of frames`);
       for (let i = 0; i < a.length; i++) {
-        if (a[i].t === 'sent' && a[i].queued === false && b[i].queued === true) {
-          // The exception: a send that crossed instances. One process hands
-          // the envelope to the recipient's socket and knows it; the other
-          // instance publishes it and cannot see whether a socket received
-          // it, so it says the envelope is held — which it is, until it is
-          // acknowledged. Reporting `false` there was a guess presented as
-          // a fact, and it suppressed the wake push with it.
-          crossed += 1;
-          assert.deepStrictEqual({ ...b[i], queued: false }, a[i], `${who}: frame ${i} differs by more than queued`);
-          continue;
-        }
         assert.deepStrictEqual(b[i], a[i], `${who} saw a different frame ${i} across two instances`);
+        if (a[i].t === 'sent') {
+          sends += 1;
+          assert.strictEqual(a[i].queued, true, `${who}: a sender is never told whether the recipient was online`);
+        }
       }
     }
-    assert.ok(crossed > 0, 'the split put no send across an instance boundary: the comparison proves nothing');
-    t.diagnostic(`${crossed} sends crossed instances and were reported held rather than delivered`);
+    assert.ok(sends > 0, 'the script sent nothing: the comparison proves nothing');
+    t.diagnostic(`${sends} sends, every one reported held, in one process and across two`);
   }
 );
 

@@ -850,7 +850,10 @@ The salt is the two ephemerals in **role order** (new device first), not
 lexicographic order: the commitment already fixes which side is which, so
 there is no symmetric case left to canonicalise. `deviceId` is
 variable-length and therefore last in the `info`, so the concatenation is
-unambiguous. `n` is taken from **seven** bytes because the modulo of a 31-bit
+unambiguous — **provided every field before it is exactly 32 bytes**, which
+rule 6 requires: without the check, moving the last byte of `deviceXPub` onto
+the front of `deviceId` gives the same bytes, the same commitment and the
+same SAS. `n` is taken from **seven** bytes because the modulo of a 31-bit
 value by 10⁸ is visibly biased, and the extra width is the point.
 
 Rules:
@@ -869,6 +872,14 @@ Rules:
    into completing the old ceremony.
 5. Both users MUST compare the SAS before the existing device sends
    `enroll-v2`, and the new device MUST check the certificate as in §10.
+6. Every fixed-width field of every frame — `c`, `ephx`, `ded`, `dx`, in
+   both ceremonies — MUST decode to exactly 32 bytes, and `id` MUST be a
+   non-empty string of at most 64 characters, or the receiver MUST abort
+   before hashing anything. A 31-byte key and a one-byte-longer id
+   concatenate to the same bytes as the honest opening; only the width tells
+   them apart (a relay could shift that byte until 2026-09-17, and both
+   screens agreed while the host certified a 31-byte ratchet key that every
+   contact then refused).
 
 Vectors: [`vectors/pair-v2/`](vectors/pair-v2/). §10's remain untouched.
 
@@ -922,10 +933,38 @@ names or (with §8) senders.
 ### 12.1 Connection and authentication
 
 ```
-S→C  { "t":"challenge", "nonce":b64(32 random bytes) }           // first frame
-C→S  { "t":"auth", "pub":b64(edPub), "sig":b64( Ed25519.sign(edSeed, utf8("z-relay-auth-v1:") || nonce) ) }
+S→C  { "t":"challenge", "nonce":b64(32 random bytes), "auth":2 }  // first frame
+C→S  { "t":"auth", "v":2, "pub":b64(edPub), "sig":b64( Ed25519.sign(edSeed, utf8("z-relay-auth-v2:") || utf8(authority) || nonce) ) }
 S→C  { "t":"ready", "id":routingId }                              // then queued frames are flushed
 ```
+
+`authority` is the relay as the client dialled it: the URL's host in lower
+case, with the port only when it is not the scheme's default, an IPv6
+literal in brackets — which is exactly the client's own `Host` header, and
+the relay verifies against that header (normalised the same way; a front
+MUST pass `Host` through, and a relay MAY additionally accept names its
+operator lists). The nonce is the fixed-width last field, so the
+concatenation is unambiguous. **A signature is therefore good at one relay
+and no other.** Until 2026‑09‑17 the signed message was
+`utf8("z-relay-auth-v1:") || nonce` — the nonce alone — so a relay the user
+was induced to connect to (a pasted address, an invite, a MITM on a `ws://`
+address) could open its own socket to the honest relay, present the honest
+relay's nonce as its own challenge, and replay the answer: authenticated as
+that device, with the `ready` flush and everything queued from then on. A
+client MUST sign only the bound form, whatever the challenge says, MUST
+take `authority` from the address it dialled and never from anything the
+relay sends (a relay that could name the authority could name the honest
+one), and MUST refuse a relay whose challenge does not carry `auth:2` (with a reason: the
+relay predates the bound form) rather than fall back — a client that would fall
+back on request could be asked to by exactly the relay that wants the
+signature. A relay MAY accept the v1 form for clients that predate it, and
+SHOULD count each one (`z_auth_v1_total`) and stop accepting it once that
+count stays at zero (`RELAY_AUTH_V1=off`); while it accepts v1, a device
+running a client from before the bound form is exposed as before, and one
+running a client that signs it is not, since that client never produces a v1
+signature. Vectors:
+[`vectors/relay-auth-v2/`](vectors/relay-auth-v2/); the v1 vectors in
+`vectors/v1/identity.json` stay as they were.
 
 On a bad signature the relay sends `error{bad_auth}` and closes with code
 4001. A second connection for the same routing id replaces the first, which is
@@ -939,12 +978,18 @@ extension under §14: a client that authenticates first behaves as before). A
 `send` whose payload begins with `zs1.` is accepted on a connection that has
 never authenticated, rate‑limited like any other frame, and acknowledged
 with `sent` as usual; such a connection owns no mailbox and receives nothing.
-That `sent` always reports `queued:true`, whatever became of the envelope: on
-an authenticated connection `queued` is feedback about one's own
-conversation, but on this one it would say whether a routing id is online
-**now** — to anyone who has ever seen that contact code, for the price of one
-sealed envelope a minute. A relay MUST NOT distinguish the two cases to a
-sender it cannot identify.
+That `sent` reports `queued:true`, whatever became of the envelope — as
+every `sent` does, on every connection, since 2026‑09‑17. `queued:false`
+would say whether a routing id is online **now**, to anyone who has ever
+seen that contact code, for the price of one envelope a minute; until
+2026‑09‑17 only the anonymous connection was refused the answer, on the
+premise that an authenticated sender was asking about its own conversation,
+and an identity costs one generated key, so the premise held for nobody. A
+relay MUST NOT tell any sender whether the recipient was connected: presence
+is the operator's (`THREAT_MODEL.md` R1), not the sender's, and a relay
+cannot tell a relationship from a stranger — a sealed envelope names no
+sender, and an attributed one from a stranger is acknowledged away by the
+recipient's client like anything else.
 Clients SHOULD send every sealed envelope on a connection of this kind and
 receive on an authenticated one, and MUST NOT fall back to the authenticated
 connection for a sealed envelope when the anonymous one is down — a sealed
@@ -957,7 +1002,7 @@ counts sealed envelopes that arrived on anonymous connections
 
 ```
 C→S  { "t":"send", "to":routingId, "id":envelopeId, "payload":string }
-S→C  { "t":"sent", "id":envelopeId, "queued":bool }               // false = handed to a live socket, true = held in RAM
+S→C  { "t":"sent", "id":envelopeId, "queued":true }               // always true since 2026‑09‑17: held until acknowledged; whether a socket took it is not the sender's to know
 S→C  { "t":"msg", "id":envelopeId, "from"?:routingId, "payload":string, "ts":int }
 C→S  { "t":"recv", "id":envelopeId, "from"?:routingId }           // "I persisted it" — drop it
 S→C  { "t":"delivered", "id":envelopeId, "to":routingId, "ts":int }   // attributed envelopes only
@@ -1022,13 +1067,13 @@ relay cannot make.
 recipient is offline, the relay sends the token a **content‑free** wake signal
 ("you have mail"): no sender, no id, no payload. Retired tokens are deleted.
 
-A relay that runs as several instances MUST NOT report `queued:false` on the
-strength of having handed an envelope to another instance: the publish says
-the message bus accepted it, not that a socket received it, and the instance
-that sent it cannot see the difference. `queued:true` is correct there — the
-envelope is held until it is acknowledged either way — and it is what makes
-the wake signal fire in the case where the recipient turns out not to be
-connected after all. Such a relay MUST also deliver again, on its own, to a
+A relay that runs as several instances MUST NOT treat having handed an
+envelope to another instance as a delivery: the publish says the message bus
+accepted it, not that a socket received it, and the instance that sent it
+cannot see the difference. The envelope is held until it is acknowledged
+either way — which is what the wire now says in every case — and treating
+it as held is what makes the wake signal fire in the case where the
+recipient turns out not to be connected after all. Such a relay MUST also deliver again, on its own, to a
 socket it holds whose mailbox has stopped emptying; without that, an envelope
 whose live push was lost waits for the recipient to reconnect, which a
 connected client has no reason to do, and the floor is `QUEUE_TTL_HOURS`.

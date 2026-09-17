@@ -93,7 +93,14 @@ void main() {
         await req.response.close();
         return;
       }
-      final upstream = await WebSocket.connect('ws://127.0.0.1:$port');
+      // As a front passes the Host header through (nginx.ha.conf, Cloudflare,
+      // Render), so does the tap: the client signs its authentication over
+      // the address it dialled, and the relay verifies it against the Host it
+      // is given. A tap that presented its own upstream address would be the
+      // machine-in-the-middle that binding exists to refuse — and was, when
+      // this test first ran against it.
+      final upstream = await WebSocket.connect('ws://127.0.0.1:$port',
+          headers: {'host': req.headers.value('host') ?? ''});
       void note(dynamic d) {
         if (d is! String) return;
         raw.add(d);

@@ -9,7 +9,17 @@ services:
   redis:
     image: redis:7-alpine
     # RAM-only: no snapshotting, no append-only file — nothing hits disk.
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    #
+    # noeviction, like render.ha.yaml, and NOT allkeys-lru, which this file
+    # ran until 2026-09-17: at maxmemory an LRU store evicts whole keys, and
+    # a mailbox's bodies (qe:) can go while its list (q:) stays — an envelope
+    # whose sender was already told "sent", silently gone, and every promise
+    # PROTOCOL.md, DATA_MAP.md and R22 make about "never evicted" false for
+    # anyone who ran the documented command line. With noeviction a full
+    # store refuses a send (store_full; the sender's outbox keeps it and
+    # retries) and still lets logins drain, so it heals; the relay counts
+    # what a store that does evict leaves behind as z_body_missing_total.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
     restart: unless-stopped
     # No ports published: only the relays talk to it, over the internal network.
 

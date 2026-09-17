@@ -109,6 +109,20 @@ const CFG = {
   maxStoreBytes: intEnv('MAX_STORE_BYTES', 192 * 1024 * 1024),
   tlsCert: process.env.TLS_CERT || null,
   tlsKey: process.env.TLS_KEY || null,
+  // Whether the unbound v1 authentication is still accepted. A v1 signature
+  // is over the nonce alone, so one obtained by any relay the user was
+  // talking to authenticates here (finding 13); v2 signs the relay's
+  // authority with it. Kept on for clients that predate v2, counted in
+  // z_auth_v1_total, and turned off (RELAY_AUTH_V1=off) once that count
+  // has been zero for as long as the operator cares to wait.
+  authV1: (process.env.RELAY_AUTH_V1 || 'on').trim().toLowerCase() !== 'off',
+  // Authorities a v2 signature may name besides the Host header this
+  // connection arrived with — for a front that rewrites Host, which the
+  // shipped ones do not. Comma-separated, host or host:port.
+  authorities: (process.env.RELAY_AUTHORITIES || '')
+    .split(',')
+    .map((a) => normalizeAuthority(a))
+    .filter(Boolean),
   logLevel: process.env.LOG_LEVEL || 'info', // 'silent' | 'info'
   // HA mode: when set, coordinate presence + queue through Redis.
   redisUrl: process.env.REDIS_URL || null,
@@ -118,6 +132,22 @@ const CFG = {
 function intEnv(name, dflt) {
   const v = parseInt(process.env[name] ?? '', 10);
   return Number.isFinite(v) ? v : dflt;
+}
+
+/**
+ * The relay's authority as a client names it: what it dialled, lower-case,
+ * with the port only when it is not the scheme's default. A client puts
+ * exactly this in its Host header (Dart and Node both omit a default port
+ * and lower-case the host), so the relay reads the header and normalises
+ * it the same way — behind a front, the front has to pass Host through
+ * (`nginx.ha.conf` does; Cloudflare and Render do). An IPv6 literal keeps
+ * its brackets, as the header has them.
+ */
+function normalizeAuthority(host) {
+  if (typeof host !== 'string') return '';
+  const h = host.trim().toLowerCase();
+  if (!h) return '';
+  return h.replace(/:(80|443)$/, '');
 }
 
 function log(...args) {
@@ -145,7 +175,17 @@ function verifyEd25519(rawPub32, message, signature) {
   }
 }
 
+// v1 signs the nonce alone. A nonce is the relay's, but nothing in the
+// signature says WHICH relay: a relay the user was induced to connect to —
+// a pasted address, an invite, a MITM on a ws:// address — could open its own
+// socket to this one, hand this one's nonce to the user as its own challenge,
+// and replay the signature it got back, authenticated as that device here,
+// with the `ready` flush and everything queued from then on (the 2026-09-14
+// review's finding 13). v2 puts the relay's authority under the signature,
+// so a signature made for one relay verifies at no other. The nonce is the
+// fixed-width last field, so the concatenation is unambiguous.
 const AUTH_CONTEXT = Buffer.from('z-relay-auth-v1:', 'utf8');
+const AUTH_CONTEXT_V2 = Buffer.from('z-relay-auth-v2:', 'utf8');
 
 function routingIdFromPub(rawPub32) {
   return crypto.createHash('sha256').update(rawPub32).digest('base64url');
@@ -237,6 +277,27 @@ const METRICS = {
   // Presence refreshes that failed for a reason other than the store being
   // full. One of these used to abort the whole pass, silently.
   presenceRefreshFailedTotal: 0,
+  // Envelopes a mailbox listed whose BODY was not in the shared store when
+  // the mailbox was flushed. One thing does this legitimately and rarely: an
+  // acknowledgement landing between the list being read and the bodies
+  // being fetched. The other is a store that evicted the body while the list
+  // kept its key — what `allkeys-lru` does at maxmemory, and what the shipped
+  // compose file ran until 2026-09-17: an envelope whose sender was told
+  // `sent`, gone, with nothing counting it (the 2026-09-14 review's finding
+  // 14). The dangling key is dropped so the same loss is counted once, not
+  // at every login; the store must run `noeviction`, and anything but a
+  // trickle here says it does not.
+  bodyMissingTotal: 0,
+  // Authentications that used the unbound v1 signature. What says when
+  // RELAY_AUTH_V1 can be turned off: clients that predate the bound form are the only
+  // honest source, and every one of these is also the shape finding 13
+  // replays.
+  authV1Total: 0,
+  // v2 authentications that verified under none of this relay's names — a
+  // client that dialled one name while the front presented another
+  // (RELAY_AUTHORITIES is for that), a signature made for another relay,
+  // which is the replay the binding exists to stop, or a bad signature.
+  authV2RefusedTotal: 0,
   // Sends refused because too many mailboxes were being CREATED at once.
   // Counted apart from the line above because it means something different
   // to an operator: the store is not full, and what was refused was a first
@@ -298,6 +359,12 @@ function renderMetrics(stats) {
   L.push(`z_reflushed_total ${METRICS.reflushedTotal}`);
   L.push('# TYPE z_presence_refresh_failed_total counter');
   L.push(`z_presence_refresh_failed_total ${METRICS.presenceRefreshFailedTotal}`);
+  L.push('# TYPE z_body_missing_total counter');
+  L.push(`z_body_missing_total ${METRICS.bodyMissingTotal}`);
+  L.push('# TYPE z_auth_v1_total counter');
+  L.push(`z_auth_v1_total ${METRICS.authV1Total}`);
+  L.push('# TYPE z_auth_v2_refused_total counter');
+  L.push(`z_auth_v2_refused_total ${METRICS.authV2RefusedTotal}`);
   L.push('# TYPE z_new_mailbox_refused_total counter');
   L.push(`z_new_mailbox_refused_total ${METRICS.newMailboxRefusedTotal}`);
   L.push('# TYPE z_presence_deferred_total counter');
@@ -973,6 +1040,19 @@ if redis.call('LLEN', KEYS[1]) == 0 then
 end
 return n`;
 
+// A key the list holds and the hash does not: drop it from the list, and
+// the mailbox with it if that was the last one. KEYS as above; ARGV = the
+// key. Nothing is settled against the byte counter — the body that would
+// have said how much is what is missing — and the counter follows the list
+// out when the list empties, or its TTL. Returns how many were removed.
+const REDIS_DROP_DANGLING_LUA = `#!lua flags=allow-oom
+if redis.call('HEXISTS', KEYS[2], ARGV[1]) == 1 then return 0 end
+local n = redis.call('LREM', KEYS[1], 0, ARGV[1])
+if redis.call('LLEN', KEYS[1]) == 0 then
+  redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+end
+return n`;
+
 // Per-entry expiry, from the head: KEYS as above; ARGV = the cutoff (ms
 // since the epoch — an entry stamped before it has outlived QUEUE_TTL_HOURS)
 // and how many entries to look at. Entries are in arrival order, so the
@@ -985,6 +1065,7 @@ return n`;
 const REDIS_EXPIRE_LUA = `#!lua flags=allow-oom
 local cutoff = tonumber(ARGV[1])
 local removed = 0
+local dangling = 0
 local bytes = 0
 for i = 1, tonumber(ARGV[2]) do
   local k = redis.call('LINDEX', KEYS[1], 0)
@@ -993,7 +1074,12 @@ for i = 1, tonumber(ARGV[2]) do
   local s = k
   if not legacy then s = redis.call('HGET', KEYS[2], k) end
   if not s then
+    -- A key whose body is gone: dropped, and COUNTED, because until
+    -- 2026-09-17 this was the quietest of the three places an evicted
+    -- envelope could disappear (the flush and the sweep both come through
+    -- here first).
     redis.call('LPOP', KEYS[1])
+    dangling = dangling + 1
   else
     local ok, e = pcall(cjson.decode, s)
     if not ok or type(e) ~= 'table' or type(e.ts) ~= 'number' or e.ts >= cutoff then break end
@@ -1020,7 +1106,7 @@ elseif bytes > 0 and redis.call('EXISTS', KEYS[3]) == 1 then
   local ttl = redis.call('TTL', KEYS[1])
   if ttl > 0 then redis.call('EXPIRE', KEYS[3], ttl) end
 end
-return removed`;
+return {removed, dangling}`;
 
 /**
  * The key an entry is held under in qe:{rid} and listed under in q:{rid} —
@@ -1117,6 +1203,7 @@ class RedisCoordinator {
     this.cmd.defineCommand('zQueuePush', { numberOfKeys: 3, lua: REDIS_PUSH_LUA });
     this.cmd.defineCommand('zQueueRemove', { numberOfKeys: 3, lua: REDIS_REMOVE_LUA });
     this.cmd.defineCommand('zQueueRemoveLegacy', { numberOfKeys: 3, lua: REDIS_REMOVE_LEGACY_LUA });
+    this.cmd.defineCommand('zQueueDropDangling', { numberOfKeys: 3, lua: REDIS_DROP_DANGLING_LUA });
     this.cmd.defineCommand('zQueueExpire', { numberOfKeys: 3, lua: REDIS_EXPIRE_LUA });
     this.cmd.defineCommand('zQueueAck', { numberOfKeys: 3, lua: REDIS_ACK_LUA });
     this.cmd.defineCommand('zQueueAckLegacy', { numberOfKeys: 3, lua: REDIS_ACK_LEGACY_LUA });
@@ -1423,9 +1510,16 @@ class RedisCoordinator {
     }
   }
 
-  /** Removes entries at the head of a mailbox that have outlived QUEUE_TTL_HOURS. */
+  /**
+   * Removes entries at the head of a mailbox that have outlived
+   * QUEUE_TTL_HOURS. Returns how many entries the call took off the head —
+   * expired ones and keys whose body was gone alike, the latter counted in
+   * z_body_missing_total as they are in the flush.
+   */
   async _expire(rid, limit = 1000) {
-    return this.cmd.zQueueExpire(`q:${rid}`, `qe:${rid}`, `qb:${rid}`, String(Date.now() - CFG.queueTtlMs), String(limit));
+    const [removed, dangling] = await this.cmd.zQueueExpire(`q:${rid}`, `qe:${rid}`, `qb:${rid}`, String(Date.now() - CFG.queueTtlMs), String(limit));
+    METRICS.bodyMissingTotal += Number(dangling) || 0;
+    return (Number(removed) || 0) + (Number(dangling) || 0);
   }
 
   /**
@@ -1458,7 +1552,24 @@ class RedisCoordinator {
       for (const x of page) {
         const legacy = x.startsWith('{');
         const str = legacy ? x : byKey.get(x);
-        if (str == null) continue; // removed meanwhile (an ack landed)
+        if (str == null) {
+          // The body is not there. An acknowledgement that landed between
+          // the LRANGE and the HMGET took the key out of the list already,
+          // and the drop below is a no-op; a store that EVICTED the body
+          // left the key listed, and until 2026-09-17 this `continue` was
+          // all that happened — the envelope was gone, the key stayed to be
+          // skipped at every login, the bytes were never settled, and no
+          // number said so. Counted now, and the key dropped, once.
+          METRICS.bodyMissingTotal += 1;
+          if (!legacy) {
+            try {
+              await this.cmd.zQueueDropDangling(`q:${rid}`, `qe:${rid}`, `qb:${rid}`, x);
+            } catch {
+              // The next flush tries again; the count already stands.
+            }
+          }
+          continue;
+        }
         let entry;
         try {
           entry = JSON.parse(str);
@@ -1786,11 +1897,14 @@ function createServer(opts = {}) {
   });
   wssRef = wss;
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
     const state = {
       authed: false,
       rid: null,
       nonce: crypto.randomBytes(32),
+      // What this connection dialled, as the Host header says: what a v2
+      // signature must name.
+      authority: normalizeAuthority(req && req.headers ? req.headers.host : ''),
       tokens: CFG.rateBurst,
       lastRefill: Date.now(),
       acksInFlight: 0,
@@ -1804,7 +1918,11 @@ function createServer(opts = {}) {
     });
     ws.on('pong', () => (ws.zAlive = true));
 
-    sendJson(ws, { t: 'challenge', nonce: state.nonce.toString('base64') });
+    // `auth: 2` says this relay verifies the bound form, so a client can
+    // fail with a reason against one that does not, rather than with
+    // `bad_auth`; the security does not rest on it — a client signs v2
+    // whatever the challenge says.
+    sendJson(ws, { t: 'challenge', nonce: state.nonce.toString('base64'), auth: 2 });
 
     ws.on('message', (data) => {
       // Rate limit, in two halves. This half is BEFORE the parse and costs
@@ -1929,8 +2047,28 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
         ws.close(4001, 'bad auth');
         return;
       }
-      const msg = Buffer.concat([AUTH_CONTEXT, state.nonce]);
-      if (!verifyEd25519(pub, msg, sig)) {
+      let ok = false;
+      if (frame.v === 2) {
+        // Bound: the signature names an authority, and it must be one of
+        // ours — the Host header this connection carried, or one the
+        // operator listed. A signature made for another relay names that
+        // relay and verifies against none of these.
+        const names = new Set([state.authority, ...CFG.authorities].filter(Boolean));
+        for (const name of names) {
+          if (verifyEd25519(pub, Buffer.concat([AUTH_CONTEXT_V2, Buffer.from(name, 'utf8'), state.nonce]), sig)) {
+            ok = true;
+            break;
+          }
+        }
+        // Not ours under any name we answer to: a signature made for
+        // another relay, a front that rewrote Host, or plain garbage — the
+        // relay cannot tell which, and the count is the same signal.
+        if (!ok) METRICS.authV2RefusedTotal += 1;
+      } else if (CFG.authV1) {
+        ok = verifyEd25519(pub, Buffer.concat([AUTH_CONTEXT, state.nonce]), sig);
+        if (ok) METRICS.authV1Total += 1;
+      }
+      if (!ok) {
         sendJson(ws, { t: 'error', code: 'bad_auth' });
         ws.close(4001, 'bad auth');
         return;
@@ -2004,23 +2142,32 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
         sendJson(ws, { t: 'error', code: 'store_full', id });
         return;
       }
-      // What the SENDER is told, which is not always what the relay knows.
+      // What the SENDER is told, which is not what the relay knows.
       //
-      // `queued` is `!live`, so on an authenticated socket it is ordinary
-      // feedback about one's own conversation. On a connection that never
-      // authenticated it is something else: anyone who has ever seen a
-      // contact code can send a 60-byte sealed envelope to that routing id
-      // from an anonymous socket and read `queued:false` as "that person is
-      // online, now". Once a minute is a 24/7 activity timeline for someone
-      // with no relationship to them at all. THREAT_MODEL grants presence to
-      // the relay operator (R1); it does not grant it to the internet.
+      // `queued` is `!live`: whether the recipient has a socket open right
+      // now. Anyone who has ever seen a contact code can send a 60-byte
+      // envelope to that routing id and read `queued:false` as "that person
+      // is online, now"; once a minute is a 24/7 activity timeline for
+      // someone with no relationship to them at all. THREAT_MODEL grants
+      // presence to the relay operator (R1); it does not grant it to the
+      // internet. Until 2026-09-14 every sender was told; until 2026-09-17
+      // only an anonymous one was not, on the premise that an authenticated
+      // sender was asking about its own conversation — and an identity here
+      // costs one generateKeyPair, so the premise held for nobody: anyone
+      // could authenticate as a key of their own and ask about anyone (the
+      // review's finding 12). Nor can the relay tell a relationship from a
+      // stranger: a sealed envelope carries no sender, and an attributed one
+      // from a stranger is acknowledged away by the recipient's client like
+      // anything else, which would make the stranger a relationship.
       //
-      // So an anonymous sender is told the envelope is held, always. It
-      // costs that sender nothing real — the Dart client discards the value,
-      // and clients send every sealed envelope this way (§12.1) — and the
-      // push decision below still uses what actually happened, so a wake
-      // ping does not start firing for recipients who are connected.
-      sendJson(ws, { t: 'sent', id, queued: state.authed ? queued : true });
+      // So every sender is told the envelope is held, always — which it is,
+      // until it is acknowledged. It costs an honest sender nothing: the
+      // Dart client never read the value, delivery is the peer's own receipt
+      // inside the ratchet (§15.3), and the push decision below still uses
+      // what actually happened, so a wake ping does not start firing for
+      // recipients who are connected. The field stays in the frame for
+      // older clients, at the one value that says nothing.
+      sendJson(ws, { t: 'sent', id, queued: true });
       // Recipient offline and push configured? Fire a content-free wake ping.
       // Best-effort and non-blocking — never delays or fails the send.
       if (queued && pushSender) {
@@ -2127,6 +2274,7 @@ if (require.main === module) {
 module.exports = {
   createServer,
   CFG,
+  normalizeAuthority,
   routingIdFromPub,
   MemoryCoordinator,
   RedisCoordinator,

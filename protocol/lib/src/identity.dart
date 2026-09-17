@@ -6,8 +6,33 @@ import 'package:cryptography/cryptography.dart';
 import 'util.dart';
 
 const String bindContext = 'z-bind-v1:';
+
+/// v1 relay authentication signs the nonce alone, so a signature says
+/// nothing about WHICH relay's nonce it answers: a relay the user was induced
+/// to connect to could hand them another relay's nonce as its own challenge
+/// and replay the answer there, authenticated as that device (the 2026-09-14
+/// review's finding 13). Kept for the frozen v1 vectors; no client signs it
+/// any more.
 const String authContext = 'z-relay-auth-v1:';
+
+/// v2 puts the relay's authority — what the client dialled, as
+/// [relayAuthority] spells it — under the signature, so a signature made for
+/// one relay verifies at no other. The nonce is the fixed-width last field.
+const String authContextV2 = 'z-relay-auth-v2:';
 const String safetyContext = 'z-safety-v1';
+
+/// The relay's name as a client signs it: the host it dialled, lower-case,
+/// with the port only when it is not the scheme's default — which is what
+/// the client's own Host header says (Dart and Node both omit a default port
+/// and lower-case the host), and what the relay reads it back from. An IPv6
+/// literal keeps its brackets, as the header has them.
+String relayAuthority(String url) {
+  final u = Uri.parse(url.trim());
+  var host = u.host.toLowerCase();
+  if (host.contains(':')) host = '[$host]';
+  if (!u.hasPort || u.port == 80 || u.port == 443) return host;
+  return '$host:${u.port}';
+}
 const String contactCodePrefix = 'zc1.';
 
 /// A user's full identity: an Ed25519 signing key pair and an X25519
@@ -53,10 +78,21 @@ class ZIdentity {
     return Uint8List.fromList(sig.bytes);
   }
 
-  /// Sign a relay authentication challenge.
+  /// Sign a relay authentication challenge the v1 way — the nonce alone.
+  /// Only the frozen vectors call this now; see [authContext].
   Future<Uint8List> signAuthChallenge(Uint8List nonce) async {
     final sig = await Ed25519().sign(
       concatBytes([utf8.encode(authContext), nonce]),
+      keyPair: edKeyPair,
+    );
+    return Uint8List.fromList(sig.bytes);
+  }
+
+  /// Sign a relay authentication challenge for the relay at [authority] and
+  /// no other ([relayAuthority] of the URL that was dialled).
+  Future<Uint8List> signAuthChallengeV2(Uint8List nonce, String authority) async {
+    final sig = await Ed25519().sign(
+      concatBytes([utf8.encode(authContextV2), utf8.encode(authority), nonce]),
       keyPair: edKeyPair,
     );
     return Uint8List.fromList(sig.bytes);

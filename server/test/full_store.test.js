@@ -17,7 +17,19 @@
 //  3. an instance's own sockets are served live whatever the store says
 //     about presence, and the heartbeat repairs presence once there is room;
 //  4. after the full mailbox is drained, sends succeed again — the store
-//     heals without anyone restarting anything.
+//     heals without anyone restarting anything;
+//  5. the shipped compose file runs the store `noeviction`, as the Blueprint
+//     does. It ran `allkeys-lru` until 2026-09-17 — the documented command
+//     line for a self-hosted HA relay — and at maxmemory an LRU store evicts
+//     whole keys, so a mailbox's bodies could go while its list stayed: an
+//     envelope whose sender was told `sent`, gone, and every "never evicted"
+//     in PROTOCOL.md, DATA_MAP.md and R22 false for whoever ran it (the
+//     2026-09-14 review's finding 14);
+//  6. and a store that DOES evict is not silent: an envelope a mailbox lists
+//     whose body is gone is counted (`z_body_missing_total`) and its key is
+//     dropped, once, rather than skipped at every login for ever with the
+//     bytes never settled — while the login still completes and what is
+//     still there is still delivered.
 //
 // Skips itself where `redis-server` or `ioredis` is missing, as ha.test.js does.
 
@@ -31,7 +43,10 @@ const WebSocket = require('ws');
 
 const { createServer, RedisCoordinator, routingIdFromPub } = require('../server.js');
 
-const AUTH_CONTEXT = Buffer.from('z-relay-auth-v1:', 'utf8');
+// The bound form (PROTOCOL §12.1): the relay's authority — what was dialled,
+// as the Host header says it — under the signature with the nonce.
+const AUTH_CONTEXT = Buffer.from('z-relay-auth-v2:', 'utf8');
+const authority = (ws) => Buffer.from(new URL(ws.url).host.toLowerCase().replace(/:(80|443)$/, ''), 'utf8');
 const BIG = 'x'.repeat(100_000);
 
 function hasRedisServer() {
@@ -114,10 +129,10 @@ class Client {
     const ch = await this.next((f) => f.t === 'challenge');
     const sig = crypto.sign(
       null,
-      Buffer.concat([AUTH_CONTEXT, Buffer.from(ch.nonce, 'base64')]),
+      Buffer.concat([AUTH_CONTEXT, authority(this.ws), Buffer.from(ch.nonce, 'base64')]),
       this.identity.privateKey
     );
-    this.send({ t: 'auth', pub: this.identity.rawPub.toString('base64'), sig: sig.toString('base64') });
+    this.send({ t: 'auth', v: 2, pub: this.identity.rawPub.toString('base64'), sig: sig.toString('base64') });
     return this.next((f) => f.t === 'ready' || f.t === 'error');
   }
   async deliver(id, to, payload) {
@@ -254,4 +269,94 @@ test('the relay under a full store: prompt refusals, logins that still drain, li
   b.close();
   c.close();
   d.close();
+});
+
+test('5. the compose file and the Blueprint agree: the store never evicts', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const compose = fs.readFileSync(path.join(__dirname, '..', 'docker-compose.ha.yml'), 'utf8');
+  const blueprint = fs.readFileSync(path.join(__dirname, '..', '..', 'render.ha.yaml'), 'utf8');
+  const cmd = compose.match(/command:\s*\[([^\]]*)\]/);
+  assert.ok(cmd, 'the compose file states the store command line');
+  assert.match(cmd[1], /"--maxmemory-policy",\s*"noeviction"/, `the store must run noeviction: ${cmd[1]}`);
+  const code = compose.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+  assert.doesNotMatch(code, /allkeys-lru|volatile-lru|allkeys-random|volatile-ttl|allkeys-lfu|volatile-lfu/, 'no eviction policy anywhere in the file');
+  assert.match(blueprint, /maxmemoryPolicy:\s*noeviction/, 'and the Blueprint says the same');
+});
+
+test('6. a store that evicts a body is counted and cleaned up, and the login still completes', { skip: SKIP && 'redis-server/ioredis unavailable' }, async (t) => {
+  const redisPort = await freePort();
+  const redis = spawn('redis-server', ['--port', String(redisPort), '--save', '', '--appendonly', 'no', '--bind', '127.0.0.1'], { stdio: 'ignore' });
+  await sleep(700);
+  const url = `redis://127.0.0.1:${redisPort}`;
+  const IORedis = require('ioredis');
+  const raw = new IORedis(url);
+  const coord = new RedisCoordinator(url, 'inst');
+  const srv = createServer({ coordinator: coord, pushSender: null });
+  const port = await freePort();
+  await new Promise((r) => srv.httpServer.listen(port, '127.0.0.1', r));
+  t.after(async () => {
+    for (const ws of srv.wss.clients) ws.terminate();
+    try {
+      srv.httpServer.close();
+    } catch {}
+    await coord.close();
+    try {
+      await raw.quit();
+    } catch {}
+    redis.kill('SIGKILL');
+  });
+
+  const alice = makeIdentity();
+  const bob = makeIdentity();
+  const a = new Client(port, alice);
+  assert.strictEqual((await a.auth()).t, 'ready');
+  for (let i = 0; i < 5; i++) assert.strictEqual((await a.deliver(`b${i}`, bob.rid, 'Ym9i')).t, 'sent');
+  assert.strictEqual(await raw.llen(`q:${bob.rid}`), 5);
+  const keys = await raw.lrange(`q:${bob.rid}`, 0, -1);
+  const before = metric(await get(port, '/metrics'), 'z_body_missing_total');
+  assert.strictEqual(before, 0);
+
+  // What an LRU store does at maxmemory: the bodies of a mailbox go as one
+  // key, its list stays. Two of the five, by hand — the same state exactly.
+  assert.strictEqual(await raw.hdel(`qe:${bob.rid}`, keys[1], keys[3]), 2);
+
+  const b = new Client(port, bob);
+  assert.strictEqual((await b.auth()).t, 'ready', 'the login completes over the damage');
+  const got = [];
+  const deadline = Date.now() + 5000;
+  while (got.length < 3 && Date.now() < deadline) {
+    const f = await b.next((x) => x.t === 'msg', 3000);
+    got.push(f.id);
+  }
+  assert.deepStrictEqual(got.sort(), ['b0', 'b2', 'b4'], 'what is still there is delivered, in order, nothing invented for the gaps');
+  assert.strictEqual(metric(await get(port, '/metrics'), 'z_body_missing_total'), 2, 'each missing body counted once');
+  assert.deepStrictEqual(await raw.lrange(`q:${bob.rid}`, 0, -1), [keys[0], keys[2], keys[4]], 'the dangling keys are gone from the list');
+
+  // A second login counts nothing more: the loss was recorded once, not at
+  // every flush for the life of the mailbox.
+  b.close();
+  await sleep(100);
+  const b2 = new Client(port, bob);
+  assert.strictEqual((await b2.auth()).t, 'ready');
+  await b2.next((x) => x.t === 'msg', 3000);
+  await sleep(200);
+  assert.strictEqual(metric(await get(port, '/metrics'), 'z_body_missing_total'), 2, 'counted once');
+
+  // And when every body of a mailbox is gone, the mailbox goes with them —
+  // the list, the hash and the byte counter, not a list of ghosts.
+  for (const id of ['b0', 'b2', 'b4']) b2.send({ t: 'recv', id, from: alice.rid });
+  await sleep(300);
+  const carol = makeIdentity();
+  for (let i = 0; i < 3; i++) assert.strictEqual((await a.deliver(`c${i}`, carol.rid, 'Y2Fyb2w=')).t, 'sent');
+  assert.strictEqual(await raw.del(`qe:${carol.rid}`), 1, 'the whole hash, as eviction takes it');
+  assert.strictEqual(await raw.llen(`q:${carol.rid}`), 3);
+  const c = new Client(port, carol);
+  assert.strictEqual((await c.auth()).t, 'ready');
+  await sleep(300);
+  assert.strictEqual(await raw.exists(`q:${carol.rid}`, `qe:${carol.rid}`, `qb:${carol.rid}`), 0, 'nothing of the mailbox is left');
+  assert.strictEqual(metric(await get(port, '/metrics'), 'z_body_missing_total'), 5);
+  a.close();
+  b2.close();
+  c.close();
 });

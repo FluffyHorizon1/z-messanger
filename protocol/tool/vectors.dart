@@ -280,6 +280,81 @@ Future<Map<String, Object?>> suiteIdentity(List<Actor> a) async {
   };
 }
 
+/// Relay authentication, v2: the authority under the signature.
+///
+/// `signed_message` is `utf8("z-relay-auth-v2:") || utf8(authority) || nonce`
+/// with the authority as the client computes it from the URL it dialled —
+/// and as a relay normalises it back from the client's own Host header,
+/// which is what `host_header` records for each case. The v1 vectors in
+/// `identity.json` stay as they are: a relay still accepts them while its
+/// operator lets it, and no client produces them.
+Future<Map<String, Object?>> suiteRelayAuthV2(List<Actor> a) async {
+  final d = Drbg(0x0039);
+  final cases = <(String, String)>[
+    // url, the Host header a client sends for it
+    ('wss://zmessengers.com', 'zmessengers.com'),
+    ('wss://Relay.Example.net:443', 'relay.example.net'),
+    ('ws://192.168.1.50:8080', '192.168.1.50:8080'),
+    ('ws://[::1]:8080', '[::1]:8080'),
+    ('wss://z-relay-x.onrender.com/', 'z-relay-x.onrender.com'),
+  ];
+  final auth = <Map<String, Object?>>[];
+  var i = 0;
+  for (final (url, hostHeader) in cases) {
+    final x = a[i % 2];
+    i++;
+    final authority = relayAuthority(url);
+    final nonce = d.next(32);
+    final sig = await x.id.signAuthChallengeV2(nonce, authority);
+    final msg = concatBytes(
+        [utf8.encode('z-relay-auth-v2:'), utf8.encode(authority), nonce]);
+    check(eq(sig, await refEdSign(x.id.edSeed, msg)), 'auth v2 sig');
+    auth.add({
+      'identity': x.name,
+      'url': url,
+      'host_header': hostHeader,
+      'authority': authority,
+      'challenge_frame': {
+        't': 'challenge',
+        'nonce': base64Encode(nonce),
+        'auth': 2
+      },
+      'nonce': hex(nonce),
+      'signed_message': hex(msg),
+      'sig': hex(sig),
+      'auth_frame': {
+        't': 'auth',
+        'v': 2,
+        'pub': base64Encode(x.id.edPub),
+        'sig': base64Encode(sig)
+      },
+      'ready_frame': {'t': 'ready', 'id': x.rid},
+    });
+  }
+  // The normalisation on its own, for a relay to check its half against.
+  final normalization = <Map<String, Object?>>[
+    for (final (url, hostHeader) in [
+      ...cases,
+      ('ws://relay.example:80', 'relay.example'),
+      ('wss://RELAY.EXAMPLE', 'RELAY.EXAMPLE'),
+      ('wss://relay.example:8443', 'relay.example:8443'),
+    ])
+      {'url': url, 'host_header': hostHeader, 'authority': relayAuthority(url)},
+  ];
+  return {
+    'suite': 'relay_auth_v2',
+    'version': vectorsVersion,
+    'description':
+        'Relay authentication bound to the relay: Ed25519 over '
+            'utf8("z-relay-auth-v2:") || utf8(authority) || nonce, where the '
+            'authority is the dialled host, lower-case, with the port only when '
+            'it is not the default for the scheme. A relay derives the same '
+            'authority from the Host header.',
+    'relay_auth_v2': auth,
+    'normalization': normalization,
+  };
+}
+
 Future<Map<String, Object?>> suiteHandshake(List<Actor> a) async {
   // Recompute X3DH explicitly; the ratchet suite proves the library derives
   // the same SK (its initiator root key is KDF_RK(sk, ...)).
@@ -2514,6 +2589,9 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     },
     'pair-v2': {
       'pairing_v2': await suitePairingV2(a),
+    },
+    'relay-auth-v2': {
+      'relay_auth_v2': await suiteRelayAuthV2(a),
     },
     'connect': {
       'connect': await suiteConnect(a),

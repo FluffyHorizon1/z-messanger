@@ -134,7 +134,22 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 | `ID_SLOTS` | `8` | sealed envelopes that may share one `id` in one mailbox (§12.2) |
 | `RATE_PER_SEC` / `RATE_BURST` | `80` / `240` | per‑connection token bucket |
 | `TLS_CERT` / `TLS_KEY` | — | enable built‑in TLS (paths to PEM) |
+| `RELAY_AUTH_V1` | `on` | whether the unbound v1 authentication is still accepted. A v1 signature is over the challenge alone, so one obtained by any relay a user was talking to authenticated them here (R33); v2 (relay and app from 2026‑09‑17 on) signs the relay's name with it, and a client from then on never produces v1. Every v1 authentication is counted in `z_auth_v1_total`; set `off` once that has stayed at zero for as long as you care to wait — after which a client from before then cannot receive until it updates |
+| `RELAY_AUTHORITIES` | — | names a v2 signature may carry besides the `Host` header the connection arrived with, comma‑separated (`relay.example`, `relay.example:8443`). Only for a front that rewrites `Host`; the shipped ones — `nginx.ha.conf`, Cloudflare, Render — pass it through, and then the header alone is right |
 | `LOG_LEVEL` | `info` | `info` logs counts/timing only, never content |
+
+**Authentication names the relay (2026‑09‑17).** A client signs its challenge
+answer over the relay's authority as it dialled it — the URL's host, lower
+case, with the port only when it is not the default — and the relay checks
+that against the `Host` header it received. So the header has to reach the
+relay as the client sent it: if you put your own proxy in front, forward
+`Host` unchanged (`nginx.ha.conf` uses `proxy_set_header Host $http_host;`
+— `$host`, which strips the port, would make every client on a non‑default
+port fail to authenticate), or list the names you answer to in
+`RELAY_AUTHORITIES`. An app from 2026‑09‑17 on refuses a relay that does not advertise the
+bound form (its challenge lacks `auth: 2`) and says so in Settings → Relay
+server ("relay too old"): **update the relay before the app** on a
+self‑hosted deployment, or the app cannot receive until you do.
 
 ## Health & monitoring
 
@@ -228,10 +243,19 @@ cd server
 docker compose -f docker-compose.ha.yml up --build --scale relay=3
 ```
 
-That starts Redis (`--save "" --appendonly no` — RAM only), three relay
-instances (`REDIS_URL` set, read‑only filesystem), and an nginx load balancer on
-`:8080` that round‑robins WebSocket upgrades across them (`nginx.ha.conf`). Put
-a TLS proxy in front for `wss://`, or point a cloud host at the same setup.
+That starts Redis (`--save "" --appendonly no` — RAM only, and
+`--maxmemory-policy noeviction`), three relay instances (`REDIS_URL` set,
+read‑only filesystem), and an nginx load balancer on `:8080` that
+round‑robins WebSocket upgrades across them (`nginx.ha.conf`). Put a TLS
+proxy in front for `wss://`, or point a cloud host at the same setup. Until
+2026‑09‑17 the compose file ran the store `allkeys-lru`, which at
+`maxmemory` evicts whole keys: a mailbox's bodies could go while its list
+stayed, an envelope whose sender had been told `sent` silently gone, and
+every "never evicted" below false for anyone who ran the documented command
+line. It is `noeviction` now, like the Blueprint, and a relay in front of a
+store that evicts anyway is no longer silent about it: an envelope a mailbox
+lists whose body is gone is counted in `z_body_missing_total` and its key
+dropped, once. Anything but a trickle there says the store is misconfigured.
 
 On Render, `render.ha.yaml` at the repository root is that setup as a
 Blueprint: two relay instances on paid compute (a free instance cannot run
@@ -241,7 +265,7 @@ Create it from **New → Blueprint** with the Blueprint Path set to
 `render.ha.yaml`; `/health` then answers `"coordinator":"redis"` with a
 different `instanceId` from one request to the next, and reports
 `queuedEnvelopes` as `-1` because the total is not counted across instances.
-It differs from the compose file in one choice: the store is `noeviction`, so
+The store is `noeviction`, as the compose file's now is, so
 when it is full a send is refused — `store_full`, promptly, and the sender's
 outbox keeps the message and retries on its own timer — rather than a queue
 being evicted after its sender was already told "sent". A full store does

@@ -233,12 +233,57 @@ class PairingAbort implements Exception {
   String toString() => 'PairingAbort: $message';
 }
 
+/// A rendezvous frame's fixed-width field: a string that decodes to exactly
+/// [length] bytes, or the ceremony aborts.
+///
+/// Every key in these frames is 32 bytes, and until 2026-09-17 nobody
+/// checked: `accept` decoded whatever was there and hashed it. The
+/// commitment and the SAS concatenate the fixed fields and then the
+/// variable-length `deviceId`, and a concatenation is only unambiguous while
+/// the fixed fields are exactly their width — a relay that moved the last
+/// byte of `dx` onto the front of `id` (an X25519 public key's last byte is
+/// below 0x80, so it is always a one-byte UTF-8 codepoint) produced the same
+/// bytes, so the opening matched the commitment, both screens showed the same
+/// eight digits, and the host certified a 31-byte ratchet key that every
+/// contact then refused — the account's device list broken for good by
+/// whoever carried the frame (the 2026-09-14 review's finding 9). Widths are
+/// enforced here, on every field of every frame, and a value that is not a
+/// string is an abort rather than a type error.
+Uint8List _fixed(Map<String, Object?> frame, String key, int length) {
+  final v = frame[key];
+  if (v is! String) throw PairingAbort('malformed frame: $key');
+  final Uint8List bytes;
+  try {
+    bytes = unb64(v);
+  } catch (_) {
+    throw PairingAbort('malformed frame: $key');
+  }
+  if (bytes.length != length) throw PairingAbort('malformed frame: $key');
+  return bytes;
+}
+
+/// The one variable-length field, bounded: a device id is what the account
+/// signs into a certificate and shows in a device list, not a payload.
+String _deviceIdField(Map<String, Object?> frame) {
+  final v = frame['id'];
+  if (v is! String || v.isEmpty || v.length > maxDeviceIdLength) {
+    throw const PairingAbort('malformed frame: id');
+  }
+  return v;
+}
+
+/// The most a device id may be. The reference app generates twelve
+/// characters (`b64url` of nine random bytes).
+const int maxDeviceIdLength = 64;
+
 /// The bytes the initiator commits to in v2, and reveals afterwards.
 ///
 /// Everything the responder will later act on is in here: the ephemeral the
 /// SAS is derived from, and the three device fields the responder signs a
 /// certificate over. `deviceId` is variable-length and therefore last, so the
-/// concatenation is unambiguous.
+/// concatenation is unambiguous — given that the three fields before it are
+/// exactly 32 bytes each, which [_fixed] enforces on every frame before
+/// anything is hashed.
 Future<Uint8List> _commitmentV2(
     Uint8List ephXPub, Uint8List deviceEdPub, Uint8List deviceXPub, String deviceId) {
   return sha256Bytes(concatBytes([
@@ -352,7 +397,7 @@ class PairingInitiatorV2 {
   /// responder's reply is in hand.
   Future<(Map<String, Object?>, PairingSession)> open(
       Map<String, Object?> responderReply) async {
-    final theirEph = unb64(responderReply['ephx'] as String);
+    final theirEph = _fixed(responderReply, 'ephx', 32);
     final dh = await _dh(ephXSeed, theirEph);
     final session = PairingSession(
       channelKey: await _deriveChannelKeyV2(dh),
@@ -388,12 +433,7 @@ class PairingResponderV2 {
   /// know what it is committing against, which is the point.
   static Future<(Map<String, Object?>, PairingResponderV2)> reply(
       Map<String, Object?> commit) async {
-    final c = commit['c'];
-    if (c is! String) throw const PairingAbort('malformed commitment');
-    final commitment = unb64(c);
-    if (commitment.length != 32) {
-      throw const PairingAbort('malformed commitment');
-    }
+    final commitment = _fixed(commit, 'c', 32);
     final ephSeed = randomBytes(32);
     final ephPub = Uint8List.fromList(
         (await (await _x.newKeyPairFromSeed(ephSeed)).extractPublicKey()).bytes);
@@ -408,10 +448,10 @@ class PairingResponderV2 {
   /// assurance, because the only thing that produces one is someone changing
   /// what the initiator said.
   Future<PairingSession> accept(Map<String, Object?> open) async {
-    final theirEph = unb64(open['ephx'] as String);
-    final deviceEdPub = unb64(open['ded'] as String);
-    final deviceXPub = unb64(open['dx'] as String);
-    final deviceId = open['id'] as String;
+    final theirEph = _fixed(open, 'ephx', 32);
+    final deviceEdPub = _fixed(open, 'ded', 32);
+    final deviceXPub = _fixed(open, 'dx', 32);
+    final deviceId = _deviceIdField(open);
     final expected =
         await _commitmentV2(theirEph, deviceEdPub, deviceXPub, deviceId);
     if (!constantTimeEquals(expected, _commitment)) {
@@ -471,7 +511,7 @@ class PairingInitiator {
 
   /// Derive the shared session from the existing device's reply.
   Future<PairingSession> complete(Map<String, Object?> responderReply) async {
-    final theirEph = unb64(responderReply['ephx'] as String);
+    final theirEph = _fixed(responderReply, 'ephx', 32);
     final dh = await _dh(ephXSeed, theirEph);
     return PairingSession(
       channelKey: await _deriveChannelKey(dh),
@@ -526,8 +566,10 @@ Future<AccountIdentity> _installFromData(
 class PairingResponder {
   static Future<(Map<String, Object?>, PairingSession)> respond(
       Map<String, Object?> hello) async {
-    final theirEph = unb64(hello['ephx'] as String);
-    final deviceEdPub = unb64(hello['ded'] as String);
+    final theirEph = _fixed(hello, 'ephx', 32);
+    final deviceEdPub = _fixed(hello, 'ded', 32);
+    final deviceXPub = _fixed(hello, 'dx', 32);
+    final deviceId = _deviceIdField(hello);
     final ephSeed = randomBytes(32);
     final ephPub = Uint8List.fromList(
         (await (await _x.newKeyPairFromSeed(ephSeed)).extractPublicKey()).bytes);
@@ -536,8 +578,8 @@ class PairingResponder {
       channelKey: await _deriveChannelKey(dh),
       sas: await _deriveSas(dh, theirEph, ephPub, deviceEdPub),
       peerDeviceEdPub: deviceEdPub,
-      peerDeviceXPub: unb64(hello['dx'] as String),
-      peerDeviceId: hello['id'] as String,
+      peerDeviceXPub: deviceXPub,
+      peerDeviceId: deviceId,
     );
     return ({'ephx': b64(ephPub)}, session);
   }

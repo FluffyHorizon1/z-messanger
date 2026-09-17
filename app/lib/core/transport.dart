@@ -196,14 +196,16 @@ class Transport extends ChangeNotifier {
     _retryTimer = Timer(delay, _connect);
   }
 
-  /// Sends one envelope. Returns true if it reached a live recipient socket,
-  /// false if the relay queued it in RAM. Throws if the link it must use is
-  /// not connected or the relay rejected it.
+  /// Sends one envelope. Resolves once the relay holds it (it stays held
+  /// until the recipient acknowledges it). Throws if the link it must use is
+  /// not connected or the relay rejected it. It used to say whether the
+  /// recipient was online at that moment; the relay no longer tells any
+  /// sender, and nothing here read it.
   ///
   /// A sealed envelope goes on the anonymous link and nowhere else. The
   /// unsealed legacy form carries the sender inside the frame already, so
   /// it goes on the authenticated link, which the relay stamps.
-  Future<bool> send(
+  Future<void> send(
       {required String to, required String id, required String payload}) {
     final c = SealedEnvelope.looksSealed(payload) ? _sender : _client;
     if (c == null || !c.isOpen) {

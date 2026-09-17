@@ -16,7 +16,10 @@ const WebSocket = require('ws');
 
 const { createServer, routingIdFromPub, _internal } = require('../server.js');
 
-const AUTH_CONTEXT = Buffer.from('z-relay-auth-v1:', 'utf8');
+// The bound form (PROTOCOL §12.1): the relay's authority — what was dialled,
+// as the Host header says it — under the signature with the nonce.
+const AUTH_CONTEXT = Buffer.from('z-relay-auth-v2:', 'utf8');
+const authority = (ws) => Buffer.from(new URL(ws.url).host.toLowerCase().replace(/:(80|443)$/, ''), 'utf8');
 
 function makeIdentity() {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
@@ -74,11 +77,12 @@ class Client {
     const nonce = Buffer.from(challenge.nonce, 'base64');
     const sig = crypto.sign(
       null,
-      Buffer.concat([AUTH_CONTEXT, nonce]),
+      Buffer.concat([AUTH_CONTEXT, authority(this.ws), nonce]),
       this.identity.privateKey
     );
     this.send({
       t: 'auth',
+      v: 2,
       pub: this.identity.rawPub.toString('base64'),
       sig: sig.toString('base64'),
     });
@@ -248,11 +252,27 @@ test('a sealed envelope is accepted from a connection that never authenticated �
   const shape = (f) => ({ ...f, id: undefined });
   assert.deepStrictEqual(shape(ack2), shape(ack), 'online and offline are indistinguishable to an anonymous sender');
   assert.strictEqual(_internal.queues.get(offline.rid).entries[0].from, null);
-  // An authenticated sender still gets the real answer about its own
-  // conversation, which is what the field is for.
+  // An authenticated sender is told the same. Until 2026-09-17 it got the
+  // real answer, on the premise that an authenticated sender was asking
+  // about its own conversation — but an identity here is one generated
+  // keypair, so the oracle was closed to the anonymous socket and open to
+  // anyone who bothered to answer the challenge with a key of their own
+  // (the 2026-09-14 review's finding 12). `auth` is exactly that: a fresh
+  // key with no relationship to b, and b is online.
   const auth = await mk();
   auth.send({ t: 'send', id: 'u5', to: b.identity.rid, payload: 'zs1.GGGG' });
-  assert.strictEqual((await auth.next((f) => f.t === 'sent' && f.id === 'u5')).queued, false);
+  const ack5 = await auth.next((f) => f.t === 'sent' && f.id === 'u5');
+  assert.strictEqual(ack5.queued, true, 'authenticating with a minted key buys no presence');
+  await b.next((f) => f.t === 'msg' && f.id === 'u5'); // and it was delivered live all the same
+  // Nor does an attributed (legacy, unsealed) envelope from that key, which
+  // the relay accepts on an authenticated socket: the same frame, the same
+  // nothing, for a recipient who is online and one who is not.
+  auth.send({ t: 'send', id: 'u6', to: b.identity.rid, payload: 'bGVnYWN5' });
+  const ack6 = await auth.next((f) => f.t === 'sent' && f.id === 'u6');
+  auth.send({ t: 'send', id: 'u7', to: offline.rid, payload: 'bGVnYWN5' });
+  const ack7 = await auth.next((f) => f.t === 'sent' && f.id === 'u7');
+  assert.strictEqual(ack6.queued, true);
+  assert.deepStrictEqual(shape(ack7), shape(ack6), 'online and offline are indistinguishable to an authenticated stranger too');
   const after = metric((await get(port, '/metrics')).body, 'z_sealed_unattributable_total');
   // Two, not three: the third went on an AUTHENTICATED socket, and a sealed
   // envelope sent there is attributable to that connection's identity by the

@@ -80,13 +80,13 @@ class AckSpy extends Transport {
 class StalledTransport extends Transport {
   StalledTransport({required super.identity})
       : super(serverUrl: 'ws://127.0.0.1:1');
-  final hung = <Completer<bool>>[];
+  final hung = <Completer<void>>[];
   @override
   bool get isConnected => true;
   @override
-  Future<bool> send(
+  Future<void> send(
       {required String to, required String id, required String payload}) {
-    final c = Completer<bool>();
+    final c = Completer<void>();
     hung.add(c);
     return c.future;
   }
@@ -250,7 +250,7 @@ void main() {
         greaterThanOrEqualTo(2),
         reason: 'both are queued for the phone');
     for (final c in stalled.hung) {
-      c.complete(false); // let the pending flush unwind before teardown
+      c.complete(); // let the pending flush unwind before teardown
     }
   });
 

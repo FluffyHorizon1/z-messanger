@@ -11,8 +11,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:test/test.dart';
-import 'package:z_protocol/src/util.dart' show randomOverrideKey;
+import 'package:z_protocol/src/util.dart' show concatBytes, randomOverrideKey;
 import 'package:z_protocol/z_protocol.dart';
 
 import '../tool/vectors.dart';
@@ -47,6 +48,7 @@ void main() {
       ('v1', 'pairing'),
       ('v1', 'inner_messages'),
       ('pair-v2', 'pairing_v2'),
+      ('relay-auth-v2', 'relay_auth_v2'),
       ('connect', 'connect'),
       ('v2', 'mlkem768'),
       ('v2', 'pq_ratchet'),
@@ -298,6 +300,52 @@ void main() {
       expect(await data.deviceCert.verify(data.accountEdPub), isTrue);
       final installed = await n.installFromData(data);
       expect(installed.holdsAccountRoot, isFalse);
+    });
+
+    test('relay auth v2: the authority is derived from the URL, and the recorded signature is over it',
+        () async {
+      final v = readVectors('relay_auth_v2', 'relay-auth-v2');
+      final identity = readVectors('identity');
+      final ids = <String, ZIdentity>{};
+      for (final id in (identity['identities'] as List).cast<Map>()) {
+        ids[id['name'] as String] = await ZIdentity.fromSeeds(
+            edSeed: unhex(id['ed_seed'] as String),
+            xSeed: unhex(id['x_seed'] as String));
+      }
+      for (final a in (v['relay_auth_v2'] as List).cast<Map>()) {
+        final me = ids[a['identity']]!;
+        expect(relayAuthority(a['url'] as String), a['authority']);
+        final nonce = unhex(a['nonce'] as String);
+        final msg = concatBytes([
+          utf8.encode(authContextV2),
+          utf8.encode(a['authority'] as String),
+          nonce,
+        ]);
+        expect(hex(msg), a['signed_message']);
+        expect(hex(await me.signAuthChallengeV2(nonce, a['authority'] as String)),
+            a['sig'], reason: 'deterministic: Ed25519 has no nonce of its own');
+        final ok = await Ed25519().verify(msg,
+            signature: Signature(unhex(a['sig'] as String),
+                publicKey: SimplePublicKey(me.edPub, type: KeyPairType.ed25519)));
+        expect(ok, isTrue);
+        // The same signature over any other authority is nothing: what the
+        // binding is for.
+        final other = concatBytes([
+          utf8.encode(authContextV2),
+          utf8.encode('other.example'),
+          nonce,
+        ]);
+        expect(
+            await Ed25519().verify(other,
+                signature: Signature(unhex(a['sig'] as String),
+                    publicKey: SimplePublicKey(me.edPub, type: KeyPairType.ed25519))),
+            isFalse);
+        expect((a['auth_frame'] as Map)['v'], 2);
+        expect((a['challenge_frame'] as Map)['auth'], 2);
+      }
+      for (final n in (v['normalization'] as List).cast<Map>()) {
+        expect(relayAuthority(n['url'] as String), n['authority'], reason: n['url'] as String);
+      }
     });
 
     test('connect: the recorded ceremony replays, and the string is the pair\'s',

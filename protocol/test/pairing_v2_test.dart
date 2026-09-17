@@ -35,7 +35,24 @@ import 'package:z_protocol/z_protocol.dart';
 //  5. a machine-in-the-middle running both legs gets two different safety
 //     strings, one per screen;
 //  6. v1 and v2 share no mailbox, no channel key and no safety string for one
-//     code, so neither ceremony can be talked into the other.
+//     code, so neither ceremony can be talked into the other;
+//  7. a frame's fixed-width fields are exactly their width, or the ceremony
+//     aborts. The commitment and the safety string concatenate the three
+//     32-byte fields and then the variable-length device id, and until
+//     2026-09-17 nothing checked the widths: a relay that moved the last
+//     byte of `dx` onto the front of `id` produced the same concatenation,
+//     so the opening matched the commitment, both screens showed the same
+//     eight digits, and the host certified a 31-byte ratchet key that every
+//     contact then refused — the account's device list broken for good by
+//     whoever carried one frame (the 2026-09-14 review's finding 9).
+//     Reproduced first: the shifted opening was accepted and the two safety
+//     strings agreed. Now every field of every frame, in both ceremonies,
+//     is a string of the right width or an abort — never a type error.
+/// An abort for a field's width or shape — not the commitment's refusal,
+/// which comes after the hashing this check exists to come before.
+Matcher malformed(String key) =>
+    isA<PairingAbort>().having((e) => e.message, 'message', 'malformed frame: $key');
+
 void main() {
   group('pairing v2', () {
     test('1. both sides agree, and the enrollment opens', () async {
@@ -206,6 +223,86 @@ void main() {
       expect(sessDesktop.sas, sessAttackerSide.sas, reason: 'leg 1 agrees');
       expect(sessPhone.sas, isNot(sessDesktop.sas),
           reason: 'the two screens disagree, which is what the user sees');
+    });
+
+    test('7. a byte moved across the dx/id boundary is an abort, not a match',
+        () async {
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV2.create(code: code);
+      final (reply, pending) = await PairingResponderV2.reply(await desktop.commit());
+      final (open, sessDesktop) = await desktop.open(reply);
+
+      // The relay's rewrite: dx loses its last byte, id gains it in front.
+      // An X25519 public key's last byte is below 0x80 (the high bit is
+      // cleared by the curve's encoding), so it is always a one-byte UTF-8
+      // codepoint and the move always produces the same bytes.
+      final dx = unb64(open['dx'] as String);
+      expect(dx.length, 32);
+      expect(dx[31] < 0x80, isTrue, reason: 'the shift always encodes');
+      final shifted = Map<String, Object?>.from(open)
+        ..['dx'] = b64(dx.sublist(0, 31))
+        ..['id'] = String.fromCharCode(dx[31]) + (open['id'] as String);
+      // The concatenation IS identical — that is the whole finding — so the
+      // commitment cannot tell them apart. Only the width can.
+      expect(
+          [...unb64(shifted['dx'] as String), ...utf8.encode(shifted['id'] as String)],
+          [...dx, ...utf8.encode(open['id'] as String)],
+          reason: 'the bytes the commitment hashes are the same');
+      await expectLater(pending.accept(shifted), throwsA(malformed('dx')),
+          reason: 'a 31-byte ratchet key is refused before anything is hashed');
+      // And the honest opening still goes through, agreeing on both screens.
+      expect((await pending.accept(open)).sas, sessDesktop.sas);
+
+      // Every fixed field of every frame, both ceremonies: a wrong width, a
+      // non-string, or bytes that are not base64 abort rather than throw a
+      // type error a caller might not catch — and abort FOR THE WIDTH, by
+      // the message, since the commitment would also refuse most of these
+      // and a test that accepted either would not know which it had.
+      Future<void> refusedBy(
+          Future<Object?> Function(Map<String, Object?>) take, Map<String, Object?> good, String key) async {
+        for (final bad in <Object?>[
+          b64(Uint8List(31)),
+          b64(Uint8List(33)),
+          b64(Uint8List(0)),
+          'not base64!!',
+          42,
+          null,
+        ]) {
+          final frame = Map<String, Object?>.from(good)..[key] = bad;
+          await expectLater(take(frame), throwsA(malformed(key)),
+              reason: '$key = $bad must abort');
+        }
+      }
+
+      final (reply2, pending2) = await PairingResponderV2.reply(await desktop.commit());
+      final (open2, _) = await desktop.open(reply2);
+      for (final key in ['ephx', 'ded', 'dx']) {
+        await refusedBy(pending2.accept, open2, key);
+      }
+      final badIds = <Object?>['', 'x' * (maxDeviceIdLength + 1), 7, null];
+      for (final badId in badIds) {
+        final frame = Map<String, Object?>.from(open2)..['id'] = badId;
+        await expectLater(pending2.accept(frame), throwsA(malformed('id')),
+            reason: 'id = $badId must abort');
+      }
+      await refusedBy(desktop.open, reply2, 'ephx');
+      await refusedBy((f) => PairingResponderV2.reply(f), await desktop.commit(), 'c');
+
+      // v1, the same widths — and here the id bound is the only check there
+      // is, since v1 commits to nothing and the id goes straight into the
+      // certificate the host signs.
+      final v1 = await PairingInitiator.create(code: code);
+      final hello = v1.hello();
+      for (final key in ['ephx', 'ded', 'dx']) {
+        await refusedBy(PairingResponder.respond, hello, key);
+      }
+      for (final badId in badIds) {
+        final frame = Map<String, Object?>.from(hello)..['id'] = badId;
+        await expectLater(PairingResponder.respond(frame), throwsA(malformed('id')),
+            reason: 'v1 id = $badId must abort');
+      }
+      final (v1reply, _) = await PairingResponder.respond(hello);
+      await refusedBy(v1.complete, v1reply, 'ephx');
     });
 
     test('6. v1 and v2 share nothing derived from one code', () async {
