@@ -1928,7 +1928,12 @@ value = nonce || ChaCha20-Poly1305( key = vk, nonce, aad = label, plaintext = li
 holds an account's public key — its contacts, and the operator, who learns
 it at publish (§19.6) — can derive `vk` and open the value; a mirror or a
 reader of the log cannot. A value MUST be at least 28 bytes and at most
-262 144 bytes.
+262 144 bytes. That maximum is a reader's obligation: a client MUST be able
+to open a value of that size. A log MAY accept less — a signed device list
+is about a kilobyte, and what a log accepts sets how many entries its disk
+holds — and MUST refuse a larger one with `413 too_large` naming its own
+cap, so a publisher can tell a log's policy from a malformed request. A log
+MUST NOT accept more than the maximum.
 
 ### 19.2 The map tree
 

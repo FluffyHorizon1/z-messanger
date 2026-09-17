@@ -3554,3 +3554,53 @@ direction; the phases, their order and both ordering arguments stand.
 
     **A ceremony that needs a human to press "next" four times is a
     ceremony that does not happen.**
+94. **The log's disk, multiplied through.**
+
+   Every limit on the transparency log was sized sensibly and nobody had
+   multiplied them together. At the protocol's 256 KiB value cap a publish is
+   up to 341 KB on disk; the Blueprint's 1 GB held 3,069 of them;
+   `PUBLISH_PER_MIN=30` with no client-address header is one bucket for the
+   whole internet; and the per-account ceiling needs only 154 minted keys,
+   which are free. **102 minutes to `ENOSPC`**, by anyone, after which every
+   publish got a 500 until an operator grew a disk that `/health` — `{size,
+   labels, sthTs}` — gave them no reason to look at. Review P0 #4, the only
+   one an outsider can reach today.
+
+   Four things, each stated for what it is rather than as a solution, because
+   a log does not forget and a disk of any size fills in finite time at any
+   positive rate:
+
+   * **What this log accepts.** A real signed device list is 1.1 KB sealed
+     for three devices and 15 KB for fifty (`docs/vectors/v3`, measured).
+     `KT_MAX_VALUE_BYTES` defaults to 32 KiB — a hundred devices — which is
+     eight times the entries per gigabyte. The protocol's 256 KiB stays: it
+     is what a *reader* must be able to open, and PROTOCOL §19.1 now says a
+     log may accept less and must say so with 413.
+   * **A first publish is the expensive event.** The R22 shape, applied
+     here: a flood needs accounts, because the per-account ceiling makes any
+     one of them useless, so `PUBLISH_NEW_ACCOUNTS_PER_MIN` charges a publish
+     from an account the log has never held. `log.hasLabel` answers that from
+     the index every lookup uses — built only by accepted publishes, so a
+     refused first publish leaves an account unknown. That is the invariant
+     the relay's mailbox gate got wrong in its first draft (entry 92) and it
+     holds here by construction. A write that fails after the tokens are
+     taken gives them back.
+   * **A floor, not a crash.** Below `KT_MIN_FREE_BYTES` the log answers
+     publishes with `503 log_full` and keeps serving reads: a read-only log
+     that says so, rather than a 500 halfway through a line. `/health` stays
+     200 with `full: true` on purpose — a host's health check would otherwise
+     restart a log whose only problem is a disk it cannot grow.
+   * **The numbers, where an operator can alarm on them.** `diskBytes`,
+     `diskFreeBytes` and `full` in `/health`. The three above are worth
+     nothing if nobody sees the floor coming.
+
+   At the defaults a flood from one address needs about fourteen hours and
+   two thousand minted accounts to reach the floor, against a hundred
+   minutes and a hundred and fifty. R30 records what remains: the arithmetic
+   itself, answered by an alarm and a disk grown before it matters, and by a
+   witness holding the whole history.
+
+   Three criteria added to `publish_limits.test.js`, each mutation-checked
+   five ways. kt 68 (was 65).
+
+   **Every limit was sensible on its own. The failure was in the product.**

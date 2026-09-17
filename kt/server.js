@@ -15,7 +15,7 @@
  *   GET  /kt/v1/entries?start=&count=        head + a page of entries (mirrors); count ≤ 1000
  *   POST /kt/v1/publish                      {acct, v, fp, value, sig} → {index, sth} — see lib/log.js
  *   GET  /kt/v1/pub                          the log's public key (for a first pin; clients ship it)
- *   GET  /health                             {size, labels, sthTs}
+ *   GET  /health                             {size, labels, sthTs, diskBytes, diskFreeBytes, full}
  *
  * Run it:
  *   KT_SEED=<64 hex>  KT_DATA=/var/lib/z-kt  KT_PORT=8443  node server.js
@@ -60,6 +60,8 @@ const {
   sthToJson,
   mapProofToJson,
   inclusionToJson,
+  labelFor,
+  MAX_VALUE_BYTES,
 } = require('./lib/log.js');
 
 const MAX_BODY = 400 * 1024;
@@ -144,6 +146,11 @@ class RateLimiter {
     this.now = now;
     this.buckets = new Map();
   }
+  /** Gives a token back: the thing it was taken for did not happen. */
+  refund(key) {
+    const b = this.buckets.get(key);
+    if (b) b.tokens = Math.min(this.perWindow, b.tokens + 1);
+  }
   take(key) {
     const t = this.now();
     let b = this.buckets.get(key);
@@ -206,9 +213,41 @@ function createServer({
   publishPerMinute = 30,
   publishPerMinuteTotal = 120,
   publishPerAccountPerDay = 20,
+  newAccountsPerMinute = 10,
+  maxValueBytes = 32 * 1024,
+  minFreeBytes = 64 * 1024 * 1024,
   clientIpHeader = null,
   now = Date.now,
+  statfs = fs.statfsSync,
 }) {
+  // The disk is the bound nobody multiplied through. A publish is up to
+  // 341 KB on disk at the protocol's 256 KiB value cap, so the blueprint's
+  // 1 GB held 3,069 of them — and with `publishPerMinute` one bucket for the
+  // whole internet (no client-address header) and account keys free to mint,
+  // that was 102 minutes to ENOSPC for anyone, after which every publish got
+  // a 500 until an operator grew the disk that `/health` gave them no reason
+  // to look at. Three things, each measured rather than guessed:
+  //
+  //   maxValueBytes  — what THIS log accepts, below the protocol's maximum.
+  //                    A signed device list is ~1.1 KB sealed for three
+  //                    devices and ~15 KB for fifty (docs/vectors/v3), so
+  //                    32 KiB is a hundred devices and eight times the
+  //                    entries per gigabyte. The protocol's 256 KiB is what a
+  //                    READER must be able to open; a log may accept less and
+  //                    says so with 413.
+  //   newAccounts    — the R22 shape. What a flood needs is accounts, because
+  //                    the per-account budget makes one account useless; a
+  //                    first publish for a label the log has never seen is
+  //                    the expensive event, and `log.hasLabel` answers it
+  //                    exactly, from the index every lookup uses. An account
+  //                    that has published before is never charged here.
+  //   minFreeBytes   — the floor. Below it, publishes are refused 503
+  //                    `log_full` and reads carry on, instead of the next
+  //                    append meeting ENOSPC mid-line. `/health` publishes
+  //                    the numbers so the operator sees the floor coming.
+  if (!(maxValueBytes > 0 && maxValueBytes <= MAX_VALUE_BYTES)) {
+    throw new Error(`maxValueBytes must be 1..${MAX_VALUE_BYTES}`);
+  }
   // Three gates, because they stop three different things and the first one
   // was doing none of them.
   //
@@ -231,11 +270,30 @@ function createServer({
     windowMs: 24 * 60 * 60 * 1000,
     now,
   });
+  const newAccounts = new RateLimiter(newAccountsPerMinute, { now });
   const sweeper = setInterval(() => {
     limiter.sweep();
     total.sweep();
     perAccount.sweep();
+    newAccounts.sweep();
   }, 60000);
+
+  /** Disk state for the floor and for /health; null where there is no disk. */
+  function disk() {
+    const dir = log.store.dir();
+    if (dir === null) return null;
+    let free = null;
+    try {
+      const st = statfs(dir);
+      free = Number(st.bavail) * Number(st.bsize);
+    } catch {
+      // A filesystem that cannot be asked is reported, not guessed at.
+    }
+    // `full` is null, not false, when free space could not be read: the
+    // gate treats unknown as open, and /health shows the instrument is
+    // broken rather than a reading it never took.
+    return { bytes: log.store.bytesOnDisk(), free, full: free === null ? null : free < minFreeBytes };
+  }
   sweeper.unref();
 
   const httpServer = http.createServer(async (req, res) => {
@@ -246,7 +304,16 @@ function createServer({
         res.setHeader('access-control-allow-origin', '*');
         if (p === '/health') {
           const sth = log.sth();
-          return json(res, 200, { size: log.size, labels: log.map.size, sthTs: sth.ts });
+          const d = disk();
+          // Still 200 when full: the host's health check would otherwise
+          // restart a log whose only problem is a disk it cannot grow, and
+          // the restart changes nothing. The alarm is on the numbers.
+          return json(res, 200, {
+            size: log.size,
+            labels: log.map.size,
+            sthTs: sth.ts,
+            ...(d ? { diskBytes: d.bytes, diskFreeBytes: d.free, full: d.full } : {}),
+          });
         }
         if (p === '/kt/v1/sth') return json(res, 200, sthToJson(log.sth()));
         if (p === '/kt/v1/pub') return json(res, 200, { pub: log.publicKey.toString('base64') });
@@ -294,6 +361,13 @@ function createServer({
         return fail(res, 404, 'not_found', 'no such route');
       }
       if (req.method === 'POST' && p === '/kt/v1/publish') {
+        // The floor first, before any token is spent on a publish that could
+        // not be written: a log that is out of room says so at once, keeps
+        // answering reads, and never meets ENOSPC halfway through a line.
+        const d = disk();
+        if (d && d.full) {
+          return fail(res, 503, 'log_full', `the log's disk has less than ${minFreeBytes} bytes free; publishing is paused until it is grown`);
+        }
         // Before the body is read, both cheap gates: a 400 KB read is not
         // free, and moving the limit after the parse would have traded a
         // limiter that bound nothing for a limiter that bound nothing until
@@ -325,6 +399,12 @@ function createServer({
         // signature. `publish` checks again — it is responsible for its own
         // input and one more Ed25519 verify is microseconds.
         log.checkPublish(req_);
+        // This log's own cap, under the protocol's. Checked after the
+        // signature like the per-account gate, so what it refuses is a real
+        // account's oversized list and not a stranger's guess at one.
+        if (req_.value.length > maxValueBytes) {
+          return fail(res, 413, 'too_large', `this log accepts values of at most ${maxValueBytes} bytes`);
+        }
         if (!perAccount.take(req_.acct.toString('base64'))) {
           return fail(
             res,
@@ -333,7 +413,23 @@ function createServer({
             `at most ${publishPerAccountPerDay} publishes a day for one account`
           );
         }
-        const entry = log.publish(req_);
+        // First contact costs a token; an account the log already holds
+        // costs nothing here. `hasLabel` reads the index accepted publishes
+        // build, so a refused publish cannot make an account look known.
+        const fresh = !log.hasLabel(labelFor(req_.acct));
+        if (fresh && !newAccounts.take('all')) {
+          perAccount.refund(req_.acct.toString('base64'));
+          return fail(res, 429, 'rate_limited', `at most ${newAccountsPerMinute} new accounts a minute`);
+        }
+        let entry;
+        try {
+          entry = log.publish(req_);
+        } catch (e) {
+          // Nothing was written, so nothing was spent.
+          perAccount.refund(req_.acct.toString('base64'));
+          if (fresh) newAccounts.refund('all');
+          throw e;
+        }
         return json(res, 201, { index: entry.index, sth: sthToJson(log.sth()) });
       }
       if (req.method === 'POST') return fail(res, 404, 'not_found', 'no such route');
@@ -391,6 +487,9 @@ function main() {
     publishPerMinute: +(process.env.PUBLISH_PER_MIN || 30),
     publishPerMinuteTotal: +(process.env.PUBLISH_PER_MIN_TOTAL || 120),
     publishPerAccountPerDay: +(process.env.PUBLISH_PER_ACCT_PER_DAY || 20),
+    newAccountsPerMinute: +(process.env.PUBLISH_NEW_ACCOUNTS_PER_MIN || 10),
+    maxValueBytes: +(process.env.KT_MAX_VALUE_BYTES || 32 * 1024),
+    minFreeBytes: +(process.env.KT_MIN_FREE_BYTES || 64 * 1024 * 1024),
     clientIpHeader: (process.env.KT_CLIENT_IP_HEADER || '').trim().toLowerCase() || null,
   });
   // KT_PORT first; then PORT, which cloud hosts inject (render.kt.yaml).

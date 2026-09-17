@@ -350,19 +350,45 @@ What it costs: no dependencies, one process, one file. Measured
 (`cd kt && npm run bench`): a publish is ~1.5 ms of CPU, a lookup ~0.1 ms, a
 lookup response ~4 KB at a hundred thousand accounts, and the entries file
 grows by roughly the size of the sealed lists it holds (a few KB per publish,
-up to 341 KB at the 256 KiB value cap). What the **process** holds is a
-function of the number of entries and not of their size or the file's: replay
-reads a fixed window at a time and an entry keeps the byte range of its own
-line rather than its value. Size the disk for the entries; size the memory
-for how many accounts you expect, not how much they publish.
+up to ~44 KB at the default `KT_MAX_VALUE_BYTES`). What the **process** holds
+is a function of the number of entries and not of their size or the file's:
+replay reads a fixed window at a time and an entry keeps the byte range of
+its own line rather than its value. Size the disk for the entries; size the
+memory for how many accounts you expect, not how much they publish.
 
-**Publishing is limited three ways, and the defaults assume a hostile
+**The disk is the bound, and it has to be watched.** Entries never expire —
+that is what a log is — so a disk fills and stays full. Nobody had multiplied
+the limits through until 2026‑09‑14: at the protocol's 256 KiB value cap a
+publish was up to 341 KB on disk, the Blueprint's 1 GB held 3,069 of them,
+and with one address bucket for the whole internet and account keys free to
+mint, that was **102 minutes to `ENOSPC`** — after which every publish got a
+500 until an operator grew a disk that `/health` gave them no reason to look
+at. Three things changed. This log accepts values only up to
+`KT_MAX_VALUE_BYTES` (32 KiB, a hundred devices; a real list is ~1.1 KB
+sealed for three) — the protocol's 256 KiB is what a *reader* must open, and
+a log that accepts less says so with 413. A first publish from an account the
+log has never held is charged against `PUBLISH_NEW_ACCOUNTS_PER_MIN`, the
+same shape as the relay's mailbox gate: a flood needs accounts, and that is
+the event worth charging; an account the log holds is never charged there.
+And below `KT_MIN_FREE_BYTES` of free space the log answers publishes with
+**503 `log_full`** and keeps serving reads, rather than meeting `ENOSPC`
+halfway through a line. `/health` reports `diskBytes`, `diskFreeBytes` and
+`full`; **alarm on `diskFreeBytes`** well above the floor and grow the disk
+before it matters. At the defaults, a flood from one address needs about
+fourteen hours and two thousand minted accounts to reach the floor, where it
+needed a hundred minutes and a hundred and fifty — and it now ends in a log
+that is read‑only and says so, not one that is down.
+
+**Publishing is limited four ways, and the defaults assume a hostile
 internet**, because the log accepts a signature from any Ed25519 key and
 generating keys is free:
 
 | `PUBLISH_PER_MIN_TOTAL` | 120 | every publish, whatever the source. The gate that stops a flood — a flood uses many accounts, so a per‑account limit does not see one |
 | `PUBLISH_PER_MIN` | 30 | per source address. Only per‑**client** if `KT_CLIENT_IP_HEADER` is set (below); otherwise the TLS front is the address and this is one bucket for everybody |
 | `PUBLISH_PER_ACCT_PER_DAY` | 20 | per account key, charged only once the signature verifies, so nobody can spend an account's budget but that account |
+| `PUBLISH_NEW_ACCOUNTS_PER_MIN` | 10 | first publishes from accounts the log has never held, in total. Charged after the signature and only for a label the index does not have — and the index is built by accepted publishes, so a refused first publish leaves the account unknown |
+| `KT_MAX_VALUE_BYTES` | 32768 | what this log accepts; at most the protocol's 262 144. Sets entries‑per‑gigabyte |
+| `KT_MIN_FREE_BYTES` | 67108864 | below this much free space, publishes are refused `503 log_full` and reads continue. `/health` still answers 200 with `full: true`, so a host's health check does not restart a log whose only problem is a disk it cannot grow |
 
 `KT_CLIENT_IP_HEADER` (e.g. `cf-connecting-ip`) is empty by default and should
 stay empty until the service is reachable **only** through the proxy that sets

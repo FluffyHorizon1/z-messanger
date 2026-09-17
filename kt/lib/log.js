@@ -199,6 +199,13 @@ class PublishError extends Error {
 /** Entries in memory only — tests, and the `kt/server.js --ephemeral` flag. */
 class MemoryStore {
   *readAll() {}
+  /** Nothing on any disk. */
+  bytesOnDisk() {
+    return 0;
+  }
+  dir() {
+    return null;
+  }
   /** Nothing to come back to, so nothing to check on the way in. */
   readHead() {
     return null;
@@ -344,6 +351,21 @@ class FileStore {
    * that was fatal, which is why the fix is the return value and not a
    * bigger try/catch.
    */
+  /** What the entries file occupies: the number a disk alarm watches. */
+  bytesOnDisk() {
+    try {
+      return fs.statSync(this.file).size;
+    } catch (e) {
+      if (e.code === 'ENOENT') return 0;
+      throw e;
+    }
+  }
+
+  /** The directory the file lives in, which is what free space is measured on. */
+  dir() {
+    return path.dirname(this.file);
+  }
+
   append(entry) {
     const fresh = this.fd === null && !fs.existsSync(this.file);
     if (this.fd === null) this.fd = fs.openSync(this.file, 'a');
@@ -762,6 +784,17 @@ class KtLog {
    * the head, the map proof (of the (index, version) or of absence), and when
    * present the entry with its inclusion proof at the head's size.
    */
+  /**
+   * Whether the log holds any entry for [label]. Exact and free — it is the
+   * index every lookup uses — which makes it the right thing for a gate on
+   * NEW accounts to ask: an account enters this index only by a publish that
+   * was accepted, so "first publish for this label" cannot be faked by a
+   * publish that was refused.
+   */
+  hasLabel(label) {
+    return this.byLabel.has(label.toString('hex'));
+  }
+
   lookup(label) {
     const sth = this.sth();
     const map = this.map.proof(label);

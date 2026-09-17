@@ -35,20 +35,46 @@
 //      value the caller picks is worse than one keyed on a value it cannot;
 //   4. the buckets are bounded: a limiter keyed on something an attacker can
 //      mint must not be a map an attacker can grow.
+//
+// And the disk, from the 2026-09-14 review, which multiplied the limits
+// together where nobody had: a publish is up to 341 KB on disk at the
+// protocol's value cap, a 1 GB disk holds 3,069 of them, and with one
+// address bucket for the whole internet that was 102 minutes to ENOSPC —
+// after which every publish got a 500 until an operator grew a disk that
+// `/health` gave them no reason to look at.
+//   5. a FIRST publish for an account the log has never seen is charged
+//      against its own allowance, an account the log holds is not — and an
+//      account whose first publish was refused is still unknown, because the
+//      index the gate asks is built only by publishes that were accepted;
+//      a publish that fails after the tokens were taken gives them back;
+//   6. below a floor of free space the log refuses to publish, says why with
+//      503 rather than failing mid-write with 500, keeps answering reads, and
+//      reports the disk in /health — where the floor is visible before it is
+//      reached;
+//   7. this log accepts values only up to its own cap, well under the
+//      protocol's 256 KiB, because a real device list is a kilobyte and the
+//      cap is what sets entries-per-gigabyte; the cap cannot be set above
+//      the protocol's maximum.
 'use strict';
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
 const {
   KtLog,
   MemoryStore,
+  FileStore,
   labelFor,
   sealValue,
   makePublish,
   privateKeyFromSeed,
   rawPublicKey,
+  MAX_VALUE_BYTES,
 } = require('../lib/log.js');
 const { createServer, RateLimiter } = require('../server.js');
 
@@ -59,8 +85,8 @@ function account(name) {
   return { key, pub: rawPublicKey(key), label: labelFor(rawPublicKey(key)) };
 }
 
-function publishJson(acct, v) {
-  const value = sealValue(acct.pub, Buffer.from(`list ${v}`, 'utf8'));
+function publishJson(acct, v, plaintext = `list ${v}`) {
+  const value = sealValue(acct.pub, Buffer.from(plaintext, 'utf8'));
   const fp = crypto.createHash('sha256').update(`fp:${v}`).digest().subarray(0, 16);
   const p = makePublish(acct.key, { version: v, fp, value });
   return {
@@ -72,8 +98,8 @@ function publishJson(acct, v) {
   };
 }
 
-async function start(opts = {}) {
-  const log = new KtLog({ store: new MemoryStore(), signingKey: logKey });
+async function start(opts = {}, { store = new MemoryStore() } = {}) {
+  const log = new KtLog({ store, signingKey: logKey });
   const { httpServer } = createServer({ log, ...opts });
   await new Promise((res) => httpServer.listen(0, '127.0.0.1', res));
   const base = `http://127.0.0.1:${httpServer.address().port}`;
@@ -210,4 +236,123 @@ test('4. the buckets are bounded however many keys arrive', () => {
   // And it refills on the stated window rather than on the number of keys.
   t = 60_000;
   assert.ok(busy.take('busy'));
+});
+
+test('5. a first publish for a new account is charged; a known account is not', async () => {
+  const s = await start({ newAccountsPerMinute: 3, publishPerMinute: 1000, publishPerMinuteTotal: 1000 });
+  try {
+    let accepted = 0;
+    const refusedAccounts = [];
+    for (let i = 0; i < 10; i++) {
+      const a = account(`new-${i}`);
+      const r = await s.post(publishJson(a, 1));
+      if (r.status === 201) accepted += 1;
+      else {
+        assert.equal(r.status, 429);
+        assert.match(r.body.message, /new accounts a minute/);
+        refusedAccounts.push(a);
+      }
+    }
+    assert.equal(accepted, 3, 'exactly the new-account allowance got in');
+    assert.equal(refusedAccounts.length, 7);
+
+    // A refused first publish left the account unknown: the gate asks the
+    // index that only accepted publishes build, so a refusal cannot make an
+    // account look like one the log already holds.
+    for (const a of refusedAccounts) assert.equal(s.log.hasLabel(a.label), false);
+
+    // An account the log holds publishes again without touching the gate,
+    // however many times, with the allowance exhausted.
+    const known = account('new-0');
+    for (let v = 2; v <= 6; v++) {
+      assert.equal((await s.post(publishJson(known, v))).status, 201, `v${v} from a known account`);
+    }
+
+  } finally {
+    await s.stop();
+  }
+
+  // A publish that fails after the tokens are taken gives them back. One
+  // token in the allowance; the first fresh account's write fails; the next
+  // fresh account is accepted — which is only possible if the refund happened.
+  const s2 = await start({ newAccountsPerMinute: 1, publishPerMinute: 1000, publishPerMinuteTotal: 1000 });
+  try {
+    const realPublish = s2.log.publish.bind(s2.log);
+    s2.log.publish = () => {
+      throw new Error('disk gone');
+    };
+    const doomed = account('doomed');
+    assert.equal((await s2.post(publishJson(doomed, 1))).status, 500, 'the write failed');
+    assert.equal(s2.log.hasLabel(doomed.label), false, 'nothing was written');
+    s2.log.publish = realPublish;
+    assert.equal((await s2.post(publishJson(account('next'), 1))).status, 201,
+      'the token the failed write took was given back');
+    assert.equal((await s2.post(publishJson(account('after'), 1))).status, 429,
+      'and only that one — the allowance is one');
+  } finally {
+    await s2.stop();
+  }
+});
+
+test('6. below the free-space floor the log pauses publishing and says so', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'z-kt-floor-'));
+  let free = 10 * 1024 * 1024; // what the fake filesystem reports
+  const s = await start(
+    {
+      minFreeBytes: 1024 * 1024,
+      statfs: () => ({ bavail: BigInt(free / 4096), bsize: BigInt(4096) }),
+      publishPerMinute: 1000,
+      publishPerMinuteTotal: 1000,
+    },
+    { store: new FileStore(path.join(dir, 'entries.jsonl')) }
+  );
+  try {
+    const a = account('floor');
+    assert.equal((await s.post(publishJson(a, 1))).status, 201, 'room to write');
+    const h1 = (await s.get('/health')).body;
+    assert.equal(h1.full, false);
+    assert.equal(h1.diskFreeBytes, free);
+    assert.ok(h1.diskBytes > 0, 'the file has a size and /health reports it');
+    assert.equal(h1.diskBytes, fs.statSync(path.join(dir, 'entries.jsonl')).size);
+
+    free = 512 * 1024; // the disk fills
+    const r = await s.post(publishJson(a, 2));
+    assert.equal(r.status, 503, 'refused before anything is written, not 500 halfway through');
+    assert.equal(r.body.error, 'log_full');
+    assert.equal(s.log.size, 1, 'nothing was appended');
+    // Reads carry on: a full log is still a log.
+    assert.equal((await s.get('/kt/v1/sth')).status, 200);
+    assert.equal((await s.get(`/kt/v1/lookup/${a.label.toString('hex')}`)).status, 200);
+    const h2 = (await s.get('/health')).body;
+    assert.equal(h2.full, true, 'and /health says so');
+    assert.equal(h2.diskFreeBytes, free);
+
+    free = 10 * 1024 * 1024; // the disk is grown
+    assert.equal((await s.post(publishJson(a, 2))).status, 201, 'and publishing resumes on its own');
+  } finally {
+    await s.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('7. the log accepts values only up to its own cap, under the protocol maximum', async () => {
+  const s = await start({ maxValueBytes: 2048, publishPerMinute: 1000, publishPerMinuteTotal: 1000 });
+  try {
+    const a = account('big');
+    // Well under the protocol's 256 KiB, over this log's 2 KiB.
+    const r = await s.post(publishJson(a, 1, 'x'.repeat(4096)));
+    assert.equal(r.status, 413);
+    assert.equal(r.body.error, 'too_large');
+    assert.match(r.body.message, /2048/);
+    assert.equal(s.log.size, 0);
+    assert.equal((await s.post(publishJson(a, 1, 'x'.repeat(1024)))).status, 201);
+  } finally {
+    await s.stop();
+  }
+  // A cap above the protocol's maximum is a configuration error, not a wider
+  // log: readers are only obliged to open 256 KiB.
+  assert.throws(
+    () => createServer({ log: new KtLog({ store: new MemoryStore(), signingKey: logKey }), maxValueBytes: MAX_VALUE_BYTES + 1 }),
+    /maxValueBytes/
+  );
 });
