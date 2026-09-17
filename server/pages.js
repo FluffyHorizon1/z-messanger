@@ -517,9 +517,13 @@ const SECURITY_HTML = page(
     <li class="no"><b>Trust starts out of band.</b> If a contact code is
     swapped before it reaches you, you verified the wrong person. That is what
     <a href="/verify">safety numbers</a> exist to catch.</li>
-    <li class="no"><b>No public transparency log yet.</b> Device changes are
-    gossiped between contacts today; a third-party-auditable log is designed
-    but not built.</li>
+    <li class="no"><b>The transparency log has no independent witness yet.</b>
+    Device-list changes are published to a public, append-only key-transparency
+    log, the shipped app pins the log's key, and contacts still cross-check by
+    gossip. What is missing is somebody outside the project mirroring that log
+    and attesting to it: until then a reader is trusting us not to show it
+    selectively. <a href="/verify">Safety numbers</a> and contact gossip catch
+    a swapped key in the meantime.</li>
     <li class="no"><b>Group membership is asserted by the group's admin</b>
     over their authenticated channel — there is no cryptographic group
     state.</li>

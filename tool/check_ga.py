@@ -105,6 +105,46 @@ def main() -> int:
                     f"holds is not a witness."
                 )
 
+    # G3, once more, off the checklist entirely: the public /security page and
+    # the roadmap must not tell the world the transparency log is unbuilt or
+    # undeployed once the shipped client pins a live one. This document's own
+    # "not built" line has been guarded since the log was built (top of this
+    # function), but the same claim lived in two files nobody guarded, and both
+    # drifted — `server/pages.js`'s /security page said "designed but not
+    # built" and `ROADMAP.md` "waits on deployment" for weeks after the log
+    # went live at kt.zmessengers.com (2026-09-13). A guard on one copy of a
+    # claim is not a guard on the claim. The log is pinned when
+    # `defaultKtLogPub` has a non-empty default — the value G3's row is checked
+    # against above.
+    log_pinned = False
+    if client.exists():
+        mk = re.search(
+            r"String\.fromEnvironment\(\s*'KT_LOG_PUB'\s*,\s*defaultValue:\s*'([^']*)'",
+            client.read_text(), re.S)
+        log_pinned = bool(mk and mk.group(1).strip())
+    if log_pinned:
+        for rel, phrases in (
+            ("server/pages.js",
+             ("no public transparency log", "designed but not built")),
+            ("ROADMAP.md",
+             ("waits on deployment",
+              "transparency log going live (a deployment")),
+        ):
+            p = ROOT / rel
+            if not p.exists():
+                continue
+            flat = re.sub(r"\s+", " ", p.read_text().lower())
+            for phrase in phrases:
+                if phrase in flat:
+                    problems.append(
+                        f"{rel} still says the transparency log is unbuilt or "
+                        f"undeployed (\"{phrase}\"), but the shipped client "
+                        f"pins a live log (defaultKtLogPub is set). It went "
+                        f"live 2026-09-13; say so, as GA_CHECKLIST and the docs "
+                        f"already do — the open half of G3 is the independent "
+                        f"witness, not deployment."
+                    )
+
     # And the values live in the SOURCE, not in a build command.
     #
     # Not a style preference. `reproducible` rebuilds the release APK four

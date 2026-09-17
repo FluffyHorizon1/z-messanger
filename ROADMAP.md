@@ -25,13 +25,14 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
 | 8 Message interactions | **✅ complete** — 8.1a replies · 8.1b reactions · 8.1c edit / delete-for-everyone / forward | `replies_test.dart` (13 cases incl. the group authorship abuse test), `docs/vectors/v1/inner_messages.json`, PROTOCOL §6.4–6.6 |
-| 9–15 | see `docs/ROADMAP_8_15.md` — **9, 10, 11, 13, 14, 15 done** except the externally gated items; 11's log is built end to end and **waits on deployment** (`adr/0006` says what "live" means); 12 (calls) waits on ADR 0005 | `docs/GA_CHECKLIST.md` is the live GA answer |
+| 9–15 | see `docs/ROADMAP_8_15.md` — **9, 10, 11, 13, 14, 15 done** except the externally gated items; 11's log is **deployed at `kt.zmessengers.com` and pinned by the shipped app** (`adr/0006` says what "live" means) — the open half is an independent witness (G3), not deployment; 12 (calls) waits on ADR 0005 | `docs/GA_CHECKLIST.md` is the live GA answer |
 | 16 | **✅ complete** — 16.1 sealed sender now holds against the relay process, not only its stored data (`adr/0007`, R21) · 16.2 pattern study: jitter and cover traffic measured against a relay that clusters by timing, and rejected with the numbers (`THREAT_MODEL.md` R18/R19) · 16.3 federation decided as client-to-many-relays and deferred (`adr/0008`) | `anonymous_sender_test.dart`, `server/test/sealed.test.js`, `server/bench/patterns.js` |
 | 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log: `adr/0006`, in progress) · 7.6 search + history sync + themes ✅ · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
 
-**Next up:** the transparency log going live (a deployment — `adr/0006`
-says what "live" means and `docs/SELF_HOSTING.md` how), then phase 12
-(calls) once ADR 0005 is decided. The full plan for phases 8–15 — backup,
+**Next up:** an independent witness for the transparency log — the log is
+deployed and pinned (`adr/0006` says what "live" means, `docs/SELF_HOSTING.md`
+how), and G3's remaining condition is somebody outside the project mirroring
+it — then phase 12 (calls) once ADR 0005 is decided. The full plan for phases 8–15 — backup,
 multi-device, key transparency, calls, PQ identity, verifiability, GA — is
 `docs/ROADMAP_8_15.md`; the externally gated items (auditor engagement,
 desktop certificates, iOS, 7.8c) are folded into phases 14 and 15 there, and
