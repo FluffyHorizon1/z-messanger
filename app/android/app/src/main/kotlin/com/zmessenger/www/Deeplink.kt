@@ -7,7 +7,7 @@ import io.flutter.plugin.common.MethodChannel
 /**
  * Invite links, handed to Dart (17.3b).
  *
- * An invite is `https://zmessengers.com/i#<code>`, and the code is in the
+ * An invite is `https://www.zmessengers.com/i#<code>`, and the code is in the
  * FRAGMENT — which no browser sends to a server, and which Android carries
  * intact in the intent's data URI. So the whole invite arrives here without
  * zmessengers.com ever learning that one exists.

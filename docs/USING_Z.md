@@ -74,7 +74,7 @@ An invite **works once** and **expires after 24 hours**. If it went to the
 wrong place, or you are not sure who opened it, discard it and make another —
 they cost nothing.
 
-The link is `https://zmessengers.com/i#…`, and the part after the `#` is the
+The link is `https://www.zmessengers.com/i#…`, and the part after the `#` is the
 invite. Browsers never send that part to a website, so the page it points at
 never receives your invite and cannot know one exists. You can check that in
 your browser's own network tab.

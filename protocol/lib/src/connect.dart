@@ -54,7 +54,7 @@ const String _commitCtx = 'z-connect-commit-v1:';
 const String connectRelayCtx = 'z-connect-relay-v1:';
 
 /// Where a `/i#…` invite link points by default.
-const String connectLinkHost = 'zmessengers.com';
+const String connectLinkHost = 'www.zmessengers.com';
 
 /// RFC 4648 base32, as code units — what [ConnectCode.parse] will accept.
 final Set<int> _b32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.codeUnits.toSet();

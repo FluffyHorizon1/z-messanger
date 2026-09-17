@@ -16,7 +16,7 @@
 //  1. generating an invite shows both renderings, and they are ONE secret —
 //     a link and a code that can drift apart is a bug reported as "the code
 //     doesn't work";
-//  2. opening a https://zmessengers.com/i#… link routes into the ceremony,
+//  2. opening a https://www.zmessengers.com/i#… link routes into the ceremony,
 //     and the fragment never leaves the device: no network is touched to
 //     consume it, and no request is ever made to that host;
 //  3. a pending invite survives the app being killed and still completes —
@@ -227,7 +227,7 @@ void main() {
     expect(find.textContaining('the same invite'), findsOneWidget);
 
     // A link and a printed code, computed from the same ten bytes.
-    expect(invite.link, startsWith('https://zmessengers.com/i#'));
+    expect(invite.link, startsWith('https://www.zmessengers.com/i#'));
     expect(invite.code, matches(RegExp(r'^[A-Z2-7-]{16,}$')));
     final fromLink = ConnectCode.fromLink(invite.link);
     final fromCode = ConnectCode.parse(invite.code);

@@ -264,10 +264,10 @@ void main() {
 
       // The link is the same secret, and the code lives in the fragment.
       final link = connect.link();
-      expect(link, startsWith('https://zmessengers.com/i#'));
+      expect(link, startsWith('https://www.zmessengers.com/i#'));
       expect(link, isNot(contains('?')), reason: 'never a query parameter');
       expect(ConnectCode.fromLink(link)!.secret, secret);
-      expect(ConnectCode.fromLink('https://zmessengers.com/i'), isNull);
+      expect(ConnectCode.fromLink('https://www.zmessengers.com/i'), isNull);
       expect(ConnectCode.fromLink(connect.text), isNull);
     });
 

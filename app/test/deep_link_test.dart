@@ -1,6 +1,6 @@
 // 17.3b — an invite link arriving from the platform.
 //
-// The invite is `https://zmessengers.com/i#<code>`, and the code is in the
+// The invite is `https://www.zmessengers.com/i#<code>`, and the code is in the
 // FRAGMENT. No browser sends a fragment to a server, and Android carries it
 // intact in the intent, so the whole secret goes from the tap into the app
 // without the site that serves the landing page ever learning an invite
@@ -130,8 +130,8 @@ void main() {
 
     for (final rubbish in [
       'https://zmessengers.com/',
-      'https://zmessengers.com/i', // no fragment: nothing was handed over
-      'https://zmessengers.com/i#not-base32-at-all-!!',
+      'https://www.zmessengers.com/i', // no fragment: nothing was handed over
+      'https://www.zmessengers.com/i#not-base32-at-all-!!',
       'zc1.notaninvite', // a contact code is not an invite
       'https://zmessengers.com/how-it-works',
       '',

@@ -18,6 +18,11 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     envVars:
+      # The Play App Signing SHA-256, which /.well-known/assetlinks.json
+      # publishes so Android can verify an invite link opens this app.
+      # Unset, the route 404s rather than making a claim nothing backs.
+      - key: ANDROID_CERT_SHA256
+        sync: false
       - key: LOG_LEVEL
         value: info
       - key: QUEUE_TTL_HOURS

@@ -6,7 +6,7 @@ import 'connect_invites.dart';
 
 /// Invite links arriving from the platform (17.3b).
 ///
-/// Android hands the app `https://zmessengers.com/i#<code>` when someone taps
+/// Android hands the app `https://www.zmessengers.com/i#<code>` when someone taps
 /// an invite. The code is in the FRAGMENT, which no browser sends to a server:
 /// the site that serves the landing page never receives an invite, and neither
 /// does anything else on the way — the whole secret goes from the intent

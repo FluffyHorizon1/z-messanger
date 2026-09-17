@@ -856,7 +856,7 @@ const PRIVACY_HTML = page(
  * Digital Asset Links for Android App Links (17.3b).
  *
  * With this file served at /.well-known/assetlinks.json, Android verifies the
- * link on install and opens https://zmessengers.com/i#<code> straight in the
+ * link on install and opens https://www.zmessengers.com/i#<code> straight in the
  * app. Without it there is no chooser on Android 12 or later: an unverified
  * https filter is never offered, the link opens in the browser, and the /i
  * page below is what the person sees — so that page tells them how to hand
