@@ -4145,3 +4145,94 @@ direction; the phases, their order and both ordering arguments stand.
 
    **A P2 is a claim the review believed, checked, and found the code did not
    keep — smaller only in blast radius.**
+
+103. **Four uploads at once was still four uploads at once.** The 3.5.0
+    publish failure was diagnosed as "nine uploads at once, up to 83 MB
+    each", and answered by splitting the step into three staged invocations.
+    That was the wrong unit, and two more releases proved it: 3.5.3 and 3.5.4
+    both died with `Error creating asset temp dir`, a string that appears
+    nowhere in the action's source — it is GitHub's asset backend refusing,
+    reported through `core.setFailed`.
+
+    3.5.4 settled the cause. Its FIRST attempt — no re-run, no leftovers from
+    an earlier one — sent this stage's four files concurrently and lost one,
+    leaving the release at three of nine with the APK stages never reached.
+    So it is concurrency itself that GitHub's upload path fails under, at
+    roughly one in four, and not the size or the count the staging was aimed
+    at. `preserve_order: true` makes the action upload one file at a time,
+    and it was there the whole time: the upload loop is
+    `Promise.all(files.map(uploadFile))` unless the input is set, the input
+    has no default, and an unset input parses to `undefined`, which is falsy.
+    Read off the source at the pinned commit rather than the README — the
+    same source that, read for its draft-and-publish semantics in entry 99,
+    had its input list left unread. Set on every one of the six invocations
+    (five, plus the one this adds); sequential is all it buys, since there is
+    no backoff between files and no retry input at this pin at all.
+
+    Stage one had no second attempt, which is why both failures stopped where
+    they did: one lost file out of four killed the job before the stages
+    carrying the APKs and the bundle ever ran. It has one now, like the other
+    two.
+
+    `overwrite_files` stays at its default, and the reasoning is worth
+    keeping because the obvious fix is a trap. The default is what destroyed
+    three of 3.5.3's assets on a re-run: it deletes an existing asset before
+    uploading the replacement, so an upload that then fails leaves the asset
+    gone. But the action matches an existing asset by name — the name, the
+    name with spaces rewritten to dots, or the label it stores the original
+    in — and never reads `state`, the word appearing nowhere in its source or
+    its shipped bundle, while GitHub's own documentation says an upstream
+    failure "may leave an empty asset with a state of `starter`". So
+    `overwrite_files: false` would match that corpse, skip it, and report
+    success: a zero-byte file in a release that looks complete. A destructive
+    failure that is loud beats a silent one that is not.
+
+    Which leaves the thing nothing was doing: asking whether the release the
+    job produced was the release the job was for. Six drafts had accumulated
+    unnoticed — 3.4.6, 3.4.7 and 3.4.9 at four, seven and four assets, 3.5.0
+    complete but never published, 3.5.3 and 3.5.4 at three — because every
+    stage but the last carried `draft: true`, so a failure left a draft, and
+    a draft looks like nothing happened rather than like a failure. Now every
+    stage is a draft and the release job publishes nothing. `release-verify`
+    reads the draft; `release-publish` flips it, and only if the draft is
+    complete. Verification after publication would have been an alarm going
+    off beside a bad release somebody could already download.
+
+    Two things about that job are worth writing down, because the first
+    version of it had both wrong. Its condition is
+    `always() && startsWith(...)`: a job that `needs:` a failed job is
+    SKIPPED unless its condition says otherwise, so a verify job gated only
+    on the tag would be skipped by precisely the six failures it was written
+    for — green in review, absent in every incident. And it takes
+    `contents: write`, for visibility rather than for writing: only a token
+    with push access is shown draft releases in a listing, and one without
+    gets a 200 with the draft simply missing. It issues nothing but GETs; the
+    flip is the other job.
+
+    It checks against the manifest the build itself computed rather than a
+    list written into the workflow, so it cannot drift from what was
+    produced; it refuses a manifest of other than eight entries in either
+    direction, because a loop over nothing is a green tick that read nothing
+    and a manifest that grew is an artefact nobody accounted for; and it
+    refuses a size it cannot read as a number, which is subtler than it
+    sounds — `[ "$size" -le 0 ]` on a non-numeric value is a bash syntax
+    error, and a syntax error in an `elif` CONDITION is not something
+    `set -e` catches. The branch is simply false, the loop continues, and the
+    step prints the all-clear over a release it could not read. That was in
+    the first version too, and an adversarial review of this patch found it
+    by feeding the check an asset with a null size.
+
+    `tool/test_release_verify.py` rehearses that shell, pulled out of
+    `build.yml` so there is one copy, against nine shapes: a complete draft,
+    3.5.3's real asset table, a `starter` corpse, a zero-byte asset, a size
+    that is not a number, a manifest with no digest lines, a manifest that
+    grew, a name GitHub rewrote, and a release already published when the
+    gate runs. Four mutations of the shipped shell, each refused by the check
+    written for it. It exists because `dry_run_release.py` cannot reach this
+    job — that guard executes every `run:` body of `jobs.release` verbatim
+    through bash on every push, and `gh` is installed on those runners, so a
+    `gh` call there would be run by the guard and, the day a token reached
+    the test job, against this repository. Being a separate job is what keeps
+    it safe and what put it outside the only rehearsal the workflow had.
+
+    **A fix aimed at the wrong unit passes every test and fails every time.**

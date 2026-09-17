@@ -118,6 +118,15 @@ jobs:
       # so there is one copy — against a staged release, on every push.
       - name: The release job's shell, on a staged release
         run: python3 tool/dry_run_release.py
+      # And the job that decides whether the release it produced is fit to
+      # publish. `dry_run_release.py` cannot reach it: that guard executes
+      # every `run:` body of `jobs.release`, which is exactly why the `gh`
+      # calls live in a job of their own — and being a job of its own put
+      # `release-verify` outside the only rehearsal this workflow had. A
+      # guard written because nothing was checking, and itself unchecked,
+      # would be the same mistake one level up.
+      - name: The release-verify job's shell, against nine shapes
+        run: python3 tool/test_release_verify.py
       # A render*.yaml is applied by clicking. This holds each one to the
       # things a click cannot undo: no literal secret in a public file, a
       # health check, a disk mounted where its data variable points on a plan
@@ -787,36 +796,82 @@ jobs:
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: 'release/*'
-      # Three uploads instead of one, a draft until the last has landed, and
-      # one more try for each of the two that carry the weight.
+      # Three uploads instead of one, a draft until the last has landed, one
+      # more try for each, and — the part that actually matters — one file at
+      # a time.
       #
-      # Two consecutive releases died in this step on 2026-09-17 — 3.4.9 with
-      # GitHub's error page mid-upload, 3.5.0 with `Headers Timeout Error` —
-      # on a day GitHub's upload path ran at ~150 KB/s a stream. The shape
-      # that broke: nine uploads at once, up to 83 MB each, through a client
-      # that gives up when the response headers take five minutes to arrive
-      # (undici's default; the body of 3.5.0's arm64 APK had been sent in
-      # full) and that retries nothing on a transport error. The action
-      # creates the release as a DRAFT and publishes only once every file of
-      # an invocation is up, so neither failure published a half-release —
-      # but each one cost a re-run of every byte.
+      # Four tagged releases died in this step. 3.4.9 took GitHub's own error
+      # page mid-upload; 3.5.0 took `Headers Timeout Error` (undici gives up
+      # when the response headers take five minutes, and the body of its
+      # arm64 APK had been sent in full); 3.5.3 and 3.5.4 took
+      # `Error creating asset temp dir`. That last string is worth naming:
+      # it is not this action's, it appears nowhere in its source, it is the
+      # message GitHub's asset backend returns and the action reports.
+      #
+      # The first diagnosis was "nine uploads at once, up to 83 MB each", and
+      # the answer was to split them into three stages. That was the wrong
+      # unit. 3.5.4's FIRST attempt — no re-run, no leftovers — sent this
+      # stage's four files and lost one, so four at once is still too many;
+      # it is concurrency itself that GitHub's upload path fails under, not
+      # the size or the count. `preserve_order: true` is the fix, and it was
+      # available all along: the action uploads with `Promise.all` unless it
+      # is set, it has no default, and an unset input parses to `undefined`,
+      # which takes the parallel branch. It must be set on every invocation.
+      # Sequential is all it buys — a bare `for...of` with `await`, no delay,
+      # no backoff, no per-file retry. There is no retry input at this pin at
+      # all; the second attempts below are the whole of it.
+      #
+      # `overwrite_files` stays at its default, deliberately, though the
+      # default is what destroyed three of 3.5.3's assets: it deletes an
+      # existing asset before uploading its replacement, so an upload that
+      # then fails leaves the asset simply gone. The alternative is worse.
+      # The action matches an existing asset BY NAME ONLY and is blind to
+      # its `state`, and GitHub's own docs say an upstream failure "may leave
+      # an empty asset with a state of `starter`" — so `overwrite_files:
+      # false` would match that corpse, skip it, and go green, publishing a
+      # zero-byte file in a release that looks complete. A loud failure
+      # beats a quiet one. The `release-verify` job below is what makes the
+      # failure loud.
       #
       # So: the checksums and the three desktop bundles first, then the three
-      # split APKs, then the two largest files. `draft: true` on all but the
-      # last keeps the release unpublished until the last has finished (the
-      # action skips its own publish step for a draft, and a later invocation
-      # finds the draft by listing releases and folds into it). The two heavy
-      # stages get a second attempt on failure — the SAME files, with the
-      # default overwrite, because an upload the client gave up on can leave
-      # an asset of the right name behind in `starter` state, and a retry
-      # that skipped existing names would publish around it. A stage that
-      # fails twice fails the job, and a re-run resumes into the same draft.
+      # split APKs, then the two largest files. `draft: true` on ALL of them
+      # now, including the last — this job no longer publishes anything. It
+      # assembles a draft; `release-verify` reads it; `release-publish` flips
+      # it, and only if the draft is complete. Verifying after publication is
+      # an alarm that goes off next to a bad release somebody can already
+      # download. (The action skips its own publish step whenever `draft` is
+      # true, and a later invocation finds the draft by listing releases and
+      # folds into it.) Each stage
+      # gets a second attempt on failure — the SAME files, with the default
+      # overwrite, because an upload the client gave up on can leave an asset
+      # of the right name behind in `starter` state, and a retry that skipped
+      # existing names would publish around it. Stage one had no second
+      # attempt until now, which is why 3.5.3 and 3.5.4 never reached the
+      # APKs at all: one lost file out of four killed the job before the
+      # stages that carry the release. A stage that fails twice fails the
+      # job, and a re-run resumes into the same draft.
       - name: Publish release — checksums and desktop bundles (draft)
+        id: publish_meta
+        continue-on-error: true
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           draft: true
           generate_release_notes: true
           fail_on_unmatched_files: true
+          preserve_order: true
+          files: |
+            release/SHA256SUMS.txt
+            release/z-linux-x64.tar.gz
+            release/z-macos.zip
+            release/z-windows-x64.zip
+      - name: Publish release — checksums and desktop bundles, second attempt (draft)
+        if: steps.publish_meta.outcome == 'failure'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          preserve_order: true
           files: |
             release/SHA256SUMS.txt
             release/z-linux-x64.tar.gz
@@ -829,6 +884,7 @@ jobs:
         with:
           draft: true
           fail_on_unmatched_files: true
+          preserve_order: true
           files: |
             release/app-arm64-v8a-release.apk
             release/app-armeabi-v7a-release.apk
@@ -839,24 +895,189 @@ jobs:
         with:
           draft: true
           fail_on_unmatched_files: true
+          preserve_order: true
           files: |
             release/app-arm64-v8a-release.apk
             release/app-armeabi-v7a-release.apk
             release/app-x86_64-release.apk
-      - name: Publish release — universal APK and bundle, then publish
+      - name: Publish release — universal APK and bundle (draft)
         id: publish_big
         continue-on-error: true
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          draft: true
           fail_on_unmatched_files: true
+          preserve_order: true
           files: |
             release/app-release.apk
             release/app-release.aab
-      - name: Publish release — universal APK and bundle, second attempt, then publish
+      - name: Publish release — universal APK and bundle, second attempt (draft)
         if: steps.publish_big.outcome == 'failure'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          draft: true
           fail_on_unmatched_files: true
+          preserve_order: true
           files: |
             release/app-release.apk
             release/app-release.aab
+
+
+  # Nothing above published anything. The release job assembles a DRAFT; this
+  # job reads it; `release-publish` flips it. Six drafts had accumulated
+  # unnoticed — 3.4.6, 3.4.7 and 3.4.9 at four, seven and four assets, 3.5.0
+  # complete but never published, 3.5.3 and 3.5.4 at three — because nothing
+  # ever asked whether the release the job produced was the release the job
+  # was for, and a draft looks like nothing happened rather than like a
+  # failure. This asks, before anyone can download the answer.
+  #
+  # `always()` is the whole point of the `if:`. A job that `needs:` a failed
+  # job is SKIPPED unless its condition says otherwise, and every incident in
+  # that list is a failed release job — so without it this would be skipped
+  # by precisely the six failures it was written for. It ran green in review
+  # and would have caught none of them.
+  #
+  # `contents: write` is for visibility, not for writing: "only users with
+  # push access will receive listings for draft releases", and a token with
+  # read access gets 200 with the draft simply absent. This job issues
+  # nothing but GETs.
+  #
+  # Its own job, not a step in `release`, and that is not tidiness.
+  # `tool/dry_run_release.py` executes EVERY `run:` step of `jobs.release`
+  # verbatim through bash with the ambient path, on every push, and `gh` is
+  # installed on those runners — so a `gh` call living in the release job
+  # would be executed by the guard, and against this repository on the day a
+  # token reached the test job's environment. The guard reads
+  # `["jobs"]["release"]` and no other, so a separate job is out of its reach
+  # by construction. `tool/test_release_verify.py` rehearses this shell
+  # instead, pulling the body out of this file so there is one copy.
+  release-verify:
+    name: Every file the release claims is actually on it
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [release]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: The draft carries every asset SHA256SUMS.txt lists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # `GET /releases/tags/{tag}` does not return drafts, so list and
+          # match on tag_name. The tag name goes in through `env.` and never
+          # through string interpolation: a tag may legally contain a double
+          # quote, and interpolating one produces a jq syntax error that says
+          # nothing about the tag. No `| head` anywhere below either — under
+          # pipefail a closed pipe fails `gh` and the step dies naming the
+          # wrong thing.
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+               --jq '[.[] | select(.tag_name==env.GITHUB_REF_NAME) | .id] | .[0] // empty')
+          if [ -z "$id" ]; then
+            echo "no release for $GITHUB_REF_NAME in the 100 most recent." >&2
+            echo "Either the release job never created one, or this repository" >&2
+            echo "now has more than 100 releases and this needs --paginate." >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$id" > release.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$id/assets" > assets.json
+          # name, label, state, size. The label matters: GitHub rewrites a
+          # space in an asset name to a dot and the action puts the original
+          # in `label`, so comparing `.name` alone would report a file
+          # MISSING from a release that carries it.
+          jq -r '.[] | [.name, (.label // ""), .state, (.size|tostring)] | @tsv' \
+            assets.json > assets.tsv
+          # SHA256SUMS.txt is computed from the artefacts themselves, so it is
+          # the release's own account of what it consists of.
+          sums_id=$(jq -r '[.[] | select(.name=="SHA256SUMS.txt") | .id] | .[0] // empty' assets.json)
+          if [ -z "$sums_id" ]; then
+            echo "SHA256SUMS.txt is not on the release, so there is no manifest" >&2
+            echo "to check the rest against. That is itself the finding." >&2
+            exit 1
+          fi
+          gh api -H "Accept: application/octet-stream" \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$sums_id" > SHA256SUMS.txt
+          # `|| true` would swallow grep's exit 2 — an unreadable or absent
+          # file — and leave the floor below reporting it as a truncated
+          # manifest, which is the wrong diagnosis for a failed download.
+          grep -E '^[0-9a-f]{64}  ' SHA256SUMS.txt > manifest.txt || [ $? -eq 1 ]
+          # An exact count, not a floor, and deliberately so: a loop over an
+          # empty manifest is a green tick that read nothing, which is the
+          # shape of the problem rather than a check on it — and a manifest
+          # that grew is a release that gained an artefact nobody updated
+          # this number for. Either direction is a stop.
+          listed=$(wc -l < manifest.txt)
+          if [ "$listed" -ne 8 ]; then
+            echo "SHA256SUMS.txt lists $listed files; a release carries 8 besides" >&2
+            echo "the manifest itself (five Android, three desktop). If that has" >&2
+            echo "genuinely changed, change this number with it; if it has not," >&2
+            echo "the manifest is truncated or its format has moved." >&2
+            exit 1
+          fi
+          missing=0
+          while read -r _ name; do
+            dotted=${name// /.}
+            line=$(awk -F'\t' -v n="$name" -v d="$dotted" '$1==n || $2==n || $1==d' assets.tsv)
+            if [ -z "$line" ]; then
+              echo "MISSING  $name" >&2; missing=1; continue
+            fi
+            state=$(printf '%s' "$line" | cut -f3)
+            size=$(printf '%s' "$line" | cut -f4)
+            # A size that is not a number reaches `[ ... -le 0 ]` as a syntax
+            # error, and a syntax error in an `elif` CONDITION is not a
+            # failure `set -e` will catch: the branch is simply false, the
+            # loop continues, and the step prints the all-clear over a
+            # release it could not read. Refuse the unreadable value instead.
+            case "$size" in
+              ''|*[!0-9]*)
+                echo "UNREADABLE SIZE  $name (size=$size)" >&2; missing=1; continue ;;
+            esac
+            # `state` is the field the action never looks at. GitHub's docs
+            # say an upstream failure "may leave an empty asset with a state
+            # of starter", and by name alone that corpse is indistinguishable
+            # from the file it stands in for.
+            if [ "$state" != "uploaded" ]; then
+              echo "NOT UPLOADED  $name (state=$state)" >&2; missing=1
+            elif [ "$size" -eq 0 ]; then
+              echo "EMPTY  $name" >&2; missing=1
+            fi
+          done < manifest.txt
+          if [ "$missing" != "0" ]; then
+            echo "the draft is incomplete and will not be published." >&2
+            exit 1
+          fi
+          # It should still be a draft here: this job runs before anything
+          # flips it. If it is already public, something published around
+          # this gate and the gate is decoration.
+          if [ "$(jq -r '.draft' release.json)" != "true" ]; then
+            echo "this release is already published, so nothing was gated." >&2
+            echo "A publish step has moved ahead of release-verify." >&2
+            exit 1
+          fi
+          echo "$listed listed files, all present, uploaded and non-empty; still a draft."
+
+  # The flip, and the only thing in this workflow that makes a release
+  # public. It needs BOTH jobs, without `always()`, so a failed assembly or a
+  # failed verification leaves the draft exactly where it is — recoverable by
+  # hand, and visible to nobody who did not go looking.
+  release-publish:
+    name: Publish the draft, now that it is complete
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release, release-verify]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flip the verified draft to published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+               --jq '[.[] | select(.tag_name==env.GITHUB_REF_NAME) | .id] | .[0] // empty')
+          if [ -z "$id" ]; then
+            echo "no release for $GITHUB_REF_NAME to publish." >&2
+            exit 1
+          fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" \
+            -F draft=false --jq '.html_url'

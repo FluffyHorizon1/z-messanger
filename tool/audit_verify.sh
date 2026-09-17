@@ -97,6 +97,8 @@ run "CI jobs check out what they use" "C25 C26" "." \
     python3 tool/check_workflow.py
 run "the release job's shell, on a staged release" "C25 C26" "." \
     python3 tool/dry_run_release.py
+run "the release-verify job refuses an incomplete release" "C25 C26" "." \
+    python3 tool/test_release_verify.py
 run "every Blueprint keeps its secrets out of the file" "-" "." \
     python3 tool/check_blueprints.py
 run "Android refuses every automatic copy of its data" "C1" "." \
