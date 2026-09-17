@@ -43,13 +43,18 @@ services:
       # now accepts values only up to KT_MAX_VALUE_BYTES (below), refuses to
       # publish once free space is under KT_MIN_FREE_BYTES, charges a FIRST
       # publish from a new account against its own allowance, and reports
-      # diskBytes / diskFreeBytes / full in /health. At the defaults 1 GB is
-      # ~22,900 maximum-size entries above the floor and several hundred
-      # thousand ordinary ones; a flood from one address takes about fourteen
-      # hours and two thousand minted accounts to reach the floor, and reads
-      # carry on when it does. Watch diskFreeBytes; grow this before it
-      # matters — entries never expire, by design.
-      sizeGB: 1
+      # diskBytes / diskFreeBytes / full in /health. A maximum-size entry costs
+      # about 44 KB on disk at KT_MAX_VALUE_BYTES, so the 50 GB below is
+      # roughly 1.2 million of them above the floor and tens of millions of
+      # ordinary ones; at PUBLISH_PER_MIN a flood from one address needs
+      # something like a month and tens of thousands of minted accounts to
+      # reach the floor, and reads carry on when it does. Those are the 1 GB
+      # figures multiplied through, not fresh measurements. Watch
+      # diskFreeBytes; grow this before it matters — entries never expire, by
+      # design.
+      # Render cannot shrink a disk: this must be >= what is mounted, or
+      # applying the Blueprint is refused.
+      sizeGB: 50
     envVars:
       - key: KT_SEED
         sync: false             # 64 hex characters, generated on your machine; asked for at creation
