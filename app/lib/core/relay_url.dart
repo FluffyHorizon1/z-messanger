@@ -5,8 +5,31 @@ import 'vault.dart';
 /// The relay every install dials by default, so a new user types nothing to get
 /// started. It can be overridden from the hidden Developer-mode settings for a
 /// custom or self-hosted relay. The service must actually be served here
-/// (DNS + TLS + WebSocket) for the default to connect.
-const String defaultRelayUrl = 'wss://zmessengers.com';
+/// (DNS + TLS + WebSocket) for the default to connect — and be served here
+/// *without a redirect*, which is why this is `www` and not the apex.
+///
+/// The apex answers `301 → www`, and until 2026-09-17 that was invisible:
+/// `WebSocket.connect` follows the redirect, so the socket opened and
+/// everything worked. Binding authentication to the relay's authority (§12.1,
+/// `z-relay-auth-v2:`) made it fatal — the client signs the host it DIALLED
+/// and the relay verifies the Host header it RECEIVED, and a redirect is
+/// exactly the case where those two differ. Measured against the live relay:
+/// the apex answered `bad_auth`, `www` authenticated. The same 301 had
+/// already forced the invite link host to `www` (`connectLinkHost`), and this
+/// constant was left behind; `tool/check_relay_url.py` now holds the two
+/// together so they cannot drift apart again.
+const String defaultRelayUrl = 'wss://www.zmessengers.com';
+
+/// What [defaultRelayUrl] used to be, and what is therefore written into the
+/// vault of every install made before 2026-09-17.
+///
+/// Onboarding does not treat the default as a fallback — it passes whatever
+/// is in the address field to `setRelayUrl`, so the apex is a stored value on
+/// essentially every existing install rather than something the constant is
+/// consulted for. Changing the constant alone would have fixed new installs
+/// only. [relayUrlFor] moves the ones that never chose an address of their
+/// own; anyone who typed a relay keeps it.
+const String legacyDefaultRelayUrl = 'wss://zmessengers.com';
 
 /// Helpers for accepting relay addresses in whatever form the user pastes.
 ///
@@ -67,6 +90,35 @@ bool isSecureOrLocalRelay(String normalizedUrl) {
     if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true; // 172.16.0.0/12
   }
   return false;
+}
+
+/// The address this install should dial, with the superseded default retired.
+///
+/// Returns the stored `server_url`, except that an install still holding the
+/// byte-exact [legacyDefaultRelayUrl] — which is what onboarding wrote for
+/// anyone who took the default and never typed anything — is moved to
+/// [defaultRelayUrl], and the move is persisted, so it happens once rather
+/// than on every start. Any other address is returned untouched: a
+/// self-hosted relay, a LAN address, a Render hostname, an address restored
+/// from an archive. Retiring a default is not licence to rewrite somebody's
+/// relay.
+///
+/// The apex is the one address not preserved, and someone who typed it
+/// deliberately is moved with everyone else. That is not a judgement about
+/// their choice: for a v2 client the apex is not a working relay at all, it
+/// is the same service one redirect away, and the redirect is the defect.
+///
+/// Written through the same door as every other writer of `server_url`
+/// (`tool/check_relay_url.py` rule 1), and with `acceptedInsecure: false`,
+/// which costs nothing: both addresses are `wss:`.
+Future<String> relayUrlFor(Vault vault) async {
+  final stored = await vault.kvGet('server_url');
+  if (stored == null) return defaultRelayUrl;
+  if (stored.trim() != legacyDefaultRelayUrl) return stored;
+  final out = await setRelayUrl(vault, defaultRelayUrl);
+  // A refusal here cannot happen for a `wss:` address, but a write that did
+  // not land must not be reported as one: keep dialling what is on disk.
+  return out == RelayUrlOutcome.saved ? defaultRelayUrl : stored;
 }
 
 /// What happened when something tried to set the relay URL.

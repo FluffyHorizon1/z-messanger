@@ -311,7 +311,7 @@ class _BootstrapperState extends State<Bootstrapper>
     final identity = await ZIdentity.fromJson(
         (jsonDecode(idJson) as Map).cast<String, Object?>());
     final name = await vault.kvGet('display_name') ?? 'Me';
-    final serverUrl = await vault.kvGet('server_url') ?? defaultRelayUrl;
+    final serverUrl = await relayUrlFor(vault);
     final transport = Transport(identity: identity, serverUrl: serverUrl);
     final service = await ChatService.init(
       vault: vault,

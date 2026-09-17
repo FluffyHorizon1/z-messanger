@@ -114,7 +114,7 @@ CI uses.
 
 ## Running your own relay
 
-The app ships pointed at `wss://zmessengers.com`, and you can point it
+The app ships pointed at `wss://www.zmessengers.com`, and you can point it
 anywhere. A relay is a single Node process that needs no storage, so it runs
 on the smallest instance a host offers — plain Docker, a one‑command VPS
 install with automatic TLS, or a free cloud tier.

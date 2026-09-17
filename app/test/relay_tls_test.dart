@@ -33,6 +33,28 @@
 //     metadata sent in the clear to whoever owns that name — from a pasted
 //     string and from a restored archive alike, since both doors used the
 //     one predicate (the 2026-09-14 review's finding 10; C36).
+//  6. the default relay is dialled directly and never through a redirect: it
+//     names the same host the invite links do, and it is TLS;
+//  7. and the address that redirect broke is retired from the installs that
+//     took it as a default, from nobody who chose one, and exactly once.
+//
+// 6 and 7 are the 2026-09-17 ones. `zmessengers.com` answers 301 -> www.
+// `WebSocket.connect` follows a redirect, so for a year the socket opened and
+// nothing looked wrong; the invite link host had already been moved to `www`
+// for the same redirect, and the relay constant was left on the apex. Binding
+// authentication to the relay's authority (`z-relay-auth-v2:`, §12.1) turned
+// the follow into a refusal — the client signs the host it DIALLED, the relay
+// verifies the Host header it RECEIVED, and a redirect is the one case where
+// those differ — so every 3.5.2 client was refused by its own default relay
+// with `bad_auth`. Measured against the live relay before it was touched:
+// apex refused, www authenticated.
+//
+// Two halves, because the constant is only half the problem: onboarding does
+// not treat the default as a fallback, it WRITES it, so the apex is on disk
+// in every install made before 2026-09-17 and a new constant would have
+// fixed new installs only. `tool/check_relay_url.py` rule 3 holds the two
+// hosts together from now on; `RELAY_AUTHORITIES` on the relay covers the
+// installs that never update, which no test here can reach.
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -244,5 +266,73 @@ void main() {
     await t.tap(find.text(l.relayInsecureUseAnyway));
     await t.pumpAndSettle();
     expect(await again, isTrue);
+  });
+
+  test('6. the default relay is one host with the invite links, over TLS',
+      () async {
+    final relay = Uri.parse(defaultRelayUrl);
+    final link = Uri.parse('https://$connectLinkHost');
+    expect(relay.scheme, 'wss',
+        reason: 'the address every install dials out of the box is TLS');
+    expect(isSecureOrLocalRelay(defaultRelayUrl), isTrue);
+    expect(relay.host, link.host,
+        reason: 'a relay and the links that point at it are one deployment. '
+            'Two hosts means one of them redirects to the other, and the '
+            'client that dials it signs an authority the relay does not read '
+            'off its own Host header');
+    expect(relay.host, isNot(Uri.parse(legacyDefaultRelayUrl).host),
+        reason: 'and the host that redirects is not it');
+    // Nothing above would notice the two constants being moved together to
+    // an address with a path or a port, which the authority is not.
+    expect(relay.path, isEmpty);
+    expect(relay.hasPort, isFalse);
+  });
+
+  test('7. the superseded default is retired, and nothing else is', () async {
+    // Nothing stored: the default, and no write — there is nothing to retire.
+    final fresh = await freshVault('seven_fresh');
+    expect(await relayUrlFor(fresh), defaultRelayUrl);
+    expect(await fresh.kvGet('server_url'), isNull,
+        reason: 'reading the address is not a reason to write one');
+    await fresh.db.close();
+
+    // An install from before 2026-09-17: onboarding wrote the old default
+    // verbatim, so that exact string is on disk. It is moved, the move is
+    // persisted, and a second start finds it already done.
+    final took = await freshVault('seven_took');
+    await took.kvPut('server_url', legacyDefaultRelayUrl, sensitive: false);
+    expect(await relayUrlFor(took), defaultRelayUrl);
+    expect(await took.kvGet('server_url'), defaultRelayUrl,
+        reason: 'persisted, so this happens once and not on every start');
+    expect(await relayUrlFor(took), defaultRelayUrl, reason: 'idempotent');
+    await took.db.close();
+
+    // Whitespace is all the vault could plausibly have added.
+    final padded = await freshVault('seven_padded');
+    await padded.kvPut('server_url', '  $legacyDefaultRelayUrl  ',
+        sensitive: false);
+    expect(await relayUrlFor(padded), defaultRelayUrl);
+    await padded.db.close();
+
+    // Everyone who chose an address keeps it, whatever it is. Retiring a
+    // default is not licence to rewrite somebody's relay, and the match is on
+    // the whole string: an address that merely contains the old one, or
+    // extends it, is somebody's choice and not the default anybody took.
+    const chosen = <String>[
+      'wss://relay.example.com',
+      'wss://z-relay-x.onrender.com',
+      'ws://192.168.1.50:8080',
+      'wss://zmessengers.com.evil.example',
+      'wss://zmessengers.com/relay',
+      'wss://zmessengers.com:8443',
+    ];
+    for (var i = 0; i < chosen.length; i++) {
+      final v = await freshVault('seven_kept_$i');
+      await v.kvPut('server_url', chosen[i], sensitive: false);
+      expect(await relayUrlFor(v), chosen[i], reason: chosen[i]);
+      expect(await v.kvGet('server_url'), chosen[i],
+          reason: 'and nothing was written over it: ${chosen[i]}');
+      await v.db.close();
+    }
   });
 }

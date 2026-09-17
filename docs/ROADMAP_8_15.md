@@ -3992,3 +3992,63 @@ direction; the phases, their order and both ordering arguments stand.
    asked it not to.
 
    **A signature says whose key answered, not whose question it was.**
+
+101. **The client could not authenticate to its own default relay, because
+    the address it dialled redirects.** Found the day after 3.5.2 shipped,
+    while answering a question about what is live. `zmessengers.com` answers
+    `301 → www.zmessengers.com`. That had been true for a long time and had
+    never mattered: `WebSocket.connect` follows a redirect, the socket
+    opened, and every release up to 3.5.1 worked. 3.5.2 bound authentication
+    to the relay's authority — the client signs `"z-relay-auth-v2:" ‖
+    authority ‖ nonce`, where the authority is the host it DIALLED, and the
+    relay verifies against the Host header it RECEIVED. A redirect is
+    precisely the case in which those two differ. So the client signed
+    `zmessengers.com`, the relay read `www.zmessengers.com` off the header,
+    the signature verified against neither of its names, and it answered
+    `bad_auth` and closed. Measured before anything was touched, with the
+    shipped `RelayClient.connect` against the live relay: apex refused, www
+    authenticated. Nobody in the field is on 3.5.2 yet — Play is on 3.0.9 —
+    and older clients are untouched because they send v1, which names no
+    authority and which `RELAY_AUTH_V1=on` still accepts. This was a release
+    that could not have worked, not an outage; the only reason it was found
+    before anyone met it is that the question happened to be asked.
+
+    The same 301 had already broken invite links and moved `connectLinkHost`
+    to `www` months earlier. The relay constant was left on the apex and
+    nothing held the two together, which is the part worth keeping: the fix
+    was known and applied once, to one of the two places that needed it, and
+    the second place stayed wrong for as long as the redirect was invisible.
+    `tool/check_relay_url.py` gained a third rule — the default relay and the
+    invite links name one host, and the default is TLS — and it fails on the
+    tree as it was, in both directions, on a cleartext default, and when
+    either constant stops being a literal it can read. A guard that cannot
+    read its subject any more says so rather than passing.
+
+    Changing the constant is the smaller half. Onboarding does not treat
+    `defaultRelayUrl` as a fallback; it puts it in the address field and
+    WRITES whatever is there, so the apex is a stored value in the vault of
+    every install made before today and a new constant reaches new installs
+    only. `relayUrlFor` retires it at boot — an install holding the
+    byte-exact old default is moved to the new one and the move is
+    persisted, so it happens once; any other address is returned untouched,
+    including one that merely looks like it (`…com.evil.example`, a path, a
+    port). Anyone who chose a relay keeps it. The apex is the one address
+    not preserved, because for a v2 client it is not a working relay: it is
+    the same service one redirect away.
+
+    Neither half reaches an install that never updates, and no app release
+    can. `RELAY_AUTHORITIES=zmessengers.com` on the relay does: it adds the
+    apex to the set of names a v2 signature may carry, so a client that
+    dials it authenticates whether or not it ever sees this release. It is
+    in `render.ha.yaml` with the reason attached, it is load-bearing and
+    permanent rather than a stopgap, and removing it later locks those
+    users out with no error anyone would connect to it. It is also the only
+    part of this a builder cannot do: setting it on `z-relay-ha` is a
+    dashboard action, and live systems are nobody's write-set.
+
+    Criteria 6 and 7 of `app/test/relay_tls_test.dart`: the default relay is
+    one host with the invite links, over TLS, with no path or port; and the
+    superseded default is retired from the installs that took it, from
+    nobody who chose an address, and exactly once.
+
+    **A redirect is invisible until something signs the name on the door.**

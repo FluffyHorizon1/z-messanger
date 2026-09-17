@@ -73,6 +73,27 @@ services:
       # delay rather than a message.
       - key: NEW_MAILBOX_PER_MIN
         value: "120"
+      # Authorities a v2 signature may name besides the Host header the
+      # connection arrived with (server.js, `authorities`). This one is not a
+      # convenience and not a stopgap: it is load-bearing, permanently.
+      #
+      # `zmessengers.com` answers 301 -> www, and `WebSocket.connect` follows
+      # it — so a client that dials the apex opens a socket whose Host header
+      # says `www.zmessengers.com` while its v2 signature names
+      # `zmessengers.com`. The two differ, the signature verifies against
+      # neither of the relay's own names, and the client is refused with
+      # `bad_auth`. Measured against the live relay on 2026-09-17: apex
+      # refused, www authenticated.
+      #
+      # The apex is not merely the old default constant — it is the string
+      # onboarding WROTE into the vault of every install made before that
+      # date, so it is on disk in the field and no app release can reach the
+      # ones that never update. app/lib/core/relay_url.dart retires it at
+      # boot for clients that do update; this line is what keeps everyone
+      # else connected, and it stays set for as long as any such install
+      # might still be dialled. Removing it locks those users out silently.
+      - key: RELAY_AUTHORITIES
+        value: zmessengers.com
       # The Play App Signing certificate fingerprint (SHA-256, colon-separated
       # upper-case hex), read out of Play Console -> Setup -> App integrity.
       # It is public — it is published verbatim at
