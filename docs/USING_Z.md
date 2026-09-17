@@ -131,7 +131,8 @@ has never published — an older app, most likely — and nothing changes.
 stays that way for a day, the devices only that list added stop getting your
 messages until it appears, and the chat says so. A **disagreement** between
 the log and their devices holds your messages to them until it resolves or
-you choose to send anyway; it is rare and worth a phone call. If the log
+you choose to send anyway — for that disagreement; a new and different one
+asks you again. It is rare and worth a phone call. If the log
 itself misbehaves — shows two different histories — Z says so at the top of
 the chat list and confirms nothing new until you reset it in Settings; your
 conversations continue on the checks that existed before the log.
@@ -151,7 +152,9 @@ The admin manages membership. Everyone sees membership changes.
 ## Disappearing messages
 
 Set a timer per conversation and messages delete on both sides when it
-expires.
+expires — on every device on both sides: a copy on your other device, a
+message sent from a contact's other device, and the history a newly linked
+device receives all keep the timer.
 
 This is a tidiness feature, not a security one. It works because the other
 person's app cooperates. Someone who wants a copy can photograph the screen,

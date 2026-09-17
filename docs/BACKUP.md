@@ -204,7 +204,12 @@ archive*. Both ends still materialise one plaintext attachment at a time to
 seal or open it, because a blob at rest is one AEAD message; the frames bound
 what the format holds, not what the AEAD needs. An importer writes each
 attachment's frames to a spill file as they arrive and seals them into the
-vault one at a time afterwards.
+vault one at a time afterwards — and the spill is itself sealed, frame by
+frame under a key that exists only for that restore, because the import can
+be killed at any frame and a spill that outlives its process must not be a
+plaintext copy of what the vault seals. The reference importer zeroes and
+removes the spill when it returns, and sweeps whatever a dead process left
+when the vault next opens.
 
 `fid` is `b64url(12 random bytes)` (PROTOCOL §7) and an importer **MUST**
 refuse a record or frame whose `fid` is not, exactly as a receiver refuses an

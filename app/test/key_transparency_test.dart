@@ -13,7 +13,10 @@
 //     fetched, verified and installed from the log (11.5);
 //  4. a log entry at the same version as the in-band list with a different
 //     fingerprint is a conflict: sends are held until "send anyway", and the
-//     account's owner is told of the entry they did not issue;
+//     account's owner is told of the entry they did not issue — told on
+//     disk, so the alert outlives the service that raised it; and a "send
+//     anyway" is for the conflict on the screen: a later, different conflict
+//     for the same contact holds sends again;
 //  5. a head that does not extend the accepted one is a log fault: nothing
 //     new is confirmed, and resetting the history recovers;
 //  6. an unreachable log degrades to in-band verification.
@@ -433,6 +436,26 @@ void main() {
     await ben.kt.check();
     expect(ben.kt.ownAlert, isNotNull);
     expect(ben.kt.ownAlert!.version, 2);
+    // And the alert is on disk, not only in this object: a service built
+    // over the same vault loads it. Until 2026-09-17 `kt_own_alert` was not
+    // on `Vault.plainKeys`, so the write after the assignment above THREW —
+    // this assertion passed on the in-memory field while the alert was never
+    // persisted, the check pass aborted before its grace pass, and every
+    // launch raised the exception again (finding 5). `check()` swallows,
+    // which is why only a second service can tell.
+    final reloaded = KeyTransparency(
+        vault: ben.vault, host: _EmptyHost(), fetcher: _CountingFetcher(), config: cfg());
+    await reloaded.load();
+    expect(reloaded.ownAlert, isNotNull, reason: 'the alert survived the service that raised it');
+    expect(reloaded.ownAlert!.version, 2);
+    expect(reloaded.ownAlert!.fpB64, b64(fakeFp));
+    await reloaded.acknowledgeOwnAlert();
+    final again = KeyTransparency(
+        vault: ben.vault, host: _EmptyHost(), fetcher: _CountingFetcher(), config: cfg());
+    await again.load();
+    expect(again.ownAlert, isNull, reason: 'and an acknowledgement is on disk too');
+    reloaded.dispose();
+    again.dispose();
     // Now Ben's honest v2 reaches Alice in-band (its publish is refused by
     // the log as stale — the rogue entry holds the version).
     final laptop = await ZIdentity.generate();
@@ -454,6 +477,35 @@ void main() {
     await alice.kt.check();
     expect(alice.kt.statusOf(ben.myRid)!.state, KtContactState.conflict);
     expect(alice.kt.sendsHeld(ben.myRid), isFalse);
+    // And does NOT survive a different one. The log now serves a v3 entry
+    // for Ben that does not open as his list at all — a more serious event
+    // than the one Alice waved through, and until 2026-09-17 it arrived
+    // acknowledged: no banner, no hold, no word (finding 11). "Send anyway"
+    // was for what was on the screen.
+    final rogue3 = await ktPublishRequest(
+        accountEdSeed: acct.accountEdSeed!,
+        version: 3,
+        fp: Uint8List.fromList(List<int>.filled(16, 0x43)),
+        value: await ktSealValue(acct.accountEdPub, utf8.encode('{"still":"not a list"}')));
+    final post3 = await (await HttpClient().postUrl(Uri.parse('http://127.0.0.1:$logPort/kt/v1/publish'))
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode(rogue3)))
+        .close();
+    expect(post3.statusCode, 201);
+    await post3.drain<void>();
+    await alice.kt.check();
+    final s3 = alice.kt.statusOf(ben.myRid)!;
+    expect(s3.state, KtContactState.conflict);
+    expect(s3.logVersion, 3);
+    expect(s3.detail, contains('does not open'));
+    expect(s3.acknowledged, isFalse, reason: 'new evidence, new question');
+    expect(alice.kt.sendsHeld(ben.myRid), isTrue, reason: 'held again until the user answers this one');
+    await expectLater(alice.sendText(ben.myRid, 'held again?'), throwsA(isA<KtSendHeldException>()));
+    // Answered, it stays answered while the evidence stays.
+    await alice.kt.acknowledgeConflict(ben.myRid);
+    await alice.kt.check();
+    expect(alice.kt.statusOf(ben.myRid)!.logVersion, 3);
+    expect(alice.kt.sendsHeld(ben.myRid), isFalse, reason: 'the same v3 conflict, still acknowledged');
     // The longest round trip in the file, and the one observed to lose the
     // race with a loaded runner.
   }, retry: 2);

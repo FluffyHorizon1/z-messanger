@@ -953,38 +953,42 @@ class KeyTransparency {
             confirmedDevs: heldDevs,
           );
         } else {
+          final detail = 'same version $lv, different fingerprint';
           next = KtContactStatus(
             state: KtContactState.conflict,
             logVersion: lv,
             logFpB64: lf,
             checkedAtMs: t,
             confirmedDevs: prev?.confirmedDevs ?? baseline,
-            detail: 'same version $lv, different fingerprint',
-            acknowledged: prev?.state == KtContactState.conflict && prev!.acknowledged,
+            detail: detail,
+            acknowledged: _stillAcknowledged(prev, lv, lf, detail),
           );
         }
       } else if (lv > hv) {
         // The log is ahead: it is a source (11.5).
         final list = await _openList(c.accountEdPub, latest);
         if (list == null) {
+          final detail = 'the log\'s entry (v$lv) does not open or verify as this account\'s list';
           next = KtContactStatus(
             state: KtContactState.conflict,
             logVersion: lv,
             logFpB64: lf,
             checkedAtMs: t,
             confirmedDevs: prev?.confirmedDevs ?? baseline,
-            detail: 'the log\'s entry (v$lv) does not open or verify as this account\'s list',
-            acknowledged: prev?.state == KtContactState.conflict && prev!.acknowledged,
+            detail: detail,
+            acknowledged: _stillAcknowledged(prev, lv, lf, detail),
           );
         } else {
           final installed = await host.ktInstallFromLog(c.rid, list);
+          final detail = installed ? null : 'the log\'s list (v$lv) was refused by the device-list rules';
           next = KtContactStatus(
             state: installed ? KtContactState.confirmed : KtContactState.conflict,
             logVersion: lv,
             logFpB64: lf,
             checkedAtMs: t,
             confirmedDevs: installed ? {for (final d in list.devices) b64(d.deviceEdPub)} : (prev?.confirmedDevs ?? baseline),
-            detail: installed ? null : 'the log\'s list (v$lv) was refused by the device-list rules',
+            detail: detail,
+            acknowledged: detail != null && _stillAcknowledged(prev, lv, lf, detail),
           );
         }
       } else {
@@ -1222,6 +1226,24 @@ class KeyTransparency {
       // A flush must not take a check down.
     }
   }
+
+  /// Whether the user's "send anyway" still stands.
+  ///
+  /// An acknowledgement is of a piece of evidence — this version, this
+  /// fingerprint, this way of being wrong — and it is carried only while the
+  /// evidence is the same. Until 2026-09-17 it was carried from any conflict
+  /// to any conflict: the user waved through "same version 5, different
+  /// fingerprint", and a v7 entry that did not even open as the account's
+  /// list arrived acknowledged — no banner, no hold, no word (the 2026-09-14
+  /// review's finding 11). ADR 0006 says "until the next check agrees or the
+  /// user chooses to send anyway"; the user chose for what was on the screen.
+  static bool _stillAcknowledged(KtContactStatus? prev, int lv, String lf, String detail) =>
+      prev != null &&
+      prev.state == KtContactState.conflict &&
+      prev.acknowledged &&
+      prev.logVersion == lv &&
+      prev.logFpB64 == lf &&
+      prev.detail == detail;
 
   /// The grace pass: every unconfirmed contact past the grace period has the
   /// devices only its held list added put on hold. Needs the current held

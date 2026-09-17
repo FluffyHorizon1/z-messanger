@@ -459,6 +459,12 @@ class Vault {
       ),
     );
     await _sweepOrphans(db, filesDir);
+    // A restore that did not live to clean up after itself. What it leaves
+    // is sealed under a key that died with the process (`RestoreSpill`), so
+    // this is hygiene rather than the defence — but until 2026-09-17 it was
+    // plaintext and nothing collected it, because this sweep walked only
+    // the files directory and the spill is not in it.
+    shredDir(Directory(p.join(root.path, restoreSpillDirName)));
     final vault = Vault._(db, root, filesDir, SecretKey(masterKeyBytes),
         masterKeyBytes, deviceSecret, fallback, hasPass);
     await vault._resealStrays();
@@ -499,6 +505,33 @@ class Vault {
   /// The delete path is fixed; this clears what earlier builds left, and
   /// catches the crash window between [writeBlob] and the transaction that
   /// records it. Rows first, then the blobs no row names any more.
+  /// Where `BackupArchive.import` spills each attachment's sealed frames
+  /// while it runs, under the vault root and beside — not inside — the files
+  /// directory. Named here so [open] can sweep it.
+  static const restoreSpillDirName = 'restore-spill';
+
+  /// Zero and remove every file under [dir], then the directory. Best effort
+  /// at every step, as [deleteBlob] is: a file that cannot be overwritten is
+  /// still deleted, and one that cannot be deleted does not stop the next.
+  static void shredDir(Directory dir) {
+    if (!dir.existsSync()) return;
+    try {
+      for (final e in dir.listSync()) {
+        if (e is! File) continue;
+        try {
+          final len = e.lengthSync();
+          e.writeAsBytesSync(Uint8List(len), flush: true);
+        } catch (_) {}
+        try {
+          e.deleteSync();
+        } catch (_) {}
+      }
+    } catch (_) {}
+    try {
+      dir.deleteSync(recursive: true);
+    } catch (_) {}
+  }
+
   static Future<void> _sweepOrphans(Database db, Directory filesDir) async {
     const orphanClause = '''
         NOT EXISTS (SELECT 1 FROM messages m
@@ -874,10 +907,19 @@ class Vault {
     'own_list_v', 'own_list_h', 'own_list_json', 'own_list_mlsig',
     'own_alert', 'own_alert_echo', 'removed_alert',
     // The transparency log's own state: heads, faults and timings, all of
-    // which the log serves publicly to anyone who asks it.
+    // which the log serves publicly to anyone who asks it — and the alert
+    // about this account's own label, which names a version and a
+    // fingerprint the log serves to anyone too. That last one was written
+    // `sensitive: false` from the day the alert existed and was never on
+    // this list, so `kvPut` threw: the one alert the log exists to raise was
+    // never persisted, and the check pass that raised it aborted before the
+    // grace pass and the UI notification (the 2026-09-14 review's finding
+    // 5). `plaintext_keys_test.dart` now checks every `sensitive: false`
+    // call site in `lib/` against this list, so the next one fails in CI
+    // rather than on the day it matters.
     'kt_config', 'kt_own_first_v', 'kt_own_known', 'kt_pub_pending',
     'kt_last_fail_ms', 'kt_fault', 'kt_head', 'kt_last_ok_ms',
-    'kt_witness_ok_ms', 'kt_pub_done',
+    'kt_witness_ok_ms', 'kt_pub_done', 'kt_own_alert',
   };
 
   /// Per-contact families of the same, keyed by routing id — and a routing id

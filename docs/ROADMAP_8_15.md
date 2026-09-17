@@ -3596,7 +3596,7 @@ direction; the phases, their order and both ordering arguments stand.
 
    At the defaults a flood from one address needs about fourteen hours and
    two thousand minted accounts to reach the floor, against a hundred
-   minutes and a hundred and fifty. R30 records what remains: the arithmetic
+   minutes and a hundred and fifty. R31 records what remains: the arithmetic
    itself, answered by an alarm and a disk grown before it matters, and by a
    witness holding the whole history.
 
@@ -3775,9 +3775,85 @@ direction; the phases, their order and both ordering arguments stand.
    charges the account's contacts for. It is kept and tried again in a
    minute now, and a log at capacity is not counted as unreachable.
 
-   R31 records what remains: honest capacity, and the header that makes any
+   R32 records what remains: honest capacity, and the header that makes any
    per-address gate per-client. kt 77 (was 72); app +1 file (2).
    Twenty-seven mutations across the log, the mirror and the client, each
    caught by the criterion written for it.
 
    **The obvious fix for a shared switch is often a second shared switch.**
+
+98. **Six things the client said it did.**
+
+   The 2026-09-14 review's client claim-breaks — 5, 6, 7, 8, 10, 11 — each
+   a sentence in a published document that the code did not keep, and each
+   reproduced against 3.4.9 before it was touched.
+
+   *5.* `kt_own_alert` was written `sensitive: false` and was not on
+   `Vault.plainKeys`, so `kvPut` threw: the one alert the log exists to
+   raise — an authenticated `latest` for this account at a version this
+   device never issued — was set in memory and never persisted, and the
+   check pass that raised it aborted before its grace pass and the UI. The
+   test read the in-memory field, which is set before the throw, and passed.
+   The key is declared now; the test reloads the alert through a second
+   service over the same vault; and `plaintext_keys_test.dart` checks every
+   `sensitive: false` call site in `lib/` against the list from the source —
+   forty-one, of which this was the one — so the next one fails in CI rather
+   than on the day a rogue publish reaches it.
+
+   *6.* A disappearing message that reached a device through the self-sync
+   door, the extra-device door or the history replay was stored with no
+   expiry, and the sweeper never matched it: a copy on your own laptop, a
+   message from a contact's laptop, and the history a new device is given
+   all lived for ever. The first two keep the inner message's `ttl` now —
+   from the message's own timestamp for one's own copy, from receipt for
+   somebody else's, the same clock as the primary inbound path; the third
+   carries `x`, an absolute expiry on each history item (PROTOCOL §9), and
+   an item whose time has passed is not stored. Four criteria, offline.
+
+   *7.* A restore spilled each attachment's frames to `restore-spill/` in the
+   clear, and the `finally` that removed it does not run for the one exit the
+   spill exists for: the OS killing the app for memory mid-restore. Nothing
+   collected what was left — the orphan sweep walks the files directory, and
+   the spill is beside it. The spill is sealed now, frame by frame under a
+   key drawn for that restore and held only in the process (`RestoreSpill`,
+   the archive's own frame construction with one counter across every
+   frame), zeroed before unlink, and swept when the vault next opens.
+   Measured by looking: the spill sampled every 10 ms through a 60 MiB
+   restore, never once showing an attachment's shape, with the detector
+   proved against an attachment first. A `DATA_MAP` row, C11's fifth dated
+   leak, C35 and `BACKUP.md` say so.
+
+   *8.* `deleteContact` removed the tables and not one `kv` family, so the
+   contact's account key, their devices' public keys with the list's
+   version and signature, the post-quantum material, the ratchet with their
+   linked devices, the alerts and what the log said stayed — keyed by the
+   routing id that says whose, unsealed where declared plain, for the life
+   of the install — and a contact added back met their own stale `cdev_ver_`
+   and had every list below it refused as a replay. The families are one
+   declared list now, removed with the rows and with the dedupe entries for
+   the contact's devices, and the process forgets them too; the test searches
+   every table and every key for the routing id afterwards, and checks the
+   list against the source both ways. `DATA_MAP`'s "nothing locally" is true.
+
+   *10.* "Local" was a string prefix on the host, so `ws://10.relay.example.net`
+   was on the LAN: no dialog, adopted, from a pasted string or a hand-built
+   archive alike. It is an address test now — `InternetAddress.tryParse`,
+   loopback, the three private ranges by their bytes — and a name is never
+   local. Eight names that begin like addresses, `10.1` and a public IPv6
+   literal are refused; every real local form still passes.
+
+   *11.* One "send anyway" was carried to every later conflict for that
+   contact, whatever it was: the user waved through "same version, different
+   fingerprint", and a v7 entry that did not even open as the account's list
+   arrived acknowledged — no banner, no hold. An acknowledgement is of its
+   evidence now (version, fingerprint, the way it is wrong) and a different
+   conflict asks again; the same one stays answered. ADR 0006's table and
+   `USING_Z` say so.
+
+   Found on the way: 3.4.9's C31 cited `key_transparency_test.dart` twice,
+   and the register's renumbering (R30 became the invite poll; the disk and
+   the log's availability moved to R31, R32) left three references behind.
+   All fixed. App 66 test files (was 64); twenty-two mutations across the
+   six, each caught by the criterion written for it.
+
+   **A claim in a document is a test nobody wrote yet.**

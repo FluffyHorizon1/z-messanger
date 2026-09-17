@@ -37,7 +37,13 @@
 //     beside the sealed copy;
 //  4. and a key nobody declared cannot be written in the clear at all, so the
 //     next `sensitive: false` has to be argued for in the one place the
-//     argument belongs.
+//     argument belongs;
+//  5. and no writer in `lib/` opts out for a key the list does not allow —
+//     checked against the source, because criterion 4 is only met on the
+//     code path that reaches the write, and for `kt_own_alert` that path was
+//     a rogue publish against this account: the one alert the log exists to
+//     raise threw on the way to disk, and the check pass aborted with it
+//     (the 2026-09-14 review's finding 5). Forty-one call sites; one failed.
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -251,5 +257,45 @@ void main() {
     expect(await v.kvGet('server_url'), 'wss://example');
     expect(await v.kvGet('cdev_abc'), 'list');
     await v.db.close();
+  });
+
+  test('5. every writer that opts out names a key the list allows', () async {
+    // Each `kvPut(<key>, ..., sensitive: false)` in lib/: the key is a
+    // literal, a literal with a routing id interpolated (a family), or a
+    // `_kName` constant declared in the same file. Anything else is a call
+    // this scan cannot judge, and it fails rather than passes.
+    final call = RegExp(r'kvPut\(\s*([^,]+),', multiLine: true);
+    final constDecl = RegExp(r"static const ([A-Za-z_]\w*) = '([^']*)';");
+    var sites = 0;
+    final bad = <String>[];
+    for (final f in Directory('lib').listSync(recursive: true).whereType<File>()) {
+      if (!f.path.endsWith('.dart')) continue;
+      final src = f.readAsStringSync();
+      final consts = {for (final m in constDecl.allMatches(src)) m.group(1)!: m.group(2)!};
+      for (final m in call.allMatches(src)) {
+        // The rest of the call, to see whether it opts out.
+        final tail = src.substring(m.end, (m.end + 400).clamp(0, src.length));
+        final close = tail.indexOf(');');
+        final args = close < 0 ? tail : tail.substring(0, close);
+        if (!args.contains('sensitive: false')) continue;
+        sites++;
+        final expr = m.group(1)!.trim();
+        String? key;
+        final lit = RegExp(r"^r?'([^']*)'$").firstMatch(expr);
+        if (lit != null) {
+          // `'family_$rid'` / `'family_${x.rid}'`: the family with something after.
+          key = lit.group(1)!.replaceAll(RegExp(r'\$\{[^}]*\}|\$\w+'), 'x');
+        } else if (consts.containsKey(expr)) {
+          key = consts[expr];
+        }
+        if (key == null) {
+          bad.add('${f.path}: cannot judge `$expr`');
+        } else if (!Vault.mayBePlain(key)) {
+          bad.add('${f.path}: `$expr` opts out of sealing for `$key`, which Vault.plainKeys does not allow — kvPut throws there');
+        }
+      }
+    }
+    expect(sites, greaterThan(30), reason: 'the scan found the opt-outs ($sites)');
+    expect(bad, isEmpty, reason: bad.join('\n'));
   });
 }

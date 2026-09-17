@@ -51,7 +51,17 @@
 //     memory fails, and it does not depend on an instrument;
 //  3. a failed import leaves nothing behind either;
 //  4. every attachment still restores byte for byte, with its metadata, and
-//     an archive of many is still one import.
+//     an archive of many is still one import;
+//  5. what the spill holds while it runs is not the attachment: every frame
+//     is sealed under a key that exists only for that restore, so the one
+//     exit the `finally` cannot cover — the OS killing the app mid-restore,
+//     which is the very case the spill exists for — leaves ciphertext under
+//     a key that died with the process, not plaintext beside a database
+//     whose whole point is that attachments are sealed (the 2026-09-14
+//     review's finding 7);
+//  6. and a spill a dead process left behind is removed when the vault next
+//     opens, which until then nothing collected: the orphan sweep walked the
+//     files directory, and the spill is beside it.
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -295,5 +305,76 @@ void main() {
       expect(back, equals(originals[fid]), reason: '$fid came back different');
     }
     await fresh.db.close();
+  }, timeout: long);
+
+  /// True when [bytes] holds a 64-byte run of consecutive values mod 251 —
+  /// the shape every stocked attachment has (`(i + j) % 251`), and the shape
+  /// nothing sealed has.
+  bool looksLikeAnAttachment(List<int> bytes) {
+    var run = 0;
+    for (var n = 1; n < bytes.length; n++) {
+      run = bytes[n] == (bytes[n - 1] + 1) % 251 ? run + 1 : 0;
+      if (run >= 64) return true;
+    }
+    return false;
+  }
+
+  test('5. the spill holds ciphertext, not the attachment', () async {
+    // The detector is real: an attachment's own shape trips it, random
+    // bytes do not.
+    expect(looksLikeAnAttachment(List<int>.generate(8192, (j) => (3 + j) % 251)), isTrue);
+    expect(looksLikeAnAttachment(randomBytes(8192)), isFalse);
+
+    final source = await stockedVault('src5');
+    final (file, code) = await archiveOf(source, 'arc5');
+    await source.db.close();
+
+    final dir = await tempDir('dst5');
+    final fresh = await Vault.open(rootOverride: dir);
+    final spill = Directory('${dir.path}/restore-spill');
+    var looked = 0;
+    var clear = 0;
+    final ticker =
+        Stream<void>.periodic(const Duration(milliseconds: 10)).listen((_) {
+      if (!spill.existsSync()) return;
+      for (final f in spill.listSync().whereType<File>()) {
+        try {
+          final len = f.lengthSync();
+          if (len < 4096) continue;
+          final raf = f.openSync();
+          final head = raf.readSync(4096);
+          raf.closeSync();
+          looked++;
+          if (looksLikeAnAttachment(head)) clear++;
+        } catch (_) {}
+      }
+    });
+    await BackupArchive.import(vault: fresh, file: file, code: code);
+    await ticker.cancel();
+    expect(looked, greaterThan(0), reason: 'the spill was looked at while it was there');
+    expect(clear, 0,
+        reason: 'of $looked looks at spill files during the import, $clear '
+            'showed the attachment in the clear');
+    expect(spill.existsSync(), isFalse);
+    // And what was sealed on the way in is whole on the way out.
+    expect((await fresh.db.query('files')).length, attachmentCount);
+    await fresh.db.close();
+  }, timeout: long);
+
+  test('6. a spill a dead process left behind goes when the vault next opens',
+      () async {
+    final dir = await tempDir('dst6');
+    final first = await Vault.open(rootOverride: dir);
+    await first.db.close();
+    // What a restore killed mid-way leaves: the directory, with files in it.
+    final spill = Directory('${dir.path}/restore-spill')..createSync();
+    File('${spill.path}/${b64url(randomBytes(12))}').writeAsBytesSync(randomBytes(65536));
+    File('${spill.path}/${b64url(randomBytes(12))}').writeAsBytesSync(randomBytes(4096));
+    expect(spill.listSync().length, 2);
+
+    final again = await Vault.open(rootOverride: dir);
+    expect(spill.existsSync(), isFalse,
+        reason: 'the vault swept the spill on opening, files and directory');
+    await again.db.close();
   }, timeout: long);
 }

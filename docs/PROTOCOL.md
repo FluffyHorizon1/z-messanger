@@ -739,9 +739,14 @@ root discipline); `"acctreq"` (a `hello` inner) asks the root to send that
 list — a root answers with `"acct"`, any other device ignores it; `"hist"`
 carries an inner of kind `hist` whose `items` replay recent history to a
 device that was just linked: each item is
-`{ "t":thread, "mid", "o":outgoing, "k":"text"|"gtext", "b":body, "ts", "sn"? }`,
+`{ "t":thread, "mid", "o":outgoing, "k":"text"|"gtext", "b":body, "ts", "sn"?, "x"? }`,
 stored as an ordinary row (deduplicated on `mid`) and ignored for a thread the
-receiving device does not hold. The reference app replays the newest 200 text
+receiving device does not hold. `x`, when present, is the absolute time in ms
+at which the item disappears (§6.1's `ttl`, already applied by the sender):
+the receiving device stores it as its own expiry, and an item whose `x` has
+passed is not stored at all. A mirrored copy of any kind keeps its `ttl` the
+same way a live one does — a disappearing message does not stop disappearing
+because it reached a device through the self-sync or extra-device door. The reference app replays the newest 200 text
 messages per chat in batches of 100; attachments are not replayed. Attachment
 chunks are not re‑encrypted for sync: the chunk
 payloads (§7) are forwarded verbatim to each of the user's other devices, which

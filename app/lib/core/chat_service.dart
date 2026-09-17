@@ -1062,6 +1062,27 @@ class ChatService extends ChangeNotifier implements KtHost {
     notifyListeners();
   }
 
+  /// Every per-contact family in `kv`, each stored as `<family><rid>`.
+  ///
+  /// [deleteContact] removes all of them. Until 2026-09-17 it removed none:
+  /// the tables went and the `kv` rows stayed — the contact's account key,
+  /// every device's public keys, the list version and its signature, the
+  /// post-quantum material, the ratchet with their linked devices — each
+  /// keyed by the routing id that says whose it is, unsealed where the
+  /// family is declared plain, for the life of the install; and a contact
+  /// added back met their own stale `cdev_ver_` and had every list below it
+  /// refused as a replay (the 2026-09-14 review's finding 8).
+  ///
+  /// `contact_erasure_test.dart` checks this list against the SOURCE — every
+  /// `kvPut` in `lib/` whose key is a family plus a routing id must name a
+  /// family here — so the next per-contact key fails in CI rather than
+  /// surviving the contact it belongs to.
+  static const List<String> contactKvFamilies = [
+    'cdev_', 'cdev_ver_', 'cdev_at_', 'cdev_pq_', 'cdev_pq_ver_',
+    'cdl_alert_', 'cdl_claims_', 'cextra_', 'dlpq_sent_', 'ktc_',
+    'last_open_', 'pql_alert_',
+  ];
+
   Future<void> deleteContact(String rid) async {
     final fids = (await vault.db.query('files',
             columns: ['fid'], where: 'rid = ?', whereArgs: [rid]))
@@ -1071,17 +1092,56 @@ class ChatService extends ChangeNotifier implements KtHost {
       await vault.deleteBlob(fid);
       await vault.db.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
     }
+    // Their other devices: each has a routing id of its own that this vault
+    // holds beside the contact's, and a dedupe row per envelope from it.
+    final extraRids = [
+      for (final e in _extraRidToContact.entries)
+        if (e.value == rid) e.key
+    ];
     await vault.db.delete('files', where: 'rid = ?', whereArgs: [rid]);
     await vault.db.delete('messages', where: 'rid = ?', whereArgs: [rid]);
+    await vault.db.delete('reactions', where: 'rid = ?', whereArgs: [rid]);
     await vault.db
         .delete('delivery', where: 'thread_rid = ?', whereArgs: [rid]);
     await vault.db.delete('outbox', where: 'rid = ?', whereArgs: [rid]);
+    for (final r in [rid, ...extraRids]) {
+      await vault.db.delete('outbox', where: 'rid = ?', whereArgs: [r]);
+      await vault.db
+          .delete('inbox_dedupe', where: 'from_rid = ?', whereArgs: [r]);
+    }
     await vault.db.delete('conversations', where: 'rid = ?', whereArgs: [rid]);
     await vault.db.delete('contacts', where: 'rid = ?', whereArgs: [rid]);
+    for (final family in contactKvFamilies) {
+      await vault.kvDelete('$family$rid');
+    }
     contacts.remove(rid);
     _convs.remove(rid);
     messagesByChat.remove(rid);
     unread.remove(rid);
+    // And what this process holds about them, so a contact added back
+    // starts from nothing rather than from the ratchets, the assurance and
+    // the device set that belonged to the one just deleted.
+    _contactExtras.remove(rid);
+    for (final r in extraRids) {
+      _extraRidToContact.remove(r);
+      _sealKeys.remove(r);
+    }
+    _sealKeys.remove(rid);
+    _deviceAssurance.remove(rid);
+    _verification.remove(rid);
+    _pendingDlv.remove(rid);
+    _helloSentMs.remove(rid);
+    _dlResentAtMs.remove(rid);
+    _pqSent.remove(rid);
+    _pqNudges.remove(rid);
+    _pqAnswers.remove(rid);
+    _pqPending.remove(rid);
+    _pqTimers.remove(rid)?.cancel();
+    _pqDueMs.remove(rid);
+    _pqLastSentMs.remove(rid);
+    _pqReqSent.remove(rid);
+    _dlpqSent.remove(rid);
+    _pqMissingSince.remove(rid);
     await kt.noteContactRemoved(rid);
     notifyListeners();
   }
@@ -3292,6 +3352,11 @@ class ChatService extends ChangeNotifier implements KtHost {
   @visibleForTesting
   Future<void> debugInbound(RelayInbound m) => _onInbound(m);
 
+  /// The disappearing-message sweep, on demand: tests assert what it removes
+  /// rather than wait twenty seconds for the timer that normally runs it.
+  @visibleForTesting
+  Future<void> debugSweep() => _sweep();
+
   /// The live conversation object for [rid], or null. Test seam for the
   /// receive-side benchmark, which times the ratchet step on its own.
   @visibleForTesting
@@ -4071,6 +4136,11 @@ class ChatService extends ChangeNotifier implements KtHost {
           'b': m.body,
           'ts': m.ts,
           if (m.senderName != null) 'sn': m.senderName,
+          // A disappearing message carries WHEN it goes, absolute, so the
+          // new device's copy goes at the same moment as this one. Older
+          // receivers ignore the member and store the copy as they always
+          // did — for ever, which is the 2026-09-14 review's finding 6.
+          if (m.expireAtMs > 0) 'x': m.expireAtMs,
         });
         if (items.length >= historySyncBatch) await flush();
       }
@@ -4090,6 +4160,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     // transaction, 99 (measured, 2026-09-11). A new device replaying fifty
     // chats notices the difference.
     final rows = <Map<String, Object?>>[];
+    final now = _now();
     for (final it in items) {
       final thread = it['t'] as String?;
       final mid = it['mid'] as String?;
@@ -4097,6 +4168,13 @@ class ChatService extends ChangeNotifier implements KtHost {
       if (!contacts.containsKey(thread) && !groups.containsKey(thread)) {
         continue;
       }
+      // The expiry rides with the item (absolute ms; absent when none). One
+      // that has already passed is not stored to be swept a moment later:
+      // a message that has disappeared on the sender does not reappear
+      // anywhere, even briefly.
+      final x = (it['x'] as num?)?.toInt() ?? 0;
+      final expireAt = x > 0 ? x : 0;
+      if (expireAt > 0 && expireAt <= now) continue;
       final kind = it['k'] == 'gtext' ? 'gtext' : 'text';
       final body = it['b'] as String? ?? '';
       final outgoing = it['o'] == true;
@@ -4110,9 +4188,9 @@ class ChatService extends ChangeNotifier implements KtHost {
         'outgoing': outgoing ? 1 : 0,
         'kind': kind,
         'enc_body': await vault.seal(encBody),
-        'ts_ms': (it['ts'] as num?)?.toInt() ?? _now(),
+        'ts_ms': (it['ts'] as num?)?.toInt() ?? now,
         'status': outgoing ? MsgStatus.sent : MsgStatus.delivered,
-        'expire_at_ms': 0,
+        'expire_at_ms': expireAt,
       });
       touched.add(thread);
     }
@@ -4340,6 +4418,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     final body = inner.data['body'] as String? ?? '';
     final status = outgoing ? MsgStatus.sent : MsgStatus.delivered;
     final quoted = await _resolveQuote(rid, inner.replyTo);
+    final expireAt = _mirroredExpiry(inner, outgoing);
     await vault.db.insert(
       'messages',
       {
@@ -4350,7 +4429,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         'enc_body': await vault.seal(body),
         'ts_ms': inner.ts,
         'status': status,
-        'expire_at_ms': 0,
+        'expire_at_ms': expireAt,
         'reply_to': quoted?.mid,
       },
       conflictAlgorithm: ConflictAlgorithm.ignore,
@@ -4365,11 +4444,27 @@ class ChatService extends ChangeNotifier implements KtHost {
           body: body,
           ts: inner.ts,
           status: status,
-          expireAtMs: 0,
+          expireAtMs: expireAt,
           replyTo: quoted?.mid,
           quote: quoted,
         ));
     notifyListeners();
+  }
+
+  /// When a copy that arrived through the self-sync or extra-device door
+  /// expires. §6.1: the sender deletes `ttl` seconds after sending, the
+  /// recipient `ttl` seconds after receipt. A copy of my OWN message on my
+  /// other device is the sender's copy, so it goes when the original does —
+  /// from the message's own timestamp, which both devices hold. A copy of
+  /// somebody else's message is a receipt, on this device, now — the same
+  /// clock the primary inbound path uses (`_persistInboundKind`), so a
+  /// message from a contact's laptop keeps time exactly as one from their
+  /// phone. Until 2026-09-17 every copy through these doors was stored with
+  /// no expiry at all: a disappearing message mirrored to a linked device, or
+  /// sent from a contact's linked device, never disappeared.
+  int _mirroredExpiry(InnerMessage inner, bool outgoing) {
+    if (inner.ttlSec <= 0) return 0;
+    return (outgoing ? inner.ts : _now()) + inner.ttlSec * 1000;
   }
 
   /// A mirrored file offer from one of my own devices: record the offer (with
@@ -4393,6 +4488,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     final durSec = (inner.data['dur'] as num?)?.toInt() ?? 0;
     final status = outgoing ? MsgStatus.sent : MsgStatus.delivered;
     final quoted = await _resolveQuote(rid, inner.replyTo);
+    final expireAt = _mirroredExpiry(inner, outgoing);
     await vault.db.insert(
       'files',
       {
@@ -4426,7 +4522,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         'fid': fid,
         'ts_ms': inner.ts,
         'status': status,
-        'expire_at_ms': 0,
+        'expire_at_ms': expireAt,
         'reply_to': quoted?.mid,
       },
       conflictAlgorithm: ConflictAlgorithm.ignore,
@@ -4442,7 +4538,7 @@ class ChatService extends ChangeNotifier implements KtHost {
           fid: fid,
           ts: inner.ts,
           status: status,
-          expireAtMs: 0,
+          expireAtMs: expireAt,
           replyTo: quoted?.mid,
           quote: quoted,
           file: FileMeta(

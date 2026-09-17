@@ -24,6 +24,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart' show SecretKey;
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -344,7 +345,20 @@ class BackupArchive {
     // the bytes and returns, so writing 80 MiB through one without awaiting a
     // flush holds 80 MiB in the sink instead of in a BytesBuilder. Measured:
     // the first version of this fix moved the memory and did not remove it.
-    final spillDir = Directory(p.join(vault.root.path, 'restore-spill'));
+    //
+    // And SEALED. Until 2026-09-17 the spill held each attachment's bytes in
+    // the clear, beside a database whose whole point is that attachments are
+    // sealed, on the argument that the `finally` below removes it — which is
+    // true of every exit but the one the spill exists for: the OS killing
+    // the app for memory mid-restore, after which the directory sat there,
+    // plaintext, for ever, collected by nothing (the 2026-09-14 review's
+    // finding 7). Now each archive frame is re-sealed as it arrives under a
+    // key that exists only in this process (`RestoreSpill`): a spill the
+    // process did not live to delete is ciphertext under a key nobody holds,
+    // `Vault.open` zeroes and removes whatever is left in the directory, and
+    // the clean path zeroes before it unlinks, as `deleteBlob` does.
+    final spillDir = Directory(p.join(vault.root.path, RestoreSpill.dirName));
+    final spill = RestoreSpill(spillDir);
     final spills = <String, RandomAccessFile>{};
     File spillFile(String fid) => File(p.join(spillDir.path, fid));
     await spillDir.create(recursive: true);
@@ -396,7 +410,7 @@ class BackupArchive {
             if (!isWellFormedFid(fid)) continue;
             final out = spills[fid] ??=
                 await spillFile(fid).open(mode: FileMode.writeOnly);
-            await out.writeFrom(bytes);
+            await spill.append(out, bytes);
             continue;
           }
           final r =
@@ -508,9 +522,9 @@ class BackupArchive {
         for (final entry in fileMeta.entries) {
           final fid = entry.key;
           final meta = entry.value;
-          final spill = spillFile(fid);
-          if (!spill.existsSync()) continue; // a record with no bytes
-          final bytes = await spill.readAsBytes();
+          final spilled = spillFile(fid);
+          if (!spilled.existsSync()) continue; // a record with no bytes
+          final bytes = await spill.readBack(spilled);
           final keyInfo = await vault.writeBlob(fid, bytes);
           await txn.insert(
               'files',
@@ -551,9 +565,7 @@ class BackupArchive {
           await out.close();
         } catch (_) {}
       }
-      try {
-        if (spillDir.existsSync()) spillDir.deleteSync(recursive: true);
-      } catch (_) {}
+      RestoreSpill.shred(spillDir);
     }
   }
 
@@ -568,4 +580,92 @@ class BackupArchive {
     }
     throw const FormatException('not a Z backup archive');
   }
+}
+
+
+/// The importer's spill: each attachment's archive frames, re-sealed as they
+/// arrive under a key that exists only for this restore, in this process.
+///
+/// A blob at rest is one AEAD message, so sealing an attachment into the
+/// vault means holding all of it — and the spill is where it waits, frame by
+/// frame, so that an archive of two hundred photographs is never two hundred
+/// photographs of heap (C35). What waits there was plaintext until
+/// 2026-09-17. It is not any more: a frame is sealed with the same
+/// construction the archive itself uses, under a random key and nonce prefix
+/// drawn when the restore starts and dropped when it ends, with one counter
+/// across every frame of every attachment so no nonce is ever used twice
+/// under the key. A spill left behind by a process that died is therefore
+/// bytes nobody can open, and [shred] and [Vault.open] remove it besides.
+///
+/// Record layout, per frame: `u32 sealedLength`, `u32 frameIndex`, then the
+/// sealed frame — the index is what [readBack] needs to rebuild the nonce.
+class RestoreSpill {
+  RestoreSpill(this.dir)
+      : _key = SecretKey(randomBytes(32)),
+        _noncePrefix = randomBytes(16);
+
+  /// Under the vault root; `Vault.open` knows the name so it can sweep it.
+  static const dirName = Vault.restoreSpillDirName;
+
+  /// The AAD's fixed part: what this is, so a spill frame is not an archive
+  /// frame and cannot be mistaken for one under any key.
+  static final Uint8List _header = Uint8List.fromList(utf8.encode('z-restore-spill-v1'));
+
+  final Directory dir;
+  final SecretKey _key;
+  final Uint8List _noncePrefix;
+  int _index = 0;
+
+  /// Seal [bytes] as the next frame and append the record to [out].
+  Future<void> append(RandomAccessFile out, List<int> bytes) async {
+    final index = _index++;
+    final sealed = await ZArchive.sealFrame(
+      key: _key,
+      header: _header,
+      noncePrefix: _noncePrefix,
+      index: index,
+      kind: ZArchive.kindBlob,
+      payload: bytes,
+    );
+    final head = ByteData(8)
+      ..setUint32(0, sealed.length)
+      ..setUint32(4, index);
+    await out.writeFrom(head.buffer.asUint8List());
+    await out.writeFrom(sealed);
+  }
+
+  /// Open every record in [file], in order, and return the attachment whole.
+  Future<Uint8List> readBack(File file) async {
+    final raf = await file.open();
+    final out = BytesBuilder(copy: false);
+    try {
+      while (true) {
+        final head = await raf.read(8);
+        if (head.isEmpty) break;
+        if (head.length < 8) throw const FormatException('torn spill record');
+        final bd = ByteData.view(Uint8List.fromList(head).buffer);
+        final len = bd.getUint32(0);
+        final index = bd.getUint32(4);
+        final sealed = await raf.read(len);
+        if (sealed.length < len) throw const FormatException('torn spill record');
+        final (kind, payload) = await ZArchive.openFrame(
+          key: _key,
+          header: _header,
+          noncePrefix: _noncePrefix,
+          index: index,
+          sealed: Uint8List.fromList(sealed),
+        );
+        if (kind != ZArchive.kindBlob) throw const FormatException('not a spill frame');
+        out.add(payload);
+      }
+    } finally {
+      await raf.close();
+    }
+    return out.takeBytes();
+  }
+
+  /// Zero and remove everything under [dir], then the directory — the same
+  /// pass `Vault.open` makes over it, and the same one [Vault.deleteBlob]
+  /// makes over a blob.
+  static void shred(Directory dir) => Vault.shredDir(dir);
 }

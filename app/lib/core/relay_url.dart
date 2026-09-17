@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'vault.dart';
 
 /// The relay every install dials by default, so a new user types nothing to get
@@ -34,23 +36,36 @@ String normalizeRelayUrl(String input) {
 
 /// True if the URL is either TLS (`wss://`) or a local/LAN address where plain
 /// `ws://` is acceptable for testing. Used to decide whether to warn the user.
+///
+/// The LAN test is made on an ADDRESS, never on a name. Until 2026-09-17 it
+/// was a string-prefix test on `u.host`, and a host is a name as often as an
+/// address: `ws://10.relay.example.net` began with `10.`, so it was "on the
+/// LAN", no warning was shown, and the relay address — the one thing every
+/// envelope this app sends goes to — was adopted from a pasted string or a
+/// hand-built archive without a word (the 2026-09-14 review's finding 10;
+/// C36). A name is never local here. What is: loopback, the three private
+/// IPv4 ranges the reference relay's own docs use for LAN testing, the
+/// Android emulator's host alias (inside one of them), and `.local` mDNS
+/// names, which resolve only on the link.
 bool isSecureOrLocalRelay(String normalizedUrl) {
   final u = Uri.tryParse(normalizedUrl);
   if (u == null) return false;
   if (u.scheme == 'wss') return true;
   final host = u.host.toLowerCase();
-  if (host == 'localhost' || host == '127.0.0.1' || host == '::1') return true;
-  // Private / LAN ranges where cleartext is reasonable for local testing.
-  if (host.startsWith('192.168.') || host.startsWith('10.')) return true;
-  if (host.startsWith('172.')) {
-    final parts = host.split('.');
-    if (parts.length >= 2) {
-      final second = int.tryParse(parts[1]);
-      if (second != null && second >= 16 && second <= 31) return true;
-    }
+  if (host == 'localhost') return true;
+  // *.local mDNS names: link-local by construction.
+  if (host.endsWith('.local')) return true;
+  // Everything else must be an address. `Uri.host` strips the brackets from
+  // an IPv6 literal, so `::1` parses here as it should.
+  final addr = InternetAddress.tryParse(host);
+  if (addr == null) return false;
+  if (addr.isLoopback) return true;
+  if (addr.type == InternetAddressType.IPv4) {
+    final b = addr.rawAddress;
+    if (b[0] == 10) return true; // 10.0.0.0/8, the emulator's 10.0.2.2 with it
+    if (b[0] == 192 && b[1] == 168) return true; // 192.168.0.0/16
+    if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true; // 172.16.0.0/12
   }
-  // *.local mDNS names, and the Android emulator host alias.
-  if (host.endsWith('.local') || host == '10.0.2.2') return true;
   return false;
 }
 
