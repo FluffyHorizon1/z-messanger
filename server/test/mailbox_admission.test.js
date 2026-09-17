@@ -34,6 +34,34 @@
 //      refused is the SEND, the mailbox is not created, and nothing already
 //      queued is evicted to make room;
 //   5. all of it again against Redis, which is what the HA relay runs.
+//
+// Criterion 2 was the one that mattered and it was not being exercised. Its
+// Bob never connected and never acknowledged, so his mailbox was never empty
+// and the interesting case — a recipient who is online and acknowledges, as
+// §12.5 requires, and therefore has NO mailbox when the next message arrives
+// — never ran. The gate was charged on an empty queue, so in that steady
+// state every message paid, and the whole relay stopped at
+// NEW_MAILBOX_PER_MIN messages a minute. Added:
+//
+//   6. a recipient who drains, which is the ordinary case: Bob online and
+//      acknowledging each message, more sends than the whole minute's
+//      allowance, all delivered — and a stranger can still start a
+//      conversation afterwards, so the allowance was not quietly spent;
+//   7. remembering recipients did not buy the attacker anything. Three ways:
+//      a refused send leaves no trace, so a flood cannot warm the set for the
+//      flood after it; a set smaller than the flood evicts its own entries;
+//      and the window ends, so the same flood later costs the same again.
+//      The first of those is the invariant the other two rest on — a routing
+//      id enters the set ONLY by a send that was accepted, and a send to a
+//      routing id with no mailbox is accepted only by spending a token;
+//   8. what TTL expiry frees is given back to the store accumulator. It was
+//      not: `_retain` rebuilt the queue's own total and left the global one
+//      alone, so every envelope that timed out rather than being acknowledged
+//      leaked its whole charge and a relay that had once been busy refused
+//      the first byte of every send for ever, with `/health` reporting
+//      `queuedEnvelopes: 0`. Nothing covered it, so it is covered here — the
+//      counter is what `MAX_STORE_BYTES` is checked against, and a counter
+//      that only goes up is a store that only fills.
 
 process.env.NEW_MAILBOX_PER_MIN = '5';
 process.env.MAX_STORE_BYTES = '20000';
@@ -45,7 +73,7 @@ const http = require('http');
 const net = require('net');
 const WebSocket = require('ws');
 
-const { createServer, routingIdFromPub, _internal } = require('../server.js');
+const { createServer, routingIdFromPub, _internal, CFG } = require('../server.js');
 
 const AUTH_CONTEXT = Buffer.from('z-relay-auth-v1:', 'utf8');
 const SEALED = `zs1.${'x'.repeat(200)}`; // a sealed envelope: no auth needed
@@ -137,6 +165,12 @@ class Client {
     this.send({ t: 'send', id, to, payload });
     return this.next((f) => (f.t === 'sent' || f.t === 'error') && f.id === id);
   }
+  /** Take delivery of one envelope and acknowledge it, as §12.5 requires. */
+  async receiveAndAck(id) {
+    const f = await this.next((x) => x.t === 'msg' && x.id === id);
+    this.send({ t: 'recv', id: f.id, from: f.from });
+    return f;
+  }
   close() {
     try {
       this.ws.close();
@@ -202,6 +236,141 @@ test('a flood of fresh mailboxes is refused, and existing ones keep working', as
   assert.ok(metric(m, 'z_new_mailbox_refused_total') >= 20);
   a.close();
   anon.close();
+});
+
+test('a recipient who drains is not charged for every message', async (t) => {
+  const port = await relay(t);
+  const alice = makeIdentity();
+  const bob = makeIdentity();
+  const a = await new Client(port, alice).auth();
+  const b = await new Client(port, bob).auth();
+
+  // NEW_MAILBOX_PER_MIN is 5 in this file. Bob is online and acknowledges
+  // each message, so his mailbox is deleted the moment it empties and does
+  // not exist when the next one arrives — the ordinary steady state, and the
+  // one the gate used to charge for. Twelve sends is more than twice the
+  // whole minute's allowance.
+  for (let i = 0; i < 12; i++) {
+    const id = `drained-${i}`;
+    assert.strictEqual(
+      (await a.deliver(id, bob.rid, 'aGk=')).t,
+      'sent',
+      `send ${i} into a mailbox that empties after every message`
+    );
+    await b.receiveAndAck(id);
+  }
+
+  // And the allowance is still there for somebody who has never been written
+  // to — which is what "the bound is on creating mailboxes" has to mean.
+  const carol = makeIdentity();
+  assert.strictEqual(
+    (await a.deliver('stranger', carol.rid, 'aGk=')).t,
+    'sent',
+    'a first message to a new recipient, after a busy minute with Bob'
+  );
+  a.close();
+  b.close();
+});
+
+test('remembering recipients does not make a flood free', async (t) => {
+  // Three properties, asserted separately.
+  const { MemoryCoordinator } = require('../server.js');
+  const allowance = CFG.newMailboxPerMin; // 5 in this file
+  // A one-byte payload, so the only thing that can refuse any of this is the
+  // admission gate: MAX_STORE_BYTES is 20 000 here and sealed envelopes would
+  // reach it first, which is a different refusal.
+
+  // (a) A REFUSED send leaves no trace. Without this the gate survives one
+  // flood and not two: the first pass is refused, every routing id in it is
+  // remembered anyway, and the second pass creates all of them for nothing.
+  const c = new MemoryCoordinator();
+  const clock = { t: Date.now() };
+  c.seen.now = () => clock.t;
+  const rids = Array.from({ length: 60 }, () => randomRid());
+  async function flood(tag) {
+    let ok = 0;
+    for (const [i, rid] of rids.entries()) {
+      const r = await c.deliverEnqueue(null, rid, `${tag}-${i}`, 'x');
+      if (!(r && r.storeFull)) ok += 1;
+    }
+    return ok;
+  }
+  /** A relay that has just started, except for what it remembers. */
+  function reset() {
+    c.newMailbox.tokens = allowance;
+    c.queues.clear();
+    c.bytes = 0;
+  }
+
+  assert.strictEqual(await flood('g'), allowance, 'the first flood is charged');
+  assert.strictEqual(c.seen.size, allowance,
+    'and only the sends that landed are remembered — the refused ones left nothing');
+
+  reset();
+  assert.strictEqual(await flood('h'), allowance * 2,
+    'the second flood pays again for everything the first one did not buy');
+
+  // (b) The window ends, so even what was paid for is charged again later.
+  clock.t += CFG.seenMailboxTtlMs + 1;
+  reset();
+  assert.strictEqual(await flood('i'), allowance,
+    'past the window nothing is remembered and the flood costs what it first did');
+
+  // (c) The set is bounded, so a flood larger than it evicts its own entries
+  // rather than growing without limit.
+  const small = new MemoryCoordinator();
+  small.seen.cap = 8;
+  let accepted = 0;
+  for (let i = 0; i < 60; i++) {
+    const r = await small.deliverEnqueue(null, randomRid(), `f-${i}`, 'x');
+    if (!(r && r.storeFull)) accepted += 1;
+  }
+  assert.strictEqual(accepted, allowance);
+  assert.ok(small.seen.size <= 8, 'and the set stayed bounded');
+});
+
+test('what expiry frees is given back to the store accumulator', async (t) => {
+  const { MemoryCoordinator, CFG: C } = require('../server.js');
+  const c = new MemoryCoordinator();
+  const body = 'x'.repeat(1000);
+
+  // Three mailboxes nobody will ever drain — the flood's shape, and also just
+  // an ordinary recipient who never comes back.
+  const rids = [randomRid(), randomRid(), randomRid()];
+  for (let i = 0; i < 12; i++) {
+    await c.deliverEnqueue(null, rids[i % 3], `m-${i}`, body);
+  }
+  const held = c.heldBytes();
+  assert.ok(held > 0);
+  assert.strictEqual(c.storeBytes(), held, 'the accumulator agrees while it is held');
+
+  // They outlive QUEUE_TTL_HOURS. Backdated rather than waited for: the
+  // property is what the sweep does to the counter, not how long it takes.
+  for (const q of c.queues.values()) {
+    for (const e of q.entries) e.ts -= C.queueTtlMs + 1000;
+  }
+  c.sweep();
+
+  assert.strictEqual(c.queues.size, 0, 'the mail is gone');
+  assert.strictEqual(c.heldBytes(), 0);
+  assert.strictEqual(c.storeBytes(), 0,
+    'and so is the charge for it — otherwise the store never empties again');
+
+  // The check that matters to a user: the relay still accepts mail.
+  const r = await c.deliverEnqueue(null, randomRid(), 'after-expiry', body);
+  assert.ok(!(r && r.storeFull), 'a send after a full cycle of expiry');
+
+  // And the same for the partial case, which is how it accrues in ordinary
+  // operation: one envelope in a mailbox times out, the rest do not.
+  const rid = randomRid();
+  await c.deliverEnqueue(null, rid, 'old', body);
+  await c.deliverEnqueue(null, rid, 'new', body);
+  const before = c.storeBytes();
+  c.queues.get(rid).entries[0].ts -= C.queueTtlMs + 1000;
+  c.sweep();
+  assert.strictEqual(c.queues.get(rid).entries.length, 1);
+  assert.strictEqual(c.storeBytes(), c.heldBytes());
+  assert.ok(c.storeBytes() < before, 'the expired one was refunded');
 });
 
 test('the RAM store refuses when it is full rather than growing', async (t) => {

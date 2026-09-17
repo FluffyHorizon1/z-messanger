@@ -3440,3 +3440,59 @@ direction; the phases, their order and both ordering arguments stand.
 
    **Three outcomes that look identical from the outside want opposite
    answers: say nothing, say it once, or say nothing and keep the envelope.**
+
+92. **Two counters that drifted from the thing they were counting, and the
+    relay stopped.**
+
+   Both from the 2026-09-14 review's P0 list, both in `server/server.js`, both
+   reproduced before anything was changed.
+
+   **The store accumulator only ever went up.** `this.bytes` is what
+   `MAX_STORE_BYTES` is checked against; `_enqueue` adds to it and
+   `_removeKey` subtracts from it, and `_retain` — the only removal path TTL
+   expiry takes — rebuilt the queue's own total and left the global one alone.
+   So every envelope that timed out rather than being acknowledged leaked its
+   whole charge. Measured at `QUEUE_TTL_HOURS=0`: eleven cycles reached
+   `store bytes = 18840, mailboxes = 0, actual queued bytes = 0`, and the next
+   send returned `storeFull` — for everyone, until a restart, with `/health`
+   reporting `queuedEnvelopes: 0` so nothing pointed at the cause. Fixed, and
+   `storeBytes` is published beside `queuedEnvelopes` now: the two disagreeing
+   is the fault, and nothing published the other number.
+
+   **The mailbox-creation gate was charged for ordinary messages.** A mailbox
+   exists only while it holds unacknowledged mail, so a recipient who is
+   online and acknowledges each message — what §12.5 requires, and the
+   ordinary case — has none when the next one arrives. The gate was charged on
+   that emptiness, and it is global to the instance, so the whole relay
+   stopped at `NEW_MAILBOX_PER_MIN` **messages** a minute. Measured: Bob
+   online and acknowledging, 120 accepted and every one after refused
+   `store_full`, with zero bytes held. Three published statements said
+   otherwise — `SELF_HOSTING.md` twice and `THREAT_MODEL.md` R22 — and the
+   test cited for it had a Bob who never connected, so his mailbox was never
+   empty and the case that decides the rule never ran.
+
+   It is charged on **first contact** now, against a bounded per-instance set
+   of recipients this relay has queued for.
+
+   **And the first version of that fix broke the gate it was preserving.** It
+   recorded the routing id at the top of `_enqueue`, before the outcome was
+   known — so a flood of 200 fresh ids against an allowance of 20 was refused
+   180 times and remembered all 200, and the same flood a moment later created
+   every one of them for nothing: 200 of 200 accepted on the second pass.
+   Two passes and R22 was gone. The invariant is now explicit and is what the
+   test asserts: **a routing id enters the set only by a send that was
+   accepted, and a send to a routing id with no mailbox is accepted only by
+   spending a token**, so membership is always backed by a token somebody
+   paid. The size cap and the time window are a memory bound and a bound on
+   re-using ids that were paid for; neither is what stops the flood.
+
+   That defect was found by reviewing the diff rather than by running it, and
+   the test written alongside it had asserted the broken behaviour as correct
+   — `flood 2 accepts all 60` read like the point of the feature. A test
+   written from the same misunderstanding as the code cannot catch it.
+
+   Four criteria added across two suites, each mutation-checked, including the
+   bypass. server 106 (was 102).
+
+   **A counter that only goes up is a store that only fills; a gate charged
+   for the wrong event is a gate on the wrong thing.**

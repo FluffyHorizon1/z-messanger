@@ -20,7 +20,14 @@
 //  1. every client's frames are identical between the two coordinators —
 //     same frames, same order, same fields;
 //  2. the script did exercise the paths it claims to, so criterion 1 cannot
-//     pass by comparing two empty transcripts.
+//     pass by comparing two empty transcripts;
+//  5. and the mailbox-admission gate is charged on first contact in BOTH
+//     modes. It was charged whenever the recipient's queue was empty, and a
+//     recipient who is online and acknowledges has no queue — so the steady
+//     state paid a token per message and the relay stopped at
+//     NEW_MAILBOX_PER_MIN messages a minute. Redis matters most here: it is
+//     what the public deployment runs, and its decision is made inside the
+//     Lua script rather than in JavaScript, so the two could be fixed apart.
 //
 // Skips itself where `redis-server` or `ioredis` is missing: parity needs
 // both modes, so there is nothing to compare without it.
@@ -442,6 +449,86 @@ test(
     const all = [...pair.values()].flat();
     for (const [what, ok] of COVERS) {
       assert.ok(ok(all), `two instances: the transcript shows no ${what}`);
+    }
+  }
+);
+
+test(
+  '5. a recipient who drains is not charged per message, in Redis too',
+  { skip: SKIP && 'redis-server/ioredis unavailable' },
+  async (t) => {
+    const Redis = require('ioredis');
+    const redisPort = await freePort();
+    const redis = spawn(
+      'redis-server',
+      ['--port', String(redisPort), '--save', '', '--appendonly', 'no', '--bind', '127.0.0.1'],
+      { stdio: 'ignore' }
+    );
+    await sleep(700);
+    const url = `redis://127.0.0.1:${redisPort}`;
+    const coord = new RedisCoordinator(url, 'instA');
+    const probe = new Redis(url);
+    try {
+      // Count what the gate actually spends. Frames cannot show this: a send
+      // that is admitted looks the same whether or not it cost a token, and
+      // that is exactly how the bug survived — the relay stopped at
+      // NEW_MAILBOX_PER_MIN messages a minute with nothing in the transcript
+      // to say why.
+      let spent = 0;
+      const gate = coord.newMailbox;
+      const take = gate.take.bind(gate);
+      const refund = gate.refund.bind(gate);
+      gate.take = () => {
+        const got = take();
+        if (got) spent += 1;
+        return got;
+      };
+      gate.refund = () => {
+        spent -= 1;
+        refund();
+      };
+
+      const rid = routingIdFromPub(crypto.randomBytes(32));
+      const sends = CFG.newMailboxPerMin + 10;
+      let refused = 0;
+      let emptied = 0;
+      for (let i = 0; i < sends; i++) {
+        try {
+          await coord.deliverEnqueue(null, rid, `drain-${i}`, 'aGk=');
+          await coord.ack(rid, '', `drain-${i}`);
+          // The mailbox really is gone again — otherwise this test would be
+          // the one the review found: a Bob who never drains, so the case
+          // that matters never runs.
+          if ((await probe.llen(`q:${rid}`)) === 0) emptied += 1;
+        } catch (e) {
+          refused += 1;
+        }
+      }
+      assert.strictEqual(emptied, sends, 'every message was acknowledged and the mailbox deleted');
+      assert.strictEqual(refused, 0, `${sends} messages to a recipient who keeps up`);
+      assert.strictEqual(spent, 1,
+        'first contact costs one token and nothing after it does');
+
+      // And the allowance is still there for a recipient nobody has written
+      // to, which is what the gate is actually for.
+      const stranger = routingIdFromPub(crypto.randomBytes(32));
+      await coord.deliverEnqueue(null, stranger, 'first', 'aGk=');
+      assert.strictEqual(spent, 2, 'a genuinely new mailbox is charged');
+
+      // A refused send leaves no trace here either. Drain the allowance, then
+      // offer a routing id that cannot be admitted: if the attempt were
+      // remembered, the next flood would have it for nothing.
+      coord.newMailbox.tokens = 0;
+      const refusedRid = routingIdFromPub(crypto.randomBytes(32));
+      const r = await coord.deliverEnqueue(null, refusedRid, 'refused', 'aGk=');
+      assert.ok(r && r.storeFull, 'no allowance left, so this must be refused');
+      assert.strictEqual(coord.seen.has(refusedRid), false,
+        'a refused send must not warm the set for the flood after it');
+      t.diagnostic(`${sends} drained sends cost 1 admission token`);
+    } finally {
+      probe.disconnect();
+      await coord.close();
+      redis.kill();
     }
   }
 );

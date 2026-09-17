@@ -95,6 +95,13 @@ const CFG = {
   // drift the way a count of live mailboxes does against a TTL that deletes
   // them without telling anyone.
   newMailboxPerMin: intEnv('NEW_MAILBOX_PER_MIN', 120),
+  // How many routing ids this instance remembers having queued for, so the
+  // admission gate above is charged on first contact rather than on an empty
+  // mailbox. Measured at 117 bytes an entry, so 100 000 is 11.2 MiB.
+  seenMailboxCap: intEnv('SEEN_MAILBOX_CAP', 100000),
+  // And for how long. An hour means at most one token per recipient per hour,
+  // against an allowance of NEW_MAILBOX_PER_MIN × 60.
+  seenMailboxTtlMs: intEnv('SEEN_MAILBOX_TTL_MIN', 60) * 60000,
   // The whole RAM queue's ceiling in single-instance mode. The Redis path
   // has the store's own `noeviction` limit to refuse against; this one had
   // nothing at all, so the answer to the same flood was an OOM kill instead
@@ -355,6 +362,86 @@ class NewMailboxGate {
   }
 }
 
+/**
+ * The routing ids this instance has queued for recently.
+ *
+ * `NewMailboxGate` exists to make creating a mailbox expensive, because that
+ * is what a flood needs (§12.4, R22). It was charged whenever the recipient
+ * had no queue — but a mailbox exists only while it holds unacknowledged
+ * mail, and a recipient who is online and acknowledges each message, as
+ * §12.5 requires, has no queue by the time the next one arrives. So the
+ * steady state charged a token for EVERY message, the gate is global to the
+ * instance, and the whole relay stopped at `newMailboxPerMin` messages a
+ * minute. Measured before the fix: Bob online and acknowledging, 120 sends
+ * accepted and every one after refused `store_full`, with zero bytes held.
+ * `SELF_HOSTING.md` ("Sending into one that already exists is never charged
+ * to it"), its `z_new_mailbox_refused_total` alarm and `THREAT_MODEL.md` R22
+ * ("bounds the flood without bounding anybody's conversation") all described
+ * the intent rather than the behaviour.
+ *
+ * First contact is the thing worth charging, so that is what is remembered.
+ * What keeps this from simply undoing R22 is `touch`: a routing id enters the
+ * set only by a send that was ACCEPTED, and a send to a routing id with no
+ * mailbox is accepted only by spending a token. Membership is therefore
+ * always backed by a token that was paid, and a flood that is refused leaves
+ * the set exactly as it found it.
+ *
+ * Two bounds on top of that, neither of which is what defends against the
+ * flood. `SEEN_MAILBOX_CAP` is a memory bound — measured at 117 bytes an
+ * entry — and evicts least-recently-used; the cost of an eviction that
+ * catches a real conversation is one token. `SEEN_MAILBOX_TTL_MIN` is a time
+ * bound on ids whose mailboxes WERE paid for, so a second flood cannot use
+ * them for free indefinitely after the queue TTL has emptied them. A
+ * recipient who is merely offline is unaffected by either, because their
+ * mailbox still exists and the queue is checked too.
+ *
+ * Per instance, deliberately. A shared set would be a Redis round trip on
+ * every send to save at most one token per routing id per instance, and the
+ * flood it defends against is charged either way.
+ */
+class SeenMailboxes {
+  constructor(cap = CFG.seenMailboxCap, ttlMs = CFG.seenMailboxTtlMs, now = Date.now) {
+    this.cap = cap;
+    this.ttlMs = ttlMs;
+    this.now = now;
+    this.ids = new Map();
+  }
+
+  /** True if [rid] was queued for within the window. Reads only. */
+  has(rid) {
+    const at = this.ids.get(rid);
+    return at !== undefined && this.now() - at < this.ttlMs;
+  }
+
+  /**
+   * Record a send that SUCCEEDED. Nothing else may call this, and that is the
+   * whole of the invariant: a routing id enters this set only by a send that
+   * was accepted, and a send to a routing id with no mailbox is accepted only
+   * by spending a token. So membership is always backed by a token somebody
+   * actually paid.
+   *
+   * Recording the attempt instead broke the gate outright, and it is worth
+   * writing down because it looked harmless. A flood of 200 fresh ids against
+   * an allowance of 20 was refused 180 times — and marked all 200 as seen, so
+   * the same flood a moment later created every one of them for nothing.
+   * Measured: 200 of 200 accepted on the second pass, 180 mailboxes past the
+   * allowance. Two passes and the gate was gone.
+   */
+  touch(rid) {
+    this.ids.delete(rid); // delete+set moves it to the end
+    this.ids.set(rid, this.now());
+    if (this.ids.size > this.cap) {
+      // A Map iterates in insertion order, so the first key is the one least
+      // recently queued for.
+      this.ids.delete(this.ids.keys().next().value);
+    }
+  }
+
+  get size() {
+    return this.ids.size;
+  }
+}
+
 class MemoryCoordinator {
   constructor() {
     /** routingId -> live socket */
@@ -367,6 +454,7 @@ class MemoryCoordinator {
     /** Bytes held across every queue: this store's own `noeviction` limit. */
     this.bytes = 0;
     this.newMailbox = new NewMailboxGate();
+    this.seen = new SeenMailboxes();
   }
 
   get name() {
@@ -407,12 +495,49 @@ class MemoryCoordinator {
     return q;
   }
 
-  /** Replaces a queue's entries, rebuilding its index and byte total. */
+  /**
+   * Replaces a queue's entries, rebuilding its index and byte total — and
+   * moving the global accumulator by the same amount.
+   *
+   * `this.bytes` is what `MAX_STORE_BYTES` is checked against. `_enqueue`
+   * adds to it and `_removeKey` subtracts from it; this, the only removal
+   * path TTL expiry takes (`_expireFor` and `sweep`), rebuilt `q.bytes` and
+   * left `this.bytes` alone. So every envelope that timed out rather than
+   * being acknowledged leaked its full charge, permanently: queue 192 MB into
+   * mailboxes nobody drains, wait out `QUEUE_TTL_HOURS`, and the sweep frees
+   * every entry while the accumulator still reads 192 MB. From then on
+   * `_enqueue` refuses the first byte of every send, for everyone, until the
+   * process restarts — and `/health` said `queuedEnvelopes: 0`, so nothing
+   * pointed at the cause. Measured before the fix: eleven cycles at
+   * `QUEUE_TTL_HOURS=0` reached `store bytes = 18840, mailboxes = 0, actual
+   * queued bytes = 0`, and the next send returned `storeFull`.
+   *
+   * The delta is taken before `q.bytes` is overwritten, because the old total
+   * is the only record of what this queue was charged.
+   */
   _retain(rid, q, kept) {
     q.entries = kept;
     q.keys = new Map(kept.map((e) => [e.key, e]));
+    const was = q.bytes;
     q.bytes = kept.reduce((sum, e) => sum + e.size, 0);
+    this.bytes = Math.max(0, this.bytes - (was - q.bytes));
     if (kept.length === 0) this.queues.delete(rid);
+  }
+
+  /**
+   * The invariant the bug above broke: the accumulator is the sum of the
+   * queues. These two are how a test says so; `/health` publishes the first
+   * of them through `stats()`, because a number that can drift silently is
+   * one that has to be visible.
+   */
+  storeBytes() {
+    return this.bytes;
+  }
+
+  heldBytes() {
+    let n = 0;
+    for (const q of this.queues.values()) n += q.bytes;
+    return n;
   }
 
   /**
@@ -426,8 +551,11 @@ class MemoryCoordinator {
    */
   _enqueue(rid, entry) {
     // A mailbox that does not exist yet is the expensive one to create, and
-    // the only one a flood needs. Charged before anything is allocated.
-    if (!this.queues.has(rid) && !this.newMailbox.take()) {
+    // the only one a flood needs. Charged before anything is allocated — on
+    // FIRST CONTACT, not on an empty queue: see `SeenMailboxes` for what
+    // charging the empty queue did to an ordinary conversation.
+    const known = this.seen.has(rid);
+    if (!known && !this.queues.has(rid) && !this.newMailbox.take()) {
       METRICS.newMailboxRefusedTotal += 1;
       throw new StoreFull();
     }
@@ -463,6 +591,9 @@ class MemoryCoordinator {
     q.keys.set(key, entry);
     q.bytes += entry.size;
     this.bytes += entry.size;
+    // Accepted, and only now: see `SeenMailboxes.touch`. Every other exit
+    // from this method is a refusal, and a refusal must leave no trace.
+    this.seen.touch(rid);
     return true;
   }
 
@@ -621,7 +752,15 @@ class MemoryCoordinator {
   stats() {
     let n = 0;
     for (const q of this.queues.values()) n += q.entries.length;
-    return { connections: this.online.size, queuedEnvelopes: n };
+    return {
+      connections: this.online.size,
+      queuedEnvelopes: n,
+      // What MAX_STORE_BYTES is actually checked against. Reported because
+      // the accumulator drifting away from what is held is exactly the
+      // failure that used to be invisible: `queuedEnvelopes: 0` beside a full
+      // store is the shape of it.
+      storeBytes: this.bytes,
+    };
   }
 
   async close() {}
@@ -972,6 +1111,7 @@ class RedisCoordinator {
     // rather than a shared counter that drifts every time a TTL deletes a
     // mailbox without telling anybody.
     this.newMailbox = new NewMailboxGate();
+    this.seen = new SeenMailboxes();
     this.chan = `z:inst:${this.id}`;
     for (const c of [this.cmd, this.sub, this.pub]) c.on('error', () => {});
     this.cmd.defineCommand('zQueuePush', { numberOfKeys: 3, lua: REDIS_PUSH_LUA });
@@ -1120,7 +1260,12 @@ class RedisCoordinator {
     // already knows whether the list is empty — so an ordinary send costs
     // exactly what it cost before, and no mailbox can appear between a
     // lookup and the write that would have been told about it.
-    const fresh = this.newMailbox.take();
+    // First contact, not an empty list — the same rule as the memory path.
+    // A routing id this instance has queued for before may create a mailbox
+    // without spending anything; only one it has never seen is charged.
+    const known = this.seen.has(rid);
+    const fresh = known ? true : this.newMailbox.take();
+    const spent = !known && fresh;
     let r;
     try {
       r = await this.cmd.zQueuePush(
@@ -1138,7 +1283,7 @@ class RedisCoordinator {
         fresh ? '1' : '0'
       );
     } catch (e) {
-      if (fresh) this.newMailbox.refund();
+      if (spent) this.newMailbox.refund();
       if (isStoreFull(e)) throw new StoreFull();
       throw e;
     }
@@ -1148,8 +1293,12 @@ class RedisCoordinator {
     }
     // 2 means this push created the mailbox and the token is spent; anything
     // else went into one that already existed, so the allowance goes back.
-    if (r !== 2 && fresh) this.newMailbox.refund();
-    return r === 1 || r === 2;
+    // Nothing to give back when nothing was taken.
+    if (r !== 2 && spent) this.newMailbox.refund();
+    const accepted = r === 1 || r === 2;
+    // Only a send that landed, for the reason in `SeenMailboxes.touch`.
+    if (accepted) this.seen.touch(rid);
+    return accepted;
   }
 
   /** Removes the entry held under `key` and settles the byte counter. */
@@ -1529,6 +1678,14 @@ function createServer(opts = {}) {
           // socket count is what the relay's tail latency follows.
           sockets: wssRef ? wssRef.clients.size : s.connections,
           queuedEnvelopes: s.queuedEnvelopes,
+          // What MAX_STORE_BYTES is checked against, in single-instance mode
+          // (Redis refuses against the store's own maxmemory and keeps no
+          // global counter, so it is absent there). Published because this
+          // number drifting away from the mail actually held is a fault that
+          // was otherwise invisible: TTL expiry used to free the mail without
+          // crediting the counter, so a relay that had once been busy refused
+          // every send for ever while reporting `queuedEnvelopes: 0`.
+          ...(s.storeBytes !== undefined ? { storeBytes: s.storeBytes } : {}),
           // Redis mode: sockets here whose presence the store refused to
           // write (it was full); their mail is queued, not pushed, until
           // the heartbeat's write succeeds. Absent in RAM mode.

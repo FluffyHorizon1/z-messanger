@@ -124,7 +124,9 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 | `MAX_QUEUE_BYTES_PER_USER` | `67108864` | per‑recipient queue cap (bytes); an envelope that would cross it is refused, not made room for |
 | `MAX_QUEUE_MSGS_PER_USER` | `5000` | per‑recipient queue cap (count), likewise |
 | `MAX_STORE_BYTES` | `201326592` | the whole RAM queue's ceiling in single‑instance mode — past it a send is refused as `store_full` rather than the process being killed. Redis mode refuses against the store's own `maxmemory` instead |
-| `NEW_MAILBOX_PER_MIN` | `120` | how many mailboxes may be **created** a minute, per instance, across all senders. Sending into one that already exists is never charged to it |
+| `NEW_MAILBOX_PER_MIN` | `120` | how many mailboxes may be **created** a minute, per instance, across all senders. Charged on **first contact** with a recipient, not on an empty mailbox — a mailbox exists only while it holds unacknowledged mail, so a recipient who is online and keeping up has none when the next message arrives, and charging that emptiness charged every message (fixed 2026‑09‑14; until then the relay stopped at this number of *messages* a minute, for everyone) |
+| `SEEN_MAILBOX_CAP` | `100000` | how many recipients an instance remembers having written to, so the line above can mean "first contact". A memory bound, measured at 117 bytes an entry (11.2 MiB at the default); least recently used are dropped. It is not what bounds a flood — **a send that was refused is never remembered**, so a refused flood leaves the set as it found it |
+| `SEEN_MAILBOX_TTL_MIN` | `60` | and for how long a recipient stays remembered. Bounds how long a second flood can re‑use ids whose mailboxes the first one paid for. A recipient who is merely offline is unaffected: their mailbox still exists, and that is checked too |
 | `QUEUE_TTL_HOURS` | `72` | drop an undelivered envelope this long after the relay accepted it — per envelope, in both modes |
 | `SWEEP_INTERVAL_SECONDS` | `60` | expiry sweep cadence (a flush expires too, before it delivers) |
 | `FLUSH_PAGE` | `64` | entries a flush may send before waiting for the socket to drain |
@@ -137,7 +139,9 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 ## Health & monitoring
 
 `GET /health` returns JSON with uptime, live connection count, number of queued
-envelopes, and `"storage":"ram-only"`. Point your uptime monitor at it. There
+envelopes, `storeBytes` in single‑instance mode (the number `MAX_STORE_BYTES`
+is checked against — watch it against `queuedEnvelopes`, since the two
+disagreeing is itself a fault), and `"storage":"ram-only"`. Point your uptime monitor at it. There
 is deliberately no message‑level logging to monitor — the relay can't see
 messages.
 
@@ -257,13 +261,33 @@ is not supposed to — so anyone could fill the store with mailboxes that
 would never drain, and the only floor was `QUEUE_TTL_HOURS`. Creating a
 mailbox is therefore rate‑limited across all senders
 (`NEW_MAILBOX_PER_MIN`), which bounds that without bounding anybody's
-conversation: sending into a mailbox that already exists is never charged to
-the limit, so the allowance is spent only by first contacts. A send refused
+conversation: the allowance is spent only by first contacts. A send refused
 by it is told `store_full` and retried, so an honest first message during a
 flood is late rather than lost, and `z_new_mailbox_refused_total` counts
 them — a number that stays at zero in ordinary use and is worth an alert.
 Single‑instance mode had no global bound at all and answered the same flood
 with an OOM kill; it now refuses at `MAX_STORE_BYTES`.
+
+That paragraph was not true until 2026‑09‑14, and the way it was untrue is
+worth stating because the shape recurs. The gate was charged whenever the
+recipient had **no mailbox** — and a mailbox exists only while it holds
+unacknowledged mail, so a recipient who is online and acknowledges each
+message, as §12.5 requires, has none by the time the next one arrives. In
+that steady state — the ordinary one — every message paid, and because the
+gate is global to the instance the whole relay stopped at
+`NEW_MAILBOX_PER_MIN` *messages* a minute, refusing `store_full` with an
+empty store and `z_new_mailbox_refused_total` climbing. What is remembered
+now is the recipients written to recently (`SEEN_MAILBOX_CAP`,
+`SEEN_MAILBOX_TTL_MIN`), which is what "first contact" needs and what an
+empty mailbox never was.
+
+`/health` also reports `storeBytes` in single‑instance mode — the number
+`MAX_STORE_BYTES` is checked against — beside `queuedEnvelopes`. (Redis mode
+refuses against the store's own `maxmemory` and keeps no global counter, so
+the field is absent there.) The two disagreeing is a fault in itself: TTL
+expiry used to free the mail without crediting the counter, so a relay that
+had once been busy refused every send for ever while reporting
+`queuedEnvelopes: 0` — invisible, because nothing published the other number.
 
 The per‑recipient caps work the same way at their own level and in
 both modes: an envelope that would take a mailbox past
