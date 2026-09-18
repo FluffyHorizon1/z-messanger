@@ -524,8 +524,28 @@ test('multidevice: device certificates, zc2 account code, signed device list', (
   assert.ok(edVerify(acctPub, input, unhex(dl.sig)));
   assert.equal(dl.json.ver, dl.version);
   assert.equal(hex(unb64(dl.json.sig)), dl.sig);
-  // 7.7a device-list fingerprint: SHA-256(signing_input)[0..16].
-  assert.equal(hex(sha256(input).subarray(0, 16)), dl.fingerprint);
+  // ADR 0010: the list also carries sig2, the account's Ed25519 over the v2
+  // input — the same order of devices, each contributing ded || dx ||
+  // u16be(len(id)) || id — so the signature covers the ratchet keys too.
+  const u16be = (n) => Buffer.from([(n >> 8) & 0xff, n & 0xff]);
+  const dcerts = [v.device1, v.device2]
+    .map((x) => ({
+      ded: unhex(x.device_ed_pub),
+      dx: unhex(x.device_x_pub),
+      id: x.device_id,
+    }))
+    .sort((a, b) => Buffer.compare(a.ded, b.ded));
+  const inputV2 = cat(utf8('z-devlist-v2:'), utf8(`${dl.version}:`),
+    ...dcerts.flatMap((d) => [d.ded, d.dx, u16be(Buffer.byteLength(d.id)), utf8(d.id)]));
+  assert.equal(hex(inputV2), dl.signing_input_v2, 'v2 signing input');
+  assert.equal(hex(edSign(acctSeed, inputV2)), dl.sig2, 'sig2');
+  assert.ok(edVerify(acctPub, inputV2, unhex(dl.sig2)));
+  assert.equal(hex(unb64(dl.json.sig2)), dl.sig2);
+  // 7.7a device-list fingerprint: SHA-256(signing_input)[0..16]. It follows the
+  // format the list was signed under — v2 here, since the list carries sig2 —
+  // and fingerprint_v1 is what a pre-0010 list of the same set would gossip.
+  assert.equal(hex(sha256(input).subarray(0, 16)), dl.fingerprint_v1);
+  assert.equal(hex(sha256(inputV2).subarray(0, 16)), dl.fingerprint);
   // Legacy zc1 read as a one-device account.
   const legacy = v.legacy_zc1_as_account;
   const lj = JSON.parse(unb64url(legacy.contact_code.slice(4)).toString('utf8'));

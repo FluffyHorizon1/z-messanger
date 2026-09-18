@@ -115,6 +115,37 @@ void main() {
   }
 
   test(
+      'ADR 0010 floor: a v1-only list above the v2 floor is refused, a v2 one '
+      'is accepted', () async {
+    final (alice, ben) = await pair('afloor', 'bfloor');
+    final benAcct = await ben.accountIdentity();
+    final laptop = await ZIdentity.generate();
+    final cert = await benAcct.signDeviceCert(
+        deviceEdPub: laptop.edPub, deviceXPub: laptop.xPub, deviceId: 'laptop');
+    // A v2 list at version 2 reaches Alice in-band; installing it raises her
+    // floor for Ben to 2.
+    await ben.addMyDevice(cert);
+    var version = 0;
+    await waitUntil(() {
+      unawaited(
+          alice.heldContactListVersion(ben.myRid).then((v) => version = v));
+      return version >= 2;
+    }, what: 'alice installs the v2 list');
+
+    final devices = await ben.myFullDeviceList();
+    final v2 = await benAcct.signDeviceList(devices, 3);
+    final v1only = SignedDeviceList(
+        accountEdPub: v2.accountEdPub,
+        version: 3,
+        devices: v2.devices,
+        sig: v2.sig); // sig2 stripped — an Ed forger's downgrade
+    expect(await alice.ktInstallFromLog(ben.myRid, v1only), isFalse,
+        reason: 'a stripped-sig2 list above the floor is a downgrade');
+    expect(await alice.ktInstallFromLog(ben.myRid, v2), isTrue,
+        reason: 'the same version carrying sig2 is accepted');
+  });
+
+  test(
       'the list is usable before the signature arrives, and post-quantum '
       'verified after', () async {
     final (alice, ben) = await pair('alice2', 'ben2');

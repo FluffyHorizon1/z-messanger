@@ -190,7 +190,14 @@ eds   = the deviceEdPub of every listed device, sorted lexicographically
 input = utf8("z-devlist-v1:") || utf8(decimal(version) || ":") || eds[0] || eds[1] || …
 sig   = Ed25519.sign(accountEdSeed, input)
 
-JSON: { "acct":b64(accountEdPub), "ver":version, "devs":[deviceCert...], "sig":b64(sig) }
+// v2 (ADR 0010): also bind every field a certificate carries, in deviceEdPub order
+input2 = utf8("z-devlist-v2:") || utf8(decimal(version) || ":") ||
+         for each device, ordered by deviceEdPub:
+             deviceEdPub || deviceXPub || u16be(len(utf8(id))) || utf8(id)
+sig2   = Ed25519.sign(accountEdSeed, input2)      // on a current list; absent on a legacy one
+
+JSON: { "acct":b64(accountEdPub), "ver":version, "devs":[deviceCert...],
+        "sig":b64(sig), "sig2":b64(sig2) }        // "sig2" omitted when absent
 ```
 
 A receiver MUST check that `acct` is the account key it already holds for
@@ -198,6 +205,27 @@ that contact, verify every certificate (§3.1) and `sig`, and reject a list
 whose `ver` is lower than the highest verified version it already holds (an
 equal version is a repeat and may be re‑applied). It then fans messages out to
 exactly the listed devices (§9) and accepts messages only from them.
+
+**A second signature (ADR 0010).** The v1 `input` covers the version and the
+membership and nothing more; each device's `deviceXPub` and `id` are bound only
+by that device's own certificate (§3.1), under Ed25519 alone. `input2` adds
+every device's ratchet key and id — the keys contacts actually open ratchets to
+— to what the account key commits to, and `sig2` is the account's Ed25519
+signature over it. A current client signs both when it issues a list, so a
+pre‑0010 contact still verifies it on `sig`; a legacy list carries only `sig`.
+Ordering is by `deviceEdPub` as in v1, and within a device the id is
+length‑prefixed with a big‑endian u16 because it is variable and is not the last
+field of its element.
+
+A receiver MUST also verify `sig2` whenever the list carries it, so a forged
+`sig2` fails outright; and it MUST enforce a floor per contact account: it
+records the highest `ver` at which it has seen a valid `sig2`, and MUST refuse a
+list that omits `sig2` whose `ver` is above that floor — a stripped‑`sig2`
+downgrade cannot be replayed at a higher version. A list that omits `sig2` at a
+`ver` at or below the floor is verified on `sig` alone. The fingerprint (§3.6)
+and the post‑quantum signature (§18.9) both follow the format the list was
+signed under — v2 when `sig2` is present, v1 otherwise — a property of the list
+object, discovered when it verifies.
 
 ### 3.5 Legacy mapping
 
@@ -229,6 +257,16 @@ fp = SHA-256( signingInput(version, devs) )[0..16]      // §3.4 input; 16 bytes
 It commits to the exact `(version, sorted deviceEdPubs)`, so two parties
 holding the same list compute the same 16 bytes however each obtained it. A
 one‑device account's baseline is `fp` at `version = 1` over its single device.
+
+Since ADR 0010 the fingerprint follows the format the list was *signed* under:
+it is `SHA‑256(input2)[0..16]` over the v2 input (§3.4) when the list carries
+`sig2`, and the v1 fingerprint above otherwise. A v2 fingerprint therefore also
+commits to each device's `deviceXPub` and `id`, and moves when a ratchet key
+does — which the v1 fingerprint was blind to. Because the format is a property
+of the list object, two parties holding the same list bytes still compute the
+same 16 bytes, and a list already gossiped here or committed to the log (§19)
+under v1 keeps its v1 fingerprint, so the cross‑checks above raise no false
+conflict at the switch‑over.
 
 **Claim and echo.** Every inner message (§6.1) MAY carry:
 
@@ -1868,13 +1906,18 @@ something the user did on this device.
 ### 18.9 A post-quantum signature over the device list
 
 The account signs its device list under ML‑DSA‑65 as well as Ed25519, over
-**exactly the bytes §3.4 already defines**:
+**the same bytes the list itself is signed under** (§3.4) — the v2 input when
+the list carries `sig2`, the v1 input otherwise (ADR 0010):
 
 ```
-input  = utf8("z-devlist-v1:") || utf8(decimal(version)) || ":" || eds[0] || eds[1] || …
+input  = the §3.4 signing input for this list    // z-devlist-v2 when sig2 is present, else z-devlist-v1
 sig    = Ed25519.Sign(account_ed_sk,  input)     carried in the list, as today
 mlsig  = ML-DSA-65.Sign(account_ml_sk, input)    delivered separately
 ```
+
+The post‑quantum half thus tracks the classical `sig2`: a v2 list's `mlsig`
+covers what `sig2` covers, and a legacy v1 list is still covered over the v1
+input without reissue.
 
 **Over the list, not over each certificate**, and that is the security
 property rather than an economy. Consider the adversary phase 13 exists for:
@@ -1886,6 +1929,20 @@ Every check passes and the honest device has been excluded, which is
 `adr/0001`'s T2. A signature over the list covers the membership and the
 version, so neither can be changed. See `adr/0004` for the measurements and
 the options rejected.
+
+**And, on a v2 list, over the ratchet keys.** Membership and version are the
+coverage a v1 input already gave the post‑quantum half; they leave one field
+open. Take a genuine hybrid list, keep every device Ed key so membership,
+routing and the fingerprint are untouched, replace one device's `deviceXPub`
+with a key the adversary holds, forge the classical signatures, and replay the
+genuine `mlsig` — which was made over a v1 input that never named `deviceXPub`,
+so it still verifies. Contacts open ratchets to the adversary's key. The v2
+input closes this: it adds each device's `deviceXPub` and `id`, so on a list
+that carries `sig2` the `mlsig` is over the new ratchet key, and the replayed
+one fails. `HybridDeviceCertificate` — the per‑certificate object whose
+post‑quantum half once covered `deviceXPub` — is retained only as the subject
+of the frozen `device_cert_v3` vector and is not constructed; the coverage it
+offered is given to the list signature instead (`adr/0004`, `adr/0010`).
 
 The signature travels as its own inner message, and can be asked for:
 

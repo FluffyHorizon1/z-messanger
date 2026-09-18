@@ -1,7 +1,9 @@
 # ADR 0010 — The device-list signature must cover the ratchet keys
 
-**Status:** **Proposed** 2026‑09‑12 — awaiting a decision, because the
-migration is the hard part and its shape depends on when it lands ·
+**Status:** **Accepted** (2026‑09‑18) — carried out as recommended: dual
+signatures (`sig` over the v1 input, `sig2` over the v2 input), the `z-devlist-v2:`
+signing input, fingerprint‑follows‑signature, the per‑account `sig2` floor, and
+`HybridDeviceCertificate` marked unused ·
 **Roadmap:** revision 48 · **Decides:** what `SignedDeviceList` signs, what
 its fingerprint commits to, and how a population that is half upgraded gets
 from one to the other without false transparency alarms or invisible devices.
@@ -177,3 +179,30 @@ permissionless by design, and the rate limit meant to bound it
 (`kt/server.js:181`) is keyed on a source address the origin never sees
 behind Cloudflare and Render, so the number of labels in the log is not a
 number of users.
+
+## Accepted / carried out, 2026-09-18
+
+Built as the recommendation above. A `SignedDeviceList` now carries `sig` over
+the v1 input and an optional `sig2` over the `z-devlist-v2:` input
+(`SignedDeviceList.signingInputV2`), which binds each device's `deviceXPub` and
+id as well as its `deviceEdPub`; a current client produces both when it signs a
+list, a legacy list keeps `sig` alone. `verify()` checks what is present —
+always `sig`, and `sig2` when the list carries it, so a stripped `sig2` cannot
+pass — and the app holds the floor: per account it records the highest version
+at which it has seen a valid `sig2` and refuses a later list that omits one.
+`fingerprint()` and the ML‑DSA‑65 half (`HybridDeviceListSignature`, via
+`_devlistSigningInputFor`) follow the same format — v2 when `sig2` is present, v1
+otherwise — so a v2 list's fingerprint and post‑quantum coverage reach the
+ratchet keys, while a list already gossiped or logged under v1 still verifies and
+keeps its fingerprint. `HybridDeviceCertificate` is marked unused and not for
+construction, kept only as the subject of the frozen `device_cert_v3` vector; its
+coverage moves to the list signature. `PROTOCOL.md` §3.4, §3.6 and §18.9 carry
+the wire detail.
+
+This landed after the window the ADR was written to catch: the log went live on
+2026‑09‑13 (the addendum), five days before. The higher cost it named was paid
+but bounded — because the fingerprint follows the signed format, the v1 lists
+already in the log kept their v1 fingerprints and none had to be republished. The
+floor is not yet raised unconditionally; that waits one release past the
+population moving, judged from `PROVENANCE.md`'s Play figures, not the log's label
+count.

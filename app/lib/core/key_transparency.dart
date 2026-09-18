@@ -952,6 +952,49 @@ class KeyTransparency {
             checkedAtMs: t,
             confirmedDevs: heldDevs,
           );
+        } else if (c.held == null) {
+          // We hold only the baseline placeholder and the log has the account's
+          // own signed list at this version. A v2 client publishes even its
+          // version-1 baseline in the v2 format (ADR 0010), so its fingerprint
+          // differs from our v1 baseline — and the baseline's device id, which
+          // the v2 input commits to, is not in a root's contact code to
+          // recompute from. Adopt the log's list: it opens and verifies under
+          // the account key, and installing it runs the full device-list rules
+          // (the floor included). A forged list does not open; a genuine one is
+          // the truth the baseline stood in for. (A real held list disagreeing
+          // at the same version, below, is a fork.)
+          final list = await _openList(c.accountEdPub, latest);
+          if (list == null) {
+            final detail = 'same version $lv, different fingerprint';
+            next = KtContactStatus(
+              state: KtContactState.conflict,
+              logVersion: lv,
+              logFpB64: lf,
+              checkedAtMs: t,
+              confirmedDevs: prev?.confirmedDevs ?? baseline,
+              detail: detail,
+              acknowledged: _stillAcknowledged(prev, lv, lf, detail),
+            );
+          } else {
+            final installed = await host.ktInstallFromLog(c.rid, list);
+            final detail = installed
+                ? null
+                : 'the log\'s list (v$lv) was refused by the device-list rules';
+            next = KtContactStatus(
+              state: installed
+                  ? KtContactState.confirmed
+                  : KtContactState.conflict,
+              logVersion: lv,
+              logFpB64: lf,
+              checkedAtMs: t,
+              confirmedDevs: installed
+                  ? {for (final d in list.devices) b64(d.deviceEdPub)}
+                  : (prev?.confirmedDevs ?? baseline),
+              detail: detail,
+              acknowledged:
+                  detail != null && _stillAcknowledged(prev, lv, lf, detail),
+            );
+          }
         } else {
           final detail = 'same version $lv, different fingerprint';
           next = KtContactStatus(

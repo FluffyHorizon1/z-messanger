@@ -356,11 +356,19 @@ class AccountIdentity {
       SignedDeviceList.signingInput(version, devices),
       keyPair: kp,
     );
+    // ADR 0010: dual-sign. `sig` (v1) keeps a pre-0010 contact verifying; `sig2`
+    // covers the ratchet keys and ids too, and its presence makes this a v2
+    // list — the fingerprint follows it and the floor rule requires it.
+    final sig2 = await _ed.sign(
+      SignedDeviceList.signingInputV2(version, devices),
+      keyPair: kp,
+    );
     return SignedDeviceList(
       accountEdPub: accountEdPub,
       version: version,
       devices: devices,
       sig: Uint8List.fromList(sig.bytes),
+      sig2: Uint8List.fromList(sig2.bytes),
     );
   }
 
@@ -480,11 +488,21 @@ class SignedDeviceList {
   final List<DeviceCertificate> devices;
   final Uint8List sig;
 
+  /// The account Ed25519 signature over [signingInputV2] — the v2 format that
+  /// also covers each device's X25519 ratchet key and id (ADR 0010). Absent on
+  /// a v1 list from a pre-0010 client; present on every list a current client
+  /// signs. Its presence is what makes this a "v2 list": the fingerprint
+  /// follows it, and the app refuses a later version from an account without it
+  /// (the floor rule). Verifying what is present here and requiring what the
+  /// floor demands there is the split ADR 0010 draws.
+  final Uint8List? sig2;
+
   SignedDeviceList({
     required this.accountEdPub,
     required this.version,
     required this.devices,
     required this.sig,
+    this.sig2,
   });
 
   static Uint8List signingInput(int version, List<DeviceCertificate> devices) {
@@ -496,6 +514,28 @@ class SignedDeviceList {
     ]);
   }
 
+  /// The v2 signing input (ADR 0010): like [signingInput], but each device
+  /// contributes its X25519 ratchet key and id as well as its Ed25519 key, so
+  /// the signature — and the fingerprint derived from it — commit to the keys
+  /// contacts actually open ratchets to. Devices are ordered by their Ed25519
+  /// key, as in v1; within a device the id is length-prefixed with a u16 because
+  /// it is variable and is not the last field of its element.
+  static Uint8List signingInputV2(
+      int version, List<DeviceCertificate> devices) {
+    final sorted = [...devices]
+      ..sort((a, b) => _lexCompare(a.deviceEdPub, b.deviceEdPub));
+    return concatBytes([
+      utf8.encode('z-devlist-v2:'),
+      utf8.encode('$version:'),
+      for (final d in sorted) ...[
+        d.deviceEdPub,
+        d.deviceXPub,
+        u16be(utf8.encode(d.deviceId).length),
+        utf8.encode(d.deviceId),
+      ],
+    ]);
+  }
+
   /// A short (16-byte) commitment to this list — the first half of the SHA-256
   /// of exactly the bytes the account key signs ([signingInput]). Because it
   /// depends only on the version and the (sorted) device Ed25519 keys, two
@@ -503,7 +543,14 @@ class SignedDeviceList {
   /// the same fingerprint regardless of how each learned it. This is the value
   /// gossiped for device-list transparency (7.7a) and the leaf a future
   /// transparency log (7.7b) would commit to.
-  Future<Uint8List> fingerprint() => deviceListFingerprint(version, devices);
+  /// The fingerprint follows the format this list was signed under: the v2
+  /// commitment when it carries [sig2], the v1 commitment otherwise. So two
+  /// parties holding the same list bytes always agree, and an existing v1 list
+  /// keeps the v1 fingerprint the log and gossip already hold for it — the
+  /// migration turns on nothing more than whether [sig2] is present (ADR 0010).
+  Future<Uint8List> fingerprint() => sig2 != null
+      ? deviceListFingerprintV2(version, devices)
+      : deviceListFingerprint(version, devices);
 
   Future<List<String>> routingIds() async =>
       [for (final d in devices) await d.routingId()];
@@ -514,12 +561,20 @@ class SignedDeviceList {
       if (!await d.verify(accountEdPub)) return false;
     }
     try {
-      return await _ed.verify(
-        signingInput(version, devices),
-        signature: Signature(sig,
-            publicKey:
-                SimplePublicKey(accountEdPub, type: KeyPairType.ed25519)),
-      );
+      final key = SimplePublicKey(accountEdPub, type: KeyPairType.ed25519);
+      final okV1 = await _ed.verify(signingInput(version, devices),
+          signature: Signature(sig, publicKey: key));
+      if (!okV1) return false;
+      // A present v2 signature must verify — a forged-and-stripped `sig2`
+      // cannot pass here. An absent one is a v1 list, which is a policy question
+      // (the floor) and not a signature one, so it is not failed here.
+      final s2 = sig2;
+      if (s2 != null) {
+        final okV2 = await _ed.verify(signingInputV2(version, devices),
+            signature: Signature(s2, publicKey: key));
+        if (!okV2) return false;
+      }
+      return true;
     } catch (_) {
       return false;
     }
@@ -530,6 +585,7 @@ class SignedDeviceList {
         'ver': version,
         'devs': [for (final d in devices) d.toJson()],
         'sig': b64(sig),
+        if (sig2 != null) 'sig2': b64(sig2!),
       };
 
   static SignedDeviceList fromJson(Map<String, Object?> j) => SignedDeviceList(
@@ -540,6 +596,7 @@ class SignedDeviceList {
             DeviceCertificate.fromJson((d as Map).cast<String, Object?>())
         ],
         sig: unb64(j['sig'] as String),
+        sig2: j['sig2'] == null ? null : unb64(j['sig2'] as String),
       );
 }
 
@@ -551,6 +608,17 @@ Future<Uint8List> deviceListFingerprint(
         int version, List<DeviceCertificate> devices) async =>
     Uint8List.sublistView(
         await sha256Bytes(SignedDeviceList.signingInput(version, devices)),
+        0,
+        16);
+
+/// The v2 device-list fingerprint (ADR 0010): the same truncated SHA-256, over
+/// [SignedDeviceList.signingInputV2], so it moves when a device's X25519 key or
+/// id does — the substitution the v1 fingerprint was blind to. A list carrying
+/// `sig2` reports this one from [SignedDeviceList.fingerprint].
+Future<Uint8List> deviceListFingerprintV2(
+        int version, List<DeviceCertificate> devices) async =>
+    Uint8List.sublistView(
+        await sha256Bytes(SignedDeviceList.signingInputV2(version, devices)),
         0,
         16);
 

@@ -452,6 +452,16 @@ enum DeviceAssurance {
   hybrid,
 }
 
+/// The bytes an account's device-list signatures cover (ADR 0010): the v2 input
+/// when the list carries `sig2`, the v1 input otherwise. Both the classical
+/// (`sig`/`sig2`) and post-quantum ([HybridDeviceListSignature]) halves use it,
+/// so the format is a property of the list — discovered when it verifies — and
+/// a v2 list gains ratchet-key coverage while a legacy v1 list stays verifiable
+/// under the bytes it was made over, with no reissue.
+Uint8List _devlistSigningInputFor(SignedDeviceList list) => list.sig2 != null
+    ? SignedDeviceList.signingInputV2(list.version, list.devices)
+    : SignedDeviceList.signingInput(list.version, list.devices);
+
 /// The account's ML-DSA-65 signature over its device list (§18.9, ADR 0004).
 ///
 /// **Over the LIST, not over each certificate**, and that is the point rather
@@ -470,9 +480,13 @@ class HybridDeviceListSignature {
   final Uint8List accountEdPub;
   final int version;
 
-  /// ML-DSA-65 over exactly [SignedDeviceList.signingInput] — the same bytes
-  /// the classical signature covers, so no valid pair can attest to different
-  /// device sets.
+  /// ML-DSA-65 over the device list's own signing input (ADR 0010): the v2
+  /// input when the list carries `sig2`, so the post-quantum half covers each
+  /// device's ratchet key and id as well as its Ed key; the v1 input for a
+  /// legacy list, so a signature made before 0010 still verifies without a
+  /// reissue. The classical half over the same bytes is `sig`/`sig2` on the
+  /// list, so no valid pair attests to a different device set — or, now, a
+  /// different ratchet key.
   final Uint8List mlSig;
 
   HybridDeviceListSignature({
@@ -500,8 +514,7 @@ class HybridDeviceListSignature {
       throw const HybridFormatException(
           'that hybrid key does not belong to this account');
     }
-    final both = await accountKey.sign(
-        SignedDeviceList.signingInput(list.version, list.devices),
+    final both = await accountKey.sign(_devlistSigningInputFor(list),
         deterministic: deterministic);
     return HybridDeviceListSignature(
       accountEdPub: list.accountEdPub,
@@ -521,8 +534,7 @@ class HybridDeviceListSignature {
     if (!constantTimeEquals(accountEdPub, list.accountEdPub)) return false;
     if (version != list.version) return false;
     try {
-      return pqDsaVerify(accountMlPub,
-          SignedDeviceList.signingInput(list.version, list.devices), mlSig);
+      return pqDsaVerify(accountMlPub, _devlistSigningInputFor(list), mlSig);
     } catch (_) {
       return false;
     }
@@ -549,6 +561,16 @@ class HybridDeviceListSignature {
 }
 
 /// A device certificate signed under both of an account's keys.
+///
+/// **Unused in shipped code, and deliberately so (ADR 0010).** `adr/0004`
+/// decided an account signs the *list*, not each certificate — a set of
+/// individually valid certs does not authenticate the *set*, so per-cert
+/// post-quantum halves reopen the subset attack. The `deviceXPub` coverage this
+/// type was reached for is instead given to the list signature by the v2
+/// signing input, so nothing constructs this for a real device list. It is kept
+/// only as the subject of the frozen `device_cert_v3` vector, which records
+/// that a certificate refuses a mismatched pair of halves; do not sign or
+/// install one, and prefer [HybridDeviceListSignature].
 ///
 /// The certificate is the whole ballgame for §13: it is the account's
 /// statement that a device belongs to it, so forging one inserts a rogue

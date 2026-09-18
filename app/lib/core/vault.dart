@@ -903,7 +903,7 @@ class Vault {
     'backup_interval_days', 'backup_last_ms',
     // This account's own device list and the alerts about it. A device list
     // is public by construction: it is signed and handed to every contact.
-    'my_devices', 'my_devlist_version',
+    'my_devices', 'my_devlist_version', 'devlist_v2_migrated',
     'own_list_v', 'own_list_h', 'own_list_json', 'own_list_mlsig',
     'own_alert', 'own_alert_echo', 'removed_alert',
     // The transparency log's own state: heads, faults and timings, all of
@@ -925,7 +925,7 @@ class Vault {
   /// Per-contact families of the same, keyed by routing id — and a routing id
   /// is already plaintext in every table beside this one.
   static const List<String> plainPrefixes = [
-    'cdev_', // a contact's device list, its version and when it arrived
+    'cdev_', // a contact's device list, its version, floor and when it arrived
     'cdl_alert_', 'cdl_claims_', // the kind of a device-list alert, and claims
     'dlpq_sent_', 'pql_alert_', // the post-quantum list signature (§18.9)
     'ktc_', // what the log says about this contact

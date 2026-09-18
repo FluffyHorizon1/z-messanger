@@ -802,6 +802,15 @@ Future<Map<String, Object?>> suiteMultidevice(List<Actor> a) async {
   final listInput = SignedDeviceList.signingInput(3, [cert2, me.deviceCert]);
   check(
       eq(list.sig, await refEdSign(me.accountEdSeed!, listInput)), 'list sig');
+  // ADR 0010: the list also carries sig2, the account's Ed25519 over the v2
+  // input, which covers each device's X25519 key and id. Its presence makes
+  // this a v2 list, so [list.fingerprint] follows the v2 format below.
+  final listInputV2 =
+      SignedDeviceList.signingInputV2(3, [cert2, me.deviceCert]);
+  check(
+      list.sig2 != null &&
+          eq(list.sig2!, await refEdSign(me.accountEdSeed!, listInputV2)),
+      'list sig2');
   // Legacy: a zc1. code reads as a one-device account.
   final legacy = await AccountBundle.decode(
       (await a[1].id.bundle(displayName: 'Bob')).encode());
@@ -848,10 +857,18 @@ Future<Map<String, Object?>> suiteMultidevice(List<Actor> a) async {
       'version': 3,
       'devices_in_given_order': [dev2Id, me.deviceId],
       'signing_input': hex(listInput),
+      'signing_input_v2': hex(listInputV2),
       'sig': hex(list.sig),
+      'sig2': hex(list.sig2!),
       // 7.7a: SHA-256(signing_input)[0..16] — the value gossiped as the
-      // device-list fingerprint and the leaf a future transparency log commits.
+      // device-list fingerprint and the leaf the transparency log commits to.
+      // It follows the format the list was signed under (ADR 0010): the v2
+      // fingerprint here, since the list carries sig2. `fingerprint_v1` is what
+      // a pre-0010 v1 list of the same set gossips, kept so a mixed population
+      // agrees at the switch-over.
       'fingerprint': hex(await list.fingerprint()),
+      'fingerprint_v1':
+          hex(await deviceListFingerprint(3, [cert2, me.deviceCert])),
       'json': list.toJson(),
     },
     'legacy_zc1_as_account': {
@@ -2408,6 +2425,48 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
   check(!await listSig.verifies(rolledBack, acct.publicKey.mlPub),
       'nor an earlier version of it');
 
+  // ADR 0010: the substitution the v1 input was blind to. Swap one device's
+  // X25519 ratchet key — keep every Ed key, so membership, the routing ids and
+  // the v1 input are byte-identical — and replay the genuine ML-DSA signature.
+  // Signing the swapped cert with the account key models the adversary who has
+  // broken Ed25519 (the premise of §18): every classical half is forgeable,
+  // only the ML-DSA one is not, and it is now over the v2 input.
+  final swapX = devices[0].deviceXPub; // any key other than device 1's own
+  final swapped = <DeviceCertificate>[...devices];
+  swapped[1] = await acctId.signDeviceCert(
+      deviceEdPub: devices[1].deviceEdPub,
+      deviceXPub: swapX,
+      deviceId: devices[1].deviceId);
+  check(
+      eq(SignedDeviceList.signingInput(3, devices),
+          SignedDeviceList.signingInput(3, swapped)),
+      'v1 signing input is blind to an X-only swap');
+  check(
+      !eq(SignedDeviceList.signingInputV2(3, devices),
+          SignedDeviceList.signingInputV2(3, swapped)),
+      'v2 signing input is not');
+  check(
+      eq(await deviceListFingerprint(3, devices),
+          await deviceListFingerprint(3, swapped)),
+      'v1 fingerprint unchanged by the swap');
+  check(
+      !eq(await deviceListFingerprintV2(3, devices),
+          await deviceListFingerprintV2(3, swapped)),
+      'v2 fingerprint moves with the ratchet key');
+  // A full list carrying both signatures refuses: the v1 sig still verifies
+  // (its input did not move) but sig2 is over the moved v2 input. And the
+  // replayed ML-DSA over the genuine v2 input does not cover the swapped set.
+  final swappedList = SignedDeviceList(
+      accountEdPub: list.accountEdPub,
+      version: list.version,
+      devices: swapped,
+      sig: list.sig,
+      sig2: list.sig2);
+  check(!await swappedList.verify(),
+      'the swapped list fails verify — sig2 is over the moved v2 input');
+  check(!await listSig.verifies(swappedList, acct.publicKey.mlPub),
+      'and the replayed ML-DSA signature does not cover the swapped key');
+
   final certJson = jsonEncode(cert.toJson());
   return {
     'suite': 'device_cert_v3',
@@ -2423,28 +2482,56 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
     'signing_context': deviceCertContext,
     'device_list': {
       'note':
-          'ADR 0004. The account signs its device LIST under ML-DSA-65 as well '
-              'as Ed25519, over exactly the bytes 3.4 already defines. Over '
-              'the set rather than per certificate: given a genuine hybrid '
-              'list, an adversary who can forge Ed25519 but not ML-DSA can '
-              'present "excluded" below — a classically perfect list whose '
-              'every remaining certificate is genuine and untouched. Only a '
-              'signature over the SET catches it. The signature travels as its '
-              'own message on an unrelated schedule, so the list keeps its '
-              '1024-byte padding bucket and its timing.',
+          'ADR 0004 and ADR 0010. The account signs its device LIST under '
+              'ML-DSA-65 as well as Ed25519, over the v2 input (§3.4): the '
+              'version, the membership, and — the 0010 change — each device\'s '
+              'X25519 ratchet key and id. Over the set rather than per '
+              'certificate: given a genuine hybrid list, an adversary who can '
+              'forge Ed25519 but not ML-DSA can present "excluded" below — a '
+              'classically perfect list whose every remaining certificate is '
+              'genuine and untouched. Only a signature over the SET catches it. '
+              'And over the ratchet keys, so "substitution" below — one X25519 '
+              'key swapped, every Ed key kept — no longer verifies, though the '
+              'v1 input and fingerprint are blind to it. The signature travels '
+              'as its own message on an unrelated schedule, so the list keeps '
+              'its 1024-byte padding bucket and its timing.',
       'list_json': jsonEncode(list.toJson()),
       'signing_input':
           hex(SignedDeviceList.signingInput(list.version, list.devices)),
+      'signing_input_v2':
+          hex(SignedDeviceList.signingInputV2(list.version, list.devices)),
       'ml_sig': hex(listSig.mlSig),
+      'v1_fingerprint':
+          hex(await deviceListFingerprint(list.version, list.devices)),
+      'v2_fingerprint':
+          hex(await deviceListFingerprintV2(list.version, list.devices)),
       'sig_json': jsonEncode(listSig.toJson()),
       'sig_json_bytes': jsonEncode(listSig.toJson()).length,
       'must_refuse': {
         'excluded_list_json': jsonEncode(subset.toJson()),
         'excluded_signing_input':
             hex(SignedDeviceList.signingInput(subset.version, subset.devices)),
+        'excluded_signing_input_v2': hex(
+            SignedDeviceList.signingInputV2(subset.version, subset.devices)),
         'rolled_back_list_json': jsonEncode(rolledBack.toJson()),
         'rolled_back_signing_input': hex(SignedDeviceList.signingInput(
             rolledBack.version, rolledBack.devices)),
+        'rolled_back_signing_input_v2': hex(SignedDeviceList.signingInputV2(
+            rolledBack.version, rolledBack.devices)),
+      },
+      'substitution': {
+        'note': 'ADR 0010. Device "${devices[1].deviceId}" keeps its Ed25519 '
+            'key and gets a different X25519 ratchet key. The v1 input and '
+            'fingerprint are byte-identical to the genuine list; the v2 input '
+            'and fingerprint are not, and the genuine ML-DSA signature (over '
+            'the genuine v2 input) does not verify it.',
+        'swapped_device_id': devices[1].deviceId,
+        'swapped_x_pub': hex(swapX),
+        'v1_signing_input': hex(SignedDeviceList.signingInput(3, swapped)),
+        'signing_input_v2': hex(SignedDeviceList.signingInputV2(3, swapped)),
+        'v1_fingerprint': hex(await deviceListFingerprint(3, swapped)),
+        'v2_fingerprint': hex(await deviceListFingerprintV2(3, swapped)),
+        'swapped_list_json': jsonEncode(swappedList.toJson()),
       },
     },
     'account': {

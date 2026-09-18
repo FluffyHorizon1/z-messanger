@@ -134,9 +134,10 @@ function ktLog() {
   const witnessKey = privateKeyFromSeed(witnessSeed);
 
   // Alice is the v1 multidevice vector's account, so the sealed value here is
-  // that file's real signed device list (version 3, fingerprint 147d6e6f…):
-  // a client that opens it gets a list it can verify with the code it
-  // already has, and the fingerprint it computes must equal the entry's.
+  // that file's real signed device list (version 3, its v2 fingerprint
+  // bf7e748f… per ADR 0010, since the list now carries sig2): a client that
+  // opens it gets a list it can verify with the code it already has, and the
+  // fingerprint it computes must equal the entry's.
   const md = JSON.parse(fs.readFileSync(path.join(OUT, '..', 'v1', 'multidevice.json'), 'utf8'));
   const alice = { name: 'alice', seed: Buffer.from(md.account_ed_seed, 'hex') };
   alice.key = privateKeyFromSeed(alice.seed);

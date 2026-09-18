@@ -102,27 +102,37 @@ def main():
         cv = json.load(f)
     dl = cv["device_list"]
     acct_pk = bytes.fromhex(cv["account"]["ml_pub"])
-    inp = bytes.fromhex(dl["signing_input"])
+    # ADR 0010: the account's ML-DSA signature is over the v2 signing input
+    # (the list carries sig2), so it covers each device's X25519 ratchet key
+    # and id, not just the Ed25519 keys and the version.
+    inp = bytes.fromhex(dl["signing_input_v2"])
     if not ML_DSA_65.verify(acct_pk, inp, bytes.fromhex(dl["ml_sig"])):
         print("MISMATCH device list: signature does not verify",
               file=sys.stderr)
         sys.exit(1)
     globals()["checks"] += 1
 
-    # The signing input is rebuilt here, not taken on trust: context, version,
-    # then the device Ed25519 keys sorted. If that reconstruction disagreed
-    # with the recorded bytes, the signature would be attesting to something
-    # other than the set a reader computes.
+    # Both signing inputs are rebuilt here, not taken on trust. v1: context,
+    # version, the device Ed25519 keys sorted. v2 (ADR 0010): the same order,
+    # each device contributing ded || dx || u16be(len(id)) || id. If either
+    # reconstruction disagreed with the recorded bytes, the signature would be
+    # attesting to something other than the set a reader computes.
     lst = json.loads(dl["list_json"])
-    eds = sorted(base64.b64decode(d["ded"]) for d in lst["devs"])
-    rebuilt = b"z-devlist-v1:" + f"{lst['ver']}:".encode() + b"".join(eds)
-    eq(rebuilt.hex(), dl["signing_input"], "device list signing input")
+    devs = sorted(lst["devs"], key=lambda d: base64.b64decode(d["ded"]))
+    eds = [base64.b64decode(d["ded"]) for d in devs]
+    rebuilt_v1 = b"z-devlist-v1:" + f"{lst['ver']}:".encode() + b"".join(eds)
+    eq(rebuilt_v1.hex(), dl["signing_input"], "device list v1 signing input")
+    rebuilt_v2 = b"z-devlist-v2:" + f"{lst['ver']}:".encode() + b"".join(
+        base64.b64decode(d["ded"]) + base64.b64decode(d["dx"])
+        + len(d["id"].encode()).to_bytes(2, "big") + d["id"].encode()
+        for d in devs)
+    eq(rebuilt_v2.hex(), dl["signing_input_v2"], "device list v2 signing input")
 
-    # An excluded device changes the input, so the genuine signature fails —
-    # which is the whole reason the signature is over the list and not over
-    # each certificate.
+    # An excluded device or a rolled-back version changes the v2 input, so the
+    # genuine signature fails — the reason the signature is over the list and
+    # not over each certificate (ADR 0004).
     for name in ("excluded", "rolled_back"):
-        other = bytes.fromhex(dl["must_refuse"][f"{name}_signing_input"])
+        other = bytes.fromhex(dl["must_refuse"][f"{name}_signing_input_v2"])
         if other == inp:
             print(f"MISMATCH device list: {name} input equals the genuine one",
                   file=sys.stderr)
@@ -131,6 +141,22 @@ def main():
             print(f"MISMATCH device list: {name} set verified", file=sys.stderr)
             sys.exit(1)
         globals()["checks"] += 2
+
+    # ADR 0010: a swapped X25519 ratchet key moves the v2 input (and the
+    # fingerprint) though every Ed25519 key — and so the v1 input — is untouched.
+    # The genuine ML-DSA signature, now over v2, does not verify the swapped set.
+    sub = dl["substitution"]
+    eq(sub["v1_signing_input"], dl["signing_input"],
+       "an X-only swap leaves the v1 input unchanged")
+    swapped_v2 = bytes.fromhex(sub["signing_input_v2"])
+    if swapped_v2 == inp:
+        print("MISMATCH device list: v2 input blind to the X swap",
+              file=sys.stderr)
+        sys.exit(1)
+    if ML_DSA_65.verify(acct_pk, swapped_v2, bytes.fromhex(dl["ml_sig"])):
+        print("MISMATCH device list: swapped set verified", file=sys.stderr)
+        sys.exit(1)
+    globals()["checks"] += 3
 
     print(f"ok: {len(v['vectors'])} ML-DSA-65 known-answer vectors, the "
           f"hybrid construction and the device-list signature reproduced by "

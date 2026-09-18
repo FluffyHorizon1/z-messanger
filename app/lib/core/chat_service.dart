@@ -256,6 +256,12 @@ class ChatService extends ChangeNotifier implements KtHost {
     await svc._initSync();
     await svc._loadContactDeviceLists(kv: kv);
     await svc._loadDevlistState(kv: kv);
+    // ADR 0010: re-sign this account's device list once under the v2 format
+    // (bumping the version) BEFORE the transport or the log check start below,
+    // so no other re-sign publishes a v2 fingerprint at a version the log
+    // already holds a v1 fingerprint for. The local sign + record is awaited;
+    // distribution to devices and contacts is durable and backgrounded.
+    await svc._migrateDeviceListToV2();
     svc._schedulePqListDelivery(); // §18.9, on its own clock
 
     transport.onMessage = (m) => unawaited(svc._onInbound(m));
@@ -5408,6 +5414,66 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
   }
 
+  /// ADR 0010: on the first start after upgrade, re-sign this account's device
+  /// list once under the v2 format so its post-quantum signature covers the
+  /// devices' ratchet keys and its fingerprint moves onto the v2 format in the
+  /// log. Only a root device re-signs (a linked device receives the v2 list by
+  /// self-sync, 7.7a rule 8). The version is bumped so the v2 fingerprint lands
+  /// at a NEW version — the old v1 entry keeps its own version and fingerprint
+  /// in the log, so there is no same-version conflict and no false transparency
+  /// alarm, and the device set itself is unchanged. Runs once, gated by a vault
+  /// flag and an in-memory guard; called from [init] before the transport and
+  /// the log check start, so nothing else re-signs at the old version first.
+  bool _v2MigrationDone = false;
+  Future<void> _migrateDeviceListToV2() async {
+    if (_v2MigrationDone) return;
+    if (await vault.kvGet('devlist_v2_migrated') == '1') {
+      _v2MigrationDone = true;
+      return;
+    }
+    final me = await accountIdentity();
+    if (!me.holdsAccountRoot) {
+      _v2MigrationDone = true;
+      await vault.kvPut('devlist_v2_migrated', '1', sensitive: false);
+      return;
+    }
+    // Only an existing v1 list needs moving. A device that has never signed a
+    // list (a fresh account) signs a v2 one the first time it does — there is
+    // nothing published at an old version to conflict with — and a list we
+    // already hold as v2 is done. Both just mark the migration complete.
+    final ownJson = await vault.kvGet('own_list_json');
+    SignedDeviceList? own;
+    if (ownJson != null) {
+      try {
+        own = SignedDeviceList.fromJson(
+            (jsonDecode(ownJson) as Map).cast<String, Object?>());
+      } catch (_) {}
+    }
+    if (own == null || own.sig2 != null) {
+      _v2MigrationDone = true;
+      await vault.kvPut('devlist_v2_migrated', '1', sensitive: false);
+      return;
+    }
+    _v2MigrationDone = true; // set before the awaits so nothing re-enters
+    final cur = await _myDevlistVersion();
+    await vault.kvPut('my_devlist_version', '${cur + 1}', sensitive: false);
+    _forgetOwnListClaim();
+    // Sign + record + queue the log publish now (local and durable) so the rest
+    // of start-up sees the v2 state; hand it to my devices and contacts in the
+    // background through the durable outbox.
+    final data = await _signCurrentDeviceList();
+    await vault.kvPut('devlist_v2_migrated', '1', sensitive: false);
+    if (data != null) {
+      unawaited(_selfSyncDeviceList(data).then((_) {}, onError: (_) {}));
+      for (final rid in contacts.keys.toList()) {
+        final c = contacts[rid];
+        if (c == null) continue;
+        unawaited(
+            _sendInner(c, _devlistInner(data)).then((_) {}, onError: (_) {}));
+      }
+    }
+  }
+
   InnerMessage _devlistInner(String listJson) => InnerMessage(
       kind: 'devlist',
       mid: newMessageId(),
@@ -5835,12 +5901,28 @@ class ChatService extends ChangeNotifier implements KtHost {
         return false; // not signed by this contact's account key
       }
       if (!await list.verify()) return false;
+      // ADR 0010 floor: once a valid v2 (sig2-bearing) list has been seen from
+      // this account, a later version arriving WITHOUT sig2 is a downgrade — an
+      // Ed25519 forger stripping the post-quantum coverage and replaying at a
+      // higher version. Refuse it. A v1-only list at or below the floor is a
+      // genuine pre-0010 list and still admitted.
+      final v2floor =
+          int.tryParse(await vault.kvGet('cdev_v2floor_$rid') ?? '0') ?? 0;
+      if (list.sig2 == null && v2floor > 0 && list.version > v2floor) {
+        return false;
+      }
       final storedVer =
           int.tryParse(await vault.kvGet('cdev_ver_$rid') ?? '0') ?? 0;
       if (list.version < storedVer) return false; // stale replay
       await vault.kvPut('cdev_$rid', jsonEncode(list.toJson()),
           sensitive: false);
       await vault.kvPut('cdev_ver_$rid', '${list.version}', sensitive: false);
+      // Raise the floor when this list carries a verified sig2, so a later
+      // strip cannot be replayed beneath it.
+      if (list.sig2 != null && list.version > v2floor) {
+        await vault.kvPut('cdev_v2floor_$rid', '${list.version}',
+            sensitive: false);
+      }
       // When it arrived: the transparency grace period runs from here.
       await vault.kvPut('cdev_at_$rid', '${_now()}', sensitive: false);
       // A new list is classical until a signature over THIS version arrives
