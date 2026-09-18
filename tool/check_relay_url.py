@@ -42,7 +42,11 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 LINK_HOST_FILE = ROOT / "protocol" / "lib" / "src" / "connect.dart"
+PROTOCOL_FILE = ROOT / "docs" / "PROTOCOL.md"
 CONST_RE = r"""const\s+String\s+%s\s*=\s*['"]([^'"]+)['"]\s*;"""
+# §20.2 states the invite-link default host in prose: "`host` defaults to
+# `<host>`" -- the one place the host is written that is not a constant.
+SPEC_HOST_RE = r"`host`\s+defaults\s+to\s+`([^`]+)`"
 LIB = ROOT / "app" / "lib"
 
 WRITER = "core/relay_url.dart"
@@ -194,7 +198,7 @@ def main():
     # skip -- rule 3 exists because two constants drifted while everything
     # stayed green, and a check that goes quiet when it cannot find one of
     # them would let them drift again in exactly the same silence.
-    relay = None
+    link = relay = None
     if not LINK_HOST_FILE.exists():
         problems.append(
             f"{LINK_HOST_FILE.relative_to(ROOT)} is not there, so the invite "
@@ -224,6 +228,42 @@ def main():
                     f"nobody typed it."
                 )
 
+    # The spec is the third place that host is written. PROTOCOL.md §20.2
+    # states, in prose, what an invite link's `host` defaults to, and that
+    # default drifted to the apex and stayed green while `connectLinkHost`
+    # moved to `www` -- the same drift as above, one document over, in the
+    # file that teaches the ceremony. It is read as text, so a reworded
+    # sentence must fail loudly rather than stop checking, exactly as
+    # `const_in` does for a renamed constant: a check that goes quiet when it
+    # cannot find the claim would let the doc drift in the same silence rule 3
+    # exists to end.
+    if not PROTOCOL_FILE.exists():
+        problems.append(
+            f"{PROTOCOL_FILE.relative_to(ROOT)} is not there, so the invite-"
+            f"link default host the spec states could not be read and this "
+            f"checked nothing."
+        )
+    else:
+        named = re.findall(SPEC_HOST_RE,
+                           PROTOCOL_FILE.read_text(encoding="utf-8"))
+        if len(named) != 1:
+            problems.append(
+                f"{PROTOCOL_FILE.relative_to(ROOT)}: the invite-link default "
+                f"host in §20.2 is stated {len(named)} time(s) as "
+                f"`host` defaults to `<host>`. This reads it as text, so a "
+                f"reworded sentence makes rule 3 silently unenforceable for "
+                f"the spec -- update the check with the doc."
+            )
+        elif link and host_of(named[0]) != host_of(link):
+            problems.append(
+                f"{PROTOCOL_FILE.relative_to(ROOT)} §20.2 says an invite "
+                f"link's host defaults to `{host_of(named[0])}`, but "
+                f"`connectLinkHost` is `{host_of(link)}`. The spec names the "
+                f"host a client writes into every invite; when it drifts from "
+                f"the constant that builds the link, the document teaching the "
+                f"ceremony is wrong about it. Make them the same host, or "
+                f"change this rule on purpose."
+            )
 
     if problems:
         print(f"\n{len(problems)} problem(s):\n")

@@ -165,7 +165,7 @@ messages.
 ```bash
 python3 tool/check_live_relay.py https://relay.example.com
 #   ... and for the reference deployment, whose Blueprint it can also check:
-python3 tool/check_live_relay.py https://zmessengers.com --blueprint render.ha.yaml
+python3 tool/check_live_relay.py https://www.zmessengers.com --blueprint render.ha.yaml
 ```
 
 It reads `/health` and `/metrics` — two GETs, no credential — and compares

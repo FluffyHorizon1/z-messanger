@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Is the relay that is serving the one this checkout describes?
 
-    python3 tool/check_live_relay.py https://zmessengers.com --blueprint render.ha.yaml
+    python3 tool/check_live_relay.py https://www.zmessengers.com --blueprint render.ha.yaml
 
 A landed `server/` change is not live until someone clicks Manual Deploy
 (`render.ha.yaml` sets `autoDeployTrigger: "off"` on purpose — main moves many

@@ -2262,7 +2262,7 @@ text  = base32Groups(secret)                    e.g. ABCDE-FGHIJ-KLMNO-P
 link  = "https://" || host || "/i#" || base32(secret)     (no group dashes)
 ```
 
-`host` defaults to `zmessengers.com` and is part of the deployment, not of the
+`host` defaults to `www.zmessengers.com` and is part of the deployment, not of the
 protocol: a self‑hosted relay serves its own landing page and its links carry
 its own host, and a client MUST accept an invite whatever host precedes the
 fragment. The code lives in the URL **fragment**, which no browser transmits,
