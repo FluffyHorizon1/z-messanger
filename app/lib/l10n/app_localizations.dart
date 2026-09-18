@@ -800,10 +800,10 @@ abstract class AppLocalizations {
   /// **'Link device'**
   String get linkDeviceAction;
 
-  /// Sets expectations: linking works, live sync of new messages does not yet.
+  /// Reassures on the link-device screen that linking establishes the verified connection AND that messages and contacts now sync live across a person's own devices (self-sync is wired).
   ///
   /// In en, this message translates to:
-  /// **'Live message sync across your devices arrives in a follow-up update; linking establishes the trusted, verified connection now.'**
+  /// **'Your linked devices stay in sync: the messages you send and receive appear on all of them, and your contacts come across too. Linking sets up the trusted, verified connection they travel over.'**
   String get linkSyncNote;
 
   /// Title of the screen on the device being added.

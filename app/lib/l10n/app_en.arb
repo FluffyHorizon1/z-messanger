@@ -531,9 +531,9 @@
   "@linkDeviceAction": {
     "description": "Button that starts pairing from the entered code."
   },
-  "linkSyncNote": "Live message sync across your devices arrives in a follow-up update; linking establishes the trusted, verified connection now.",
+  "linkSyncNote": "Your linked devices stay in sync: the messages you send and receive appear on all of them, and your contacts come across too. Linking sets up the trusted, verified connection they travel over.",
   "@linkSyncNote": {
-    "description": "Sets expectations: linking works, live sync of new messages does not yet."
+    "description": "Reassures on the link-device screen that linking establishes the verified connection AND that messages and contacts now sync live across a person's own devices (self-sync is wired)."
   },
   "linkToAccount": "Link to an account",
   "@linkToAccount": {

@@ -427,7 +427,7 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get linkSyncNote =>
-      'La sincronización en vivo de mensajes entre tus dispositivos llegará en una actualización posterior; la vinculación establece ahora la conexión verificada y de confianza.';
+      'Tus dispositivos vinculados se mantienen sincronizados: los mensajes que envías y recibes aparecen en todos, y tus contactos también se copian. La vinculación establece la conexión verificada y de confianza por la que viajan.';
 
   @override
   String get linkToAccount => 'Vincular a una cuenta';

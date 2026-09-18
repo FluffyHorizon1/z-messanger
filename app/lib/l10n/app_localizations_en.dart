@@ -422,7 +422,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get linkSyncNote =>
-      'Live message sync across your devices arrives in a follow-up update; linking establishes the trusted, verified connection now.';
+      'Your linked devices stay in sync: the messages you send and receive appear on all of them, and your contacts come across too. Linking sets up the trusted, verified connection they travel over.';
 
   @override
   String get linkToAccount => 'Link to an account';

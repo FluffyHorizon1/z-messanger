@@ -117,7 +117,7 @@
   "linkHostHelp": "En el dispositivo que quieres añadir, instala Z y elige «Vincular a una cuenta existente». Mostrará un código de emparejamiento: introdúcelo aquí.",
   "linkPairingCode": "Código de emparejamiento",
   "linkDeviceAction": "Vincular dispositivo",
-  "linkSyncNote": "La sincronización en vivo de mensajes entre tus dispositivos llegará en una actualización posterior; la vinculación establece ahora la conexión verificada y de confianza.",
+  "linkSyncNote": "Tus dispositivos vinculados se mantienen sincronizados: los mensajes que envías y recibes aparecen en todos, y tus contactos también se copian. La vinculación establece la conexión verificada y de confianza por la que viajan.",
   "linkToAccount": "Vincular a una cuenta",
   "linkJoinHelp": "En tu dispositivo actual, abre Ajustes → Dispositivos vinculados → «Vincular un dispositivo» e introduce el código de abajo.",
   "copyCode": "Copiar código",
