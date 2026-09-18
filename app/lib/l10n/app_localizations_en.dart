@@ -1815,4 +1815,40 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get connectSharedToClipboard =>
       'No share sheet here — the link is on the clipboard instead.';
+
+  @override
+  String get requestsTitle => 'Requests';
+
+  @override
+  String requestsBanner(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count people want to connect',
+      one: '1 person wants to connect',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get requestsWantsToConnect => 'Wants to connect';
+
+  @override
+  String get requestsNote =>
+      'Accepting adds them to your chats. It does not confirm who they are — compare safety numbers for that.';
+
+  @override
+  String get requestsEmpty => 'No requests right now';
+
+  @override
+  String get requestAccept => 'Accept';
+
+  @override
+  String get requestDecline => 'Decline';
+
+  @override
+  String get requestBlock => 'Block';
+
+  @override
+  String get chatRequested => 'Requested';
 }

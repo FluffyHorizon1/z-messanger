@@ -1832,4 +1832,40 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get connectSharedToClipboard =>
       'Aquí no hay menú de compartir: el enlace se copió al portapapeles.';
+
+  @override
+  String get requestsTitle => 'Solicitudes';
+
+  @override
+  String requestsBanner(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count personas quieren conectar',
+      one: '1 persona quiere conectar',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get requestsWantsToConnect => 'Quiere conectar';
+
+  @override
+  String get requestsNote =>
+      'Aceptar la añade a tus chats. No confirma quién es: para eso, compara los números de seguridad.';
+
+  @override
+  String get requestsEmpty => 'No hay solicitudes ahora mismo';
+
+  @override
+  String get requestAccept => 'Aceptar';
+
+  @override
+  String get requestDecline => 'Rechazar';
+
+  @override
+  String get requestBlock => 'Bloquear';
+
+  @override
+  String get chatRequested => 'Solicitado';
 }

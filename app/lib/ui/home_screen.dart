@@ -14,6 +14,7 @@ import '../core/transport.dart';
 import 'add_contact_screen.dart';
 import 'chat_screen.dart';
 import 'group_screens.dart';
+import 'requests_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 import 'theme.dart';
@@ -98,6 +99,9 @@ class HomeScreen extends StatelessWidget {
               message: l.homeKtUnreachable(
                   whenText(context, service.kt.lastOkMs)),
             ),
+          // ADR 0011: people who added you and are waiting on your answer.
+          if (service.requests.isNotEmpty)
+            _RequestsBanner(count: service.requests.length),
           Expanded(
             child: chats.isEmpty
                 ? const _EmptyState()
@@ -256,10 +260,16 @@ class _ChatTile extends StatelessWidget {
         ],
       ),
       subtitle: Text(
-        _preview(summary.last, l),
+        (c?.requested ?? false) ? l.chatRequested : _preview(summary.last, l),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(color: context.z.textSecondary),
+        style: TextStyle(
+          color: (c?.requested ?? false)
+              ? context.z.accent
+              : context.z.textSecondary,
+          fontStyle:
+              (c?.requested ?? false) ? FontStyle.italic : FontStyle.normal,
+        ),
       ),
       trailing: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -287,6 +297,47 @@ class _ChatTile extends StatelessWidget {
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => ChatScreen(rid: summary.rid)),
+      ),
+    );
+  }
+}
+
+/// ADR 0011: a tappable strip announcing pending contact requests. Not an
+/// alarm — a quiet, positive prompt in the accent colour — that opens the
+/// Requests screen.
+class _RequestsBanner extends StatelessWidget {
+  final int count;
+  const _RequestsBanner({required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    return Material(
+      color: context.z.accent.withValues(alpha: 0.10),
+      child: InkWell(
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const RequestsScreen()),
+        ),
+        child: SafeArea(
+          bottom: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+            child: Row(
+              children: [
+                Icon(Icons.person_add_alt_1, size: 18, color: context.z.accent),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(l.requestsBanner(count),
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600)),
+                ),
+                Icon(Icons.chevron_right,
+                    size: 20, color: context.z.textSecondary),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

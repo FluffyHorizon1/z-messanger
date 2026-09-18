@@ -2989,6 +2989,60 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No share sheet here — the link is on the clipboard instead.'**
   String get connectSharedToClipboard;
+
+  /// Title of the screen listing people who have added you and are waiting for you to accept or decline (ADR 0011 contact requests).
+  ///
+  /// In en, this message translates to:
+  /// **'Requests'**
+  String get requestsTitle;
+
+  /// Tappable strip above the chat list summarising pending contact requests. Opens the Requests screen.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 person wants to connect} other{{count} people want to connect}}'**
+  String requestsBanner(int count);
+
+  /// Subtitle under a requester's name in the Requests list.
+  ///
+  /// In en, this message translates to:
+  /// **'Wants to connect'**
+  String get requestsWantsToConnect;
+
+  /// Honest note on the Requests screen. A request proves someone holding these keys asked to connect, and nothing about who they are; verification is still the separate safety-number step. Must not imply an accepted request is verified.
+  ///
+  /// In en, this message translates to:
+  /// **'Accepting adds them to your chats. It does not confirm who they are — compare safety numbers for that.'**
+  String get requestsNote;
+
+  /// Shown on the Requests screen when nobody is currently waiting.
+  ///
+  /// In en, this message translates to:
+  /// **'No requests right now'**
+  String get requestsEmpty;
+
+  /// Button that accepts a contact request: adds the person and opens the chat.
+  ///
+  /// In en, this message translates to:
+  /// **'Accept'**
+  String get requestAccept;
+
+  /// Button that declines a contact request: it is dropped, silently, and nothing is added.
+  ///
+  /// In en, this message translates to:
+  /// **'Decline'**
+  String get requestDecline;
+
+  /// Button that blocks the requester: this request and every future one from them are dropped without a trace.
+  ///
+  /// In en, this message translates to:
+  /// **'Block'**
+  String get requestBlock;
+
+  /// Small label on a chat you started that the other person has not accepted yet. It clears the moment they reply. Says nothing about verification — only that they have not answered.
+  ///
+  /// In en, this message translates to:
+  /// **'Requested'**
+  String get chatRequested;
 }
 
 class _AppLocalizationsDelegate

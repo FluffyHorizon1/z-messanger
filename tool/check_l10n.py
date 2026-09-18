@@ -56,6 +56,7 @@ MIGRATED = {
     "backup_screen.dart",
     "contact_info_screen.dart",
     "chat_screen.dart",
+    "requests_screen.dart",
     # No strings of its own; listed so that one added later is caught.
     "theme.dart",
     "settings_screen.dart",

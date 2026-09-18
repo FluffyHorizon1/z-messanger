@@ -495,5 +495,14 @@
   "connectExpiresSoon": "Queda menos de un minuto",
   "connectQrLabel": "Como código QR",
   "connectShareSheet": "Compartir",
-  "connectSharedToClipboard": "Aquí no hay menú de compartir: el enlace se copió al portapapeles."
+  "connectSharedToClipboard": "Aquí no hay menú de compartir: el enlace se copió al portapapeles.",
+  "requestsTitle": "Solicitudes",
+  "requestsBanner": "{count, plural, =1{1 persona quiere conectar} other{{count} personas quieren conectar}}",
+  "requestsWantsToConnect": "Quiere conectar",
+  "requestsNote": "Aceptar la añade a tus chats. No confirma quién es: para eso, compara los números de seguridad.",
+  "requestsEmpty": "No hay solicitudes ahora mismo",
+  "requestAccept": "Aceptar",
+  "requestDecline": "Rechazar",
+  "requestBlock": "Bloquear",
+  "chatRequested": "Solicitado"
 }
