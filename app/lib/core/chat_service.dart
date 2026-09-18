@@ -231,6 +231,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     );
     await svc.kt.load();
     await svc._loadContacts();
+    await svc._loadRequests(); // ADR 0011: pending inbound requests + blocklist
     await svc._refreshAllVerification();
     // Cold start read every per-contact key with its own query — fifteen
     // round trips per contact, 6 ms each contact, 2.5 s for four hundred
@@ -361,6 +362,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         pqPub: sealedPq == null ? null : unb64(await vault.unseal(sealedPq)),
         verifiedSn: r['verified_sn'] as String?,
         pqMismatch: (r['pq_mismatch'] as int? ?? 0) == 1,
+        requested: (r['requested'] as int? ?? 0) == 1,
         accountEdPub:
             r['acct_ed'] == null ? null : unb64(r['acct_ed'] as String),
         addedByDevice: r['added_by'] as String?,
@@ -722,6 +724,10 @@ class ChatService extends ChangeNotifier implements KtHost {
       pqCommit: scanned.v3?.pqCommit,
       accountEdPub: scanned.v3?.declaredAccountEdPub,
       deviceCert: scanned.deviceCert,
+      // ADR 0011: we added them; we are waiting for them to accept. Clears on
+      // their first traffic. On a mutual scan it clears at once, when the
+      // other side's own hello/request arrives.
+      requested: true,
     );
     // 13.7 put a second writer on this table: the same contact can arrive from
     // one of my own devices while the user is scanning it here. The check
@@ -738,6 +744,7 @@ class ChatService extends ChangeNotifier implements KtHost {
             'ttl_seconds': 0,
             'verified': 0,
             'created_ms': contact.createdMs,
+            'requested': 1,
             if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
             if (contact.accountEdPub != null)
               'acct_ed': b64(contact.accountEdPub!),
@@ -747,6 +754,9 @@ class ChatService extends ChangeNotifier implements KtHost {
               'added_by': contact.addedByDevice,
           },
           conflictAlgorithm: ConflictAlgorithm.replace);
+      // Adding someone we had blocked is a change of mind: the block goes, so
+      // `contacts` and `blocked` never both name one id (ADR 0011).
+      await vault.db.delete('blocked', where: 'rid = ?', whereArgs: [rid]);
       contacts[rid] = contact;
       return true;
     });
@@ -756,7 +766,25 @@ class ChatService extends ChangeNotifier implements KtHost {
       throw FormatException(
           'already in your contacts as "${contacts[rid]!.name}"');
     }
-    _sealKeys[rid] = bundle.xPub;
+    await _onContactAdded(contact);
+    // ADR 0011: hand them a signed request so they can accept without scanning
+    // us back. (On a mutual scan they already added us; their side folds the
+    // duplicate.)
+    await _sendContactRequest(contact);
+    return contact;
+  }
+
+  /// The steps shared by every path that adds a NEW contact (a scan/paste, or
+  /// accepting a request): the send keys, the empty thread, and the proactive
+  /// session open. Factored so accepting a request establishes exactly as a
+  /// scan does — the timing self-heal (`_noteUndecryptable`) then closes the
+  /// case where our opening hello was dropped because they had not added us.
+  Future<void> _onContactAdded(Contact contact) async {
+    final rid = contact.rid;
+    // If a request from them was pending (a mutual scan crossing in flight), it
+    // is answered by the add itself.
+    await _removeRequest(rid);
+    _sealKeys[rid] = contact.bundle.xPub;
     messagesByChat[rid] = [];
     unread[rid] = 0;
 
@@ -784,7 +812,203 @@ class ChatService extends ChangeNotifier implements KtHost {
     unawaited(_mirrorContact(contact).then((_) {}, onError: (_) {}));
     _schedulePqListDelivery(); // §18.9: a new contact is owed the signature
     notifyListeners();
-    return contact;
+  }
+
+  // --- ADR 0011: contact requests -----------------------------------------
+
+  /// Pending INBOUND requests, rid → who is asking. The durable copy is the
+  /// `requests` table; this is loaded from it on start and kept current for the
+  /// Requests surface.
+  final Map<String, PendingRequest> requestsByRid = {};
+
+  /// Routing ids blocked here: a request or any traffic from one is dropped in
+  /// silence. Cached from the `blocked` table.
+  final Set<String> _blocked = {};
+
+  /// Pending inbound requests, newest first.
+  List<PendingRequest> get requests {
+    final list = requestsByRid.values.toList();
+    list.sort((a, b) => b.createdMs.compareTo(a.createdMs));
+    return list;
+  }
+
+  bool isBlocked(String rid) => _blocked.contains(rid);
+
+  Future<void> _loadRequests() async {
+    for (final r in await vault.db.query('blocked')) {
+      _blocked.add(r['rid'] as String);
+    }
+    for (final r in await vault.db.query('requests')) {
+      try {
+        final bundle = ContactBundle.fromJson(
+            (jsonDecode(await vault.unseal(r['enc_bundle'] as String)) as Map)
+                .cast<String, Object?>());
+        final rid = r['rid'] as String;
+        requestsByRid[rid] = PendingRequest(
+          rid: rid,
+          name: await vault.unseal(r['enc_name'] as String),
+          bundle: bundle,
+          createdMs: r['created_ms'] as int,
+        );
+      } catch (_) {
+        // A row we cannot open is not one we can act on; erasure still sweeps it.
+      }
+    }
+  }
+
+  /// Seal a signed request to [contact] and queue it. It travels outside any
+  /// ratchet (there is none yet) and is recognised by the receiver before it
+  /// would be dropped as an unknown sender.
+  Future<void> _sendContactRequest(Contact contact) async {
+    final key = _sealKeys[contact.rid];
+    if (key == null) return;
+    final req = await ContactRequest.create(
+        me: identity, toRid: contact.rid, displayName: displayName);
+    final sealed = await SealedEnvelope.seal(
+        toXPub: key, fromRid: myRid, payload: req.encode());
+    await vault.db.insert('outbox', {
+      'id': newMessageId(),
+      'rid': contact.rid,
+      'payload': sealed,
+      'created_ms': _now(),
+    });
+    unawaited(flushOutbox());
+  }
+
+  /// A `creq` arrived — sealed, but with no session, so it is handled before
+  /// the unknown-sender drop. Signed by the identity it names, addressed to us,
+  /// and sealed by that same identity: a forged "X wants to connect" cannot
+  /// pass [ContactRequest.verify].
+  Future<void> _onContactRequest(String from, ContactRequest req) async {
+    if (!await req.verify(expectedTo: myRid, sealedFrom: from)) return;
+    final rid = await req.fromRid();
+    if (_blocked.contains(rid)) return; // dropped in silence
+    if (contacts.containsKey(rid)) {
+      // Already a contact: this is their ACCEPTANCE of a request we sent (or
+      // the duplicate on a mutual scan). Stop waiting on them, and — if we are
+      // the side that opens the session — re-poke the hello they may have
+      // dropped before they had added us.
+      await _clearRequested(rid);
+      await _pokeHello(contacts[rid]!);
+      return;
+    }
+    final name = (req.bundle.displayName?.trim().isNotEmpty ?? false)
+        ? req.bundle.displayName!.trim()
+        : 'Unknown';
+    final now = _now();
+    await vault.db.insert(
+        'requests',
+        {
+          'rid': rid,
+          'enc_bundle': await vault.seal(jsonEncode(req.bundle.toJson())),
+          'enc_name': await vault.seal(name),
+          'created_ms': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+    requestsByRid[rid] =
+        PendingRequest(rid: rid, name: name, bundle: req.bundle, createdMs: now);
+    notifyListeners();
+  }
+
+  /// Accept a pending request: add the requester as a contact — at the
+  /// classical floor, exactly as scanning their code would — and hand them a
+  /// request back, so their side stops waiting and the session establishes both
+  /// ways. The account identity and post-quantum key follow in-band (§18.2).
+  Future<Contact?> acceptRequest(String rid) async {
+    final pending = requestsByRid[rid];
+    if (pending == null) return contacts[rid];
+    final contact = Contact(
+      rid: rid,
+      bundle: pending.bundle,
+      name: pending.name,
+      createdMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    final claimed = await _withLock<bool>(rid, () async {
+      if (contacts.containsKey(rid)) return false;
+      await vault.db.insert(
+          'contacts',
+          {
+            'rid': rid,
+            'enc_bundle': await vault.seal(jsonEncode(contact.bundle.toJson())),
+            'enc_name': await vault.seal(contact.name),
+            'ttl_seconds': 0,
+            'verified': 0,
+            'created_ms': contact.createdMs,
+            'requested': 0, // we accepted; we are not the one waiting
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      await vault.db.delete('blocked', where: 'rid = ?', whereArgs: [rid]);
+      contacts[rid] = contact;
+      return true;
+    });
+    if (claimed) {
+      await _onContactAdded(contact); // also removes the pending request
+      await _sendContactRequest(contact);
+    } else {
+      await _removeRequest(rid);
+    }
+    notifyListeners();
+    return contacts[rid];
+  }
+
+  /// Decline a pending request: drop it, in silence to the sender (ADR 0011).
+  Future<void> declineRequest(String rid) async {
+    await _removeRequest(rid);
+    notifyListeners();
+  }
+
+  /// Block a routing id: drop this request and every future one from it without
+  /// a trace.
+  Future<void> blockRequest(String rid) async {
+    await vault.db.insert('blocked', {'rid': rid, 'created_ms': _now()},
+        conflictAlgorithm: ConflictAlgorithm.replace);
+    _blocked.add(rid);
+    await _removeRequest(rid);
+    notifyListeners();
+  }
+
+  Future<void> _removeRequest(String rid) async {
+    await vault.db.delete('requests', where: 'rid = ?', whereArgs: [rid]);
+    requestsByRid.remove(rid);
+  }
+
+  /// Clear "waiting for them to accept" once they have answered.
+  Future<void> _clearRequested(String rid) async {
+    final c = contacts[rid];
+    if (c == null || !c.requested) return;
+    c.requested = false;
+    await vault.db
+        .update('contacts', {'requested': 0}, where: 'rid = ?', whereArgs: [rid]);
+    notifyListeners();
+  }
+
+  /// When we last re-poked an opening hello per contact. Kept SEPARATE from
+  /// `_helloSentMs` (the undecryptable-repair limiter) on purpose: a poke must
+  /// not suppress that repair, nor be suppressed by it, and it must not touch
+  /// `debugHellos`, which counts only the repair path.
+  final Map<String, int> _pokeSentMs = {};
+
+  /// Routing ids we have received a decryptable message from this run — i.e.
+  /// the session is established. Used only to skip a redundant re-poke; nothing
+  /// depends on it for correctness, so it need not persist.
+  final Set<String> _heardFrom = {};
+
+  /// Re-send our opening hello when a peer signals (with a request) that they
+  /// have added us but our first hello may have been dropped — only if we are
+  /// the designated initiator (so the two sides never both open), we have not
+  /// already heard from them (the hello would then be redundant traffic), and
+  /// not too soon after the last poke.
+  Future<void> _pokeHello(Contact contact) async {
+    if (_heardFrom.contains(contact.rid)) return;
+    final conv = await _convFor(contact);
+    if (!conv.isDesignatedInitiator) return;
+    final now = _now();
+    if (now - (_pokeSentMs[contact.rid] ?? 0) <
+        helloMinInterval.inMilliseconds) {
+      return;
+    }
+    _pokeSentMs[contact.rid] = now;
+    await _sendInner(contact, InnerMessage.hello(newMessageId(), now));
   }
 
   /// Announce a contact to my account's other devices (13.7).
@@ -1122,6 +1346,11 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     await vault.db.delete('conversations', where: 'rid = ?', whereArgs: [rid]);
     await vault.db.delete('contacts', where: 'rid = ?', whereArgs: [rid]);
+    // ADR 0011: any pending request from them is theirs too, so it goes with
+    // them; the blocklist is left alone (adding them cleared it, so a deleted
+    // contact is never on it, and a genuine block should outlive a delete).
+    await vault.db.delete('requests', where: 'rid = ?', whereArgs: [rid]);
+    requestsByRid.remove(rid);
     for (final family in contactKvFamilies) {
       await vault.kvDelete('$family$rid');
     }
@@ -1142,6 +1371,8 @@ class ChatService extends ChangeNotifier implements KtHost {
     _verification.remove(rid);
     _pendingDlv.remove(rid);
     _helloSentMs.remove(rid);
+    _pokeSentMs.remove(rid);
+    _heardFrom.remove(rid);
     _dlResentAtMs.remove(rid);
     _pqSent.remove(rid);
     _pqNudges.remove(rid);
@@ -1965,6 +2196,16 @@ class ChatService extends ChangeNotifier implements KtHost {
       return;
     }
 
+    // ADR 0011: a contact request rides sealed but OUTSIDE any ratchet (there
+    // is none yet), so it is recognised here — before the unknown-sender drop
+    // below, which is exactly what it replaces: an add stops being silent.
+    final creq = ContactRequest.tryParse(payload);
+    if (creq != null) {
+      await _onContactRequest(from, creq);
+      transport.ackReceived(id: m.id, from: m.from);
+      return;
+    }
+
     // Self-sync from one of my OWN linked devices takes a separate path.
     final sync = _sync;
     if (sync != null && sync.deviceRoutingIds.contains(from)) {
@@ -2144,6 +2385,11 @@ class ChatService extends ChangeNotifier implements KtHost {
     // forget the envelope.
     transport.ackReceived(id: m.id, from: m.from);
     unawaited(flushOutbox()); // a queued v2 key offer, if any, goes out now
+    // ADR 0011: any traffic from them means they have added us — stop showing
+    // the chat as "requested", and the session is now established, so a later
+    // request from them needs no re-poke. (Their acceptance also signals this.)
+    _heardFrom.add(contact.rid);
+    await _clearRequested(contact.rid);
 
     if (inner != null) {
       if ((inner.kind == 'file' || inner.kind == 'gfile') &&

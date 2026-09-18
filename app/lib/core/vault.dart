@@ -88,7 +88,7 @@ class Vault {
   /// 3 — 8.1c: `forwarded`, which needs a column of its own — a 1:1 text
   ///     row's sealed body is the bare message, with no envelope to put a
   ///     flag in, and inventing one would misparse ordinary text.
-  static const int schemaVersion = 11;
+  static const int schemaVersion = 12;
 
   // Message ids are already stored in the clear (they are the primary key),
   // so `reply_to` — a mid within the same chat — reveals nothing the row
@@ -235,7 +235,41 @@ class Vault {
       // never moves backwards), and this table fills from the next receipt.
       await db.execute(_createDelivery);
     }
+    if (from < 12) {
+      // ADR 0011: contact requests. Being added stops being silent — a request
+      // arrives, and you accept, decline, or block it.
+      //   contacts.requested — set on a contact WE added and are waiting for
+      //     the other side to answer; clears on their first traffic.
+      //   requests           — pending INBOUND requests, not yet contacts.
+      //   blocked            — routing ids whose requests and traffic are
+      //     dropped in silence.
+      await db.execute(
+          'ALTER TABLE contacts ADD COLUMN requested INTEGER NOT NULL DEFAULT 0');
+      await db.execute(_createRequests);
+      await db.execute(_createBlocked);
+    }
   }
+
+  /// ADR 0011. One row per pending INBOUND contact request — someone who added
+  /// us and is waiting on our accept/decline. Not a contact until accepted; the
+  /// bundle and offered name are sealed at rest like a contact's, and the whole
+  /// row is erased with the contact if one is later made and then deleted.
+  static const String _createRequests = '''
+            CREATE TABLE requests(
+              rid TEXT PRIMARY KEY,
+              enc_bundle TEXT NOT NULL,
+              enc_name TEXT NOT NULL,
+              created_ms INTEGER NOT NULL
+            )''';
+
+  /// ADR 0011. Routing ids we have blocked: a request or any traffic from one
+  /// is dropped without a trace. Adding a blocked id as a contact clears it, so
+  /// this and `contacts` never both name the same id.
+  static const String _createBlocked = '''
+            CREATE TABLE blocked(
+              rid TEXT PRIMARY KEY,
+              created_ms INTEGER NOT NULL
+            )''';
 
   /// One row per (message, recipient) still to be encrypted and queued.
   /// `payload` is the sealed inner message — sealed because it is the message
@@ -379,7 +413,8 @@ class Vault {
               pq_mismatch INTEGER,
               acct_ed TEXT,
               dev_cert TEXT,
-              added_by TEXT
+              added_by TEXT,
+              requested INTEGER NOT NULL DEFAULT 0
             )''');
           await db.execute('''
             CREATE TABLE conversations(
@@ -455,6 +490,8 @@ class Vault {
               k TEXT PRIMARY KEY,
               v TEXT NOT NULL
             )''');
+          await db.execute(_createRequests);
+          await db.execute(_createBlocked);
         },
       ),
     );

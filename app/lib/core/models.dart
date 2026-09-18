@@ -65,6 +65,13 @@ class Contact {
   /// than being retried into acceptance.
   bool pqMismatch;
 
+  /// ADR 0011: this contact was added here by us (a scan, a paste) and we are
+  /// still waiting for the other side to accept the request. It clears the
+  /// moment any traffic from them arrives — their acceptance, or a message.
+  /// While set, the chat is shown as "requested". It says nothing about
+  /// authenticity; it is purely "have they answered yet".
+  bool requested;
+
   Contact({
     required this.rid,
     required this.bundle,
@@ -79,6 +86,7 @@ class Contact {
     this.accountEdPub,
     this.deviceCert,
     this.addedByDevice,
+    this.requested = false,
   });
 
   /// What is actually known about this identity's authenticity.
@@ -98,6 +106,24 @@ class Contact {
   /// post-quantum half is known and verified.
   HybridPublicKey? get hybridKey =>
       pqPub == null ? null : HybridPublicKey(edPub: accountEd, mlPub: pqPub!);
+}
+
+/// ADR 0011: a pending INBOUND contact request — someone who added us and is
+/// waiting on our accept/decline. It is not a contact until accepted; the
+/// bundle is what they revealed (self-verifying), and accepting adds them from
+/// it exactly as a scan would. It carries no assurance of its own: all it says
+/// is that whoever holds these keys asked to connect.
+class PendingRequest {
+  final String rid;
+  final String name;
+  final ContactBundle bundle;
+  final int createdMs;
+  PendingRequest({
+    required this.rid,
+    required this.name,
+    required this.bundle,
+    required this.createdMs,
+  });
 }
 
 class FileMeta {
