@@ -1089,9 +1089,9 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// family here — so the next per-contact key fails in CI rather than
   /// surviving the contact it belongs to.
   static const List<String> contactKvFamilies = [
-    'cdev_', 'cdev_ver_', 'cdev_at_', 'cdev_pq_', 'cdev_pq_ver_',
-    'cdl_alert_', 'cdl_claims_', 'cextra_', 'dlpq_sent_', 'ktc_',
-    'last_open_', 'pql_alert_',
+    'cdev_', 'cdev_ver_', 'cdev_at_', 'cdev_sigfloor_', 'cdev_pq_',
+    'cdev_pq_ver_', 'cdl_alert_', 'cdl_claims_', 'cextra_', 'dlpq_sent_',
+    'ktc_', 'last_open_', 'pql_alert_',
   ];
 
   Future<void> deleteContact(String rid) async {
@@ -5906,9 +5906,9 @@ class ChatService extends ChangeNotifier implements KtHost {
       // Ed25519 forger stripping the post-quantum coverage and replaying at a
       // higher version. Refuse it. A v1-only list at or below the floor is a
       // genuine pre-0010 list and still admitted.
-      final v2floor =
-          int.tryParse(await vault.kvGet('cdev_v2floor_$rid') ?? '0') ?? 0;
-      if (list.sig2 == null && v2floor > 0 && list.version > v2floor) {
+      final sigFloor =
+          int.tryParse(await vault.kvGet('cdev_sigfloor_$rid') ?? '0') ?? 0;
+      if (list.sig2 == null && sigFloor > 0 && list.version > sigFloor) {
         return false;
       }
       final storedVer =
@@ -5919,8 +5919,8 @@ class ChatService extends ChangeNotifier implements KtHost {
       await vault.kvPut('cdev_ver_$rid', '${list.version}', sensitive: false);
       // Raise the floor when this list carries a verified sig2, so a later
       // strip cannot be replayed beneath it.
-      if (list.sig2 != null && list.version > v2floor) {
-        await vault.kvPut('cdev_v2floor_$rid', '${list.version}',
+      if (list.sig2 != null && list.version > sigFloor) {
+        await vault.kvPut('cdev_sigfloor_$rid', '${list.version}',
             sensitive: false);
       }
       // When it arrived: the transparency grace period runs from here.
