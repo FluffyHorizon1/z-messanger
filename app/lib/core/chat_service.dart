@@ -691,11 +691,18 @@ class ChatService extends ChangeNotifier implements KtHost {
         .encodeStrict();
   }
 
-  Future<Contact> addContactFromCode(String code, {String? alias}) async {
+  Future<Contact> addContactFromCode(String code,
+      {String? alias, bool requested = true}) async {
     // Accepts zc1. and zc3.; a v3 code yields the same classical bundle plus
     // the commitment its post-quantum key must later match. (zc2. account
     // codes are for device linking, not contact exchange, and never reached
     // this path.)
+    //
+    // [requested] (ADR 0011/0012): a scan or paste is a one-sided add, so it
+    // marks the contact "requested" and hands the other side a signed request.
+    // The CONNECT ceremony passes false: both sides add each other as the
+    // ceremony completes, so there is no one-sided limbo to show and no request
+    // to send — the redundant creq would only fold on an existing contact.
     final scanned = await scanContactCode(code);
     final bundle = scanned.classical;
     final rid = await bundle.routingId();
@@ -726,8 +733,9 @@ class ChatService extends ChangeNotifier implements KtHost {
       deviceCert: scanned.deviceCert,
       // ADR 0011: we added them; we are waiting for them to accept. Clears on
       // their first traffic. On a mutual scan it clears at once, when the
-      // other side's own hello/request arrives.
-      requested: true,
+      // other side's own hello/request arrives. The CONNECT ceremony sets this
+      // false (ADR 0012): both sides add each other as it completes.
+      requested: requested,
     );
     // 13.7 put a second writer on this table: the same contact can arrive from
     // one of my own devices while the user is scanning it here. The check
@@ -744,7 +752,7 @@ class ChatService extends ChangeNotifier implements KtHost {
             'ttl_seconds': 0,
             'verified': 0,
             'created_ms': contact.createdMs,
-            'requested': 1,
+            'requested': requested ? 1 : 0,
             if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
             if (contact.accountEdPub != null)
               'acct_ed': b64(contact.accountEdPub!),
@@ -769,8 +777,9 @@ class ChatService extends ChangeNotifier implements KtHost {
     await _onContactAdded(contact);
     // ADR 0011: hand them a signed request so they can accept without scanning
     // us back. (On a mutual scan they already added us; their side folds the
-    // duplicate.)
-    await _sendContactRequest(contact);
+    // duplicate.) The CONNECT ceremony (requested:false) skips it: the ceremony
+    // already added both sides, so the request would only fold anyway.
+    if (requested) await _sendContactRequest(contact);
     return contact;
   }
 

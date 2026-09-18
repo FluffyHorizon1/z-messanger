@@ -22,7 +22,8 @@
 //  3. a pending invite survives the app being killed and still completes —
 //     an invite sent at lunchtime may be opened at midnight;
 //  4. confirming the digits marks the contact verified, and adding without
-//     comparing lands it unverified AND says so on screen;
+//     comparing lands it unverified AND says so on screen — and either way a
+//     connect-added contact is not left showing as a pending request (0012);
 //  5. a mismatch offers only "stop": no path from a failed comparison ends
 //     with a contact, and the invite is spent so it cannot be retried into
 //     the same attacker;
@@ -364,6 +365,10 @@ void main() {
         reason: 'and it is the number this pair actually has, so every reader '
             'of verified_sn treats a connect-verified contact like a scanned one');
     expect(alice.svc.verificationWith(added.rid), VerificationState.verified);
+    // ADR 0012: the ceremony added both sides, so it is not a one-sided add —
+    // the chat must not linger as "requested".
+    expect(contact.requested, isFalse,
+        reason: 'a connect-added contact is not a pending request');
     // The invite is spent and gone from the list either way.
     expect(alice.invites.invites, isEmpty);
 
@@ -374,6 +379,8 @@ void main() {
     expect(bobContact.verified, isFalse);
     expect(bobContact.verifiedSn, isNull);
     expect(bob.svc.verificationWith(bobAdded.rid), VerificationState.unverified);
+    expect(bobContact.requested, isFalse,
+        reason: 'unverified, but still not a pending request (ADR 0012)');
     expect(bob.invites.invites, isEmpty);
   }, timeout: const Timeout(Duration(minutes: 3)));
 
@@ -392,7 +399,11 @@ void main() {
     });
     expect(ready.sas, isNotNull);
 
-    await t.pumpWidget(tab(alice, ConnectConfirmPanel(invite: ready)));
+    // Pump it the way the CONNECT tab shows it — inside a scroll view
+    // (connect_tab.dart wraps its body in one), so the panel's natural height
+    // is not clipped to a bare 800x600 test viewport.
+    await t.pumpWidget(
+        tab(alice, SingleChildScrollView(child: ConnectConfirmPanel(invite: ready))));
     await t.pumpAndSettle();
 
     // The digits are on screen, and so is the warning about what a mismatch

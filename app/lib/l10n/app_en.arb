@@ -2188,6 +2188,8 @@
   "@connectNoInvites": {"description": "Shown when there are no pending invites."},
   "connectConfirmTitle": "Compare these digits",
   "@connectConfirmTitle": {"description": "Heading of the screen shown when both sides have revealed and the eight digits are ready."},
+  "connectWhoAccepted": "{name} took your invite. Whoever had the link could have taken it — so if this is not who you meant to reach, stop below instead of adding them.",
+  "@connectWhoAccepted": {"description": "ADR 0012 bearer-token consent line, shown above the safety-number comparison on the connect completion screen. An invite link is a bearer token until spent, so the person who accepted may not be who the inviter sent it to; this states that and points to the stop action. Names who actually accepted.", "placeholders": {"name": {"type": "String"}}},
   "connectConfirmBody": "Read these eight digits to {name} on a call, or in person. They must see exactly the same. If they do, nobody is in the middle — not the relay, not the network, not whoever could see the message that carried the invite.",
   "@connectConfirmBody": {"description": "Explains what the comparison proves. 'exactly the same' and the list of who is excluded are both load-bearing: the whole value of the ceremony is in this step being done properly."},
   "connectMatch": "They match",

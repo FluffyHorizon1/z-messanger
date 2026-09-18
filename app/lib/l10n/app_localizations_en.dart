@@ -1708,6 +1708,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get connectConfirmTitle => 'Compare these digits';
 
   @override
+  String connectWhoAccepted(String name) {
+    return '$name took your invite. Whoever had the link could have taken it — so if this is not who you meant to reach, stop below instead of adding them.';
+  }
+
+  @override
   String connectConfirmBody(Object name) {
     return 'Read these eight digits to $name on a call, or in person. They must see exactly the same. If they do, nobody is in the middle — not the relay, not the network, not whoever could see the message that carried the invite.';
   }

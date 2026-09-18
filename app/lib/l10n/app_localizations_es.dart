@@ -1725,6 +1725,11 @@ class AppLocalizationsEs extends AppLocalizations {
   String get connectConfirmTitle => 'Comparad estos dígitos';
 
   @override
+  String connectWhoAccepted(String name) {
+    return '$name aceptó tu invitación. Cualquiera que tuviera el enlace pudo tomarla, así que si no es la persona con quien querías conectar, detente abajo en vez de añadirla.';
+  }
+
+  @override
   String connectConfirmBody(Object name) {
     return 'Léele estos ocho dígitos a $name por teléfono o en persona. Tiene que ver exactamente los mismos. Si es así, nadie está en medio: ni el relé, ni la red, ni quien pudiera ver el mensaje que llevaba la invitación.';
   }

@@ -414,8 +414,10 @@ class ConnectInvites extends ChangeNotifier {
     if (peer == null) {
       throw StateError('the ceremony has not finished');
     }
+    // ADR 0012: the ceremony added both sides, so this is not a one-sided add —
+    // no "requested" limbo to show, and no request to send (it would only fold).
     return _svc.addContactFromCode(peer.contactCode,
-        alias: peer.displayName ?? '');
+        alias: peer.displayName ?? '', requested: false);
   }
 
   Future<void> _finish(PendingInvite invite) async {

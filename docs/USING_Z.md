@@ -65,7 +65,9 @@ the room. It works like this:
 Why the digits matter: anyone who sees the invite before your friend does can
 answer it, and Z has no way to tell. What they cannot do is show the right
 eight digits on your friend's screen. An impostor in the middle produces two
-*different* strings, and the comparison is what catches it.
+*different* strings, and the comparison is what catches it. Z names whoever
+took the invite, right above the digits — so if it is not who you meant to
+reach, stop there instead of adding them.
 
 So:
 

@@ -2846,6 +2846,12 @@ abstract class AppLocalizations {
   /// **'Compare these digits'**
   String get connectConfirmTitle;
 
+  /// ADR 0012 bearer-token consent line, shown above the safety-number comparison on the connect completion screen. An invite link is a bearer token until spent, so the person who accepted may not be who the inviter sent it to; this states that and points to the stop action. Names who actually accepted.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} took your invite. Whoever had the link could have taken it — so if this is not who you meant to reach, stop below instead of adding them.'**
+  String connectWhoAccepted(String name);
+
   /// Explains what the comparison proves. 'exactly the same' and the list of who is excluded are both load-bearing: the whole value of the ceremony is in this step being done properly.
   ///
   /// In en, this message translates to:

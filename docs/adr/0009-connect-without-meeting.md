@@ -137,8 +137,9 @@ Out of scope permanently, not for this phase.
   link is a bearer token until it is spent**, so whoever sees it first can
   complete the ceremony under the name the recipient expected — which is
   precisely the risk the comparison exists to catch, and it should be stated
-  rather than buried; and a skipped comparison is trust‑on‑first‑use over
-  whatever carried the link.
+  rather than buried (it now is, on the completion screen, in the words of the
+  residual itself — `adr/0012`); and a skipped comparison is
+  trust‑on‑first‑use over whatever carried the link.
 - `contacts.verified_sn` gains a second way to be set. Everything that reads
   it — the safety‑number prompt, the assurance badge, `_classifyVerification`
   — must treat both the same, or the badge starts meaning two things.

@@ -360,6 +360,18 @@ class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
             Text(l.connectConfirmTitle,
                 style: const TextStyle(
                     fontSize: 18, fontWeight: FontWeight.w700)),
+            // ADR 0012: who actually took the invite, and the bearer-token
+            // caveat — the person who accepted may not be who you sent it to.
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: context.z.surfaceAlt,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(l.connectWhoAccepted(peerName),
+                  style: const TextStyle(fontSize: 13, height: 1.4)),
+            ),
             const SizedBox(height: 16),
             Center(
               child: SelectableText(
