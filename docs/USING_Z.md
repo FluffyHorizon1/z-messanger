@@ -21,13 +21,20 @@ key, and the only way anyone gets it is if you give it to them.
 
 ## Adding someone
 
-Swap contact codes — scan the QR, or copy the text and send it however you
-like. Both of you have to do it; adding someone does not add you to them.
+Scan their QR, or copy the text and send it however you like. When you add
+someone this way, a request appears on their phone — *someone wants to connect*
+— and they tap **Accept**, **Decline**, or **Block**. They do not have to scan
+you back; accepting is enough.
 
-The code you show is public. Someone who copies it can add you, and that is
-all: they cannot read anything, impersonate you, or find out who else you talk
-to. What matters is that the code you *scan* is really theirs, which is what
-the safety number is for.
+The code you show is public. Someone who copies it can send you a request, and
+that is all: they cannot read anything, impersonate you, or find out who else
+you talk to — and a request that names someone really is from them, because it
+is signed with their own key, so nobody can put a stranger's face on it. If you
+did not want it, **Decline** drops it quietly and **Block** stops any more.
+
+Accepting adds them, but it does not confirm *who* they are — for that, compare
+safety numbers. What matters, when you *scan* someone in person, is that the
+code is really theirs, which is the same thing the safety number checks.
 
 If you cannot get in the same room, use **CONNECT** instead of sending your
 code — it is below, and it ends with the two of you verified rather than

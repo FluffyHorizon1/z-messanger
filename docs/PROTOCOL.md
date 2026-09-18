@@ -737,7 +737,9 @@ as the sender. Any failure is a silent drop.
 This layer provides no authenticity and needs none: `p` is ratchet
 ciphertext (or a chunk sealed under a key that only the offer's recipient
 holds) that only the claimed sender can produce; a forged `f` simply fails
-inner decryption. The relay stores and delivers `zs1.` payloads with **no
+inner decryption. The one `p` that is neither — a contact request (§8.1),
+which by design arrives before any session exists — carries its own signature
+instead. The relay stores and delivers `zs1.` payloads with **no
 sender attribution** (§12), matches acks by envelope id alone, and emits no
 `delivered` frames for them (§6.3 replaces those). Senders MUST seal every
 envelope for which they know the recipient device's X25519 key; the unsealed
@@ -749,6 +751,46 @@ the relay not to know who sent what therefore sends sealed envelopes on a
 connection that has not authenticated (§12.1), and receives on one that
 has. The relay then holds an address and not an identity for each sealed
 send; what an address is worth is `THREAT_MODEL.md` R21.
+
+### 8.1 Contact request payload (`creq`, ADR 0011)
+
+A contact request is a sealed `p` that is neither ratchet ciphertext nor a
+chunk. Adding someone used to send them a `hello` they dropped as an unknown
+sender — no session, so nothing to authenticate it against — which is why a
+connection needed **both** people to add each other. A request is what the
+receiver surfaces instead of that drop: *someone wants to connect*, to accept,
+decline, or block. It rides sealed but **outside any ratchet**, because when it
+arrives there is no session and the receiver drops unknown senders before it
+would decrypt one.
+
+```
+creq     = b64( utf8( JSON{ "v":1, "t":"creq", "to":recipientRoutingId,
+                            "ts":int, "bundle":ContactBundleJSON, "sig":b64 } ) )
+sigInput = utf8("z-contact-request-v1:") || edPub || xPub
+           || u16be(len(to)) || to || u64be(ts) || u16be(len(name)) || name
+sig      = Ed25519.Sign( bundle.edSk, sigInput )      // name = bundle.displayName or ""
+```
+
+The sealed layer hides the sender from the relay but proves nothing to the
+recipient — anyone can seal a `p` and set `f` to any routing id — so, unlike
+ratchet ciphertext, a `creq` carries its own authenticity. A recipient MUST
+verify, dropping silently on any failure: `to` is its own routing id; the
+bundle self‑verifies (§2.3 — its X key is bound to its identity); the bundle's
+routing id is `SHA‑256(edPub)` and equals the sealed sender `f`; and `sig`
+verifies under `bundle.edPub` over `sigInput`. This makes a forged *X wants to
+connect* impossible: an attacker holding X's public `zc1.` code cannot produce
+X's signature, and cannot replay a genuine request at a different recipient
+because `to` is signed in.
+
+Accepting a request adds the contact from `bundle` at the **classical** floor,
+exactly as scanning that `zc1.` code would — the account identity and
+post‑quantum key follow in‑band (§18.2), and nothing here marks a contact
+verified. A `creq` whose routing id is already a contact is that contact
+accepting a request we sent (or the duplicate on a mutual add): it clears the
+"requested" state and is not shown again. A blocked routing id's `creq` — and
+its traffic — is dropped in silence. Older clients, which never send `creq`,
+keep dropping the opening `hello` as before; nothing about the wire is
+incompatible, and only a new client shows the request.
 
 ## 9. Multi‑device messaging and self‑sync
 
