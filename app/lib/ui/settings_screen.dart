@@ -1,8 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
+import '../core/update_check.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/ttl_text.dart';
 import '../l10n/when_text.dart';
@@ -35,6 +37,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Whether this device can seal the pass key under a hardware key that
   // only the authenticated user can operate (7.8b, Android).
   bool _boundAvailable = false;
+  // 24.4: the running build's version, read from the platform bundle. Null
+  // until it loads, and stays null where there is no platform to ask (a plain
+  // widget test), which is also what keeps the update check from firing there.
+  String? _appVersion;
 
   @override
   void initState() {
@@ -46,6 +52,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
     lock.boundAvailable.then((v) {
       if (mounted) setState(() => _boundAvailable = v);
     });
+    _loadVersionAndMaybeCheck();
+  }
+
+  /// 24.4 — read the real version, then (at most once a day) ask the relay's
+  /// own `/latest.json` whether a newer build exists. Reading the platform
+  /// version first is deliberate: under a widget test it throws, and this
+  /// returns before any network, so the check is a no-op there. Every failure
+  /// — no platform, unreachable, malformed — is swallowed: a check that cannot
+  /// run just shows no notice, it never crashes the screen.
+  Future<void> _loadVersionAndMaybeCheck() async {
+    final String version;
+    try {
+      version = (await PackageInfo.fromPlatform()).version;
+    } catch (_) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _appVersion = version);
+    try {
+      final prefs = context.read<AppPrefs>();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      const dayMs = 24 * 60 * 60 * 1000;
+      if (now - prefs.lastUpdateCheckMs < dayMs) return; // the cached answer stands
+      final relayUrl = context.read<Transport>().serverUrl;
+      final status = await checkForUpdate(current: version, relayUrl: relayUrl);
+      if (!mounted) return;
+      await prefs.recordUpdateCheck(
+          atMs: now, latestVersion: status.latest, latestUrl: status.url);
+    } catch (_) {
+      // A check that could not run leaves no notice, and never throws.
+    }
   }
 
   String _biometricUnlockCopy(AppLocalizations l, AppLock lock) {
@@ -69,6 +106,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       appBar: AppBar(title: Text(l.stSettings)),
       body: ListView(
         children: [
+          // 24.4: a quiet, non-blocking "you're behind" notice. Shown only
+          // when the relay's /latest.json reported a strictly-newer version
+          // than the one running; recomputed against the running version, so
+          // it clears itself once the user updates.
+          if (_appVersion != null &&
+              prefs.latestVersion != null &&
+              isBehind(_appVersion!, prefs.latestVersion!))
+            _UpdateNotice(latest: prefs.latestVersion!, url: prefs.latestUrl),
           _SectionHeader(l.stProfile),
           ListTile(
             leading: const Icon(Icons.badge_outlined),
@@ -428,13 +473,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 24),
           Center(
-            child: Text(
-              // No version number here: the one that used to be here said
-              // 1.0.0 for eighteen releases. The build's real version needs
-              // package_info_plus, which is a separate change.
-              l.stFooter,
-              textAlign: TextAlign.center,
-              style: TextStyle(color: context.z.textSecondary, fontSize: 12),
+            // 24.4: the build's real version, read via package_info_plus, so
+            // it can no longer drift (this line said 1.0.0 for eighteen
+            // releases). Absent under a widget test, where there is no platform
+            // version to read; the footer then shows just its text.
+            child: Column(
+              children: [
+                Text(l.stFooter,
+                    textAlign: TextAlign.center,
+                    style:
+                        TextStyle(color: context.z.textSecondary, fontSize: 12)),
+                if (_appVersion != null) ...[
+                  const SizedBox(height: 4),
+                  Text(l.stVersion(_appVersion!),
+                      style: TextStyle(
+                          color: context.z.textSecondary, fontSize: 12)),
+                ],
+              ],
             ),
           ),
           const SizedBox(height: 24),
@@ -830,6 +885,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
     exit(0); // relaunch lands on onboarding with a clean vault
+  }
+}
+
+/// 24.4 — the "you're behind" card. There is no in-app updater by design
+/// (THREAT_MODEL R8), so this only names the newer version and shows where to
+/// get it, as selectable text to copy (no url_launcher dependency).
+class _UpdateNotice extends StatelessWidget {
+  final String latest;
+  final String? url;
+  const _UpdateNotice({required this.latest, this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: context.z.surfaceAlt,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: context.z.accent),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.system_update_alt, size: 18, color: context.z.accent),
+              const SizedBox(width: 8),
+              Text(l.stUpdateTitle,
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(l.stUpdateBody(latest),
+              style: const TextStyle(fontSize: 13, height: 1.4)),
+          if (url != null) ...[
+            const SizedBox(height: 6),
+            SelectableText(url!,
+                style: TextStyle(fontSize: 13, color: context.z.accent)),
+          ],
+        ],
+      ),
+    );
   }
 }
 

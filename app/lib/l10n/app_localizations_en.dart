@@ -1278,6 +1278,19 @@ class AppLocalizationsEn extends AppLocalizations {
       'Z — zero-trust messenger\nNo accounts · No analytics · No server storage';
 
   @override
+  String stVersion(String version) {
+    return 'Version $version';
+  }
+
+  @override
+  String get stUpdateTitle => 'Update available';
+
+  @override
+  String stUpdateBody(String version) {
+    return 'Z $version is available. Z has no in-app updater, by design — get it from:';
+  }
+
+  @override
   String get stScreenLockOn => 'Screen lock on. Z will ask before opening.';
 
   @override

@@ -31,6 +31,7 @@ const { PushSender } = require('./push.js');
 const {
   ROUTES,
   androidAssetLinks,
+  latestJson,
   SECURITY_TXT,
   FAVICON_SVG,
   FAVICON_ICO,
@@ -1878,6 +1879,21 @@ function createServer(opts = {}) {
         res.writeHead(200, {
           'content-type': 'application/json; charset=utf-8',
           'cache-control': 'public, max-age=3600',
+        });
+        res.end(body);
+        return;
+      }
+    }
+    // The latest published version (24.4), read at request time so setting
+    // Z_LATEST_VERSION is a restart, not a redeploy, and its absence is a 404
+    // rather than a claim. The client derives this URL from the relay it
+    // already dials, so this answers a host the client is already talking to.
+    if (req.url === '/latest.json') {
+      const body = latestJson(process.env.Z_LATEST_VERSION);
+      if (body) {
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'public, max-age=300',
         });
         res.end(body);
         return;

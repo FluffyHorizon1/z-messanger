@@ -327,6 +327,41 @@ test('assetlinks: with a fingerprint it is the file Android expects',
     }
   });
 
+const { latestJson } = require('../pages.js');
+
+test('/latest.json is not served until a version is configured (24.4)',
+  async () => {
+    delete process.env.Z_LATEST_VERSION;
+    const r = await get('/latest.json');
+    assert.strictEqual(r.status, 404,
+      'an unset version is no claim, not a claim of 0');
+    assert.strictEqual(latestJson(undefined), null);
+    assert.strictEqual(latestJson(''), null);
+    // A string that is not a plain semver is treated as unset, so a typo
+    // cannot ship a junk "latest" to every client.
+    for (const junk of ['latest', 'v3.7.0', '3.7', 'three.seven', '3.7.0.1']) {
+      assert.strictEqual(latestJson(junk), null, junk);
+    }
+  });
+
+test('/latest.json with a version is the file the client expects (24.4)',
+  async () => {
+    process.env.Z_LATEST_VERSION = '3.7.0';
+    try {
+      const r = await get('/latest.json');
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.type.includes('application/json'), `served as ${r.type}`);
+      const j = JSON.parse(r.body);
+      assert.strictEqual(j.version, '3.7.0');
+      assert.ok(/\/releases\/latest$/.test(j.url), `url was ${j.url}`);
+      // Two keys and nothing else: the body names no user, no routing id,
+      // no per-request anything — it is the same file for everyone.
+      assert.deepStrictEqual(Object.keys(j).sort(), ['url', 'version']);
+    } finally {
+      delete process.env.Z_LATEST_VERSION;
+    }
+  });
+
 test('assetlinks: the app link it authorises is the one the manifest claims',
   () => {
     // Two files, one claim, in different languages and different repositories'

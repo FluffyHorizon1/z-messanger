@@ -262,6 +262,19 @@ There is no automatic cloud backup and there will not be one, because it would
 mean either us holding a key or you holding a password we could reset. Both
 defeat the point.
 
+## Staying up to date
+
+Z has no in-app updater — an app that can update itself is an app that can be
+made to run someone else's code, and Z does not hold that power over your
+device. What it does instead: when you open Settings, at most once a day, it
+asks your own relay whether a newer version has been published, and if one has,
+it shows a small "Update available" note with the version and where to get it.
+Nothing is downloaded or installed for you; you go and get the new build the
+same way you got this one. The check talks only to the relay you already use —
+not Google, not us, not anyone new — and it sends nothing that says which
+install you are. If you run your own relay and do not set a latest version,
+nobody on it is ever prompted.
+
 ## What Z never asks for
 
 No phone number, no email, no contacts-list upload, no analytics, no crash

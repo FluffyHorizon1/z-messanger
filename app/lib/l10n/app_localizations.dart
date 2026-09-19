@@ -2168,6 +2168,24 @@ abstract class AppLocalizations {
   /// **'Z — zero-trust messenger\nNo accounts · No analytics · No server storage'**
   String get stFooter;
 
+  /// The running build's version, shown in the settings footer (24.4). Read from the platform bundle via package_info_plus.
+  ///
+  /// In en, this message translates to:
+  /// **'Version {version}'**
+  String stVersion(String version);
+
+  /// Heading of the non-blocking notice at the top of Settings (24.4) shown only when the relay's /latest.json reported a newer version than the one running.
+  ///
+  /// In en, this message translates to:
+  /// **'Update available'**
+  String get stUpdateTitle;
+
+  /// Body of the update notice (24.4). Names the newer version and states there is no in-app updater (THREAT_MODEL R8); the download URL follows on its own line as selectable text. 'by design' is load-bearing: it is a deliberate choice, not a missing feature.
+  ///
+  /// In en, this message translates to:
+  /// **'Z {version} is available. Z has no in-app updater, by design — get it from:'**
+  String stUpdateBody(String version);
+
   /// After enabling screen lock.
   ///
   /// In en, this message translates to:

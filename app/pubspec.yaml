@@ -56,6 +56,12 @@ dependencies:
   media_kit_libs_linux: ^1.2.1
   media_kit_libs_windows_audio: ^1.0.9
 
+  # 24.4: the app's own version at runtime, read from the platform bundle
+  # (AndroidManifest / Info.plist), for the "you're behind" check. Reads what
+  # the build already carries, so it cannot drift the way a hardcoded string
+  # did ("1.0.0 for eighteen releases").
+  package_info_plus: ^8.3.0
+
   intl: ^0.20.2
   firebase_core: ^4.13.0
   firebase_messaging: ^16.5.0

@@ -899,6 +899,28 @@ function androidAssetLinks(raw) {
   )}\n`;
 }
 
+/**
+ * The latest published version, for the in-app "you're behind" check (24.4).
+ *
+ * Served at /latest.json only when Z_LATEST_VERSION is set — 404 otherwise, the
+ * same honest shape as assetlinks above: an unset version is no claim, not a
+ * claim of "0", so a self-hoster who does not set it simply never prompts their
+ * users. Read at request time, so setting it is a restart, not a redeploy.
+ *
+ * The value is the operator's to set on each release. A string that is not a
+ * plain semver is treated as unset, so a typo cannot ship a junk "latest" to
+ * every client. The body carries the version and the releases page and nothing
+ * per-user: the client derives this URL from the relay it already dials
+ * (§24.4), so no new host is contacted and the request names nobody.
+ *
+ * Returns null when there is nothing to say.
+ */
+function latestJson(raw) {
+  const v = String(raw || '').trim();
+  if (!/^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(v)) return null;
+  return `${JSON.stringify({ version: v, url: RELEASES }, null, 2)}\n`;
+}
+
 const INVITE_HTML = page(
   '/i',
   'Someone invited you to Z',
@@ -988,5 +1010,5 @@ Acknowledgments: https://github.com/FluffyHorizon1/z-messanger/blob/main/docs/VD
 module.exports = {
   LANDING_HTML, PRIVACY_HTML, SECURITY_TXT,
   FAVICON_SVG, FAVICON_ICO,
-  ROUTES, PAGES, STYLE, androidAssetLinks,
+  ROUTES, PAGES, STYLE, androidAssetLinks, latestJson,
 };

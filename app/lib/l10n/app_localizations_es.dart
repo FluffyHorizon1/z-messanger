@@ -1291,6 +1291,19 @@ class AppLocalizationsEs extends AppLocalizations {
       'Z — mensajería de confianza cero\nSin cuentas · Sin analíticas · Sin almacenamiento en servidores';
 
   @override
+  String stVersion(String version) {
+    return 'Versión $version';
+  }
+
+  @override
+  String get stUpdateTitle => 'Actualización disponible';
+
+  @override
+  String stUpdateBody(String version) {
+    return 'Z $version ya está disponible. Z no tiene actualización dentro de la app, por diseño; consíguela en:';
+  }
+
+  @override
   String get stScreenLockOn =>
       'Bloqueo de pantalla activado. Z preguntará antes de abrirse.';
 
