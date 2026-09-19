@@ -111,6 +111,13 @@ UNCITED_OK = {
         "that the contact screen's disappearing-messages row opens the timer "
         "picker rather than sitting dead — a control-wiring property, not a "
         "claim about secrecy",
+    "app/test/desktop_audio_test.dart":
+        "24.1 — which desktop platforms register the media_kit voice-note "
+        "backend (Linux/Windows only; the rest keep their native player). A "
+        "platform-availability property. The secrecy property it must not "
+        "break — a decrypted note never written to disk — is upheld by serving "
+        "bytes over just_audio's loopback server rather than a file, the same "
+        "path macOS already used, and is not this policy function's to assert",
 }
 
 

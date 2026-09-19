@@ -39,11 +39,22 @@ dependencies:
   file_picker: ^8.1.2
 
   # Voice messages (7.4): capture + inline playback. `record`'s Linux impl is
-  # pure Dart and just_audio has no Linux native code, so the desktop CI
-  # builds are unaffected; where playback is unsupported the player shows a
-  # notice and the message menu's Save action takes the note off the device.
+  # pure Dart. just_audio has native backends on Android, iOS and macOS; on
+  # Linux and Windows it had none, so playback there fell back to a notice +
+  # Save. 24.1 registers a media_kit backend on those two platforms only
+  # (`just_audio_media_kit`, opt-in per platform from main()). A note still
+  # reaches the player as bytes over just_audio's loopback HTTP server — never a
+  # plaintext file on disk (the vault invariant) — which is the same path macOS
+  # already used. Where a build still has no backend the player shows a notice
+  # and the message menu's Save action takes the note off the device.
   record: ^7.1.1
   just_audio: ^0.10.6
+  # 24.1 desktop audio backend. media_kit itself is pulled transitively
+  # (^1.2.0); only Linux and Windows native libs are added, so the Android, iOS
+  # and macOS builds gain no new native code (and keep their native backends).
+  just_audio_media_kit: ^2.1.0
+  media_kit_libs_linux: ^1.2.1
+  media_kit_libs_windows_audio: ^1.0.9
 
   intl: ^0.20.2
   firebase_core: ^4.13.0

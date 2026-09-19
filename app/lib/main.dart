@@ -18,6 +18,7 @@ import 'core/app_lock.dart';
 import 'core/chat_service.dart';
 import 'core/connect_invites.dart';
 import 'core/deep_links.dart';
+import 'core/desktop_audio.dart';
 import 'core/prefs.dart';
 import 'core/push_service.dart';
 import 'core/relay_url.dart';
@@ -32,6 +33,11 @@ import 'ui/unlock_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // 24.1: register the media_kit audio backend on Linux/Windows (a no-op on
+  // every other platform), so voice notes play on desktop instead of falling
+  // back to the Save action. Bytes still reach the player over just_audio's
+  // loopback server, never a plaintext file — see core/desktop_audio.dart.
+  initDesktopAudio(kIsWeb ? '' : Platform.operatingSystem);
   if (!kIsWeb && Platform.isAndroid) {
     // Register the background wake-ping handler (desktop has no FCM).
     FirebaseMessaging.onBackgroundMessage(zPushBackgroundHandler);

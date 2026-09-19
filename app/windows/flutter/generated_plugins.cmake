@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   firebase_core
   flutter_secure_storage_windows
   local_auth_windows
+  media_kit_libs_windows_audio
   record_windows
   sqlite3_flutter_libs
 )

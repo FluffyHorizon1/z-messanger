@@ -38,10 +38,12 @@ class MemoryAudioSource extends StreamAudioSource {
 }
 
 /// Inline player for a received/sent voice message: play-pause, progress and
-/// duration. Decrypts lazily on first play; playback failures (a desktop
-/// platform without an audio backend) show a notice, and the message's
-/// long-press menu carries a Save action so the note can still be taken off
-/// the device where it cannot be played (`saveAttachment`, chat_screen.dart).
+/// duration. Decrypts lazily on first play. Every shipping platform now has a
+/// backend — native on Android/iOS/macOS, media_kit on Linux/Windows (24.1,
+/// core/desktop_audio.dart) — but any playback failure still shows a notice,
+/// and the message's long-press menu keeps a Save action so a note can be taken
+/// off the device even where it cannot be played (`saveAttachment`,
+/// chat_screen.dart).
 class VoiceNoteBody extends StatefulWidget {
   final String fid;
   final FileMeta meta;
