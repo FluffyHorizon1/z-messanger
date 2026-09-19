@@ -541,11 +541,15 @@ test('multidevice: device certificates, zc2 account code, signed device list', (
   assert.equal(hex(edSign(acctSeed, inputV2)), dl.sig2, 'sig2');
   assert.ok(edVerify(acctPub, inputV2, unhex(dl.sig2)));
   assert.equal(hex(unb64(dl.json.sig2)), dl.sig2);
-  // 7.7a device-list fingerprint: SHA-256(signing_input)[0..16]. It follows the
-  // format the list was signed under — v2 here, since the list carries sig2 —
-  // and fingerprint_v1 is what a pre-0010 list of the same set would gossip.
+  // 7.7a device-list fingerprint: SHA-256(signing_input)[0..16], over the v1
+  // input for as long as a v1 signature is produced — which is always today.
+  // It briefly followed the format the list was signed under, but a v2
+  // fingerprint and a v1 one for the same list is the disagreement a
+  // not-yet-updated contact reads as an attack, so both sides compute v1 and
+  // fingerprint_v1 holds the same value. sig2 is still signed, carried and
+  // verified above; only what is gossiped and compared reverted.
   assert.equal(hex(sha256(input).subarray(0, 16)), dl.fingerprint_v1);
-  assert.equal(hex(sha256(inputV2).subarray(0, 16)), dl.fingerprint);
+  assert.equal(hex(sha256(input).subarray(0, 16)), dl.fingerprint);
   // Legacy zc1 read as a one-device account.
   const legacy = v.legacy_zc1_as_account;
   const lj = JSON.parse(unb64url(legacy.contact_code.slice(4)).toString('utf8'));
