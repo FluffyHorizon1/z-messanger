@@ -380,6 +380,24 @@ abstract class AppLocalizations {
   /// **'Code copied'**
   String get addCodeCopied;
 
+  /// Button on the MY CODE tab (24.3) that hands the contact code to the platform's share sheet, or the clipboard where there is none (every platform but Android today).
+  ///
+  /// In en, this message translates to:
+  /// **'Share'**
+  String get addShareCode;
+
+  /// Button on the PASTE tab (24.3) that picks an image file and reads a contact code out of the QR in it — the way to use a QR on a platform with no camera scan.
+  ///
+  /// In en, this message translates to:
+  /// **'Open a QR image'**
+  String get addOpenImage;
+
+  /// Shown when the chosen image had no readable QR code, could not be read, or the platform has no image decoder (24.3). Load-bearing: it is a quiet 'nothing found', not an error the user did something wrong.
+  ///
+  /// In en, this message translates to:
+  /// **'No code found in that image.'**
+  String get addNoCodeInImage;
+
   /// Label on the field where a pasted code goes.
   ///
   /// In en, this message translates to:

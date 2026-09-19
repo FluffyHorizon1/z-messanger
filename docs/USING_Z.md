@@ -21,10 +21,13 @@ key, and the only way anyone gets it is if you give it to them.
 
 ## Adding someone
 
-Scan their QR, or copy the text and send it however you like. When you add
-someone this way, a request appears on their phone — *someone wants to connect*
-— and they tap **Accept**, **Decline**, or **Block**. They do not have to scan
-you back; accepting is enough.
+Scan their QR, or copy the text and send it however you like. On a computer,
+where there is no camera to scan with, you can instead **open a QR image** on
+the Paste tab — a screenshot or photo of their code — and Z reads the code out
+of it. Your own code has **Copy** and **Share** on the My code tab, on every
+platform. When you add someone this way, a request appears on their phone —
+*someone wants to connect* — and they tap **Accept**, **Decline**, or **Block**.
+They do not have to scan you back; accepting is enough.
 
 The code you show is public. Someone who copies it can send you a request, and
 that is all: they cannot read anything, impersonate you, or find out who else

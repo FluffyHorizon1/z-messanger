@@ -3,12 +3,15 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/chat_service.dart';
+import '../core/qr_image.dart';
+import '../core/share_text.dart';
 import 'connect_tab.dart';
 import 'theme.dart';
 
@@ -79,6 +82,49 @@ class _AddContactScreenState extends State<AddContactScreen>
         _error = '$e';
       });
     }
+  }
+
+  /// 24.3 — hand the code to the platform's share sheet, or fall back to the
+  /// clipboard and say which happened. The same shape the connect invite uses;
+  /// on every platform but Android today it is the clipboard.
+  Future<void> _share(String code) async {
+    final l = AppLocalizations.of(context);
+    if (await ShareText.share(code)) return;
+    await Clipboard.setData(ClipboardData(text: code));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(l.addCodeCopied)));
+  }
+
+  /// 24.3 — read a code out of a QR image the user picks, for platforms with no
+  /// camera scan. The decode is quiet (qr_image.dart): an image with no code,
+  /// or a platform whose decoder is not implemented, says "no code found"
+  /// rather than throwing.
+  Future<void> _importFromImage() async {
+    if (_busy) return;
+    final l = AppLocalizations.of(context);
+    final files = (await FilePicker.platform
+            .pickFiles(type: FileType.image, withData: false))
+        ?.files;
+    final path = (files != null && files.isNotEmpty) ? files.first.path : null;
+    if (path == null) return; // cancelled, or no path (e.g. web)
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final code = await readQrImage(path);
+    // The picker copied the image into the app cache — a plaintext copy of a QR
+    // that encodes a contact code. Delete it now that it is decoded, the same
+    // rule every pick site follows (client_review_p0_test 5). On desktop the
+    // picker returns the original path and this is a no-op.
+    await FilePicker.platform.clearTemporaryFiles();
+    if (!mounted) return;
+    setState(() => _busy = false); // release before _import re-acquires it
+    if (code == null) {
+      setState(() => _error = l.addNoCodeInImage);
+      return;
+    }
+    await _import(code);
   }
 
   @override
@@ -160,6 +206,14 @@ class _AddContactScreenState extends State<AddContactScreen>
                     .showSnackBar(SnackBar(content: Text(l.addCodeCopied)));
               },
             ),
+            // 24.3: Share, cross-platform — the platform sheet on Android, the
+            // clipboard everywhere else (ShareText falls back and says which).
+            const SizedBox(height: 8),
+            TextButton.icon(
+              icon: const Icon(Icons.ios_share),
+              label: Text(l.addShareCode),
+              onPressed: () => _share(code),
+            ),
           ],
         ],
       ),
@@ -208,6 +262,14 @@ class _AddContactScreenState extends State<AddContactScreen>
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2))
                 : Text(l.addVerifyAndAdd),
+          ),
+          // 24.3: read a code out of a QR image, for desktop and anywhere with
+          // no camera scan. The decode is quiet — an image with no code says so.
+          const SizedBox(height: 8),
+          TextButton.icon(
+            icon: const Icon(Icons.image_outlined),
+            label: Text(l.addOpenImage),
+            onPressed: _busy ? null : _importFromImage,
           ),
           const SizedBox(height: 12),
           Text(

@@ -172,6 +172,15 @@ class AppLocalizationsEs extends AppLocalizations {
   String get addCodeCopied => 'Código copiado';
 
   @override
+  String get addShareCode => 'Compartir';
+
+  @override
+  String get addOpenImage => 'Abrir una imagen QR';
+
+  @override
+  String get addNoCodeInImage => 'No se encontró ningún código en esa imagen.';
+
+  @override
   String get addTheirCode => 'Su código de contacto';
 
   @override

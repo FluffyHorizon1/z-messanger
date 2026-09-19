@@ -118,6 +118,14 @@ UNCITED_OK = {
         "break — a decrypted note never written to disk — is upheld by serving "
         "bytes over just_audio's loopback server rather than a file, the same "
         "path macOS already used, and is not this policy function's to assert",
+    "app/test/qr_image_test.dart":
+        "24.3 — the graceful-failure wrapper around QR-image decode: a decoded "
+        "code comes back, and a missing code, an empty result or a decoder that "
+        "throws (including a platform with none) is a quiet null so the screen "
+        "says 'no code found' rather than crashing. A UI-robustness property; "
+        "the decode itself is mobile_scanner's and platform-gated, and the code "
+        "it reads is verified on add exactly as a pasted one is (C32/C37), not "
+        "here",
 }
 
 
