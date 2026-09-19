@@ -2453,9 +2453,13 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
       !eq(await deviceListFingerprintV2(3, devices),
           await deviceListFingerprintV2(3, swapped)),
       'v2 fingerprint moves with the ratchet key');
-  // A full list carrying both signatures refuses: the v1 sig still verifies
-  // (its input did not move) but sig2 is over the moved v2 input. And the
-  // replayed ML-DSA over the genuine v2 input does not cover the swapped set.
+  // A full list carrying both signatures still fails verify(): the v1 sig
+  // verifies (its input did not move) but sig2 is over the moved v2 input, so
+  // the substitution is caught there. The ML-DSA is held at the v1 input during
+  // the mixed-version transition (ADR 0016) so a not-yet-migrated client can
+  // verify it; that input is blind to an X-only swap, so the ML-DSA does not
+  // catch the swap here — its post-quantum coverage of the ratchet keys returns
+  // in stage 2, when signing moves to v2-only.
   final swappedList = SignedDeviceList(
       accountEdPub: list.accountEdPub,
       version: list.version,
@@ -2464,8 +2468,8 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
       sig2: list.sig2);
   check(!await swappedList.verify(),
       'the swapped list fails verify — sig2 is over the moved v2 input');
-  check(!await listSig.verifies(swappedList, acct.publicKey.mlPub),
-      'and the replayed ML-DSA signature does not cover the swapped key');
+  check(await listSig.verifies(swappedList, acct.publicKey.mlPub),
+      'the ML-DSA is held at v1 (ADR 0016), blind to the swap; verify() catches it');
 
   final certJson = jsonEncode(cert.toJson());
   return {
@@ -2482,19 +2486,22 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
     'signing_context': deviceCertContext,
     'device_list': {
       'note':
-          'ADR 0004 and ADR 0010. The account signs its device LIST under '
-              'ML-DSA-65 as well as Ed25519, over the v2 input (§3.4): the '
-              'version, the membership, and — the 0010 change — each device\'s '
-              'X25519 ratchet key and id. Over the set rather than per '
+          'ADR 0004, ADR 0010 and ADR 0016. The account signs its device LIST '
+              'under ML-DSA-65 as well as Ed25519. Over the SET rather than per '
               'certificate: given a genuine hybrid list, an adversary who can '
               'forge Ed25519 but not ML-DSA can present "excluded" below — a '
               'classically perfect list whose every remaining certificate is '
-              'genuine and untouched. Only a signature over the SET catches it. '
-              'And over the ratchet keys, so "substitution" below — one X25519 '
-              'key swapped, every Ed key kept — no longer verifies, though the '
-              'v1 input and fingerprint are blind to it. The signature travels '
-              'as its own message on an unrelated schedule, so the list keeps '
-              'its 1024-byte padding bucket and its timing.',
+              'genuine and untouched — and only a signature over the SET catches '
+              'that. The input is held at the v1 format (version + membership) '
+              'while any client in the field still signs v1 (ADR 0016, the '
+              'mixed-version fix): a not-yet-migrated client verifies this '
+              'ML-DSA, and the v1 input is blind to an X-only swap, so '
+              '"substitution" below is caught by verify() (sig2), not here. The '
+              'v2 input — which also covers each device\'s X25519 ratchet key and '
+              'id (the 0010 change, §3.4) — takes over in stage 2, once v1 '
+              'signing stops. The signature travels as its own message on an '
+              'unrelated schedule, so the list keeps its 1024-byte padding bucket '
+              'and its timing.',
       'list_json': jsonEncode(list.toJson()),
       'signing_input':
           hex(SignedDeviceList.signingInput(list.version, list.devices)),
@@ -2520,11 +2527,14 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
             rolledBack.version, rolledBack.devices)),
       },
       'substitution': {
-        'note': 'ADR 0010. Device "${devices[1].deviceId}" keeps its Ed25519 '
-            'key and gets a different X25519 ratchet key. The v1 input and '
-            'fingerprint are byte-identical to the genuine list; the v2 input '
-            'and fingerprint are not, and the genuine ML-DSA signature (over '
-            'the genuine v2 input) does not verify it.',
+        'note': 'ADR 0010 and ADR 0016. Device "${devices[1].deviceId}" keeps '
+            'its Ed25519 key and gets a different X25519 ratchet key. The v1 '
+            'input and fingerprint are byte-identical to the genuine list; the '
+            'v2 input and fingerprint are not. In stage 1 the ML-DSA is held at '
+            'the v1 input (ADR 0016), so the genuine ML-DSA signature DOES verify '
+            'this swapped list — the substitution is caught by verify() instead, '
+            'whose sig2 is over the moved v2 input. Stage 2 moves the ML-DSA to '
+            'the v2 input and catches it there too.',
         'swapped_device_id': devices[1].deviceId,
         'swapped_x_pub': hex(swapX),
         'v1_signing_input': hex(SignedDeviceList.signingInput(3, swapped)),

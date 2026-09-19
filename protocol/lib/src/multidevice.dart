@@ -537,20 +537,26 @@ class SignedDeviceList {
   }
 
   /// A short (16-byte) commitment to this list — the first half of the SHA-256
-  /// of exactly the bytes the account key signs ([signingInput]). Because it
-  /// depends only on the version and the (sorted) device Ed25519 keys, two
-  /// parties that hold the same logical device set at the same version compute
-  /// the same fingerprint regardless of how each learned it. This is the value
-  /// gossiped for device-list transparency (7.7a) and the leaf a future
-  /// transparency log (7.7b) would commit to.
-  /// The fingerprint follows the format this list was signed under: the v2
-  /// commitment when it carries [sig2], the v1 commitment otherwise. So two
-  /// parties holding the same list bytes always agree, and an existing v1 list
-  /// keeps the v1 fingerprint the log and gossip already hold for it — the
-  /// migration turns on nothing more than whether [sig2] is present (ADR 0010).
-  Future<Uint8List> fingerprint() => sig2 != null
-      ? deviceListFingerprintV2(version, devices)
-      : deviceListFingerprint(version, devices);
+  /// of the bytes the account key signs. Because it depends only on the version
+  /// and the (sorted) device Ed25519 keys, two parties that hold the same logical
+  /// device set at the same version compute the same fingerprint regardless of
+  /// how each learned it. This is the value gossiped for device-list transparency
+  /// (7.7a) and the leaf a future transparency log (7.7b) would commit to.
+  ///
+  /// It follows the **v1** commitment while any client in the field still signs
+  /// v1 — which today every list does, because the migration dual-signs ([sig] +
+  /// [sig2]) and so a v1 signature is always present. A not-yet-migrated (pre-0010)
+  /// contact can only compute the v1 fingerprint; if a current client reported the
+  /// v2 one for the same list, both sides would hold the same list at the same
+  /// version and disagree about its fingerprint — the one thing each is built to
+  /// treat as an attack. That was the mixed-version P0 (ADR 0016). The v2
+  /// commitment ([deviceListFingerprintV2]), which also covers each device's
+  /// ratchet key, takes over only in stage 2 — a later release that stops
+  /// producing v1 signatures at all, made safe once the v1 population is gone by
+  /// the downgrade floor (`cdev_sigfloor_`). The ratchet-key coverage is not lost
+  /// meanwhile: a present [sig2] must still verify in [verify], which is where a
+  /// list is actually admitted or refused.
+  Future<Uint8List> fingerprint() => deviceListFingerprint(version, devices);
 
   Future<List<String>> routingIds() async =>
       [for (final d in devices) await d.routingId()];

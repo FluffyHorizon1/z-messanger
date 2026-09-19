@@ -458,9 +458,18 @@ enum DeviceAssurance {
 /// so the format is a property of the list — discovered when it verifies — and
 /// a v2 list gains ratchet-key coverage while a legacy v1 list stays verifiable
 /// under the bytes it was made over, with no reissue.
-Uint8List _devlistSigningInputFor(SignedDeviceList list) => list.sig2 != null
-    ? SignedDeviceList.signingInputV2(list.version, list.devices)
-    : SignedDeviceList.signingInput(list.version, list.devices);
+/// The bytes the account's ML-DSA signs over, and that a verifier checks it
+/// against. Held at the **v1** input while any client in the field still signs
+/// v1 — today every list, since the migration dual-signs and a v1 `sig` is always
+/// present. A not-yet-migrated (pre-0010) client verifies the ML-DSA over the v1
+/// input unconditionally; signing it over v2 made that verification fail and
+/// raised a false `pqSignatureMissing` at every such contact (the mixed-version
+/// P0, ADR 0016). The v2 input — which also covers the ratchet keys — takes over
+/// in stage 2, alongside the fingerprint, once v1 signing stops and the downgrade
+/// floor (`cdev_sigfloor_`) makes it safe. This mirrors
+/// [SignedDeviceList.fingerprint], and for the same reason.
+Uint8List _devlistSigningInputFor(SignedDeviceList list) =>
+    SignedDeviceList.signingInput(list.version, list.devices);
 
 /// The account's ML-DSA-65 signature over its device list (§18.9, ADR 0004).
 ///

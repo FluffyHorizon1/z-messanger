@@ -38,14 +38,18 @@ void main() {
           deviceId: laptop.deviceId);
     }
 
-    test('a signed list carries sig2, and its fingerprint follows the v2 format',
+    test('a signed list carries sig2, but its fingerprint holds at v1 (ADR 0016)',
         () async {
       expect(list.sig2, isNotNull);
       expect(await list.verify(), isTrue);
-      expect(
-          await list.fingerprint(), await deviceListFingerprintV2(2, devices));
+      // The list is dual-signed, but the fingerprint follows v1 while v1 signing
+      // continues, so a not-yet-migrated contact — which can only compute the v1
+      // fingerprint — agrees with it rather than seeing a phantom split. The v2
+      // commitment activates in stage 2 (v2-only lists). ADR 0016; the
+      // ratchet-key coverage meanwhile is enforced by verify() (sig2), below.
+      expect(await list.fingerprint(), await deviceListFingerprint(2, devices));
       expect(await list.fingerprint(),
-          isNot(await deviceListFingerprint(2, devices)));
+          isNot(await deviceListFingerprintV2(2, devices)));
     });
 
     test('a legacy v1 list still verifies and keeps its v1 fingerprint',
@@ -84,20 +88,29 @@ void main() {
       expect(await forged.verify(), isFalse);
     });
 
-    test('the hybrid signature is over v2 and refuses a swapped-key list',
+    test('the hybrid signature holds at v1 during the transition (ADR 0016)',
         () async {
       final sig =
           await HybridDeviceListSignature.sign(accountKey: pq, list: list);
       expect(await sig.verifies(list, pq.publicKey.mlPub), isTrue);
+      // A not-yet-migrated client verifies this ML-DSA over the v1 input, so the
+      // signing input is held at v1 while v1 signing continues (ADR 0016) — that
+      // is what stops the false pqSignatureMissing at a 3.5.7 contact. v1 is blind
+      // to an X-only swap, so during stage 1 the ML-DSA does NOT catch it; the
+      // swapped list is refused by verify() instead (its sig2 is over the moved v2
+      // input — the test above). The post-quantum ratchet-key coverage returns in
+      // stage 2, when signing moves to v2-only.
       final swapped = SignedDeviceList(
           accountEdPub: list.accountEdPub,
           version: 2,
           devices: [devices[0], await swappedLaptop()],
           sig: list.sig,
           sig2: list.sig2);
-      expect(await sig.verifies(swapped, pq.publicKey.mlPub), isFalse,
-          reason:
-              'the replayed ML-DSA signature does not cover the swapped key');
+      expect(await sig.verifies(swapped, pq.publicKey.mlPub), isTrue,
+          reason: 'the ML-DSA is held at the v1 input, which is blind to the swap');
+      expect(await swapped.verify(), isFalse,
+          reason: 'verify() catches the swap in stage 1: sig2 is over the moved '
+              'v2 input');
     });
 
     test('the hybrid signature over a legacy v1 list still verifies (no reissue)',
