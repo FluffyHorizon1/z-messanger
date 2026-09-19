@@ -123,7 +123,19 @@ void main() {
           'KT_SEED': [for (final b in seed ?? logSeed) b.toRadixString(16).padLeft(2, '0')].join(),
           'KT_EPHEMERAL': '1',
           'KT_PORT': '$port',
-          'PUBLISH_PER_MIN': '1000',
+          // Every publish gate is raised out of the way. One log service is
+          // shared by the whole file (setUpAll), so all of these tests' publishes
+          // — every pair()'s two first-publishes, every honest and every forged
+          // v2 — share the four buckets, and the defaults (per-address 30, total
+          // 120, per-account/day 20, new-accounts/min 10) trip partway through a
+          // fast run: a later publish that should be 201 comes back 429. That is
+          // what turned "a conflict … is held" into a red test on CI. These
+          // limits are not what this file checks; kt/test/publish_limits.test.js
+          // is where the gates themselves are exercised, one fresh service each.
+          'PUBLISH_PER_MIN': '1000000',
+          'PUBLISH_PER_MIN_TOTAL': '1000000',
+          'PUBLISH_PER_ACCT_PER_DAY': '1000000',
+          'PUBLISH_NEW_ACCOUNTS_PER_MIN': '1000000',
         });
     p.stderr.drain<void>();
     p.stdout.drain<void>();
