@@ -1,6 +1,6 @@
 # ADR 0017 — Mixed-version device lists: hold the fingerprint and ML-DSA at v1 while v1 signing continues
 
-**Status:** **Accepted** (2026‑09‑19) — built (3.7.6). Amends ADR 0010.
+**Status:** **Accepted** (2026‑09‑19) — built (3.7.8). Amends ADR 0010.
 **Decides:** what a current client reports as a device list's fingerprint, and
 what input its ML‑DSA covers, while clients that predate ADR 0010 are still in
 the field.

@@ -381,7 +381,7 @@ def check_kt_log():
     first = v["publishes"][0]
     eq(json.loads(first["plaintext_json"]), md["device_list"]["json"], "alice v3: the sealed list is the v1 vector's signed list")
     eq(first["fingerprint"], md["device_list"]["fingerprint"], "alice v3: fp is the v1 vector's fingerprint")
-    eq(sha256(bytes.fromhex(md["device_list"]["signing_input"]))[:16].hex(), first["fingerprint"], "alice v3: fp = SHA-256(v1 signing input)[0..16] (ADR 0016: held at v1 while v1 signing continues, though the list carries sig2)")
+    eq(sha256(bytes.fromhex(md["device_list"]["signing_input"]))[:16].hex(), first["fingerprint"], "alice v3: fp = SHA-256(v1 signing input)[0..16] (ADR 0017: held at v1 while v1 signing continues, though the list carries sig2)")
 
     for c in v["consistency"]:
         ok(verify_consistency(c["first"], c["second"], b64(heads[c["first"]]["logRoot"]), b64(heads[c["second"]]["logRoot"]), [b64(x) for x in c["proof"]]), f"PROOF({c['first']}, {c['second']})")

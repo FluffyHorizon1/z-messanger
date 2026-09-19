@@ -38,14 +38,14 @@ void main() {
           deviceId: laptop.deviceId);
     }
 
-    test('a signed list carries sig2, but its fingerprint holds at v1 (ADR 0016)',
+    test('a signed list carries sig2, but its fingerprint holds at v1 (ADR 0017)',
         () async {
       expect(list.sig2, isNotNull);
       expect(await list.verify(), isTrue);
       // The list is dual-signed, but the fingerprint follows v1 while v1 signing
       // continues, so a not-yet-migrated contact — which can only compute the v1
       // fingerprint — agrees with it rather than seeing a phantom split. The v2
-      // commitment activates in stage 2 (v2-only lists). ADR 0016; the
+      // commitment activates in stage 2 (v2-only lists). ADR 0017; the
       // ratchet-key coverage meanwhile is enforced by verify() (sig2), below.
       expect(await list.fingerprint(), await deviceListFingerprint(2, devices));
       expect(await list.fingerprint(),
@@ -88,13 +88,13 @@ void main() {
       expect(await forged.verify(), isFalse);
     });
 
-    test('the hybrid signature holds at v1 during the transition (ADR 0016)',
+    test('the hybrid signature holds at v1 during the transition (ADR 0017)',
         () async {
       final sig =
           await HybridDeviceListSignature.sign(accountKey: pq, list: list);
       expect(await sig.verifies(list, pq.publicKey.mlPub), isTrue);
       // A not-yet-migrated client verifies this ML-DSA over the v1 input, so the
-      // signing input is held at v1 while v1 signing continues (ADR 0016) — that
+      // signing input is held at v1 while v1 signing continues (ADR 0017) — that
       // is what stops the false pqSignatureMissing at a 3.5.7 contact. v1 is blind
       // to an X-only swap, so during stage 1 the ML-DSA does NOT catch it; the
       // swapped list is refused by verify() instead (its sig2 is over the moved v2

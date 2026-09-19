@@ -549,7 +549,7 @@ class SignedDeviceList {
   /// contact can only compute the v1 fingerprint; if a current client reported the
   /// v2 one for the same list, both sides would hold the same list at the same
   /// version and disagree about its fingerprint — the one thing each is built to
-  /// treat as an attack. That was the mixed-version P0 (ADR 0016). The v2
+  /// treat as an attack. That was the mixed-version P0 (ADR 0017). The v2
   /// commitment ([deviceListFingerprintV2]), which also covers each device's
   /// ratchet key, takes over only in stage 2 — a later release that stops
   /// producing v1 signatures at all, made safe once the v1 population is gone by

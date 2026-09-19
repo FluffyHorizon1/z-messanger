@@ -13,7 +13,7 @@ import 'package:z_protocol/z_protocol.dart';
 /// nothing of v2 — computed the **v1** fingerprint and verified the ML-DSA over
 /// the **v1** input. Same list, same version, disagreeing fingerprint: each side
 /// is built to read that as an attack (a "split" / "reset your identity" alarm),
-/// and the ML-DSA check fails too (a false `pqSignatureMissing`). ADR 0016.
+/// and the ML-DSA check fails too (a false `pqSignatureMissing`). ADR 0017.
 ///
 /// This is checkable in ONE tree. The v1 signing input (`z-devlist-v1:`) is
 /// frozen and byte-identical in 3.5.7 (`b6d7b90`) and HEAD — `git diff b6d7b90
@@ -31,7 +31,7 @@ import 'package:z_protocol/z_protocol.dart';
 ///   3. a current client still verifies its own dual-signed list end to end —
 ///      the hold does not weaken same-version verification.
 void main() {
-  group('mixed-version device lists agree (ADR 0016)', () {
+  group('mixed-version device lists agree (ADR 0017)', () {
     late AccountIdentity acct;
     late HybridKeyPair pq;
     late List<DeviceCertificate> devices;

@@ -464,7 +464,7 @@ enum DeviceAssurance {
 /// present. A not-yet-migrated (pre-0010) client verifies the ML-DSA over the v1
 /// input unconditionally; signing it over v2 made that verification fail and
 /// raised a false `pqSignatureMissing` at every such contact (the mixed-version
-/// P0, ADR 0016). The v2 input — which also covers the ratchet keys — takes over
+/// P0, ADR 0017). The v2 input — which also covers the ratchet keys — takes over
 /// in stage 2, alongside the fingerprint, once v1 signing stops and the downgrade
 /// floor (`cdev_sigfloor_`) makes it safe. This mirrors
 /// [SignedDeviceList.fingerprint], and for the same reason.

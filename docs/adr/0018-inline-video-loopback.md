@@ -1,6 +1,6 @@
 # ADR 0018 — Inline video plays from memory over a loopback socket, never from a file
 
-**Status:** **Accepted** (2026‑09‑19) — built (continuous‑b, playback half; 3.7.9).
+**Status:** **Accepted** (2026‑09‑19) — built (continuous‑b, playback half; 3.7.10).
 Android only for now; every other platform keeps the file card + Save.
 **Decides:** how a received video is played inside the chat without breaking
 the vault invariant, and what that costs.

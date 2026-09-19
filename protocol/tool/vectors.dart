@@ -2456,7 +2456,7 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
   // A full list carrying both signatures still fails verify(): the v1 sig
   // verifies (its input did not move) but sig2 is over the moved v2 input, so
   // the substitution is caught there. The ML-DSA is held at the v1 input during
-  // the mixed-version transition (ADR 0016) so a not-yet-migrated client can
+  // the mixed-version transition (ADR 0017) so a not-yet-migrated client can
   // verify it; that input is blind to an X-only swap, so the ML-DSA does not
   // catch the swap here — its post-quantum coverage of the ratchet keys returns
   // in stage 2, when signing moves to v2-only.
@@ -2469,7 +2469,7 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
   check(!await swappedList.verify(),
       'the swapped list fails verify — sig2 is over the moved v2 input');
   check(await listSig.verifies(swappedList, acct.publicKey.mlPub),
-      'the ML-DSA is held at v1 (ADR 0016), blind to the swap; verify() catches it');
+      'the ML-DSA is held at v1 (ADR 0017), blind to the swap; verify() catches it');
 
   final certJson = jsonEncode(cert.toJson());
   return {
@@ -2486,14 +2486,14 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
     'signing_context': deviceCertContext,
     'device_list': {
       'note':
-          'ADR 0004, ADR 0010 and ADR 0016. The account signs its device LIST '
+          'ADR 0004, ADR 0010 and ADR 0017. The account signs its device LIST '
               'under ML-DSA-65 as well as Ed25519. Over the SET rather than per '
               'certificate: given a genuine hybrid list, an adversary who can '
               'forge Ed25519 but not ML-DSA can present "excluded" below — a '
               'classically perfect list whose every remaining certificate is '
               'genuine and untouched — and only a signature over the SET catches '
               'that. The input is held at the v1 format (version + membership) '
-              'while any client in the field still signs v1 (ADR 0016, the '
+              'while any client in the field still signs v1 (ADR 0017, the '
               'mixed-version fix): a not-yet-migrated client verifies this '
               'ML-DSA, and the v1 input is blind to an X-only swap, so '
               '"substitution" below is caught by verify() (sig2), not here. The '
@@ -2527,11 +2527,11 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
             rolledBack.version, rolledBack.devices)),
       },
       'substitution': {
-        'note': 'ADR 0010 and ADR 0016. Device "${devices[1].deviceId}" keeps '
+        'note': 'ADR 0010 and ADR 0017. Device "${devices[1].deviceId}" keeps '
             'its Ed25519 key and gets a different X25519 ratchet key. The v1 '
             'input and fingerprint are byte-identical to the genuine list; the '
             'v2 input and fingerprint are not. In stage 1 the ML-DSA is held at '
-            'the v1 input (ADR 0016), so the genuine ML-DSA signature DOES verify '
+            'the v1 input (ADR 0017), so the genuine ML-DSA signature DOES verify '
             'this swapped list — the substitution is caught by verify() instead, '
             'whose sig2 is over the moved v2 input. Stage 2 moves the ML-DSA to '
             'the v2 input and catches it there too.',

@@ -136,7 +136,7 @@ function ktLog() {
   // Alice is the v1 multidevice vector's account, so the sealed value here is
   // that file's real signed device list (version 3). Its fingerprint is the v1
   // one, held there while v1 signing continues even though the list carries sig2
-  // (ADR 0016, the mixed-version fix — a not-yet-migrated client computes v1 and
+  // (ADR 0017, the mixed-version fix — a not-yet-migrated client computes v1 and
   // both sides must agree): a client that opens it gets a list it can verify with
   // the code it already has, and the fingerprint it computes must equal the
   // entry's. Derived from the multidevice vector below, so it tracks that fix.
