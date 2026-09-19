@@ -2349,5 +2349,13 @@
   "requestBlock": "Block",
   "@requestBlock": {"description": "Button that blocks the requester: this request and every future one from them are dropped without a trace."},
   "chatRequested": "Requested",
-  "@chatRequested": {"description": "Small label on a chat you started that the other person has not accepted yet. It clears the moment they reply. Says nothing about verification — only that they have not answered."}
+  "@chatRequested": {"description": "Small label on a chat you started that the other person has not accepted yet. It clears the moment they reply. Says nothing about verification — only that they have not answered."},
+  "videoNoPlayback": "This video can't be played here — save it and open it in another app.",
+  "@videoNoPlayback": {"description": "Shown in the video bubble when the inline player cannot start. The video is intact; only in-app playback is unavailable, so the user is pointed at saving it."},
+  "chatPlayVideo": "Play video",
+  "@chatPlayVideo": {"description": "Tooltip/label of the play button on a received video, read by screen readers."},
+  "chatPauseVideo": "Pause video",
+  "@chatPauseVideo": {"description": "Tooltip/label of the pause button while a received video is playing."},
+  "chatVideo": "Video",
+  "@chatVideo": {"description": "Fallback description of a video attachment when it has no file name."}
 }

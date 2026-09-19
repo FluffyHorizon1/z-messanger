@@ -45,6 +45,9 @@ MIGRATED = {
     "unlock_screen.dart",
     "lock_screen.dart",
     "voice_widgets.dart",
+    # The inline video bubble (continuous-b, playback half): its notice and
+    # play/pause labels come from the ARB.
+    "video_widgets.dart",
     "disappearing_timer.dart",
     "search_screen.dart",
     "home_screen.dart",

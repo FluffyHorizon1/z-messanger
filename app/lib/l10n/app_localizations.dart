@@ -3103,6 +3103,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Requested'**
   String get chatRequested;
+
+  /// Shown in the video bubble when the inline player cannot start. The video is intact; only in-app playback is unavailable, so the user is pointed at saving it.
+  ///
+  /// In en, this message translates to:
+  /// **'This video can\'t be played here — save it and open it in another app.'**
+  String get videoNoPlayback;
+
+  /// Tooltip/label of the play button on a received video, read by screen readers.
+  ///
+  /// In en, this message translates to:
+  /// **'Play video'**
+  String get chatPlayVideo;
+
+  /// Tooltip/label of the pause button while a received video is playing.
+  ///
+  /// In en, this message translates to:
+  /// **'Pause video'**
+  String get chatPauseVideo;
+
+  /// Fallback description of a video attachment when it has no file name.
+  ///
+  /// In en, this message translates to:
+  /// **'Video'**
+  String get chatVideo;
 }
 
 class _AppLocalizationsDelegate

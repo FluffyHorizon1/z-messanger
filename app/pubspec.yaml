@@ -45,6 +45,15 @@ dependencies:
   # capped at maxAttachmentBytes, and the picker's plaintext copy deleted at
   # once — nothing new lands unencrypted.
   image_picker: ^1.1.2
+  # Inline video (continuous-b, playback half). video_player has no in-memory
+  # source, so a received video is NOT handed to it as a file: the decrypted
+  # bytes stay in RAM and are served to the player over a loopback HTTP server
+  # bound to 127.0.0.1 on a random port at a random 32-byte path, alive only
+  # while the bubble plays (core/loopback_media.dart) — the same route the voice
+  # notes take through just_audio's own loopback server, so the vault invariant
+  # (no plaintext on disk) holds. Inline on Android for now; elsewhere the file
+  # card + Save stays. ADR 0018.
+  video_player: ^2.14.0
 
   # Voice messages (7.4): capture + inline playback. `record`'s Linux impl is
   # pure Dart. just_audio has native backends on Android, iOS and macOS; on

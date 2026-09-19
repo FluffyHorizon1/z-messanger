@@ -18,12 +18,14 @@ import '../core/chat_service.dart';
 import '../core/file_export.dart';
 import '../core/key_transparency.dart';
 import '../core/models.dart';
+import '../core/inline_video.dart';
 import '../core/picked_file.dart';
 import 'disappearing_timer.dart';
 import '../core/voice.dart';
 import 'contact_info_screen.dart';
 import 'group_screens.dart';
 import 'theme.dart';
+import 'video_widgets.dart';
 import 'voice_widgets.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -1349,6 +1351,15 @@ class _FileBodyState extends State<_FileBody> {
       (widget.msg.file?.mime ?? '').startsWith('image/') &&
       (widget.msg.file?.complete ?? false);
 
+  /// continuous-b (playback): a complete video plays inline, on Android — the
+  /// platform the capture half targets and the one with a video_player
+  /// implementation we ship. Elsewhere it stays the file card + Save. The
+  /// bytes reach the player over a loopback server, never a file (ADR 0018).
+  bool get _isVideo =>
+      (widget.msg.file?.mime ?? '').startsWith('video/') &&
+      (widget.msg.file?.complete ?? false) &&
+      inlineVideoFor(Platform.operatingSystem);
+
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
@@ -1373,7 +1384,9 @@ class _FileBodyState extends State<_FileBody> {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (_imageBytes != null)
+        if (_isVideo)
+          VideoNoteBody(fid: f.fid, meta: f)
+        else if (_imageBytes != null)
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
             child: ConstrainedBox(

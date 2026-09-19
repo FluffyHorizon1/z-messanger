@@ -1887,4 +1887,17 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get chatRequested => 'Requested';
+
+  @override
+  String get videoNoPlayback =>
+      'This video can\'t be played here — save it and open it in another app.';
+
+  @override
+  String get chatPlayVideo => 'Play video';
+
+  @override
+  String get chatPauseVideo => 'Pause video';
+
+  @override
+  String get chatVideo => 'Video';
 }
