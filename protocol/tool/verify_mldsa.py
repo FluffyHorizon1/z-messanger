@@ -102,10 +102,13 @@ def main():
         cv = json.load(f)
     dl = cv["device_list"]
     acct_pk = bytes.fromhex(cv["account"]["ml_pub"])
-    # ADR 0010: the account's ML-DSA signature is over the v2 signing input
-    # (the list carries sig2), so it covers each device's X25519 ratchet key
-    # and id, not just the Ed25519 keys and the version.
-    inp = bytes.fromhex(dl["signing_input_v2"])
+    # ADR 0010 made the account's ML-DSA signature follow whatever the
+    # classical half signs. Since the mixed-version fix that is the v1 input,
+    # for as long as a v1 signature is produced — verifying it over v2 is
+    # precisely what a not-yet-updated client could not do. The v2 input is
+    # still rebuilt and compared below, and sig2 still covers each device's
+    # X25519 ratchet key and id.
+    inp = bytes.fromhex(dl["signing_input"])
     if not ML_DSA_65.verify(acct_pk, inp, bytes.fromhex(dl["ml_sig"])):
         print("MISMATCH device list: signature does not verify",
               file=sys.stderr)
