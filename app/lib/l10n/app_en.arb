@@ -1244,6 +1244,18 @@
   "@chatAttachFile": {
     "description": "Tooltip on the paperclip."
   },
+  "chatAttachCamera": "Take a photo",
+  "@chatAttachCamera": {
+    "description": "Attach menu (continuous-b, Android): capture a photo with the camera and send it as an attachment."
+  },
+  "chatAttachGallery": "Photo or video",
+  "@chatAttachGallery": {
+    "description": "Attach menu (continuous-b, Android): pick an image or a video from the device gallery."
+  },
+  "chatAttachFileOption": "File",
+  "@chatAttachFileOption": {
+    "description": "Attach menu (continuous-b, Android): the generic file browser, the same path used directly on other platforms."
+  },
   "chatInputHint": "Encrypted message…",
   "@chatInputHint": {
     "description": "Hint in the composer. 'Encrypted' is deliberate: the field itself says what happens to what is typed in it."

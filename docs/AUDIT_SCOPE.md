@@ -33,7 +33,7 @@ Three components, one operator‑independent trust story:
 | Component | Language / size | Role |
 |---|---|---|
 | `protocol/` (`z_protocol`) | pure Dart, ~7.2 k lines in 21 modules, ~5.6 k lines of tests (221, ten of them driving a real relay) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader |
-| `app/` | Flutter (Dart), core ~12.9 k lines (`lib/core/`), UI ~6.8 k lines, 76 test files (~19.4 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
+| `app/` | Flutter (Dart), core ~12.9 k lines (`lib/core/`), UI ~6.8 k lines, 77 test files (~19.4 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
 | `server/` | Node.js, `server.js` ~2 300 lines, ~6.8 k lines of tests (113) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics. **Two code paths, and the Redis one is what the public deployment runs** (`MemoryCoordinator` for a single instance, `RedisCoordinator` for several sharing a RAM‑only store — `render.ha.yaml`); a change to queueing, presence, acknowledgement, flush or push handling has to be read in both |
 
 Every message is encrypted on a device and decrypted only on the recipient
@@ -236,7 +236,7 @@ python3 protocol/tool/verify_mldsa.py
 # claiming nothing, with a reason)
 python3 tool/check_audit_scope.py
 
-# App: 76 test files, most driving real clients through the real relay
+# App: 77 test files, most driving real clients through the real relay
 # (each spawns its own relay process; node must be on PATH)
 cd app && flutter test
 

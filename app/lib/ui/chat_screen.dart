@@ -6,6 +6,7 @@ import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:record/record.dart';
@@ -17,6 +18,7 @@ import '../core/chat_service.dart';
 import '../core/file_export.dart';
 import '../core/key_transparency.dart';
 import '../core/models.dart';
+import '../core/picked_file.dart';
 import 'disappearing_timer.dart';
 import '../core/voice.dart';
 import 'contact_info_screen.dart';
@@ -380,9 +382,57 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// The attach button. Android has a camera and a photo library worth
+  /// reaching directly, so it offers Camera / Gallery / File (continuous-b);
+  /// every other platform goes straight to the file browser — where
+  /// image_picker would land anyway, and whose camera/gallery need per-platform
+  /// config (iOS usage strings, macOS entitlements) the file picker does not.
   Future<void> _attach() async {
-    final svc = context.read<ChatService>();
-    final messenger = ScaffoldMessenger.of(context);
+    if (!Platform.isAndroid) {
+      await _attachFile();
+      return;
+    }
+    final l = AppLocalizations.of(context);
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: Text(l.chatAttachCamera),
+              onTap: () => Navigator.pop(ctx, 'camera'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: Text(l.chatAttachGallery),
+              onTap: () => Navigator.pop(ctx, 'gallery'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.insert_drive_file_outlined),
+              title: Text(l.chatAttachFileOption),
+              onTap: () => Navigator.pop(ctx, 'file'),
+            ),
+          ],
+        ),
+      ),
+    );
+    switch (choice) {
+      case 'camera':
+        await _attachFromPicker(camera: true);
+      case 'gallery':
+        await _attachFromPicker(camera: false);
+      case 'file':
+        await _attachFile();
+    }
+  }
+
+  /// The file browser, on every platform. Reads the bytes, then deletes the
+  /// picker's plaintext copy at once — on Android the picker COPIES the chosen
+  /// file into the app cache and returns that, and a copy left there outlives
+  /// the sweeper, the disappearing timer and "reset identity" alike.
+  Future<void> _attachFile() async {
     final picked = await FilePicker.platform.pickFiles(withData: true);
     final f = picked?.files.single;
     if (f == null) {
@@ -393,20 +443,44 @@ class _ChatScreenState extends State<ChatScreen> {
     if (bytes == null && f.path != null) {
       bytes = await File(f.path!).readAsBytes();
     }
-    // The picker does not hand over the file the user chose: on Android it
-    // COPIES it into the app's cache directory and returns that, so every
-    // attachment ever sent was left sitting outside the vault, unencrypted,
-    // for as long as the OS kept the cache — surviving the sweeper, the
-    // disappearing-message timer and "reset identity" alike. Drop the copy as
-    // soon as the bytes are in hand, whatever happens next.
     await _clearPickerCache();
     if (bytes == null) return;
-    final mime = _guessMime(f.name);
+    await _sendPicked(f.name, bytes, _guessMime(f.name));
+  }
+
+  /// Camera or gallery, via image_picker (Android). Picked media rides the same
+  /// sealed-attachment pipeline as any file; the picker's plaintext copy is
+  /// deleted as soon as the bytes are read.
+  Future<void> _attachFromPicker({required bool camera}) async {
+    final messenger = ScaffoldMessenger.of(context);
+    XFile? x;
+    try {
+      final picker = ImagePicker();
+      x = camera
+          ? await picker.pickImage(source: ImageSource.camera)
+          : await picker.pickMedia(); // one image or video from the library
+    } catch (e) {
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('$e')));
+      return;
+    }
+    if (x == null) return; // cancelled
+    // Read the bytes and delete the picker's plaintext copy in one step.
+    final bytes = await readAndDeletePicked(File(x.path));
+    await _sendPicked(x.name, bytes, x.mimeType ?? _guessMime(x.name));
+  }
+
+  /// Seal and send bytes already in memory, direct or group. Shared by every
+  /// attach path, so the size cap (enforced in sendFile) and the error handling
+  /// live in one place.
+  Future<void> _sendPicked(String name, Uint8List bytes, String mime) async {
+    if (!mounted) return;
+    final svc = context.read<ChatService>();
+    final messenger = ScaffoldMessenger.of(context);
     try {
       if (svc.groups.containsKey(widget.rid)) {
-        await svc.sendGroupFile(widget.rid, f.name, bytes, mime);
+        await svc.sendGroupFile(widget.rid, name, bytes, mime);
       } else {
-        await svc.sendFile(widget.rid, f.name, bytes, mime);
+        await svc.sendFile(widget.rid, name, bytes, mime);
       }
       _jumpToEnd();
     } catch (e) {

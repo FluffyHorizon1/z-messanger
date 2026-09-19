@@ -1652,6 +1652,24 @@ abstract class AppLocalizations {
   /// **'Attach a file'**
   String get chatAttachFile;
 
+  /// Attach menu (continuous-b, Android): capture a photo with the camera and send it as an attachment.
+  ///
+  /// In en, this message translates to:
+  /// **'Take a photo'**
+  String get chatAttachCamera;
+
+  /// Attach menu (continuous-b, Android): pick an image or a video from the device gallery.
+  ///
+  /// In en, this message translates to:
+  /// **'Photo or video'**
+  String get chatAttachGallery;
+
+  /// Attach menu (continuous-b, Android): the generic file browser, the same path used directly on other platforms.
+  ///
+  /// In en, this message translates to:
+  /// **'File'**
+  String get chatAttachFileOption;
+
   /// Hint in the composer. 'Encrypted' is deliberate: the field itself says what happens to what is typed in it.
   ///
   /// In en, this message translates to:

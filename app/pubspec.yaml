@@ -37,6 +37,14 @@ dependencies:
 
   # Attachments.
   file_picker: ^8.1.2
+  # Richer media (continuous-b): a camera + photo/video gallery picker, so
+  # attaching a photo is not a trip through the generic file browser. Camera
+  # capture is mobile-only (Android/iOS); on desktop image_picker falls back to
+  # a file dialog, so the file picker above stays the desktop path. Picked media
+  # rides the SAME sealed-attachment pipeline as any file — read into memory,
+  # capped at maxAttachmentBytes, and the picker's plaintext copy deleted at
+  # once — nothing new lands unencrypted.
+  image_picker: ^1.1.2
 
   # Voice messages (7.4): capture + inline playback. `record`'s Linux impl is
   # pure Dart. just_audio has native backends on Android, iOS and macOS; on

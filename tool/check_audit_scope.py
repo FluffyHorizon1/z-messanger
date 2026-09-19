@@ -126,6 +126,12 @@ UNCITED_OK = {
         "the decode itself is mobile_scanner's and platform-gated, and the code "
         "it reads is verified on add exactly as a pasted one is (C32/C37), not "
         "here",
+    "app/test/picked_file_test.dart":
+        "continuous-b — a picked photo/video's bytes are read and the picker's "
+        "plaintext cache copy deleted at once. A defence-in-depth erasure "
+        "property (no plaintext copy left outside the vault); the sealing of "
+        "what is then sent is C11's, and the file-picker call-site rule is "
+        "client_review_p0_test 5's, not this helper's",
 }
 
 

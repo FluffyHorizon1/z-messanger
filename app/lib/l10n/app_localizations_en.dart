@@ -987,6 +987,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get chatAttachFile => 'Attach a file';
 
   @override
+  String get chatAttachCamera => 'Take a photo';
+
+  @override
+  String get chatAttachGallery => 'Photo or video';
+
+  @override
+  String get chatAttachFileOption => 'File';
+
+  @override
   String get chatInputHint => 'Encrypted message…';
 
   @override
