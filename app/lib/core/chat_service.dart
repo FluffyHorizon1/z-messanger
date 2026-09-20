@@ -5037,6 +5037,12 @@ class ChatService extends ChangeNotifier implements KtHost {
       // Members a pass could not send to because of a transparency conflict.
       // Shown on the group screen, which had no way to say so at all.
       final heldMembers = <String>{};
+      // 23.2: a file's encrypted chunks, rebuilt once per PAGE of rows and
+      // reused for every member's rows on it (keyed by the offer's mid). A
+      // file's rows are queued together so they are contiguous by seq; the
+      // cache is dropped after each page, so a long queue of large files
+      // holds at most a page's worth of ciphertext, not all of it.
+      final chunkCache = <String, List<String>>{};
       while (!debugPauseGroupFanout) {
         _fanoutWanted = false;
         // Past `after`, not from the start. A row that cannot be sent yet —
@@ -5104,9 +5110,38 @@ class ChatService extends ChangeNotifier implements KtHost {
           try {
             final inner = InnerMessage.fromBytes(Uint8List.fromList(
                 utf8.encode(await vault.unseal(r['payload'] as String))));
+            // 23.2: a file offer travels with its sealed chunks, in the same
+            // transaction as the offer's outbox row, so a member gets the key
+            // and every chunk or nothing. The chunks are rebuilt from the
+            // vault blob, once per file per sweep.
+            final chunks = inner.kind == 'gfile'
+                ? await _groupFileChunks(inner, chunkCache)
+                : null;
+            if (inner.kind == 'gfile' && chunks == null) {
+              // The file is gone (deleted before its fan-out finished). An
+              // offer with no chunks behind it is a broken card on the other
+              // side; drop the row rather than spin on it.
+              await vault.db.delete('group_fanout',
+                  where: 'seq = ?', whereArgs: [r['seq']]);
+              progressed = true;
+              continue;
+            }
             // The message row lives under the GROUP, not under the member
             // whose mailbox this envelope is addressed to.
-            await _sendInner(contact, inner, threadRid: r['gid'] as String);
+            await _sendInner(contact, inner,
+                threadRid: r['gid'] as String,
+                also: chunks == null
+                    ? null
+                    : (txn) async {
+                        for (final p in chunks) {
+                          await txn.insert('outbox', {
+                            'id': newMessageId(),
+                            'rid': rid,
+                            'payload': await _sealFor(rid, p),
+                            'created_ms': _now(),
+                          });
+                        }
+                      });
             await vault.db.delete('group_fanout',
                 where: 'seq = ?', whereArgs: [r['seq']]);
             progressed = true;
@@ -5130,6 +5165,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         // not hide the rows behind it, which may be for members who are
         // fine. The sweep ends when the query comes back empty.
         after = rows.last['seq'] as int;
+        chunkCache.clear();
       }
     } on DatabaseException {
       // The vault closed under the drain (the app shutting down, or a
@@ -5142,6 +5178,39 @@ class ChatService extends ChangeNotifier implements KtHost {
       _fanoutDraining = false;
     }
   }
+
+  /// 23.2: the sealed chunk payloads for a queued group file offer, rebuilt
+  /// from the vault blob and the key material the offer carries. Returns null
+  /// if the file no longer exists locally. Cached in [cache] by mid for the
+  /// rest of the sweep, since every member's rows are the same bytes.
+  Future<List<String>?> _groupFileChunks(
+      InnerMessage inner, Map<String, List<String>> cache) async {
+    final cached = cache[inner.mid];
+    if (cached != null) return cached;
+    final fid = inner.data['fid'] as String?;
+    final fk = inner.data['fk'] as String?;
+    final fn = inner.data['fn'] as String?;
+    if (fid == null || fk == null || fn == null) return null;
+    final Uint8List bytes;
+    try {
+      bytes = await readAttachment(fid);
+    } catch (_) {
+      return null;
+    }
+    final km = FileKeyMaterial(fid: fid, fk: unb64(fk), fn: unb64(fn));
+    final parts = splitChunks(bytes);
+    final out = <String>[];
+    for (var i = 0; i < parts.length; i++) {
+      out.add(await encryptChunk(km, i, parts[i]));
+    }
+    cache[inner.mid] = out;
+    return out;
+  }
+
+  /// Test helper: run one drain pass to completion, synchronously — so a test
+  /// can put an obstacle in the vault, drain against it, and look.
+  @visibleForTesting
+  Future<void> drainGroupFanoutForTest() => _drainGroupFanout();
 
   /// Test helper: settle once the queue for [gid] is empty.
   @visibleForTesting
@@ -5241,6 +5310,31 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (removed != null) await _sendInner(removed, inner);
     // The tick is no longer waiting for them.
     await _reevaluateGroupDelivery(gid);
+    unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
+        Future<void>.value());
+    notifyListeners();
+  }
+
+  /// Admin only: rename the group (23.1). The name already travels in every
+  /// invite, so a rename is a membership version bump and a re-invite; members
+  /// adopt the new name from the newer invite and say so (`renamedBy`). Nothing
+  /// new crosses the wire and no member set changes.
+  Future<void> renameGroup(String gid, String name) async {
+    final g = groups[gid];
+    final trimmed = name.trim();
+    if (g == null || !g.iAmAdmin || g.left) return;
+    if (trimmed.isEmpty || trimmed == g.name) return;
+    g.name = trimmed;
+    g.ver += 1;
+    await _saveGroups();
+    await _insertSystemMessage(
+        gid, systemBody(SystemKind.renamedYou, {'name': trimmed}));
+    final inner = InnerMessage(
+        kind: 'ginvite',
+        mid: newMessageId(),
+        ts: _now(),
+        data: await _inviteData(g));
+    await _fanGroupInner(g, inner);
     unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
         Future<void>.value());
     notifyListeners();
@@ -5361,13 +5455,15 @@ class ChatService extends ChangeNotifier implements KtHost {
       },
     );
     final keyInfo = await vault.writeBlob(km.fid, bytes);
-    final chunkPayloads = <String>[];
-    for (var i = 0; i < chunks.length; i++) {
-      chunkPayloads.add(await encryptChunk(km, i, chunks[i]));
-    }
-    // Local copy + placeholder first, so the thread shows the send even if a
-    // member's fan-out below fails and is retried from the outbox.
-    await vault.db.transaction((txn) async {
+    // 23.2: the chunks are NOT encrypted on the send path. The fan-out is
+    // queued like a text's, and the drain rebuilds each member's chunk rows
+    // from the blob when that member's turn comes (`chunkNonce` is derived
+    // from the file nonce and the index, so every rebuild is byte-identical).
+    // Only the mirror to my own linked devices, below, needs them now.
+    // Local copy, placeholder and the delivery plan land in ONE transaction,
+    // so the file either exists with its fan-out rows or does not exist at
+    // all (the same shape as sendGroupText; group_file_fanout_test 4).
+    await _queueGroupFanout(g, inner, also: (txn) async {
       await txn.insert('files', {
         'fid': km.fid,
         'rid': gid,
@@ -5426,24 +5522,17 @@ class ChatService extends ChangeNotifier implements KtHost {
           ),
         ));
     notifyListeners();
-    // Fan out: offer over the ratchet + chunks in the durable outbox, per
-    // member, sealed to each member's device.
-    for (final rid in g.memberRids.toList()) {
-      final c = contacts[rid];
-      if (c == null) continue;
-      await _sendInner(c, inner, threadRid: g.gid, also: (txn) async {
-        for (final p in chunkPayloads) {
-          await txn.insert('outbox', {
-            'id': newMessageId(),
-            'rid': rid,
-            'payload': await _sealFor(rid, p),
-            'created_ms': _now(),
-          });
-        }
-      });
-    }
+    // The per-member fan-out — the offer over the ratchet plus the sealed
+    // chunks in the durable outbox — is performed by _drainGroupFanout, which
+    // queues it above and runs in the background (23.2). Membership was
+    // snapshotted at queue time, so a member removed before this send never
+    // receives the key, exactly as before.
     final sync = _sync;
     if (sync != null) {
+      final chunkPayloads = <String>[];
+      for (var i = 0; i < chunks.length; i++) {
+        chunkPayloads.add(await encryptChunk(km, i, chunks[i]));
+      }
       unawaited(() async {
         await sync.mirror(threadRid: gid, dir: 'out', inner: inner);
         for (final p in chunkPayloads) {
@@ -5555,6 +5644,8 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
 
     final isNew = existing == null;
+    final oldName = existing?.name;
+    final oldMembers = existing?.memberRids.toSet();
     groups[gid] = Group(
       gid: gid,
       name: name,
@@ -5573,8 +5664,25 @@ class ChatService extends ChangeNotifier implements KtHost {
                   {'by': contacts[fromRid]?.name, 'name': name}),
           txn: txn);
     } else {
-      await _insertSystemMessage(gid, systemBody(SystemKind.membershipUpdated),
-          txn: txn);
+      // A newer invite says what changed: the name, the members, or both.
+      // Each gets its own line, so a rename does not read as "membership
+      // updated" and a membership change does not read as a rename (23.1).
+      if (oldName != name) {
+        await _insertSystemMessage(
+            gid,
+            mirroredOwn
+                ? systemBody(SystemKind.renamedYou, {'name': name})
+                : systemBody(SystemKind.renamedBy,
+                    {'by': contacts[fromRid]?.name, 'name': name}),
+            txn: txn);
+      }
+      if (oldMembers == null ||
+          oldMembers.length != memberRids.length ||
+          !oldMembers.containsAll(memberRids)) {
+        await _insertSystemMessage(
+            gid, systemBody(SystemKind.membershipUpdated),
+            txn: txn);
+      }
     }
   }
 

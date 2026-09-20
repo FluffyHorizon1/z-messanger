@@ -55,6 +55,8 @@ String systemText(AppLocalizations l, String body) {
     SystemKind.addedToBy =>
       l.sysAddedToBy(s('by', l.sysSomeone), s('name', '')),
     SystemKind.membershipUpdated => l.sysMembershipUpdated,
+    SystemKind.renamedYou => l.sysRenamedYou(s('name', '')),
+    SystemKind.renamedBy => l.sysRenamedBy(s('by', l.sysSomeone), s('name', '')),
     SystemKind.memberLeft => m['name'] is String
         ? l.sysMemberLeft(m['name'] as String)
         : l.sysUnknownMemberLeft,

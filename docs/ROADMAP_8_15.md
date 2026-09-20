@@ -479,8 +479,13 @@ Everything currently externally gated, plus the work to call it 1.0.
   Membership changes stay synchronous, because their ordering carries the
   security property that a member removed before a send never receives it: a
   send snapshots membership at queue time, so removal-then-send still excludes
-  them. `sendGroupFile` is not queued — its fan-out carries per-recipient chunk
-  payloads that would have to be stored again per row.
+  them. `sendGroupFile` was not queued at first — its fan-out carries
+  per-recipient chunk payloads that would have had to be stored again per
+  row. Since 23.2 it is: nothing is stored twice, because the drain rebuilds
+  each member's chunk rows from the vault blob when that member's turn comes
+  (`chunkNonce` is derived from the file nonce and the index, so every
+  rebuild is byte-identical) and commits them with that member's offer
+  (`group_file_fanout_test.dart`).
 
   Both exit criteria are tests, and both were verified by removing the guard:
   putting the synchronous loop back makes a twenty-member send take 406 ms and

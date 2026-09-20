@@ -27,6 +27,8 @@ abstract final class SystemKind {
   static const removedFrom = 'removed_from'; // name
   static const addedToBy = 'added_to_by'; // by?, name
   static const membershipUpdated = 'membership_updated';
+  static const renamedYou = 'renamed_you'; // name (23.1)
+  static const renamedBy = 'renamed_by'; // by?, name (23.1)
   static const memberLeft = 'member_left'; // name?
 }
 

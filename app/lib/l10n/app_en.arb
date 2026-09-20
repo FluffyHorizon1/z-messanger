@@ -2357,5 +2357,11 @@
   "chatPauseVideo": "Pause video",
   "@chatPauseVideo": {"description": "Tooltip/label of the pause button while a received video is playing."},
   "chatVideo": "Video",
-  "@chatVideo": {"description": "Fallback description of a video attachment when it has no file name."}
+  "@chatVideo": {"description": "Fallback description of a video attachment when it has no file name."},
+  "sysRenamedYou": "You renamed the group to \"{name}\".",
+  "@sysRenamedYou": {"description": "System message in a group the user administers, after they rename it.", "placeholders": {"name": {"type": "String"}}},
+  "sysRenamedBy": "{by} renamed the group to \"{name}\".",
+  "@sysRenamedBy": {"description": "System message: the admin {by} (a contact) renamed the group to {name}.", "placeholders": {"by": {"type": "String"}, "name": {"type": "String"}}},
+  "grpRename": "Rename group",
+  "@grpRename": {"description": "Tooltip of the edit button on the group info screen (admin only), and the title of the rename dialog."}
 }

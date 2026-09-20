@@ -3127,6 +3127,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Video'**
   String get chatVideo;
+
+  /// System message in a group the user administers, after they rename it.
+  ///
+  /// In en, this message translates to:
+  /// **'You renamed the group to \"{name}\".'**
+  String sysRenamedYou(String name);
+
+  /// System message: the admin {by} (a contact) renamed the group to {name}.
+  ///
+  /// In en, this message translates to:
+  /// **'{by} renamed the group to \"{name}\".'**
+  String sysRenamedBy(String by, String name);
+
+  /// Tooltip of the edit button on the group info screen (admin only), and the title of the rename dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Rename group'**
+  String get grpRename;
 }
 
 class _AppLocalizationsDelegate

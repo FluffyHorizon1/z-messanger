@@ -191,6 +191,37 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     }
   }
 
+  /// 23.1: the admin renames the group. The dialog is prefilled with the
+  /// current name; an unchanged or empty name is a no-op in the service.
+  Future<void> _rename(ChatService chat) async {
+    final l = AppLocalizations.of(context);
+    final g = chat.groups[widget.gid];
+    if (g == null) return;
+    final ctrl = TextEditingController(text: g.name);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.grpRename),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLength: 64,
+          decoration: InputDecoration(labelText: l.grpName),
+          onSubmitted: (v) => Navigator.pop(ctx, v),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctrl.text),
+              child: Text(l.save)),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (name != null) await chat.renameGroup(widget.gid, name);
+  }
+
   Future<void> _leave(ChatService chat) async {
     final l = AppLocalizations.of(context);
     final nav = Navigator.of(context);
@@ -231,7 +262,17 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           .compareTo((chat.contacts[b]?.name ?? '').toLowerCase()));
 
     return Scaffold(
-      appBar: AppBar(title: Text(g.name)),
+      appBar: AppBar(
+        title: Text(g.name),
+        actions: [
+          if (g.iAmAdmin && !g.left)
+            IconButton(
+              icon: const Icon(Icons.edit_outlined),
+              tooltip: l.grpRename,
+              onPressed: () => _rename(chat),
+            ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [

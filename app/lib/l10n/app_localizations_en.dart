@@ -1900,4 +1900,17 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get chatVideo => 'Video';
+
+  @override
+  String sysRenamedYou(String name) {
+    return 'You renamed the group to \"$name\".';
+  }
+
+  @override
+  String sysRenamedBy(String by, String name) {
+    return '$by renamed the group to \"$name\".';
+  }
+
+  @override
+  String get grpRename => 'Rename group';
 }
