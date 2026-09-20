@@ -198,6 +198,14 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
   }
 
+  /// Test seam: run just before a send commits, INSIDE the per-contact lock.
+  ///
+  /// It exists so a test can put a send exactly where a loaded machine puts
+  /// it — sealed, holding the lock, not yet committed — instead of waiting
+  /// for the scheduler to do it by luck. See `contact_erasure_test.dart` 4.
+  @visibleForTesting
+  Future<void> Function(String rid)? debugBeforeSendCommit;
+
   ChatService._({
     required this.vault,
     required this.identity,
@@ -869,6 +877,10 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// ratchet (there is none yet) and is recognised by the receiver before it
   /// would be dropped as an unknown sender.
   Future<void> _sendContactRequest(Contact contact) async {
+    // Not under the send lock (there is no session yet), so the membership
+    // check is the whole fence here: a request queued for someone deleted
+    // in the meantime would put their routing id back in `outbox`.
+    if (!contacts.containsKey(contact.rid)) return;
     final key = _sealKeys[contact.rid];
     if (key == null) return;
     final req = await ContactRequest.create(
@@ -1327,7 +1339,27 @@ class ChatService extends ChangeNotifier implements KtHost {
     'ktc_', 'last_open_', 'pql_alert_',
   ];
 
-  Future<void> deleteContact(String rid) async {
+  /// Forget a contact: every row, every blob, every `kv` family, and every
+  /// piece of them this process is holding.
+  ///
+  /// Under the per-contact lock, because a deletion is not the only thing
+  /// that writes under a routing id. A send is a sealed envelope and a
+  /// ratchet step before it is a row, and it holds this lock for the whole
+  /// of it; before 2026-09-20 the deletion took no lock at all, so a send
+  /// that was mid-flight committed INTO the sweep — landing after the
+  /// `outbox` delete and before or after the `conversations` one, so the
+  /// leftovers differed run to run. The CI failure that made this a bug
+  /// rather than a flake showed exactly that shape: `outbox.rid` and
+  /// `outbox.thread_rid` alone on one attempt, those plus
+  /// `conversations.rid` on the next two. Taking the lock puts the sweep
+  /// after any send already in flight; the membership check in [_sendInner]
+  /// stops one that was queued behind it from writing afterwards. Between
+  /// them, "delete contact — nothing locally" (`DATA_MAP.md`) is true no
+  /// matter what was in the air when the user pressed it.
+  Future<void> deleteContact(String rid) =>
+      _withLock(rid, () => _deleteContactLocked(rid));
+
+  Future<void> _deleteContactLocked(String rid) async {
     final fids = (await vault.db.query('files',
             columns: ['fid'], where: 'rid = ?', whereArgs: [rid]))
         .map((r) => r['fid'] as String)
@@ -1786,6 +1818,16 @@ class ChatService extends ChangeNotifier implements KtHost {
       throw KtSendHeldException(contact.rid);
     }
     await _withLock(contact.rid, () async {
+      // The contact can have been DELETED while this send waited for the
+      // lock — [deleteContact] takes the same one. Writing now would put
+      // their routing id back in `outbox`, their ciphertext back in the
+      // vault and a fresh row back in `conversations`, in a vault that is
+      // supposed to have forgotten them (`DATA_MAP.md`: "Delete contact —
+      // nothing locally"). There is also nobody to send to: the ratchet,
+      // the send key and the device set went with them. So this writes
+      // nothing and says the message was accepted, which is what every
+      // other send-side failure here does.
+      if (!contacts.containsKey(contact.rid)) return;
       final conv = await _convFor(contact);
       // Rollback snapshot WITHOUT the out-of-order key cache. A send never
       // reads or changes that cache, so it does not belong in the thing a
@@ -1804,6 +1846,12 @@ class ChatService extends ChangeNotifier implements KtHost {
       await _decorateForWire(inner, contact);
       final payload =
           await _sealFor(contact.rid, await conv.encrypt(inner.toBytes()));
+      // Read once and call only if set: `await gate?.call(...)` would await a
+      // null and so yield a microtask on EVERY send, which is enough to move
+      // the debounce-versus-settle races the PQ exchange tests count
+      // envelopes against.
+      final gate = debugBeforeSendCommit;
+      if (gate != null) await gate(contact.rid);
       try {
         await vault.db.transaction((txn) async {
           await _saveConv(contact.rid, txn: txn);
@@ -3910,7 +3958,15 @@ class ChatService extends ChangeNotifier implements KtHost {
   }
 
   void _appendLoaded(String rid, ChatMessage msg) {
-    final list = messagesByChat.putIfAbsent(rid, () => []);
+    var list = messagesByChat[rid];
+    if (list == null) {
+      // Only a contact or a group has a thread. Creating one for a rid that
+      // is neither would put a conversation back on the home screen after
+      // the user deleted it — the in-memory half of the same race the
+      // per-contact lock closes in the vault (`contact_erasure_test` 4, 5).
+      if (!contacts.containsKey(rid) && !groups.containsKey(rid)) return;
+      list = messagesByChat[rid] = [];
+    }
     // Idempotent: a rolled-back-then-redelivered message must not appear twice.
     if (list.any((m) => m.mid == msg.mid)) return;
     list.add(msg);
@@ -6444,13 +6500,23 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// every send and receive for that contact queued behind it. The lock now
   /// covers the ratchet step and the writes; the network is the outbox's.
   Future<void> _fanToContactExtras(String rid, InnerMessage inner) async {
-    final s = _contactExtras[rid];
-    if (s == null || s.targetRoutingIds.isEmpty) return;
-    final contact = contacts[rid];
+    // Cheap check first, exactly as before: a contact with no extra devices
+    // — the common case — must not pay a lock acquisition per send just to
+    // discover it has nothing to do.
+    final held = _contactExtras[rid];
+    if (held == null || held.targetRoutingIds.isEmpty) return;
     var queued = false;
     await _withLock(rid, () async {
+      // Re-read under the lock, and only for a contact this vault still
+      // holds: this runs unawaited after the primary send, so a deletion can
+      // land in between, and the session object captured before it would
+      // otherwise queue envelopes to their laptop and re-write `cextra_`
+      // for someone who has been forgotten.
+      final s = _contactExtras[rid];
+      final contact = contacts[rid];
+      if (s == null || contact == null || s.targetRoutingIds.isEmpty) return;
       try {
-        if (contact != null) await _decorateForWire(inner, contact);
+        await _decorateForWire(inner, contact);
         // A device only an unconfirmed list added gets nothing (ADR 0006):
         // the hold is what makes a split view cost the attacker something.
         final fan = await s.encrypt(inner.toBytes(), except: kt.heldRids(rid));

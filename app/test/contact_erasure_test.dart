@@ -29,7 +29,19 @@
 //   2. the family list matches the source, both ways;
 //   3. a contact added back starts from nothing: a device list at a version
 //      below the one held before the deletion is accepted, where the stale
-//      `cdev_ver_` used to refuse it.
+//      `cdev_ver_` used to refuse it;
+//   4. a send that is already in flight when the contact is deleted does not
+//      commit into the sweep — the deletion waits for it and removes what it
+//      wrote, rather than interleaving with it;
+//   5. a send that was queued BEHIND the deletion writes nothing at all: no
+//      outbox row, no conversation, nothing to their laptop.
+//
+// 4 and 5 are the two halves of one rule — a deleted contact is final — and
+// they are what `retry: 2` on criterion 1 used to paper over. The leftovers
+// varied run to run because the interleaving did: a send committing between
+// the `outbox` sweep and the `conversations` one leaves a different set than
+// one committing after both. Both are forced here rather than waited for.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -160,18 +172,13 @@ void main() {
     // message that arrives from them now is a stranger's, as it should be.
     expect(a.deviceAssuranceWith(b.myRid), DeviceAssurance.classical,
         reason: 'no assurance is remembered for a stranger');
-    // retry: `acquainted()` leaves async work in flight that `deleteContact`
-    // does not wait on — the 300 ms delivery-receipt timer, the PQ-delivery
-    // timers, and an unawaited device-assurance refresh. Under a loaded suite
-    // one of them can fire *after* the deletion and re-enqueue an outbox row,
-    // re-touch the conversation, or rewrite a `kv` key for the contact; which
-    // one wins varies run to run (the leaked set is not stable), which is the
-    // signature of a timing race, not an erasure gap. The property holds
-    // deterministically in isolation, and a real regression — `deleteContact`
-    // missing a table or family — fails every attempt, not one run in a busy
-    // suite. `pq_identity_exchange_test` carries the same guard for the same
-    // reason.
-  }, retry: 2);
+    // No `retry:` here any more. It was added when this failed only under a
+    // loaded suite and passed alone, which reads like flakiness; the release
+    // build of 3.9.0 then failed it three attempts running, and the leftovers
+    // named the cause — an in-flight send committing into the sweep. That is
+    // criterion 4 below, forced rather than raced, so this one can go back to
+    // being the plain statement it looks like.
+  });
 
   test('2. the family list matches the source, both ways', () async {
     // Every `kvPut('<family>$rid'` / `'<family>${x.rid}'` in lib/, where the
@@ -229,5 +236,78 @@ void main() {
     final version = (jsonDecode(held!) as Map)['ver'] as int;
     expect(version, lessThan(99), reason: 'accepted at its own version, not refused against a ghost');
     expect(a.messagesByChat[b.myRid]!.map((m) => m.body), contains('again back'));
+  });
+
+  test('4. a send in flight when the contact is deleted is swept with them',
+      () async {
+    final (a, b, laptopRid) = await acquainted();
+    // Hold a send where a loaded machine held it: sealed, inside the send
+    // lock, one step from its transaction. Without the deletion taking that
+    // lock, its writes land in the middle of the sweep.
+    final atCommit = Completer<void>();
+    final release = Completer<void>();
+    a.debugBeforeSendCommit = (rid) async {
+      if (rid != b.myRid) return;
+      a.debugBeforeSendCommit = null; // once; the fan-out send is not the test
+      if (!atCommit.isCompleted) atCommit.complete();
+      await release.future;
+    };
+    final inFlight = a.sendText(b.myRid, 'mid-flight when they were deleted');
+    await atCommit.future;
+
+    final deletion = a.deleteContact(b.myRid);
+    // The deletion must be waiting on the lock this send holds, not running
+    // through it: give it every chance to interleave if it can.
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    var deletionDone = false;
+    unawaited(deletion.then((_) => deletionDone = true));
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(deletionDone, isFalse,
+        reason: 'the deletion waits for the send that holds the lock');
+
+    release.complete();
+    await inFlight;
+    await deletion;
+    // The fan-out to their laptop rides unawaited off the same send.
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+
+    expect(await mentions(a.vault, b.myRid), isEmpty,
+        reason: 'the envelope the send wrote was swept with the contact');
+    expect(await mentions(a.vault, laptopRid), isEmpty,
+        reason: 'and so was the copy addressed to their laptop');
+  });
+
+  test('5. a send queued behind the deletion writes nothing', () async {
+    final (a, b, laptopRid) = await acquainted();
+    // Hold the FIRST send inside the lock, start the deletion behind it, then
+    // start a second send behind that. When the lock reaches the second send
+    // the contact is gone: it must write nothing rather than recreate them.
+    final atCommit = Completer<void>();
+    final release = Completer<void>();
+    a.debugBeforeSendCommit = (rid) async {
+      if (rid != b.myRid) return;
+      a.debugBeforeSendCommit = null;
+      if (!atCommit.isCompleted) atCommit.complete();
+      await release.future;
+    };
+    final first = a.sendText(b.myRid, 'first');
+    await atCommit.future;
+    final deletion = a.deleteContact(b.myRid);
+    final queued = a.sendText(b.myRid, 'queued behind the deletion');
+    release.complete();
+    await first;
+    await deletion;
+    await queued; // completes; it simply has nowhere to go
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+
+    expect(await mentions(a.vault, b.myRid), isEmpty,
+        reason: 'a send after the deletion does not bring the contact back');
+    expect(await mentions(a.vault, laptopRid), isEmpty);
+    expect((await a.vault.db.query('outbox')), isEmpty,
+        reason: 'nothing was queued for anyone');
+    expect((await a.vault.db.query('conversations')), isEmpty,
+        reason: 'and no conversation was recreated');
+    expect(a.messagesByChat.containsKey(b.myRid), isFalse,
+        reason: 'nor a thread put back on the home screen');
   });
 }
