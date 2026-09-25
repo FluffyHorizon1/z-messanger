@@ -533,6 +533,8 @@ Unknown kinds MUST be ignored.
 | `gfile` | `gid` + the `file` members, opt. `rt` | group attachment offer (§7, §11) |
 | `gleave` | `gid` | sender left the group (§11) |
 | `pqek` | `alg:"ML-KEM-768", ek:b64` | v2 post‑quantum key offer (§17); consumed by the session layer, never shown |
+| `pqid` | `alg:"ML-DSA-65", pk:b64`, opt. `ack:true` | v3 post‑quantum identity key (§18.2); checked against the commitment from the scanned code, or kept as a candidate when none is held. `ack` = the sender holds the receiver's key |
+| `pqack` | — | the sender holds the receiver's post‑quantum key (§18.2); the `ack` above without a key, for when no `pqid` is going out to carry it |
 | `dlrm` | `acct:b64, v:int, h:b64` | device‑list removal notice (§3.6); tells a device it was dropped from account `acct`'s list |
 | `react` | `rt:string, emo:string` | reaction to one message (§6.5); `emo:""` withdraws |
 | `greact` | `gid` + the `react` members | reaction inside a group (§6.5, §11) |
@@ -1627,9 +1629,38 @@ inner message (§6):
 {"k":"pqid","mid":…,"ts":…,"alg":"ML-DSA-65","pk":b64(ml_pub)[,"ack":true]}
 ```
 
-`ack`, when present and true, says the sender already holds the receiver's
-key, checked against its own commitment. It is omitted otherwise, so a
-message without it is byte-for-byte what earlier clients send.
+`ack`, when present and true, says **the sender holds the receiver's
+post‑quantum key** — established against its own commitment, or held as a
+candidate (ADR 0021). It is omitted otherwise, so a message without it is
+byte-for-byte what earlier clients send. The reading was narrower before ADR
+0021 ("established, checked against my commitment"), and widening it is safe
+in both directions: a client that predates the change sets `ack` only when it
+has checked a key against a commitment, so it can only ever mean the narrower
+thing, which the wider reading contains; and what `ack` is *used* for — the
+§18.5 rule about which number to show — asks only whether the peer holds our
+key at all.
+
+The same statement also has a message of its own, carrying no key:
+
+```
+{"k":"pqack","mid":…,"ts":…}
+```
+
+A client SHOULD send it when inbound traffic finds it holding the sender's
+post‑quantum key (established or candidate) without ever having said so, and
+no `pqid` of its own is going out to carry the fact in an `ack` — because the
+sender's key arrived *with* `ack`, which must not be answered with a `pqid`
+(below), or because the key came to be held before either side kept
+candidates. It MUST be sent
+**at most once per contact**, gated by state that survives a restart rather
+than by a flag in memory; a `pqid` sent with `ack` discharges the same
+obligation and sets the same state, so only one of the two ever goes.
+
+Unlike a `pqid`, it is cheap to send: a few dozen bytes pads into the
+**1 024‑byte** bucket (§8), the one read receipts, reactions and short chat
+occupy, so it is not the distinctive mark on the relay's view that a 16 384
+envelope is (`THREAT_MODEL.md` R17). A client that predates it ignores the
+unknown kind (§6.1).
 
 The receiver MUST check `SHA-256("z-pqid-v3:" || pk)` against the `pqc` from
 the scanned code, in constant time, and MUST refuse the identity on a
@@ -1637,10 +1668,25 @@ mismatch. It MUST NOT fall back to treating the contact as classical: a
 mismatch means the key that arrived is not the key the person in front of you
 committed to. A v2 peer ignores the unknown kind, as with `pqek`.
 
-A key that arrives with **no** commitment to check it against is ignored, not
-stored. That is what makes it safe to volunteer the key to every contact
-rather than only to those known to hold a `zc3.` code — which the sender
-cannot know anyway, since holding a commitment is the *receiver's* state.
+A key that arrives with **no** commitment to check it against is kept as a
+**candidate**, and is used for the safety number (§18.5) and nothing else. It
+MUST NOT be treated as an identity: it does not move the assurance state
+(§18.3), MUST NOT be used to verify a device‑list signature (§18.9) or any
+transparency claim, and MUST NOT be carried to the account's own other devices
+as an established key. A client MUST NOT let a later, different key replace a
+candidate it already holds, and MUST NOT install one for a contact whose key
+has already been refused: nothing distinguishes a second arrival from the
+first — the ratchet authenticated both as this contact — so a swap conveys
+nothing while moving a number the user may be reading aloud. Volunteering the
+key to every contact stays safe, which is what matters, because holding a
+commitment is the *receiver's* state and the sender cannot know it.
+
+Until 2026‑09‑20 (ADR 0021) such a key was discarded. Because a commitment is
+one‑sided, that left the two sides of an ordinary pair showing different
+numbers for ever — the side that scanned a `zc3.` code on the v2 number, the
+side that added the other from a classical code, by accepting a contact
+request (§8.1) or from a pre‑v3 record on the v1 number — with no way to
+complete a comparison and no way out but deleting the contact.
 
 Delivery follows the first traffic, as the v2 `pqek` offer does: nothing can
 be exchanged before a session exists. An opening message can also be dropped
@@ -1714,7 +1760,7 @@ third:
 |---|---|
 | `classical` | a `zc1.`/`zc2.` code: no post‑quantum key was promised. Nothing is missing, but a CRQC could forge this identity |
 | `pendingPostQuantum` | a `zc3.` code was scanned; the key is committed to but has not arrived. Authentication is classical until it does |
-| `hybrid` | the key arrived and matched the commitment |
+| `hybrid` | the key arrived and matched the commitment — or a candidate was confirmed by comparing the post‑quantum safety number (§18.5, ADR 0021), which is the same evidence by a different route |
 
 A key that arrives and does **not** match is a fourth situation, and it is not
 a state of the identity: the identity stays `pendingPostQuantum`, because
@@ -1722,6 +1768,15 @@ nothing was upgraded. The refusal MUST be recorded durably and surfaced, and
 it MUST be announced **once** — the offer is re-made on traffic (§18.2), so a
 client that announces per arrival hands whoever is sending the bad key a way
 to bury the warning under copies of itself.
+
+A **candidate** (§18.2) does not move the assurance state either. A contact
+holding one is `classical`: nothing has checked the key, so nothing may be
+authenticated with it. What the candidate does change is which safety number
+is displayed (§18.5), and a client MUST present that distinction rather than
+letting the post‑quantum number read as a post‑quantum identity — the number
+is the post‑quantum one, and confirming it is what has not happened yet. The
+reference client shows it under a separate, non‑success label
+("Post‑quantum, unconfirmed") for exactly this reason.
 
 ### 18.4 Hybrid device certificates
 
@@ -1794,6 +1849,44 @@ key substitution.
 
 As in v1 the inputs are **account** keys, so the number does not move when
 either side links or drops a device.
+
+**Which number a client shows** (ADR 0021). Both sides decide independently,
+from the same two facts, and must reach the same answer — a safety number that
+differs between the two screens is worse than no safety number, because it
+reads as a substitution. A client shows:
+
+* the **v2** number when it holds an established post‑quantum key for the
+  contact (§18.3 `hybrid`);
+* the **v2** number when it holds a *candidate* (§18.2) **and** the contact has
+  said it holds ours — `ack` on a `pqid`, or a `pqack`;
+* the **v1** number otherwise, including while a candidate is held that the
+  contact has not yet acknowledged, and for a contact whose key was refused.
+
+The second condition is what keeps a mixed‑version pair on one number. A
+client that predates ADR 0021 discards a key it holds no commitment for and
+never acknowledges one, so a current client facing such a peer never sees the
+acknowledgement, keeps its candidate out of the number, and shows the v1
+number — which is the number that peer is showing. Where the older peer *did*
+scan a `zc3.` code it establishes the key and shows the v2 number regardless,
+and whether the two screens agree turns on whether it ever set `ack`: such a
+client can say so only on a `pqid`, computing the flag at each send, so it
+tells us only if one of its sends falls after our key reached it — which its
+opening volunteer usually does not, and which our answer then suppresses,
+because a `pqid` carrying `ack` MUST NOT be answered. When it did, the v2 number appears
+on both screens together; when it did not, the disagreement stands until that
+side updates. A client MUST NOT try to close that case by withholding the v2
+number over an *established* key until the peer acknowledges: a pre‑0021 peer
+that already holds ours will never say so, so the rule would create a fresh
+disagreement in the case that works today.
+
+**Confirming a candidate‑derived number establishes the key.** A user's
+confirmation that the digits matched is the statement that the key the number
+was derived from is the contact's — the same fact a scanned commitment asserts,
+obtained over the same kind of channel. A client MAY therefore promote the
+candidate to an established key on confirmation, after which it is `hybrid`
+and usable wherever an established key is (§18.9). A planted key does not
+survive this: the number fails to match, which is the outcome the ceremony
+exists to produce, and the same one a classical substitution produces.
 
 **What a client must do about the change.** A user's confirmation that they
 compared numbers is a statement about a *particular* number, so a client:

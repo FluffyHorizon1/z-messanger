@@ -166,6 +166,18 @@ class BackupArchive {
           pqPub = null; // unreadable cell: the key re-arrives in-band
         }
       }
+      // ADR 0021: the candidate too. A restore that dropped it would show the
+      // classical number again for every contact whose post-quantum half was
+      // established by comparison rather than by a scanned commitment, and
+      // would ask them to compare a second time for nothing.
+      String? pqCand;
+      if (c['enc_pq_cand'] != null) {
+        try {
+          pqCand = await vault.unseal(c['enc_pq_cand'] as String);
+        } catch (_) {
+          pqCand = null;
+        }
+      }
       await record({
         't': 'contact',
         'rid': c['rid'],
@@ -176,6 +188,9 @@ class BackupArchive {
         'created': c['created_ms'],
         if (c['pq_commit'] != null) 'pqc': c['pq_commit'],
         if (pqPub != null) 'pqk': pqPub,
+        if (pqCand != null) 'pqcand': pqCand,
+        if ((c['pq_acked'] as int? ?? 0) == 1) 'pqack': 1,
+        if ((c['pq_told'] as int? ?? 0) == 1) 'pqtold': 1,
         // 13.3: WHICH number the user compared, and whether a post-quantum
         // key has already been refused for this contact. Without them a
         // restore reinstates a tick it cannot account for, and forgets a
@@ -466,6 +481,10 @@ class BackupArchive {
                     'pq_commit': r['pqc'],
                     if (r['pqk'] is String)
                       'enc_pq_pub': await vault.seal(r['pqk'] as String),
+                    if (r['pqcand'] is String)
+                      'enc_pq_cand': await vault.seal(r['pqcand'] as String),
+                    'pq_acked': (r['pqack'] as num?)?.toInt() ?? 0,
+                    'pq_told': (r['pqtold'] as num?)?.toInt() ?? 0,
                     'verified_sn': r['vsn'],
                     'pq_mismatch': (r['pqbad'] as num?)?.toInt() ?? 0,
                     'acct_ed': r['acct'],

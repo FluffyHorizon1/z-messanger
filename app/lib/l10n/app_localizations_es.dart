@@ -153,6 +153,11 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String contactUpgraded(String name) {
+    return '$name ya estaba en tus contactos: su compromiso poscuántico se ha tomado de este código.';
+  }
+
+  @override
   String get addMyCode => 'MI CÓDIGO';
 
   @override
@@ -786,6 +791,14 @@ class AppLocalizationsEs extends AppLocalizations {
       'Cubre ambas mitades de ambas identidades: Ed25519 y ML-DSA-65. La clave poscuántica llegó por la sesión cifrada y coincidió con el compromiso del código que escaneaste.';
 
   @override
+  String get ciBlurbWaiting =>
+      'Su clave poscuántica ya ha llegado, pero ellos aún no tienen la tuya, así que el número de abajo sigue siendo el de Ed25519: el mismo que muestra su dispositivo. Pasará a ser el número poscuántico en ambos dispositivos a la vez, en cuanto cada uno tenga la clave del otro.';
+
+  @override
+  String get ciBlurbCandidate =>
+      'El número de abajo cubre ambas mitades de ambas identidades, pero esta aplicación no ha podido comprobar su clave poscuántica contra nada: los añadiste desde un código anterior a ella, o te la enviaron después de añadirlos. Comparar este número ES la comprobación: si coincide en su dispositivo, la clave es suya, y confirmarlo abajo lo deja registrado.';
+
+  @override
   String get ciSwitchVerified => 'Verificado';
 
   @override
@@ -802,6 +815,19 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get ciPillPq => 'Poscuántico';
+
+  @override
+  String get ciBlurbRefused =>
+      'Llegó una clave poscuántica para este contacto que NO coincide con el código que escaneaste, así que fue rechazada. El número de abajo es el de Ed25519: el único que aquí significa algo. Esta identidad no se actualizará mientras el rechazo siga sin resolverse; lee el aviso de arriba.';
+
+  @override
+  String get ciPillPqRefused => 'Clave rechazada';
+
+  @override
+  String get ciPillPqWaiting => 'Esperándoles';
+
+  @override
+  String get ciPillPqUnconfirmed => 'Poscuántico, sin confirmar';
 
   @override
   String get ciNoticeVerified => 'Verificado';

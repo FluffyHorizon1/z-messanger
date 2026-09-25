@@ -15,10 +15,37 @@ class Contact {
   /// was promised, so nothing is missing.
   Uint8List? pqCommit;
 
-  /// The contact's ML-DSA-65 account key, once it has arrived in-band AND
-  /// matched [pqCommit]. Never set from an unverified source: this being
-  /// non-null is what [assurance] reports as hybrid.
+  /// The contact's ML-DSA-65 account key, once it is ESTABLISHED: it arrived
+  /// in-band and matched [pqCommit], or it was a [pqCandidate] the user
+  /// confirmed by comparing the post-quantum safety number (ADR 0021). Never
+  /// set from an unchecked source: this being non-null is what [assurance]
+  /// reports as hybrid, and what device-list and transparency checks use.
   Uint8List? pqPub;
+
+  /// ADR 0021: an ML-DSA-65 key that arrived in-band for a contact we hold NO
+  /// commitment for — a classical code, an accepted contact request, or a
+  /// record from before v3. It is kept, not dropped, so that the post-quantum
+  /// safety number can be shown and compared; the comparison is what confirms
+  /// it, and it becomes [pqPub]. Until then it is used for the NUMBER ONLY —
+  /// never for [hybridKey], never to verify a device list or a transparency
+  /// claim. A quantum adversary forging the classical channel could plant
+  /// one; the comparison catches exactly that, the way it catches a classical
+  /// substitution.
+  Uint8List? pqCandidate;
+
+  /// ADR 0021: the contact has told us they hold OUR post-quantum key — the
+  /// `ack` on their `pqid`, or a `pqack`. A [pqCandidate]'s number is shown
+  /// only once they have, so the two screens show one number: a peer that
+  /// never says so — a build from before this ADR, which drops a key it holds
+  /// no commitment for — keeps both screens classical, which is what it shows
+  /// itself.
+  bool pqAcked;
+
+  /// ADR 0021: we have told THEM we hold their key — a `pqid` sent with `ack`,
+  /// or a `pqack`. Until it is set, their next message earns a `pqack`: that
+  /// is how a peer whose key we held before either side kept candidates, or
+  /// whose ack we were not running new enough code to answer, still learns it.
+  bool pqTold;
 
   /// The safety number the user actually read aloud and confirmed (13.3).
   ///
@@ -81,6 +108,9 @@ class Contact {
     required this.createdMs,
     this.pqCommit,
     this.pqPub,
+    this.pqCandidate,
+    this.pqAcked = false,
+    this.pqTold = false,
     this.verifiedSn,
     this.pqMismatch = false,
     this.accountEdPub,
@@ -96,16 +126,83 @@ class Contact {
   /// the moment a code is scanned — which makes it easy to show the identity
   /// as post-quantum before the key has arrived and been checked. It has not.
   IdentityAssurance get assurance {
-    if (pqCommit == null) return IdentityAssurance.classical;
-    return pqPub == null
-        ? IdentityAssurance.pendingPostQuantum
-        : IdentityAssurance.hybrid;
+    // An established key is hybrid however it was established — against a
+    // scanned commitment, or by the user comparing the post-quantum number
+    // it was a candidate for (ADR 0021). A commitment without a key is
+    // pending; neither is classical.
+    if (pqPub != null) return IdentityAssurance.hybrid;
+    return pqCommit == null
+        ? IdentityAssurance.classical
+        : IdentityAssurance.pendingPostQuantum;
   }
 
   /// The contact's account key as a hybrid public key, or null until the
-  /// post-quantum half is known and verified.
+  /// post-quantum half is known and verified. A [pqCandidate] is deliberately
+  /// NOT here: this is the key every trust decision reads.
   HybridPublicKey? get hybridKey =>
       pqPub == null ? null : HybridPublicKey(edPub: accountEd, mlPub: pqPub!);
+
+  /// ADR 0021: the post-quantum key the safety NUMBER may use — established,
+  /// or a candidate awaiting the comparison that confirms it. Null when
+  /// nothing is held, or when a key was refused ([pqMismatch]).
+  HybridPublicKey? get numberKey {
+    if (pqMismatch) return null;
+    final k = pqPub ?? pqCandidate;
+    return k == null ? null : HybridPublicKey(edPub: accountEd, mlPub: k);
+  }
+
+  /// ADR 0021: whether the post-quantum safety number is the one to show.
+  ///
+  /// An ESTABLISHED key shows it, as it always has: the commitment came from
+  /// a code the user scanned, and a peer that scanned ours shows it too. A
+  /// CANDIDATE shows it only once the peer has said it holds our key — then
+  /// both sides compute the same number, and comparing it is what confirms
+  /// the candidate. A candidate the peer has not acknowledged keeps the
+  /// classical number, which is what an older peer shows for us.
+  bool get showsPostQuantumNumber {
+    if (pqMismatch) return false;
+    if (pqPub != null) return true;
+    return pqCandidate != null && pqAcked;
+  }
+
+  /// What the contact screen says about the post-quantum half (ADR 0021).
+  PqDisplay get pqDisplay {
+    if (pqMismatch) return PqDisplay.mismatch;
+    if (pqPub != null) return PqDisplay.postQuantum;
+    if (pqCandidate != null) {
+      return pqAcked ? PqDisplay.unverified : PqDisplay.waitingForThem;
+    }
+    if (pqCommit != null) return PqDisplay.pending;
+    return PqDisplay.classical;
+  }
+}
+
+/// How the contact screen presents the post-quantum half (ADR 0021). Distinct
+/// from [IdentityAssurance], which is the TRUST model — what the key may be
+/// used to check; this is what the number on screen is derived from, and why.
+/// They genuinely differ for a candidate: the number is post-quantum while
+/// the identity is still classical.
+enum PqDisplay {
+  /// Classical number shown; no post-quantum key held for them.
+  classical,
+
+  /// Classical number shown; a commitment was scanned but the key has not
+  /// arrived yet (§18.3 pending).
+  pending,
+
+  /// Classical number shown; we hold their key, but they have not said they
+  /// hold ours — an older build, or the exchange is still in flight.
+  waitingForThem,
+
+  /// Post-quantum number shown, over a candidate: comparing it is the check.
+  unverified,
+
+  /// Post-quantum number shown, over an established key.
+  postQuantum,
+
+  /// A key was refused (did not match the commitment); the classical number
+  /// is shown and the warning stays.
+  mismatch,
 }
 
 /// ADR 0011: a pending INBOUND contact request — someone who added us and is

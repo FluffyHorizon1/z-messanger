@@ -201,6 +201,19 @@ void main() {
     expect(find.textContaining('someone is substituting keys'), findsOneWidget);
     // Refused means NOT upgraded — the screen must not also be claiming the
     // identity is post-quantum.
-    expect(find.text('Post-quantum pending'), findsOneWidget);
+    expect(find.text('Post-quantum'), findsNothing);
+    // And it must not say the reassuring thing either. Until ADR 0021 this
+    // case borrowed the PENDING pill and blurb, so directly under a red
+    // banner about substituted keys the screen also said the key "has not
+    // arrived yet" and that the change to come "is the upgrade, not
+    // tampering" — the opposite of the warning, in the same card.
+    expect(find.text('Key refused'), findsOneWidget,
+        reason: 'the pill labels the refusal rather than borrowing "pending"');
+    expect(find.textContaining('that is the upgrade, not tampering'),
+        findsNothing,
+        reason: 'the pending blurb must not appear under a refusal');
+    expect(find.textContaining('the only number left that means anything'),
+        findsOneWidget,
+        reason: 'the refusal has words of its own about what the number is');
   });
 }

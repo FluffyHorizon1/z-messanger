@@ -1,135 +1,98 @@
-# Handoff: fix/contact-erasure-race
-Phase: release hotfix — 3.9.0's release build failed twice
-Base: main @ `df062b3` (Release 3.9.0)   Built: 2026-09-20
+# Handoff: fix/pq-number-upgrade
+Phase: a reported bug in published 3.7.0 — the safety number two people could never make agree
+Base: main @ `05ddc3e` (Release 3.9.1)   Built: 2026-09-25
 
 ## What changed
-- `deleteContact` now runs under the **per-contact lock** every send already
-  takes (`_withLock(rid)`), so a send that is in flight cannot commit into the
-  middle of the sweep.
-- `_sendInner` re-checks membership **inside** that lock: a send queued behind
-  a deletion writes nothing — no envelope, no conversation, no message row.
-- `_fanToContactExtras` re-reads the extras session under the lock and skips a
-  contact that is gone, so nothing is queued to their laptop and `cextra_` is
-  not rewritten after the sweep.
-- `_sendContactRequest` (a direct `outbox` insert, no session, no lock) gets
-  the same membership check.
-- `_appendLoaded` no longer creates a thread for a rid that is neither a
-  contact nor a group — the in-memory half of the same race, which would have
-  put a deleted conversation back on the home screen.
-- `contact_erasure_test.dart`: `retry: 2` **removed** from criterion 1, and two
-  new criteria that force the race instead of waiting for it (4, 5), using a
-  new `@visibleForTesting` seam `debugBeforeSendCommit` that holds a send
-  inside the lock one step before its transaction.
-- `docs/DATA_MAP.md` erasure row and `docs/AUDIT_SCOPE.md` C33 evidence updated.
-- Version 3.9.0+177 → 3.9.1+178.
+ADR 0021, `docs/adr/0021-pq-number-upgrade-in-session.md`. In one line: a
+post-quantum key that arrives with no commitment to check it against is now
+**kept as a candidate, for the safety number and nothing else**, both sides show
+the post-quantum number only once each holds the other's key and has said so,
+and **comparing that number is what establishes the key**.
+
+- `Contact` gains `pqCandidate` (sealed), `pqAcked`, `pqTold`, and a `PqDisplay`
+  enum — what the number on screen is derived from, which is a different
+  question from `IdentityAssurance`, what the key may be trusted for.
+- `_onPqIdentity` keeps an uncommitted key instead of dropping it; first key
+  wins; a refused contact is never given one.
+- New keyless inner kind **`pqack`** ("I hold your key") for when no `pqid` of
+  ours is going out to carry the same fact in its `ack`. 1 024-byte bucket, at
+  most once per contact, gated by a durable flag.
+- `setVerified` promotes a compared candidate to an established key.
+- `addContactFromCode` on an existing contact upgrades the record instead of
+  throwing; the CONNECT ceremony opts out (`upgradeExisting: false`) so its own
+  refusal rule is untouched.
+- Vault schema 13; all three fields travel in the backup archive.
+- Contact screen keyed on `PqDisplay`; new strings in en + es; the refused case
+  finally gets words of its own instead of borrowing "pending".
+- Version 3.9.1+178 → 3.9.2+179.
 
 ## Why
-The v3.9.0 release run failed in the `test` job, three attempts in a row:
-
-```
-❌ app/test/contact_erasure_test.dart: 1. after deleting a contact, nothing in the vault names them
-   Expected: empty  Actual: ['outbox.rid', 'outbox.thread_rid']
-   Expected: empty  Actual: ['conversations.rid', 'outbox.rid', 'outbox.thread_rid']   (x2)
-##[error]332 tests passed, 1 failed, 7 skipped.
-```
-
-Nothing downstream ran — `android`, `linux`, `windows`, `macos`,
-`reproducible` and `release` all `needs: test` — so there are no artifacts and
-no draft release for v3.9.0.
-
-`deleteContact` took no lock. A send holds `_withLock(rid)` from the ratchet
-step through the commit, which on a busy machine is tens of milliseconds of
-sealing; the deletion's sweep is a sequence of awaited `DELETE`s over the same
-rows. Interleave the two and the send commits *into* the sweep. The two leaked
-sets are the two places it can land: after the `outbox` delete but before the
-`conversations` one (attempt 1), or after both (attempts 2 and 3) — the
-deletion's own statement order, read off the failure. 3.7.7 diagnosed this as a
-busy build machine and added `retry: 2`; that reading was wrong, and this is
-the bug it was hiding.
-
-It is a correctness bug, not a test bug: `DATA_MAP.md` says of deleting a
-contact "Nothing locally", and what survived is the contact's routing id, a
-sealed envelope addressed to them, and a fresh conversation row — for the life
-of the install, in a vault that is supposed to have forgotten them. Deleting a
-contact while a message to them is being sent is an ordinary thing to do.
+Reported against 3.7.0: *"when an account that just has a classical number tries
+to compare with a quantum number they don't match"*, and *"I can't see a way the
+person can upgrade to a quantum number."* §18.2 said an uncommitted key is
+discarded, and a commitment is one-sided — so the side that scanned a `zc3.`
+code showed the v2 number and the side that added them from a classical code (or
+by accepting a contact request, or from a pre-v3 record) showed v1, for ever.
+`addContactFromCode` threw for an existing rid, so re-scanning did nothing
+either. The only escape was deleting the contact and all its history.
 
 ## Invariants touched
-- Zero knowledge at the relay — unchanged. Nothing new is sent, logged or
-  metered; the change only stops writes to the local vault.
-- Metadata minimisation — unchanged. No new message kinds, no new sizes, no new
-  timing. One envelope that used to be queued after a deletion is now not
-  queued at all, which is strictly less traffic.
-- Forward secrecy / PCS — unchanged. The ratchet step for a deleted contact no
-  longer happens, but that session is being destroyed in the same breath.
-- Erasure (`DATA_MAP.md`, AUDIT_SCOPE C33) — this is the invariant being
-  repaired.
-- Wire protocol: unchanged.
-- New dependencies: none.
+- **A candidate is never an assurance.** Not `hybridKey`, not `assurance`
+  hybrid, never verifies a device list (§18.9), never mirrored to one's own
+  devices, never swapped for a later key. Checked by two independent reviews.
+- **Zero knowledge at the relay** — unchanged. One extra 1 024-bucket envelope
+  per contact per install, the bucket short chat already occupies.
+- **Metadata** — the nudge for a key we were never promised is bounded to once
+  per run per contact, deliberately tighter than the three a met commitment
+  gets, because a 16 384 envelope at a v1 peer that can never answer is pure
+  mark (R17).
+- **Wire** — additive only: one new kind, and `ack` widened in a direction an
+  older client cannot misread.
+- **13.3** — the tick still records WHICH number was compared.
 
 ## How I verified
-- `app/`: `flutter test --concurrency=1` on the committed tree — **335 passed,
-  6 skipped, 1 failed**, the one failure being `destructive_confirm_test` 40,
-  which fails on `main` on this machine too (see below) and passed in CI. An
-  earlier full run of the same tree was **336 passed, 6 skipped, 0 failed**.
-  CI's failing run for comparison: 332 passed, 1 failed, 7 skipped.
-- Mutation-checked both halves of the fix, which is the part worth re-running:
-  - lock removed from `deleteContact` → criterion 4 fails
-    (`the deletion waits for the send that holds the lock`) **and** criterion 5
-    fails with `['messages.rid']`;
-  - membership check removed from `_sendInner` → criterion 5 fails with
-    `['conversations.rid', 'messages.rid', 'outbox.rid', 'outbox.thread_rid']`
-    — the CI shape exactly.
+- `app/`: `flutter test --concurrency=1` — see the report at the end of this
+  session for the exact run; `safety_number_mixed_test.dart` is 10 tests over a
+  real relay.
 - `protocol/`: `dart test` — 224 passed.
-- `server/`: `npm test` — 119 passed, 0 failed.
-- `kt/`: `npm test` — 78 passed, 0 failed.
-- `python3 kt/tools/verify_vectors.py` — 344 values reproduced.
-- `python3 protocol/tool/verify_mldsa.py` — 39 checks (dilithium-py).
-- Guards: `check_audit_scope`, `check_test_criteria`, `check_ga`, `check_l10n`,
-  `check_a11y`, `check_android_data_safety`, `check_workflow`,
-  `check_blueprints`, `check_relay_url`, `app/tool/contrast.py`,
-  `test_verify_reproducible`, `test_check_live_relay`, `test_release_verify`,
-  `dry_run_release` — all pass.
-- `flutter analyze` — no issues.
+- `server/`: `npm test` — 119 passed. `kt/`: `npm test` — 78 passed.
+- `kt/tools/verify_vectors.py` — 344 values. `protocol/tool/verify_mldsa.py` —
+  39 checks under dilithium-py.
+- Every guard in `tool/` plus `app/tool/contrast.py` — all pass.
+- **Three subagent reviews**, run in parallel with the build: a doc-vs-code
+  audit, an adversarial security review, and a final pre-delivery audit. They
+  found, and this branch fixes: a **P0 TOCTOU in `setVerified`** (the number and
+  the promotion decision were read either side of an await, so a peer's `ack`
+  landing in the gap turned a confirmation of the *classical* number into the
+  establishment of a post-quantum key nobody compared — now one snapshot, with
+  test 4b as the regression); an unbounded `pqack` when the durable write fails;
+  a re-scan mismatch that reported success to the user at the one moment the app
+  has hard evidence of a substituted key; the CONNECT contract being widened
+  silently; a test that proved nothing because it never checked the §18.9
+  signature had arrived; and two doc claims that were wrong about 3.7.x
+  behaviour.
 
 ## Not done / watch out
-- **`app/test/devlist_transparency_test.dart` "split view (a)" is flaky on this
-  machine, at about one first attempt in five**, timing out on a 60-second
-  `waitUntil` and passing on its own retry. I measured it because a bisect
-  appeared to blame this branch: five runs on this branch gave 4 clean / 1
-  retried, five on `main` gave 4 clean / 1 retried — the same rate, so it is
-  pre-existing and nothing here touches it. (That flake is also why two earlier
-  bisect results in this session were wrong; the signal only became readable
-  once nothing else was running on the box.) It passed in CI's 3.9.0 run. Its
-  own comment already records losing three attempts "on a tag whose code was
-  unchanged". Worth its own branch: it is the same kind of retry-as-diagnosis
-  this fix just undid.
-- **`app/test/destructive_confirm_test.dart` 40 ("resetting a secure session
-  asks first") fails on THIS machine under full-suite load**, looking for the
-  snackbar text "Secure session reset" and finding none. It failed the same way
-  on an unmodified `main` run here, passes in isolation on this branch (2/2),
-  and passed in CI's 3.9.0 run — a widget-pump timing issue on a two-core box,
-  not this bug and not this branch. It has no retry, so a full local run ends
-  "Some tests failed" on it. Worth a look on its own; one bug per branch.
-- `_fanToContactExtras` keeps its pre-lock early-out for a contact with no
-  extra devices. An earlier draft moved that check inside the lock, which made
-  the common case pay a lock acquisition per send for nothing.
-- The seam `debugBeforeSendCommit` is `@visibleForTesting` and reads as
-  `final gate = ...; if (gate != null)` rather than `await gate?.call(...)` on
-  purpose: awaiting a null yields a microtask on every send, and that alone was
-  enough to flip `pq_identity_exchange_test`'s envelope counting (I saw it
-  fail once with exactly that, and it went green when the null-await went).
-  If that call ever becomes unconditional again, expect those counts to move.
-- The `retry: 2` still on `pq_identity_exchange_test`'s first test, and on
-  `pq_rekey_test`/`pq_upgrade_test`, is a different race (a 100 ms debounce
-  against 150 ms settle rounds) and is untouched. Given what this one turned
-  out to be, they are worth the same treatment — a seam and a forced
-  interleaving — rather than a retry. Not in this branch.
-- Version bumped to **3.9.1**. Nothing downstream of the failed v3.9.0 run
-  produced artifacts, so re-cutting v3.9.0 would also be defensible; 3.9.1 is
-  what I have prepared, since a tag with a failed run attached is confusing.
+- **The limit is real and is documented, not hidden.** Where a pre-0021 peer
+  already established our key, it shows the post-quantum number and we may show
+  the classical one; no change of ours reaches a build in the field. Test 3b
+  pins the rule rather than an outcome, because which way it falls depends on
+  send ordering. `docs/PROTOCOL.md` §18.5 carries a MUST NOT against the obvious
+  "fix" (withholding the number over an established key), which would break the
+  pair that works today.
+- A careless "verified" tick now installs a trust anchor rather than a label —
+  recorded in THREAT_MODEL R37, which is the row to read before signing this off.
+- Still untested: that a candidate is never mirrored to one's own devices
+  (verified by reading `_contactInner`, not by a test with a linked device).
+- `app/test/destructive_confirm_test.dart` 40 fails on this machine under
+  full-suite load and passes in isolation; it failed the same way on unmodified
+  `main` here and passed in CI. Untouched by this branch.
+- `app/test/devlist_transparency_test.dart` "split view (a)" is flaky at about
+  one first attempt in five on this machine (measured 4/1 on both this branch
+  and `main` in an earlier session) and recovers on its own retry. Untouched.
 
 ## Suggested pusher actions
 - changelog: n/a (this repo logs releases in the release commit message)
-- version bump: done (3.9.1+178) — the release commit message is in this branch
-- release: yes — tag `v3.9.1` once CI is green
+- version bump: done (3.9.2+179); release commit is in this branch
+- release: yes — tag `v3.9.2` once CI is green
 - redeploy relay: no (no server change)

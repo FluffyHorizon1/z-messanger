@@ -12,8 +12,12 @@ import 'util.dart';
 ///   'file'   file offer { fid, name, size, mime, sha256, fk, fn, chunks, csize }
 ///   'timer'  disappearing-messages setting { sec } (0 = off)
 ///   'read'   read receipts { mids: [...] }
-///   'pqid'   (v3) post-quantum identity key { alg, pk } — checked against
-///            the commitment carried by the zc3. contact code (§13.2)
+///   'pqid'   (v3) post-quantum identity key { alg, pk[, ack] } — checked
+///            against the commitment carried by the zc3. contact code
+///            (§13.2); kept as a candidate for the safety number when no
+///            commitment is held (ADR 0021)
+///   'pqack'  (ADR 0021) the sender holds the receiver's post-quantum key —
+///            `ack` without a key; ignored by clients that predate it
 ///   'pqek'   (v2) post-quantum key offer { alg, ek } — consumed by the
 ///            session layer, never shown; ignored by v1 clients
 ///   'dlrm'   (7.7a) device-list removal notice { acct, v, h } — a contact
@@ -161,6 +165,17 @@ class InnerMessage {
         'pk': b64(mlPub),
         if (ack) 'ack': true,
       });
+
+  /// ADR 0021: the sender holds the receiver's post-quantum key — the same
+  /// statement as `ack` on a `pqid`, without the key. Sent when that fact
+  /// arose after the sender's own `pqid` had gone, so no message would
+  /// otherwise carry it: the receiver's key arrived WITH `ack` (so it was not
+  /// answered), or the sender came to hold the key before either side kept
+  /// candidates. A few dozen bytes — the smallest envelope bucket, the size
+  /// of a read receipt, so unlike a `pqid` it is not a distinctive mark on
+  /// the relay's view. Clients that predate it ignore the kind (§6).
+  static InnerMessage pqAck(String mid, int ts) =>
+      InnerMessage(kind: 'pqack', mid: mid, ts: ts);
 
   /// 7.7a device-list removal notice: sent by a contact to a device it just
   /// dropped from account [acct]'s list (at version [v], fingerprint [h]), so

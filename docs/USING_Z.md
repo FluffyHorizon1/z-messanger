@@ -119,6 +119,32 @@ of three things on the contact's screen:
 Z will not guess in your favour. A change it cannot account for is reported as
 unexplained even when the innocent reading is the likelier one.
 
+**Two labels you may see beside the number.** Which number Z shows depends on
+what each of you has of the other, and Z will not move your number until it
+knows their screen is moving too — a number that is right on your phone and
+wrong on theirs is worse than no number at all.
+
+* **"Waiting for them"** — you have their post-quantum key, they do not yet
+  have yours, so you are both still on the older number. Nothing is wrong and
+  there is nothing to do. It resolves itself the next time they use the app,
+  and when it does, both numbers change at the same moment.
+* **"Post-quantum, unconfirmed"** — you each have the other's key and the
+  number you are looking at covers both of them, but Z has never had anything
+  to check that key against. You added them from a code that came before this
+  existed, or they only sent the key after you added them, so there was no
+  advance promise to hold it to. **Comparing the number is that check.** Read
+  it out to them the usual way; if the digits match on their screen, the key
+  really is theirs, and ticking "verified" records it for good. If you happen
+  to be in the same room, scanning their code again does the same job on the
+  spot, and you can do either — neither is better than the other.
+
+Before version 3.9.2 the second situation had no way out at all. One of you
+saw one number, the other saw a different one, and no amount of comparing,
+re-scanning or waiting would bring them together; deleting the contact and the
+conversation with it was the only thing that worked. If you have a contact
+stuck like that, you both need to be on 3.9.2 or later, and then it sorts
+itself out.
+
 ## Your other devices
 
 Link a second device from Settings → Linked devices. Both screens show a short

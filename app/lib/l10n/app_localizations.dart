@@ -344,6 +344,12 @@ abstract class AppLocalizations {
   /// **'{name} added. Compare safety numbers when you can.'**
   String contactAdded(String name);
 
+  /// Confirmation after scanning the code of someone already in the contact list (ADR 0021). Nothing was added; the record gained the post-quantum commitment the code carries, which is what lets the post-quantum safety number be shown. 'commitment' is the protocol's term — the code holds a hash of the key, not the key.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} was already in your contacts — their post-quantum commitment was taken from this code.'**
+  String contactUpgraded(String name);
+
   /// Tab: show my own contact code. Upper case in the design.
   ///
   /// In en, this message translates to:
@@ -1370,6 +1376,18 @@ abstract class AppLocalizations {
   /// **'Covers both halves of both identities: Ed25519 and ML-DSA-65. The post-quantum key arrived over the encrypted session and matched the commitment in the code you scanned.'**
   String get ciBlurbHybrid;
 
+  /// One side holds the other's post-quantum key and is waiting for the reverse (ADR 0021). The load-bearing part is 'the same number their device is showing': the reason for waiting is that the two screens must never disagree, which is the whole point of a safety number. 'at once' matters too — the user should not go looking for a button. Nothing is wrong here; do not translate it as a warning.
+  ///
+  /// In en, this message translates to:
+  /// **'Their post-quantum key has arrived, but they do not have yours yet, so the number below is still the Ed25519 one — the same number their device is showing. It becomes the post-quantum number on both devices at once, as soon as each of you holds the other\'s key.'**
+  String get ciBlurbWaiting;
+
+  /// The candidate state (ADR 0021), and the most important new string on this screen. Three things must survive translation: the number IS the post-quantum one; nothing has verified the key yet, so this is not the same as the hybrid state; and the comparison itself is the verification rather than a formality. 'IS the check' carries that last point.
+  ///
+  /// In en, this message translates to:
+  /// **'The number below covers both halves of both identities, but this app has not been able to check their post-quantum key against anything — you added them from a code that predates it, or they sent it after you added them. Comparing this number IS the check: if it matches on their device, the key is theirs, and confirming it below records that.'**
+  String get ciBlurbCandidate;
+
   /// Label of the verification toggle when it is on. A control label, not a heading — ciNoticeVerified is the heading with the same English.
   ///
   /// In en, this message translates to:
@@ -1405,6 +1423,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Post-quantum'**
   String get ciPillPq;
+
+  /// Shown under the safety number when a key has been refused (§18.2). Before ADR 0021 this case borrowed ciBlurbPending, which says the key 'has not arrived yet' and that the coming change 'is the upgrade, not tampering' — the opposite of the red banner directly above it. It must not reassure: the number is classical, that is deliberate, and the refusal does not clear itself.
+  ///
+  /// In en, this message translates to:
+  /// **'A post-quantum key arrived for them and did NOT match the code you scanned, so it was refused. The number below is the Ed25519 one — the only number left that means anything here. Nothing will upgrade this identity until the refusal is resolved; read the warning above.'**
+  String get ciBlurbRefused;
+
+  /// Pill beside the safety-number heading for a contact whose post-quantum key was refused, in the danger colour. Deliberately NOT the same words as the ciPqRefused banner above it — the banner explains, the pill labels, and repeating a sentence verbatim in both makes the screen read as an error message printed twice.
+  ///
+  /// In en, this message translates to:
+  /// **'Key refused'**
+  String get ciPillPqRefused;
+
+  /// Pill (ADR 0021) for: we hold their post-quantum key, they do not hold ours, so both screens still show the classical number. 'them' is the contact. Nothing is wrong and nothing is asked of the user — keep it neutral, not a warning.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for them'**
+  String get ciPillPqWaiting;
+
+  /// Pill (ADR 0021) for the post-quantum number shown over a key nothing has checked yet — comparing the number is what checks it. Both halves matter: it IS post-quantum, and it is NOT yet confirmed. Shown in the warning colour, never the success one, precisely so it cannot be mistaken for ciPillPq.
+  ///
+  /// In en, this message translates to:
+  /// **'Post-quantum, unconfirmed'**
+  String get ciPillPqUnconfirmed;
 
   /// Banner heading confirming a verification still holds. Same English as ciSwitchVerified but this is a heading over a body, not a control label.
   ///

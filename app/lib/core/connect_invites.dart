@@ -416,8 +416,12 @@ class ConnectInvites extends ChangeNotifier {
     }
     // ADR 0012: the ceremony added both sides, so this is not a one-sided add —
     // no "requested" limbo to show, and no request to send (it would only fold).
+    // `upgradeExisting: false` keeps the refusal this doc-comment describes.
+    // ADR 0021 made a re-scan upgrade an existing record; that is a decision
+    // about a code the user scanned in person, and it does not carry over to
+    // a ceremony run at a distance, which is the trust-model change above.
     return _svc.addContactFromCode(peer.contactCode,
-        alias: peer.displayName ?? '', requested: false);
+        alias: peer.displayName ?? '', requested: false, upgradeExisting: false);
   }
 
   Future<void> _finish(PendingInvite invite) async {

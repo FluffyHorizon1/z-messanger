@@ -150,6 +150,11 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String contactUpgraded(String name) {
+    return '$name was already in your contacts — their post-quantum commitment was taken from this code.';
+  }
+
+  @override
   String get addMyCode => 'MY CODE';
 
   @override
@@ -780,6 +785,14 @@ class AppLocalizationsEn extends AppLocalizations {
       'Covers both halves of both identities: Ed25519 and ML-DSA-65. The post-quantum key arrived over the encrypted session and matched the commitment in the code you scanned.';
 
   @override
+  String get ciBlurbWaiting =>
+      'Their post-quantum key has arrived, but they do not have yours yet, so the number below is still the Ed25519 one — the same number their device is showing. It becomes the post-quantum number on both devices at once, as soon as each of you holds the other\'s key.';
+
+  @override
+  String get ciBlurbCandidate =>
+      'The number below covers both halves of both identities, but this app has not been able to check their post-quantum key against anything — you added them from a code that predates it, or they sent it after you added them. Comparing this number IS the check: if it matches on their device, the key is theirs, and confirming it below records that.';
+
+  @override
   String get ciSwitchVerified => 'Verified';
 
   @override
@@ -796,6 +809,19 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get ciPillPq => 'Post-quantum';
+
+  @override
+  String get ciBlurbRefused =>
+      'A post-quantum key arrived for them and did NOT match the code you scanned, so it was refused. The number below is the Ed25519 one — the only number left that means anything here. Nothing will upgrade this identity until the refusal is resolved; read the warning above.';
+
+  @override
+  String get ciPillPqRefused => 'Key refused';
+
+  @override
+  String get ciPillPqWaiting => 'Waiting for them';
+
+  @override
+  String get ciPillPqUnconfirmed => 'Post-quantum, unconfirmed';
 
   @override
   String get ciNoticeVerified => 'Verified';

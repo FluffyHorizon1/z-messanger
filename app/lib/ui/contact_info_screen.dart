@@ -21,25 +21,31 @@ class ContactInfoScreen extends StatefulWidget {
 
 class _ContactInfoScreenState extends State<ContactInfoScreen> {
   String? _safety;
-  IdentityAssurance? _safetyFor;
+  PqDisplay? _safetyFor;
 
   @override
   void initState() {
     super.initState();
-    _load(context.read<ChatService>());
+    final svc = context.read<ChatService>();
+    // ADR 0021: opening this screen on a contact whose post-quantum key we do
+    // not hold asks for it, so the upgrade does not wait for their next
+    // message. Bounded like any re-send; nothing if it is already held.
+    svc.requestPqIdentity(widget.rid);
+    _load(svc);
   }
 
   /// The number is not fixed for the life of the screen: it moves the moment
-  /// a post-quantum key arrives and matches (§18.5). Recomputing when the
-  /// assurance changes is what stops this screen showing the old number while
-  /// the rest of the app has moved on — the exact confusion 13.3 exists to
-  /// avoid, on the one screen meant to resolve it.
+  /// a post-quantum key arrives and matches (§18.5), or — ADR 0021 — the
+  /// moment both sides hold each other's key. Recomputing when what the
+  /// number is made of changes is what stops this screen showing the old
+  /// number while the rest of the app has moved on — the exact confusion
+  /// 13.3 exists to avoid, on the one screen meant to resolve it.
   void _load(ChatService svc) {
-    final want = svc.contacts[widget.rid]?.assurance;
+    final want = svc.contacts[widget.rid]?.pqDisplay;
     if (want == null || want == _safetyFor) return;
     _safetyFor = want;
     svc.safetyNumberWith(widget.rid).then((s) {
-      if (mounted && svc.contacts[widget.rid]?.assurance == want) {
+      if (mounted && svc.contacts[widget.rid]?.pqDisplay == want) {
         setState(() => _safety = s);
       }
     });
@@ -139,7 +145,7 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                       Text(l.ciSafetyNumber,
                           style: const TextStyle(fontWeight: FontWeight.w700)),
                       const Spacer(),
-                      _AssurancePill(assurance: contact.assurance),
+                      _AssurancePill(display: contact.pqDisplay),
                     ],
                   ),
                   const SizedBox(height: 12),
@@ -168,7 +174,7 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    _assuranceBlurb(l, contact.assurance),
+                    _pqBlurb(l, contact),
                     style: TextStyle(
                         fontSize: 12,
                         color: context.z.textSecondary,
@@ -323,10 +329,20 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
   }
 }
 
-String _assuranceBlurb(AppLocalizations l, IdentityAssurance a) => switch (a) {
-      IdentityAssurance.classical => l.ciBlurbClassical,
-      IdentityAssurance.pendingPostQuantum => l.ciBlurbPending,
-      IdentityAssurance.hybrid => l.ciBlurbHybrid,
+/// What the number on screen actually covers, and why (ADR 0021).
+///
+/// Keyed on [PqDisplay] rather than [IdentityAssurance] because they answer
+/// different questions. Assurance is what the key may be TRUSTED for — a
+/// candidate confirms nothing until it is compared, so it never reads as
+/// hybrid. This is what the sixty digits are DERIVED from, and the user needs
+/// both: which number this is, and what confirming it would buy.
+String _pqBlurb(AppLocalizations l, Contact c) => switch (c.pqDisplay) {
+      PqDisplay.classical => l.ciBlurbClassical,
+      PqDisplay.pending => l.ciBlurbPending,
+      PqDisplay.waitingForThem => l.ciBlurbWaiting,
+      PqDisplay.unverified => l.ciBlurbCandidate,
+      PqDisplay.postQuantum => l.ciBlurbHybrid,
+      PqDisplay.mismatch => l.ciBlurbRefused,
     };
 
 String _switchLabel(AppLocalizations l, VerificationState s) => switch (s) {
@@ -336,27 +352,28 @@ String _switchLabel(AppLocalizations l, VerificationState s) => switch (s) {
       VerificationState.unverified => l.ciSwitchMarkVerified,
     };
 
-/// Which of the three states (§18.3) this identity is actually in. Shown
-/// rather than inferred, because the classical view of a v3 code works
-/// perfectly on its own — which makes it very easy to present an identity as
-/// post-quantum when all that has happened is a scan.
+/// Which state (§18.3, ADR 0021) this identity is actually in. Shown rather
+/// than inferred, because the classical view of a v3 code works perfectly on
+/// its own — which makes it very easy to present an identity as post-quantum
+/// when all that has happened is a scan.
+///
+/// The "unconfirmed" pill is deliberately NOT the green one: the number below
+/// it is post-quantum, but nothing has checked that the key it was derived
+/// from is theirs. Comparing it is what makes it green.
 class _AssurancePill extends StatelessWidget {
-  final IdentityAssurance assurance;
-  const _AssurancePill({required this.assurance});
+  final PqDisplay display;
+  const _AssurancePill({required this.display});
 
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    final (label, tone) = switch (assurance) {
-      IdentityAssurance.classical => (
-          l.ciPillClassical,
-          context.z.textSecondary
-        ),
-      IdentityAssurance.pendingPostQuantum => (
-          l.ciPillPqPending,
-          context.z.warn
-        ),
-      IdentityAssurance.hybrid => (l.ciPillPq, context.z.ok),
+    final (label, tone) = switch (display) {
+      PqDisplay.classical => (l.ciPillClassical, context.z.textSecondary),
+      PqDisplay.pending => (l.ciPillPqPending, context.z.warn),
+      PqDisplay.waitingForThem => (l.ciPillPqWaiting, context.z.textSecondary),
+      PqDisplay.unverified => (l.ciPillPqUnconfirmed, context.z.warn),
+      PqDisplay.postQuantum => (l.ciPillPq, context.z.ok),
+      PqDisplay.mismatch => (l.ciPillPqRefused, context.z.danger),
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),

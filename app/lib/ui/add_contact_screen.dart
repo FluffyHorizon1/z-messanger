@@ -61,11 +61,16 @@ class _AddContactScreenState extends State<AddContactScreen>
       _error = null;
     });
     try {
-      final contact = await context
-          .read<ChatService>()
-          .addContactFromCode(code, alias: _aliasCtrl.text);
+      final svc = context.read<ChatService>();
+      // ADR 0021: a contact's code scanned again upgrades the record it
+      // already has rather than adding one, so say which happened.
+      final before = svc.contacts.keys.toSet();
+      final contact = await svc.addContactFromCode(code, alias: _aliasCtrl.text);
       if (!mounted) return;
-      final added = AppLocalizations.of(context).contactAdded(contact.name);
+      final l = AppLocalizations.of(context);
+      final added = before.contains(contact.rid)
+          ? l.contactUpgraded(contact.name)
+          : l.contactAdded(contact.name);
       Navigator.pop(context);
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(added)));

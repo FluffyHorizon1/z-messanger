@@ -88,7 +88,7 @@ class Vault {
   /// 3 — 8.1c: `forwarded`, which needs a column of its own — a 1:1 text
   ///     row's sealed body is the bare message, with no envelope to put a
   ///     flag in, and inventing one would misparse ordinary text.
-  static const int schemaVersion = 12;
+  static const int schemaVersion = 13;
 
   // Message ids are already stored in the clear (they are the primary key),
   // so `reply_to` — a mid within the same chat — reveals nothing the row
@@ -247,6 +247,24 @@ class Vault {
           'ALTER TABLE contacts ADD COLUMN requested INTEGER NOT NULL DEFAULT 0');
       await db.execute(_createRequests);
       await db.execute(_createBlocked);
+    }
+    if (from < 13) {
+      // ADR 0021: the post-quantum half can be established in-session.
+      //   enc_pq_cand — an ML-DSA key that arrived for a contact we hold no
+      //     commitment for; sealed like enc_pq_pub; used for the safety NUMBER
+      //     only until the user confirms it by comparison.
+      //   pq_acked    — the contact said they hold OUR post-quantum key; a
+      //     candidate's number is shown only once they have, so the two
+      //     screens show one number.
+      //   pq_told     — we have told THEM we hold theirs (a `pqid` with `ack`,
+      //     or a `pqack`); until it is set, their next message earns one, so
+      //     a side that learned to keep candidates after the exchange ran
+      //     still gets told.
+      await db.execute('ALTER TABLE contacts ADD COLUMN enc_pq_cand TEXT');
+      await db.execute(
+          'ALTER TABLE contacts ADD COLUMN pq_acked INTEGER NOT NULL DEFAULT 0');
+      await db.execute(
+          'ALTER TABLE contacts ADD COLUMN pq_told INTEGER NOT NULL DEFAULT 0');
     }
   }
 
@@ -414,7 +432,10 @@ class Vault {
               acct_ed TEXT,
               dev_cert TEXT,
               added_by TEXT,
-              requested INTEGER NOT NULL DEFAULT 0
+              requested INTEGER NOT NULL DEFAULT 0,
+              enc_pq_cand TEXT,
+              pq_acked INTEGER NOT NULL DEFAULT 0,
+              pq_told INTEGER NOT NULL DEFAULT 0
             )''');
           await db.execute('''
             CREATE TABLE conversations(
