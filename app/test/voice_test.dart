@@ -99,6 +99,31 @@ void main() {
     }
   }
 
+  /// Wait for a freshly-added pair to have finished introducing themselves,
+  /// instead of sleeping a second and hoping. The second was covering the
+  /// contact requests crossing, the hello, and the post-quantum send
+  /// debounce; `pqSendPending` covers a send for its whole life (it did not
+  /// until 2026-09-27), so this is the same wait made observable.
+  Future<void> settled() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    while (true) {
+      var quiet = services.every((s) => !s.pqSendPending);
+      if (quiet) {
+        for (final s in services) {
+          if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+            quiet = false;
+            break;
+          }
+        }
+      }
+      if (quiet) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('the pair never settled');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+  }
+
   // The "recording": 2.5 s of synthetic 16 kHz mono PCM with a distinctive
   // pattern, wrapped exactly as the record button wraps it.
   Uint8List fakeRecordingPcm() =>
@@ -131,7 +156,7 @@ void main() {
         () => alice.transport.isConnected && bob.transport.isConnected);
     await alice.addContactFromCode(await bob.myContactCode());
     await bob.addContactFromCode(await alice.myContactCode());
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     final pcm = fakeRecordingPcm();
     final wav = wavFromPcm16(pcm);
@@ -161,7 +186,7 @@ void main() {
     final again = reloaded.lastWhere((m) => m.kind == 'file' && m.file != null);
     expect(again.file!.voice, isTrue, reason: 'voice flag lost in the vault');
     expect(again.file!.durSec, dur);
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 3);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('a group voice note reaches every member', () async {
     final ann = await makeClient('ann');
@@ -175,7 +200,7 @@ void main() {
       await a.addContactFromCode(await b.myContactCode());
       await b.addContactFromCode(await a.myContactCode());
     }
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     final gid = await ann.createGroup('Voices', [ben.myRid, cat.myRid]);
     await waitUntil(
@@ -193,7 +218,7 @@ void main() {
       final got = await awaitBytes(member, m.file!.fid);
       expect(got, equals(wav));
     }
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 3);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   group('wavFromPcm16 (no relay needed)', () {
     test('produces a canonical 44-byte header over the PCM', () {

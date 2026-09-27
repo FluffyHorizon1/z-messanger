@@ -123,14 +123,34 @@ void main() {
 
   int big(List<int> buckets) => buckets.where((k) => k == 16384).length;
 
-  void quick(ChatService s) =>
-      s.pqSendDebounce = const Duration(milliseconds: 100);
+  /// Shorten the post-quantum send debounce, because three of the four tests
+  /// below do arithmetic on it: a nudge waits 2x it (20x on the side that
+  /// opened the session) and any send quiets the next one for 10x, and the
+  /// rounds those tests carry envelopes in are sized against those multiples.
+  ///
+  /// It is a knob with two jobs, and the flake the `retry: 2` here used to
+  /// absorb came from the other one. The debounce is also what lets a
+  /// volunteer scheduled on a `hello` be cancelled by the answer to the
+  /// `pqid` that arrives right behind it — and at 100 ms it is competitive
+  /// with the work in between (an ML-DSA check against the commitment, a
+  /// vault seal, a sqlite write) on a loaded two-core box. Lose that race and
+  /// the side sends twice, which is exactly what the first test counts and
+  /// refuses. So the test that counts gets a debounce comfortably longer than
+  /// that work, and costs nothing for it: `settle` returns as soon as both
+  /// sides are quiet, so a longer debounce buys a few more polling rounds and
+  /// no wall-clock. The tests whose arithmetic needs the short one keep it.
+  void quick(ChatService s,
+          {Duration d = const Duration(milliseconds: 100)}) =>
+      s.pqSendDebounce = d;
+
+  /// Long enough that the answer always wins the cancellation race above.
+  const counting = Duration(milliseconds: 800);
 
   test('a mutual add sends one post-quantum identity each way, not two',
       () async {
     final (a, b) = await twoClients();
-    quick(a);
-    quick(b);
+    quick(a, d: counting);
+    quick(b, d: counting);
     final aToB = <int>[], bToA = <int>[];
     await a.addContactFromCode(await b.myContactCode());
     await b.addContactFromCode(await a.myContactCode());
@@ -146,7 +166,7 @@ void main() {
     // twice (a second 16 384-bucket envelope) before the first is acknowledged.
     // Its PQ siblings pq_rekey_test and pq_upgrade_test carry the same guard; a
     // real regression fails every attempt, not one run in a busy suite.
-  }, retry: 2);
+  });
 
   for (final reverse in [false, true]) {
     test(

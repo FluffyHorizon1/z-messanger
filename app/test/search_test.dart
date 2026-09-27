@@ -91,6 +91,38 @@ void main() {
     }
   }
 
+  /// Wait for a freshly-added pair (or group) to have finished introducing
+  /// themselves, instead of sleeping a second and hoping.
+  ///
+  /// What the second was covering: the contact requests crossing, the
+  /// designated initiator's hello, and the 500 ms post-quantum send debounce
+  /// — about two debounces' worth of work on a two-core box, which is why
+  /// every test that copied the sleep also copied a `retry:`. None of those
+  /// retries was ever added in response to a failure; each arrived in the
+  /// same commit as the test it sits on. `pqSendPending` now covers a send
+  /// for its whole life rather than only while it is scheduled, so this is
+  /// the same wait made observable: every service quiet, and nobody holding
+  /// an envelope they have not managed to hand over.
+  Future<void> settled() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    while (true) {
+      var quiet = services.every((s) => !s.pqSendPending);
+      if (quiet) {
+        for (final s in services) {
+          if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+            quiet = false;
+            break;
+          }
+        }
+      }
+      if (quiet) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('the pair never settled');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+  }
+
   test('search finds direct text, group text and attachment names', () async {
     final me = await makeClient('me');
     final alice = await makeClient('alice');
@@ -105,7 +137,7 @@ void main() {
       await other.addContactFromCode(await me.myContactCode());
     }
     final aliceRid = alice.myRid, bobRid = bob.myRid;
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     // Direct messages both ways.
     await me.sendText(aliceRid, 'the quarterly penguin report is ready');
@@ -145,7 +177,7 @@ void main() {
     expect((await me.searchMessages('PENGUIN')).length, hits.length);
     expect(await me.searchMessages('platypus'), isEmpty);
     expect(await me.searchMessages('   '), isEmpty);
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('search decrypts in memory only — stored cells stay sealed', () async {
     final me = await makeClient('sealed');
@@ -154,7 +186,7 @@ void main() {
         () => me.transport.isConnected && pal.transport.isConnected);
     await me.addContactFromCode(await pal.myContactCode());
     await pal.addContactFromCode(await me.myContactCode());
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     const secret = 'xyzzy-marker-42';
     await me.sendText(pal.myRid, 'a message containing $secret here');
@@ -167,7 +199,7 @@ void main() {
       expect((r['enc_body'] as String).contains(secret), isFalse,
           reason: 'plaintext leaked into a stored cell');
     }
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   group('jump to message', _jumpTests);
 }

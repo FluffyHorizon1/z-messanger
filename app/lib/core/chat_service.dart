@@ -1819,9 +1819,25 @@ class ChatService extends ChangeNotifier implements KtHost {
   @visibleForTesting
   Duration pqSendDebounce = const Duration(milliseconds: 500);
 
-  /// True while a send is scheduled for any contact. Test seam.
+  /// Sends that have begun and not finished. A `pqid` costs a vault read,
+  /// an ML-DSA key fetch, a ratchet step and a seal, so "in flight" is a
+  /// real interval, not an instant.
+  int _pqInFlight = 0;
+
+  /// True while a post-quantum identity send is scheduled OR in flight.
+  ///
+  /// Test seam, and the thing tests settle on — so it has to be true for the
+  /// whole life of a send. Until 2026-09-27 it read `_pqTimers.isNotEmpty`
+  /// alone, which is false in two places a send actually occupies: the
+  /// ANSWER path never registers a timer at all (it calls [_sendPqIdentity]
+  /// directly), and the timer path removes its entry before calling it. A
+  /// settle loop polling this could therefore return while an envelope was
+  /// still being sealed, and the test that followed would count one fewer
+  /// than the exchange really sends — which is the flake a `retry:` was
+  /// absorbing. A seam that lies is worse than no seam: it makes every test
+  /// built on it unfalsifiable in one direction.
   @visibleForTesting
-  bool get pqSendPending => _pqTimers.isNotEmpty;
+  bool get pqSendPending => _pqTimers.isNotEmpty || _pqInFlight > 0;
 
   /// `pqid` envelopes actually sent. Test seam.
   @visibleForTesting
@@ -1886,6 +1902,9 @@ class ChatService extends ChangeNotifier implements KtHost {
   }
 
   Future<void> _sendPqIdentity(Contact contact) async {
+    // Counted from before the first await to after the last, so
+    // [pqSendPending] covers the whole send and not just the wait for it.
+    _pqInFlight++;
     try {
       final mlPub = await pqAccountPublic();
       if (mlPub == null) return;
@@ -1905,6 +1924,8 @@ class ChatService extends ChangeNotifier implements KtHost {
       if (ack) await _markPqTold(contact);
     } catch (_) {
       // The next reason re-offers it; see _onInbound.
+    } finally {
+      _pqInFlight--;
     }
   }
 
@@ -7531,11 +7552,37 @@ class ChatService extends ChangeNotifier implements KtHost {
     notifyListeners();
   }
 
+  /// When the pending re-check is currently due, so a later request cannot
+  /// push an earlier one back.
+  DateTime? _devlistDueAt;
+
   void _scheduleDevlistRecheck() {
     if (_disposed) return;
-    _devlistTimer?.cancel();
+    final due =
+        DateTime.now().add(devlistGrace + const Duration(milliseconds: 200));
+    // A re-check already scheduled SOONER covers this one. Blindly
+    // cancelling and re-arming made the fuse a function of the last request
+    // rather than the first, so one contact's steady traffic could push out
+    // the re-check that another contact's echo was waiting for — the
+    // `unissued` alert, "somebody is showing my contacts a device list I
+    // never signed", delayed for as long as anyone kept talking. The
+    // per-entry grace is measured from when each was first seen, so the
+    // earliest deadline is the one that matters. `_offerPqIdentity` bounds
+    // its own re-sends the same way and for the same reason.
+    final pending = _devlistTimer;
+    if (pending != null &&
+        pending.isActive &&
+        _devlistDueAt != null &&
+        !_devlistDueAt!.isAfter(due)) {
+      return;
+    }
+    pending?.cancel();
+    _devlistDueAt = due;
     _devlistTimer = Timer(devlistGrace + const Duration(milliseconds: 200),
-        () => unawaited(_reevaluateDevlistPending()));
+        () {
+      _devlistDueAt = null;
+      unawaited(_reevaluateDevlistPending());
+    });
   }
 
   /// A contact told this device it was dropped from its own account's list.

@@ -232,6 +232,38 @@ void _wireTests() {
     }
   }
 
+  /// Wait for a freshly-added pair (or group) to have finished introducing
+  /// themselves, instead of sleeping a second and hoping.
+  ///
+  /// What the second was covering: the contact requests crossing, the
+  /// designated initiator's hello, and the 500 ms post-quantum send debounce
+  /// — about two debounces' worth of work on a two-core box, which is why
+  /// every test that copied the sleep also copied a `retry:`. None of those
+  /// retries was ever added in response to a failure; each arrived in the
+  /// same commit as the test it sits on. `pqSendPending` now covers a send
+  /// for its whole life rather than only while it is scheduled, so this is
+  /// the same wait made observable: every service quiet, and nobody holding
+  /// an envelope they have not managed to hand over.
+  Future<void> settled() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    while (true) {
+      var quiet = services.every((s) => !s.pqSendPending);
+      if (quiet) {
+        for (final s in services) {
+          if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+            quiet = false;
+            break;
+          }
+        }
+      }
+      if (quiet) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('the pair never settled');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+  }
+
   test('a reply travels as an id and is quoted from the receiver\'s own copy',
       () async {
     final alice = await makeClient('alice');
@@ -240,7 +272,7 @@ void _wireTests() {
         () => alice.transport.isConnected && bob.transport.isConnected);
     await alice.addContactFromCode(await bob.myContactCode());
     await bob.addContactFromCode(await alice.myContactCode());
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     // Alice asks; Bob replies to that exact message.
     await alice.sendText(bob.myRid, 'are we still on for the hike?');
@@ -285,7 +317,7 @@ void _wireTests() {
             .quote!
             .preview,
         contains('hike'));
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('a reply id from another chat or an unknown id degrades to no quote',
       () async {
@@ -300,7 +332,7 @@ void _wireTests() {
       await me.addContactFromCode(await c.myContactCode());
       await c.addContactFromCode(await me.myContactCode());
     }
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     // A message that exists, but in the OTHER conversation.
     await other.sendText(me.myRid, 'secret in another chat');
@@ -325,7 +357,7 @@ void _wireTests() {
     }
     // The other conversation is untouched.
     expect(me.messagesByChat[other.myRid]!.length, 1);
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('an oversized or malformed reply id is ignored', () async {
     final dir = await Directory.systemTemp.createTemp('z_reply_raw');
@@ -423,6 +455,38 @@ void _reactionTests() {
     }
   }
 
+  /// Wait for a freshly-added pair (or group) to have finished introducing
+  /// themselves, instead of sleeping a second and hoping.
+  ///
+  /// What the second was covering: the contact requests crossing, the
+  /// designated initiator's hello, and the 500 ms post-quantum send debounce
+  /// — about two debounces' worth of work on a two-core box, which is why
+  /// every test that copied the sleep also copied a `retry:`. None of those
+  /// retries was ever added in response to a failure; each arrived in the
+  /// same commit as the test it sits on. `pqSendPending` now covers a send
+  /// for its whole life rather than only while it is scheduled, so this is
+  /// the same wait made observable: every service quiet, and nobody holding
+  /// an envelope they have not managed to hand over.
+  Future<void> settled() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    while (true) {
+      var quiet = services.every((s) => !s.pqSendPending);
+      if (quiet) {
+        for (final s in services) {
+          if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+            quiet = false;
+            break;
+          }
+        }
+      }
+      if (quiet) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('the pair never settled');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+  }
+
   List<MessageReaction> reactionsOn(ChatService s, String rid, String mid) =>
       s.messagesByChat[rid]!.firstWhere((m) => m.mid == mid).reactions;
 
@@ -433,7 +497,7 @@ void _reactionTests() {
         () => ann.transport.isConnected && ben.transport.isConnected);
     await ann.addContactFromCode(await ben.myContactCode());
     await ben.addContactFromCode(await ann.myContactCode());
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     await ann.sendText(ben.myRid, 'shipping it today');
     await waitUntil(() => (ben.messagesByChat[ann.myRid] ?? [])
@@ -477,7 +541,7 @@ void _reactionTests() {
     final stored =
         await ann.vault.db.query('reactions', columns: ['enc_emoji']);
     expect(stored.single['enc_emoji'].toString().contains('❤'), isFalse);
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('two members react in a group; each is kept separately', () async {
     final host = await makeClient('host');
@@ -491,7 +555,7 @@ void _reactionTests() {
       await host.addContactFromCode(await c.myContactCode());
       await c.addContactFromCode(await host.myContactCode());
     }
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
     final gid = await host.createGroup('Crew', [m1.myRid, m2.myRid]);
     await waitUntil(
         () => m1.groups.containsKey(gid) && m2.groups.containsKey(gid));
@@ -515,7 +579,7 @@ void _reactionTests() {
     await m1.toggleReaction(gid, mid, '🎉');
     await waitUntil(() => reactionsOn(host, gid, mid).length == 1);
     expect(reactionsOn(host, gid, mid).single.senderRid, m2.myRid);
-  }, timeout: const Timeout(Duration(minutes: 3)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('a reaction to an unknown or cross-chat message is dropped', () async {
     final me = await makeClient('rme');
@@ -529,7 +593,7 @@ void _reactionTests() {
       await me.addContactFromCode(await c.myContactCode());
       await c.addContactFromCode(await me.myContactCode());
     }
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     await other.sendText(me.myRid, 'in the other chat');
     await waitUntil(() => (me.messagesByChat[other.myRid] ?? []).isNotEmpty);
@@ -552,7 +616,7 @@ void _reactionTests() {
     expect(await me.vault.db.query('reactions'), isEmpty);
     // The other conversation is untouched.
     expect(reactionsOn(me, other.myRid, elsewhere), isEmpty);
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('an oversized or control-laden emoji never reaches the vault', () {
     // Protocol level: the payload is rejected before any storage.
@@ -655,6 +719,38 @@ void _editDeleteTests() {
     }
   }
 
+  /// Wait for a freshly-added pair (or group) to have finished introducing
+  /// themselves, instead of sleeping a second and hoping.
+  ///
+  /// What the second was covering: the contact requests crossing, the
+  /// designated initiator's hello, and the 500 ms post-quantum send debounce
+  /// — about two debounces' worth of work on a two-core box, which is why
+  /// every test that copied the sleep also copied a `retry:`. None of those
+  /// retries was ever added in response to a failure; each arrived in the
+  /// same commit as the test it sits on. `pqSendPending` now covers a send
+  /// for its whole life rather than only while it is scheduled, so this is
+  /// the same wait made observable: every service quiet, and nobody holding
+  /// an envelope they have not managed to hand over.
+  Future<void> settled() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    while (true) {
+      var quiet = services.every((s) => !s.pqSendPending);
+      if (quiet) {
+        for (final s in services) {
+          if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+            quiet = false;
+            break;
+          }
+        }
+      }
+      if (quiet) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('the pair never settled');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+  }
+
   ChatMessage msgOf(ChatService s, String rid, String mid) =>
       s.messagesByChat[rid]!.firstWhere((m) => m.mid == mid);
 
@@ -665,7 +761,7 @@ void _editDeleteTests() {
         () => ed.transport.isConnected && flo.transport.isConnected);
     await ed.addContactFromCode(await flo.myContactCode());
     await flo.addContactFromCode(await ed.myContactCode());
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     await ed.sendText(flo.myRid, 'see you at 6');
     await ed.sendText(flo.myRid, 'bring the tickets');
@@ -695,7 +791,7 @@ void _editDeleteTests() {
         (ed.messagesByChat[flo.myRid] ?? []).any((m) => m.body == 'barrier'));
     expect(msgOf(ed, flo.myRid, first.mid).body, 'see you at 7');
     expect(msgOf(ed, flo.myRid, first.mid).editedMs, greaterThan(0));
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('delete for everyone tombstones on both sides and takes the blob',
       () async {
@@ -705,7 +801,7 @@ void _editDeleteTests() {
         () => gus.transport.isConnected && hal.transport.isConnected);
     await gus.addContactFromCode(await hal.myContactCode());
     await hal.addContactFromCode(await gus.myContactCode());
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     await gus.sendText(hal.myRid, 'oops wrong chat');
     await gus.sendFile(hal.myRid, 'private.pdf',
@@ -753,7 +849,7 @@ void _editDeleteTests() {
         (gus.messagesByChat[hal.myRid] ?? []).any((m) => m.body == 'barrier'));
     expect(msgOf(gus, hal.myRid, survivor).deleted, isFalse,
         reason: 'only the author may delete for everyone');
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('a group member cannot edit or delete a neighbour\'s message', () async {
     final owner = await makeClient('owner');
@@ -771,7 +867,7 @@ void _editDeleteTests() {
     // bystander directly — exactly the position a group member is in.
     await rogue.addContactFromCode(await bystander.myContactCode());
     await bystander.addContactFromCode(await rogue.myContactCode());
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     final gid =
         await owner.createGroup('Board', [rogue.myRid, bystander.myRid]);
@@ -813,7 +909,7 @@ void _editDeleteTests() {
         () => msgOf(bystander, gid, target).body.contains('Friday'));
     await owner.deleteForEveryone(gid, [target]);
     await waitUntil(() => msgOf(bystander, gid, target).deleted);
-  }, timeout: const Timeout(Duration(minutes: 3)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('forwarding sends a new message marked as forwarded', () async {
     final ida = await makeClient('ida');
@@ -827,7 +923,7 @@ void _editDeleteTests() {
       await ida.addContactFromCode(await c.myContactCode());
       await c.addContactFromCode(await ida.myContactCode());
     }
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled();
 
     await jon.sendText(ida.myRid, 'the venue changed to the old mill');
     await waitUntil(() => (ida.messagesByChat[jon.myRid] ?? []).isNotEmpty);
@@ -848,5 +944,5 @@ void _editDeleteTests() {
     expect(ida.messagesByChat[kim.myRid]!.single.forwarded, isTrue);
     // Nothing about Jon travels with it: the marker is a flag, not provenance.
     expect(atKim.senderName, isNull);
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }

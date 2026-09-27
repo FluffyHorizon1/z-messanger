@@ -203,6 +203,17 @@ void main() {
     }
 
     // Messages sent after the leave do not reach Bob.
+    //
+    // "Bob's count does not change" is NOT that claim, and asserting it is
+    // what the `retry: 2` here was absorbing. The app deliberately still
+    // serves a member who has merely left, for anything queued before the
+    // leave propagated — `_drainGroupFanout` says so in as many words: what
+    // was sent before a change reaches everyone it was sent to; what is sent
+    // after does not. So a row queued for Bob a moment earlier may land
+    // inside the window and lift his count, legitimately, and the test would
+    // fail on the app behaving as designed. Drain what is already owed
+    // first, then assert the thing that is actually promised.
+    await alice.waitForGroupFanout(gid);
     final bobCountBefore = groupTexts(bob, gid).length;
     await alice.sendGroupText(gid, 'post-leave');
     await waitUntil(
@@ -210,11 +221,13 @@ void main() {
             groupTexts(carol, gid).contains('post-leave') &&
             groupTexts(alice, gid).contains('post-leave'),
         what: 'post-leave reaches the remaining members');
-    await Future<void>.delayed(const Duration(milliseconds: 600));
+    await alice.waitForGroupFanout(gid);
+    expect(groupTexts(bob, gid), isNot(contains('post-leave')),
+        reason: 'what is sent AFTER the leave does not reach him');
     expect(groupTexts(bob, gid).length, bobCountBefore,
-        reason: 'Bob must receive nothing after leaving');
-    expect(groupTexts(bob, gid), isNot(contains('post-leave')));
-  }, timeout: const Timeout(Duration(minutes: 3)), retry: 2);
+        reason: 'and nothing else arrived for him either, now that what was '
+            'owed to him before the leave has been drained');
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   /// The assembled bytes of the attachment named [name] in [svc]'s copy of
   /// the group thread, or null if it never (completely) arrives.

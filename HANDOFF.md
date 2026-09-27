@@ -1,98 +1,102 @@
-# Handoff: fix/pq-number-upgrade
-Phase: a reported bug in published 3.7.0 — the safety number two people could never make agree
-Base: main @ `05ddc3e` (Release 3.9.1)   Built: 2026-09-25
-
-## What changed
-ADR 0021, `docs/adr/0021-pq-number-upgrade-in-session.md`. In one line: a
-post-quantum key that arrives with no commitment to check it against is now
-**kept as a candidate, for the safety number and nothing else**, both sides show
-the post-quantum number only once each holds the other's key and has said so,
-and **comparing that number is what establishes the key**.
-
-- `Contact` gains `pqCandidate` (sealed), `pqAcked`, `pqTold`, and a `PqDisplay`
-  enum — what the number on screen is derived from, which is a different
-  question from `IdentityAssurance`, what the key may be trusted for.
-- `_onPqIdentity` keeps an uncommitted key instead of dropping it; first key
-  wins; a refused contact is never given one.
-- New keyless inner kind **`pqack`** ("I hold your key") for when no `pqid` of
-  ours is going out to carry the same fact in its `ack`. 1 024-byte bucket, at
-  most once per contact, gated by a durable flag.
-- `setVerified` promotes a compared candidate to an established key.
-- `addContactFromCode` on an existing contact upgrades the record instead of
-  throwing; the CONNECT ceremony opts out (`upgradeExisting: false`) so its own
-  refusal rule is untouched.
-- Vault schema 13; all three fields travel in the backup archive.
-- Contact screen keyed on `PqDisplay`; new strings in en + es; the refused case
-  finally gets words of its own instead of borrowing "pending".
-- Version 3.9.1+178 → 3.9.2+179.
+# Handoff: fix/retire-test-retries
+Phase: continuous — the retries the 3.9.0 failure taught us to distrust
+Base: main @ `05ddc3e` (Release 3.9.1)   Built: 2026-09-27
 
 ## Why
-Reported against 3.7.0: *"when an account that just has a classical number tries
-to compare with a quantum number they don't match"*, and *"I can't see a way the
-person can upgrade to a quantum number."* §18.2 said an uncommitted key is
-discarded, and a commitment is one-sided — so the side that scanned a `zc3.`
-code showed the v2 number and the side that added them from a classical code (or
-by accepting a contact request, or from a pre-v3 record) showed v1, for ever.
-`addContactFromCode` threw for an existing rid, so re-scanning did nothing
-either. The only escape was deleting the contact and all its history.
+3.9.0's release build failed three attempts running on `contact_erasure_test`,
+and the `retry: 2` that had been on it since 3.7.7 — added with a comment
+blaming a busy build machine — turned out to be hiding a real erasure bug. That
+raised the obvious question about the other 31. This branch is the answer to
+it: every one was triaged against its test body and its originating commit.
 
-## Invariants touched
-- **A candidate is never an assurance.** Not `hybridKey`, not `assurance`
-  hybrid, never verifies a device list (§18.9), never mirrored to one's own
-  devices, never swapped for a later key. Checked by two independent reviews.
-- **Zero knowledge at the relay** — unchanged. One extra 1 024-bucket envelope
-  per contact per install, the bucket short chat already occupies.
-- **Metadata** — the nudge for a key we were never promised is bounded to once
-  per run per contact, deliberately tighter than the three a met commitment
-  gets, because a 16 384 envelope at a v1 peer that can never answer is pure
-  mark (R17).
-- **Wire** — additive only: one new kind, and `ack` widened in a direction an
-  older client cannot misread.
-- **13.3** — the tick still records WHICH number was compared.
+## What the triage found
+- **11 of the 32 were never a finding.** `replies_test` (9) and `search_test`
+  (2) have no comment at all, and `git log -S` shows each arrived in the *same
+  commit that introduced the test* — `d4922ca`, `7c4234e`, `05ce539` — none of
+  whose messages mentions a flake. They are boilerplate copied onto new
+  real-relay tests, and all 11 sit on one copied
+  `await Future.delayed(const Duration(seconds: 1))` after the mutual add.
+- **One test seam was lying.** `pqSendPending` read `_pqTimers.isNotEmpty`,
+  which is false in two places a send actually occupies: the ANSWER path never
+  registers a timer, and the timer path removes its entry before sending. A
+  settle loop polling it could return with an envelope still being sealed.
+- **One test contradicted the app's own contract.** `group_test`'s post-leave
+  case asserted a removed member's message count does not change, while
+  `_drainGroupFanout` deliberately still serves anything queued before the
+  leave propagated. The retry was absorbing the app behaving as designed.
+- **One flake was real and is now understood.** `pq_identity_exchange`'s
+  `quick()` shrank the send debounce to 100 ms, which is competitive on a
+  two-core box with the work the debounce exists to outlast (an ML-DSA check,
+  a vault seal, a sqlite write) — so the volunteer scheduled on the `hello`
+  sometimes fired before the answer to the `pqid` behind it could cancel it,
+  and the side sent twice. That is what the test counts and refuses.
+
+## What changed
+- `pqSendPending` now counts sends in flight as well as scheduled
+  (`_pqInFlight`), so it is true for a send's whole life.
+- `_scheduleDevlistRecheck` no longer pushes out a re-check that is already due
+  sooner. It blindly cancelled and re-armed one shared timer, so one contact's
+  steady traffic could delay the re-check another contact's echo was waiting
+  for — the `unissued` alert. (The common case was always covered by the inline
+  `_reevaluateDevlistPending` after each echo; this closes the quiet-echo case.)
+  `_offerPqIdentity` already bounds its re-sends this way.
+- `replies_test`, `search_test`, `voice_test`: the copied sleep replaced by a
+  `settled()` helper that waits on every service being quiet and every outbox
+  empty. **13 retries removed.**
+- `pq_identity_exchange_test`: the counting test gets a debounce comfortably
+  longer than the work it must outlast; the three tests whose nudge arithmetic
+  genuinely needs the short one keep it, and now say why. **1 retry removed.**
+- `group_test`: the post-leave case drains what is already owed, then asserts
+  the thing actually promised. **1 retry removed.**
+
+**32 → 17.** The 17 that remain all name a mechanism; they are listed below for
+the next branch rather than removed on a guess.
 
 ## How I verified
-- `app/`: `flutter test --concurrency=1` — see the report at the end of this
-  session for the exact run; `safety_number_mixed_test.dart` is 10 tests over a
-  real relay.
-- `protocol/`: `dart test` — 224 passed.
-- `server/`: `npm test` — 119 passed. `kt/`: `npm test` — 78 passed.
-- `kt/tools/verify_vectors.py` — 344 values. `protocol/tool/verify_mldsa.py` —
-  39 checks under dilithium-py.
-- Every guard in `tool/` plus `app/tool/contrast.py` — all pass.
-- **Three subagent reviews**, run in parallel with the build: a doc-vs-code
-  audit, an adversarial security review, and a final pre-delivery audit. They
-  found, and this branch fixes: a **P0 TOCTOU in `setVerified`** (the number and
-  the promotion decision were read either side of an await, so a peer's `ack`
-  landing in the gap turned a confirmation of the *classical* number into the
-  establishment of a post-quantum key nobody compared — now one snapshot, with
-  test 4b as the regression); an unbounded `pqack` when the durable write fails;
-  a re-scan mismatch that reported success to the user at the one moment the app
-  has hard evidence of a substituted key; the CONNECT contract being widened
-  silently; a test that proved nothing because it never checked the §18.9
-  signature had arrived; and two doc claims that were wrong about 3.7.x
-  behaviour.
+Each de-retried file run **three or four times in a row on an idle machine** —
+a single green run proves nothing about a retry you have just removed:
+- `replies_test` + `search_test`: 3/3 clean, 18 tests.
+- `pq_identity_exchange_test`: 4/4 clean, 4 tests.
+- `voice_test` + `group_test`: 3/3 clean, 5 tests.
+Plus the full app suite, `flutter analyze`, and the repository guards.
 
-## Not done / watch out
-- **The limit is real and is documented, not hidden.** Where a pre-0021 peer
-  already established our key, it shows the post-quantum number and we may show
-  the classical one; no change of ours reaches a build in the field. Test 3b
-  pins the rule rather than an outcome, because which way it falls depends on
-  send ordering. `docs/PROTOCOL.md` §18.5 carries a MUST NOT against the obvious
-  "fix" (withholding the number over an established key), which would break the
-  pair that works today.
-- A careless "verified" tick now installs a trust anchor rather than a label —
-  recorded in THREAT_MODEL R37, which is the row to read before signing this off.
-- Still untested: that a candidate is never mirrored to one's own devices
-  (verified by reading `_contactInner`, not by a test with a linked device).
-- `app/test/destructive_confirm_test.dart` 40 fails on this machine under
-  full-suite load and passes in isolation; it failed the same way on unmodified
-  `main` here and passed in CI. Untouched by this branch.
-- `app/test/devlist_transparency_test.dart` "split view (a)" is flaky at about
-  one first attempt in five on this machine (measured 4/1 on both this branch
-  and `main` in an earlier session) and recovers on its own retry. Untouched.
+An intermediate step is worth recording because it disproved something: I first
+neutered `quick()` entirely, on the theory that the production debounce would
+be safer. That made `asking and answering are both bounded` fail **3 out of 3**
+— its rounds are sized against multiples of the debounce, so the knob is
+load-bearing arithmetic there, not a speed-up. The narrower fix is what shipped.
+
+## Not done — the remaining 17, triaged
+For the next branch. Each already names a mechanism in its comment, or was
+classified by reading:
+- `devlist_transparency` (3) and `devlist_distribution` (3): several waits
+  watch `transport.isConnected`, the *identified* link, then depend on
+  consequences of the *anonymous* one; and `versionReaches` is capped at 15 s
+  while the surrounding `waitUntil` has 60. Fix the signal, then the retries go.
+  "split view (a)" is measurably ~1-in-5 on this hardware, on `main` too.
+- `key_transparency` (3): the file's `heldVersion()` helper polls with an
+  unawaited read and returns the *previous* iteration's value, so it degrades
+  exactly when the box is loaded. There is a `checkUntil` helper in the same
+  file that does it properly.
+- `pq_rekey` (1), `durability` (1): honestly environmental — a real relay and
+  ~10 round trips or ~10 vault reopens. Worth converting to a larger inner
+  deadline rather than a retry, but that is a judgement call, not a bug.
+- `pq_upgrade` (2), `history_sync` (1), `backup` (1), `attachment_sync` (1),
+  `group` (1): unsynchronised negative assertions and snapshot reads. Each is a
+  small deterministic fix of the same family as this branch.
+
+Two things the triage raised that I checked and **did not** act on, because the
+code already handles them: `flushOutbox` gating on the identified link (the
+transport's `_maybeAnnounceUp` only announces when both links are up, and
+`_handleSenderClosed` resets it, so the outbox does flush on reconnect); and
+the device-list alert being suppressible by a chatty contact (line 7031
+evaluates inline after each echo, preserving `seen`). Both were plausible and
+specific and both were wrong; I mention them so nobody re-derives them.
 
 ## Suggested pusher actions
-- changelog: n/a (this repo logs releases in the release commit message)
-- version bump: done (3.9.2+179); release commit is in this branch
-- release: yes — tag `v3.9.2` once CI is green
-- redeploy relay: no (no server change)
+- changelog: n/a; version bump: **no** (tests and two small app changes, no
+  user-visible behaviour); release: no; redeploy relay: no
+- The two `app/lib` changes are the reviewable part: `_pqInFlight` and the
+  `_devlistTimer` deadline. Both are small and both have tests behind them only
+  indirectly — worth a second pair of eyes on whether the devlist one deserves
+  a test of its own.
