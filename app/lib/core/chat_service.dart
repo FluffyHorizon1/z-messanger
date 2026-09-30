@@ -1835,9 +1835,13 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// still being sealed, and the test that followed would count one fewer
   /// than the exchange really sends — which is the flake a `retry:` was
   /// absorbing. A seam that lies is worse than no seam: it makes every test
-  /// built on it unfalsifiable in one direction.
+  /// built on it unfalsifiable in one direction. A `pqack` (ADR 0021) counts
+  /// too: it is part of the same exchange, and a test settling on this means
+  /// "the two of them have finished introducing their keys", not "no `pqid`
+  /// is in the air".
   @visibleForTesting
-  bool get pqSendPending => _pqTimers.isNotEmpty || _pqInFlight > 0;
+  bool get pqSendPending =>
+      _pqTimers.isNotEmpty || _pqInFlight > 0 || _pqAckInFlight.isNotEmpty;
 
   /// `pqid` envelopes actually sent. Test seam.
   @visibleForTesting

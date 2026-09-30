@@ -168,8 +168,24 @@ void main() {
           if (m.kind == 'text') m.body
       ];
 
+  /// Both links, not just one.
+  ///
+  /// `transport.isConnected` is the IDENTIFIED link; a sealed envelope only
+  /// ever goes out on the ANONYMOUS one, and `onConnected` — which is what
+  /// flushes the outbox and what re-asserts a root's device list to its own
+  /// devices — fires only when both are up. Waiting on `isConnected` alone
+  /// and then depending on either of those is waiting for the wrong thing,
+  /// and on a loaded box the two links can come up far enough apart to
+  /// matter. That is a large part of what the `retry:` on these tests was
+  /// paying for.
+  bool linked(ChatService s) =>
+      s.transport.isConnected && s.transport.isSenderConnected;
+
   Future<bool> versionReaches(Future<int> Function() read, int want) async {
-    final deadline = DateTime.now().add(const Duration(seconds: 15));
+    // Was 15 s while the waits around it had 25 or 60, so the fixture
+    // this helper guards timed out first and reported as a reasoned
+    // `expect` rather than as the timeout it was.
+    final deadline = DateTime.now().add(const Duration(seconds: 45));
     while (DateTime.now().isBefore(deadline)) {
       if (await read() >= want) return true;
       await Future<void>.delayed(const Duration(milliseconds: 40));
@@ -204,10 +220,7 @@ void main() {
 
     final carol = await makePrimary('carol', await ZIdentity.generate());
 
-    await waitUntil(() =>
-        phone.transport.isConnected &&
-        laptop.transport.isConnected &&
-        carol.transport.isConnected);
+    await waitUntil(() => linked(phone) && linked(laptop) && linked(carol));
 
     final accountRid = phone.myRid;
     await carol.addContactFromCode(await phone.myContactCode());
@@ -250,7 +263,7 @@ void main() {
     // view: rule 8 self-sync deliberately skipped).
     final rogue =
         await makeRogue(s.phoneId, s.account, [s.laptopCert, rogueCert], 3);
-    await waitUntil(() => rogue.transport.isConnected);
+    await waitUntil(() => linked(rogue));
     await rogue.addContactFromCode(await s.carol.myContactCode());
     await rogue.broadcastMyDeviceList(alsoOwnDevices: false);
     expect(
@@ -274,7 +287,7 @@ void main() {
     // The honest phone returns. Three independent detections follow:
     await rogue.transport.stop();
     s.phone.transport.start();
-    await waitUntil(() => s.phone.transport.isConnected);
+    await waitUntil(() => linked(s.phone));
     // 1. On reconnect the phone re-asserts its honest v2 list to its own
     //    devices; the laptop holds v3 from "the root" — an honest root never
     //    regresses, so the laptop flags the newer list as signed by someone else.
@@ -313,6 +326,14 @@ void main() {
     // 3. Carol's receipt back to the phone echoes v3 — a list the root never
     //    issued and cannot explain: after the grace period the root alerts.
     await waitUntil(() => s.phone.ownAccountAlert != null);
+    // retry: KEPT, and now for a reason rather than a shrug. Waiting on
+    // both links (`linked`) and giving the version polls the same budget as
+    // the waits around them took this file from failing often to failing
+    // about one first attempt in three on a two-core box — better, and not
+    // good enough to take the retry off. What still times out has not been
+    // identified; the honest state is "improved, cause not yet found", and
+    // removing the retry on the strength of two green runs is exactly the
+    // move that hid the erasure bug for two releases.
   }, timeout: const Timeout(Duration(minutes: 4)), retry: 1);
 
   test('exclusion (b): a rogue list that drops the honest device is caught',
@@ -327,7 +348,7 @@ void main() {
     await s.phone.transport.stop();
     // Rogue publishes v3={phone,rogue} — the honest laptop is removed.
     final rogue = await makeRogue(s.phoneId, s.account, [rogueCert], 3);
-    await waitUntil(() => rogue.transport.isConnected);
+    await waitUntil(() => linked(rogue));
     await rogue.addContactFromCode(await s.carol.myContactCode());
     await rogue.broadcastMyDeviceList();
     expect(
@@ -345,10 +366,18 @@ void main() {
     // And the contact still catches the contradiction when device #1 returns.
     await rogue.transport.stop();
     s.phone.transport.start();
-    await waitUntil(() => s.phone.transport.isConnected);
+    await waitUntil(() => linked(s.phone));
     await s.phone.sendText(s.carol.myRid, 'still me');
     await waitUntil(() => s.carol.contactDevlistAlerts[s.accountRid] != null);
     expect(s.carol.contactDevlistAlerts[s.accountRid], isNotNull);
+    // retry: KEPT, and now for a reason rather than a shrug. Waiting on
+    // both links (`linked`) and giving the version polls the same budget as
+    // the waits around them took this file from failing often to failing
+    // about one first attempt in three on a two-core box — better, and not
+    // good enough to take the retry off. What still times out has not been
+    // identified; the honest state is "improved, cause not yet found", and
+    // removing the retry on the strength of two green runs is exactly the
+    // move that hid the erasure bug for two releases.
   }, timeout: const Timeout(Duration(minutes: 4)), retry: 1);
 
   test('control: an honest device added and distributed to all raises nothing',
@@ -382,5 +411,13 @@ void main() {
     expect(s.phone.ownAccountAlert, isNull);
     expect(s.carol.contactDevlistAlerts[s.accountRid], isNull,
         reason: 'false contact alarm on an honest update');
+    // retry: KEPT, and now for a reason rather than a shrug. Waiting on
+    // both links (`linked`) and giving the version polls the same budget as
+    // the waits around them took this file from failing often to failing
+    // about one first attempt in three on a two-core box — better, and not
+    // good enough to take the retry off. What still times out has not been
+    // identified; the honest state is "improved, cause not yet found", and
+    // removing the retry on the strength of two green runs is exactly the
+    // move that hid the erasure bug for two releases.
   }, timeout: const Timeout(Duration(minutes: 4)), retry: 1);
 }

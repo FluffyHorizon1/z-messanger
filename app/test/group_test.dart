@@ -222,6 +222,22 @@ void main() {
             groupTexts(alice, gid).contains('post-leave'),
         what: 'post-leave reaches the remaining members');
     await alice.waitForGroupFanout(gid);
+    // `waitForGroupFanout` drains ALICE's queue — it says the envelopes have
+    // been built and handed on, not that any of them has arrived. Wait for
+    // her outbox too, so they have actually left, and then give the negative
+    // the margin every negative needs: "Bob has not got it" can only ever be
+    // "Bob has not got it yet", so the question is whether the bound is
+    // anchored to something real. It is now — everything observable on the
+    // sending side is finished before the clock starts, where the 600 ms this
+    // replaced started at the send and was the whole margin by itself.
+    final drained = DateTime.now().add(const Duration(seconds: 25));
+    while ((await alice.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+      if (DateTime.now().isAfter(drained)) {
+        throw TimeoutException("alice's outbox never drained");
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 600));
     expect(groupTexts(bob, gid), isNot(contains('post-leave')),
         reason: 'what is sent AFTER the leave does not reach him');
     expect(groupTexts(bob, gid).length, bobCountBefore,

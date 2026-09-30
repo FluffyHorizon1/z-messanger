@@ -103,19 +103,42 @@ void main() {
   /// for its whole life rather than only while it is scheduled, so this is
   /// the same wait made observable: every service quiet, and nobody holding
   /// an envelope they have not managed to hand over.
-  Future<void> settled() async {
+  Future<void> settled(List<ChatService> pair) async {
     final deadline = DateTime.now().add(const Duration(seconds: 25));
     while (true) {
-      var quiet = services.every((s) => !s.pqSendPending);
-      if (quiet) {
-        for (final s in services) {
+      // A POSITIVE signal first. Quiescence alone is not enough and the
+      // difference is not academic: between both sides handing their contact
+      // requests to the relay and either of them processing one, every outbox
+      // is empty and no timer exists, so a purely negative test would return
+      // having waited for none of the things the second it replaced was
+      // covering. Each side holding the other's post-quantum key — however it
+      // got there, established or candidate (ADR 0021) — means the requests
+      // crossed, the hello landed, a session exists and the exchange ran.
+      var done = true;
+      for (final s in pair) {
+        for (final o in pair) {
+          if (identical(s, o)) continue;
+          // Only the pairs that actually added each other: a three-service
+          // fixture where two members share a host but never meet must not
+          // wait for a key those two will never exchange.
+          final c = s.contacts[o.myRid];
+          if (c == null) continue;
+          if (c.pqPub == null && c.pqCandidate == null) done = false;
+        }
+      }
+      // THEN quiescence, and in the right order: a send moves timer →
+      // in-flight → outbox row, so the outbox is read last and the flag is
+      // re-read after it. Sampling the flag first and never again let a send
+      // scheduled during the reads slip through.
+      if (done) {
+        for (final s in pair) {
           if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty) {
-            quiet = false;
+            done = false;
             break;
           }
         }
       }
-      if (quiet) return;
+      if (done && pair.every((s) => !s.pqSendPending)) return;
       if (DateTime.now().isAfter(deadline)) {
         throw TimeoutException('the pair never settled');
       }
@@ -137,7 +160,7 @@ void main() {
       await other.addContactFromCode(await me.myContactCode());
     }
     final aliceRid = alice.myRid, bobRid = bob.myRid;
-    await settled();
+    await settled([me, alice, bob]);
 
     // Direct messages both ways.
     await me.sendText(aliceRid, 'the quarterly penguin report is ready');
@@ -186,7 +209,7 @@ void main() {
         () => me.transport.isConnected && pal.transport.isConnected);
     await me.addContactFromCode(await pal.myContactCode());
     await pal.addContactFromCode(await me.myContactCode());
-    await settled();
+    await settled([me, pal]);
 
     const secret = 'xyzzy-marker-42';
     await me.sendText(pal.myRid, 'a message containing $secret here');

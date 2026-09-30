@@ -231,12 +231,25 @@ void main() {
     }
   }
 
+  /// Wait until [svc] holds [rid]'s device list at version [v] or better.
+  ///
+  /// Awaited, one read per poll. It used to fire the read UNAWAITED inside a
+  /// synchronous predicate and test the value the *previous* iteration had
+  /// set, which made it lag by at least one poll always, and by much more
+  /// exactly when it mattered: every 30 ms it queued another read onto the
+  /// serialised sqlite connection, so on a loaded box they arrived faster
+  /// than they drained and the value it tested fell further and further
+  /// behind the truth. A helper that gets less accurate the busier the
+  /// machine is will be blamed on the machine — which is what the `retry:`
+  /// on the three tests using it said.
   Future<void> heldVersion(ChatService svc, String rid, int v) async {
-    var got = 0;
-    await waitUntil(() {
-      unawaited(svc.heldContactListVersion(rid).then((x) => got = x));
-      return got >= v;
-    }, what: 'held list reaches v$v');
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    while (await svc.heldContactListVersion(rid) < v) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('held list never reached v$v');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
   }
 
   Future<Map<String, Object?>> lookup(int port, Uint8List acctPub) async {
@@ -321,9 +334,13 @@ void main() {
     // A real-relay+log integration test: the grace-hold assertion is timing
     // bound and flaked once on a loaded CI runner, while passing alone (8/8)
     // and in the serialised suite. ADR 0010 does not touch this code path.
-    // `retry:` matches this file's sibling tests and the wider suite — the
-    // load-flake case, not the masking-a-behaviour case guarded elsewhere.
-  }, retry: 2);
+    //
+    // The `retry: 2` that used to sit here was blamed on a loaded runner. The
+    // loaded runner was real and the diagnosis was not: `heldVersion` read the
+    // held list UNAWAITED and tested the previous poll's value, so it lagged
+    // further the busier the box got (see its doc-comment). Awaited, this
+    // needs no retry.
+  });
 
   test('re-sending the same list does not release a hold, and does not buy grace',
       () async {
@@ -407,9 +424,11 @@ void main() {
     // where the shared relay carries every earlier test's traffic. It was the
     // last grace-hold case here without the `retry:` its siblings (this file's
     // "unconfirmed…held" and the loopback test) already carry; neutralising the
-    // ADR 0011 add traffic did not change its flake rate, so this completes the
-    // coverage rather than papering over that feature.
-  }, retry: 2);
+    // ADR 0011 add traffic did not change its flake rate — which was the clue,
+    // and was read the wrong way round. The flake was not the add traffic and
+    // not the runner: `heldVersion` tested a value one poll stale and growing
+    // staler under load. Awaited, this needs no retry.
+  });
 
   test('a list the log holds and the contact never received is installed from the log (11.5)', () async {
     final (alice, ben) = await pair('alice3', 'ben3');
@@ -530,9 +549,10 @@ void main() {
     await alice.kt.check();
     expect(alice.kt.statusOf(ben.myRid)!.logVersion, 3);
     expect(alice.kt.sendsHeld(ben.myRid), isFalse, reason: 'the same v3 conflict, still acknowledged');
-    // The longest round trip in the file, and the one observed to lose the
-    // race with a loaded runner.
-  }, retry: 2);
+    // The longest round trip in the file, and so the one that showed the
+    // `heldVersion` staleness first — it polls that helper the most times, and
+    // the helper fell further behind on every one. Awaited, it needs no retry.
+  });
 
   test('a head that does not extend the accepted one is a log fault; resetting the history recovers', () async {
     // A log of its own for this pair, so the sizes are known exactly.
