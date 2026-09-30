@@ -241,6 +241,31 @@ jobs:
           else
             echo "No ANDROID_KEYSTORE_BASE64 secret — building debug-signed."
           fi
+      # The Android Gradle Plugin's default CMake, 3.22.1, is not on the
+      # ubuntu-24.04 image (it ships 3.31.5 and 4.1.2), so AGP downloaded it
+      # from Google inside every Android build — silently, for a month — until
+      # one download was not a zip and the 3.9.4 reproducible slot (c) died
+      # four minutes into Gradle. android/build.gradle.kts now pins a version
+      # the image carries; this step proves the pin and the image still agree
+      # BEFORE Gradle starts, so an image that drops it fails here, in one
+      # line that says what to change, not inside a Java stack trace.
+      - name: The pinned CMake is on this runner (nothing is fetched inside the build)
+        working-directory: z/app
+        run: |
+          v=$(sed -n 's/^val pinnedCmakeVersion = "\([0-9.]*\)"$/\1/p' android/build.gradle.kts)
+          if [ -z "$v" ]; then
+            echo "could not read pinnedCmakeVersion from android/build.gradle.kts" >&2
+            exit 1
+          fi
+          cmake="$ANDROID_HOME/cmake/$v/bin/cmake"
+          if [ ! -x "$cmake" ]; then
+            echo "CMake $v is not in this runner image's Android SDK; it has:" >&2
+            ls "$ANDROID_HOME/cmake" >&2 || true
+            echo "Pick one the image ships, in android/build.gradle.kts and" >&2
+            echo "docs/REPRODUCIBLE_BUILDS.md together (see the comment on the pin)." >&2
+            exit 1
+          fi
+          "$cmake" --version | head -1
       - working-directory: z/app
         run: |
           flutter pub get
@@ -457,6 +482,31 @@ jobs:
           # download fails the job before a line of code has run. That is
           # what exit 35 (curl, SSL connect) was.
           cache: true
+      # The Android Gradle Plugin's default CMake, 3.22.1, is not on the
+      # ubuntu-24.04 image (it ships 3.31.5 and 4.1.2), so AGP downloaded it
+      # from Google inside every Android build — silently, for a month — until
+      # one download was not a zip and the 3.9.4 reproducible slot (c) died
+      # four minutes into Gradle. android/build.gradle.kts now pins a version
+      # the image carries; this step proves the pin and the image still agree
+      # BEFORE Gradle starts, so an image that drops it fails here, in one
+      # line that says what to change, not inside a Java stack trace.
+      - name: The pinned CMake is on this runner (nothing is fetched inside the build)
+        working-directory: ${{ matrix.dir }}/app
+        run: |
+          v=$(sed -n 's/^val pinnedCmakeVersion = "\([0-9.]*\)"$/\1/p' android/build.gradle.kts)
+          if [ -z "$v" ]; then
+            echo "could not read pinnedCmakeVersion from android/build.gradle.kts" >&2
+            exit 1
+          fi
+          cmake="$ANDROID_HOME/cmake/$v/bin/cmake"
+          if [ ! -x "$cmake" ]; then
+            echo "CMake $v is not in this runner image's Android SDK; it has:" >&2
+            ls "$ANDROID_HOME/cmake" >&2 || true
+            echo "Pick one the image ships, in android/build.gradle.kts and" >&2
+            echo "docs/REPRODUCIBLE_BUILDS.md together (see the comment on the pin)." >&2
+            exit 1
+          fi
+          "$cmake" --version | head -1
       - name: Build release APK
         working-directory: ${{ matrix.dir }}/app
         env:

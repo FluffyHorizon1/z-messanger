@@ -11,7 +11,7 @@ are the same thing by hand.
 |------|------------------------|
 | Flutter | 3.44.7 stable (Dart 3.9+) |
 | Node.js | 20+ (relay & protocol integration test) |
-| Android | JDK 17, Android SDK (compileSdk 35), the Gradle version pinned in `app/android/gradle/wrapper/gradle-wrapper.properties` (Android Gradle Plugin in `app/android/settings.gradle.kts`) |
+| Android | JDK 17, Android SDK (compileSdk 36, NDK 28.2.13676358, **CMake 3.31.5** — `sdkmanager --install "cmake;3.31.5"`; the build pins it in `app/android/build.gradle.kts` and fetches no toolchain of its own), the Gradle version pinned in `app/android/gradle/wrapper/gradle-wrapper.properties` (Android Gradle Plugin in `app/android/settings.gradle.kts`) |
 | Linux | clang, cmake, ninja, `libgtk-3-dev`, `libsecret-1-dev`, `liblzma-dev` |
 | Windows | Visual Studio 2022 with “Desktop development with C++” |
 | macOS | Xcode 15+ |

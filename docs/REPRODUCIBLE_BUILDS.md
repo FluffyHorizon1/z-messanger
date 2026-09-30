@@ -166,9 +166,11 @@ measured with:
 | Engine | `69c8c61792` / `7076f47b1d1a3a0edfd8837b17dc15be6abab661` |
 | Dart | 3.12.2 |
 | Gradle | 9.1.0 |
-| JDK | OpenJDK 21 |
+| JDK | Temurin 17 — what every CI job that builds Android pins (`setup-java`, `java-version: '17'`) and what `BUILD.md` asks for. This row used to say OpenJDK 21, the machine the first local measurement was made on; the release is not built with it |
 | Android compileSdk | 36 |
 | Android build-tools | 35.0.0 |
+| Android NDK | 28.2.13676358 — Flutter 3.44.7's `flutter.ndkVersion`, which the app and every plugin inherit; on the runner image already, so it is not downloaded |
+| Android SDK CMake | **3.31.5**, pinned in `app/android/build.gradle.kts` (`pinnedCmakeVersion`) for every module that has not chosen one, and checked to be on the runner by a named CI step before Gradle starts. Install it with `sdkmanager --install "cmake;3.31.5"`; see [The CMake the recipe never mentioned](#the-cmake-the-recipe-never-mentioned-2026-09-30) |
 
 14.2 should pin these in a container image and build from it, so a verifier
 does not have to reconstruct them by hand.
@@ -428,6 +430,57 @@ publishing: yes"* or *"NO — … see the run log"*, with the per-entry
 difference in the log. Reported rather than enforced until it has been seen
 to agree on a real tag; a release note that says "reproducible" and was never
 checked is the overclaim this document exists to prevent.
+
+### The CMake the recipe never mentioned (2026-09-30)
+
+Two Gradle modules in the Android build run CMake. One is the app itself, and
+that build is empty: the Flutter tool points the app at a CMakeLists.txt with
+nothing in it, purely so that the Android Gradle Plugin believes the project
+needs the NDK and fetches it (`forceNdkDownload` in `flutter_tools`). The
+other is `jni`, pulled in by `path_provider_android`, and that one is real:
+it produces `libdartjni.so`, which ships in every APK and is one of the two
+libraries that embed the build path. Neither module names a CMake version, so
+both took AGP's default, 3.22.1.
+
+The `ubuntu-24.04` runner image has not carried 3.22.1 since at least its
+`20260907.300` build — it ships 3.31.5 and 4.1.2 — and AGP's answer to a
+missing default is to download it from Google's repository in the middle of
+the build. It did that, silently, on every Android job for a month. On
+2026-09-30 one of those downloads came back as something that was not a zip
+(`ZipException: Archive is not a ZIP archive`), and the 3.9.4 release run's
+reproducible slot (c) failed four minutes into Gradle on
+`:app:configureCMakeRelease[arm64-v8a]`. The build it failed in was the empty
+one; had it got past it, `jni` would have built with the same downloaded
+copy.
+
+Two things were wrong, and the failure only exposed the smaller one. The
+smaller: a build step that depends on a network fetch nobody asked for is a
+build step that fails when the fetch does. The larger: **the toolchain table
+above did not list CMake at all, so a verifier following it had no way to
+know which CMake the release was built with** — they got whatever their own
+AGP defaulted to, and matched only because that default happened to be the
+same 3.22.1. A recipe that is right by coincidence is not a recipe.
+
+What changed: `app/android/build.gradle.kts` pins `3.31.5` — a version the
+image already carries — for every Android module that has not chosen its own,
+in the same `afterEvaluate` pass that already forces `compileSdk`; both
+Android-building CI jobs check that the pinned version exists in the runner's
+SDK **before** `flutter build` runs, reading the pin out of the Gradle file so
+the two cannot drift, and fail in one line naming what to change if an image
+update drops it; and the table above gained the row. 4.1.2 is also on the image
+but was not chosen: CMake 4 drops compatibility with `cmake_minimum_required`
+below 3.5, and `jni`'s CMakeLists.txt declares 3.10 for reasons its comment
+explains.
+
+What it means for a verifier: releases from this change on are built with
+CMake 3.31.5, and a rebuild wants the same (`sdkmanager --install
+"cmake;3.31.5"`). Releases before it were built with 3.22.1, downloaded at
+build time; to reproduce one of those, install `cmake;3.22.1` and remove the
+pin, or let AGP fetch it as it did then. Whether 3.22.1 and 3.31.5 produce the
+same `libdartjni.so` bytes has not been measured and is not claimed — the
+NDK's toolchain file sets the compiler flags and CMake versions rarely change
+generated output, but "rarely" is not a measurement, so the two are treated as
+different toolchains and each release stands with the one that built it.
 
 ## What has NOT been established
 
