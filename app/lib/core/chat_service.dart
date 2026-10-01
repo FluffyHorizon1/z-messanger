@@ -6723,7 +6723,27 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// Returns whether a persisted install actually happened — a refusal here
   /// must not look like an acceptance to the caller, because the caller tells
   /// the transparency log a new list arrived and that resets a hold.
+  ///
+  /// One contact's installs run one at a time. Each is a read of what is held
+  /// — the version, the signature floor — then checks, then writes, and two
+  /// for the same account used to be free to interleave: the in-band path
+  /// installs after the ratchet lock is released, and the log check installs
+  /// on its own clock. A re-sent broadcast still in flight when a newer list
+  /// arrived could read the old version, pass its staleness check and write
+  /// last, so the held version went backwards and the newer list was lost —
+  /// and the floor, the same read-check-write, could be stepped over the same
+  /// way. The lock is not the ratchet's (a send holds that while it steps and
+  /// writes, and an install has no reason to wait on one or be waited on by
+  /// one) but its own key in the same table.
   Future<bool> _installContactDeviceList(Contact contact, SignedDeviceList list,
+          {required bool persist, Map<String, String>? kv}) =>
+      _withLock(
+          'devlist:${contact.rid}',
+          () => _installContactDeviceListLocked(contact, list,
+              persist: persist, kv: kv));
+
+  Future<bool> _installContactDeviceListLocked(
+      Contact contact, SignedDeviceList list,
       {required bool persist, Map<String, String>? kv}) async {
     final rid = contact.rid;
     if (persist) {
