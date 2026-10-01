@@ -95,6 +95,18 @@ void main() {
           if (m.kind == 'text') m.body
       ];
 
+  /// Envelopes the relay holds that their recipient has not acknowledged.
+  /// The RAM store keeps an envelope until it is acknowledged, delivered or
+  /// not, so zero means everything sent so far has been taken off the relay
+  /// — and handled, since a client acknowledges after handling.
+  Future<int> relayUnacked() async {
+    final res = await (await HttpClient()
+            .getUrl(Uri.parse('http://127.0.0.1:$port/health')))
+        .close();
+    final body = await res.transform(utf8.decoder).join();
+    return ((jsonDecode(body) as Map)['queuedEnvelopes'] as num).toInt();
+  }
+
   test('a fresh pair becomes post-quantum during its first exchange', () async {
     final alice = await makeClient('alice');
     final bob = await makeClient('bob');
@@ -109,9 +121,31 @@ void main() {
     final offerer = identical(initiator, alice) ? bob : alice;
     final initiatorRid = identical(initiator, alice) ? aliceRid : bobRid;
     final offererRid = identical(initiator, alice) ? bobRid : aliceRid;
+    // "The offerer needs a ciphertext first" is a claim about one instant:
+    // the initiator holds the secret, and the ciphertext that would give it
+    // to the offerer has not left yet. That instant has a name. It is the
+    // commit of the initiator's first envelope sealed WITH the secret —
+    // sealed, so it carries the ciphertext; not yet committed, so the
+    // ciphertext exists nowhere outside the initiator — and
+    // `debugBeforeSendCommit` runs exactly there, inside the conversation
+    // lock that the inbound path establishing the secret also takes. This
+    // used to be sampled straight after the positive wait below, which raced
+    // the initiator's own unprompted sends (its identity exchange, a pqack):
+    // every envelope it seals once it holds the secret carries the
+    // ciphertext, so by then the offerer could hold it too, legitimately,
+    // and `retry: 2` absorbed the difference.
+    bool? offererPqAtFirstCiphertext;
+    initiator.debugBeforeSendCommit = (rid) async {
+      if (rid != offererRid) return;
+      if (!await initiator.isPostQuantumWith(offererRid)) return;
+      initiator.debugBeforeSendCommit = null; // the first such envelope only
+      offererPqAtFirstCiphertext =
+          await offerer.isPostQuantumWith(initiatorRid);
+    };
+
     // The offerer adds the contact first so the initiator's hello is not
     // dropped as coming from a stranger (if it were, the upgrade would simply
-    // happen one message later — see the note at the end).
+    // happen one message later — see the next test).
     await offerer.addContactFromCode(await initiator.myContactCode());
     await initiator.addContactFromCode(await offerer.myContactCode());
 
@@ -120,11 +154,13 @@ void main() {
     // prove it is post-quantum before anyone types.
     await waitUntil(() => initiator.isPostQuantumWith(offererRid),
         what: 'initiator holds the shared secret after the hello round trip');
-    expect(await offerer.isPostQuantumWith(initiatorRid), isFalse,
-        reason: 'the offerer needs a ciphertext first');
 
     // The first real message carries it; from then on both sides are pq.
     await initiator.sendText(offererRid, 'first');
+    // 'first' is sealed with the secret, so the gate has fired by now —
+    // on it, or on an envelope that went before it.
+    expect(offererPqAtFirstCiphertext, isFalse,
+        reason: 'the offerer needs a ciphertext first');
     await waitUntil(() async => texts(offerer, initiatorRid).contains('first'),
         what: 'first message arrives');
     expect(await offerer.isPostQuantumWith(initiatorRid), isTrue);
@@ -147,7 +183,7 @@ void main() {
                 .toSet()
                 .containsAll({for (var i = 0; i < 5; i++) 'o$i'}),
         what: 'burst delivered both ways');
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('adding contacts in the other order upgrades one message later',
       () async {
@@ -163,8 +199,24 @@ void main() {
     final offererRid = identical(initiator, carol) ? daveRid : carolRid;
     // Initiator adds first: its hello reaches a stranger and is dropped.
     await initiator.addContactFromCode(await offerer.myContactCode());
+    // ...but only if it lands before the offerer's own add, which nothing
+    // here used to ensure: the add followed at once, and whenever the hello
+    // was the slower of the two the session could open on it and the pair
+    // go post-quantum before 'one' — every assertion below holds that way
+    // too, so the test would pass without exercising what it is named for.
+    // So: the initiator's outbox empty — the relay has accepted the hello
+    // (and the identity key sent with it) — and THEN the relay holding
+    // nothing unacknowledged, which means the offerer has taken them off
+    // again while it was still a stranger. In that order: the relay alone
+    // reads zero before the hello has left the outbox, too.
+    await waitUntil(
+        () async =>
+            (await initiator.vault.db.query('outbox', limit: 1)).isEmpty &&
+            await relayUnacked() == 0,
+        what: "the offerer has taken the initiator's hello off the relay");
     await offerer.addContactFromCode(await initiator.myContactCode());
-    await Future<void>.delayed(const Duration(milliseconds: 500));
+    // A 500 ms sleep stood here, equal to `pqSendDebounce` and covering
+    // nothing: every step below waits on what it needs.
 
     // First real message is classical (the session opens on it); it makes
     // the offerer offer, the initiator encapsulate, and the second message
@@ -181,5 +233,5 @@ void main() {
     await offerer.sendText(initiatorRid, 'three');
     await waitUntil(() async => texts(initiator, offererRid).contains('three'),
         what: 'reply arrives');
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }

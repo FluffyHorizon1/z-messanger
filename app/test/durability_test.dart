@@ -89,24 +89,61 @@ void main() {
   }
 
   Future<void> waitUntil(bool Function() cond,
-      {Duration timeout = const Duration(seconds: 45)}) async {
+      {Duration timeout = const Duration(seconds: 45),
+      required String what}) async {
     final deadline = DateTime.now().add(timeout);
     while (!cond()) {
       if (DateTime.now().isAfter(deadline)) {
-        throw TimeoutException('condition not met');
+        throw TimeoutException('condition not met: $what');
       }
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
   }
 
   Future<void> waitUntilAsync(Future<bool> Function() cond,
-      {Duration timeout = const Duration(seconds: 45)}) async {
+      {Duration timeout = const Duration(seconds: 45),
+      required String what}) async {
     final deadline = DateTime.now().add(timeout);
     while (!await cond()) {
       if (DateTime.now().isAfter(deadline)) {
-        throw TimeoutException('condition not met');
+        throw TimeoutException('condition not met: $what');
       }
       await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+  }
+
+  /// Wait for a freshly-added pair to have finished introducing themselves,
+  /// instead of sleeping a second and hoping — the same copied second, and
+  /// the same wait that replaced it, as `settled()` in `replies_test.dart`
+  /// (whose comments carry the reasoning): a positive signal first, each
+  /// side holding the other's post-quantum key, which means the requests
+  /// crossed, the hello landed and a session exists; then quiescence, the
+  /// outbox read last and the send flag re-read after it.
+  Future<void> settled(List<ChatService> pair) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    while (true) {
+      var done = true;
+      for (final s in pair) {
+        for (final o in pair) {
+          if (identical(s, o)) continue;
+          final c = s.contacts[o.myRid];
+          if (c == null) continue;
+          if (c.pqPub == null && c.pqCandidate == null) done = false;
+        }
+      }
+      if (done) {
+        for (final s in pair) {
+          if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+            done = false;
+            break;
+          }
+        }
+      }
+      if (done && pair.every((s) => !s.pqSendPending)) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('the pair never settled');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
     }
   }
 
@@ -128,15 +165,18 @@ void main() {
 
     var alice = await open(aliceDir, aliceId, 'alice');
     var bob = await open(bobDir, bobId, 'bob');
-    await waitUntil(() =>
-        alice.svc.transport.isConnected && bob.svc.transport.isConnected);
+    await waitUntil(
+        () => alice.svc.transport.isConnected && bob.svc.transport.isConnected,
+        what: 'both connected');
 
     // Verified contacts both ways.
     await alice.svc.addContactFromCode(await bob.svc.myContactCode());
     await bob.svc.addContactFromCode(await alice.svc.myContactCode());
     final aliceRid = alice.svc.myRid;
     final bobRid = bob.svc.myRid;
-    await Future<void>.delayed(const Duration(seconds: 1)); // handshake settle
+    // The churn below is meant to start from an established pair, not from
+    // the middle of its introduction.
+    await settled([alice.svc, bob.svc]);
 
     // Fire messages both directions, restarting a side at pseudo-random points
     // (index-derived, since Random() is unavailable in this harness). Each send
@@ -164,7 +204,7 @@ void main() {
       final b = (await inbound(bob.svc, aliceRid)).length;
       final a = (await inbound(alice.svc, bobRid)).length;
       return b >= n && a >= n;
-    });
+    }, what: 'all $n messages each way stored after the churn');
 
     final bobInbox = await inbound(bob.svc, aliceRid);
     final aliceInbox = await inbound(alice.svc, bobRid);
@@ -183,11 +223,13 @@ void main() {
     // No desync: a fresh round-trip after all the churn still decrypts.
     await alice.svc.sendText(bobRid, 'after-a');
     await bob.svc.sendText(aliceRid, 'after-b');
-    await waitUntilAsync(() async =>
-        (await inbound(bob.svc, aliceRid)).contains('after-a') &&
-        (await inbound(alice.svc, bobRid)).contains('after-b'));
+    await waitUntilAsync(
+        () async =>
+            (await inbound(bob.svc, aliceRid)).contains('after-a') &&
+            (await inbound(alice.svc, bobRid)).contains('after-b'),
+        what: 'the post-churn round trip in both directions');
 
     await alice.svc.transport.stop();
     await bob.svc.transport.stop();
-  }, timeout: const Timeout(Duration(minutes: 3)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }

@@ -108,11 +108,68 @@ void main() {
   }
 
   Future<void> waitUntil(bool Function() cond,
-      {Duration timeout = const Duration(seconds: 25)}) async {
+      {Duration timeout = const Duration(seconds: 25),
+      required String what}) async {
     final deadline = DateTime.now().add(timeout);
     while (!cond()) {
       if (DateTime.now().isAfter(deadline)) {
-        throw TimeoutException('condition not met');
+        throw TimeoutException('condition not met: $what');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+  }
+
+  /// Envelopes the relay holds that their recipient has not acknowledged.
+  /// The RAM store keeps an envelope until it is acknowledged, delivered or
+  /// not, so zero means everything sent so far has been taken off the relay
+  /// — and handled, since a client acknowledges after handling.
+  Future<int> relayUnacked() async {
+    final res = await (await HttpClient()
+            .getUrl(Uri.parse('http://127.0.0.1:$port/health')))
+        .close();
+    final body = await res.transform(utf8.decoder).join();
+    return ((jsonDecode(body) as Map)['queuedEnvelopes'] as num).toInt();
+  }
+
+  /// Whether any of [services] still has something queued to send.
+  Future<bool> anyOutboxPending(List<ChatService> services) async {
+    for (final s in services) {
+      if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty) return true;
+    }
+    return false;
+  }
+
+  /// Wait for freshly-added contacts to have finished introducing
+  /// themselves, instead of sleeping a second and hoping — the same copied
+  /// second, and the same wait that replaced it, as `settled()` in
+  /// `replies_test.dart` (whose comments carry the reasoning): a positive
+  /// signal first, each side of every pair holding the other's post-quantum
+  /// key, which means the requests crossed, the hello landed and a session
+  /// exists; then quiescence, the outbox read last and the send flag re-read
+  /// after it.
+  Future<void> settled(List<ChatService> services) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    while (true) {
+      var done = true;
+      for (final s in services) {
+        for (final o in services) {
+          if (identical(s, o)) continue;
+          final c = s.contacts[o.myRid];
+          if (c == null) continue;
+          if (c.pqPub == null && c.pqCandidate == null) done = false;
+        }
+      }
+      if (done) {
+        for (final s in services) {
+          if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+            done = false;
+            break;
+          }
+        }
+      }
+      if (done && services.every((s) => !s.pqSendPending)) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('the contacts never settled');
       }
       await Future<void>.delayed(const Duration(milliseconds: 30));
     }
@@ -128,15 +185,17 @@ void main() {
     final phone = await makePrimary('phone', phoneId);
     final carol = await makePrimary('carol', await ZIdentity.generate());
     final dave = await makePrimary('dave', await ZIdentity.generate());
-    await waitUntil(() =>
-        phone.transport.isConnected &&
-        carol.transport.isConnected &&
-        dave.transport.isConnected);
+    await waitUntil(
+        () =>
+            phone.transport.isConnected &&
+            carol.transport.isConnected &&
+            dave.transport.isConnected,
+        what: 'phone, carol and dave connected');
     for (final (a, b) in [(phone, carol), (phone, dave), (carol, dave)]) {
       await a.addContactFromCode(await b.myContactCode());
       await b.addContactFromCode(await a.myContactCode());
     }
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await settled([phone, carol, dave]);
 
     // History BEFORE any device is linked: a direct thread both ways and a
     // group thread.
@@ -144,14 +203,20 @@ void main() {
       await phone.sendText(carol.myRid, 'phone $i');
       await carol.sendText(phone.myRid, 'carol $i');
     }
-    await waitUntil(() =>
-        texts(phone, carol.myRid).where((t) => t.startsWith('carol')).length ==
-        5);
+    await waitUntil(
+        () =>
+            texts(phone, carol.myRid)
+                .where((t) => t.startsWith('carol'))
+                .length ==
+            5,
+        what: "carol's five messages at the phone");
     final gid = await phone.createGroup('Trip', [carol.myRid, dave.myRid]);
-    await waitUntil(() => carol.groups.containsKey(gid));
+    await waitUntil(() => carol.groups.containsKey(gid),
+        what: 'the group invite at carol');
     await phone.sendGroupText(gid, 'group from phone');
     await carol.sendGroupText(gid, 'group from carol');
-    await waitUntil(() => texts(phone, gid).contains('group from carol'));
+    await waitUntil(() => texts(phone, gid).contains('group from carol'),
+        what: "carol's group message at the phone");
 
     // Now link a laptop. It holds Carol (contacts ship with enrollment) but
     // not the group, which this device was never invited to.
@@ -163,12 +228,17 @@ void main() {
         deviceId: 'laptop');
     final laptop = await makeLinked(
         'laptop', laptopId, account, laptopCert, account.deviceCert);
-    await waitUntil(() => laptop.transport.isConnected);
+    await waitUntil(() => laptop.transport.isConnected,
+        what: 'the laptop connected');
     await laptop.addContactFromCode(await carol.myContactCode());
     await phone.addMyDevice(laptopCert); // triggers the history replay
 
-    // The direct history lands, in order, both directions.
-    await waitUntil(() => texts(laptop, carol.myRid).length >= 10);
+    // The direct history lands, in order, both directions. Twelve items
+    // here (ten direct, two group) and a batch holds a hundred, so the
+    // replay is ONE envelope: this wait is the replay having landed, and
+    // nothing of it can still be on its way to the assertions below.
+    await waitUntil(() => texts(laptop, carol.myRid).length >= 10,
+        what: 'the replayed direct history at the laptop');
     final got = texts(laptop, carol.myRid);
     expect(got.where((t) => t.startsWith('phone')).toList(),
         [for (var i = 0; i < 5; i++) 'phone $i']);
@@ -185,10 +255,36 @@ void main() {
 
     // A message that arrives live after linking is not doubled by the replay.
     await carol.sendText(phone.myRid, 'after link');
-    await waitUntil(() => texts(laptop, carol.myRid).contains('after link'));
-    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await waitUntil(() => texts(laptop, carol.myRid).contains('after link'),
+        what: "'after link' at the laptop");
+    // It can reach the laptop more than once — straight from Carol once she
+    // holds v2, and mirrored by the phone — and every copy is the same
+    // message id, which is what keeps it single. A late copy therefore
+    // cannot move the two counts below unless de-duplication is broken;
+    // what a margin buys is that the late copy has ARRIVED to be counted.
+    // That margin was 500 ms after the first copy, a guess. It is now the
+    // phone holding the message and the relay holding nothing anyone sent:
+    // every copy handed over has been taken off and handled. One gap is
+    // stated rather than hidden — a device acknowledges a message a few
+    // awaits before it queues the mirror of it, so a quiet relay read
+    // inside that gap counts one copy fewer, which can miss a doubling and
+    // cannot invent one.
+    await waitUntil(() => texts(phone, carol.myRid).contains('after link'),
+        what: "'after link' at the phone");
+    // The outboxes are read BEFORE the relay: an envelope moving between the
+    // two is then seen in one or the other, where the other order could
+    // read the relay before it arrived and the outbox after it left.
+    final quiet = DateTime.now().add(const Duration(seconds: 25));
+    while (await anyOutboxPending([phone, carol, dave, laptop]) ||
+        await relayUnacked() != 0) {
+      if (DateTime.now().isAfter(quiet)) {
+        throw TimeoutException(
+            'condition not met: every copy of it taken off the relay');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
     expect(
         texts(laptop, carol.myRid).where((t) => t == 'after link').length, 1);
     expect(texts(laptop, carol.myRid).length, 11);
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }

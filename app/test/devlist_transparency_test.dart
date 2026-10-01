@@ -35,7 +35,13 @@ void main() {
   final temps = <Directory>[];
   final services = <ChatService>[];
 
-  setUpAll(() async {
+  // A relay per TEST, not one per file. `syncSettled` below asks the relay
+  // whether it still holds anything nobody has acknowledged, and a relay
+  // shared with an earlier test goes on holding that test's mail for
+  // mailboxes nobody reads any more — the rogue's own device, the tablet
+  // that only ever existed in a signed list — so on a shared relay that
+  // question has no useful answer after the first test.
+  setUp(() async {
     HttpOverrides.global = null;
     final serverDir =
         '${Directory.current.parent.path}${Platform.pathSeparator}server';
@@ -64,11 +70,15 @@ void main() {
     fail('relay did not start');
   });
 
-  tearDownAll(() async {
+  tearDown(() async {
     for (final s in services) {
       await s.transport.stop();
     }
+    services.clear();
     relay.kill();
+  });
+
+  tearDownAll(() async {
     for (final d in temps) {
       if (d.existsSync()) d.deleteSync(recursive: true);
     }
@@ -152,12 +162,19 @@ void main() {
   // runner the room to finish a delivery it would otherwise be cut off in.
   // Three attempts of this file's tests were lost to a 25-second budget on a
   // tag whose code was unchanged, and the same tag passed on a re-run.
+  //
+  // Every wait names what it waits for. A bare 'condition not met' from a
+  // file with a dozen waits says nothing about which delivery was cut off,
+  // and that is how this file went two triage passes without anyone knowing
+  // what was actually timing out.
   Future<void> waitUntil(bool Function() cond,
-      {Duration timeout = const Duration(seconds: 60)}) async {
+      {Duration timeout = const Duration(seconds: 60),
+      required String what}) async {
     final deadline = DateTime.now().add(timeout);
     while (!cond()) {
       if (DateTime.now().isAfter(deadline)) {
-        throw TimeoutException('condition not met');
+        throw TimeoutException(
+            'timed out after ${timeout.inSeconds}s waiting for: $what');
       }
       await Future<void>.delayed(const Duration(milliseconds: 30));
     }
@@ -193,9 +210,92 @@ void main() {
     return false;
   }
 
+  /// Envelopes the relay holds that their recipient has not acknowledged.
+  /// The RAM store keeps an envelope until it is acknowledged, delivered or
+  /// not, so this is zero only when everything sent so far has been taken
+  /// off the relay by whoever it was for. (In Redis mode `/health` reports
+  /// -1 and this never settles; these tests run the RAM store.)
+  Future<int> relayUnacked() async {
+    final res = await (await HttpClient()
+            .getUrl(Uri.parse('http://127.0.0.1:$port/health')))
+        .close();
+    final body = await res.transform(utf8.decoder).join();
+    return ((jsonDecode(body) as Map)['queuedEnvelopes'] as num).toInt();
+  }
+
+  /// Whether [device] has heard back on the sync session it sends on to
+  /// [peer]: read from the session the app persists after every operation
+  /// (`sync_session`, sealed; `kvGet` opens it).
+  Future<bool> heardBackOnSync(ChatService device, ChatService peer) async {
+    final raw = await device.vault.kvGet('sync_session');
+    if (raw == null) return false;
+    final convs = (jsonDecode(raw) as Map)['convs'] as Map;
+    final conv = convs[peer.myRid] as Map?;
+    final out = conv?['outboundSid'] as String?;
+    if (conv == null || out == null) return false;
+    return ((conv['sessions'] as Map)[out] as Map?)?['receivedAny'] == true;
+  }
+
+  /// The phone and the laptop have finished OPENING their sync channel, and
+  /// nothing anyone sent is still waiting at the relay.
+  ///
+  /// This is what split view (a) was failing on, about one run in two. The
+  /// device whose routing id sorts first opens the sync session, and until
+  /// it has heard back on it, every envelope it sends there carries the
+  /// session's ephemeral key (`ek`). The rogue holds the phone's identity
+  /// key and takes over the phone's mailbox, so when the LAPTOP was the
+  /// opener and the phone went offline inside that window, the first such
+  /// envelope the rogue received — one the phone had not acknowledged yet,
+  /// or the laptop's next mirror — let it re-derive the very same session
+  /// (same id, same root key) and answer on it with a ratchet key of its
+  /// own. The laptop followed the rogue's branch. When the honest phone came
+  /// back it carried on along ITS branch of the same session, which the
+  /// laptop could no longer decrypt ("authentication failed"), and the
+  /// laptop's answers were undecryptable at the phone ("pq message without a
+  /// shared secret"); the phone's re-asserted v2 never arrived, and the wait
+  /// for the laptop's `olderList` alert timed out. When the phone was the
+  /// opener, the rogue had to open a session of its own, the laptop kept
+  /// the phone's beside it and went back to it when the phone spoke, and
+  /// the test passed — hence one run in two. Measured by forcing the order:
+  /// with the laptop as opener 4 runs in 8 failed, two of them on both
+  /// attempts so that `retry: 1` would not have saved the build; with the
+  /// phone as opener, none in 6.
+  ///
+  /// The scenario is two honest devices whose channel is long established,
+  /// so the fixture now starts from that: each side has heard back on the
+  /// session it sends on — nothing either sends carries `ek` any more — and
+  /// the relay holds nothing unacknowledged, so no envelope from the
+  /// opening is left to be redelivered to whoever next holds the phone's
+  /// mailbox. Both are needed: the first stops new envelopes carrying the
+  /// key, the second accounts for the ones already sent.
+  Future<void> syncSettled(ChatService phone, ChatService laptop) async {
+    const budget = Duration(seconds: 60);
+    final deadline = DateTime.now().add(budget);
+    while (true) {
+      var done = await heardBackOnSync(laptop, phone) &&
+          await heardBackOnSync(phone, laptop);
+      if (done) {
+        for (final s in [phone, laptop]) {
+          if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+            done = false;
+            break;
+          }
+        }
+      }
+      if (done && await relayUnacked() == 0) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('timed out after ${budget.inSeconds}s waiting '
+            'for: the phone-laptop sync channel to finish opening, with '
+            'nothing left unacknowledged at the relay');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+  }
+
   // Stand up the phone (root), a linked laptop, and the contact Carol, all at
-  // device-list version 2 = {phone, laptop}. Returns the pieces the scenarios
-  // build on.
+  // device-list version 2 = {phone, laptop}, with the phone and laptop's sync
+  // channel open in both directions (`syncSettled`). Returns the pieces the
+  // scenarios build on.
   Future<
       ({
         ChatService phone,
@@ -220,7 +320,8 @@ void main() {
 
     final carol = await makePrimary('carol', await ZIdentity.generate());
 
-    await waitUntil(() => linked(phone) && linked(laptop) && linked(carol));
+    await waitUntil(() => linked(phone) && linked(laptop) && linked(carol),
+        what: 'phone, laptop and carol each up on both links');
 
     final accountRid = phone.myRid;
     await carol.addContactFromCode(await phone.myContactCode());
@@ -237,6 +338,10 @@ void main() {
         reason: 'Carol never received the v2 device list');
     expect(await versionReaches(() => laptop.ownDeviceListVersion(), 2), isTrue,
         reason: 'the laptop never learned it is at v2');
+    // Version 2 can reach the laptop on a session the PHONE opened while the
+    // laptop's own is still half-open, so it says nothing about the channel
+    // the scenarios rely on; wait for that separately.
+    await syncSettled(phone, laptop);
     return (
       phone: phone,
       laptop: laptop,
@@ -263,7 +368,7 @@ void main() {
     // view: rule 8 self-sync deliberately skipped).
     final rogue =
         await makeRogue(s.phoneId, s.account, [s.laptopCert, rogueCert], 3);
-    await waitUntil(() => linked(rogue));
+    await waitUntil(() => linked(rogue), what: 'the rogue up on both links');
     await rogue.addContactFromCode(await s.carol.myContactCode());
     await rogue.broadcastMyDeviceList(alsoOwnDevices: false);
     expect(
@@ -279,7 +384,8 @@ void main() {
     // holding device #1's keys could always have pushed that list; the split
     // view is caught the moment the honest root is heard from again.)
     await s.carol.sendText(s.accountRid, 'hey');
-    await waitUntil(() => texts(s.laptop, s.carol.myRid).contains('hey'));
+    await waitUntil(() => texts(s.laptop, s.carol.myRid).contains('hey'),
+        what: "carol's 'hey' fanned out to the laptop");
     expect(
         await versionReaches(() => s.laptop.ownDeviceListVersion(), 3), isTrue,
         reason: 'the rogue, impersonating the root, fed the laptop its list');
@@ -287,11 +393,13 @@ void main() {
     // The honest phone returns. Three independent detections follow:
     await rogue.transport.stop();
     s.phone.transport.start();
-    await waitUntil(() => linked(s.phone));
+    await waitUntil(() => linked(s.phone),
+        what: 'the honest phone back up on both links');
     // 1. On reconnect the phone re-asserts its honest v2 list to its own
     //    devices; the laptop holds v3 from "the root" — an honest root never
     //    regresses, so the laptop flags the newer list as signed by someone else.
-    await waitUntil(() => s.laptop.ownAccountAlert != null);
+    await waitUntil(() => s.laptop.ownAccountAlert != null,
+        what: "the laptop's owner alert after the honest root re-asserts v2");
     // Stored as a kind and its versions, not a sentence (finding 38); the
     // words are chosen in the reader's language when the banner is drawn.
     expect(jsonDecode(s.laptop.ownAccountAlert!)['k'], OwnAlertKind.olderList,
@@ -299,7 +407,8 @@ void main() {
     // 2. The phone speaks with its true (v2) claim; Carol sees device #1
     //    contradict the v3 list it was handed (a rollback on that device).
     await s.phone.sendText(s.carol.myRid, 'still me');
-    await waitUntil(() => s.carol.contactDevlistAlerts[s.accountRid] != null);
+    await waitUntil(() => s.carol.contactDevlistAlerts[s.accountRid] != null,
+        what: "carol's contact alert on the phone's v2 claim against her v3");
     expect(s.carol.contactDevlistAlerts[s.accountRid], isNotNull,
         reason: 'Carol did not flag the contradictory device list');
     // What she flagged it WITH: a kind, and no name. The sentence this used
@@ -325,16 +434,9 @@ void main() {
     }
     // 3. Carol's receipt back to the phone echoes v3 — a list the root never
     //    issued and cannot explain: after the grace period the root alerts.
-    await waitUntil(() => s.phone.ownAccountAlert != null);
-    // retry: KEPT, and now for a reason rather than a shrug. Waiting on
-    // both links (`linked`) and giving the version polls the same budget as
-    // the waits around them took this file from failing often to failing
-    // about one first attempt in three on a two-core box — better, and not
-    // good enough to take the retry off. What still times out has not been
-    // identified; the honest state is "improved, cause not yet found", and
-    // removing the retry on the strength of two green runs is exactly the
-    // move that hid the erasure bug for two releases.
-  }, timeout: const Timeout(Duration(minutes: 4)), retry: 1);
+    await waitUntil(() => s.phone.ownAccountAlert != null,
+        what: "the phone's owner alert on carol's echo of the unissued v3");
+  }, timeout: const Timeout(Duration(minutes: 4)));
 
   test('exclusion (b): a rogue list that drops the honest device is caught',
       () async {
@@ -348,7 +450,7 @@ void main() {
     await s.phone.transport.stop();
     // Rogue publishes v3={phone,rogue} — the honest laptop is removed.
     final rogue = await makeRogue(s.phoneId, s.account, [rogueCert], 3);
-    await waitUntil(() => linked(rogue));
+    await waitUntil(() => linked(rogue), what: 'the rogue up on both links');
     await rogue.addContactFromCode(await s.carol.myContactCode());
     await rogue.broadcastMyDeviceList();
     expect(
@@ -359,26 +461,21 @@ void main() {
 
     // Installing a list that drops the laptop, Carol sends it a removal notice
     // over the still-open pairwise session — which the rogue cannot suppress.
-    await waitUntil(() => s.laptop.removedDeviceAlert != null);
+    await waitUntil(() => s.laptop.removedDeviceAlert != null,
+        what: "carol's removal notice reaching the dropped laptop");
     expect(s.laptop.removedDeviceAlert, isNotNull,
         reason: 'the removed laptop was never told it was cut off');
 
     // And the contact still catches the contradiction when device #1 returns.
     await rogue.transport.stop();
     s.phone.transport.start();
-    await waitUntil(() => linked(s.phone));
+    await waitUntil(() => linked(s.phone),
+        what: 'the honest phone back up on both links');
     await s.phone.sendText(s.carol.myRid, 'still me');
-    await waitUntil(() => s.carol.contactDevlistAlerts[s.accountRid] != null);
+    await waitUntil(() => s.carol.contactDevlistAlerts[s.accountRid] != null,
+        what: "carol's contact alert on the phone's v2 claim against her v3");
     expect(s.carol.contactDevlistAlerts[s.accountRid], isNotNull);
-    // retry: KEPT, and now for a reason rather than a shrug. Waiting on
-    // both links (`linked`) and giving the version polls the same budget as
-    // the waits around them took this file from failing often to failing
-    // about one first attempt in three on a two-core box — better, and not
-    // good enough to take the retry off. What still times out has not been
-    // identified; the honest state is "improved, cause not yet found", and
-    // removing the retry on the strength of two green runs is exactly the
-    // move that hid the erasure bug for two releases.
-  }, timeout: const Timeout(Duration(minutes: 4)), retry: 1);
+  }, timeout: const Timeout(Duration(minutes: 4)));
 
   test('control: an honest device added and distributed to all raises nothing',
       () async {
@@ -395,7 +492,8 @@ void main() {
     expect(
         await versionReaches(
             () => s.carol.heldContactListVersion(s.accountRid), 3),
-        isTrue);
+        isTrue,
+        reason: 'Carol never received the honest v3 device list');
     expect(
         await versionReaches(() => s.laptop.ownDeviceListVersion(), 3), isTrue,
         reason: 'the laptop never caught up to the honest v3');
@@ -403,6 +501,16 @@ void main() {
     // Traffic flows both ways; the echoes now match what every device knows.
     await s.carol.sendText(s.accountRid, 'nice');
     await s.phone.sendText(s.carol.myRid, 'thanks');
+    // An echo is checked when the message carrying it ARRIVES, so that is
+    // where the margin below has to start. Started at the send, as it was,
+    // a slow delivery on a loaded box left the negatives checking a window
+    // in which nothing had been observed yet — a pass that tested nothing.
+    await waitUntil(
+        () =>
+            texts(s.phone, s.carol.myRid).contains('nice') &&
+            texts(s.laptop, s.carol.myRid).contains('nice') &&
+            texts(s.carol, s.accountRid).contains('thanks'),
+        what: "'nice' at the phone and the laptop, and 'thanks' at carol");
 
     // Give the grace window time to fire, then assert everything is quiet.
     await Future<void>.delayed(grace + const Duration(seconds: 1));
@@ -411,13 +519,5 @@ void main() {
     expect(s.phone.ownAccountAlert, isNull);
     expect(s.carol.contactDevlistAlerts[s.accountRid], isNull,
         reason: 'false contact alarm on an honest update');
-    // retry: KEPT, and now for a reason rather than a shrug. Waiting on
-    // both links (`linked`) and giving the version polls the same budget as
-    // the waits around them took this file from failing often to failing
-    // about one first attempt in three on a two-core box — better, and not
-    // good enough to take the retry off. What still times out has not been
-    // identified; the honest state is "improved, cause not yet found", and
-    // removing the retry on the strength of two green runs is exactly the
-    // move that hid the erasure bug for two releases.
-  }, timeout: const Timeout(Duration(minutes: 4)), retry: 1);
+  }, timeout: const Timeout(Duration(minutes: 4)));
 }

@@ -100,6 +100,44 @@ void main() {
     }
   }
 
+  /// Wait for freshly-added contacts to have finished introducing
+  /// themselves, instead of sleeping a second and hoping — the same copied
+  /// second, and the same wait that replaced it, as `settled()` in
+  /// `replies_test.dart` (whose comments carry the reasoning): a positive
+  /// signal first, each side of every pair that added each other holding
+  /// the other's post-quantum key, which means the requests crossed, the
+  /// hello landed and a session exists; then quiescence, the outbox read
+  /// last and the send flag re-read after it.
+  Future<void> settled(List<ChatService> services) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    while (true) {
+      var done = true;
+      for (final s in services) {
+        for (final o in services) {
+          if (identical(s, o)) continue;
+          // Only the pairs that actually added each other: two members who
+          // have never exchanged codes have no key to wait for.
+          final c = s.contacts[o.myRid];
+          if (c == null) continue;
+          if (c.pqPub == null && c.pqCandidate == null) done = false;
+        }
+      }
+      if (done) {
+        for (final s in services) {
+          if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+            done = false;
+            break;
+          }
+        }
+      }
+      if (done && services.every((s) => !s.pqSendPending)) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('the contacts never settled');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+  }
+
   List<String> groupTexts(ChatService svc, String gid) => [
         for (final m in svc.messagesByChat[gid] ?? const [])
           if (m.kind == 'gtext') m.body
@@ -132,7 +170,7 @@ void main() {
     final aliceRid = alice.myRid;
     final bobRid = bob.myRid;
     final carolRid = carol.myRid;
-    await Future<void>.delayed(const Duration(seconds: 1)); // hellos settle
+    await settled([alice, bob, carol]); // hellos settle
 
     // Alice creates the group.
     final gid = await alice.createGroup('Trio', [bobRid, carolRid]);
@@ -289,7 +327,7 @@ void main() {
     await carol.addContactFromCode(await alice.myContactCode());
     final bobRid = bob.myRid;
     final carolRid = carol.myRid;
-    await Future<void>.delayed(const Duration(seconds: 1)); // hellos settle
+    await settled([alice, bob, carol]); // hellos settle
 
     final gid = await alice.createGroup('Photos', [bobRid, carolRid]);
     await waitUntil(
@@ -337,6 +375,20 @@ void main() {
     await alice.sendGroupFile(gid, 'secret.png', secret, 'image/png');
     expect(await awaitGroupFile(carol, gid, 'secret.png'), equals(secret));
     expect(fileSenderOf(carol, gid, 'secret.png'), 'alice2');
+    // The negative's two seconds used to start at Carol's copy, so on a
+    // loaded box they could run out while Alice was still working through
+    // the fan-out — "Bob has not got it" checked before anything was even
+    // on its way to anyone. Anchored the way the post-leave case above is:
+    // the fan-out drained and Alice's outbox empty, so everything the send
+    // will ever hand the relay is already there, and only then the margin.
+    await alice.waitForGroupFanout(gid);
+    final drained = DateTime.now().add(const Duration(seconds: 25));
+    while ((await alice.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+      if (DateTime.now().isAfter(drained)) {
+        throw TimeoutException("alice's outbox never drained");
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
     expect(
         await awaitGroupFile(bob, gid, 'secret.png',
             timeout: const Duration(seconds: 2)),
@@ -347,5 +399,5 @@ void main() {
             .where((m) => m.kind == 'file')
             .map((m) => m.body),
         isNot(contains('secret.png')));
-  }, timeout: const Timeout(Duration(minutes: 3)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }

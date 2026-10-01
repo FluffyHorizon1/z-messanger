@@ -122,12 +122,18 @@ void main() {
         transport: transport));
   }
 
+  // Every wait names what it waits for. A bare 'condition not met' from a
+  // file with a dozen waits says nothing about which delivery was cut off,
+  // and that is how this family went two triage passes without anyone
+  // knowing what was actually timing out.
   Future<void> waitUntil(bool Function() cond,
-      {Duration timeout = const Duration(seconds: 25)}) async {
+      {Duration timeout = const Duration(seconds: 25),
+      required String what}) async {
     final deadline = DateTime.now().add(timeout);
     while (!cond()) {
       if (DateTime.now().isAfter(deadline)) {
-        throw TimeoutException('condition not met');
+        throw TimeoutException(
+            'timed out after ${timeout.inSeconds}s waiting for: $what');
       }
       await Future<void>.delayed(const Duration(milliseconds: 30));
     }
@@ -181,7 +187,8 @@ void main() {
         deviceId: 'laptop');
     final laptop = await makeLinked(
         'laptop', laptopId, account, laptopCert, account.deviceCert);
-    await waitUntil(() => linked(phone) && linked(laptop));
+    await waitUntil(() => linked(phone) && linked(laptop),
+        what: 'phone and laptop each up on both links');
     await phone.addMyDevice(laptopCert); // v2, self-synced to the laptop
     expect(await reaches(() => laptop.ownDeviceListVersion(), 2), isTrue,
         reason: 'laptop never learned v2');
@@ -197,7 +204,7 @@ void main() {
       () async {
     final a = await linkedAccount();
     final carol = await makePrimary('carol', await ZIdentity.generate());
-    await waitUntil(() => linked(carol));
+    await waitUntil(() => linked(carol), what: 'carol up on both links');
 
     // Carol is added AFTER the laptop was linked, and adds the account back.
     // Whichever side is the designated initiator, no broadcast is triggered
@@ -210,7 +217,8 @@ void main() {
     // Carol's first message echoes the baseline (v1) list she holds for the
     // account; the phone sees the stale echo and hands over its v2 list.
     await carol.sendText(a.phone.myRid, 'hello there');
-    await waitUntil(() => texts(a.phone, carol.myRid).contains('hello there'));
+    await waitUntil(() => texts(a.phone, carol.myRid).contains('hello there'),
+        what: "carol's 'hello there' at the phone");
     expect(await reaches(() => carol.heldContactListVersion(a.phone.myRid), 2),
         isTrue,
         reason: 'Carol never received the device list via the echo path');
@@ -220,22 +228,15 @@ void main() {
     await carol.sendText(a.phone.myRid, 'direct to both');
     await waitUntil(
         () => texts(a.laptop, carol.myRid).contains('direct to both'),
-        timeout: const Duration(seconds: 25));
-    // retry: KEPT, and now for a reason rather than a shrug. Waiting on
-    // both links (`linked`) and giving the version polls the same budget as
-    // the waits around them took this family from failing often to failing
-    // about one first attempt in three on a two-core box — better, and not
-    // good enough to take the retry off. What still times out has not been
-    // identified; the honest state is "improved, cause not yet found", and
-    // removing a retry on the strength of two green runs is exactly the
-    // move that hid the erasure bug for two releases.
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+        timeout: const Duration(seconds: 25),
+        what: "carol's 'direct to both' fanned out to the laptop");
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('a stale linked device is caught up by its root — no false alert',
       () async {
     final a = await linkedAccount();
     final carol = await makePrimary('carol', await ZIdentity.generate());
-    await waitUntil(() => linked(carol));
+    await waitUntil(() => linked(carol), what: 'carol up on both links');
     await carol.addContactFromCode(await a.phone.myContactCode());
     await a.phone.addContactFromCode(await carol.myContactCode());
     await laptopAddsCarol(a.laptop, carol);
@@ -243,7 +244,8 @@ void main() {
     // laptop.
     await carol.sendText(a.phone.myRid, 'warm-up');
     expect(await reaches(() => carol.heldContactListVersion(a.phone.myRid), 2),
-        isTrue);
+        isTrue,
+        reason: 'Carol never received the v2 device list after the warm-up');
 
     // Simulate a laptop that never learned its account's list (linked before
     // 7.7a): forget the own-list knowledge and drop back to the v1 baseline.
@@ -257,36 +259,31 @@ void main() {
     // than the laptop knows. Rather than alarming, the laptop asks its root,
     // which answers with the honest v2 list; the pending check clears.
     await carol.sendText(a.phone.myRid, 'how are you');
-    await waitUntil(() => texts(a.laptop, carol.myRid).contains('how are you'));
+    await waitUntil(() => texts(a.laptop, carol.myRid).contains('how are you'),
+        what: "carol's 'how are you' fanned out to the stale laptop");
     expect(await reaches(() => a.laptop.ownDeviceListVersion(), 2), isTrue,
         reason: 'laptop was not caught up by its root');
     await Future<void>.delayed(grace + const Duration(seconds: 1));
     expect(a.laptop.ownAccountAlert, isNull,
         reason: 'an honest, merely-missed update must not raise the alert');
-    // retry: KEPT, and now for a reason rather than a shrug. Waiting on
-    // both links (`linked`) and giving the version polls the same budget as
-    // the waits around them took this family from failing often to failing
-    // about one first attempt in three on a two-core box — better, and not
-    // good enough to take the retry off. What still times out has not been
-    // identified; the honest state is "improved, cause not yet found", and
-    // removing a retry on the strength of two green runs is exactly the
-    // move that hid the erasure bug for two releases.
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('an alert raised while the root was offline clears when it answers',
       () async {
     final a = await linkedAccount();
     final carol = await makePrimary('carol', await ZIdentity.generate());
-    await waitUntil(() => linked(carol));
+    await waitUntil(() => linked(carol), what: 'carol up on both links');
     await carol.addContactFromCode(await a.phone.myContactCode());
     await a.phone.addContactFromCode(await carol.myContactCode());
     await laptopAddsCarol(a.laptop, carol);
     await carol.sendText(a.phone.myRid, 'warm-up');
     expect(await reaches(() => carol.heldContactListVersion(a.phone.myRid), 2),
-        isTrue);
+        isTrue,
+        reason: 'Carol never received the v2 device list after the warm-up');
     // Carol must already reach the laptop directly before the phone goes away.
     await carol.sendText(a.phone.myRid, 'reach check');
-    await waitUntil(() => texts(a.laptop, carol.myRid).contains('reach check'));
+    await waitUntil(() => texts(a.laptop, carol.myRid).contains('reach check'),
+        what: "carol's 'reach check' fanned out to the laptop");
 
     // Stale laptop again, but this time the root is unreachable.
     await a.laptop.vault.kvDelete('own_list_v');
@@ -297,28 +294,24 @@ void main() {
 
     await carol.sendText(a.phone.myRid, 'while phone is off');
     await waitUntil(
-        () => texts(a.laptop, carol.myRid).contains('while phone is off'));
+        () => texts(a.laptop, carol.myRid).contains('while phone is off'),
+        what: "carol's 'while phone is off' fanned out to the laptop");
     // No answer can arrive: after the grace period the laptop must alert —
     // it cannot tell an honest missed update from a rogue list on its own.
     await waitUntil(() => a.laptop.ownAccountAlert != null,
-        timeout: grace + const Duration(seconds: 5));
+        timeout: grace + const Duration(seconds: 5),
+        what: "the laptop's owner alert with its root unreachable");
 
     // The root returns, receives the queued request and answers with its
     // honest v2 list, which explains the echo: the alert clears itself.
     a.phone.transport.start();
-    await waitUntil(() => linked(a.phone));
+    await waitUntil(() => linked(a.phone),
+        what: 'the phone back up on both links');
     await waitUntil(() => a.laptop.ownAccountAlert == null,
-        timeout: const Duration(seconds: 25));
+        timeout: const Duration(seconds: 25),
+        what: "the laptop's owner alert clearing on the root's answer");
     expect(await a.laptop.ownDeviceListVersion(), 2);
-    // retry: KEPT, and now for a reason rather than a shrug. Waiting on
-    // both links (`linked`) and giving the version polls the same budget as
-    // the waits around them took this family from failing often to failing
-    // about one first attempt in three on a two-core box — better, and not
-    // good enough to take the retry off. What still times out has not been
-    // identified; the honest state is "improved, cause not yet found", and
-    // removing a retry on the strength of two green runs is exactly the
-    // move that hid the erasure bug for two releases.
-  }, timeout: const Timeout(Duration(minutes: 2)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }
 
 /// The laptop needs Carol as a contact to decrypt what she fans to it.

@@ -1,152 +1,173 @@
-# Handoff: fix/retire-test-retries
-Phase: continuous — the retries the 3.9.0 failure taught us to distrust
-Base: main @ `9ec3496` (Release 3.9.2)   Built: 2026-09-30
+# Handoff: fix/retire-test-retries-2
+Phase: continuous — the fourteen retries the first pass left
+Base: main @ `50d9786` (Release 3.9.4)   Built: 2026-10-01
 
 ## Why
-3.9.0's release build failed three attempts running on `contact_erasure_test`,
-and the `retry: 2` that had been on it since 3.7.7 — added with a comment
-blaming a busy build machine — turned out to be hiding a real erasure bug. That
-raised the obvious question about the other 31. This branch is the answer to
-it: every one was triaged against its test body and its originating commit.
+`50d9786` ended the first pass with fourteen live `retry:` annotations in
+`app/test`, each triaged in the previous handoff and none acted on. The rule
+this pass ran under came from 3.9.0: a `retry: 2` on `contact_erasure_test`,
+blamed on a busy machine, had hidden a real erasure bug since 3.7.7. So no
+retry came off here without a diagnosed cause and at least four consecutive
+clean runs of its file under the shared lock, and every count below was
+measured.
 
 ## What the triage found
-- **11 of the 32 were never a finding.** `replies_test` (9) and `search_test`
-  (2) have no comment at all, and `git log -S` shows each arrived in the *same
-  commit that introduced the test* — `d4922ca`, `7c4234e`, `05ce539` — none of
-  whose messages mentions a flake. They are boilerplate copied onto new
-  real-relay tests, and all 11 sit on one copied
-  `await Future.delayed(const Duration(seconds: 1))` after the mutual add.
-- **One test seam was lying.** `pqSendPending` read `_pqTimers.isNotEmpty`,
-  which is false in two places a send actually occupies: the ANSWER path never
-  registers a timer, and the timer path removes its entry before sending. A
-  settle loop polling it could return with an envelope still being sealed.
-- **One test contradicted the app's own contract.** `group_test`'s post-leave
-  case asserted a removed member's message count does not change, while
-  `_drainGroupFanout` deliberately still serves anything queued before the
-  leave propagated. The retry was absorbing the app behaving as designed.
-- **One flake was real and is now understood.** `pq_identity_exchange`'s
-  `quick()` shrank the send debounce to 100 ms, which is competitive on a
-  two-core box with the work the debounce exists to outlast (an ML-DSA check,
-  a vault seal, a sqlite write) — so the volunteer scheduled on the `hello`
-  sometimes fired before the answer to the `pqid` behind it could cancel it,
-  and the side sent twice. That is what the test counts and refuses.
+- **Thirteen of the fourteen arrived in the same commit as the test they sit
+  on** (`git log -S`): `71a5fc8` durability, `134d04e` devlist_transparency
+  (3), `43423fa` devlist_distribution (3), `b805ff5` pq_upgrade (2),
+  `17be9c1` pq_rekey, `4569558` history_sync, `eb8a408` backup, `e584b9d`
+  group (the attachments case). None of those messages mentions a flake.
+- **The fourteenth was a response to one.** attachment_sync's `retry: 3`
+  went on in `4a01302` beside two real self-sync fixes (a ~25% CI flake),
+  "to absorb residual ratchet-establishment timing". Ten days later
+  `e584b9d` found the most plausible residual: concurrent assembly — the
+  offer's post-processing and the last chunk both calling `_tryAssemble` —
+  storing a key from a different run than the bytes, an attachment that
+  never opens. That is the linked device's exact path in this test, and
+  assembly has been serialized per fid since. Plausible, not proven.
+- **One was covering a real race, and it was in a fixture**:
+  devlist_transparency's split view (a), which failed about one run in two.
+  The device whose routing id sorts first opens the phone–laptop sync
+  session, and until it has heard back on it, everything it sends there
+  carries the session's ephemeral key (`ek`). The rogue holds the phone's
+  identity key and takes over the phone's mailbox, so when the LAPTOP was
+  the opener and the phone went offline inside that window, the first such
+  envelope the rogue received (one the phone had not acknowledged, or the
+  laptop's next mirror) let it re-derive the SAME session — same id, same
+  root key — and answer on it with a ratchet key of its own. The laptop
+  followed the rogue's branch; the honest phone came back on its own branch
+  of that session, which the laptop could no longer decrypt ("authentication
+  failed"), and the laptop's answers failed at the phone ("pq message without
+  a shared secret"). The phone's re-asserted v2 never arrived and the wait
+  for the laptop's `olderList` alert timed out. Seen directly in decrypt
+  traces, then confirmed by forcing the order: laptop as opener, 4 runs in 8
+  failed (two on both attempts, past `retry: 1`); phone as opener, 0 in 6.
+- **Two of the previous triage's premises did not survive checking**, so the
+  seams it proposed were not added:
+  - history_sync: the replay is ONE envelope here (12 items, batch of 100)
+    and the test's own wait for ten messages is that envelope landing, so
+    nothing of the replay can still be coming. The exact counts rest on
+    message-id de-duplication (`_appendLoaded` and the `(rid, mid)` key both
+    ignore a repeat); the 500 ms only let the live message's second copy
+    arrive to be counted. A seam exposing the replay future would be a no-op
+    with no failing test behind it.
+  - backup: sqflite queues a read on the database behind an open transaction
+    (`sqflite_common` 2.5.11, `txnSynchronized` takes `_rawLock`, which a
+    transaction holds until it commits), so a body seen in memory and then
+    read back through `vault.db` is read committed. No "committed" barrier
+    needed; none added.
+- pq_upgrade's negative (`offerer.isPostQuantumWith` is false) was a real
+  race in the test: true only at an instant no poll can name, because the
+  initiator's unprompted sends carry the ciphertext the moment it holds the
+  secret.
 
-## What changed
-- `pqSendPending` now counts sends in flight as well as scheduled
-  (`_pqInFlight`), and in-flight `pqack`s (ADR 0021), so it is true for a
-  send's whole life.
-- `_scheduleDevlistRecheck` no longer pushes out a re-check that is already due
-  sooner. It blindly cancelled and re-armed one shared timer, so one contact's
-  steady traffic could delay the re-check another contact's echo was waiting
-  for — the `unissued` alert. (The common case was always covered by the inline
-  `_reevaluateDevlistPending` after each echo; this closes the quiet-echo case.)
-  `_offerPqIdentity` already bounds its re-sends this way.
-- `replies_test`, `search_test`, `voice_test`: the copied sleep replaced by a
-  `settled()` helper. **13 retries removed.**
-- `key_transparency_test`: `heldVersion()` fired its vault read UNAWAITED
-  inside a synchronous predicate and tested the previous poll's value, so it
-  lagged by at least one poll always and by much more under load — every 30 ms
-  it queued another read onto the serialised sqlite connection. Awaited.
-  **3 retries removed.**
-- `pq_identity_exchange_test`: the counting test gets a debounce comfortably
-  longer than the work it must outlast; the three tests whose nudge arithmetic
-  needs the short one keep it, and now say why. **1 retry removed.**
-- `group_test`: the post-leave case asserted something the app does not promise
-  (`_drainGroupFanout` deliberately still delivers what was queued before the
-  leave propagated), and its negative now waits for the fan-out AND the
-  sender's outbox to drain before its margin starts. **1 retry removed.**
-- `devlist_transparency`, `devlist_distribution`: the waits watched
-  `transport.isConnected`, the IDENTIFIED link, then depended on consequences
-  of the ANONYMOUS one — `onConnected`, which flushes the outbox and
-  re-asserts a root's list, fires only when both are up. A `linked()` helper
-  waits on both, and the version polls got the same budget as the waits around
-  them. **No retries removed** — see below.
+## What changed (test files only)
+- `devlist_transparency_test.dart`: every wait labelled (`what:`, required);
+  `bringUpAccount` now ends with `syncSettled` — each side has heard back on
+  the sync session it sends on (read from the persisted `sync_session`) and
+  the relay holds nothing unacknowledged (`/health` `queuedEnvelopes`); a
+  relay per test so that question has an answer after the first test; the
+  control case's negative margin now starts when the echoes have arrived,
+  not at the send. **3 retries removed.**
+- `devlist_distribution_test.dart`: every wait labelled; no failure in any
+  run. **3 removed.**
+- `pq_upgrade_test.dart`: the negative is sampled inside
+  `debugBeforeSendCommit` at the commit of the initiator's first envelope
+  sealed with the secret; in the sibling, the 500 ms sleep (equal to
+  `pqSendDebounce`, covering nothing) is gone and the test's premise — the
+  hello reaches a stranger and is dropped — is made true by waiting, before
+  the offerer adds, until the initiator's outbox is empty and then the relay
+  holds nothing. **2 removed.**
+- `durability_test.dart`, `backup_test.dart`, `history_sync_test.dart`,
+  `attachment_sync_test.dart`, `group_test.dart`: the copied one-second
+  handshake sleep replaced by `settled()` (the final form from
+  `replies_test.dart`; group case 1 had it too, unretried). group case 2's
+  two-second negative now starts after Alice's fan-out and outbox have
+  drained; history_sync's 500 ms margin now waits for the phone to hold the
+  message, every outbox to be empty and then the relay to hold nothing;
+  labels where missing. **1 removed each.**
+- `pq_rekey_test.dart`: body unchanged — every wait was already an awaited,
+  labelled poll. **1 removed.**
+
+Live count, `grep -rn "retry: [0-9]" app/test/ | grep -v "^\S*:[0-9]*: *//" | wc -l`:
+**14 before, 0 after.**
+
+## Invariants touched
+- None. `git diff 50d9786 -- app/lib protocol server kt` is empty: zero
+  knowledge at the relay, sealed sender, forward secrecy, key material and
+  the trust model are untouched, and nothing new is trusted.
+- Wire protocol: unchanged (no protocol or app code changed at all).
+- The investigation used temporary `print` tracing in
+  `protocol/lib/src/session.dart`, `app/lib/core/device_sync.dart` and
+  `app/lib/core/chat_service.dart`; all of it was reverted to `50d9786`
+  before any run counted below.
 
 ## How I verified
-Each de-retried file run **three times in a row on an idle machine** — a single
-green run proves nothing about a retry you have just removed:
-- `replies_test` + `search_test` + `voice_test` + `group_test` +
-  `key_transparency_test`: 3/3 clean, 32 tests, after the helper rewrite below.
-- `pq_identity_exchange_test`: 4/4 clean.
-- `group_test` again after its margin change: 3/3.
-Plus the full app suite — **346 passed, 6 skipped, 1 failed**, the one
-failure being `destructive_confirm_test.dart: 40. resetting a secure session
-asks first`, which this branch does not touch, carries no `retry:`, fails
-only on this two-core box under load and passes in CI. Plus `flutter
-analyze` and every repository guard.
+Every run under the shared test lock, one file per run, Flutter
+3.47.5. A run is clean only if it exits 0 AND prints no `Retry:` line.
+- Before the fix, devlist_transparency with labels: 4 of 6 runs retried,
+  every one at "the laptop's owner alert after the honest root re-asserts v2";
+  with decrypt tracing, 1 of 4 at the same wait.
+- Forced order, old fixture: laptop opens 4/8 dirty, phone opens 0/6 dirty.
+  Fixed fixture with the laptop forced to open, retries off: 8/8 clean.
+- Final code, retries off, consecutive clean runs: devlist_transparency 8/8,
+  devlist_distribution 6/6 (plus 6/6 with labels before), pq_upgrade 6/6,
+  durability 6/6, history_sync 6/6, backup 6/6, attachment_sync 6/6,
+  group 6/6, pq_rekey 6/6 with its retry never firing and 4/4 after removal
+  (each test body ~2 s against its 3-minute cap). pq_upgrade and
+  history_sync ran 6/6 again after their last change (the quiet checks now
+  read the outbox before the relay).
+- Full app suite once, on the final tree: **346 passed, 6 skipped, 1
+  failed**, no `Retry:` line, 13 min 35 s. The failure is
+  `devlist_hybrid_test.dart: ADR 0010 floor ...` — a file this branch does
+  not touch, compiled against code identical to `50d9786`; re-run three
+  times: failed, passed, passed. Pre-existing; see below.
+- `flutter analyze --no-pub` (from `app/`): No issues found.
+- All guards: rc=0 (sweep verbatim in the report).
 
-**Three things went wrong on the way, and they are the reason to trust the
-rest.** First: I neutered `quick()` entirely, on the theory that the production
-debounce was safer; `asking and answering are both bounded` then failed 3 out
-of 3, because its rounds are arithmetic on multiples of that debounce. Second:
-I removed the six device-list retries after two green runs, and the next run
-failed — so they are back, with a comment saying what is known and what is
-not. Third: the first `settled()` sampled `pqSendPending` once BEFORE its
-awaited outbox reads and never re-tested it, and everything it watched was
-local send-side state — so between both sides handing their contact requests
-to the relay and either processing one, it could return having waited for
-nothing at all. It now waits for a positive signal first (each side that has
-the other as a contact actually holds their post-quantum key, which means the
-requests crossed, the hello landed and a session exists), then for quiescence,
-reading the outbox last and re-reading the flag after it.
-
-## Not done — the remaining 14, triaged
-For the next branch.
-
-- **`devlist_transparency` (3) and `devlist_distribution` (3) — kept, and the
-  honest state is "improved, cause not yet found".** The waits now use
-  `linked()` (both transport links, which is what `onConnected` gates on) and
-  the version polls got the same budget as the waits around them. That took
-  the family from failing often to failing about one first attempt in three on
-  this two-core box. I removed the retries on two green runs, the next run
-  failed, and I put them back. What still times out is unidentified; the waits
-  have no `what:` labels, so the first job on this next is to label them and
-  find out which one it is.
-- **`pq_rekey` (1), `durability` (1)** — nothing in either body is wall-clock;
-  every wait is an awaited poll. What varies is only how much of a 3-minute cap
-  a loaded box eats across ~10 real-relay round trips or ~10 vault reopens.
-  `durability` also still carries the copied 1-second handshake sleep, which
-  `settled()` would replace.
-- **`pq_upgrade` (2)** — an unsynchronised NEGATIVE assertion
-  (`expect(offerer.isPostQuantumWith, isFalse)`) taken right after a positive
-  `waitUntil`: the instant the initiator holds the secret, every envelope it
-  seals carries the ciphertext, and it has unprompted sends due right then, so
-  "the offerer has no ciphertext yet" is only true at an instant no poll can
-  name. The fix is to sample it inside `debugBeforeSendCommit`, which runs
-  after the seal and before the outbox row. Its sibling has a
-  `Future.delayed(500 ms)` sitting exactly on `pqSendDebounce`.
-- **`history_sync` (1)** — `addMyDevice` fires the replay unawaited, so an
-  exact-count assertion rests on 500 ms being longer than whatever is still
-  coming. Wants a seam exposing that future.
-- **`backup` (1)** — waits on a message body in memory, then asserts on state
-  read off disk; `_appendLoaded` runs INSIDE the inbound transaction, so the
-  body is visible before the commit. Wants a "committed" barrier.
-- **`attachment_sync` (1), `group` (1)** — the copied sleep again, and a
-  negative assertion bounded by a bare two seconds.
-
-A subagent produced exact before/after patches for all eight of the
-non-devlist ones; they are sound on reading and none of them is applied here,
-because applying eight unverified changes at the end of a branch about not
-trusting unverified changes would be the joke writing itself. They are the
-next branch's starting point.
-
-Two things the triage raised that I checked and **did not** act on, because the
-code already handles them: `flushOutbox` gating on the identified link (the
-transport's `_maybeAnnounceUp` only announces when both links are up, and
-`_handleSenderClosed` resets it, so the outbox does flush on reconnect); and
-the device-list alert being suppressible by a chatty contact (line 7031
-evaluates inline after each echo, preserving `seen`). Both were plausible and
-specific and both were wrong; I mention them so nobody re-derives them.
+## Not done / watch out
+- **The adoption window is real outside the test.** An attacker holding a
+  device's identity key who is on that device's mailbox while a sibling's
+  sync session to it is still unanswered can take that session over, and
+  the sync channel has no repair for a forked session (the contact path has
+  the notice-and-hello; `DeviceSyncService.handleInbound` just drops what it
+  cannot decrypt). The device-side detection (the laptop's `olderList`) is
+  then silenced and that channel stops carrying mirrors, with nothing on
+  the sync path that would notice and open a fresh session. Narrow:
+  the attacker already holds the root, the window is the opening of a sync
+  session, and the contact-side detections are a different path (not
+  exercised in a forked run here). Not fixed: it is protocol behaviour and
+  wants its own branch, probably an ADR; no THREAT_MODEL row added (rows
+  are coordinated).
+- `_initSync` replaces the `DeviceSyncService` with a new instance that
+  reloads `sync_session` from the vault while an operation on the old one
+  may still be running and saving — a possible lost update of the sync
+  ratchet on one device. Read, not observed to fail; worth a look.
+- Test coupling: `syncSettled` reads the persisted sync session's JSON
+  (`convs/<rid>/outboundSid`, `sessions/<sid>/receivedAny`), and
+  `relayUnacked` reads `queuedEnvelopes`, which the RAM store reports and
+  the Redis store does not (-1). Both are documented where they are used.
+- history_sync's margin has one stated gap: a device acknowledges a message
+  a few awaits before it queues the mirror of it, so a quiet relay read
+  inside that gap counts one copy fewer — it can miss a doubling, never
+  invent one.
+- **A pre-existing flake with no retry on it**: `devlist_hybrid_test.dart`,
+  "ADR 0010 floor", line 144 — `ktInstallFromLog(v3)` returning false (2
+  failures in 4 runs here). From reading, not confirmed by a trace: the
+  persist path of `_installContactDeviceList` reads `cdev_ver_`, checks it
+  and writes it with no lock, and both its callers run outside the
+  per-contact lock — the in-band one in the inbound post-processing, the
+  log one in `ktInstallFromLog`. Ben re-sends v2 when Alice's earlier `hi`
+  echoes v1, so an install of that v2 can read 2, let the test's v3 write
+  3, and write 2 back. If that is it, the held list can go backwards under
+  a race, which is an app bug and wants its own branch and test.
+- Nearly all runs above were on an idle box. A batch of runs under a
+  deliberate two-core CPU load was started; its results were not read, so
+  nothing here rests on it.
 
 ## Suggested pusher actions
-- changelog: n/a; version bump: **no** (tests and two small app changes, no
-  user-visible behaviour); release: no; redeploy relay: no
-- Unrelated and pre-existing on `main`, noticed while running the analyzer and
-  deliberately left alone so this branch stays one thing: `flutter analyze`
-  reports one warning, an unused `identity.dart` import at
-  `protocol/lib/src/connect.dart:42`. CI does not run the analyzer, so nothing
-  is red because of it.
-- The two `app/lib` changes are the reviewable part: `_pqInFlight` and the
-  `_devlistTimer` deadline. Both are small and both have tests behind them only
-  indirectly — worth a second pair of eyes on whether the devlist one deserves
-  a test of its own.
+- changelog: n/a; version bump: no (tests only, no user-visible behaviour);
+  release: no; redeploy relay: no.
+- The three findings above (the adoption window, `_initSync`, the
+  `cdev_ver_` race behind `devlist_hybrid`) are each a candidate for a
+  branch of their own.

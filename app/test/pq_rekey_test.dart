@@ -179,5 +179,5 @@ void main() {
       expect(gotByOfferer.where((t) => t == 't$i').length, 1, reason: 't$i');
       expect(gotByInitiator.where((t) => t == 'u$i').length, 1, reason: 'u$i');
     }
-  }, timeout: const Timeout(Duration(minutes: 3)), retry: 2);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }
