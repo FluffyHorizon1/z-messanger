@@ -796,15 +796,20 @@ Future<Map<String, Object?>> suiteMultidevice(List<Actor> a) async {
   final code = bundle.encode();
   check((await AccountBundle.decode(code)).devices.length == 2, 'zc2 decode');
   // Deliberately pass the devices in non-sorted order: the signing input
-  // sorts device Ed25519 keys lexicographically.
-  final list = await me.signDeviceList([cert2, me.deviceCert], 3);
+  // sorts device Ed25519 keys lexicographically. Dual-signed by name, not by
+  // default: this is the stage-1 list, and it stays one when the v2-only
+  // signer (`devlistSignV2Only`) is switched on — the frozen file must not
+  // move with that constant.
+  final list =
+      await me.signDeviceList([cert2, me.deviceCert], 3, v2Only: false);
   check(await list.verify(), 'device list verifies');
   final listInput = SignedDeviceList.signingInput(3, [cert2, me.deviceCert]);
   check(
-      eq(list.sig, await refEdSign(me.accountEdSeed!, listInput)), 'list sig');
+      eq(list.sig!, await refEdSign(me.accountEdSeed!, listInput)), 'list sig');
   // ADR 0010: the list also carries sig2, the account's Ed25519 over the v2
   // input, which covers each device's X25519 key and id. Its presence makes
-  // this a v2 list, so [list.fingerprint] follows the v2 format below.
+  // this a v2 list for the floor; because it still carries `sig`, what it
+  // commits to — fingerprint and ML-DSA — is the v1 input (ADR 0017).
   final listInputV2 =
       SignedDeviceList.signingInputV2(3, [cert2, me.deviceCert]);
   check(
@@ -828,6 +833,139 @@ Future<Map<String, Object?>> suiteMultidevice(List<Actor> a) async {
       };
   final c1 = await certJson(me.deviceCert, in1);
   final c2 = await certJson(cert2, in2);
+
+  // ADR 0017 stage 2: the list this account's root republishes once the
+  // v2-only signer is on — the same two devices, at the next version, signed
+  // with `sig3` alone over the v2 content under its own context. Everything
+  // here is deterministic and draws nothing from the DRBG, so every value
+  // above is unchanged by it.
+  final v2oDevices = [cert2, me.deviceCert];
+  final v2o = await me.signDeviceList(v2oDevices, 4, v2Only: true);
+  final v3Input = SignedDeviceList.signingInputV3(4, v2oDevices);
+  final v2Input4 = SignedDeviceList.signingInputV2(4, v2oDevices);
+  check(v2o.sig == null && v2o.sig2 == null && v2o.isV2Only,
+      'v2-only: sig3 and nothing else');
+  check(await v2o.verify(), 'v2-only: verifies on sig3 alone');
+  check(eq(v2o.sig3!, await refEdSign(me.accountEdSeed!, v3Input)),
+      'v2-only: sig3 is the reference Ed25519 over the v3 input');
+  check(
+      eq(v3Input.sublist(0, 13), utf8.encode('z-devlist-v3:')) &&
+          eq(v2Input4.sublist(0, 13), utf8.encode('z-devlist-v2:')) &&
+          eq(v3Input.sublist(13), v2Input4.sublist(13)),
+      'the v3 input is the v2 content under a context of its own');
+  check(eq(v2o.commitmentInput, v3Input), 'v2-only: commits to the v3 input');
+  check(
+      eq(await v2o.fingerprint(), (await refSha256(v3Input)).sublist(0, 16)),
+      'v2-only: fingerprint = SHA-256(v3 input)[0..16]');
+  check(
+      !eq(await v2o.fingerprint(),
+              await deviceListFingerprint(4, v2oDevices)) &&
+          !eq(await v2o.fingerprint(),
+              await deviceListFingerprintV2(4, v2oDevices)),
+      'v2-only: and neither the v1 nor the v2 one');
+  // Refused 1: the list with its only signature taken off.
+  final noSig = SignedDeviceList(
+      accountEdPub: me.accountEdPub, version: 4, devices: v2oDevices);
+  check(!await noSig.verify(), 'a list with no signature is refused');
+  // Refused 2: device 2's ratchet key replaced by one the attacker holds, its
+  // certificate re-signed by the account key — what an adversary who can
+  // forge Ed25519 produces — and the genuine sig3 carried over. The v1 input
+  // cannot see the change; the v3 input, and so sig3, can.
+  final attackerXSeed = Uint8List.fromList(List<int>.filled(32, 0x42));
+  final attackerXPub = await refXPub(attackerXSeed);
+  final forgedCert2 = await me.signDeviceCert(
+      deviceEdPub: dev2EdPub, deviceXPub: attackerXPub, deviceId: dev2Id);
+  check(await forgedCert2.verify(me.accountEdPub),
+      'the substituted certificate is itself well signed');
+  final swapped = SignedDeviceList(
+      accountEdPub: me.accountEdPub,
+      version: 4,
+      devices: [forgedCert2, me.deviceCert],
+      sig3: v2o.sig3);
+  check(!await swapped.verify(), 'a swapped deviceXPub under sig3 is refused');
+  check(
+      eq(SignedDeviceList.signingInput(4, swapped.devices),
+          SignedDeviceList.signingInput(4, v2oDevices)),
+      'the v1 input is blind to the swap');
+  check(!eq(await swapped.fingerprint(), await v2o.fingerprint()),
+      'the v3 fingerprint is not');
+  // Refused 3: the stage-1 list above with `sig` deleted — what anyone who
+  // passes a list on can make of any dual-signed list, the log operator
+  // included (a log value is sealed under a key derived from the account's
+  // public key, §19.1). What is left is the genuine sig2, which verifies over
+  // the v2 input: only the shape refuses it.
+  final sigStripped = SignedDeviceList(
+      accountEdPub: list.accountEdPub,
+      version: list.version,
+      devices: list.devices,
+      sig2: list.sig2);
+  check(!await sigStripped.verify(),
+      'a dual-signed list with sig deleted is refused');
+  // Refused 4: the same sig2 moved into sig3. It is over the v2 input, and a
+  // sig3 must be over the v3 one.
+  final relabelled = SignedDeviceList(
+      accountEdPub: list.accountEdPub,
+      version: list.version,
+      devices: list.devices,
+      sig3: list.sig2);
+  check(!await relabelled.verify(), 'a sig2 presented as sig3 is refused');
+  // Refused 5: every other way of combining the three signatures, each one
+  // genuine — made for this vector over the same version and devices as the
+  // v2-only list, which a real account never does (it signs a version one way
+  // only) — so that each list is refused for its shape and nothing else.
+  final dual4 = await me.signDeviceList(v2oDevices, 4, v2Only: false);
+  check(await dual4.verify(), 'the dual-signed list at version 4 verifies');
+  final otherShapes = <String, SignedDeviceList>{
+    'sig2': SignedDeviceList(
+        accountEdPub: me.accountEdPub,
+        version: 4,
+        devices: v2oDevices,
+        sig2: dual4.sig2),
+    'sig+sig3': SignedDeviceList(
+        accountEdPub: me.accountEdPub,
+        version: 4,
+        devices: v2oDevices,
+        sig: dual4.sig,
+        sig3: v2o.sig3),
+    'sig2+sig3': SignedDeviceList(
+        accountEdPub: me.accountEdPub,
+        version: 4,
+        devices: v2oDevices,
+        sig2: dual4.sig2,
+        sig3: v2o.sig3),
+    'sig+sig2+sig3': SignedDeviceList(
+        accountEdPub: me.accountEdPub,
+        version: 4,
+        devices: v2oDevices,
+        sig: dual4.sig,
+        sig2: dual4.sig2,
+        sig3: v2o.sig3),
+  };
+  for (final e in otherShapes.entries) {
+    check(!await e.value.verify(), 'a {${e.key}} list is refused');
+  }
+  // Refused 6: a signature member present with the value null, beside a valid
+  // shape. Read as absent, the first three would be admitted as the shape
+  // they then are, while a reader going by which members are present refuses
+  // them: two answers for one list. So present means a signature, and a list
+  // with a null one is malformed — it does not parse (§3.4).
+  final v1OnlyJson = Map<String, Object?>.of(list.toJson())..remove('sig2');
+  final nullMembers = <(String, Map<String, Object?>)>[
+    ('sig3', {...list.toJson(), 'sig3': null}),
+    ('sig', {...v2o.toJson(), 'sig': null}),
+    ('sig2', {...v1OnlyJson, 'sig2': null}),
+    ('sig3', {...v1OnlyJson, 'sig3': null}),
+    ('sig2', {...v2o.toJson(), 'sig2': null}),
+  ];
+  for (final (member, json) in nullMembers) {
+    var refused = false;
+    try {
+      SignedDeviceList.fromJson(json);
+    } on FormatException {
+      refused = true;
+    }
+    check(refused, 'a list with a null $member member does not parse');
+  }
 
   return {
     'suite': 'multidevice',
@@ -858,18 +996,79 @@ Future<Map<String, Object?>> suiteMultidevice(List<Actor> a) async {
       'devices_in_given_order': [dev2Id, me.deviceId],
       'signing_input': hex(listInput),
       'signing_input_v2': hex(listInputV2),
-      'sig': hex(list.sig),
+      'sig': hex(list.sig!),
       'sig2': hex(list.sig2!),
       // 7.7a: SHA-256(signing_input)[0..16] — the value gossiped as the
       // device-list fingerprint and the leaf the transparency log commits to.
-      // It follows the format the list was signed under (ADR 0010): the v2
-      // fingerprint here, since the list carries sig2. `fingerprint_v1` is what
-      // a pre-0010 v1 list of the same set gossips, kept so a mixed population
-      // agrees at the switch-over.
+      // This list carries `sig`, so it commits to the v1 input (ADR 0017) and
+      // `fingerprint` equals `fingerprint_v1`; the v2-only list below is the
+      // one whose fingerprint is over the v2 input.
       'fingerprint': hex(await list.fingerprint()),
       'fingerprint_v1':
           hex(await deviceListFingerprint(3, [cert2, me.deviceCert])),
       'json': list.toJson(),
+    },
+    'device_list_v2_only': {
+      'note': 'ADR 0017 stage 2: the same account and devices at the next '
+          'version, signed v2-only — the list a root republishes once the '
+          'v2-only signer is on. Its one signature is sig3, over '
+          'signing_input_v3: the v2 content (each device\'s Ed25519 key, '
+          'X25519 ratchet key and length-prefixed id) under the context '
+          '"z-devlist-v3:" rather than "z-devlist-v2:", so that no signature '
+          'ever made beside sig — every sig2 — can stand alone. A list has one '
+          'of three shapes, {sig}, {sig, sig2} or {sig3}, and any other is '
+          'refused before a signature is checked. It commits to the strongest '
+          'signature that is alone: the v1 input while it carries sig, the v3 '
+          'input once it carries sig3 alone. So this list\'s fingerprint, '
+          'gossiped and committed to by a log leaf, is '
+          'SHA-256(signing_input_v3)[0..16]; v1_fingerprint_not_reported and '
+          'v2_fingerprint_not_reported are what the other two inputs would '
+          'give, and no reader reports either. must_refuse: the list with no '
+          'signature; the list with device "$dev2Id"\'s X25519 key replaced by '
+          'the one derived from attacker_x_seed — its certificate re-signed by '
+          'the account key, as an adversary who can forge Ed25519 would — and '
+          'the genuine sig3 carried over; device_list above with its sig '
+          'deleted, which leaves a genuine sig2 that verifies over its own '
+          'input; the same sig2 moved into sig3; and every other combination '
+          'of the three signatures, each genuine (made over this version and '
+          'set for this vector only: a real account signs a version one way), '
+          'refused for its shape alone; and the valid lists with a signature '
+          'member added as null — {sig, sig2, "sig3": null}, '
+          '{"sig": null, sig3} and the like — which do not parse: a '
+          'signature member that is present is a signature, and a reader that '
+          'read null as absent would admit what one going by the members '
+          'present refuses.',
+      'version': 4,
+      'signing_input_v3': hex(v3Input),
+      'sig3': hex(v2o.sig3!),
+      'fingerprint': hex(await v2o.fingerprint()),
+      'v1_fingerprint_not_reported':
+          hex(await deviceListFingerprint(4, v2oDevices)),
+      'v2_fingerprint_not_reported':
+          hex(await deviceListFingerprintV2(4, v2oDevices)),
+      'json': v2o.toJson(),
+      'must_refuse': {
+        'no_signature_json': noSig.toJson(),
+        'swapped_ratchet_key': {
+          'device_id': dev2Id,
+          'attacker_x_seed': hex(attackerXSeed),
+          'attacker_x_pub': hex(attackerXPub),
+          'signing_input_v3':
+              hex(SignedDeviceList.signingInputV3(4, swapped.devices)),
+          'fingerprint': hex(await swapped.fingerprint()),
+          'json': swapped.toJson(),
+        },
+        'sig_stripped_json': sigStripped.toJson(),
+        'sig2_as_sig3_json': relabelled.toJson(),
+        'other_shapes': [
+          for (final e in otherShapes.entries)
+            {'shape': e.key, 'json': e.value.toJson()},
+        ],
+        'null_members': [
+          for (final (member, json) in nullMembers)
+            {'member': member, 'json': json},
+        ],
+      },
     },
     'legacy_zc1_as_account': {
       'contact_code': (await a[1].id.bundle(displayName: 'Bob')).encode(),
@@ -2411,17 +2610,20 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
     devices.add(await acctId.signDeviceCert(
         deviceEdPub: x.edPub, deviceXPub: x.xPub, deviceId: name));
   }
-  final list = await acctId.signDeviceList(devices, 3);
+  // Stage-1 (dual-signed) lists by name, as in the multidevice suite, so this
+  // file does not move when the v2-only signer is switched on.
+  final list = await acctId.signDeviceList(devices, 3, v2Only: false);
   final listSig = await HybridDeviceListSignature.sign(
       accountKey: acct, list: list, deterministic: true);
   check(await listSig.verifies(list, acct.publicKey.mlPub),
       'the list signature verifies');
-  final subset = await acctId.signDeviceList(devices.sublist(0, 2), 3);
+  final subset =
+      await acctId.signDeviceList(devices.sublist(0, 2), 3, v2Only: false);
   check(await subset.verify(),
       'the excluded list is classically perfect — that is the point');
   check(!await listSig.verifies(subset, acct.publicKey.mlPub),
       'but the account never signed THAT set post-quantum');
-  final rolledBack = await acctId.signDeviceList(devices, 2);
+  final rolledBack = await acctId.signDeviceList(devices, 2, v2Only: false);
   check(!await listSig.verifies(rolledBack, acct.publicKey.mlPub),
       'nor an earlier version of it');
 
@@ -2470,6 +2672,57 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
       'the swapped list fails verify — sig2 is over the moved v2 input');
   check(await listSig.verifies(swappedList, acct.publicKey.mlPub),
       'the ML-DSA is held at v1 (ADR 0017), blind to the swap; verify() catches it');
+
+  // ADR 0017 stage 2: the account's list at the next version signed v2-only —
+  // `sig3` alone, over the v2 content under its own context — and its ML-DSA,
+  // over the same v3 input because the list carries no v1 signature. The swap
+  // above is tried again at this version: in stage 1 only sig2 caught it, here
+  // the post-quantum half refuses it as well. Deterministic throughout;
+  // nothing is drawn from the DRBG.
+  final v2oList = await acctId.signDeviceList(devices, 4, v2Only: true);
+  final v3Input = SignedDeviceList.signingInputV3(4, devices);
+  check(v2oList.isV2Only && await v2oList.verify(),
+      'the v2-only list verifies');
+  final v2oSig = await HybridDeviceListSignature.sign(
+      accountKey: acct, list: v2oList, deterministic: true);
+  check(await v2oSig.verifies(v2oList, acct.publicKey.mlPub),
+      'its ML-DSA verifies');
+  check(pqDsaVerify(acct.publicKey.mlPub, v3Input, v2oSig.mlSig),
+      'over the v3 input');
+  check(
+      !pqDsaVerify(acct.publicKey.mlPub,
+          SignedDeviceList.signingInput(4, devices), v2oSig.mlSig),
+      'and not over the v1 one');
+  check(
+      !pqDsaVerify(acct.publicKey.mlPub,
+          SignedDeviceList.signingInputV2(4, devices), v2oSig.mlSig),
+      'nor over the v2 one');
+  check(!await listSig.verifies(v2oList, acct.publicKey.mlPub),
+      'the stage-1 signature does not carry over to it');
+  final v2oSwapped = SignedDeviceList(
+      accountEdPub: v2oList.accountEdPub,
+      version: 4,
+      devices: swapped,
+      sig3: v2oList.sig3);
+  check(!await v2oSwapped.verify(), 'the swapped v2-only list fails sig3');
+  check(!await v2oSig.verifies(v2oSwapped, acct.publicKey.mlPub),
+      'and its ML-DSA no longer verifies either');
+  // The stage-1 list with `sig` deleted. Its sig2 is genuine and the v1 input
+  // is untouched by the deletion, so the genuine stage-1 ML-DSA still verifies
+  // over those bytes: neither signature can refuse it. The shape does — in
+  // verify(), and in the ML-DSA check, which takes no list in no shape.
+  final sigStripped = SignedDeviceList(
+      accountEdPub: list.accountEdPub,
+      version: list.version,
+      devices: list.devices,
+      sig2: list.sig2);
+  check(!await sigStripped.verify(), 'the sig-stripped list is refused');
+  check(
+      pqDsaVerify(acct.publicKey.mlPub, SignedDeviceList.signingInput(3, devices),
+          listSig.mlSig),
+      'though the stage-1 ML-DSA still covers its v1 input');
+  check(!await listSig.verifies(sigStripped, acct.publicKey.mlPub),
+      'and the ML-DSA check refuses it for its shape');
 
   final certJson = jsonEncode(cert.toJson());
   return {
@@ -2542,6 +2795,42 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
         'v1_fingerprint': hex(await deviceListFingerprint(3, swapped)),
         'v2_fingerprint': hex(await deviceListFingerprintV2(3, swapped)),
         'swapped_list_json': jsonEncode(swappedList.toJson()),
+      },
+    },
+    'device_list_v2_only': {
+      'note': 'ADR 0017 stage 2: the same account and devices at version 4, '
+          'signed v2-only — sig3 alone, over signing_input_v3, which is the '
+          'v2 content under the context "z-devlist-v3:" so that no sig2 can '
+          'stand alone — and the account\'s ML-DSA-65 over it. A list commits '
+          'to the strongest signature that is alone, so with no v1 sig the '
+          'ML-DSA is over signing_input_v3, which names each device\'s X25519 '
+          'ratchet key and id, and NOT over v1_signing_input or '
+          'v2_signing_input; the fingerprint is over the same bytes. '
+          'must_refuse: the substitution from device_list again, at this '
+          'version — device "${devices[1].deviceId}" keeps its Ed25519 key, '
+          'gets another ratchet key and a re-signed certificate, and carries '
+          'the genuine sig3 and ml_sig; here both refuse it, the ML-DSA '
+          'included, which in stage 1 was blind to this — and device_list '
+          'with its sig deleted (sig_stripped_list_json). Its sig2 is genuine, '
+          'and device_list\'s ml_sig still verifies over its v1 input, which '
+          'the deletion does not move: neither signature can refuse it, and '
+          'the list is refused for its shape, {sig2}, which is not one of the '
+          'three. device_list\'s ml_sig does not verify the v2-only list.',
+      'list_json': jsonEncode(v2oList.toJson()),
+      'signing_input_v3': hex(v3Input),
+      'v1_signing_input': hex(SignedDeviceList.signingInput(4, devices)),
+      'v2_signing_input': hex(SignedDeviceList.signingInputV2(4, devices)),
+      'fingerprint': hex(await v2oList.fingerprint()),
+      'ml_sig': hex(v2oSig.mlSig),
+      'sig_json': jsonEncode(v2oSig.toJson()),
+      'must_refuse': {
+        'swapped_device_id': devices[1].deviceId,
+        'swapped_x_pub': hex(swapX),
+        'swapped_signing_input_v3':
+            hex(SignedDeviceList.signingInputV3(4, swapped)),
+        'swapped_fingerprint': hex(await v2oSwapped.fingerprint()),
+        'swapped_list_json': jsonEncode(v2oSwapped.toJson()),
+        'sig_stripped_list_json': jsonEncode(sigStripped.toJson()),
       },
     },
     'account': {

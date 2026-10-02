@@ -191,20 +191,42 @@ input = utf8("z-devlist-v1:") || utf8(decimal(version) || ":") || eds[0] || eds[
 sig   = Ed25519.sign(accountEdSeed, input)
 
 // v2 (ADR 0010): also bind every field a certificate carries, in deviceEdPub order
-input2 = utf8("z-devlist-v2:") || utf8(decimal(version) || ":") ||
-         for each device, ordered by deviceEdPub:
-             deviceEdPub || deviceXPub || u16be(len(utf8(id))) || utf8(id)
-sig2   = Ed25519.sign(accountEdSeed, input2)      // on a current list; absent on a legacy one
+content = utf8(decimal(version) || ":") ||
+          for each device, ordered by deviceEdPub:
+              deviceEdPub || deviceXPub || u16be(len(utf8(id))) || utf8(id)
+input2  = utf8("z-devlist-v2:") || content
+sig2    = Ed25519.sign(accountEdSeed, input2)   // beside sig, on a dual-signed list
+
+// v2-only (ADR 0017 stage 2): the same content, under a context of its own
+input3  = utf8("z-devlist-v3:") || content
+sig3    = Ed25519.sign(accountEdSeed, input3)   // alone, on a v2-only list
 
 JSON: { "acct":b64(accountEdPub), "ver":version, "devs":[deviceCert...],
-        "sig":b64(sig), "sig2":b64(sig2) }        // "sig2" omitted when absent
+        "sig":b64(sig), "sig2":b64(sig2), "sig3":b64(sig3) }
+                                                // a member is omitted when that
+                                                // signature is absent
 ```
 
-A receiver MUST check that `acct` is the account key it already holds for
-that contact, verify every certificate (§3.1) and `sig`, and reject a list
-whose `ver` is lower than the highest verified version it already holds (an
-equal version is a repeat and may be re‑applied). It then fans messages out to
-exactly the listed devices (§9) and accepts messages only from them.
+A list has one of three shapes, and only three: `sig` alone (a list from before
+ADR 0010), `sig` and `sig2` (dual‑signed: what every current client signs —
+stage 1 of ADR 0017), or `sig3` alone (v2‑only: stage 2 of ADR 0017; see below).
+Any other combination — no signature, `sig2` alone, `sig3` beside `sig` or
+`sig2` — is malformed. A signature member that is present MUST be a base64
+string: a list carrying `sig`, `sig2` or `sig3` with any other value — `null`
+included — is malformed too, whatever the rest of it is. (Present‑but‑null is
+not absent. Read as absent, `{sig, sig2, "sig3": null}` would be a dual‑signed
+list and `{"sig": null, sig3}` a v2‑only one, while a reader going by the
+members present refuses both; one rule, the strict one, keeps every reader at
+one answer.)
+
+A receiver MUST refuse a malformed list before it checks any signature. It MUST
+check that `acct` is the account key it already holds for that contact, verify
+every certificate (§3.1) and every signature the list carries, each over its own
+input — `sig` over `input`, `sig2` over `input2`, `sig3` over `input3` — and
+reject a list whose `ver` is lower than the highest verified version it already
+holds (an equal version is a repeat and may be re‑applied). It then fans
+messages out to exactly the listed devices (§9) and accepts messages only from
+them.
 
 **A second signature (ADR 0010).** The v1 `input` covers the version and the
 membership and nothing more; each device's `deviceXPub` and `id` are bound only
@@ -218,14 +240,77 @@ length‑prefixed with a big‑endian u16 because it is variable and is not the 
 field of its element.
 
 A receiver MUST also verify `sig2` whenever the list carries it, so a forged
-`sig2` fails outright; and it MUST enforce a floor per contact account: it
-records the highest `ver` at which it has seen a valid `sig2`, and MUST refuse a
-list that omits `sig2` whose `ver` is above that floor — a stripped‑`sig2`
-downgrade cannot be replayed at a higher version. A list that omits `sig2` at a
-`ver` at or below the floor is verified on `sig` alone. The fingerprint (§3.6)
-and the post‑quantum signature (§18.9) both follow the format the list was
-signed under — v2 when `sig2` is present, v1 otherwise — a property of the list
-object, discovered when it verifies.
+`sig2` fails outright — on a dual‑signed list both signatures must verify.
+
+**A sole signature over its own input (ADR 0017).** `sig2` is only ever made
+beside `sig`. A v2‑only list's one signature is `sig3`, over `input3`: the
+content of `input2` under the context `z-devlist-v3:`. The two differ because a
+list with one signature must not be obtainable from a list with two by deleting
+one. Every dual‑signed list carries a genuine `sig2`, and anyone who passes a
+list on — the log's operator included, who can open a value and seal it again
+(§19.1) — could otherwise delete `sig` and present what is left as a v2‑only
+list: one the account never sent, fingerprinted over another input than every
+other reader holds for that version. `{sig2}` is malformed, and a `sig2` moved
+into `sig3` does not verify over `input3`. The three contexts share the
+`z-devlist-vN:` form, so the inputs differ in one byte at the same offset and
+none can equal another.
+
+**What a list commits to (ADR 0017).** The list's fingerprint (§3.6) and the
+input of its post‑quantum signature (§18.9) are taken over one of its inputs,
+chosen by the list itself:
+
+> The fingerprint and the ML‑DSA input follow the strongest signature that
+> is *alone*: v1 while a v1 signature is produced; once it is not, the input
+> of the one signature the list carries.
+
+So a list that carries `sig` — alone or beside `sig2` — commits to `input`, and
+a v2‑only list commits to `input3`. It is the v1 signature's presence that
+decides because a client from before ADR 0010 admits a list on `sig`, knows only
+`input`, and computes the fingerprint and checks the ML‑DSA over it; while lists
+are still signed so that such a client can read them, every reader has to commit
+to the same bytes it does, or the two would hold one list at one version and
+disagree about its fingerprint. A list without `sig` is one that client cannot
+read at all (it does not parse there), so committing to `input3` — which also
+names each device's ratchet key — loses nothing. The rule reads only the list,
+so two parties holding the same bytes always agree.
+
+**The floor, per contact account, in three levels.** A receiver MUST record how
+far each contact account's signing has moved, and MUST refuse a list below that
+point:
+
+| level | reached when | refused from then on |
+|---|---|---|
+| 0 | nothing yet | nothing (beyond the rules above) |
+| 1 | a valid `sig2` or `sig3` has been seen (ADR 0010, ADR 0017); the receiver records the highest `ver` at which one was | a list that carries neither with a `ver` above that floor — a downgrade that strips the ratchet‑key signature cannot be replayed at a higher version. A list that carries neither at or below the floor is verified on `sig` alone |
+| 2 | a v2‑only list (`sig3` alone) has been installed (ADR 0017 stage 2) | any list that carries `sig` — dual‑signed or v1‑only, at any version, the held one included |
+
+At level 2 a downgrade cannot be expressed: the account has stopped producing v1
+signatures, so a list from it that carries one is a forger putting back the
+format whose fingerprint is blind to a ratchet key, or a build that went
+backwards, and a receiver cannot tell those apart. (The reference client does
+not store level 2 separately: an account is at level 2 exactly when the list
+held for it is v2‑only, since nothing at that level can replace it with a list
+carrying `sig` — and only the account can raise it, since only the account can
+sign `sig3`.) In‑band, a refusal under the floor is silent, as a list that fails
+to verify is: nothing is installed and nobody is told. That is also what keeps
+it from accusing an innocent account — the gossip of §3.6 goes on comparing the
+account's own claims with the list still held, and they agree. A list refused
+when it comes from the log is not silent: the log check reports a conflict — the
+log's list refused by the device‑list rules — which holds sends to the account,
+as an entry that does not open does (§19, `adr/0006`).
+
+**The v2‑only signer (ADR 0017 stage 2b) is built and switched off.** Every
+current client reads all three shapes. None signs `sig3` until the constant
+`devlistSignV2Only` (`protocol/lib/src/multidevice.dart`) is set, which is gated
+on every client running at least the release that taught readers the third shape
+— a client before it cannot parse a list without `sig`. When it is set, a root
+moves its account's list once to the next version, signed with `sig3` alone, and
+sends it to its own devices, its contacts and the log (§19.6); a v2‑only list is
+therefore never at version 1, the baseline a contact computes for itself over
+`input` (§3.6). A root that has signed v2‑only keeps signing `sig3` alone on
+every build that can read it, whatever that build's constant says: re‑signing
+its current version the other way would give the version a second fingerprint
+(§19.8).
 
 ### 3.5 Legacy mapping
 
@@ -258,15 +343,26 @@ It commits to the exact `(version, sorted deviceEdPubs)`, so two parties
 holding the same list compute the same 16 bytes however each obtained it. A
 one‑device account's baseline is `fp` at `version = 1` over its single device.
 
-Since ADR 0010 the fingerprint follows the format the list was *signed* under:
-it is `SHA‑256(input2)[0..16]` over the v2 input (§3.4) when the list carries
-`sig2`, and the v1 fingerprint above otherwise. A v2 fingerprint therefore also
-commits to each device's `deviceXPub` and `id`, and moves when a ratchet key
-does — which the v1 fingerprint was blind to. Because the format is a property
-of the list object, two parties holding the same list bytes still compute the
-same 16 bytes, and a list already gossiped here or committed to the log (§19)
-under v1 keeps its v1 fingerprint, so the cross‑checks above raise no false
-conflict at the switch‑over.
+Which input the fingerprint is over is decided by the list, by the rule in §3.4:
+the strongest signature that is alone. A list that carries `sig` — every list a
+client signs today, dual‑signed since ADR 0010 — has the v1 fingerprint above; a
+v2‑only list (`sig3` alone, ADR 0017 stage 2) has `SHA-256(input3)[0..16]`, over
+the v2 content under its own context. That one also commits to each device's
+`deviceXPub` and `id`, and moves when a ratchet key does — which the v1
+fingerprint is blind to. Because the rule reads only the list, two parties
+holding the same list bytes compute the same 16 bytes; a client from before ADR
+0010, which knows only the v1 input, agrees with a current one about every list
+it can read; and a list already gossiped here or committed to the log (§19)
+keeps the fingerprint it had, so no cross‑check raises a false conflict when
+signing moves to v2‑only. Nothing can make a list report another list's
+fingerprint by deleting a signature: a dual‑signed list with `sig` deleted is
+malformed (§3.4). (Until ADR 0017 this paragraph said the fingerprint followed
+`sig2` wherever it was present; that is what made a 3.5.7 client and a current
+one disagree about the same dual‑signed list.)
+
+The baseline is always the v1 fingerprint: a contact computes it itself, from
+the one device in the code it scanned, and that code does not carry the device
+id `input3` commits to. This is why a v2‑only list is never at version 1 (§3.4).
 
 **Claim and echo.** Every inner message (§6.1) MAY carry:
 
@@ -2041,18 +2137,28 @@ something the user did on this device.
 ### 18.9 A post-quantum signature over the device list
 
 The account signs its device list under ML‑DSA‑65 as well as Ed25519, over
-**the same bytes the list itself is signed under** (§3.4) — the v2 input when
-the list carries `sig2`, the v1 input otherwise (ADR 0010):
+**the input the list commits to** (§3.4) — the same input its fingerprint is
+over, chosen by the same rule: the strongest signature that is alone (ADR
+0017):
 
 ```
-input  = the §3.4 signing input for this list    // z-devlist-v2 when sig2 is present, else z-devlist-v1
-sig    = Ed25519.Sign(account_ed_sk,  input)     carried in the list, as today
-mlsig  = ML-DSA-65.Sign(account_ml_sk, input)    delivered separately
+input  = the §3.4 commitment input for this list  // z-devlist-v1 while the list carries sig,
+                                                  // z-devlist-v3 when it carries sig3 alone
+sig    = Ed25519.Sign(account_ed_sk,  input)      carried in the list, as today
+mlsig  = ML-DSA-65.Sign(account_ml_sk, input)     delivered separately
 ```
 
-The post‑quantum half thus tracks the classical `sig2`: a v2 list's `mlsig`
-covers what `sig2` covers, and a legacy v1 list is still covered over the v1
-input without reissue.
+So the post‑quantum half covers the v1 input on every list that carries `sig`
+— every list signed today, which a client from before ADR 0010 can therefore
+still check (it verifies `mlsig` over the v1 input unconditionally, and a v2
+input there was the false `pqSignatureMissing` of ADR 0017) — and `input3` on a
+v2‑only list, where it covers what `sig3` covers: bytes no `mlsig` made for an
+earlier list covers, the v2 input that clients between ADR 0010 and ADR 0017
+signed under ML‑DSA included. A legacy v1 list is still covered over the v1
+input without reissue. A verifier MUST refuse a malformed list (§3.4) before it
+checks `mlsig`: deleting `sig` from a dual‑signed list leaves the v1 input as
+it was, so that list's own `mlsig` would otherwise still verify over what is
+left.
 
 **Over the list, not over each certificate**, and that is the security
 property rather than an economy. Consider the adversary phase 13 exists for:
@@ -2065,16 +2171,21 @@ Every check passes and the honest device has been excluded, which is
 version, so neither can be changed. See `adr/0004` for the measurements and
 the options rejected.
 
-**And, on a v2 list, over the ratchet keys.** Membership and version are the
-coverage a v1 input already gave the post‑quantum half; they leave one field
-open. Take a genuine hybrid list, keep every device Ed key so membership,
-routing and the fingerprint are untouched, replace one device's `deviceXPub`
+**And, on a v2‑only list, over the ratchet keys.** Membership and version are
+the coverage a v1 input already gave the post‑quantum half; they leave one
+field open. Take a genuine hybrid list, keep every device Ed key so membership,
+routing and the v1 fingerprint are untouched, replace one device's `deviceXPub`
 with a key the adversary holds, forge the classical signatures, and replay the
 genuine `mlsig` — which was made over a v1 input that never named `deviceXPub`,
 so it still verifies. Contacts open ratchets to the adversary's key. The v2
-input closes this: it adds each device's `deviceXPub` and `id`, so on a list
-that carries `sig2` the `mlsig` is over the new ratchet key, and the replayed
-one fails. `HybridDeviceCertificate` — the per‑certificate object whose
+input closes this: it adds each device's `deviceXPub` and `id`. On a
+dual‑signed list it is closed by `sig2` alone, classically — the `mlsig` is held
+at the v1 input there (ADR 0017), so against an adversary who has broken
+Ed25519 the replay still passes the post‑quantum check while dual‑signing
+lasts; on a v2‑only list (`sig3` alone) the `mlsig` is over the new ratchet
+key as well, and the replayed one fails. That is the commitment ADR 0017's
+stage 2 restores, and it takes effect when the v2‑only signer is switched on
+(§3.4). `HybridDeviceCertificate` — the per‑certificate object whose
 post‑quantum half once covered `deviceXPub` — is retained only as the subject
 of the frozen `device_cert_v3` vector and is not constructed; the coverage it
 offered is given to the list signature instead (`adr/0004`, `adr/0010`).
@@ -2225,7 +2336,17 @@ leafInput = utf8("z-kt-leaf-v1:") || label || u64be(version) || fp || SHA-256(va
 
 `fp` is the §3.6 fingerprint of the list in `value`; `ts` is the log's
 clock at acceptance in milliseconds since the epoch. Entries are numbered
-from 0 in acceptance order; an entry's `index` is its leaf index.
+from 0 in acceptance order; an entry's `index` is its leaf index. Only a client
+computes `fp` — the log, its mirrors and its witness treat it as sixteen opaque
+bytes — and it computes it by §3.6's rule from the list it signed: over the v1
+input for a list that carries `sig`, over `input3` for a v2‑only one (`sig3`
+alone). A reader that opens `value` derives it the same way from the list
+inside, and an entry whose list is malformed (§3.4), does not verify, or does
+not give the entry's `fp` is not this account's list (the reference client
+treats it as one that does not open, per `adr/0006`'s table). That matters
+because the log's operator can open a value (§19.1): a dual‑signed list it
+served with `sig` deleted, under any `fp`, is a conflict at every reader, not a
+list.
 
 ### 19.4 Signed tree heads
 
@@ -2364,6 +2485,14 @@ A device that does not hold the account root judges only versions it has
 seen: it learns lists by self-sync and may skip versions, so a version it
 never saw is not evidence. A version it HAS seen, carrying a different
 fingerprint, is a contradiction on any device.
+
+A change in how the account signs is not an exception to that, and needs
+none. Both migrations so far move the fingerprint by publishing at a NEW
+version — ADR 0010's dual-signed republish, and ADR 0017's v2-only one (§3.4),
+which a root performs once when its v2-only signer is switched on — so the old
+`(version, fingerprint)` stays what it was in the log and in the account's own
+record, and the new one is a version the account issued. A version is never
+re-signed into a second fingerprint.
 
 ### 19.9 Mirrors and witnesses
 

@@ -26,6 +26,67 @@ import 'util.dart';
 const String deviceCertContext = 'z-device-cert-v1:';
 const String accountCodePrefix = 'zc2.';
 
+/// Stage 2b of ADR 0017: a root signs its device lists v2-only — with `sig3`
+/// alone, over the v2 content under a context of its own
+/// ([SignedDeviceList.signingInputV3]) — and produces neither the v1 `sig` nor
+/// the `sig2` that sits beside it. **Off.**
+///
+/// While this is `false` nothing has changed from stage 1: [AccountIdentity
+/// .signDeviceList] dual-signs, every list reports the v1 fingerprint and its
+/// ML-DSA is over the v1 input, byte for byte as before. What the release that
+/// carries it does change is the reading side (stage 2a, always on): every
+/// client now verifies, fingerprints and ML-DSA-checks a list signed with
+/// `sig3` alone, and refuses any list in a shape other than the three the
+/// protocol defines — see [SignedDeviceList.hasValidShape] and
+/// [SignedDeviceList.commitmentInput].
+///
+/// Setting it to `true` is the whole of the flip. On its next start each root
+/// re-signs its account's list once, at the next version, with `sig3` alone
+/// (the app's `_migrateDeviceListToV2Only`), and sends it to its own devices,
+/// to every contact and to the log; the list's fingerprint and its ML-DSA then
+/// cover each device's ratchet key, and from then on every list it signs is
+/// v2-only. A contact that has seen such a list refuses any later list from
+/// that account that carries a v1 signature.
+///
+/// So the flip is one way, by design. Turning this back to `false` does not
+/// un-flip an account that has moved: the stored state decides, not this
+/// constant, and a root that has signed v2-only keeps signing v2-only on any
+/// build from this release on — one that turns the constant back, a
+/// downgrade to this release, a post-flip backup restored onto it. Were it
+/// otherwise, the version it re-signed would gain a second fingerprint, and
+/// every contact would raise a split alarm. Turning the constant off only
+/// stops roots that have not moved from moving. A build OLDER than this
+/// release cannot read a v2-only list at all, and cannot even start on a
+/// vault that holds a contact's: going below this release after the flip is
+/// not supported.
+///
+/// What must be true before flipping it, and both halves matter:
+///
+///  * no client from the 3.5.7 era is left. Such a client verifies `sig` and
+///    nothing else; it is what stage 1 dual-signs for. The evidence is the one
+///    `RELAY_AUTH_V1` in `server/server.js` waits on: the relay's
+///    `z_auth_v1_total` at zero for as long as the operator cares to wait.
+///  * no client from before stage 2a is left either — which is the real floor,
+///    and the stricter one. Every build before the release that introduced this
+///    constant reads `sig` unconditionally when it parses a list, so a list
+///    without it is thrown away unread. To that client a flipped account's new
+///    devices do not exist, its user is told after the grace that the
+///    contact's list update never arrived, and the account's new log entry
+///    does not open as its list — which the log check treats as a conflict
+///    and holds sends to that account. Its own linked devices on such a build
+///    never learn the account's list, and raise a false own-account alert
+///    (an unissued list) when contacts echo the version they cannot parse.
+///    "No v1 signer left" is therefore not enough; the flip waits until
+///    everyone — linked devices included — runs at least the release that
+///    shipped this line (ADR 0017, "Stage 2").
+///
+/// Tests turn the signer on for one service at a time through
+/// `ChatService.init(signDevlistV2Only:)` and for one call through
+/// [AccountIdentity.signDeviceList]'s `v2Only`; the constant itself is read
+/// nowhere else. The commit that flips it also updates the tests written for
+/// stage 1 — ADR 0017 lists the ones a run with it on turned up.
+const bool devlistSignV2Only = false;
+
 final _ed = Ed25519();
 final _x = X25519();
 
@@ -345,20 +406,40 @@ class AccountIdentity {
   /// which devices make up this account, at a monotonic [version]. Contacts
   /// verify it against the account key and update their fan-out set. Requires
   /// the account root.
+  ///
+  /// Dual-signed (`sig` and `sig2`) unless [v2Only] (ADR 0017 stage 2b), which
+  /// signs `sig3` alone instead. It defaults to [devlistSignV2Only] — off — and
+  /// the app passes it explicitly, so that a test can turn it on for one
+  /// account.
   Future<SignedDeviceList> signDeviceList(
-      List<DeviceCertificate> devices, int version) async {
+      List<DeviceCertificate> devices, int version,
+      {bool v2Only = devlistSignV2Only}) async {
     final seed = accountEdSeed;
     if (seed == null) {
       throw StateError('this device does not hold the account root');
     }
     final kp = await _ed.newKeyPairFromSeed(seed);
+    if (v2Only) {
+      // Stage 2: one signature, over an input no dual-signed list is ever
+      // signed over (see [SignedDeviceList.signingInputV3] for why).
+      final sig3 = await _ed.sign(
+        SignedDeviceList.signingInputV3(version, devices),
+        keyPair: kp,
+      );
+      return SignedDeviceList(
+        accountEdPub: accountEdPub,
+        version: version,
+        devices: devices,
+        sig3: Uint8List.fromList(sig3.bytes),
+      );
+    }
+    // ADR 0010: dual-sign. `sig` (v1) keeps a pre-0010 contact verifying; `sig2`
+    // covers the ratchet keys and ids too, and its presence makes this a v2
+    // list, which the floor rule then requires.
     final sig = await _ed.sign(
       SignedDeviceList.signingInput(version, devices),
       keyPair: kp,
     );
-    // ADR 0010: dual-sign. `sig` (v1) keeps a pre-0010 contact verifying; `sig2`
-    // covers the ratchet keys and ids too, and its presence makes this a v2
-    // list — the fingerprint follows it and the floor rule requires it.
     final sig2 = await _ed.sign(
       SignedDeviceList.signingInputV2(version, devices),
       keyPair: kp,
@@ -486,24 +567,58 @@ class SignedDeviceList {
   final Uint8List accountEdPub;
   final int version;
   final List<DeviceCertificate> devices;
-  final Uint8List sig;
+
+  /// The account Ed25519 signature over [signingInput], the frozen v1 format.
+  /// Alone on a list from before ADR 0010, and beside [sig2] on every list
+  /// signed until the stage-2 signer is switched on (ADR 0017). A v2-only list
+  /// carries neither: its one signature is [sig3].
+  final Uint8List? sig;
 
   /// The account Ed25519 signature over [signingInputV2] — the v2 format that
-  /// also covers each device's X25519 ratchet key and id (ADR 0010). Absent on
-  /// a v1 list from a pre-0010 client; present on every list a current client
-  /// signs. Its presence is what makes this a "v2 list": the fingerprint
-  /// follows it, and the app refuses a later version from an account without it
-  /// (the floor rule). Verifying what is present here and requiring what the
-  /// floor demands there is the split ADR 0010 draws.
+  /// also covers each device's X25519 ratchet key and id (ADR 0010). Never
+  /// alone: it is made beside [sig], on every dual-signed list, and a list that
+  /// carries it without [sig] is a dual-signed list with its v1 signature
+  /// deleted, which [verify] refuses. Its presence makes a list a "v2 list" for
+  /// the floor (the app refuses a later version from an account without it);
+  /// verifying what is present here and requiring what the floor demands there
+  /// is the split ADR 0010 draws.
   final Uint8List? sig2;
+
+  /// The account Ed25519 signature over [signingInputV3], and the only
+  /// signature a v2-only list carries (ADR 0017 stage 2). Never beside [sig]
+  /// or [sig2]: a list that carries it with either is refused.
+  final Uint8List? sig3;
 
   SignedDeviceList({
     required this.accountEdPub,
     required this.version,
     required this.devices,
-    required this.sig,
+    this.sig,
     this.sig2,
+    this.sig3,
   });
+
+  /// The three shapes a list can have, and the only three (ADR 0017):
+  ///
+  ///  * `{sig}` — a list from before ADR 0010;
+  ///  * `{sig, sig2}` — dual-signed: every list signed until the stage-2
+  ///    signer is switched on;
+  ///  * `{sig3}` — v2-only (stage 2).
+  ///
+  /// Anything else is malformed, and [verify] refuses it before it checks a
+  /// signature: no signature at all; `sig2` alone, which is what deleting `sig`
+  /// from any dual-signed list leaves; `sig3` beside `sig` or `sig2`. The shape
+  /// is checked, not inferred, because a reader must not be able to turn one
+  /// shape into another by taking something away. (On the wire a member is
+  /// present or absent; a `null` one does not parse at all — [fromJson].)
+  bool get hasValidShape {
+    if (sig3 != null) return sig == null && sig2 == null;
+    return sig != null;
+  }
+
+  /// Signed with `sig3` and nothing else: a stage-2, v2-only list (ADR 0017).
+  /// A list carrying `sig2` alone is not one — see [hasValidShape].
+  bool get isV2Only => sig3 != null && sig == null && sig2 == null;
 
   static Uint8List signingInput(int version, List<DeviceCertificate> devices) {
     final eds = [for (final d in devices) d.deviceEdPub]..sort(_lexCompare);
@@ -521,11 +636,42 @@ class SignedDeviceList {
   /// key, as in v1; within a device the id is length-prefixed with a u16 because
   /// it is variable and is not the last field of its element.
   static Uint8List signingInputV2(
-      int version, List<DeviceCertificate> devices) {
+          int version, List<DeviceCertificate> devices) =>
+      _v2Content('z-devlist-v2:', version, devices);
+
+  /// The input a v2-only list's [sig3] is made over (ADR 0017 stage 2): byte
+  /// for byte the content of [signingInputV2] — the version, then each
+  /// device's Ed25519 key, ratchet key and length-prefixed id, in the same
+  /// order — under the context `z-devlist-v3:` instead of `z-devlist-v2:`.
+  ///
+  /// Why a context of its own. A list with one signature must not be
+  /// obtainable from a list with two by taking one away. `sig2` is made beside
+  /// `sig`, over the v2 input; were a v2-only list signed over those same
+  /// bytes, deleting `sig` from ANY dual-signed list the account ever signed
+  /// would leave a list that verifies — fingerprinted over a different input
+  /// from the one every other reader holds for that version, and lifting a
+  /// contact's floor to a level the account never reached. Deleting is within
+  /// reach of anyone who passes a list on, the transparency-log operator
+  /// included: a log value is sealed under a key derived from the account's
+  /// PUBLIC key (§19.1), so the operator can open one, delete `sig` and seal
+  /// it again. Under `z-devlist-v3:` nothing signed for a dual-signed list
+  /// verifies alone, and a `sig2` moved into `sig3` does not verify either.
+  ///
+  /// Why this string. It keeps the `z-devlist-vN:` form of the other two
+  /// inputs, so the three differ in one byte at the same offset and no input
+  /// of one kind can equal an input of another; no other context the account
+  /// key signs begins with `z-devlist-`. The "v3" counts the inputs a list is
+  /// signed over, not formats of its content: the content is v2's.
+  static Uint8List signingInputV3(
+          int version, List<DeviceCertificate> devices) =>
+      _v2Content('z-devlist-v3:', version, devices);
+
+  static Uint8List _v2Content(
+      String context, int version, List<DeviceCertificate> devices) {
     final sorted = [...devices]
       ..sort((a, b) => _lexCompare(a.deviceEdPub, b.deviceEdPub));
     return concatBytes([
-      utf8.encode('z-devlist-v2:'),
+      utf8.encode(context),
       utf8.encode('$version:'),
       for (final d in sorted) ...[
         d.deviceEdPub,
@@ -536,49 +682,97 @@ class SignedDeviceList {
     ]);
   }
 
-  /// A short (16-byte) commitment to this list — the first half of the SHA-256
-  /// of the bytes the account key signs. Because it depends only on the version
-  /// and the (sorted) device Ed25519 keys, two parties that hold the same logical
-  /// device set at the same version compute the same fingerprint regardless of
-  /// how each learned it. This is the value gossiped for device-list transparency
-  /// (7.7a) and the leaf a future transparency log (7.7b) would commit to.
+  /// What this list commits to: the bytes its fingerprint is taken over, and
+  /// the bytes the account's ML-DSA signature over it (§18.9) is made over.
+  /// **The rule, written down once** — [fingerprint] here and
+  /// `_devlistSigningInputFor` in `identity_v3.dart` both take it from this
+  /// getter and from nowhere else (ADR 0017):
   ///
-  /// It follows the **v1** commitment while any client in the field still signs
-  /// v1 — which today every list does, because the migration dual-signs ([sig] +
-  /// [sig2]) and so a v1 signature is always present. A not-yet-migrated (pre-0010)
-  /// contact can only compute the v1 fingerprint; if a current client reported the
-  /// v2 one for the same list, both sides would hold the same list at the same
-  /// version and disagree about its fingerprint — the one thing each is built to
-  /// treat as an attack. That was the mixed-version P0 (ADR 0017). The v2
-  /// commitment ([deviceListFingerprintV2]), which also covers each device's
-  /// ratchet key, takes over only in stage 2 — a later release that stops
-  /// producing v1 signatures at all, made safe once the v1 population is gone by
-  /// the downgrade floor (`cdev_sigfloor_`). The ratchet-key coverage is not lost
-  /// meanwhile: a present [sig2] must still verify in [verify], which is where a
-  /// list is actually admitted or refused.
-  Future<Uint8List> fingerprint() => deviceListFingerprint(version, devices);
+  /// > The fingerprint and the ML-DSA input follow the strongest signature
+  /// > that is *alone*: v1 while a v1 signature is produced; once it is not,
+  /// > the input of the one signature the list carries.
+  ///
+  /// So a list that carries `sig` — `{sig}` from before ADR 0010, or
+  /// `{sig, sig2}`, every list signed until the stage-2 signer is on — commits
+  /// to [signingInput], and a v2-only list, `{sig3}`, commits to
+  /// [signingInputV3], which also names each device's ratchet key and id.
+  ///
+  /// It is the presence of the v1 signature that decides, because of who else
+  /// reads the list. A client from before ADR 0010 admits a list on `sig`,
+  /// knows only the v1 input, and fingerprints it and checks its ML-DSA over
+  /// that. For as long as a list is signed so that such a client can read it,
+  /// every reader has to commit to the bytes that client does, or the two hold
+  /// one list at one version and disagree about its fingerprint — which each is
+  /// built to treat as an attack (the mixed-version P0). A v2-only list is one
+  /// that client cannot read at all, so nothing is lost by committing to the
+  /// wider input there, and that is where the ratchet-key commitment ADR 0010
+  /// asked for takes effect. The rule reads only the list itself, so two
+  /// parties holding the same bytes always agree.
+  ///
+  /// A list in no valid shape ([hasValidShape]) commits to nothing: [verify]
+  /// refuses it, `HybridDeviceListSignature.verifies` refuses it too, and no
+  /// reader computes anything from a list it has not admitted. (This getter
+  /// returns the v1 input for one; nothing uses it.)
+  Uint8List get commitmentInput => isV2Only
+      ? signingInputV3(version, devices)
+      : signingInput(version, devices);
+
+  /// A short (16-byte) commitment to this list: the first half of the SHA-256
+  /// of [commitmentInput]. Two parties holding the same list compute the same
+  /// value however each of them learned it. This is the value gossiped for
+  /// device-list transparency (7.7a) and the fingerprint a log leaf commits to
+  /// (7.7b, §19).
+  ///
+  /// For every list signed before the stage-2 signer is on that is the v1
+  /// fingerprint — every such list carries `sig` — and a v2-only list reports
+  /// [deviceListFingerprintV3], which also moves when a device's ratchet key
+  /// does. While the fingerprint is held at v1 the ratchet keys are still
+  /// covered where a list is admitted or refused: a present [sig2] must verify
+  /// in [verify].
+  Future<Uint8List> fingerprint() async =>
+      Uint8List.sublistView(await sha256Bytes(commitmentInput), 0, 16);
 
   Future<List<String>> routingIds() async =>
       [for (final d in devices) await d.routingId()];
 
+  /// Whether the account signed this list: it has one of the three shapes
+  /// ([hasValidShape]), every certificate verifies under the account key, and
+  /// so does every signature the list carries, each over its own input — `sig`
+  /// over [signingInput], `sig2` over [signingInputV2], `sig3` over
+  /// [signingInputV3]. On a dual-signed list BOTH must verify, so a forged
+  /// `sig2` cannot ride beside a genuine `sig`.
+  ///
+  /// The shape comes first, and it is what refuses a dual-signed list with
+  /// `sig` deleted: the `sig2` left behind is genuine and verifies over its
+  /// input, so no signature check could.
+  ///
+  /// Which of the valid shapes an account may still send is not decided here.
+  /// That is the floor in the app (`cdev_sigfloor_`, and its third level): a
+  /// policy about what this reader has already seen from the account, not a
+  /// fact about the signatures in front of it.
   Future<bool> verify() async {
     if (accountEdPub.length != 32 || devices.isEmpty) return false;
+    if (!hasValidShape) return false;
     for (final d in devices) {
       if (!await d.verify(accountEdPub)) return false;
     }
+    final s1 = sig, s2 = sig2, s3 = sig3;
     try {
       final key = SimplePublicKey(accountEdPub, type: KeyPairType.ed25519);
-      final okV1 = await _ed.verify(signingInput(version, devices),
-          signature: Signature(sig, publicKey: key));
-      if (!okV1) return false;
-      // A present v2 signature must verify — a forged-and-stripped `sig2`
-      // cannot pass here. An absent one is a v1 list, which is a policy question
-      // (the floor) and not a signature one, so it is not failed here.
-      final s2 = sig2;
-      if (s2 != null) {
-        final okV2 = await _ed.verify(signingInputV2(version, devices),
-            signature: Signature(s2, publicKey: key));
-        if (!okV2) return false;
+      if (s1 != null &&
+          !await _ed.verify(signingInput(version, devices),
+              signature: Signature(s1, publicKey: key))) {
+        return false;
+      }
+      if (s2 != null &&
+          !await _ed.verify(signingInputV2(version, devices),
+              signature: Signature(s2, publicKey: key))) {
+        return false;
+      }
+      if (s3 != null &&
+          !await _ed.verify(signingInputV3(version, devices),
+              signature: Signature(s3, publicKey: key))) {
+        return false;
       }
       return true;
     } catch (_) {
@@ -590,10 +784,20 @@ class SignedDeviceList {
         'acct': b64(accountEdPub),
         'ver': version,
         'devs': [for (final d in devices) d.toJson()],
-        'sig': b64(sig),
+        if (sig != null) 'sig': b64(sig!),
         if (sig2 != null) 'sig2': b64(sig2!),
+        if (sig3 != null) 'sig3': b64(sig3!),
       };
 
+  /// Parses a list from its JSON. A signature member is either absent or a
+  /// base64 string; one that is present with any other value — `null`
+  /// included — makes the list malformed, and this throws a
+  /// [FormatException] (§3.4). Absent and `null` are not the same thing here:
+  /// were a `null` member read as absent, `{sig, sig2, "sig3": null}` would
+  /// be admitted as dual-signed and `{"sig": null, sig3}` as v2-only, while a
+  /// reader that goes by which members are present refuses both — two
+  /// readers of one list reaching two answers. Every reader handed a list it
+  /// did not write catches the exception and treats the list as refused.
   static SignedDeviceList fromJson(Map<String, Object?> j) => SignedDeviceList(
         accountEdPub: unb64(j['acct'] as String),
         version: (j['ver'] as num).toInt(),
@@ -601,9 +805,23 @@ class SignedDeviceList {
           for (final d in (j['devs'] as List))
             DeviceCertificate.fromJson((d as Map).cast<String, Object?>())
         ],
-        sig: unb64(j['sig'] as String),
-        sig2: j['sig2'] == null ? null : unb64(j['sig2'] as String),
+        // A v2-only list has no `sig`. Every build before stage 2a cast this
+        // member to a String unconditionally, so such a list does not even
+        // parse there — the reason the flip waits for those builds to be gone.
+        sig: _signatureMember(j, 'sig'),
+        sig2: _signatureMember(j, 'sig2'),
+        sig3: _signatureMember(j, 'sig3'),
       );
+
+  static Uint8List? _signatureMember(Map<String, Object?> j, String key) {
+    if (!j.containsKey(key)) return null;
+    final value = j[key];
+    if (value is! String) {
+      throw FormatException(
+          'device list member "$key" is present but not a signature');
+    }
+    return unb64(value);
+  }
 }
 
 /// The device-list fingerprint for an arbitrary (version, device set), without
@@ -619,12 +837,25 @@ Future<Uint8List> deviceListFingerprint(
 
 /// The v2 device-list fingerprint (ADR 0010): the same truncated SHA-256, over
 /// [SignedDeviceList.signingInputV2], so it moves when a device's X25519 key or
-/// id does — the substitution the v1 fingerprint was blind to. A list carrying
-/// `sig2` reports this one from [SignedDeviceList.fingerprint].
+/// id does — the substitution the v1 fingerprint was blind to. What clients
+/// between ADR 0010 and ADR 0017 reported for a list carrying `sig2`; no list
+/// reports it now — one that carries `sig` reports [deviceListFingerprint], a
+/// v2-only one [deviceListFingerprintV3].
 Future<Uint8List> deviceListFingerprintV2(
         int version, List<DeviceCertificate> devices) async =>
     Uint8List.sublistView(
         await sha256Bytes(SignedDeviceList.signingInputV2(version, devices)),
+        0,
+        16);
+
+/// The fingerprint a v2-only list reports (ADR 0017 stage 2): the same
+/// truncated SHA-256, over [SignedDeviceList.signingInputV3]. It moves with a
+/// device's ratchet key or id, as the v2 one does, and differs from every v1
+/// and v2 fingerprint of the same version and set.
+Future<Uint8List> deviceListFingerprintV3(
+        int version, List<DeviceCertificate> devices) async =>
+    Uint8List.sublistView(
+        await sha256Bytes(SignedDeviceList.signingInputV3(version, devices)),
         0,
         16);
 

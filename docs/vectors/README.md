@@ -14,7 +14,7 @@ to a frozen file; the freeze test then pins the additions too.
 | `ratchet.json` | a complete two‑party Double Ratchet transcript (6 messages, 3 DH ratchet steps, one out‑of‑order delivery) with every intermediate key and state | §4, §5 |
 | `sealed_sender.json` | `zs1.` envelopes at four sizes (including both sides of the 1024‑byte bucket boundary) | §8 |
 | `attachments.json` | chunk nonces (incl. an index above 2³²), AEAD, chunk payloads, chunking | §7 |
-| `multidevice.json` | device certificates, `zc2.` account code, signed device list (unsorted input) and its transparency fingerprint, legacy mapping | §3 |
+| `multidevice.json` | device certificates, `zc2.` account code, signed device list (unsorted input) and its transparency fingerprint, legacy mapping — and, added beside the dual‑signed list without changing it, `device_list_v2_only`: the same account's list at the next version signed with `sig3` alone (ADR 0017 stage 2), over the v2 content under its own context, whose fingerprint is over that input — with the lists that must be refused: no signature at all; one device's `deviceXPub` replaced under the genuine `sig3`; the dual‑signed list with its `sig` deleted; its `sig2` moved into `sig3`; every other combination of the three signatures; and the valid lists with a signature member added as `null`, which do not parse | §3 |
 | `pairing.json` | pairing code text, rendezvous, relay identities, channel key, SAS, sealed enrollment | §10 |
 | `inner_messages.json` | the plaintext encoding of every inner kind (incl. `dlrm`) and the `dl`/`pdl` transparency members, plus the self‑sync envelope | §6, §9, §3.6 |
 
@@ -32,7 +32,7 @@ to a frozen file; the freeze test then pins the additions too.
 |---|---|---|
 | `mldsa65.json` | ML‑DSA‑65 known answers from seeds (`KeyGen_internal(zeta)`, deterministic signing with `rnd = 0^32`, verification, and a one‑byte tamper that must fail), plus the hybrid Ed25519 + ML‑DSA‑65 construction and the 32‑byte contact‑code commitment | §18.1, `adr/0003` |
 | `contact_code_v3.json` | the `zc3.` code end to end: identity seeds → keys → binding signature → routing id, the commitment over the ML‑DSA key, the encoded code and its JSON, the `pqid` inner message that delivers the key, and a substituted key that must be refused | §18.2 |
-| `device_cert_v3.json` | hybrid device certificates: the shared signing input, both signatures, and a forgery whose Ed25519 half is genuine over this device while its ML‑DSA half attests to another — plus safety number v2 over both key halves | §18.4, §18.5 |
+| `device_cert_v3.json` | hybrid device certificates: the shared signing input, both signatures, and a forgery whose Ed25519 half is genuine over this device while its ML‑DSA half attests to another — plus safety number v2 over both key halves; the account's ML‑DSA over its device list, held at the v1 input on a dual‑signed list (ADR 0017), and, added beside it, `device_list_v2_only`: the ML‑DSA over a list signed with `sig3` alone, which is over the v3 input and so refuses the ratchet‑key substitution the stage‑1 signature could not see — and the dual‑signed list with its `sig` deleted, which its own ML‑DSA still covers and which is refused for its shape | §18.4, §18.5, §18.9 |
 
 `kt/` pins the transparency log (PROTOCOL.md §19, `adr/0006`) — a service
 beside the protocol rather than a version of it, frozen on the same terms.
@@ -70,7 +70,8 @@ protocol version directories; it is frozen on the same terms
 
 ## Verifying
 
-Two independent verifiers run in CI:
+The verifiers CI runs — the reference implementation, and independent ones
+that share no code with it:
 
 ```
 cd protocol && dart test test/vectors_test.dart   # reference implementation reproduces the files bit-for-bit,
@@ -80,11 +81,24 @@ cd server   && node --test test/vectors.test.js   # clean-room Node.js implement
 pip install kyber-py==1.2.0 && python3 protocol/tool/verify_mlkem.py
                                                   # v2: ML-KEM-768 values re-derived by an independent
                                                   # FIPS 203 implementation (kyber-py)
+pip install dilithium-py==1.4.0 && python3 protocol/tool/verify_mldsa.py
+                                                  # v3: ML-DSA-65 values, the hybrid construction and the
+                                                  # device-list signatures, dual-signed and v2-only, by an
+                                                  # independent FIPS 204 implementation (dilithium-py)
 cd kt && node --test test/vectors.test.js         # the transparency log reproduces docs/vectors/kt bit-for-bit
 pip install cryptography && python3 kt/tools/verify_vectors.py
                                                   # and an implementation written from PROTOCOL.md §19 alone
                                                   # (hashlib + cryptography, no shared code) re-derives every value
 ```
+
+The device‑list values are re‑derived three times over, independently: by
+the Node file, by `verify_mldsa.py` and by `verify_vectors.py`. Each rebuilds a
+list's signing inputs from the list's own JSON and applies the rule for which
+one it commits to — the v1 input while the list carries `sig`, the v3 input
+once it carries `sig3` alone (PROTOCOL.md §3.6) — the three shapes a list may
+have, and that a signature member which is present is a signature, rather
+than reading the recorded field, so a vector that named the wrong input, a
+list with its `sig` deleted or one with a `null` member would be caught.
 
 The Node file is deliberately self‑contained (~800 lines including an
 HChaCha20 for XChaCha20‑Poly1305) and is a reasonable starting point for a

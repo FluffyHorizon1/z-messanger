@@ -452,24 +452,30 @@ enum DeviceAssurance {
   hybrid,
 }
 
-/// The bytes an account's device-list signatures cover (ADR 0010): the v2 input
-/// when the list carries `sig2`, the v1 input otherwise. Both the classical
-/// (`sig`/`sig2`) and post-quantum ([HybridDeviceListSignature]) halves use it,
-/// so the format is a property of the list — discovered when it verifies — and
-/// a v2 list gains ratchet-key coverage while a legacy v1 list stays verifiable
-/// under the bytes it was made over, with no reissue.
 /// The bytes the account's ML-DSA signs over, and that a verifier checks it
-/// against. Held at the **v1** input while any client in the field still signs
-/// v1 — today every list, since the migration dual-signs and a v1 `sig` is always
-/// present. A not-yet-migrated (pre-0010) client verifies the ML-DSA over the v1
-/// input unconditionally; signing it over v2 made that verification fail and
-/// raised a false `pqSignatureMissing` at every such contact (the mixed-version
-/// P0, ADR 0017). The v2 input — which also covers the ratchet keys — takes over
-/// in stage 2, alongside the fingerprint, once v1 signing stops and the downgrade
-/// floor (`cdev_sigfloor_`) makes it safe. This mirrors
-/// [SignedDeviceList.fingerprint], and for the same reason.
+/// against: [SignedDeviceList.commitmentInput], the same bytes the list's
+/// fingerprint is taken over. The rule lives there, once, and this cites it —
+/// the fingerprint and the ML-DSA input follow the strongest signature that is
+/// alone: v1 while a v1 signature is produced; once it is not, the input of
+/// the one signature the list carries (ADR 0017).
+///
+/// In practice: the **v1** input for every list that carries `sig`, which is
+/// every list signed until the stage-2 signer is on. A client from before ADR
+/// 0010 verifies the ML-DSA over the v1 input and nothing else; signing it over
+/// v2 while such clients could still read the list was the third symptom of
+/// the mixed-version P0, a false `pqSignatureMissing` at every one of them. The
+/// **v3** input — the v2 content, which also covers each device's ratchet key
+/// and id, under a context of its own — for a v2-only list, signed with `sig3`
+/// alone (stage 2): a list no such client can read. So the post-quantum
+/// commitment to the ratchet keys returns exactly when v1 signing stops, and
+/// it is over bytes no ML-DSA made for an earlier list covers — not the v1
+/// input, and not the v2 input that clients between ADR 0010 and ADR 0017
+/// signed under ML-DSA. The downgrade floor (`cdev_sigfloor_` and its third
+/// level) keeps a v1 list from being re-introduced underneath it. A list
+/// signed before ADR 0010 stays verifiable over the bytes it was made over,
+/// with no reissue.
 Uint8List _devlistSigningInputFor(SignedDeviceList list) =>
-    SignedDeviceList.signingInput(list.version, list.devices);
+    list.commitmentInput;
 
 /// The account's ML-DSA-65 signature over its device list (§18.9, ADR 0004).
 ///
@@ -489,13 +495,15 @@ class HybridDeviceListSignature {
   final Uint8List accountEdPub;
   final int version;
 
-  /// ML-DSA-65 over the device list's own signing input (ADR 0010): the v2
-  /// input when the list carries `sig2`, so the post-quantum half covers each
-  /// device's ratchet key and id as well as its Ed key; the v1 input for a
-  /// legacy list, so a signature made before 0010 still verifies without a
-  /// reissue. The classical half over the same bytes is `sig`/`sig2` on the
-  /// list, so no valid pair attests to a different device set — or, now, a
-  /// different ratchet key.
+  /// ML-DSA-65 over the list's commitment input
+  /// ([SignedDeviceList.commitmentInput]): the v1 input for a list that
+  /// carries `sig`, so a client from before ADR 0010 can still check it and a
+  /// signature made before 0010 still verifies without a reissue; the v3 input
+  /// for a v2-only list, signed with `sig3` alone, so the post-quantum half
+  /// covers each device's ratchet key and id as well as its Ed key. The
+  /// classical signature over the same bytes is on the list itself (`sig`, or
+  /// `sig3`), so no valid pair attests to a different device set — or, on a
+  /// v2-only list, a different ratchet key.
   final Uint8List mlSig;
 
   HybridDeviceListSignature({
@@ -534,12 +542,20 @@ class HybridDeviceListSignature {
 
   /// Checks this signature against a list and the account's ML-DSA key.
   ///
-  /// Every part must line up: the key must be the one this list claims, the
-  /// version must match, and the signature must cover the list's own signing
-  /// input. A caller that has not yet established [accountMlPub] against the
-  /// commitment from a scanned code (§18.2) has nothing to check with and
-  /// must hold the signature rather than accept it.
+  /// Every part must line up: the list must be in one of the three shapes the
+  /// protocol defines ([SignedDeviceList.hasValidShape]), the key must be the
+  /// one this list claims, the version must match, and the signature must
+  /// cover the list's own signing input. A caller that has not yet established
+  /// [accountMlPub] against the commitment from a scanned code (§18.2) has
+  /// nothing to check with and must hold the signature rather than accept it.
+  ///
+  /// The shape is checked here as well as in [SignedDeviceList.verify]
+  /// because deleting `sig` from a dual-signed list leaves its v1 input as it
+  /// was: without the check, that list's genuine ML-DSA would still verify
+  /// over the list `sig` was taken from, and the post-quantum half would vouch
+  /// for a list the account never sent.
   Future<bool> verifies(SignedDeviceList list, Uint8List accountMlPub) async {
+    if (!list.hasValidShape) return false;
     if (!constantTimeEquals(accountEdPub, list.accountEdPub)) return false;
     if (version != list.version) return false;
     try {

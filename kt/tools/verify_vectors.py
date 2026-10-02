@@ -6,8 +6,12 @@ Two implementations that share no code and agree on every byte is the
 standard the rest of the protocol is held to (verify_mlkem.py,
 verify_mldsa.py, the Node clean-room verifier); this is the log's turn. The
 Merkle hashing is RFC 9162 re-typed from the RFC, the map tree from §19.2,
-the leaf, head, publish and witness inputs from §19.3–19.6; Ed25519,
-ChaCha20-Poly1305 and HKDF come from `cryptography`.
+the leaf, head, publish and witness inputs from §19.3–19.6, and the device-list
+fingerprint a leaf carries from §3.4 and §3.6 (ADR 0017: the three shapes a
+list may have and the input each commits to, applied to the dual-signed list
+the log holds, to that list with its sig deleted and sealed again, and to a
+v2-only one); Ed25519, X25519, ChaCha20-Poly1305 and HKDF come from
+`cryptography`.
 
     pip install cryptography
     python3 kt/tools/verify_vectors.py          # from the repo root
@@ -23,6 +27,7 @@ import sys
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
     from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives import hashes
@@ -466,10 +471,182 @@ def check_kt_log():
     del held_versions
 
 
+# --- §3.4 / §3.6 the fingerprint a leaf carries -------------------------------------
+#
+# The log never computes a fingerprint: the client does, and a reader that opens
+# a value has to get the same 16 bytes from the list inside. A list has one of
+# three shapes, and only three (ADR 0017): {sig} (before ADR 0010), {sig, sig2}
+# (dual-signed) or {sig3} (v2-only). A signature member that is present is a
+# signature: one present as null (or anything but a string) makes the list
+# malformed. Any other shape — {sig2} alone, which is what
+# deleting sig from a dual-signed list leaves, or sig3 beside another — is
+# refused before a signature is checked, so a log operator who opens a value
+# (its key derives from the account's PUBLIC key, §19.1), deletes sig and seals
+# it again has made nothing a reader takes. Each signature is over its own
+# input: sig over v1, sig2 over v2, sig3 over v3 — the v2 content under the
+# context "z-devlist-v3:". What a list commits to is the strongest signature
+# that is alone: the v1 input while it carries sig, the v3 input once sig3 is
+# alone. Written from §3.4 and §3.6, like everything above.
+
+def devlist_v1_input(lst):
+    eds = sorted(b64(d["ded"]) for d in lst["devs"])
+    return b"z-devlist-v1:" + f"{lst['ver']}:".encode() + b"".join(eds)
+
+
+def devlist_v2_content(context, lst):
+    out = context + f"{lst['ver']}:".encode()
+    for d in sorted(lst["devs"], key=lambda d: b64(d["ded"])):
+        ident = d["id"].encode("utf-8")
+        out += b64(d["ded"]) + b64(d["dx"]) + len(ident).to_bytes(2, "big") + ident
+    return out
+
+
+def devlist_v2_input(lst):
+    return devlist_v2_content(b"z-devlist-v2:", lst)
+
+
+def devlist_v3_input(lst):
+    return devlist_v2_content(b"z-devlist-v3:", lst)
+
+
+def devlist_shape(lst):
+    return "+".join(k for k in ("sig", "sig2", "sig3") if k in lst)
+
+
+DEVLIST_SHAPES = {"sig", "sig+sig2", "sig3"}
+
+
+def devlist_committed_input(lst):
+    return devlist_v3_input(lst) if devlist_shape(lst) == "sig3" else devlist_v1_input(lst)
+
+
+def devlist_fingerprint(lst):
+    return sha256(devlist_committed_input(lst))[:16]
+
+
+def devlist_sigs_genuine(lst, acct_pub):
+    """Every signature the list carries verifies over its own input."""
+    return all(ed_verify(acct_pub, inp(lst), b64(lst[k]))
+               for k, inp in (("sig", devlist_v1_input), ("sig2", devlist_v2_input),
+                              ("sig3", devlist_v3_input)) if k in lst)
+
+
+def devlist_sig_members_well_formed(lst):
+    return all(isinstance(lst[k], str) for k in ("sig", "sig2", "sig3") if k in lst)
+
+
+def devlist_admitted(lst, acct_pub):
+    """§3.4 as a reader applies it, stage 2a included: signature members that
+    are signatures, one of the three shapes, the account key, every
+    certificate, and every signature present."""
+    if not devlist_sig_members_well_formed(lst):
+        return False
+    if devlist_shape(lst) not in DEVLIST_SHAPES:
+        return False
+    if b64(lst["acct"]) != acct_pub or not lst["devs"]:
+        return False
+    for d in lst["devs"]:
+        cert = b"z-device-cert-v1:" + b64(d["ded"]) + b64(d["dx"]) + d["id"].encode("utf-8")
+        if not ed_verify(acct_pub, cert, b64(d["sig"])):
+            return False
+    return devlist_sigs_genuine(lst, acct_pub)
+
+
+def check_devlist_fingerprints():
+    with open(os.path.join(DIR, "kt_log.json"), encoding="utf-8") as f:
+        v = json.load(f)
+    with open(os.path.join(DIR, "..", "v1", "multidevice.json"), encoding="utf-8") as f:
+        md = json.load(f)
+    acct = bytes.fromhex(md["account_ed_pub"])
+    eq(acct.hex(), v["accounts"]["alice"]["account_ed_pub"], "alice is the multidevice vector's account")
+
+    # A stage-1 list, as it sits in the log today: Alice v3 seals the
+    # dual-signed list, and its leaf's fingerprint is what the rule gives for it.
+    first = v["publishes"][0]
+    opened = open_value(acct, bytes.fromhex(first["value"]))
+    ok(opened is not None, "alice v3: the value opens")
+    sealed = json.loads(opened)
+    eq(devlist_shape(sealed), "sig+sig2", "alice v3: a dual-signed list")
+    ok(devlist_admitted(sealed, acct), "alice v3: a reader admits the list it opened")
+    eq(devlist_fingerprint(sealed).hex(), first["fingerprint"],
+       "alice v3: the rule applied to the opened list gives the leaf's fingerprint (v1: it carries sig)")
+
+    # What a log operator can do to that value: open it, delete sig, seal it
+    # again. The sig2 left behind is genuine over its own input, so only the
+    # shape can refuse the result — and does; so does moving sig2 into sig3.
+    stripped = {k: x for k, x in sealed.items() if k != "sig"}
+    eq(devlist_shape(stripped), "sig2", "alice v3, sig deleted: {sig2}")
+    ok(devlist_sigs_genuine(stripped, acct), "alice v3, sig deleted: the sig2 left is genuine")
+    ok(not devlist_admitted(stripped, acct), "alice v3, sig deleted: refused")
+    resealed = seal_value(acct, bytes(12), json.dumps(stripped, separators=(",", ":")).encode())
+    reopened = json.loads(open_value(acct, resealed))
+    ok(not devlist_admitted(reopened, acct), "alice v3, sig deleted and sealed again by the operator: refused")
+    relabelled = dict(stripped)
+    relabelled["sig3"] = relabelled.pop("sig2")
+    ok(not devlist_admitted(relabelled, acct), "alice v3, sig deleted and sig2 moved into sig3: refused")
+
+    # A stage-2 list: the same account at the next version, sig3 alone. What a
+    # flipped client publishes for it is the v3 fingerprint, and a reader that
+    # opened it would derive the same.
+    v2o = md["device_list_v2_only"]
+    lst = v2o["json"]
+    eq(devlist_shape(lst), "sig3", "v2-only list: sig3 alone")
+    eq(lst["ver"], sealed["ver"] + 1, "v2-only list: the next version")
+    ok(devlist_admitted(lst, acct), "v2-only list: admitted on sig3 alone")
+    eq(devlist_committed_input(lst).hex(), v2o["signing_input_v3"], "v2-only list: commits to the v3 input")
+    eq(devlist_v3_input(lst)[:13], b"z-devlist-v3:", "v2-only list: the v3 context")
+    eq(devlist_v3_input(lst)[13:], devlist_v2_input(lst)[13:], "v2-only list: the v3 input is the v2 content")
+    eq(devlist_fingerprint(lst).hex(), v2o["fingerprint"], "v2-only list: the fingerprint its leaf would carry")
+    eq(sha256(devlist_v1_input(lst))[:16].hex(), v2o["v1_fingerprint_not_reported"], "v2-only list: the v1 value, for contrast")
+    eq(sha256(devlist_v2_input(lst))[:16].hex(), v2o["v2_fingerprint_not_reported"], "v2-only list: the v2 value, for contrast")
+    ok(len({v2o["fingerprint"], v2o["v1_fingerprint_not_reported"], v2o["v2_fingerprint_not_reported"]}) == 3,
+       "v2-only list: three inputs, three different fingerprints")
+
+    refuse = v2o["must_refuse"]
+    bare = refuse["no_signature_json"]
+    eq(devlist_shape(bare), "", "must refuse: a list with no signature")
+    ok(not devlist_admitted(bare, acct), "must refuse: no signature, nothing admitted")
+    sw = refuse["swapped_ratchet_key"]
+    attacker = X25519PrivateKey.from_private_bytes(bytes.fromhex(sw["attacker_x_seed"])).public_key().public_bytes_raw()
+    eq(attacker.hex(), sw["attacker_x_pub"], "must refuse: the attacker's ratchet key from its seed")
+    moved = [d for d in sw["json"]["devs"] if d["id"] == sw["device_id"]][0]
+    eq(b64(moved["dx"]), attacker, "must refuse: the device now carries the attacker's key")
+    ok(ed_verify(acct, b"z-device-cert-v1:" + b64(moved["ded"]) + b64(moved["dx"]) + moved["id"].encode("utf-8"), b64(moved["sig"])),
+       "must refuse: its certificate is itself well signed (an Ed25519 forger's)")
+    eq(sw["json"]["sig3"], lst["sig3"], "must refuse: the genuine sig3, replayed")
+    ok(not devlist_admitted(sw["json"], acct), "must refuse: a replaced deviceXPub under sig3")
+    eq(devlist_committed_input(sw["json"]).hex(), sw["signing_input_v3"], "must refuse: the swapped list's v3 input")
+    eq(devlist_fingerprint(sw["json"]).hex(), sw["fingerprint"], "must refuse: the swapped list's fingerprint")
+    ok(sw["fingerprint"] != v2o["fingerprint"], "must refuse: the v3 fingerprint moves with the key")
+    eq(devlist_v1_input(sw["json"]), devlist_v1_input(lst), "must refuse: the v1 input could not have seen it")
+    eq(refuse["sig_stripped_json"], {k: x for k, x in md["device_list"]["json"].items() if k != "sig"},
+       "must refuse: the recorded stripped list is device_list without sig")
+    eq(refuse["sig_stripped_json"], stripped, "must refuse: and the one the log's value gives")
+    ok(not devlist_admitted(refuse["sig_stripped_json"], acct), "must refuse: device_list with sig deleted")
+    ok(not devlist_admitted(refuse["sig2_as_sig3_json"], acct), "must refuse: device_list's sig2 presented as sig3")
+    eq(sorted(s["shape"] for s in refuse["other_shapes"]),
+       ["sig+sig2+sig3", "sig+sig3", "sig2", "sig2+sig3"], "must refuse: every other combination")
+    for s in refuse["other_shapes"]:
+        eq(devlist_shape(s["json"]), s["shape"], f"must refuse: {{{s['shape']}}} is that shape")
+        ok(devlist_sigs_genuine(s["json"], acct), f"must refuse: every signature in {{{s['shape']}}} is genuine")
+        ok(not devlist_admitted(s["json"], acct), f"must refuse: {{{s['shape']}}} is refused for its shape")
+    # A valid list with a signature member added as null: refused, though read
+    # as absent every one of them would be admitted.
+    eq(len(refuse["null_members"]), 5, "must refuse: five lists with a null signature member")
+    for s in refuse["null_members"]:
+        m = s["member"]
+        ok(m in s["json"] and s["json"][m] is None, f"must refuse: a null {m}")
+        ok(not devlist_sig_members_well_formed(s["json"]), f"must refuse: a null {m} is not a signature")
+        ok(not devlist_admitted(s["json"], acct), f"must refuse: a list with a null {m} member")
+        absent = {k: x for k, x in s["json"].items() if k != m}
+        ok(devlist_admitted(absent, acct), f"must refuse: with the null {m} read as absent it would be admitted")
+
+
 def main():
     check_log_tree()
     check_map_tree()
     check_kt_log()
+    check_devlist_fingerprints()
     print(f"docs/vectors/kt: {checks} values reproduced or refused by an independent implementation")
     return 0
 

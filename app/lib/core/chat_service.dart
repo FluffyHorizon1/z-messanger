@@ -222,6 +222,10 @@ class ChatService extends ChangeNotifier implements KtHost {
     KtFetcher? ktFetcher,
     KtConfig ktConfig = KtConfig.defaults,
     int Function()? ktNow,
+    // The ADR 0017 stage-2b signer for this service. Production never passes
+    // it, so it is the protocol's constant — off; a test passes true to start
+    // one account as a build with the signer on (see [debugDevlistSignV2Only]).
+    bool signDevlistV2Only = devlistSignV2Only,
   }) async {
     final svc = ChatService._(
       vault: vault,
@@ -230,6 +234,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       displayName: displayName,
       transport: transport,
     );
+    svc._signerV2Only = signDevlistV2Only;
     svc.kt = KeyTransparency(
       vault: vault,
       host: svc,
@@ -271,6 +276,9 @@ class ChatService extends ChangeNotifier implements KtHost {
     // already holds a v1 fingerprint for. The local sign + record is awaited;
     // distribution to devices and contacts is durable and backgrounded.
     await svc._migrateDeviceListToV2();
+    // ADR 0017 stage 2b: the same once more for the v2-only signer, at the
+    // same point and for the same reason. Returns at once while it is off.
+    await svc._migrateDeviceListToV2Only();
     svc._schedulePqListDelivery(); // §18.9, on its own clock
 
     transport.onMessage = (m) => unawaited(svc._onInbound(m));
@@ -1665,9 +1673,13 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<bool> ktInstallFromLog(String rid, SignedDeviceList list) async {
     final contact = contacts[rid];
     if (contact == null) return false;
-    await _installContactDeviceList(contact, list, persist: true);
+    // Installed, and still the version held. The held version alone used to
+    // answer, which is as true of a list refused AT the held version as of
+    // one installed there — and the floor's third level refuses exactly
+    // there, so the log check would have confirmed a list it had refused.
+    final ok = await _installContactDeviceList(contact, list, persist: true);
     final ver = int.tryParse(await vault.kvGet('cdev_ver_$rid') ?? '0') ?? 0;
-    return ver == list.version;
+    return ok && ver == list.version;
   }
 
   @override
@@ -6270,7 +6282,9 @@ class ChatService extends ChangeNotifier implements KtHost {
     // Only an existing v1 list needs moving. A device that has never signed a
     // list (a fresh account) signs a v2 one the first time it does — there is
     // nothing published at an old version to conflict with — and a list we
-    // already hold as v2 is done. Both just mark the migration complete.
+    // already hold as v2 is done: dual-signed, or v2-only (ADR 0017 stage 2,
+    // whose `sig3` covers what `sig2` does). All just mark the migration
+    // complete.
     final ownJson = await vault.kvGet('own_list_json');
     SignedDeviceList? own;
     if (ownJson != null) {
@@ -6279,7 +6293,7 @@ class ChatService extends ChangeNotifier implements KtHost {
             (jsonDecode(ownJson) as Map).cast<String, Object?>());
       } catch (_) {}
     }
-    if (own == null || own.sig2 != null) {
+    if (own == null || own.sig2 != null || own.sig3 != null) {
       _v2MigrationDone = true;
       await vault.kvPut('devlist_v2_migrated', '1', sensitive: false);
       return;
@@ -6304,6 +6318,105 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
   }
 
+  /// ADR 0017 stage 2b: whether this service's root signs v2-only (`sig3`
+  /// alone) once its account has been moved there — that is, whether this
+  /// build moves an account that has not. Set from `init`'s
+  /// `signDevlistV2Only`, which is the protocol's [devlistSignV2Only] — off —
+  /// unless a test starts this one account as a build with the signer on.
+  /// Whether an account that HAS moved keeps signing v2-only is not this
+  /// switch's to say: see [_signsV2Only].
+  bool _signerV2Only = devlistSignV2Only;
+
+  /// The stage-2b signer as this service was started with it.
+  @visibleForTesting
+  bool get debugDevlistSignV2Only => _signerV2Only;
+
+  /// True once this account has been moved to a version it signs with `sig3`
+  /// alone — by this build or by any earlier one, as the vault records — and
+  /// from then on every list this root signs is v2-only. Never true before the
+  /// move, even with the signer on, and never false after it, even with the
+  /// signer off: in both directions so that no version this device has signed
+  /// is ever signed again the other way. A version keeps the fingerprint it
+  /// was first published with (PROTOCOL §19.8).
+  bool _signsV2Only = false;
+
+  /// ADR 0017 stage 2b: the one-time republish when the v2-only signer is on —
+  /// [_migrateDeviceListToV2] once more, a stage later, for the same reasons.
+  ///
+  /// On the first start with the signer on, a root moves its account's list to
+  /// the NEXT version and signs it there with `sig3` alone, then hands it to
+  /// its own devices, to every contact and to the log by the paths a new
+  /// device's list takes. The version moves rather than the current one being
+  /// re-signed because a version keeps the fingerprint it was published with:
+  /// the old (version, v1 fingerprint) stays in the log and in this device's
+  /// record of its own lists, the v2-only list lands at a version nobody has
+  /// seen, and the self-monitor, which accepts any (version, fingerprint) this
+  /// device recorded as its own ([_recordOwnList]), sees one expected change
+  /// and nothing it did not issue — exactly how the 0010 migration got past it.
+  /// To a contact it is an ordinary device-list update.
+  ///
+  /// Every root moves, one that has never signed a list included, so the
+  /// first v2-only list is never version 1. Version 1 is the baseline a
+  /// contact computes for itself, over the v1 input, from the one device in
+  /// the code it scanned; a v2-only list at version 1 would claim a
+  /// fingerprint over a device id that code does not carry, and the gossip
+  /// would read the mismatch as the account's devices disagreeing.
+  ///
+  /// Once, by a vault flag. A linked device signs nothing and has nothing to
+  /// move.
+  ///
+  /// The vault decides before the constant does. An account that has moved
+  /// stays moved on a build with the signer off — one that turns the
+  /// constant back, a downgrade to this release, a post-flip backup restored
+  /// onto it — because the alternative is worse than any revert could want:
+  /// that build would re-sign the account's current version dual-signed,
+  /// giving the version a second fingerprint, and every contact holding the
+  /// v2-only list would raise a split alarm while the account's own monitor
+  /// flagged its own genuine entry. Only the move itself waits on the
+  /// constant; with the signer off and no move recorded — every account
+  /// until the constant flips — this reads two rows and changes nothing.
+  Future<void> _migrateDeviceListToV2Only() async {
+    if (_signsV2Only) return;
+    final me = await accountIdentity();
+    if (!me.holdsAccountRoot) return;
+    if (await vault.kvGet('devlist_v2only_migrated') == '1') {
+      _signsV2Only = true;
+      return;
+    }
+    // Already v2-only — the flag's write was all that a crash cut short, or a
+    // restore brought the list without it: there is nothing to move.
+    final ownJson = await vault.kvGet('own_list_json');
+    if (ownJson != null) {
+      try {
+        final own = SignedDeviceList.fromJson(
+            (jsonDecode(ownJson) as Map).cast<String, Object?>());
+        if (own.isV2Only) {
+          _signsV2Only = true;
+          await vault.kvPut('devlist_v2only_migrated', '1', sensitive: false);
+          return;
+        }
+      } catch (_) {}
+    }
+    if (!_signerV2Only) return; // the move, and only the move, waits on it
+    final cur = await _myDevlistVersion();
+    await vault.kvPut('my_devlist_version', '${cur + 1}', sensitive: false);
+    _forgetOwnListClaim();
+    _signsV2Only = true;
+    // Signed, recorded as this device's own and queued for the log here, so
+    // the rest of start-up sees the new list; delivered in the background,
+    // through the durable outbox, as the 0010 migration's was.
+    final data = await _signCurrentDeviceList();
+    await vault.kvPut('devlist_v2only_migrated', '1', sensitive: false);
+    if (data == null) return;
+    unawaited(_selfSyncDeviceList(data).then((_) {}, onError: (_) {}));
+    for (final rid in contacts.keys.toList()) {
+      final c = contacts[rid];
+      if (c == null) continue;
+      unawaited(
+          _sendInner(c, _devlistInner(data)).then((_) {}, onError: (_) {}));
+    }
+  }
+
   InnerMessage _devlistInner(String listJson) => InnerMessage(
       kind: 'devlist',
       mid: newMessageId(),
@@ -6315,8 +6428,12 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<String?> _signCurrentDeviceList() async {
     final me = await accountIdentity();
     if (!me.holdsAccountRoot) return null;
+    // Dual-signed, as in stage 1, unless this account has been moved to
+    // v2-only signing ([_signsV2Only]); the fingerprint and the ML-DSA below
+    // follow whichever the list is (`SignedDeviceList.commitmentInput`).
     final list = await me.signDeviceList(
-        await myFullDeviceList(), await _myDevlistVersion());
+        await myFullDeviceList(), await _myDevlistVersion(),
+        v2Only: _signsV2Only);
     // §18.9: the same bytes, signed again under ML-DSA-65. Computed here so
     // it always exists for the list that exists — but NOT sent here. It
     // travels on its own schedule (`_deliverPqListSignatures`), which is what
@@ -6751,25 +6868,57 @@ class ChatService extends ChangeNotifier implements KtHost {
         return false; // not signed by this contact's account key
       }
       if (!await list.verify()) return false;
-      // ADR 0010 floor: once a valid v2 (sig2-bearing) list has been seen from
-      // this account, a later version arriving WITHOUT sig2 is a downgrade — an
-      // Ed25519 forger stripping the post-quantum coverage and replaying at a
-      // higher version. Refuse it. A v1-only list at or below the floor is a
-      // genuine pre-0010 list and still admitted.
+      // The signature floor, per contact account. It has three levels, and a
+      // list below the level the account has reached is refused here exactly
+      // as a list that does not verify is — nothing installed, the log told
+      // nothing, no alert: a downgrade cannot be expressed.
+      //
+      //   0  nothing seen yet: any list that verifies.
+      //   1  a list covering the ratchet keys seen — carrying sig2 (ADR 0010)
+      //      or, v2-only, sig3 (ADR 0017). `cdev_sigfloor_` holds the highest
+      //      version at which one was, and a LATER version arriving with
+      //      neither is an Ed25519 forger stripping the ratchet-key coverage
+      //      and replaying above it. A v1-only list at or below the floor is a
+      //      genuine pre-0010 list and still admitted.
+      //   2  a v2-only list seen — sig3 alone (ADR 0017 stage 2). The account
+      //      has stopped producing v1 signatures, so a list from it that
+      //      carries one — dual-signed or v1-only, at any version, the held
+      //      one included — is refused: it can only be a forger putting back
+      //      the format whose fingerprint is blind to a ratchet key, or a
+      //      build that went backwards, and a contact can tell neither apart.
+      //      This level is not stored beside the list; it IS the list. The
+      //      account is at level 2 exactly when the list held for it is
+      //      v2-only, because nothing at level 2 can replace that with a list
+      //      carrying `sig`. So it is recorded in the same write that installs
+      //      the list, and goes when the contact does. Only the account can
+      //      raise it: a v2-only list is signed over an input no dual-signed
+      //      list is signed over, so deleting `sig` from one of the account's
+      //      dual-signed lists does not make one (`verify()` refuses `sig2`
+      //      alone outright).
+      //
+      // Refusing in silence is also what keeps an innocent account from being
+      // accused. Nothing is said about the list that was refused; what the
+      // gossip goes on comparing is the account's own devices' claims, and
+      // those agree with the v2-only list still held.
       final sigFloor =
           int.tryParse(await vault.kvGet('cdev_sigfloor_$rid') ?? '0') ?? 0;
-      if (list.sig2 == null && sigFloor > 0 && list.version > sigFloor) {
+      if (list.sig2 == null &&
+          list.sig3 == null &&
+          sigFloor > 0 &&
+          list.version > sigFloor) {
         return false;
       }
+      if (!list.isV2Only && await _holdsV2OnlyListFor(rid)) return false;
       final storedVer =
           int.tryParse(await vault.kvGet('cdev_ver_$rid') ?? '0') ?? 0;
       if (list.version < storedVer) return false; // stale replay
       await vault.kvPut('cdev_$rid', jsonEncode(list.toJson()),
           sensitive: false);
       await vault.kvPut('cdev_ver_$rid', '${list.version}', sensitive: false);
-      // Raise the floor when this list carries a verified sig2, so a later
-      // strip cannot be replayed beneath it.
-      if (list.sig2 != null && list.version > sigFloor) {
+      // Raise the floor when this list carries a verified sig2 or sig3, so a
+      // later strip cannot be replayed beneath it.
+      if ((list.sig2 != null || list.sig3 != null) &&
+          list.version > sigFloor) {
         await vault.kvPut('cdev_sigfloor_$rid', '${list.version}',
             sensitive: false);
       }
@@ -6808,6 +6957,22 @@ class ChatService extends ChangeNotifier implements KtHost {
       for (final r in session.targetRoutingIds.toList())
         if (!newRids.contains(r)) r
     ];
+    // Not under the conversation's lock. This install holds its own key
+    // ('devlist:<rid>'), while `_fanToContactExtras` and `_handleExtraInbound`
+    // work on the same AccountSession under `_withLock(rid)`, and the two do
+    // not exclude each other: a fan-out can step a removed device's ratchet
+    // while the notice below does. And `_handleExtraInbound`'s rollback
+    // (`_restoreExtra` — under that lock after a failed decrypt or store,
+    // after it when a dispatch fails, and a dispatch may itself have
+    // installed a list here) replaces `_contactExtras[rid]` with a snapshot
+    // taken before this install, dropping the notice's ratchet step and the
+    // target changes below until the next install rebuilds them. This
+    // predates the install's lock — installs used to take none — and is a
+    // follow-up, not a fix to make here: `_withLock(rid)` is not re-entrant,
+    // so taking it inside this one would deadlock any path that reached an
+    // install while holding it (which is why inbound post-processing, where
+    // in-band lists are installed, runs only after the conversation lock is
+    // released).
     if (persist && removed.isNotEmpty) {
       final fp = await list.fingerprint();
       var queued = false;
@@ -6875,6 +7040,22 @@ class ChatService extends ChangeNotifier implements KtHost {
       _offerPqIdentity(contact, _PqReason.volunteer);
     }
     return true;
+  }
+
+  /// The floor's third level for [rid]'s account (ADR 0017 stage 2): whether
+  /// the list held for it is v2-only — `sig3` alone. See the floor in
+  /// [_installContactDeviceList]. A held row that does not parse is not
+  /// evidence of anything, and the next list that verifies replaces it.
+  Future<bool> _holdsV2OnlyListFor(String rid) async {
+    final held = await vault.kvGet('cdev_$rid');
+    if (held == null) return false;
+    try {
+      return SignedDeviceList.fromJson(
+              (jsonDecode(held) as Map).cast<String, Object?>())
+          .isV2Only;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// The routing ids of every device in a list.

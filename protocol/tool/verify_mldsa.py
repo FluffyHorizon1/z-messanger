@@ -161,9 +161,159 @@ def main():
         sys.exit(1)
     globals()["checks"] += 3
 
+    # ADR 0017: WHICH input the ML-DSA is over is decided by the list itself.
+    # A list has one of three shapes — {sig}, {sig, sig2} or {sig3} — and any
+    # other is refused before a signature is looked at. It commits to the
+    # strongest signature that is alone: the v1 input while it carries sig,
+    # the v3 input (the v2 content under "z-devlist-v3:") once sig3 is alone.
+    # Applied here to each list's own JSON rather than read from the recorded
+    # field, so a vector that labelled the wrong input would be caught.
+    def v1_input(l):
+        return b"z-devlist-v1:" + f"{l['ver']}:".encode() + b"".join(
+            sorted(base64.b64decode(d["ded"]) for d in l["devs"]))
+
+    def v2_content(context, l):
+        return context + f"{l['ver']}:".encode() + b"".join(
+            base64.b64decode(d["ded"]) + base64.b64decode(d["dx"])
+            + len(d["id"].encode()).to_bytes(2, "big") + d["id"].encode()
+            for d in sorted(l["devs"], key=lambda d: base64.b64decode(d["ded"])))
+
+    def v2_input(l):
+        return v2_content(b"z-devlist-v2:", l)
+
+    def v3_input(l):
+        return v2_content(b"z-devlist-v3:", l)
+
+    def shape(l):
+        return "+".join(k for k in ("sig", "sig2", "sig3") if k in l)
+
+    def committed(l):
+        return v3_input(l) if shape(l) == "sig3" else v1_input(l)
+
+    VALID_SHAPES = ("sig", "sig+sig2", "sig3")
+
+    def well_formed(l):
+        """A signature member that is present is a signature (§3.4)."""
+        return all(isinstance(l[k], str) for k in ("sig", "sig2", "sig3") if k in l)
+
+    def pq_admitted(l, ml_sig):
+        """What a reader's post-quantum check takes (§18.9): a well-formed
+        list in one of the three shapes, whose committed input the ML-DSA
+        verifies over."""
+        return (well_formed(l) and shape(l) in VALID_SHAPES
+                and ML_DSA_65.verify(acct_pk, committed(l), ml_sig))
+
+    def refuse(cond, what):
+        if cond:
+            print(f"MISMATCH {what}", file=sys.stderr)
+            sys.exit(1)
+        globals()["checks"] += 1
+
+    # The stage-1 list carries `sig`: the rule gives the v1 input, which is
+    # what its signature verified over above.
+    eq(committed(lst).hex(), dl["signing_input"],
+       "stage-1 list: the rule gives the v1 input")
+    dl_ml = bytes.fromhex(dl["ml_sig"])
+    refuse(not pq_admitted(lst, dl_ml),
+           "stage-1 list: its ML-DSA is not taken over the input it commits to")
+
+    # A stage-2 list: the account's list at version 4 with `sig3` alone, and
+    # its ML-DSA — over the v3 input, which names each device's ratchet key.
+    c2 = cv["device_list_v2_only"]
+    l2 = json.loads(c2["list_json"])
+    ml2 = bytes.fromhex(c2["ml_sig"])
+    eq(shape(l2), "sig3", "v2-only list: sig3 alone")
+    eq(l2["ver"], lst["ver"] + 1, "v2-only list: the next version")
+    in2 = committed(l2)
+    eq(in2.hex(), c2["signing_input_v3"], "v2-only list: the rule gives the v3 input")
+    eq(in2[:13], b"z-devlist-v3:", "v2-only list: the v3 context")
+    eq(in2[13:], v2_input(l2)[13:], "v2-only list: the v3 input is the v2 content")
+    eq(v1_input(l2).hex(), c2["v1_signing_input"], "v2-only list: its v1 input")
+    eq(v2_input(l2).hex(), c2["v2_signing_input"], "v2-only list: its v2 input")
+    refuse(not pq_admitted(l2, ml2),
+           "v2-only list: its ML-DSA is not taken over the v3 input")
+    refuse(pq_admitted(l2, dl_ml),
+           "v2-only list: the stage-1 ML-DSA is taken for it")
+    refuse(ML_DSA_65.verify(acct_pk, v1_input(l2), ml2),
+           "v2-only list: the ML-DSA verifies over the v1 input, so the rule "
+           "was not what signed it")
+    refuse(ML_DSA_65.verify(acct_pk, v2_input(l2), ml2),
+           "v2-only list: the ML-DSA verifies over the v2 input, which ML-DSAs "
+           "made for earlier lists were also over")
+    refuse(ML_DSA_65.verify(acct_pk, in2, bytes.fromhex(dl["ml_sig"])),
+           "v2-only list: the stage-1 signature covers it")
+    eq(hashlib.sha256(in2).hexdigest()[:32], c2["fingerprint"],
+       "v2-only list: fingerprint = SHA-256(v3 input)[0..16]")
+    eq(json.loads(c2["sig_json"])["mlsig"],
+       base64.b64encode(ml2).decode(), "v2-only list: sig_json carries ml_sig")
+    # The ratchet-key swap again, at this version: in stage 1 the ML-DSA could
+    # not see it; over the v3 input it refuses it.
+    r2 = c2["must_refuse"]
+    sw = json.loads(r2["swapped_list_json"])
+    eq(shape(sw), "sig3", "swapped v2-only list: sig3 alone")
+    moved = [d for d in sw["devs"] if d["id"] == r2["swapped_device_id"]][0]
+    eq(base64.b64decode(moved["dx"]).hex(), r2["swapped_x_pub"],
+       "swapped v2-only list: the replaced ratchet key")
+    in_sw = committed(sw)
+    eq(in_sw.hex(), r2["swapped_signing_input_v3"],
+       "swapped v2-only list: the rule gives its v3 input")
+    refuse(in_sw == in2, "swapped v2-only list: v3 input blind to the swap")
+    refuse(v1_input(sw) != v1_input(l2),
+           "swapped v2-only list: the swap moved the v1 input too")
+    refuse(pq_admitted(sw, ml2),
+           "swapped v2-only list: the genuine ML-DSA is taken for it")
+    eq(hashlib.sha256(in_sw).hexdigest()[:32], r2["swapped_fingerprint"],
+       "swapped v2-only list: its fingerprint")
+
+    # The stage-1 list with `sig` deleted. What the ML-DSA half does with it:
+    # the deletion leaves the v1 input exactly as it was, so the stage-1
+    # ML-DSA KEPT beside it still verifies over those bytes — the post-quantum
+    # signature cannot tell a stripped list from the one it was made for, and
+    # with it DELETED there is nothing post-quantum to check at all. Either
+    # way the list is refused for its shape, {sig2}, before any signature: that
+    # is the only check that can refuse it, and the one this verifies.
+    st = json.loads(r2["sig_stripped_list_json"])
+    eq(st, {k: x for k, x in lst.items() if k != "sig"},
+       "sig-stripped list: device_list without sig")
+    eq(shape(st), "sig2", "sig-stripped list: {sig2}")
+    eq(v1_input(st).hex(), dl["signing_input"],
+       "sig-stripped list: its v1 input is the stage-1 list's")
+    refuse(not ML_DSA_65.verify(acct_pk, committed(st), dl_ml),
+           "sig-stripped list: the kept stage-1 ML-DSA should still verify over "
+           "the input the list would commit to, which the deletion leaves as it "
+           "was")
+    refuse(pq_admitted(st, dl_ml),
+           "sig-stripped list: taken with its own ML-DSA — only its shape, "
+           "{sig2}, can refuse it, and here it did not")
+    refuse(ML_DSA_65.verify(acct_pk, v3_input(st), dl_ml),
+           "sig-stripped list: the stage-1 ML-DSA verifies over its v3 input")
+
+    # A null signature member: the list is malformed, and the post-quantum
+    # check takes it no more than verify() does — though its ML-DSA verifies
+    # over the input the list would otherwise commit to. The last case keeps
+    # the members of a dual-signed list, so by the members present it is a
+    # valid shape and only this rule refuses it.
+    sig2_nulled = dict(lst)
+    sig2_nulled["sig2"] = None
+    for base, ml, nulled, member in (
+            (lst, dl_ml, {**lst, "sig3": None}, "sig3"),
+            (l2, ml2, {**l2, "sig": None}, "sig"),
+            (lst, dl_ml, sig2_nulled, "sig2")):
+        absent = {k: x for k, x in nulled.items() if x is not None}
+        refuse(not ML_DSA_65.verify(acct_pk, committed(absent), ml),
+               f"null {member}: the genuine ML-DSA should verify over the input "
+               f"the list commits to with the null read as absent")
+        refuse(well_formed(nulled),
+               f"a null {member} member taken for a signature")
+        refuse(pq_admitted(nulled, ml),
+               f"a list with a null {member} member is taken by the ML-DSA check")
+    eq(shape(sig2_nulled), "sig+sig2",
+       "a null sig2 beside sig: a valid shape by the members present")
+
     print(f"ok: {len(v['vectors'])} ML-DSA-65 known-answer vectors, the "
-          f"hybrid construction and the device-list signature reproduced by "
-          f"dilithium-py ({checks} checks)")
+          f"hybrid construction and the device-list signatures (dual-signed "
+          f"and v2-only, and the dual-signed list with its sig deleted) "
+          f"reproduced or refused by dilithium-py ({checks} checks)")
 
 
 if __name__ == "__main__":

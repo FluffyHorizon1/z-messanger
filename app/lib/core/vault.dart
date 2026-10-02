@@ -962,6 +962,7 @@ class Vault {
     // This account's own device list and the alerts about it. A device list
     // is public by construction: it is signed and handed to every contact.
     'my_devices', 'my_devlist_version', 'devlist_v2_migrated',
+    'devlist_v2only_migrated', // ADR 0017 stage 2b, once its signer is on
     'own_list_v', 'own_list_h', 'own_list_json', 'own_list_mlsig',
     'own_alert', 'own_alert_echo', 'removed_alert',
     // The transparency log's own state: heads, faults and timings, all of

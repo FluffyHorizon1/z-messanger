@@ -487,6 +487,53 @@ test('attachments: chunk AEAD, nonce layout and payload', () => {
 // ===========================================================================
 const certInput = (ded, dx, id) => cat(utf8('z-device-cert-v1:'), ded, dx, utf8(id));
 
+// A signed device list (§3.4) as a reader takes it, from the list's JSON and
+// nothing else. It has one of three shapes, and only three: `sig` alone
+// (before ADR 0010), `sig` and `sig2` (dual-signed, stage 1), or `sig3` alone
+// (v2-only, ADR 0017 stage 2). A signature member that is present is a
+// signature: one present with any other value, null included, makes the list
+// malformed. Any other combination — `sig2` alone, which is
+// what deleting `sig` from a dual-signed list leaves; `sig3` beside another
+// signature; none — is refused before a signature is checked. Each signature
+// is over its own input: `sig` over v1, `sig2` over v2, `sig3` over v3, which
+// is the v2 content under its own context, `z-devlist-v3:`, so that no `sig2`
+// can stand alone. What the list commits to — the input its fingerprint is
+// taken over and its ML-DSA is made over — follows the strongest signature
+// that is alone: the v1 input while `sig` is carried, the v3 input once `sig3`
+// is alone.
+const u16 = (n) => Buffer.from([(n >> 8) & 0xff, n & 0xff]);
+const devlistV1Input = (l) => cat(utf8('z-devlist-v1:'), utf8(`${l.ver}:`),
+  ...l.devs.map((d) => unb64(d.ded)).sort(Buffer.compare));
+const devlistV2Content = (context, l) => cat(utf8(context), utf8(`${l.ver}:`),
+  ...[...l.devs].sort((p, q) => Buffer.compare(unb64(p.ded), unb64(q.ded)))
+    .flatMap((d) => [unb64(d.ded), unb64(d.dx), u16(Buffer.byteLength(d.id)), utf8(d.id)]));
+const devlistV2Input = (l) => devlistV2Content('z-devlist-v2:', l);
+const devlistV3Input = (l) => devlistV2Content('z-devlist-v3:', l);
+const devlistShape = (l) => ['sig', 'sig2', 'sig3'].filter((k) => k in l).join('+');
+const devlistShapes = new Set(['sig', 'sig+sig2', 'sig3']);
+const devlistCommitted = (l) => (devlistShape(l) === 'sig3' ? devlistV3Input(l) : devlistV1Input(l));
+const devlistFingerprint = (l) => sha256(devlistCommitted(l)).subarray(0, 16);
+const devlistSigMembersWellFormed = (l) =>
+  ['sig', 'sig2', 'sig3'].every((k) => !(k in l) || typeof l[k] === 'string');
+function devlistAdmitted(l, acctPub) {
+  if (!devlistSigMembersWellFormed(l)) return false;
+  if (!devlistShapes.has(devlistShape(l))) return false;
+  if (!unb64(l.acct).equals(acctPub) || l.devs.length === 0) return false;
+  for (const d of l.devs) {
+    if (!edVerify(acctPub, certInput(unb64(d.ded), unb64(d.dx), d.id), unb64(d.sig))) return false;
+  }
+  if ('sig' in l && !edVerify(acctPub, devlistV1Input(l), unb64(l.sig))) return false;
+  if ('sig2' in l && !edVerify(acctPub, devlistV2Input(l), unb64(l.sig2))) return false;
+  if ('sig3' in l && !edVerify(acctPub, devlistV3Input(l), unb64(l.sig3))) return false;
+  return true;
+}
+// Every signature [l] carries is genuine over its own input — what makes a
+// list refused for its shape refused for nothing else.
+const devlistSigsGenuine = (l, acctPub) =>
+  (!('sig' in l) || edVerify(acctPub, devlistV1Input(l), unb64(l.sig))) &&
+  (!('sig2' in l) || edVerify(acctPub, devlistV2Input(l), unb64(l.sig2))) &&
+  (!('sig3' in l) || edVerify(acctPub, devlistV3Input(l), unb64(l.sig3)));
+
 test('multidevice: device certificates, zc2 account code, signed device list', () => {
   const v = load('multidevice');
   const acctSeed = unhex(v.account_ed_seed), acctPub = unhex(v.account_ed_pub);
@@ -550,6 +597,93 @@ test('multidevice: device certificates, zc2 account code, signed device list', (
   // verified above; only what is gossiped and compared reverted.
   assert.equal(hex(sha256(input).subarray(0, 16)), dl.fingerprint_v1);
   assert.equal(hex(sha256(input).subarray(0, 16)), dl.fingerprint);
+  // The same, by the rule a reader applies to any list: it carries `sig`, so
+  // it commits to the v1 input.
+  assert.ok(devlistAdmitted(dl.json, acctPub), 'a reader admits the dual-signed list');
+  assert.equal(hex(devlistFingerprint(dl.json)), dl.fingerprint);
+
+  // ADR 0017 stage 2: the account's list at the next version, v2-only —
+  // `sig3` alone. Rebuilt from its JSON: it commits to the v3 input, the v2
+  // content under its own context, and the fingerprint a reader reports — and
+  // a log leaf carries — is SHA-256 of that, not of the v1 or v2 input.
+  const v2o = v.device_list_v2_only;
+  assert.equal(devlistShape(v2o.json), 'sig3', 'sig3 and nothing else on the wire');
+  assert.equal(v2o.json.ver, v2o.version);
+  assert.equal(v2o.version, dl.version + 1, 'republished at the next version');
+  assert.deepEqual(v2o.json.devs, dl.json.devs, 'over the same devices');
+  assert.ok(devlistAdmitted(v2o.json, acctPub), 'a reader admits it on sig3 alone');
+  assert.equal(hex(devlistCommitted(v2o.json)), v2o.signing_input_v3);
+  assert.equal(devlistV3Input(v2o.json).subarray(0, 13).toString(), 'z-devlist-v3:');
+  assert.ok(devlistV3Input(v2o.json).subarray(13).equals(devlistV2Input(v2o.json).subarray(13)),
+    'the v3 input is the v2 content under a context of its own');
+  assert.equal(hex(edSign(acctSeed, devlistV3Input(v2o.json))), v2o.sig3, 'sig3 reproduced');
+  assert.equal(hex(devlistFingerprint(v2o.json)), v2o.fingerprint);
+  assert.equal(hex(sha256(devlistV1Input(v2o.json)).subarray(0, 16)), v2o.v1_fingerprint_not_reported);
+  assert.equal(hex(sha256(devlistV2Input(v2o.json)).subarray(0, 16)), v2o.v2_fingerprint_not_reported);
+  assert.equal(new Set([v2o.fingerprint, v2o.v1_fingerprint_not_reported,
+    v2o.v2_fingerprint_not_reported]).size, 3, 'three inputs, three fingerprints');
+  const mr = v2o.must_refuse;
+  // Refused: no signature at all.
+  const bare = mr.no_signature_json;
+  assert.equal(devlistShape(bare), '');
+  assert.ok(!devlistAdmitted(bare, acctPub), 'a list with no signature is refused');
+  // Refused: second-device's ratchet key replaced by the attacker's, its
+  // certificate re-signed by the account key, the genuine sig3 kept. The
+  // attacker's key is derived here from its recorded seed.
+  const sw = mr.swapped_ratchet_key;
+  assert.equal(hex(xPub(unhex(sw.attacker_x_seed))), sw.attacker_x_pub);
+  const moved = sw.json.devs.find((d) => d.id === sw.device_id);
+  assert.equal(hex(unb64(moved.dx)), sw.attacker_x_pub);
+  assert.ok(edVerify(acctPub, certInput(unb64(moved.ded), unb64(moved.dx), moved.id), unb64(moved.sig)),
+    'the substituted certificate is itself well signed');
+  assert.equal(sw.json.sig3, v2o.json.sig3, 'the genuine sig3, replayed');
+  assert.ok(!devlistAdmitted(sw.json, acctPub), 'a replaced deviceXPub is refused');
+  assert.equal(hex(devlistCommitted(sw.json)), sw.signing_input_v3);
+  assert.equal(hex(devlistFingerprint(sw.json)), sw.fingerprint);
+  assert.notEqual(sw.fingerprint, v2o.fingerprint, 'the v3 fingerprint moves with the key');
+  assert.ok(devlistV1Input(sw.json).equals(devlistV1Input(v2o.json)),
+    'which a v1 fingerprint could not have seen');
+  // Refused: the dual-signed list above with `sig` deleted — made here from
+  // that list and compared with the recorded one. The sig2 left behind is
+  // genuine and verifies over its own input; only the shape refuses it.
+  const stripped = { ...dl.json };
+  delete stripped.sig;
+  assert.deepEqual(stripped, mr.sig_stripped_json, 'the recorded list is dl.json without sig');
+  assert.equal(devlistShape(stripped), 'sig2');
+  assert.ok(devlistSigsGenuine(stripped, acctPub), 'its sig2 is genuine');
+  assert.ok(!devlistAdmitted(stripped, acctPub), 'a dual-signed list with sig deleted is refused');
+  // Refused: the same sig2 moved into sig3, where it would have to be over
+  // the v3 input.
+  const relabelled = mr.sig2_as_sig3_json;
+  assert.equal(relabelled.sig3, dl.json.sig2);
+  assert.equal(devlistShape(relabelled), 'sig3');
+  assert.ok(!devlistAdmitted(relabelled, acctPub), 'a sig2 presented as sig3 is refused');
+  // Refused: every other combination of the three, each signature genuine,
+  // so each list is refused for its shape and for nothing else.
+  assert.deepEqual(mr.other_shapes.map((s) => s.shape).sort(),
+    ['sig+sig2+sig3', 'sig+sig3', 'sig2', 'sig2+sig3']);
+  for (const s of mr.other_shapes) {
+    assert.equal(devlistShape(s.json), s.shape);
+    assert.ok(devlistSigsGenuine(s.json, acctPub), `every signature in {${s.shape}} is genuine`);
+    assert.ok(!devlistAdmitted(s.json, acctPub), `a {${s.shape}} list is refused`);
+  }
+  // Refused: a valid list with a signature member added as null. Read as
+  // absent, every one of them would be admitted — which is why present means
+  // a signature, and a null member makes the list malformed.
+  assert.equal(mr.null_members.length, 5);
+  assert.ok(mr.null_members.some((s) => s.member === 'sig3' && 'sig' in s.json && 'sig2' in s.json),
+    '{sig, sig2, "sig3": null} is among them');
+  assert.ok(mr.null_members.some((s) => s.member === 'sig' && 'sig3' in s.json),
+    '{"sig": null, sig3} is among them');
+  for (const s of mr.null_members) {
+    assert.ok(s.member in s.json && s.json[s.member] === null, `a null ${s.member}`);
+    assert.ok(!devlistSigMembersWellFormed(s.json), `a null ${s.member} is not a signature`);
+    assert.ok(!devlistAdmitted(s.json, acctPub), `a list with a null ${s.member} is refused`);
+    const readAsAbsent = { ...s.json };
+    delete readAsAbsent[s.member];
+    assert.ok(devlistAdmitted(readAsAbsent, acctPub),
+      `with the null ${s.member} read as absent it would have been admitted`);
+  }
   // Legacy zc1 read as a one-device account.
   const legacy = v.legacy_zc1_as_account;
   const lj = JSON.parse(unb64url(legacy.contact_code.slice(4)).toString('utf8'));
@@ -1336,6 +1470,58 @@ test('v3 device_cert_v3: both halves cover the same input, and the classical '
   // grow with the device set.
   assert.ok(dl.sig_json_bytes < 4600 && dl.sig_json_bytes > 4400,
     'one constant-size artefact, whatever the device count');
+
+  // ADR 0017 stage 2: the list at version 4, v2-only (`sig3` alone), and the
+  // account's ML-DSA over it. Node has no ML-DSA, so dilithium-py checks the
+  // signature itself (protocol/tool/verify_mldsa.py); what Node checks is
+  // everything classical about the same objects. The rule picks the input:
+  // this list is `sig3` alone, so it commits to — and the ML-DSA is recorded
+  // over — the v3 input, which is what sig3 is over too.
+  const acctEd = unhex(v.account.ed_pub);
+  assert.ok(devlistAdmitted(list, acctEd), 'the stage-1 list, by the same rule');
+  assert.equal(hex(devlistCommitted(list)), dl.signing_input,
+    'which commits to the v1 input — what its ML-DSA is over');
+  const s2 = v.device_list_v2_only;
+  const l2 = JSON.parse(s2.list_json);
+  assert.equal(devlistShape(l2), 'sig3');
+  assert.equal(l2.ver, list.ver + 1);
+  assert.deepEqual(l2.devs, list.devs);
+  assert.ok(devlistAdmitted(l2, acctEd), 'admitted on sig3 alone');
+  assert.equal(hex(devlistCommitted(l2)), s2.signing_input_v3,
+    'commits to the v3 input, which the ML-DSA is recorded over');
+  assert.equal(hex(devlistV1Input(l2)), s2.v1_signing_input);
+  assert.equal(hex(devlistV2Input(l2)), s2.v2_signing_input);
+  assert.equal(new Set([s2.signing_input_v3, s2.v1_signing_input, s2.v2_signing_input]).size, 3);
+  assert.equal(hex(devlistFingerprint(l2)), s2.fingerprint);
+  const sj2 = JSON.parse(s2.sig_json);
+  assert.equal(sj2.mlsig, b64(unhex(s2.ml_sig)));
+  assert.equal(sj2.ver, l2.ver);
+  assert.equal(hex(unb64(sj2.acct)), v.account.ed_pub);
+  assert.equal(unhex(s2.ml_sig).length, 3309);
+  assert.notEqual(s2.ml_sig, dl.ml_sig, 'not the stage-1 signature');
+  const r2 = s2.must_refuse;
+  const swl = JSON.parse(r2.swapped_list_json);
+  const swd = swl.devs.find((d) => d.id === r2.swapped_device_id);
+  assert.equal(hex(unb64(swd.dx)), r2.swapped_x_pub);
+  assert.ok(edVerify(acctEd, certInput(unb64(swd.ded), unb64(swd.dx), swd.id), unb64(swd.sig)),
+    'the substituted certificate is itself well signed');
+  assert.equal(swl.sig3, l2.sig3, 'the genuine sig3, replayed');
+  assert.ok(!devlistAdmitted(swl, acctEd), 'refused: sig3 does not cover the new key');
+  assert.equal(hex(devlistCommitted(swl)), r2.swapped_signing_input_v3);
+  assert.equal(hex(devlistFingerprint(swl)), r2.swapped_fingerprint);
+  assert.notEqual(r2.swapped_fingerprint, s2.fingerprint);
+  // The stage-1 list with `sig` deleted. Its sig2 is genuine, and its v1
+  // input — over which dl.ml_sig is made — is exactly the stage-1 list's, so
+  // that ML-DSA still verifies over it (dilithium-py checks that): neither
+  // signature can refuse it, and the shape does.
+  const strippedList = JSON.parse(r2.sig_stripped_list_json);
+  const mine = { ...list };
+  delete mine.sig;
+  assert.deepEqual(strippedList, mine, 'the recorded list is list_json without sig');
+  assert.ok(devlistSigsGenuine(strippedList, acctEd), 'its sig2 is genuine');
+  assert.equal(hex(devlistV1Input(strippedList)), dl.signing_input,
+    'and its v1 input is the one the stage-1 ML-DSA is over');
+  assert.ok(!devlistAdmitted(strippedList, acctEd), 'refused: {sig2} is not one of the shapes');
 
   // Safety number v2: twelve five-digit groups, different from v1 for the
   // same pair, so the one-time change cannot be mistaken for a substitution.
