@@ -9,8 +9,8 @@
 // is also the one a platform without a backend takes in the field.
 //
 // Criteria, each a test below:
-//   1. the platform policy: inline on Android only; the web and every other OS
-//      keep the file card + Save;
+//   1. the platform policy: inline on Android and macOS; the web and every
+//      other OS keep the file card + Save;
 //   2. before the user asks, the bubble shows a play control and has neither
 //      read the bytes nor opened a server;
 //   3. when the player cannot start, the bubble says so, and the server it
@@ -28,12 +28,14 @@ import 'package:zapp/ui/theme.dart';
 import 'package:zapp/ui/video_widgets.dart';
 
 void main() {
-  test('1. inline video is an Android policy', () {
+  test('1. inline video is an Android and macOS policy', () {
     expect(inlineVideoFor('android'), isTrue);
-    for (final os in ['ios', 'macos', 'linux', 'windows', 'fuchsia', '']) {
+    expect(inlineVideoFor('macos'), isTrue);
+    for (final os in ['ios', 'linux', 'windows', 'fuchsia', '']) {
       expect(inlineVideoFor(os), isFalse, reason: os);
     }
     expect(inlineVideoFor('android', isWeb: true), isFalse);
+    expect(inlineVideoFor('macos', isWeb: true), isFalse);
   });
 
   final meta = FileMeta(

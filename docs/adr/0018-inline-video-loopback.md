@@ -1,7 +1,8 @@
 # ADR 0018 — Inline video plays from memory over a loopback socket, never from a file
 
 **Status:** **Accepted** (2026‑09‑19) — built (continuous‑b, playback half; 3.7.10).
-Android only for now; every other platform keeps the file card + Save.
+Android, and macOS since 2026‑10‑02 (see the last section); every other platform keeps
+the file card + Save.
 **Decides:** how a received video is played inside the chat without breaking
 the vault invariant, and what that costs.
 
@@ -63,7 +64,8 @@ asserting "nothing on disk", which no test can prove in general.
 - **Widen to macOS/iOS now.** macOS has an AVFoundation implementation and the
   server is platform‑neutral, so it is one line in `inlineVideoFor`; iOS is the
   iOS track's decision. Held to Android to match the capture half and to keep
-  this patch to the one design point.
+  this patch to the one design point. *(macOS done 2026‑10‑02 — and it turned
+  out not to be one line; see below. iOS is still the iOS track's.)*
 
 ## Consequences
 
@@ -94,3 +96,49 @@ asserting "nothing on disk", which no test can prove in general.
   seek. The test environment has no `video_player` implementation, so the path
   exercised here is the graceful failure — which is also the path a platform
   without a backend takes in the field.
+
+## macOS (2026‑10‑02)
+
+`inlineVideoFor` now answers yes for macOS as well as Android. The line was the
+small part. The macOS app runs in the App Sandbox, and the sandbox refuses a
+**listening** socket — loopback included — unless the build is entitled to
+`com.apple.security.network.server`. `macos/Runner/DebugProfile.entitlements`
+has always had it, because the Flutter template puts it there for the tooling;
+`Release.entitlements` never did. So a debug run would have played a video and a
+shipped build could not have opened `LoopbackMediaServer` at all: `bind` fails,
+and the bubble takes its existing failure path — the "cannot play" notice and
+Save, with nothing left listening.
+
+The same is very likely true **today, for voice notes**: `just_audio` hands a
+`StreamAudioSource` to the native player through its own loopback server
+(`_ProxyHttpServer`, `HttpServer.bind(127.0.0.1, 0)`), which is the route ADR
+0013 calls "the same route macOS already used". A release build without the
+key would show the voice player's failure notice and offer Save instead of
+playing. Nobody has reported it, nobody has run a release build on a Mac to
+check, and the debug profile — the build a developer runs — hides it. Adding
+the key to the release entitlements is therefore its own change, and it is the
+fix for both.
+
+What the key costs: it is not scoped to loopback — the sandbox has no such
+variant — so a compromised app could listen on any interface. The scoping is
+the app's: `LoopbackMediaServer` and `just_audio`'s server both bind
+`127.0.0.1` only, and the former also refuses a non‑loopback peer. R36 says so.
+macOS also lets any other process of the same user connect to `127.0.0.1`,
+which is the residual R36 already records for Android, under the same
+mitigations (random port, one random 32‑byte path, alive only while playing,
+`no-store`).
+
+App Transport Security should not stand in the way: the player is handed an
+IP‑literal `http://127.0.0.1:…` URL, and Apple's stated position is that ATS
+does not apply to loads of IP addresses (iOS 10 / macOS 10.12 on). Voice
+playback depends on the same exemption. The sandbox behaviour is not a guess
+either: it is the documented failure of other Flutter apps whose release
+builds lacked the key — `SocketException: Operation not permitted` from a
+localhost‑only server that worked under `flutter run`.
+
+**Not verified here:** none of this has run on a Mac. The sandbox and
+toolchain for a macOS build are not available to the builder, so playback,
+seeking and the voice‑note fix are hardware‑gated exactly as the Android
+playback was. Before it is called done: a **release** build (not `flutter run`)
+on a Mac, one received video played and seeked inline, and one voice note
+played.
