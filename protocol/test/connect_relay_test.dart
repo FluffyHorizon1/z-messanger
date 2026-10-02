@@ -38,14 +38,20 @@ import 'package:z_protocol/z_protocol.dart';
 //  4. a second attempt on a spent invite is refused: one-time, and the
 //     finished ceremony leaves nothing in relay RAM to replay;
 //  5. the relay sees only two ephemeral mailboxes — neither party's routing
-//     id, account key, or contact code appears anywhere in the exchange.
+//     id, account key, or contact code appears anywhere in the exchange;
+//  6. (ADR 0020) an invite whose message 3 carries the group bit runs the
+//     same four frames through the relay: the acceptor that knows the bit
+//     reads it and says so back, one from before the bit completes the
+//     same ceremony without it, both runs survive storage with the bit
+//     intact, and the message 3 the relay carried is the same length with
+//     the bit set and clear.
 //
-// Criterion 5 is asserted against what the relay actually saw, not against
-// what the client meant to send: every frame passes through a recording
-// WebSocket tap standing between the clients and the relay.
+// Criteria 5 and 6 are asserted against what the relay actually saw, not
+// against what the client meant to send: every frame passes through a
+// recording WebSocket tap standing between the clients and the relay.
 //
-// A sixth, unnumbered test covers the transport's half of 17.1's criterion 2:
-// what a refusal does to an invite once the frames are coming out of a
+// One more, unnumbered test covers the transport's half of 17.1's criterion
+// 2: what a refusal does to an invite once the frames are coming out of a
 // mailbox anyone holding the code can write to.
 void main() {
   late Process relay;
@@ -407,6 +413,70 @@ void main() {
     expect(mailboxes, isNot(contains(await aliceDev.routingId())));
     expect(mailboxes, isNot(contains(await bobDev.routingId())));
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('6. the group bit rides the same four frames, read or ignored',
+      () async {
+    final (alice, _) = await person('Alice');
+    final (bob, _) = await person('Bob');
+
+    /// One whole ceremony through the tap, each side through storage after
+    /// every step. Returns both runs and message 3 as the relay carried it.
+    Future<(ConnectRun, ConnectRun, String)> through(
+        bool? group, bool aware) async {
+      seen.clear();
+      var inv = await reopen(await ConnectRun.invite(me: alice, group: group));
+      var acc = await reopen(
+          ConnectRun.accept(me: bob, code: inv.code, groupAware: aware));
+      expect(await inv.step(relayUrl: url, poll: p), ConnectProgress.waiting);
+      inv = await reopen(inv);
+      expect(await acc.step(relayUrl: url, poll: p), ConnectProgress.waiting);
+      acc = await reopen(acc);
+      expect(await inv.step(relayUrl: url, poll: p), ConnectProgress.waiting);
+      inv = await reopen(inv);
+      expect(await acc.step(relayUrl: url, poll: p), ConnectProgress.confirm);
+      acc = await reopen(acc);
+      expect(await inv.step(relayUrl: url, poll: p), ConnectProgress.confirm);
+      inv = await reopen(inv);
+      expect(acc.session!.sas, inv.session!.sas);
+      final x3 = seen
+          .where((f) => f['t'] == 'send' && f['id'] == 'z-connect-c3')
+          .single['payload'] as String;
+      for (final id in const [
+        'z-connect-c1',
+        'z-connect-c2',
+        'z-connect-c3',
+        'z-connect-c4'
+      ]) {
+        expect(sends(id), 1, reason: 'the same four frames, $id once');
+      }
+      return (inv, acc, x3);
+    }
+
+    // Both sides know the bit, and it came through storage on both.
+    final (inv, acc, x3Set) = await through(true, true);
+    expect(acc.session!.group, isTrue,
+        reason: 'the acceptor read that a group is attached');
+    expect(inv.session!.group, isTrue,
+        reason: 'and the inviter read it back');
+    expect((jsonDecode(x3Set) as Map).keys.toSet(), {'k', 'ephx', 'blob'},
+        reason: 'nothing outside the seal');
+
+    // An acceptor from before the bit: the same ceremony, completed, and
+    // neither side's session claims anything about a group.
+    final (invOld, accOld, _) = await through(true, false);
+    expect(accOld.session!.group, isNull);
+    expect(invOld.session!.group, isNull,
+        reason: 'no repetition came back: that client knows of no group');
+
+    // The same inviter's plain invite: message 3 is the same length at the
+    // relay, so the relay cannot tell the two kinds of invite apart by size.
+    final (_, accPlain, x3Clear) = await through(false, true);
+    expect(accPlain.session!.group, isFalse);
+    expect(x3Clear.length, x3Set.length,
+        reason: 'message 3 as the relay received it: one length, bit or no');
+    print('message 3 at the relay: bit set ${x3Set.length} bytes, '
+        'bit clear ${x3Clear.length} bytes');
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('a refused frame spends the invite, and the refusal is durable',
       () async {

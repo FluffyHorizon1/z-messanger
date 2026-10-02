@@ -31,6 +31,39 @@ const int pqRekeyIntervalMs = 7 * 24 * 3600 * 1000;
 /// costs nothing.
 const int pqOfferRetryMs = 6 * 3600 * 1000;
 
+/// What a group invite link's inviter can expect once its person has gone
+/// ahead with whoever answered the link (ADR 0020,
+/// [ChatService.expectLinkJoin]).
+enum LinkJoinOutcome {
+  /// Their client was told the invite is to a group; they join it when their
+  /// own person goes ahead too.
+  waiting,
+
+  /// Their client predates group links and could not have told them: they
+  /// are a contact only, and the group says so.
+  tooOld,
+
+  /// The link's 24 hours were over: a contact only, and the group says so.
+  expired,
+
+  /// This device may no longer add members to the group (demoted, or out of
+  /// it): a contact only, and the group says so.
+  refused,
+}
+
+/// What stopping a wait for a group link's answer did (ADR 0020).
+enum LinkWaitStop {
+  /// Stopped: the answer, come or to come, adds nobody, and the group says
+  /// so.
+  stopped,
+
+  /// Too late: the answer had come and the add itself had begun.
+  adding,
+
+  /// Nothing to stop: the wait had already ended.
+  gone,
+}
+
 /// The orchestrator: owns contacts, protocol conversations, the message
 /// store, the outbox, attachments, receipts and disappearing messages.
 ///
@@ -264,6 +297,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       await svc._refreshDeviceAssurance(rid, notify: false, kv: kv);
     }
     await svc._loadGroups();
+    await svc._loadLinks(); // ADR 0020: group links in either direction
     // ADR 0019: who this account is in a group — its root device's routing
     // id, one more id that is me when a list names it; whether this device
     // may change roles; and the binding signature its own member entry
@@ -316,6 +350,9 @@ class ChatService extends ChangeNotifier implements KtHost {
     for (final g in svc.groups.values) {
       if (g.held.isNotEmpty) unawaited(svc._askAboutHeld(g));
     }
+    // ADR 0020: a joiner's go-ahead read just before the app last stopped,
+    // and not yet acted on, is acted on now — re-checked like any other.
+    unawaited(svc._finishLinkAdds());
     return svc;
   }
 
@@ -1632,6 +1669,12 @@ class ChatService extends ChangeNotifier implements KtHost {
     // contact is never on it, and a genuine block should outlive a delete).
     await vault.db.delete('requests', where: 'rid = ?', whereArgs: [rid]);
     requestsByRid.remove(rid);
+    // ADR 0020: group links waiting on their answer, and answers owed to
+    // them, name them too.
+    final links = _linkAdds.length + _linkJoins.length;
+    _linkAdds.removeWhere((_, r) => r.rid == rid);
+    _linkJoins.removeWhere((_, r) => r.rid == rid);
+    if (_linkAdds.length + _linkJoins.length != links) await _saveLinks();
     for (final family in contactKvFamilies) {
       await vault.kvDelete('$family$rid');
     }
@@ -2970,6 +3013,13 @@ class ChatService extends ChangeNotifier implements KtHost {
       }
       if (inner.kind == 'hello') {
         _offerPqIdentity(contact, _PqReason.volunteer);
+        // ADR 0020: an inviter I owe an answer to has opened a session —
+        // perhaps after dropping it as a stranger's, or before it was
+        // waiting for it.
+        await _answerLinkHello(contact.rid);
+      }
+      if (inner.kind == 'gjoin') {
+        await _finishLinkAdds(); // ADR 0020: act on the go-ahead just read
       }
       if (contact.pqPub == null &&
           contact.pqCandidate == null &&
@@ -3145,6 +3195,12 @@ class ChatService extends ChangeNotifier implements KtHost {
       // ADR 0019: a member who had to refuse a list asks what it lacks.
       case 'gsync':
         _answerGroupSync(contact, inner.data);
+        break;
+
+      case 'gjoin':
+        // ADR 0020: a joiner's answer to a link of mine. Marked here, in the
+        // transaction that reads it; an add follows the commit.
+        await _onLinkJoin(contact, inner, txn);
         break;
 
       case 'gleave':
@@ -4698,6 +4754,7 @@ class ChatService extends ChangeNotifier implements KtHost {
   // ------------------------------------------------------------------
 
   Future<void> _sweep() async {
+    await _sweepLinks(); // ADR 0020: a link's go-ahead that never came
     final now = _now();
     final doomed = await vault.db.query('messages',
         where: 'expire_at_ms > 0 AND expire_at_ms <= ?', whereArgs: [now]);
@@ -6037,7 +6094,12 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// Any admin: add members and re-invite everyone at a higher version.
   /// Returns once the new list is recorded for every member; it is sent
   /// from the durable queue ([_sendInvite]).
-  Future<void> addGroupMembers(String gid, List<String> rids) async {
+  ///
+  /// [fromLink]: the add a group invite link (ADR 0020) makes once its
+  /// joiner has gone ahead — the same add in every respect, said in the
+  /// group as a join from my link rather than as something I just did.
+  Future<void> addGroupMembers(String gid, List<String> rids,
+      {bool fromLink = false}) async {
     final g = groups[gid];
     if (g == null || !mayIssueGroupList(gid, '')) return;
     final added = rids
@@ -6052,7 +6114,10 @@ class ChatService extends ChangeNotifier implements KtHost {
     // missing name is a null, not the word for it.
     final names = [for (final r in added) contacts[r]?.name];
     await _insertSystemMessage(
-        gid, systemBody(SystemKind.addedYou, {'names': names}));
+        gid,
+        fromLink
+            ? systemBody(SystemKind.linkJoined, {'name': names.first})
+            : systemBody(SystemKind.addedYou, {'names': names}));
     await _sendInvite(g, data);
     notifyListeners();
   }
@@ -6275,6 +6340,465 @@ class ChatService extends ChangeNotifier implements KtHost {
     final n = g.orphans[rid]?['n'];
     return n is String ? n : null;
   }
+
+  // ---------------------------------------------------------------- 23.3
+  // Group invite links (ADR 0020).
+  //
+  // A group invite link IS a connect invite (§20): the group is remembered
+  // on the inviter's device only — never in the link, never in a frame —
+  // and when the ceremony is over the inviter's device does what its admin
+  // would have done by hand, `addGroupMembers`. Two things stand between a
+  // completed ceremony and that add, and both are about the JOINER's
+  // consent, which is the property this section exists to keep: no
+  // joiner's bundle reaches a group's members unless the joiner's own client
+  // told its person, before the digits, that the invite was to a group, and
+  // the person then went ahead.
+  //
+  //  * Message 3 carries one sealed bit, "a group is attached" (§20.3), and
+  //    the joiner's client repeats it in message 4. A joiner whose client
+  //    does not repeat it predates the bit and cannot have said anything:
+  //    it ends a contact, and the inviter is told so in the group.
+  //  * The ceremony carries itself to the digits with nobody pressing
+  //    anything, so message 4 says only "my client can show the notice",
+  //    never "my person accepted". What says that is `gjoin`: one sealed
+  //    inner message, naming no group, which a joiner's client sends over
+  //    the pairwise session when its person, having been told, answers the
+  //    comparison — `go` 1 to join, 0 to be a contact only. It carries the
+  //    ceremony's go-ahead tag (`t`, §20.6), derived from the channel key,
+  //    which only the two ends of that ceremony can compute, so it answers
+  //    that ceremony and no other. The inviter adds the joiner when a
+  //    go-ahead for its own ceremony arrives — within the link's 24 hours,
+  //    and only if it may still add members then.
+  //
+  // The records on both sides are per LINK, keyed by that tag: two links
+  // between the same two people are two waits and two answers, and neither
+  // replaces or resets the other. Either person can answer first. A `gjoin`
+  // sent before the inviter has added the joiner arrives from a stranger and
+  // is dropped, and one that arrives before the inviter is waiting finds
+  // nothing it answers; so the inviter, once it is waiting, speaks first (a
+  // `hello`), and the joiner's client answers any `hello` from that inviter
+  // with every answer it still owes them. Both records are durable; neither
+  // ever leaves the device.
+
+  /// Inviter side: completed group links this device made, whose joiner my
+  /// person went ahead with — keyed by the ceremony's go-ahead tag (unpadded
+  /// base64url): who answered, the group, when the link's lifetime ends, the
+  /// tag, and whether their go-ahead has arrived (set inside the inbound
+  /// step that read it, acted on after — so a go-ahead read just before the
+  /// app was killed still adds them at the next start).
+  final Map<String,
+          ({String rid, String gid, int until, Uint8List tag, bool go})>
+      _linkAdds = {};
+
+  /// Joiner side: answers my person gave to group links — keyed by the
+  /// ceremony's go-ahead tag: to whom, until when a `hello` from them is
+  /// answered with it again, the tag, and the answer (join, or be a contact
+  /// only).
+  final Map<String, ({String rid, int until, Uint8List tag, bool join})>
+      _linkJoins = {};
+
+  /// Inviter side: waits whose go-ahead [_finishLinkAdds] has taken and is
+  /// adding now — past the point where stopping the wait can stop the add.
+  final Set<String> _linkAdding = {};
+
+  /// How long a joiner keeps answering, and keeps watching for the group:
+  /// twice the link's own lifetime, because the joiner's clock starts when
+  /// its person went ahead and the inviter's when the link was made, and
+  /// a phone that was off has the rest of the relay's queue to catch up in.
+  static final Duration linkJoinWindow = connectInviteLifetime * 2;
+
+  /// Test seam: the clock the link records are judged by. Nothing else in
+  /// the service reads it, so a test can put an inviter a day ahead without
+  /// moving any other timestamp.
+  @visibleForTesting
+  int Function()? debugLinkClock;
+
+  int _linkNow() => debugLinkClock?.call() ?? _now();
+
+  /// Whether a group link made at [issuedMs] can still add anyone (its 24
+  /// hours, by the clock the link records are judged by) — what the
+  /// inviter's comparison screen says before its person goes ahead.
+  bool linkStillOpen(int issuedMs) =>
+      _linkNow() <= issuedMs + connectInviteLifetime.inMilliseconds;
+
+  /// Test seam: the `mid` of every `gjoin` this device sent, newest last —
+  /// so a test can find the envelope in the outbox and weigh it.
+  @visibleForTesting
+  final List<String> debugLinkJoinMids = [];
+
+  /// Test seam: whether this device is waiting for [rid]'s answer to any
+  /// group link it made.
+  @visibleForTesting
+  bool debugAwaitingLinkJoin(String rid) =>
+      _linkAdds.values.any((r) => r.rid == rid);
+
+  /// Test seam: whether this device still owes [rid] an answer to any of
+  /// their group links.
+  @visibleForTesting
+  bool debugOwesLinkJoin(String rid) =>
+      _linkJoins.values.any((r) => r.rid == rid);
+
+  /// Test seam: how many `gjoin`s have been read from each contact, counted
+  /// in the step that judges them — so a test can wait for a go-ahead to
+  /// have been refused rather than sleeping on it.
+  @visibleForTesting
+  final Map<String, int> debugLinkJoinsRead = {};
+
+  /// Test seam: while true, a go-ahead that arrives is recorded but not
+  /// acted on — the state an app killed between reading one and adding its
+  /// joiner leaves, which the next start must finish.
+  @visibleForTesting
+  bool debugHoldLinkAdds = false;
+
+  /// Test seam: when set, [_finishLinkAdds] waits on it after taking a
+  /// go-ahead and before adding its joiner — the moment at which stopping
+  /// the wait comes too late.
+  @visibleForTesting
+  Completer<void>? debugBeforeLinkAdd;
+
+  /// Test seam: the waits whose joiner is being added right now.
+  @visibleForTesting
+  Set<String> get debugLinkAdding => Set.unmodifiable(_linkAdding);
+
+  /// Test seam: act now on every go-ahead that has arrived, as the step
+  /// that read one, or the next start, does.
+  @visibleForTesting
+  Future<void> debugFinishLinkAdds() => _finishLinkAdds();
+
+  /// The waits this device has for answers to its group links (ADR 0020),
+  /// for the screen that lets my person stop one: which wait ([id], the
+  /// ceremony's tag), who, which group, until when. A go-ahead already read
+  /// and about to be acted on is not listed.
+  List<({String id, String rid, String gid, int until})>
+      get pendingLinkJoins => [
+            for (final e in _linkAdds.entries)
+              if (!e.value.go)
+                (
+                  id: e.key,
+                  rid: e.value.rid,
+                  gid: e.value.gid,
+                  until: e.value.until
+                )
+          ];
+
+  Future<void> _loadLinks() async {
+    final raw = await vault.kvGet('group_links');
+    if (raw == null) return;
+    try {
+      final j = (jsonDecode(raw) as Map).cast<String, Object?>();
+      Uint8List tagOf(String id) {
+        final t = unb64url(id);
+        if (t.length != connectGoAheadTagBytes) {
+          throw const FormatException('not a go-ahead tag');
+        }
+        return t;
+      }
+
+      for (final e in ((j['adds'] as Map?) ?? const {}).entries) {
+        final id = e.key as String;
+        final r = (e.value as Map).cast<String, Object?>();
+        _linkAdds[id] = (
+          rid: r['rid'] as String,
+          gid: r['gid'] as String,
+          until: (r['until'] as num).toInt(),
+          tag: tagOf(id),
+          go: r['go'] == true,
+        );
+      }
+      for (final e in ((j['joins'] as Map?) ?? const {}).entries) {
+        final id = e.key as String;
+        final r = (e.value as Map).cast<String, Object?>();
+        _linkJoins[id] = (
+          rid: r['rid'] as String,
+          until: (r['until'] as num).toInt(),
+          tag: tagOf(id),
+          join: r['join'] == true,
+        );
+      }
+    } catch (_) {
+      // A record this build cannot read adds nobody, which is the safe way
+      // for it to fail: the person is a contact either way, and an admin can
+      // add them by hand.
+      _linkAdds.clear();
+      _linkJoins.clear();
+    }
+  }
+
+  /// Persist both sides' records. Sealed, in the vault's kv format so it can
+  /// be written inside the inbound transaction, as [_saveGroups] is.
+  Future<void> _saveLinks({DatabaseExecutor? txn}) async {
+    final v = await vault.seal(jsonEncode({
+      'adds': {
+        for (final e in _linkAdds.entries)
+          e.key: {
+            'rid': e.value.rid,
+            'gid': e.value.gid,
+            'until': e.value.until,
+            'go': e.value.go,
+          }
+      },
+      'joins': {
+        for (final e in _linkJoins.entries)
+          e.key: {
+            'rid': e.value.rid,
+            'until': e.value.until,
+            'join': e.value.join,
+          }
+      },
+    }));
+    await (txn ?? vault.db).insert('kv', {'k': 's:group_links', 'v': v},
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  /// **Inviter side.** My person went ahead (matched, or not compared) with
+  /// [rid], who completed a link this device made for group [gid] at
+  /// [issuedMs], in the ceremony whose go-ahead tag is [tag]. [joinerKnows]
+  /// is whether the joiner's client repeated the group bit in message 4 —
+  /// and so could tell its person, before the digits, that this was a group
+  /// invite.
+  ///
+  /// Nothing is added here. Either the joiner's answer to THIS ceremony is
+  /// now awaited, or the group's thread says, on this device only, why it
+  /// will not come. A wait is the link's own: another link with the same
+  /// person is another wait, and this one neither replaces it nor resets a
+  /// go-ahead it has already read.
+  Future<LinkJoinOutcome> expectLinkJoin(String rid, String gid,
+      {required int issuedMs,
+      required bool joinerKnows,
+      required Uint8List tag,
+      int? nowMs}) async {
+    final now = nowMs ?? _linkNow();
+    final until = issuedMs + connectInviteLifetime.inMilliseconds;
+    final name = contacts[rid]?.name;
+    if (groups[gid] == null) return LinkJoinOutcome.refused;
+    if (!joinerKnows) {
+      // Their client could not have told them the invite was to a group, so
+      // their bundle goes nowhere: a contact, exactly as after any CONNECT.
+      await _insertSystemMessage(
+          gid, systemBody(SystemKind.linkTooOld, {'name': name}));
+      notifyListeners();
+      return LinkJoinOutcome.tooOld;
+    }
+    if (now > until) {
+      await _insertSystemMessage(
+          gid, systemBody(SystemKind.linkExpired, {'name': name}));
+      notifyListeners();
+      return LinkJoinOutcome.expired;
+    }
+    if (!mayIssueGroupList(gid, '')) {
+      await _insertSystemMessage(
+          gid, systemBody(SystemKind.linkRefused, {'name': name}));
+      notifyListeners();
+      return LinkJoinOutcome.refused;
+    }
+    _linkAdds[b64url(tag)] =
+        (rid: rid, gid: gid, until: until, tag: tag, go: false);
+    await _saveLinks();
+    notifyListeners();
+    // Speak first, now that an answer would be acted on. If they answered
+    // before I added them, their `gjoin` came from a stranger and was
+    // dropped, and if before I was waiting, it answered nothing; this is
+    // what their client answers with it again. Sent even by the designated
+    // initiator, whose opening hello went out before the record above
+    // existed — a `gjoin` answering THAT one could arrive first and find
+    // nothing waiting for it.
+    final c = contacts[rid];
+    if (c != null) {
+      await _sendInner(c, InnerMessage.hello(newMessageId(), _now()));
+    }
+    return LinkJoinOutcome.waiting;
+  }
+
+  /// **Inviter side.** My person stops waiting on the link whose tag is
+  /// [id] (from [pendingLinkJoins]): its go-ahead adds nobody — one still to
+  /// come, and one already read and not yet acted on — and the group says
+  /// so; they stay a contact. Too late only once the add itself has begun,
+  /// and then the answer says so rather than nothing.
+  Future<LinkWaitStop> cancelLinkJoin(String id) async {
+    final rec = _linkAdds.remove(id);
+    if (rec == null) {
+      return _linkAdding.contains(id)
+          ? LinkWaitStop.adding
+          : LinkWaitStop.gone;
+    }
+    await _saveLinks();
+    if (groups[rec.gid] != null) {
+      await _insertSystemMessage(
+          rec.gid,
+          systemBody(
+              SystemKind.linkCancelled, {'name': contacts[rec.rid]?.name}));
+    }
+    notifyListeners();
+    return LinkWaitStop.stopped;
+  }
+
+  /// **Joiner side.** My person answered [rid]'s invite — which said, before
+  /// the digits, that it also brings me into a group — in the ceremony whose
+  /// go-ahead tag is [tag]: [join] to join, or false to be their contact
+  /// only. Says so to them (`gjoin`, carrying the tag and the answer) and
+  /// remembers to say it again whenever they say `hello`, until their group
+  /// arrives or [linkJoinWindow] has passed. An answer is the link's own:
+  /// one given to another link with the same inviter stays as it was.
+  Future<void> acceptLinkJoin(String rid,
+      {required Uint8List tag, bool join = true, int? nowMs}) async {
+    if (contacts[rid] == null) return;
+    final id = b64url(tag);
+    _linkJoins[id] = (
+      rid: rid,
+      until: (nowMs ?? _linkNow()) + linkJoinWindow.inMilliseconds,
+      tag: tag,
+      join: join,
+    );
+    await _saveLinks();
+    await _sendLinkJoin(id);
+  }
+
+  /// **Joiner side.** [rid] said `hello`, on whichever of their devices: an
+  /// inviter whose links I answered has opened a session — perhaps after
+  /// dropping an answer as a stranger's, or before it was waiting for one.
+  /// Every answer still owed to them is said again.
+  Future<void> _answerLinkHello(String rid) async {
+    final now = _linkNow();
+    for (final e in _linkJoins.entries.toList()) {
+      if (e.value.rid == rid && now <= e.value.until) {
+        await _sendLinkJoin(e.key);
+      }
+    }
+  }
+
+  Future<void> _sendLinkJoin(String id) async {
+    final owed = _linkJoins[id];
+    final c = owed == null ? null : contacts[owed.rid];
+    if (owed == null || c == null) return;
+    final mid = newMessageId();
+    debugLinkJoinMids.add(mid);
+    await _sendInner(
+        c,
+        InnerMessage(kind: 'gjoin', mid: mid, ts: _now(), data: {
+          't': id,
+          'go': owed.join ? 1 : 0,
+        }));
+  }
+
+  /// A `gjoin` from [contact] — from any of their devices — read inside the
+  /// step that stores it. A go-ahead only marks the wait it answers: the add
+  /// is a list fan-out that takes locks of its own, so it runs after, from
+  /// [_finishLinkAdds]. A refusal closes that wait, and the group says so.
+  ///
+  /// Only an answer carrying the tag of a ceremony this device went ahead on
+  /// with [contact] counts — compared in constant time with each of theirs,
+  /// never looked up by it. Until 2026-10-03 a `gjoin` said nothing of which
+  /// ceremony it answered, so one given for an earlier link added the joiner
+  /// through a later link they had stopped.
+  Future<void> _onLinkJoin(
+      Contact contact, InnerMessage inner, DatabaseExecutor txn) async {
+    debugLinkJoinsRead[contact.rid] =
+        (debugLinkJoinsRead[contact.rid] ?? 0) + 1;
+    final t = inner.data['t'];
+    final go = inner.data['go'];
+    if (t is! String || (go != 0 && go != 1)) return;
+    final Uint8List tag;
+    try {
+      tag = unb64url(t);
+    } catch (_) {
+      return;
+    }
+    if (tag.length != connectGoAheadTagBytes) return;
+    String? id;
+    for (final e in _linkAdds.entries) {
+      if (e.value.rid == contact.rid &&
+          !e.value.go &&
+          constantTimeEquals(tag, e.value.tag)) {
+        id = e.key;
+      }
+    }
+    if (id == null) return; // an answer to some other ceremony, or read
+    final rec = _linkAdds[id]!;
+    if (_linkNow() > rec.until) return; // the sweep says so in the group
+    if (go == 0) {
+      // They answered, and chose to be a contact only: said now, as what
+      // happened, rather than a day later as a link that ran out.
+      _linkAdds.remove(id);
+      await _saveLinks(txn: txn);
+      if (groups[rec.gid] != null) {
+        await _insertSystemMessage(rec.gid,
+            systemBody(SystemKind.linkDeclined, {'name': contact.name}),
+            txn: txn);
+      }
+      return;
+    }
+    _linkAdds[id] =
+        (rid: rec.rid, gid: rec.gid, until: rec.until, tag: rec.tag, go: true);
+    await _saveLinks(txn: txn);
+  }
+
+  bool _finishingLinkAdds = false;
+
+  /// Act on every go-ahead that has arrived: re-check, at this moment, that
+  /// I may still add members to the group — a link minted by an admin since
+  /// demoted adds nobody — and add them by the ordinary path. Each wait is
+  /// taken before its add, so one link adds one person once; and from the
+  /// moment it is taken, stopping it says it is too late.
+  Future<void> _finishLinkAdds() async {
+    if (_finishingLinkAdds || debugHoldLinkAdds) return;
+    _finishingLinkAdds = true;
+    try {
+      while (true) {
+        final next = _linkAdds.entries.where((e) => e.value.go).firstOrNull;
+        if (next == null) break;
+        final id = next.key, rid = next.value.rid, gid = next.value.gid;
+        _linkAdds.remove(id);
+        _linkAdding.add(id);
+        try {
+          await _saveLinks();
+          final gate = debugBeforeLinkAdd;
+          if (gate != null) await gate.future;
+          if (contacts[rid] == null || groups[gid] == null) continue;
+          if (!mayIssueGroupList(gid, '')) {
+            await _insertSystemMessage(gid,
+                systemBody(SystemKind.linkRefused, {'name': contacts[rid]?.name}));
+            notifyListeners();
+            continue;
+          }
+          await addGroupMembers(gid, [rid], fromLink: true);
+        } finally {
+          _linkAdding.remove(id);
+        }
+      }
+    } finally {
+      _finishingLinkAdds = false;
+    }
+  }
+
+  /// Records whose time is up. An inviter's go-ahead that never came is said
+  /// in the group, once; a joiner stops answering and watching.
+  Future<void> _sweepLinks() async {
+    if (_linkAdds.isEmpty && _linkJoins.isEmpty) return;
+    final now = _linkNow();
+    final lapsed = [
+      for (final e in _linkAdds.entries)
+        if (!e.value.go && now > e.value.until) e
+    ];
+    final before = _linkJoins.length;
+    _linkJoins.removeWhere((_, r) => now > r.until);
+    if (lapsed.isEmpty && _linkJoins.length == before) return;
+    for (final e in lapsed) {
+      _linkAdds.remove(e.key);
+    }
+    await _saveLinks();
+    for (final e in lapsed) {
+      if (groups[e.value.gid] == null) continue;
+      await _insertSystemMessage(
+          e.value.gid,
+          systemBody(
+              SystemKind.linkExpired, {'name': contacts[e.value.rid]?.name}));
+    }
+    notifyListeners();
+  }
+
+  /// Test seam: run the link sweep now, as the 20-second timer does.
+  @visibleForTesting
+  Future<void> debugSweepLinks() => _sweepLinks();
 
   /// Send a text to every member of [gid], each over their pairwise ratchet.
   Future<void> sendGroupText(String gid, String body,
@@ -7057,16 +7581,32 @@ class ChatService extends ChangeNotifier implements KtHost {
     );
     unread.putIfAbsent(gid, () => 0);
     _asked.remove(gid);
+    // ADR 0020: a first group from an inviter whose group link I answered
+    // is one a link promised. Which link, the list cannot say — it names no
+    // link — so with one answer owed to them it is that one, and the answer
+    // is settled; with several, each stays owed until its own window ends
+    // (an inviter that has added me through one ignores that one's tag when
+    // it comes again). Settled in this same step, so nothing can see the
+    // group held while the answer still reads as owed.
+    final owed = <String>[
+      if (isNew && !mirroredOwn)
+        for (final e in _linkJoins.entries)
+          if (e.value.rid == fromRid && _linkNow() <= e.value.until) e.key
+    ];
+    final fromLink = owed.any((id) => _linkJoins[id]!.join);
+    final settled = owed.length == 1 && _linkJoins.remove(owed.single) != null;
     // ---- End of the decision; what follows records it.
 
     await _persistGroupContacts(adopted, txn: txn);
     await _saveGroups(txn: txn);
+    if (settled) await _saveLinks(txn: txn);
     if (isNew) {
       await _insertSystemMessage(
           gid,
           mirroredOwn
               ? systemBody(SystemKind.createdYou, {'name': list.name})
-              : systemBody(SystemKind.addedToBy,
+              : systemBody(
+                  fromLink ? SystemKind.addedFromLinkBy : SystemKind.addedToBy,
                   {'by': contacts[fromRid]?.name, 'name': list.name}),
           txn: txn);
       return true;
@@ -8271,6 +8811,27 @@ class ChatService extends ChangeNotifier implements KtHost {
   String? debugListedDeviceOwner(String deviceRid) =>
       _extraRidToContact[deviceRid];
 
+  /// The contact a device belongs to, as a connect ceremony reveals it (ADR
+  /// 0020): the contact added from that device, or the contact whose device
+  /// list — as this device holds it, signed by their account — names it,
+  /// provided that contact's account is [accountEdPub], the account the
+  /// ceremony's digits covered. Null for anyone else.
+  ///
+  /// By the list and not by the account alone: a certificate an account
+  /// signed proves the account once vouched for the device, not that it
+  /// still does — a device dropped from the list keeps its certificate. The
+  /// account is compared as [_deviceHeldElsewhere] compares accounts.
+  Contact? contactForDevice(String deviceRid, Uint8List accountEdPub) {
+    final direct = contacts[deviceRid];
+    if (direct != null) return direct;
+    final owner = _extraRidToContact[deviceRid];
+    final c = owner == null ? null : contacts[owner];
+    if (c == null || !constantTimeEquals(c.accountEd, accountEdPub)) {
+      return null;
+    }
+    return c;
+  }
+
   /// Test seam: run the gossip's judgement of [rid] now, as an inbound claim
   /// would — so a test can tell what it decides apart from when it happens
   /// to run (inbound post-processing is not ordered against the next
@@ -8595,6 +9156,22 @@ class ChatService extends ChangeNotifier implements KtHost {
       notifyListeners();
     } else if (inner.kind == 'gsync') {
       _answerGroupSync(contact, inner.data);
+    }
+    // ADR 0020, from another of a contact's devices: their answer to a
+    // group link of mine — given on whichever of their devices opened it —
+    // and the hello that asks me again for an answer I owe them, from
+    // whichever of their devices made the link. Until 2026-10-03 both were
+    // ignored here, so a contact who opened a link on their laptop never
+    // joined, and the inviter was told a day later that the link had run
+    // out. The answer is stored before this envelope is acknowledged; the
+    // add runs after, as on the primary path, and a start-up finishes it if
+    // this one does not.
+    if (inner.kind == 'gjoin') {
+      await vault.db.transaction((txn) => _onLinkJoin(contact, inner, txn));
+      unawaited(_finishLinkAdds().catchError((Object _) {}));
+    }
+    if (inner.kind == 'hello') {
+      await _answerLinkHello(contact.rid);
     }
     // 7.7a: observe the claim/echo after any devlist install above, so the
     // "held" list this cross-check compares against is current.

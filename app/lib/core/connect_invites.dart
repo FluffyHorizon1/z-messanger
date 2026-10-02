@@ -25,6 +25,12 @@ class PendingInvite {
 
   final int createdMs;
 
+  /// The group this invite is a link to (ADR 0020), or null for an ordinary
+  /// invite. On the INVITER's side only, and only here: it is not in the
+  /// link, not in any frame, and not in the run — message 3 carries one bit
+  /// saying that a group is attached, and nothing that says which.
+  final String? gid;
+
   ConnectRun run;
 
   /// The last thing [ConnectInvites.pump] learned about this invite.
@@ -50,13 +56,46 @@ class PendingInvite {
   /// for as long as the person cared to look.
   String? lastFailure;
 
+  /// The record this answer added, by its creation time — written down
+  /// before anything else the answer does, so an answer cut short after the
+  /// add (the app killed before the go-ahead went) finishes when the person
+  /// answers again, rather than meeting "already in your contacts" from its
+  /// own add. The record, not the routing id: a contact deleted and added
+  /// back another way in between is not this answer's, and is not ticked as
+  /// compared by it.
+  int? addedMs;
+
+  /// This answer has added the peer as a contact ([addedMs]).
+  bool get added => addedMs != null;
+
+  /// Set by an answer to a group link (ADR 0020) whose peer was already a
+  /// contact: the record was used as it was, neither replaced nor marked as
+  /// compared, which is what the screen then says. In memory only.
+  bool peerWasHeld = false;
+
   PendingInvite({
     required this.id,
     required this.mine,
     required this.createdMs,
     required this.run,
+    this.gid,
     this.progress = ConnectProgress.waiting,
+    this.addedMs,
   });
+
+  /// A group invite link (ADR 0020) on either side: made here for a group,
+  /// or opened here and saying a group is attached.
+  bool get groupLink => mine ? gid != null : offersGroup;
+
+  /// Opened by me, and its message 3 said the invite also brings me into a
+  /// group (ADR 0020): what the comparison screen must say before the digits.
+  bool get offersGroup => !mine && run.session?.group == true;
+
+  /// Made by me as a group link, and whoever answered it has a client that
+  /// repeated the group bit — so it could tell them, before the digits, and
+  /// they can go ahead into the group. False for an answer from a client
+  /// that predates group links: they can be a contact, not a member.
+  bool get joinerKnowsGroup => mine && gid != null && run.session?.group == true;
 
   /// The invite's two renderings. One secret: the code is what you read down
   /// a phone line, the link is what you paste into a chat.
@@ -75,8 +114,10 @@ class PendingInvite {
         'id': id,
         'mine': mine,
         'created': createdMs,
+        if (gid != null) 'gid': gid,
         'progress': progress.name,
         'run': run.toJson(),
+        if (addedMs != null) 'addedMs': addedMs,
       };
 
   static Future<PendingInvite> fromJson(Map<String, Object?> j) async =>
@@ -84,11 +125,13 @@ class PendingInvite {
         id: j['id'] as String,
         mine: j['mine'] as bool,
         createdMs: (j['created'] as num).toInt(),
+        gid: j['gid'] as String?,
         run: await ConnectRun.fromJson(
             (j['run'] as Map).cast<String, Object?>()),
         progress: ConnectProgress.values.firstWhere(
             (p) => p.name == j['progress'],
             orElse: () => ConnectProgress.waiting),
+        addedMs: (j['addedMs'] as num?)?.toInt(),
       );
 }
 
@@ -129,6 +172,19 @@ class ConnectInvites extends ChangeNotifier {
   /// an invite secret is a bearer token until it is spent.
   static const String _kvKey = 'connect_invites';
 
+  /// Test seam: open invites as a client from before group links (ADR 0020)
+  /// does — message 3's group bit is neither read nor repeated, so nothing
+  /// is said about a group and no go-ahead is ever sent. That is the joiner
+  /// the inviter has to recognise and refuse to add.
+  @visibleForTesting
+  bool debugBeforeGroupLinks = false;
+
+  /// Test seam: an answer stops right after it has added the contact and
+  /// written that down — where an app killed between the add and the rest
+  /// of the answer leaves it.
+  @visibleForTesting
+  bool debugStopAfterAdd = false;
+
   final List<PendingInvite> _invites = [];
   bool _loaded = false;
 
@@ -163,14 +219,28 @@ class ConnectInvites extends ChangeNotifier {
       displayName: _svc.displayName);
 
   /// Make an invite. Nothing is posted until the first [pump].
-  Future<PendingInvite> create({int? nowMs}) async {
+  ///
+  /// [gid]: make it a link to that group (ADR 0020) — an ordinary one-time,
+  /// 24-hour invite, with the group remembered here and nowhere else. The run
+  /// is told one bit, "a group is attached", which message 3 carries sealed;
+  /// an ordinary invite carries the same bit clear, so the two are the same
+  /// length on the wire. Whether this device may add members is checked when
+  /// the joiner's go-ahead arrives, not only now.
+  Future<PendingInvite> create({int? nowMs, String? gid}) async {
+    if (gid != null && !_svc.mayIssueGroupList(gid, '')) {
+      // The screen offers this only to someone who may add members; a link
+      // minted without that could never add anyone.
+      throw StateError('a group link needs a group this device may add to');
+    }
     await load();
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     final invite = PendingInvite(
       id: b64url(randomBytes(9)),
       mine: true,
       createdMs: now,
-      run: await ConnectRun.invite(me: await _me(), nowMs: now),
+      gid: gid,
+      run: await ConnectRun.invite(
+          me: await _me(), nowMs: now, group: gid != null),
     );
     _invites.add(invite);
     await _save();
@@ -201,7 +271,11 @@ class ConnectInvites extends ChangeNotifier {
       id: b64url(randomBytes(9)),
       mine: false,
       createdMs: now,
-      run: ConnectRun.accept(me: await _me(), code: code, nowMs: now),
+      run: ConnectRun.accept(
+          me: await _me(),
+          code: code,
+          nowMs: now,
+          groupAware: !debugBeforeGroupLinks),
     );
     _invites.add(invite);
     await _save();
@@ -366,10 +440,21 @@ class ConnectInvites extends ChangeNotifier {
   /// If that reasoning is ever rejected, this is the one line to change:
   /// drop the [ChatService.setVerified] call and the contact lands exactly
   /// where [defer] leaves it.
-  Future<Contact> confirm(PendingInvite invite) async {
-    final contact = await _add(invite);
-    await _svc.setVerified(contact.rid, true);
-    await _finish(invite);
+  ///
+  /// [join]: for a group link opened here (ADR 0020), whether going ahead
+  /// also joins the group — false makes the inviter a contact only, and
+  /// tells them so. Ignored on any other invite.
+  Future<Contact> confirm(PendingInvite invite, {bool join = true}) async {
+    final (contact, ours) = await _contactFor(invite);
+    // A contact this answer did not add is left exactly as it was: marking
+    // an existing record as compared, from a ceremony run at a distance, is
+    // the trust-model change [_add] describes.
+    if (ours) await _svc.setVerified(contact.rid, true);
+    try {
+      await _goAhead(invite, contact, join: join);
+    } finally {
+      await _finish(invite);
+    }
     return contact;
   }
 
@@ -377,27 +462,117 @@ class ConnectInvites extends ChangeNotifier {
   /// state, which is what the paste flow has always produced — the difference
   /// is that here the app knows a comparison was available and skipped, so
   /// the screen says so rather than leaving the user to infer it.
-  Future<Contact> defer(PendingInvite invite) async {
-    final contact = await _add(invite);
-    await _finish(invite);
+  Future<Contact> defer(PendingInvite invite, {bool join = true}) async {
+    final (contact, _) = await _contactFor(invite);
+    try {
+      await _goAhead(invite, contact, join: join);
+    } finally {
+      await _finish(invite);
+    }
     return contact;
+  }
+
+  /// What going ahead also means when the invite was a group link (ADR
+  /// 0020). Matching and not comparing both count: the property is that the
+  /// joiner's person was TOLD before the digits and went on, not that they
+  /// compared them; a mismatch goes nowhere near here.
+  ///
+  /// The inviter's side starts waiting for the joiner's answer — or, for a
+  /// joiner whose client never repeated the group bit, says in the group that
+  /// they are a contact only. The joiner's side sends its answer: [join], or
+  /// a contact only. Neither adds anyone: the add happens on the inviter's
+  /// device when a go-ahead arrives, by the ordinary add path, re-checked
+  /// then. Both sides bind the answer to THIS ceremony with its go-ahead tag
+  /// (§20.6), which only the two of them can compute.
+  Future<void> _goAhead(PendingInvite invite, Contact contact,
+      {required bool join}) async {
+    final session = invite.run.session;
+    if (session == null) return;
+    if (invite.mine) {
+      final gid = invite.gid;
+      if (gid == null) return;
+      await _svc.expectLinkJoin(contact.rid, gid,
+          issuedMs: invite.run.issuedMs,
+          joinerKnows: invite.joinerKnowsGroup,
+          tag: await session.goAheadTag());
+    } else if (invite.offersGroup) {
+      await _svc.acceptLinkJoin(contact.rid,
+          tag: await session.goAheadTag(), join: join);
+    }
   }
 
   /// **The digits did not match.** Nothing is added, and the invite is spent:
   /// retrying it would meet whoever produced the mismatch. There is no path
   /// from here that ends with a contact.
+  ///
+  /// Nothing else is touched — in particular no answer this device still
+  /// owes to a group link (ADR 0020). A ceremony that is stopped revealed an
+  /// identity nobody verified, so it says nothing about anyone: until
+  /// 2026-10-03 stopping a group link ended any answer still owed to the
+  /// identity it revealed, and anyone holding a person's public contact code
+  /// could make a link that revealed it, and so cancel the answer that
+  /// person was genuinely owed. An owed answer carries its own ceremony's
+  /// tag, which no other link's wait accepts.
   Future<void> mismatch(PendingInvite invite) async {
     invite.run.abandon();
     await _finish(invite);
   }
 
-  /// The user gave up on an invite that never completed.
+  /// The user gave up on an invite. Like [mismatch], it ends this invite and
+  /// nothing else.
   Future<void> discard(PendingInvite invite) async {
     invite.run.abandon();
     _invites.removeWhere((i) => i.id == invite.id);
     await _save();
     _arm();
     notifyListeners();
+  }
+
+  static Future<String> _peerRid(ConnectIdentity peer) async =>
+      (await scanContactCode(peer.contactCode)).classical.routingId();
+
+  /// The contact an answer is about, and whether this answer added it.
+  ///
+  /// Normally that is a new contact, added now ([_add]) and noted on the
+  /// invite before anything else happens ([PendingInvite.addedMs]). Two
+  /// other cases:
+  ///
+  ///  * the invite records that this same answer added that very record
+  ///    already — the app was killed between the add and the rest — so it
+  ///    is this answer's;
+  ///  * on a group link (ADR 0020), the peer was a contact before — the
+  ///    device the ceremony revealed is the one the record was added from,
+  ///    or one the record's own device list names under the account the
+  ///    digits covered ([ChatService.contactForDevice]) — so the record is
+  ///    used as it is, and the group's answer travels over the sessions that
+  ///    already exist with that account. Until 2026-10-03 this was refused
+  ///    like any existing contact, and a joiner who had once scanned the
+  ///    inviter could never join from their link; and a contact who opened
+  ///    the link on another of their devices was added again as a second
+  ///    contact, whose answer the inviter never read.
+  ///
+  /// Anything else already in the contact list is refused, as it always was.
+  Future<(Contact, bool)> _contactFor(PendingInvite invite) async {
+    final peer = invite.run.session?.peer;
+    if (peer == null) {
+      throw StateError('the ceremony has not finished');
+    }
+    final rid = await _peerRid(peer);
+    final held = _svc.contactForDevice(rid, peer.accountEdPub);
+    if (held != null) {
+      if (held.rid == rid && held.createdMs == invite.addedMs) {
+        return (held, true);
+      }
+      if (invite.groupLink) {
+        invite.peerWasHeld = true;
+        return (held, false);
+      }
+    }
+    final contact = await _add(invite);
+    invite.addedMs = contact.createdMs;
+    await _save();
+    if (debugStopAfterAdd) throw StateError('stopped after the add');
+    return (contact, true);
   }
 
   /// Add the peer the ceremony revealed.

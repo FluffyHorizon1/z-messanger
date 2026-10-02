@@ -221,6 +221,51 @@ A member still on a version of Z from before admins existed follows only the
 person who added them, until they update — and Z already tells them they are
 behind.
 
+### Inviting someone to a group by link
+
+If you can add members to a group — you own it, or you are one of its admins —
+its info screen has **Invite to group by link**. That makes an ordinary
+CONNECT invite (a link and a code, the same thing) that remembers the group on
+the device you made it on and nowhere else. Send it however you can, as with
+any invite.
+
+* **The link says nothing about the group** — not its name, not who is in it.
+  Anyone who sees it learns only that it is a Z invite.
+* **It works once and expires after 24 hours**, like every invite, and whoever
+  opens it first is who it reaches. A group link on the CONNECT tab says which
+  group it is for (on your screen only); **Discard** revokes it.
+* **What they see.** Their screen says, above the eight digits, that the invite
+  also adds them to a group, and that they will see which one once you are
+  connected. You compare the digits as for any invite. They join the group only
+  if they then go ahead on their side — *they match* or *we have not compared
+  yet* — and the group tells you *"… joined from your invite link"*. They see
+  who added them and to which group, and can leave like any member.
+* **They can connect without joining.** Beside those buttons is **Also join the
+  group**; if they turn it off they become your contact only, and the group
+  tells you at once that they chose not to join.
+* **Already contacts?** The link works anyway — even opened on another of their
+  devices: whoever already has the other as a contact keeps that contact exactly
+  as it was, and they still join. (An ordinary invite between two people who are
+  already contacts is still refused.)
+* **More than one link for the same person** — say, to two of your groups — is
+  fine: each one is answered on its own.
+* **If their app is too old** to tell them it is a group invite, your screen
+  says so before you go ahead, and they become a contact only; add them to the
+  group by hand if you still want to. If they stop at the digits, or do not
+  go ahead within the link's 24 hours, the group tells you that too.
+* **If you stop being an admin** before they join, the link adds nobody.
+* **The device you make it on adds them.** A link made on your laptop is
+  answered on your laptop, which has to be online once they have gone ahead
+  and before the link's 24 hours are up; your other devices then see the new
+  member as they see any change.
+* **Changed your mind?** Until they have joined, the CONNECT tab lists them
+  under **Waiting to join your groups**. **Stop waiting** there and the link
+  adds nobody; they stay your contact. If they had already said yes and your
+  phone was already adding them, it tells you it was too late.
+
+Make one link per person. A link that anyone who saw it could use would be a
+key to your group, sitting in whatever chat history it ended up in.
+
 ## Disappearing messages
 
 Set a timer per conversation and messages delete on both sides when it

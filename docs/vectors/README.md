@@ -16,7 +16,7 @@ to a frozen file; the freeze test then pins the additions too.
 | `attachments.json` | chunk nonces (incl. an index above 2³²), AEAD, chunk payloads, chunking | §7 |
 | `multidevice.json` | device certificates, `zc2.` account code, signed device list (unsorted input) and its transparency fingerprint, legacy mapping — and, added beside the dual‑signed list without changing it, `device_list_v2_only`: the same account's list at the next version signed with `sig3` alone (ADR 0017 stage 2), over the v2 content under its own context, whose fingerprint is over that input — with the lists that must be refused: no signature at all; one device's `deviceXPub` replaced under the genuine `sig3`; the dual‑signed list with its `sig` deleted; its `sig2` moved into `sig3`; every other combination of the three signatures; and the valid lists with a signature member added as `null`, which do not parse | §3 |
 | `pairing.json` | pairing code text, rendezvous, relay identities, channel key, SAS, sealed enrollment | §10 |
-| `inner_messages.json` | the plaintext encoding of every inner kind (incl. `dlrm`, a `ginvite` carrying `owner`/`admins`/`rv`, and `gsync`) and the `dl`/`pdl` transparency members, plus the self‑sync envelope; and `group_list_digests`: for three lists — the two `ginvite`s, and one whose name needs every escape the canonical form has and whose admins and members arrive unsorted — the canonical JSON a list's digest hashes (as text and as bytes) and the digest itself, which ranks two lists at one version — re-derived from §11.1 alone by the relay's clean‑room verifier | §6, §9, §3.6, §11.1 |
+| `inner_messages.json` | the plaintext encoding of every inner kind (incl. `dlrm`, a `ginvite` carrying `owner`/`admins`/`rv`, `gsync`, and the group‑link answer `gjoin` with its go‑ahead tag) and the `dl`/`pdl` transparency members, plus the self‑sync envelope; and `group_list_digests`: for three lists — the two `ginvite`s, and one whose name needs every escape the canonical form has and whose admins and members arrive unsorted — the canonical JSON a list's digest hashes (as text and as bytes) and the digest itself, which ranks two lists at one version — re-derived from §11.1 alone by the relay's clean‑room verifier | §6, §9, §3.6, §11.1, §20.6 |
 
 `v2/` (post‑quantum hybrid, §17):
 
@@ -33,6 +33,15 @@ to a frozen file; the freeze test then pins the additions too.
 | `mldsa65.json` | ML‑DSA‑65 known answers from seeds (`KeyGen_internal(zeta)`, deterministic signing with `rnd = 0^32`, verification, and a one‑byte tamper that must fail), plus the hybrid Ed25519 + ML‑DSA‑65 construction and the 32‑byte contact‑code commitment | §18.1, `adr/0003` |
 | `contact_code_v3.json` | the `zc3.` code end to end: identity seeds → keys → binding signature → routing id, the commitment over the ML‑DSA key, the encoded code and its JSON, the `pqid` inner message that delivers the key, and a substituted key that must be refused | §18.2 |
 | `device_cert_v3.json` | hybrid device certificates: the shared signing input, both signatures, and a forgery whose Ed25519 half is genuine over this device while its ML‑DSA half attests to another — plus safety number v2 over both key halves; the account's ML‑DSA over its device list, held at the v1 input on a dual‑signed list (ADR 0017), and, added beside it, `device_list_v2_only`: the ML‑DSA over a list signed with `sig3` alone, which is over the v3 input and so refuses the ratchet‑key substitution the stage‑1 signature could not see — and the dual‑signed list with its `sig` deleted, which its own ML‑DSA still covers and which is refused for its shape | §18.4, §18.5, §18.9 |
+
+`connect/` pins the connect ceremony (PROTOCOL.md §20, `adr/0009`), on the
+same terms:
+
+| File | Covers | Spec |
+|---|---|---|
+| `connect.json` | the code and both renderings, two v3 identities, both ephemerals and commitments, all four frames, the channel key and the eight digits in canonical order — the ceremony as a client before `adr/0020` runs it | §20.2–20.4 |
+| `mailboxes.json` | the two per‑role relay mailboxes an invite derives, and their distinctness from every other id the same secret names | §20.5 |
+| `group.json` | `adr/0020`: the same four messages with the group bit — `"grp":1` sealed in message 3 and repeated in message 4 — with both reveals' plaintexts and seal nonces, so the member's bytes can be checked, and the ceremony's go‑ahead tag (HKDF‑SHA256 of the channel key, 16 bytes) that its answer carries | §20.3, §20.6 |
 
 `kt/` pins the transparency log (PROTOCOL.md §19, `adr/0006`) — a service
 beside the protocol rather than a version of it, frozen on the same terms.

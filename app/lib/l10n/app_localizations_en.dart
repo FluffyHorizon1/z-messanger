@@ -1783,6 +1783,69 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get connectGroupNotice =>
+      'This invite also adds you to a group. You will see which one once you are connected, and you can leave it whenever you like.';
+
+  @override
+  String connectGroupLinkGoAhead(String group) {
+    return 'This link is for \"$group\": if you go ahead, they join the group as soon as they go ahead on their side too.';
+  }
+
+  @override
+  String connectGroupLinkTooOld(String group) {
+    return 'Their app is too old to join a group from a link. If you go ahead they will be a contact only — add them to \"$group\" by hand.';
+  }
+
+  @override
+  String connectGroupLinkNotAdmin(String group) {
+    return 'You can no longer add members to \"$group\", so if you go ahead they will be a contact only.';
+  }
+
+  @override
+  String connectGroupLinkLabel(String group) {
+    return 'Group link: \"$group\"';
+  }
+
+  @override
+  String get connectJoinGroup => 'Also join the group';
+
+  @override
+  String connectJoinGroupOff(String name) {
+    return 'You will be $name\'s contact only, and $name will be told you chose not to join.';
+  }
+
+  @override
+  String connectGroupLinkExpired(String group) {
+    return 'This link\'s 24 hours are over: if you go ahead they will be a contact only, not added to \"$group\".';
+  }
+
+  @override
+  String connectAlreadyContact(String name) {
+    return '$name was already your contact, and nothing about them changed.';
+  }
+
+  @override
+  String connectAlreadyContactJoining(String name) {
+    return '$name was already your contact, and nothing about them changed. You join the group once $name\'s device adds you.';
+  }
+
+  @override
+  String get connectLinkWaitsTitle => 'Waiting to join your groups';
+
+  @override
+  String connectLinkWait(String name, String group) {
+    return '$name, to \"$group\"';
+  }
+
+  @override
+  String get connectLinkWaitStop => 'Stop waiting';
+
+  @override
+  String connectLinkWaitTooLate(String name, String group) {
+    return 'Too late to stop: $name had already said yes, and is being added to \"$group\".';
+  }
+
+  @override
   String connectConfirmBody(Object name) {
     return 'Read these eight digits to $name on a call, or in person. They must see exactly the same. If they do, nobody is in the middle — not the relay, not the network, not whoever could see the message that carried the invite.';
   }
@@ -2028,6 +2091,41 @@ class AppLocalizationsEn extends AppLocalizations {
       'A change made on your other device at the same moment replaced this one, which did not stand. Make it again if you still want it.';
 
   @override
+  String sysAddedFromLinkBy(String by, String name) {
+    return '$by added you to \"$name\" from the link you opened.';
+  }
+
+  @override
+  String sysLinkJoined(String name) {
+    return '$name joined from your invite link.';
+  }
+
+  @override
+  String sysLinkTooOld(String name) {
+    return '$name is your contact, but was not added to this group: their app is too old to join from a link. Add them by hand.';
+  }
+
+  @override
+  String sysLinkExpired(String name) {
+    return '$name is your contact, but was not added to this group: their go-ahead did not reach you within the invite link\'s 24 hours. Add them by hand if you still want them here.';
+  }
+
+  @override
+  String sysLinkRefused(String name) {
+    return '$name is your contact, but was not added to this group: you can no longer add members to it.';
+  }
+
+  @override
+  String sysLinkDeclined(String name) {
+    return '$name is your contact, and chose not to join this group.';
+  }
+
+  @override
+  String sysLinkCancelled(String name) {
+    return 'You stopped waiting for $name to join from your invite link. They are still your contact.';
+  }
+
+  @override
   String get grpYouOwner => 'You (owner)';
 
   @override
@@ -2089,4 +2187,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String grpTransferOldBuild(String name) {
     return 'If $name still has a version of Z from before group admins, nobody will be able to change who the admins are until they update.';
   }
+
+  @override
+  String get grpInviteByLink => 'Invite to group by link';
+
+  @override
+  String get grpInviteByLinkNote =>
+      'Works once, for 24 hours. Whoever opens it first becomes your contact, and joins this group once they agree. The link itself says nothing about the group.';
 }

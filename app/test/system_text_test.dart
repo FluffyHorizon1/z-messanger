@@ -53,6 +53,13 @@ void main() {
       SystemKind.steppedDown,
       SystemKind.changeOverriddenBy,
       SystemKind.changeOverriddenMine,
+      SystemKind.addedFromLinkBy,
+      SystemKind.linkJoined,
+      SystemKind.linkTooOld,
+      SystemKind.linkExpired,
+      SystemKind.linkRefused,
+      SystemKind.linkDeclined,
+      SystemKind.linkCancelled,
     ];
     for (final k in kinds) {
       final out = systemText(

@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:test/test.dart';
 import 'package:z_protocol/z_protocol.dart';
 
@@ -33,7 +35,27 @@ import 'package:z_protocol/z_protocol.dart';
 //  6. a connect code never derives a pairing rendezvous, and vice versa;
 //  7. the exchange carries a contact code in both directions, so one ceremony
 //     adds both people, and each side ends holding something its existing
-//     scan path accepts.
+//     scan path accepts;
+//  8. (ADR 0020) message 3 can say that the invite also brings the acceptor
+//     into a group — one sealed bit, read by an acceptor that knows it and
+//     repeated in message 4 — and the bit set and the bit clear make frames
+//     of the same length, while a client from before the bit, on either
+//     side, completes the same ceremony ignoring it (§14);
+//  9. a bit that is not 0 or 1 is an abort, as a malformed name is; an
+//     acceptor that repeats a different bit from the one sent is an abort at
+//     the inviter; and the bit is not in the commitment — two inviters that
+//     differ only in it commit identically — so its integrity is the AEAD's,
+//     under a key only the two ends, or a machine in the middle whom the
+//     digits catch, can hold;
+// 10. (ADR 0020) the go-ahead tag — HKDF-SHA256 of the channel key, zero
+//     salt, info `z-connect-gjoin-v1`, 16 bytes: a key of its own, not the
+//     sealing key used as an HMAC key — is the same at both ends of one
+//     ceremony and different for every other: a second ceremony between the
+//     same two people, and each leg a machine in the middle runs;
+// 11. an ephemeral of small order — the zero point among them — is refused
+//     on either side (RFC 7748 §6.1): with one, X25519's output is all zeros
+//     whatever the other key is, so the channel key, and every tag derived
+//     from it, would be a constant anyone can compute.
 void main() {
   /// A v3 contact code for a fresh identity — what the app puts in a QR.
   Future<ConnectIdentity> person(String name) async {
@@ -291,7 +313,294 @@ void main() {
       expect(b64(decoded.accountEdPub), b64(bob.accountEdPub));
       expect(await decoded.classical.verify(), isTrue);
     });
+
+    test('8. one sealed bit says a group is attached, at no cost in length',
+        () async {
+      final alice = await person('Alice');
+      final bob = await person('Bob');
+
+      /// A whole ceremony: the inviter's [group] bit (null: a client from
+      /// before ADR 0020 writes none) against an acceptor that does or does
+      /// not read it. The frames are returned as the relay would carry them.
+      Future<({ConnectSession i, ConnectSession a, String x3, String x4})> run(
+          bool? group, bool aware) async {
+        final inviter = await ConnectInviter.create(me: alice, group: group);
+        final (reply, acceptor) = await ConnectAcceptor.reply(
+            await inviter.commit(),
+            me: bob,
+            groupAware: aware);
+        final open = await inviter.open(reply);
+        final (reveal, sessionB) = await acceptor.accept(open);
+        final sessionA = await inviter.complete(reveal);
+        expect(sessionA.sas, sessionB.sas, reason: 'both sides agree');
+        return (
+          i: sessionA,
+          a: sessionB,
+          x3: jsonEncode({'k': 'x3', ...open}),
+          x4: jsonEncode({'k': 'x4', ...reveal}),
+        );
+      }
+
+      // Both sides know the bit: set, the acceptor reads it and says so
+      // back; clear, both read clear.
+      final bitSet = await run(true, true);
+      expect(bitSet.a.group, isTrue, reason: 'the acceptor was told: a group');
+      expect(bitSet.i.group, isTrue, reason: 'and repeated it to the inviter');
+      final bitClear = await run(false, true);
+      expect(bitClear.a.group, isFalse);
+      expect(bitClear.i.group, isFalse);
+
+      // The bit is inside the seal and nothing new is outside it: message 3
+      // is still `k`, `ephx` and `blob`.
+      expect((jsonDecode(bitSet.x3) as Map).keys.toSet(), {'k', 'ephx', 'blob'});
+      expect((jsonDecode(bitSet.x4) as Map).keys.toSet(), {'k', 'blob'});
+
+      // Connect frames are not padded to a bucket (§20.5): the relay sees
+      // each one's exact length. Set and clear are the same length, in both
+      // directions, so the length says nothing about a group.
+      expect(bitSet.x3.length, bitClear.x3.length,
+          reason: 'message 3 with the bit set and clear: one length');
+      expect(bitSet.x4.length, bitClear.x4.length,
+          reason: 'and message 4, which repeats it');
+
+      // A client from before the bit, on either side, completes the same
+      // ceremony, the bit simply ignored — §14's rule for an unknown member,
+      // never an abort.
+      final oldAcceptor = await run(true, false);
+      expect(oldAcceptor.a.group, isNull,
+          reason: 'an acceptor that predates the bit never reads it');
+      expect(oldAcceptor.i.group, isNull,
+          reason: 'and the inviter hears nothing back: so it knows that '
+              'client could not have told its person about a group');
+      final oldInviter = await run(null, true);
+      expect(oldInviter.a.group, isNull,
+          reason: 'an inviter that predates the bit attached no group');
+      expect(oldInviter.i.group, isNull,
+          reason: 'it reads no repetition either');
+      final neither = await run(null, false);
+      expect(neither.x3.length, lessThan(bitSet.x3.length),
+          reason: "the bytes a client before ADR 0020 sends, which "
+              "vectors/connect/connect.json pins");
+
+      // The numbers, for PROTOCOL §20.3 and the report: the length of each
+      // message as the relay receives it.
+      print('connect frames, bytes as the relay sees them:\n'
+          '  x3  no bit ${neither.x3.length}  bit clear ${bitClear.x3.length}'
+          '  bit set ${bitSet.x3.length}\n'
+          '  x4  no bit ${neither.x4.length}  bit clear ${bitClear.x4.length}'
+          '  bit set ${bitSet.x4.length}');
+    });
+
+    test('9. a malformed or contradicted bit aborts; the commitment omits it',
+        () async {
+      final alice = await person('Alice');
+      final bob = await person('Bob');
+
+      // Message 3 sealed by hand, carrying [extra] beside the identity — what
+      // a client that writes nonsense would send.
+      Future<Map<String, Object?>> forgedOpen(ConnectInviter inviter,
+              ConnectAcceptor acceptor, Map<String, Object?> extra) async =>
+          {
+            'ephx': b64(inviter.ephPub),
+            'blob': await _seal(
+                await _channelKey(inviter.ephSeed, acceptor.ephPub),
+                {'code': alice.contactCode, 'name': 'Alice', ...extra}),
+          };
+
+      for (final bad in <Object?>[2, -1, '1', true, 1.0, <int>[1]]) {
+        final inviter = await ConnectInviter.create(me: alice, group: true);
+        final (_, aware) = await ConnectAcceptor.reply(await inviter.commit(),
+            me: bob, groupAware: true);
+        await expectLater(
+            aware.accept(await forgedOpen(inviter, aware, {'grp': bad})),
+            throwsA(isA<ConnectAbort>()),
+            reason: 'a group bit of $bad is not 0 or 1');
+        // A client that never reads the member is not troubled by it.
+        final (_, old) =
+            await ConnectAcceptor.reply(await inviter.commit(), me: bob);
+        final (_, s) =
+            await old.accept(await forgedOpen(inviter, old, {'grp': bad}));
+        expect(s.group, isNull);
+      }
+
+      // Message 4 repeating the opposite bit: the two sides disagree about
+      // what the ceremony is, so the inviter stops.
+      for (final group in [true, false]) {
+        final inviter = await ConnectInviter.create(me: alice, group: group);
+        final (reply, acceptor) = await ConnectAcceptor.reply(
+            await inviter.commit(),
+            me: bob,
+            groupAware: true);
+        await inviter.open(reply);
+        final key = await _channelKey(inviter.ephSeed, acceptor.ephPub);
+        final contradicted = {
+          'blob': await _seal(key,
+              {'code': bob.contactCode, 'name': 'Bob', 'grp': group ? 0 : 1})
+        };
+        await expectLater(inviter.complete(contradicted),
+            throwsA(isA<ConnectAbort>()),
+            reason: 'sent $group, read back ${!group}');
+      }
+
+      // The commitment covers the code and the name, not the bit: an
+      // inviter that differs from another only in the bit commits to the
+      // same value, so the acceptor's check passes either way and the bit's
+      // integrity is the AEAD's. That is enough, because the only party able
+      // to seal under the channel key besides the two ends is a machine in
+      // the middle, and criterion 5 is what happens to one of those.
+      final withBit = await ConnectInviter.create(me: alice, group: true);
+      final withoutBit = await ConnectInviter.fromJson(
+          {...withBit.toJson(), 'grp': false});
+      expect(await withoutBit.commit(), await withBit.commit());
+      final (reply, acceptor) = await ConnectAcceptor.reply(
+          await withBit.commit(),
+          me: bob,
+          groupAware: true);
+      final (_, flipped) = await acceptor.accept(await withoutBit.open(reply));
+      expect(flipped.group, isFalse,
+          reason: 'the flipped opening passed the commitment check');
+    });
+
+    test('10. the go-ahead tag names one ceremony, at both of its ends',
+        () async {
+      final alice = await person('Alice');
+      final bob = await person('Bob');
+      final mallory = await person('Mallory');
+      Future<(ConnectSession, ConnectSession)> run(
+          ConnectIdentity i, ConnectIdentity a) async {
+        final inviter = await ConnectInviter.create(me: i, group: true);
+        final (reply, acceptor) = await ConnectAcceptor.reply(
+            await inviter.commit(),
+            me: a,
+            groupAware: true);
+        final (reveal, sa) = await acceptor.accept(await inviter.open(reply));
+        return (await inviter.complete(reveal), sa);
+      }
+
+      final (i1, a1) = await run(alice, bob);
+      final t1 = await i1.goAheadTag();
+      expect(t1, hasLength(connectGoAheadTagBytes));
+      expect(await a1.goAheadTag(), t1, reason: 'both ends of one ceremony');
+      // What it is, from the definition alone — and what it is not: the
+      // channel key used as an HMAC key, as it was until 2026-10-03.
+      final derived = await Hkdf(hmac: Hmac.sha256(), outputLength: 16)
+          .deriveKey(
+              secretKey: SecretKey(i1.channelKey),
+              nonce: Uint8List(32),
+              info: utf8.encode('z-connect-gjoin-v1'));
+      expect(t1, await derived.extractBytes());
+      final keyedWithIt = await Hmac.sha256().calculateMac(
+          utf8.encode('z-connect-gjoin-v1'),
+          secretKey: SecretKey(i1.channelKey));
+      expect(t1, isNot(keyedWithIt.bytes.sublist(0, 16)));
+
+      // The same two people again: another ceremony, another tag.
+      final (i2, a2) = await run(alice, bob);
+      expect(await i2.goAheadTag(), isNot(t1));
+      expect(await a2.goAheadTag(), await i2.goAheadTag());
+
+      // A machine in the middle runs two ceremonies: the tag of one leg is
+      // not the tag of the other, so a go-ahead given on the acceptor's leg
+      // answers nothing the inviter holds.
+      final (aliceLeg, _) = await run(alice, mallory);
+      final (_, bobLeg) = await run(mallory, bob);
+      expect(await bobLeg.goAheadTag(), isNot(await aliceLeg.goAheadTag()));
+    });
+
+    test('11. an ephemeral of small order is refused, on either side',
+        () async {
+      // The u-coordinates of every point of small order an X25519 key can
+      // name, little-endian as on the wire: 0, 1, the two of order 8, and
+      // p - 1, p and p + 1, which name points of order 2, 4 and 1 (the list
+      // libsodium refuses).
+      Uint8List fromHex(String h) => Uint8List.fromList([
+            for (var i = 0; i < h.length; i += 2)
+              int.parse(h.substring(i, i + 2), radix: 16)
+          ]);
+      final high = 'ff' * 30;
+      final smallOrder = {
+        'zero': Uint8List(32),
+        'one': fromHex('01${'00' * 31}'),
+        'order 8 (a)': fromHex(
+            'e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800'),
+        'order 8 (b)': fromHex(
+            '5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157'),
+        'p - 1': fromHex('ec${high}7f'),
+        'p': fromHex('ed${high}7f'),
+        'p + 1': fromHex('ee${high}7f'),
+      };
+      final x = X25519();
+      final alice = await person('Alice');
+      final bob = await person('Bob');
+      for (final MapEntry(key: name, value: point) in smallOrder.entries) {
+        // What makes it dangerous: whatever this side's key, all zeros.
+        final shared = await x.sharedSecretKey(
+            keyPair: await x.newKeyPair(),
+            remotePublicKey:
+                SimplePublicKey(point, type: KeyPairType.x25519));
+        expect(await shared.extractBytes(), everyElement(0), reason: name);
+
+        // At the inviter: message 2 carrying it as the acceptor's ephemeral,
+        // with a commitment that matches it — what a machine in the middle
+        // would send.
+        final inviter = await ConnectInviter.create(me: alice, group: true);
+        final (reply, _) = await ConnectAcceptor.reply(await inviter.commit(),
+            me: bob, groupAware: true);
+        await expectLater(
+            inviter.open({...reply, 'ephx': b64(point)}),
+            throwsA(isA<ConnectAbort>()
+                .having((e) => e.message, 'message', contains('small order'))),
+            reason: name);
+        expect(inviter.opened, isFalse,
+            reason: '$name: nothing of a refused reply is kept');
+        expect(inviter.toJson().containsKey('peerEph'), isFalse,
+            reason: '$name: nor written into the state a resumed run reads');
+
+        // At the acceptor: message 3 carrying it as the inviter's ephemeral.
+        final inviter2 = await ConnectInviter.create(me: alice, group: true);
+        final (reply2, acceptor) = await ConnectAcceptor.reply(
+            await inviter2.commit(),
+            me: bob,
+            groupAware: true);
+        final open = await inviter2.open(reply2);
+        await expectLater(
+            acceptor.accept({...open, 'ephx': b64(point)}),
+            throwsA(isA<ConnectAbort>()
+                .having((e) => e.message, 'message', contains('small order'))),
+            reason: name);
+      }
+
+      // An honest ceremony is untouched by the check.
+      final inviter = await ConnectInviter.create(me: alice);
+      final (reply, acceptor) =
+          await ConnectAcceptor.reply(await inviter.commit(), me: bob);
+      final (reveal, sb) = await acceptor.accept(await inviter.open(reply));
+      expect((await inviter.complete(reveal)).sas, sb.sas);
+    });
   });
+}
+
+/// The channel key both sides derive (§20.3), recomputed here so a test can
+/// seal a reveal the library itself would never write.
+Future<Uint8List> _channelKey(Uint8List mySeed, Uint8List peerPub) async {
+  final x = X25519();
+  final shared = await x.sharedSecretKey(
+      keyPair: await x.newKeyPairFromSeed(mySeed),
+      remotePublicKey: SimplePublicKey(peerPub, type: KeyPairType.x25519));
+  final k = await Hkdf(hmac: Hmac.sha256(), outputLength: 32).deriveKey(
+      secretKey: SecretKey(await shared.extractBytes()),
+      nonce: Uint8List(32),
+      info: utf8.encode('z-connect-channel-v1'));
+  return Uint8List.fromList(await k.extractBytes());
+}
+
+/// §20.3's `seal`: nonce, then ChaCha20-Poly1305 of the JSON.
+Future<String> _seal(Uint8List key, Map<String, Object?> payload) async {
+  final box = await Chacha20.poly1305Aead().encrypt(
+      utf8.encode(jsonEncode(payload)),
+      secretKey: SecretKey(key),
+      nonce: randomBytes(12));
+  return b64(box.concatenation());
 }
 
 /// One whole ceremony, returning the string both sides agreed on.

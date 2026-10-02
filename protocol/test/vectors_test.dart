@@ -50,6 +50,8 @@ void main() {
       ('pair-v2', 'pairing_v2'),
       ('relay-auth-v2', 'relay_auth_v2'),
       ('connect', 'connect'),
+      ('connect', 'mailboxes'),
+      ('connect', 'group'),
       ('v2', 'mlkem768'),
       ('v2', 'pq_ratchet'),
       ('v2', 'pq_rekey'),
@@ -442,6 +444,73 @@ void main() {
       expect(await pairing.rendezvousRoutingId(), others['pairing_v1']);
       expect(await pairing.rendezvousRoutingIdV2(), others['pairing_v2']);
       expect(ids.intersection(others.values.cast<String>().toSet()), isEmpty);
+    });
+
+    test('connect group: the recorded ceremony replays with the group bit',
+        () async {
+      final v = readVectors('group', 'connect');
+      final code = ConnectCode(
+          unhex((v['connect_code'] as Map)['secret'] as String));
+      final parties = (v['parties'] as List).cast<Map<String, Object?>>();
+      final ids = [
+        for (final p in parties)
+          await ConnectIdentity.fromCode(p['contact_code'] as String,
+              displayName: p['display_name'] as String?)
+      ];
+      final frames = (v['frames'] as Map).cast<String, Object?>();
+      final reveals = (v['reveals'] as Map).cast<String, Object?>();
+      Map<String, Object?> frame(String k) =>
+          (frames[k] as Map).cast<String, Object?>()..remove('k');
+
+      // All four messages, from the recorded ephemerals and seal nonces.
+      final inviter = await runScripted(
+          [unhex((v['inviter_ephemeral'] as Map)['seed'] as String)],
+          () => ConnectInviter.create(me: ids[0], code: code, group: true));
+      expect({'k': 'x1', ...await inviter.commit()}, frames['commit']);
+      final (reply, acceptor) = await runScripted(
+          [unhex((v['acceptor_ephemeral'] as Map)['seed'] as String)],
+          () => ConnectAcceptor.reply(frame('commit'),
+              me: ids[1], groupAware: true));
+      expect({'k': 'x2', ...reply}, frames['reply']);
+      final open = await runScripted(
+          [unhex(reveals['open_nonce'] as String)], () => inviter.open(reply));
+      expect({'k': 'x3', ...open}, frames['open']);
+      final (reveal, sessionJ) = await runScripted(
+          [unhex(reveals['reveal_nonce'] as String)],
+          () => acceptor.accept(open));
+      expect({'k': 'x4', ...reveal}, frames['reveal']);
+      final sessionA = await inviter.complete(reveal);
+      expect(sessionA.sas, v['sas']);
+      expect(hex(sessionA.channelKey), v['channel_key']);
+      expect(sessionJ.group, isTrue, reason: 'message 3 said: a group');
+      expect(sessionA.group, isTrue, reason: 'message 4 said it back');
+
+      // The go-ahead tag (§20.6): from the recorded channel key, at both ends.
+      final goAhead = (v['go_ahead'] as Map).cast<String, Object?>();
+      expect(goAhead['label'], connectGoAheadLabel);
+      expect(hex(await sessionA.goAheadTag()), goAhead['tag']);
+      expect(hex(await sessionJ.goAheadTag()), goAhead['tag']);
+      expect(b64url(await sessionJ.goAheadTag()), goAhead['tag_b64url']);
+
+      // The plaintexts carry the member under its recorded name, as 1.
+      expect(v['group_member'], connectGroupMember);
+      for (final k in ['open_plaintext', 'reveal_plaintext']) {
+        final m = jsonDecode(reveals[k] as String) as Map;
+        expect(m[connectGroupMember], 1, reason: k);
+        expect(m.keys.toSet(), {'code', 'name', connectGroupMember},
+            reason: 'nothing about the group but the bit: $k');
+      }
+
+      // And a reader from before the bit replays the inviter's half of the
+      // same ceremony, from the same recorded inputs, without noticing it.
+      final (_, old) = await runScripted(
+          [unhex((v['acceptor_ephemeral'] as Map)['seed'] as String)],
+          () => ConnectAcceptor.reply(frame('commit'), me: ids[1]));
+      final (_, oldSession) = await runScripted(
+          [unhex(reveals['reveal_nonce'] as String)],
+          () => old.accept(frame('open')));
+      expect(oldSession.sas, v['sas']);
+      expect(oldSession.group, isNull);
     });
 
     test('backup archive: the recorded code opens every frame of the file',

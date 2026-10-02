@@ -1247,6 +1247,137 @@ Future<Map<String, Object?>> suiteConnect(List<Actor> a) async {
   };
 }
 
+/// The connect ceremony with the group bit (ADR 0020, PROTOCOL §20.3).
+///
+/// `connect.json` is the ceremony as a client before ADR 0020 runs it and is
+/// left exactly as it was. This is the same four messages with the bit:
+/// message 3's sealed reveal carries `"grp":1` — a group is attached, and
+/// nothing about which — and message 4's repeats it. Both plaintexts and
+/// both seal nonces are recorded, and each blob is recomputed here from
+/// them with the `cryptography` primitives, so a second implementation can
+/// see the member's exact bytes and check its own seal against them.
+Future<Map<String, Object?>> suiteConnectGroup() async {
+  final d = Drbg(0x0020);
+  final code = ConnectCode(d.next(10));
+  final ids = <ConnectIdentity>[];
+  final raw = <Map<String, Object?>>[];
+  for (final (name, tag) in [('Ana', 'inviter'), ('Joe', 'acceptor')]) {
+    final edSeed = d.next(32);
+    final xSeed = d.next(32);
+    final mlSeed = d.next(32);
+    final zid = await ZIdentity.fromSeeds(edSeed: edSeed, xSeed: xSeed);
+    final pq = await HybridKeyPair.fromSeeds(edSeed: edSeed, mlSeed: mlSeed);
+    final bundle =
+        await ContactBundleV3.forIdentity(zid, pq.publicKey, displayName: name);
+    final ci = await ConnectIdentity.fromCode(bundle.encode(), displayName: name);
+    ids.add(ci);
+    raw.add({
+      'role': tag,
+      'display_name': name,
+      'ed_seed': hex(edSeed),
+      'x_seed': hex(xSeed),
+      'ml_seed': hex(mlSeed),
+      'contact_code': ci.contactCode,
+    });
+  }
+  final ana = ids[0], joe = ids[1];
+
+  d.takeDraws();
+  final inviter = await d.run(
+      () => ConnectInviter.create(me: ana, code: code, group: true));
+  final iEphSeed = d.takeDraws().single;
+  final commitFrame = await inviter.commit();
+  final (reply, acceptor) = await d.run(() =>
+      ConnectAcceptor.reply(commitFrame, me: joe, groupAware: true));
+  final rEphSeed = d.takeDraws().single;
+  final rEphPub = await refXPub(rEphSeed);
+  final open = await d.run(() => inviter.open(reply));
+  final openNonce = d.takeDraws().single;
+  final (reveal, sessionJ) = await d.run(() => acceptor.accept(open));
+  final revealNonce = d.takeDraws().single;
+  final sessionA = await inviter.complete(reveal);
+  check(sessionJ.group == true, 'the acceptor read the bit');
+  check(sessionA.group == true, 'the inviter read it back');
+  check(sessionA.sas == sessionJ.sas, 'connect group agreement');
+
+  // The two reveals, rebuilt from their plaintexts: the member is one byte
+  // of value, `0` or `1`, written whichever it is.
+  final dh = await refDh(iEphSeed, rEphPub);
+  final channelKey =
+      await refHkdf(dh, Uint8List(32), utf8.encode('z-connect-channel-v1'), 32);
+  final aead = Chacha20.poly1305Aead();
+  Future<String> sealed(String plain, Uint8List nonce) async => base64Encode(
+      (await aead.encrypt(utf8.encode(plain),
+              secretKey: SecretKey(channelKey), nonce: nonce))
+          .concatenation());
+  final openPlain = jsonEncode(
+      {'code': ana.contactCode, 'name': 'Ana', connectGroupMember: 1});
+  final revealPlain = jsonEncode(
+      {'code': joe.contactCode, 'name': 'Joe', connectGroupMember: 1});
+  check(await sealed(openPlain, openNonce) == open['blob'],
+      'message 3 is the recorded plaintext, sealed');
+  check(await sealed(revealPlain, revealNonce) == reveal['blob'],
+      'message 4 is the recorded plaintext, sealed');
+
+  // The go-ahead tag (PROTOCOL 20.6): what the acceptor's `gjoin` carries so
+  // that it answers this ceremony and no other — the same at both ends, and
+  // nothing but HKDF of the channel key under its own label.
+  final tag = await sessionA.goAheadTag();
+  check(eq(tag, await sessionJ.goAheadTag()), 'one tag at both ends');
+  check(
+      eq(
+          tag,
+          await refHkdf(channelKey, Uint8List(32),
+              utf8.encode(connectGoAheadLabel), connectGoAheadTagBytes)),
+      'the go-ahead tag is HKDF-SHA256 of the channel key, 16 bytes');
+
+  return {
+    'suite': 'connect_group',
+    'version': vectorsVersion,
+    'description':
+        'The connect ceremony (PROTOCOL 20) with the group bit of ADR 0020: '
+            'message 3 seals "grp":1 beside the inviter\'s code and name — the '
+            'invite also brings the acceptor into a group, and nothing says '
+            'which — and message 4 repeats it. A client that knows the member '
+            'writes it in every reveal, 0 or 1, so the length of a frame never '
+            'depends on it; one that does not neither writes nor reads it. The '
+            'commitments do not cover it (they are computed exactly as in '
+            'connect.json): it is protected by the AEAD under the channel key. '
+            'go_ahead is the tag the acceptor\'s go-ahead (gjoin) carries: '
+            'HKDF-SHA256 with the channel key as input, a salt of 32 zero bytes '
+            'and the label as info, 16 bytes, so a go-ahead answers this '
+            'ceremony and no other. '
+            'Everything not recorded here is computed as connect.json shows.',
+    'connect_code': {
+      'secret': hex(code.secret),
+      'text': code.text,
+    },
+    'parties': raw,
+    'inviter_ephemeral': {'seed': hex(iEphSeed), 'pub': hex(inviter.ephPub)},
+    'acceptor_ephemeral': {'seed': hex(rEphSeed), 'pub': hex(rEphPub)},
+    'channel_key': hex(channelKey),
+    'group_member': connectGroupMember,
+    'go_ahead': {
+      'label': connectGoAheadLabel,
+      'tag': hex(tag),
+      'tag_b64url': b64url(tag),
+    },
+    'reveals': {
+      'open_plaintext': openPlain,
+      'open_nonce': hex(openNonce),
+      'reveal_plaintext': revealPlain,
+      'reveal_nonce': hex(revealNonce),
+    },
+    'frames': {
+      'commit': {'k': 'x1', ...commitFrame},
+      'reply': {'k': 'x2', ...reply},
+      'open': {'k': 'x3', ...open},
+      'reveal': {'k': 'x4', ...reveal},
+    },
+    'sas': sessionA.sas,
+  };
+}
+
 Future<Map<String, Object?>> suitePairingV2(List<Actor> a) async {
   final d = Drbg(0x0017);
   final code = PairingCode(d.next(10));
@@ -1695,6 +1826,17 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
         mid: 'mid-gsync',
         ts: ts,
         data: {'gid': 'gAAECAwQFBgcICQoL'}),
+    // ADR 0020: a joiner's answer to a group invite link, sent over the new
+    // pairwise session once its person was told, before the digits, that
+    // the invite was to a group and answered: `go` 1 to join, 0 to stay a
+    // contact only. It names no group — only the receiver knows which group
+    // its invite was for — and `t`, the ceremony's go-ahead tag (§20.6),
+    // says which invite it answers. (Sixteen fixed bytes here; group.json
+    // records a real one, derived from a recorded channel key.)
+    InnerMessage(kind: 'gjoin', mid: 'mid-gjoin', ts: ts, data: {
+      't': b64url(Uint8List.fromList(List<int>.generate(16, (i) => i))),
+      'go': 1,
+    }),
   ];
   final vectors = <Map<String, Object?>>[];
   for (final m in kinds) {
@@ -3055,6 +3197,7 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     'connect': {
       'connect': await suiteConnect(a),
       'mailboxes': await suiteConnectMailboxes(),
+      'group': await suiteConnectGroup(),
     },
     'backup': {
       'archive': await suiteBackup(),

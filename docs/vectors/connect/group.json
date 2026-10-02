@@ -1,0 +1,69 @@
+{
+  "suite": "connect_group",
+  "version": 1,
+  "description": "The connect ceremony (PROTOCOL 20) with the group bit of ADR 0020: message 3 seals \"grp\":1 beside the inviter's code and name — the invite also brings the acceptor into a group, and nothing says which — and message 4 repeats it. A client that knows the member writes it in every reveal, 0 or 1, so the length of a frame never depends on it; one that does not neither writes nor reads it. The commitments do not cover it (they are computed exactly as in connect.json): it is protected by the AEAD under the channel key. go_ahead is the tag the acceptor's go-ahead (gjoin) carries: HKDF-SHA256 with the channel key as input, a salt of 32 zero bytes and the label as info, 16 bytes, so a go-ahead answers this ceremony and no other. Everything not recorded here is computed as connect.json shows.",
+  "connect_code": {
+    "secret": "01244eb5277febeae439",
+    "text": "AESE5-NJHP7-V6VZB-Z"
+  },
+  "parties": [
+    {
+      "role": "inviter",
+      "display_name": "Ana",
+      "ed_seed": "d9f4d2bc39f0e248877cee36b768d1b78f86edfbff075f90a9cbfb5875d49aed",
+      "x_seed": "207e84de05bc2588ff0143760918e26636742551f0dbf5a1676b05cf49730893",
+      "ml_seed": "265e8816ecfb0817d5a2fe58d2def19c0bd4cc7e54690d60ab795ca66080df0a",
+      "contact_code": "zc1.eyJ2IjoxLCJlZCI6IjZwU0Nmbk53YnlDTFB0VUZKWWFTeEtFeXFsMjh6a0VVdHhpYzA0N3BndlE9IiwieCI6ImZRY1JuTXl0L2hTYUc2UHJFTi9xYW1ndEZTRTN0bk40ZUpGMlppd2JxWHM9Iiwic2lnIjoiMCtaRHdxS2pYSFErNEU1UWJFOVlYNXBmQ2NUdlArMXE1MjArWkNETlhoTGNodFpZK3JGRnlhTUtKOTh2aVdSWmxuZmJxR0tkQVJ1dHplN0JDbWRXQ2c9PSIsInBxYyI6IjhXMk5zRjc3dkRzVVNJZ056U1BycUUvNE91dmJkTnh4OE8waGNteGRyU009IiwibmFtZSI6IkFuYSJ9"
+    },
+    {
+      "role": "acceptor",
+      "display_name": "Joe",
+      "ed_seed": "be685e3d772a3cb0e3065ab47dfd9d8d118f962799460f7ed163a0fc58cc75e6",
+      "x_seed": "818fbffed545fad6dd47aaa52e91bfa421b3b4a3f0c9e26f2f3a89cc98d5bd7d",
+      "ml_seed": "621350bf57d2e2dd34110bdda45188e073e0e989c8a7d3114011abf45efb2452",
+      "contact_code": "zc1.eyJ2IjoxLCJlZCI6ImhERENxRVY5c0U1TXluQm1QcU5WajZVRUNpNUdvaDhsQll4WFozQXRjSms9IiwieCI6InkyOFlMZEdBd2R5L1hUNGZwdFV0SkUyNlNzS25TTzB6SkRsWHNKM0VtZzQ9Iiwic2lnIjoiOEFJNEhHa2VmRmFZWEwzc2toclJpbGZxbEJSUDdEaVI2VDgxNGZYdlJqSkJSelVZb01vTlVZakhuVVNwczZ5NmZUVzhXbVdYL1NUUHVVVUNEWHdWQXc9PSIsInBxYyI6Im40Vk9hU0tHNnVUMEt1WXdMR2pMemovOUxIQkt5YzRYT1I2b3YwYjVqVmM9IiwibmFtZSI6IkpvZSJ9"
+    }
+  ],
+  "inviter_ephemeral": {
+    "seed": "089e37735781f05109d3d0e0be3fee15e378796ef3eae3bbc2849d14fb9148bb",
+    "pub": "b0509f524a62f903f8040f5b65819edf99b58634d050cf8da6cf0aab74edb522"
+  },
+  "acceptor_ephemeral": {
+    "seed": "3edcabe04939e776e18356c2e7a03d544a3fed9446cb929bcfea06d36e21a563",
+    "pub": "0ee67fb98822e7e35de82670960e279ca5986991f1d2e2d3e091261aadb76b30"
+  },
+  "channel_key": "cc0d6b9795a3f459a8926332d749e8884076bc85754617905f47eb31569bf1ac",
+  "group_member": "grp",
+  "go_ahead": {
+    "label": "z-connect-gjoin-v1",
+    "tag": "84f813aaafaa2a80dcf8123a65e3635a",
+    "tag_b64url": "hPgTqq-qKoDc-BI6ZeNjWg"
+  },
+  "reveals": {
+    "open_plaintext": "{\"code\":\"zc1.eyJ2IjoxLCJlZCI6IjZwU0Nmbk53YnlDTFB0VUZKWWFTeEtFeXFsMjh6a0VVdHhpYzA0N3BndlE9IiwieCI6ImZRY1JuTXl0L2hTYUc2UHJFTi9xYW1ndEZTRTN0bk40ZUpGMlppd2JxWHM9Iiwic2lnIjoiMCtaRHdxS2pYSFErNEU1UWJFOVlYNXBmQ2NUdlArMXE1MjArWkNETlhoTGNodFpZK3JGRnlhTUtKOTh2aVdSWmxuZmJxR0tkQVJ1dHplN0JDbWRXQ2c9PSIsInBxYyI6IjhXMk5zRjc3dkRzVVNJZ056U1BycUUvNE91dmJkTnh4OE8waGNteGRyU009IiwibmFtZSI6IkFuYSJ9\",\"name\":\"Ana\",\"grp\":1}",
+    "open_nonce": "4b842ef4f6578806a78f81dd",
+    "reveal_plaintext": "{\"code\":\"zc1.eyJ2IjoxLCJlZCI6ImhERENxRVY5c0U1TXluQm1QcU5WajZVRUNpNUdvaDhsQll4WFozQXRjSms9IiwieCI6InkyOFlMZEdBd2R5L1hUNGZwdFV0SkUyNlNzS25TTzB6SkRsWHNKM0VtZzQ9Iiwic2lnIjoiOEFJNEhHa2VmRmFZWEwzc2toclJpbGZxbEJSUDdEaVI2VDgxNGZYdlJqSkJSelVZb01vTlVZakhuVVNwczZ5NmZUVzhXbVdYL1NUUHVVVUNEWHdWQXc9PSIsInBxYyI6Im40Vk9hU0tHNnVUMEt1WXdMR2pMemovOUxIQkt5YzRYT1I2b3YwYjVqVmM9IiwibmFtZSI6IkpvZSJ9\",\"name\":\"Joe\",\"grp\":1}",
+    "reveal_nonce": "d3762c11116e8e7196054ffa"
+  },
+  "frames": {
+    "commit": {
+      "k": "x1",
+      "c": "oj+SB4LaSZmkN9hbzQ1XElwFsF27oqxSsSWPIK/JuGA="
+    },
+    "reply": {
+      "k": "x2",
+      "ephx": "DuZ/uYgi5+Nd6CZwlg4nnKWYaZHx0uLT4JEmGq23azA=",
+      "c": "KXajdL4kSRGF7RK/jCPwkXzC1E87o0+LpoonstPbq3I="
+    },
+    "open": {
+      "k": "x3",
+      "ephx": "sFCfUkpi+QP4BA9bZYGe35m1hjTQUM+Nps8Kq3TttSI=",
+      "blob": "S4Qu9PZXiAanj4Hdp4Y5qcEC9Wxpj+GJRsNmXBwKfVnn2QzR1q0f6fr0F8wv5GEDPfn6WcsczG+y6BCkJTsPP7/bS63U11zxivwUt0MU62vazeEwVDRRkb+JrZ1K6UU/KcZoUZqs9Kq+6oRZ0n+1dYnP+hWAc3FmxWP6bGAXrf1dkHvcUMD7MyFT1V6zf3VcmdSKZA04yy2+4sICtMInovM5j4TwkHzAEpK+zMj0rrywue9qqD0f0UzfvD/Q+YKUcdBjqIgRlxkj0TN6kgZNUTbBd/xX4X5euHwdu5vXLe+WlfP+/7io3xD3kMONcI6lkkD3/kXV6NRMER10IuO42s1s4loNMFnINjPmjcclJ4bfLUPWiAs+Nqe4LO2/XAALIGEmFtt7zB6lGhkqo+5CnpTJocYmhHXwrRIsbJGIpXPCnPaqyrukEEF23ElgrAHeXzsxvmflOCMXsQUmCMb5dlbUrFRSxZOXuef7dWYZ2mqaTpiq8/+fjfzavjnqYGTpvspwAl4D2kqr6kK11sX9UOmKBRVxgBeQsyeZChb7dVeqnzDQD2NCrMbTuLM="
+    },
+    "reveal": {
+      "k": "x4",
+      "blob": "03YsERFujnGWBU/6vJ+StNP4f8Yn3Aw8eDI4wft3dUDcxRqpFpr4cdfmhJUJnAx8/z8ZZFOg+FDPJy5dJljRhC0YbX2ITDSwtZtvyPUqMHaCAKEOEy9M/NKfq79jf/Hvsz9DV/QMBIiBPaiePWxKWSUmXGsexqAYobHoXDpf6I8km69LpBCJqWwr9S9PdGHvTqt+ePwCeq1AouY5XZkauiVVlUzJqyoAu5sNmd+43w96/L3Kma5tTAAKitgDRPQhJS4hcmOotZIbgqdh4UkLoPTVYJtGFfU5kw6baAXc9lU1xUH1rXmAVSnOxAibNIZCWwy4xxA8Gh27ALVhm9vuoaDeo+81rBkQTwxfQ2R5nIGTZZdHHrGZlldb143r597c4Vgqg6VDW/lE4kUke9VOqh/1NOig7PwDfwdSxm6vsDNm2NhbGeRcNXGqSlBgHq745t1/Kyv39UDKaT28Cj/1ActPEJ/y0F3mOA5dgN1MYKRXcoT8m4lnBdBSqrCZW66pXhRtjGOC15VgV0RXcouWkhMmGDMq5qiQb6hSqIaieWsZt5ro0OKhnI1Ja0A="
+    }
+  },
+  "sas": "5052 0900"
+}

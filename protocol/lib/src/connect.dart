@@ -56,6 +56,27 @@ const String connectRelayCtx = 'z-connect-relay-v1:';
 /// Where a `/i#…` invite link points by default.
 const String connectLinkHost = 'www.zmessengers.com';
 
+/// The group bit: an optional member of a sealed reveal (ADR 0020, §20.3),
+/// `0` or `1` and nothing else.
+///
+/// In message 3 it is the inviter saying whether the invite also brings the
+/// acceptor into a group — not which group, not its name, not its size: the
+/// acceptor's screen says so before the digits, and learns the rest from the
+/// group's own invite once there is a session to carry it. In message 4 it
+/// is the acceptor repeating what it read in message 3, which is also how
+/// the inviter learns that the acceptor's client knows what the bit means.
+///
+/// A client that implements it writes it in EVERY reveal, `0` as readily as
+/// `1`. Connect frames are attributed sends with the JSON as their payload,
+/// not sealed envelopes padded to a bucket (§20.5), so the relay sees each
+/// frame's exact length — and a member written only when a group is
+/// attached would be a group invite announcing itself by eight bytes. A
+/// client from before ADR 0020 neither writes nor reads it (§14), and
+/// [ConnectInviter.create] and [ConnectAcceptor.reply] produce that client's
+/// bytes when not asked for the bit, which is what keeps
+/// `vectors/connect/connect.json` what it was.
+const String connectGroupMember = 'grp';
+
 /// RFC 4648 base32, as code units — what [ConnectCode.parse] will accept.
 final Set<int> _b32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.codeUnits.toSet();
 
@@ -222,10 +243,51 @@ class ConnectIdentity {
     ]));
   }
 
-  Map<String, Object?> _reveal() => {
+  /// What this side seals into its message 3 or 4. [group] is the group
+  /// bit ([connectGroupMember]), left out when null — the reveal a client
+  /// before ADR 0020 sends. It is not part of the commitment: the
+  /// commitment binds who this side says it is, and the bit travels inside
+  /// the AEAD under the channel key, where the only party who could set it
+  /// is one who holds that key — a machine in the middle, which is what the
+  /// digits exist to catch.
+  Map<String, Object?> _reveal({bool? group}) => {
         'code': contactCode,
         if (displayName != null) 'name': displayName,
+        if (group != null) connectGroupMember: group ? 1 : 0,
       };
+}
+
+/// The label of a ceremony's go-ahead tag ([connectGoAheadTag]).
+const String connectGoAheadLabel = 'z-connect-gjoin-v1';
+
+/// How many bytes a go-ahead tag is ([connectGoAheadTag]).
+const int connectGoAheadTagBytes = 16;
+
+/// The go-ahead tag of the ceremony whose channel key is [channelKey] (ADR
+/// 0020, PROTOCOL §20.6): HKDF-SHA256 with the channel key as its input, a
+/// salt of 32 zero bytes (as the channel key's own derivation has) and
+/// [connectGoAheadLabel] as its info, [connectGoAheadTagBytes] bytes long.
+///
+/// A group link's go-ahead (`gjoin`, §6.2) carries it, so a go-ahead answers
+/// the one ceremony it was given on: both ends of that ceremony compute the
+/// same tag, and nobody else can — not the relay, not a later or an earlier
+/// ceremony between the same two people, whose channel key is another. A
+/// go-ahead without the tag could not say which link it answered, and the
+/// inviter took one given for an earlier link as the answer to a later one
+/// the joiner had stopped.
+///
+/// Derived, rather than an HMAC keyed with the channel key itself, so that
+/// the key which seals the two reveals is used for that and nothing else.
+/// Until 2026-10-03 the tag was HMAC-SHA256 under the channel key directly.
+Future<Uint8List> connectGoAheadTag(Uint8List channelKey) async {
+  final hkdf =
+      Hkdf(hmac: Hmac.sha256(), outputLength: connectGoAheadTagBytes);
+  final k = await hkdf.deriveKey(
+    secretKey: SecretKey(channelKey),
+    nonce: Uint8List(32),
+    info: utf8.encode(connectGoAheadLabel),
+  );
+  return Uint8List.fromList(await k.extractBytes());
 }
 
 /// A completed ceremony: the channel, the confirmation string, and who the
@@ -240,8 +302,25 @@ class ConnectSession {
   /// The peer's identity, as revealed and checked against its commitment.
   final ConnectIdentity peer;
 
+  /// The group bit ([connectGroupMember]) as the PEER's reveal stated it,
+  /// or null when its reveal carried none — a client from before ADR 0020,
+  /// or a side that was not asked to read it.
+  ///
+  /// On the acceptor's side this is the inviter saying whether a group is
+  /// attached: true is what the acceptor's screen must announce before the
+  /// digits. On the inviter's side it is the acceptor repeating what it
+  /// read, so null there means the acceptor's client cannot know the invite
+  /// was to a group — and could not have told its person so.
+  final bool? group;
+
   ConnectSession(
-      {required this.channelKey, required this.sas, required this.peer});
+      {required this.channelKey,
+      required this.sas,
+      required this.peer,
+      this.group});
+
+  /// This ceremony's go-ahead tag ([connectGoAheadTag]).
+  Future<Uint8List> goAheadTag() => connectGoAheadTag(channelKey);
 }
 
 /// The side that made the invite. Sends messages 1 and 3.
@@ -250,19 +329,26 @@ class ConnectInviter {
   final ConnectIdentity me;
   final Uint8List ephSeed, ephPub;
 
+  /// The group bit this side seals into message 3 ([connectGroupMember]):
+  /// whether the invite also brings the acceptor into a group. Null writes
+  /// no member at all and reads none back — exactly what a client before
+  /// ADR 0020 does, which is what the recorded vectors are.
+  final bool? group;
+
   Uint8List? _dh;
   Uint8List? _channelKey;
   Uint8List? _peerEph;
   Uint8List? _peerCommitment;
 
-  ConnectInviter._(this.code, this.me, this.ephSeed, this.ephPub);
+  ConnectInviter._(this.code, this.me, this.ephSeed, this.ephPub, this.group);
 
   static Future<ConnectInviter> create(
-      {required ConnectIdentity me, ConnectCode? code}) async {
+      {required ConnectIdentity me, ConnectCode? code, bool? group}) async {
     final seed = randomBytes(32);
     final pub = Uint8List.fromList(
         (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
-    return ConnectInviter._(code ?? ConnectCode.generate(), me, seed, pub);
+    return ConnectInviter._(
+        code ?? ConnectCode.generate(), me, seed, pub, group);
   }
 
   /// Everything needed to pick this ceremony up after the app was closed.
@@ -276,6 +362,7 @@ class ConnectInviter {
         'me': me.contactCode,
         if (me.displayName != null) 'name': me.displayName,
         'eph': b64(ephSeed),
+        if (group != null) 'grp': group,
         if (_peerEph != null) 'peerEph': b64(_peerEph!),
         if (_peerCommitment != null) 'peerC': b64(_peerCommitment!),
       };
@@ -286,14 +373,23 @@ class ConnectInviter {
     final seed = unb64(j['eph'] as String);
     final pub = Uint8List.fromList(
         (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
-    final out =
-        ConnectInviter._(ConnectCode(unb64(j['code'] as String)), me, seed, pub);
+    final grp = j['grp'];
+    final out = ConnectInviter._(ConnectCode(unb64(j['code'] as String)), me,
+        seed, pub, grp is bool ? grp : null);
     final pe = j['peerEph'], pc = j['peerC'];
     if (pe is String && pc is String) {
-      out._peerEph = unb64(pe);
-      out._peerCommitment = unb64(pc);
-      out._dh = await _dhOf(seed, out._peerEph!);
-      out._channelKey = await _deriveChannelKey(out._dh!);
+      try {
+        final dh = await _dhOf(seed, unb64(pe));
+        out._peerEph = unb64(pe);
+        out._peerCommitment = unb64(pc);
+        out._dh = dh;
+        out._channelKey = await _deriveChannelKey(dh);
+      } on ConnectAbort {
+        // A reply a build from before the small-order check took in. Read
+        // back unopened: the run is spent or about to be, and the next step
+        // meets the same refusal — rather than one bad record making every
+        // pending invite beside it unreadable.
+      }
     }
     return out;
   }
@@ -313,33 +409,49 @@ class ConnectInviter {
     if (eph.length != 32 || commitment.length != 32) {
       throw const ConnectAbort('malformed reply');
     }
+    // The DH first: a reply this side refuses ([_dhOf]) is never written
+    // into the state a resumed run reads back.
+    final dh = await _dhOf(ephSeed, eph);
     _peerEph = eph;
     _peerCommitment = commitment;
-    _dh = await _dhOf(ephSeed, eph);
-    _channelKey = await _deriveChannelKey(_dh!);
+    _dh = dh;
+    _channelKey = await _deriveChannelKey(dh);
     return {
       'ephx': b64(ephPub),
-      'blob': b64(await _seal(_channelKey!, me._reveal())),
+      'blob': b64(await _seal(_channelKey!, me._reveal(group: group))),
     };
   }
 
   /// Message 4: the acceptor's sealed reveal. Checks it against the
   /// commitment it made in message 2, and completes the ceremony.
+  ///
+  /// With a group bit of its own, this side also reads the acceptor's
+  /// repetition of it ([ConnectSession.group]). Absent is a client from
+  /// before ADR 0020 and is not an error. Present and different is: the two
+  /// sides disagree about what this ceremony is, which only happens when
+  /// message 3 did not arrive as it was sent, and §20.3's rule for a
+  /// disagreement is to abort, not to carry on at a lower assurance.
   Future<ConnectSession> complete(Map<String, Object?> reveal) async {
     final key = _channelKey;
     if (key == null) {
       throw const ConnectAbort('complete() before open(): out of order');
     }
-    final peer = await _openReveal(key, reveal);
+    final (peer, echo) =
+        await _openReveal(key, reveal, readGroup: group != null);
     if (!constantTimeEquals(
         await peer._commitment(_peerEph!), _peerCommitment!)) {
       throw const ConnectAbort(
           'the other side revealed something it had not committed to');
     }
+    if (echo != null && echo != group) {
+      throw const ConnectAbort(
+          'the other side read a different group bit from the one sent');
+    }
     return ConnectSession(
       channelKey: key,
       sas: await _deriveSas(_dh!, me, ephPub, peer, _peerEph!),
       peer: peer,
+      group: echo,
     );
   }
 }
@@ -349,7 +461,14 @@ class ConnectAcceptor {
   final ConnectIdentity me;
   final Uint8List _ephSeed, _ephPub, _peerCommitment;
 
-  ConnectAcceptor._(this.me, this._ephSeed, this._ephPub, this._peerCommitment);
+  /// Whether this side reads the group bit in message 3 and repeats it in
+  /// message 4 ([connectGroupMember]). False neither reads nor writes it —
+  /// exactly a client from before ADR 0020, which is what the recorded
+  /// vectors are and what a test standing in for such a client needs.
+  final bool groupAware;
+
+  ConnectAcceptor._(this.me, this._ephSeed, this._ephPub, this._peerCommitment,
+      this.groupAware);
 
   Uint8List get ephPub => _ephPub;
 
@@ -360,6 +479,7 @@ class ConnectAcceptor {
         if (me.displayName != null) 'name': me.displayName,
         'eph': b64(_ephSeed),
         'peerC': b64(_peerCommitment),
+        if (groupAware) 'ga': true,
       };
 
   static Future<ConnectAcceptor> fromJson(Map<String, Object?> j) async {
@@ -368,7 +488,8 @@ class ConnectAcceptor {
     final seed = unb64(j['eph'] as String);
     final pub = Uint8List.fromList(
         (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
-    return ConnectAcceptor._(me, seed, pub, unb64(j['peerC'] as String));
+    return ConnectAcceptor._(
+        me, seed, pub, unb64(j['peerC'] as String), j['ga'] == true);
   }
 
   /// Message 2: a fresh ephemeral and this side's own commitment, chosen
@@ -376,13 +497,14 @@ class ConnectAcceptor {
   /// side steering the confirmation string.
   static Future<(Map<String, Object?>, ConnectAcceptor)> reply(
       Map<String, Object?> commit,
-      {required ConnectIdentity me}) async {
+      {required ConnectIdentity me,
+      bool groupAware = false}) async {
     final c = _need(commit, 'c');
     if (c.length != 32) throw const ConnectAbort('malformed commitment');
     final seed = randomBytes(32);
     final pub = Uint8List.fromList(
         (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
-    final acceptor = ConnectAcceptor._(me, seed, pub, c);
+    final acceptor = ConnectAcceptor._(me, seed, pub, c, groupAware);
     return (
       {'ephx': b64(pub), 'c': b64(await me._commitment(pub))},
       acceptor,
@@ -391,23 +513,32 @@ class ConnectAcceptor {
 
   /// Message 3 in, message 4 out: check the inviter's opening against its
   /// commitment, then reveal this side's identity over the channel.
+  ///
+  /// A group-aware acceptor also reads the inviter's group bit into
+  /// [ConnectSession.group] and repeats it in message 4 — `0` when the
+  /// inviter wrote none, so this side's reveal is the same length whatever
+  /// the invite was.
   Future<(Map<String, Object?>, ConnectSession)> accept(
       Map<String, Object?> open) async {
     final eph = _need(open, 'ephx');
     if (eph.length != 32) throw const ConnectAbort('malformed opening');
     final dh = await _dhOf(_ephSeed, eph);
     final key = await _deriveChannelKey(dh);
-    final peer = await _openReveal(key, open);
+    final (peer, group) = await _openReveal(key, open, readGroup: groupAware);
     if (!constantTimeEquals(await peer._commitment(eph), _peerCommitment)) {
       throw const ConnectAbort(
           'the other side revealed something it had not committed to');
     }
     return (
-      {'blob': b64(await _seal(key, me._reveal()))},
+      {
+        'blob': b64(await _seal(
+            key, me._reveal(group: groupAware ? (group ?? false) : null)))
+      },
       ConnectSession(
         channelKey: key,
         sas: await _deriveSas(dh, peer, eph, me, _ephPub),
         peer: peer,
+        group: group,
       ),
     );
   }
@@ -425,12 +556,33 @@ Uint8List _need(Map<String, Object?> j, String k) {
   }
 }
 
+/// X25519 of this side's ephemeral with the peer's, refusing an all-zero
+/// result (RFC 7748 §6.1).
+///
+/// A peer "ephemeral" of small order — the zero point, or any of the few
+/// points of order 2, 4 or 8, in any of their encodings — makes the output
+/// all zeros whatever this side's key is, so the channel key would be
+/// HKDF of zeros: a constant anyone can compute, the same on every leg a
+/// machine in the middle runs that way, and with it the go-ahead tag of
+/// every such ceremony. An honest side never sends one (its ephemeral is a
+/// clamped scalar times the base point), so refusing it costs an honest
+/// ceremony nothing; and each side checks the output it computes, so the
+/// refusal holds on both. Checked in constant time, as the RFC asks.
 Future<Uint8List> _dhOf(Uint8List seed, Uint8List peerPub) async {
   final s = await _x.sharedSecretKey(
     keyPair: await _x.newKeyPairFromSeed(seed),
     remotePublicKey: SimplePublicKey(peerPub, type: KeyPairType.x25519),
   );
-  return Uint8List.fromList(await s.extractBytes());
+  final out = Uint8List.fromList(await s.extractBytes());
+  var any = 0;
+  for (final b in out) {
+    any |= b;
+  }
+  if (any == 0) {
+    throw const ConnectAbort(
+        'the other side\'s ephemeral key is a point of small order');
+  }
+  return out;
 }
 
 Future<Uint8List> _deriveChannelKey(Uint8List dh) async {
@@ -491,8 +643,15 @@ Future<Uint8List> _seal(Uint8List key, Map<String, Object?> payload) async {
   return Uint8List.fromList(box.concatenation());
 }
 
-Future<ConnectIdentity> _openReveal(
-    Uint8List key, Map<String, Object?> frame) async {
+/// Open a sealed reveal: the identity it carries, and — when [readGroup] —
+/// its group bit ([connectGroupMember]), null when it carries none. A side
+/// that does not read the bit ignores the member entirely, as a client from
+/// before ADR 0020 does. One that does refuses a value other than 0 or 1,
+/// the same answer a malformed name gets: a field that is not what it must
+/// be is an abort, not a value to work around (§20.3).
+Future<(ConnectIdentity, bool?)> _openReveal(
+    Uint8List key, Map<String, Object?> frame,
+    {required bool readGroup}) async {
   final sealed = _need(frame, 'blob');
   final Uint8List clear;
   try {
@@ -514,8 +673,19 @@ Future<ConnectIdentity> _openReveal(
   if (name != null && name is! String) {
     throw const ConnectAbort('reveal carries a malformed name');
   }
+  bool? group;
+  final grp = j[connectGroupMember];
+  if (readGroup && grp != null) {
+    if (grp is! int || (grp != 0 && grp != 1)) {
+      throw const ConnectAbort('reveal carries a malformed group bit');
+    }
+    group = grp == 1;
+  }
   try {
-    return await ConnectIdentity.fromCode(code, displayName: name as String?);
+    return (
+      await ConnectIdentity.fromCode(code, displayName: name as String?),
+      group
+    );
   } on FormatException catch (e) {
     // A code the ceremony cannot read is an abort, never a weaker identity:
     // the invite is spent and the pair start again, which costs a minute and

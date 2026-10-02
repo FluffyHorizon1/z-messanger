@@ -83,9 +83,19 @@ class ConnectRun {
       this._acceptor, this.session, this._spent);
 
   /// Make an invite: generates the code and the ephemeral, posts nothing yet.
+  ///
+  /// [group] is the group bit message 3 carries (ADR 0020,
+  /// [connectGroupMember]): whether this invite also brings the acceptor
+  /// into a group. Never which one — the run does not know, and the bit is
+  /// all that goes. Null writes no bit, as a client before ADR 0020 does; a
+  /// client that implements it passes false for a plain invite, so the two
+  /// kinds of message 3 are the same length (see [connectGroupMember]).
   static Future<ConnectRun> invite(
-      {required ConnectIdentity me, ConnectCode? code, int? nowMs}) async {
-    final i = await ConnectInviter.create(me: me, code: code);
+      {required ConnectIdentity me,
+      ConnectCode? code,
+      int? nowMs,
+      bool? group}) async {
+    final i = await ConnectInviter.create(me: me, code: code, group: group);
     return ConnectRun._(true, nowMs ?? DateTime.now().millisecondsSinceEpoch,
         me, i, null, null, false);
   }
@@ -94,13 +104,25 @@ class ConnectRun {
   /// now, which is deliberate — the acceptor cannot know when the invite was
   /// made, so it enforces the lifetime from when it was handed the code. The
   /// inviter's copy is what bounds the invite properly.
+  ///
+  /// [groupAware]: read the inviter's group bit and repeat it in message 4
+  /// (ADR 0020). False is a client from before it, which neither reads nor
+  /// writes the bit.
   static ConnectRun accept(
-          {required ConnectIdentity me, required ConnectCode code, int? nowMs}) =>
+          {required ConnectIdentity me,
+          required ConnectCode code,
+          int? nowMs,
+          bool groupAware = false}) =>
       ConnectRun._(false, nowMs ?? DateTime.now().millisecondsSinceEpoch, me,
           null, null, null, false)
-        .._code = code;
+        .._code = code
+        .._groupAware = groupAware;
 
   ConnectCode? _code;
+
+  /// The acceptor's [groupAware], kept until message 1 arrives and makes
+  /// the [ConnectAcceptor] that carries it from then on.
+  bool _groupAware = false;
 
   /// The invite's code — the thing to render as a link or read aloud.
   ConnectCode get code => _inviter?.code ?? _code!;
@@ -114,6 +136,7 @@ class ConnectRun {
         'me': _me.contactCode,
         if (_me.displayName != null) 'name': _me.displayName,
         'code': b64(code.secret),
+        if (_groupAware) 'ga': true,
         if (_inviter != null) 'i': _inviter!.toJson(),
         if (_acceptor != null) 'a': _acceptor!.toJson(),
         if (session != null)
@@ -123,6 +146,7 @@ class ConnectRun {
             'peer': session!.peer.contactCode,
             if (session!.peer.displayName != null)
               'peerName': session!.peer.displayName,
+            if (session!.group != null) 'grp': session!.group,
           },
         'spent': _spent,
         if (abortReason != null) 'abort': abortReason,
@@ -135,11 +159,13 @@ class ConnectRun {
     final sj = j['session'];
     if (sj is Map) {
       final m = sj.cast<String, Object?>();
+      final grp = m['grp'];
       session = ConnectSession(
         channelKey: unb64(m['key'] as String),
         sas: m['sas'] as String,
         peer: await ConnectIdentity.fromCode(m['peer'] as String,
             displayName: m['peerName'] as String?),
+        group: grp is bool ? grp : null,
       );
     }
     final run = ConnectRun._(
@@ -157,6 +183,7 @@ class ConnectRun {
       j['spent'] as bool? ?? false,
     );
     run._code = ConnectCode(unb64(j['code'] as String));
+    run._groupAware = j['ga'] == true;
     run.abortReason = j['abort'] as String?;
     return run;
   }
@@ -263,8 +290,8 @@ class ConnectRun {
     if (_acceptor == null) {
       final commit = _take(inbox, 'x1', spent);
       if (commit == null) return ConnectProgress.waiting;
-      final (reply, acceptor) =
-          await ConnectAcceptor.reply(commit, me: _me);
+      final (reply, acceptor) = await ConnectAcceptor.reply(commit,
+          me: _me, groupAware: _groupAware);
       _acceptor = acceptor;
       await client.send(
           to: theirs,

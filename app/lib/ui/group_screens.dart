@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
 import 'package:provider/provider.dart';
 
 import '../core/chat_service.dart';
+import '../core/connect_invites.dart';
+import 'add_contact_screen.dart';
 import 'chat_screen.dart';
 import 'theme.dart';
 
@@ -193,6 +197,25 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     if (ok == true && picked.isNotEmpty) {
       await chat.addGroupMembers(widget.gid, picked.toList());
     }
+  }
+
+  /// ADR 0020: a link to this group. It is an ordinary one-time, 24-hour
+  /// connect invite with the group remembered on this device only — so it is
+  /// shown, shared and revoked on the CONNECT tab like any other invite, and
+  /// nothing in it says which group it is for. Whoever opens it becomes a
+  /// contact; they join only once they go ahead on their own device, and
+  /// only if this device may still add members then.
+  Future<void> _inviteByLink() async {
+    final invites = context.read<ConnectInvites>();
+    final nav = Navigator.of(context);
+    // Asked again at the tap: a demotion can land between the screen being
+    // drawn and the button being pressed.
+    if (!context.read<ChatService>().mayIssueGroupList(widget.gid, '')) return;
+    await invites.create(gid: widget.gid);
+    unawaited(invites.pump());
+    if (!mounted) return;
+    await nav.push(MaterialPageRoute<void>(
+        builder: (_) => const AddContactScreen(connect: true)));
   }
 
   /// 23.1: the admin renames the group. The dialog is prefilled with the
@@ -565,6 +588,20 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
               label: Text(l.grpAddMembers),
               onPressed: () => _addMembers(chat),
             ),
+          // ADR 0020: anyone who may add a member may mint a link that adds
+          // one — the same question, asked the same way.
+          if (chat.mayIssueGroupList(g.gid, '')) ...[
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.link),
+              label: Text(l.grpInviteByLink),
+              onPressed: _inviteByLink,
+            ),
+            const SizedBox(height: 4),
+            Text(l.grpInviteByLinkNote,
+                style: TextStyle(
+                    fontSize: 12, color: context.z.textSecondary, height: 1.4)),
+          ],
           const SizedBox(height: 8),
           if (!g.left)
             OutlinedButton.icon(

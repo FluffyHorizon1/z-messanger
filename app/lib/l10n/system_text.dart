@@ -77,6 +77,15 @@ String systemText(AppLocalizations l, String body) {
     SystemKind.changeOverriddenBy =>
       l.sysChangeOverriddenBy(s('by', l.sysSomeone)),
     SystemKind.changeOverriddenMine => l.sysChangeOverriddenMine,
+    // Group invite links (ADR 0020).
+    SystemKind.addedFromLinkBy =>
+      l.sysAddedFromLinkBy(s('by', l.sysSomeone), s('name', '')),
+    SystemKind.linkJoined => l.sysLinkJoined(s('name', l.sysSomeone)),
+    SystemKind.linkTooOld => l.sysLinkTooOld(s('name', l.sysSomeone)),
+    SystemKind.linkExpired => l.sysLinkExpired(s('name', l.sysSomeone)),
+    SystemKind.linkRefused => l.sysLinkRefused(s('name', l.sysSomeone)),
+    SystemKind.linkDeclined => l.sysLinkDeclined(s('name', l.sysSomeone)),
+    SystemKind.linkCancelled => l.sysLinkCancelled(s('name', l.sysSomeone)),
     // A kind this build does not know — written by a newer one. The stored
     // object is the only thing there is to show; better than nothing, and
     // it says plainly that something happened here.

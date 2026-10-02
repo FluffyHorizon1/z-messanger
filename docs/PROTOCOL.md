@@ -659,6 +659,7 @@ Unknown kinds MUST be ignored.
 | `gedit` | `gid` + the `edit` members | the same inside a group (§6.6, §11) |
 | `del` | `mids:[string]` | delete‑for‑everyone of the sender's own messages (§6.6) |
 | `gdel` | `gid, mids:[string]` | the same inside a group (§6.6, §11) |
+| `gjoin` | `t:string, go:int` | the answer to a group invite link (`adr/0020`, §20.6): the sender opened a connect invite of the receiver's whose message 3 carried the group bit, was told before the digits that it brings them into a group, and answered — `go` 1 to join, 0 to be a contact only. `t` is that ceremony's go‑ahead tag (§20.6), sixteen bytes as unpadded base64url: an answer counts for the one ceremony whose tag it carries, and for no other. It names no group — only the receiver knows which group its link was for. Each link is answered on its own; the sender says every answer it still owes the receiver again in answer to each `hello` from them — until the group arrives (when one answer is owed to them; with several, the list cannot say which link it settles, so each is said until its own window ends) or for 48 hours from the answer — so one join carries one to three of them (measured, `group_invite_link_test` 16); the receiver acts on one at most once. The smallest bucket: measured, 854 bytes of sealed plaintext in the 1 024 bucket, most of it the ratchet header and the §3.6 members every inner message carries |
 
 `ContactBundleJSON` is `{ "ed", "x", "sig", "name" }` as in §2.4 (all `b64`);
 every bundle in a `ginvite` MUST be verified (§2.3) before use.
@@ -1137,6 +1138,14 @@ tell group messages from direct ones.
 * `gsync` asks a member for what it holds for the group (§11.1). It is
   answered only to someone the answering device holds as a member (or held
   when it left), once per list it holds.
+* A member may also arrive by a **group invite link** (`adr/0020`): a connect
+  invite (§20) made by an admin, who adds the acceptor with an ordinary
+  `ginvite` once the acceptor's go‑ahead for that ceremony (`gjoin`, §6.2,
+  §20.6) arrives — and only if, at that moment, the admin may issue a list
+  (§11.1). The acceptor is the
+  account whose code the ceremony revealed, mapped like any member. Nothing in
+  a list records how a member came, and a receiver applies it under the same
+  rules as any other.
 
 Consequences an implementer must preserve: membership authenticity rests on
 the pairwise channel of an admin the receiver holds; a removed member keeps
@@ -2780,7 +2789,10 @@ beside the untouched ones, and a new subsection here.
 *Normative. A fourth way to add a contact, beside the QR, the paste and the
 device‑pairing ceremony of §10. Nothing in §3–§19 changes: no new frame type,
 no relay change, and the contact this produces is the same `zc1.`/`zc3.`
-bundle a scan produces. Design and the trust‑model decision: `adr/0009`.*
+bundle a scan produces. Design and the trust‑model decision: `adr/0009`. A
+group invite link (`adr/0020`) is this ceremony with one optional sealed
+member in each reveal (20.3) and one inner kind afterwards (§6.2, `gjoin`),
+bound to the ceremony by a tag derived from its channel key (20.6).*
 
 In person, adding someone is a QR code and **the QR is the verification**: the
 channel is your eyes. Remotely there was one path — copy your code, send it
@@ -2860,7 +2872,8 @@ is not last; the name is last.
 seal(k, m) = nonce || ChaCha20-Poly1305(key = k, nonce = nonce, plaintext = m)
              nonce  = 12 random bytes; the AEAD's 16-byte tag is appended
              m      = UTF-8 JSON: {"code": "<zc1./zc3. code>", "name": "…"}
-                      "name" is omitted when there is none
+                      "name" is omitted when there is none;
+                      optionally "grp": 0 | 1, the group bit (below)
 ```
 
 On the wire each message is a JSON object with `k` naming which it is and
@@ -2876,6 +2889,15 @@ x4  {"k":"x4","blob":<sealed>}
 A field of the wrong length, missing, or not decodable is an abort, not a
 value to work around.
 
+Each side MUST abort if the `dh` it computes is all zeros (RFC 7748 §6.1),
+checked in constant time. A peer ephemeral of small order — the zero point, or
+any point of order 2, 4 or 8, in any encoding — makes X25519's output all
+zeros whatever the other key is, and the channel key would then be a constant
+anyone can compute: the same on every leg a machine in the middle runs that
+way, with every value derived from it. An honest ephemeral is never one, so the
+check costs an honest ceremony nothing; and because each side checks the value
+it computes, a refusal on one side is a refusal on both (`connect_test` 11).
+
 Each side MUST check the other's reveal against the commitment it received:
 the acceptor checks message 3's identity and ephemeral against the commitment
 in message 1, and the inviter checks message 4's against the commitment in
@@ -2886,6 +2908,46 @@ Both sides commit before either reveals. §10's responder chose its ephemeral
 after seeing the initiator's, which is why §10's six digits are grindable
 (about 2²⁰ tries at a value already read aloud) and these eight are not: with
 both sides committed, a machine in the middle gets one blind guess.
+
+**The group bit (`adr/0020`).** A reveal MAY carry one more member, `"grp"`,
+the integer `0` or `1` and nothing else:
+
+```
+message 3: {"code": …, "name": …, "grp": 1}    this invite also brings the
+                                               acceptor into a group
+message 4: {"code": …, "name": …, "grp": 1}    the acceptor read 1 in message 3
+```
+
+* In message 3 it is the inviter saying whether the invite is also a link to a
+  group — not which group: no id, no name, no size. The acceptor learns those
+  from the group's own `ginvite` (§11) once the two have a pairwise session. In
+  message 4 it is the acceptor repeating what it read (`0` when message 3
+  carried no bit), which also tells the inviter that the acceptor's client
+  knows what the bit means.
+* A client that implements the bit writes it in **every** reveal it sends, `0`
+  as readily as `1`. Connect frames are not padded to a bucket (20.5: an
+  attributed envelope with the JSON as its payload), so the relay sees each
+  frame's exact length, and a member written only for group invites would mark
+  them. Measured at the relay, one inviter's message 3 is the same length with
+  the bit at `1` and at `0` (654 bytes for a v3 identity named `Alice`); a
+  client that writes no bit sends twelve bytes fewer, which tells the relay at
+  most which build sent it — display names vary by more.
+* A reader that implements the bit MUST treat a `grp` that is not the integer
+  `0` or `1` as a malformed reveal and abort, as for a malformed `name`. An
+  inviter that wrote the bit and reads a message 4 repeating a different value
+  MUST abort: the two sides disagree about what the ceremony is, and a
+  disagreement is never continued at a lower assurance. A message 4 with no
+  `grp` is a client from before `adr/0020` and is not an error. A client that
+  does not implement the bit ignores the member, as §14 requires.
+* The commitments cover the code and the name, not the bit. That is enough:
+  the bit travels inside the AEAD under the channel key, so the only party
+  besides the two ends that can write it is one that holds that key — a
+  machine in the middle running both legs, whose two legs show different
+  digits (20.4). Such a party could set or clear the bit on either leg.
+  Cleared on the acceptor's leg, it means no notice and no go‑ahead (20.6), so
+  nobody joins; set, it shows a notice nobody meant, and the go‑ahead finds no
+  group waiting. It cannot send the acceptor's go‑ahead, which travels in the
+  pairwise session that only the holder of the acceptor's keys can speak in.
 
 ### 20.4 The confirmation string
 
@@ -2980,12 +3042,65 @@ in the comparison being done properly:
 * a **mismatch** MUST offer no path that ends with a contact, and MUST spend
   the invite.
 
+For a group invite link (`adr/0020`, the group bit of 20.3):
+
+* an acceptor whose message 3 carried the bit at `1` MUST say, before it shows
+  the digits, that the invite also brings them into a group, and MUST NOT send
+  an answer (`gjoin`, §6.2) except when its person then answers the
+  comparison — confirms it or skips it — and then only the answer its person
+  chose: `go` 1 to join, `go` 0 to be a contact only. A mismatch sends
+  nothing;
+* an answer MUST carry the ceremony's **go‑ahead tag**, `t`:
+  `HKDF(secret = channelKey, salt = 32 zero bytes, info = "z-connect-gjoin-v1",
+  16)` — a key of its own, derived from the channel key (20.3) rather than
+  the sealing key used as an HMAC key. Only the two ends of one ceremony can
+  compute it — a machine in the middle has one per leg, and neither is the
+  other's — so an answer counts only for the ceremony it was given on: not an
+  earlier link between the same two people, and not a later one;
+* each link is awaited and answered on its own, by its tag: two links between
+  the same two people are two waits and two answers, and neither replaces,
+  or resets, the other. An acceptor answers every `hello` from an inviter with
+  every answer it still owes them;
+* stopping a ceremony — the digits do not match, or the invite is given up at
+  them — MUST NOT touch an answer owed from another: the identity a stopped
+  ceremony revealed is one nobody verified, and anyone holding a person's
+  public contact code can make a ceremony reveal it. An owed answer keeps its
+  own ceremony's tag, which no other link's wait accepts, until the group
+  arrives or its window ends;
+* an inviter MUST NOT add an acceptor to the group unless the acceptor's
+  message 4 repeated the bit AND a `gjoin` with `go` 1 carrying THIS
+  ceremony's tag (compared in constant time) has arrived over the pairwise
+  session — within the invite's lifetime from when it was made, and only if
+  the inviter may add members at that moment (§11.1). A completed ceremony is
+  not the acceptor's consent: it completes before either person has looked at
+  a screen. The add is an ordinary `ginvite` (§11); nothing in the group's
+  lists says how a member came. A `gjoin` with `go` 0 and this ceremony's tag
+  ends the wait, and the inviter's person SHOULD be told the acceptor chose to
+  be a contact only;
+* a side whose contact list already holds the identity the ceremony revealed
+  MAY answer a group link with that contact as it is — not replaced, and not
+  marked as compared, since 20.4's verification is a statement about contacts
+  the ceremony adds — and the answer travels over the sessions that already
+  exist with it. "Holds" includes another device of that contact's account:
+  one the account's own signed device list, as this side holds it, names, under
+  the account key the digits covered (§3.4). Its answer, and the inviter's
+  `hello`, are read from whichever of the account's devices they come;
+* an acceptor whose message 4 did not repeat the bit can be added as a contact
+  only, and the inviter's person MUST be told so;
+* until the group's own `ginvite` reaches the acceptor, the group is named
+  only on the inviter's screen: neither rendering of the invite, and no frame
+  of the ceremony, names it.
+
 ### 20.7 Vectors
 
 `vectors/connect/` pins this section: `connect.json` (the code and both its
 renderings, the rendezvous id, two v3 identities, both ephemerals, both
 commitment inputs, all four frames, the DH, the channel key, the SAS salt,
-info, okm and digits, and the canonical order) and `mailboxes.json` (the two
+info, okm and digits, and the canonical order), `group.json` (`adr/0020`: a
+ceremony whose message 3 carries the group bit and whose message 4 repeats it,
+with both reveals' plaintexts and seal nonces recorded, so the member's exact
+bytes can be checked, and the ceremony's go‑ahead tag from its channel key)
+and `mailboxes.json` (the two
 per‑role transport mailboxes an invite derives, with the HKDF info and okm and
 the resulting routing ids, and their distinctness from the code's rendezvous
 id and from both pairing rendezvous). Generated by `protocol/tool/vectors.dart`

@@ -783,6 +783,7 @@ const INNER_SCHEMA = {
   del: ['mids'], // 8.1c delete-for-everyone of the sender's own messages
   gdel: ['gid', 'mids'],
   gsync: ['gid'], // ADR 0019: a member asking for what it lacks — keyless
+  gjoin: ['t', 'go'], // ADR 0020: a joiner's answer to a group invite link; names no group
 };
 
 // §11.1: a routing id as `owner` and `admins` carry one — 43 base64url
@@ -839,6 +840,16 @@ test('inner messages: every kind parses with its required fields', () => {
     // §6.2: `gsync` says which group and nothing else.
     if (j.k === 'gsync') {
       assert.deepEqual(Object.keys(j).sort(), ['gid', 'k', 'mid', 'ts']);
+    }
+    // §6.2, ADR 0020: `gjoin` names no group at all — only the receiver
+    // knows which group its link was for. It carries the ceremony's go-ahead
+    // tag, sixteen bytes as unpadded base64url, and the answer: 1 to join,
+    // 0 to stay a contact only.
+    if (j.k === 'gjoin') {
+      assert.deepEqual(Object.keys(j).sort(), ['go', 'k', 'mid', 't', 'ts']);
+      assert.ok(/^[A-Za-z0-9_-]{22}$/.test(j.t), 't is 16 bytes, base64url');
+      assert.equal(Buffer.from(j.t, 'base64url').length, 16);
+      assert.ok(j.go === 0 || j.go === 1, 'go is 0 or 1');
     }
     // A forward marker is a boolean flag, never a provenance claim about who
     // originally wrote the message.

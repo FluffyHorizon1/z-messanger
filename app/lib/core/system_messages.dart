@@ -55,6 +55,23 @@ abstract final class SystemKind {
   /// The same, where the list that replaced mine came from another device
   /// of my own account, made there before the two had synced.
   static const changeOverriddenMine = 'change_overridden_mine';
+
+  // Group invite links (ADR 0020). The joiner's line, in the group, names
+  // who added them and which group, from the link they opened; the rest are
+  // the inviter's own, in the group the link was for — local text, never
+  // sent, which is where the group may be named.
+  static const addedFromLinkBy = 'added_from_link_by'; // by?, name
+  static const linkJoined = 'link_joined'; // name? — joined from my link
+  // name? — added as a contact only: their app cannot show a group link
+  static const linkTooOld = 'link_too_old';
+  // name? — their go-ahead did not come within the link's 24 hours
+  static const linkExpired = 'link_expired';
+  // name? — they went ahead, and I may no longer add members to the group
+  static const linkRefused = 'link_refused';
+  // name? — they answered the link, and chose to be a contact only
+  static const linkDeclined = 'link_declined';
+  // name? — I stopped waiting for them to join from my link
+  static const linkCancelled = 'link_cancelled';
 }
 
 /// The stored form of a system message.

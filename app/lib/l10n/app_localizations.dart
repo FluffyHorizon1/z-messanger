@@ -2954,6 +2954,90 @@ abstract class AppLocalizations {
   /// **'{name} took your invite. Whoever had the link could have taken it — so if this is not who you meant to reach, stop below instead of adding them.'**
   String connectWhoAccepted(String name);
 
+  /// ADR 0020, shown to the person who OPENED an invite, above the eight digits, when the link is also to a group. Load-bearing: it must say plainly, before the digits, that going ahead also joins a group. Which group is learned only once connected, because the link itself says nothing about it.
+  ///
+  /// In en, this message translates to:
+  /// **'This invite also adds you to a group. You will see which one once you are connected, and you can leave it whenever you like.'**
+  String get connectGroupNotice;
+
+  /// ADR 0020, shown to the person who MADE a group invite link, on the comparison screen, naming the group (only ever on their own screen). The person who opened it joins only once they also go ahead on their own device.
+  ///
+  /// In en, this message translates to:
+  /// **'This link is for \"{group}\": if you go ahead, they join the group as soon as they go ahead on their side too.'**
+  String connectGroupLinkGoAhead(String group);
+
+  /// ADR 0020, shown to the person who MADE a group invite link, on the comparison screen, when whoever opened it runs an app from before group links, which could not tell them the invite was to a group. Load-bearing: they will NOT be added to the group, only as a contact.
+  ///
+  /// In en, this message translates to:
+  /// **'Their app is too old to join a group from a link. If you go ahead they will be a contact only — add them to \"{group}\" by hand.'**
+  String connectGroupLinkTooOld(String group);
+
+  /// ADR 0020, shown to the person who MADE a group invite link, on the comparison screen, when they may no longer add members to that group (demoted, or out of it). Load-bearing: the link adds nobody to the group; going ahead makes whoever opened it a contact only.
+  ///
+  /// In en, this message translates to:
+  /// **'You can no longer add members to \"{group}\", so if you go ahead they will be a contact only.'**
+  String connectGroupLinkNotAdmin(String group);
+
+  /// ADR 0020, on a pending invite card on the screen of the person who made it: this invite is a link to the named group. Discarding the invite revokes the link, and then it adds nobody.
+  ///
+  /// In en, this message translates to:
+  /// **'Group link: \"{group}\"'**
+  String connectGroupLinkLabel(String group);
+
+  /// ADR 0020, switch on the comparison screen of the person who OPENED a group invite link, shown only when the invite said it is also to a group: on (the default) means going ahead also joins the group; off means they become a contact only, and the one who made the link is told so.
+  ///
+  /// In en, this message translates to:
+  /// **'Also join the group'**
+  String get connectJoinGroup;
+
+  /// ADR 0020, shown under the join switch when it is off: going ahead (matched or not compared) makes the person a contact only, and the one who made the link is told they chose not to join the group.
+  ///
+  /// In en, this message translates to:
+  /// **'You will be {name}\'s contact only, and {name} will be told you chose not to join.'**
+  String connectJoinGroupOff(String name);
+
+  /// ADR 0020, shown to the person who MADE a group invite link, on the comparison screen, when the link's 24 hours have already passed. Load-bearing: going ahead makes whoever opened it a contact only; the link no longer adds anyone.
+  ///
+  /// In en, this message translates to:
+  /// **'This link\'s 24 hours are over: if you go ahead they will be a contact only, not added to \"{group}\".'**
+  String connectGroupLinkExpired(String group);
+
+  /// ADR 0020, shown after going ahead on a group invite link with someone already in the contact list: the existing contact is left exactly as it was — not replaced, and not marked as compared.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} was already your contact, and nothing about them changed.'**
+  String connectAlreadyContact(String name);
+
+  /// ADR 0020, shown to the person who OPENED a group invite link and went ahead to join, when they already had the link's maker as a contact: the contact is left exactly as it was, and they join the group when the maker's device adds them.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} was already your contact, and nothing about them changed. You join the group once {name}\'s device adds you.'**
+  String connectAlreadyContactJoining(String name);
+
+  /// ADR 0020, heading of a list on the CONNECT tab: people who answered a group invite link this device made, whom this device will add to the group once their go-ahead arrives within the link's 24 hours.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting to join your groups'**
+  String get connectLinkWaitsTitle;
+
+  /// ADR 0020, one row of the list of people this device is waiting to add from a group invite link: who, and to which group (shown on this device only).
+  ///
+  /// In en, this message translates to:
+  /// **'{name}, to \"{group}\"'**
+  String connectLinkWait(String name, String group);
+
+  /// ADR 0020, button on a row of the list of people this device is waiting to add from a group invite link: stop waiting, so the link adds nobody. They stay a contact.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop waiting'**
+  String get connectLinkWaitStop;
+
+  /// ADR 0020, shown when the person taps "Stop waiting" on a row of the list of people this device is waiting to add from a group invite link, but the answer had come and the add had already begun in the meantime. Load-bearing: it must say plainly that the stop did NOT take effect and that {name} is being added to {group}.
+  ///
+  /// In en, this message translates to:
+  /// **'Too late to stop: {name} had already said yes, and is being added to \"{group}\".'**
+  String connectLinkWaitTooLate(String name, String group);
+
   /// Explains what the comparison proves. 'exactly the same' and the list of who is excluded are both load-bearing: the whole value of the ceremony is in this step being done properly.
   ///
   /// In en, this message translates to:
@@ -3284,6 +3368,48 @@ abstract class AppLocalizations {
   /// **'A change made on your other device at the same moment replaced this one, which did not stand. Make it again if you still want it.'**
   String get sysChangeOverriddenMine;
 
+  /// System message (ADR 0020) in a group, on the device of someone who joined it from a group invite link: {by}, who made the link, added them to the group {name}.
+  ///
+  /// In en, this message translates to:
+  /// **'{by} added you to \"{name}\" from the link you opened.'**
+  String sysAddedFromLinkBy(String by, String name);
+
+  /// System message (ADR 0020) in a group, on the device of the person who made a group invite link: {name} opened it, agreed on their side, and was added.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} joined from your invite link.'**
+  String sysLinkJoined(String name);
+
+  /// System message (ADR 0020) in a group, on the device of the person who made a group invite link: whoever opened it runs an app from before group links, which could not tell them it was a group invite, so they are only a contact. Worded "is your contact", not "was added": a group link goes ahead with someone who was a contact already.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} is your contact, but was not added to this group: their app is too old to join from a link. Add them by hand.'**
+  String sysLinkTooOld(String name);
+
+  /// System message (ADR 0020) on the device of the person who made a group invite link: no go-ahead from the person who opened it reached this device within the link's 24 hours — they stopped at the digits, never answered, or their answer came too late — so they are only a contact. It says what this device knows, not why. Worded "is your contact", not "was added": a group link goes ahead with someone who was a contact already.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} is your contact, but was not added to this group: their go-ahead did not reach you within the invite link\'s 24 hours. Add them by hand if you still want them here.'**
+  String sysLinkExpired(String name);
+
+  /// System message (ADR 0020) on the device of the person who made a group invite link: they are no longer an admin of the group, or have left it, so the link adds nobody and the person who opened it is only a contact. Worded "is your contact", not "was added": a group link goes ahead with someone who was a contact already.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} is your contact, but was not added to this group: you can no longer add members to it.'**
+  String sysLinkRefused(String name);
+
+  /// System message (ADR 0020) in a group, on the device of the person who made a group invite link: whoever opened it went ahead as a contact and chose not to join the group. Worded "is your contact", not "is now your contact": a group link goes ahead with someone who was a contact already.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} is your contact, and chose not to join this group.'**
+  String sysLinkDeclined(String name);
+
+  /// System message (ADR 0020) in a group, on the device of the person who made a group invite link: they stopped waiting for this person's go-ahead, so the link adds nobody.
+  ///
+  /// In en, this message translates to:
+  /// **'You stopped waiting for {name} to join from your invite link. They are still your contact.'**
+  String sysLinkCancelled(String name);
+
   /// Label of the user's own row on the group info screen when they own the group: the one person who can change who the admins are.
   ///
   /// In en, this message translates to:
@@ -3391,6 +3517,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'If {name} still has a version of Z from before group admins, nobody will be able to change who the admins are until they update.'**
   String grpTransferOldBuild(String name);
+
+  /// ADR 0020, button on the group info screen for anyone who may add members: makes a one-time connect invite that also brings whoever opens it into this group.
+  ///
+  /// In en, this message translates to:
+  /// **'Invite to group by link'**
+  String get grpInviteByLink;
+
+  /// ADR 0020, note under the invite-by-link button. Load-bearing: one-time and 24 hours; the bearer-token fact that whoever opens it first is who joins; and that the link carries nothing about the group.
+  ///
+  /// In en, this message translates to:
+  /// **'Works once, for 24 hours. Whoever opens it first becomes your contact, and joins this group once they agree. The link itself says nothing about the group.'**
+  String get grpInviteByLinkNote;
 }
 
 class _AppLocalizationsDelegate

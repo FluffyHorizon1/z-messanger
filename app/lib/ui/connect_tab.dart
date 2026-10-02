@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import '../core/chat_service.dart';
 import '../core/connect_invites.dart';
 import '../core/share_text.dart';
 import '../l10n/app_localizations.dart';
@@ -163,8 +164,16 @@ class _ConnectTabState extends State<ConnectTab> {
           else
             for (final invite in invites.invites)
               _inviteCard(l, invites, invite),
+          const ConnectLinkWaits(),
+          // Keyed by the invite: each panel holds state of its own — whether
+          // to join the group, whether an answer is in flight — and without
+          // a key, answering one of two panels handed the one removed's state
+          // to the one left, so a switch turned off on one link read on on
+          // the other, and "they match" joined the group it had been turned
+          // off for.
           for (final invite in ready)
             Padding(
+              key: ValueKey('connect-panel-${invite.id}'),
               padding: const EdgeInsets.only(top: 16),
               child: ConnectConfirmPanel(invite: invite),
             ),
@@ -200,6 +209,10 @@ class _ConnectTabState extends State<ConnectTab> {
     final unanswered = invite.progress == ConnectProgress.waiting;
     final live = unanswered && left > Duration.zero;
     return Card(
+      // Keyed by the invite, as the comparison panels are, so nothing a card
+      // holds (a selection in its link, say) moves to its neighbour when one
+      // card goes.
+      key: ValueKey('connect-card-${invite.id}'),
       margin: const EdgeInsets.only(top: 12),
       color: context.z.surfaceAlt,
       child: Padding(
@@ -212,6 +225,16 @@ class _ConnectTabState extends State<ConnectTab> {
                     color: invite.progress == ConnectProgress.waiting
                         ? context.z.textSecondary
                         : context.z.warn)),
+            // ADR 0020: which of my invites are links to a group, named here
+            // on my own screen and nowhere else. Discard below revokes it.
+            if (invite.mine && invite.gid != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                  l.connectGroupLinkLabel(
+                      context.read<ChatService>().groups[invite.gid]?.name ??
+                          ''),
+                  style: TextStyle(fontSize: 12, color: context.z.accent)),
+            ],
             if (unanswered) ...[
               const SizedBox(height: 4),
               // The one number a person needs to decide whether to send it
@@ -318,6 +341,12 @@ class ConnectConfirmPanel extends StatefulWidget {
 class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
   bool _busy = false;
 
+  /// ADR 0020: for a group link opened here, whether going ahead also joins
+  /// the group. On unless the person turns it off: the notice above the
+  /// digits has said what going ahead means, and this is how they say "a
+  /// contact, not the group" instead.
+  bool _join = true;
+
   Future<void> _finish(Future<String?> Function() action) async {
     if (_busy) return;
     setState(() => _busy = true);
@@ -349,6 +378,16 @@ class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
     // stopped — the one button that must never be reachable twice.
     if (sas == null || invite.answered) return const SizedBox.shrink();
     final peerName = invite.peer?.displayName ?? '';
+    final gid = invite.gid;
+    // Watched, for a group link: a demotion landing while this is on screen
+    // changes what going ahead will do, and the screen has to say so.
+    final chat = gid == null ? null : context.watch<ChatService>();
+    final groupName = chat?.groups[gid]?.name ?? '';
+    final canAdd = gid != null && chat!.mayIssueGroupList(gid, '');
+    // The link's own 24 hours, by the clock the service judges them by: a
+    // link answered after them adds nobody, whatever else holds.
+    final open = gid != null && chat!.linkStillOpen(invite.run.issuedMs);
+    final joining = invite.offersGroup && _join;
 
     return Card(
       color: context.z.surface,
@@ -360,6 +399,38 @@ class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
             Text(l.connectConfirmTitle,
                 style: const TextStyle(
                     fontSize: 18, fontWeight: FontWeight.w700)),
+            // ADR 0020: an invite that also brings me into a group says so
+            // HERE, first, before the digits — going ahead below is what
+            // lets my bundle reach that group's members, so this is the
+            // moment the choice is made. Which group is not known yet: the
+            // link says nothing about it, and the group's own invite names
+            // it once there is a session to carry it.
+            if (invite.offersGroup) ...[
+              const SizedBox(height: 12),
+              Container(
+                key: const ValueKey('connect-group-notice'),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: context.z.surfaceAlt,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: context.z.accent),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ExcludeSemantics(
+                      child: Icon(Icons.group_add_outlined,
+                          size: 20, color: context.z.accent),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(l.connectGroupNotice,
+                          style: const TextStyle(fontSize: 13, height: 1.4)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             // ADR 0012: who actually took the invite, and the bearer-token
             // caveat — the person who accepted may not be who you sent it to.
             const SizedBox(height: 12),
@@ -372,6 +443,30 @@ class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
               child: Text(l.connectWhoAccepted(peerName),
                   style: const TextStyle(fontSize: 13, height: 1.4)),
             ),
+            // ADR 0020, the inviter's side of a group link: which group, and
+            // what going ahead will do — join them to it, or make them a
+            // contact only, because their client predates group links and
+            // could not have told them, or because this device may no
+            // longer add members (asked again when their go-ahead lands).
+            if (invite.mine && gid != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                !open
+                    ? l.connectGroupLinkExpired(groupName)
+                    : !invite.joinerKnowsGroup
+                        ? l.connectGroupLinkTooOld(groupName)
+                        : canAdd
+                            ? l.connectGroupLinkGoAhead(groupName)
+                            : l.connectGroupLinkNotAdmin(groupName),
+                key: const ValueKey('connect-group-link-outcome'),
+                style: TextStyle(
+                    fontSize: 13,
+                    height: 1.4,
+                    color: open && invite.joinerKnowsGroup && canAdd
+                        ? null
+                        : context.z.warn),
+              ),
+            ],
             const SizedBox(height: 16),
             Center(
               child: SelectableText(
@@ -387,6 +482,24 @@ class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
             Text(l.connectConfirmBody(peerName),
                 style:
                     TextStyle(color: context.z.textSecondary, height: 1.5)),
+            // ADR 0020: the joiner's choice, beside the buttons it changes —
+            // join the group, or connect as a contact only. The inviter is
+            // told which, either way.
+            if (invite.offersGroup) ...[
+              const SizedBox(height: 12),
+              SwitchListTile(
+                key: const ValueKey('connect-join-group'),
+                contentPadding: EdgeInsets.zero,
+                title: Text(l.connectJoinGroup),
+                subtitle: _join
+                    ? null
+                    : Text(l.connectJoinGroupOff(peerName),
+                        style: TextStyle(
+                            fontSize: 12, color: context.z.textSecondary)),
+                value: _join,
+                onChanged: _busy ? null : (v) => setState(() => _join = v),
+              ),
+            ],
             const SizedBox(height: 20),
             FilledButton(
               style: FilledButton.styleFrom(
@@ -397,8 +510,12 @@ class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
               onPressed: _busy
                   ? null
                   : () => _finish(() async {
-                        final c = await invites.confirm(invite);
-                        return l.connectAdded(c.name);
+                        final c = await invites.confirm(invite, join: _join);
+                        return invite.peerWasHeld
+                            ? joining
+                                ? l.connectAlreadyContactJoining(c.name)
+                                : l.connectAlreadyContact(c.name)
+                            : l.connectAdded(c.name);
                       }),
               child: Text(l.connectMatch),
             ),
@@ -407,8 +524,12 @@ class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
               onPressed: _busy
                   ? null
                   : () => _finish(() async {
-                        final c = await invites.defer(invite);
-                        return l.connectAddedUnverified(c.name);
+                        final c = await invites.defer(invite, join: _join);
+                        return invite.peerWasHeld
+                            ? joining
+                                ? l.connectAlreadyContactJoining(c.name)
+                                : l.connectAlreadyContact(c.name)
+                            : l.connectAddedUnverified(c.name);
                       }),
               child: Text(l.connectNotYet),
             ),
@@ -437,6 +558,52 @@ class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// ADR 0020: whoever answered a group link this device made, and is still
+/// to be added once their go-ahead arrives — named here, on this device
+/// only, with a way to stop waiting. Going ahead finishes the invite, so
+/// without this the wait it starts could be seen nowhere until it ended.
+class ConnectLinkWaits extends StatelessWidget {
+  const ConnectLinkWaits({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final chat = context.watch<ChatService>();
+    final waits = chat.pendingLinkJoins;
+    if (waits.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Divider(height: 40),
+        Text(l.connectLinkWaitsTitle,
+            style: const TextStyle(fontWeight: FontWeight.w600)),
+        for (final w in waits)
+          ListTile(
+            key: ValueKey('connect-link-wait-${w.id}'),
+            contentPadding: EdgeInsets.zero,
+            title: Text(l.connectLinkWait(chat.contacts[w.rid]?.name ?? '',
+                chat.groups[w.gid]?.name ?? '')),
+            trailing: TextButton(
+              onPressed: () async {
+                final name = chat.contacts[w.rid]?.name ?? '';
+                final group = chat.groups[w.gid]?.name ?? '';
+                final messenger = ScaffoldMessenger.of(context);
+                // Their answer can have come, and the add begun, since this
+                // row was drawn: then it is too late, and that is what the
+                // person is told — not nothing.
+                if (await chat.cancelLinkJoin(w.id) == LinkWaitStop.adding) {
+                  messenger.showSnackBar(SnackBar(
+                      content: Text(l.connectLinkWaitTooLate(name, group))));
+                }
+              },
+              child: Text(l.connectLinkWaitStop),
+            ),
+          ),
+      ],
     );
   }
 }
