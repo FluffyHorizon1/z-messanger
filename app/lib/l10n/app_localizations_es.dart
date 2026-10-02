@@ -1850,6 +1850,21 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String alertDlShared(String name, String other) {
+    return 'La lista de dispositivos de $name incluye un dispositivo que también incluye la lista de $other, así que no se ha usado. Un dispositivo pertenece a una sola cuenta y Z no puede saber cuál de las dos tiene razón: confírmalo con ambas personas.';
+  }
+
+  @override
+  String alertDlSharedAnother(String name) {
+    return 'La lista de dispositivos de $name incluye un dispositivo que también incluía la lista de otra cuenta, así que no se ha usado. Un dispositivo pertenece a una sola cuenta: confírmalo con esa persona.';
+  }
+
+  @override
+  String alertDlSharedMine(String name) {
+    return 'La lista de dispositivos de $name incluye uno de tus propios dispositivos, así que no se ha usado. Un dispositivo pertenece a una sola cuenta: confírmalo con esa persona.';
+  }
+
+  @override
   String get relayInsecureTitle => 'Este relay no usa TLS';
 
   @override

@@ -1614,6 +1614,15 @@ class ChatService extends ChangeNotifier implements KtHost {
     _pqReqSent.remove(rid);
     _dlpqSent.remove(rid);
     _pqMissingSince.remove(rid);
+    // Another contact's alert can name this one: "<A>'s list names a device
+    // <this contact>'s list also names" (§3.4). It is kept, without them —
+    // their routing id would otherwise outlive them in the vault.
+    for (final e in contactDevlistAlerts.entries.toList()) {
+      if (e.key != rid && sharedDeviceAlertOther(e.value) == rid) {
+        await _setContactAlert(
+            e.key, devlistAlertBody(DevlistAlertKind.sharedDevice));
+      }
+    }
     await kt.noteContactRemoved(rid);
     notifyListeners();
   }
@@ -6852,10 +6861,17 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// way. The lock is not the ratchet's (a send holds that while it steps and
   /// writes, and an install has no reason to wait on one or be waited on by
   /// one) but its own key in the same table.
+  ///
+  /// And it is one key for every contact, not one per contact, because one
+  /// check reads across accounts: a list naming a device already held for
+  /// another account is refused ([_deviceHeldElsewhere]). Two installs for
+  /// two accounts naming one device, each checking before either wrote, would
+  /// both pass and the second write would take the device. Installs are rare
+  /// and short, and nothing that holds this lock installs again.
   Future<bool> _installContactDeviceList(Contact contact, SignedDeviceList list,
           {required bool persist, Map<String, String>? kv}) =>
       _withLock(
-          'devlist:${contact.rid}',
+          'devlist',
           () => _installContactDeviceListLocked(contact, list,
               persist: persist, kv: kv));
 
@@ -6863,6 +6879,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       Contact contact, SignedDeviceList list,
       {required bool persist, Map<String, String>? kv}) async {
     final rid = contact.rid;
+    var sigFloor = 0;
     if (persist) {
       if (base64Encode(list.accountEdPub) != base64Encode(contact.accountEd)) {
         return false; // not signed by this contact's account key
@@ -6900,7 +6917,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       // accused. Nothing is said about the list that was refused; what the
       // gossip goes on comparing is the account's own devices' claims, and
       // those agree with the v2-only list still held.
-      final sigFloor =
+      sigFloor =
           int.tryParse(await vault.kvGet('cdev_sigfloor_$rid') ?? '0') ?? 0;
       if (list.sig2 == null &&
           list.sig3 == null &&
@@ -6912,6 +6929,41 @@ class ChatService extends ChangeNotifier implements KtHost {
       final storedVer =
           int.tryParse(await vault.kvGet('cdev_ver_$rid') ?? '0') ?? 0;
       if (list.version < storedVer) return false; // stale replay
+    }
+
+    // A device belongs to one account (§3.4). A certificate proves only that
+    // the account SIGNED it — not that whoever holds the account holds the
+    // device key it names — so any contact can put another person's public
+    // keys in their own list: those of another contact, from a code or a
+    // group's member list, or this device's own. Installed, that list would
+    // take the device here. Inbound routing asks [_extraRidToContact] before
+    // [contacts], so the other contact's messages would be decrypted against
+    // the wrong account and dropped, and ours to them sealed beside a key of
+    // the claimant's choosing. So the whole list is refused, whichever path
+    // brought it — in-band, the log, or the vault at start-up, where a list
+    // an earlier build installed is held to the same rule.
+    //
+    // What the user is told, for a list that arrived: the fact, naming both
+    // parties, on the chat of the contact whose list was refused. Not an
+    // accusation — this device cannot tell which of two accounts is lying,
+    // and when the claim came first and the real owner's list second, the
+    // one refused is the honest one. Silence would leave the user nothing to
+    // ask either of them about.
+    final clash = await _deviceHeldElsewhere(contact, list);
+    if (clash != null) {
+      if (persist) {
+        await _setContactAlert(
+            rid,
+            clash.mine
+                ? devlistAlertBody(DevlistAlertKind.sharedWithMe)
+                : devlistAlertBody(
+                    DevlistAlertKind.sharedDevice, {'with': clash.other}));
+        notifyListeners();
+      }
+      return false;
+    }
+
+    if (persist) {
       await vault.kvPut('cdev_$rid', jsonEncode(list.toJson()),
           sensitive: false);
       await vault.kvPut('cdev_ver_$rid', '${list.version}', sensitive: false);
@@ -6927,6 +6979,11 @@ class ChatService extends ChangeNotifier implements KtHost {
       // A new list is classical until a signature over THIS version arrives
       // (§18.9); the one we hold, if any, is for an older set.
       await _refreshDeviceAssurance(rid, notify: false);
+      // A list of theirs refused for naming a device held elsewhere is
+      // superseded by this one, which names none.
+      if (isSharedDeviceAlert(contactDevlistAlerts[rid])) {
+        await _setContactAlert(rid, null);
+      }
     }
 
     final extras = _extrasOf(contact, list);
@@ -6958,7 +7015,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         if (!newRids.contains(r)) r
     ];
     // Not under the conversation's lock. This install holds its own key
-    // ('devlist:<rid>'), while `_fanToContactExtras` and `_handleExtraInbound`
+    // ('devlist'), while `_fanToContactExtras` and `_handleExtraInbound`
     // work on the same AccountSession under `_withLock(rid)`, and the two do
     // not exclude each other: a fan-out can step a removed device's ratchet
     // while the notice below does. And `_handleExtraInbound`'s rollback
@@ -7041,6 +7098,57 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     return true;
   }
+
+  /// Whether [list] — a list for [contact]'s account — names a device this
+  /// device already holds for ANOTHER account: one of its own ([mine]), or
+  /// another contact's ([other], that contact's routing id), whether as the
+  /// device that contact was added from or one their own list named.
+  ///
+  /// Accounts are compared, not contact records. The same person added from
+  /// two of their devices is two records for one account, and each record's
+  /// list names the other's device; that is one account's device set seen
+  /// twice, not a claim on anybody else's.
+  ///
+  /// Called under the install lock, which every install takes, so nothing
+  /// else changes [_extraRidToContact] between this answer and the write
+  /// that follows it.
+  Future<({bool mine, String? other})?> _deviceHeldElsewhere(
+      Contact contact, SignedDeviceList list) async {
+    final acct = base64Encode(contact.accountEd);
+    final mine = {
+      ..._myAccountRids,
+      for (final d in await myFullDeviceList()) await d.routingId(),
+    };
+    for (final d in list.devices) {
+      final r = await d.routingId();
+      if (mine.contains(r)) return (mine: true, other: null);
+      final added = contacts[r];
+      if (added != null && base64Encode(added.accountEd) != acct) {
+        return (mine: false, other: added.rid);
+      }
+      final listedFor = _extraRidToContact[r];
+      final lister = listedFor == null || listedFor == contact.rid
+          ? null
+          : contacts[listedFor];
+      if (lister != null && base64Encode(lister.accountEd) != acct) {
+        return (mine: false, other: lister.rid);
+      }
+    }
+    return null;
+  }
+
+  /// Test seam: which contact a device's routing id is held for as one of
+  /// their other devices, if any.
+  @visibleForTesting
+  String? debugListedDeviceOwner(String deviceRid) =>
+      _extraRidToContact[deviceRid];
+
+  /// Test seam: run the gossip's judgement of [rid] now, as an inbound claim
+  /// would — so a test can tell what it decides apart from when it happens
+  /// to run (inbound post-processing is not ordered against the next
+  /// envelope).
+  @visibleForTesting
+  Future<void> debugEvaluateContact(String rid) => _evaluateContact(rid);
 
   /// The floor's third level for [rid]'s account (ADR 0017 stage 2): whether
   /// the list held for it is v2-only — `sig3` alone. See the floor in
@@ -7686,6 +7794,17 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (conflict != null) {
       _pendingContact.remove(rid);
       await _setContactAlert(rid, _conflictMsg(conflict));
+      return;
+    }
+
+    // Their last list was refused for naming a device held for another
+    // account (§3.4), and the banner says so, naming both. Their devices go on
+    // claiming that list, so the deferred case below would replace the banner,
+    // after the grace, with "the update never arrived" — the same refusal
+    // seen from the gossip, and saying less — and agreement would clear it.
+    // It stands until their next list installs or the user dismisses it.
+    if (isSharedDeviceAlert(contactDevlistAlerts[rid])) {
+      _pendingContact.remove(rid);
       return;
     }
 

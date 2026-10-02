@@ -228,6 +228,26 @@ holds (an equal version is a repeat and may be re‑applied). It then fans
 messages out to exactly the listed devices (§9) and accepts messages only from
 them.
 
+**A device belongs to one account.** A certificate (§3.1) proves that the
+account signed it, not that whoever holds the account holds the device key it
+names, so any contact can put another person's public keys — from a contact
+code, or a group's member list (§11) — in a list of their own. A receiver MUST
+refuse a list, the whole list, that names a device whose routing id it already
+holds for a **different account**: the device another contact was added from,
+a device another contact's installed list names, or one of the receiver's own
+devices. Accounts are compared, not contact records — the same account added
+from two of its devices (§18.7) is two records naming each other's devices,
+and that is not a collision. The rule holds for every list the receiver
+installs: in‑band, from the log (§19), and lists it already held when it
+starts. It is **first come**: a list that arrives before the receiver holds the
+real owner's device for anyone takes it, and the owner's own list, arriving
+second, is the one refused. Closing that needs proof of possession — a device
+key signing its own certificate — which is a change to §3.1, not made. The
+reference client tells the user, on the chat of the contact whose list was
+refused, that the list named a device another contact's list also names (or
+one of the user's own), naming both: it cannot tell which of the two accounts
+is wrong, and the one refused may be the honest one.
+
 **A second signature (ADR 0010).** The v1 `input` covers the version and the
 membership and nothing more; each device's `deviceXPub` and `id` are bound only
 by that device's own certificate (§3.1), under Ed25519 alone. `input2` adds

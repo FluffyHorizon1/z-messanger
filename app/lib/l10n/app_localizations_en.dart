@@ -1833,6 +1833,21 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String alertDlShared(String name, String other) {
+    return '$name\'s device list names a device that $other\'s list also names, so it was not used. A device belongs to one account, and Z cannot tell which of them is right — check with both of them.';
+  }
+
+  @override
+  String alertDlSharedAnother(String name) {
+    return '$name\'s device list names a device that another account\'s list also named, so it was not used. A device belongs to one account — check with them.';
+  }
+
+  @override
+  String alertDlSharedMine(String name) {
+    return '$name\'s device list names one of your own devices, so it was not used. A device belongs to one account — check with them.';
+  }
+
+  @override
   String get relayInsecureTitle => 'This relay is not using TLS';
 
   @override

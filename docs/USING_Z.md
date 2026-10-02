@@ -159,6 +159,12 @@ If your contacts start seeing a device you did not add, Z tells them, and it
 tells you. That alert is the whole point of the design, so please do not
 dismiss it as noise.
 
+A device belongs to one account. If a contact's device list names a device
+that another of your contacts' lists already names — or one of your own
+devices — Z does not use that list, and their chat says so, naming both of
+them. It cannot tell which of the two is wrong: the list it refused may be
+the honest one, if the other arrived first. Ask them both.
+
 Where a public transparency log is configured (Settings › Transparency log
 shows whether one is), Z also records every device list your account
 publishes in it, and checks your contacts' lists against it. A contact's

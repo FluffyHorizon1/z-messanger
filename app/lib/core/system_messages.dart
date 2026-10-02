@@ -66,10 +66,50 @@ abstract final class DevlistAlertKind {
 
   /// §18.9: the post-quantum signature was claimed and never arrived.
   static const pqSignatureMissing = 'dl_pq_missing';
+
+  /// §3.4: their list named a device this device already holds for another
+  /// account, so it was not installed. Param `with`: the routing id of the
+  /// contact who holds it — a routing id, like the key the alert is stored
+  /// under, never a name. Absent once that contact has been deleted, so the
+  /// alert does not keep them in the vault after they are gone.
+  static const sharedDevice = 'dl_shared';
+
+  /// §3.4: their list named one of this account's own devices, so it was not
+  /// installed. No params.
+  static const sharedWithMe = 'dl_shared_mine';
 }
 
 /// The stored form of a device-list alert.
-String devlistAlertBody(String kind) => jsonEncode({'k': kind});
+String devlistAlertBody(String kind,
+        [Map<String, Object?> params = const {}]) =>
+    jsonEncode({'k': kind, ...params});
+
+/// Whether [stored] is the alert a refused list leaves when it named a device
+/// held for another account ([DevlistAlertKind.sharedDevice] or
+/// [DevlistAlertKind.sharedWithMe]).
+bool isSharedDeviceAlert(String? stored) {
+  final k = _alertKind(stored);
+  return k == DevlistAlertKind.sharedDevice ||
+      k == DevlistAlertKind.sharedWithMe;
+}
+
+/// The contact a [DevlistAlertKind.sharedDevice] alert names besides the one
+/// it is stored on, or null.
+String? sharedDeviceAlertOther(String? stored) {
+  if (_alertKind(stored) != DevlistAlertKind.sharedDevice) return null;
+  final w = (jsonDecode(stored!) as Map)['with'];
+  return w is String && w.isNotEmpty ? w : null;
+}
+
+String? _alertKind(String? stored) {
+  if (stored == null || !stored.startsWith('{')) return null;
+  try {
+    final d = jsonDecode(stored);
+    return d is Map && d['k'] is String ? d['k'] as String : null;
+  } on FormatException {
+    return null;
+  }
+}
 
 /// The two loudest banners on the home screen — the owner's own-account
 /// alarms — stored the same way and for the same reason: a kind and its

@@ -613,9 +613,12 @@ class _ChatScreenState extends State<ChatScreen> {
           if (!isGroup && svc.contactDevlistAlerts[widget.rid] != null)
             _DevlistBanner(
               // The service stores a kind; the name is supplied here, from
-              // the contact, and was never written to the vault unsealed.
+              // the contact, and was never written to the vault unsealed —
+              // and so is the second name an alert about a device two
+              // contacts both list carries (it stores a routing id).
               message: devlistAlertText(
-                  l, svc.contactDevlistAlerts[widget.rid]!, contact!.name),
+                  l, svc.contactDevlistAlerts[widget.rid]!, contact!.name,
+                  nameOf: (r) => svc.contacts[r]?.name),
               onDismiss: () => svc.acknowledgeContactDevlistAlert(widget.rid),
             ),
           // 7.7b: what the transparency log says about this contact's device

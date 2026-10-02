@@ -3038,6 +3038,24 @@ abstract class AppLocalizations {
   /// **'{name}\'s app says it sent the post-quantum signature for its device list, and it has not arrived. Their device list is still verified classically, which works today but is what a future quantum adversary could forge. Something on the network may be removing it.'**
   String alertDlPqMissing(String name);
 
+  /// Banner on a contact's chat and screen when that contact's device list named a device this phone already holds for ANOTHER contact (PROTOCOL 3.4), so the list was refused. It must accuse neither person: the app cannot tell which of the two lists is wrong, and the one refused may be the honest one. Both names must appear. {name} and {other} take English possessives here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s device list names a device that {other}\'s list also names, so it was not used. A device belongs to one account, and Z cannot tell which of them is right — check with both of them.'**
+  String alertDlShared(String name, String other);
+
+  /// The same banner as alertDlShared when the other contact has since been deleted, so there is no second name to show. Accuses nobody. {name} takes an English possessive here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s device list names a device that another account\'s list also named, so it was not used. A device belongs to one account — check with them.'**
+  String alertDlSharedAnother(String name);
+
+  /// Banner on a contact's chat and screen when that contact's device list named one of the reader's OWN devices (PROTOCOL 3.4), so the list was refused. 'your own devices' means the reader's phone or a device linked to it. {name} takes an English possessive here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s device list names one of your own devices, so it was not used. A device belongs to one account — check with them.'**
+  String alertDlSharedMine(String name);
+
   /// Title of the dialog shown before connecting to a public relay address that begins ws:// rather than wss://.
   ///
   /// In en, this message translates to:
