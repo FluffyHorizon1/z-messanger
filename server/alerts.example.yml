@@ -1,0 +1,310 @@
+# Example Prometheus alerting rules for the Z relay and transparency log (25.4).
+#
+# These back the objectives in docs/SLO.md; each rule points, in its runbook
+# annotation, at the step to take in docs/SELF_HOSTING.md ("When an alert
+# fires"). They are EXAMPLES — the thresholds are starting points, not law —
+# and nothing here is wired into any live system: copy what fits into your own
+# Prometheus, set your own targets, and route the pages. Wiring alerts into the
+# reference deployment (Render) is the operator's, as everything live is.
+#
+# Where the series come from (the relay keeps NO per-identity data; every z_*
+# is an aggregate counter, RAM only, per instance):
+#   - z_*                     the relay's own GET /metrics, scraped directly.
+#   - probe_success,
+#     probe_duration_seconds  the blackbox exporter, probing GET /health of the
+#                             relay, the KT log and the witness (JSON, no auth).
+#                             probe_duration_seconds is a GAUGE — one value per
+#                             probe — so it is read with *_over_time, never
+#                             histogram_quantile (it has no _bucket series).
+#   - redis_up, redis_memory_used_bytes, redis_memory_max_bytes
+#                             the Valkey/Redis exporter on the shared store
+#                             (Redis mode). It holds the store's credentials:
+#                             run it on the store's private network, with its
+#                             /metrics no more public than the store. And do NOT
+#                             enable its key-level options (--check-keys,
+#                             --check-single-keys, --check-key-groups,
+#                             --check-streams, --check-single-streams): they
+#                             export key names as labels, and this store's keys
+#                             are q:<routing id>, presence:<routing id> and
+#                             push:<routing id> — routing ids, and who is
+#                             online, copied into the metrics system.
+#                             Single-instance operators have no store: watch
+#                             /health `storeBytes` against MAX_STORE_BYTES
+#                             through a json exporter instead.
+#   - kt_health_*, kt_witness_*
+#                             a prometheus-json-exporter mapping of JSON the KT
+#                             services serve (they expose JSON, not Prometheus,
+#                             having no dependencies). The names used below:
+#                               kt_health_disk_free_bytes  <- log /health diskFreeBytes
+#                               kt_health_full             <- log /health full (true=1)
+#                               kt_health_size             <- log /health size
+#                               kt_witness_size            <- witness /health size
+#                               kt_witness_diverged        <- witness /health diverged (true=1)
+#                             Map the witness from its /health, not /sth.json:
+#                             the co-signed record carries the size but never
+#                             `diverged`. `full` is null when the log cannot
+#                             read its free space; the mapping then yields no
+#                             series, which is what the *Unread rules catch.
+#
+# A rule over a series that is absent never fires, so every series an exporter
+# has to produce has an absent() partner here: a dashboard that is quiet
+# because nothing is being read must not look like one that is quiet because
+# everything is fine. `job` labels (z-relay, z-relay-health, z-relay-store,
+# z-kt-health, z-kt-witness) are placeholders — match them to your scrapes.
+
+groups:
+  # ---------------------------------------------------------------------------
+  - name: z-relay-availability
+    rules:
+      - alert: RelayHealthDown
+        # SLO 1. /health not answering 200 ok. One instance restarting on
+        # deploy is seconds; the HA pair should keep this from firing at all.
+        # /health does not touch the store (by design), so a store outage is
+        # RelayStoreDown, not this.
+        expr: probe_success{job="z-relay-health"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "Relay /health is down ({{ $labels.instance }})"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayHealthDown"
+
+      - alert: RelayMetricsUnread
+        # SLO 1. The relay's own counters are not being scraped, so every rule
+        # below that reads z_* is blind.
+        expr: absent(z_connections{job="z-relay"})
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "No relay metrics are being scraped — the z_* alarms cannot fire"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayMetricsUnread"
+
+      - alert: RelayHealthSlow
+        # SLO 3. /health answered promptly under the sustained load in LOAD.md
+        # (p99 about 6 ms at 2 000 deliveries/s); most probes over a second
+        # means the event loop is saturated — the signal to scale out
+        # (CAPACITY.md (d)). A gauge, so the quantile is over its samples.
+        expr: quantile_over_time(0.9, probe_duration_seconds{job="z-relay-health"}[15m]) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Relay /health mostly over 1s for 15m — the relay is CPU/event-loop bound"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayHealthSlow"
+
+  # ---------------------------------------------------------------------------
+  - name: z-relay-store
+    rules:
+      - alert: RelayStoreDown
+        # SLO 2. The shared store is not answering. /health stays 200 through
+        # this on purpose, so this is the page for it.
+        expr: redis_up{job="z-relay-store"} == 0
+        for: 1m
+        labels: { severity: page }
+        annotations:
+          summary: "The relay's shared store is down — sends fail `internal`, /health still green"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayStoreDown"
+
+      - alert: RelayStoreUnwatched
+        # SLO 2. The store exporter is not reporting, so RelayStoreDown and the
+        # memory rules cannot fire.
+        expr: absent(redis_up{job="z-relay-store"})
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Nothing reports on the relay's store — its alarms are blind"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayStoreUnwatched"
+
+      - alert: RelaySendInternalErrors
+        # SLO 2. Sends the relay could not store or route — in Redis mode, the
+        # store unreachable from the instances even if the exporter can reach
+        # it. The app treats `internal` as connection trouble and waits for its
+        # next reconnect, so these are messages stalled on phones.
+        expr: sum(increase(z_send_internal_error_total{job="z-relay"}[5m])) > 5
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "Relay answering sends `internal` — it cannot store or route"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelaySendInternalErrors"
+
+      - alert: RelayStoreNearFull
+        # SLO 6. The shared store approaching maxmemory (which must be set: it
+        # is what noeviction refuses against). Past it, sends are refused
+        # store_full and heal as mailboxes drain — grow the store or lower
+        # MAX_QUEUE_BYTES_PER_USER before then (CAPACITY.md (c)).
+        expr: redis_memory_used_bytes{job="z-relay-store"} / redis_memory_max_bytes{job="z-relay-store"} > 0.9
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Relay store over 90% of maxmemory"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayStoreNearFull"
+
+      - alert: RelayStoreFull
+        # SLO 6. The store is refusing sends for want of memory. Mailbox-creation
+        # refusals are NOT counted here (they are z_new_mailbox_refused_total,
+        # below); this counter is the store itself.
+        expr: sum(increase(z_store_full_total{job="z-relay"}[5m])) > 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "Relay store full — sends refused store_full"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayStoreFull"
+
+  # ---------------------------------------------------------------------------
+  - name: z-relay-integrity
+    rules:
+      - alert: RelayBodyMissing
+        # SLO 4. Envelopes a mailbox listed whose body the store no longer held:
+        # an evicting store, and each one a message whose sender was told
+        # `sent`. ONE can be legitimate — an acknowledgement landing between a
+        # flush's list read and its body read — so this fires on more than a
+        # trickle, which an evicting store produces at once and a race does not.
+        expr: sum(increase(z_body_missing_total{job="z-relay"}[30m])) > 5
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "Relay finding envelope bodies missing — the store is evicting (must be noeviction)"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayBodyMissing"
+
+      - alert: RelayPresenceRefreshFailing
+        # SLO 5. Presence refreshes failing for a reason other than a full store
+        # — the store unreachable or slow. Mail to those sockets is queued, not
+        # pushed live, until it recovers.
+        expr: sum(increase(z_presence_refresh_failed_total{job="z-relay"}[10m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Relay presence refresh failing — the shared store is unreachable or slow"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayPresenceRefreshFailing"
+
+      - alert: RelayReflushElevated
+        # SLO 5. Re-flushes recover a live push that went nowhere (a stale
+        # presence record). A few are normal at handover; a sustained rate means
+        # live delivery is routinely failing and being repaired a cycle later.
+        expr: sum(rate(z_reflushed_total{job="z-relay"}[10m])) > 1
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Relay re-flushing mailboxes often — live cross-instance delivery is failing"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayReflushElevated"
+
+  # ---------------------------------------------------------------------------
+  - name: z-relay-signals
+    rules:
+      - alert: RelayNewMailboxRefused
+        # Signal. The mailbox-creation gate is firing: a flood of first
+        # contacts, or an allowance too low for the real rate of new
+        # conversations. Per instance by default; relay-wide with
+        # NEW_MAILBOX_SHARED=on (25.3). Zero in ordinary use.
+        expr: sum(increase(z_new_mailbox_refused_total{job="z-relay"}[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Relay refusing new-mailbox creation — flood, or NEW_MAILBOX_PER_MIN too low"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayNewMailboxRefused"
+
+      - alert: RelayNewMailboxGateFallback
+        # Signal. With NEW_MAILBOX_SHARED=on, creations the shared window could
+        # not decide — its counter unreachable or unreadable — so each instance
+        # decided on its own bucket: N × the configured rate while it lasts.
+        # Always zero with sharing off.
+        expr: sum(increase(z_new_mailbox_shared_fallback_total{job="z-relay"}[10m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Shared mailbox-creation gate falling back to per-instance buckets"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayNewMailboxGateFallback"
+
+      - alert: RelayAuthV2Refused
+        # Signal. v2 authentications verifying under none of the relay's names:
+        # a front rewriting Host (set RELAY_AUTHORITIES), or signatures made for
+        # another relay (the replay the binding stops, R33).
+        expr: sum(rate(z_auth_v2_refused_total{job="z-relay"}[10m])) > 0.1
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Relay refusing v2 auth — Host rewritten upstream, or a replay attempt"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayAuthV2Refused"
+
+  # ---------------------------------------------------------------------------
+  - name: z-kt-log
+    rules:
+      - alert: KtLogDown
+        # SLO 7.
+        expr: probe_success{job="z-kt-health"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "KT log /health is down"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — KtLogDown"
+
+      - alert: KtHealthUnread
+        # SLO 8. The log's disk figures are not being read — the json exporter
+        # stopped, its mapping no longer matches, or the log reports `full` as
+        # null because it cannot read its own free space. KtDiskLow and
+        # KtLogFull are blind meanwhile.
+        expr: absent(kt_health_disk_free_bytes{job="z-kt-health"}) or absent(kt_health_full{job="z-kt-health"})
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "KT log disk figures are not being read — the disk alarms are blind"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — KtHealthUnread"
+
+      - alert: KtDiskLow
+        # SLO 8. Entries NEVER expire (R31), so the disk is a one-way resource:
+        # alarm well above the KT_MIN_FREE_BYTES floor (64 MiB) and grow the disk
+        # with lead time. 512 MiB free is a starting threshold — set it to many
+        # weeks of your growth from CAPACITY.md (b).
+        expr: kt_health_disk_free_bytes{job="z-kt-health"} < 536870912
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "KT log free disk low — entries never expire; grow the disk early"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — KtDiskLow"
+
+      - alert: KtLogFull
+        # SLO 8. Below KT_MIN_FREE_BYTES the log refuses publishes (503
+        # log_full) and keeps serving reads. /health stays 200 with full:true on
+        # purpose, so this reads `full`, not probe_success.
+        expr: kt_health_full{job="z-kt-health"} == 1
+        for: 1m
+        labels: { severity: page }
+        annotations:
+          summary: "KT log is full — publishes refused (503 log_full), reads still served"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — KtLogFull"
+
+  # ---------------------------------------------------------------------------
+  - name: z-kt-witness
+    rules:
+      - alert: KtWitnessDown
+        # SLO 9. The witness not answering, or its /health not being read —
+        # either way a divergence would go unseen. Page whoever runs it.
+        expr: probe_success{job="z-kt-witness"} == 0 or absent(kt_witness_diverged{job="z-kt-witness"})
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "KT witness down or unread — a divergence would go unseen"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — KtWitnessDown"
+
+      - alert: KtWitnessDiverged
+        # SLO 9. The witness saw the log sign a head that does not extend what
+        # it verified — a rewritten entry, a shrunk log, a fork. Permanent and
+        # deliberate; a network blip does NOT cause it (SELF_HOSTING.md,
+        # "Run a witness"). Read from the witness's /health: /sth.json does not
+        # carry `diverged`.
+        expr: kt_witness_diverged{job="z-kt-witness"} == 1
+        labels: { severity: page }
+        annotations:
+          summary: "KT WITNESS DIVERGED — the log signed a head that does not extend the verified one"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — KtWitnessDiverged"
+
+      - alert: KtWitnessBehind
+        # SLO 9. The witness verifies every five minutes, so it lags the head a
+        # little by design; a large, sustained lag means it has stopped
+        # following (network, or the log unreachable to it) — not a fork, but
+        # the head is unattested meanwhile. max() on each side: the two series
+        # come from different jobs and share no labels to match on.
+        expr: max(kt_health_size{job="z-kt-health"}) - max(kt_witness_size{job="z-kt-witness"}) > 1000
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "KT witness far behind the log head for 30m — it has stopped following"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — KtWitnessBehind"

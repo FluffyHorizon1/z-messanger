@@ -124,9 +124,10 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 | `MAX_QUEUE_BYTES_PER_USER` | `67108864` | per‑recipient queue cap (bytes); an envelope that would cross it is refused, not made room for |
 | `MAX_QUEUE_MSGS_PER_USER` | `5000` | per‑recipient queue cap (count), likewise |
 | `MAX_STORE_BYTES` | `201326592` | the whole RAM queue's ceiling in single‑instance mode — past it a send is refused as `store_full` rather than the process being killed. Redis mode refuses against the store's own `maxmemory` instead |
-| `NEW_MAILBOX_PER_MIN` | `120` | how many mailboxes may be **created** a minute, per instance, across all senders. Charged on **first contact** with a recipient, not on an empty mailbox — a mailbox exists only while it holds unacknowledged mail, so a recipient who is online and keeping up has none when the next message arrives, and charging that emptiness charged every message (fixed 2026‑09‑14; until then the relay stopped at this number of *messages* a minute, for everyone) |
+| `NEW_MAILBOX_PER_MIN` | `120` | how many mailboxes may be **created** a minute, across all senders — **per instance**, so N instances admit N× this between them, unless `NEW_MAILBOX_SHARED=on` makes it the figure for the whole relay. Charged on **first contact** with a recipient, not on an empty mailbox — a mailbox exists only while it holds unacknowledged mail, so a recipient who is online and keeping up has none when the next message arrives, and charging that emptiness charged every message (fixed 2026‑09‑14; until then the relay stopped at this number of *messages* a minute, for everyone) |
 | `SEEN_MAILBOX_CAP` | `100000` | how many recipients an instance remembers having written to, so the line above can mean "first contact". A memory bound, measured at 117 bytes an entry (11.2 MiB at the default); least recently used are dropped. It is not what bounds a flood — **a send that was refused is never remembered**, so a refused flood leaves the set as it found it |
 | `SEEN_MAILBOX_TTL_MIN` | `60` | and for how long a recipient stays remembered. Bounds how long a second flood can re‑use ids whose mailboxes the first one paid for. A recipient who is merely offline is unaffected: their mailbox still exists, and that is checked too |
+| `NEW_MAILBOX_SHARED` | off | `on` shares the mailbox‑creation allowance across instances through the store (Redis mode; inert on a single‑instance relay, whose own gate is already relay‑wide). Off, each instance keeps its own bucket, exactly as before this setting existed. **What it rations:** creating a mailbox for a recipient who holds no mail — a send into a mailbox that exists is never charged. **Turning it on makes `NEW_MAILBOX_PER_MIN` the relay‑wide figure:** set it to N × the per‑instance value to keep the total you had (240 for two instances at the default). **What it costs:** a flood that spends the shared minute spends it for every instance — a gate everybody shares is a switch whoever fills it holds (R22, R32) — and an instance that restarts or is added pays first contact again, against that minute, for every recipient it re‑contacts; measured, a restarted instance had all 5 600 of its sends to online contacts refused while a flood held the window (`docs/LOAD.md`, 25.3). The counter is one hash of two integers for the whole relay — a count of creations in the store's current minute, never a routing id. If it cannot be read the instance falls back to its own bucket and counts it (`z_new_mailbox_shared_fallback_total`) |
 | `QUEUE_TTL_HOURS` | `72` | drop an undelivered envelope this long after the relay accepted it — per envelope, in both modes |
 | `SWEEP_INTERVAL_SECONDS` | `60` | expiry sweep cadence (a flush expires too, before it delivers) |
 | `FLUSH_PAGE` | `64` | entries a flush may send before waiting for the socket to drain |
@@ -160,6 +161,120 @@ is checked against — watch it against `queuedEnvelopes`, since the two
 disagreeing is itself a fault), and `"storage":"ram-only"`. Point your uptime monitor at it. There
 is deliberately no message‑level logging to monitor — the relay can't see
 messages.
+
+**Objectives, alarms, and capacity.** `docs/SLO.md` sets availability and
+latency objectives you can measure from `/health` and the `z_*` metrics, with
+an error budget for each; `server/alerts.example.yml` is the Prometheus rules
+that back them (copy what fits — nothing there is wired into a live system);
+and `docs/CAPACITY.md` turns the measured per‑envelope, per‑connection and
+per‑published‑list costs into a box size, so you can tell when to raise the
+store versus add an instance. The subsection below is the other half of those
+rules: what to do when one fires.
+
+### When an alert fires
+
+Each rule in `server/alerts.example.yml` names one of these. They assume the
+reference HA shape (`render.ha.yaml`); a single‑instance relay has no store
+exporter, so watch `/health` `storeBytes` in place of the Redis rules. Two
+things about the store exporter are part of the threat model, not of
+monitoring: never enable its key‑level options (`--check-keys` and the like —
+they export `q:<routing id>` and `presence:<routing id>` as labels, routing ids
+and who is online copied into the metrics system), and keep it, and its
+`/metrics`, on the store's private network — it holds the store's credentials
+(`docs/SLO.md`, "Watching the store without learning from it").
+
+- **RelayHealthDown** — an instance is not answering `/health`. On the HA pair a
+  client just lands on the other instance, so check which instance and whether
+  it is restarting (a deploy) or wedged; redeploy it, and confirm the serving
+  relay with `python3 tool/check_live_relay.py https://<host>`. If both are
+  down, it is the instances, their host or the load balancer — **not the
+  store**: `/health` does not touch the store, deliberately, so a store outage
+  leaves it green and pages as `RelayStoreDown` instead.
+- **RelayMetricsUnread** — Prometheus is not scraping the relay's `/metrics`,
+  so every `z_*` alarm is blind. Fix the scrape before trusting a quiet board.
+- **RelayStoreDown** (`redis_up == 0`) / **RelaySendInternalErrors**
+  (`z_send_internal_error_total`) — the shared store is not answering, or the
+  instances cannot reach it: every send is answered `internal` while `/health`
+  stays 200. Restore the store (and the network path to it); queued mail is in
+  the store's RAM, so a store that **restarted** has lost what it held — the
+  senders' outboxes still have it and re‑send. One thing to know: the app treats
+  `internal` as connection trouble and retries on its next reconnect, not on a
+  timer, so phones may sit on unsent messages after the store is back until
+  they reconnect; restarting the relay instances once the store is healthy
+  forces that reconnect. **RelayStoreUnwatched** is the exporter not reporting —
+  the store's alarms are blind until it is.
+- **RelayHealthSlow** — `/health` is slow because the event loop is saturated,
+  not because anything is wrong with the data. This is the signal to **add an
+  instance** (`docs/CAPACITY.md`, "when to add an instance vs. raise the
+  store"), on a box with cores to spare — more instances on the same cores do
+  not help.
+- **RelayBodyMissing** (`z_body_missing_total`) — envelope bodies are missing
+  from under mailboxes that list them: an envelope whose sender was told
+  `sent`, gone. One now and then is a race (an acknowledgement landing between
+  a flush's two reads) and the rule ignores it; more than a trickle means **the
+  store is not running `noeviction`.** Fix its `maxmemory-policy` (both shipped
+  configs are `noeviction`; a self‑host that changed it, or an older
+  `allkeys-lru` compose file, is the cause) and redeploy the store. The relay
+  has already dropped the dangling keys and counted them once.
+- **RelayPresenceRefreshFailing / RelayReflushElevated** — the shared store is
+  unreachable or slow from the instances, so live cross‑instance delivery is
+  failing and being repaired a cycle later (nothing is lost — it is delivered
+  on the re‑flush). Check the store's health and the network between it and the
+  instances; these clear when the store is reachable again.
+- **RelayStoreNearFull / RelayStoreFull** — the backlog is approaching, or has
+  reached, the store's `maxmemory`. A full store refuses sends (`store_full`,
+  which senders retry) and heals as mailboxes drain, so this is urgent but not
+  data loss. **Grow the store**, or lower `MAX_QUEUE_BYTES_PER_USER` so one
+  recipient holds less of it (`docs/CAPACITY.md`, "Sizing the Redis store").
+  `z_store_full_total` counts the store itself and nothing else — refusals by
+  the mailbox‑creation gate reach senders as the same `store_full` but are
+  counted as `z_new_mailbox_refused_total`; if both are climbing, suspect a
+  flood of undrainable mailboxes rather than real backlog.
+- **RelayNewMailboxRefused** (`z_new_mailbox_refused_total`) — the
+  mailbox‑creation gate is firing. Zero in ordinary use, so this is either a
+  flood of first contacts to routing ids nobody holds (R22 — the gate is doing
+  its job; watch the store and let it ride, the junk expires at
+  `QUEUE_TTL_HOURS`) or `NEW_MAILBOX_PER_MIN` set too low for a genuinely busy
+  first‑contact rate (raise it). Per instance by default, so the count is that
+  instance's; with `NEW_MAILBOX_SHARED=on` it is the whole relay's, and a flood
+  holding the shared window also refuses first contacts made through an
+  instance that has just restarted — a rolling redeploy during a flood is the
+  worst moment to have sharing on (`docs/LOAD.md`, 25.3).
+- **RelayNewMailboxGateFallback** (`z_new_mailbox_shared_fallback_total`) —
+  with sharing on, the shared counter could not be read, so each instance is
+  deciding on its own bucket: N× the configured rate while it lasts, never more.
+  The store unreachable (see `RelayStoreDown`), or the `z:nm` hash holding
+  something that is not a count — delete it and the next creation starts a
+  fresh window.
+- **RelayAuthV2Refused** (`z_auth_v2_refused_total`) — v2 authentications are
+  verifying under none of the relay's names. Almost always a front rewriting
+  the `Host` header: set `RELAY_AUTHORITIES` to the name clients dial (see the
+  authentication note above). A steady low rate with no front change is the
+  replay the binding stops (R33) and needs nothing.
+- **KtLogDown / KtLogFull / KtDiskLow / KtHealthUnread** — the transparency
+  log. `KtDiskLow` is the one to act on early: **entries never expire**, so the
+  disk is a one‑way resource — grow it with lead time (`docs/CAPACITY.md`, the
+  KT disk table). `KtLogFull` means it is already below `KT_MIN_FREE_BYTES` and
+  refusing publishes while still serving reads; grow the disk now. `KtLogDown`
+  is a process or host failure — restart it; it replays and re‑verifies its
+  head on the way up (the log, step 4). `KtHealthUnread` means the disk figures
+  are not arriving — the exporter, its mapping, or a log that reports `full:
+  null` because it cannot read its own free space — and the two disk alarms are
+  blind until they do.
+- **KtWitnessDiverged** — the one that matters most and the rarest: the witness
+  saw the log sign a head that does not extend what it verified. A network blip
+  does **not** cause this (it is reserved for what the log signed). Treat it as
+  a possible key compromise or a rewritten log: stop trusting new heads, get
+  the witness operator and the log operator talking, and follow "Run a witness"
+  — the witness keeps its last good head and the clients check against it.
+  **KtWitnessDown** is the witness not answering, or its `/health` not being
+  read, so a divergence would go unseen — page whoever runs it.
+  **KtWitnessBehind** is the softer cousin: the witness has stopped following
+  (network, or the log unreachable to it), the head is unattested until it
+  catches up; check the witness and the path between it and the log.
+
+This is files in the repository only; wiring these rules into your Prometheus
+and routing their pages is yours, as everything that touches a live system is.
 
 ### After a deploy: check that the relay serving is the one you deployed
 
