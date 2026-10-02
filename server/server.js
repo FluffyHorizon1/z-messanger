@@ -94,7 +94,9 @@ const CFG = {
   // creations bounds the attack without bounding anybody's conversation,
   // needs no counter shared between instances to be correct, and cannot
   // drift the way a count of live mailboxes does against a TTL that deletes
-  // them without telling anyone.
+  // them without telling anyone. The figure is per instance, so N instances
+  // admit N × it between them, unless NEW_MAILBOX_SHARED=on makes it the
+  // figure for the whole relay (below).
   newMailboxPerMin: intEnv('NEW_MAILBOX_PER_MIN', 120),
   // How many routing ids this instance remembers having queued for, so the
   // admission gate above is charged on first contact rather than on an empty
@@ -103,6 +105,22 @@ const CFG = {
   // And for how long. An hour means at most one token per recipient per hour,
   // against an allowance of NEW_MAILBOX_PER_MIN × 60.
   seenMailboxTtlMs: intEnv('SEEN_MAILBOX_TTL_MIN', 60) * 60000,
+  // Whether the mailbox-creation allowance is shared across instances through
+  // the store (25.3). OFF unless NEW_MAILBOX_SHARED=on. Off, every instance
+  // keeps its own bucket exactly as it always has, so N instances admit
+  // N × NEW_MAILBOX_PER_MIN between them. On, NEW_MAILBOX_PER_MIN is the
+  // relay-wide figure — set it to N × the per-instance value to keep the same
+  // total — and two things change that make it an operator's decision rather
+  // than a default: a flood that spends the window spends it for every
+  // instance at once (a gate everybody shares is a switch whoever fills it
+  // holds, R32), and an instance that restarts or is newly added pays first
+  // contact again, against that shared window, for every recipient it has not
+  // queued for since it started (`seen` is this process's memory and nothing
+  // else may be: a shared record of who was written to would be a record of
+  // routing ids in the store). Inert on a single-instance RAM relay, whose own
+  // gate is already relay-wide. The shared counter is one integer per window —
+  // a count of creations, never a routing id.
+  newMailboxShared: (process.env.NEW_MAILBOX_SHARED || '').trim().toLowerCase() === 'on',
   // The whole RAM queue's ceiling in single-instance mode. The Redis path
   // has the store's own `noeviction` limit to refuse against; this one had
   // nothing at all, so the answer to the same flood was an OOM kill instead
@@ -304,8 +322,25 @@ const METRICS = {
   // to an operator: the store is not full, and what was refused was a first
   // envelope to an address nothing had been sent to yet. Ordinary traffic
   // never touches it, so anything but zero is either a flood or a limit set
-  // too low for the deployment's rate of first contacts.
+  // too low for the deployment's rate of first contacts. Counted HERE and not
+  // also in z_store_full_total — both refusals reach the sender as
+  // `store_full`, but until 2026-10-02 the Redis path counted this one under
+  // both names (RAM never did), so a flood paged as a full store.
   newMailboxRefusedTotal: 0,
+  // Mailbox-creation decisions the shared gate (NEW_MAILBOX_SHARED=on) could
+  // not make — its counter unreachable, or unreadable — so this instance fell
+  // back to its own per-instance bucket. Each one is a moment the relay-wide
+  // allowance was N × the configured one. Not counted when the store is
+  // simply full: the push that follows is refused for the same want of memory
+  // and counted as z_store_full_total.
+  newMailboxSharedFallbackTotal: 0,
+  // Sends answered `internal`: the relay could not store or route an envelope
+  // for a reason it did not expect — in Redis mode, overwhelmingly the store
+  // being unreachable. `/health` cannot show this, deliberately (it does not
+  // touch the store, so a store blip does not get healthy instances
+  // restarted), which is why it is counted: it is the availability signal
+  // `/health` is not.
+  sendInternalErrorTotal: 0,
   // Presence writes the store refused for want of memory. Counted apart
   // from the sends above: one is mail a sender must retry, the other is a
   // login that went ahead anyway and heals at the next heartbeat.
@@ -368,6 +403,10 @@ function renderMetrics(stats) {
   L.push(`z_auth_v2_refused_total ${METRICS.authV2RefusedTotal}`);
   L.push('# TYPE z_new_mailbox_refused_total counter');
   L.push(`z_new_mailbox_refused_total ${METRICS.newMailboxRefusedTotal}`);
+  L.push('# TYPE z_new_mailbox_shared_fallback_total counter');
+  L.push(`z_new_mailbox_shared_fallback_total ${METRICS.newMailboxSharedFallbackTotal}`);
+  L.push('# TYPE z_send_internal_error_total counter');
+  L.push(`z_send_internal_error_total ${METRICS.sendInternalErrorTotal}`);
   L.push('# TYPE z_presence_deferred_total counter');
   L.push(`z_presence_deferred_total ${METRICS.presenceDeferredTotal}`);
   L.push('# TYPE z_delivered_live_total counter');
@@ -465,7 +504,12 @@ class NewMailboxGate {
  *
  * Per instance, deliberately. A shared set would be a Redis round trip on
  * every send to save at most one token per routing id per instance, and the
- * flood it defends against is charged either way.
+ * flood it defends against is charged either way — and, decisively, it would
+ * be a record in the store of which routing ids were written to recently,
+ * which the relay must not keep. The price is paid by NEW_MAILBOX_SHARED=on:
+ * an instance that has just started remembers nobody, so it pays first
+ * contact again, against the shared window, for every recipient it writes to
+ * (LOAD.md, 25.3).
  */
 class SeenMailboxes {
   constructor(cap = CFG.seenMailboxCap, ttlMs = CFG.seenMailboxTtlMs, now = Date.now) {
@@ -646,7 +690,7 @@ class MemoryCoordinator {
     const known = this.seen.has(rid);
     if (!known && !this.queues.has(rid) && !this.newMailbox.take()) {
       METRICS.newMailboxRefusedTotal += 1;
-      throw new StoreFull();
+      throw new NewMailboxRefused();
     }
     if (this.bytes + entry.size > CFG.maxStoreBytes) {
       METRICS.storeFullTotal += 1;
@@ -1130,6 +1174,61 @@ elseif bytes > 0 and redis.call('EXISTS', KEYS[3]) == 1 then
 end
 return {removed, dangling}`;
 
+// The relay-wide mailbox-creation allowance (NEW_MAILBOX_SHARED=on, 25.3),
+// held in the store so N instances share one rate instead of each enforcing
+// its own. KEYS[1] = z:nm, ONE hash for the whole relay: `w`, the current
+// window's number, and `n`, how many mailboxes were created in it. That is
+// all it holds — a count of creations, never a routing id — so the gate
+// stores nothing per identity (it counts how many, not who or for whom).
+// KEYS[2] = q:<rid>, the destination's list, only read. ARGV = the allowance,
+// the window in seconds.
+//
+// A destination whose list exists is granted WITHOUT a charge (2): nothing is
+// being created — the push puts the entry into a mailbox that is already
+// there, under the per-mailbox caps that bound it — so charging it, then
+// handing the slot back after the push said so, cost two round trips and held
+// a slot that a genuine first contact could have been refused for meanwhile.
+// The window is the STORE's clock (TIME), not the instance's: with the
+// instance's, two instances whose clocks disagreed by more than a window
+// counted into different keys and the allowance was N × again (measured: 20
+// a window against 10 at a skew of three windows). A fresh window resets `n`
+// as it is first touched, so nothing has to expire for the count to start
+// over. Returns {1, w} for a slot taken in window w, {2, -1} for an exempt
+// destination, {0, w} for a full window — and a full window changes nothing,
+// so a flood's refused attempts do not inflate the count an honest first
+// contact a moment later is measured against. NOT flagged allow-oom: a store
+// at its memory limit refuses the script up front, the caller treats that as
+// the store being full, and the push that follows is refused the same way.
+const REDIS_NEWMAILBOX_LUA = `#!lua
+if redis.call('EXISTS', KEYS[2]) == 1 then return {2, -1} end
+local secs = tonumber(ARGV[2])
+local t = redis.call('TIME')
+local w = math.floor(tonumber(t[1]) / secs)
+local n = 0
+if tonumber(redis.call('HGET', KEYS[1], 'w') or '-1') == w then
+  n = tonumber(redis.call('HGET', KEYS[1], 'n') or '0')
+end
+if n >= tonumber(ARGV[1]) then return {0, w} end
+redis.call('HSET', KEYS[1], 'w', w, 'n', n + 1)
+redis.call('EXPIRE', KEYS[1], secs * 2)
+return {1, w}`;
+
+// Give back a slot taken in window ARGV[1], when the push it was taken for did
+// not create a mailbox after all — another instance created it first, or the
+// envelope was refused. Only in the SAME window: a slot from a window that
+// has since rolled over counted against a minute that is already over, and
+// the new window's count must not be lowered for it. Never creates the hash
+// (a refund after the window expired used to DECR a missing key into a
+// counter with no TTL at all) and never resets its TTL (HSET keeps it).
+// allow-oom because it only lowers a count — a refund must settle even when
+// the store is full.
+const REDIS_NEWMAILBOX_REFUND_LUA = `#!lua flags=allow-oom
+if tonumber(redis.call('HGET', KEYS[1], 'w') or '-1') ~= tonumber(ARGV[1]) then return 0 end
+local n = tonumber(redis.call('HGET', KEYS[1], 'n') or '0')
+if n <= 0 then return 0 end
+redis.call('HSET', KEYS[1], 'n', n - 1)
+return 1`;
+
 /**
  * The key an entry is held under in qe:{rid} and listed under in q:{rid} —
  * one function, used by both coordinators, because a mailbox that keys its
@@ -1194,6 +1293,22 @@ class StoreFull extends Error {
   }
 }
 
+/**
+ * Thrown by a push the mailbox-creation gate refused. Still a StoreFull, so the
+ * sender is told `store_full` — the code PROTOCOL §12.4 says a client pauses
+ * and retries on, which is right for a refusal that ends with the minute —
+ * but kept apart so it is counted once, as
+ * z_new_mailbox_refused_total, and never also as z_store_full_total. RAM mode
+ * always counted it once; the Redis path counted it under both names, so a
+ * flood of first contacts read as a full store.
+ */
+class NewMailboxRefused extends StoreFull {
+  constructor() {
+    super();
+    this.message = 'too many mailboxes are being created';
+  }
+}
+
 /** Redis refusing a write for want of memory ("OOM command not allowed …"). */
 function isStoreFull(e) {
   return /\bOOM\b/.test(String((e && e.message) || ''));
@@ -1213,12 +1328,18 @@ class RedisCoordinator {
     this.reflushing = false;
     /** rid -> mailbox length at the last re-flush check, for the pass below. */
     this.lastMailboxLen = new Map();
-    // Per instance, like the rate limiter beside it. A flood arrives on one
-    // socket and therefore one instance; a flood spread across N instances
-    // gets N times the allowance, which is a bounded and stated degradation
-    // rather than a shared counter that drifts every time a TTL deletes a
-    // mailbox without telling anybody.
+    // Per instance, like the rate limiter beside it — the gate by default, and
+    // the fallback when the shared one is on and cannot be reached. N
+    // instances admit N × NEW_MAILBOX_PER_MIN between them; the byte caps
+    // (MAX_QUEUE_BYTES_PER_USER, the store's maxmemory) bound what a flood
+    // can hold whatever N is, so the N× loosens the creation RATE and not the
+    // store's worst case (LOAD.md, 25.3).
     this.newMailbox = new NewMailboxGate();
+    // NEW_MAILBOX_SHARED=on makes the store's window the gate instead (see
+    // REDIS_NEWMAILBOX_LUA): one relay-wide allowance per window of this
+    // length, the same minute the per-instance rate is quoted over.
+    this.newMailboxShared = CFG.newMailboxShared;
+    this.newMailboxWindowMs = 60000;
     this.seen = new SeenMailboxes();
     this.chan = `z:inst:${this.id}`;
     for (const c of [this.cmd, this.sub, this.pub]) c.on('error', () => {});
@@ -1229,6 +1350,8 @@ class RedisCoordinator {
     this.cmd.defineCommand('zQueueExpire', { numberOfKeys: 3, lua: REDIS_EXPIRE_LUA });
     this.cmd.defineCommand('zQueueAck', { numberOfKeys: 3, lua: REDIS_ACK_LUA });
     this.cmd.defineCommand('zQueueAckLegacy', { numberOfKeys: 3, lua: REDIS_ACK_LEGACY_LUA });
+    this.cmd.defineCommand('zNewMailboxTake', { numberOfKeys: 2, lua: REDIS_NEWMAILBOX_LUA });
+    this.cmd.defineCommand('zNewMailboxRefund', { numberOfKeys: 1, lua: REDIS_NEWMAILBOX_REFUND_LUA });
     this.sub.subscribe(this.chan).catch(() => {});
     this.sub.on('message', (_ch, msg) => this._onPub(msg));
   }
@@ -1351,30 +1474,92 @@ class RedisCoordinator {
   }
 
   /**
+   * Ask the store's relay-wide window (NEW_MAILBOX_SHARED=on) whether a push
+   * to `rid` may create a mailbox. Resolves to `{ granted, window, fellBack }`:
+   *
+   *  - granted, `window` a number: a slot was taken in that window, to be
+   *    given back with `_refundShared(window)` if the push does not create;
+   *  - granted, `window` null: the destination's list already exists, so
+   *    nothing is being created and nothing was charged;
+   *  - not granted: the window's allowance is spent;
+   *  - `fellBack`: the window could not be consulted and the caller decides on
+   *    this instance's own bucket instead — fail to the per-instance rate,
+   *    never open. Counted in z_new_mailbox_shared_fallback_total, except when
+   *    the store is merely full: the push that follows is refused for the
+   *    same want of memory, and z_store_full_total says so.
+   */
+  async _takeShared(rid) {
+    try {
+      const [code, window] = await this.cmd.zNewMailboxTake(
+        'z:nm',
+        `q:${rid}`,
+        String(CFG.newMailboxPerMin),
+        String(Math.max(1, Math.round(this.newMailboxWindowMs / 1000)))
+      );
+      if (code === 1) return { granted: true, window, fellBack: false };
+      if (code === 2) return { granted: true, window: null, fellBack: false };
+      return { granted: false, window: null, fellBack: false };
+    } catch (e) {
+      if (!isStoreFull(e)) METRICS.newMailboxSharedFallbackTotal += 1;
+      return { granted: false, window: null, fellBack: true };
+    }
+  }
+
+  /** Give back a slot taken in `window`; a no-op once that window has passed. */
+  async _refundShared(window) {
+    try {
+      await this.cmd.zNewMailboxRefund('z:nm', String(window));
+    } catch {
+      // The window ends on its own; a slot that could not be handed back is
+      // one creation the relay does not reuse before the minute rolls over.
+    }
+  }
+
+  /**
    * Stores an entry; returns false when the recipient's queue is at a cap
    * (see MemoryCoordinator#_enqueue) and throws a StoreFull when the store
-   * itself has no room, or when the entry would have created a mailbox and
-   * too many were being created at once — the caller says which to the
-   * sender, and both are told as `store_full`, which a client pauses and
-   * retries on rather than treating as final. An attributed
-   * entry already held under its key is not stored twice: the push is
-   * acknowledged as if it had been, which is what a sender retrying after a
-   * lost `sent` needs. A sealed one takes the next free slot instead
-   * (entryDedupes).
+   * itself has no room — or a NewMailboxRefused, which is one, when the entry
+   * would have created a mailbox and too many were being created at once.
+   * Both reach the sender as `store_full`, which a client pauses and retries
+   * on rather than treating as final. An attributed entry already held under
+   * its key is not stored twice: the push is acknowledged as if it had been,
+   * which is what a sender retrying after a lost `sent` needs. A sealed one
+   * takes the next free slot instead (entryDedupes).
    */
   async _push(rid, entry) {
-    // The same admission rule as the memory path, and the same reasoning:
-    // creating a mailbox is what a flood needs and what nobody drains. The
-    // decision travels WITH the push instead of ahead of it — the script
-    // already knows whether the list is empty — so an ordinary send costs
-    // exactly what it cost before, and no mailbox can appear between a
-    // lookup and the write that would have been told about it.
-    // First contact, not an empty list — the same rule as the memory path.
-    // A routing id this instance has queued for before may create a mailbox
-    // without spending anything; only one it has never seen is charged.
+    // Admission is charged on FIRST CONTACT only: a routing id this instance
+    // has queued for recently (`seen`) creates a mailbox without spending
+    // anything, so steady traffic never reaches either gate.
+    //
+    // Which gate: by default this instance's own bucket, exactly as it always
+    // was. With NEW_MAILBOX_SHARED=on, the store's relay-wide window instead,
+    // and the own bucket only when the window cannot be consulted.
+    //
+    // Either way the decision travels WITH the push as `fresh`: the script
+    // creates a mailbox only when told it may, and puts the entry into one
+    // that already exists whatever it is told, so no mailbox can appear
+    // between the check and the write, and two instances cannot both squeeze
+    // past the per-mailbox caps.
     const known = this.seen.has(rid);
-    const fresh = known ? true : this.newMailbox.take();
-    const spent = !known && fresh;
+    let fresh = known;
+    let localSpent = false;
+    let sharedWindow = null; // the window a shared slot was taken in, to refund
+    if (!known) {
+      let local = !this.newMailboxShared;
+      if (!local) {
+        const shared = await this._takeShared(rid);
+        if (shared.fellBack) {
+          local = true;
+        } else {
+          fresh = shared.granted;
+          sharedWindow = shared.window;
+        }
+      }
+      if (local) {
+        fresh = this.newMailbox.take();
+        localSpent = fresh;
+      }
+    }
     let r;
     try {
       r = await this.cmd.zQueuePush(
@@ -1392,18 +1577,24 @@ class RedisCoordinator {
         fresh ? '1' : '0'
       );
     } catch (e) {
-      if (spent) this.newMailbox.refund();
+      if (localSpent) this.newMailbox.refund();
+      if (sharedWindow !== null) await this._refundShared(sharedWindow);
       if (isStoreFull(e)) throw new StoreFull();
       throw e;
     }
     if (r === -1) {
+      // Told it may not create, and there was nothing to put the entry into.
+      // `fresh` was false, so nothing was spent on the way here.
       METRICS.newMailboxRefusedTotal += 1;
-      throw new StoreFull();
+      throw new NewMailboxRefused();
     }
-    // 2 means this push created the mailbox and the token is spent; anything
-    // else went into one that already existed, so the allowance goes back.
-    // Nothing to give back when nothing was taken.
-    if (r !== 2 && spent) this.newMailbox.refund();
+    // 2 means this push created the mailbox and what was spent stays spent;
+    // anything else created nothing — the mailbox already existed, or the
+    // entry was refused — so the allowance goes back.
+    if (r !== 2) {
+      if (localSpent) this.newMailbox.refund();
+      if (sharedWindow !== null) await this._refundShared(sharedWindow);
+    }
     const accepted = r === 1 || r === 2;
     // Only a send that landed, for the reason in `SeenMailboxes.touch`.
     if (accepted) this.seen.touch(rid);
@@ -1427,7 +1618,9 @@ class RedisCoordinator {
       accepted = await this._push(to, entry);
     } catch (e) {
       if (!(e instanceof StoreFull)) throw e;
-      METRICS.storeFullTotal += 1;
+      // A creation refusal was counted where it was decided; only the store
+      // itself refusing for want of memory is a full store (as in RAM mode).
+      if (!(e instanceof NewMailboxRefused)) METRICS.storeFullTotal += 1;
       return { queued: false, storeFull: true };
     }
     if (!accepted) {
@@ -1528,7 +1721,7 @@ class RedisCoordinator {
       await this._push(rid, receipt);
     } catch (e) {
       if (!(e instanceof StoreFull)) throw e;
-      METRICS.storeFullTotal += 1;
+      if (!(e instanceof NewMailboxRefused)) METRICS.storeFullTotal += 1;
     }
   }
 
@@ -2025,6 +2218,10 @@ function createServer(opts = {}) {
             state.acksInFlight -= 1;
             state.tokens -= 1;
           }
+          // A send the relay could not store or route — in Redis mode, the
+          // store unreachable. Counted, because `/health` deliberately does not
+          // touch the store and so cannot see it (z_send_internal_error_total).
+          if (frame.t === 'send') METRICS.sendInternalErrorTotal += 1;
           sendJson(ws, { t: 'error', code: 'internal' });
         });
     });

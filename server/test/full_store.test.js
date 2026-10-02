@@ -29,7 +29,13 @@
 //     whose body is gone is counted (`z_body_missing_total`) and its key is
 //     dropped, once, rather than skipped at every login for ever with the
 //     bytes never settled — while the login still completes and what is
-//     still there is still delivered.
+//     still there is still delivered;
+//  7. and a store that cannot be reached at all is not silent either. `/health`
+//     keeps answering 200, deliberately — it does not touch the store, so a
+//     store blip does not get every healthy instance restarted by the
+//     platform — and so it cannot see this; a send is answered `internal`,
+//     and `z_send_internal_error_total` counts it, which is the signal an
+//     alarm can see. Before, nothing moved at all: no counter, a 200 health.
 //
 // Skips itself where `redis-server` or `ioredis` is missing, as ha.test.js does.
 
@@ -359,4 +365,36 @@ test('6. a store that evicts a body is counted and cleaned up, and the login sti
   a.close();
   b2.close();
   c.close();
+});
+
+test('7. a store that cannot be reached: /health stays up, and a send is answered internal and counted', { skip: !hasIoredis() && 'ioredis unavailable' }, async (t) => {
+  const dead = await freePort(); // nothing listens here
+  const coord = new RedisCoordinator(`redis://127.0.0.1:${dead}`, 'inst');
+  const srv = createServer({ coordinator: coord, pushSender: null });
+  const port = await freePort();
+  await new Promise((r) => srv.httpServer.listen(port, '127.0.0.1', r));
+  t.after(() => {
+    for (const ws of srv.wss.clients) ws.terminate();
+    try {
+      srv.httpServer.close();
+    } catch {}
+    for (const c of [coord.cmd, coord.sub, coord.pub]) c.disconnect();
+  });
+
+  const health = JSON.parse(await get(port, '/health'));
+  assert.strictEqual(health.ok, true, '/health does not touch the store, by design');
+  assert.strictEqual(health.coordinator, 'redis');
+  const before = metric(await get(port, '/metrics'), 'z_send_internal_error_total');
+
+  const anon = new Client(port, makeIdentity());
+  await anon.next((f) => f.t === 'challenge');
+  anon.send({ t: 'send', id: 's1', to: makeIdentity().rid, payload: 'zs1.' + 'a'.repeat(64) });
+  const reply = await anon.next((f) => f.t === 'error', 15_000);
+  assert.strictEqual(reply.code, 'internal');
+  assert.strictEqual(
+    metric(await get(port, '/metrics'), 'z_send_internal_error_total'),
+    before + 1,
+    'the send the store could not take is counted where an alarm can see it'
+  );
+  anon.close();
 });

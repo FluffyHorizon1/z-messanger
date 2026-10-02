@@ -27,7 +27,14 @@
 //     state paid a token per message and the relay stopped at
 //     NEW_MAILBOX_PER_MIN messages a minute. Redis matters most here: it is
 //     what the public deployment runs, and its decision is made inside the
-//     Lua script rather than in JavaScript, so the two could be fixed apart.
+//     Lua script rather than in JavaScript, so the two could be fixed apart;
+//  6. and a refusal is counted under ONE name, the same in both modes: a
+//     mailbox-creation refusal moves z_new_mailbox_refused_total and not
+//     z_store_full_total, and a store with no room moves z_store_full_total
+//     and not the other. Both reach the sender as `store_full`, which no
+//     frame comparison can tell apart — and the Redis path counted the first
+//     under both names until 2026-10-02 (RAM never did), so an alarm on a
+//     full store fired on a flood of first contacts.
 //
 // Skips itself where `redis-server` or `ioredis` is missing: parity needs
 // both modes, so there is nothing to compare without it.
@@ -532,5 +539,105 @@ test(
       await coord.close();
       redis.kill();
     }
+  }
+);
+
+test(
+  '6. a refusal is counted under one name, the same in both modes',
+  { skip: SKIP && 'redis-server/ioredis unavailable' },
+  async (t) => {
+    const http = require('http');
+    const { MemoryCoordinator } = require('../server.js');
+    const redisPort = await freePort();
+    const redis = spawn('redis-server', ['--port', String(redisPort), '--save', '', '--appendonly', 'no', '--bind', '127.0.0.1'], { stdio: 'ignore' });
+    for (let i = 0; i < 500; i++) {
+      // Up as soon as it accepts a connection, rather than after a fixed wait.
+      const up = await new Promise((resolve) => {
+        const c = net.connect(redisPort, '127.0.0.1');
+        c.once('connect', () => (c.destroy(), resolve(true)));
+        c.once('error', () => resolve(false));
+      });
+      if (up) break;
+      await sleep(10);
+    }
+    const url = `redis://127.0.0.1:${redisPort}`;
+    const coords = [];
+    // Any server renders the one process-wide set of counters.
+    const srv = createServer({ pushSender: null });
+    const port = await freePort();
+    await new Promise((r) => srv.httpServer.listen(port, '127.0.0.1', r));
+    t.after(async () => {
+      srv.httpServer.close();
+      for (const c of coords) await c.close();
+      redis.kill('SIGKILL');
+    });
+    const counters = () =>
+      new Promise((resolve, reject) => {
+        http
+          .get({ host: '127.0.0.1', port, path: '/metrics' }, (res) => {
+            let b = '';
+            res.on('data', (c) => (b += c));
+            res.on('end', () => {
+              const v = (n) => Number((b.match(new RegExp(`^${n} (\\d+)$`, 'm')) || [])[1]);
+              resolve({ created: v('z_new_mailbox_refused_total'), full: v('z_store_full_total') });
+            });
+          })
+          .on('error', reject);
+      });
+    const fresh = () => routingIdFromPub(crypto.randomBytes(32));
+    /** What one refused send moved: {created, full}. */
+    const moved = async (send) => {
+      const a = await counters();
+      const r = await send();
+      assert.ok(r && r.storeFull, `the send must be refused store_full: ${JSON.stringify(r)}`);
+      const b = await counters();
+      return { created: b.created - a.created, full: b.full - a.full };
+    };
+    const pinned = (gate) => {
+      const T = Date.now();
+      gate.now = () => T;
+      gate.at = T;
+      gate.tokens = 0; // no allowance left: the next first contact is refused
+    };
+
+    // A creation refused — RAM, Redis with the per-instance gate (the
+    // default), and Redis with the shared window spent.
+    const ram = new MemoryCoordinator();
+    pinned(ram.newMailbox);
+    const red = new RedisCoordinator(url, 'instA');
+    coords.push(red);
+    pinned(red.newMailbox);
+    const shared = new RedisCoordinator(url, 'instB');
+    coords.push(shared);
+    shared.newMailboxShared = true;
+    const raw = shared.cmd;
+    const [s] = await raw.time();
+    await raw.hset('z:nm', 'w', String(Math.floor(Number(s) / 60)), 'n', String(CFG.newMailboxPerMin));
+    const creation = {
+      ram: await moved(() => ram.deliverEnqueue(null, fresh(), 'c', 'aGk=')),
+      redis: await moved(() => red.deliverEnqueue(null, fresh(), 'c', 'aGk=')),
+      shared: await moved(() => shared.deliverEnqueue(null, fresh(), 'c', 'aGk=')),
+    };
+    for (const [mode, m] of Object.entries(creation)) {
+      assert.deepStrictEqual(m, { created: 1, full: 0 }, `${mode}: a creation refusal is one creation refusal and no full store`);
+    }
+
+    // The store itself with no room — RAM at its ceiling, Redis refusing the
+    // write for want of memory — is one full store and no creation refusal.
+    const ramFull = new MemoryCoordinator();
+    const bob = fresh();
+    assert.ok(!(await ramFull.deliverEnqueue(null, bob, 'b1', 'aGk=')).storeFull); // bob's mailbox exists
+    ramFull.bytes = CFG.maxStoreBytes; // the ceiling reached
+    const redFull = new RedisCoordinator(url, 'instC');
+    coords.push(redFull);
+    redFull.cmd.zQueuePush = () => Promise.reject(new Error("OOM command not allowed when used memory > 'maxmemory'."));
+    const full = {
+      ram: await moved(() => ramFull.deliverEnqueue(null, bob, 'b2', 'aGk=')),
+      redis: await moved(() => redFull.deliverEnqueue(null, fresh(), 'b', 'aGk=')),
+    };
+    for (const [mode, m] of Object.entries(full)) {
+      assert.deepStrictEqual(m, { created: 0, full: 1 }, `${mode}: a full store is one full store and no creation refusal`);
+    }
+    t.diagnostic(`creation refusals ${JSON.stringify(creation)}; full stores ${JSON.stringify(full)}`);
   }
 );

@@ -89,6 +89,7 @@ same opaque form.
 | That a sealed envelope arrived on an anonymous socket — never which identity sent it | RAM, transiently | Operator; nothing ties the socket to a routing id but its address (R21) | Duration of the send |
 | Which routing id an envelope is addressed to, and when | RAM, transiently | Operator | Duration of delivery |
 | Push tokens (FCM), if push is enabled | RAM — or the store, so any instance can wake a device (`push:{rid}`) | Operator, and Google when a push is sent | Until expiry (`PUSH_TTL_DAYS`, 30) or a store restart |
+| Two relay‑wide counters, with no routing id in either: how many logins there have been (`z:reg`, which orders one device's successive sockets across instances), and — only with `NEW_MAILBOX_SHARED=on` — how many mailboxes were created in the store's current minute (`z:nm`: the minute and the count, two integers) | The store | Operator | `z:reg` until the store restarts; `z:nm` two minutes past the last creation it counted |
 | Aggregate counters (`/metrics`) | RAM, per instance — each instance counts its own work and `/health` reports its own sockets. Counts only: envelopes, refusals of each kind, acknowledgements that matched and that did not (`z_ack_miss_total`), delivery latency buckets — no routing id appears in any of them | Anyone who can reach `/metrics` | Until that instance restarts |
 
 **Not held by the relay at any point:** message content, sender identity
