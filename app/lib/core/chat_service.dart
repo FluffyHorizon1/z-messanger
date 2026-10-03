@@ -264,6 +264,16 @@ class ChatService extends ChangeNotifier implements KtHost {
       await svc._refreshDeviceAssurance(rid, notify: false, kv: kv);
     }
     await svc._loadGroups();
+    // ADR 0019: who this account is in a group — its root device's routing
+    // id, one more id that is me when a list names it; whether this device
+    // may change roles; and the binding signature its own member entry
+    // carries — read here, because the decision they feed runs inside the
+    // inbound transaction and the list an admin issues is built in one
+    // synchronous step.
+    final account = await svc.accountIdentity();
+    svc._rootRid = b64url(await sha256Bytes(account.accountEdPub));
+    svc._holdsRoot = account.holdsAccountRoot;
+    svc._myBindingSig = await identity.bindingSignature();
     await svc._loadConversations();
     await svc._computeUnread();
     svc.devMode = (await vault.kvGet('dev_mode')) == '1';
@@ -301,6 +311,11 @@ class ChatService extends ChangeNotifier implements KtHost {
     // queue existed there was nothing to resume from: the remaining
     // recipients were simply lost.
     unawaited(svc._drainGroupFanout());
+    // ADR 0019: a list held back before a restart is still waiting for
+    // whatever it rests on — ask again, once, for what this device lacks.
+    for (final g in svc.groups.values) {
+      if (g.held.isNotEmpty) unawaited(svc._askAboutHeld(g));
+    }
     return svc;
   }
 
@@ -1546,6 +1561,41 @@ class ChatService extends ChangeNotifier implements KtHost {
       _withLock(rid, () => _deleteContactLocked(rid));
 
   Future<void> _deleteContactLocked(String rid) async {
+    // A group member, deleted as a contact, is still a member of the group:
+    // deleting a contact is not a change to anyone's group. The lists this
+    // device issues go on naming them, from the entry kept in the group's
+    // own sealed record ([Group.orphans]) for as long as they are in it and
+    // I am — without it they were silently dropped from my next list
+    // (removing them from the group, for everyone), and an ADMIN dropped so
+    // made every member refuse my lists, for good (ADR 0019). A group I have
+    // left issues no lists and needs no entry: it lets go of them instead,
+    // as its owner or its list's issuer too ([_forgetInLeft]) — so the plain
+    // dialog, shown when no group I am in names them, is the whole truth —
+    // and what I last changed in any group stops naming them. What a group
+    // I am in still holds of them is what the other dialog lists
+    // ([groupsNaming]; `contact_erasure_test` 6–13).
+    final c = contacts[rid];
+    var changed = false;
+    for (final g in groups.values) {
+      final mine = g.mine;
+      if (mine != null) {
+        for (final k in const ['add', 'rm']) {
+          final l = mine[k];
+          if (l is List && l.remove(rid)) changed = true;
+        }
+      }
+      if (g.left) {
+        if (_forgetInLeft(g, {rid})) changed = true;
+      } else if (c != null &&
+          (g.memberRids.contains(rid) || g.adminRids.contains(rid))) {
+        // An admin who has left is still named in `admins` until the owner
+        // takes the role: the entry is what marks them as someone I
+        // deleted, so that leaving lets go of them there too.
+        g.orphans[rid] = {'b': c.bundle.toJson(), 'n': c.name};
+        changed = true;
+      }
+    }
+    if (changed) await _saveGroups();
     final fids = (await vault.db.query('files',
             columns: ['fid'], where: 'rid = ?', whereArgs: [rid]))
         .map((r) => r['fid'] as String)
@@ -1566,6 +1616,10 @@ class ChatService extends ChangeNotifier implements KtHost {
     await vault.db
         .delete('delivery', where: 'thread_rid = ?', whereArgs: [rid]);
     await vault.db.delete('outbox', where: 'rid = ?', whereArgs: [rid]);
+    // Group copies still queued for them: never sendable now (the drain
+    // drops a row whose contact is gone), and until it ran each one named
+    // them in the clear.
+    await vault.db.delete('group_fanout', where: 'rid = ?', whereArgs: [rid]);
     for (final r in [rid, ...extraRids]) {
       await vault.db.delete('outbox', where: 'rid = ?', whereArgs: [r]);
       await vault.db
@@ -1614,6 +1668,14 @@ class ChatService extends ChangeNotifier implements KtHost {
     _pqReqSent.remove(rid);
     _dlpqSent.remove(rid);
     _pqMissingSince.remove(rid);
+    // Whom I asked about a group, and whom I answered: a contact added back
+    // is asked and answered afresh.
+    for (final asked in _asked.values) {
+      asked.remove(rid);
+    }
+    for (final answered in _answered.values) {
+      answered.remove(rid);
+    }
     // Another contact's alert can name this one: "<A>'s list names a device
     // <this contact>'s list also names" (§3.4). It is kept, without them —
     // their routing id would otherwise outlive them in the vault.
@@ -3078,6 +3140,11 @@ class ChatService extends ChangeNotifier implements KtHost {
 
       case 'ginvite':
         await _applyGroupInvite(contact.rid, inner.data, txn: txn);
+        break;
+
+      // ADR 0019: a member who had to refuse a list asks what it lacks.
+      case 'gsync':
+        _answerGroupSync(contact, inner.data);
         break;
 
       case 'gleave':
@@ -5128,6 +5195,8 @@ class ChatService extends ChangeNotifier implements KtHost {
         final g = groups[inner.data['gid'] as String? ?? ''];
         if (g != null && !g.left) {
           g.left = true;
+          g.mine = null;
+          _trimLeft(g);
           await _saveGroups();
           await _insertSystemMessage(g.gid, systemBody(SystemKind.leftYou));
         }
@@ -5414,23 +5483,90 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// The invite payload for [g]: name, membership version, and every member's
   /// verified bundle (including mine), so recipients can auto-add anyone they
   /// don't know and detect their own removal.
-  Future<Map<String, Object?>> _inviteData(Group g) async => {
-        'gid': g.gid,
-        'name': g.name,
-        'ver': g.ver,
-        'members': [
+  ///
+  /// ADR 0019: `owner` and `admins` name who runs the group, as routing ids
+  /// — mine for me, since `''` means nothing to anyone else — and `rv` is
+  /// the version of those roles ([Group.rolesVer]). All three are optional
+  /// members of an existing sealed inner message (PROTOCOL §11.1, §14): a
+  /// client from before roles ignores them and treats whoever sent it its
+  /// first invite as the one admin, and an invite without them is read here
+  /// as "owner = sender, admins = {sender}, rv = 0", which is what it meant
+  /// when it was written. What they cost against the envelope buckets is
+  /// measured in group_roles_test 11.
+  ///
+  /// So they are written only when they say something their absence does
+  /// not. For the owner of a group whose roles have never changed — I own
+  /// it, I am its only admin, `rv` is 0 — absence says exactly that, and the
+  /// list goes out as the bytes a client before 0019 would send: the relay
+  /// sees the envelope it always saw, and nothing in it tells a 0019 client
+  /// from an older one (group_roles_test 13). Every other list carries all
+  /// three. The receiving rules need nothing for this, because an omission
+  /// is never more than a claim they already judge: anyone else who leaves
+  /// them out is claiming "I own it, I am its only admin, at roles version
+  /// 0". Where the roles have ever changed, `rv` 0 is older than the version
+  /// every member holds, and the list is discarded as stale (check 1 of
+  /// [_applyGroupInvite]); where they have not, the sender is not in the
+  /// held admin set and the list is held back (check 2) — at the held `rv`
+  /// a different owner would fail check 3 too. Either way it is refused
+  /// exactly as the same claim written out would be (group_roles_test 14).
+  /// And the owner must write them once `rv` has moved, even with the admin
+  /// set back to just themselves: an omission would read as `rv` 0, stale.
+  ///
+  /// A person is named on the wire by their ACCOUNT, never by one of its
+  /// devices: I name myself by my account's routing id ([_rootRid]), and a
+  /// linked device of mine writes no member entry for itself at all. Every
+  /// receiver already names the sender by the contact the envelope came
+  /// from, and an entry for the laptop was what made every member hold the
+  /// laptop as a second member and a second contact — one an owner's later
+  /// removal of the account named, and kept serving (group_roles_sync_test
+  /// 1).
+  /// My root device's entry cannot be written from here: the signature that
+  /// binds its keys is its own, and a linked device does not hold it.
+  ///
+  /// A member whose contact I deleted is still named, from the entry kept in
+  /// [Group.orphans]: deleting a contact is not a change to a group, and a
+  /// list that dropped an admin would be refused everywhere.
+  ///
+  /// Synchronous, so the list that goes out is exactly the list [g] holds at
+  /// the moment it is issued, and its digest is known before anything else
+  /// can run.
+  Map<String, Object?> _inviteData(Group g) {
+    final rv = g.rolesVer;
+    final roles = !(g.iAmOwner && g.adminRids.length == 1 && rv == 0);
+    final owner = _wireRid(g.ownerRid);
+    final admins = [for (final a in g.adminRids) _wireRid(a)]..sort();
+    final others = [
+      for (final rid in g.memberRids)
+        if (contacts[rid] != null)
           {
-            'b': (await identity.bundle(displayName: displayName)).toJson(),
+            'b': contacts[rid]!.bundle.toJson(),
+            'n': contacts[rid]!.name,
+          }
+        else if (g.orphans[rid] != null)
+          g.orphans[rid]!
+    ];
+    return {
+      'gid': g.gid,
+      'name': g.name,
+      'ver': g.ver,
+      if (roles) 'owner': owner,
+      if (roles) 'admins': admins,
+      if (roles) 'rv': rv,
+      'members': [
+        if (_rootRid == null || _rootRid == myRid)
+          {
+            'b': ContactBundle(
+                    edPub: identity.edPub,
+                    xPub: identity.xPub,
+                    bindingSig: _myBindingSig!,
+                    displayName: displayName)
+                .toJson(),
             'n': displayName,
           },
-          for (final rid in g.memberRids)
-            if (contacts[rid] != null)
-              {
-                'b': contacts[rid]!.bundle.toJson(),
-                'n': contacts[rid]!.name,
-              }
-        ],
-      };
+        ...others,
+      ],
+    };
+  }
 
   // ---------------------------------------------------------------- 15.3
   // Group fan-out: recorded first, performed after.
@@ -5457,6 +5593,13 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// Test hook: hold the queue so an interrupted fan-out can be observed.
   bool debugPauseGroupFanout = false;
 
+  /// Test hook: rows this returns true for are stepped over and left queued
+  /// — one recipient's copy delayed, or (deleted from the queue while held)
+  /// lost, while every other row goes on being sent. Cleared, the next
+  /// drain ([retryGroupFanout]) sends them.
+  @visibleForTesting
+  bool Function(String rid, InnerMessage inner)? debugHoldGroupFanout;
+
   /// Record one row per recipient, then drain in the background.
   ///
   /// [also] runs inside the same transaction as the rows — the caller's own
@@ -5465,10 +5608,15 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// two leaves a message on screen as "pending" with nothing queued behind
   /// it: never sent, and nothing to resume on the next start. The 1:1 path
   /// has always done this (see [_sendInner]); the group path now does too.
+  ///
+  /// [extraRids]: recipients the list in [inner] no longer names but who
+  /// must still be told — a member it removes, whose app marks the group as
+  /// left on reading it.
   Future<void> _queueGroupFanout(Group g, InnerMessage inner,
-      {Future<void> Function(Transaction txn)? also}) async {
+      {Future<void> Function(Transaction txn)? also,
+      Iterable<String> extraRids = const []}) async {
     final rids = [
-      for (final rid in g.memberRids)
+      for (final rid in {...g.memberRids, ...extraRids})
         if (contacts[rid] != null) rid
     ];
     // A group with nobody else in it still records the caller's row.
@@ -5609,6 +5757,8 @@ class ChatService extends ChangeNotifier implements KtHost {
           try {
             final inner = InnerMessage.fromBytes(Uint8List.fromList(
                 utf8.encode(await vault.unseal(r['payload'] as String))));
+            final hold = debugHoldGroupFanout;
+            if (hold != null && hold(rid, inner)) continue;
             // 23.2: a file offer travels with its sealed chunks, in the same
             // transaction as the offer's outbox row, so a member gets the key
             // and every chunk or nothing. The chunks are rebuilt from the
@@ -5727,13 +5877,139 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
   }
 
-  Future<void> _fanGroupInner(Group g, InnerMessage inner) async {
-    for (final rid in g.memberRids.toList()) {
-      final c = contacts[rid];
-      // One message, N envelopes, N mailboxes — and now N distinct envelope
-      // ids. The message row is the group's, not the member's.
-      if (c != null) await _sendInner(c, inner, threadRid: g.gid);
-    }
+  /// A routing id as the wire names it: for me, THIS device's — `''` is a
+  /// convention of this device's records — and for anyone else the id this
+  /// device holds them under. Every receiver maps either to the contact it
+  /// holds for that account ([_canonRid]).
+  ///
+  /// This device's own id, not my account's root id, because it is the one
+  /// id of mine every receiver of this list can map: to take the list at
+  /// all, a receiver has mapped the device that sent it. The root id is
+  /// known only to those who hold my device list — not to a member who
+  /// adopted me from a list ([_adoptGroupContacts]) under the id of the
+  /// device another admin added me from (PROTOCOL §18.7), which then read
+  /// my lists as naming an admin who is not in the group, and refused them.
+  String _wireRid(String rid) => rid.isEmpty ? myRid : rid;
+
+  /// A routing id from a received list, as THIS device names the person:
+  /// `''` for any device of my own account, the contact I hold for any
+  /// device of a contact's account (their other devices are in
+  /// [_extraRidToContact]), and otherwise the id itself — someone this
+  /// device does not know yet. One account is one member, whichever of its
+  /// devices a list was written on or names it by.
+  String _canonRid(String rid) {
+    if (rid == _rootRid || _myAccountRids.contains(rid)) return '';
+    return _extraRidToContact[rid] ?? rid;
+  }
+
+  /// ADR 0019's authorisation rule, in one place: may [rid] issue a
+  /// membership list for group [gid] — add, remove, rename — on the strength
+  /// of the list this device holds now? [rid] is a routing id as this device
+  /// holds the person; `''`, or any of my own account's routing ids, is me.
+  ///
+  /// Yes when they are in the held list's admin set AND in the group. A
+  /// demoted admin is not in the set, so a list they issue on the strength
+  /// of the one they still hold is refused by every member holding the newer
+  /// — including a list that would put them back. An admin who has left or
+  /// been removed keeps the role on paper (only the owner changes roles), but
+  /// cannot use it until an admin adds them back: a list from outside the
+  /// group is not one the group has to take, and an owner who left freezes
+  /// the admin set, as ADR 0019 says it does, rather than running it from
+  /// outside.
+  ///
+  /// Every local operation asks this about me, and every received list asks
+  /// it about its sender before anything else is looked at.
+  bool mayIssueGroupList(String gid, String rid) {
+    final g = groups[gid];
+    if (g == null) return false;
+    final who = _myAccountRids.contains(rid) ? '' : rid;
+    if (!g.adminRids.contains(who)) return false;
+    return who.isEmpty ? !g.left : g.memberRids.contains(who);
+  }
+
+  /// Whether this device may change who the admins are, or who owns a group
+  /// it owns: only the device holding the account's root, the one that links
+  /// the others. Two devices of one owner, each changing the roles before
+  /// they have synced, would each open the same roles version with roles of
+  /// their own; members holding one would refuse every later list built on
+  /// the other, for good (PROTOCOL §11.1). One device per account moves the
+  /// roles, so a roles version is only ever opened once. Membership and the
+  /// name can still be changed from any device.
+  bool get canChangeGroupRolesHere => _holdsRoot;
+
+  /// ADR 0019: may [rid] change who the admins are, or who owns [gid]? The
+  /// owner alone, and only while they may issue a list at all — and for me,
+  /// only on the device that holds my account's root
+  /// ([canChangeGroupRolesHere]).
+  bool mayChangeGroupRoles(String gid, String rid) {
+    final g = groups[gid];
+    if (g == null) return false;
+    final who = _myAccountRids.contains(rid) ? '' : rid;
+    if (who.isEmpty && !_holdsRoot) return false;
+    return who == g.ownerRid && mayIssueGroupList(gid, rid);
+  }
+
+  /// Make [g]'s next list, issued by me, and return it as it goes out: the
+  /// next version — and, for an owner's change to who the admins are or who
+  /// owns the group ([roles]), the next version of the roles, which every
+  /// member ranks above any membership version (PROTOCOL §11.1). [members]
+  /// and [name] are what the held list said before this change, so what the
+  /// change did can be remembered ([Group.mine]) and checked against
+  /// whatever list replaces this one.
+  Map<String, Object?> _issue(Group g, Set<String> members, String name,
+      {bool roles = false}) {
+    g.ver += 1;
+    g.by = '';
+    if (roles) g.rolesVer += 1;
+    g.opensRoles = roles;
+    g.mine = {
+      'add': g.memberRids.difference(members).toList(),
+      // Not someone whose contact I deleted: removing them is how the group
+      // lets go of them, and the record keeps nothing of them afterwards.
+      'rm': members
+          .difference(g.memberRids)
+          .where(contacts.containsKey)
+          .toList(),
+      if (g.name != name) 'name': g.name,
+    };
+    g.orphans.removeWhere((rid, _) =>
+        contacts.containsKey(rid) ||
+        !(g.memberRids.contains(rid) || g.adminRids.contains(rid)));
+    final data = _inviteData(g);
+    g.digest = Group.listDigest(data);
+    return data;
+  }
+
+  /// Hand [data], a list of [g] just issued, to every member it names — and
+  /// to [also], a member it no longer names, so their app marks the group as
+  /// left — through the durable fan-out queue (15.3), and mirror it to my own
+  /// devices, which apply it as their own action.
+  ///
+  /// Durable since 2026-10-02. A list sent member by member, with nothing
+  /// written down first, lost its remaining recipients to a kill part-way
+  /// through the loop, and to a transparency conflict with any one member
+  /// (the send throws for a held contact, and the throw left the loop).
+  /// With several admins a member a list never reaches can refuse every
+  /// later list built on it; recorded first, it is sent on the next start
+  /// instead.
+  Future<void> _sendInvite(Group g, Map<String, Object?> data,
+      {String? also}) async {
+    final inner = InnerMessage(
+        kind: 'ginvite', mid: newMessageId(), ts: _now(), data: data);
+    await _queueGroupFanout(g, inner, extraRids: [if (also != null) also]);
+    unawaited(_mirrorGroupChange(g.gid, inner));
+  }
+
+  /// Test hook: awaited before a list or a leave of mine is mirrored to my
+  /// other devices, so a test can deliver the mirror after something else.
+  @visibleForTesting
+  Future<void> Function()? debugBeforeGroupMirror;
+
+  Future<void> _mirrorGroupChange(String gid, InnerMessage inner) async {
+    final gate = debugBeforeGroupMirror;
+    if (gate != null) await gate();
+    await (_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
+        Future<void>.value());
   }
 
   /// Create a group with [memberRids] (existing contacts) and invite them.
@@ -5742,117 +6018,262 @@ class ChatService extends ChangeNotifier implements KtHost {
     final g = Group(
       gid: gid,
       name: name,
-      adminRid: '', // I am the admin
-      memberRids: memberRids.toSet()..remove(myRid),
+      ownerRid: '', // I am the owner, and so far the only admin
+      memberRids: memberRids.toSet()..removeAll(_myAccountRids),
+      opensRoles: true,
     );
+    final data = _inviteData(g);
+    g.digest = Group.listDigest(data);
     groups[gid] = g;
     await _saveGroups();
     unread[gid] = 0;
     await _insertSystemMessage(
         gid, systemBody(SystemKind.createdYou, {'name': name}));
-    final inner = InnerMessage(
-        kind: 'ginvite',
-        mid: newMessageId(),
-        ts: _now(),
-        data: await _inviteData(g));
-    await _fanGroupInner(g, inner);
-    unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
-        Future<void>.value());
+    await _sendInvite(g, data);
     notifyListeners();
     return gid;
   }
 
-  /// Admin only: add members and re-invite everyone at a higher version.
+  /// Any admin: add members and re-invite everyone at a higher version.
+  /// Returns once the new list is recorded for every member; it is sent
+  /// from the durable queue ([_sendInvite]).
   Future<void> addGroupMembers(String gid, List<String> rids) async {
     final g = groups[gid];
-    if (g == null || !g.iAmAdmin || g.left) return;
-    final added = rids.where((r) => !g.memberRids.contains(r)).toList();
+    if (g == null || !mayIssueGroupList(gid, '')) return;
+    final added = rids
+        .where((r) => !g.memberRids.contains(r) && !_myAccountRids.contains(r))
+        .toList();
     if (added.isEmpty) return;
+    final before = g.memberRids.toSet();
     g.memberRids.addAll(added);
-    g.ver += 1;
+    final data = _issue(g, before, g.name);
     await _saveGroups();
     // Names as a list; the screen joins them the way its locale does. A
     // missing name is a null, not the word for it.
     final names = [for (final r in added) contacts[r]?.name];
     await _insertSystemMessage(
         gid, systemBody(SystemKind.addedYou, {'names': names}));
-    final inner = InnerMessage(
-        kind: 'ginvite',
-        mid: newMessageId(),
-        ts: _now(),
-        data: await _inviteData(g));
-    await _fanGroupInner(g, inner);
-    unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
-        Future<void>.value());
+    await _sendInvite(g, data);
     notifyListeners();
   }
 
-  /// Admin only: remove a member. Remaining members get the new list; the
+  /// Any admin: remove a member. Remaining members get the new list; the
   /// removed member's next invite omits them, which their app reads as
   /// removal. Either way, everyone else now rejects what they send.
+  ///
+  /// Removing an ADMIN is the owner's alone (ADR 0019), and takes their role
+  /// in the same list. A co-admin who could remove admins could remove the
+  /// owner — and then nobody could demote them: an owner who is not in the
+  /// group cannot issue a list. Members refuse such a list from a co-admin.
   Future<void> removeGroupMember(String gid, String rid) async {
     final g = groups[gid];
-    if (g == null || !g.iAmAdmin || g.left) return;
-    if (!g.memberRids.remove(rid)) return;
-    g.ver += 1;
+    if (g == null || !mayIssueGroupList(gid, '')) return;
+    final wasAdmin = g.adminRids.contains(rid);
+    if (wasAdmin && !mayChangeGroupRoles(gid, '')) return;
+    if (!g.memberRids.contains(rid)) return;
+    final before = g.memberRids.toSet();
+    g.memberRids.remove(rid);
+    g.adminRids.remove(rid);
+    final data = _issue(g, before, g.name, roles: wasAdmin);
     await _saveGroups();
     await _insertSystemMessage(
         gid, systemBody(SystemKind.removedYou, {'name': contacts[rid]?.name}));
-    final inner = InnerMessage(
-        kind: 'ginvite',
-        mid: newMessageId(),
-        ts: _now(),
-        data: await _inviteData(g));
-    await _fanGroupInner(g, inner);
     // Tell the removed member too, so their app marks the group as left.
-    final removed = contacts[rid];
-    if (removed != null) await _sendInner(removed, inner);
+    await _sendInvite(g, data, also: rid);
     // The tick is no longer waiting for them.
     await _reevaluateGroupDelivery(gid);
-    unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
-        Future<void>.value());
     notifyListeners();
   }
 
-  /// Admin only: rename the group (23.1). The name already travels in every
+  /// Any admin: rename the group (23.1). The name already travels in every
   /// invite, so a rename is a membership version bump and a re-invite; members
   /// adopt the new name from the newer invite and say so (`renamedBy`). Nothing
   /// new crosses the wire and no member set changes.
   Future<void> renameGroup(String gid, String name) async {
     final g = groups[gid];
     final trimmed = name.trim();
-    if (g == null || !g.iAmAdmin || g.left) return;
+    if (g == null || !mayIssueGroupList(gid, '')) return;
     if (trimmed.isEmpty || trimmed == g.name) return;
+    final before = g.name;
     g.name = trimmed;
-    g.ver += 1;
+    final data = _issue(g, g.memberRids.toSet(), before);
     await _saveGroups();
     await _insertSystemMessage(
         gid, systemBody(SystemKind.renamedYou, {'name': trimmed}));
-    final inner = InnerMessage(
-        kind: 'ginvite',
-        mid: newMessageId(),
-        ts: _now(),
-        data: await _inviteData(g));
-    await _fanGroupInner(g, inner);
-    unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
-        Future<void>.value());
+    await _sendInvite(g, data);
+    notifyListeners();
+  }
+
+  /// Owner only (ADR 0019), on the device holding the account root: make
+  /// [rid], a member, a co-admin. From then on their lists are accepted by
+  /// everyone who accepts this one.
+  Future<void> promoteAdmin(String gid, String rid) async {
+    final g = groups[gid];
+    if (g == null || !mayChangeGroupRoles(gid, '')) return;
+    if (!g.memberRids.contains(rid) || g.adminRids.contains(rid)) return;
+    g.adminRids.add(rid);
+    final data = _issue(g, g.memberRids.toSet(), g.name, roles: true);
+    await _saveGroups();
+    await _insertSystemMessage(gid,
+        systemBody(SystemKind.promotedYou, {'name': contacts[rid]?.name}));
+    await _sendInvite(g, data);
+    notifyListeners();
+  }
+
+  /// Owner only (ADR 0019), on the device holding the account root: take
+  /// [rid]'s admin role away. They stay a member. Every member then holds a
+  /// list that does not name them, so a list they issue on the strength of
+  /// the old one is refused everywhere — including a list that would put
+  /// them back. An admin who has LEFT can be demoted too: their role stays
+  /// in the list after they go, and only this takes it away.
+  Future<void> demoteAdmin(String gid, String rid) async {
+    final g = groups[gid];
+    if (g == null || !mayChangeGroupRoles(gid, '')) return;
+    if (rid == g.ownerRid || !g.adminRids.contains(rid)) return;
+    g.adminRids.remove(rid);
+    final data = _issue(g, g.memberRids.toSet(), g.name, roles: true);
+    await _saveGroups();
+    await _insertSystemMessage(
+        gid, systemBody(SystemKind.demotedYou, {'name': contacts[rid]?.name}));
+    await _sendInvite(g, data);
+    notifyListeners();
+  }
+
+  /// Owner only (ADR 0019), on the device holding the account root: make
+  /// [rid], a member, the owner. I stay a co-admin unless [keepAsAdmin] is
+  /// false, in which case this same list demotes me. There is no undo from
+  /// my side: only the new owner can give ownership back.
+  Future<void> transferOwnership(String gid, String rid,
+      {bool keepAsAdmin = true}) async {
+    final g = groups[gid];
+    if (g == null || !mayChangeGroupRoles(gid, '')) return;
+    if (!g.memberRids.contains(rid)) return;
+    g.ownerRid = rid;
+    g.adminRids.add(rid);
+    if (!keepAsAdmin) g.adminRids.remove('');
+    final data = _issue(g, g.memberRids.toSet(), g.name, roles: true);
+    await _saveGroups();
+    await _insertSystemMessage(gid,
+        systemBody(SystemKind.transferredYou, {'name': contacts[rid]?.name}));
+    await _sendInvite(g, data);
     notifyListeners();
   }
 
   /// Leave a group: everyone is told directly (authenticated by the pairwise
   /// channel), and the local copy is kept read-only for history.
+  ///
+  /// Roles are untouched (ADR 0019): an admin who leaves keeps the role on
+  /// paper and cannot use it from outside ([mayIssueGroupList]); an owner
+  /// who leaves stays the owner of record, so the admin set is frozen until
+  /// they are added back. The screen says so, and offers a transfer first.
+  /// The leave goes out through the durable queue, like a list: a member it
+  /// never reaches keeps the leaver as an admin in the group, and refuses
+  /// the other admins' lists that leave them out — until it asks
+  /// ([_askAbout]) and this device answers.
   Future<void> leaveGroup(String gid) async {
     final g = groups[gid];
     if (g == null || g.left) return;
     g.left = true;
+    g.mine = null;
+    _trimLeft(g);
     await _saveGroups();
     await _insertSystemMessage(gid, systemBody(SystemKind.leftYou));
     final inner = InnerMessage(
         kind: 'gleave', mid: newMessageId(), ts: _now(), data: {'gid': gid});
-    await _fanGroupInner(g, inner);
-    unawaited(_sync?.mirror(threadRid: gid, dir: 'out', inner: inner) ??
-        Future<void>.value());
+    await _queueGroupFanout(g, inner);
+    unawaited(_mirrorGroupChange(gid, inner));
     notifyListeners();
+  }
+
+  /// What a group I am out of — left, or removed — keeps of the people in it
+  /// whose contact I deleted: nothing ([_forgetInLeft]). Deleting a contact
+  /// keeps them only for as long as a group I am in names them; leaving is
+  /// one way that ends, and the delete dialog says so.
+  void _trimLeft(Group g) {
+    _forgetInLeft(g, {
+      ...g.orphans.keys,
+      for (final r in g.memberRids)
+        if (!contacts.containsKey(r)) r,
+    });
+  }
+
+  /// Make [g], a group I am out of, name none of [gone] — people whose
+  /// contact I deleted. They go from its members and its admins; where one
+  /// of them is its owner of record, or issued the list it holds, that field
+  /// holds [Group.nobody] instead, so the record keeps an owner among its
+  /// admins and an issuer without naming anyone. The entries my lists named
+  /// people by ([Group.orphans]) and the lists held back for later go too,
+  /// whoever they name: a device out of the group has no use for either.
+  /// If anyone went, [g] is [Group.trimmed] — no longer the list I held, and
+  /// never sent as one. Returns whether [g] changed at all, so that a caller
+  /// that saves only on a change saves this one.
+  ///
+  /// The owner and the issuer were kept until 2026-10-03, as what a later
+  /// list is judged against: deleting the owner of a group one had left
+  /// showed the plain delete dialog, which promises the contact is wiped,
+  /// and left their routing id in this record for good. What naming nobody
+  /// costs: a list for the group names its real owner, never this one (a
+  /// list's `owner` is a routing id or it is refused), so it can no longer
+  /// match the roles held — an admin's list adding me back is refused, where
+  /// it used to be taken and to bring the owner back as a contact; the
+  /// owner's own was refused already, deleting them having taken them out
+  /// of its members (`contact_erasure_test` 14).
+  bool _forgetInLeft(Group g, Set<String> gone) {
+    final changed = g.orphans.isNotEmpty || g.held.isNotEmpty;
+    g.orphans.clear();
+    g.held.clear();
+    var trimmed = false;
+    if (g.memberRids.any(gone.contains)) {
+      g.memberRids.removeAll(gone);
+      trimmed = true;
+    }
+    if (gone.contains(g.ownerRid)) {
+      g.ownerRid = Group.nobody;
+      trimmed = true;
+    }
+    if (gone.contains(g.by)) {
+      g.by = Group.nobody;
+      trimmed = true;
+    }
+    if (g.adminRids.any(gone.contains)) {
+      g.adminRids.removeAll(gone);
+      trimmed = true;
+    }
+    g.adminRids.add(g.ownerRid);
+    if (trimmed) g.trimmed = true;
+    return changed || trimmed;
+  }
+
+  /// The groups I am in whose record names [rid] — as a member, an admin,
+  /// the owner, the issuer of the list held, or in a list held back — and
+  /// so goes on naming them if their contact is deleted: deleting a contact
+  /// changes no group. The delete dialog names these groups and says what
+  /// each keeps (`contact_erasure_test` 6–13). A group I am out of is not
+  /// one of them: it lets go of them when they are deleted
+  /// ([_forgetInLeft]).
+  List<Group> groupsNaming(String rid) {
+    final c = contacts[rid];
+    final ed = c == null ? null : b64(c.bundle.edPub);
+    bool names(Group g) =>
+        g.memberRids.contains(rid) ||
+        g.adminRids.contains(rid) ||
+        g.ownerRid == rid ||
+        g.by == rid ||
+        g.held.any((h) =>
+            h.from == rid || (ed != null && jsonEncode(h.data).contains(ed)));
+    return [
+      for (final g in groups.values)
+        if (!g.left && names(g)) g
+    ];
+  }
+
+  /// How [g]'s screen names [rid]: as the contact, or — for a member whose
+  /// contact I deleted — by the name their entry in it keeps.
+  String? groupMemberName(Group g, String rid) {
+    final c = contacts[rid];
+    if (c != null) return c.name;
+    final n = g.orphans[rid]?['n'];
+    return n is String ? n : null;
   }
 
   /// Send a text to every member of [gid], each over their pairwise ratchet.
@@ -6054,12 +6475,392 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// member of the group.
   Set<String> get _myAccountRids => {myRid, ...?_sync?.deviceRoutingIds};
 
+  /// This ACCOUNT's routing id (ADR 0019): the routing id of its root
+  /// device, `b64url(SHA-256(account Ed25519 key))` — what a contact who
+  /// scanned my main device holds me under. One more id that is me when a
+  /// list names it ([_canonRid]), and how a device knows whether it is the
+  /// root, which alone writes a member entry for me ([_inviteData]).
+  /// Computed once in [init]: the decision it feeds runs inside the inbound
+  /// transaction, where a vault read would wait on that transaction for
+  /// ever.
+  String? _rootRid;
+
+  /// Whether this device holds my account's root ([canChangeGroupRolesHere]).
+  bool _holdsRoot = false;
+
+  /// The signature binding this device's keys, for its own member entry —
+  /// deterministic, so computed once ([init]) and a list is built without
+  /// an await ([_inviteData]).
+  Uint8List? _myBindingSig;
+
+  /// Whether a list at roles version [rv] and version [ver] from [sender],
+  /// whose [Group.listDigest] is [digest], is no newer than what [g] holds
+  /// (ADR 0019's order, PROTOCOL §11.1): by `rv`, then `ver`; at both equal,
+  /// the owner's list outranks any other admin's — the same owner for both,
+  /// since within one roles version the owner cannot change — and otherwise
+  /// the list whose digest sorts FIRST in plain byte order (`compareTo` on
+  /// the base64url strings) wins, whoever sent it. The same list again has
+  /// the same digest and changes nothing.
+  ///
+  /// By digest, not by who sent it. Two admins' lists used to be ranked by
+  /// the issuers' routing ids — their accounts', so that a person ranked
+  /// the same whichever of their devices sent a list. But which account a
+  /// contact is, this device knows only for one added from a code that said
+  /// so (§18.7): one adopted from a list is known by the device another
+  /// admin added them from, and nothing it can check says more. So a
+  /// co-admin added from her laptop's code ranked as her account on the
+  /// members who had scanned it and as her laptop on those who had adopted
+  /// her, and a tie between her and another admin went one way on some
+  /// devices and the other way on the rest, for good (group_roles_test
+  /// 27). A list's digest is computed from the list as it travels, the same
+  /// on every device that receives it, whoever it holds the sender as.
+  bool _notNewer(Group g, int rv, int ver, String sender, String digest) {
+    if (rv != g.rolesVer) return rv < g.rolesVer;
+    if (ver != g.ver) return ver < g.ver;
+    final senderOwns = sender == g.ownerRid;
+    final heldOwns = g.by == g.ownerRid;
+    if (senderOwns != heldOwns) return heldOwns;
+    return g.digest.isEmpty || digest.compareTo(g.digest) >= 0;
+  }
+
+  /// Whether a list keeps in the group every admin who is in it on [g]:
+  /// at the held roles version a list must (ADR 0019). A co-admin's list
+  /// that dropped an admin from the members would demote them as surely as
+  /// one that dropped them from `admins`, and dropping the owner would leave
+  /// nobody able to demote that co-admin.
+  bool _keepsAdmins(Group g, Set<String> members, bool includesMe) {
+    for (final a in g.adminRids) {
+      final inGroup = a.isEmpty ? !g.left : g.memberRids.contains(a);
+      final kept = a.isEmpty ? includesMe : members.contains(a);
+      if (inGroup && !kept) return false;
+    }
+    return true;
+  }
+
+  /// Whether a list replacing one I issued undoes what mine did ([mine],
+  /// [Group.mine]): a member I added is not in it, one I removed is back, or
+  /// the name I gave is gone. Whatever its version — a co-admin's second
+  /// quick change, built on their own first, is a version above mine and
+  /// carries none of it — so the owner whose removal a co-admin's list put
+  /// back is told, where only a list at no higher a version used to say so.
+  bool _undoes(Map<String, Object?> mine, Set<String> members, String name) {
+    final add = mine['add'], rm = mine['rm'], renamed = mine['name'];
+    if (add is List && add.any((r) => !members.contains(r))) return true;
+    if (rm is List && rm.any(members.contains)) return true;
+    return renamed is String && renamed != name;
+  }
+
+  /// Test seam: how many `ginvite`s for each group have been judged —
+  /// applied, discarded or held back — counted once each, in the same
+  /// synchronous step that acts on the judgement, so a test that sees the
+  /// outcome also sees the count. It lets a test wait for a list it expects
+  /// to be refused to have been judged, instead of sleeping on it.
+  @visibleForTesting
+  final Map<String, int> debugGroupListsHandled = {};
+  final Map<String, Map<String, int>> _judgedFrom = {};
+
+  /// Test seam: [debugGroupListsHandled] for one sender — `''` for my own
+  /// account — so a test can wait for exactly the lists IT sent to have been
+  /// judged, whatever else arrives meanwhile (an answer to a `gsync`, say).
+  @visibleForTesting
+  int debugListsJudgedFrom(String gid, String sender) =>
+      _judgedFrom[gid]?[sender] ?? 0;
+
+  void _judged(String gid, bool retry, String sender) {
+    if (!retry) {
+      debugGroupListsHandled[gid] = (debugGroupListsHandled[gid] ?? 0) + 1;
+      final by = _judgedFrom.putIfAbsent(gid, () => {});
+      by[sender] = (by[sender] ?? 0) + 1;
+    }
+  }
+
+  /// Test seam: how many lists for [gid] are held back — the observable that
+  /// a refused list ARRIVED and was refused, rather than not having arrived
+  /// yet, so a test can assert a refusal without sleeping on it.
+  @visibleForTesting
+  int debugHeldBackLists(String gid) => groups[gid]?.held.length ?? 0;
+
+  /// Test seam: the `ginvite` payload this device would send for [gid] now —
+  /// so a test can weigh the list with and without ADR 0019's members, sent
+  /// down the same path.
+  @visibleForTesting
+  Future<Map<String, Object?>> debugInviteData(String gid) async =>
+      _inviteData(groups[gid]!);
+
+  /// Test seam: awaited by every received list just before it is judged —
+  /// after its member entries are verified, before the decision, which has
+  /// no await in it. A test lines two lists up here and lets them go
+  /// together, so the decision is exercised against a list another one is
+  /// deciding at that moment. Only lists that arrive outside the inbound
+  /// transaction — from a contact's linked device, or mirrored by my own —
+  /// can be lined up so: one held here on the primary path holds the
+  /// transaction, and every other envelope waits behind it.
+  @visibleForTesting
+  Future<void> Function(String gid, String sender)? debugBeforeGroupDecision;
+
+  /// Hold [data], refused for its sender's role or the roles it carries,
+  /// until the held list changes (ADR 0019): it may rest on a list that has
+  /// not arrived — the owner's promotion of its sender, a leave it reflects.
+  /// One per sender — that sender's newer list, the later one replacing
+  /// their earlier wholesale anyway, and the same list twice (sent to me,
+  /// and mirrored by my other device) kept once — so no member can push an
+  /// honest list out with lists of their own; and at most [Group.maxHeld],
+  /// the oldest going first. In the group's record, so a restart keeps them.
+  void _holdBack(
+      Group g, String fromRid, Map<String, Object?> data, bool mirrored,
+      _WireList list) {
+    final sender = mirrored ? '' : fromRid;
+    final i = g.held.indexWhere((h) => h.sender == sender);
+    if (i >= 0) {
+      final kept = _parseList(g.held[i].data);
+      if (kept != null && kept.newerThan(list)) return;
+      g.held.removeAt(i);
+    }
+    g.held.add(HeldList(fromRid, data, mirrored));
+    while (g.held.length > Group.maxHeld) {
+      g.held.removeAt(0);
+    }
+  }
+
+  /// Who I have asked about each group (`gsync`) since the list I hold for it
+  /// last changed: each of them once per change, not once per list refused.
+  final Map<String, Set<String>> _asked = {};
+
+  /// Whom I have answered about each group, and at which held list: once
+  /// per list I hold, however often they ask.
+  final Map<String, Map<String, String>> _answered = {};
+
+  /// Ask what this device lacks to apply a list it had to refuse (PROTOCOL
+  /// §11.1, `gsync`): the held owner — whose current list carries any
+  /// promotion, transfer or demotion that never arrived — and every admin
+  /// who is a member here and missing from that list, who may have left
+  /// with a leave that never arrived. Delivery is not guaranteed: the relay
+  /// keeps an envelope 72 hours, in memory. Before roles a member that
+  /// missed a list caught up at the next one; now a member that missed one
+  /// admin's leave refuses every list the others issue without them, and
+  /// would do so for good. Each is asked once until the list held changes.
+  void _askAbout(Group g, Set<String> listMembers, String sender) {
+    final targets = <String>{
+      g.ownerRid,
+      for (final a in g.adminRids)
+        if (a.isNotEmpty &&
+            g.memberRids.contains(a) &&
+            !listMembers.contains(a))
+          a,
+    }
+      ..remove('')
+      ..remove(sender);
+    final asked = _asked.putIfAbsent(g.gid, () => {});
+    for (final rid in targets) {
+      final c = contacts[rid];
+      if (c == null || !asked.add(rid)) continue;
+      final inner = InnerMessage(
+          kind: 'gsync',
+          mid: newMessageId(),
+          ts: _now(),
+          data: {'gid': g.gid});
+      // Not awaited: this runs inside the inbound transaction, and a send
+      // writes the outbox in a transaction of its own.
+      unawaited(
+          _sendInner(c, inner, threadRid: g.gid).then((_) {}, onError: (_) {}));
+    }
+  }
+
+  /// [_askAbout] for every list [g] holds back — after a restart, when the
+  /// asks made before it are forgotten.
+  Future<void> _askAboutHeld(Group g) async {
+    for (final h in [...g.held]) {
+      final members = <String>{if (!h.mirrored) h.from};
+      final ms = h.data['members'];
+      if (ms is List) {
+        for (final m in ms) {
+          try {
+            final e = (m as Map).cast<String, Object?>();
+            final b =
+                ContactBundle.fromJson((e['b'] as Map).cast<String, Object?>());
+            members.add(_canonRid(await b.routingId()));
+          } catch (_) {}
+        }
+      }
+      _askAbout(g, members, h.sender);
+    }
+  }
+
+  /// Answer a member who asked about [data]'s group (`gsync`): an admin
+  /// sends the list it holds — an admin who has left included, since what
+  /// it holds is what it left, unless it has since let go of someone in it
+  /// ([Group.trimmed]: that list would drop them) — and a device that has
+  /// left then sends its leave again. Only to someone this device holds as
+  /// a member, or held when it left; anyone else learns nothing. Once per
+  /// list held.
+  void _answerGroupSync(Contact c, Map<String, Object?> data) {
+    final gid = data['gid'];
+    if (gid is! String) return;
+    final g = groups[gid];
+    if (g == null || !g.memberRids.contains(c.rid)) return;
+    final at = '${g.rolesVer}/${g.ver}/${g.digest}/${g.left}';
+    final done = _answered.putIfAbsent(gid, () => {});
+    if (done[c.rid] == at) return;
+    done[c.rid] = at;
+    final replies = [
+      if (g.iAmAdmin && !g.trimmed)
+        InnerMessage(
+            kind: 'ginvite',
+            mid: newMessageId(),
+            ts: _now(),
+            data: _inviteData(g)),
+      if (g.left)
+        InnerMessage(
+            kind: 'gleave',
+            mid: newMessageId(),
+            ts: _now(),
+            data: {'gid': gid}),
+    ];
+    if (replies.isEmpty) return;
+    // In order — the list, then the leave — and outside the inbound
+    // transaction this is called from.
+    unawaited(() async {
+      for (final inner in replies) {
+        try {
+          await _sendInner(c, inner, threadRid: gid);
+        } catch (_) {}
+      }
+    }());
+  }
+
+  final Set<String> _retryingHeldBack = {};
+  final Set<String> _retryHeldBackAgain = {};
+
+  /// Try [gid]'s held-back lists again, until a pass applies none of them.
+  /// Each pass takes the whole queue; a list still not acceptable is held
+  /// back again by its own attempt, and one now stale is dropped.
+  /// Terminates: a list is only applied when it outranks what is held, and
+  /// there are finitely many.
+  ///
+  /// A second call while a pass runs — the held list changed under it, from
+  /// another contact's envelope — makes the running pass go round again
+  /// rather than being lost: a list the pass had already tried may pass
+  /// now. Without that, it waited for the next change.
+  Future<void> _retryHeldBack(String gid, {DatabaseExecutor? txn}) async {
+    if (!_retryingHeldBack.add(gid)) {
+      _retryHeldBackAgain.add(gid);
+      return;
+    }
+    try {
+      var again = true;
+      while (again) {
+        again = false;
+        _retryHeldBackAgain.remove(gid);
+        final g = groups[gid];
+        if (g == null || g.held.isEmpty) break;
+        final waiting = [...g.held];
+        g.held.clear();
+        for (final h in waiting) {
+          if (await _applyGroupInvite(h.from, h.data,
+              txn: txn, mirroredOwn: h.mirrored, retry: true)) {
+            again = true;
+          }
+        }
+        if (_retryHeldBackAgain.contains(gid)) again = true;
+      }
+      await _saveGroups(txn: txn);
+    } finally {
+      _retryingHeldBack.remove(gid);
+      _retryHeldBackAgain.remove(gid);
+    }
+  }
+
+  static final RegExp _ridShape = RegExp(r'^[A-Za-z0-9_-]{43}$');
+
+  /// The highest version a list may carry: far beyond any honest group, and
+  /// low enough that the next one is still exact.
+  static const _maxListVersion = 1 << 52;
+
+  /// The most entries a list's `members` — or its `admins` — may have
+  /// (PROTOCOL §11.1). Above anything the reference relay can carry: under
+  /// its default frame cap a list travels in the 262 144-byte bucket at
+  /// most, which holds fewer than 900 member entries with empty names, so
+  /// no list that relay delivers is refused for it. What it bounds is the
+  /// work and the room one list can cost: one signature check per entry,
+  /// again for every held-back list each time the held list changes, and
+  /// up to [Group.maxHeld] such lists kept per group. Unbounded, a member
+  /// behind a relay configured with a larger frame could have each of those
+  /// eight be a list of megabytes.
+  static const _maxListEntries = 1024;
+
+  /// [data] as a list, or null if it is not one: every member present with
+  /// the type §11 gives it — a version a whole number, `owner` and each of
+  /// `admins` a routing id (43 base64url characters; an empty string was
+  /// read as "me" by every receiver, so each believed it owned the group),
+  /// and no more than [_maxListEntries] members or admins. Absent members
+  /// take the meaning they had before ADR 0019. Nothing here throws: this
+  /// runs inside the inbound transaction, and an exception would leave the
+  /// envelope unacknowledged, to be delivered and refused again for ever.
+  _WireList? _parseList(Map<String, Object?> data) {
+    final name = data['name'] ?? 'Group';
+    final ver = data['ver'] ?? 1;
+    final rv = data['rv'] ?? 0;
+    final owner = data['owner'];
+    final admins = data['admins'];
+    final members = data['members'] ?? const <Object?>[];
+    if (name is! String || ver is! int || rv is! int || members is! List) {
+      return null;
+    }
+    if (members.length > _maxListEntries) return null;
+    if (ver < 1 || ver > _maxListVersion || rv < 0 || rv > _maxListVersion) {
+      return null;
+    }
+    if (owner != null && (owner is! String || !_ridShape.hasMatch(owner))) {
+      return null;
+    }
+    if (admins != null &&
+        (admins is! List ||
+            admins.length > _maxListEntries ||
+            admins.any((a) => a is! String || !_ridShape.hasMatch(a)))) {
+      return null;
+    }
+    return _WireList(
+      name: name,
+      ver: ver,
+      rv: rv,
+      owner: owner as String?,
+      admins: admins == null ? null : [for (final a in admins as List) a as String],
+      members: members,
+      digest: Group.listDigest(data),
+    );
+  }
+
   /// Apply a group invite. [fromRid] is the authenticated sender ('' when the
-  /// invite is a mirror of my own admin action from my other device).
-  Future<void> _applyGroupInvite(String fromRid, Map<String, Object?> data,
-      {DatabaseExecutor? txn, bool mirroredOwn = false}) async {
-    final gid = data['gid'] as String?;
-    if (gid == null || !isWellFormedGid(gid)) return;
+  /// invite is a mirror of my own admin action from my other device). True
+  /// if the list was applied. [retry]: a held-back list tried again.
+  ///
+  /// ADR 0019 (PROTOCOL §11.1), for a group already held:
+  ///   1. a list no newer than the one held is dropped — ordered by roles
+  ///      version, then version, then rank ([_notNewer]);
+  ///   2. its sender must be allowed to issue one by the list HELD, not the
+  ///      one arriving ([mayIssueGroupList]) — so a demoted admin still
+  ///      holding the old list cannot re-admit themselves: every member holds
+  ///      the newer list, the sender is not in its admin set, and the list
+  ///      goes no further, the same fate a removed member's messages meet in
+  ///      [_persistGroupText];
+  ///   3. a newer roles version only from the held owner, and at the held
+  ///      one the roles kept ([_keepsAdmins]) — except the sibling of a list
+  ///      that opened the roles version, which is the same owner's other
+  ///      opening of it and is ranked against it instead.
+  /// A list failing 2 or 3 is held back ([_holdBack]) — if its sender is in
+  /// the group at all — and what it rests on is asked for ([_askAbout]).
+  /// What passes replaces the held list wholesale: nothing is merged and
+  /// nothing rolled back.
+  ///
+  /// Every routing id in the list is mapped to the person this device holds
+  /// ([_canonRid]): a member's linked device is that member, and any device
+  /// of my own account is me.
+  Future<bool> _applyGroupInvite(String fromRid, Map<String, Object?> data,
+      {DatabaseExecutor? txn,
+      bool mirroredOwn = false,
+      bool retry = false}) async {
+    final gid = data['gid'];
+    if (gid is! String || !isWellFormedGid(gid)) return false;
     // A group id is also the THREAD KEY: messages are filed under it, and a
     // chat is a group when `groups[rid]` exists. Until 2026-09-13 any
     // non-empty string was accepted here, so a contact could send a
@@ -6075,20 +6876,43 @@ class ChatService extends ChangeNotifier implements KtHost {
     // base64url characters, a group id is `g` and sixteen more. The explicit
     // refusal below is belt and braces — it is the property that matters, so
     // it is written down rather than left to be deduced from two lengths.
-    if (contacts.containsKey(gid) || gid == myRid) return;
-    final name = data['name'] as String? ?? 'Group';
-    final ver = (data['ver'] as num?)?.toInt() ?? 1;
-    final existing = groups[gid];
-    if (existing != null) {
-      final fromAdmin =
-          mirroredOwn ? existing.iAmAdmin : existing.adminRid == fromRid;
-      if (!fromAdmin || ver <= existing.ver) return; // not admin, or stale
+    if (contacts.containsKey(gid) || gid == myRid) return false;
+    final sender = mirroredOwn ? '' : fromRid;
+    final list = _parseList(data);
+    if (list == null) {
+      _judged(gid, retry, sender);
+      return false;
     }
 
-    // Verify every member bundle; auto-add contacts we don't know yet.
-    var includesMe = false;
+    // Who the list says runs the group, as THIS device names them. An invite
+    // from before ADR 0019 carries neither member and is read as it was
+    // written: the sender owns the group and is its only admin, at roles
+    // version 0.
+    final owner = list.owner == null ? sender : _canonRid(list.owner!);
+    final admins = <String>{
+      for (final a in list.admins ?? const <String>[]) _canonRid(a),
+      owner,
+    };
+
+    // A quick refusal before the bundles are verified, for the common case
+    // of a list this device already holds (it arrives twice: directly and
+    // mirrored by my other device). Decided again below, without an await.
+    final early = groups[gid];
+    if (early != null &&
+        _notNewer(early, list.rv, list.ver, sender, list.digest)) {
+      _judged(gid, retry, sender);
+      return false;
+    }
+
+    // Verify every member bundle. Contacts we do not know yet are collected
+    // here and added only once the list is accepted: a refused list must not
+    // leave strangers in the address book. A list of my own account's,
+    // mirrored from my other device, includes me whether or not it carries
+    // an entry for me — a linked device writes none (see [_inviteData]).
+    var includesMe = mirroredOwn;
     final memberRids = <String>{};
-    for (final m in (data['members'] as List? ?? const [])) {
+    final unknown = <(String, ContactBundle, String)>[];
+    for (final m in list.members) {
       ContactBundle bundle;
       String cname;
       try {
@@ -6096,91 +6920,282 @@ class ChatService extends ChangeNotifier implements KtHost {
         bundle =
             ContactBundle.fromJson((e['b'] as Map).cast<String, Object?>());
         if (!await bundle.verify()) continue;
-        cname = e['n'] as String? ?? 'Unknown';
+        final n = e['n'];
+        cname = n is String ? n : 'Unknown';
       } catch (_) {
         continue;
       }
-      final rid = await bundle.routingId();
-      if (_myAccountRids.contains(rid)) {
+      final rid = _canonRid(await bundle.routingId());
+      if (rid.isEmpty) {
         includesMe = true;
         continue;
       }
       memberRids.add(rid);
-      if (!contacts.containsKey(rid)) {
-        final createdMs = _now();
-        await (txn ?? vault.db).insert(
-            'contacts',
-            {
-              'rid': rid,
-              'enc_bundle': await vault.seal(jsonEncode(bundle.toJson())),
-              'enc_name': await vault.seal(cname),
-              'ttl_seconds': 0,
-              'verified': 0,
-              'created_ms': createdMs,
-            },
-            conflictAlgorithm: ConflictAlgorithm.ignore);
-        contacts[rid] = Contact(
-            rid: rid, bundle: bundle, name: cname, createdMs: createdMs);
-        _sealKeys[rid] = bundle.xPub;
-        messagesByChat.putIfAbsent(rid, () => []);
-        unread.putIfAbsent(rid, () => 0);
+      if (!contacts.containsKey(rid)) unknown.add((rid, bundle, cname));
+    }
+    if (!mirroredOwn) memberRids.add(fromRid); // the sender is a member too
+
+    final gate = debugBeforeGroupDecision;
+    if (gate != null) await gate(gid, sender);
+
+    // ---- The decision. No await from here until the held list has been
+    // replaced: two lists for one group can be judged at once — the inbound
+    // transaction serialises envelopes on the primary path, but a list from
+    // a contact's linked device, or mirrored by my own, is judged outside it
+    // — and an await between reading the held list and replacing it would
+    // let the second overwrite the first without ever being ranked against
+    // it (group_roles_test 18).
+    _judged(gid, retry, sender);
+    final existing = groups[gid];
+    var opens = true;
+    if (existing != null) {
+      if (_notNewer(existing, list.rv, list.ver, sender, list.digest)) {
+        return false;
+      }
+      final sameRoles =
+          owner == existing.ownerRid && setEquals(admins, existing.adminRids);
+      final sibling = list.rv == existing.rolesVer &&
+          list.ver == existing.ver &&
+          sender == existing.by;
+      final bool ok;
+      if (sibling && !sameRoles) {
+        // The held list's issuer, at its versions, with other roles: their
+        // other opening of this roles version — the owner on two devices, or
+        // sending two lists. Accepted only where the held list opened it, so
+        // it is ranked against its twin by digest ([_notNewer]) rather than
+        // refused by the twin's roles, and every member keeps the same one.
+        ok = existing.opensRoles;
+      } else if (list.rv > existing.rolesVer) {
+        ok = sender == existing.ownerRid && mayIssueGroupList(gid, sender);
+      } else {
+        ok = sameRoles &&
+            _keepsAdmins(existing, memberRids, includesMe) &&
+            mayIssueGroupList(gid, sender);
+        opens = sibling && existing.opensRoles;
+      }
+      if (!ok) {
+        // Held for later only from someone in the group as this device holds
+        // it (or my own account): anyone else's list could only ever be
+        // applied after a list adding them, which brings their next one.
+        if (sender.isEmpty || existing.memberRids.contains(sender)) {
+          _holdBack(existing, fromRid, data, mirroredOwn, list);
+        }
+        _askAbout(existing, memberRids, sender);
+        await _saveGroups(txn: txn);
+        return false;
       }
     }
 
-    if (!mirroredOwn) {
-      if (existing != null && !includesMe) {
-        // The admin's new list omits me: I was removed.
-        existing.name = name;
-        existing.ver = ver;
-        existing.left = true;
-        await _saveGroups(txn: txn);
-        await _insertSystemMessage(
-            gid, systemBody(SystemKind.removedFrom, {'name': name}),
-            txn: txn);
-        return;
-      }
-      memberRids.add(fromRid); // the admin is a member too
+    if (!mirroredOwn && existing != null && !includesMe) {
+      // The new list omits me: I was removed. It is still the list I hold —
+      // version, issuer, roles and members — so that a later list is judged
+      // against it, and the group's screen says who is in it now; except
+      // that, as on a leave, a member whose contact I deleted is let go of
+      // rather than introduced to me again ([_trimLeft]).
+      final deleted = existing.orphans.keys.toSet();
+      existing
+        ..name = list.name
+        ..ver = list.ver
+        ..by = sender
+        ..rolesVer = list.rv
+        ..ownerRid = owner
+        ..digest = list.digest
+        ..opensRoles = opens
+        ..mine = null
+        ..left = true;
+      existing.adminRids
+        ..clear()
+        ..addAll(admins);
+      existing.memberRids
+        ..clear()
+        ..addAll(memberRids);
+      _asked.remove(gid);
+      final adopted = _adoptGroupContacts(
+          [for (final u in unknown) if (!deleted.contains(u.$1)) u]);
+      _trimLeft(existing);
+      await _persistGroupContacts(adopted, txn: txn);
+      await _saveGroups(txn: txn);
+      await _insertSystemMessage(
+          gid, systemBody(SystemKind.removedFrom, {'name': list.name}),
+          txn: txn);
+      return true;
     }
 
     final isNew = existing == null;
     final oldName = existing?.name;
     final oldMembers = existing?.memberRids.toSet();
+    final oldOwner = existing?.ownerRid;
+    final oldAdmins = existing?.adminRids.toSet();
+    // A list I issued, replaced by one that undoes it ([_undoes]): said
+    // before the lines describing the new list, because it explains them.
+    final mine =
+        existing != null && existing.by.isEmpty ? existing.mine : null;
+    final undone = mine != null && _undoes(mine, memberRids, list.name);
+    // The members it introduces become contacts in the same step as the list
+    // is installed, so nothing that reads the group — a send's fan-out, which
+    // skips a member it holds no contact for — finds a member it cannot reach.
+    final adopted = _adoptGroupContacts(unknown);
     groups[gid] = Group(
       gid: gid,
-      name: name,
-      adminRid: mirroredOwn ? '' : fromRid,
+      name: list.name,
+      ownerRid: owner,
+      adminRids: admins,
+      by: sender,
+      rolesVer: list.rv,
       memberRids: memberRids,
-      ver: ver,
+      ver: list.ver,
+      digest: list.digest,
+      opensRoles: opens,
+      held: existing?.held,
+      orphans: {
+        for (final e in existing?.orphans.entries ??
+            const <MapEntry<String, Map<String, Object?>>>[])
+          if ((memberRids.contains(e.key) || admins.contains(e.key)) &&
+              !contacts.containsKey(e.key))
+            e.key: e.value
+      },
     );
-    await _saveGroups(txn: txn);
     unread.putIfAbsent(gid, () => 0);
+    _asked.remove(gid);
+    // ---- End of the decision; what follows records it.
+
+    await _persistGroupContacts(adopted, txn: txn);
+    await _saveGroups(txn: txn);
     if (isNew) {
       await _insertSystemMessage(
           gid,
           mirroredOwn
-              ? systemBody(SystemKind.createdYou, {'name': name})
+              ? systemBody(SystemKind.createdYou, {'name': list.name})
               : systemBody(SystemKind.addedToBy,
-                  {'by': contacts[fromRid]?.name, 'name': name}),
+                  {'by': contacts[fromRid]?.name, 'name': list.name}),
           txn: txn);
-    } else {
-      // A newer invite says what changed: the name, the members, or both.
-      // Each gets its own line, so a rename does not read as "membership
-      // updated" and a membership change does not read as a rename (23.1).
-      if (oldName != name) {
-        await _insertSystemMessage(
-            gid,
-            mirroredOwn
-                ? systemBody(SystemKind.renamedYou, {'name': name})
-                : systemBody(SystemKind.renamedBy,
-                    {'by': contacts[fromRid]?.name, 'name': name}),
-            txn: txn);
+      return true;
+    }
+    if (undone) {
+      await _insertSystemMessage(
+          gid,
+          mirroredOwn
+              ? systemBody(SystemKind.changeOverriddenMine)
+              : systemBody(SystemKind.changeOverriddenBy,
+                  {'by': contacts[fromRid]?.name}),
+          txn: txn);
+    }
+    // A newer invite says what changed: the name, the members, the roles.
+    // Each gets its own line, so a rename does not read as "membership
+    // updated" and a membership change does not read as a rename (23.1).
+    if (oldName != list.name) {
+      await _insertSystemMessage(
+          gid,
+          mirroredOwn
+              ? systemBody(SystemKind.renamedYou, {'name': list.name})
+              : systemBody(SystemKind.renamedBy,
+                  {'by': contacts[fromRid]?.name, 'name': list.name}),
+          txn: txn);
+    }
+    if (oldMembers == null ||
+        oldMembers.length != memberRids.length ||
+        !oldMembers.containsAll(memberRids)) {
+      await _insertSystemMessage(gid, systemBody(SystemKind.membershipUpdated),
+          txn: txn);
+    }
+    await _sayRoleChanges(gid, fromRid, mirroredOwn,
+        oldOwner: oldOwner!,
+        oldAdmins: oldAdmins!,
+        owner: owner,
+        admins: admins,
+        members: memberRids,
+        txn: txn);
+    await _retryHeldBack(gid, txn: txn);
+    return true;
+  }
+
+  /// Contacts an accepted list introduced, made known in memory at once —
+  /// synchronously, in the step that installs the list — and returned for
+  /// [_persistGroupContacts] to write. One added meanwhile by other means
+  /// is left as it is.
+  List<Contact> _adoptGroupContacts(
+      List<(String, ContactBundle, String)> unknown) {
+    final adopted = <Contact>[];
+    for (final (rid, bundle, cname) in unknown) {
+      if (contacts.containsKey(rid)) continue;
+      final c =
+          Contact(rid: rid, bundle: bundle, name: cname, createdMs: _now());
+      contacts[rid] = c;
+      _sealKeys[rid] = bundle.xPub;
+      messagesByChat.putIfAbsent(rid, () => []);
+      unread.putIfAbsent(rid, () => 0);
+      adopted.add(c);
+    }
+    return adopted;
+  }
+
+  /// Write the contacts [_adoptGroupContacts] made known.
+  Future<void> _persistGroupContacts(List<Contact> adopted,
+      {DatabaseExecutor? txn}) async {
+    for (final c in adopted) {
+      await (txn ?? vault.db).insert(
+          'contacts',
+          {
+            'rid': c.rid,
+            'enc_bundle': await vault.seal(jsonEncode(c.bundle.toJson())),
+            'enc_name': await vault.seal(c.name),
+            'ttl_seconds': 0,
+            'verified': 0,
+            'created_ms': c.createdMs,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  /// One line per role that changed between the held list and the accepted
+  /// one (ADR 0019): who owns the group now, who became an admin, who
+  /// stopped being one — as "you" for my own action mirrored from my other
+  /// device, and as "{by} …" for a list that arrived. A member the list
+  /// removed is not also said to be demoted: the removal covers it.
+  Future<void> _sayRoleChanges(String gid, String fromRid, bool mirroredOwn,
+      {required String oldOwner,
+      required Set<String> oldAdmins,
+      required String owner,
+      required Set<String> admins,
+      required Set<String> members,
+      DatabaseExecutor? txn}) async {
+    final by = contacts[fromRid]?.name;
+    String? nameOf(String rid) => contacts[rid]?.name;
+    Future<void> say(String kind, Map<String, Object?> params) =>
+        _insertSystemMessage(gid, systemBody(kind, params), txn: txn);
+    if (owner != oldOwner) {
+      if (mirroredOwn) {
+        await say(SystemKind.transferredYou, {'name': nameOf(owner)});
+      } else if (owner.isEmpty) {
+        await say(SystemKind.ownerMeBy, {'by': by});
+      } else {
+        await say(SystemKind.ownerBy, {'by': by, 'name': nameOf(owner)});
       }
-      if (oldMembers == null ||
-          oldMembers.length != memberRids.length ||
-          !oldMembers.containsAll(memberRids)) {
-        await _insertSystemMessage(
-            gid, systemBody(SystemKind.membershipUpdated),
-            txn: txn);
+    }
+    for (final rid in admins.difference(oldAdmins)) {
+      if (rid == owner && owner != oldOwner) continue; // said above
+      if (mirroredOwn) {
+        await say(SystemKind.promotedYou, {'name': nameOf(rid)});
+      } else if (rid.isEmpty) {
+        await say(SystemKind.promotedMeBy, {'by': by});
+      } else {
+        await say(SystemKind.promotedBy, {'by': by, 'name': nameOf(rid)});
+      }
+    }
+    for (final rid in oldAdmins.difference(admins)) {
+      if (rid.isNotEmpty && !members.contains(rid)) continue; // removed
+      if (mirroredOwn) {
+        // My own list: a transfer that let go of my role says so above,
+        // and nothing else of mine demotes me.
+        if (rid.isNotEmpty) {
+          await say(SystemKind.demotedYou, {'name': nameOf(rid)});
+        }
+      } else if (rid.isEmpty) {
+        await say(SystemKind.demotedMeBy, {'by': by});
+      } else if (rid == fromRid) {
+        await say(SystemKind.steppedDown, {'name': by});
+      } else {
+        await say(SystemKind.demotedBy, {'by': by, 'name': nameOf(rid)});
       }
     }
   }
@@ -6231,17 +7246,42 @@ class ChatService extends ChangeNotifier implements KtHost {
   }
 
   /// A member told us (over their authenticated channel) that they left.
+  ///
+  /// A leave takes the member out of this device's copy of the list and
+  /// nothing else: the version and the issuer stay as they were, and so do
+  /// the roles (ADR 0019 — only an owner's list changes those; an admin who
+  /// left cannot use the role from outside, see [mayIssueGroupList]).
+  ///
+  /// Until 23.1b the admin moved the version on here, so that "future
+  /// invites exclude them". With one admin that changed nothing — the
+  /// admin's next list moved it anyway. With several it breaks the order the
+  /// `(ver, by)` rule depends on: admins would hold the same list one
+  /// version ahead of the members, so a co-admin who had not yet seen the
+  /// leave and changed the group at that version would be refused by every
+  /// admin and accepted by every member, and the owner's next list would
+  /// then undo the change everywhere without a word (group_roles_test 9).
   Future<void> _applyGroupLeave(String fromRid, Map<String, Object?> data,
       {DatabaseExecutor? txn}) async {
-    final gid = data['gid'] as String?;
-    final g = gid == null ? null : groups[gid];
+    final gid = data['gid'];
+    final g = gid is String ? groups[gid] : null;
     if (g == null) return;
     if (!g.memberRids.remove(fromRid)) return;
-    if (g.iAmAdmin) g.ver += 1; // future invites exclude them
+    // Someone my last list added has gone of their own accord: a later list
+    // without them undoes nothing of mine.
+    final added = g.mine?['add'];
+    if (added is List) added.remove(fromRid);
+    // An admin who left is still named in `admins`, and an entry marks
+    // them as someone whose contact I deleted until it is not ([_trimLeft]).
+    if (!g.adminRids.contains(fromRid)) g.orphans.remove(fromRid);
+    _asked.remove(g.gid);
     await _saveGroups(txn: txn);
-    await _insertSystemMessage(gid!,
+    await _insertSystemMessage(g.gid,
         systemBody(SystemKind.memberLeft, {'name': contacts[fromRid]?.name}),
         txn: txn);
+    // A co-admin's list that took this member out — they were an admin, and
+    // the list could not be told from a co-admin removing one — can be
+    // applied now.
+    await _retryHeldBack(g.gid, txn: txn);
   }
 
   // ---- M4: contact device-list distribution + fan-out --------------------
@@ -7541,12 +8581,20 @@ class ChatService extends ChangeNotifier implements KtHost {
       await _persistGroupFile(contact, inner, _now());
       notifyListeners();
       await _offerLanded(inner.data['fid'] as String);
-    } else if (inner.kind == 'ginvite') {
-      await _applyGroupInvite(contact.rid, inner.data);
+    } else if (inner.kind == 'ginvite' || inner.kind == 'gleave') {
+      if (inner.kind == 'ginvite') {
+        await _applyGroupInvite(contact.rid, inner.data);
+      } else {
+        await _applyGroupLeave(contact.rid, inner.data);
+      }
+      // Mirrored to my other devices, as the primary path mirrors one: a
+      // contact's laptop that has not yet learned my laptop sends it nothing,
+      // and a list my laptop never holds is one it would build on stale.
+      unawaited(_sync?.mirror(threadRid: contact.rid, dir: 'in', inner: inner) ??
+          Future<void>.value());
       notifyListeners();
-    } else if (inner.kind == 'gleave') {
-      await _applyGroupLeave(contact.rid, inner.data);
-      notifyListeners();
+    } else if (inner.kind == 'gsync') {
+      _answerGroupSync(contact, inner.data);
     }
     // 7.7a: observe the claim/echo after any devlist install above, so the
     // "held" list this cross-check compares against is current.
@@ -8126,3 +9174,32 @@ int? firstIntValue(List<Map<String, Object?>> rows) {
 /// Why a post-quantum identity is being sent (§18.2); see
 /// `ChatService._offerPqIdentity`.
 enum _PqReason { volunteer, nudge, answer }
+
+/// A `ginvite`'s fields as [ChatService._parseList] read them.
+class _WireList {
+  final String name;
+  final int ver;
+  final int rv;
+  final String? owner;
+  final List<String>? admins;
+  final List<Object?> members;
+  final String digest;
+  const _WireList({
+    required this.name,
+    required this.ver,
+    required this.rv,
+    required this.owner,
+    required this.admins,
+    required this.members,
+    required this.digest,
+  });
+
+  /// Whether this list is newer than [o], both from one sender: the higher
+  /// roles version, then the higher version, then the smaller digest — the
+  /// order `ChatService._notNewer` applies between one issuer's lists.
+  bool newerThan(_WireList o) {
+    if (rv != o.rv) return rv > o.rv;
+    if (ver != o.ver) return ver > o.ver;
+    return digest.compareTo(o.digest) < 0;
+  }
+}

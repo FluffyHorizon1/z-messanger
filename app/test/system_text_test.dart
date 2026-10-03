@@ -39,6 +39,20 @@ void main() {
       SystemKind.addedToBy,
       SystemKind.membershipUpdated,
       SystemKind.memberLeft,
+      SystemKind.renamedYou,
+      SystemKind.renamedBy,
+      SystemKind.promotedYou,
+      SystemKind.demotedYou,
+      SystemKind.transferredYou,
+      SystemKind.promotedBy,
+      SystemKind.promotedMeBy,
+      SystemKind.demotedBy,
+      SystemKind.demotedMeBy,
+      SystemKind.ownerBy,
+      SystemKind.ownerMeBy,
+      SystemKind.steppedDown,
+      SystemKind.changeOverriddenBy,
+      SystemKind.changeOverriddenMine,
     ];
     for (final k in kinds) {
       final out = systemText(

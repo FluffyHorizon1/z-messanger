@@ -30,6 +30,31 @@ abstract final class SystemKind {
   static const renamedYou = 'renamed_you'; // name (23.1)
   static const renamedBy = 'renamed_by'; // by?, name (23.1)
   static const memberLeft = 'member_left'; // name?
+
+  // Roles (ADR 0019, 23.1b). "You" lines are the owner's own actions, on
+  // every device of theirs; "by" lines are what a member sees arrive.
+  static const promotedYou = 'promoted_you'; // name?
+  static const demotedYou = 'demoted_you'; // name?
+  static const transferredYou = 'transferred_you'; // name?
+  static const promotedBy = 'promoted_by'; // by?, name?
+  static const promotedMeBy = 'promoted_me_by'; // by?
+  static const demotedBy = 'demoted_by'; // by?, name?
+  static const demotedMeBy = 'demoted_me_by'; // by?
+  static const ownerBy = 'owner_by'; // by?, name?
+  static const ownerMeBy = 'owner_me_by'; // by?
+  // name? — an owner who handed the group on and gave up their admin role
+  static const steppedDown = 'stepped_down';
+
+  /// A list I issued was replaced by another admin's that undoes what mine
+  /// did — a member I added missing, one I removed back, my name gone —
+  /// whatever its version: the race ADR 0019's order decides, or a later
+  /// list from an admin who never saw mine. My change does not stand and can
+  /// simply be made again on the list now held.
+  static const changeOverriddenBy = 'change_overridden_by'; // by?
+
+  /// The same, where the list that replaced mine came from another device
+  /// of my own account, made there before the two had synced.
+  static const changeOverriddenMine = 'change_overridden_mine';
 }
 
 /// The stored form of a system message.

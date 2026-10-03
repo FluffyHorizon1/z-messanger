@@ -191,7 +191,35 @@ read anything sent afterwards**, because there was never a group key for them
 to keep. It also means nobody — including whoever created the group — can hand
 out access without every member's device agreeing.
 
-The admin manages membership. Everyone sees membership changes.
+Whoever creates a group **owns** it. The owner can make other members
+**admins**: an admin can add people, remove members who are not admins, and
+rename the group. Only the owner decides who the admins are — making someone
+an admin, taking that away, or handing the whole group to someone else (you
+choose whether to stay on as an admin) — and does so on their main phone, the
+one their other devices were linked from; from a linked laptop the owner can
+still add, remove and rename. Everyone sees every change.
+
+Make someone an admin only if you would trust them to run the group: an admin
+can add anyone, including someone the rest of the group has never met. What an
+admin cannot do is read anything sent before they were added, change who the
+admins are, or remove you — so you can always take the role back, and once
+you have, their changes stop being accepted.
+
+If two admins change the group at the same moment — or you change it on two of
+your own devices before they have caught up with each other — one change wins
+on every phone; whoever's change did not stand is told so in the chat and can
+simply make it again. If you own a group, hand it on before you leave: once the
+owner has gone, nobody can change who the admins are (the admins can still
+add, remove and rename). An admin who has left keeps the role on paper until
+the owner takes it away; the group's screen lists them.
+
+A phone that missed a change — offline for days, say — asks the group's owner
+(or the admin it lost track of) for the current list the next time it cannot
+make sense of one, and catches up.
+
+A member still on a version of Z from before admins existed follows only the
+person who added them, until they update — and Z already tells them they are
+behind.
 
 ## Disappearing messages
 

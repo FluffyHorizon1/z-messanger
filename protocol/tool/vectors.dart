@@ -1670,6 +1670,31 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
         targets: ['mid-gmsg'], gid: 'gAAECAwQFBgcICQoL'),
     // A forwarded message is an ordinary one with a marker.
     InnerMessage.text('mid-fw', ts, 'passing this on')..data['fw'] = true,
+    // ADR 0019: a list that carries its roles — the owner, every admin (the
+    // owner included) and the roles version. A client from before 0019
+    // ignores all three; one after reads their absence as "the sender owns
+    // the group and is its only admin, roles version 0".
+    InnerMessage(kind: 'ginvite', mid: 'mid-ginvite-roles', ts: ts, data: {
+      'gid': 'gAAECAwQFBgcICQoL',
+      'name': 'Weekend plans',
+      'ver': 3,
+      'owner': a[0].rid,
+      'admins': [a[0].rid, a[1].rid]..sort(),
+      'rv': 1,
+      'members': [
+        {'b': aliceBundle, 'n': 'Alice'},
+        {'b': bobBundle, 'n': 'Bob'},
+      ],
+    }),
+    // ADR 0019: a member that had to refuse a list asks the owner — or an
+    // admin whose leave it may have missed — for what it lacks; the answer
+    // is that admin's `ginvite`, and its `gleave` if it has left. Keyless:
+    // the group id is all it says.
+    InnerMessage(
+        kind: 'gsync',
+        mid: 'mid-gsync',
+        ts: ts,
+        data: {'gid': 'gAAECAwQFBgcICQoL'}),
   ];
   final vectors = <Map<String, Object?>>[];
   for (final m in kinds) {
@@ -1693,6 +1718,53 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
     'dir': 'out',
     'inner': base64Encode(kinds[1].toBytes()),
   });
+  // PROTOCOL §11.1: the digest that ranks two lists at one `(rv, ver)`,
+  // computed here from the section's own words — the two `ginvite`s above,
+  // and one more whose name needs every escape the canonical JSON has and
+  // whose `admins` and members arrive unsorted. The bytes hashed are
+  // recorded too, so a second implementation can compare those first.
+  final lists = <Map<String, Object?>>[
+    for (final m in kinds)
+      if (m.kind == 'ginvite') m.data,
+    {
+      'gid': 'gAAECAwQFBgcICQoL',
+      // An unpaired surrogate can arrive too — as `\ud800` in the JSON —
+      // and is written back the same way.
+      'name': 'Caf\u00e9 "plans" \\ / \b\f\n\r\t\u0001\u007f \u2028 \u{1F389} '
+          '${String.fromCharCode(0xD800)}.',
+      'ver': 4,
+      'owner': a[1].rid,
+      'admins': [a[1].rid, a[0].rid],
+      'rv': 2,
+      'members': [
+        {'b': bobBundle, 'n': 'Bob'},
+        {'b': aliceBundle, 'n': 'Alice'},
+      ],
+    },
+  ];
+  final listDigests = <Map<String, Object?>>[];
+  for (final d in lists) {
+    final admins = d['admins'] as List?;
+    final canonical = jsonEncode([
+      d['gid'],
+      d['name'],
+      d['ver'],
+      d['rv'],
+      d['owner'],
+      admins == null ? null : ([...admins.cast<String>()]..sort()),
+      [
+        for (final m in d['members'] as List)
+          ((m as Map)['b'] as Map)['ed'] as String
+      ]..sort(),
+    ]);
+    final bytes = utf8.encode(canonical);
+    listDigests.add({
+      'list': jsonEncode(d),
+      'canonical': canonical,
+      'canonical_hex': hex(bytes),
+      'digest': b64url(await sha256Bytes(bytes)),
+    });
+  }
   return {
     'suite': 'inner_messages',
     'version': vectorsVersion,
@@ -1706,6 +1778,7 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
       'json': syncEnvelope,
       'bytes': hex(utf8.encode(syncEnvelope)),
     },
+    'group_list_digests': listDigests,
   };
 }
 

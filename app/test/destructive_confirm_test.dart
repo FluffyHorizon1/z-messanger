@@ -7,9 +7,13 @@
 //     undo — with one icon tap.
 // Both are gated by a confirmation now. These tests pin the gate: cancelling
 // changes nothing, confirming does the work.
+//
+// A third since ADR 0019: an owner leaving their group freezes its admin set
+// for everyone left in it, so the owner is told so and offered a transfer
+// first — and dismissing that question is a cancel, not a choice.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -134,6 +138,71 @@ void main() {
       await tester.pump();
       expect(svc.groups[gid]!.memberRids, isNot(contains(rid)),
           reason: 'confirming removed the member');
+    });
+  });
+}
+
+          reason: 'confirming removed the member');
+    });
+  });
+
+  /// Pump until [cond] holds, polling outside the fake clock.
+  Future<void> until(
+      WidgetTester tester, bool Function() cond, String what) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 15));
+    while (!cond()) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('condition not met: $what');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await tester.pump();
+    }
+  }
+
+  testWidgets('an owner leaving is warned and offered a transfer first',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.runAsync(() async {
+      final gid = await svc.createGroup('Trio', [rid]);
+      await tester.pumpWidget(wrap(GroupInfoScreen(gid: gid)));
+      await until(tester, () => find.text(l.grpYouOwner).evaluate().isNotEmpty,
+          'the owner sees their role');
+
+      // Leave asks the owner's question, with a transfer on offer.
+      await tester.tap(find.text(l.grpLeaveGroup));
+      await tester.pump();
+      expect(find.text(l.grpLeaveOwnerTitle), findsOneWidget);
+      expect(find.text(l.grpTransferFirst), findsOneWidget);
+      // Dismissed by a tap outside it: nothing happens, no picker opens.
+      await tester.tapAt(const Offset(4, 4));
+      await until(
+          tester,
+          () => find.text(l.grpLeaveOwnerTitle).evaluate().isEmpty,
+          'the dialog closes');
+      expect(find.text(l.grpPickNewOwner), findsNothing,
+          reason: 'dismissing is a cancel, not "transfer first"');
+      expect(svc.groups[gid]!.left, isFalse);
+
+      // Transfer first: pick Alice, confirm, and the group is hers.
+      await tester.tap(find.text(l.grpLeaveGroup));
+      await tester.pump();
+      await tester.tap(find.text(l.grpTransferFirst));
+      await until(tester, () => find.text(l.grpPickNewOwner).evaluate().isNotEmpty,
+          'the new-owner picker opens');
+      await tester.tap(find.descendant(
+          of: find.byType(SimpleDialog), matching: find.text('Alice')));
+      await until(
+          tester,
+          () => find.text(l.grpTransferTitle('Alice')).evaluate().isNotEmpty,
+          'the transfer is confirmed first');
+      await tester.tap(find.text(l.grpMakeOwner));
+      await until(tester, () => svc.groups[gid]!.ownerRid == rid,
+          'the group is Alice\'s');
+      expect(svc.groups[gid]!.iAmAdmin, isTrue,
+          reason: 'the old owner stays an admin unless they say otherwise');
+      expect(svc.groups[gid]!.left, isFalse,
+          reason: 'handing the group on is not leaving it');
     });
   });
 }

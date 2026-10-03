@@ -1352,11 +1352,17 @@ abstract class AppLocalizations {
   /// **'Delete everything?'**
   String get ciDeleteTitle;
 
-  /// The last warning before an irreversible delete. 'THIS device' is capitalised because other linked devices keep their copies. The final clause explains that irrecoverability is the design, not a limitation — the same argument as the backup recovery code.
+  /// The last warning before an irreversible delete, for a contact no group you are in names. 'THIS device' is capitalised because other linked devices keep their copies. The group sentence is there because it is true of every contact: deleting one removes your one-to-one chat, not what a group chat holds of them — their messages, reactions and receipts there, and the chat's own lines that name them. A group you have left keeps nothing else of them: deleting the contact takes them out of its record. The final clause explains that irrecoverability is the design, not a limitation — the same argument as the backup recovery code.
   ///
   /// In en, this message translates to:
-  /// **'This wipes the contact, every message and every attachment from THIS device. There is no server copy to restore from — that is the point.'**
+  /// **'This wipes the contact, your chat with them and every attachment in it from THIS device. Anything a group\'s chat holds of them stays in that chat. There is no server copy to restore from — that is the point.'**
   String get ciDeleteBody;
+
+  /// The delete warning instead of ciDeleteBody when a group the user is in still names this contact. {groups} is those groups' names joined with commas; {count} is how many there are. It has to say exactly what is kept and why, because the plain warning ('wipes the contact') is not the whole truth here: each group keeps the person's routing id, public key and name (the group's lists must go on naming every member, or the next list would remove them), and a change another admin makes to the group re-adds them as a contact, as groups do for every member. Removing them from the group, or leaving it, is how to drop them. 'routing id' is the protocol's term, as in ciRoutingId.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{This wipes the contact, your chat with them and every attachment in it from THIS device, but not what the group {groups} holds of them: deleting a contact takes nobody out of a group.} other{This wipes the contact, your chat with them and every attachment in it from THIS device, but not what the groups {groups} hold of them: deleting a contact takes nobody out of a group.}} Because a group goes on naming its members, this device keeps their routing id, public key and name in each group\'s record; and while they are in a group, a change made to it by someone else — or by you on another device — adds them back as a contact, as it does any member. Removing them from the group, or leaving it, drops them from its record. Anything a group\'s chat holds of them stays in that chat. There is no server copy to restore from — that is the point.'**
+  String ciDeleteBodyInGroups(int count, String groups);
 
   /// What the safety number covers when the contact is classical-only. 'nothing further to check' is reassurance: this is a complete state, not a partial one. Ed25519 is an algorithm name and stays as it is.
   ///
@@ -3205,6 +3211,186 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Rename group'**
   String get grpRename;
+
+  /// System message in a group the user owns, after they make a member an admin (ADR 0019).
+  ///
+  /// In en, this message translates to:
+  /// **'You made {name} an admin.'**
+  String sysPromotedYou(String name);
+
+  /// System message in a group the user owns, after they take a member's admin role away. The member stays in the group.
+  ///
+  /// In en, this message translates to:
+  /// **'You removed {name} as an admin.'**
+  String sysDemotedYou(String name);
+
+  /// System message after the user hands ownership of a group to a member.
+  ///
+  /// In en, this message translates to:
+  /// **'You made {name} the owner.'**
+  String sysTransferredYou(String name);
+
+  /// System message: the owner {by} made the member {name} an admin (both contacts).
+  ///
+  /// In en, this message translates to:
+  /// **'{by} made {name} an admin.'**
+  String sysPromotedBy(String by, String name);
+
+  /// System message: the owner {by} made the user an admin of the group.
+  ///
+  /// In en, this message translates to:
+  /// **'{by} made you an admin.'**
+  String sysPromotedMeBy(String by);
+
+  /// System message: the owner {by} took the admin role away from {name}, who stays a member.
+  ///
+  /// In en, this message translates to:
+  /// **'{by} removed {name} as an admin.'**
+  String sysDemotedBy(String by, String name);
+
+  /// System message: the owner {by} took the user's admin role away. The user stays in the group.
+  ///
+  /// In en, this message translates to:
+  /// **'{by} removed you as an admin.'**
+  String sysDemotedMeBy(String by);
+
+  /// System message: the owner {by} handed the group to {name}, who owns it now.
+  ///
+  /// In en, this message translates to:
+  /// **'{by} made {name} the owner.'**
+  String sysOwnerBy(String by, String name);
+
+  /// System message: the owner {by} handed the group to the user, who owns it now.
+  ///
+  /// In en, this message translates to:
+  /// **'{by} made you the owner.'**
+  String sysOwnerMeBy(String by);
+
+  /// System message: the previous owner {name} handed the group over and gave up their own admin role in the same step.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} is no longer an admin.'**
+  String sysSteppedDown(String name);
+
+  /// System message to an admin whose change to a group (an add, a removal, a rename) was replaced by another admin's list that undoes it — a race the other admin won, or a later change from an admin who had not seen it: the group now shows the other change, and theirs must be redone on top of it.
+  ///
+  /// In en, this message translates to:
+  /// **'{by}\'s change to the group replaced yours, which did not stand. Make it again if you still want it.'**
+  String sysChangeOverriddenBy(String by);
+
+  /// System message to an admin whose change to a group, made on this device, was replaced by a change they made on another of their own devices before the two had synced: the group now shows the other change.
+  ///
+  /// In en, this message translates to:
+  /// **'A change made on your other device at the same moment replaced this one, which did not stand. Make it again if you still want it.'**
+  String get sysChangeOverriddenMine;
+
+  /// Label of the user's own row on the group info screen when they own the group: the one person who can change who the admins are.
+  ///
+  /// In en, this message translates to:
+  /// **'You (owner)'**
+  String get grpYouOwner;
+
+  /// Small tag next to a member's name on the group info screen: this member owns the group.
+  ///
+  /// In en, this message translates to:
+  /// **'owner'**
+  String get grpOwner;
+
+  /// Tooltip of the per-member menu the owner sees on the group info screen, offering make admin, remove as admin and make owner.
+  ///
+  /// In en, this message translates to:
+  /// **'Change role'**
+  String get grpChangeRole;
+
+  /// Menu item (owner only): give this member the admin role — they can then add and remove members and rename the group.
+  ///
+  /// In en, this message translates to:
+  /// **'Make admin'**
+  String get grpMakeAdmin;
+
+  /// Menu item (owner only): take this member's admin role away. They stay in the group.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove as admin'**
+  String get grpRemoveAdmin;
+
+  /// Menu item (owner only) and confirm button: hand the group to this member, who becomes its owner.
+  ///
+  /// In en, this message translates to:
+  /// **'Make owner'**
+  String get grpMakeOwner;
+
+  /// Title of the dialog confirming an ownership transfer.
+  ///
+  /// In en, this message translates to:
+  /// **'Make {name} the owner?'**
+  String grpTransferTitle(String name);
+
+  /// Body of the dialog confirming an ownership transfer: what the new owner gets and that the step is not undoable by the user.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} will be the only person who can change who the admins are. You cannot take this back — only the new owner can give it back to you.'**
+  String grpTransferBody(String name);
+
+  /// Checkbox in the ownership-transfer dialog, on by default: the user keeps the admin role after handing over ownership. Off, the same step also removes them as an admin.
+  ///
+  /// In en, this message translates to:
+  /// **'Stay on as an admin'**
+  String get grpTransferKeepAdmin;
+
+  /// Title of the leave dialog shown to a group's owner instead of the plain one.
+  ///
+  /// In en, this message translates to:
+  /// **'You own this group'**
+  String get grpLeaveOwnerTitle;
+
+  /// Body of the leave dialog shown to a group's owner: what leaving without a transfer freezes, and the offer to transfer first.
+  ///
+  /// In en, this message translates to:
+  /// **'If you leave now, nobody will be able to change who the admins are. The admins can still add, remove and rename. Make someone else the owner first?'**
+  String get grpLeaveOwnerBody;
+
+  /// Button in the owner's leave dialog: leave without transferring ownership.
+  ///
+  /// In en, this message translates to:
+  /// **'Leave anyway'**
+  String get grpLeaveAnyway;
+
+  /// Button in the owner's leave dialog: pick a member to hand the group to before leaving.
+  ///
+  /// In en, this message translates to:
+  /// **'Transfer ownership'**
+  String get grpTransferFirst;
+
+  /// Title of the dialog listing the members the owner can hand the group to.
+  ///
+  /// In en, this message translates to:
+  /// **'New owner'**
+  String get grpPickNewOwner;
+
+  /// Shown to a group's owner on a linked device (not the one holding the account): making admins, removing them and handing the group on are done on the main device, so that two devices never change the roles at once.
+  ///
+  /// In en, this message translates to:
+  /// **'Admins and ownership can only be changed on your main device.'**
+  String get grpRolesOnMainDevice;
+
+  /// Role label for an admin who has left the group or was removed from it: they keep the role on paper and cannot use it from outside; the owner can take it away.
+  ///
+  /// In en, this message translates to:
+  /// **'admin, no longer in the group'**
+  String get grpAdminNotMember;
+
+  /// Body of the leave dialog shown to a group's owner on a linked device, where ownership cannot be transferred: what leaving freezes, and where a transfer can be made.
+  ///
+  /// In en, this message translates to:
+  /// **'If you leave now, nobody will be able to change who the admins are. The admins can still add, remove and rename. To hand the group on first, use your main device.'**
+  String get grpLeaveOwnerBodyLinked;
+
+  /// Warning in the ownership-transfer dialog: a member on an old build does not know they own the group, so the roles stay frozen until they update. The app cannot tell which version a member runs, so this is shown for every transfer.
+  ///
+  /// In en, this message translates to:
+  /// **'If {name} still has a version of Z from before group admins, nobody will be able to change who the admins are until they update.'**
+  String grpTransferOldBuild(String name);
 }
 
 class _AppLocalizationsDelegate

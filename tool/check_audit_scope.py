@@ -105,8 +105,10 @@ UNCITED_OK = {
         "localisation property (G9), not a security claim",
     "app/test/destructive_confirm_test.dart":
         "that resetting a secure session and removing a group member ask "
-        "before they act, as every other destructive action does — a "
-        "confirmation-UX property, not a claim about secrecy",
+        "before they act, as every other destructive action does, and that "
+        "an owner leaving their group is warned and offered a transfer "
+        "first (ADR 0019) — a confirmation-UX property, not a claim about "
+        "secrecy",
     "app/test/dead_controls_test.dart":
         "that the contact screen's disappearing-messages row opens the timer "
         "picker rather than sitting dead — a control-wiring property, not a "

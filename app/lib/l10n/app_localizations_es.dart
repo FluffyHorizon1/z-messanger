@@ -776,7 +776,20 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get ciDeleteBody =>
-      'Esto borra el contacto, todos los mensajes y todos los adjuntos de ESTE dispositivo. No hay copia en ningún servidor desde la que restaurar; esa es la idea.';
+      'Esto borra de ESTE dispositivo el contacto y tu chat con esa persona, con todos sus adjuntos. Lo que el chat de un grupo guarde de esa persona se queda en ese chat. No hay copia en ningún servidor desde la que restaurar; esa es la idea.';
+
+  @override
+  String ciDeleteBodyInGroups(int count, String groups) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other:
+          'Esto borra de ESTE dispositivo el contacto y tu chat con esa persona, con todos sus adjuntos, pero no lo que los grupos $groups guardan de ella: borrar un contacto no saca a nadie de un grupo.',
+      one:
+          'Esto borra de ESTE dispositivo el contacto y tu chat con esa persona, con todos sus adjuntos, pero no lo que el grupo $groups guarda de ella: borrar un contacto no saca a nadie de un grupo.',
+    );
+    return '$_temp0 Como un grupo sigue nombrando a sus miembros, este dispositivo conserva su id de enrutamiento, su clave pública y su nombre en el registro de cada grupo; y mientras siga en un grupo, un cambio que haga en él otra persona —o tú desde otro dispositivo— la vuelve a añadir como contacto, como a cualquier miembro. Quitarla del grupo, o salir de él, la borra de su registro. Lo que el chat de un grupo guarde de esa persona se queda en ese chat. No hay copia en ningún servidor desde la que restaurar; esa es la idea.';
+  }
 
   @override
   String get ciBlurbClassical =>
@@ -1971,4 +1984,126 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get grpRename => 'Cambiar el nombre del grupo';
+
+  @override
+  String sysPromotedYou(String name) {
+    return 'Hiciste administrador a $name.';
+  }
+
+  @override
+  String sysDemotedYou(String name) {
+    return 'Quitaste a $name como administrador.';
+  }
+
+  @override
+  String sysTransferredYou(String name) {
+    return 'Hiciste propietario del grupo a $name.';
+  }
+
+  @override
+  String sysPromotedBy(String by, String name) {
+    return '$by hizo administrador a $name.';
+  }
+
+  @override
+  String sysPromotedMeBy(String by) {
+    return '$by te hizo administrador.';
+  }
+
+  @override
+  String sysDemotedBy(String by, String name) {
+    return '$by quitó a $name como administrador.';
+  }
+
+  @override
+  String sysDemotedMeBy(String by) {
+    return '$by te quitó como administrador.';
+  }
+
+  @override
+  String sysOwnerBy(String by, String name) {
+    return '$by hizo propietario del grupo a $name.';
+  }
+
+  @override
+  String sysOwnerMeBy(String by) {
+    return '$by te hizo propietario del grupo.';
+  }
+
+  @override
+  String sysSteppedDown(String name) {
+    return '$name ya no es administrador.';
+  }
+
+  @override
+  String sysChangeOverriddenBy(String by) {
+    return 'El cambio de $by en el grupo sustituyó al tuyo, que no se mantuvo. Vuelve a hacerlo si aún lo quieres.';
+  }
+
+  @override
+  String get sysChangeOverriddenMine =>
+      'Un cambio hecho en tu otro dispositivo en ese mismo momento sustituyó a este, que no se mantuvo. Vuelve a hacerlo si aún lo quieres.';
+
+  @override
+  String get grpYouOwner => 'Tú (propietario)';
+
+  @override
+  String get grpOwner => 'propietario';
+
+  @override
+  String get grpChangeRole => 'Cambiar el rol';
+
+  @override
+  String get grpMakeAdmin => 'Hacer administrador';
+
+  @override
+  String get grpRemoveAdmin => 'Quitar como administrador';
+
+  @override
+  String get grpMakeOwner => 'Hacer propietario';
+
+  @override
+  String grpTransferTitle(String name) {
+    return '¿Hacer propietario a $name?';
+  }
+
+  @override
+  String grpTransferBody(String name) {
+    return '$name será la única persona que pueda cambiar quiénes son los administradores. No puedes deshacerlo: solo el nuevo propietario puede devolvértelo.';
+  }
+
+  @override
+  String get grpTransferKeepAdmin => 'Seguir como administrador';
+
+  @override
+  String get grpLeaveOwnerTitle => 'Eres el propietario de este grupo';
+
+  @override
+  String get grpLeaveOwnerBody =>
+      'Si sales ahora, nadie podrá cambiar quiénes son los administradores. Los administradores podrán seguir añadiendo, quitando y cambiando el nombre. ¿Quieres nombrar antes a otro propietario?';
+
+  @override
+  String get grpLeaveAnyway => 'Salir de todos modos';
+
+  @override
+  String get grpTransferFirst => 'Transferir la propiedad';
+
+  @override
+  String get grpPickNewOwner => 'Nuevo propietario';
+
+  @override
+  String get grpRolesOnMainDevice =>
+      'Los administradores y la propiedad del grupo solo se pueden cambiar en tu dispositivo principal.';
+
+  @override
+  String get grpAdminNotMember => 'administrador, ya no está en el grupo';
+
+  @override
+  String get grpLeaveOwnerBodyLinked =>
+      'Si sales ahora, nadie podrá cambiar quiénes son los administradores. Los administradores aún podrán añadir, quitar y cambiar el nombre. Para ceder el grupo antes, usa tu dispositivo principal.';
+
+  @override
+  String grpTransferOldBuild(String name) {
+    return 'Si $name aún tiene una versión de Z anterior a los administradores de grupo, nadie podrá cambiar quiénes son los administradores hasta que la actualice.';
+  }
 }

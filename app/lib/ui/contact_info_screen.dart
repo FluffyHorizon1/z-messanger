@@ -289,11 +289,20 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             title: Text(l.ciDeleteContact,
                 style: TextStyle(color: context.z.danger)),
             onTap: () async {
+              // Deleting a contact takes nobody out of a group: a group I
+              // am in that names them goes on doing so, and the dialog says
+              // what that keeps (`contact_erasure_test` 6).
+              final shared = svc.groupsNaming(widget.rid);
               final sure = await showDialog<bool>(
                 context: context,
                 builder: (ctx) => AlertDialog(
                   title: Text(l.ciDeleteTitle),
-                  content: Text(l.ciDeleteBody),
+                  content: SingleChildScrollView(
+                    child: Text(shared.isEmpty
+                        ? l.ciDeleteBody
+                        : l.ciDeleteBodyInGroups(shared.length,
+                            shared.map((g) => g.name).join(', '))),
+                  ),
                   actions: [
                     TextButton(
                         onPressed: () => Navigator.pop(ctx, false),

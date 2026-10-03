@@ -644,10 +644,11 @@ Unknown kinds MUST be ignored.
 | `read` | `mids:[string]` | read receipts |
 | `dlv` | `mids:[string]` | end‑to‑end delivery receipts (§6.3) |
 | `devlist` | `list:string` (the JSON of §3.4, as a string) | account device‑set update |
-| `ginvite` | `gid, name, ver:int, members:[{ "b":ContactBundleJSON, "n":string }]` | group create/update (§11) |
+| `ginvite` | `gid, name, ver:int, members:[{ "b":ContactBundleJSON, "n":string }]`, opt. `owner:string, admins:[string], rv:int` | group create/update (§11); `owner`/`admins` = who may issue lists, `rv` = the version of those roles — left out while the group's roles have never changed (§11.1) |
 | `gmsg` | `gid, body`, opt. `rt` | group text (§11) |
 | `gfile` | `gid` + the `file` members, opt. `rt` | group attachment offer (§7, §11) |
 | `gleave` | `gid` | sender left the group (§11) |
+| `gsync` | `gid` | "send me what you hold for this group": asked by a member that had to refuse a list, of the owner and of any admin it may have missed the leave of (§11.1); answered with the asked admin's `ginvite`, and its `gleave` if it has left |
 | `pqek` | `alg:"ML-KEM-768", ek:b64` | v2 post‑quantum key offer (§17); consumed by the session layer, never shown |
 | `pqid` | `alg:"ML-DSA-65", pk:b64`, opt. `ack:true` | v3 post‑quantum identity key (§18.2); checked against the commitment from the scanned code, or kept as a candidate when none is held. `ack` = the sender holds the receiver's key |
 | `pqack` | — | the sender holds the receiver's post‑quantum key (§18.2); the `ack` above without a key, for when no `pqid` is going out to carry it |
@@ -1100,27 +1101,221 @@ tell group messages from direct ones.
   `ginvite` naming ANOTHER contact's routing id and take that conversation
   over: its title and membership became the inviter's to choose, and every
   warning drawn only for a 1:1 stopped being drawn. The creator is the
-  **admin** for the group's life.
+  group's first **owner** (§11.1).
 * `ginvite` carries the full member list (verified `zc1.` bundles plus display
-  names) at membership version `ver`. A receiver accepts a `ginvite` for a
-  known group only from the admin and only with `ver` strictly greater than
-  its current version; for an unknown group it creates it with the sender as
-  admin. Unknown members are auto‑added as contacts (unverified) so the
-  receiver can decrypt from them. A list that no longer includes the receiver
-  means they were removed.
+  names) at membership version `ver` — and, once the group's roles have ever
+  changed, who may issue the next one (`owner`, `admins`, at roles version
+  `rv`, §11.1). A member is an ACCOUNT: a receiver maps each bundle's
+  routing id to the contact it holds for that account (any of its devices,
+  as the device lists it has installed say — first come, §3.4) and to itself
+  for any device of its own account, and the sender of a
+  list is a member whether or not the list carries an entry for it — a
+  linked device writes none for itself, since the binding signature of its
+  account's root device is not its to make. A receiver applies a `ginvite`
+  for a known group only under §11.1's rules; for an unknown group it
+  creates it as the list describes, the sender being trusted by
+  construction. Unknown members are auto‑added as contacts (unverified) so
+  the receiver can decrypt from them — only once the list is accepted. A
+  list that no longer includes the receiver means they were removed.
 * `gmsg` is accepted only from a current member of a known, not‑left group.
 * `gfile` is a group attachment offer under the same rule: one file key and
   one set of chunks (§7), the offer sent to every member over their pairwise
   session and the chunks queued for every member's mailbox. A member removed
   before a send never receives the key.
-* `gleave` removes the sender from the receiver's copy of the list; the admin
-  bumps `ver` so later invites exclude them.
+* `gleave` removes the sender from the receiver's copy of the list and
+  changes nothing else: not `ver`, not who issued the list held, not the
+  roles (§11.1). (Before ADR 0019 the admin bumped `ver` here. With more than
+  one admin that holds one list at two versions — ahead on admins' devices —
+  and a co‑admin's change made before it heard of the leave is refused by
+  every admin and taken by every member.)
+* A `ginvite` or `gleave` goes to each member like any other group message,
+  and an implementation SHOULD record it for every recipient before sending
+  any (the reference client queues it in `group_fanout`, §11's fan‑out,
+  15.3): sent member by member with nothing written down, an interruption
+  loses the remaining recipients, and with several admins a member that
+  never gets a list can refuse every later list built on it (§11.1).
+* `gsync` asks a member for what it holds for the group (§11.1). It is
+  answered only to someone the answering device holds as a member (or held
+  when it left), once per list it holds.
 
 Consequences an implementer must preserve: membership authenticity rests on
-the admin's pairwise channel; a removed member keeps the history they already
-received but every remaining member rejects anything they send afterwards; a
-message reaches the members the sender's current list names, so two members
-with different versions can briefly disagree.
+the pairwise channel of an admin the receiver holds; a removed member keeps
+the history they already received but every remaining member rejects anything
+they send afterwards; a message reaches the members the sender's current list
+names, so two members with different versions can briefly disagree — and an
+admin's list issued before it heard of a leave names the leaver, so it puts
+them back, on the leaver's own device as on everyone's (THREAT_MODEL R38).
+
+### 11.1 Roles (ADR 0019)
+
+A group has an **owner** and a set of **admins** that always includes the
+owner. Any admin may add members, remove members who are not admins, and
+rename. Only the owner may change `owner` or `admins` — promote, demote,
+transfer ownership — or remove an admin, which takes their role in the same
+list; and only from its device that holds the account root (below). Who holds
+which role travels in the list itself:
+
+* `owner` — the owner's routing id; `admins` — the routing ids of every
+  admin, the owner included; `rv` — the **roles version**, which the owner
+  moves on with every change to `owner` or `admins` and which nobody else
+  may move. A sender names everyone else by the routing id it holds them
+  under, and itself by the routing id of the device it sends from — the one
+  id of it that every receiver able to take the list has already mapped,
+  since it mapped the sender; its account's root id is known only to those
+  holding its device list, and not to a member who adopted it from a list
+  under another device's id (§18.7). A receiver maps each id in `owner` and
+  `admins` as it maps member bundles (§11): to the contact it holds for
+  that account, or to itself. Each MUST be 43 base64url characters, and a
+  receiver MUST refuse a list in which one is not — an empty `owner`,
+  mapped as an id of one's own, made every receiver its owner. All three
+  are **optional** members of an existing inner kind (§14: no version
+  bump). An invite carrying none is read as `owner = sender, admins =
+  {sender}, rv = 0` — what it meant when a client before ADR 0019 sent it.
+  A list whose `ver` or `rv` is not a whole number, or whose `name` or
+  `members` is not the type §6.2 gives it, is refused too — refused, not
+  failed on: a receiver that throws on it inside the step that acknowledges
+  the envelope is handed it again for ever. So is a list with more than
+  1 024 entries in `members` or in `admins`: more than the reference relay
+  can carry at all (its frame cap admits a list in the 262 144‑byte bucket
+  at most, fewer than 900 member entries even with empty names), and a
+  bound on what one list costs a receiver — a signature check per entry,
+  again for every list held back each time the held list changes.
+* A sender therefore writes them only when they say something their absence
+  does not: the **owner** of a group whose roles have never changed (it is
+  the only admin and `rv` is 0) leaves all three out, so its lists are byte
+  for byte what a client before ADR 0019 sends, and the relay sees the
+  envelope it always saw. Every other list carries all three — the owner's
+  too, once `rv` has moved, even if the admins are back to the owner alone,
+  since an omission would read as `rv` 0. Receivers need no rule for this:
+  anyone else who leaves them out is claiming "I own the group and am its
+  only admin, at roles version 0", which the rules below refuse exactly as
+  they refuse that claim written out — stale where `rv` has moved, held back
+  where it has not, the sender not being in the admin set held.
+* Lists are ordered by `(rv, ver, by)`, `by` being the sender. Within one
+  `rv` the owner and the admins are fixed. At equal `rv` and `ver` the
+  **owner**'s list outranks every other admin's; otherwise — two co‑admins
+  changing the group at once, one admin on two of its devices before they
+  have synced, the owner's own two lists — the one whose **digest** sorts
+  first wins, whoever sent it. The
+  digest is computed from the list as it travels, so every receiver
+  computes the same one, however it holds the sender; the same list again
+  has the same digest and changes nothing. Ranking two admins by their
+  routing ids, as this section first did, could not be made to agree: a
+  person's routing id is the device a receiver holds them under, and which
+  ACCOUNT a contact is — what would make it agree — is known only for one
+  added from a code that says so (§18.7), not for one adopted from a list.
+  A co‑admin can shape a list (its name, say) so that its digest sorts
+  first; that wins it a tie and nothing it could not get by issuing the
+  next version. The digest is SHA‑256 over the UTF‑8 bytes of a canonical
+  JSON text, written as the unpadded base64url of the 32 bytes; two compare
+  as ASCII strings, in plain byte order. The text is pinned byte for byte:
+  - the JSON array `[gid, name, ver, rv, owner, admins, members]`, in that
+    order: each field as the list carries it, and `null` where the list
+    leaves it out (a list without roles has `null` for `rv`, `owner` and
+    `admins`);
+  - `admins` is its strings, sorted; `members` is replaced by the `ed`
+    string of each entry whose `b` is an object with a string `ed`, sorted
+    — display names and the bundles' other fields are left out. Strings
+    sort by UTF‑16 code unit, which for the ASCII an honest list carries is
+    plain byte order;
+  - no whitespace anywhere; `ver` and `rv` are JSON integers in plain
+    decimal (a list whose versions are not whole numbers was refused
+    above);
+  - in a string, `"` and `\` are written `\"` and `\\`; U+0008, U+0009,
+    U+000A, U+000C and U+000D are written `\b`, `\t`, `\n`, `\f` and `\r`;
+    every other code point below U+0020, and every unpaired surrogate, is
+    written `\u` and four lowercase hex digits; nothing else is escaped —
+    not `/`, not U+007F, not U+2028, not anything beyond ASCII, which is
+    written as itself.
+
+  `docs/vectors/v1/inner_messages.json` (`group_list_digests`) records the
+  text, its bytes and the digest for three lists, one of them needing every
+  escape above; `server/test/vectors.test.js` re-derives all three from this
+  section alone, in JavaScript, sharing no code with the client.
+* The roles move on **one device per account**: the owner's device that holds
+  the account root (§3), the one that links the others, alone promotes,
+  demotes, transfers or removes an admin; the owner's other devices may
+  still add, remove and rename. Two devices of one owner each opening the
+  same `rv`, each with roles of its own, would leave the members holding one
+  refusing every list built on the other, for good — the next roles version
+  could only come from an owner the two halves no longer agree on. A
+  receiver cannot tell which device of an account sent a list it was handed
+  by its own other device, and does not try: an honest client never opens a
+  roles version twice.
+* A receiver holding the group applies a `ginvite` only if, in this order:
+  1. **it is newer**, by that order;
+  2. **its sender may issue one**: the sender is in the held list's `admins`
+     AND a member of the held list (or is the receiver's own account, not
+     having left). A demoted admin is not in the set, so a list they issue on
+     the strength of an older one — including one putting themselves back —
+     is refused wherever the demotion has arrived. An admin who left or was
+     removed keeps the role in the list but cannot use it until an admin adds
+     them back; an owner who leaves therefore freezes the admin set;
+  3. **the roles are the owner's**: a list at a higher `rv` than the one held
+     is accepted only from the held owner; a list at the held `rv` must name
+     the same `owner` and the same `admins`, and keep every admin who is a
+     member of the held list a member. The one exception is a list from the
+     held list's own sender at the held list's own `(rv, ver)` when the held
+     list opened that `rv`: it is that owner's other opening of the same
+     roles version (two of its devices, or a modified client), ranked against
+     its twin by digest rather than refused by the twin's roles — so every
+     member keeps the same one of the two.
+* A list failing 1 is discarded. A list failing 2 or 3 is not applied, but a
+  receiver SHOULD keep it — across restarts; one per sender, that sender's
+  newest; not at all from someone who is not in the group as the receiver
+  holds it — and try it again whenever its held list changes: envelopes from
+  different senders are not ordered, so the list it rests on — the owner's
+  promotion of its sender, a leave it reflects — may simply not have
+  arrived yet. Trying it later is what a later delivery would have done; a
+  list that never passes is never applied. A list that passes replaces the
+  held one wholesale. Nothing is merged and nothing rolled back.
+* **Asking for what never arrived** (`gsync`, §6.2). Delivery is not
+  guaranteed — the reference relay keeps an envelope 72 hours, in memory —
+  and since roles a list that never arrives is not always healed by the
+  next one: a member that missed an admin's leave holds that admin as an
+  admin in the group, and refuses every list the others issue without them.
+  So a receiver that refuses a list for check 2 or 3 SHOULD ask, once until
+  its held list changes: the held owner — whose current list carries any
+  promotion, transfer or demotion that never arrived — and every admin that
+  is a member of its held list and missing from the refused one. A device
+  asked answers someone it holds as a member (or held, when it left), once
+  per list it holds: an admin, one that has left included, with the list it
+  holds; and a device that has left with its `gleave`, after that list. The
+  answer is an ordinary list from the answering account, judged like any
+  other. A device never answers with a list that leaves out someone the
+  list it held names: one that has since let go of someone in a group it is
+  out of — the reference client does, for a contact deleted while out of
+  the group or before leaving it — answers with its `gleave` alone. An
+  admin that can never answer — it left, and is gone for good — leaves such
+  a member where it is (THREAT_MODEL R38).
+* Why `rv`, and not `(ver, by)` alone: an admin chooses whom it sends a list
+  to. A co‑admin that sends its lists to everyone but the owner moves every
+  member's `ver` ahead of the owner's, and the owner — never sent them — has
+  no way to know. Under `(ver, by)` alone the owner's demotion of that
+  co‑admin is then older than what every member holds, and is discarded
+  everywhere. Ordered by `rv` first, an owner's change to the roles outranks
+  any version a co‑admin has reached, and replaces what it sent.
+* An admin whose own list is replaced — at any version — by one that undoes
+  what its list did (a member it added is missing, one it removed is back,
+  the name it gave is gone) learns that its change did not stand (the
+  reference client says so in the chat) and makes it again on the list now
+  held. A co‑admin's second quick change, built on its own first, is a
+  version above the owner's and carries none of it: two admins are enough
+  for that. Only the replacement of the admin's own list is checked: a
+  change carried forward by one admin and then overtaken, at that same
+  version, by a third admin's list that never saw it is not reported.
+* A client from before ADR 0019 ignores `owner`, `admins` and `rv` and accepts
+  lists only from whoever sent its first invite. Added by a co‑admin, it takes
+  that co‑admin as its only admin and drops every list the owner sends; added
+  by the owner, it drops every co‑admin's list and catches up at the owner's
+  next one. This drift is accepted (ADR 0019); such builds are shown the
+  version notice (ADR 0014). THREAT_MODEL R38.
+* Size: a group whose roles have never changed sends exactly what it sent
+  before ADR 0019. Otherwise the three members cost a fixed ~455 bytes of
+  sealed envelope with three admins — one member entry — so an invite fits
+  the 4 096‑byte bucket up to 6 members (7 for a group with no role changes)
+  and needs the 16 384‑byte bucket from there;
+  `app/test/group_roles_test.dart` 11 prints the table.
 
 ## 12. Relay protocol
 
@@ -1471,9 +1666,10 @@ known‑answer‑test technique); production builds have no such hook exposed.
 * **Sealed sender is unauthenticated by design** (§8); the inner layer
   authenticates. A relay can therefore inject garbage that costs the recipient
   a failed decryption — a denial‑of‑service, not a confidentiality issue.
-* **Group membership is admin‑asserted** over the admin's authenticated
-  channel (§11); there is no cryptographic group state, so no post‑compromise
-  security beyond the pairwise sessions' own.
+* **Group membership is admin‑asserted** over an admin's authenticated
+  channel (§11) — the owner's, or a co‑admin's the owner promoted (§11.1);
+  there is no cryptographic group state, so no post‑compromise security
+  beyond the pairwise sessions' own.
 * **Device lists are account‑signed** (§3.4). A compromised account seed can
   enroll devices; revocation is a new list at a higher version and reaches
   contacts only when they next receive it.

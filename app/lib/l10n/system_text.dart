@@ -60,6 +60,23 @@ String systemText(AppLocalizations l, String body) {
     SystemKind.memberLeft => m['name'] is String
         ? l.sysMemberLeft(m['name'] as String)
         : l.sysUnknownMemberLeft,
+    // Roles (ADR 0019).
+    SystemKind.promotedYou => l.sysPromotedYou(s('name', l.sysAMember)),
+    SystemKind.demotedYou => l.sysDemotedYou(s('name', l.sysAMember)),
+    SystemKind.transferredYou => l.sysTransferredYou(s('name', l.sysAMember)),
+    SystemKind.promotedBy =>
+      l.sysPromotedBy(s('by', l.sysSomeone), s('name', l.sysAMember)),
+    SystemKind.promotedMeBy => l.sysPromotedMeBy(s('by', l.sysSomeone)),
+    SystemKind.demotedBy =>
+      l.sysDemotedBy(s('by', l.sysSomeone), s('name', l.sysAMember)),
+    SystemKind.demotedMeBy => l.sysDemotedMeBy(s('by', l.sysSomeone)),
+    SystemKind.ownerBy =>
+      l.sysOwnerBy(s('by', l.sysSomeone), s('name', l.sysAMember)),
+    SystemKind.ownerMeBy => l.sysOwnerMeBy(s('by', l.sysSomeone)),
+    SystemKind.steppedDown => l.sysSteppedDown(s('name', l.sysSomeone)),
+    SystemKind.changeOverriddenBy =>
+      l.sysChangeOverriddenBy(s('by', l.sysSomeone)),
+    SystemKind.changeOverriddenMine => l.sysChangeOverriddenMine,
     // A kind this build does not know — written by a newer one. The stored
     // object is the only thing there is to show; better than nothing, and
     // it says plainly that something happened here.

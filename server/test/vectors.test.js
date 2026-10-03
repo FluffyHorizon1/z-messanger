@@ -782,7 +782,12 @@ const INNER_SCHEMA = {
   gedit: ['gid', 'rt', 'body'],
   del: ['mids'], // 8.1c delete-for-everyone of the sender's own messages
   gdel: ['gid', 'mids'],
+  gsync: ['gid'], // ADR 0019: a member asking for what it lacks — keyless
 };
+
+// §11.1: a routing id as `owner` and `admins` carry one — 43 base64url
+// characters, never empty.
+const RID = /^[A-Za-z0-9_-]{43}$/;
 
 test('inner messages: every kind parses with its required fields', () => {
   const v = load('inner_messages');
@@ -823,6 +828,18 @@ test('inner messages: every kind parses with its required fields', () => {
         assert.ok(typeof m2 === 'string' && m2.length <= 64, 'an id');
       }
     }
+    // §11.1: a list's roles, where it carries them, are routing ids and a
+    // whole roles version — the owner among the admins.
+    if (j.k === 'ginvite' && 'owner' in j) {
+      assert.ok(RID.test(j.owner), 'owner is a routing id');
+      assert.ok(Array.isArray(j.admins) && j.admins.every((a) => RID.test(a)));
+      assert.ok(j.admins.includes(j.owner), 'the owner is an admin');
+      assert.ok(Number.isInteger(j.rv) && j.rv >= 0, 'rv is a whole number');
+    }
+    // §6.2: `gsync` says which group and nothing else.
+    if (j.k === 'gsync') {
+      assert.deepEqual(Object.keys(j).sort(), ['gid', 'k', 'mid', 'ts']);
+    }
     // A forward marker is a boolean flag, never a provenance claim about who
     // originally wrote the message.
     if ('fw' in j) {
@@ -847,6 +864,42 @@ test('inner messages: every kind parses with its required fields', () => {
   const s = JSON.parse(v.sync_envelope.json);
   assert.deepEqual(Object.keys(s), ['thread', 'dir', 'inner']);
   assert.equal(JSON.parse(unb64(s.inner).toString('utf8')).k, 'text');
+});
+
+// §11.1: the digest that ranks two lists at one (rv, ver), re-derived from
+// the section's words: the compact JSON of [gid, name, ver, rv, owner,
+// admins, members] — each as the list carries it, null where it leaves it
+// out; admins sorted; members replaced by their entries' `ed` strings,
+// sorted — strings sorted by UTF-16 code unit (what `sort()` does) and
+// escaped as JSON.stringify escapes them, which is the escaping §11.1 pins
+// (`"` and `\`, the five short control escapes, \u00xx for the rest below
+// U+0020 and for an unpaired surrogate, nothing else); then SHA-256 over the
+// UTF-8 and unpadded base64url. One of the three lists needs every escape.
+test('group list digests: canonical JSON and SHA-256, from §11.1 alone', () => {
+  const v = load('inner_messages');
+  assert.equal(v.group_list_digests.length, 3);
+  for (const d of v.group_list_digests) {
+    const l = JSON.parse(d.list);
+    const members = (Array.isArray(l.members) ? l.members : [])
+      .filter((m) => m && typeof m.b === 'object' && m.b && typeof m.b.ed === 'string')
+      .map((m) => m.b.ed)
+      .sort();
+    const admins = Array.isArray(l.admins)
+      ? l.admins.filter((a) => typeof a === 'string').sort()
+      : null;
+    const canonical = JSON.stringify([
+      l.gid ?? null,
+      l.name ?? null,
+      l.ver ?? null,
+      l.rv ?? null,
+      l.owner ?? null,
+      admins,
+      members,
+    ]);
+    assert.equal(canonical, d.canonical);
+    assert.equal(hex(utf8(canonical)), d.canonical_hex);
+    assert.equal(b64url(sha256(utf8(canonical))), d.digest);
+  }
 });
 
 // ===========================================================================
