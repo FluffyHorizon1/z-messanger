@@ -623,6 +623,11 @@ class KeyTransparency {
     host.ktChanged();
   }
 
+  /// The fingerprint recorded for [version] of this device's own account, if
+  /// one is. The service never records a second one for a version
+  /// (`_recordOwnList`); this is what it asks first.
+  String? knownOwnFingerprint(int version) => _knownOwn[version];
+
   /// The service records every list this device signed or learned for its
   /// own account, so an entry in the log's history that is none of them can
   /// be told apart from one this device simply issued.

@@ -4859,19 +4859,25 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   /// Persist a newly-linked device of MY account and (re)build the sync channel.
   Future<void> addMyDevice(DeviceCertificate cert) async {
-    final list = await _myDevices();
-    final isNew = !list.any(
-        (d) => base64Encode(d.deviceEdPub) == base64Encode(cert.deviceEdPub));
-    if (isNew) {
-      list.add(cert);
-      await vault.kvPut(
-          'my_devices', jsonEncode([for (final d in list) d.toJson()]),
-          sensitive: false);
-      await vault.kvPut(
-          'my_devlist_version', '${(await _myDevlistVersion()) + 1}',
-          sensitive: false);
-      _forgetOwnListClaim(); // after the writes; see _recordOwnList
-    }
+    // The device set and its version change together, under the lock a
+    // signer reads them under ([_signCurrentDeviceList]); the broadcast below
+    // takes it again for the signing, after this has let it go.
+    final isNew = await _withOwnListLock(() async {
+      final list = await _myDevices();
+      final isNew = !list.any((d) =>
+          base64Encode(d.deviceEdPub) == base64Encode(cert.deviceEdPub));
+      if (isNew) {
+        list.add(cert);
+        await vault.kvPut(
+            'my_devices', jsonEncode([for (final d in list) d.toJson()]),
+            sensitive: false);
+        await vault.kvPut(
+            'my_devlist_version', '${(await _myDevlistVersion()) + 1}',
+            sensitive: false);
+        _forgetOwnListClaim(); // after the writes; see _recordOwnList
+      }
+      return isNew;
+    });
     await _initSync();
     await broadcastMyDeviceList(); // tell contacts about the new device
     // 7.6b: a device that just joined starts with the recent history instead
@@ -5014,18 +5020,23 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// reject anything it sends. Only a root-holding device can do this.
   Future<void> removeMyDevice(DeviceCertificate cert) async {
     if (!await holdsAccountRoot()) return;
-    final list = await _myDevices();
-    final before = list.length;
-    list.removeWhere(
-        (d) => base64Encode(d.deviceEdPub) == base64Encode(cert.deviceEdPub));
-    if (list.length == before) return; // nothing matched
-    await vault.kvPut(
-        'my_devices', jsonEncode([for (final d in list) d.toJson()]),
-        sensitive: false);
-    await vault.kvPut(
-        'my_devlist_version', '${(await _myDevlistVersion()) + 1}',
-        sensitive: false);
-    _forgetOwnListClaim(); // after the writes; see _recordOwnList
+    // Under the signer's lock, as in [addMyDevice].
+    final removed = await _withOwnListLock(() async {
+      final list = await _myDevices();
+      final before = list.length;
+      list.removeWhere((d) =>
+          base64Encode(d.deviceEdPub) == base64Encode(cert.deviceEdPub));
+      if (list.length == before) return false; // nothing matched
+      await vault.kvPut(
+          'my_devices', jsonEncode([for (final d in list) d.toJson()]),
+          sensitive: false);
+      await vault.kvPut(
+          'my_devlist_version', '${(await _myDevlistVersion()) + 1}',
+          sensitive: false);
+      _forgetOwnListClaim(); // after the writes; see _recordOwnList
+      return true;
+    });
+    if (!removed) return;
     // Whatever was still queued for that device — mirrors, history — is
     // not delivered to it. Removing it is the statement that it is no longer
     // mine; the outbox being durable must not turn a link that was down at
@@ -6308,9 +6319,11 @@ class ChatService extends ChangeNotifier implements KtHost {
       return;
     }
     _v2MigrationDone = true; // set before the awaits so nothing re-enters
-    final cur = await _myDevlistVersion();
-    await vault.kvPut('my_devlist_version', '${cur + 1}', sensitive: false);
-    _forgetOwnListClaim();
+    await _withOwnListLock(() async {
+      final cur = await _myDevlistVersion();
+      await vault.kvPut('my_devlist_version', '${cur + 1}', sensitive: false);
+      _forgetOwnListClaim();
+    });
     // Sign + record + queue the log publish now (local and durable) so the rest
     // of start-up sees the v2 state; hand it to my devices and contacts in the
     // background through the durable outbox.
@@ -6407,10 +6420,12 @@ class ChatService extends ChangeNotifier implements KtHost {
       } catch (_) {}
     }
     if (!_signerV2Only) return; // the move, and only the move, waits on it
-    final cur = await _myDevlistVersion();
-    await vault.kvPut('my_devlist_version', '${cur + 1}', sensitive: false);
-    _forgetOwnListClaim();
-    _signsV2Only = true;
+    await _withOwnListLock(() async {
+      final cur = await _myDevlistVersion();
+      await vault.kvPut('my_devlist_version', '${cur + 1}', sensitive: false);
+      _forgetOwnListClaim();
+      _signsV2Only = true;
+    });
     // Signed, recorded as this device's own and queued for the log here, so
     // the rest of start-up sees the new list; delivered in the background,
     // through the durable outbox, as the 0010 migration's was.
@@ -6434,38 +6449,111 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   /// Sign the account's current device set at the current version (root
   /// only; null elsewhere) and record it as this device's own-list knowledge.
+  ///
+  /// Under [_ownListLock], from reading the device set to recording what was
+  /// signed, so a list is always one snapshot. The set and the version are
+  /// two rows, read one after the other here and written one after the
+  /// other when a device is linked or removed, and this is called from paths
+  /// that run whenever they run — the re-send to a contact whose echo is
+  /// behind, the hello's list, the re-assertion on every reconnect, the log
+  /// check's baseline. One of them caught between a link's two writes signed
+  /// the version before the link with the link's device set (or the reverse)
+  /// and recorded it, over the genuine list already published at that
+  /// version; after a restart the self-monitor found the genuine entry in
+  /// the log, judged it never issued, and said so — the alarm that tells a
+  /// user to reset their identity. Measured on 50d9786: 2 rounds in 12 of a
+  /// device linked while a re-send was in flight.
+  ///
+  /// The lock is held for the signing and the record, not for any send: the
+  /// callers send what this returns, outside it.
   Future<String?> _signCurrentDeviceList() async {
     final me = await accountIdentity();
     if (!me.holdsAccountRoot) return null;
-    // Dual-signed, as in stage 1, unless this account has been moved to
-    // v2-only signing ([_signsV2Only]); the fingerprint and the ML-DSA below
-    // follow whichever the list is (`SignedDeviceList.commitmentInput`).
-    final list = await me.signDeviceList(
-        await myFullDeviceList(), await _myDevlistVersion(),
-        v2Only: _signsV2Only);
-    // §18.9: the same bytes, signed again under ML-DSA-65. Computed here so
-    // it always exists for the list that exists — but NOT sent here. It
-    // travels on its own schedule (`_deliverPqListSignatures`), which is what
-    // stops a 16 KB envelope marking the moment a device set changed.
-    await _signListPostQuantum(list);
-    // 7.7a: this device now KNOWS the latest legitimate (version, fingerprint)
-    // of its own account — record it so an echo from a contact carrying a list
-    // this device never issued stands out (owner rule).
-    await _recordOwnList(list);
-    final json = jsonEncode(list.toJson());
-    // 7.7b: the same list goes to the log (ADR 0006), through a durable
-    // queue; a version the log already holds is skipped by the client.
-    final seed = me.accountEdSeed;
-    if (seed != null) {
-      unawaited(kt.publishOwnList(
-        accountEdSeed: seed,
-        accountEdPub: me.accountEdPub,
-        version: list.version,
-        fp: await list.fingerprint(),
-        listJson: json,
-      ));
-    }
-    return json;
+    return _withOwnListLock(() async {
+      // Dual-signed, as in stage 1, unless this account has been moved to
+      // v2-only signing ([_signsV2Only]); the fingerprint and the ML-DSA
+      // below follow whichever the list is
+      // (`SignedDeviceList.commitmentInput`).
+      final devices = await myFullDeviceList();
+      await debugBetweenOwnListReads?.call();
+      final list = await me.signDeviceList(devices, await _myDevlistVersion(),
+          v2Only: _signsV2Only);
+      final fp = await list.fingerprint();
+      // A version keeps the list it was first recorded with (§19.8). Signing
+      // one under another fingerprint is a bug in this device, never a state
+      // to accept: loud where it can be, and nothing sent where it cannot —
+      // the callers fall back to the list on record, or send nothing.
+      if (_ownVersionRecordedOtherwise(list.version, b64(fp))) {
+        assert(
+            false,
+            'own device list v${list.version} signed into a second '
+            'fingerprint; the first record stands');
+        return null;
+      }
+      // §18.9: the same bytes, signed again under ML-DSA-65. Computed here so
+      // it always exists for the list that exists — but NOT sent here. It
+      // travels on its own schedule (`_deliverPqListSignatures`), which is
+      // what stops a 16 KB envelope marking the moment a device set changed.
+      await _signListPostQuantum(list);
+      // 7.7a: this device now KNOWS the latest legitimate (version,
+      // fingerprint) of its own account — record it so an echo from a contact
+      // carrying a list this device never issued stands out (owner rule).
+      await _recordOwnList(list);
+      final json = jsonEncode(list.toJson());
+      // 7.7b: the same list goes to the log (ADR 0006), through a durable
+      // queue; a version the log already holds is skipped by the client.
+      final seed = me.accountEdSeed;
+      if (seed != null) {
+        unawaited(kt.publishOwnList(
+          accountEdSeed: seed,
+          accountEdPub: me.accountEdPub,
+          version: list.version,
+          fp: fp,
+          listJson: json,
+        ));
+      }
+      return json;
+    });
+  }
+
+  /// The lock key every read-sign-record of this account's own list holds,
+  /// and every write of the two rows it reads — `my_devices` and
+  /// `my_devlist_version` — holds too. Not a conversation's lock ([_withLock]
+  /// is keyed by string, and this is its own key), and never held across a
+  /// send: [_withLock] is not re-entrant, and [broadcastMyDeviceList] calls
+  /// [_signCurrentDeviceList], which takes it.
+  static const String _ownListLock = 'ownlist';
+
+  /// [_withLock] on [_ownListLock], counting callers that found it held and
+  /// are waiting for it.
+  Future<T> _withOwnListLock<T>(Future<T> Function() op) {
+    final held = _locks.containsKey(_ownListLock);
+    if (held) _ownListWaiting++;
+    return _withLock(_ownListLock, () {
+      if (held) _ownListWaiting--;
+      return op();
+    });
+  }
+
+  int _ownListWaiting = 0;
+
+  /// Test seam: whether anything found the own-list lock held and is waiting
+  /// for it — so a test can see a link queued behind a signing rather than
+  /// guess how long to give it.
+  @visibleForTesting
+  bool get debugOwnListWaiting => _ownListWaiting > 0;
+
+  /// Test seam: run inside [_signCurrentDeviceList], under its lock, between
+  /// reading the device set and reading the version — the gap a link's two
+  /// writes used to fall into.
+  @visibleForTesting
+  Future<void> Function()? debugBetweenOwnListReads;
+
+  /// Whether [version] of this account's list is already recorded under a
+  /// fingerprint other than [fpB64].
+  bool _ownVersionRecordedOtherwise(int version, String fpB64) {
+    final known = kt.knownOwnFingerprint(version);
+    return known != null && known != fpB64;
   }
 
   /// The account's ML-DSA-65 signature over its own current device list
@@ -7580,9 +7668,15 @@ class ChatService extends ChangeNotifier implements KtHost {
   @visibleForTesting
   void forgetOwnListClaim() => _forgetOwnListClaim();
 
-  Future<void> _recordOwnList(SignedDeviceList list) async {
-    await vault.kvPut('own_list_v', '${list.version}', sensitive: false);
+  /// Record [list] as this device's knowledge of its own account. Returns
+  /// false, and records nothing, when its version is already recorded under
+  /// another fingerprint: a version keeps the list it was first recorded
+  /// with (§19.8). Overwriting it is how a device came to judge its own
+  /// genuine entry in the log as one it never issued.
+  Future<bool> _recordOwnList(SignedDeviceList list) async {
     final fp = b64(await list.fingerprint());
+    if (_ownVersionRecordedOtherwise(list.version, fp)) return false;
+    await vault.kvPut('own_list_v', '${list.version}', sensitive: false);
     await vault.kvPut('own_list_h', fp, sensitive: false);
     // 7.7b self-monitoring: a list this device signed or learned is one the
     // log may hold without alarm; any other entry for this account is not.
@@ -7596,6 +7690,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     // over the one its account signed. See [_shareableDeviceList].
     await vault.kvPut('own_list_json', jsonEncode(list.toJson()),
         sensitive: false);
+    return true;
   }
 
   /// The newest verified (version, fingerprint) this device holds for a
@@ -7641,6 +7736,12 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
   }
 
+  /// Test seam: [list] as if this device's root had self-synced it — the
+  /// one way a list for this account reaches a device that cannot sign one.
+  @visibleForTesting
+  Future<void> debugApplyOwnDeviceList(SignedDeviceList list) =>
+      _applyOwnDeviceList(_devlistInner(jsonEncode(list.toJson())));
+
   /// A linked device applies the account's latest signed list, self-synced from
   /// the root device (rule 8), keeping its own-account version in step.
   Future<void> _applyOwnDeviceList(InnerMessage inner) async {
@@ -7669,6 +7770,15 @@ class ChatService extends ChangeNotifier implements KtHost {
       if (list.version == knownV &&
           b64(await list.fingerprint()) == (await _ownListClaim()).$2) {
         return; // already hold exactly this list (a reconnect re-assertion)
+      }
+      // A version this device already holds under another fingerprint is not
+      // adopted: it keeps the list it was first recorded with (§19.8). Two
+      // lists at one version are not something an honest root signs, and the
+      // record kept is what lets this device's monitor of the log notice the
+      // other one.
+      if (_ownVersionRecordedOtherwise(
+          list.version, b64(await list.fingerprint()))) {
+        return;
       }
       final others = [
         for (final d in list.devices)

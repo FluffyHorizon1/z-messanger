@@ -2514,6 +2514,22 @@ which a root performs once when its v2-only signer is switched on — so the old
 record, and the new one is a version the account issued. A version is never
 re-signed into a second fingerprint.
 
+A client has to hold itself to that mechanically. A root signs its list from
+two values — the device set and the version — that linking or removing a
+device changes one after the other, and it signs from paths that run when
+they run: a re-send to a contact whose echo is behind, the hello, the
+re-assertion on every reconnect, the log check's baseline. One caught between
+the two writes signs a version with the next one's devices. So a root MUST
+read, sign and record its list as one step that those writes cannot fall
+inside, and a client MUST NOT record a second fingerprint for a version it
+has recorded: the first stands. The reference client serialises the two
+under one lock; a root that would sign a second fingerprint fails loudly in a
+debug build and sends nothing in a release one; and a device that cannot sign
+does not adopt a second list at a version it holds — the record it keeps is
+what lets it see the other one in the log. Until 2026‑10‑02 it did none of
+this, and the overwritten record turned the account's own genuine entry into
+an alert at the next start.
+
 ### 19.9 Mirrors and witnesses
 
 A mirror holds every entry and the last head it verified. On each sync it

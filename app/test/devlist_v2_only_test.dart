@@ -650,10 +650,10 @@ void main() {
       'list stays v2-only, its next one is v2-only, and nobody is alerted',
       () async {
     // Alice's first start is a flipped build, which moves her account at
-    // once. No device is linked before the restart: a device linked while
-    // the root is still answering a new contact's first echo can be signed
-    // into the version before it — a race in the root's own signing that
-    // predates this stage and is not what this test is about.
+    // once. No device is linked before the restart; that once kept this test
+    // clear of a race in the root's own signing — a device linked while the
+    // root answered a new contact's first echo — closed since
+    // (`own_list_race_test.dart`).
     var alice = await start('alice5', v2Only: true);
     final ben = await start('ben5');
     await introduce(alice, ben);

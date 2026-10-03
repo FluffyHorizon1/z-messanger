@@ -1,7 +1,8 @@
 # ADR 0017 — Mixed-version device lists: hold the fingerprint and ML-DSA at v1 while v1 signing continues
 
 **Status:** **Accepted** (2026‑09‑19) — stage 1 built (3.7.8); stage 2 built
-and switched off (2026‑09‑30, the last section). Amends ADR 0010.
+and switched off (2026‑09‑30, "Stage 2" below); its follow‑ups, one closed
+and two open, at the end (2026‑10‑02). Amends ADR 0010.
 **Decides:** what a current client reports as a device list's fingerprint, and
 what input its ML‑DSA covers, while clients that predate ADR 0010 are still in
 the field.
@@ -389,3 +390,38 @@ v1 input's — is a conflict at a contact, with nothing installed and its held
 list and floor as they were, and the honest dual‑signed list still installs when
 it arrives in‑band. The deletion tests fail against the first build of stage 2,
 where a lone `sig2` verified, and pass against this one.
+
+## Follow-ups (2026‑10‑02)
+
+What the review of stage 2 left, and where each stands.
+
+- **The root's own signing raced a device being linked — closed.** A root
+  signs its list from two rows read one after the other, the device set and
+  the version, and linking or removing a device writes them one after the
+  other. A re‑send to a contact whose echo was behind — or the hello's list,
+  the re‑assertion on a reconnect, the log check's baseline — caught between
+  the two writes signed the version before the link with the link's device
+  set, and the record of what this device issued (`kt_own_known`) was
+  overwritten with it, over the genuine list the log already held at that
+  version. After a restart the self‑monitor judged that genuine entry never
+  issued and said so: the alarm that tells a user to reset their identity.
+  It predates stage 2 (probed on 50d9786: 2 rounds in 12), and stage 2 would
+  have widened it — with the signer on, every account is at version 2 from
+  its first start, so every new contact's first echo is behind and is
+  answered by a re‑send. Now the read–sign–record and the two writes take one
+  lock, and a version keeps the fingerprint it was first recorded with: a
+  root that would record a second fails loudly in a debug build and sends
+  nothing in a release one, and a linked device does not adopt a second list
+  at a version it holds (`PROTOCOL.md` §19.8;
+  `app/test/own_list_race_test.dart`, the probe run for 24 rounds).
+  `devlist_v2_only_test.dart` 10 links its device only after the restart to
+  stay out of this race; it no longer has to.
+- **A removal notice and the extras session — open.** The notice in
+  `_installContactDeviceList` is encrypted on a contact's extras session
+  under the install's lock, while the fan‑out and the inbound path work on the
+  same session under the conversation's, so the two can interleave; the
+  comment at the notice says how. Taking the conversation's lock inside the
+  install is not the fix: it is not re‑entrant.
+- **The log's install path, superseded — open.** `ktInstallFromLog` answers
+  "refused" when an in‑band list replaced the log's between the install and
+  its answer, which reads, until the next check, as a conflict.
