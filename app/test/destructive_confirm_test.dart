@@ -20,6 +20,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/system_messages.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:zapp/l10n/app_localizations.dart';
@@ -72,6 +73,19 @@ void main() {
         ),
       );
 
+  /// Pump until [cond] holds, polling outside the fake clock.
+  Future<void> until(
+      WidgetTester tester, bool Function() cond, String what) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 15));
+    while (!cond()) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('condition not met: $what');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await tester.pump();
+    }
+  }
+
   testWidgets('40. resetting a secure session asks first', (tester) async {
     // The reset row is near the bottom of a ListView; a tall (and wide enough
     // to avoid a test-only horizontal overflow) surface builds every row so
@@ -80,8 +94,9 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.runAsync(() async {
       await tester.pumpWidget(wrap(ContactInfoScreen(rid: rid)));
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      await tester.pump();
+      await until(tester,
+          () => find.text(l.ciResetSession).evaluate().isNotEmpty,
+          'the reset row on screen');
 
       // Tapping the row opens a confirmation, and resets nothing yet.
       await tester.tap(find.text(l.ciResetSession));
@@ -101,10 +116,33 @@ void main() {
       await tester.tap(find.text(l.ciResetSession));
       await tester.pump();
       await tester.tap(find.text(l.ciResetConfirm));
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      await tester.pump();
+      // The snackbar follows `resetSecureSession`, which seals a hello on a
+      // fresh session — and when this side is the post-quantum OFFERER (its
+      // routing id sorts after the contact's: one run in two, since both
+      // identities are random) that hello carries a new ML-KEM-768 offer,
+      // generated there and then. Measured on a two-core box, Confirm to
+      // snackbar: 100-133 ms as the initiator, 178-277 ms as the offerer —
+      // against the 100 ms this used to sleep before its single pump, which
+      // is why it failed about every other run with no retry to hide it.
+      await until(tester,
+          () => find.text(l.ciResetSessionDone).evaluate().isNotEmpty,
+          'the reset finishing and its snackbar shown');
       expect(find.text(l.ciResetSessionDone), findsOneWidget,
           reason: 'confirming reset the session');
+      // And it reset ONCE: the Cancel above did nothing. Checked here, after
+      // a reset has visibly finished, because straight after Cancel a reset
+      // started by mistake would still have been ~100 ms from showing
+      // anything, and "no snackbar yet" would have passed regardless.
+      final resets = (svc.messagesByChat[rid] ?? const []).where((m) {
+        if (m.kind != 'system') return false;
+        try {
+          return (jsonDecode(m.body) as Map)['k'] == SystemKind.sessionReset;
+        } on FormatException {
+          return false; // a notice stored as prose is not a reset
+        }
+      }).length;
+      expect(resets, 1,
+          reason: 'cancelling reset nothing, and confirming reset once');
     });
   });
 
@@ -141,19 +179,6 @@ void main() {
           reason: 'confirming removed the member');
     });
   });
-
-  /// Pump until [cond] holds, polling outside the fake clock.
-  Future<void> until(
-      WidgetTester tester, bool Function() cond, String what) async {
-    final deadline = DateTime.now().add(const Duration(seconds: 15));
-    while (!cond()) {
-      if (DateTime.now().isAfter(deadline)) {
-        throw TimeoutException('condition not met: $what');
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      await tester.pump();
-    }
-  }
 
   testWidgets('an owner leaving is warned and offered a transfer first',
       (tester) async {
