@@ -15,7 +15,13 @@ dependencies:
   # ML-KEM-768 (FIPS 203) for the post-quantum hybrid (protocol v2). Pure
   # Dart, zero dependencies, MIT. Cross-checked byte-for-byte against kyber-py
   # and PQClean on seeded vectors (docs/vectors/v2/mlkem768.json).
-  pqcrypto: ^0.4.1
+  #
+  # Pinned EXACTLY, to the version app/pubspec.lock ships. This package has no
+  # lockfile of its own (pubspec.lock is not committed here), so a caret range
+  # let CI resolve whatever 0.4.x was newest and test that instead of what
+  # ships — 0.4.2 when this was written, whose lib/ happens to be identical to
+  # 0.4.1's. The next one need not be. Move this and the app's lock together.
+  pqcrypto: 0.4.1
 
 dev_dependencies:
   lints: ^4.0.0

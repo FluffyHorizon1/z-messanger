@@ -22,8 +22,13 @@ A design‑and‑implementation review of the cryptographic protocol and the cod
 paths that carry secrets, against the threat model, with findings ranked and
 reproducible. We are **not** asking for a UI/UX review, a code‑quality review
 of screens, or a review of the third‑party primitives' internals (Ed25519,
-X25519, ChaCha20‑Poly1305, ML‑KEM‑768 implementations in `package:cryptography`
-and `package:pqcrypto`) beyond how we *use* them. A short engagement that
+X25519 and ChaCha20‑Poly1305 in `package:cryptography`) beyond how we *use*
+them. `package:pqcrypto` — every ML‑KEM‑768 and ML‑DSA‑65 operation Z performs
+— IS in scope, because it is the weakest link we know of: one publisher, pure
+Dart, unaudited, about ten months old, with secret‑dependent branches and
+divisions of the KyberSlash class; the vectors re‑derived by unrelated
+implementations (§7) check its answers, not its side channels, and `protocol/`
+pins the exact version the app ships (0.4.1). A short engagement that
 covers §4 in depth is more useful to us than a broad one that skims.
 
 ## 2. The system in one page
@@ -188,7 +193,7 @@ Linux desktop builds (verified in CI); Windows and macOS build but are
 unsigned; iOS is not built yet.
 
 **Out of scope:** UI layout and accessibility; third‑party primitive
-implementations (report them upstream, but tell us); the website and store
+implementations except `package:pqcrypto`, which §1 brings in (report them upstream, but tell us); the website and store
 listings; the Firebase push transport's own security (we send it no
 content); social engineering of the out‑of‑band code exchange (documented as
 unsolvable in the threat model, but do challenge the safety‑number and SAS
