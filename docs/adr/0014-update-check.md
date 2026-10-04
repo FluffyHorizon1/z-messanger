@@ -2,6 +2,8 @@
 
 **Status:** **Accepted** (2026‑09‑19) — built (24.4). Client‑only notice; the
 relay grows one read‑only route and no client is ever updated in place.
+**Amended 2026‑10‑04:** the link is the app's own, never the relay's — the Play
+listing for a Google Play install, the release page otherwise (see the end).
 **Decides:** whether the app checks for a newer build at all, where it asks, and
 what that check is allowed to reveal.
 
@@ -77,3 +79,57 @@ A **self‑hosted, identity‑free, user‑triggered** check.
   so the reproducibility fingerprint is unchanged.
 - Tested in `update_check_test.dart` (the compare and the fetch, no network) and
   `server/test/pages.test.js` (the route, served only when configured). C38.
+
+## Amendment (2026‑10‑04) — the relay says *whether*, the app says *where*
+
+Decision 1 had the route return `{"version","url"}`, and the client showed that
+`url` as where to get the newer build. That made the download address the
+relay's choice. The relay — or anyone able to answer in its name on that host:
+whoever terminates its TLS, a self‑hoster's proxy — could put any address in
+front of every user of it, with the app's own notice vouching for it. And the
+one address the official relay serves, the GitHub release page, is wrong for a
+Google Play install: Play App Signing signs the Play build with Google's key
+and the release page's APK with the project's, and Android will not install one
+over the other.
+
+1. **The client never reads `url`.** The answer decides whether a newer version
+   exists, and its number; nothing else in it is used.
+2. **The link is a constant in the app, chosen by who installed it**
+   (`updateDestination`, `update_check.dart`): an install whose installer is
+   Google Play (`com.android.vending`) is sent to the Play listing; everything
+   else — the desktop builds, an APK from the release page installed through
+   the system installer, a browser or a file manager, another store, `adb` — is
+   sent to the project's release page. The installer is read through
+   `package_info_plus`, already a dependency (`installerStore`: on Android the
+   installing package, from `InstallSourceInfo` on Android 11 and later; null on
+   the desktop platforms). No native code of ours changes. A build flavour or a
+   build‑time define was the alternative and is not available: CI builds the
+   Play bundle and the release APK from the same sources with no flavour and no
+   define, so the installer is the signal that exists.
+3. **No link is stored.** `prefs.json` keeps the time of the check and the
+   version. A `upd.url` an earlier build stored there is not read back, and the
+   next check's write drops it.
+4. **The route is unchanged.** It still sends `url` (the release page), because
+   builds before this one show it. This one ignores it.
+
+Consequences:
+
+- **What the relay still decides:** whether a notice appears, and the version
+  it names. It can claim a newer version — the user is sent to the real release
+  page or Play listing and finds what is there, a nuisance rather than a
+  redirect — or withhold one, which is R8's gap as before. R35 gains a sentence.
+- **A store that installs Play's build under another installer name** (a
+  third‑party Play client) is not recognised, and its users are shown the
+  release page, whose APK will not install over that build. Accepted: rare, and
+  the failure is an install Android refuses, not a different app.
+- **Operating the official relay:** Play users are now sent to Play, so
+  `Z_LATEST_VERSION` should name a version only once Play offers it; set
+  earlier, Play users are told of an update Play does not have yet.
+- **Forks and self‑hosters** who publish builds elsewhere change
+  `releasesPageUrl` and `playListingUrl` in `update_check.dart`. The trust
+  decision belongs in the build the user installed, not in a server's answer.
+- Tested in `update_check_test.dart` (criteria 3 and 6–9): the link in the
+  answer is not what is shown; the Settings notice shows the release page to an
+  install not from Play even with a planted link left in `prefs.json`, and the
+  Play listing to a Play install even when the relay names the release page;
+  the installer alone picks the link; and nothing about it is kept.

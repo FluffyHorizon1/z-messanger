@@ -41,6 +41,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // until it loads, and stays null where there is no platform to ask (a plain
   // widget test), which is also what keeps the update check from firing there.
   String? _appVersion;
+  // Who installed this build, as the platform reports it: what decides where
+  // the update notice sends someone (updateDestination, update_check.dart).
+  String? _installer;
 
   @override
   void initState() {
@@ -62,24 +65,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// — no platform, unreachable, malformed — is swallowed: a check that cannot
   /// run just shows no notice, it never crashes the screen.
   Future<void> _loadVersionAndMaybeCheck() async {
-    final String version;
+    final PackageInfo info;
     try {
-      version = (await PackageInfo.fromPlatform()).version;
+      info = await PackageInfo.fromPlatform();
     } catch (_) {
       return;
     }
     if (!mounted) return;
-    setState(() => _appVersion = version);
+    setState(() {
+      _appVersion = info.version;
+      _installer = info.installerStore;
+    });
     try {
       final prefs = context.read<AppPrefs>();
       final now = DateTime.now().millisecondsSinceEpoch;
       const dayMs = 24 * 60 * 60 * 1000;
       if (now - prefs.lastUpdateCheckMs < dayMs) return; // the cached answer stands
       final relayUrl = context.read<Transport>().serverUrl;
-      final status = await checkForUpdate(current: version, relayUrl: relayUrl);
+      final status = await checkForUpdate(
+          current: info.version,
+          relayUrl: relayUrl,
+          installerStore: info.installerStore);
       if (!mounted) return;
-      await prefs.recordUpdateCheck(
-          atMs: now, latestVersion: status.latest, latestUrl: status.url);
+      await prefs.recordUpdateCheck(atMs: now, latestVersion: status.latest);
     } catch (_) {
       // A check that could not run leaves no notice, and never throws.
     }
@@ -109,11 +117,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // 24.4: a quiet, non-blocking "you're behind" notice. Shown only
           // when the relay's /latest.json reported a strictly-newer version
           // than the one running; recomputed against the running version, so
-          // it clears itself once the user updates.
+          // it clears itself once the user updates. The link is the app's
+          // own for this install, never one the relay named.
           if (_appVersion != null &&
               prefs.latestVersion != null &&
               isBehind(_appVersion!, prefs.latestVersion!))
-            _UpdateNotice(latest: prefs.latestVersion!, url: prefs.latestUrl),
+            _UpdateNotice(
+                latest: prefs.latestVersion!,
+                url: updateDestination(installerStore: _installer)),
           _SectionHeader(l.stProfile),
           ListTile(
             leading: const Icon(Icons.badge_outlined),
@@ -890,11 +901,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
 /// 24.4 — the "you're behind" card. There is no in-app updater by design
 /// (THREAT_MODEL R8), so this only names the newer version and shows where to
-/// get it, as selectable text to copy (no url_launcher dependency).
+/// get it, as selectable text to copy (no url_launcher dependency). [url] is
+/// the app's own destination for this install — the Play listing for a Play
+/// install, the release page otherwise — never a link the relay supplied.
 class _UpdateNotice extends StatelessWidget {
   final String latest;
-  final String? url;
-  const _UpdateNotice({required this.latest, this.url});
+  final String url;
+  const _UpdateNotice({required this.latest, required this.url});
 
   @override
   Widget build(BuildContext context) {
@@ -921,11 +934,9 @@ class _UpdateNotice extends StatelessWidget {
           const SizedBox(height: 6),
           Text(l.stUpdateBody(latest),
               style: const TextStyle(fontSize: 13, height: 1.4)),
-          if (url != null) ...[
-            const SizedBox(height: 6),
-            SelectableText(url!,
-                style: TextStyle(fontSize: 13, color: context.z.accent)),
-          ],
+          const SizedBox(height: 6),
+          SelectableText(url,
+              style: TextStyle(fontSize: 13, color: context.z.accent)),
         ],
       ),
     );

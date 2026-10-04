@@ -18,7 +18,6 @@ class AppPrefs extends ChangeNotifier {
   // fetch. Nothing here is secret; it sits in the same plaintext prefs.json.
   int _lastUpdateCheckMs = 0;
   String? _latestVersion;
-  String? _latestUrl;
 
   AppPrefs({required this.root});
 
@@ -30,12 +29,13 @@ class AppPrefs extends ChangeNotifier {
   /// When the update check last ran (epoch ms; 0 = never).
   int get lastUpdateCheckMs => _lastUpdateCheckMs;
 
-  /// The version the relay's `/latest.json` last reported, and where to get
-  /// it. Null when it said nothing. The "behind" decision is recomputed
-  /// against the running version at read time, so it clears itself once the
-  /// user updates rather than being cached as a stale yes.
+  /// The version the relay's `/latest.json` last reported. Null when it said
+  /// nothing. The "behind" decision is recomputed against the running version
+  /// at read time, so it clears itself once the user updates rather than
+  /// being cached as a stale yes. Where to get it is not kept: that is the
+  /// app's own choice (`updateDestination`), never the relay's, and the link
+  /// a build before 2026-10-04 stored here (`upd.url`) is not read back.
   String? get latestVersion => _latestVersion;
-  String? get latestUrl => _latestUrl;
 
   static ThemeMode _parseMode(Object? v) => switch (v) {
         'light' => ThemeMode.light,
@@ -53,7 +53,6 @@ class AppPrefs extends ChangeNotifier {
         if (upd is Map) {
           _lastUpdateCheckMs = (upd['ts'] as num?)?.toInt() ?? 0;
           _latestVersion = upd['ver'] as String?;
-          _latestUrl = upd['url'] as String?;
         }
       }
     } catch (_) {
@@ -72,7 +71,6 @@ class AppPrefs extends ChangeNotifier {
             'upd': {
               'ts': _lastUpdateCheckMs,
               if (_latestVersion != null) 'ver': _latestVersion,
-              if (_latestUrl != null) 'url': _latestUrl,
             },
           }),
           flush: true);
@@ -87,13 +85,12 @@ class AppPrefs extends ChangeNotifier {
     await _save();
   }
 
-  /// 24.4: record the result of an update check — [latestVersion]/[latestUrl]
-  /// are what `/latest.json` returned, or null when it said nothing.
+  /// 24.4: record the result of an update check — [latestVersion] is what
+  /// `/latest.json` returned, or null when it said nothing.
   Future<void> recordUpdateCheck(
-      {required int atMs, String? latestVersion, String? latestUrl}) async {
+      {required int atMs, String? latestVersion}) async {
     _lastUpdateCheckMs = atMs;
     _latestVersion = latestVersion;
-    _latestUrl = latestUrl;
     notifyListeners();
     await _save();
   }

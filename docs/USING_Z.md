@@ -413,6 +413,8 @@ made to run someone else's code, and Z does not hold that power over your
 device. What it does instead: when you open Settings, at most once a day, it
 asks your own relay whether a newer version has been published, and if one has,
 it shows a small "Update available" note with the version and where to get it.
+Where to get it is Z's own answer, never the relay's: Google Play if that is
+where your copy came from, the project's release page otherwise.
 Nothing is downloaded or installed for you; you go and get the new build the
 same way you got this one. The check talks only to the relay you already use —
 not Google, not us, not anyone new — and it sends nothing that says which

@@ -10,6 +10,35 @@ import 'dart:io';
 /// address the client already dials, over a plain GET that carries no account,
 /// no routing id and no cookie — the same `/latest.json` every install gets.
 /// It is not a background poll; Settings triggers it, at most once a day.
+///
+/// The relay's answer says whether something newer exists. It does not say
+/// where to get it: the link is the app's own ([updateDestination]), and the
+/// `url` member `/latest.json` carries is never read (ADR 0014, amended
+/// 2026-10-04). A link the relay chose would let it — or whoever answers in
+/// its name — send every user of it to a download of its choosing, with the
+/// app vouching for the address.
+
+/// The project's release page: the desktop builds and the APK.
+const String releasesPageUrl =
+    'https://github.com/FluffyHorizon1/z-messanger/releases/latest';
+
+/// The app's Google Play listing.
+const String playListingUrl =
+    'https://play.google.com/store/apps/details?id=com.zmessenger.www';
+
+/// The installer Android reports for an app Google Play installed.
+const String playStoreInstaller = 'com.android.vending';
+
+/// Where the notice sends this install for a newer build. An app Google Play
+/// installed goes to its Play listing: Play App Signing signs the Play build
+/// with Google's key and the release page's APK with the project's, and
+/// Android will not install one over the other, so the APK is the one place
+/// a Play install must not be sent. Everything else — the desktop builds, an
+/// APK from the release page — goes to the release page. [installerStore] is
+/// what the platform reports installed the app (`PackageInfo.installerStore`:
+/// the installing package on Android, null on the desktop platforms).
+String updateDestination({String? installerStore}) =>
+    installerStore == playStoreInstaller ? playListingUrl : releasesPageUrl;
 
 /// Parse a plain `x.y.z` (ignoring any `-pre`/`+build` tail) into [maj, min,
 /// pat]. Returns null for anything that is not that shape, so a malformed
@@ -49,7 +78,8 @@ Uri? latestJsonUrl(String relayUrl) {
 }
 
 /// The outcome of a check. [behind] is the only thing the UI acts on; [latest]
-/// and [url] are what it shows when [behind] is true.
+/// and [url] are what it shows when [behind] is true. [latest] is the relay's
+/// answer; [url] is not — it is [updateDestination] for this install.
 class UpdateStatus {
   final String current;
   final String? latest;
@@ -90,10 +120,12 @@ Future<String?> _defaultGet(Uri url) async {
 /// [get] is injectable so tests need no network. Any failure — an address that
 /// is not ws/wss, an unreachable or unset endpoint, a non-200, a malformed or
 /// non-semver body — returns a not-behind status: the check never turns a bad
-/// answer into a prompt.
+/// answer into a prompt. [installerStore] picks the link
+/// ([updateDestination]); whatever link the answer carries is ignored.
 Future<UpdateStatus> checkForUpdate({
   required String current,
   required String relayUrl,
+  String? installerStore,
   Future<String?> Function(Uri url)? get,
 }) async {
   final url = latestJsonUrl(relayUrl);
@@ -103,12 +135,11 @@ Future<UpdateStatus> checkForUpdate({
   try {
     final j = (jsonDecode(body) as Map).cast<String, Object?>();
     final latest = j['version'] as String?;
-    final link = j['url'] as String?;
     if (latest == null) return UpdateStatus(current: current);
     return UpdateStatus(
       current: current,
       latest: latest,
-      url: link,
+      url: updateDestination(installerStore: installerStore),
       behind: isBehind(current, latest),
     );
   } catch (_) {
