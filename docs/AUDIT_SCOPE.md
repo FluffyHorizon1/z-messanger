@@ -34,7 +34,7 @@ Three components, one operator‑independent trust story:
 |---|---|---|
 | `protocol/` (`z_protocol`) | pure Dart, ~7.9 k lines in 21 modules, ~6.8 k lines of tests (238, ten of them driving a real relay) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader |
 | `app/` | Flutter (Dart), core ~16.5 k lines (`lib/core/`), UI ~7.8 k lines, 88 test files (~28.0 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
-| `app/` | Flutter (Dart), core ~16.5 k lines (`lib/core/`), UI ~7.8 k lines, 88 test files (~28.0 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
+| `server/` | Node.js, `server.js` ~2 300 lines, ~6.8 k lines of tests (113) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics. **Two code paths, and the Redis one is what the public deployment runs** (`MemoryCoordinator` for a single instance, `RedisCoordinator` for several sharing a RAM‑only store — `render.ha.yaml`); a change to queueing, presence, acknowledgement, flush or push handling has to be read in both |
 
 Every message is encrypted on a device and decrypted only on the recipient
 devices; the relay sees padded ciphertext addressed to a mailbox id and,
@@ -163,6 +163,10 @@ than bugs we expect.
     invites carry every member's bundle. Look at what a malicious member or
     a malicious *former* member can do (replay of old invites, version
     games) and at the attachment fan‑out's key handling — and, since ADR
+    0019 (§11.1), at what a malicious co‑admin or a demoted one can do: the
+    `(rv, ver, by)` order and its tie‑break, the lists a receiver holds back
+    and retries, a co‑admin sending its lists to some members and not
+    others.
 
 ## 5. In scope / out of scope
 
