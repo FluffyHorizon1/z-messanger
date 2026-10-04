@@ -72,6 +72,52 @@ CI imports the cert into a throwaway keychain, `codesign`s with the hardened
 runtime, submits to `notarytool --wait`, and staples the ticket. Verify with
 `spctl -a -vv Z.app`.
 
+### Known hazard — resolve before the first signed macOS build
+
+**Do not set the Apple secrets until the signing step passes the app's
+entitlements.** As written, the `macos` job re‑signs with
+`codesign --deep --force --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY"`
+and no `--entitlements`. A forced re‑sign does not carry the old signature's
+entitlements across, so the signed app has none — none of
+`app/macos/Runner/Release.entitlements`, which today's unsigned builds do carry
+(Xcode signs them ad hoc with that file). On a Mac that runs the first signed
+build over an unsigned one:
+
+- **The vault moves.** The app keeps its vault, `prefs.json` and its app‑lock
+  settings in `<Application Support>/z` (`Vault.defaultRoot()`). Sandboxed, as
+  every build so far is, that is inside the app's container:
+  `~/Library/Containers/com.zmessenger.www/Data/Library/Application Support/com.zmessenger.www/z/`.
+  Unsandboxed, the same call answers
+  `~/Library/Application Support/com.zmessenger.www/z/`, which is empty. The
+  signed build finds no vault and starts as a new install.
+- **What the user loses** — nothing is deleted, the old folder stays in the
+  container, but the app no longer looks there: their identity (a new one is
+  made at onboarding, so every contact sees a new key and every safety number
+  changes), all contacts, every message and attachment, their groups and
+  linked devices, and their settings (relay address, theme, app lock,
+  transparency log). The only way back inside the app is restoring a `.zbk`
+  backup with its recovery code, for those who made one. Moving the folder by
+  hand works only if the per‑device secret that wraps the vault's key can
+  still be read: `Vault` keeps it in the keychain, or in the folder's `.device`
+  file when the keychain refuses it, and which of the two a given Mac used was
+  not checked here.
+- **The microphone stops.** Under the hardened runtime (`--options runtime`)
+  audio input needs `com.apple.security.device.audio-input`; without it voice
+  recording is refused.
+- **The app is no longer confined:** unsandboxed, it can read anything the
+  user can.
+
+It has to be right the first time. Fixing the step after a signed build has
+shipped moves the vault back into the container — and anyone who set up a new
+identity in the unsandboxed build then loses that one.
+
+The fix is a change to `.github/workflows/build.yml`, not made here: sign the
+nested frameworks first, without entitlements, then the app itself with
+`--entitlements app/macos/Runner/Release.entitlements` (not with `--deep`,
+which would give every nested framework the app's entitlements), and before
+notarizing check that `codesign -d --entitlements - Z.app` lists
+`com.apple.security.app-sandbox`.
+
 ## Reproducibility
 
 Every tagged release also publishes `SHA256SUMS.txt` (see `SECURITY.md`), so a
