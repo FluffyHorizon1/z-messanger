@@ -1,7 +1,9 @@
 # ADR 0013 — A voice-note backend for Linux and Windows
 
 **Status:** **Accepted** (2026‑09‑19) — built (24.1). Linux/Windows only; the
-platforms with a working backend are untouched.
+platforms with a working backend are untouched. **Amended 2026‑10‑04:** on Linux
+libmpv is a system library the build does not bundle, and a machine without it
+now starts with playback off and is told what to install (see the end).
 **Decides:** how voice notes play on the two desktop platforms `just_audio` does
 not support, and what dependency that is worth.
 
@@ -94,3 +96,67 @@ part:
   from GitHub, so the build could not be run here; CI has no such proxy — and
   actual playback of a note on Linux/Windows hardware. The runtime audio check
   was hardware‑gated from the start (the 24.1 scoping said so).
+
+## Amendment (2026‑10‑04) — libmpv is not bundled on Linux, and its absence no longer stops the app
+
+Two sentences above were wrong for Linux, and the second one hid a defect that
+shipped in every Linux build from 3.7.1 to 3.10.0 (P1‑18 in the 2026‑10‑03
+analysis).
+
+- **"`media_kit_libs_linux`/`_windows_audio` download and bundle libmpv."** True
+  of Windows: `media_kit_libs_windows_audio` downloads an audio‑only
+  `libmpv-2.dll` and installs it beside the executable. Not of Linux:
+  `media_kit_libs_linux` 1.2.1 bundles nothing (its
+  `media_kit_libs_linux_bundled_libraries` is empty). Its build step downloads
+  and compiles mimalloc, which media_kit's *video* package links and this app
+  does not. At run time media_kit looks for a **system** libmpv —
+  `libmpv.so`, `libmpv.so.2`, then `libmpv.so.1`, or the path in
+  `LIBMPV_LIBRARY_PATH` — so on Linux libmpv is a runtime dependency of the
+  user's machine, now listed per distribution in `BUILD.md`.
+- **"A build with the backend disabled, or a playback that fails for any other
+  reason, still degrades exactly as before."** Not this failure. `main()` called
+  `initDesktopAudio` before `runApp` with nothing around it, and media_kit
+  rethrows when no libmpv loads. The Linux runner shows its window on Flutter's
+  first frame, so on a machine without libmpv the process started and no window
+  ever appeared — not a degraded voice note, an app that does not open.
+
+What changed:
+
+- **`initDesktopAudio` cannot throw.** A backend that fails to load leaves
+  `voicePlayback` at `unavailable` for the run; the app starts as usual.
+  `main()` is now `startApp()`, whose operating system and loader a test can
+  replace — which is how `desktop_startup_test.dart` reproduces a machine
+  without libmpv on one that has it.
+- **The app says so, above its first screen.** A dismissible notice: voice
+  messages cannot play on this computer, and what fixes it — on Linux the
+  package to install (`libmpv2` on Debian and Ubuntu, `libmpv1` on older
+  releases, `mpv-libs` on Fedora, `mpv` on Arch), on Windows unpacking the
+  download again, since the DLL ships with Z. English and Spanish. It returns
+  at the next start for as long as the library is missing.
+- **A voice message's control says playback is off,** and tapping it gives the
+  same explanation. Nothing is decrypted and no player is made — `just_audio`'s
+  platform instance is already media_kit's by then (it is registered before
+  libmpv is looked for), so trying would only fail later. The message menu's
+  Save still takes the note off the device.
+- **Recording is left on.** It does not use libmpv: `record`'s Linux
+  implementation captures through `parecord` (PulseAudio's utilities, which
+  PipeWire systems provide too), and its own failure already says "recording
+  isn't available". Turning it off because playback is off would have told the
+  user to install a library that does not fix it.
+- **Nothing is logged.** The app neither prints nor stores the error. media_kit
+  prints its own fixed banner to standard output, which names no path, machine
+  or person.
+
+Not changed: the backend, the two platforms it is registered on, and the vault
+invariant — a note that is not played is not read at all. Bundling libmpv and
+its FFmpeg into the Linux build was not taken up here: it would add a large
+native supply chain to the release, and the build job would have to change.
+
+Tested in `desktop_startup_test.dart` (criteria 1, 2 and 4–6): the real
+backend on a Linux machine without libmpv no longer throws, and the app's own
+`main()` reaches its first screen there; an injected
+failing backend is caught on Linux and Windows and loads nothing elsewhere; the
+app started with it shows the notice in both languages and dismisses it; and a
+voice message's control is off and explains without reading the note. Still
+hardware‑gated: a real `flutter build linux` bundle started on a desktop with
+and without libmpv, and a Windows build with the DLL removed.

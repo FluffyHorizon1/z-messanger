@@ -6,10 +6,25 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 /// (Android, iOS, macOS), unimplemented elsewhere.
 ///
 /// The property that matters here, and the reason this wrapper exists, is that
-/// it is **quiet**: no code in the image, an unreadable file, or a platform
-/// with no decoder at all is a `null`, never a throw. The caller shows "no
-/// code found" rather than crashing, so offering the button on a platform
-/// where the decode may not work ships nothing broken.
+/// it is **quiet**: no code in the image, an unreadable file, or a decoder
+/// that throws is a `null`, never a throw. The caller shows "no code found"
+/// rather than crashing.
+///
+/// Quiet is not the same as useful, though: on Linux and Windows there is no
+/// decoder at all, and a button that answers "no code found" to every image —
+/// a perfectly good QR included — misleads the person holding one. So the
+/// button is offered only where [qrImageDecodeFor] says a decoder exists.
+
+/// Where reading a QR out of an image can work: Android, iOS and macOS, the
+/// platforms `mobile_scanner` implements `analyzeImage` on. Not Linux or
+/// Windows (no implementation) and not the web (it throws there). A pure
+/// function of the OS name, like `inlineVideoFor` and `mediaKitAudioFor`, so
+/// the policy is testable without the platforms.
+bool qrImageDecodeFor(String operatingSystem, {bool isWeb = false}) =>
+    !isWeb &&
+    (operatingSystem == 'android' ||
+        operatingSystem == 'ios' ||
+        operatingSystem == 'macos');
 
 /// How the raw text is pulled from an image path. Injectable so the wrapper's
 /// graceful‑failure contract can be tested without a real decoder.

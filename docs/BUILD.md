@@ -39,6 +39,26 @@ flutter build macos   --release        # → build/macos/Build/Products/Release/
 Run locally during development with `flutter run -d linux`
 (or `windows`, `macos`, or an attached Android device).
 
+`flutter build linux` downloads mimalloc's source from GitHub during the build
+(a step of `media_kit_libs_linux`); it is compiled but nothing in Z links it.
+
+### What the Linux build needs on the machine that runs it
+
+The Linux bundle carries Flutter and the app's own plugins, and two things it
+uses come from the system instead. Neither is needed to start Z.
+
+| Used for | What | Debian, Ubuntu | Fedora | Arch |
+|---|---|---|---|---|
+| Playing voice messages | libmpv (`libmpv.so.2`, or `libmpv.so.1`) | `libmpv2` (`libmpv1` on Debian 11 and Ubuntu 22.04) | `mpv-libs` | `mpv` |
+| Recording voice messages | `parecord` | `pulseaudio-utils` | `pulseaudio-utils` | `libpulse` |
+
+Without libmpv, Z starts as usual and says above its first screen that voice
+messages cannot play and what to install; everything else works, and a voice
+message can still be saved from its menu (ADR 0013, amended 2026‑10‑04).
+Without `parecord`, recording says it is unavailable. The Windows build ships
+its own `libmpv-2.dll` beside `zapp.exe`; macOS and Android use their native
+players.
+
 ## Relay (Node)
 
 ```bash

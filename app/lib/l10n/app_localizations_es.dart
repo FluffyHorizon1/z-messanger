@@ -86,6 +86,18 @@ class AppLocalizationsEs extends AppLocalizations {
       'La reproducción no está disponible en este dispositivo; guarda el archivo en su lugar.';
 
   @override
+  String get voicePlaybackOff =>
+      'La reproducción de voz está desactivada en este ordenador';
+
+  @override
+  String get voiceNoLibmpvLinux =>
+      'Los mensajes de voz no se pueden reproducir en este ordenador: libmpv, la biblioteca con la que Z los reproduce, no está instalada. Instálala con tu gestor de paquetes (libmpv2 en Debian y Ubuntu, o libmpv1 en versiones anteriores; mpv-libs en Fedora; mpv en Arch) y reinicia Z. Todo lo demás funciona, y un mensaje de voz se puede seguir guardando desde su menú.';
+
+  @override
+  String get voiceNoLibmpvWindows =>
+      'Los mensajes de voz no se pueden reproducir en este ordenador: falta libmpv-2.dll, que viene con Z, o no se pudo cargar. Vuelve a descomprimir la descarga de Z con todos sus archivos juntos y reinicia Z. Todo lo demás funciona, y un mensaje de voz se puede seguir guardando desde su menú.';
+
+  @override
   String get searchHint => 'Buscar mensajes…';
 
   @override

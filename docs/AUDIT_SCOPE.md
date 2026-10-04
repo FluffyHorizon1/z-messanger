@@ -33,7 +33,7 @@ Three components, one operator‑independent trust story:
 | Component | Language / size | Role |
 |---|---|---|
 | `protocol/` (`z_protocol`) | pure Dart, ~8.2 k lines in 21 modules, ~7.3 k lines of tests (249, eleven of them driving a real relay) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader |
-| `app/` | Flutter (Dart), core ~17.3 k lines (`lib/core/`), UI ~8.0 k lines, 89 test files (~30.1 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
+| `app/` | Flutter (Dart), core ~17.4 k lines (`lib/core/`), UI ~8.1 k lines, 90 test files (~30.7 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
 | `server/` | Node.js, `server.js` ~3 200 lines, ~9.0 k lines of tests (149) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics. **Two code paths, and the Redis one is what the public deployment runs** (`MemoryCoordinator` for a single instance, `RedisCoordinator` for several sharing a RAM‑only store — `render.ha.yaml`); a change to queueing, presence, acknowledgement, flush or push handling has to be read in both |
 
 Every message is encrypted on a device and decrypted only on the recipient
@@ -261,7 +261,7 @@ python3 protocol/tool/verify_mldsa.py
 # claiming nothing, with a reason)
 python3 tool/check_audit_scope.py
 
-# App: 89 test files, most driving real clients through the real relay
+# App: 90 test files, most driving real clients through the real relay
 # (each spawns its own relay process; node must be on PATH)
 cd app && flutter test
 

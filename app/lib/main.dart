@@ -5,7 +5,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 
 import 'l10n/app_localizations.dart';
@@ -30,14 +30,26 @@ import 'ui/lock_screen.dart';
 import 'ui/onboarding_screen.dart';
 import 'ui/theme.dart';
 import 'ui/unlock_screen.dart';
+import 'ui/voice_widgets.dart';
 
-void main() {
+void main() => startApp();
+
+/// [main], with the two things a test of the start must control open to it:
+/// the operating system the audio backend is chosen for, and the call that
+/// loads that backend — a test passes one that fails the way a Linux machine
+/// without libmpv does (P1-18). Production passes neither.
+@visibleForTesting
+void startApp({String? operatingSystem, MediaKitLoader? loadAudio}) {
   WidgetsFlutterBinding.ensureInitialized();
   // 24.1: register the media_kit audio backend on Linux/Windows (a no-op on
   // every other platform), so voice notes play on desktop instead of falling
   // back to the Save action. Bytes still reach the player over just_audio's
   // loopback server, never a plaintext file — see core/desktop_audio.dart.
-  initDesktopAudio(kIsWeb ? '' : Platform.operatingSystem);
+  // It cannot stop the app from starting: a backend that fails to load leaves
+  // playback off and the app says so (VoicePlaybackNotice, below).
+  initDesktopAudio(
+      operatingSystem ?? (kIsWeb ? '' : Platform.operatingSystem),
+      load: loadAudio);
   if (!kIsWeb && Platform.isAndroid) {
     // Register the background wake-ping handler (desktop has no FCM).
     FirebaseMessaging.onBackgroundMessage(zPushBackgroundHandler);
@@ -77,8 +89,16 @@ class ZApp extends StatelessWidget {
 /// keeps its place in the tree — and its stack — when the lock comes and
 /// goes. The overlay gets its own Overlay so text fields inside it work
 /// without the Navigator's.
+///
+/// [banner] is a strip above every screen — the voice-playback notice
+/// (P1-18) is the one there is — and sits under the lock like everything
+/// else. The column that holds it is always there, so the Navigator keeps
+/// its place when the banner is dismissed too.
 MaterialApp _shell(
-        {required Widget home, Widget? overlay, required ThemeMode mode}) =>
+        {required Widget home,
+        Widget? overlay,
+        Widget? banner,
+        required ThemeMode mode}) =>
     MaterialApp(
       title: 'Z',
       debugShowCheckedModeBanner: false,
@@ -112,8 +132,16 @@ MaterialApp _shell(
                 excluding: overlay != null,
                 child: ExcludeSemantics(
                   excluding: overlay != null,
-                  child:
-                      IgnorePointer(ignoring: overlay != null, child: child!),
+                  child: IgnorePointer(
+                    ignoring: overlay != null,
+                    child: Column(
+                      children: [
+                        if (banner != null) banner,
+                        Expanded(
+                            key: const ValueKey('navigator'), child: child!),
+                      ],
+                    ),
+                  ),
                 ),
               ),
               if (overlay != null) Overlay.wrap(child: overlay),
@@ -148,6 +176,17 @@ class _BootstrapperState extends State<Bootstrapper>
   UnlockError? _unlockError;
   bool _unlocking = false;
   Object? _fatal;
+  // P1-18: the voice-playback notice, once dismissed, stays away for this
+  // run; it is back at the next start for as long as libmpv is missing.
+  bool _voiceNoticeDismissed = false;
+
+  /// The strip shown above every screen when the voice backend could not
+  /// load (core/desktop_audio.dart), until it is dismissed.
+  Widget? get _banner =>
+      voicePlayback == VoicePlayback.unavailable && !_voiceNoticeDismissed
+          ? VoicePlaybackNotice(
+              onDismiss: () => setState(() => _voiceNoticeDismissed = true))
+          : null;
 
   @override
   void initState() {
@@ -360,6 +399,7 @@ class _BootstrapperState extends State<Bootstrapper>
     if (_fatal != null) {
       return _shell(
         mode: mode,
+        banner: _banner,
         // Builder: the palette lives in the MaterialApp below this widget.
         home: Builder(
           builder: (ctx) {
@@ -383,6 +423,7 @@ class _BootstrapperState extends State<Bootstrapper>
     if (_locked) {
       return _shell(
         mode: mode,
+        banner: _banner,
         home: UnlockScreen(
           onUnlock: _tryUnlock,
           onBiometric: _biometricOffered ? _tryBiometricUnlock : null,
@@ -394,6 +435,7 @@ class _BootstrapperState extends State<Bootstrapper>
     if (_needsOnboarding && _vault != null) {
       return _shell(
         mode: mode,
+        banner: _banner,
         home: OnboardingScreen(vault: _vault!, onDone: _onboardingDone),
       );
     }
@@ -410,6 +452,7 @@ class _BootstrapperState extends State<Bootstrapper>
     if (service == null) {
       return _shell(
         mode: mode,
+        banner: _banner,
         home: Builder(
           builder: (ctx) => Scaffold(
             body: Center(
@@ -440,6 +483,7 @@ class _BootstrapperState extends State<Bootstrapper>
       ],
       child: _shell(
           mode: mode,
+          banner: _banner,
           home: const InviteLinkWatcher(child: HomeScreen()),
           overlay: overlay),
     );

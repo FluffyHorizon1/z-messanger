@@ -128,6 +128,14 @@ UNCITED_OK = {
         "the decode itself is mobile_scanner's and platform-gated, and the code "
         "it reads is verified on add exactly as a pasted one is (C32/C37), not "
         "here",
+    "app/test/desktop_startup_test.dart":
+        "24.1/24.3 — the desktop app reaches its first screen whatever its "
+        "audio backend does (P1-18: a Linux machine without libmpv), says "
+        "what to install, and keeps voice playback off rather than failing; "
+        "and 'Open a QR image' is offered only where a decoder exists. "
+        "Availability and UI-honesty properties. The secrecy property next to "
+        "them — a decrypted note never on disk — is untouched: with playback "
+        "off a note is not read at all",
     "app/test/picked_file_test.dart":
         "continuous-b — a picked photo/video's bytes are read and the picker's "
         "plaintext cache copy deleted at once. A defence-in-depth erasure "

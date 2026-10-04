@@ -38,6 +38,11 @@ class _AddContactScreenState extends State<AddContactScreen>
 
   bool get _canScan => Platform.isAndroid;
 
+  /// 24.3: "Open a QR image" only where there is a decoder to read it with
+  /// (qr_image.dart) — on Linux and Windows every image would come back as
+  /// "no code found", a perfectly good QR included.
+  bool get _canOpenImage => qrImageDecodeFor(Platform.operatingSystem);
+
   @override
   void initState() {
     super.initState();
@@ -101,10 +106,9 @@ class _AddContactScreenState extends State<AddContactScreen>
         .showSnackBar(SnackBar(content: Text(l.addCodeCopied)));
   }
 
-  /// 24.3 — read a code out of a QR image the user picks, for platforms with no
-  /// camera scan. The decode is quiet (qr_image.dart): an image with no code,
-  /// or a platform whose decoder is not implemented, says "no code found"
-  /// rather than throwing.
+  /// 24.3 — read a code out of a QR image the user picks, where there is a
+  /// decoder (`_canOpenImage`). The decode is quiet (qr_image.dart): an image
+  /// with no code says "no code found" rather than throwing.
   Future<void> _importFromImage() async {
     if (_busy) return;
     final l = AppLocalizations.of(context);
@@ -268,14 +272,17 @@ class _AddContactScreenState extends State<AddContactScreen>
                     child: CircularProgressIndicator(strokeWidth: 2))
                 : Text(l.addVerifyAndAdd),
           ),
-          // 24.3: read a code out of a QR image, for desktop and anywhere with
-          // no camera scan. The decode is quiet — an image with no code says so.
-          const SizedBox(height: 8),
-          TextButton.icon(
-            icon: const Icon(Icons.image_outlined),
-            label: Text(l.addOpenImage),
-            onPressed: _busy ? null : _importFromImage,
-          ),
+          // 24.3: read a code out of a QR image, where a decoder exists
+          // (Android, iOS, macOS). The decode is quiet — an image with no
+          // code says so.
+          if (_canOpenImage) ...[
+            const SizedBox(height: 8),
+            TextButton.icon(
+              icon: const Icon(Icons.image_outlined),
+              label: Text(l.addOpenImage),
+              onPressed: _busy ? null : _importFromImage,
+            ),
+          ],
           const SizedBox(height: 12),
           Text(
             l.addSignatureNote,

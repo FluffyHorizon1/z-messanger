@@ -93,6 +93,18 @@
   "@voiceNoPlayback": {
     "description": "Shown when the audio player cannot start. The voice note is intact; only in-app playback is unavailable, so the user is pointed at saving it."
   },
+  "voicePlaybackOff": "Voice playback is off on this computer",
+  "@voicePlaybackOff": {
+    "description": "Screen-reader label and tooltip for a voice message's control when the desktop audio library could not be loaded at start-up (P1-18). Tapping it explains why; the message itself is intact and can be saved."
+  },
+  "voiceNoLibmpvLinux": "Voice messages can't play on this computer: libmpv, the library Z plays them with, isn't installed. Install it with your package manager — libmpv2 on Debian and Ubuntu (libmpv1 on older releases), mpv-libs on Fedora, mpv on Arch — then restart Z. Everything else works, and a voice message can still be saved from its menu.",
+  "@voiceNoLibmpvLinux": {
+    "description": "Linux only: shown at start-up above the first screen, and when a voice message's control is tapped, when the system's libmpv could not be loaded (P1-18). The package names are literal (libmpv2, libmpv1, mpv-libs, mpv) and must not be translated; distribution names stay as they are. Recording still works; only playback is off."
+  },
+  "voiceNoLibmpvWindows": "Voice messages can't play on this computer: libmpv-2.dll, which comes with Z, is missing or could not be loaded. Unpack the Z download again with all of its files kept together, then restart Z. Everything else works, and a voice message can still be saved from its menu.",
+  "@voiceNoLibmpvWindows": {
+    "description": "Windows only: the same notice as voiceNoLibmpvLinux, for when the libmpv-2.dll that ships beside Z's program file is missing or broken (P1-18). The file name is literal and must not be translated."
+  },
   "searchHint": "Search messages…",
   "@searchHint": {
     "description": "Placeholder in the search field."

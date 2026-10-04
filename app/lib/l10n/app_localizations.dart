@@ -230,6 +230,24 @@ abstract class AppLocalizations {
   /// **'Playback isn\'t available on this device — save the file instead.'**
   String get voiceNoPlayback;
 
+  /// Screen-reader label and tooltip for a voice message's control when the desktop audio library could not be loaded at start-up (P1-18). Tapping it explains why; the message itself is intact and can be saved.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice playback is off on this computer'**
+  String get voicePlaybackOff;
+
+  /// Linux only: shown at start-up above the first screen, and when a voice message's control is tapped, when the system's libmpv could not be loaded (P1-18). The package names are literal (libmpv2, libmpv1, mpv-libs, mpv) and must not be translated; distribution names stay as they are. Recording still works; only playback is off.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice messages can\'t play on this computer: libmpv, the library Z plays them with, isn\'t installed. Install it with your package manager — libmpv2 on Debian and Ubuntu (libmpv1 on older releases), mpv-libs on Fedora, mpv on Arch — then restart Z. Everything else works, and a voice message can still be saved from its menu.'**
+  String get voiceNoLibmpvLinux;
+
+  /// Windows only: the same notice as voiceNoLibmpvLinux, for when the libmpv-2.dll that ships beside Z's program file is missing or broken (P1-18). The file name is literal and must not be translated.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice messages can\'t play on this computer: libmpv-2.dll, which comes with Z, is missing or could not be loaded. Unpack the Z download again with all of its files kept together, then restart Z. Everything else works, and a voice message can still be saved from its menu.'**
+  String get voiceNoLibmpvWindows;
+
   /// Placeholder in the search field.
   ///
   /// In en, this message translates to:
