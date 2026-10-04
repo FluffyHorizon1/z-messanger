@@ -23,9 +23,11 @@ Future<(Conversation enc, Conversation off)> pair(
     (a, b) = (b, a);
   }
   final enc =
-      await Conversation.create(a, await b.bundle(), postQuantum: encPq);
+      await Conversation.create(a, await b.bundle(), postQuantum: encPq,
+          intervals: PqIntervals.disabled);
   final off =
-      await Conversation.create(b, await a.bundle(), postQuantum: offPq);
+      await Conversation.create(b, await a.bundle(), postQuantum: offPq,
+          intervals: PqIntervals.disabled);
   assert(enc.isDesignatedInitiator && off.isPqOfferer);
   return (enc, off);
 }
@@ -162,9 +164,11 @@ void main() {
       final encId = enc.me, offId = off.me;
       Future<void> roundTrip() async {
         enc = await Conversation.fromJson(
-            encId, jsonDecode(jsonEncode(enc.toJson())));
+            encId, jsonDecode(jsonEncode(enc.toJson())),
+            intervals: PqIntervals.disabled);
         off = await Conversation.fromJson(
-            offId, jsonDecode(jsonEncode(off.toJson())));
+            offId, jsonDecode(jsonEncode(off.toJson())),
+            intervals: PqIntervals.disabled);
       }
 
       final r1 = await off.decrypt(await enc.encrypt(utf8b('hello')));
@@ -352,7 +356,8 @@ void main() {
       final offer = await off.forcePqRekey();
       // Round-trip the offerer through JSON with a re-key outstanding.
       final off2 = await Conversation.fromJson(
-          off.me, jsonDecode(jsonEncode(off.toJson())));
+          off.me, jsonDecode(jsonEncode(off.toJson())),
+          intervals: PqIntervals.disabled);
       expect(off2.pq.offerGen, 1);
       await enc.decrypt(offer!);
       final g1 = await enc.encrypt(utf8b('after reload'));

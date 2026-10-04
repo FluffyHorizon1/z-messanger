@@ -599,18 +599,24 @@ class BackupArchive {
   /// A conversation that holds no session and remembers [sids] as retired:
   /// what a restored device keeps of every session the archive names. Built
   /// by the protocol's own reader, so it is the shape any later load
-  /// expects, bound included.
+  /// expects, bound included. Its post-quantum clocks are not part of that
+  /// shape — nothing stored carries them, and the service tells every
+  /// conversation it loads its own (26.2) — and nothing is sent on it here,
+  /// so it is built with none.
   static Future<Map<String, Object?>> _retiredOnly(
       ZIdentity me, Object? them, Object? sids) async {
-    final conv = await Conversation.fromJson(me, {
-      'them': them,
-      'outboundSid': null,
-      'sessions': <String, Object?>{},
-      'retired': [
-        for (final s in (sids as List?) ?? const [])
-          if (s is String) s
-      ],
-    });
+    final conv = await Conversation.fromJson(
+        me,
+        {
+          'them': them,
+          'outboundSid': null,
+          'sessions': <String, Object?>{},
+          'retired': [
+            for (final s in (sids as List?) ?? const [])
+              if (s is String) s
+          ],
+        },
+        intervals: PqIntervals.disabled);
     return conv.toJson(includeSkipped: false);
   }
 

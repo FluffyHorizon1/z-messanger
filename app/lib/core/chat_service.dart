@@ -104,26 +104,41 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   /// 7.5b: the post-quantum re-key interval applied to conversations. Defaults
   /// to [pqRekeyIntervalMs]; tests set a short value. Changing it re-applies to
-  /// every open conversation.
+  /// every open conversation — on every channel: a contact's main device, a
+  /// contact's other devices, and my own (26.2; PROTOCOL §17.8).
   int get pqRekeyInterval => _pqRekeyInterval;
   int _pqRekeyInterval = pqRekeyIntervalMs;
 
   set pqRekeyInterval(int ms) {
     _pqRekeyInterval = ms;
-    for (final c in _convs.values) {
-      c.pqRekeyIntervalMs = ms;
-    }
+    _applyPqIntervals();
   }
 
-  /// As [pqRekeyInterval], for the retry of an initial offer nobody answered
-  /// (PROTOCOL §17.4). Tests set a short value.
+  /// As [pqRekeyInterval], for the retry of an offer nobody answered
+  /// (PROTOCOL §17.4, §17.7). Tests set a short value.
   int get pqOfferRetry => _pqOfferRetry;
   int _pqOfferRetry = pqOfferRetryMs;
   set pqOfferRetry(int ms) {
     _pqOfferRetry = ms;
+    _applyPqIntervals();
+  }
+
+  /// Both clocks, as every conversation this service builds is built with
+  /// them — required by the protocol library, so no channel can be built
+  /// without them again. Each channel to a linked device, and every
+  /// conversation a rollback rebuilt from a snapshot, used to run on none.
+  PqIntervals get _pqIntervals =>
+      PqIntervals(rekeyMs: _pqRekeyInterval, offerRetryMs: _pqOfferRetry);
+
+  void _applyPqIntervals() {
+    final i = _pqIntervals;
     for (final c in _convs.values) {
-      c.pqOfferRetryMs = ms;
+      c.pqIntervals = i;
     }
+    for (final s in _contactExtras.values) {
+      s.pqIntervals = i;
+    }
+    _sync?.applyPqIntervals();
   }
 
   final Map<String, Contact> contacts = {};
@@ -304,6 +319,49 @@ class ChatService extends ChangeNotifier implements KtHost {
   @visibleForTesting
   Future<void> Function(String rid)? debugBeforeSendCommit;
 
+  /// Test seam: shown every envelope as it would decrypt — [path] is
+  /// `primary` (a contact's main device), `extra` (one of a contact's other
+  /// devices) or `sync` (one of my own) — on a COPY of the ratchet, before
+  /// anything acts on it. Returning true discards the envelope as though the
+  /// relay had never delivered it: the ratchet is left exactly as it was and
+  /// the envelope is acknowledged. A test cannot pick one envelope out by
+  /// kind from the sealed bytes on the wire, and withholding exactly one is
+  /// what a relay can always do (R27). Null in production, where nothing is
+  /// decrypted twice.
+  @visibleForTesting
+  bool Function(String path, String fromRid, DecryptResult dec)?
+      get debugOnDecrypted => _debugOnDecrypted;
+  @visibleForTesting
+  set debugOnDecrypted(
+      bool Function(String path, String fromRid, DecryptResult dec)? f) {
+    _debugOnDecrypted = f;
+    _wireSyncProbe();
+  }
+
+  bool Function(String path, String fromRid, DecryptResult dec)?
+      _debugOnDecrypted;
+
+  void _wireSyncProbe() {
+    final f = _debugOnDecrypted;
+    _sync?.debugOnDecrypted =
+        f == null ? null : (from, dec) => f('sync', from, dec);
+  }
+
+  /// Runs [probe] over what [decryptCopy] — a decrypt on a copy of the
+  /// ratchet — yields. False when the copy does not decrypt: the real
+  /// attempt that follows reports that, as it always has.
+  Future<bool> _debugPeek(
+      bool Function(String path, String fromRid, DecryptResult dec) probe,
+      String path,
+      String fromRid,
+      Future<DecryptResult> Function() decryptCopy) async {
+    try {
+      return probe(path, fromRid, await decryptCopy());
+    } catch (_) {
+      return false;
+    }
+  }
+
   ChatService._({
     required this.vault,
     required this.identity,
@@ -381,6 +439,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     await svc._computeUnread();
     svc.devMode = (await vault.kvGet('dev_mode')) == '1';
     await svc._initSync();
+    await svc._loadHistoryDue(); // 26.2: replays still waiting; run on connect
     await svc._loadContactDeviceLists(kv: kv);
     await svc._loadDevlistState(kv: kv);
     // Phase 31: the first start after a restore re-asserts the account — a
@@ -452,6 +511,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     _outboxRetry?.cancel();
     _devlistTimer?.cancel();
     _dlvTimer?.cancel();
+    _historyTimer?.cancel();
     for (final t in _pqTimers.values) {
       t.cancel();
     }
@@ -600,9 +660,8 @@ class ChatService extends ChangeNotifier implements KtHost {
       final stateJson =
           (jsonDecode(await vault.unseal(r['enc_state'] as String)) as Map)
               .cast<String, Object?>();
-      final conv = await Conversation.fromJson(identity, stateJson)
-        ..pqRekeyIntervalMs = _pqRekeyInterval
-        ..pqOfferRetryMs = _pqOfferRetry;
+      final conv = await Conversation.fromJson(identity, stateJson,
+          intervals: _pqIntervals);
       await _restoreSkipped(conv, r['enc_skipped']);
       _convs[rid] = conv;
       // A row from before schema 9 carries its cache inside `enc_state`,
@@ -643,13 +702,22 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<Conversation> _convFor(Contact contact) async {
     var conv = _convs[contact.rid];
     if (conv == null) {
-      conv = await Conversation.create(identity, contact.bundle)
-        ..pqRekeyIntervalMs = _pqRekeyInterval
-        ..pqOfferRetryMs = _pqOfferRetry;
+      conv = await Conversation.create(identity, contact.bundle,
+          intervals: _pqIntervals);
       _convs[contact.rid] = conv;
     }
     return conv;
   }
+
+  /// A conversation put back from [snapshot] — a rollback. It is told the
+  /// intervals as any conversation is: a snapshot is state, and the clocks
+  /// are not state. Until 26.2 this was a bare `fromJson`, so every rollback
+  /// left a conversation that neither retried nor re-keyed until the app
+  /// restarted — and one garbage envelope from anyone holding the code is a
+  /// rollback.
+  Future<Conversation> _convFromSnapshot(String snapshot) =>
+      Conversation.fromJson(identity, jsonDecode(snapshot),
+          intervals: _pqIntervals);
 
   /// Persist a conversation's hot ratchet state — **without** the
   /// out-of-order key cache, which lives in its own cell (see
@@ -2171,7 +2239,10 @@ class ChatService extends ChangeNotifier implements KtHost {
   ///
   /// Best-effort and bounded by the durable flag: until [Contact.pqTold] is
   /// set this is re-earned on traffic, and once it is set it never fires
-  /// again for that contact.
+  /// again for that contact. The flag bounds the ENVELOPE, not the fact: it
+  /// is set when the `pqack` is queued, and one lost at the relay used to be
+  /// lost for good — so since 26.2 the fact also rides every message (`pqh`,
+  /// [_decorateForWire]), and a peer from before that still gets this.
   final Set<String> _pqAckInFlight = {};
 
   /// Contacts told this run, whether or not the durable flag could be
@@ -2218,6 +2289,13 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// `debugSuppressPqList` models a dropped signature for the same reason.
   @visibleForTesting
   bool debugPreAdr0021 = false;
+
+  /// The `pqh` member (26.2): the sender holds our post-quantum key — a
+  /// `pqack`'s statement, carried on every message they send (see
+  /// [_decorateForWire]). A client running as one from before ADR 0021
+  /// neither sends nor heeds it.
+  bool _saysHoldsOurKey(InnerMessage inner) =>
+      !debugPreAdr0021 && inner.data['pqh'] == 1;
 
   Future<void> _markPqTold(Contact contact) async {
     if (contact.pqTold || _disposed) return;
@@ -2492,8 +2570,7 @@ class ChatService extends ChangeNotifier implements KtHost {
           if (also != null) await also(txn);
         });
       } catch (e) {
-        final restored =
-            await Conversation.fromJson(identity, jsonDecode(snapshot));
+        final restored = await _convFromSnapshot(snapshot);
         // Carry the out-of-order keys over from the object being replaced.
         // Without this the rollback would quietly empty the cache and lose
         // the ability to decrypt messages already in flight — a silent
@@ -2825,6 +2902,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     // whatever went wrong — kicks it.
     unawaited(_drainGroupFanout());
     await _sync?.prime(); // open the sync ratchet deterministically once online
+    if (_historyDue.isNotEmpty) unawaited(_runHistoryReplays());
     // 7.7a hardening: on every (re)connect a root re-asserts its newest signed
     // list to its own devices. Cheap, idempotent on the receiving side, and it
     // is what lets a device that was fed a list behind the root's back hear
@@ -2902,6 +2980,10 @@ class ChatService extends ChangeNotifier implements KtHost {
         }
       }
       transport.ackReceived(id: m.id, from: m.from);
+      // 26.2: what just arrived may have made that device's channel
+      // post-quantum — its offer, or the answer to ours — which is what a
+      // waiting history replay is waiting for.
+      if (_historyDue.containsKey(from)) unawaited(_runHistoryReplays());
       return;
     }
 
@@ -2925,7 +3007,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     // Post-processing (ack, assembly, read receipts, session-reset hello) runs
     // AFTER the lock releases, because it may itself re-enter the lock.
     const int kOk = 0, kUnknownSession = 1, kDropped = 2, kReplay = 3;
-    const int kMalformed = 4;
+    const int kMalformed = 4, kWithheld = 5;
     int status;
     InnerMessage? inner;
     // What became of an attachment offer, as its transaction decided (§7).
@@ -2937,6 +3019,16 @@ class ChatService extends ChangeNotifier implements KtHost {
         final conv = await _convFor(contact);
         final snapshot = jsonEncode(conv.toJson()); // for rollback
         final cacheBefore = _skippedShape(conv);
+        final probe = _debugOnDecrypted;
+        if (probe != null &&
+            await _debugPeek(
+                probe,
+                'primary',
+                from,
+                () async =>
+                    (await _convFromSnapshot(snapshot)).decrypt(payload))) {
+          return (kWithheld, null);
+        }
         final DecryptResult dec;
         try {
           dec = await conv.decrypt(payload);
@@ -2950,8 +3042,7 @@ class ChatService extends ChangeNotifier implements KtHost {
           // one. Either way we consumed it once and there is nothing to
           // repair, so it is acknowledged in silence. This arm comes first
           // because it is a subtype of the one below.
-          _convs[contact.rid] =
-              await Conversation.fromJson(identity, jsonDecode(snapshot));
+          _convs[contact.rid] = await _convFromSnapshot(snapshot);
           return (kReplay, null);
         } on RatchetDecryptException {
           // The chain no longer agrees with the peer's. Restore state, drop
@@ -2959,8 +3050,7 @@ class ChatService extends ChangeNotifier implements KtHost {
           // the acknowledgement below with no row, no count and no hello, so
           // a desync made the conversation simply stop. Nothing on screen,
           // nothing sent, and the peer believing every message arrived.
-          _convs[contact.rid] =
-              await Conversation.fromJson(identity, jsonDecode(snapshot));
+          _convs[contact.rid] = await _convFromSnapshot(snapshot);
           return (kDropped, null);
         }
 
@@ -3028,8 +3118,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         } catch (_) {
           // Persist failed: roll the in-memory ratchet back so the relay's
           // redelivery can be decrypted again. Do NOT ack.
-          _convs[contact.rid] =
-              await Conversation.fromJson(identity, jsonDecode(snapshot));
+          _convs[contact.rid] = await _convFromSnapshot(snapshot);
           rethrow;
         }
         return (kOk, parsed);
@@ -3042,6 +3131,11 @@ class ChatService extends ChangeNotifier implements KtHost {
       return;
     }
 
+    if (status == kWithheld) {
+      // A test withheld it (debugOnDecrypted): gone, as if never delivered.
+      transport.ackReceived(id: m.id, from: m.from);
+      return;
+    }
     if (status == kUnknownSession ||
         status == kDropped ||
         status == kMalformed) {
@@ -3118,7 +3212,7 @@ class ChatService extends ChangeNotifier implements KtHost {
           _offerPqIdentity(contact, _PqReason.answer);
         }
       }
-      if (inner.kind == 'pqack') {
+      if (inner.kind == 'pqack' || _saysHoldsOurKey(inner)) {
         // ADR 0021: they hold our key, so a candidate's number can be shown.
         try {
           if (await _markPqAcked(contact)) notifyListeners();
@@ -5380,24 +5474,161 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// Items per self-sync envelope (~30 KB, well under the relay frame cap).
   static const int historySyncBatch = 100;
 
+  /// 26.2: how long a history replay waits for the new device's self-sync
+  /// channel to be post-quantum (PROTOCOL §17.8) — the relay's queue
+  /// lifetime. A device that has not completed one round trip on that
+  /// channel in 72 hours has not been online to take the replay anyway: an
+  /// envelope sent to it would have expired at the relay. At the bound the
+  /// replay is DROPPED, never sent classical: the new device keeps what it
+  /// receives from then on, which is what a lost batch always meant. Tests
+  /// shorten it.
+  @visibleForTesting
+  Duration historySyncPqWait = const Duration(hours: 72);
+
+  /// Replays waiting for their device's channel to be post-quantum: device
+  /// routing id → when the wait gives up (ms since the epoch). Also sealed in
+  /// the vault (`hist_due`), so a restart resumes a wait rather than losing
+  /// the replay — which a replay queued at once never risked.
+  final Map<String, int> _historyDue = {};
+  Timer? _historyTimer;
+  bool _historyRunning = false;
+  bool _historyAgain = false;
+
+  /// Test seam: whether a history replay to [deviceRid] is still waiting.
+  @visibleForTesting
+  Future<bool> debugHistoryReplayPending(String deviceRid) async =>
+      _historyDue.containsKey(deviceRid);
+
+  Future<void> _loadHistoryDue() async {
+    final stored = await vault.kvGet('hist_due');
+    if (stored == null) return;
+    try {
+      final m = (jsonDecode(stored) as Map).cast<String, Object?>();
+      for (final e in m.entries) {
+        _historyDue[e.key] = (e.value as num).toInt();
+      }
+    } catch (_) {
+      // Unreadable: nothing to resume. The replay is a convenience.
+    }
+  }
+
+  Future<void> _saveHistoryDue() async {
+    if (_historyDue.isEmpty) {
+      await vault.kvDelete('hist_due');
+    } else {
+      await vault.kvPut('hist_due', jsonEncode(_historyDue));
+    }
+  }
+
+  /// Start the replay to a device just linked: it waits for that device's
+  /// channel to be post-quantum ([_runHistoryReplays]).
+  ///
+  /// Until 26.2 it went out at once, on whatever the channel was at that
+  /// moment — which, whenever this device is the side that offers the
+  /// ML-KEM key, was always classical: its history left before its own
+  /// offer did. Up to 200 texts per chat, in the clear to anyone who records
+  /// the traffic now and breaks X25519 later.
+  Future<void> _syncHistoryTo(String deviceRid) async {
+    _historyDue[deviceRid] = _now() + historySyncPqWait.inMilliseconds;
+    try {
+      await _saveHistoryDue();
+    } catch (_) {
+      // Held in memory for this run; only a restart can lose it now.
+    }
+    await _runHistoryReplays();
+  }
+
+  /// Every waiting replay, one pass: sent if its device's channel is
+  /// post-quantum; given up if the device is no longer linked or the wait
+  /// has reached [historySyncPqWait]; otherwise nudged along. Runs on link,
+  /// on reconnect, after anything arrives from one of my devices, and on a
+  /// timer while anything waits.
+  Future<void> _runHistoryReplays() async {
+    if (_historyRunning) {
+      _historyAgain = true;
+      return;
+    }
+    _historyRunning = true;
+    try {
+      do {
+        _historyAgain = false;
+        for (final e in _historyDue.entries.toList()) {
+          if (_disposed) return;
+          final rid = e.key;
+          final sync = _sync;
+          if (sync == null ||
+              !sync.deviceRoutingIds.contains(rid) ||
+              _now() >= e.value) {
+            // Unlinked meanwhile, or the bound: dropped, not sent classical.
+            _historyDue.remove(rid);
+            await _saveHistoryDue();
+            continue;
+          }
+          if (!sync.isPostQuantumWith(rid)) {
+            // If this device offers on that channel, its offer — the first,
+            // or one said again once its interval has passed — goes now
+            // rather than with the next mirror, which may be a long time
+            // coming. If the other device offers, its offer is coming
+            // whether or not we speak; the answer it needs from this side
+            // goes the moment it arrives (DeviceSyncService.handleInbound).
+            await sync.offerPqTo(rid);
+            continue;
+          }
+          if (await _replayHistoryTo(sync, rid)) {
+            _historyDue.remove(rid);
+            await _saveHistoryDue();
+          }
+        }
+      } while (_historyAgain);
+    } catch (_) {
+      // A vault closing under us. What still waits is in the vault, and the
+      // next start resumes it.
+    } finally {
+      _historyRunning = false;
+      _armHistoryTimer();
+    }
+  }
+
+  /// While a replay waits, look again by its deadline, and no later than the
+  /// offer-retry interval, so an offer said again goes out on time.
+  void _armHistoryTimer() {
+    _historyTimer?.cancel();
+    _historyTimer = null;
+    if (_historyDue.isEmpty || _disposed) return;
+    final now = _now();
+    final due = _historyDue.values.reduce(min) - now;
+    final wait = min(max(due, 0), _pqOfferRetry);
+    _historyTimer = Timer(
+        Duration(milliseconds: wait.clamp(1000, 3600 * 1000).toInt()), () {
+      _historyTimer = null;
+      unawaited(_runHistoryReplays());
+    });
+  }
+
   /// Replay the newest [historySyncPerChat] text messages of every chat to
   /// ONE of my devices (the one just linked), oldest first, in batches over
   /// the self-sync channel. Attachments are not replayed: their key material
   /// is not retained on the sender's side, and a placeholder that could never
   /// complete would be worse than the file simply living on the other device.
-  Future<void> _syncHistoryTo(String deviceRid) async {
-    final sync = _sync;
-    if (sync == null) return;
+  ///
+  /// Every batch goes post-quantum or not at all (26.2): false, and nothing
+  /// further sent, the moment the channel is not. The device stores each item
+  /// under its message id and ignores one it holds, so a replay begun again
+  /// later repeats nothing that shows.
+  Future<bool> _replayHistoryTo(
+      DeviceSyncService sync, String deviceRid) async {
     final items = <Map<String, Object?>>[];
+    var complete = true;
     Future<void> flush() async {
-      if (items.isEmpty) return;
+      if (items.isEmpty || !complete) return;
       final batch = List<Map<String, Object?>>.from(items);
       items.clear();
       try {
-        await sync.mirrorTo(
+        complete = await sync.mirrorTo(
             deviceRid: deviceRid,
             threadRid: '',
             dir: 'hist',
+            onlyPostQuantum: true,
             inner: InnerMessage(
                 kind: 'hist',
                 mid: newMessageId(),
@@ -5436,9 +5667,11 @@ class ChatService extends ChangeNotifier implements KtHost {
           if (m.expireAtMs > 0) 'x': m.expireAtMs,
         });
         if (items.length >= historySyncBatch) await flush();
+        if (!complete) return false;
       }
     }
     await flush();
+    return complete;
   }
 
   /// Receiving side of [_syncHistoryTo]: store each item as an ordinary text /
@@ -5546,7 +5779,19 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<bool> holdsAccountRoot() async =>
       (await accountIdentity()).holdsAccountRoot;
 
-  Future<void> _initSync() async {
+  /// Rebuilds the self-sync service for the device list as it now stands.
+  /// One rebuild at a time, in the order asked for, so the service left in
+  /// place was built from the latest list and every one of them took over
+  /// the same session.
+  Future<void> _initSync() {
+    final run = _syncRebuilds.then((_) => _rebuildSync());
+    _syncRebuilds = run.then((_) {}, onError: (Object _) {});
+    return run;
+  }
+
+  Future<void> _syncRebuilds = Future<void>.value();
+
+  Future<void> _rebuildSync() async {
     final devices = await _myDevices();
     for (final d in devices) {
       _sealKeys[await d.routingId()] = d.deviceXPub; // seal self-sync too
@@ -5555,14 +5800,32 @@ class ChatService extends ChangeNotifier implements KtHost {
       _sync = null;
       return;
     }
-    _sync = DeviceSyncService(
+    // 26.2: the new service takes over the old one's session and lock, and
+    // replaces it once it is ready. It used to replace it at once, before
+    // it knew which routing ids were mine — so for a moment an envelope from
+    // my own device was taken for a stranger's — and to read its own copy of
+    // the ratchet from the vault while the old one, still handling an
+    // envelope, stepped and saved its copy (see [DeviceSyncService]).
+    final next = DeviceSyncService(
       vault: vault,
       reliableSend: _syncSend,
       account: await accountIdentity(),
       myDevices: devices,
+      pqIntervals: () => _pqIntervals,
+      replacing: _sync,
     );
-    await _sync!.init();
+    await next.init();
+    _sync = next;
+    _wireSyncProbe();
   }
+
+  /// Test seam: the self-sync session, to read its post-quantum state.
+  @visibleForTesting
+  AccountSession? get debugSyncSession => _sync?.debugSession;
+
+  /// Test seam: the session with [rid]'s other devices, likewise.
+  @visibleForTesting
+  AccountSession? debugExtraSession(String rid) => _contactExtras[rid];
 
   /// Reliable send for the self-sync channel: enqueue to the durable outbox and
   /// flush, so a mirrored message or file chunk gets the same relay-backed,
@@ -9285,8 +9548,10 @@ class ChatService extends ChangeNotifier implements KtHost {
             kv != null ? kv['cextra_$rid'] : await vault.kvGet('cextra_$rid');
         session = stored != null
             ? await AccountSession.fromJson(
-                acct, (jsonDecode(stored) as Map).cast<String, Object?>())
-            : await AccountSession.create(acct, const []);
+                acct, (jsonDecode(stored) as Map).cast<String, Object?>(),
+                intervals: _pqIntervals)
+            : await AccountSession.create(acct, const [],
+                intervals: _pqIntervals);
         _contactExtras[rid] = session;
       }
 
@@ -9594,6 +9859,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     // the decrypt, the save and the parse. Those three want three different
     // answers and used to get one: silence, followed by an acknowledgement.
     const int kOk = 0, kUndecryptable = 1, kReplay = 2, kUnpersisted = 3;
+    const int kWithheld = 4;
     int outcome = kOk;
     await _withLock(rid, () async {
       final s = _contactExtras[rid];
@@ -9602,6 +9868,20 @@ class ChatService extends ChangeNotifier implements KtHost {
         return;
       }
       snapshot = jsonEncode(s.toJson());
+      final probe = _debugOnDecrypted;
+      if (probe != null &&
+          await _debugPeek(
+              probe,
+              'extra',
+              fromDeviceRid,
+              () async => (await AccountSession.fromJson(
+                      await accountIdentity(),
+                      (jsonDecode(snapshot) as Map).cast<String, Object?>(),
+                      intervals: _pqIntervals))
+                  .decryptFrom(fromDeviceRid, payload))) {
+        outcome = kWithheld;
+        return;
+      }
       final DecryptResult dec;
       try {
         dec = await s.decryptFrom(fromDeviceRid, payload);
@@ -9641,6 +9921,11 @@ class ChatService extends ChangeNotifier implements KtHost {
       }
       offer = dec.pqOfferPayload;
     });
+    if (outcome == kWithheld) {
+      // A test withheld it (debugOnDecrypted): gone, as if never delivered.
+      transport.ackReceived(id: m.id, from: m.from);
+      return;
+    }
     if (outcome == kUnpersisted) {
       // Leave the envelope with the relay. It is redelivered onto the session
       // that is now back in memory, and the store is attempted again.
@@ -9702,7 +9987,8 @@ class ChatService extends ChangeNotifier implements KtHost {
       {bool persist = false}) async {
     _contactExtras[rid] = await AccountSession.fromJson(
         await accountIdentity(),
-        (jsonDecode(snapshot) as Map).cast<String, Object?>());
+        (jsonDecode(snapshot) as Map).cast<String, Object?>(),
+        intervals: _pqIntervals);
     if (persist) await _saveExtra(rid);
   }
 
@@ -9739,7 +10025,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         _offerPqIdentity(contact, _PqReason.volunteer);
       }
     }
-    if (inner.kind == 'pqack') {
+    if (inner.kind == 'pqack' || _saysHoldsOurKey(inner)) {
       try {
         if (await _markPqAcked(contact)) notifyListeners(); // ADR 0021
       } catch (_) {}
@@ -10025,6 +10311,17 @@ class ChatService extends ChangeNotifier implements KtHost {
       // device-list version is not a trade worth making.
       final sent = _dlpqSent[contact.rid] ?? 0;
       if (sent > 0) inner.data['pql'] = sent;
+      // ADR 0021, 26.2: "I hold your post-quantum key" — what a `pqack` says
+      // — on every message, so the fact cannot be lost with one envelope.
+      // `pq_told` is set when a `pqack` is QUEUED, not when it arrives (no
+      // sender can know that), so one lost at the relay left the pair on two
+      // numbers for good while "Waiting for them" promised they would match.
+      // Set or cleared per recipient: one inner can go to several (a group).
+      if (!debugPreAdr0021 && contact.numberKey != null) {
+        inner.data['pqh'] = 1;
+      } else {
+        inner.data.remove('pqh');
+      }
     } catch (_) {
       // Leave the message undecorated; gossip resumes on the next send.
     }

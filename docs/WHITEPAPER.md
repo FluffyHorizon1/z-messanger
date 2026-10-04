@@ -154,9 +154,7 @@ before the offer is answered (R5). Nor anything that never enters the
 ratchet: contact requests, the connect ceremony, the enrolment a newly
 linked device receives (which carries the contact list), and the sealed
 outer layer that says who sent an envelope are X25519 only
-(`THREAT_MODEL.md`, "The quantum layer's edges"). And today the channels to a
-person's own other devices, and to a contact's, are never re-keyed, and are
-not offered a key again if the first offer is lost. ML-KEM in pure Dart is
+(`THREAT_MODEL.md`, "The quantum layer's edges"). ML-KEM in pure Dart is
 best-effort constant-time; a timing leak there reduces security to v1, never
 below it (R43).
 

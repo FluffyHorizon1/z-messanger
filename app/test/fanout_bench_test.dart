@@ -468,7 +468,8 @@ void main() {
     final json =
         (jsonDecode(await svc.vault.unseal(row['enc_state'] as String)) as Map)
             .cast<String, Object?>();
-    final conv = await Conversation.fromJson(svc.identity, json);
+    final conv = await Conversation.fromJson(svc.identity, json,
+        intervals: PqIntervals.disabled);
 
     const reps = 40;
 
@@ -484,7 +485,8 @@ void main() {
     //    fires, and a proxy for how much structure is in here.
     sw = Stopwatch()..start();
     for (var i = 0; i < 10; i++) {
-      await Conversation.fromJson(svc.identity, json);
+      await Conversation.fromJson(svc.identity, json,
+          intervals: PqIntervals.disabled);
     }
     sw.stop();
     final rebuild = sw.elapsedMicroseconds / 1000.0 / 10;

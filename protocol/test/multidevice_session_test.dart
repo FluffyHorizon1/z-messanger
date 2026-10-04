@@ -65,7 +65,7 @@ void main() {
       final aliceSess = await AccountSession.create(a1, [
         DeviceTarget.fromCert(bob[0].cert),
         DeviceTarget.fromCert(bob[1].cert),
-      ]);
+      ], intervals: PqIntervals.disabled);
       final fan = await aliceSess.encrypt(utf8b('hi bob'));
       expect(fan.map((f) => f.routingId).toSet().length, 2,
           reason: 'every contact device is addressed');
@@ -73,7 +73,8 @@ void main() {
       for (final bd in bob) {
         final rid = await bd.id.routingId();
         final sess = await AccountSession.create(
-            bd.id, [DeviceTarget.fromCert(alice[0].cert)]);
+            bd.id, [DeviceTarget.fromCert(alice[0].cert)],
+            intervals: PqIntervals.disabled);
         expect(
             await decryptAll(sess, a1rid, payloadsFor(fan, rid)), ['hi bob']);
       }
@@ -89,13 +90,14 @@ void main() {
       final sess = await AccountSession.create(a1, [
         DeviceTarget.fromCert(bob[0].cert),
         DeviceTarget.fromCert(alice[1].cert),
-      ]);
+      ], intervals: PqIntervals.disabled);
       final fan = await sess.encrypt(utf8b('note to self+bob'));
       expect(fan.map((f) => f.routingId).toSet().length, 2);
 
       final a2rid = await a2.routingId();
       final a2sess = await AccountSession.create(
-          a2, [DeviceTarget.fromCert(alice[0].cert)]);
+          a2, [DeviceTarget.fromCert(alice[0].cert)],
+          intervals: PqIntervals.disabled);
       expect(await decryptAll(a2sess, a1rid, payloadsFor(fan, a2rid)),
           ['note to self+bob']);
     });
@@ -108,9 +110,11 @@ void main() {
       final a1rid = await a1.routingId(), b1rid = await b1.routingId();
 
       final aSess =
-          await AccountSession.create(a1, [DeviceTarget.fromCert(bob[0].cert)]);
+          await AccountSession.create(a1, [DeviceTarget.fromCert(bob[0].cert)],
+              intervals: PqIntervals.disabled);
       final bSess = await AccountSession.create(
-          b1, [DeviceTarget.fromCert(alice[0].cert)]);
+          b1, [DeviceTarget.fromCert(alice[0].cert)],
+          intervals: PqIntervals.disabled);
 
       final f1 = await aSess.encrypt(utf8b('hi'));
       expect(await decryptAll(bSess, a1rid, payloadsFor(f1, b1rid)), ['hi']);
@@ -126,16 +130,18 @@ void main() {
       final a1rid = await a1.routingId();
 
       var aSess =
-          await AccountSession.create(a1, [DeviceTarget.fromCert(bob[0].cert)]);
+          await AccountSession.create(a1, [DeviceTarget.fromCert(bob[0].cert)],
+              intervals: PqIntervals.disabled);
       final bSess = await AccountSession.create(
-          b1, [DeviceTarget.fromCert(alice[0].cert)]);
+          b1, [DeviceTarget.fromCert(alice[0].cert)],
+          intervals: PqIntervals.disabled);
 
       final b1rid = await b1.routingId();
       final f1 = await aSess.encrypt(utf8b('m1'));
       await decryptAll(bSess, a1rid, payloadsFor(f1, b1rid));
 
-      aSess = await AccountSession.fromJson(
-          a1, aSess.toJson()); // persist + restore
+      aSess = await AccountSession.fromJson(a1, aSess.toJson(),
+          intervals: PqIntervals.disabled); // persist + restore
       final f2 = await aSess.encrypt(utf8b('m2'));
       expect(await decryptAll(bSess, a1rid, payloadsFor(f2, b1rid)), ['m2']);
     });
@@ -144,7 +150,8 @@ void main() {
       final alice = await makeAccount(1);
       final bob = await makeAccount(1);
       final aSess = await AccountSession.create(
-          alice[0].id, [DeviceTarget.fromCert(bob[0].cert)]);
+          alice[0].id, [DeviceTarget.fromCert(bob[0].cert)],
+          intervals: PqIntervals.disabled);
       expect(() => aSess.decryptFrom('not-a-real-rid', 'x'),
           throwsA(isA<UnknownSessionException>()));
     });
@@ -156,7 +163,8 @@ void main() {
       final a1rid = await a1.routingId();
 
       final sess =
-          await AccountSession.create(a1, [DeviceTarget.fromCert(bob[0].cert)]);
+          await AccountSession.create(a1, [DeviceTarget.fromCert(bob[0].cert)],
+              intervals: PqIntervals.disabled);
       expect(sess.targetRoutingIds.length, 1);
       await sess.addTarget(DeviceTarget.fromCert(bob[1].cert));
       expect(sess.targetRoutingIds.length, 2);
@@ -167,7 +175,8 @@ void main() {
       final b2 = bob[1].id;
       final b2rid = await b2.routingId();
       final b2sess = await AccountSession.create(
-          b2, [DeviceTarget.fromCert(alice[0].cert)]);
+          b2, [DeviceTarget.fromCert(alice[0].cert)],
+          intervals: PqIntervals.disabled);
       expect(await decryptAll(b2sess, a1rid, payloadsFor(fan, b2rid)),
           ['now to both']);
     });

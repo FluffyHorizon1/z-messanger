@@ -125,9 +125,9 @@ void main() {
       final alice = ids['alice']!, bob = ids['bob']!;
       final convs = {
         'alice': await Conversation.create(alice, await bob.bundle(),
-            postQuantum: false),
+            postQuantum: false, intervals: PqIntervals.disabled),
         'bob': await Conversation.create(bob, await alice.bundle(),
-            postQuantum: false),
+            postQuantum: false, intervals: PqIntervals.disabled),
       };
       final steps = {
         for (final s in (ratchet['steps'] as List).cast<Map>())

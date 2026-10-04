@@ -43,8 +43,10 @@ Future<(Conversation enc, Conversation off)> pair({int retryMs = 3600000}) async
   if ((await a.routingId()).compareTo(await b.routingId()) > 0) {
     (a, b) = (b, a);
   }
-  final enc = await Conversation.create(a, await b.bundle());
-  final off = await Conversation.create(b, await a.bundle());
+  final enc = await Conversation.create(a, await b.bundle(),
+      intervals: PqIntervals.disabled);
+  final off = await Conversation.create(b, await a.bundle(),
+      intervals: PqIntervals.disabled);
   off.pqOfferRetryMs = retryMs;
   enc.pqOfferRetryMs = retryMs;
   return (enc, off);

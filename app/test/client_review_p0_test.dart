@@ -277,12 +277,14 @@ void main() {
         vault: oneVault,
         reliableSend: (to, payload) async => sent.add(payload),
         account: oneAcct,
-        myDevices: [twoCert]);
+        myDevices: [twoCert],
+        pqIntervals: () => PqIntervals.disabled);
     final two = DeviceSyncService(
         vault: twoVault,
         reliableSend: (to, payload) async {},
         account: twoAcct,
-        myDevices: [oneCert]);
+        myDevices: [oneCert],
+        pqIntervals: () => PqIntervals.disabled);
     await one.init();
     await two.init();
 
@@ -327,8 +329,10 @@ void main() {
     final bob = await ZIdentity.generate();
 
     // --- after an explicit reset ---
-    var a = await Conversation.create(alice, await bob.bundle());
-    var bConv = await Conversation.create(bob, await alice.bundle());
+    var a = await Conversation.create(alice, await bob.bundle(),
+        intervals: PqIntervals.disabled);
+    var bConv = await Conversation.create(bob, await alice.bundle(),
+        intervals: PqIntervals.disabled);
     final captured = [
       await a.encrypt(b('one')),
       await a.encrypt(b('two')),
@@ -344,14 +348,17 @@ void main() {
     expect(bConv.retiredSids, isNotEmpty);
 
     // --- and it survives being written out and read back ---
-    final reloaded = await Conversation.fromJson(bob, bConv.toJson());
+    final reloaded = await Conversation.fromJson(bob, bConv.toJson(),
+        intervals: PqIntervals.disabled);
     await expectLater(
         reloaded.decrypt(captured.first), throwsA(isA<RatchetDecryptException>()),
         reason: 'the retired ids are persisted with the conversation');
 
     // --- after a stale session is pruned ---
-    a = await Conversation.create(alice, await bob.bundle());
-    bConv = await Conversation.create(bob, await alice.bundle());
+    a = await Conversation.create(alice, await bob.bundle(),
+        intervals: PqIntervals.disabled);
+    bConv = await Conversation.create(bob, await alice.bundle(),
+        intervals: PqIntervals.disabled);
     final opener = await a.encrypt(b('from alice'));
     await bConv.decrypt(opener);
     await bConv.encrypt(b('from bob')); // bob's own session is the outbound one
@@ -366,7 +373,8 @@ void main() {
 
     // The bound holds: the list does not grow without limit.
     for (var i = 0; i < Conversation.maxRetiredSids + 10; i++) {
-      final conv = await Conversation.create(alice, await bob.bundle());
+      final conv = await Conversation.create(alice, await bob.bundle(),
+          intervals: PqIntervals.disabled);
       final p = await conv.encrypt(b('x'));
       await bConv.decrypt(p);
       bConv.resetSessions();

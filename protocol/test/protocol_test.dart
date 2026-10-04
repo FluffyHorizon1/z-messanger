@@ -10,9 +10,11 @@ Future<(ZIdentity, ZIdentity, Conversation, Conversation)> pair() async {
   final alice = await ZIdentity.generate();
   final bob = await ZIdentity.generate();
   final aliceConv =
-      await Conversation.create(alice, await bob.bundle(displayName: 'Bob'));
+      await Conversation.create(alice, await bob.bundle(displayName: 'Bob'),
+          intervals: PqIntervals.disabled);
   final bobConv =
-      await Conversation.create(bob, await alice.bundle(displayName: 'Alice'));
+      await Conversation.create(bob, await alice.bundle(displayName: 'Alice'),
+          intervals: PqIntervals.disabled);
   return (alice, bob, aliceConv, bobConv);
 }
 
@@ -201,7 +203,8 @@ void main() {
       // Bob's own identity: rebuilding his session under Alice's would fail
       // the AEAD for a different reason entirely and the test would pass
       // without ever exercising the chain.
-      final desynced = await Conversation.fromJson(bob, j);
+      final desynced = await Conversation.fromJson(bob, j,
+          intervals: PqIntervals.disabled);
       final next = await aliceConv.encrypt(utf8b('are you there'));
       expect(
           () => desynced.decrypt(next),
@@ -216,8 +219,10 @@ void main() {
 
       // Persist and restore BOTH sides (simulates app restart).
       final aliceRestored =
-          await Conversation.fromJson(alice, aliceConv.toJson());
-      final bobRestored = await Conversation.fromJson(bob, bobConv.toJson());
+          await Conversation.fromJson(alice, aliceConv.toJson(),
+              intervals: PqIntervals.disabled);
+      final bobRestored = await Conversation.fromJson(bob, bobConv.toJson(),
+          intervals: PqIntervals.disabled);
 
       final res = await bobRestored
           .decrypt(await aliceRestored.encrypt(utf8b('three')));
@@ -256,7 +261,8 @@ void main() {
       await aliceConv.decrypt(await bobConv.encrypt(utf8b('ok')));
 
       // Bob reinstalls: fresh conversation state, same identity.
-      final bobFresh = await Conversation.create(bob, bobConv.them);
+      final bobFresh = await Conversation.create(bob, bobConv.them,
+          intervals: PqIntervals.disabled);
       final late = await aliceConv.encrypt(utf8b('you there?'));
       expect(() => bobFresh.decrypt(late),
           throwsA(isA<UnknownSessionException>()));
@@ -290,7 +296,8 @@ void main() {
         expect(bobConv.isPostQuantum, isTrue, reason: 'PQ up before loss');
 
         // Bob loses everything and starts from a fresh conversation.
-        final bobFresh = await Conversation.create(bob, bobConv.them);
+        final bobFresh = await Conversation.create(bob, bobConv.them,
+            intervals: PqIntervals.disabled);
 
         // He speaks first, as a restored device does…
         expect(await carry(bobFresh, aliceConv, 'back on a new phone'),
@@ -334,7 +341,8 @@ void main() {
         expect(bobConv.isPostQuantum, isTrue);
 
         // A second device with the same identity opens its own session.
-        final bobOther = await Conversation.create(bob, bobConv.them);
+        final bobOther = await Conversation.create(bob, bobConv.them,
+            intervals: PqIntervals.disabled);
         expect(await carry(bobOther, aliceConv, 'from the other one'),
             'from the other one');
         expect(await carry(aliceConv, bobOther, 'noted'), 'noted');

@@ -52,7 +52,8 @@ void main() {
     test('a malformed transport payload is a RatchetDecryptException', () async {
       final a = await ZIdentity.generate();
       final b = await ZIdentity.generate();
-      final conv = await Conversation.create(a, await b.bundle());
+      final conv = await Conversation.create(a, await b.bundle(),
+          intervals: PqIntervals.disabled);
       // Reaches the sid check before any session lookup: a non-string sid.
       final badSid = base64Encode(_bytes({'v': 1, 't': 'r', 'sid': 123}));
       await expectLater(

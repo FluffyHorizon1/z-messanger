@@ -709,7 +709,10 @@ every bundle in a `ginvite` MUST be verified (§2.3) before use.
 
 Independently of kind, an inner message MAY also carry the device‑list
 transparency members `dl` and `pdl` (§3.6), each `{ "v":int, "h":b64 }`;
-clients that do not implement 7.7a ignore them.
+clients that do not implement 7.7a ignore them. It MAY also carry `pqh:1`: the
+sender holds the receiver's post‑quantum key — a `pqack`'s statement, restated
+on every message so that one lost envelope cannot lose it (§18.2); clients that
+predate it ignore the member.
 
 ### 6.3 Receipts
 
@@ -1033,7 +1036,8 @@ the receiving device stores it as its own expiry, and an item whose `x` has
 passed is not stored at all. A mirrored copy of any kind keeps its `ttl` the
 same way a live one does — a disappearing message does not stop disappearing
 because it reached a device through the self-sync or extra-device door. The reference app replays the newest 200 text
-messages per chat in batches of 100; attachments are not replayed. Attachment
+messages per chat in batches of 100, and only once that device's channel is
+post‑quantum (§17.8); attachments are not replayed. Attachment
 chunks are not re‑encrypted for sync: the chunk
 payloads (§7) are forwarded verbatim to each of the user's other devices, which
 decrypt them with the mirrored offer.
@@ -1916,7 +1920,8 @@ an unanswered initial offer after a bounded interval, and MUST repeat the
 fresh one, so that a late answer to the first copy still establishes. §18.2
 already required this of the identity offer; it belongs here for the same
 reason. The re-key offer of §17.7 is a different mechanism and is not a
-substitute: it only runs once the secret is established. A v2 implementation MAY be run with the
+substitute: it only runs once the secret is established. Both run on every
+channel a client holds a ratchet on, not only its main chats (§17.8). A v2 implementation MAY be run with the
 extension disabled; it then behaves as v1 (this is how the v1 vectors are
 regenerated).
 
@@ -1976,10 +1981,100 @@ likewise retains the outgoing generation, and advances. During the crossover
 each side holds two secrets, so a message still in flight under the old
 generation (identified by its own `pqg`) decrypts against the retained secret;
 a message tagged with a generation neither current nor retained is rejected
-(fail‑closed). One previous generation is retained — ample for in‑flight
-reordering given the interval dwarfs a round trip. Everything is a compatible
+(fail‑closed). One previous generation is retained, and only for as long as
+reordering needs it (below). Everything is a compatible
 extension: `pqg` is a new optional header member and `g` a new optional offer
 member, both ignored by a generation‑0‑only implementation, no version bump.
+
+**A re‑key offer nobody answers** (26.2). The next re‑key waits for an answer
+to the one outstanding, and until 26.2 nothing ever made that one again — so a
+single offer the relay did not deliver (the peer offline across the relay's 72
+hours, or one drop) froze re‑keying for the life of the session. The offerer
+therefore:
+
+* says the outstanding offer again on the retry interval of §17.4, with the
+  **same** key, regenerated from the persisted seed — not before the interval,
+  and once per interval;
+* **abandons** it once it has gone one whole re‑key interval unanswered while
+  the peer has been heard on that session (at the old generation, or it would
+  have been answered): it generates a fresh key and offers it for the **same**
+  generation, since an encapsulator accepts only `g == gen+1` — every
+  encapsulator ever shipped included. It keeps the abandoned key's seed: the
+  peer encapsulates to whichever copy reaches it first and ignores the rest,
+  so an answer to an abandoned key can still arrive. On a `pqct` for that
+  generation that does not open under the pending key, the offerer tries each
+  abandoned key, newest first (implicit rejection leaves only the AEAD to say
+  which key was used), and erases every one of them with the pending key once
+  the generation is established. At most 16 are kept, oldest dropped first,
+  which is margin: a key is abandoned only while the peer is heard at the old
+  generation, and a peer that has taken any copy answers on everything it
+  sends from then on.
+
+A peer that is silent is offered the same key again, never a fresh one — a
+fresh key would not reach a peer that is not there either. Nothing here
+changes the encapsulator, which takes the first offer for `gen+1` that reaches
+it, so a peer of any version interoperates; an offerer from before 26.2 simply
+never says its offer again, as before.
+
+**How long the previous generation is kept** (26.2). It used to be kept until
+the next re‑key overwrote it — a week, so a stolen state read up to two weeks
+back. It is kept until the peer has been seen on the new generation (a message
+mixed under it has been read), and then 72 hours: a peer's outbox sends in
+order per mailbox, so whatever it sealed under the old secret reached the
+relay before the first thing it sealed under the new one, and the relay drops
+every envelope `QUEUE_TTL_HOURS` (72) after accepting it (§12.4). After that,
+nothing sealed under the old secret can still arrive, so keeping it protects
+no message and only widens what a stolen state reads. A relay configured to
+hold mail longer can deliver one later; it is refused as undecryptable.
+
+**A classical message after mixing** (26.2). Once the peer has been seen
+mixing on a session (a message with `pq:1` read on it), a message without
+`pq:1` can come only from a downgraded peer or from a party able to derive the
+classical chain keys — a quantum adversary forging messages. It is refused,
+with one exception: a straggler the peer sent before it started mixing, which
+can only sit at a ratchet position already skipped when the peer's first mixed
+message was read. A receiver records those positions at that moment and
+accepts a classical message only at one of them, once, and for the same 72
+hours. An honest peer of any version never sends a classical message on a
+session after a mixed one — it mixes from the moment it holds `K` — so this
+refuses nothing a peer sends. The check comes after the replay check (§5.4),
+so a classical message already read that a relay delivers again is reported
+as the replay it is.
+
+### 17.8 Where the clocks run (26.2)
+
+The offer retry (§17.4) and the re‑key interval (§17.7) are properties of every
+conversation, not of the main chat. A client MUST run both on every channel it
+holds a ratchet on — a contact's main device, a contact's other devices (§9),
+and its own other devices (self‑sync, §9) — and on a conversation rebuilt from
+a snapshot after a failed write, exactly as on one loaded from storage. Until
+26.2 the reference client ran them on the main chat only: everything else it
+built ran with neither, so one withheld offer kept a linked‑device channel
+classical for good (self‑sync among them, which carries a copy of every
+message), none of those channels ever re‑keyed, and one garbage envelope from
+anyone holding a contact's code rolled that chat back onto neither until the
+app restarted. The protocol library now requires both wherever a conversation
+is built.
+
+**On self‑sync an offer is answered at once.** Nothing else may be said on that
+channel for a long time — a device just linked has nothing of its own to
+mirror — so the side that encapsulates sends a `ping` (§9) straight away, on
+the session the offer arrived on (right after linking it is not always the one
+the side would otherwise send on), carrying the ciphertext. The side that
+offers holds `K` one round trip after offering.
+
+**History replay waits for the post‑quantum layer.** The replay to a newly
+linked device (§9, `hist`) is up to 200 texts per chat, the most valuable
+thing the channel ever carries. It used to go out at once, and whenever the
+root was the side that offers it went out classical: it left before the
+root's own offer did. A root now sends it only when the next message on that
+device's channel would be mixed — making its offer at once if it is the side
+that offers — and checks that again for every batch, in the same step that
+encrypts it. If the channel is not post‑quantum within 72 hours — a device
+that has not completed one round trip in that time has not been online to
+take the replay anyway, since anything sent to it would have expired at the
+relay — the replay is **dropped**, never sent classical, and the device keeps
+what reaches it from then on. The wait survives a restart.
 
 ## 18. Protocol v3 — post‑quantum identity
 
@@ -2102,6 +2197,15 @@ candidates. It MUST be sent
 **at most once per contact**, gated by state that survives a restart rather
 than by a flag in memory; a `pqid` sent with `ack` discharges the same
 obligation and sets the same state, so only one of the two ever goes.
+
+That state records that the envelope was *queued*: no sender can know one
+arrived. Until 26.2 a `pqack` the relay never delivered — one expiring at the
+72‑hour limit was enough — left the two screens on two different numbers for
+good (§18.5), while the one still waiting said they would match. So a client
+holding the peer's key (established or candidate) also says so on **every**
+inner message it sends, as the optional member `pqh:1` (§6.2), and a receiver
+treats it exactly as a `pqack`: the next thing said converges the pair. The
+`pqack` stays, for a peer that predates `pqh`.
 
 Unlike a `pqid`, it is cheap to send: a few dozen bytes pads into the
 **1 024‑byte** bucket (§8), the one read receipts, reactions and short chat
@@ -2305,7 +2409,7 @@ reads as a substitution. A client shows:
 * the **v2** number when it holds an established post‑quantum key for the
   contact (§18.3 `hybrid`);
 * the **v2** number when it holds a *candidate* (§18.2) **and** the contact has
-  said it holds ours — `ack` on a `pqid`, or a `pqack`;
+  said it holds ours — `ack` on a `pqid`, a `pqack`, or `pqh` on any message;
 * the **v1** number otherwise, including while a candidate is held that the
   contact has not yet acknowledged, and for a contact whose key was refused.
 

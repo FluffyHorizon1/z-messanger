@@ -62,9 +62,11 @@ void main() {
     final alice = await ZIdentity.generate();
     final bob = await ZIdentity.generate();
     final aliceConv =
-        await Conversation.create(alice, await bob.bundle(displayName: 'Bob'));
+        await Conversation.create(alice, await bob.bundle(displayName: 'Bob'),
+            intervals: PqIntervals.disabled);
     final bobConv = await Conversation.create(
-        bob, await alice.bundle(displayName: 'Alice'));
+        bob, await alice.bundle(displayName: 'Alice'),
+        intervals: PqIntervals.disabled);
 
     final aliceNet =
         await RelayClient.connect('ws://127.0.0.1:$port', alice);

@@ -59,6 +59,11 @@ import 'util.dart';
 ///   'pdl'  {v, h}  the newest device list the sender holds for the RECIPIENT's
 ///                  account — an echo that lets the owner detect a list a
 ///                  contact was given but the owner's device never issued.
+///
+/// And (26.2, ADR 0021) one more, ignored by clients that predate it:
+///   'pqh'  1       the sender holds the RECIPIENT's post-quantum key — what a
+///                  'pqack' says, on every message, so a lost 'pqack' cannot
+///                  leave the two on different safety numbers (§18.2).
 class InnerMessage {
   final String kind;
   final String mid; // sender-chosen message id (unique per sender)

@@ -144,6 +144,25 @@ void main() {
     return svc;
   }
 
+  /// Carry between [owner] and its newly linked [dev] until [owner] has no
+  /// history replay waiting for it, then once more to deliver what the
+  /// replay queued. Since 26.2 the replay waits until that device's
+  /// self-sync channel is post-quantum (§17.8) — a round trip on it — and
+  /// is queued by work the inbound path starts after acknowledging the
+  /// message that completes it, so one quiet pass of [settle] can come
+  /// before the replay is in the outbox.
+  Future<void> replayed(ChatService owner, ChatService dev, String devRid) async {
+    for (var i = 0; i < 100; i++) {
+      await settle(owner, dev);
+      if (!await owner.debugHistoryReplayPending(devRid)) {
+        await settle(owner, dev);
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    fail('the history replay to ${dev.myRid} never went out');
+  }
+
   Future<Map<String, Object?>?> row(ChatService s, String mid) async {
     final r = await s.vault.db
         .query('messages', where: 'mid = ?', whereArgs: [mid], limit: 1);
@@ -275,16 +294,10 @@ void main() {
         deviceEdPub: ltId.edPub, deviceXPub: ltId.xPub, deviceId: 'lt3');
     await b.vault.db.delete('outbox');
     await b.addMyDevice(cert);
-    // The replay is queued a moment after the link.
     final ltRid = await ltId.routingId();
-    for (var i = 0; i < 50; i++) {
-      final n = await b.vault.db.query('outbox', where: 'rid = ?', whereArgs: [ltRid]);
-      if (n.length >= 2) break;
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    }
     final lt = await runLinked(b, ltId, cert, 'lt3');
     await lt.addContactFromCode(await a.myContactCode());
-    await settle(b, lt);
+    await replayed(b, lt, ltRid);
 
     final bodies = [for (final m in lt.messagesByChat[a.myRid] ?? const <ChatMessage>[]) m.body];
     expect(bodies, contains('kept for ever'));

@@ -402,10 +402,10 @@ Future<Map<String, Object?>> suiteRatchet(List<Actor> a) async {
   // transcript is exactly what a v1 implementation produces.
   final convA = await Conversation.create(
       alice.id, await bob.id.bundle(displayName: bob.displayName),
-      postQuantum: false);
+      postQuantum: false, intervals: PqIntervals.disabled);
   final convB = await Conversation.create(
       bob.id, await alice.id.bundle(displayName: alice.displayName),
-      postQuantum: false);
+      postQuantum: false, intervals: PqIntervals.disabled);
 
   final steps = <Map<String, Object?>>[];
   final transcript = <Map<String, Object?>>[];
@@ -1992,9 +1992,11 @@ Future<Map<String, Object?>> suitePqRatchet(List<Actor> a) async {
   final alice = a[0], bob = a[1];
   final d = Drbg(0x0021);
   final convA = await Conversation.create(
-      alice.id, await bob.id.bundle(displayName: bob.displayName));
+      alice.id, await bob.id.bundle(displayName: bob.displayName),
+      intervals: PqIntervals.disabled);
   final convB = await Conversation.create(
-      bob.id, await alice.id.bundle(displayName: alice.displayName));
+      bob.id, await alice.id.bundle(displayName: alice.displayName),
+      intervals: PqIntervals.disabled);
   // Roles are fixed by routing-id order (the designated initiator
   // encapsulates, the other side offers); resolve them from the actors.
   final enc = convA.isDesignatedInitiator ? 'alice' : 'bob';
@@ -2109,7 +2111,7 @@ Future<Map<String, Object?>> suitePqRatchet(List<Actor> a) async {
   await stepDecrypt(off, 'offerer receives m4', s8['payload'] as String);
   // Sanity: a v1 receiver cannot decrypt a pq message (no shared secret).
   final v1 = await Conversation.create(convOff.me, await convEnc.me.bundle(),
-      postQuantum: false);
+      postQuantum: false, intervals: PqIntervals.disabled);
   var v1Failed = false;
   try {
     await v1.decrypt(s1['payload'] as String); // fine: classical hello
@@ -2151,9 +2153,11 @@ Future<Map<String, Object?>> suitePqRekey(List<Actor> a) async {
   final alice = a[0], bob = a[1];
   final d = Drbg(0x0031);
   final convA = await Conversation.create(
-      alice.id, await bob.id.bundle(displayName: bob.displayName));
+      alice.id, await bob.id.bundle(displayName: bob.displayName),
+      intervals: PqIntervals.disabled);
   final convB = await Conversation.create(
-      bob.id, await alice.id.bundle(displayName: alice.displayName));
+      bob.id, await alice.id.bundle(displayName: alice.displayName),
+      intervals: PqIntervals.disabled);
   final enc = convA.isDesignatedInitiator ? 'alice' : 'bob';
   final off = enc == 'alice' ? 'bob' : 'alice';
   final convs = {'alice': convA, 'bob': convB};

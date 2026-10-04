@@ -54,6 +54,48 @@ Future<Uint8List> _deriveAd(
 Future<String> sessionIdFromEk(Uint8List ekPub) async =>
     b64url(await sha256Bytes(ekPub)).substring(0, 22);
 
+/// The two clocks that keep a conversation's post-quantum layer alive: how
+/// often the offering side rotates the ML-KEM secret (§17.7), and how long an
+/// offer nobody has answered — the initial one (§17.4) or a re-key — waits
+/// before it is made again.
+///
+/// Every [Conversation] is built with them, and has to be: they used to be
+/// fields defaulting to zero that the app set on the conversations of a
+/// person's main chat, so everything else it built — every channel to a
+/// linked device, and every conversation rebuilt by a rollback — ran with
+/// neither. One withheld offer then kept such a channel classical for good,
+/// and none of them ever re-keyed. A required parameter is what makes that
+/// impossible to repeat.
+class PqIntervals {
+  /// The re-key interval; also the bound after which an unanswered re-key
+  /// offer is abandoned for a fresh key (§17.7). 0 never re-keys.
+  final int rekeyMs;
+
+  /// How long an unanswered offer waits before it is made again. 0 never.
+  final int offerRetryMs;
+
+  const PqIntervals({required this.rekeyMs, required this.offerRetryMs});
+
+  /// Neither clock runs: the setting the frozen vectors were generated with,
+  /// and that a test driving the timing itself uses. Never a running client's.
+  static const PqIntervals disabled =
+      PqIntervals(rekeyMs: 0, offerRetryMs: 0);
+}
+
+/// How long the secret of a superseded post-quantum generation, and the
+/// positions at which a peer's last classical messages can still arrive, are
+/// kept once the peer has been seen on the new key (§17.7): 72 hours.
+///
+/// That is what out-of-order delivery actually needs. A peer's outbox sends
+/// in order per mailbox, so whatever it encrypted under the old key reached
+/// the relay before the first thing it encrypted under the new one; and the
+/// relay drops every envelope `QUEUE_TTL_HOURS` (72) after it accepted it
+/// (§12). Seventy-two hours after the first new-key message arrives, nothing
+/// sealed under the old key can still be delivered — so keeping it longer
+/// protects no message and only widens what a stolen state reads. It used to
+/// be kept until the next re-key: a week, two weeks counting the current one.
+const int pqCrossoverMs = 72 * 3600 * 1000;
+
 /// One double-ratchet session. A conversation normally has exactly one; a
 /// brief race where both sides initiate simultaneously can create two, which
 /// [Conversation] converges deterministically.
@@ -124,8 +166,14 @@ class DecryptResult {
   /// there is nothing to offer.
   final String? pqOfferPayload;
 
+  /// Whether this message's key was mixed with a post-quantum secret — its
+  /// header carried `"pq":1` (§17.2). What the message itself was protected
+  /// by, as opposed to [Conversation.isPostQuantum], which describes the
+  /// session's next send.
+  final bool postQuantum;
+
   DecryptResult(this.plaintext, this.sid, this.createdNewSession,
-      {this.pqOfferPayload});
+      {this.pqOfferPayload, this.postQuantum = false});
 }
 
 /// All E2E state for one contact. Serializable; the app persists it
@@ -173,10 +221,12 @@ class Conversation {
       (outboundSid == null ? null : sessions[outboundSid!])?.pq ?? _idlePq;
 
   /// 7.5b: how often the offering side rotates the ML-KEM secret (post-compromise
-  /// security for the PQ layer). 0 (the default, and what the frozen v2 vectors
-  /// use) disables periodic re-keying — the secret is established once. The app
-  /// sets a real interval; a re-key offer then rides the next message sent after
-  /// the interval elapses (no traffic → nothing to protect → no re-key).
+  /// security for the PQ layer). 0 (what the frozen v2 vectors use) disables
+  /// periodic re-keying — the secret is established once. Set from the
+  /// [PqIntervals] every conversation is built with; a re-key offer then rides
+  /// the next message sent after the interval elapses (no traffic → nothing to
+  /// protect → no re-key). 26.2: it is also the bound after which an
+  /// unanswered re-key offer is abandoned for a fresh key.
   int pqRekeyIntervalMs = 0;
 
   /// How long an unanswered INITIAL post-quantum offer waits before it is
@@ -195,8 +245,17 @@ class Conversation {
   /// persisted seed: a retry is not a re-key, and a late answer to the first
   /// offer must still be usable. §18 got this right for `pqid` — the
   /// identity offer is re-made for several reasons — and the same reasoning
-  /// was never carried back to `pqek`.
+  /// was never carried back to `pqek`. 26.2: a re-key offer is repeated on
+  /// the same clock, for the same reason (§17.7).
   int pqOfferRetryMs = 0;
+
+  /// Both clocks, as one value (see [PqIntervals]).
+  PqIntervals get pqIntervals => PqIntervals(
+      rekeyMs: pqRekeyIntervalMs, offerRetryMs: pqOfferRetryMs);
+  set pqIntervals(PqIntervals i) {
+    pqRekeyIntervalMs = i.rekeyMs;
+    pqOfferRetryMs = i.offerRetryMs;
+  }
 
   /// Whether this side takes part in the v2 post-quantum upgrade. Off, the
   /// conversation behaves exactly as protocol v1 (it neither offers nor
@@ -219,11 +278,13 @@ class Conversation {
     }
   }
 
+  /// [intervals] is required: see [PqIntervals] for what forgetting it cost.
   static Future<Conversation> create(ZIdentity me, ContactBundle them,
-      {bool postQuantum = true}) async {
+      {required PqIntervals intervals, bool postQuantum = true}) async {
     return Conversation._(
         me, them, await me.routingId(), await them.routingId(), {}, null,
-        postQuantum: postQuantum);
+        postQuantum: postQuantum)
+      ..pqIntervals = intervals;
   }
 
   /// True if this side should proactively open the session at contact-add
@@ -242,6 +303,40 @@ class Conversation {
   /// 7.5b: the current post-quantum generation (0 after the first
   /// establishment, incremented by each completed re-key).
   int get pqGeneration => pq.gen;
+
+  /// Whether the next [encrypt] would be mixed: the session it would go out
+  /// on holds the secret. Not always [isPostQuantum], which reads the session
+  /// marked outbound even while it cannot be sent on yet; this reads the one
+  /// a send actually uses, and is false when a send would have to open one.
+  bool get nextSendIsPostQuantum => _sendableSession()?.pq.established ?? false;
+
+  /// On session [sid] the encapsulating side holds a secret the peer has not
+  /// yet been seen using — so its ciphertext rides every message sent there,
+  /// and the offering side does not have the secret until one arrives. A
+  /// caller with nothing else to say can send something on that session now
+  /// ([encryptOnSession]; the self-sync channel does, §17.8) rather than
+  /// leave the offerer waiting on the next thing the user happens to do.
+  bool pqAnswerOwedOn(String sid) {
+    if (!postQuantum || isPqOfferer) return false;
+    final s = sessions[sid];
+    return s != null &&
+        s.ratchet.cks != null &&
+        s.pq.established &&
+        s.pq.ct != null &&
+        !s.pq.acked;
+  }
+
+  /// Encrypts on the session [sid] specifically, rather than the one
+  /// [encrypt] would choose: an answer to an offer has to carry THAT
+  /// session's ciphertext, and right after a double opening (§4) the session
+  /// an offer arrived on is not always the one convergence sends on. Null if
+  /// that session cannot be sent on. Persist BEFORE sending.
+  Future<String?> encryptOnSession(String sid, Uint8List plaintext,
+      {int? nowMs}) async {
+    final s = sessions[sid];
+    if (s == null || s.ratchet.cks == null) return null;
+    return _encryptOn(s, plaintext, nowMs: nowMs);
+  }
 
   String get _designatedInitiatorRid =>
       myRid.compareTo(theirRid) < 0 ? myRid : theirRid;
@@ -325,11 +420,14 @@ class Conversation {
     return Uint8List.fromList(await secret.extractBytes());
   }
 
-  /// v2: if this side should offer its ML-KEM key and has not yet done so,
-  /// returns the offer as an encrypted transport payload for the caller to
-  /// send (it is an inner message of kind `pqek`, so a v1 peer just ignores
-  /// it). The offer is made once per conversation, until [resetSessions].
-  /// Persist this conversation BEFORE sending — this advances a ratchet.
+  /// v2: if this side should offer its ML-KEM key now, returns the offer as
+  /// an encrypted transport payload for the caller to send (it is an inner
+  /// message of kind `pqek`, so a v1 peer just ignores it): the initial
+  /// offer of a session, that offer said again while unanswered (§17.4), a
+  /// re-key offer once the interval is due (§17.7), or an unanswered re-key
+  /// offer said again or abandoned for a fresh key (§17.7, 26.2). Null when
+  /// there is nothing to offer. Persist this conversation BEFORE sending —
+  /// this advances a ratchet.
   Future<String?> takePqOfferPayload({int? nowMs}) async {
     if (!postQuantum || !isPqOfferer) return null;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
@@ -348,7 +446,8 @@ class Conversation {
         ..dkSeed = seed
         ..offered = true
         ..offerGen = 0
-        ..lastRekeyMs = now;
+        ..lastRekeyMs = now
+        ..offerSinceMs = now;
       final offer = InnerMessage.pqOffer(newMessageId(), now, ek);
       return _encryptOn(session, offer.toBytes(), nowMs: nowMs);
     }
@@ -367,6 +466,45 @@ class Conversation {
       final offer = InnerMessage.pqOffer(newMessageId(), now, ek);
       return _encryptOn(existing, offer.toBytes(), nowMs: nowMs);
     }
+    // 26.2: a re-key offer is out and unanswered. Until this, nothing ever
+    // made it again — the next re-key waited for an answer to this one — so
+    // one envelope the relay never delivered froze re-keying for the life of
+    // the session (the peer offline across the relay's 72 hours, or one drop,
+    // was enough). It is said again on the retry clock, with the SAME key,
+    // like the initial offer (§17.4); and given up once it has gone a whole
+    // re-key interval unanswered while the peer kept talking — the bound —
+    // for a fresh key offered for the same generation, which is the only
+    // one a peer will accept (§17.7). The abandoned key is kept: the peer
+    // may have taken it and its answer still be on the way.
+    if (existing != null && pq.rekeyOutstanding) {
+      final session = existing;
+      final p = session.pq;
+      if (pqRekeyIntervalMs > 0 &&
+          p.offerHeard &&
+          now - p.offeredSinceMs >= pqRekeyIntervalMs) {
+        final (seed, ek) = pqGenerate();
+        p.staleSeeds.add(p.dkSeed!);
+        while (p.staleSeeds.length > PqState.maxStaleSeeds) {
+          p.staleSeeds.removeAt(0);
+        }
+        p
+          ..dkSeed = seed
+          ..lastRekeyMs = now
+          ..offerSinceMs = now
+          ..offerHeard = false;
+        final offer =
+            InnerMessage.pqOffer(newMessageId(), now, ek, gen: p.offerGen);
+        return _encryptOn(session, offer.toBytes(), nowMs: nowMs);
+      }
+      if (pqOfferRetryMs > 0 && now - p.lastRekeyMs >= pqOfferRetryMs) {
+        final (ek, _) = pqKeyPairFromSeed(p.dkSeed!);
+        p.lastRekeyMs = now;
+        final offer =
+            InnerMessage.pqOffer(newMessageId(), now, ek, gen: p.offerGen);
+        return _encryptOn(session, offer.toBytes(), nowMs: nowMs);
+      }
+      return null;
+    }
     // 7.5b re-key offer: established, an interval is set and due, and no offer
     // for a higher generation is already outstanding.
     if (pq.established &&
@@ -379,7 +517,9 @@ class Conversation {
       session.pq
         ..dkSeed = seed
         ..offerGen = nextGen
-        ..lastRekeyMs = now;
+        ..lastRekeyMs = now
+        ..offerSinceMs = now
+        ..offerHeard = false;
       final offer = InnerMessage.pqOffer(newMessageId(), now, ek, gen: nextGen);
       return _encryptOn(session, offer.toBytes(), nowMs: nowMs);
     }
@@ -400,7 +540,9 @@ class Conversation {
     session.pq
       ..dkSeed = seed
       ..offerGen = nextGen
-      ..lastRekeyMs = now;
+      ..lastRekeyMs = now
+      ..offerSinceMs = now
+      ..offerHeard = false;
     final offer = InnerMessage.pqOffer(newMessageId(), now, ek, gen: nextGen);
     return _encryptOn(session, offer.toBytes(), nowMs: nowMs);
   }
@@ -427,8 +569,48 @@ class Conversation {
   Future<Session> _outboundSession() async =>
       _sendableSession() ?? await _initiateSession();
 
+  /// 26.2 (§17.7): what has outlived [pqCrossoverMs] is erased — the previous
+  /// generation's secret, and the positions a classical straggler could still
+  /// have used. Run before a session is used, either way.
+  static void _expirePqWindows(PqState pq, int now) {
+    if (pq.oldK != null && pq.oldUntilMs != 0 && now >= pq.oldUntilMs) {
+      pq
+        ..oldK = null
+        ..oldGen = null
+        ..oldUntilMs = 0;
+    }
+    final cls = pq.classicalSkips;
+    if (cls != null &&
+        cls.isNotEmpty &&
+        pq.classicalUntilMs != 0 &&
+        now >= pq.classicalUntilMs) {
+      cls.clear();
+    }
+  }
+
+  /// 26.2 (§17.7): after a message from the peer has been read, start the
+  /// windows its arrival opens, and note that the peer is talking while a
+  /// re-key offer of ours is out. A window starts at the first such moment
+  /// and is never pushed back.
+  static void _notePqHeard(PqState pq, int now) {
+    // Seen on the current generation, with the previous one still held: the
+    // previous one is kept 72 hours more, for messages already in flight.
+    // A vault from before this rule, with the crossover long done, starts
+    // its 72 hours here.
+    if (pq.oldK != null && pq.acked && pq.oldUntilMs == 0) {
+      pq.oldUntilMs = now + pqCrossoverMs;
+    }
+    // Seen mixing: classical stragglers have 72 hours.
+    if (pq.classicalSkips != null && pq.classicalUntilMs == 0) {
+      pq.classicalUntilMs = now + pqCrossoverMs;
+    }
+    if (pq.rekeyOutstanding) pq.offerHeard = true;
+  }
+
   Future<String> _encryptOn(Session session, Uint8List plaintext,
       {int? nowMs}) async {
+    _expirePqWindows(
+        session.pq, nowMs ?? DateTime.now().millisecondsSinceEpoch);
     final msg =
         await ratchetEncrypt(session.ratchet, plaintext, pq: session.pq);
     session.lastUsedMs = nowMs ?? DateTime.now().millisecondsSinceEpoch;
@@ -510,9 +692,12 @@ class Conversation {
       if (e is RatchetDecryptException) rethrow;
       throw RatchetDecryptException('malformed payload');
     }
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    _expirePqWindows(session.pq, now);
     final plain = await ratchetDecrypt(session.ratchet, msg, pq: session.pq);
+    _notePqHeard(session.pq, now);
     session.receivedAny = true;
-    session.lastUsedMs = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    session.lastUsedMs = now;
 
     // Which session do we answer on? Normally [_converge] decides, and both
     // sides apply the same rule. But a peer that opens a BRAND-NEW session
@@ -552,7 +737,8 @@ class Conversation {
     if (postQuantum && !isPqOfferer) _acceptPqOffer(session.pq, plain);
     final offerPayload =
         isPqOfferer ? await takePqOfferPayload(nowMs: nowMs) : null;
-    return DecryptResult(plain, sid, created, pqOfferPayload: offerPayload);
+    return DecryptResult(plain, sid, created,
+        pqOfferPayload: offerPayload, postQuantum: msg.header.pq);
   }
 
   /// If [plain] is a `pqek` offer for the supported algorithm, encapsulate to
@@ -576,6 +762,7 @@ class Conversation {
         pq.oldGen =
             pq.gen; // retain the outgoing generation across the crossover
         pq.oldK = pq.k;
+        pq.oldUntilMs = 0; // until the peer is seen on the new one (§17.7)
       }
       pq
         ..k = k
@@ -622,11 +809,15 @@ class Conversation {
         'pq': pq.toJson(),
       };
 
+  /// [intervals] is required, as for [create]: they are configuration, not
+  /// state, so nothing stored carries them — a conversation rebuilt from a
+  /// snapshot (a rollback) or from the vault has to be told them again.
   static Future<Conversation> fromJson(ZIdentity me, Map<String, Object?> j,
-      {bool postQuantum = true}) async {
+      {required PqIntervals intervals, bool postQuantum = true}) async {
     final them =
         ContactBundle.fromJson((j['them'] as Map).cast<String, Object?>());
-    final conv = await create(me, them, postQuantum: postQuantum);
+    final conv =
+        await create(me, them, intervals: intervals, postQuantum: postQuantum);
     final legacyPq =
         PqState.fromJson((j['pq'] as Map?)?.cast<String, Object?>());
     conv._idlePq.copyFrom(legacyPq);

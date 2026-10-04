@@ -116,7 +116,51 @@ class PqState {
   int offerGen;
 
   /// 7.5b offerer: when this side last STARTED a re-key, for interval pacing.
+  /// Each copy of an offer said again moves it too (§17.4), so it is also
+  /// what paces the retries.
   int lastRekeyMs;
+
+  /// 26.2 offerer: when the key in [dkSeed] was FIRST offered — what the
+  /// abandon bound of §17.7 is measured from, which the retries must not
+  /// move. 0 in state written before it existed; [offeredSinceMs] then falls
+  /// back to [lastRekeyMs].
+  int offerSinceMs;
+
+  /// 26.2 offerer: the peer has been heard on this session since the
+  /// outstanding re-key key was offered — still at the old generation, or
+  /// the offer would have been answered. Abandoning a key is only worth it
+  /// for a peer that is there to receive a fresh one (§17.7).
+  bool offerHeard;
+
+  /// 26.2 offerer: keys offered for [offerGen] and then abandoned, oldest
+  /// first. The peer takes the first copy that reaches it and ignores the
+  /// rest, so an answer to any of them can still arrive and must still
+  /// decapsulate; all are erased, with [dkSeed], once the generation is
+  /// established. Bounded by [maxStaleSeeds].
+  final List<Uint8List> staleSeeds;
+
+  /// How many abandoned keys are kept, oldest dropped first. Margin: a key
+  /// is abandoned only while the peer is heard at the old generation, and a
+  /// peer that has taken any copy answers on everything it sends from then
+  /// on, so more than one is needed only if its answers keep being lost
+  /// while its older messages keep arriving.
+  static const int maxStaleSeeds = 16;
+
+  /// 26.2: when the retained previous generation ([oldK]) is erased — set
+  /// once the peer has been seen on the current one ([acked]), to that
+  /// moment plus `pqCrossoverMs`. 0 while unscheduled.
+  int oldUntilMs;
+
+  /// 26.2: null until the peer is first seen mixing on this session. From
+  /// then on a CLASSICAL message is accepted only at one of these ratchet
+  /// positions — positions the peer had already used when it started
+  /// mixing, which are the only ones an honest classical message can still
+  /// arrive at — and only until [classicalUntilMs]. Emptied as they are
+  /// used.
+  Set<String>? classicalSkips;
+
+  /// 26.2: when [classicalSkips] closes for good (0 while unscheduled).
+  int classicalUntilMs;
 
   PqState({
     this.dkSeed,
@@ -129,9 +173,22 @@ class PqState {
     this.oldK,
     this.offerGen = 0,
     this.lastRekeyMs = 0,
-  });
+    this.offerSinceMs = 0,
+    this.offerHeard = false,
+    List<Uint8List>? staleSeeds,
+    this.oldUntilMs = 0,
+    this.classicalSkips,
+    this.classicalUntilMs = 0,
+  }) : staleSeeds = staleSeeds ?? <Uint8List>[];
 
   bool get established => k != null;
+
+  /// A re-key offer is out and unanswered: a key is pending for a generation
+  /// above the established one.
+  bool get rekeyOutstanding => k != null && offerGen > gen && dkSeed != null;
+
+  /// When the pending key was first offered (see [offerSinceMs]).
+  int get offeredSinceMs => offerSinceMs != 0 ? offerSinceMs : lastRekeyMs;
 
   /// The secret to mix for a message tagged with generation [g], or null if
   /// this side holds no secret for it (fail closed).
@@ -152,6 +209,13 @@ class PqState {
         oldK: oldK == null ? null : Uint8List.fromList(oldK!),
         offerGen: offerGen,
         lastRekeyMs: lastRekeyMs,
+        offerSinceMs: offerSinceMs,
+        offerHeard: offerHeard,
+        staleSeeds: [for (final s in staleSeeds) Uint8List.fromList(s)],
+        oldUntilMs: oldUntilMs,
+        classicalSkips:
+            classicalSkips == null ? null : {...classicalSkips!},
+        classicalUntilMs: classicalUntilMs,
       );
 
   void copyFrom(PqState o) {
@@ -165,8 +229,19 @@ class PqState {
     oldK = o.oldK;
     offerGen = o.offerGen;
     lastRekeyMs = o.lastRekeyMs;
+    offerSinceMs = o.offerSinceMs;
+    offerHeard = o.offerHeard;
+    final stale = [...o.staleSeeds];
+    staleSeeds
+      ..clear()
+      ..addAll(stale);
+    oldUntilMs = o.oldUntilMs;
+    classicalSkips = o.classicalSkips == null ? null : {...o.classicalSkips!};
+    classicalUntilMs = o.classicalUntilMs;
   }
 
+  /// Members are optional and written only when set, so the state of a
+  /// conversation that has never used them encodes as it always did.
   Map<String, Object?> toJson() => {
         if (dkSeed != null) 'dkSeed': b64(dkSeed!),
         if (k != null) 'k': b64(k!),
@@ -178,6 +253,13 @@ class PqState {
         if (oldK != null) 'oldK': b64(oldK!),
         if (offerGen > 0) 'offerGen': offerGen,
         if (lastRekeyMs > 0) 'lastRekeyMs': lastRekeyMs,
+        if (offerSinceMs > 0) 'offerSince': offerSinceMs,
+        if (offerHeard) 'heard': true,
+        if (staleSeeds.isNotEmpty)
+          'stale': [for (final s in staleSeeds) b64(s)],
+        if (oldUntilMs > 0) 'oldUntil': oldUntilMs,
+        if (classicalSkips != null) 'cls': classicalSkips!.toList(),
+        if (classicalUntilMs > 0) 'clsUntil': classicalUntilMs,
       };
 
   static PqState fromJson(Map<String, Object?>? j) => j == null
@@ -193,6 +275,17 @@ class PqState {
           oldK: j['oldK'] == null ? null : unb64(j['oldK'] as String),
           offerGen: (j['offerGen'] as num?)?.toInt() ?? 0,
           lastRekeyMs: (j['lastRekeyMs'] as num?)?.toInt() ?? 0,
+          offerSinceMs: (j['offerSince'] as num?)?.toInt() ?? 0,
+          offerHeard: j['heard'] == true,
+          staleSeeds: [
+            for (final s in (j['stale'] as List? ?? const []))
+              unb64(s as String)
+          ],
+          oldUntilMs: (j['oldUntil'] as num?)?.toInt() ?? 0,
+          classicalSkips: j['cls'] == null
+              ? null
+              : {for (final s in (j['cls'] as List)) s as String},
+          classicalUntilMs: (j['clsUntil'] as num?)?.toInt() ?? 0,
         );
 }
 
@@ -467,9 +560,35 @@ Future<RatchetMessage> ratchetEncrypt(RatchetState state, Uint8List plaintext,
 /// On any failure the state is left completely untouched.
 Future<Uint8List> ratchetDecrypt(RatchetState state, RatchetMessage msg,
     {PqState? pq}) async {
-  final work = state.clone();
-  final pqWork = pq?.clone();
-  final plaintext = await _decryptInner(work, msg, pqWork);
+  var work = state.clone();
+  var pqWork = pq?.clone();
+  Uint8List plaintext;
+  try {
+    plaintext = await _decryptInner(work, msg, pqWork);
+  } on RatchetReplayException {
+    rethrow;
+  } on RatchetDecryptException {
+    // 26.2: the ciphertext may answer a key this side offered for the same
+    // generation and then abandoned (§17.7) — the peer takes whichever copy
+    // reaches it first. Implicit rejection means only the AEAD can say which
+    // key was used, so each abandoned key is tried, newest first, on fresh
+    // copies of the state. Nothing is committed unless one opens the message.
+    Uint8List? opened;
+    for (final seed in _abandonedKeysFor(pq, msg)) {
+      final w = state.clone();
+      final p = pq!.clone();
+      try {
+        opened = await _decryptInner(w, msg, p, seed: seed);
+      } on RatchetDecryptException {
+        continue;
+      }
+      work = w;
+      pqWork = p;
+      break;
+    }
+    if (opened == null) rethrow;
+    plaintext = opened;
+  }
   // Commit.
   pq?.copyFrom(pqWork!);
   state
@@ -488,17 +607,35 @@ Future<Uint8List> ratchetDecrypt(RatchetState state, RatchetMessage msg,
   return plaintext;
 }
 
+/// The keys this side offered for the generation [msg]'s ciphertext names and
+/// then abandoned, newest first — empty unless the message is establishing
+/// exactly that generation.
+List<Uint8List> _abandonedKeysFor(PqState? pq, RatchetMessage msg) {
+  final hg = msg.header.pqGen;
+  if (pq == null ||
+      msg.header.pqCt == null ||
+      pq.staleSeeds.isEmpty ||
+      pq.offerGen != hg ||
+      pq.secretFor(hg) != null) {
+    return const [];
+  }
+  return pq.staleSeeds.reversed.toList();
+}
+
 Future<Uint8List> _decryptInner(
-    RatchetState s, RatchetMessage msg, PqState? pq) async {
+    RatchetState s, RatchetMessage msg, PqState? pq,
+    {Uint8List? seed}) async {
   // 0. v2: a ciphertext in the header establishes the ML-KEM secret for its
   //    generation (only the side that offered a key for that generation can
   //    decapsulate; anyone else must reject). 7.5b: a ciphertext for gen+1
   //    rotates the secret, retaining the previous one for in-flight messages.
+  //    [seed], when given, is an abandoned key of that generation tried in
+  //    place of the pending one (see [ratchetDecrypt]).
   final ct = msg.header.pqCt;
   final hg = msg.header.pqGen;
   if (ct != null && pq != null && pq.secretFor(hg) == null) {
-    final seed = pq.dkSeed;
-    if (seed == null || pq.offerGen != hg) {
+    final pending = seed ?? pq.dkSeed;
+    if (pending == null || pq.offerGen != hg) {
       throw RatchetDecryptException('pq ciphertext but no pending key');
     }
     // A ciphertext of the right length but wrong content decapsulates to a
@@ -509,28 +646,42 @@ Future<Uint8List> _decryptInner(
     // (finding 42).
     final Uint8List newK;
     try {
-      newK = pqDecapsulate(seed, ct);
+      newK = pqDecapsulate(pending, ct);
     } on ArgumentError {
       throw RatchetDecryptException('malformed pq ciphertext');
     }
     if (pq.k != null) {
       pq.oldGen = pq.gen; // retain the outgoing generation across the crossover
       pq.oldK = pq.k;
+      pq.oldUntilMs = 0; // until the peer is seen on the new one (§17.7)
     }
     pq
       ..k = newK
       ..gen = hg
       ..dkSeed = null // single use; erased on commit
-      ..acked = false;
+      ..acked = false
+      ..offerHeard = false;
+    pq.staleSeeds.clear(); // and every key abandoned for this generation
   }
   if (msg.header.pq && (pq == null || pq.secretFor(hg) == null)) {
     throw RatchetDecryptException('pq message without a shared secret');
   }
+  // 26.2: once the peer has been seen mixing on this session, a classical
+  // message is something only a downgraded peer, or a party able to derive
+  // the classical chain keys, can produce — both what the post-quantum layer
+  // exists to stop. The one honest exception is a straggler the peer sent
+  // BEFORE it started mixing, which can only sit at a position that was
+  // already skipped when its first mixed message was read (§17.7).
+  final classicalLate =
+      !msg.header.pq && pq != null && pq.classicalSkips != null;
 
   // 1. Try skipped message keys (out-of-order arrivals).
   final skipKey = '${b64(msg.header.dhPub)}|${msg.header.n}';
   final cachedMk = s.skipped.remove(skipKey);
   if (cachedMk != null) {
+    if (classicalLate && !pq.classicalSkips!.remove(skipKey)) {
+      throw RatchetDecryptException('classical message after mixing');
+    }
     return _aeadOpen(unb64(cachedMk), s, msg, pq);
   }
 
@@ -548,6 +699,11 @@ Future<Uint8List> _decryptInner(
     // it is instead: see [RatchetReplayException].
     throw RatchetReplayException(
         'message ${msg.header.n} on a chain already at ${s.nr}');
+  }
+  // A classical message at a fresh position — after the replay check, so a
+  // relay redelivering one already read is still reported as just that.
+  if (classicalLate) {
+    throw RatchetDecryptException('classical message after mixing');
   }
 
   // 3. Skip forward within the current receiving chain if needed.
@@ -579,6 +735,12 @@ Future<Uint8List> _aeadOpen(
     // can stop attaching its ciphertext. An in-flight message from an older
     // generation (during a re-key crossover) does not count.
     if (msg.header.pq && msg.header.pqGen == pq!.gen) pq.acked = true;
+    // The first mixed message from the peer on this session: the positions
+    // still skipped now are the only ones a classical message of theirs can
+    // honestly arrive at from here on (see `classicalLate` above).
+    if (msg.header.pq && pq!.classicalSkips == null) {
+      pq.classicalSkips = {...s.skipped.keys};
+    }
     return unpad(clear);
   } on SecretBoxAuthenticationError {
     throw RatchetDecryptException('authentication failed');

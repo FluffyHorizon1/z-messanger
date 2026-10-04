@@ -45,9 +45,11 @@ class Pipe {
     final alice = await ZIdentity.generate();
     final bob = await ZIdentity.generate();
     final a =
-        await Conversation.create(alice, await bob.bundle(displayName: 'Bob'));
+        await Conversation.create(alice, await bob.bundle(displayName: 'Bob'),
+            intervals: PqIntervals.disabled);
     final b = await Conversation.create(
-        bob, await alice.bundle(displayName: 'Alice'));
+        bob, await alice.bundle(displayName: 'Alice'),
+        intervals: PqIntervals.disabled);
     for (var i = 0; i < 2; i++) {
       await b.decrypt(await a.encrypt(utf8b('hi $i')));
       await a.decrypt(await b.encrypt(utf8b('yo $i')));

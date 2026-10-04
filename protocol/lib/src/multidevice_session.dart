@@ -56,21 +56,39 @@ class AccountSession {
   /// targetDeviceRoutingId → the ratchet with that device.
   final Map<String, Conversation> _convs;
 
-  AccountSession._(this.myDevice, this._convs);
+  /// The post-quantum clocks every conversation here runs on, including one
+  /// added later ([addTarget]). Required wherever a session is built: these
+  /// channels — the self-sync mirror of every message, a contact's other
+  /// devices — were built with both at zero until 26.2, and so never re-made
+  /// a withheld offer and never re-keyed (PROTOCOL §17.8).
+  PqIntervals _intervals;
+
+  AccountSession._(this.myDevice, this._convs, this._intervals);
 
   /// Build (or rebuild) an account session for a set of target devices.
   static Future<AccountSession> create(
     AccountIdentity me,
-    List<DeviceTarget> targets,
-  ) async {
+    List<DeviceTarget> targets, {
+    required PqIntervals intervals,
+  }) async {
     final myDevice = await ZIdentity.fromSeeds(
         edSeed: me.deviceEdSeed, xSeed: me.deviceXSeed);
     final convs = <String, Conversation>{};
     for (final t in targets) {
-      convs[await t.routingId()] =
-          await Conversation.create(myDevice, t.asBundle());
+      convs[await t.routingId()] = await Conversation.create(
+          myDevice, t.asBundle(),
+          intervals: intervals);
     }
-    return AccountSession._(myDevice, convs);
+    return AccountSession._(myDevice, convs, intervals);
+  }
+
+  /// The clocks; setting them re-applies them to every conversation held.
+  PqIntervals get pqIntervals => _intervals;
+  set pqIntervals(PqIntervals i) {
+    _intervals = i;
+    for (final c in _convs.values) {
+      c.pqIntervals = i;
+    }
   }
 
   /// The device mailboxes this session will fan out to.
@@ -78,12 +96,19 @@ class AccountSession {
 
   bool hasTarget(String routingId) => _convs.containsKey(routingId);
 
+  /// The conversation with one target device, to read its state — whether
+  /// it is post-quantum, and at which generation. Messages go through this
+  /// session ([encrypt], [encryptFor], [decryptFrom]), never through the
+  /// conversation directly.
+  Conversation? targetConversation(String routingId) => _convs[routingId];
+
   /// Add a newly-learned device (e.g. from a device-list update, M4). No-op if
   /// already present.
   Future<void> addTarget(DeviceTarget t) async {
     final rid = await t.routingId();
     if (_convs.containsKey(rid)) return;
-    _convs[rid] = await Conversation.create(myDevice, t.asBundle());
+    _convs[rid] = await Conversation.create(myDevice, t.asBundle(),
+        intervals: _intervals);
   }
 
   /// Forget a revoked/removed device.
@@ -135,12 +160,33 @@ class AccountSession {
   /// Used to send a device its final device-list removal notice (7.7a) over the
   /// still-open pairwise session, just before the target is forgotten. Returns
   /// null if no session is held for that device. Persist BEFORE sending.
+  ///
+  /// [sid] pins the session it goes out on ([Conversation.encryptOnSession]):
+  /// null, and nothing sent, if that session cannot be sent on.
   Future<FanoutMessage?> encryptFor(String routingId, Uint8List plaintext,
-      {int? nowMs}) async {
+      {int? nowMs, String? sid}) async {
     final conv = _convs[routingId];
     if (conv == null) return null;
+    if (sid != null) {
+      final p = await conv.encryptOnSession(sid, plaintext, nowMs: nowMs);
+      return p == null ? null : FanoutMessage(routingId, p);
+    }
     return FanoutMessage(
         routingId, await conv.encrypt(plaintext, nowMs: nowMs));
+  }
+
+  /// The post-quantum offer due to ONE target device now, if any — the
+  /// initial offer (opening a session to carry it if there is none), or one
+  /// said again ([Conversation.takePqOfferPayload]). For a caller that needs
+  /// that device's channel post-quantum before it sends something, and so
+  /// cannot wait for the offer to ride its next message. Null when nothing
+  /// is due, when this side does not offer to that device, or when no
+  /// session is held for it. Persist BEFORE sending.
+  Future<FanoutMessage?> takePqOfferFor(String routingId, {int? nowMs}) async {
+    final conv = _convs[routingId];
+    if (conv == null) return null;
+    final offer = await conv.takePqOfferPayload(nowMs: nowMs);
+    return offer == null ? null : FanoutMessage(routingId, offer);
   }
 
   /// Decrypt an inbound payload known to have come from [senderDeviceRid].
@@ -169,16 +215,21 @@ class AccountSession {
         },
       };
 
+  /// [intervals] is required, as for [create]: nothing stored carries them,
+  /// so a session restored from the vault or rolled back to a snapshot is
+  /// told them again here.
   static Future<AccountSession> fromJson(
-      AccountIdentity me, Map<String, Object?> j) async {
+      AccountIdentity me, Map<String, Object?> j,
+      {required PqIntervals intervals}) async {
     final myDevice = await ZIdentity.fromSeeds(
         edSeed: me.deviceEdSeed, xSeed: me.deviceXSeed);
     final convs = <String, Conversation>{};
     final raw = (j['convs'] as Map).cast<String, Object?>();
     for (final e in raw.entries) {
       convs[e.key] = await Conversation.fromJson(
-          myDevice, (e.value as Map).cast<String, Object?>());
+          myDevice, (e.value as Map).cast<String, Object?>(),
+          intervals: intervals);
     }
-    return AccountSession._(myDevice, convs);
+    return AccountSession._(myDevice, convs, intervals);
   }
 }
