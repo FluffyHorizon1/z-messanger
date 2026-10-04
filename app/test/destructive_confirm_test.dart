@@ -14,6 +14,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -137,11 +138,6 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       await tester.pump();
       expect(svc.groups[gid]!.memberRids, isNot(contains(rid)),
-          reason: 'confirming removed the member');
-    });
-  });
-}
-
           reason: 'confirming removed the member');
     });
   });
