@@ -858,12 +858,7 @@ class KeyTransparency {
       }
       return true;
     }
-    if (rec.head.size > fresh.size) {
-      await _setFault(
-          'the log served a head of size ${fresh.size}, older than the witness\'s ${rec.head.size}',
-          served: fresh);
-      return false;
-    }
+    if (rec.head.size > fresh.size) return _witnessAhead(fresh, rec.head, logPub);
     final c = await _getJson(_url('/kt/v1/consistency?first=${rec.head.size}&second=${fresh.size}'));
     if (c == null) return true; // could not ask; not a verdict
     List<Uint8List> proof;
@@ -880,6 +875,67 @@ class KeyTransparency {
         proof: proof);
     if (!ok) {
       await _setFault('the log\'s head does not extend the one its witness verified', served: fresh);
+      return false;
+    }
+    return true;
+  }
+
+  /// The witness has verified a head LARGER than the one being adopted.
+  ///
+  /// That is not a fork. A witness verifies the log every few minutes and the
+  /// log grows in between, so a head fetched a moment before the witness's
+  /// record can be smaller than the one the witness has just co-signed. Until
+  /// 2026-10-04 that was a fault — "the log served a head older than the
+  /// witness's" — raised against an honest log by a race that needs nothing
+  /// but one publish between two requests, and a fault is permanent until
+  /// the user resets the log's history. Latent while no witness is
+  /// configured; on every client the day one is.
+  ///
+  /// It is a question the log can answer instead: prove [fresh] is a prefix
+  /// of [witnessed]. A proof that verifies settles it; one that does not is
+  /// a fault, as it is for a witness behind the client. No proof at all is
+  /// either the network or the one case the old rule was right about — a log
+  /// that has gone back to a smaller history than one it signed and the
+  /// witness verified, which is what a restored snapshot looks like from
+  /// here, and which refuses a `second` past its own head. The log's current
+  /// head says which: smaller than the witness's is the fault; anything else
+  /// is not a verdict, and the next check asks again.
+  Future<bool> _witnessAhead(KtTreeHead fresh, KtTreeHead witnessed, Uint8List logPub) async {
+    final c = await _getJson(_url('/kt/v1/consistency?first=${fresh.size}&second=${witnessed.size}'));
+    if (c != null) {
+      List<Uint8List> proof;
+      try {
+        proof = [for (final h in (c['proof'] as List)) unb64(h as String)];
+      } catch (_) {
+        return true; // could not read it; not a verdict
+      }
+      final ok = await ktVerifyConsistency(
+          first: fresh.size,
+          second: witnessed.size,
+          firstRoot: fresh.logRoot,
+          secondRoot: witnessed.logRoot,
+          proof: proof);
+      if (!ok) {
+        await _setFault(
+            'the log\'s head of size ${fresh.size} is not a prefix of the ${witnessed.size} its witness verified',
+            served: fresh);
+        return false;
+      }
+      return true;
+    }
+    final j = await _getJson(_url('/kt/v1/sth'));
+    if (j == null) return true; // unreachable: not a verdict
+    KtTreeHead current;
+    try {
+      current = KtTreeHead.fromJson(j);
+    } on KtVerifyException {
+      return true;
+    }
+    if (!await current.verify(logPub)) return true;
+    if (current.size < witnessed.size) {
+      await _setFault(
+          'the log serves a head of size ${current.size}, smaller than the ${witnessed.size} its witness verified',
+          served: current);
       return false;
     }
     return true;

@@ -25,8 +25,32 @@
 //  6. a witness address that is not loopback stops a test process making any
 //     request at all — the same rule the log's address has had since the
 //     suite was found publishing to production.
+//
+// And a witness AHEAD of the client, against the real log (kt/server.js) on
+// loopback. A witness verifies the log every few minutes and the log grows
+// in between, so the head a client has just fetched can be smaller than the
+// one its witness has just co-signed. That was a fault — "the log served a
+// head older than the witness's", permanent until the user resets the log's
+// history — raised against an honest log by one publish between two
+// requests (the 2026-10-03 analysis; latent while no witness is configured,
+// on every client the day one is). PROTOCOL §19.5 step 3 already said what
+// to do: a consistency proof between the two sizes, in either direction.
+//  7. a witness ahead because the log grew between the client's two
+//     requests is not a fork: the log proves the client's head is a prefix
+//     of the witness's, and nothing is raised;
+//  8. a witness ahead with a head the log's history does not lead to — under
+//     the log's own key, over other entries — is a fault, as a witness
+//     behind the client always was;
+//  9. and a log that has gone back to a smaller history than its witness
+//     verified — a restored snapshot, seen from a client — is still caught:
+//     it cannot prove the way to the witness's head, and its own current
+//     head is smaller than it.
+@Timeout(Duration(minutes: 2))
+library;
+
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
@@ -71,6 +95,27 @@ class _StubFetcher implements KtFetcher {
 
   @override
   Future<KtResponse> post(Uri url, String body) async => KtResponse(500, '{}');
+}
+
+/// The real log for everything but the witness address, which [witness]
+/// answers when — and only when — the client asks it. Remembers every URL.
+class _LogFetcher implements KtFetcher {
+  final HttpKtFetcher net = HttpKtFetcher();
+  final String witnessUrl;
+  final Future<KtResponse> Function() witness;
+  final List<Uri> gets = [];
+
+  _LogFetcher(this.witnessUrl, this.witness);
+
+  @override
+  Future<KtResponse> get(Uri url) async {
+    gets.add(url);
+    if (url.toString() == witnessUrl) return witness();
+    return net.get(url);
+  }
+
+  @override
+  Future<KtResponse> post(Uri url, String body) => net.post(url, body);
 }
 
 Future<SimpleKeyPair> keyFrom(String seed) => Ed25519()
@@ -145,7 +190,7 @@ void main() {
         },
       });
 
-  Future<KeyTransparency> service(KtConfig c, _StubFetcher f, {required int now}) async {
+  Future<KeyTransparency> service(KtConfig c, KtFetcher f, {required int now}) async {
     final v = await freshVault('svc');
     return KeyTransparency(vault: v, host: _NoHost(), fetcher: f, config: c, now: () => now);
   }
@@ -273,5 +318,138 @@ void main() {
     await kt.check();
     expect(f.gets, isEmpty,
         reason: 'a witness on the internet is a stranger this suite must not poll');
+  });
+
+  group('a witness ahead of the client, against the real log', () {
+    late Process log;
+    late String realLogUrl;
+    final rng = Random.secure();
+    Uint8List random(int n) => Uint8List.fromList(List<int>.generate(n, (_) => rng.nextInt(256)));
+
+    setUpAll(() async {
+      HttpOverrides.global = null;
+      final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = probe.port;
+      await probe.close();
+      // The same key as the log above, so a head can be signed by it here
+      // when a test needs one the log never served.
+      final seed = utf8.encode('the log'.padRight(32, '.')).take(32);
+      log = await Process.start('node', ['server.js'],
+          workingDirectory: '${Directory.current.parent.path}${Platform.pathSeparator}kt',
+          environment: {
+            'KT_SEED': [for (final b in seed) b.toRadixString(16).padLeft(2, '0')].join(),
+            'KT_EPHEMERAL': '1',
+            'KT_PORT': '$port',
+            // The gates are kt/test/publish_limits.test.js's business.
+            'PUBLISH_PER_MIN': '1000000',
+            'PUBLISH_PER_MIN_TOTAL': '1000000',
+            'PUBLISH_PER_ACCT_PER_DAY': '1000000',
+            'PUBLISH_NEW_ACCOUNTS_PER_MIN': '1000000',
+          });
+      log.stdout.drain<void>();
+      log.stderr.drain<void>();
+      realLogUrl = 'http://127.0.0.1:$port';
+      for (var i = 0; i < 100; i++) {
+        try {
+          final res = await (await HttpClient().getUrl(Uri.parse('$realLogUrl/health'))).close();
+          await res.drain<void>();
+          if (res.statusCode == 200) return;
+        } catch (_) {}
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      fail('the log on $port did not start');
+    });
+
+    tearDownAll(() async {
+      log.kill();
+      await log.exitCode;
+    });
+
+    final net = HttpKtFetcher();
+
+    /// One publish to the real log, by an account of its own.
+    Future<void> publish(String who) async {
+      final seed = await sha256Bytes(utf8.encode('witness ahead: $who'));
+      final body = await ktPublishRequest(accountEdSeed: seed, version: 1, fp: random(16), value: random(64));
+      final r = await net.post(Uri.parse('$realLogUrl/kt/v1/publish'), jsonEncode(body));
+      expect(r.status, 201, reason: r.body);
+    }
+
+    Future<KtTreeHead> logHead() async => KtTreeHead.fromJson((await net.get(Uri.parse('$realLogUrl/kt/v1/sth'))).json);
+
+    KtConfig configFor(String witness) =>
+        KtConfig(logUrl: realLogUrl, logPubB64: b64(logPub), witnessUrl: witness, witnessPubB64: b64(pinnedPub));
+
+    /// A head at [size] under the log's own key, over roots its history does
+    /// not have.
+    Future<KtTreeHead> forgedHead(int size) async {
+      final unsigned = KtTreeHead(
+          size: size,
+          logRoot: random(32),
+          mapRoot: random(32),
+          ts: DateTime.now().millisecondsSinceEpoch,
+          sig: Uint8List(64));
+      return KtTreeHead(
+          size: size,
+          logRoot: unsigned.logRoot,
+          mapRoot: unsigned.mapRoot,
+          ts: unsigned.ts,
+          sig: await signWith(logKey, unsigned.signingInput));
+    }
+
+    test('7. a witness ahead because the log grew is not a fork: the log proves the way there', () async {
+      await publish('7-a');
+      await publish('7-b');
+      final witnessUrl = '$realLogUrl/witness-7/sth.json'; // answered by the fetcher; never reaches the log
+      late KtTreeHead witnessed;
+      final f = _LogFetcher(witnessUrl, () async {
+        // Between the client's head and its question to the witness, the log
+        // grows and the witness verifies the larger head. That is all it takes.
+        await publish('7-c');
+        await publish('7-d');
+        witnessed = await logHead();
+        return KtResponse(200, await record(witnessed, pinned, pinnedPub));
+      });
+      final kt = await service(configFor(witnessUrl), f, now: DateTime.now().millisecondsSinceEpoch);
+      await kt.check();
+      expect(kt.head, isNotNull);
+      expect(witnessed.size, kt.head!.size + 2, reason: 'the witness was two entries ahead of the head adopted');
+      expect(kt.fault, isNull,
+          reason: 'until 2026-10-04: "the log served a head of size ${kt.head?.size}, older than the witness\'s ${witnessed.size}"');
+      expect(kt.witnessOkMs, isNotNull, reason: 'the witness counted');
+      expect(f.gets.map((u) => u.path), contains('/kt/v1/consistency'), reason: 'the log was asked to prove the way there');
+    });
+
+    test('8. a witness ahead with a head the log does not lead to is a fault', () async {
+      await publish('8-a');
+      final witnessUrl = '$realLogUrl/witness-8/sth.json';
+      final f = _LogFetcher(witnessUrl, () async {
+        // The log grows by two, so it can answer for that size; the witness's
+        // head at that size is under the log's own key and over other entries.
+        final base = await logHead();
+        await publish('8-b');
+        await publish('8-c');
+        return KtResponse(200, await record(await forgedHead(base.size + 2), pinned, pinnedPub));
+      });
+      final kt = await service(configFor(witnessUrl), f, now: DateTime.now().millisecondsSinceEpoch);
+      await kt.check();
+      expect(kt.fault, isNotNull);
+      expect(kt.fault!.reason, contains('is not a prefix of the'));
+    });
+
+    test('9. a log gone back below what its witness verified is still caught', () async {
+      await publish('9-a');
+      final current = await logHead();
+      // The witness holds a head the log signed at a size the log no longer
+      // has — a restored snapshot, seen from a client. The log answers at its
+      // old size and cannot prove the way to the witness's head.
+      final signed = await forgedHead(current.size + 3);
+      final witnessUrl = '$realLogUrl/witness-9/sth.json';
+      final f = _LogFetcher(witnessUrl, () async => KtResponse(200, await record(signed, pinned, pinnedPub)));
+      final kt = await service(configFor(witnessUrl), f, now: DateTime.now().millisecondsSinceEpoch);
+      await kt.check();
+      expect(kt.fault, isNotNull);
+      expect(kt.fault!.reason, contains('smaller than the ${signed.size} its witness verified'));
+    });
   });
 }
