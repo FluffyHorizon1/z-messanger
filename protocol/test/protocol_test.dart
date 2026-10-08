@@ -463,5 +463,27 @@ void main() {
       final p = await aliceConv.encrypt(utf8b('x'));
       expect(tryParseChunk(p), isNull);
     });
+
+    test('the chunk count and each chunk\'s length follow from the size',
+        () {
+      // What a receiver holds an offer and its chunks to (§7) must be what a
+      // sender produces, at every boundary — or an honest file is refused.
+      const cs = defaultChunkSize;
+      for (final size in [
+        0, 1, 1000, cs - 1, cs, cs + 1, 2 * cs, 2 * cs + 7, 500 * 1000,
+        24 * 1024 * 1024, // the reference app's limit: 176 chunks
+      ]) {
+        final chunks = splitChunks(Uint8List(size));
+        expect(fileChunkCount(size), chunks.length, reason: 'size $size');
+        for (var i = 0; i < chunks.length; i++) {
+          expect(fileChunkLength(size, i), chunks[i].length,
+              reason: 'size $size, chunk $i');
+        }
+        expect(fileChunkLength(size, chunks.length), -1,
+            reason: 'no chunk past the last');
+        expect(fileChunkLength(size, -1), -1);
+      }
+      expect(fileChunkCount(24 * 1024 * 1024), 176);
+    });
   });
 }

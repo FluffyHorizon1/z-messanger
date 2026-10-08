@@ -2827,6 +2827,8 @@ class ChatService extends ChangeNotifier implements KtHost {
     const int kMalformed = 4;
     int status;
     InnerMessage? inner;
+    // What became of an attachment offer, as its transaction decided (§7).
+    _OfferFate? offerFate;
 
     try {
       final (s, parsedInner) =
@@ -2913,8 +2915,14 @@ class ChatService extends ChangeNotifier implements KtHost {
             final inserted = await txn.insert('inbox_dedupe',
                 {'from_rid': from, 'mid': parsed.mid, 'seen_ms': now},
                 conflictAlgorithm: ConflictAlgorithm.ignore);
-            if (inserted == 0) return; // duplicate resend — already processed
-            await _persistInboundKind(txn, contact, parsed, now);
+            if (inserted == 0) {
+              // A duplicate resend, already processed: an offer in it is
+              // what the vault says it was, so one refused the first time is
+              // not mirrored, receipted or assembled the second.
+              offerFate = await _heldOfferFate(txn, contact.rid, parsed);
+              return;
+            }
+            offerFate = await _persistInboundKind(txn, contact, parsed, now);
           });
         } catch (_) {
           // Persist failed: roll the in-memory ratchet back so the relay's
@@ -2959,30 +2967,34 @@ class ChatService extends ChangeNotifier implements KtHost {
     await _clearRequested(contact.rid);
 
     if (inner != null) {
-      if ((inner.kind == 'file' || inner.kind == 'gfile') &&
-          inner.data['fid'] is String) {
+      // An offer §7 refused is not this device's to confirm, to pass on to
+      // its own other devices, or to assemble chunks for: it was not stored.
+      final refused = offerFate == _OfferFate.refused;
+      if (offerFate == _OfferFate.fresh) {
         await _offerLanded(inner.data['fid'] as String);
       }
       if (openChatRid == contact.rid &&
           (inner.kind == 'text' || inner.kind == 'file')) {
         unawaited(_sendReadReceipts(contact.rid));
       }
-      if (inner.kind == 'text' ||
-          inner.kind == 'file' ||
-          inner.kind == 'gmsg' ||
-          inner.kind == 'gfile') {
+      if (!refused &&
+          (inner.kind == 'text' ||
+              inner.kind == 'file' ||
+              inner.kind == 'gmsg' ||
+              inner.kind == 'gfile')) {
         // E2E delivery receipt. With sealed sender the relay no longer knows
         // whom to notify of delivery, so the recipient tells the sender
         // directly — encrypted, like everything else. Best-effort: if the app
         // dies before it goes out the sender simply keeps a single grey tick.
         _queueDeliveryReceipt(contact.rid, inner.mid);
       }
-      if (inner.kind == 'text' ||
-          inner.kind == 'file' ||
-          inner.kind == 'gmsg' ||
-          inner.kind == 'gfile' ||
-          inner.kind == 'ginvite' ||
-          inner.kind == 'gleave') {
+      if (!refused &&
+          (inner.kind == 'text' ||
+              inner.kind == 'file' ||
+              inner.kind == 'gmsg' ||
+              inner.kind == 'gfile' ||
+              inner.kind == 'ginvite' ||
+              inner.kind == 'gleave')) {
         // Mirror the received message to my own other devices. For a file this
         // carries the offer (with its file key); the sealed chunks are relayed
         // separately in _onChunk as they arrive. Group traffic mirrors too so
@@ -3075,7 +3087,8 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   /// DB writes + in-memory UI updates for one decrypted inner message.
   /// Runs inside the inbound transaction (and thus the conversation lock).
-  Future<void> _persistInboundKind(
+  /// Returns what became of an attachment offer, and null for anything else.
+  Future<_OfferFate?> _persistInboundKind(
       Transaction txn, Contact contact, InnerMessage inner, int now) async {
     switch (inner.kind) {
       case 'text':
@@ -3120,13 +3133,11 @@ class ChatService extends ChangeNotifier implements KtHost {
         break;
 
       case 'file':
-        await _persistFileOffer(txn, contact.rid, inner, now,
+        return _persistFileOffer(txn, contact.rid, inner, now,
             expireAt: inner.ttlSec > 0 ? now + inner.ttlSec * 1000 : 0);
-        break;
 
       case 'gfile':
-        await _persistGroupFile(contact, inner, now, txn: txn);
-        break;
+        return _persistGroupFile(contact, inner, now, txn: txn);
 
       case 'timer':
         final sec = (inner.data['sec'] as num?)?.toInt() ?? 0;
@@ -3219,48 +3230,43 @@ class ChatService extends ChangeNotifier implements KtHost {
       default:
         break; // session bootstrap or unknown-forward-compat: state saved
     }
+    return null;
   }
 
   /// Record an inbound attachment offer (the file key rides inside it) and
   /// its placeholder message in thread [threadRid] — a contact's routing id
   /// for a direct message, a gid for a group. Chunks are thread-agnostic: they
-  /// are matched to the offer by fid when they arrive (see [_onChunk]).
-  Future<void> _persistFileOffer(
+  /// are matched to the offer by fid when they arrive (see [_onChunk]); the
+  /// offer, and everything that reads or removes it, is bound to the message
+  /// it arrived as ([_offerFate]).
+  Future<_OfferFate> _persistFileOffer(
       DatabaseExecutor txn, String threadRid, InnerMessage inner, int now,
       {int expireAt = 0, String? senderName, String? senderRid}) async {
-    final fid = inner.data['fid'] as String;
     // §7 says a file id is `b64url(12 random bytes)`. The SENDER picks it, so
     // that is a rule this side has to enforce rather than assume: it names
     // the blob's file on disk, and `../..`, a leading `/` and `C:` are all
-    // strings a contact can put in an inner field. Refused like any other
-    // malformed inner message — nothing stored, no placeholder, no alarm,
-    // because an honest client cannot produce one.
-    if (!isWellFormedFid(fid)) return;
-    final name = inner.data['name'] as String? ?? 'file';
-    final voice = inner.data['voice'] == true;
-    final durSec = (inner.data['dur'] as num?)?.toInt() ?? 0;
+    // strings a contact can put in an inner field. The size, the chunk count
+    // and the key material are the sender's say-so too ([_FileOffer]).
+    // Refused like any other malformed inner message — nothing stored, no
+    // placeholder, no alarm, because an honest client cannot produce one.
+    final offer = _FileOffer.read(inner.data);
+    if (offer == null) return _OfferFate.refused;
+    final fid = offer.fid;
+    // A group offer names its sender; a 1:1 conversation is its sender.
+    final fate = await _offerFate(
+        txn, threadRid, inner.mid, fid, senderRid ?? threadRid);
+    if (fate != _OfferFate.fresh) return fate;
+    final name = offer.name;
     final quoted = await _resolveQuote(threadRid, inner.replyTo, txn: txn);
-    await txn.insert(
-        'files',
-        {
-          'fid': fid,
-          'rid': threadRid,
-          'mid': inner.mid,
-          'enc_meta': await vault.seal(jsonEncode({
-            'name': name,
-            'size': inner.data['size'],
-            'mime': inner.data['mime'],
-            'sha256': inner.data['sha256'],
-            'fk': inner.data['fk'],
-            'fn': inner.data['fn'],
-            if (voice) 'voice': true,
-            if (durSec > 0) 'dur': durSec,
-          })),
-          'complete': 0,
-          'got_chunks': 0,
-          'total_chunks': (inner.data['chunks'] as num).toInt(),
-        },
-        conflictAlgorithm: ConflictAlgorithm.ignore);
+    await txn.insert('files', {
+      'fid': fid,
+      'rid': threadRid,
+      'mid': inner.mid,
+      'enc_meta': await vault.seal(jsonEncode(offer.meta)),
+      'complete': 0,
+      'got_chunks': 0,
+      'total_chunks': offer.chunks,
+    });
     await txn.insert(
         'messages',
         {
@@ -3297,32 +3303,107 @@ class ChatService extends ChangeNotifier implements KtHost {
           senderName: senderName,
           replyTo: quoted?.mid,
           quote: quoted,
-          file: FileMeta(
-            fid: fid,
-            name: name,
-            size: (inner.data['size'] as num?)?.toInt() ?? 0,
-            mime: inner.data['mime'] as String? ?? 'application/octet-stream',
-            sha256b64: inner.data['sha256'] as String? ?? '',
-            totalChunks: (inner.data['chunks'] as num).toInt(),
-            voice: voice,
-            durSec: durSec,
-          ),
+          file: offer.fileMeta,
         ));
     if (openChatRid != threadRid) {
       unread[threadRid] = (unread[threadRid] ?? 0) + 1;
     }
+    return _OfferFate.fresh;
   }
 
   /// A group attachment offer from [contact]: same membership rule as a group
   /// text (unknown group, left group or non-member sender → silent drop).
-  Future<void> _persistGroupFile(Contact contact, InnerMessage inner, int now,
+  ///
+  /// [contact] is the ACCOUNT: an offer from one of their linked devices
+  /// arrives here as them ([_dispatchExtraInner]), so the sender recorded
+  /// with it — the one §6.6's rule later holds a delete to — is the person,
+  /// whichever of their devices sent it.
+  Future<_OfferFate> _persistGroupFile(
+      Contact contact, InnerMessage inner, int now,
       {DatabaseExecutor? txn}) async {
-    final gid = inner.data['gid'] as String?;
-    final g = gid == null ? null : groups[gid];
-    if (g == null || g.left || !g.memberRids.contains(contact.rid)) return;
-    if (inner.data['fid'] is! String || inner.data['chunks'] is! num) return;
-    await _persistFileOffer(txn ?? vault.db, gid!, inner, now,
+    final gid = inner.data['gid'];
+    final g = gid is String ? groups[gid] : null;
+    if (g == null || g.left || !g.memberRids.contains(contact.rid)) {
+      return _OfferFate.refused;
+    }
+    return _persistFileOffer(txn ?? vault.db, g.gid, inner, now,
         senderName: contact.name, senderRid: contact.rid);
+  }
+
+  /// Whether an offer under [fid], arriving as message [mid] in [thread],
+  /// may be stored (PROTOCOL §7).
+  ///
+  /// A file id is chosen by its sender, and every member of a group holds
+  /// every member's: an id names nothing until it is bound to the message
+  /// that brought it. It used to name the attachment ITSELF. The `files`
+  /// insert was ignored when the id was already held, so another member's
+  /// offer of it stored a message of theirs pointing at the first sender's
+  /// file; their delete of that message, which the authorship rule allowed —
+  /// it was theirs — removed the file it pointed at; and the id, free again,
+  /// took their re-offer with their own bytes, which the first sender's
+  /// message then showed under the first sender's name. No race was needed.
+  ///
+  /// Now an id held for any other message — in this conversation or another,
+  /// from this sender or another — is refused, and so is a message id this
+  /// conversation already holds, whatever it holds it for: the second would
+  /// otherwise store an attachment no message shows, and a re-delivered offer
+  /// of a message deleted for everyone would bring its file back. What
+  /// remains is the same offer arriving twice ([_OfferFate.again]) — from
+  /// the same [sender] (`''` for me, the contact's routing id otherwise): in
+  /// a group, a member replaying another member's offer word for word names
+  /// the same conversation, message and id, and is still not its sender.
+  Future<_OfferFate> _offerFate(DatabaseExecutor db, String thread, String mid,
+      String fid, String sender) async {
+    final held = await db.query('files',
+        columns: ['rid', 'mid'], where: 'fid = ?', whereArgs: [fid], limit: 1);
+    if (held.isNotEmpty) {
+      if (held.first['rid'] != thread || held.first['mid'] != mid) {
+        return _OfferFate.refused;
+      }
+      return await _heldSender(db, thread, mid) == sender
+          ? _OfferFate.again
+          : _OfferFate.refused;
+    }
+    final taken = await db.query('messages',
+        columns: ['mid'],
+        where: 'rid = ? AND mid = ?',
+        whereArgs: [thread, mid],
+        limit: 1);
+    return taken.isEmpty ? _OfferFate.fresh : _OfferFate.refused;
+  }
+
+  /// Who sent the message [mid] in [thread]: `''` when it is mine, the
+  /// contact for a 1:1 chat, the routing id a group message recorded (`sr`);
+  /// null when there is no such message or it does not say.
+  Future<String?> _heldSender(
+      DatabaseExecutor db, String thread, String mid) async {
+    final rows = await db.query('messages',
+        columns: ['outgoing', 'enc_body'],
+        where: 'rid = ? AND mid = ?',
+        whereArgs: [thread, mid],
+        limit: 1);
+    if (rows.isEmpty) return null;
+    if ((rows.first['outgoing'] as int) == 1) return '';
+    return _storedSenderRid(thread, rows.first);
+  }
+
+  /// What became of the offer in [inner] from contact [rid] when it was first
+  /// processed — read back for a duplicate resend, which is not processed
+  /// again. Null when [inner] is not an offer.
+  Future<_OfferFate?> _heldOfferFate(
+      DatabaseExecutor db, String rid, InnerMessage inner) async {
+    if (inner.kind != 'file' && inner.kind != 'gfile') return null;
+    final fid = inner.data['fid'];
+    final thread = inner.kind == 'gfile' ? inner.data['gid'] : rid;
+    if (fid is! String || thread is! String) return _OfferFate.refused;
+    final held = await db.query('files',
+        columns: ['fid'],
+        where: 'fid = ? AND rid = ? AND mid = ?',
+        whereArgs: [fid, thread, inner.mid],
+        limit: 1);
+    return held.isEmpty || await _heldSender(db, thread, inner.mid) != rid
+        ? _OfferFate.refused
+        : _OfferFate.again;
   }
 
   /// How many chunks may be held for an offer this device has not seen.
@@ -3352,7 +3433,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       return;
     }
     final offer = await vault.db.query('files',
-        columns: ['total_chunks', 'complete'],
+        columns: ['total_chunks', 'complete', 'enc_meta'],
         where: 'fid = ?',
         whereArgs: [chunk.fid]);
     final known = offer.isNotEmpty;
@@ -3360,17 +3441,33 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (known) {
       // An offer arrived over the ratchet, so this fid is one a contact
       // really sent. Its shape still bounds what may be stored under it: an
-      // index outside the offer's range is not a chunk of this file, and a
-      // file already assembled needs nothing more.
+      // index outside the offer's range is not a chunk of this file, a chunk
+      // carrying more or fewer bytes than its index's share of the declared
+      // size is not one either (§7), and a file already assembled needs
+      // nothing more. The length is checked here, before anything is stored,
+      // so the wrong chunk cannot take the place of the right one at its
+      // index — and so nothing ever assembles past the size the offer said.
       if ((offer.first['complete'] as int) == 1) {
         transport.ackReceived(id: m.id, from: m.from);
         return;
       }
       final total = offer.first['total_chunks'] as int;
-      if (chunk.index < 0 || chunk.index >= total) {
+      final size = await _declaredSize(offer.first);
+      if (chunk.index < 0 ||
+          chunk.index >= total ||
+          size == null ||
+          chunk.cipherText.length != fileChunkLength(size, chunk.index)) {
         transport.ackReceived(id: m.id, from: m.from);
         return;
       }
+    } else if (chunk.index < 0 ||
+        chunk.index >= fileChunkCount(maxAttachmentBytes) ||
+        chunk.cipherText.length > defaultChunkSize) {
+      // No offer this device will ever take has a chunk like this one: past
+      // the last index of the largest file there is, or longer than any
+      // chunk of any file. Not worth one of the [maxHeldChunks] places.
+      transport.ackReceived(id: m.id, from: m.from);
+      return;
     }
 
     await vault.db.insert(
@@ -3411,6 +3508,21 @@ class ChatService extends ChangeNotifier implements KtHost {
     await _tryAssemble(chunk.fid);
   }
 
+  /// The size an offer declared, from its `files` row: the sealed meta's
+  /// `size`, or null when the row's offer does not say one this device
+  /// would accept — a chunk can then fit no part of it.
+  Future<int?> _declaredSize(Map<String, Object?> row) async {
+    try {
+      final meta = jsonDecode(await vault.unseal(row['enc_meta'] as String));
+      final size = meta is Map ? meta['size'] : null;
+      return size is int && size >= 0 && size <= maxAttachmentBytes
+          ? size
+          : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Relay to my own other devices every chunk already stored for [fid].
   ///
   /// Called once, when the offer lands. Chunks that arrive AFTER it are fanned
@@ -3435,12 +3547,61 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> _tryAssemble(String fid) =>
       _withLock('assemble:$fid', () => _tryAssembleLocked(fid));
 
-  /// An offer has arrived: whatever was held for it is explained now, so
-  /// relay it onward (which [_onChunk] deliberately would not do while it was
-  /// unexplained) and then assemble.
+  /// An offer has arrived: whatever was held for it is explained now. What
+  /// does not fit it is dropped, what does is relayed onward (which
+  /// [_onChunk] deliberately would not do while it was unexplained), and
+  /// then the file is assembled.
   Future<void> _offerLanded(String fid) async {
+    await _withLock('assemble:$fid', () => _dropUnfitChunks(fid));
     await _fanHeldChunks(fid);
     await _tryAssemble(fid);
+  }
+
+  /// The chunk stored as [payload] at index [idx], if it can be chunk [idx]
+  /// of [fid], a file of [size] bytes (§7); null if not. Null [size]: an
+  /// offer that does not say one this device would accept, which nothing
+  /// fits.
+  FileChunk? _fitting(String fid, int? size, int idx, String payload) {
+    if (size == null) return null;
+    final fc = tryParseChunk(payload);
+    return fc != null &&
+            fc.fid == fid &&
+            fc.index == idx &&
+            fc.cipherText.length == fileChunkLength(size, idx)
+        ? fc
+        : null;
+  }
+
+  /// Chunks held for [fid] before its offer arrived that the offer now shows
+  /// are not its own: past its last index, or not its index's share of the
+  /// declared size (§7). They were held because there was nothing to check
+  /// them against; now there is, and a misfit left in its place would only
+  /// fail the whole file at assembly. Read one at a time — up to the
+  /// [maxHeldChunks] of them are a few tens of megabytes.
+  Future<void> _dropUnfitChunks(String fid) async {
+    final offer = await vault.db.query('files',
+        columns: ['total_chunks', 'complete', 'enc_meta'],
+        where: 'fid = ?',
+        whereArgs: [fid]);
+    if (offer.isEmpty || (offer.first['complete'] as int) == 1) return;
+    final total = offer.first['total_chunks'] as int;
+    final size = await _declaredSize(offer.first);
+    final held = await vault.db
+        .query('chunks', columns: ['idx'], where: 'fid = ?', whereArgs: [fid]);
+    for (final r in held) {
+      final idx = r['idx'] as int;
+      final c = await vault.db.query('chunks',
+          columns: ['payload'],
+          where: 'fid = ? AND idx = ?',
+          whereArgs: [fid, idx]);
+      if (c.isEmpty) continue;
+      if (idx < total &&
+          _fitting(fid, size, idx, c.first['payload'] as String) != null) {
+        continue;
+      }
+      await vault.db.delete('chunks',
+          where: 'fid = ? AND idx = ?', whereArgs: [fid, idx]);
+    }
   }
 
   Future<void> _tryAssembleLocked(String fid) async {
@@ -3449,15 +3610,26 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (rows.isEmpty) return; // chunks arrived before the offer — wait
     final row = rows.first;
     if ((row['complete'] as int) == 1) return;
+    // The message this attachment arrived as. Everything written below is
+    // bound to it, so an offer deleted while this runs is not written back
+    // under its id for whatever offer may hold that id by then.
+    final rid = row['rid'] as String;
+    final mid = row['mid'] as String;
+    const bound = 'fid = ? AND rid = ? AND mid = ?';
 
     final total = row['total_chunks'] as int;
-    final chunkRows = await vault.db
-        .query('chunks', where: 'fid = ?', whereArgs: [fid], orderBy: 'idx');
-    final got = chunkRows.length;
+    // Counted, not loaded. This used to read every chunk held for the file
+    // — the payloads — on every chunk's arrival, just to count them: a file
+    // of n chunks cost n²/2 chunk reads, and an offer that declared a
+    // million chunks made each chunk sent for it re-read all the others.
+    final got = firstIntValue(await vault.db.rawQuery(
+            'SELECT COUNT(*) FROM chunks WHERE fid = ? AND idx >= 0 AND idx < ?',
+            [fid, total])) ??
+        0;
     if (got != row['got_chunks']) {
       await vault.db.update('files', {'got_chunks': got},
-          where: 'fid = ?', whereArgs: [fid]);
-      _updateLoadedFileProgress(row['rid'] as String, fid, got, total, false);
+          where: bound, whereArgs: [fid, rid, mid]);
+      _updateLoadedFileProgress(rid, mid, got, total, false);
       notifyListeners();
     }
     if (got < total) return;
@@ -3465,21 +3637,55 @@ class ChatService extends ChangeNotifier implements KtHost {
     final meta =
         (jsonDecode(await vault.unseal(row['enc_meta'] as String)) as Map)
             .cast<String, Object?>();
-    final fk = unb64(meta['fk'] as String);
-    final fn = unb64(meta['fn'] as String);
 
     try {
-      final parts = <Uint8List>[];
-      for (final cr in chunkRows) {
-        final fc = tryParseChunk(cr['payload'] as String);
-        if (fc == null) throw const FormatException('bad chunk');
-        parts.add(await decryptChunk(fk: fk, fn: fn, fid: fid, chunk: fc));
+      final size = meta['size'];
+      if (size is! int ||
+          size < 0 ||
+          size > maxAttachmentBytes ||
+          fileChunkCount(size) != total) {
+        // Only a row stored before the offer itself was checked can say this.
+        throw const FormatException('the offer does not add up');
       }
-      final assembled = Uint8List.fromList(parts.expand((x) => x).toList());
-      if (b64(await sha256Bytes(assembled)) != meta['sha256']) {
+      final fk = unb64(meta['fk'] as String);
+      final fn = unb64(meta['fn'] as String);
+      // One buffer of exactly the declared size, filled a chunk at a time,
+      // each chunk read when it is needed. This used to hold every chunk's
+      // payload, then every decrypted chunk, then join them through
+      // `expand(...).toList()` — a List<int> at eight bytes an element — so
+      // an honest 24 MiB attachment peaked at hundreds of megabytes, and a
+      // file whose chunks added up to more than its offer said was assembled
+      // at whatever size they added up to.
+      final out = Uint8List(size);
+      var at = 0;
+      for (var i = 0; i < total; i++) {
+        final c = await vault.db.query('chunks',
+            columns: ['payload'],
+            where: 'fid = ? AND idx = ?',
+            whereArgs: [fid, i]);
+        if (c.isEmpty) return; // removed under us: the file is going
+        final chunk = _fitting(fid, size, i, c.first['payload'] as String);
+        if (chunk == null) {
+          // Held before the offer could rule it out, and not this file's:
+          // dropped, so the slot is free for the chunk that is — and counted
+          // again, so the progress shown is what is actually held.
+          await vault.db.delete('chunks',
+              where: 'fid = ? AND idx = ?', whereArgs: [fid, i]);
+          await _tryAssembleLocked(fid);
+          return;
+        }
+        final part =
+            await decryptChunk(fk: fk, fn: fn, fid: fid, chunk: chunk);
+        out.setRange(at, at + part.length, part);
+        at += part.length;
+      }
+      if (b64(await sha256Bytes(out)) != meta['sha256']) {
         throw const FormatException('attachment hash mismatch');
       }
-      final keyInfo = await vault.writeBlob(fid, assembled);
+      final still = await vault.db.query('files',
+          columns: ['complete'], where: bound, whereArgs: [fid, rid, mid]);
+      if (still.isEmpty || still.first['complete'] == 1) return;
+      final keyInfo = await vault.writeBlob(fid, out);
       meta['local'] = keyInfo;
       meta.remove('fk');
       meta.remove('fn');
@@ -3490,14 +3696,14 @@ class ChatService extends ChangeNotifier implements KtHost {
             'complete': 1,
             'got_chunks': total,
           },
-          where: 'fid = ?',
-          whereArgs: [fid]);
+          where: bound,
+          whereArgs: [fid, rid, mid]);
       await vault.db.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
-      _updateLoadedFileProgress(row['rid'] as String, fid, total, total, true);
+      _updateLoadedFileProgress(rid, mid, total, total, true);
     } catch (_) {
       await vault.db.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
       await _insertSystemMessage(
-          row['rid'] as String, systemBody(SystemKind.attachmentDiscarded));
+          rid, systemBody(SystemKind.attachmentDiscarded));
     }
     notifyListeners();
   }
@@ -3710,8 +3916,13 @@ class ChatService extends ChangeNotifier implements KtHost {
     String? senderName;
     FileMeta? fileMeta;
     if (kind == 'file') {
-      final fid = r['fid'] as String;
-      fileMeta = deleted ? null : await _loadFileMeta(fid);
+      // A tombstone keeps its kind and loses its id: nothing to load, and
+      // reading it as a String threw, so a chat holding an attachment that
+      // was deleted for everyone could not be opened again.
+      final fid = r['fid'] as String?;
+      fileMeta = deleted || fid == null
+          ? null
+          : await _loadFileMeta(rid, r['mid'] as String, fid);
       body = fileMeta?.name ?? 'file';
       try {
         final j =
@@ -4022,9 +4233,29 @@ class ChatService extends ChangeNotifier implements KtHost {
         Future<void>.value());
   }
 
+  /// Removes the attachment message [mid] in [rid] brought — the `files` row
+  /// bound to that message under [fid], and the chunks still held for it —
+  /// and says whether there was one, so the caller destroys the blob only
+  /// then (§7).
+  ///
+  /// By the message, never by the id alone. Every delete path used to remove
+  /// whatever the vault held under the id, and an id is chosen by its sender
+  /// and seen by every member of a group: a member's message naming another
+  /// member's id, deleted by its author as the authorship rule allows, took
+  /// the other member's file with it.
+  Future<bool> _dropAttachment(
+      DatabaseExecutor db, String rid, String mid, String fid) async {
+    final n = await db.delete('files',
+        where: 'fid = ? AND rid = ? AND mid = ?', whereArgs: [fid, rid, mid]);
+    if (n == 0) return false;
+    await db.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
+    return true;
+  }
+
   /// Turns one message into a tombstone: body wiped, attachment blob and
   /// chunks destroyed, reactions dropped, row kept so the conversation keeps
-  /// its shape and replies to it still resolve (as "unavailable").
+  /// its shape and replies to it still resolve (as "unavailable"). The
+  /// attachment is the message's own ([_dropAttachment]).
   Future<void> _tombstone(String rid, String mid,
       {DatabaseExecutor? txn}) async {
     final db = txn ?? vault.db;
@@ -4035,10 +4266,8 @@ class ChatService extends ChangeNotifier implements KtHost {
         limit: 1);
     if (rows.isEmpty) return;
     final fid = rows.first['fid'] as String?;
-    if (fid != null) {
+    if (fid != null && await _dropAttachment(db, rid, mid, fid)) {
       await vault.deleteBlob(fid);
-      await db.delete('files', where: 'fid = ?', whereArgs: [fid]);
-      await db.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
     }
     await db.update(
         'messages',
@@ -4162,7 +4391,8 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (msg.kind == 'file') {
       final fid = msg.fid;
       if (fid == null) return;
-      final bytes = await readAttachment(fid);
+      // This message's own attachment — not whatever else holds its id.
+      final bytes = await readAttachment(fid, rid: fromRid, mid: mid);
       final meta = msg.file;
       if (toGroup) {
         await sendGroupFile(toRid, meta?.name ?? 'file', bytes,
@@ -4426,7 +4656,14 @@ class ChatService extends ChangeNotifier implements KtHost {
     String? senderName;
     try {
       if (kind == 'file') {
-        preview = (await _loadFileMeta(r['fid'] as String? ?? ''))?.name ??
+        // Through [txn]: a reply is resolved inside the transaction that
+        // stores it, and a read on the database's own connection there waits
+        // for that transaction to end — which waits for this.
+        final fid = r['fid'] as String?;
+        preview = (fid == null
+                    ? null
+                    : await _loadFileMeta(rid, mid, fid, db: txn))
+                ?.name ??
             'Attachment';
       } else if (kind == 'gtext') {
         final j =
@@ -4449,9 +4686,15 @@ class ChatService extends ChangeNotifier implements KtHost {
     );
   }
 
-  Future<FileMeta?> _loadFileMeta(String fid) async {
-    final rows =
-        await vault.db.query('files', where: 'fid = ?', whereArgs: [fid]);
+  /// The attachment message [mid] in conversation [rid] brought, under the
+  /// file id [fid] its row names — and only that one (§7). A message used to
+  /// show whatever the vault held under the id, so a member's message naming
+  /// another member's id showed the other member's file, and the other
+  /// member's message showed whatever had taken that id over.
+  Future<FileMeta?> _loadFileMeta(String rid, String mid, String fid,
+      {DatabaseExecutor? db}) async {
+    final rows = await (db ?? vault.db).query('files',
+        where: 'fid = ? AND rid = ? AND mid = ?', whereArgs: [fid, rid, mid]);
     if (rows.isEmpty) return null;
     final r = rows.first;
     final meta =
@@ -4473,9 +4716,21 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   /// Decrypted attachment bytes (for viewing/saving). Never touches disk in
   /// plaintext.
-  Future<Uint8List> readAttachment(String fid) async {
-    final rows =
-        await vault.db.query('files', where: 'fid = ?', whereArgs: [fid]);
+  ///
+  /// A file id names one attachment in this vault — §7's rule refuses an id
+  /// already held for another message — so [fid] alone finds the one a
+  /// screen was shown. A caller re-sending a message's own attachment (a
+  /// forward, a group fan-out) also passes the message, [rid] and [mid], and
+  /// gets nothing if the id is no longer that message's.
+  Future<Uint8List> readAttachment(String fid,
+      {String? rid, String? mid}) async {
+    final rows = await vault.db.query('files',
+        where: [
+          'fid = ?',
+          if (rid != null) 'rid = ?',
+          if (mid != null) 'mid = ?',
+        ].join(' AND '),
+        whereArgs: [fid, if (rid != null) rid, if (mid != null) mid]);
     if (rows.isEmpty) throw StateError('no such attachment');
     final meta =
         (jsonDecode(await vault.unseal(rows.first['enc_meta'] as String))
@@ -4621,11 +4876,11 @@ class ChatService extends ChangeNotifier implements KtHost {
   }
 
   void _updateLoadedFileProgress(
-      String rid, String fid, int got, int total, bool complete) {
+      String rid, String mid, int got, int total, bool complete) {
     final list = messagesByChat[rid];
     if (list == null) return;
     for (final m in list) {
-      if (m.fid == fid && m.file != null) {
+      if (m.mid == mid && m.file != null) {
         m.file!.gotChunks = got;
         m.file!.totalChunks = total;
         m.file!.complete = complete;
@@ -4761,10 +5016,10 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (doomed.isEmpty) return;
     for (final r in doomed) {
       final fid = r['fid'] as String?;
-      if (fid != null) {
+      if (fid != null &&
+          await _dropAttachment(
+              vault.db, r['rid'] as String, r['mid'] as String, fid)) {
         await vault.deleteBlob(fid);
-        await vault.db.delete('files', where: 'fid = ?', whereArgs: [fid]);
-        await vault.db.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
       }
     }
     for (final r in doomed) {
@@ -4876,10 +5131,10 @@ class ChatService extends ChangeNotifier implements KtHost {
           whereArgs: [rid, mid],
           limit: 1);
       if (rows.isEmpty) return;
-      fid = rows.first['fid'] as String?;
-      if (fid != null) {
-        await txn.delete('files', where: 'fid = ?', whereArgs: [fid]);
-        await txn.delete('chunks', where: 'fid = ?', whereArgs: [fid]);
+      final named = rows.first['fid'] as String?;
+      // The message's own attachment; one it merely names stays (§7).
+      if (named != null && await _dropAttachment(txn, rid, mid, named)) {
+        fid = named;
       }
       await txn.delete('reactions',
           where: 'rid = ? AND mid = ?', whereArgs: [rid, mid]);
@@ -5316,11 +5571,40 @@ class ChatService extends ChangeNotifier implements KtHost {
       } else {
         final c = contacts[rid];
         if (c != null) {
-          await _persistGroupFile(c, inner, inner.ts);
+          final fate = await vault.db.transaction(
+              (txn) => _persistGroupFile(c, inner, inner.ts, txn: txn));
           notifyListeners();
-          await _offerLanded(inner.data['fid'] as String);
+          if (fate == _OfferFate.fresh) {
+            await _offerLanded(inner.data['fid'] as String);
+          }
         }
       }
+      return;
+    }
+    // My own delete-for-everyone, made on another of my devices: my own
+    // devices are me, so it removes my message here — and the attachment it
+    // brought, which is mine (§7). A contact's delete is not mirrored: it
+    // reaches each of my devices from them.
+    if (inner.kind == 'del' || inner.kind == 'gdel') {
+      if (!outgoing) return;
+      final gid = inner.data['gid'];
+      final thread = inner.kind == 'gdel' ? gid : rid;
+      if (thread is! String) return;
+      if (inner.kind == 'gdel' ? !groups.containsKey(thread)
+          : !contacts.containsKey(thread)) {
+        return;
+      }
+      await vault.db.transaction((txn) async {
+        for (final mid in inner.deleteTargets) {
+          final mine = await txn.query('messages',
+              columns: ['mid'],
+              where: 'rid = ? AND mid = ? AND outgoing = 1',
+              whereArgs: [thread, mid],
+              limit: 1);
+          if (mine.isNotEmpty) await _tombstone(thread, mid, txn: txn);
+        }
+      });
+      notifyListeners();
       return;
     }
     if (!contacts.containsKey(rid)) return;
@@ -5408,50 +5692,44 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// A mirrored file offer from one of my own devices: record the offer (with
   /// its file key, so the sidecar chunks can be assembled) and a placeholder
   /// message, then try to assemble in case those chunks already arrived.
-  Future<void> _insertMirroredFile(
+  ///
+  /// [outgoing]: mine, sent from another of my devices — my own devices are
+  /// me. Otherwise it came from the contact whose conversation [rid] is,
+  /// whichever of their devices sent it or mine passed it on.
+  Future<_OfferFate> _insertMirroredFile(
       String rid, bool outgoing, InnerMessage inner) async {
-    final fid = inner.data['fid'] as String?;
-    // The same rule as [_persistFileOffer], because this is the same offer
+    // The same rules as [_persistFileOffer], because this is the same offer
     // arriving through a different door: a contact's LINKED device sends its
     // attachment offers here rather than there (`_dispatchExtraInner`), and
-    // that door was not checked when the rule was written. `Vault.blobFile`
+    // that door was not checked when the id rule was written. `Vault.blobFile`
     // refuses to write a blob under a malformed id, so nothing was ever put
     // where it should not be — what got through was a `files` row and a
     // message placeholder under an id nothing can ever complete, which no
-    // sweep collects because the message row it belongs to is real.
-    if (fid == null || !isWellFormedFid(fid)) return;
-    final name = inner.data['name'] as String? ?? 'file';
-    final total = (inner.data['chunks'] as num?)?.toInt() ?? 0;
-    final voice = inner.data['voice'] == true;
-    final durSec = (inner.data['dur'] as num?)?.toInt() ?? 0;
+    // sweep collects because the message row it belongs to is real. An id
+    // held for another message (§7) is refused here as there, or the
+    // laptop's door would be the one the delete-and-replace went through.
+    final offer = _FileOffer.read(inner.data);
+    if (offer == null) return _OfferFate.refused;
+    final fid = offer.fid;
+    final name = offer.name;
     final status = outgoing ? MsgStatus.sent : MsgStatus.delivered;
-    final quoted = await _resolveQuote(rid, inner.replyTo);
     final expireAt = _mirroredExpiry(inner, outgoing);
-    await vault.db.insert(
-      'files',
-      {
+    QuotedMessage? quoted;
+    final fate = await vault.db.transaction((txn) async {
+      final fate =
+          await _offerFate(txn, rid, inner.mid, fid, outgoing ? '' : rid);
+      if (fate != _OfferFate.fresh) return fate;
+      quoted = await _resolveQuote(rid, inner.replyTo, txn: txn);
+      await txn.insert('files', {
         'fid': fid,
         'rid': rid,
         'mid': inner.mid,
-        'enc_meta': await vault.seal(jsonEncode({
-          'name': name,
-          'size': inner.data['size'],
-          'mime': inner.data['mime'],
-          'sha256': inner.data['sha256'],
-          'fk': inner.data['fk'],
-          'fn': inner.data['fn'],
-          if (voice) 'voice': true,
-          if (durSec > 0) 'dur': durSec,
-        })),
+        'enc_meta': await vault.seal(jsonEncode(offer.meta)),
         'complete': 0,
         'got_chunks': 0,
-        'total_chunks': total,
-      },
-      conflictAlgorithm: ConflictAlgorithm.ignore,
-    );
-    await vault.db.insert(
-      'messages',
-      {
+        'total_chunks': offer.chunks,
+      });
+      await txn.insert('messages', {
         'mid': inner.mid,
         'rid': rid,
         'outgoing': outgoing ? 1 : 0,
@@ -5462,9 +5740,10 @@ class ChatService extends ChangeNotifier implements KtHost {
         'status': status,
         'expire_at_ms': expireAt,
         'reply_to': quoted?.mid,
-      },
-      conflictAlgorithm: ConflictAlgorithm.ignore,
-    );
+      });
+      return _OfferFate.fresh;
+    });
+    if (fate != _OfferFate.fresh) return fate;
     _appendLoaded(
         rid,
         ChatMessage(
@@ -5479,19 +5758,11 @@ class ChatService extends ChangeNotifier implements KtHost {
           expireAtMs: expireAt,
           replyTo: quoted?.mid,
           quote: quoted,
-          file: FileMeta(
-            fid: fid,
-            name: name,
-            size: (inner.data['size'] as num?)?.toInt() ?? 0,
-            mime: inner.data['mime'] as String? ?? 'application/octet-stream',
-            sha256b64: inner.data['sha256'] as String? ?? '',
-            totalChunks: total,
-            voice: voice,
-            durSec: durSec,
-          ),
+          file: offer.fileMeta,
         ));
     notifyListeners();
     await _offerLanded(fid); // sidecar chunks may already be here
+    return _OfferFate.fresh;
   }
 
   // ------------------------------------------------------------------
@@ -5900,10 +6171,15 @@ class ChatService extends ChangeNotifier implements KtHost {
     final fid = inner.data['fid'] as String?;
     final fk = inner.data['fk'] as String?;
     final fn = inner.data['fn'] as String?;
-    if (fid == null || fk == null || fn == null) return null;
+    final gid = inner.data['gid'] as String?;
+    if (fid == null || fk == null || fn == null || gid == null) return null;
     final Uint8List bytes;
     try {
-      bytes = await readAttachment(fid);
+      // My own file as THIS message carries it. If the message was deleted
+      // before its fan-out finished, its id may since have been taken by an
+      // offer from somebody else (§7), whose bytes must not go out under my
+      // key: nothing is found, and the row is dropped below.
+      bytes = await readAttachment(fid, rid: gid, mid: inner.mid);
     } catch (_) {
       return null;
     }
@@ -9143,9 +9419,23 @@ class ChatService extends ChangeNotifier implements KtHost {
       // mirrored-in offer — record it, chunks arrive by fid.
       await _insertMirroredFile(rid, false, inner);
     } else if (inner.kind == 'gfile' && inner.data['fid'] is String) {
-      await _persistGroupFile(contact, inner, _now());
+      final fate = await vault.db.transaction(
+          (txn) => _persistGroupFile(contact, inner, _now(), txn: txn));
       notifyListeners();
-      await _offerLanded(inner.data['fid'] as String);
+      if (fate == _OfferFate.fresh) {
+        await _offerLanded(inner.data['fid'] as String);
+      }
+    } else if (inner.kind == 'del' || inner.kind == 'gdel') {
+      // A delete-for-everyone from one of the contact's other devices is the
+      // CONTACT's: their account wrote the messages it names, whichever of
+      // their devices it was on, so §6.6's authorship rule is applied with
+      // them as the sender — and through it §7's, so what it removes is the
+      // attachment their message brought and nothing another member's
+      // message merely names. It used to be dropped here, so a laptop's
+      // delete left the file on every other member's device.
+      await vault.db
+          .transaction((txn) => _applyDelete(contact, inner, txn: txn));
+      notifyListeners();
     } else if (inner.kind == 'ginvite' || inner.kind == 'gleave') {
       if (inner.kind == 'ginvite') {
         await _applyGroupInvite(contact.rid, inner.data);
@@ -9755,6 +10045,101 @@ int? firstIntValue(List<Map<String, Object?>> rows) {
 /// Why a post-quantum identity is being sent (§18.2); see
 /// `ChatService._offerPqIdentity`.
 enum _PqReason { volunteer, nudge, answer }
+
+/// What became of an attachment offer (PROTOCOL §7), wherever it arrived.
+enum _OfferFate {
+  /// Stored, with its placeholder: chunks may now be fanned and assembled.
+  fresh,
+
+  /// The same offer again through another door — a linked device's mirror of
+  /// one this device also had directly — and already stored. Nothing new,
+  /// and nothing wrong: it is receipted and mirrored exactly as before.
+  again,
+
+  /// Refused: malformed, larger than the product limit, a chunk count its
+  /// size does not imply, or a file id this device holds for another
+  /// message, or a message id this conversation already holds. Nothing is
+  /// stored, and nothing is receipted, mirrored or assembled on its account.
+  refused,
+}
+
+/// An attachment offer's members (`file`, or `gfile` plus `gid`), checked.
+///
+/// Every one of them is the sender's say-so, and the receiver used to take
+/// `size` and `chunks` as given: a 24 MiB offer declaring a million chunks
+/// was stored, every chunk that then arrived for it was kept, and a file
+/// assembled to whatever its chunks added up to, whatever the offer said.
+/// The key material is checked for length here because an offer whose key
+/// cannot open its own chunks is one that will never complete.
+class _FileOffer {
+  final String fid;
+  final String name;
+  final int size;
+  final String mime;
+  final String sha256;
+  final String fk;
+  final String fn;
+  final int chunks;
+  final bool voice;
+  final int durSec;
+  const _FileOffer(this.fid, this.name, this.size, this.mime, this.sha256,
+      this.fk, this.fn, this.chunks, this.voice, this.durSec);
+
+  /// The offer in [d], or null when §7 says no receiver may accept it.
+  static _FileOffer? read(Map<String, Object?> d) {
+    final fid = d['fid'], size = d['size'], chunks = d['chunks'];
+    final sha = d['sha256'], fk = d['fk'], fn = d['fn'];
+    if (fid is! String || !isWellFormedFid(fid)) return null;
+    if (size is! int || size < 0 || size > maxAttachmentBytes) return null;
+    if (chunks is! int || chunks != fileChunkCount(size)) return null;
+    if (sha is! String || fk is! String || fn is! String) return null;
+    try {
+      if (unb64(sha).length != 32 ||
+          unb64(fk).length != 32 ||
+          unb64(fn).length != 16) {
+        return null;
+      }
+    } catch (_) {
+      return null;
+    }
+    final name = d['name'], mime = d['mime'], dur = d['dur'];
+    return _FileOffer(
+        fid,
+        name is String ? name : 'file',
+        size,
+        mime is String ? mime : 'application/octet-stream',
+        sha,
+        fk,
+        fn,
+        chunks,
+        d['voice'] == true,
+        dur is num && dur > 0 ? dur.toInt() : 0);
+  }
+
+  /// The sealed `files.enc_meta` of a received offer: what the earlier
+  /// builds stored, member for member.
+  Map<String, Object?> get meta => {
+        'name': name,
+        'size': size,
+        'mime': mime,
+        'sha256': sha256,
+        'fk': fk,
+        'fn': fn,
+        if (voice) 'voice': true,
+        if (durSec > 0) 'dur': durSec,
+      };
+
+  FileMeta get fileMeta => FileMeta(
+        fid: fid,
+        name: name,
+        size: size,
+        mime: mime,
+        sha256b64: sha256,
+        totalChunks: chunks,
+        voice: voice,
+        durSec: durSec,
+      );
+}
 
 /// A `ginvite`'s fields as [ChatService._parseList] read them.
 class _WireList {

@@ -805,8 +805,8 @@ chunk payload = b64( utf8( JSON{ "v":1, "t":"f", "fid":fid, "idx":i, "ct":b64(ct
 ```
 
 Chunks are consecutive `chunkSize` slices of the file; the last may be
-shorter; an empty file is one empty chunk. A receiver MUST accept any chunk
-size. *Implementation note:* `chunkSize` is 140 KiB — the largest raw chunk
+shorter; an empty file is one empty chunk. `chunkSize` is 140 KiB (143 360
+bytes) — the largest raw chunk
 whose payload, once sealed (§8), pads into the 262144 bucket, which is the
 largest bucket whose base64url envelope stays under the relay's
 1,000,000‑character frame cap (§12.2). Every chunk envelope is therefore the
@@ -828,6 +828,46 @@ none of them is a file id. The reference client refused nothing here until
 2026‑09‑13 and used the value as `files/$fid.bin`, so a contact could choose
 where on the device an attachment landed; the rule was already written above,
 and only the receiver never read it.
+
+An offer's numbers are the sender's say‑so too. A receiver **MUST** refuse an
+offer whose `chunks` is not ⌈`size` / `chunkSize`⌉ (1 for an empty file), or
+whose `fk`, `fn` or `sha256` is not 32, 16 or 32 bytes; and it MUST NOT store
+a chunk whose `idx` is outside `[0, chunks)` or whose ciphertext is not that
+index's share of `size` — `chunkSize`, or what is left for the last — which
+it can check before decrypting anything, since the tag travels apart as
+`mac`. So no chunk takes the place of the right one at its index, and nothing
+assembles to more than the offer declared. The reference client also refuses
+an offer larger than its 24 MiB limit, and holds a chunk that arrives before
+its offer only if an offer it would accept could own it (an index below 176,
+at most `chunkSize` bytes). Until 2026‑10‑04 it believed both numbers: an
+offer declaring a million chunks was stored and every chunk sent for it kept,
+and a file assembled to whatever its chunks added up to. *Compatibility:*
+this section used to say a receiver MUST accept any chunk size. Every sender
+since v1.2.0 uses 140 KiB; v1.0.x and v1.1.x used 480 KiB, so a file of more
+than one chunk from either is refused now — and those two releases predate
+sealed sender (§8), so they can open nothing a later build sends them.
+
+A `fid` is unique per sender, but it is not secret from anyone the offer
+reaches: in a group every member holds every member's. So a receiver keys an
+attachment by **(conversation, sender, `fid`)** — the sender being the
+account, whichever of its devices (§9) sent the offer — and binds it to the
+message that carried it. A receiver **MUST** refuse an offer whose `fid` it
+already holds for any other conversation, sender or message (the same offer
+again, through another of the receiver's doors, is the one it holds and not a
+second), and an offer whose `mid` that conversation already holds for
+anything else. Chunks carry no sender; they are matched by `fid` to the one
+offer holding it. Everything that reads, assembles, re‑sends, archives or
+removes an attachment does so through the message it belongs to: a
+`del`/`gdel` (§6.6) removes the attachment its target message brought, and
+nothing another message merely names, and only where §6.6's authorship rule
+holds — which a sender's linked devices satisfy as the sender. The reference
+client keyed attachments by `fid` alone until 2026‑10‑04, so a group member
+could offer another member's id as a message of their own, delete that
+message — theirs, so the rule allowed it — and with it the other member's
+file, then offer the id again with their own bytes, which the other member's
+message then showed under the other member's name. What remains is a race: an
+offer of an id that reaches a receiver before the genuine one is the one it
+keeps, shown under its own sender's name (`THREAT_MODEL.md`).
 
 ## 8. Sealed sender
 

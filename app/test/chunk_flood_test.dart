@@ -116,6 +116,33 @@ void main() {
       firstIntValue(await svc.vault.db.rawQuery('SELECT COUNT(*) FROM chunks')) ??
       0;
 
+  /// Sends [payloads] to [to] from a stranger's connection and returns once
+  /// [to] has acknowledged every one — which it does for a chunk only once
+  /// it has decided what to do with it: the relay tells a sender that is
+  /// still connected (`delivered`).
+  Future<void> sendDecided(String to, List<String> payloads,
+      {required String what}) async {
+    final sender = await RelayClient.connect(
+        'ws://127.0.0.1:$port', await ZIdentity.generate());
+    final decided = <String>{};
+    final sub = sender.delivered.listen((d) => decided.add(d.id));
+    final ids = <String>[];
+    for (final p in payloads) {
+      final id = newMessageId();
+      ids.add(id);
+      await sender.send(to: to, id: id, payload: p);
+    }
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (!decided.containsAll(ids)) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw StateError('never acknowledged: $what');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+    await sub.cancel();
+    await sender.close();
+  }
+
   Future<void> flood(ChatService svc, int n, {String? fid}) async {
     final rid = await svc.identity.routingId();
     final sender = await RelayClient.connect(
@@ -204,8 +231,12 @@ void main() {
     final me = await victim('Me');
     // An offer as a real one is recorded: over the ratchet, so this fid is
     // one a contact really sent, with a shape that bounds what belongs to it.
+    // The id is a well-formed one (§7). It used to be 'real', which the
+    // shape check refuses at the door before the offer is even looked up —
+    // so this passed without ever reaching the range check it is about.
+    final fid = b64url(randomBytes(12));
     await me.vault.db.insert('files', {
-      'fid': 'real',
+      'fid': fid,
       'rid': 'peer',
       'mid': 'm1',
       'enc_meta': await me.vault.seal(jsonEncode({'name': 'a.bin'})),
@@ -214,29 +245,21 @@ void main() {
       'total_chunks': 3,
     });
     final rid = await me.identity.routingId();
-    final sender = await RelayClient.connect(
-        'ws://127.0.0.1:$port', await ZIdentity.generate());
-    for (final idx in [3, 99, -1, 1000000]) {
-      await sender.send(
-          to: rid, id: newMessageId(), payload: junkChunk('real', idx));
-    }
-    await sender.close();
-    await Future<void>.delayed(const Duration(seconds: 2));
+    await sendDecided(
+        rid, [for (final idx in [3, 99, -1, 1000000]) junkChunk(fid, idx)],
+        what: 'the out-of-range chunks');
     final stored = await me.vault.db
-        .query('chunks', where: 'fid = ?', whereArgs: ['real']);
+        .query('chunks', where: 'fid = ?', whereArgs: [fid]);
     expect(stored, isEmpty,
         reason: 'an index outside the offer is not a chunk of that file');
 
     // And a file already assembled needs nothing more.
     await me.vault.db.update('files', {'complete': 1},
-        where: 'fid = ?', whereArgs: ['real']);
-    final again = await RelayClient.connect(
-        'ws://127.0.0.1:$port', await ZIdentity.generate());
-    await again.send(to: rid, id: newMessageId(), payload: junkChunk('real', 0));
-    await again.close();
-    await Future<void>.delayed(const Duration(seconds: 2));
+        where: 'fid = ?', whereArgs: [fid]);
+    await sendDecided(rid, [junkChunk(fid, 0)],
+        what: "the assembled file's chunk");
     expect(
-        await me.vault.db.query('chunks', where: 'fid = ?', whereArgs: ['real']),
+        await me.vault.db.query('chunks', where: 'fid = ?', whereArgs: [fid]),
         isEmpty);
   }, timeout: const Timeout(Duration(minutes: 4)));
 

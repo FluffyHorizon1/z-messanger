@@ -132,6 +132,30 @@ Future<Uint8List> decryptChunk(
   return Uint8List.fromList(clear);
 }
 
+/// How many chunks a file of [size] bytes is sent as (§7): consecutive
+/// [defaultChunkSize] slices, the last one shorter, an empty file one empty
+/// chunk — exactly what [splitChunks] produces.
+///
+/// A RECEIVER's check, like [isWellFormedFid]. An offer's `size` and
+/// `chunks` are both the sender's say-so, and nothing tied one to the other:
+/// a 24 MiB offer declaring a million chunks was stored, and every chunk that
+/// then arrived for it was kept. A count the size does not imply is not a
+/// file this protocol sends.
+int fileChunkCount(int size) =>
+    size <= 0 ? 1 : (size + defaultChunkSize - 1) ~/ defaultChunkSize;
+
+/// How many bytes chunk [index] of a [size]-byte file carries (§7), or -1
+/// when a file of that size has no such chunk. The ciphertext of a chunk is
+/// exactly as long as its plaintext (the tag travels apart, as `mac`), so a
+/// receiver can hold a chunk to this before it decrypts anything — and so
+/// never assembles more than the size the offer declared.
+int fileChunkLength(int size, int index) {
+  if (index < 0 || index >= fileChunkCount(size)) return -1;
+  if (size <= 0) return 0;
+  final rest = size - index * defaultChunkSize;
+  return rest < defaultChunkSize ? rest : defaultChunkSize;
+}
+
 /// Splits [data] into chunks of [chunkSize].
 List<Uint8List> splitChunks(Uint8List data,
     {int chunkSize = defaultChunkSize}) {
