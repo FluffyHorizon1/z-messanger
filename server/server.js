@@ -58,6 +58,23 @@ const CFG = {
   // whole backlog, at any envelope size.
   flushPage: intEnv('FLUSH_PAGE', 64),
   flushHighWaterBytes: intEnv('FLUSH_HIGH_WATER_BYTES', 1024 * 1024),
+  // How long a flush will wait for a socket to drain below the high-water
+  // mark before terminating it (P1-13). A reader on a slow link drains in
+  // well under this; one that never does is a stuck reader holding a page of
+  // the relay's memory, and is dropped (it reconnects and the flush restarts,
+  // delivery being at-least-once).
+  drainTimeoutMs: intEnv('DRAIN_TIMEOUT_SECONDS', 60) * 1000,
+  // The most one socket may have buffered and unread before it is dropped
+  // (P1-13). Must stay above what a flush legitimately leaves in a socket —
+  // about 2 × FLUSH_HIGH_WATER_BYTES plus one envelope (~3 MB at the
+  // defaults) — so an honest slow reader is paged, not dropped.
+  sendBufferCapBytes: intEnv('SEND_BUFFER_CAP_BYTES', 8 * 1024 * 1024),
+  // And the most ALL sockets together may hold that way (P1-13). The
+  // per-socket cap alone bounds one socket, not the relay: N sockets that
+  // stop reading would hold N × the cap. Past this, the socket holding the
+  // most is dropped first — an attacker's, filling towards its cap, before an
+  // honest slow reader, which a paged flush keeps near FLUSH_HIGH_WATER.
+  sendBufferTotalBytes: intEnv('SEND_BUFFER_TOTAL_BYTES', 64 * 1024 * 1024),
   // Two entries can share an id — two senders choosing the same one, or a
   // sender retrying after a lost `sent`. Both are stored (the RAM queue
   // always did), so the store holds up to this many per id and refuses
@@ -126,6 +143,75 @@ const CFG = {
   // nothing at all, so the answer to the same flood was an OOM kill instead
   // of the documented refusal.
   maxStoreBytes: intEnv('MAX_STORE_BYTES', 192 * 1024 * 1024),
+  // --- first-contact abuse limits (phase 29, THREAT_MODEL R22, P0-4) ---
+  //
+  // One unauthenticated socket used to fill the whole store with mailboxes
+  // addressed to routing ids nobody holds (~253 frames of 1 MB in ~7 s), so
+  // every send by every user got `store_full` for up to QUEUE_TTL_HOURS. The
+  // per-mailbox caps bound what ONE recipient holds and the creation gate
+  // rations how fast new mailboxes appear, but neither bounds the SUM a flood
+  // of first contacts can hold. These do.
+  //
+  // A mailbox is UNOWNED until the routing id it is addressed to has
+  // authenticated to this relay at least once (`register`). An unowned mailbox
+  // is exactly the one nobody has proved they can drain, which is the only
+  // kind a flood needs. Ownership is recorded at auth, keyed by the routing id
+  // the relay already knows (no new identity information), and in the Redis
+  // path it is a store key so it survives a relay restart; RAM mode keeps it
+  // in a Set, which a restart loses along with the queue it would have capped.
+  ownedTtlMs: intEnv('OWNED_TTL_DAYS', 30) * 24 * 3600 * 1000,
+  // RAM mode only: how many owned routing ids the process remembers, the
+  // least recently authenticated forgotten first (the Redis path's keys
+  // expire on OWNED_TTL instead). Without a bound, throwaway identities that
+  // authenticate once each would grow the relay's memory for ever; ≈120 bytes
+  // an entry, so the default is ≈24 MB. A forgotten owner is merely unowned
+  // again until it next authenticates.
+  ownedCap: intEnv('OWNED_CAP', 200000),
+  // The byte cap for ONE unowned mailbox: enough for a first contact and the
+  // few messages before the recipient first connects, small enough that
+  // filling the store needs many mailboxes (and NEW_MAILBOX_PER_MIN rations
+  // how fast those appear). Once the recipient authenticates the mailbox is
+  // owned and MAX_QUEUE_BYTES_PER_USER applies instead.
+  unownedMailboxBytes: intEnv('UNOWNED_MAILBOX_BYTES', 2 * 1024 * 1024),
+  // The whole store's budget for unowned bytes, across every unowned mailbox
+  // at once — a modest fraction of the store, so first-contact traffic can
+  // never crowd out what owned mailboxes need. Past it an unowned send is
+  // refused `store_full` (counted z_unowned_refused_total) and retried; owned
+  // mailboxes are unaffected. Absolute, because the Redis path has no single
+  // MAX_STORE_BYTES to take a fraction of.
+  unownedStoreBytes: intEnv('UNOWNED_STORE_BYTES', 32 * 1024 * 1024),
+  // Per-IP budget on unowned bytes a minute, keyed on the client IP — the
+  // CLIENT_IP_HEADER value when configured, else the socket address. Mirrors
+  // kt's KT_CLIENT_IP_HEADER: a limiter keyed on a value the caller picks is
+  // worse than none, so the header is honoured only when the operator names a
+  // front known to set it. Behind a front with no header every client shares
+  // one address, so this collapses to one bucket and the GLOBAL budget above
+  // is what bounds the flood; set the header to make it per-client.
+  unownedBytesPerIpPerMin: intEnv('UNOWNED_BYTES_PER_IP_PER_MIN', 4 * 1024 * 1024),
+  // Connection caps. The global one is always on. The per-IP one engages only
+  // when CLIENT_IP_HEADER is set, because keyed on a shared front address it
+  // would cap the whole relay's connections at one number (the global cap is
+  // the backstop for the unconfigured case).
+  maxConnections: intEnv('MAX_CONNECTIONS', 20000),
+  maxConnectionsPerIp: intEnv('MAX_CONNECTIONS_PER_IP', 256),
+  // A socket that has not authenticated and has sent nothing for this long is
+  // closed. ADR 0007: an anonymous sealed-send socket never authenticates and
+  // is legitimate — but it pings every 25 s, which counts as activity, so
+  // this closes only a socket doing nothing at all. Not an auth deadline.
+  unauthIdleMs: intEnv('UNAUTH_IDLE_SECONDS', 120) * 1000,
+  // How often the relay pings its sockets, refreshes presence, and checks the
+  // idle timeout above. 25 s against the 60 s presence TTL; configurable so a
+  // test can exercise the idle close without waiting on the wall clock.
+  heartbeatMs: intEnv('HEARTBEAT_SECONDS', 25) * 1000,
+  // The header a configured front sets to the real client address (e.g.
+  // CF-Connecting-IP). Unset → the socket address is used (correct for a
+  // direct relay; one bucket for everyone behind an unconfigured front).
+  clientIpHeader: (process.env.CLIENT_IP_HEADER || '').trim().toLowerCase() || null,
+  // The bearer token `/metrics` requires. Unset → `/metrics` answers 404 (the
+  // safe default: the counters are a presence oracle, so an unauthenticated
+  // scrape must learn nothing, not even that the endpoint exists). Compared in
+  // constant time.
+  metricsToken: process.env.METRICS_TOKEN || null,
   tlsCert: process.env.TLS_CERT || null,
   tlsKey: process.env.TLS_KEY || null,
   // Whether the unbound v1 authentication is still accepted. A v1 signature
@@ -135,13 +221,18 @@ const CFG = {
   // z_auth_v1_total, and turned off (RELAY_AUTH_V1=off) once that count
   // has been zero for as long as the operator cares to wait.
   authV1: (process.env.RELAY_AUTH_V1 || 'on').trim().toLowerCase() !== 'off',
-  // Authorities a v2 signature may name besides the Host header this
-  // connection arrived with — for a front that rewrites Host, which the
-  // shipped ones do not. Comma-separated, host or host:port.
-  authorities: (process.env.RELAY_AUTHORITIES || '')
-    .split(',')
-    .map((a) => normalizeAuthority(a))
-    .filter(Boolean),
+  // The names this relay answers to: the ONLY names a v2 signature is checked
+  // against (P1-16). It is NOT the Host header the presenter sent — the
+  // presenter controls that, so a relay that verified against it would accept
+  // a signature a victim was tricked into making for the presenter's own name
+  // (the splice). RELAY_AUTHORITIES is the operator's list (comma-separated,
+  // host or host:port), plus any name the platform hands the process so a
+  // self-hoster on a PaaS need not spell its own address out. An unconfigured
+  // relay (empty list) is handled at verification time: a loopback/LAN name
+  // dialled from a loopback/LAN address is trusted (no machine-in-the-middle
+  // boundary to protect — the dev and test case); anything else is refused
+  // until the operator lists the relay's names (`isLocalAuthority`).
+  authorities: computeAuthorities(),
   logLevel: process.env.LOG_LEVEL || 'info', // 'silent' | 'info'
   // HA mode: when set, coordinate presence + queue through Redis.
   redisUrl: process.env.REDIS_URL || null,
@@ -157,9 +248,10 @@ function intEnv(name, dflt) {
  * The relay's authority as a client names it: what it dialled, lower-case,
  * with the port only when it is not the scheme's default. A client puts
  * exactly this in its Host header (Dart and Node both omit a default port
- * and lower-case the host), so the relay reads the header and normalises
- * it the same way — behind a front, the front has to pass Host through
- * (`nginx.ha.conf` does; Cloudflare and Render do). An IPv6 literal keeps
+ * and lower-case the host). `RELAY_AUTHORITIES` is normalised by this too,
+ * and since phase 29 those configured names — not the header — are what a v2
+ * signature is verified against; the header matters only to an unconfigured
+ * relay on a loopback/LAN name (`isLocalAuthority`). An IPv6 literal keeps
  * its brackets, as the header has them.
  */
 function normalizeAuthority(host) {
@@ -167,6 +259,97 @@ function normalizeAuthority(host) {
   const h = host.trim().toLowerCase();
   if (!h) return '';
   return h.replace(/:(80|443)$/, '');
+}
+
+/**
+ * The names a v2 signature may be checked against: `RELAY_AUTHORITIES`, plus
+ * whatever name the hosting platform hands the process. Render sets
+ * `RENDER_EXTERNAL_HOSTNAME`; Fly sets `FLY_APP_NAME` (whose host is
+ * `<app>.fly.dev`). These are the relay's own names — a client that dials the
+ * platform URL directly signs one of them — so accepting them is a
+ * convenience, not a loosening: nothing the presenter sends enters this set.
+ */
+function computeAuthorities() {
+  const names = new Set();
+  for (const a of (process.env.RELAY_AUTHORITIES || '').split(',')) {
+    const n = normalizeAuthority(a);
+    if (n) names.add(n);
+  }
+  const render = normalizeAuthority(process.env.RENDER_EXTERNAL_HOSTNAME || '');
+  if (render) names.add(render);
+  const fly = (process.env.FLY_APP_NAME || '').trim().toLowerCase();
+  if (fly) names.add(normalizeAuthority(`${fly}.fly.dev`));
+  return [...names];
+}
+
+/**
+ * Whether a host (a name, or an address without brackets or port) is
+ * loopback, private-range or `.local`: IPv4 127/8, 10/8, 172.16/12,
+ * 192.168/16, 169.254/16; IPv6 ::1, fc00::/7, fe80::/10 (and the v4-mapped
+ * forms); `localhost`, `*.localhost`, `*.local`. An IPv6 prefix is matched
+ * only on an IPv6 literal, so a public name such as `fd.example` is not local.
+ */
+function isLocalHost(host) {
+  if (!host) return false;
+  let h = String(host).toLowerCase();
+  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
+  if (h.startsWith('::ffff:') && h.includes('.')) h = h.slice('::ffff:'.length);
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  if (h.includes(':')) return h === '::1' || /^f[cd][0-9a-f]{2}:/.test(h) || /^fe[89ab][0-9a-f]:/.test(h);
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254);
+}
+
+/**
+ * Whether an unconfigured relay (no `RELAY_AUTHORITIES`, no platform name)
+ * may verify a v2 signature against the name a connection dialled (P1-16).
+ * Both halves must be local: the dialled authority names a loopback,
+ * private-range or `.local` host, AND the TCP peer is itself a loopback or
+ * private address — a developer's `ws://127.0.0.1`, a LAN relay, the test
+ * suite, a proxy on the same host. That is the deployment with no
+ * machine-in-the-middle boundary to protect, the same boundary the app draws
+ * for cleartext without a warning. A public name, or a local name presented
+ * from the internet (a signature a victim made for some LAN relay, replayed
+ * here), is refused rather than verified against a name the caller chose.
+ */
+function isLocalAuthority(authority, peerAddress) {
+  if (!authority || !isLocalHost(peerAddress)) return false;
+  const bracketed = /^\[([^\]]*)\](?::\d+)?$/.exec(authority);
+  if (bracketed) return bracketed[1].includes(':') && isLocalHost(bracketed[1]);
+  return isLocalHost(authority.replace(/:\d+$/, ''));
+}
+
+/** The address to hold responsible for a connection: the CLIENT_IP_HEADER
+ * value when the operator has named a front known to set it, else the socket
+ * address. A forwarded header is the caller's to choose unless something in
+ * front overwrites it, so it is read only when configured (as kt/ does). */
+function clientIp(req) {
+  if (CFG.clientIpHeader) {
+    const v = req && req.headers ? req.headers[CFG.clientIpHeader] : undefined;
+    const first = (Array.isArray(v) ? v[0] : v || '').split(',')[0].trim();
+    if (first && first.length <= 45 && /^[0-9a-fA-F:.]+$/.test(first)) return first;
+  }
+  return (req && req.socket && req.socket.remoteAddress) || 'unknown';
+}
+
+/**
+ * Whether a `/metrics` request carries the configured bearer token (P1-14).
+ * No token configured → never authorized (the handler then 404s, the safe
+ * default). The compare hashes both sides to a fixed width and uses
+ * `timingSafeEqual`, so neither the token's value nor its length leaks through
+ * timing.
+ */
+function metricsAuthorized(req) {
+  if (!CFG.metricsToken) return false;
+  const h = (req && req.headers && req.headers['authorization']) || '';
+  const m = /^Bearer\s+(.+)$/i.exec(Array.isArray(h) ? h[0] : h);
+  const presented = m ? m[1] : '';
+  const a = crypto.createHash('sha256').update(presented).digest();
+  const b = crypto.createHash('sha256').update(CFG.metricsToken).digest();
+  return crypto.timingSafeEqual(a, b);
 }
 
 function log(...args) {
@@ -216,9 +399,69 @@ const ROUTING_ID = /^[A-Za-z0-9_-]{43}$/;
 // ---------------------------------------------------------------------------
 // Wire helpers
 // ---------------------------------------------------------------------------
+// Sockets holding more than this unread are summed against
+// SEND_BUFFER_TOTAL; a socket that reads promptly never enters the set, so the
+// relay-wide check costs nothing for nearly every send. The set holds at most
+// SEND_BUFFER_TOTAL / HEAVY_SOCKET_BYTES live members before the budget
+// starts dropping them, which bounds the cost of a check too.
+const HEAVY_SOCKET_BYTES = 256 * 1024;
+const heavySockets = new Set();
+
+/** Drops a socket for not reading (P1-13), counted. */
+function dropSlowReader(ws) {
+  heavySockets.delete(ws);
+  METRICS.slowReaderClosedTotal += 1;
+  try {
+    ws.terminate();
+  } catch {}
+}
+
+/**
+ * Over SEND_BUFFER_TOTAL: drop whichever socket holds the most. Returns true
+ * when that was `ws` itself. Prunes sockets that have drained or closed.
+ */
+function enforceSendBudget(ws) {
+  let total = 0;
+  let worst = null;
+  let worstBytes = -1;
+  for (const w of heavySockets) {
+    const b = w.readyState === w.OPEN ? w.bufferedAmount : 0;
+    if (b <= HEAVY_SOCKET_BYTES) {
+      heavySockets.delete(w);
+      continue;
+    }
+    total += b;
+    if (b > worstBytes) {
+      worst = w;
+      worstBytes = b;
+    }
+  }
+  if (total <= CFG.sendBufferTotalBytes || !worst) return false;
+  dropSlowReader(worst);
+  return worst === ws;
+}
+
 function sendJson(ws, obj) {
   if (ws && ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify(obj));
+    // A peer that has stopped reading must not make the relay buffer for it
+    // without bound (P1-13: a socket that sent frames and read none of the
+    // replies took the relay +880 MiB in 9 s). Every outbound frame — a
+    // reply, a live delivery, a flush page — lands here, so this is the one
+    // place the caps hold for all of them: past SEND_BUFFER_CAP this socket
+    // is dropped, and past SEND_BUFFER_TOTAL across all sockets the one
+    // holding the most is. Nothing is lost: mail stays queued until
+    // acknowledged, and a reader that resumes reconnects and is flushed
+    // again (§12.5).
+    const b = ws.bufferedAmount;
+    if (b > CFG.sendBufferCapBytes) {
+      dropSlowReader(ws);
+      return false;
+    }
+    if (b > HEAVY_SOCKET_BYTES) {
+      heavySockets.add(ws);
+      if (enforceSendBudget(ws)) return false;
+    }
     return true;
   }
   return false;
@@ -230,9 +473,22 @@ function sendJson(ws, obj) {
  * pages, so what the relay holds for a slow reader is bounded by a page and
  * the mark rather than by the backlog. Resolves true while the socket is
  * still open.
+ *
+ * A socket that stays above the mark for `DRAIN_TIMEOUT` is TERMINATED and
+ * this resolves false (P1-13): backpressure alone bounds what one slow reader
+ * costs to a page plus the mark, but a socket that never drains would hold
+ * that page and tie up a flush indefinitely, and many of them are a way to
+ * pin the relay's memory at the bound × the connection count. The WS
+ * ping/pong heartbeat catches a dead socket in ≤50 s; this catches one that
+ * keeps its TCP window shut while answering pongs.
  */
 async function drained(ws) {
+  const deadline = Date.now() + CFG.drainTimeoutMs;
   while (ws.readyState === ws.OPEN && ws.bufferedAmount > CFG.flushHighWaterBytes) {
+    if (Date.now() > deadline) {
+      dropSlowReader(ws);
+      return false;
+    }
     await new Promise((r) => setTimeout(r, 20));
   }
   return ws.readyState === ws.OPEN;
@@ -283,6 +539,26 @@ const METRICS = {
   // store at maxmemory with noeviction): the sender is told store_full and
   // retries later; the store heals as recipients drain their mailboxes.
   storeFullTotal: 0,
+  // First-contact sends refused by an unowned-mailbox limit (P0-4): the
+  // per-unowned-mailbox byte cap, the relay-wide unowned budget, or the
+  // per-IP unowned rate. All reach the sender as `store_full` (retried), and
+  // are counted HERE and not in z_store_full_total — the store is not full,
+  // a flood of mailboxes nobody owns is being bounded. Zero in ordinary use,
+  // so a non-zero rate is the flood signal the alert watches. An owned
+  // mailbox never touches any of these, so honest traffic never counts here.
+  unownedRefusedTotal: 0,
+  // Sockets dropped for not reading (P1-13): their unread output passed
+  // SEND_BUFFER_CAP, or they held the most when all sockets together passed
+  // SEND_BUFFER_TOTAL, or a flush waited DRAIN_TIMEOUT for them to drain. An
+  // honest client on a slow link is paged long before any of these, so a
+  // steady count is somebody holding sockets open without reading them.
+  slowReaderClosedTotal: 0,
+  // Connections refused at MAX_CONNECTIONS or, with CLIENT_IP_HEADER set, at
+  // MAX_CONNECTIONS_PER_IP — counted, because a cap that refuses in silence
+  // is an outage nobody can see.
+  connectionsRefusedTotal: 0,
+  // Unauthenticated sockets closed for sending nothing for UNAUTH_IDLE.
+  idleClosedTotal: 0,
   // Envelopes handed to another instance over pub/sub. Not counted as
   // delivered live, because this instance cannot see whether they were:
   // the gap between this and z_delivered_live_total is the traffic whose
@@ -368,8 +644,68 @@ function observeAck(entry) {
   METRICS.latencyCounts[i] += 1;
 }
 
-function renderMetrics(stats) {
+/**
+ * A per-IP budget of unowned bytes per minute (P0-4). RAM, per instance: an
+ * IP-keyed limit is inherently local to the instance a socket landed on, and
+ * the relay must not keep a per-address record in the shared store. Keyed on
+ * whatever `clientIp` resolves — the CLIENT_IP_HEADER value when the operator
+ * has named a front that sets it, else the socket address — so behind a front
+ * with no header it collapses to one bucket and the relay-wide unowned budget
+ * is what bounds the flood instead. A fixed window, reset lazily, pruned by
+ * the sweep.
+ */
+class IpByteBudget {
+  constructor(perMinute, now = Date.now) {
+    this.perMinute = perMinute;
+    this.now = now;
+    this.windowMs = 60000;
+    this.ips = new Map(); // ip -> { bytes, at }
+  }
+  _cur(ip) {
+    const t = this.now();
+    let e = this.ips.get(ip);
+    if (!e || t - e.at >= this.windowMs) {
+      e = { bytes: 0, at: t };
+      this.ips.set(ip, e);
+    }
+    return e;
+  }
+  /** True if [ip] has already spent its minute's unowned allowance. Reads
+   * only: an address is recorded when it is charged, never for asking. */
+  over(ip) {
+    const e = this.ips.get(ip);
+    return !!e && this.now() - e.at < this.windowMs && e.bytes >= this.perMinute;
+  }
+  /** Record unowned bytes just accepted from [ip]. */
+  charge(ip, bytes) {
+    this._cur(ip).bytes += bytes;
+  }
+  /** Drop windows that have rolled over, so an idle relay forgets addresses. */
+  prune() {
+    const t = this.now();
+    for (const [ip, e] of this.ips) {
+      if (t - e.at >= this.windowMs) this.ips.delete(ip);
+    }
+  }
+}
+
+function renderMetrics(stats, meta = {}) {
   const L = [];
+  // What `/health` used to carry and no longer does, now that `/health` is
+  // liveness only and `/metrics` is behind a token (P1-14): the instance id,
+  // coordinator, push state and storage, as one info line a scrape reads the
+  // labels off. A quoted label value is escaped the Prometheus way.
+  const lbl = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  L.push('# TYPE z_relay_info gauge');
+  L.push(
+    `z_relay_info{instance="${lbl(meta.instanceId || '')}",` +
+      `coordinator="${lbl(meta.coordinator || '')}",` +
+      `push="${lbl(meta.push || '')}",storage="ram-only"} 1`
+  );
+  L.push('# TYPE z_uptime_seconds gauge');
+  L.push(`z_uptime_seconds ${Math.floor(meta.uptimeSec || 0)}`);
+  L.push('# TYPE z_sockets gauge');
+  L.push(`z_sockets ${meta.sockets == null ? stats.connections : meta.sockets}`);
   L.push('# TYPE z_connections gauge');
   L.push(`z_connections ${stats.connections}`);
   // Omitted rather than reported as -1 where instances share a store and no
@@ -378,6 +714,32 @@ function renderMetrics(stats) {
   if (stats.queuedEnvelopes >= 0) {
     L.push('# TYPE z_queued_envelopes gauge');
     L.push(`z_queued_envelopes ${stats.queuedEnvelopes}`);
+  }
+  // The store-fill gauge (P0-4): single-instance mode holds the whole queue in
+  // the process, so this is the number to alarm on. Absent in Redis mode,
+  // where the store's own exporter reports used_memory/maxmemory — hence
+  // indented, so a relay that does not emit it is not read as "behind".
+  if (stats.storeBytes !== undefined) {
+    L.push('# TYPE z_store_bytes gauge');
+    L.push(`z_store_bytes ${stats.storeBytes}`);
+    L.push('# TYPE z_store_max_bytes gauge');
+    L.push(`z_store_max_bytes ${CFG.maxStoreBytes}`);
+  }
+  // Unowned bytes held, and the budget (P0-4): the store-fill gauge for
+  // first-contact traffic. RAM mode counts them directly; Redis mode reports
+  // the relay-wide total its last sweep reconciled (absent until then), the
+  // same on every instance. Conditional for the same reason as above.
+  if (stats.unownedBytes !== undefined) {
+    L.push('# TYPE z_unowned_bytes gauge');
+    L.push(`z_unowned_bytes ${stats.unownedBytes}`);
+    L.push('# TYPE z_unowned_max_bytes gauge');
+    L.push(`z_unowned_max_bytes ${CFG.unownedStoreBytes}`);
+  }
+  // Sockets whose presence write the full store refused (Redis mode): their
+  // mail is queued, not pushed, until the heartbeat repairs it. Conditional.
+  if (stats.presenceStale !== undefined) {
+    L.push('# TYPE z_presence_stale gauge');
+    L.push(`z_presence_stale ${stats.presenceStale}`);
   }
   L.push('# TYPE z_enqueued_total counter');
   L.push(`z_enqueued_total ${METRICS.enqueuedTotal}`);
@@ -389,6 +751,14 @@ function renderMetrics(stats) {
   L.push(`z_refused_total ${METRICS.refusedTotal}`);
   L.push('# TYPE z_store_full_total counter');
   L.push(`z_store_full_total ${METRICS.storeFullTotal}`);
+  L.push('# TYPE z_unowned_refused_total counter');
+  L.push(`z_unowned_refused_total ${METRICS.unownedRefusedTotal}`);
+  L.push('# TYPE z_slow_reader_closed_total counter');
+  L.push(`z_slow_reader_closed_total ${METRICS.slowReaderClosedTotal}`);
+  L.push('# TYPE z_connections_refused_total counter');
+  L.push(`z_connections_refused_total ${METRICS.connectionsRefusedTotal}`);
+  L.push('# TYPE z_idle_closed_total counter');
+  L.push(`z_idle_closed_total ${METRICS.idleClosedTotal}`);
   L.push('# TYPE z_cross_instance_total counter');
   L.push(`z_cross_instance_total ${METRICS.crossInstanceTotal}`);
   L.push('# TYPE z_reflushed_total counter');
@@ -578,10 +948,56 @@ class MemoryCoordinator {
     this.count = 0;
     this.newMailbox = new NewMailboxGate();
     this.seen = new SeenMailboxes();
+    /**
+     * Routing ids that have authenticated to this relay — the OWNED mailboxes
+     * (P0-4) — each with when it last did, oldest first. An unowned mailbox
+     * (not in this map) is the one nobody has proved they can drain, so it is
+     * capped tightly and its bytes are charged against the relay-wide unowned
+     * budget. Bounded by OWNED_TTL and OWNED_CAP (`_trimOwned`). A restart
+     * loses it along with the queue it would have capped, so the two stay
+     * consistent; the Redis path persists ownership instead.
+     */
+    this.owned = new Map();
+    /** Bytes held across every UNOWNED mailbox: the relay-wide unowned budget
+     * is checked against this, kept in step with `bytes` at the same sites. */
+    this.unownedBytes = 0;
+    this.unownedIp = new IpByteBudget(CFG.unownedBytesPerIpPerMin);
   }
 
   get name() {
     return 'memory';
+  }
+
+  /**
+   * Record that [rid] has authenticated: its mailbox is OWNED from now on, so
+   * its bytes stop counting against the unowned budget and it gets the full
+   * per-user cap. Returns the previous ownership, so a test can see the
+   * transition happen once. The decrement of the unowned total by whatever is
+   * queued for it is the counterpart to `_enqueue` having added it.
+   */
+  claimOwner(rid, now = Date.now()) {
+    const was = this.owned.delete(rid); // re-inserted below: newest last
+    this.owned.set(rid, now);
+    if (!was) {
+      const q = this.queues.get(rid);
+      if (q) this.unownedBytes = Math.max(0, this.unownedBytes - q.bytes);
+      this._trimOwned(now);
+    }
+    return was;
+  }
+
+  /**
+   * Forgets owners past OWNED_TTL, and the least recently authenticated past
+   * OWNED_CAP. A forgotten owner's mailbox is unowned again, so what it holds
+   * goes back into the unowned total — the counterpart of `claimOwner`.
+   */
+  _trimOwned(now = Date.now()) {
+    for (const [rid, at] of this.owned) {
+      if (this.owned.size <= CFG.ownedCap && now - at <= CFG.ownedTtlMs) break;
+      this.owned.delete(rid);
+      const q = this.queues.get(rid);
+      if (q) this.unownedBytes += q.bytes;
+    }
   }
 
   registerPush(rid, token, platform) {
@@ -597,6 +1013,9 @@ class MemoryCoordinator {
   }
 
   async register(rid, ws) {
+    // Authenticating proves the holder can drain this mailbox: it is owned
+    // from now on (P0-4), so its queued bytes leave the unowned budget.
+    this.claimOwner(rid);
     const prev = this.online.get(rid);
     this.online.set(rid, ws);
     return prev; // caller closes it if !== ws
@@ -644,7 +1063,12 @@ class MemoryCoordinator {
     q.keys = new Map(kept.map((e) => [e.key, e]));
     const was = q.bytes;
     q.bytes = kept.reduce((sum, e) => sum + e.size, 0);
-    this.bytes = Math.max(0, this.bytes - (was - q.bytes));
+    const freed = was - q.bytes;
+    this.bytes = Math.max(0, this.bytes - freed);
+    // While the mailbox is still unowned its bytes are in the unowned total
+    // too; once it is claimed at auth that total was already settled, so an
+    // owned mailbox's expiry must not touch it again.
+    if (!this.owned.has(rid)) this.unownedBytes = Math.max(0, this.unownedBytes - freed);
     this.count = Math.max(0, this.count - Math.max(0, removed));
     if (kept.length === 0) this.queues.delete(rid);
   }
@@ -683,6 +1107,29 @@ class MemoryCoordinator {
    * (§12.4): a flood fills the queue and is refused from then on, loudly.
    */
   _enqueue(rid, entry) {
+    // A mailbox whose owner has never authenticated is UNOWNED (P0-4): nobody
+    // has proved they can drain it, so it is held to a tight per-mailbox cap
+    // and its bytes are charged against the relay-wide unowned budget, so a
+    // flood of first-contact mailboxes can never crowd out what owned
+    // mailboxes need. An owned mailbox skips all of this and gets the full
+    // per-user cap below. The checks are refusals, so they come before
+    // anything is allocated or spent and leave no trace — ahead of the
+    // creation gate too, so a flood the budget refuses does not also burn the
+    // NEW_MAILBOX_PER_MIN allowance every honest first contact (an owned
+    // recipient's emptied mailbox included) needs; the Redis path refunds the
+    // token for the same reason.
+    const unowned = !this.owned.has(rid);
+    if (unowned) {
+      const existing = this.queues.get(rid);
+      const held = existing ? existing.bytes : 0;
+      if (
+        this.unownedBytes + entry.size > CFG.unownedStoreBytes ||
+        held + entry.size > CFG.unownedMailboxBytes
+      ) {
+        METRICS.unownedRefusedTotal += 1;
+        throw new UnownedRefused();
+      }
+    }
     // A mailbox that does not exist yet is the expensive one to create, and
     // the only one a flood needs. Charged before anything is allocated — on
     // FIRST CONTACT, not on an empty queue: see `SeenMailboxes` for what
@@ -724,6 +1171,7 @@ class MemoryCoordinator {
     q.keys.set(key, entry);
     q.bytes += entry.size;
     this.bytes += entry.size;
+    if (unowned) this.unownedBytes += entry.size;
     this.count += 1;
     // Accepted, and only now: see `SeenMailboxes.touch`. Every other exit
     // from this method is a refusal, and a refusal must leave no trace.
@@ -742,12 +1190,13 @@ class MemoryCoordinator {
     if (idx !== -1) q.entries.splice(idx, 1);
     q.bytes -= entry.size;
     this.bytes = Math.max(0, this.bytes - entry.size);
+    if (!this.owned.has(rid)) this.unownedBytes = Math.max(0, this.unownedBytes - entry.size);
     this.count = Math.max(0, this.count - 1);
     if (q.entries.length === 0) this.queues.delete(rid);
     return entry;
   }
 
-  async deliverEnqueue(from, to, id, payload) {
+  async deliverEnqueue(from, to, id, payload, ip) {
     const entry = {
       seq: ++this.seq,
       kind: 'msg',
@@ -755,8 +1204,20 @@ class MemoryCoordinator {
       from, // null for sealed-sender envelopes
       payload,
       ts: Date.now(),
-      size: payload.length + 256,
+      size: envelopeSize(payload),
     };
+    // Per-IP unowned budget (P0-4): one address may inject only so many bytes
+    // a minute into mailboxes nobody owns. Checked only when the destination
+    // is unowned, so an owned conversation is never throttled by it; charged
+    // after the store accepts, so a refused send costs the IP nothing. Keyed
+    // on `ip` (CLIENT_IP_HEADER value or socket address) — one bucket for
+    // everyone behind an unconfigured front, where the relay-wide budget is
+    // the real bound.
+    const unowned = !this.owned.has(to);
+    if (unowned && ip && this.unownedIp.over(ip)) {
+      METRICS.unownedRefusedTotal += 1;
+      return { queued: false, storeFull: true, unowned: true };
+    }
     try {
       if (!this._enqueue(to, entry)) {
         METRICS.refusedTotal += 1;
@@ -764,20 +1225,24 @@ class MemoryCoordinator {
       }
     } catch (e) {
       // The store has no room, or too many mailboxes are being created at
-      // once. Told promptly and with the id, as the Redis path does, so the
-      // sender's outbox pauses and retries rather than waiting out a
-      // timeout per envelope (PROTOCOL §12.4). Until 2026-09-14 this
-      // coordinator had no such refusal at all and answered the same flood
-      // with an OOM kill.
-      if (e instanceof StoreFull) return { queued: false, storeFull: true };
+      // once, or an unowned limit was hit. Told promptly and with the id, as
+      // the Redis path does, so the sender's outbox pauses and retries rather
+      // than waiting out a timeout per envelope (PROTOCOL §12.4). Until
+      // 2026-09-14 this coordinator had no such refusal at all and answered
+      // the same flood with an OOM kill.
+      if (e instanceof StoreFull) {
+        return { queued: false, storeFull: true, unowned: e instanceof UnownedRefused };
+      }
       throw e;
     }
+    if (unowned && ip) this.unownedIp.charge(ip, entry.size);
     METRICS.enqueuedTotal += 1;
     if (from == null) METRICS.sealedTotal += 1;
     const target = this.online.get(to);
     const live = target ? sendJson(target, entryToFrame(entry)) : false;
     if (live) METRICS.deliveredLiveTotal += 1;
-    return { queued: !live };
+    // One process, so "offline" is simply "no socket here": wake then.
+    return { queued: !live, push: !live };
   }
 
   async ack(recipient, from, id) {
@@ -880,6 +1345,8 @@ class MemoryCoordinator {
     for (const [rid, rec] of this.pushTokens) {
       if (rec.ts < pushCutoff) this.pushTokens.delete(rid);
     }
+    this.unownedIp.prune();
+    this._trimOwned();
   }
 
   async heartbeat() {}
@@ -893,6 +1360,8 @@ class MemoryCoordinator {
       // failure that used to be invisible: `queuedEnvelopes: 0` beside a full
       // store is the shape of it.
       storeBytes: this.bytes,
+      // What the relay-wide unowned budget is checked against (P0-4).
+      unownedBytes: this.unownedBytes,
     };
   }
 
@@ -951,7 +1420,18 @@ class MemoryCoordinator {
 // is full or the id has no free slot, and -1 if it would have created a
 // mailbox and was not allowed to — each decided and applied atomically, so
 // two instances pushing at once cannot both squeeze past the cap.
+// KEYS[4] = owned:{rid} (set when the recipient has authenticated — the
+// mailbox is then OWNED and skips the unowned limits), KEYS[5] = z:ub (the
+// relay-wide unowned-bytes counter the sweep reconciles). ARGV gains [10] the
+// per-unowned-mailbox byte cap, [11] the relay-wide unowned budget, [12]
+// whether this IP has spent its minute's unowned allowance (P0-4). Returns a
+// two-element array {code, unowned}: code 2 stored+created, 1 stored/existing,
+// 0 queue cap, -1 new-mailbox gate, -2 an unowned limit (per-mailbox cap,
+// relay-wide budget, or per-IP); `unowned` is 1 when the destination mailbox
+// is unowned and something was stored, so the caller charges the per-IP
+// budget for exactly what landed.
 const REDIS_PUSH_LUA = `#!lua
+local owned = redis.call('EXISTS', KEYS[4]) == 1
 -- Two entries can want one key. Where the relay can attribute the entry the
 -- key carries the party (entryKey), so an occupied key is a retry and
 -- storing nothing is right. Where it cannot -- a sealed envelope -- the key
@@ -961,12 +1441,12 @@ const REDIS_PUSH_LUA = `#!lua
 -- member's receipt (roadmap revision 45).
 local key = ARGV[1]
 if ARGV[8] == '1' then
-  if redis.call('HEXISTS', KEYS[2], key) == 1 then return 1 end
+  if redis.call('HEXISTS', KEYS[2], key) == 1 then return {1, 0} end
 else
   local dup = 0
   while redis.call('HEXISTS', KEYS[2], key) == 1 do
     dup = dup + 1
-    if dup > tonumber(ARGV[7]) then return 0 end
+    if dup > tonumber(ARGV[7]) then return {0, 0} end
     key = ARGV[1] .. '#' .. dup
   end
 end
@@ -976,11 +1456,21 @@ local len = redis.call('LLEN', KEYS[1])
 -- than by asking first: the script already knows, so admission costs no extra
 -- round trip, and no mailbox can be created between the question and the
 -- write. -1 says the send was refused for that reason and nothing else.
-if len == 0 and ARGV[9] == '0' then return -1 end
+if len == 0 and ARGV[9] == '0' then return {-1, 0} end
 local bytes = 0
 if len > 0 then bytes = tonumber(redis.call('GET', KEYS[3]) or '0') end
-if len + 1 > tonumber(ARGV[4]) or bytes + tonumber(ARGV[3]) > tonumber(ARGV[5]) then
-  return 0
+-- Unowned limits (P0-4): a mailbox whose owner has never authenticated is
+-- held to a tight per-mailbox cap and its bytes to the relay-wide budget, and
+-- one IP may inject only so much a minute. An owned mailbox skips all three.
+local size = tonumber(ARGV[3])
+if not owned then
+  if ARGV[12] == '1' then return {-2, 1} end
+  local ub = tonumber(redis.call('GET', KEYS[5]) or '0')
+  if ub + size > tonumber(ARGV[11]) then return {-2, 1} end
+  if bytes + size > tonumber(ARGV[10]) then return {-2, 1} end
+end
+if len + 1 > tonumber(ARGV[4]) or bytes + size > tonumber(ARGV[5]) then
+  return {0, owned and 0 or 1}
 end
 redis.call('RPUSH', KEYS[1], key)
 redis.call('HSET', KEYS[2], key, ARGV[2])
@@ -992,10 +1482,15 @@ end
 redis.call('EXPIRE', KEYS[1], ARGV[6])
 redis.call('EXPIRE', KEYS[2], ARGV[6])
 redis.call('EXPIRE', KEYS[3], ARGV[6])
+-- Live increment of the relay-wide unowned total; the sweep SETs it to a true
+-- recount every interval, so a per-key TTL expiry that frees unowned bytes
+-- without passing through here cannot make it drift upward for longer than
+-- that (the counterpart of the accumulator leak revision 45 recorded).
+if not owned then redis.call('INCRBY', KEYS[5], size) end
 -- 2 rather than 1 when this call is what created the mailbox, so the instance
 -- knows to keep the token it spent.
-if len == 0 then return 2 end
-return 1`;
+if len == 0 then return {2, owned and 0 or 1} end
+return {1, owned and 0 or 1}`;
 
 // KEYS as above; ARGV = the entry key, its size. Removes the entry and takes
 // its size off the counter, clamping at zero; an emptied list deletes all
@@ -1280,10 +1775,39 @@ function ackCandidateKeys(id, from) {
   return keys;
 }
 
+/**
+ * What one envelope's payload is charged at: what it really occupies, plus 256
+ * of object/framing overhead. Until phase 29 this was `payload.length` — UTF-16
+ * code units — and a unit is not a byte in either store (relay P2):
+ *
+ *  - RAM: V8 keeps a string one byte a unit only while every character is
+ *    ≤ U+00FF. One character above that makes the WHOLE string two bytes a
+ *    unit, so a payload of ASCII plus a single 'ā' held twice what was charged
+ *    — while its UTF-8 length stayed ≈ 1×, so charging UTF-8 bytes alone would
+ *    not have closed it.
+ *  - Redis: the store holds `JSON.stringify(entry)` as UTF-8, so a non-ASCII
+ *    character is 2–3 bytes, and a quote, backslash or control character is
+ *    escaped (`\"`, `\u0001`: up to six bytes for one unit).
+ *
+ * So the charge is the larger of the two. The honest traffic is base64 under a
+ * `zs1.` prefix — printable ASCII with no quote or backslash — which is one
+ * byte a unit everywhere, so a cheap test leaves its charge exactly what it
+ * was (`length`); only a payload the protocol never produces pays more, and it
+ * is precisely the one the caps must not under-count.
+ */
+const PLAIN_PAYLOAD = /^[\x20\x21\x23-\x5b\x5d-\x7e]*$/;
+function envelopeSize(payload) {
+  const s = String(payload || '');
+  if (PLAIN_PAYLOAD.test(s)) return s.length + 256;
+  const stored = Buffer.byteLength(JSON.stringify(s), 'utf8') - 2; // as the store holds it
+  const heap = /[^\x00-\xff]/.test(s) ? 2 * s.length : s.length; // as V8 holds it
+  return Math.max(stored, heap) + 256;
+}
+
 /** The size an entry is charged at, computed the same way in both coordinators. */
 function entrySize(e) {
   if (typeof e.size === 'number') return e.size;
-  return e.kind === 'receipt' ? 192 : String(e.payload || '').length + 256;
+  return e.kind === 'receipt' ? 192 : envelopeSize(e.payload);
 }
 
 /** Thrown by a push the store refused for want of memory; answered `store_full`. */
@@ -1306,6 +1830,20 @@ class NewMailboxRefused extends StoreFull {
   constructor() {
     super();
     this.message = 'too many mailboxes are being created';
+  }
+}
+
+/**
+ * Thrown by a push an unowned-mailbox limit refused (P0-4): the per-unowned
+ * mailbox byte cap, the relay-wide unowned budget, or the per-IP unowned
+ * rate. Still a StoreFull, so the sender is told `store_full` and retries,
+ * but counted apart as z_unowned_refused_total — the store is not full, a
+ * flood of first contacts to mailboxes nobody owns is being bounded.
+ */
+class UnownedRefused extends StoreFull {
+  constructor() {
+    super();
+    this.message = 'the unowned-mailbox budget is full';
   }
 }
 
@@ -1341,9 +1879,15 @@ class RedisCoordinator {
     this.newMailboxShared = CFG.newMailboxShared;
     this.newMailboxWindowMs = 60000;
     this.seen = new SeenMailboxes();
+    // Per-IP unowned budget: RAM, per instance, like `newMailbox` beside it —
+    // an address-keyed limit is local to the instance a socket landed on, and
+    // the relay must not keep a per-address record in the shared store (P0-4).
+    this.unownedIp = new IpByteBudget(CFG.unownedBytesPerIpPerMin);
+    // The relay-wide unowned total as the last sweep reconciled it (a gauge).
+    this.lastUnownedBytes = null;
     this.chan = `z:inst:${this.id}`;
     for (const c of [this.cmd, this.sub, this.pub]) c.on('error', () => {});
-    this.cmd.defineCommand('zQueuePush', { numberOfKeys: 3, lua: REDIS_PUSH_LUA });
+    this.cmd.defineCommand('zQueuePush', { numberOfKeys: 5, lua: REDIS_PUSH_LUA });
     this.cmd.defineCommand('zQueueRemove', { numberOfKeys: 3, lua: REDIS_REMOVE_LUA });
     this.cmd.defineCommand('zQueueRemoveLegacy', { numberOfKeys: 3, lua: REDIS_REMOVE_LEGACY_LUA });
     this.cmd.defineCommand('zQueueDropDangling', { numberOfKeys: 3, lua: REDIS_DROP_DANGLING_LUA });
@@ -1418,6 +1962,19 @@ class RedisCoordinator {
       if (!isStoreFull(e)) throw e;
     }
     ws.zReg = token;
+    // Authenticating proves the holder can drain this mailbox: record it as
+    // OWNED (P0-4), so its queued bytes stop counting against the unowned
+    // budget (the sweep reconciles that) and it gets the full per-user cap.
+    // A store key keyed by the routing id the relay already knows — the same
+    // shape as presence:/q:/push: — so it survives a relay restart and adds
+    // no new identity information. Refreshed each auth with OWNED_TTL; a store
+    // too full to take it just leaves the mailbox unowned a while longer,
+    // which only tightens a cap, so the login is never blocked on it.
+    try {
+      await this.cmd.set(`owned:${rid}`, '1', 'PX', CFG.ownedTtlMs);
+    } catch (e) {
+      if (!isStoreFull(e)) throw e;
+    }
     const prevLocal = this.local.get(rid);
     this.local.set(rid, ws);
     const owner = await this.cmd.get(`presence:${rid}`);
@@ -1526,7 +2083,7 @@ class RedisCoordinator {
    * which is what a sender retrying after a lost `sent` needs. A sealed one
    * takes the next free slot instead (entryDedupes).
    */
-  async _push(rid, entry) {
+  async _push(rid, entry, ip) {
     // Admission is charged on FIRST CONTACT only: a routing id this instance
     // has queued for recently (`seen`) creates a mailbox without spending
     // anything, so steady traffic never reaches either gate.
@@ -1560,12 +2117,19 @@ class RedisCoordinator {
         localSpent = fresh;
       }
     }
+    // The per-IP unowned allowance is a RAM check here and a flag to the
+    // script, so the script decides atomically against the mailbox's
+    // ownership (an owned mailbox ignores it) and nothing is stored for an IP
+    // over its budget. Charged after the fact, by what actually landed.
+    const ipOver = ip && this.unownedIp.over(ip) ? '1' : '0';
     let r;
     try {
       r = await this.cmd.zQueuePush(
         `q:${rid}`,
         `qe:${rid}`,
         `qb:${rid}`,
+        `owned:${rid}`,
+        'z:ub',
         entryKey(entry),
         JSON.stringify(entry),
         String(entrySize(entry)),
@@ -1574,7 +2138,10 @@ class RedisCoordinator {
         String(CFG.queueTtlHours * 3600),
         String(CFG.idSlots),
         entryDedupes(entry) ? '1' : '0',
-        fresh ? '1' : '0'
+        fresh ? '1' : '0',
+        String(CFG.unownedMailboxBytes),
+        String(CFG.unownedStoreBytes),
+        ipOver
       );
     } catch (e) {
       if (localSpent) this.newMailbox.refund();
@@ -1582,22 +2149,35 @@ class RedisCoordinator {
       if (isStoreFull(e)) throw new StoreFull();
       throw e;
     }
-    if (r === -1) {
+    const code = Array.isArray(r) ? Number(r[0]) : Number(r);
+    const unowned = Array.isArray(r) && Number(r[1]) === 1;
+    if (code === -1) {
       // Told it may not create, and there was nothing to put the entry into.
       // `fresh` was false, so nothing was spent on the way here.
       METRICS.newMailboxRefusedTotal += 1;
       throw new NewMailboxRefused();
     }
+    if (code === -2) {
+      // An unowned-mailbox limit (per-mailbox cap, relay-wide budget, or this
+      // IP's minute). Nothing was created, so give any token back.
+      if (localSpent) this.newMailbox.refund();
+      if (sharedWindow !== null) await this._refundShared(sharedWindow);
+      METRICS.unownedRefusedTotal += 1;
+      throw new UnownedRefused();
+    }
     // 2 means this push created the mailbox and what was spent stays spent;
     // anything else created nothing — the mailbox already existed, or the
     // entry was refused — so the allowance goes back.
-    if (r !== 2) {
+    if (code !== 2) {
       if (localSpent) this.newMailbox.refund();
       if (sharedWindow !== null) await this._refundShared(sharedWindow);
     }
-    const accepted = r === 1 || r === 2;
+    const accepted = code === 1 || code === 2;
     // Only a send that landed, for the reason in `SeenMailboxes.touch`.
-    if (accepted) this.seen.touch(rid);
+    if (accepted) {
+      this.seen.touch(rid);
+      if (unowned && ip) this.unownedIp.charge(ip, entrySize(entry));
+    }
     return accepted;
   }
 
@@ -1611,17 +2191,19 @@ class RedisCoordinator {
     await this.cmd.zQueueRemoveLegacy(`q:${rid}`, `qe:${rid}`, `qb:${rid}`, s);
   }
 
-  async deliverEnqueue(from, to, id, payload) {
-    const entry = { kind: 'msg', id, from, payload, ts: Date.now(), size: payload.length + 256 };
+  async deliverEnqueue(from, to, id, payload, ip) {
+    const entry = { kind: 'msg', id, from, payload, ts: Date.now(), size: envelopeSize(payload) };
     let accepted;
     try {
-      accepted = await this._push(to, entry);
+      accepted = await this._push(to, entry, ip);
     } catch (e) {
       if (!(e instanceof StoreFull)) throw e;
-      // A creation refusal was counted where it was decided; only the store
-      // itself refusing for want of memory is a full store (as in RAM mode).
-      if (!(e instanceof NewMailboxRefused)) METRICS.storeFullTotal += 1;
-      return { queued: false, storeFull: true };
+      // A creation refusal was counted where it was decided; a store with no
+      // room is a full store (counted here); an unowned-mailbox limit was
+      // counted as z_unowned_refused_total. All three reach the sender as
+      // store_full, which it retries (PROTOCOL §12.4).
+      if (!(e instanceof NewMailboxRefused) && !(e instanceof UnownedRefused)) METRICS.storeFullTotal += 1;
+      return { queued: false, storeFull: true, unowned: e instanceof UnownedRefused };
     }
     if (!accepted) {
       METRICS.refusedTotal += 1;
@@ -1643,37 +2225,28 @@ class RedisCoordinator {
         JSON.stringify({ op: 'deliver', toRid: to, frame: entryToFrame(entry) })
       );
       METRICS.crossInstanceTotal += 1;
-      // And `live` stays false, which is the correction.
+      // And `live` stays false: this instance cannot see whether the instance
+      // named by `presence:` still held a socket, so the envelope is reported
+      // held (it is, until acknowledged) and re-delivered by `reflushStalled`
+      // if the live push went nowhere — the recovery that does not depend on
+      // the recipient reconnecting.
       //
-      // It used to be set true here, on the strength of the publish having
-      // resolved — which says Redis accepted the PUBLISH, and nothing about
-      // whether the instance named by `presence:` still holds a socket for
-      // this recipient. The receiving side drops the frame silently when it
-      // does not (`_onPub`), and answers nobody. So a presence record that
-      // was stale by even a second produced `queued: false` — the sender
-      // told it went live, no wake push fired because that is gated on
-      // `queued`, and the envelope sat in the store until the recipient
-      // happened to reconnect. Nothing re-flushed a socket that was already
-      // connected, so "until they reconnect" could be the full
-      // QUEUE_TTL_HOURS: three days, invisible to everyone.
-      //
-      // Saying `queued: true` here is not a lie in the other direction: the
-      // envelope IS held, and stays held until it is acknowledged, exactly
-      // as the frame's comment in §12.2 describes. The live push is an
-      // optimisation on top of that, and this instance cannot see whether
-      // it happened. The wake push it now allows is correct in the case
-      // that matters — the recipient is not really there — and harmless in
-      // the case that it is, being content-free and going to a device that
-      // is already awake.
-      //
-      // The alternative, an acknowledgement back over pub/sub with a
-      // timeout, would put a second round trip on the hot path of every
-      // cross-instance send to recover one bit that no client reads: the
-      // Dart client discards it (`transport.dart`), and the only consumer
-      // is the wake push decided here.
+      // What it does NOT do any more is fire a wake push. `presence:` naming
+      // any instance means the recipient is online SOMEWHERE, and waking an
+      // online user's device by FCM on every message is exactly the metadata
+      // leak push is meant to minimise (R12, DATA_MAP) — Google learns "this
+      // device should wake" per message for a user who is already connected.
+      // So the wake push is for a recipient no instance has online (`push`
+      // below); the stale-presence case, where a push might have helped, is
+      // covered by `reflushStalled` within one interval and then by the
+      // recipient's own reconnect, at the cost of that delay rather than a
+      // wake on every online user's message.
     }
     if (live) METRICS.deliveredLiveTotal += 1;
-    return { queued: !live };
+    // Wake only a recipient no instance has online: no presence record
+    // anywhere and no socket here (P2 — HA cross-instance deliveries used to
+    // wake online users through FCM).
+    return { queued: !live, push: !owner && !here };
   }
 
   /**
@@ -1829,22 +2402,61 @@ class RedisCoordinator {
     // interval, and passes that overlap pile up instead of degrading.
     if (this.sweeping) return;
     this.sweeping = true;
+    // Reconcile the relay-wide unowned-bytes counter while we are walking the
+    // mailboxes anyway (P0-4): `z:ub` is incremented live by every unowned
+    // push, but a per-key TTL expiry frees unowned bytes without passing
+    // through any decrement, so the live counter can only drift UPWARD (refuse
+    // first-contact too early — safe, not a store-fill hole). Summing the
+    // qb of every mailbox that has no `owned:` marker and SETTING z:ub to it
+    // each sweep bounds that drift to one interval and makes a leak
+    // impossible, the way the accumulator recount does in RAM mode. A true
+    // recount, so it also absorbs the claim-on-auth transition (the mailbox
+    // is now owned and simply drops out of the sum) without a decrement path.
+    // The SET can drop what was pushed during the walk to a mailbox already
+    // counted: an under-count of at most one walk's worth of first-contact
+    // traffic (itself held to the per-IP minute and NEW_MAILBOX_PER_MIN),
+    // which the next sweep restores.
+    let unownedSum = 0;
+    let reconciled = true;
     try {
       let cursor = '0';
       do {
         const [next, keys] = await this.cmd.scan(cursor, 'MATCH', 'q:*', 'COUNT', '200');
         cursor = next;
         for (const key of keys) {
+          const rid = key.slice(2);
           try {
-            await this._expireAll(key.slice(2), 200);
+            await this._expireAll(rid, 200);
           } catch {
             // A store that is unreachable for a moment: the next sweep tries again.
           }
+          try {
+            if ((await this.cmd.exists(`owned:${rid}`)) === 0) {
+              unownedSum += Number(await this.cmd.get(`qb:${rid}`)) || 0;
+            }
+          } catch {
+            // Could not read this mailbox's ownership/bytes this pass; do not
+            // SET a total that is missing a mailbox (it would under-count and
+            // loosen the budget). Skip the reconcile this sweep.
+            reconciled = false;
+          }
         }
       } while (cursor !== '0');
+      if (reconciled) {
+        // A TTL a few intervals long, so the counter clears itself if sweeps
+        // ever stop, rather than pinning the budget shut for ever.
+        await this.cmd.set('z:ub', String(unownedSum), 'PX', Math.max(60000, CFG.sweepIntervalMs * 5));
+        // The store-fill gauge for the unowned budget (z_unowned_bytes):
+        // relay-wide, as of this instance's last sweep, so every instance
+        // reports the same figure — take the max across them, not the sum.
+        this.lastUnownedBytes = unownedSum;
+      }
+    } catch {
+      // The SCAN itself failed; leave z:ub as the live counter has it.
     } finally {
       this.sweeping = false;
     }
+    this.unownedIp.prune();
   }
 
   /**
@@ -1953,7 +2565,9 @@ class RedisCoordinator {
 
   stats() {
     // Global totals aren't counted per-instance to stay cheap; report local.
-    return { connections: this.local.size, queuedEnvelopes: -1, presenceStale: this.presenceStale.size };
+    const out = { connections: this.local.size, queuedEnvelopes: -1, presenceStale: this.presenceStale.size };
+    if (this.lastUnownedBytes != null) out.unownedBytes = this.lastUnownedBytes;
+    return out;
   }
 
   async close() {
@@ -1990,32 +2604,21 @@ function createServer(opts = {}) {
   let wssRef = null; // set once the WebSocket server exists, below
   const requestListener = (req, res) => {
     if (req.url === '/health') {
-      const s = coord.stats();
+      // Liveness only (P1-14). `/health` is unauthenticated — it is what a
+      // platform health check hits — so it must say the process is up and
+      // nothing a stranger could read as a signal. The counts, the socket
+      // totals, the instance id, `presenceStale` and the store bytes all moved
+      // to `/metrics`, which now needs a token: sending one envelope and
+      // watching a delta there used to turn these two endpoints into a
+      // presence oracle. `coordinator` and `push` stay — neither is a counter
+      // or an identifier, and tooling reads them to tell a single-instance
+      // relay from the HA one. `storage` stays because DATA_MAP points at it
+      // as a checkable claim.
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({
           ok: true,
-          uptimeSec: Math.floor(process.uptime()),
-          instanceId: CFG.instanceId,
           coordinator: coord.name,
-          connections: s.connections,
-          // Every socket, authenticated or not: a device holds two since
-          // 16.1 (its mailbox link and its anonymous sender link), and the
-          // socket count is what the relay's tail latency follows.
-          sockets: wssRef ? wssRef.clients.size : s.connections,
-          queuedEnvelopes: s.queuedEnvelopes,
-          // What MAX_STORE_BYTES is checked against, in single-instance mode
-          // (Redis refuses against the store's own maxmemory and keeps no
-          // global counter, so it is absent there). Published because this
-          // number drifting away from the mail actually held is a fault that
-          // was otherwise invisible: TTL expiry used to free the mail without
-          // crediting the counter, so a relay that had once been busy refused
-          // every send for ever while reporting `queuedEnvelopes: 0`.
-          ...(s.storeBytes !== undefined ? { storeBytes: s.storeBytes } : {}),
-          // Redis mode: sockets here whose presence the store refused to
-          // write (it was full); their mail is queued, not pushed, until
-          // the heartbeat's write succeeds. Absent in RAM mode.
-          ...(s.presenceStale !== undefined ? { presenceStale: s.presenceStale } : {}),
           storage: 'ram-only',
           push: pushSender ? 'enabled' : 'disabled',
         })
@@ -2023,9 +2626,36 @@ function createServer(opts = {}) {
       return;
     }
     if (req.url === '/metrics') {
-      // Aggregate delivery SLIs only — no per-user data, no content, RAM only.
+      // Aggregate delivery SLIs only — no per-user data, no content, RAM only;
+      // but even aggregates are a presence oracle (send one sealed envelope,
+      // read the z_delivered_live_total delta), so this requires a bearer
+      // token from METRICS_TOKEN, compared in constant time. Unset → 404, the
+      // safe default: a relay with no token configured does not even admit the
+      // endpoint exists (P1-14). The operator sets the secret and scrapes with
+      // `Authorization: Bearer <token>`.
+      if (!metricsAuthorized(req)) {
+        if (!CFG.metricsToken) {
+          res.writeHead(404, { 'content-type': 'text/plain' });
+          res.end('not found\n');
+          return;
+        }
+        res.writeHead(401, {
+          'content-type': 'text/plain',
+          'www-authenticate': 'Bearer realm="z-relay metrics"',
+        });
+        res.end('unauthorized\n');
+        return;
+      }
       res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' });
-      res.end(renderMetrics(coord.stats()));
+      res.end(
+        renderMetrics(coord.stats(), {
+          instanceId: CFG.instanceId,
+          coordinator: coord.name,
+          push: pushSender ? 'enabled' : 'disabled',
+          uptimeSec: process.uptime(),
+          sockets: wssRef ? wssRef.clients.size : undefined,
+        })
+      );
       return;
     }
     // The tab icon, in both formats. Served ahead of the HTML lookup because
@@ -2127,19 +2757,62 @@ function createServer(opts = {}) {
   });
   wssRef = wss;
 
+  // Open sockets per client IP, for the per-IP connection cap (P1-13, review
+  // finding #40). RAM, per instance — a connection cap is only about this
+  // instance's sockets.
+  const connsByIp = new Map();
+
   wss.on('connection', (ws, req) => {
+    const ip = clientIp(req);
+    // Connection caps (P1-13). The global one is always on: a bound on this
+    // instance's sockets whatever their source, so a flood of idle
+    // connections cannot exhaust file descriptors or the ~11 KB of RSS each
+    // socket costs (CAPACITY.md). The per-IP one engages only when
+    // CLIENT_IP_HEADER names a front that sets the real address — keyed on a
+    // shared front address it would cap the whole relay's connections at one
+    // number, so without the header the global cap is the backstop.
+    if (wss.clients.size > CFG.maxConnections) {
+      METRICS.connectionsRefusedTotal += 1;
+      try {
+        ws.close(1013, 'relay at capacity');
+      } catch {}
+      return;
+    }
+    const ipCount = (connsByIp.get(ip) || 0) + 1;
+    if (CFG.clientIpHeader && CFG.maxConnectionsPerIp > 0 && ipCount > CFG.maxConnectionsPerIp) {
+      METRICS.connectionsRefusedTotal += 1;
+      try {
+        ws.close(1013, 'too many connections from this address');
+      } catch {}
+      return;
+    }
+    connsByIp.set(ip, ipCount);
+
     const state = {
       authed: false,
       rid: null,
+      ip,
       nonce: crypto.randomBytes(32),
-      // What this connection dialled, as the Host header says: what a v2
-      // signature must name.
+      // What this connection dialled, as the Host header says. A v2 signature
+      // is NOT verified against this (the presenter controls it) — it is kept
+      // only so an unconfigured relay on a loopback/LAN name can trust the
+      // dialled name, the one case with no machine-in-the-middle boundary,
+      // and only when the TCP peer (`peer`, never a forwarded header) is
+      // itself loopback or private.
       authority: normalizeAuthority(req && req.headers ? req.headers.host : ''),
+      peer: (req && req.socket && req.socket.remoteAddress) || '',
       tokens: CFG.rateBurst,
       lastRefill: Date.now(),
       acksInFlight: 0,
     };
     ws.zAlive = true;
+    // When this socket last sent a frame: the unauthenticated-idle timeout
+    // (P1-13, ADR 0007) closes a socket that has neither authenticated nor
+    // sent anything for UNAUTH_IDLE. An anonymous sealed-send socket is
+    // legitimate and never authenticates, but it pings every 25 s, which lands
+    // here as a frame — so this reclaims only a socket doing nothing at all,
+    // not one sending sealed envelopes.
+    ws.zLastFrame = Date.now();
 
     ws.on('error', () => {
       try {
@@ -2164,6 +2837,7 @@ function createServer(opts = {}) {
       // unauthenticated socket could spend the relay's time for free:
       // roadmap revision 45.)
       const now = Date.now();
+      ws.zLastFrame = now; // activity, for the unauthenticated-idle timeout
       state.tokens = Math.min(
         CFG.rateBurst,
         state.tokens + ((now - state.lastRefill) / 1000) * CFG.ratePerSec
@@ -2227,12 +2901,33 @@ function createServer(opts = {}) {
     });
 
     ws.on('close', () => {
+      heavySockets.delete(ws);
+      const n = (connsByIp.get(ip) || 1) - 1;
+      if (n > 0) connsByIp.set(ip, n);
+      else connsByIp.delete(ip);
       if (state.rid) coord.unregister(state.rid, ws).catch(() => {});
     });
   });
 
   const heartbeat = setInterval(() => {
+    const now = Date.now();
     for (const ws of wss.clients) {
+      // An unauthenticated socket that has sent nothing for UNAUTH_IDLE is
+      // closed (P1-13). A legitimate anonymous sender pings every 25 s, which
+      // refreshes zLastFrame, so this reclaims only a socket doing nothing at
+      // all — it is not an auth deadline (ADR 0007).
+      if (
+        CFG.unauthIdleMs > 0 &&
+        ws.readyState === ws.OPEN &&
+        !ws.zAuthed &&
+        now - (ws.zLastFrame || 0) > CFG.unauthIdleMs
+      ) {
+        METRICS.idleClosedTotal += 1;
+        try {
+          ws.close(4003, 'idle without authenticating');
+        } catch {}
+        continue;
+      }
       if (ws.zAlive === false) {
         ws.terminate();
         continue;
@@ -2243,7 +2938,7 @@ function createServer(opts = {}) {
       } catch {}
     }
     coord.heartbeat().catch(() => {});
-  }, 25_000);
+  }, CFG.heartbeatMs);
   heartbeat.unref();
 
   const sweeper = setInterval(() => Promise.resolve(coord.sweep()).catch(() => {}), CFG.sweepIntervalMs);
@@ -2283,20 +2978,35 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
       }
       let ok = false;
       if (frame.v === 2) {
-        // Bound: the signature names an authority, and it must be one of
-        // ours — the Host header this connection carried, or one the
-        // operator listed. A signature made for another relay names that
-        // relay and verifies against none of these.
-        const names = new Set([state.authority, ...CFG.authorities].filter(Boolean));
+        // Bound, and verified ONLY against the names this relay is configured
+        // to answer to — never the Host header the presenter sent (P1-16). A
+        // relay that verified against the presented Host would accept a
+        // signature a victim was tricked into making for the presenter's own
+        // name: dial evil.example, sign "evil.example" over the honest
+        // relay's forwarded nonce, and the presenter replays it to the honest
+        // relay with Host: evil.example. The honest relay's own name is not
+        // evil.example, so against CFG.authorities it fails.
+        let names = CFG.authorities;
+        if (names.length === 0) {
+          // Unconfigured: the relay was told no name. A loopback/LAN/.local
+          // dialled name, on a connection that itself arrived from a loopback
+          // or private address, has no machine-in-the-middle boundary to
+          // protect (dev, LAN, the test suite), so the dialled name is
+          // trusted; anything else is refused until the operator lists the
+          // relay's names in RELAY_AUTHORITIES, rather than verify against a
+          // name a presenter could choose.
+          names = isLocalAuthority(state.authority, state.peer) ? [state.authority] : [];
+        }
         for (const name of names) {
           if (verifyEd25519(pub, Buffer.concat([AUTH_CONTEXT_V2, Buffer.from(name, 'utf8'), state.nonce]), sig)) {
             ok = true;
             break;
           }
         }
-        // Not ours under any name we answer to: a signature made for
-        // another relay, a front that rewrote Host, or plain garbage — the
-        // relay cannot tell which, and the count is the same signal.
+        // Not ours under any configured name: a signature made for another
+        // relay (the replay the binding stops), a front that rewrote Host
+        // with no RELAY_AUTHORITIES set, or plain garbage — the relay cannot
+        // tell which, and the count is the same signal.
         if (!ok) METRICS.authV2RefusedTotal += 1;
       } else if (CFG.authV1) {
         ok = verifyEd25519(pub, Buffer.concat([AUTH_CONTEXT, state.nonce]), sig);
@@ -2308,6 +3018,7 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
         return;
       }
       state.authed = true;
+      ws.zAuthed = true; // the heartbeat's idle check reads this off the socket
       state.rid = routingIdFromPub(pub);
       const prev = await coord.register(state.rid, ws);
       if (prev && prev !== ws) {
@@ -2357,11 +3068,12 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
       // encrypted envelope, so a full copy of this server yields no social
       // graph. Authenticity is enforced end-to-end by the inner ratchet.
       if (anon && !state.authed) METRICS.sealedUnattributableTotal += 1;
-      const { queued, refused, storeFull } = await coord.deliverEnqueue(
+      const { refused, storeFull, push } = await coord.deliverEnqueue(
         anon ? null : state.rid,
         to,
         id,
-        payload
+        payload,
+        state.ip
       );
       if (refused) {
         // The recipient's queue is at its cap. Told, not dropped: the
@@ -2402,9 +3114,13 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
       // recipients who are connected. The field stays in the frame for
       // older clients, at the one value that says nothing.
       sendJson(ws, { t: 'sent', id, queued: true });
-      // Recipient offline and push configured? Fire a content-free wake ping.
-      // Best-effort and non-blocking — never delays or fails the send.
-      if (queued && pushSender) {
+      // Recipient online on NO instance and push configured? Fire a
+      // content-free wake ping. `push` is the coordinator's judgement: in
+      // Redis mode it is false when any instance holds the recipient's
+      // presence, so an online user on another instance is not woken by FCM
+      // on every message (P2) — the leak R12 bounds is for offline wakes.
+      // Best-effort and non-blocking: never delays or fails the send.
+      if (push && pushSender) {
         const rec = await coord.getPush(to);
         if (rec && rec.token) {
           pushSender
@@ -2489,6 +3205,21 @@ if (require.main === module) {
         `(MAX_ENVELOPE_BYTES ${CFG.maxEnvelopeBytes} + 256): the largest envelopes will be refused`
     );
   }
+  // Phase 29 settings an operator has to get right, said once at boot: the
+  // relay's own names are public (clients dial them), the token is not.
+  log(
+    CFG.authorities.length
+      ? `v2 authentication verified against: ${CFG.authorities.join(', ')}`
+      : 'RELAY_AUTHORITIES unset: only a loopback/LAN name dialled from a loopback/LAN address ' +
+          'can authenticate; set it to the name(s) clients dial'
+  );
+  if (!CFG.metricsToken) log('METRICS_TOKEN unset: /metrics answers 404');
+  if (CFG.sendBufferCapBytes < 2 * CFG.flushHighWaterBytes + CFG.maxEnvelopeBytes) {
+    log(
+      `SEND_BUFFER_CAP_BYTES (${CFG.sendBufferCapBytes}) is below what a paged flush may hold ` +
+        `(2 × FLUSH_HIGH_WATER_BYTES + MAX_ENVELOPE_BYTES): honest slow readers will be dropped`
+    );
+  }
   const { httpServer } = createServer();
   httpServer.listen(CFG.port, CFG.host, () => {
     log(
@@ -2509,6 +3240,7 @@ module.exports = {
   createServer,
   CFG,
   normalizeAuthority,
+  isLocalAuthority,
   routingIdFromPub,
   MemoryCoordinator,
   RedisCoordinator,

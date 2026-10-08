@@ -11,4 +11,8 @@ services:
       QUEUE_TTL_HOURS: "72"
       MAX_QUEUE_BYTES_PER_USER: "67108864"
       LOG_LEVEL: "info"
+      # The name(s) clients dial, e.g. `RELAY_AUTHORITIES=relay.example.com
+      # docker compose up -d`. Authentication is verified against these and
+      # never the Host header; unset, only a loopback/LAN name is trusted.
+      RELAY_AUTHORITIES: "${RELAY_AUTHORITIES:-}"
     # No volumes. Ever.

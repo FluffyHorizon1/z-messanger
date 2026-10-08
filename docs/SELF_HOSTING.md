@@ -29,7 +29,11 @@ docker compose up --build -d
 
 `docker-compose.yml` runs the container with `read_only: true` and **no
 volumes**, so the process physically cannot persist anything. It exposes
-`:8080` (plain `ws://`). Put it behind a TLS‑terminating reverse proxy (below).
+`:8080` (plain `ws://`). Put it behind a TLS‑terminating reverse proxy (below)
+and tell it the name clients dial — `RELAY_AUTHORITIES=relay.example.com
+docker compose up --build -d` (the compose file passes it through; see
+"Authentication names the relay" below). `deploy/vps-install.sh` does all of
+this for one domain, Caddy included, and sets `RELAY_AUTHORITIES` to it.
 
 ## Option B: Node directly
 
@@ -50,6 +54,7 @@ After=network.target
 ExecStart=/usr/bin/node /opt/z/server/server.js
 Environment=PORT=8080
 Environment=LOG_LEVEL=info
+Environment=RELAY_AUTHORITIES=relay.example.com
 DynamicUser=yes
 ProtectSystem=strict     # read-only filesystem — the relay needs no writes
 ProtectHome=yes
@@ -68,7 +73,9 @@ from the fork, and Render hands you a `wss://…onrender.com` address in a
 couple of minutes. `deploy/fly.toml` does the same for
 [Fly.io](https://fly.io) (`fly launch`, then `fly deploy`). Both terminate
 TLS for you, so the address is usable in the app as it is; check
-`https://<your host>/health` for `"storage":"ram-only"`.
+`https://<your host>/health` for `"storage":"ram-only"`. The platform's own
+hostname is trusted for authentication automatically; a custom domain you add
+there needs `RELAY_AUTHORITIES` set to it.
 
 Render's free tier sleeps after about fifteen minutes without a connection
 and takes ~30 s to wake on the next one. Delivered messages are on the
@@ -90,6 +97,8 @@ relay.example.com {
 ```
 
 Caddy upgrades WebSockets automatically and provisions Let's Encrypt certs.
+Run the relay with `RELAY_AUTHORITIES=relay.example.com` (and `HOST=127.0.0.1`
+so it is reachable only through Caddy) — see the note under Nginx.
 
 ### Nginx
 
@@ -106,10 +115,25 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_set_header Host $http_host;          # as dialled, port included
+        proxy_set_header X-Real-IP $remote_addr;   # the client's address (CLIENT_IP_HEADER=x-real-ip)
         proxy_read_timeout 3600s;      # keep idle WebSockets alive
     }
 }
 ```
+
+With this front, **set `RELAY_AUTHORITIES=relay.example.com`** on the relay:
+v2 authentication is verified against that name and not against the `Host`
+header the proxy forwards (phase 29), so the relay has to be told the name
+clients dial. (Before phase 29 the relay read the name off `Host`, and a
+`proxy_pass` with no `proxy_set_header Host` quietly rewrote it to
+`127.0.0.1:8080`, so every client failed to authenticate; now the header is
+not load‑bearing for auth, but pass it through anyway and set
+`RELAY_AUTHORITIES`.) This proxy overwrites `X-Real-IP` with the address it
+saw, so once the relay is reachable **only** through it (`HOST=127.0.0.1`),
+set `CLIENT_IP_HEADER=x-real-ip` and the per‑IP limits are per client; while
+the relay's port is reachable directly, leave it unset, since anyone could
+then send the header.
 
 The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 `TLS_KEY` — but a proxy is usually easier to operate.
@@ -124,7 +148,7 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 | `MAX_QUEUE_BYTES_PER_USER` | `67108864` | per‑recipient queue cap (bytes); an envelope that would cross it is refused, not made room for |
 | `MAX_QUEUE_MSGS_PER_USER` | `5000` | per‑recipient queue cap (count), likewise |
 | `MAX_STORE_BYTES` | `201326592` | the whole RAM queue's ceiling in single‑instance mode — past it a send is refused as `store_full` rather than the process being killed. Redis mode refuses against the store's own `maxmemory` instead |
-| `NEW_MAILBOX_PER_MIN` | `120` | how many mailboxes may be **created** a minute, across all senders — **per instance**, so N instances admit N× this between them, unless `NEW_MAILBOX_SHARED=on` makes it the figure for the whole relay. Charged on **first contact** with a recipient, not on an empty mailbox — a mailbox exists only while it holds unacknowledged mail, so a recipient who is online and keeping up has none when the next message arrives, and charging that emptiness charged every message (fixed 2026‑09‑14; until then the relay stopped at this number of *messages* a minute, for everyone) |
+| `NEW_MAILBOX_PER_MIN` | `120` | how many mailboxes may be **created** a minute, across all senders (since phase 29 a send the unowned limits refuse is not charged) — **per instance**, so N instances admit N× this between them, unless `NEW_MAILBOX_SHARED=on` makes it the figure for the whole relay. Charged on **first contact** with a recipient, not on an empty mailbox — a mailbox exists only while it holds unacknowledged mail, so a recipient who is online and keeping up has none when the next message arrives, and charging that emptiness charged every message (fixed 2026‑09‑14; until then the relay stopped at this number of *messages* a minute, for everyone) |
 | `SEEN_MAILBOX_CAP` | `100000` | how many recipients an instance remembers having written to, so the line above can mean "first contact". A memory bound, measured at 117 bytes an entry (11.2 MiB at the default); least recently used are dropped. It is not what bounds a flood — **a send that was refused is never remembered**, so a refused flood leaves the set as it found it |
 | `SEEN_MAILBOX_TTL_MIN` | `60` | and for how long a recipient stays remembered. Bounds how long a second flood can re‑use ids whose mailboxes the first one paid for. A recipient who is merely offline is unaffected: their mailbox still exists, and that is checked too |
 | `NEW_MAILBOX_SHARED` | off | `on` shares the mailbox‑creation allowance across instances through the store (Redis mode; inert on a single‑instance relay, whose own gate is already relay‑wide). Off, each instance keeps its own bucket, exactly as before this setting existed. **What it rations:** creating a mailbox for a recipient who holds no mail — a send into a mailbox that exists is never charged. **Turning it on makes `NEW_MAILBOX_PER_MIN` the relay‑wide figure:** set it to N × the per‑instance value to keep the total you had (240 for two instances at the default). **What it costs:** a flood that spends the shared minute spends it for every instance — a gate everybody shares is a switch whoever fills it holds (R22, R32) — and an instance that restarts or is added pays first contact again, against that minute, for every recipient it re‑contacts; measured, a restarted instance had all 5 600 of its sends to online contacts refused while a flood held the window (`docs/LOAD.md`, 25.3). The counter is one hash of two integers for the whole relay — a count of creations in the store's current minute, never a routing id. If it cannot be read the instance falls back to its own bucket and counts it (`z_new_mailbox_shared_fallback_total`) |
@@ -136,31 +160,73 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 | `RATE_PER_SEC` / `RATE_BURST` | `80` / `240` | per‑connection token bucket |
 | `TLS_CERT` / `TLS_KEY` | — | enable built‑in TLS (paths to PEM) |
 | `RELAY_AUTH_V1` | `on` | whether the unbound v1 authentication is still accepted. A v1 signature is over the challenge alone, so one obtained by any relay a user was talking to authenticated them here (R33); v2 (relay and app from 2026‑09‑17 on) signs the relay's name with it, and a client from then on never produces v1. Every v1 authentication is counted in `z_auth_v1_total`; set `off` once that has stayed at zero for as long as you care to wait — after which a client from before then cannot receive until it updates |
-| `RELAY_AUTHORITIES` | — | names a v2 signature may carry besides the `Host` header the connection arrived with, comma‑separated (`relay.example`, `relay.example:8443`). Only for a front that rewrites `Host`; the shipped ones — `nginx.ha.conf`, Cloudflare, Render — pass it through, and then the header alone is right |
+| `RELAY_AUTHORITIES` | — | the names a v2 signature is verified against, comma‑separated (`relay.example`, `relay.example:8443`) — the **only** names, never the `Host` header (phase 29, P1‑16). A public relay MUST set this to every name clients dial. `RENDER_EXTERNAL_HOSTNAME` / `FLY_APP_NAME` are added automatically on those platforms. Unset, a dialled loopback/private/`.local` name is trusted only on a connection from a loopback/private address (dev/LAN); anything else is then refused |
+| `METRICS_TOKEN` | — | the bearer token `GET /metrics` requires (`Authorization: Bearer …`, constant‑time compare). **Unset → `/metrics` answers 404**, the safe default: the counters are a presence oracle, so an unauthenticated scrape must learn nothing (P1‑14). Set it to a secret and give your scraper the same value |
+| `CLIENT_IP_HEADER` | — | the header a front sets to the real client address (e.g. `cf-connecting-ip`), for the per‑IP limits below. Honoured **only when set**: a forwarded header is the caller's to choose unless a front overwrites it, so unset the socket address is used instead (mirrors `kt/`'s `KT_CLIENT_IP_HEADER`). Behind a front with this unset, every client shares one address and the per‑IP limits collapse to one bucket — the relay‑wide budgets are the real bound then |
+| `UNOWNED_MAILBOX_BYTES` | `2097152` | the byte cap for a mailbox whose owner has never authenticated here (an *unowned* mailbox, P0‑4). Generous for a first contact; small enough that filling the store needs many mailboxes, which `NEW_MAILBOX_PER_MIN` rations. Once the recipient authenticates the mailbox is owned and `MAX_QUEUE_BYTES_PER_USER` applies |
+| `UNOWNED_STORE_BYTES` | `33554432` | the whole store's budget for unowned bytes at once — a modest fraction of the store, so first‑contact traffic can never crowd out what owned mailboxes need. Past it an unowned send is refused `store_full` (counted `z_unowned_refused_total`); owned mailboxes are unaffected |
+| `UNOWNED_BYTES_PER_IP_PER_MIN` | `4194304` | per‑IP budget on unowned bytes a minute, keyed on `CLIENT_IP_HEADER` or the socket address |
+| `OWNED_TTL_DAYS` | `30` | how long a routing id stays *owned* after it last authenticated (Redis path; a store key `owned:{rid}` — the same shape as `q:`/`presence:`, no new identity data, survives a relay restart). RAM mode keeps it in memory, lost with the queue on restart — so until a recipient reconnects after a restart, mail to them is held to the first‑contact caps (refused `store_full` and retried by the sender past them, never lost) |
+| `OWNED_CAP` | `200000` | RAM mode only: how many owned routing ids the relay remembers (≈120 bytes each), the least recently authenticated forgotten first, so throwaway identities cannot grow its memory without bound. A forgotten owner's mailbox is merely unowned again until it next authenticates |
+| `MAX_CONNECTIONS` | `20000` | global cap on open WebSockets this instance holds; past it a new connection is closed (1013). ≈ 11 KB RSS a socket (`docs/CAPACITY.md`), so this also sizes the box |
+| `MAX_CONNECTIONS_PER_IP` | `256` | per‑IP connection cap — enforced **only when `CLIENT_IP_HEADER` is set**, since keyed on a shared front address it would cap the whole relay at one number |
+| `UNAUTH_IDLE_SECONDS` | `120` | a socket that has not authenticated and has sent nothing for this long is closed. An anonymous sealed‑send socket (ADR 0007) pings every 25 s, which counts as activity, so this closes only a socket doing nothing — not an auth deadline. `0` disables |
+| `DRAIN_TIMEOUT_SECONDS` | `60` | how long a flush waits for a slow reader to drain below `FLUSH_HIGH_WATER_BYTES` before terminating it (P1‑13); it reconnects and the flush restarts (at‑least‑once) |
+| `SEND_BUFFER_CAP_BYTES` | `8388608` | the most the relay holds buffered and unread for one socket — replies, live deliveries, flush pages — before dropping it (P1‑13: a socket that kept sending and stopped reading grew the relay +880 MiB in 9 s). Mail stays queued until acknowledged, so a reader that resumes reconnects and is flushed again. Keep it above `2 × FLUSH_HIGH_WATER_BYTES` + `MAX_ENVELOPE_BYTES` so an honest slow reader is paged, not dropped |
+| `SEND_BUFFER_TOTAL_BYTES` | `67108864` | the most ALL sockets together may hold buffered and unread (P1‑13): the per‑socket cap alone would let N non‑reading sockets hold N × it. Past this the socket holding the most is dropped first — an attacker's, filling towards its cap, before an honest slow reader, which a paged flush keeps near `FLUSH_HIGH_WATER_BYTES`. Size it with `MAX_STORE_BYTES` against the instance's memory |
 | `LOG_LEVEL` | `info` | `info` logs counts/timing only, never content |
 | `Z_LATEST_VERSION` | — | the newest app version you want your users prompted to update to (24.4). Set it to a plain `x.y.z` and `/latest.json` serves `{"version","url"}`; leave it unset (or non‑semver) and the route 404s, so your users are never prompted. The app checks it at most once a day when Settings is opened, against the host it already dials — no third party, nothing per‑user. The official relay does not set it yet — no Blueprint in this repository does, and its `/latest.json` answered 404 on 2026‑10‑03 — so nobody on it is prompted; a self‑hoster who does not track releases can ignore it |
 
-**Authentication names the relay (2026‑09‑17).** A client signs its challenge
-answer over the relay's authority as it dialled it — the URL's host, lower
-case, with the port only when it is not the default — and the relay checks
-that against the `Host` header it received. So the header has to reach the
-relay as the client sent it: if you put your own proxy in front, forward
-`Host` unchanged (`nginx.ha.conf` uses `proxy_set_header Host $http_host;`
-— `$host`, which strips the port, would make every client on a non‑default
-port fail to authenticate), or list the names you answer to in
-`RELAY_AUTHORITIES`. An app from 2026‑09‑17 on refuses a relay that does not advertise the
+**Authentication names the relay, and the relay verifies against its OWN
+name — not the `Host` header (phase 29).** A client signs its challenge answer
+over the relay's authority as it dialled it (the URL's host, lower case, with
+the port only when it is not the default). The relay checks that against the
+names in **`RELAY_AUTHORITIES`** and nothing else: it does **not** trust the
+`Host` header a connection carries, because whoever opens the socket chooses
+that header, so a relay that verified against it would accept a signature a
+victim had been tricked into making for the attacker's name (the splice the
+binding exists to stop). **So a public relay MUST set `RELAY_AUTHORITIES` to
+every name clients dial** — a self‑hosted relay behind any proxy, and the
+reference deployment too. On Render or Fly the platform's own hostname
+(`RENDER_EXTERNAL_HOSTNAME`, `FLY_APP_NAME`) is added automatically, so a
+relay reached at that address needs nothing. A relay with `RELAY_AUTHORITIES`
+unset trusts only a dialled **loopback / private‑range / `.local`** name, and
+only on a connection that itself comes from a loopback or private address —
+the dev and LAN case, where there is no machine‑in‑the‑middle to protect. A
+public name with nothing configured is refused (and counted
+`z_auth_v2_refused_total`), and so is a local name presented from a public
+address (a signature someone made for a LAN relay, replayed here), rather than
+verified against a name the caller picked. So a relay that is fine on
+`ws://192.168.1.10:8080` starts refusing everyone the moment it is put behind
+a public name — set `RELAY_AUTHORITIES` then. The `Host` header no
+longer needs to reach the relay for authentication, so a front may rewrite it
+freely. An app from 2026‑09‑17 on refuses a relay that does not advertise the
 bound form (its challenge lacks `auth: 2`) and says so in Settings → Relay
 server ("relay too old"): **update the relay before the app** on a
 self‑hosted deployment, or the app cannot receive until you do.
 
 ## Health & monitoring
 
-`GET /health` returns JSON with uptime, live connection count, number of queued
-envelopes, `storeBytes` in single‑instance mode (the number `MAX_STORE_BYTES`
-is checked against — watch it against `queuedEnvelopes`, since the two
-disagreeing is itself a fault), and `"storage":"ram-only"`. Point your uptime monitor at it. There
-is deliberately no message‑level logging to monitor — the relay can't see
-messages.
+`GET /health` returns JSON with liveness only — `{"ok":true,"coordinator":…,
+"storage":"ram-only","push":…}` — and nothing else (phase 29, P1‑14). It is
+unauthenticated, so it must reveal nothing a stranger could read as a signal:
+the connection count, queued‑envelope count, store bytes, `presenceStale` and
+instance id all moved to `/metrics`, because sending one envelope and watching
+a counter tick there was a presence oracle. Point your uptime monitor at
+`/health`. There is deliberately no message‑level logging to monitor — the
+relay can't see messages.
+
+`GET /metrics` (Prometheus text) now requires `Authorization: Bearer
+<METRICS_TOKEN>`; with no token configured it answers **404** (it does not even
+admit the endpoint exists). It carries the aggregate `z_*` counters, plus
+`z_store_bytes`/`z_store_max_bytes` in single‑instance mode (watch the ratio —
+the store‑fill gauge), `z_unowned_refused_total` (the first‑contact flood
+signal), `z_presence_stale` (Redis mode), the abuse‑limit counters
+`z_slow_reader_closed_total` (sockets dropped for not reading),
+`z_connections_refused_total` (connection caps) and `z_idle_closed_total`
+(unauthenticated sockets idle past `UNAUTH_IDLE_SECONDS`), and a
+`z_relay_info` line whose labels carry the instance id, coordinator and push
+state.
 
 **Objectives, alarms, and capacity.** `docs/SLO.md` sets availability and
 latency objectives you can measure from `/health` and the `z_*` metrics, with
@@ -175,7 +241,8 @@ rules: what to do when one fires.
 
 Each rule in `server/alerts.example.yml` names one of these. They assume the
 reference HA shape (`render.ha.yaml`); a single‑instance relay has no store
-exporter, so watch `/health` `storeBytes` in place of the Redis rules. Two
+exporter, so watch `z_store_bytes` against `z_store_max_bytes` on `/metrics`
+(`RelayStoreFillHigh`) in place of the Redis rules. Two
 things about the store exporter are part of the threat model, not of
 monitoring: never enable its key‑level options (`--check-keys` and the like —
 they export `q:<routing id>` and `presence:<routing id>` as labels, routing ids
@@ -279,18 +346,20 @@ and routing their pages is yours, as everything that touches a live system is.
 ### After a deploy: check that the relay serving is the one you deployed
 
 ```bash
-python3 tool/check_live_relay.py https://relay.example.com
+METRICS_TOKEN=<your relay's token> python3 tool/check_live_relay.py https://relay.example.com
 #   ... and for the reference deployment, whose Blueprint it can also check:
-python3 tool/check_live_relay.py https://www.zmessengers.com --blueprint render.ha.yaml
+METRICS_TOKEN=<token> python3 tool/check_live_relay.py https://www.zmessengers.com --blueprint render.ha.yaml
 ```
 
-It reads `/health` and `/metrics` — two GETs, no credential — and compares
-what comes back against the checkout it is run from: every `z_*` metric this
-code emits in every mode must be live, `/health` must answer ok with
-`storage: ram-only`, and in Redis mode `presenceStale` must be present and
-zero. It exits 0 when the serving relay is at least this checkout, 1 when it
-is behind or unhealthy, and 2 when it could not be reached — so it belongs in
-a deploy script as much as at a prompt.
+It reads `/health` and `/metrics` — two GETs — and compares what comes back
+against the checkout it is run from: every `z_*` metric this code emits in
+every mode must be live, `/health` must answer ok with `storage: ram-only`,
+and in Redis mode `z_presence_stale` must be present and zero. `/metrics` is
+token‑gated now (P1‑14), so give it the relay's `METRICS_TOKEN` in the
+environment (never on the command line). It exits 0 when the serving relay is
+at least this checkout, 1 when it is behind or unhealthy, 2 when it could not
+be reached, and 3 when the token was missing or wrong — so it belongs in a
+deploy script as much as at a prompt.
 
 Run it because **a landed `server/` change is not live until someone clicks
 Deploy**, and that click is the only step in the pipeline that leaves no
@@ -363,7 +432,9 @@ That starts Redis (`--save "" --appendonly no` — RAM only, and
 `--maxmemory-policy noeviction`), three relay instances (`REDIS_URL` set,
 read‑only filesystem), and an nginx load balancer on `:8080` that
 round‑robins WebSocket upgrades across them (`nginx.ha.conf`). Put a TLS
-proxy in front for `wss://`, or point a cloud host at the same setup. Until
+proxy in front for `wss://`, or point a cloud host at the same setup, and give
+the relays the name clients dial (`RELAY_AUTHORITIES=relay.example.com docker
+compose -f docker-compose.ha.yml up …`; the compose file passes it through). Until
 2026‑09‑17 the compose file ran the store `allkeys-lru`, which at
 `maxmemory` evicts whole keys: a mailbox's bodies could go while its list
 stayed, an envelope whose sender had been told `sent` silently gone, and
@@ -378,9 +449,10 @@ Blueprint: two relay instances on paid compute (a free instance cannot run
 more than one copy), Render's own load balancer in front, and a Key Value
 instance with persistence off and no public access as the RAM‑only Redis.
 Create it from **New → Blueprint** with the Blueprint Path set to
-`render.ha.yaml`; `/health` then answers `"coordinator":"redis"` with a
-different `instanceId` from one request to the next, and reports
-`queuedEnvelopes` as `-1` because the total is not counted across instances.
+`render.ha.yaml`; `/health` then answers `"coordinator":"redis"`, and
+`/metrics` (with the token) labels `z_relay_info` with a different instance id
+from one request to the next and omits `z_queued_envelopes`, because the total
+is not counted across instances.
 The store is `noeviction`, as the compose file's now is, so
 when it is full a send is refused — `store_full`, promptly, and the sender's
 outbox keeps the message and retries on its own timer — rather than a queue
@@ -388,8 +460,8 @@ being evicted after its sender was already told "sent". A full store does
 not keep anyone out: logins still succeed, queued envelopes are still
 delivered and acknowledged (reads and removals are allowed when memory is
 short), so the mailboxes that filled it can be drained and it heals by
-itself; `/health` shows `presenceStale` while it lasts and `/metrics`
-counts `z_store_full_total`. This relies on Redis 7 script flags: run
+itself; `/metrics` shows `z_presence_stale` while it lasts and counts
+`z_store_full_total`. This relies on Redis 7 script flags: run
 Redis 7 or newer, or Valkey (the compose file and the Blueprint do).
 
 That healing has a precondition worth stating, because until 2026‑09‑14 it
@@ -421,13 +493,14 @@ now is the recipients written to recently (`SEEN_MAILBOX_CAP`,
 `SEEN_MAILBOX_TTL_MIN`), which is what "first contact" needs and what an
 empty mailbox never was.
 
-`/health` also reports `storeBytes` in single‑instance mode — the number
-`MAX_STORE_BYTES` is checked against — beside `queuedEnvelopes`. (Redis mode
-refuses against the store's own `maxmemory` and keeps no global counter, so
-the field is absent there.) The two disagreeing is a fault in itself: TTL
-expiry used to free the mail without crediting the counter, so a relay that
-had once been busy refused every send for ever while reporting
-`queuedEnvelopes: 0` — invisible, because nothing published the other number.
+`/metrics` also reports `z_store_bytes` in single‑instance mode — the number
+`MAX_STORE_BYTES` is checked against — beside `z_queued_envelopes` (both were
+`/health` fields until phase 29). (Redis mode refuses against the store's own
+`maxmemory` and keeps no global counter, so the gauge is absent there.) The
+two disagreeing is a fault in itself: TTL expiry used to free the mail
+without crediting the counter, so a relay that had once been busy refused
+every send for ever while reporting no queued envelopes — invisible, because
+nothing published the other number.
 
 The per‑recipient caps work the same way at their own level and in
 both modes: an envelope that would take a mailbox past
@@ -474,8 +547,15 @@ until acked).
   256 MB, and at the 64 MB default four full mailboxes fill it — a full store
   refuses every sender until someone drains one, where a mailbox at its own
   cap refuses only its own.
-- **Restarts drop in‑flight messages.** Senders keep them in their device
-  outbox and the protocol re‑delivers, but schedule redeploys thoughtfully.
+- **A single‑instance relay restart loses accepted‑but‑undelivered mail, for
+  good.** The queue is in process RAM only (by design — nothing touches disk),
+  so a restart wipes it; and the sender was already told `sent` and has
+  **deleted the envelope from its outbox**, so it does not re‑send. The
+  recipient simply never gets those messages (the ratchet recovers the session
+  but not the dropped payload). This is the cost of the no‑disk promise on one
+  box. The HA path (`render.ha.yaml`) keeps the queue in the shared store, so a
+  relay **instance** restart loses nothing there — only a *store* restart does.
+  Schedule single‑instance redeploys for quiet moments, or run the HA shape.
 - **No backups needed.** There is nothing on disk to back up. That's the point.
 
 ## Running the transparency log

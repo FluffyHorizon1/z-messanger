@@ -45,7 +45,10 @@ $DOMAIN {
 }
 EOF
 
-cat > "$WORK/docker-compose.yml" <<'EOF'
+# RELAY_AUTHORITIES: the relay verifies a client's authentication against the
+# names it is told and never against the Host header (docs/SELF_HOSTING.md,
+# "Authentication names the relay"), so it is told the domain clients dial.
+cat > "$WORK/docker-compose.yml" <<EOF
 services:
   z-relay:
     build: .
@@ -54,6 +57,7 @@ services:
     environment:
       LOG_LEVEL: info
       QUEUE_TTL_HOURS: "72"
+      RELAY_AUTHORITIES: "$DOMAIN"
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped

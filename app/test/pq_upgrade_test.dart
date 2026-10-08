@@ -37,7 +37,7 @@ void main() {
     await portProbe.close();
     relay = await Process.start('node', ['server.js'],
         workingDirectory: serverDir,
-        environment: {'PORT': '$port', 'LOG_LEVEL': 'silent'});
+        environment: {'PORT': '$port', 'LOG_LEVEL': 'silent', 'METRICS_TOKEN': 'z-apptest-metrics'});
     for (var i = 0; i < 60; i++) {
       try {
         final res = await (await HttpClient()
@@ -100,11 +100,23 @@ void main() {
   /// not, so zero means everything sent so far has been taken off the relay
   /// — and handled, since a client acknowledges after handling.
   Future<int> relayUnacked() async {
-    final res = await (await HttpClient()
-            .getUrl(Uri.parse('http://127.0.0.1:$port/health')))
-        .close();
+    // The queued-envelope count moved from /health to /metrics with P1-14
+    // (/health is liveness only); /metrics is token-gated, and the relay is
+    // spawned with METRICS_TOKEN set below. Single-instance, so
+    // z_queued_envelopes is emitted.
+    final req =
+        await HttpClient().getUrl(Uri.parse('http://127.0.0.1:$port/metrics'));
+    req.headers.set('authorization', 'Bearer z-apptest-metrics');
+    final res = await req.close();
     final body = await res.transform(utf8.decoder).join();
-    return ((jsonDecode(body) as Map)['queuedEnvelopes'] as num).toInt();
+    final m = RegExp(r'^z_queued_envelopes (\d+)$', multiLine: true)
+        .firstMatch(body);
+    // Absent means the scrape failed (a wrong token is a 401), not that the
+    // relay is empty: fail loudly rather than read it as settled.
+    if (m == null) {
+      throw StateError('no z_queued_envelopes on /metrics (HTTP ${res.statusCode})');
+    }
+    return int.parse(m.group(1)!);
   }
 
   test('a fresh pair becomes post-quantum during its first exchange', () async {

@@ -29,21 +29,30 @@ than from a table of versions that would itself go stale:
     two calls see. Without the flag the two are printed and not asserted —
     the metric comparison above is the part that is true of ANY relay, and a
     self-hoster running one instance in RAM mode is not misconfigured;
-  * two calls are made, so `instanceId` is sampled twice and reported: with
-    several instances the ids may differ, and a single id is not a failure.
+  * two /metrics scrapes are made, so the instance id (now a `z_relay_info`
+    label, since P1-14 took it off `/health`) is sampled twice and reported:
+    with several instances the ids may differ, and a single id is not a
+    failure.
 
-  * `presenceStale` must be present in Redis mode and zero, and `storage`
-    must be `ram-only`, whatever Blueprint is or is not named.
+  * `presenceStale` (now the `z_presence_stale` gauge) must be present in
+    Redis mode and zero, and `/health` `storage` must be `ram-only`, whatever
+    Blueprint is or is not named.
+
+`/metrics` now needs a bearer token (P1-14, default-404 without one). This
+reads it from the `METRICS_TOKEN` environment variable — pass the same secret
+the relay has — and sends it. **Never run this against a live URL** (the hard
+rule): its test drives it against a relay it starts itself.
 
 Exit status is 0 when the live relay is at least this checkout, 1 when it is
 behind or unhealthy, 2 when it could not be reached or the arguments are
-wrong. Reading `/health` and
-`/metrics` is a GET a builder may make; nothing here deploys, and nothing here
-needs a credential.
+wrong, and 3 when `/metrics` answered 401/404 because the token was missing or
+wrong. Reading `/health` and `/metrics` is a GET a builder may make; nothing
+here deploys.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import ssl
 import sys
@@ -55,6 +64,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVER = ROOT / "server" / "server.js"
 BLUEPRINT = ROOT / "render.ha.yaml"
 TIMEOUT = 15
+METRICS_TOKEN = os.environ.get("METRICS_TOKEN", "")
 
 
 def emitted_metrics(src: str) -> tuple[list[str], list[str]]:
@@ -85,10 +95,28 @@ def blueprint_expectations(text: str) -> dict[str, object]:
     return out
 
 
-def get(url: str) -> str:
-    req = urllib.request.Request(url, headers={"user-agent": "z-check-live-relay"})
+def get(url: str, token: str = "") -> str:
+    headers = {"user-agent": "z-check-live-relay"}
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=TIMEOUT, context=ssl.create_default_context()) as r:
         return r.read().decode("utf-8", "replace")
+
+
+def label(body: str, metric: str, key: str) -> str | None:
+    """Read one label off an info metric line (e.g. z_relay_info{instance="…"})."""
+    m = re.search(rf'^{metric}\{{([^}}]*)\}}', body, re.M)
+    if not m:
+        return None
+    lm = re.search(rf'{key}="([^"]*)"', m.group(1))
+    return lm.group(1) if lm else None
+
+
+def metric_value(body: str, name: str) -> int | None:
+    """The value of a bare gauge/counter line, or None if absent."""
+    m = re.search(rf"^{name} (\d+)$", body, re.M)
+    return int(m.group(1)) if m else None
 
 
 def main(argv: list[str]) -> int:
@@ -126,17 +154,35 @@ def main(argv: list[str]) -> int:
         else {}
     )
 
+    if not METRICS_TOKEN:
+        print("METRICS_TOKEN is not set — /metrics needs the relay's bearer token "
+              "(P1-14). Set it in the environment to the secret the relay has; this "
+              "tool never takes it on the command line and must never be run against a "
+              "live URL.", file=sys.stderr)
+        return 3
+
     try:
         health_raw = get(f"{base}/health")
-        metrics_raw = get(f"{base}/metrics")
         second_health_raw = get(f"{base}/health")
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as e:
+        print(f"{base}: not reachable ({e})", file=sys.stderr)
+        return 2
+    try:
+        metrics_raw = get(f"{base}/metrics", METRICS_TOKEN)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 404):
+            print(f"{base}/metrics answered {e.code}: the METRICS_TOKEN is wrong, or the "
+                  "relay has none configured (P1-14). Nothing could be checked.", file=sys.stderr)
+            return 3
+        print(f"{base}/metrics: {e}", file=sys.stderr)
+        return 2
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
         print(f"{base}: not reachable ({e})", file=sys.stderr)
         return 2
 
     try:
         health = json.loads(health_raw)
-        health2 = json.loads(second_health_raw)
+        json.loads(second_health_raw)
     except json.JSONDecodeError:
         print(f"{base}/health did not answer JSON:\n{health_raw[:200]}", file=sys.stderr)
         return 1
@@ -150,13 +196,21 @@ def main(argv: list[str]) -> int:
     missing = [m for m in want if m not in live]
     extra = [m for m in live if m not in want]
 
-    ids = {health.get("instanceId"), health2.get("instanceId")}
+    # The instance id is now a z_relay_info label (P1-14 took it off /health);
+    # a second /metrics scrape samples it again, so several instances show up.
+    try:
+        metrics_raw2 = get(f"{base}/metrics", METRICS_TOKEN)
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
+        metrics_raw2 = metrics_raw
+    ids = {label(metrics_raw, "z_relay_info", "instance"),
+           label(metrics_raw2, "z_relay_info", "instance")}
     ids.discard(None)
+    ids.discard("")
+    presence_stale = metric_value(metrics_raw, "z_presence_stale")
 
     print(f"relay      {base}")
-    print(f"health     ok={health.get('ok')} uptime={health.get('uptimeSec')}s "
-          f"coordinator={health.get('coordinator')} storage={health.get('storage')} "
-          f"push={health.get('push')}")
+    print(f"health     ok={health.get('ok')} coordinator={health.get('coordinator')} "
+          f"storage={health.get('storage')} push={health.get('push')}")
     print(f"instances  {len(ids)} seen in two calls: {', '.join(sorted(ids)) or 'none reported'}"
           + (f" (Blueprint says {expect['instances']})" if "instances" in expect else ""))
     if blueprint is None:
@@ -183,11 +237,11 @@ def main(argv: list[str]) -> int:
             f"{expect['coordinator']!r} — this is not that Blueprint's service"
         )
     if health.get("coordinator") == "redis":
-        if "presenceStale" not in health:
-            problems.append("Redis mode but /health has no presenceStale (pre-2.7.9 relay)")
-        elif health.get("presenceStale"):
+        if presence_stale is None:
+            problems.append("Redis mode but /metrics has no z_presence_stale (pre-phase-29 relay)")
+        elif presence_stale:
             problems.append(
-                f"presenceStale={health['presenceStale']}: that many sockets have no presence "
+                f"z_presence_stale={presence_stale}: that many sockets have no presence "
                 "record, so their mail is queued rather than pushed — the store was full when "
                 "they logged in, and the heartbeat has not repaired it yet"
             )

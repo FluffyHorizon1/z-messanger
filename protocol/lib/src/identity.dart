@@ -78,9 +78,19 @@ class ZIdentity {
     return Uint8List.fromList(sig.bytes);
   }
 
+  /// A relay challenge nonce is a fixed 32 bytes (PROTOCOL §12.1). The signing
+  /// methods below refuse any other length: the signature concatenates the
+  /// authority with the nonce, so a variable-width nonce would blur the
+  /// boundary between them, and every relay since v1.0.0 sends exactly 32 —
+  /// refusing anything else breaks no real relay.
+  static const int _nonceLen = 32;
+
   /// Sign a relay authentication challenge the v1 way — the nonce alone.
   /// Only the frozen vectors call this now; see [authContext].
   Future<Uint8List> signAuthChallenge(Uint8List nonce) async {
+    if (nonce.length != _nonceLen) {
+      throw ArgumentError('a relay challenge nonce is $_nonceLen bytes, not ${nonce.length}');
+    }
     final sig = await Ed25519().sign(
       concatBytes([utf8.encode(authContext), nonce]),
       keyPair: edKeyPair,
@@ -91,6 +101,9 @@ class ZIdentity {
   /// Sign a relay authentication challenge for the relay at [authority] and
   /// no other ([relayAuthority] of the URL that was dialled).
   Future<Uint8List> signAuthChallengeV2(Uint8List nonce, String authority) async {
+    if (nonce.length != _nonceLen) {
+      throw ArgumentError('a relay challenge nonce is $_nonceLen bytes, not ${nonce.length}');
+    }
     final sig = await Ed25519().sign(
       concatBytes([utf8.encode(authContextV2), utf8.encode(authority), nonce]),
       keyPair: edKeyPair,

@@ -1345,12 +1345,20 @@ S→C  { "t":"ready", "id":routingId }                              // then queu
 
 `authority` is the relay as the client dialled it: the URL's host in lower
 case, with the port only when it is not the scheme's default, an IPv6
-literal in brackets — which is exactly the client's own `Host` header, and
-the relay verifies against that header (normalised the same way; a front
-MUST pass `Host` through, and a relay MAY additionally accept names its
-operator lists). The nonce is the fixed-width last field, so the
-concatenation is unambiguous. **A signature is therefore good at one relay
-and no other.** Until 2026‑09‑17 the signed message was
+literal in brackets — which is exactly the client's own `Host` header. The
+relay verifies the signature against the names **it is configured to answer
+to** (`RELAY_AUTHORITIES`, plus any name its platform supplies), and **never
+against the `Host` header the connection carried** — the presenter chooses
+that header, so a relay that verified against it would accept a signature a
+victim had been induced to make for the presenter's own name (the splice).
+A relay with no names configured trusts a dialled loopback/private/`.local`
+name only, and only on a connection from a loopback or private address — the
+case with no machine‑in‑the‑middle boundary — and refuses anything else until
+its operator lists its names. The nonce MUST be exactly 32 bytes
+and is the fixed‑width last field, so the concatenation is unambiguous; a
+client MUST refuse a challenge whose nonce is any other length (every relay
+has sent 32 since v1.0.0). **A signature is therefore good at one relay and
+no other.** Until 2026‑09‑17 the signed message was
 `utf8("z-relay-auth-v1:") || nonce` — the nonce alone — so a relay the user
 was induced to connect to (a pasted address, an invite, a MITM on a `ws://`
 address) could open its own socket to the honest relay, present the honest
@@ -1373,7 +1381,13 @@ signature. Vectors:
 
 On a bad signature the relay sends `error{bad_auth}` and closes with code
 4001. A second connection for the same routing id replaces the first, which is
-closed with code 4002. Before `ready`, `push-register` and a `send` whose
+closed with code 4002. Since phase 29 a relay also closes a connection that
+has not authenticated and has sent no frame for its idle timeout (120 s by
+default; a `ping` counts, so an anonymous sender that pings is never closed)
+with code 4003, refuses a connection past its connection caps with 1013, and
+drops without a close frame one whose unread output passes its send‑buffer
+caps; in every case what is queued stays queued for the next connection.
+Before `ready`, `push-register` and a `send` whose
 payload is not sealed are answered with `error{not_authed}`, `recv` and
 `push-unregister` are ignored, and `ping` is answered; a repeated `auth` is
 ignored.
@@ -1546,7 +1560,7 @@ instance are queued rather than pushed live until the relay's next
 successful heartbeat write; the instance it is on serves it live from its
 own knowledge regardless. The relay counts refusals of this kind
 (`z_store_full_total`) and reports sockets whose presence write is pending
-(`/health` `presenceStale`).
+(`z_presence_stale` on `/metrics`; until phase 29 `/health` `presenceStale`).
 
 ### 12.5 Delivery semantics
 
@@ -1599,8 +1613,11 @@ own knowledge regardless. The relay counts refusals of this kind
 
 ### 12.6 HTTP endpoints (informative)
 
-`GET /health` (liveness), `GET /metrics` (Prometheus, aggregate only — no
-per‑user data), `GET /` and `GET /privacy` (static pages).
+`GET /health` (liveness only — `ok`, `coordinator`, `storage`, `push`, and no
+counter or instance id), `GET /metrics` (Prometheus, aggregate only — no
+per‑user data; requires `Authorization: Bearer <METRICS_TOKEN>`, and answers
+404 when no token is configured, since even aggregate counters are a presence
+oracle — P1‑14), `GET /` and `GET /privacy` (static pages).
 
 ## 13. Local storage and identity backup (informative)
 

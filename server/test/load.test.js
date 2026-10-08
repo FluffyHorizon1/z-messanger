@@ -168,10 +168,12 @@ test('a swarm of concurrent clients all authenticate', async () => {
       new Client(port, makeIdentity()).open().then((c) => c.auth())
     )
   );
-  const h = await health(port);
-  assert.ok(h.json.connections >= N, `only ${h.json.connections} online`);
+  // The live connection count moved off /health to /metrics with P1-14; this
+  // suite runs the coordinator in-process, so read it straight off the map.
+  const online = _internal.online.size;
+  assert.ok(online >= N, `only ${online} online`);
   summary.concurrentClients = N;
-  summary.connectionsAtPeak = h.json.connections;
+  summary.connectionsAtPeak = online;
   clients.forEach((c) => c.close());
   await sleep(200);
   summary.rssDeltaAfterSwarmMB =

@@ -1,4 +1,8 @@
 'use strict';
+// /metrics requires a bearer token (P1-14); set one before server.js is
+// required so CFG picks it up, and send it on the gets below.
+process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'z-test-metrics-token';
+
 
 // Delivery receipts, and what an acknowledgement costs the relay.
 //
@@ -85,7 +89,7 @@ function sleep(ms) {
 function metric(port, name) {
   return new Promise((res, rej) => {
     http
-      .get({ host: '127.0.0.1', port, path: '/metrics' }, (r) => {
+      .get({ host: '127.0.0.1', port, path: '/metrics', headers: { authorization: `Bearer ${process.env.METRICS_TOKEN}` } }, (r) => {
         let body = '';
         r.on('data', (d) => (body += d));
         r.on('end', () => {
@@ -250,6 +254,9 @@ test('2. Redis: the same, as three entries in the store', { skip: SKIP && 'redis
 test('3. Redis: an acknowledgement that matches nothing does not read the mailbox', { skip: SKIP && 'redis-server/ioredis unavailable' }, async (t) => {
   const { raw, port } = await redisHarness(t);
   const bob = makeIdentity();
+  // Bob has used this relay before: his mailbox is OWNED (phase 29, P0-4), so
+  // it takes this backlog under the per-user caps, not the first-contact ones.
+  (await new Client(port, bob).auth()).close();
   const N = 200;
   const KB64 = 'zs1.' + 'x'.repeat(64 * 1024 - 4); // sealed: no receipts in the way
   const senders = [];

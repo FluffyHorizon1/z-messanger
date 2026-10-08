@@ -1,4 +1,8 @@
 'use strict';
+// /metrics requires a bearer token (P1-14); set one before server.js is
+// required so CFG picks it up, and send it on the gets below.
+process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'z-test-metrics-token';
+
 
 // Sealed-sender delivery at the relay (the zero-knowledge upgrade) and the
 // /metrics endpoint (Phase 4 delivery SLIs).
@@ -99,7 +103,7 @@ class Client {
 function get(port, path) {
   return new Promise((resolve, reject) => {
     http
-      .get(`http://127.0.0.1:${port}${path}`, (res) => {
+      .get(`http://127.0.0.1:${port}${path}`, { headers: { authorization: `Bearer ${process.env.METRICS_TOKEN}` } }, (res) => {
         let body = '';
         res.on('data', (d) => (body += d));
         res.on('end', () => resolve({ status: res.statusCode, body }));

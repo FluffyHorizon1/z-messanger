@@ -30,6 +30,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CHECKER = ROOT / "tool" / "check_live_relay.py"
+TOKEN = "z-check-live-token"  # /metrics is token-gated now (P1-14)
 
 
 def free_port() -> int:
@@ -38,12 +39,18 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def run_checker(url: str, *extra: str) -> subprocess.CompletedProcess:
+def run_checker(url: str, *extra: str, token: str | None = TOKEN) -> subprocess.CompletedProcess:
+    env = {**__import__("os").environ}
+    if token is None:
+        env.pop("METRICS_TOKEN", None)
+    else:
+        env["METRICS_TOKEN"] = token
     return subprocess.run(
         [sys.executable, str(CHECKER), url, *extra],
         capture_output=True,
         text=True,
         cwd=str(ROOT),
+        env=env,
         timeout=120,
     )
 
@@ -61,13 +68,22 @@ def wait_for(url_port: int, path: str = "/health", tries: int = 100) -> bool:
     return False
 
 
-def stub(health: dict, metrics: str) -> tuple[str, http.server.HTTPServer]:
+def stub(health: dict, metrics: str, token: str = TOKEN) -> tuple[str, http.server.HTTPServer]:
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
             if self.path == "/health":
                 body = json.dumps(health).encode()
                 ctype = "application/json"
             elif self.path == "/metrics":
+                # Mirror the relay: default-404 without a token, 401 on a
+                # wrong one, 200 with the right one (P1-14).
+                auth = self.headers.get("authorization", "")
+                if not token:
+                    self.send_error(404)
+                    return
+                if auth != f"Bearer {token}":
+                    self.send_error(401)
+                    return
                 body = metrics.encode()
                 ctype = "text/plain; version=0.0.4"
             else:
@@ -102,7 +118,7 @@ def main() -> int:
     proc = subprocess.Popen(
         ["node", "server.js"],
         cwd=str(env_server),
-        env={**__import__("os").environ, "PORT": str(port), "LOG_LEVEL": "error"},
+        env={**__import__("os").environ, "PORT": str(port), "LOG_LEVEL": "error", "METRICS_TOKEN": TOKEN},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -137,19 +153,12 @@ def main() -> int:
     )
     dropped = "z_ack_miss_total" if "z_ack_miss_total" in emitted else emitted[-1]
     body = "".join(f"# TYPE {m} counter\n{m} 0\n" for m in emitted if m != dropped)
+    # z_presence_stale is Redis-only and conditional, so it is not in `emitted`;
+    # a Redis stub must still carry it or the checker flags its absence.
+    stale0 = "# TYPE z_presence_stale gauge\nz_presence_stale 0\n"
     url, srv = stub(
-        {
-            "ok": True,
-            "uptimeSec": 99,
-            "instanceId": "stale0",
-            "coordinator": "redis",
-            "connections": 0,
-            "queuedEnvelopes": -1,
-            "presenceStale": 0,
-            "storage": "ram-only",
-            "push": "enabled",
-        },
-        body,
+        {"ok": True, "coordinator": "redis", "storage": "ram-only", "push": "enabled"},
+        body + stale0,
     )
     try:
         r = run_checker(url)
@@ -164,18 +173,9 @@ def main() -> int:
     # ---- 3. a relay whose store was full when someone logged in ----
     print("a relay with sockets whose presence write was refused")
     url, srv = stub(
-        {
-            "ok": True,
-            "uptimeSec": 99,
-            "instanceId": "x",
-            "coordinator": "redis",
-            "connections": 3,
-            "queuedEnvelopes": -1,
-            "presenceStale": 2,
-            "storage": "ram-only",
-            "push": "enabled",
-        },
-        "".join(f"# TYPE {m} counter\n{m} 0\n" for m in emitted),
+        {"ok": True, "coordinator": "redis", "storage": "ram-only", "push": "enabled"},
+        "".join(f"# TYPE {m} counter\n{m} 0\n" for m in emitted)
+        + "# TYPE z_presence_stale gauge\nz_presence_stale 2\n",
     )
     try:
         r = run_checker(url)
@@ -188,8 +188,7 @@ def main() -> int:
     # ---- 4. the wrong coordinator for this Blueprint ----
     print("a relay in RAM mode where the named Blueprint wires a store")
     url, srv = stub(
-        {"ok": True, "uptimeSec": 1, "instanceId": "x", "coordinator": "memory",
-         "connections": 0, "queuedEnvelopes": 0, "storage": "ram-only", "push": "disabled"},
+        {"ok": True, "coordinator": "memory", "storage": "ram-only", "push": "disabled"},
         "".join(f"# TYPE {m} counter\n{m} 0\n" for m in emitted),
     )
     try:
@@ -205,6 +204,22 @@ def main() -> int:
     r = run_checker(f"http://127.0.0.1:{free_port()}")
     check("exits 2 rather than 1 — unreachable is not the same as behind",
           r.returncode == 2, r.stdout + r.stderr)
+
+    # ---- 6. /metrics is token-gated (P1-14) ----
+    print("the /metrics token")
+    url, srv = stub(
+        {"ok": True, "coordinator": "memory", "storage": "ram-only", "push": "disabled"},
+        "".join(f"# TYPE {m} counter\n{m} 0\n" for m in emitted),
+    )
+    try:
+        r = run_checker(url, token=None)
+        check("exits 3 when METRICS_TOKEN is unset — nothing could be checked",
+              r.returncode == 3, r.stdout + r.stderr)
+        check("and says the token is needed", "METRICS_TOKEN" in r.stderr, r.stderr)
+        r = run_checker(url, token="the-wrong-token")
+        check("exits 3 when the token is wrong (/metrics 401)", r.returncode == 3, r.stdout + r.stderr)
+    finally:
+        srv.shutdown()
 
     print()
     if failures:

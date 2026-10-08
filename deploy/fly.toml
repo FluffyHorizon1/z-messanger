@@ -16,6 +16,9 @@ primary_region = "iad"          # pick one near you: https://fly.io/docs/referen
 [env]
   LOG_LEVEL = "info"
   QUEUE_TTL_HOURS = "72"
+  # <app-name>.fly.dev is trusted for authentication automatically (FLY_APP_NAME).
+  # Serving a custom domain too? Name it here, or clients dialling it are refused:
+  # RELAY_AUTHORITIES = "relay.example.com"
 
 [http_service]
   internal_port = 8080          # the relay defaults to 8080; Fly maps 443→this

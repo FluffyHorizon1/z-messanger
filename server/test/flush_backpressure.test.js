@@ -151,8 +151,16 @@ class Client {
   }
 }
 
-/** Fills `rid`'s mailbox with `n` copies of `payload`, from enough senders to stay under the rate limit. */
-async function fillWith(port, rid, payload, n) {
+/**
+ * Fills `recipient`'s mailbox with `n` copies of `payload`, from enough
+ * senders to stay under the rate limit. The recipient has used this relay
+ * before, as every real one has: one authentication makes the mailbox OWNED
+ * (phase 29, P0-4), so it is held to the per-user caps this file is about and
+ * not to the first-contact ones a mailbox nobody has claimed gets.
+ */
+async function fillWith(port, recipient, payload, n) {
+  const rid = recipient.rid;
+  (await new Client(port, recipient).auth()).close();
   const senders = [];
   for (let i = 0; i < Math.ceil(n / 200); i++) senders.push(await new Client(port, makeIdentity()).auth());
   for (let i = 0; i < n; i++) {
@@ -163,8 +171,8 @@ async function fillWith(port, rid, payload, n) {
 }
 
 /** Fills `rid`'s mailbox with BACKLOG envelopes of 64 KB. */
-function fill(port, rid) {
-  return fillWith(port, rid, KB64, BACKLOG);
+function fill(port, recipient) {
+  return fillWith(port, recipient, KB64, BACKLOG);
 }
 
 /**
@@ -193,7 +201,7 @@ test('1. RAM: a reader that stops reading costs the relay one page, not its back
   });
 
   const bob = makeIdentity();
-  const senders = await fill(port, bob.rid);
+  const senders = await fill(port, bob);
 
   // Bob connects and immediately stops reading. The flush starts; the relay
   // must stop filling the socket once the buffer is over the mark.
@@ -246,7 +254,7 @@ test('2. Redis: the same bound, and the store is read a page at a time', { skip:
   });
 
   const bob = makeIdentity();
-  const senders = await fill(port, bob.rid);
+  const senders = await fill(port, bob);
   const outBefore = +/total_net_output_bytes:(\d+)/.exec(await raw.info('stats'))[1];
 
   const b = new Client(port, bob);
@@ -284,7 +292,7 @@ test('3. a socket that goes away mid-flush ends the flush, and its envelopes wai
   });
 
   const bob = makeIdentity();
-  const senders = await fill(port, bob.rid);
+  const senders = await fill(port, bob);
   const b = new Client(port, bob);
   await b.auth();
   b.pause();
@@ -320,7 +328,7 @@ test('4. RAM: envelopes the size of the cap are bounded by bytes, not by the cou
   });
 
   const bob = makeIdentity();
-  const senders = await fillWith(port, bob.rid, BIG, BIG_N);
+  const senders = await fillWith(port, bob, BIG, BIG_N);
 
   const b = new Client(port, bob);
   await b.auth();
@@ -365,7 +373,7 @@ test('5. Redis: the same, where a body’s size is not known until it is read', 
   });
 
   const bob = makeIdentity();
-  const senders = await fillWith(port, bob.rid, BIG, BIG_N);
+  const senders = await fillWith(port, bob, BIG, BIG_N);
 
   const b = new Client(port, bob);
   await b.auth();

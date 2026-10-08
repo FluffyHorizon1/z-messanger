@@ -1,4 +1,8 @@
 'use strict';
+// /metrics requires a bearer token (P1-14); set one before server.js is
+// required so CFG picks it up, and send it on the gets below.
+process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'z-test-metrics-token';
+
 
 // The mailbox-creation gate across instances (25.3).
 //
@@ -114,7 +118,7 @@ async function listening(port, ms = 5000) {
 function get(port, p) {
   return new Promise((resolve, reject) => {
     http
-      .get({ host: '127.0.0.1', port, path: p }, (res) => {
+      .get({ host: '127.0.0.1', port, path: p, headers: { authorization: `Bearer ${process.env.METRICS_TOKEN}` } }, (res) => {
         let body = '';
         res.on('data', (c) => (body += c));
         res.on('end', () => resolve(body));

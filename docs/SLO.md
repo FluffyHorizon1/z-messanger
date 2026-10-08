@@ -29,7 +29,10 @@ build a latency SLO on the way a normal service would. What exists is:
   `z_presence_refresh_failed_total`, `z_body_missing_total`), and
   `z_send_internal_error_total` — sends the relay could not store or route,
   which in Redis mode is almost always the store being unreachable: the
-  store-availability signal `/health` deliberately is not.
+  store-availability signal `/health` deliberately is not. `/metrics` now
+  requires the `METRICS_TOKEN` bearer (P1-14; 404 without it), so the scrape
+  config must send it — a scrape with no token learns nothing, by design, so
+  that the counters are not a presence oracle for the internet.
 - The store's own `redis_up`, `used_memory` and `maxmemory` (the Valkey/Redis
   exporter), and the KT log's and witness's `/health` (JSON, read through a
   json exporter).
@@ -85,6 +88,24 @@ the flood and mis-configuration signals the capacity work put in
   refusing sends. It heals as mailboxes drain, but a sustained rate means the
   store is too small for the backlog (`docs/CAPACITY.md`); see
   `RelayStoreFull`.
+- **`z_unowned_refused_total` leaving zero** — the first‑contact abuse limits
+  are firing (P0‑4): a flood of sealed envelopes to mailboxes nobody owns has
+  hit the per‑mailbox cap, the relay‑wide unowned budget, or a per‑IP minute.
+  Zero in ordinary use, so any rate is a flood the limits are bounding (the
+  junk clears at `QUEUE_TTL_HOURS`) or `UNOWNED_STORE_BYTES` set too low for a
+  genuinely busy first‑contact rate. Owned mailboxes are unaffected. See
+  `RelayUnownedRefused`.
+- **`z_unowned_bytes` approaching `z_unowned_max_bytes`** — the store‑fill
+  gauge for first‑contact traffic (P0‑4): what mailboxes nobody owns hold,
+  against `UNOWNED_STORE_BYTES`. RAM mode counts it live; Redis mode reports
+  the relay‑wide total each sweep reconciles (the same figure on every
+  instance — take the max, not the sum). At the budget, unowned sends are
+  refused and `z_unowned_refused_total` moves; owned mailboxes are unaffected.
+- **`z_store_bytes` approaching `z_store_max_bytes`** — the single‑instance
+  store‑fill gauge (both emitted only in RAM mode; Redis mode watches the
+  store exporter's `used_memory` instead, SLO 6). Past the ceiling a send is
+  refused `store_full` rather than the process being OOM‑killed, but the
+  backlog is near its limit; see `RelayStoreFillHigh`.
 - **`z_auth_v2_refused_total` rate rising** — v2 authentications verifying under
   none of the relay's names: a front rewriting `Host` (set `RELAY_AUTHORITIES`),
   or signatures made for another relay (the replay the binding stops, R33). And

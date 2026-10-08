@@ -1,4 +1,8 @@
 'use strict';
+// /metrics requires a bearer token (P1-14); set one before server.js is
+// required so CFG picks it up, and send it on the gets below.
+process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'z-test-metrics-token';
+
 
 // The shared store at its memory limit (Redis mode — render.ha.yaml runs the
 // Key Value instance with `noeviction`, so a full store refuses writes rather
@@ -92,7 +96,7 @@ function sleep(ms) {
 function get(port, path) {
   return new Promise((resolve, reject) => {
     http
-      .get({ host: '127.0.0.1', port, path }, (res) => {
+      .get({ host: '127.0.0.1', port, path, headers: { authorization: `Bearer ${process.env.METRICS_TOKEN}` } }, (res) => {
         let body = '';
         res.on('data', (c) => (body += c));
         res.on('end', () => resolve(body));
@@ -190,6 +194,15 @@ test('the relay under a full store: prompt refusals, logins that still drain, li
   const bob = makeIdentity(); // offline; his mailbox is what fills the store
   const carol = makeIdentity(); // offline with one queued envelope; logs in while full
   const dave = makeIdentity(); // logs in while full, on the sender's instance
+  // Bob and Carol have used this relay before, as every real recipient has:
+  // one authentication each makes their mailboxes OWNED (phase 29, P0-4), so
+  // what refuses Bob's backlog below is the full store this test is about
+  // and not the first-contact caps an unclaimed mailbox gets.
+  for (const who of [bob, carol]) {
+    const c0 = new Client(portA, who);
+    assert.strictEqual((await c0.auth()).t, 'ready');
+    c0.close();
+  }
   const a = new Client(portA, alice);
   assert.strictEqual((await a.auth()).t, 'ready');
 
@@ -228,7 +241,7 @@ test('the relay under a full store: prompt refusals, logins that still drain, li
   const got = await c.next((f) => f.t === 'msg' && f.id === 'c1');
   assert.strictEqual(got.from, alice.rid);
   assert.strictEqual(await raw.get(`presence:${carol.rid}`), null, 'the presence write was refused');
-  assert.strictEqual(JSON.parse(await get(portB, '/health')).presenceStale, 1);
+  assert.strictEqual(metric(await get(portB, '/metrics'), 'z_presence_stale'), 1);
   const delivered = a.next((f) => f.t === 'delivered' && f.id === 'c1');
   c.send({ t: 'recv', id: 'c1', from: alice.rid });
   await delivered; // the ack removed the entry (allowed when full) and reached Alice live
@@ -266,7 +279,7 @@ test('the relay under a full store: prompt refusals, logins that still drain, li
   // from A is queued (not lost). After the heartbeat it is pushed live.
   await coordB.heartbeat();
   assert.strictEqual(await raw.get(`presence:${carol.rid}`), 'instB');
-  assert.strictEqual(JSON.parse(await get(portB, '/health')).presenceStale, 0);
+  assert.strictEqual(metric(await get(portB, '/metrics'), 'z_presence_stale'), 0);
   a.send({ t: 'send', id: 'c2', to: carol.rid, payload: 'Y2Fyb2wy' });
   const c2 = await c.next((f) => f.t === 'msg' && f.id === 'c2');
   assert.strictEqual(c2.from, alice.rid);

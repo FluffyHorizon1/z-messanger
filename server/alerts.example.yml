@@ -10,6 +10,10 @@
 # Where the series come from (the relay keeps NO per-identity data; every z_*
 # is an aggregate counter, RAM only, per instance):
 #   - z_*                     the relay's own GET /metrics, scraped directly.
+#                             /metrics needs an Authorization: Bearer
+#                             <METRICS_TOKEN> header now (P1-14; 404 without
+#                             one), so the scrape job must carry it
+#                             (prometheus: authorization.credentials).
 #   - probe_success,
 #     probe_duration_seconds  the blackbox exporter, probing GET /health of the
 #                             relay, the KT log and the witness (JSON, no auth).
@@ -212,6 +216,33 @@ groups:
         annotations:
           summary: "Shared mailbox-creation gate falling back to per-instance buckets"
           runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayNewMailboxGateFallback"
+
+      - alert: RelayUnownedRefused
+        # Signal (P0-4). The first-contact abuse limits are firing: a flood of
+        # sealed envelopes to mailboxes nobody owns hit the per-unowned-mailbox
+        # cap, the relay-wide UNOWNED_STORE_BYTES budget, or a per-IP minute.
+        # Owned mailboxes are unaffected; the junk clears at QUEUE_TTL_HOURS.
+        # Zero in ordinary use — a sustained rate is a flood being bounded, or
+        # UNOWNED_STORE_BYTES set too low for a busy first-contact rate.
+        expr: sum(increase(z_unowned_refused_total{job="z-relay"}[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Relay refusing first-contact (unowned) mail — a flood, or UNOWNED_STORE_BYTES too low"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayNewMailboxRefused"
+
+      - alert: RelayStoreFillHigh
+        # SLO 6, single-instance. The RAM store's own fill gauge: past
+        # MAX_STORE_BYTES a send is refused store_full rather than the process
+        # being OOM-killed, but the backlog is near its ceiling. Redis mode has
+        # no z_store_bytes (the store exporter's used_memory covers it,
+        # RelayStoreNearFull); this rule is for the single-instance relay.
+        expr: z_store_bytes{job="z-relay"} / z_store_max_bytes{job="z-relay"} > 0.9
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Single-instance relay store over 90% of MAX_STORE_BYTES"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — RelayStoreNearFull"
 
       - alert: RelayAuthV2Refused
         # Signal. v2 authentications verifying under none of the relay's names:

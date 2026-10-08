@@ -1,4 +1,8 @@
 'use strict';
+// /metrics requires a bearer token (P1-14); set one before server.js is
+// required so CFG picks it up, and send it on the gets below.
+process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'z-test-metrics-token';
+
 
 // The two coordinators must behave the same. `MemoryCoordinator` is what a
 // single instance runs and what most of this suite exercises;
@@ -574,7 +578,7 @@ test(
     const counters = () =>
       new Promise((resolve, reject) => {
         http
-          .get({ host: '127.0.0.1', port, path: '/metrics' }, (res) => {
+          .get({ host: '127.0.0.1', port, path: '/metrics', headers: { authorization: `Bearer ${process.env.METRICS_TOKEN}` } }, (res) => {
             let b = '';
             res.on('data', (c) => (b += c));
             res.on('end', () => {

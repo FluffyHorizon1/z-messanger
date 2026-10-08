@@ -162,6 +162,21 @@ class RelayClient {
           return;
         }
         final nonce = unb64(frame['nonce'] as String);
+        // The challenge nonce is a fixed 32 bytes (PROTOCOL §12.1), and the
+        // signature concatenates authority ‖ nonce. A nonce of any other
+        // length would let a hostile relay vary where the authority ends and
+        // the nonce begins under the signature — a splicing surface the
+        // fixed width closes. Every relay since v1.0.0 sends exactly 32
+        // bytes, so refusing anything else breaks no real relay; it refuses
+        // only one that is trying something.
+        if (nonce.length != 32) {
+          if (!_ready.isCompleted) {
+            _ready.completeError(RelayException(
+                'relay sent a ${nonce.length}-byte challenge nonce; '
+                'a Z relay sends exactly 32'));
+          }
+          return;
+        }
         final sig = await _identity.signAuthChallengeV2(nonce, _authority);
         _ws.add(jsonEncode({
           't': 'auth',

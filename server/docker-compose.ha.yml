@@ -31,6 +31,8 @@ services:
       REDIS_URL: "redis://redis:6379"
       LOG_LEVEL: "info"
       QUEUE_TTL_HOURS: "72"
+      # The name(s) clients dial — see docker-compose.yml.
+      RELAY_AUTHORITIES: "${RELAY_AUTHORITIES:-}"
     depends_on:
       - redis
     # No ports here — the load balancer fronts them. `--scale relay=N` to add more.

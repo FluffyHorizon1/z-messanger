@@ -55,7 +55,7 @@ void main() {
     await portProbe.close();
     relay = await Process.start('node', ['server.js'],
         workingDirectory: serverDir,
-        environment: {'PORT': '$port', 'LOG_LEVEL': 'silent'});
+        environment: {'PORT': '$port', 'LOG_LEVEL': 'silent', 'METRICS_TOKEN': 'z-apptest-metrics'});
     for (var i = 0; i < 60; i++) {
       try {
         final res = await (await HttpClient()
@@ -213,14 +213,25 @@ void main() {
   /// Envelopes the relay holds that their recipient has not acknowledged.
   /// The RAM store keeps an envelope until it is acknowledged, delivered or
   /// not, so this is zero only when everything sent so far has been taken
-  /// off the relay by whoever it was for. (In Redis mode `/health` reports
-  /// -1 and this never settles; these tests run the RAM store.)
+  /// off the relay by whoever it was for. Read from /metrics
+  /// (z_queued_envelopes) since P1-14 trimmed /health to liveness; /metrics is
+  /// token-gated and the relay is spawned with METRICS_TOKEN below. (In Redis
+  /// mode z_queued_envelopes is absent and this never settles; these tests run
+  /// the RAM store.)
   Future<int> relayUnacked() async {
-    final res = await (await HttpClient()
-            .getUrl(Uri.parse('http://127.0.0.1:$port/health')))
-        .close();
+    final req =
+        await HttpClient().getUrl(Uri.parse('http://127.0.0.1:$port/metrics'));
+    req.headers.set('authorization', 'Bearer z-apptest-metrics');
+    final res = await req.close();
     final body = await res.transform(utf8.decoder).join();
-    return ((jsonDecode(body) as Map)['queuedEnvelopes'] as num).toInt();
+    final m = RegExp(r'^z_queued_envelopes (\d+)$', multiLine: true)
+        .firstMatch(body);
+    // Absent means the scrape failed (a wrong token is a 401), not that the
+    // relay is empty: fail loudly rather than read it as settled.
+    if (m == null) {
+      throw StateError('no z_queued_envelopes on /metrics (HTTP ${res.statusCode})');
+    }
+    return int.parse(m.group(1)!);
   }
 
   /// Whether [device] has heard back on the sync session it sends on to

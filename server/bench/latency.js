@@ -29,6 +29,9 @@ const crypto = require('crypto');
 const http = require('http');
 const WebSocket = require('ws');
 
+// /metrics requires a bearer token since phase 29 (P1-14); set one before
+// server.js reads its environment, and send it below.
+process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'z-bench-metrics-token';
 const { createServer, routingIdFromPub } = require('../server.js');
 
 const PAIRS = +(process.env.PAIRS || 50);
@@ -106,16 +109,27 @@ function percentile(sorted, p) {
   return sorted[i];
 }
 
-function health(port) {
+function httpGet(port, path, headers = {}) {
   return new Promise((resolve, reject) => {
     http
-      .get(`http://127.0.0.1:${port}/health`, (res) => {
+      .get({ host: '127.0.0.1', port, path, headers }, (res) => {
         let body = '';
         res.on('data', (c) => (body += c));
-        res.on('end', () => resolve(JSON.parse(body)));
+        res.on('end', () => resolve(body));
       })
       .on('error', reject);
   });
+}
+
+// The counters moved from /health (liveness only now) to /metrics (P1-14).
+async function health(port) {
+  const h = JSON.parse(await httpGet(port, '/health'));
+  const m = await httpGet(port, '/metrics', { authorization: `Bearer ${process.env.METRICS_TOKEN}` });
+  const metric = (name) => {
+    const x = new RegExp(`^${name} (\\d+)$`, 'm').exec(m);
+    return x ? Number(x[1]) : undefined;
+  };
+  return { connections: metric('z_connections'), queuedEnvelopes: metric('z_queued_envelopes'), storage: h.storage };
 }
 
 async function main() {

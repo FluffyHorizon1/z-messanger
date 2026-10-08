@@ -139,6 +139,10 @@ function parseArgs(argv) {
 // The relay logs a line per authentication; two hundred of them would bury
 // the table. Set before server.js is required, since CFG reads it then.
 if (process.env.LOG_LEVEL === undefined) process.env.LOG_LEVEL = 'silent';
+// /metrics needs a bearer token now (default-404, P1-14); set one before
+// server.js is required so every instance (in-process and forked, which
+// inherits this env) accepts the scrapes below, and send it on httpGet.
+if (process.env.METRICS_TOKEN === undefined) process.env.METRICS_TOKEN = 'z-bench-metrics-token';
 
 // ---------------------------------------------------------------------------
 // What a sealed envelope of a given bucket is on the wire: "zs1." and the
@@ -214,7 +218,7 @@ function httpGet(port, p) {
   return new Promise((resolve, reject) => {
     const t0 = process.hrtime.bigint();
     http
-      .get({ host: '127.0.0.1', port, path: p }, (res) => {
+      .get({ host: '127.0.0.1', port, path: p, headers: { authorization: `Bearer ${process.env.METRICS_TOKEN}` } }, (res) => {
         let body = '';
         res.on('data', (c) => (body += c));
         res.on('end', () => resolve({ status: res.statusCode, body, ms: Number(process.hrtime.bigint() - t0) / 1e6 }));
@@ -622,11 +626,18 @@ async function run(o) {
     const totals = {};
     for (const name of METRIC_NAMES) totals[name] = 0;
     for (const [i, inst] of instances.entries()) {
-      const h = JSON.parse((await httpGet(inst.port, '/health')).body);
       const stat = await inst.stat();
-      const row = { id: inst.id, connections: h.connections, sockets: h.sockets, presenceStale: h.presenceStale };
+      // connections/sockets/presenceStale moved from /health to /metrics with
+      // P1-14 (/health is liveness only). Read them off the one /metrics
+      // scrape below rather than a second endpoint.
+      const m = await httpGet(inst.port, '/metrics');
+      const row = {
+        id: inst.id,
+        connections: metric(m.body, 'z_connections'),
+        sockets: metric(m.body, 'z_sockets'),
+        presenceStale: metric(m.body, 'z_presence_stale'),
+      };
       if (o.fork || i === 0) {
-        const m = await httpGet(inst.port, '/metrics');
         for (const name of METRIC_NAMES) {
           const v = metric(m.body, name);
           totals[name] += v;

@@ -18,7 +18,13 @@ void main() {
   setUpAll(() async {
     final serverDir =
         '${Directory.current.parent.path}${Platform.pathSeparator}server';
-    port = 40000 + DateTime.now().millisecondsSinceEpoch % 20000;
+    // Ask the OS for a free port rather than derive one from the clock:
+    // `dart test` runs files concurrently, so two files computing a port from
+    // the same millisecond collided and one relay lost the bind (the app
+    // tests already bind port 0 for exactly this reason).
+    final portProbe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    port = portProbe.port;
+    await portProbe.close();
     relay = await Process.start(
       'node',
       ['server.js'],

@@ -129,7 +129,7 @@ objectives and the exact alarm expressions are in `docs/SLO.md` and
 `server/alerts.example.yml`.
 
 - **Raise the store (or lower `MAX_QUEUE_BYTES_PER_USER`)** when `used_memory`
-  / `storeBytes` climbs toward `maxmemory` / `MAX_STORE_BYTES`, or
+  / `z_store_bytes` climbs toward `maxmemory` / `MAX_STORE_BYTES`, or
   `z_store_full_total` leaves zero. The store is a shared resource one full
   mailbox at its cap cannot exhaust but many backlogged recipients can.
 - **Add an instance** when a single one is CPU- or event-loop-bound: delivery

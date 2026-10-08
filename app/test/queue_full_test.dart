@@ -36,7 +36,9 @@ void main() {
   const cap = 6;
 
   Future<Map<String, int>> metrics() async {
-    final res = await (await HttpClient().getUrl(Uri.parse('http://127.0.0.1:$port/metrics'))).close();
+    final req = await HttpClient().getUrl(Uri.parse('http://127.0.0.1:$port/metrics'));
+    req.headers.set('authorization', 'Bearer z-apptest-metrics'); // /metrics is token-gated (P1-14)
+    final res = await req.close();
     final body = await res.transform(utf8.decoder).join();
     final out = <String, int>{};
     for (final line in body.split('\n')) {
@@ -55,6 +57,7 @@ void main() {
     relay = await Process.start('node', ['server.js'], workingDirectory: serverDir, environment: {
       'PORT': '$port',
       'LOG_LEVEL': 'silent',
+      'METRICS_TOKEN': 'z-apptest-metrics',
       'MAX_QUEUE_MSGS_PER_USER': '$cap',
     });
     for (var i = 0; i < 60; i++) {

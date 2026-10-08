@@ -1,4 +1,8 @@
 'use strict';
+// /metrics requires a bearer token (P1-14); set one before server.js is
+// required so CFG picks it up, and send it on the gets below.
+process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'z-test-metrics-token';
+
 
 // Anyone could fill the store with mailboxes nobody would ever drain.
 //
@@ -106,7 +110,7 @@ function freePort() {
 function get(port, path) {
   return new Promise((resolve, reject) => {
     http
-      .get({ host: '127.0.0.1', port, path }, (res) => {
+      .get({ host: '127.0.0.1', port, path, headers: { authorization: `Bearer ${process.env.METRICS_TOKEN}` } }, (res) => {
         let body = '';
         res.on('data', (c) => (body += c));
         res.on('end', () => resolve(body));

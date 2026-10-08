@@ -38,7 +38,11 @@ void main() {
   final services = <ChatService>[];
 
   Future<Map<String, int>> metrics() async {
-    final res = await (await HttpClient().getUrl(Uri.parse('http://127.0.0.1:$port/metrics'))).close();
+    // /metrics needs a bearer token now (P1-14); the relay is spawned with
+    // METRICS_TOKEN set to this value below.
+    final req = await HttpClient().getUrl(Uri.parse('http://127.0.0.1:$port/metrics'));
+    req.headers.set('authorization', 'Bearer z-apptest-metrics');
+    final res = await req.close();
     final body = await res.transform(utf8.decoder).join();
     final out = <String, int>{};
     for (final line in body.split('\n')) {
@@ -55,7 +59,7 @@ void main() {
     port = probe.port;
     await probe.close();
     relay = await Process.start('node', ['server.js'],
-        workingDirectory: serverDir, environment: {'PORT': '$port', 'LOG_LEVEL': 'silent'});
+        workingDirectory: serverDir, environment: {'PORT': '$port', 'LOG_LEVEL': 'silent', 'METRICS_TOKEN': 'z-apptest-metrics'});
     for (var i = 0; i < 60; i++) {
       try {
         final res = await (await HttpClient().getUrl(Uri.parse('http://127.0.0.1:$port/health'))).close();

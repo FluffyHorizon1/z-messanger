@@ -1,4 +1,8 @@
 'use strict';
+// /metrics requires a bearer token (P1-14); set one before server.js is
+// required so CFG picks it up, and send it on the gets below.
+process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'z-test-metrics-token';
+
 
 // Authentication that names the relay it is for.
 //
@@ -24,10 +28,14 @@
 //      client through a hostile relay authenticates at the honest relay
 //      under v1 and does NOT under v2, because the client signed the
 //      hostile relay's authority;
-//   2. a v2 signature over the wrong authority is refused and counted, one
-//      over an authority the operator listed (RELAY_AUTHORITIES) is
-//      accepted, and the authority is normalised — case, a default port —
-//      the same way a client's Host header is;
+//   2. v2 is verified against the relay's CONFIGURED names only, never the
+//      Host header the presenter sends (P1-16): a signature made for another
+//      relay is refused even when the presenter sets Host to match it (the
+//      splice); a configured name is accepted whatever Host says; and an
+//      unconfigured relay trusts a dialled loopback/LAN name on a connection
+//      from a loopback/private address (dev, LAN, this suite) but refuses a
+//      public name — including one that merely starts like an IPv6 prefix —
+//      and a local name presented from a public address;
 //   3. v1 is accepted while RELAY_AUTH_V1 is on and counted every time, and
 //      refused when it is off; the challenge advertises v2 either way;
 //   4. and the frozen v2 vectors verify here, against the same message the
@@ -41,7 +49,7 @@ const http = require('http');
 const path = require('path');
 const WebSocket = require('ws');
 
-const { createServer, CFG, normalizeAuthority, routingIdFromPub } = require('../server.js');
+const { createServer, CFG, normalizeAuthority, isLocalAuthority, routingIdFromPub } = require('../server.js');
 
 const V1 = Buffer.from('z-relay-auth-v1:', 'utf8');
 const V2 = Buffer.from('z-relay-auth-v2:', 'utf8');
@@ -62,7 +70,7 @@ function signV2(identity, authority, nonce) {
 function get(port, p) {
   return new Promise((resolve, reject) => {
     http
-      .get({ host: '127.0.0.1', port, path: p }, (res) => {
+      .get({ host: '127.0.0.1', port, path: p, headers: { authorization: `Bearer ${process.env.METRICS_TOKEN}` } }, (res) => {
         let body = '';
         res.on('data', (c) => (body += c));
         res.on('end', () => resolve(body));
@@ -159,7 +167,7 @@ test('1. a signature drawn out through a hostile relay authenticates under v1 an
   assert.strictEqual(metric(after, 'z_auth_v2_refused_total') - metric(before, 'z_auth_v2_refused_total'), 1, 'the one replay counted');
 });
 
-test('2. the authority is the Host header, normalised as a client normalises it; the operator may list more', async (t) => {
+test('2. v2 is verified against the configured names ONLY, never the presented Host (P1-16)', async (t) => {
   const r = await relay(t);
   const alice = makeIdentity();
   const tryAuth = async (signed, headers = {}) => {
@@ -170,26 +178,57 @@ test('2. the authority is the Host header, normalised as a client normalises it;
     c.close();
     return res.t;
   };
-  assert.strictEqual(await tryAuth(r.authority), 'ready');
-  assert.strictEqual(await tryAuth('RELAY.EXAMPLE', { Host: 'relay.example' }), 'error', 'the signed authority must already be normalised');
-  assert.strictEqual(await tryAuth('127.0.0.1'), 'error', 'the port is part of the name when it is not the default');
-  assert.strictEqual(await tryAuth('127.0.0.2:' + r.port), 'error');
-  // The Host header decides what this relay is called: a client that sends
-  // one names the relay by it (through a front that passes Host along, that
-  // is the name the user dialled).
-  assert.strictEqual(await tryAuth('relay.example', { Host: 'Relay.Example' }), 'ready', 'lower-cased');
-  assert.strictEqual(await tryAuth('relay.example', { Host: 'relay.example:443' }), 'ready', 'a default port is not part of the name');
-  assert.strictEqual(await tryAuth('relay.example:443', { Host: 'relay.example:443' }), 'error', 'and must not be signed either');
-  assert.strictEqual(await tryAuth('relay.example:8443', { Host: 'relay.example:8443' }), 'ready', 'a non-default port is');
-  assert.strictEqual(await tryAuth('[::1]:8080', { Host: '[::1]:8080' }), 'ready', 'an IPv6 literal keeps its brackets');
-  // The operator's list, for a front that rewrites Host.
+
+  // Unconfigured relay (the default): it was told no name, and the connection
+  // dialled a loopback address (127.0.0.1:port), which has no MITM boundary
+  // to protect — so the dialled name is trusted, which is how the whole test
+  // suite authenticates. A public Host with no RELAY_AUTHORITIES is refused.
+  assert.strictEqual(CFG.authorities.length, 0, 'default is unconfigured');
+  assert.strictEqual(await tryAuth(r.authority), 'ready', 'loopback authority: the dev/LAN fallback');
+  assert.strictEqual(await tryAuth('RELAY.EXAMPLE', { Host: 'relay.example' }), 'error',
+    'a public Host with nothing configured is refused — the relay will not verify a name it was not told');
+  assert.strictEqual(await tryAuth('relay.example', { Host: 'relay.example' }), 'error',
+    'signing the public Host does not help: the Host is never what v2 is checked against');
+  assert.strictEqual(await tryAuth('127.0.0.2:' + r.port), 'error', 'the wrong loopback name still fails');
+  assert.strictEqual(await tryAuth('relay.local:8080', { Host: 'relay.local:8080' }), 'ready', 'a .local (LAN) name is the same case');
+  assert.strictEqual(await tryAuth('[fd12:3456::1]:8080', { Host: '[fd12:3456::1]:8080' }), 'ready', 'so is a unique-local IPv6 literal');
+  // A public NAME that merely starts like an IPv6 prefix is public.
+  assert.strictEqual(await tryAuth('fd.example', { Host: 'fd.example' }), 'error', 'fd.example is a public name');
+  assert.strictEqual(await tryAuth('fcbarcelona.example', { Host: 'fcbarcelona.example' }), 'error', 'and so is fc…');
+  // The other half: a local name presented from the INTERNET is refused — a
+  // signature some victim made for a LAN relay, replayed to this one. (The
+  // suite connects over loopback, so this half is exercised directly.)
+  assert.strictEqual(isLocalAuthority('192.168.1.50:8080', '203.0.113.9'), false, 'local name, public peer: refused');
+  assert.strictEqual(isLocalAuthority('192.168.1.50:8080', '::ffff:203.0.113.9'), false, 'nor via a v4-mapped public peer');
+  assert.strictEqual(isLocalAuthority('192.168.1.50:8080', '::ffff:10.0.0.7'), true, 'local name, private peer (a LAN, a container network)');
+  assert.strictEqual(isLocalAuthority('127.0.0.1:8080', '::1'), true, 'loopback both ways');
+  assert.strictEqual(isLocalAuthority('relay.example', '127.0.0.1'), false, 'a public name is refused even from loopback (a same-host proxy)');
+  assert.strictEqual(isLocalAuthority('[2001:db8::1]', '127.0.0.1'), false, 'a public IPv6 literal is public');
+
+  // Configured relay: v2 is verified against CFG.authorities and nothing else.
   const saved = CFG.authorities;
-  CFG.authorities = [normalizeAuthority('Public.Example:443')];
+  CFG.authorities = [normalizeAuthority('Honest.Example')];
   t.after(() => (CFG.authorities = saved));
-  assert.strictEqual(await tryAuth('public.example', { Host: 'internal-name:8080' }), 'ready', 'a listed authority is accepted whatever Host says');
-  assert.strictEqual(await tryAuth('internal-name:8080', { Host: 'internal-name:8080' }), 'ready', 'and the Host header still is');
-  assert.strictEqual(await tryAuth('other.example'), 'error');
-  // The normaliser itself, at its edges.
+  // THE SPLICE (P1-16): a victim dialled the attacker and signed the
+  // attacker's name; the attacker presents that signature to the honest relay
+  // with Host set to the attacker's name. The honest relay verifies only
+  // against its own configured name, so the victim's signature is nothing
+  // here whatever Host the presenter sends.
+  assert.strictEqual(await tryAuth('evil.example', { Host: 'evil.example' }), 'error',
+    'a signature made for another relay is refused even when the presenter sets Host to match it');
+  assert.strictEqual(await tryAuth('honest.example', { Host: 'evil.example' }), 'ready',
+    'the configured name is accepted whatever Host says — the Host is not consulted');
+  assert.strictEqual(await tryAuth('honest.example'), 'ready', 'and with no Host header at all');
+  assert.strictEqual(await tryAuth(r.authority), 'error',
+    'once a name is configured, the loopback fallback is off: only the configured name verifies');
+
+  // A front that rewrites Host: the operator lists every name clients dial.
+  CFG.authorities = [normalizeAuthority('public.example'), normalizeAuthority('www.public.example')];
+  assert.strictEqual(await tryAuth('public.example', { Host: 'internal-upstream:8080' }), 'ready');
+  assert.strictEqual(await tryAuth('www.public.example', { Host: 'internal-upstream:8080' }), 'ready');
+  assert.strictEqual(await tryAuth('other.example', { Host: 'public.example' }), 'error');
+
+  // The normaliser itself, at its edges (a client signs the normalised form).
   assert.strictEqual(normalizeAuthority('Relay.Example:443'), 'relay.example');
   assert.strictEqual(normalizeAuthority('relay.example:80'), 'relay.example');
   assert.strictEqual(normalizeAuthority('relay.example:8080'), 'relay.example:8080');
