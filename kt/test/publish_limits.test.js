@@ -72,6 +72,22 @@
 //      at once are capped, which sockets held open can occupy and a request
 //      that finishes never does, because a rate is a switch and a bound on
 //      concurrency is not.
+//
+// And first publishes, which could still be starved (the 2026-10-03
+// analysis). Behind a front with KT_CLIENT_IP_HEADER empty, every request is
+// one address and nothing here can tell clients apart — which is why the
+// operator documents say to set it. With it set, two ways remained:
+//  10. one client cannot starve genuine first publishes. One address minting
+//      accounts as fast as it can gets a quarter of the first-publish
+//      allowance — it used to get all of it, its own gate being three times
+//      the allowance's size — so a new account from anywhere else is
+//      accepted meanwhile; and eight addresses republishing their own
+//      accounts, which used to hold the total at zero, hold it at a reserve
+//      only first publishes may spend, while the total still counts every
+//      publish there is;
+//  11. and one client is one machine: IPv6 addresses in the same /64 share a
+//      bucket, since a host chooses its own last 64 bits, and an IPv4 peer
+//      is its IPv4 address however a dual-stack socket writes it.
 'use strict';
 
 const test = require('node:test');
@@ -143,7 +159,9 @@ test('1. a flood of fresh accounts from one address is stopped', async () => {
   // Every publish is genuine: a different account, correctly signed, first
   // version. Nothing about any one of them is refusable — which is the shape
   // the live flood had, and the reason a per-account gate does not see it.
-  const s = await start({ publishPerMinuteTotal: 5, publishPerMinute: 1000 });
+  // The address's own gates out of the way — the per-address rate and its
+  // share of first publishes (criterion 10) — so the total is what is seen.
+  const s = await start({ publishPerMinuteTotal: 5, publishPerMinute: 1000, newAccountsPerAddressPerMinute: 1000 });
   try {
     let accepted = 0;
     let refused = 0;
@@ -256,7 +274,9 @@ test('4. the buckets are bounded however many keys arrive', () => {
 });
 
 test('5. a first publish for a new account is charged; a known account is not', async () => {
-  const s = await start({ newAccountsPerMinute: 3, publishPerMinute: 1000, publishPerMinuteTotal: 1000 });
+  // One address's share of first publishes (criterion 10) out of the way, so
+  // the allowance itself is what is seen.
+  const s = await start({ newAccountsPerMinute: 3, newAccountsPerAddressPerMinute: 1000, publishPerMinute: 1000, publishPerMinuteTotal: 1000 });
   try {
     let accepted = 0;
     const refusedAccounts = [];
@@ -401,7 +421,7 @@ test('8. the address gate is spent only by a publish that happens', async () => 
   // the address is charged after it, so a refusal there gives the address
   // its token back; the count the address ends on is the count of publishes
   // that happened, exactly.
-  const r = await start({ publishPerMinute: 4, publishPerMinuteTotal: 1000, newAccountsPerMinute: 2, publishPerAccountPerDay: 2 });
+  const r = await start({ publishPerMinute: 4, publishPerMinuteTotal: 1000, newAccountsPerMinute: 2, newAccountsPerAddressPerMinute: 1000, publishPerAccountPerDay: 2 });
   try {
     const a = account('first');
     const b = account('second');
@@ -427,7 +447,7 @@ test('8. the address gate is spent only by a publish that happens', async () => 
   // Nor the total gate, which everybody shares by construction: moving only
   // the address gate would have left this one as the same switch at two
   // requests a second. Junk at the total's rate, then a genuine publish.
-  const t = await start({ publishPerMinute: 1000, publishPerMinuteTotal: 5 });
+  const t = await start({ publishPerMinute: 1000, publishPerMinuteTotal: 5, newAccountsPerAddressPerMinute: 1000 });
   try {
     for (let i = 0; i < 50; i++) await fetch(`${t.base}/kt/v1/publish`, { method: 'POST', body: 'x' });
     assert.equal((await t.post(publishJson(account('after-junk'), 1))).status, 201, 'fifty junk requests spent nothing of the total');
@@ -512,5 +532,91 @@ test('9. what a request that publishes nothing can cost is bounded: bodies being
     held.destroy();
   } finally {
     await t.stop();
+  }
+});
+
+test('10. one client cannot starve genuine first publishes', async () => {
+  // Time stands still, so nothing refills: what each bucket starts with is
+  // all there is, and every count below is exact.
+  const frozen = Date.now();
+  const as = (ip) => ({ 'cf-connecting-ip': ip });
+
+  // One address minting accounts as fast as it can.
+  const s = await start({ clientIpHeader: 'cf-connecting-ip', now: () => frozen });
+  try {
+    let minted = 0;
+    for (let i = 0; i < 20; i++) {
+      const r = await s.post(publishJson(account(`mint-${i}`), 1), as('203.0.113.66'));
+      if (r.status === 201) minted += 1;
+      else {
+        assert.equal(r.status, 429);
+        assert.match(r.body.message, /new accounts a minute from one address/);
+      }
+    }
+    assert.equal(minted, 3, 'a quarter of the ten-a-minute allowance, rounded up, and no more');
+    assert.equal(
+      (await s.post(publishJson(account('genuine-new'), 1), as('198.51.100.7'))).status,
+      201,
+      'a new account from anywhere else is accepted — the minting address used to take all ten'
+    );
+  } finally {
+    await s.stop();
+  }
+
+  // Eight addresses republishing accounts they already hold: the shape that
+  // held the total at zero. Each address and each account is well inside
+  // its own gates; only the total can say no.
+  const t = await start({ clientIpHeader: 'cf-connecting-ip', now: () => frozen, publishPerMinuteTotal: 40 });
+  try {
+    const flooders = Array.from({ length: 8 }, (_, i) => ({ ip: `203.0.113.${10 + i}`, acct: account(`flooder-${i}`), v: 1 }));
+    for (const f of flooders) assert.equal((await t.post(publishJson(f.acct, 1), as(f.ip))).status, 201);
+    let updates = 0;
+    for (let round = 0; round < 10; round++) {
+      for (const f of flooders) {
+        const r = await t.post(publishJson(f.acct, f.v + 1), as(f.ip));
+        if (r.status === 201) {
+          updates += 1;
+          f.v += 1;
+        } else {
+          assert.equal(r.status, 429);
+          assert.match(r.body.message, /in total/);
+        }
+      }
+    }
+    // 40, less their own 8 first publishes, less a minute of first publishes
+    // (10) kept back: the total said no with ten tokens still in it.
+    assert.equal(updates, 22);
+    for (const ip of ['198.51.100.8', '198.51.100.9']) {
+      assert.equal((await t.post(publishJson(account(`genuine-${ip}`), 1), as(ip))).status, 201, `a first publish from ${ip} gets in`);
+    }
+    // And the total still counts every publish, first ones included.
+    assert.equal(t.log.size, 8 + 22 + 2);
+    assert.ok(t.log.size <= 40);
+  } finally {
+    await t.stop();
+  }
+});
+
+test('11. one client is one machine: an IPv6 /64 is one address', async () => {
+  const frozen = Date.now();
+  const s = await start({
+    clientIpHeader: 'cf-connecting-ip',
+    now: () => frozen,
+    publishPerMinute: 2,
+    publishPerMinuteTotal: 1000,
+    newAccountsPerMinute: 1000,
+    newAccountsPerAddressPerMinute: 1000,
+  });
+  try {
+    const from = async (ip, name) => (await s.post(publishJson(account(name), 1), { 'cf-connecting-ip': ip })).status;
+    assert.equal(await from('2001:db8:1:2::a', 'v6-a'), 201);
+    assert.equal(await from('2001:DB8:1:2:0:0:0:b', 'v6-b'), 201, 'the same /64, written out in full');
+    assert.equal(await from('2001:db8:1:2:ffff:ffff:ffff:ffff', 'v6-c'), 429, 'a third address in that /64 is the same client');
+    assert.equal(await from('2001:db8:1:3::1', 'v6-d'), 201, 'the next /64 is another');
+    assert.equal(await from('192.0.2.5', 'v4-a'), 201);
+    assert.equal(await from('::ffff:192.0.2.5', 'v4-b'), 201, 'an IPv4 peer as a dual-stack socket writes it');
+    assert.equal(await from('192.0.2.5', 'v4-c'), 429, 'is the same IPv4 address');
+  } finally {
+    await s.stop();
   }
 });

@@ -42,8 +42,11 @@
 #                               kt_health_disk_free_bytes  <- log /health diskFreeBytes
 #                               kt_health_full             <- log /health full (true=1)
 #                               kt_health_size             <- log /health size
+#                               kt_health_rss_bytes        <- log /health rssBytes
+#                               kt_health_mem_limit_bytes  <- log /health memLimitBytes
 #                               kt_witness_size            <- witness /health size
 #                               kt_witness_diverged        <- witness /health diverged (true=1)
+#                               kt_witness_stale           <- witness /health stale (true=1)
 #                             Map the witness from its /health, not /sth.json:
 #                             the co-signed record carries the size but never
 #                             `diverged`. `full` is null when the log cannot
@@ -271,13 +274,26 @@ groups:
         # SLO 8. The log's disk figures are not being read — the json exporter
         # stopped, its mapping no longer matches, or the log reports `full` as
         # null because it cannot read its own free space. KtDiskLow and
-        # KtLogFull are blind meanwhile.
-        expr: absent(kt_health_disk_free_bytes{job="z-kt-health"}) or absent(kt_health_full{job="z-kt-health"})
+        # KtLogFull are blind meanwhile; so is KtMemoryHigh, without rssBytes.
+        expr: absent(kt_health_disk_free_bytes{job="z-kt-health"}) or absent(kt_health_full{job="z-kt-health"}) or absent(kt_health_rss_bytes{job="z-kt-health"})
         for: 10m
         labels: { severity: warning }
         annotations:
-          summary: "KT log disk figures are not being read — the disk alarms are blind"
+          summary: "KT log disk or memory figures are not being read — those alarms are blind"
           runbook: "SELF_HOSTING.md#when-an-alert-fires — KtHealthUnread"
+
+      - alert: KtMemoryHigh
+        # SLO 7, early. The log holds every entry in memory for its whole life
+        # (~2.4 KB retained, ~6.5 KB resident an entry; kt/bench/memory.js), and
+        # the replay that rebuilds it runs before the log listens: an instance
+        # that runs out does not slow down, it is killed during the replay on
+        # every start. Grow it with the log, like the disk (CAPACITY.md (b)).
+        expr: kt_health_rss_bytes{job="z-kt-health"} / kt_health_mem_limit_bytes{job="z-kt-health"} > 0.75
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "KT log resident memory past 75% of its limit — grow the instance before the log outgrows it"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — KtMemoryHigh"
 
       - alert: KtDiskLow
         # SLO 8. Entries NEVER expire (R31), so the disk is a one-way resource:
@@ -339,3 +355,17 @@ groups:
         annotations:
           summary: "KT witness far behind the log head for 30m — it has stopped following"
           runbook: "SELF_HOSTING.md#when-an-alert-fires — KtWitnessBehind"
+
+      - alert: KtWitnessStale
+        # SLO 9. Nothing verified for longer than KT_STALE_AFTER (three
+        # intervals): every sync failing — the log unreachable to it or past
+        # the deadline, an answer too large, a head past KT_MIRROR_MAX_ENTRIES.
+        # Not a fork, and on a quiet log sooner than KtWitnessBehind. A witness
+        # from before 2026-10-04 reports no `stale` at all, which this also
+        # catches: update it.
+        expr: kt_witness_stale{job="z-kt-witness"} == 1 or absent(kt_witness_stale{job="z-kt-witness"})
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "KT witness has verified nothing for longer than it should — it has stopped keeping up"
+          runbook: "SELF_HOSTING.md#when-an-alert-fires — KtWitnessStale"

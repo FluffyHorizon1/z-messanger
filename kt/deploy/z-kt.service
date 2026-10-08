@@ -1,5 +1,14 @@
 # systemd unit for the Z transparency log (docs/SELF_HOSTING.md, "Running the
 # transparency log"). Install to /etc/systemd/system/z-kt.service.
+#
+# The seed stays root's (/etc/z-kt/seed, mode 600, as step 1 makes it) and
+# reaches the service as a credential: systemd reads it as root at start and
+# hands a private copy to this service alone, in a directory only it can
+# read, which KT_SEED_FILE names. Until 2026-10-04 this unit pointed
+# KT_SEED_FILE at /etc/z-kt/seed itself, which the unprivileged user below
+# cannot read — every start following the documented steps failed with
+# EACCES. Needs systemd 248 or later for %d (Debian 12, Ubuntu 22.04, RHEL 9);
+# on an older one, SELF_HOSTING.md says what to do instead.
 [Unit]
 Description=Z transparency log
 After=network-online.target
@@ -10,7 +19,8 @@ Type=simple
 User=z-kt
 Group=z-kt
 WorkingDirectory=/opt/z-kt
-Environment=KT_SEED_FILE=/etc/z-kt/seed
+LoadCredential=kt-seed:/etc/z-kt/seed
+Environment=KT_SEED_FILE=%d/kt-seed
 Environment=KT_DATA=/var/lib/z-kt
 Environment=KT_HOST=127.0.0.1
 Environment=KT_PORT=8085

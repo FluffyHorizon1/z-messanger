@@ -29,6 +29,29 @@
 //      snapshot and the half-copied file;
 //   5. and `KT_MIN_SIZE` refuses an empty log when the head file went with
 //      the disk, which is the one the head file cannot see.
+//
+// And three more, from the 2026-10-03 analysis, about the two ways a head
+// came to be wrong without anybody deciding it should be:
+//   6. `tools/repair.js` signs nothing. It opened the file with a throwaway
+//      key, and a file with no head beside it was given one — signed by
+//      `Buffer.alloc(32, 1)` — which the log then refused to start against
+//      as a head somebody else wrote. Now a repaired file with no head gets
+//      none, and the log records its own, with its own key, at its next
+//      start; a file with a head keeps it byte for byte;
+//   7. a WHOLE-disk snapshot, restored, is refused. Criterion 4's snapshot
+//      lost the entries and kept the head; a whole-disk one brings the head
+//      back with the entries, the two consistent and both out of date, and
+//      under KT_MIN_SIZE=1 the log signed on from it — a fork for every
+//      client and witness holding a later head. A start whose last recorded
+//      head is older than `maxHeadAgeMs` is refused, says what to check, and
+//      starts only when KT_CONFIRM_HEAD names exactly that head; a
+//      confirmation names one head, so it does not wave through a later one;
+//   8. and a log that runs keeps that evidence current, so the ordinary
+//      restart is never refused: the head is re-recorded every `resignMs`
+//      and at a clean stop. Nor is the first start after the upgrade, whose
+//      head an older build wrote at its last publish, hours ago on a quiet
+//      day, without the promise to keep it current: that start records one
+//      that carries the promise, and the check holds from there on.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -48,6 +71,8 @@ const {
   rawPublicKey,
   verifySth,
 } = require('../lib/log.js');
+const { verifyConsistency } = require('../lib/merkle.js');
+const repair = require('../tools/repair.js');
 
 const logKey = privateKeyFromSeed(crypto.createHash('sha256').update('head floor').digest());
 
@@ -191,6 +216,220 @@ test('5. KT_MIN_SIZE refuses what a lost disk takes with it', (t) => {
   const fine = open(file, { minSize: 2 })();
   assert.equal(fine.size, 3);
   fine.close();
+});
+
+/** A head file's record, as the log's own types. */
+function headOf(rec) {
+  return {
+    size: rec.size,
+    logRoot: Buffer.from(rec.logRoot, 'base64'),
+    mapRoot: Buffer.from(rec.mapRoot, 'base64'),
+    ts: rec.ts,
+    sig: Buffer.from(rec.sig, 'base64'),
+  };
+}
+
+/** tools/repair.js, quietly; its exit code. */
+function runRepair(args) {
+  const out = console.log;
+  const err = console.error;
+  console.log = () => {};
+  console.error = () => {};
+  try {
+    return repair.main(['node', 'repair.js', ...args]);
+  } finally {
+    console.log = out;
+    console.error = err;
+  }
+}
+
+test('6. a repair signs nothing: no head is planted, and one that is there is left alone', (t) => {
+  const { file, headFile, text } = threeEntries(t);
+  // A file with no head beside it — an older build's, or one whose head went
+  // missing — ending in the torn line an older build left.
+  fs.rmSync(headFile);
+  fs.writeFileSync(file, text + '{"i":3,"label":"ab');
+  assert.equal(runRepair([file, '--write']), 0, 'the tail is dropped and the file replays');
+  assert.equal(fs.readFileSync(file, 'utf8'), text);
+  assert.ok(!fs.existsSync(headFile), 'and no head was written: the tool holds none of the log\'s keys');
+
+  // The log starts — it used to refuse, against the head the repair had
+  // signed with `Buffer.alloc(32, 1)` — and the head it records is its own.
+  const log = open(file)();
+  assert.equal(log.size, 3);
+  log.close();
+  const rec = JSON.parse(fs.readFileSync(headFile, 'utf8'));
+  assert.ok(verifySth(headOf(rec), rawPublicKey(logKey)), 'the only head on disk is one the log signed');
+
+  // With a head beside it, a repair leaves the head exactly as it found it.
+  const before = fs.readFileSync(headFile);
+  fs.appendFileSync(file, '{"i":3,"lab');
+  assert.equal(runRepair([file, '--write']), 0);
+  assert.deepEqual(fs.readFileSync(headFile), before, 'byte for byte');
+  const again = open(file)();
+  assert.equal(again.size, 3);
+  again.close();
+
+  // And a log opened without its key cannot be made to sign or accept.
+  const ro = new KtLog({ store: new FileStore(file), signingKey: null });
+  assert.equal(ro.size, 3, 'it replays and checks everything');
+  assert.throws(() => ro.sth(), /without its key/);
+  assert.throws(() => ro.publish(publishFor(account('carol'), 1)), /without its key/);
+  assert.equal(ro.keepAlive({ force: true }), false);
+  ro.close();
+  assert.deepEqual(fs.readFileSync(headFile), before, 'still byte for byte');
+});
+
+test('7. a whole-disk snapshot, restored, is refused until the head it brought back is named', (t) => {
+  const dir = tmpdir(t);
+  const file = path.join(dir, 'entries.jsonl');
+  const headFile = `${file}.head.json`;
+  const HOUR = 3_600_000;
+  let clock = Date.now() - 5 * HOUR;
+  const now = () => clock;
+  // KT_MIN_SIZE=1, as the reference Blueprint ships, and the server's default
+  // KT_MAX_HEAD_AGE_MIN.
+  const opts = { minSize: 1, maxHeadAgeMs: 30 * 60_000, now };
+  const start = (extra = {}) => new KtLog({ store: new FileStore(file), signingKey: logKey, ...opts, ...extra });
+
+  // A deployment's first start (the floor is set after it), three publishes,
+  // and the platform's nightly snapshot of the whole disk.
+  const first = new KtLog({ store: new FileStore(file), signingKey: logKey, now });
+  const alice = account('alice');
+  for (let v = 1; v <= 3; v++) first.publish(publishFor(alice, v));
+  const snapshot = { entries: fs.readFileSync(file), head: fs.readFileSync(headFile) };
+  const snapTs = JSON.parse(snapshot.head.toString('utf8')).ts;
+  // An hour on, two more, and a client — or a witness — holds the head that
+  // covers them.
+  clock += HOUR;
+  const bob = account('bob');
+  first.publish(publishFor(bob, 1));
+  first.publish(publishFor(bob, 2));
+  const held = first.sth();
+  assert.equal(held.size, 5);
+  first.close();
+
+  // The disk is lost; the snapshot comes back, head file and all.
+  clock += HOUR;
+  fs.writeFileSync(file, snapshot.entries);
+  fs.writeFileSync(headFile, snapshot.head);
+
+  // What every start was until 2026-10-04, on a copy: every floor passes —
+  // the head matches the entries, there are more than KT_MIN_SIZE — and the
+  // next head it signs is a fork of the one the client holds.
+  {
+    const copy = tmpdir(t);
+    const cfile = path.join(copy, 'entries.jsonl');
+    fs.writeFileSync(cfile, snapshot.entries);
+    fs.writeFileSync(`${cfile}.head.json`, snapshot.head);
+    const unchecked = new KtLog({ store: new FileStore(cfile), signingKey: logKey, minSize: 1, now });
+    for (let v = 1; v <= 3; v++) unchecked.publish(publishFor(account('carol'), v));
+    const next = unchecked.sth();
+    assert.ok(next.size > held.size);
+    const proof = unchecked.consistency(held.size, next.size);
+    assert.equal(
+      verifyConsistency({ first: held.size, second: next.size, firstRoot: held.logRoot, secondRoot: next.logRoot, proof }),
+      false,
+      'a head under the real key that does not extend the one the client holds'
+    );
+    unchecked.close();
+  }
+
+  // Now: what gives a whole-disk snapshot away is the time.
+  assert.throws(
+    () => start(),
+    (e) =>
+      /recorded is .* old \(size 3, ts \d+\)/.test(e.message) &&
+      e.message.includes(`KT_CONFIRM_HEAD=3@${snapTs}`) &&
+      /restored disk snapshot/.test(e.message)
+  );
+  assert.deepEqual(fs.readFileSync(headFile), snapshot.head, 'and the refusal wrote nothing over the evidence');
+
+  // A confirmation naming any other head confirms nothing.
+  assert.throws(() => start({ confirmHead: { size: 3, ts: snapTs + 1 } }), /names a different head/);
+  assert.throws(() => start({ confirmHead: { size: 5, ts: snapTs } }), /names a different head/);
+
+  // Naming exactly this one — once somebody has checked that nothing ever saw
+  // more than 3 — starts it, and the head on disk is then this start's.
+  const resumed = start({ confirmHead: { size: 3, ts: snapTs } });
+  assert.equal(resumed.size, 3);
+  assert.equal(JSON.parse(fs.readFileSync(headFile, 'utf8')).ts, clock, 'recorded at this start');
+  resumed.close();
+
+  // Which is why a confirmation left in the environment is harmless: hours
+  // later the log is stopped long enough to need one again, and the old one
+  // names a head that is no longer there.
+  clock += 3 * HOUR;
+  assert.throws(() => start({ confirmHead: { size: 3, ts: snapTs } }), /names a different head/);
+});
+
+test('8. a log that runs keeps that evidence current, so an ordinary restart is never refused', (t) => {
+  const dir = tmpdir(t);
+  const file = path.join(dir, 'entries.jsonl');
+  const headFile = `${file}.head.json`;
+  let clock = Date.now();
+  const now = () => clock;
+  const opts = { maxHeadAgeMs: 30 * 60_000, resignMs: 10 * 60_000, now };
+  const headTs = () => JSON.parse(fs.readFileSync(headFile, 'utf8')).ts;
+
+  const log = new KtLog({ store: new FileStore(file), signingKey: logKey, ...opts });
+  log.publish(publishFor(account('alice'), 1));
+  // Two quiet hours, the server's timer asking every minute: the head is
+  // re-recorded once it is `resignMs` old, and not before.
+  let writes = 0;
+  let last = headTs();
+  for (let m = 1; m <= 120; m++) {
+    clock += 60_000;
+    log.keepAlive();
+    const ts = headTs();
+    if (ts !== last) writes += 1;
+    last = ts;
+    assert.ok(clock - ts < opts.resignMs, `minute ${m}: the head on disk is under resignMs old`);
+  }
+  assert.ok(writes >= 11 && writes <= 13, `${writes} writes in two hours, not one a minute`);
+
+  // A crash: no clean stop (closing the store records nothing). The restart,
+  // minutes later, is within reach of the last record and starts without a
+  // word.
+  log.close();
+  clock += 5 * 60_000;
+  const restarted = new KtLog({ store: new FileStore(file), signingKey: logKey, ...opts });
+  assert.equal(restarted.size, 1);
+
+  // A clean stop records the head whatever its age, so a deploy's restart is
+  // measured from the moment the old process stopped.
+  clock += 3 * 60_000;
+  assert.equal(restarted.keepAlive({ force: true }), true);
+  assert.equal(headTs(), clock);
+  restarted.close();
+  clock += 20 * 60_000;
+  const deployed = new KtLog({ store: new FileStore(file), signingKey: logKey, ...opts });
+  assert.equal(deployed.size, 1, 'twenty minutes after a clean stop: not refused');
+  deployed.close();
+
+  // The upgrade. The build before this one wrote its head only at a publish,
+  // and wrote no `everyMs`: on a quiet day the live log's head is hours old
+  // when this version first starts, and that age says nothing.
+  const upgraded = tmpdir(t);
+  const ufile = path.join(upgraded, 'entries.jsonl');
+  const uhead = `${ufile}.head.json`;
+  const quiet = clock - 6 * 3_600_000;
+  const before = new KtLog({ store: new FileStore(ufile), signingKey: logKey, now: () => quiet });
+  before.publish(publishFor(account('quiet'), 1));
+  before.close();
+  const older = JSON.parse(fs.readFileSync(uhead, 'utf8'));
+  delete older.everyMs; // what the older build wrote
+  fs.writeFileSync(uhead, JSON.stringify(older));
+  const first = new KtLog({ store: new FileStore(ufile), signingKey: logKey, ...opts });
+  assert.equal(first.size, 1, 'a six-hour-old head from the older build is not refused');
+  first.close();
+  const current = JSON.parse(fs.readFileSync(uhead, 'utf8'));
+  assert.equal(current.ts, clock, 'it recorded a current head at once');
+  assert.equal(current.everyMs, opts.resignMs, 'carrying the promise the check relies on');
+  // And from there the check holds: the same six hours, on a head that made
+  // the promise, is refused.
+  clock += 6 * 3_600_000;
+  assert.throws(() => new KtLog({ store: new FileStore(ufile), signingKey: logKey, ...opts }), /KT_CONFIRM_HEAD=1@/);
 });
 
 test('a memory store has nothing to come back to, and says so by being quiet', () => {

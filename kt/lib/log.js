@@ -191,6 +191,43 @@ function makePublish(acctPrivateKey, { version, fp, value }) {
   return { acct, version, fp, value, sig };
 }
 
+// --- Memory the log keeps ----------------------------------------------------
+
+/**
+ * Copies of [bufs] in ONE allocation of exactly their total size — never a
+ * slice of Node's shared buffer pool. A null passes through as null.
+ *
+ * `Buffer.from(string, 'base64')`, `Buffer.concat` and `Buffer.allocUnsafe`
+ * hand out slices of a shared 8 KiB slab for anything under 4 KiB, and a slab
+ * is freed only when every slice of it is. An entry keeps five small fields
+ * (176 bytes) for the life of the process, decoded from base64 on replay and
+ * on publish alike; and between one entry's fields and the next, the map
+ * insert churns through ~16 KB of transient `Buffer.concat`s. So every entry
+ * pinned about one slab of its own: measured on a replay of 22,094 entries
+ * (the live log's size on 2026-10-03), 9.5 KB of the 11.6 KB each one
+ * retained was slab, 376 MiB resident in all — and in a 512 MiB cgroup the
+ * replay was killed at about 39,000 entries, on every start, because it runs
+ * before the server listens. Owned, an entry retains 2.4 KB, the same log is
+ * 187 MiB, and the same cgroup holds about 131,000 (`bench/memory.js`;
+ * `test/log_memory.test.js` 5–7).
+ *
+ * One allocation rather than one per field: every ArrayBuffer carries its
+ * own bookkeeping, which for 16- and 32-byte fields is more than the bytes.
+ */
+function owned(...bufs) {
+  let n = 0;
+  for (const b of bufs) if (b) n += b.length;
+  const out = Buffer.allocUnsafeSlow(n);
+  let at = 0;
+  return bufs.map((b) => {
+    if (!b) return b;
+    b.copy(out, at);
+    const view = out.subarray(at, at + b.length);
+    at += b.length;
+    return view;
+  });
+}
+
 // --- Errors ------------------------------------------------------------------
 
 class PublishError extends Error {
@@ -442,6 +479,9 @@ class FileStore {
       head.signedFrom = j.signedFrom;
       head.signedFromSig = Buffer.from(j.signedFromSig || '', 'base64');
     }
+    // How often the log that wrote this head re-records it while running;
+    // absent from heads written before 2026-10-04 (`KtLog._checkResumed`).
+    if (j.everyMs !== undefined) head.everyMs = j.everyMs;
     return head;
   }
 
@@ -462,6 +502,7 @@ class FileStore {
         ...(head.signedFrom !== undefined
           ? { signedFrom: head.signedFrom, signedFromSig: head.signedFromSig.toString('base64') }
           : {}),
+        ...(head.everyMs !== undefined ? { everyMs: head.everyMs } : {}),
       },
       null,
       2
@@ -549,26 +590,51 @@ function entryFromStored(j) {
 
 // --- The log -----------------------------------------------------------------
 
+/** What a refusal says about an age in milliseconds: "45 minutes", "26.3 hours", "3.1 days". */
+function describeAge(ms) {
+  const min = ms / 60000;
+  if (min < 120) return `${Math.round(min)} minutes`;
+  const h = min / 60;
+  if (h < 48) return `${h.toFixed(1)} hours`;
+  return `${(h / 24).toFixed(1)} days`;
+}
+
 class KtLog {
   /**
    * @param {object} o
    * @param {MemoryStore|FileStore} o.store
-   * @param {crypto.KeyObject} o.signingKey  the log's Ed25519 private key
+   * @param {crypto.KeyObject|null} o.signingKey  the log's Ed25519 private key; null opens the
+   *                                         file READ-ONLY — replayed and checked, never signed or written
    * @param {number} [o.resignMs]            how old an unchanged head may get before it is re-signed
    * @param {() => number} [o.now]           the clock (tests)
+   * @param {number} [o.minSize]             KT_MIN_SIZE: refuse a replay shorter than this
+   * @param {number} [o.maxHeadAgeMs]        refuse a start whose last recorded head is older than
+   *                                         this, unless [o.confirmHead] names it (`_checkResumed`)
+   * @param {{size: number, ts: number}|null} [o.confirmHead]  KT_CONFIRM_HEAD, parsed
    */
-  constructor({ store, signingKey, resignMs = 10 * 60 * 1000, now = Date.now, minSize = 0, verifyHead = true }) {
+  constructor({
+    store,
+    signingKey,
+    resignMs = 10 * 60 * 1000,
+    now = Date.now,
+    minSize = 0,
+    maxHeadAgeMs = Infinity,
+    confirmHead = null,
+    deferReplay = false,
+  }) {
     this.store = store;
-    this.signingKey = signingKey;
-    this.publicKey = rawPublicKey(signingKey);
+    /**
+     * Null when the log was opened without its key: `tools/repair.js` asks
+     * whether a file replays, and a tool that does not hold the log's key
+     * must not be able to sign anything in its name. It used to open the
+     * file with a throwaway key instead — and a file with no head beside it
+     * got one, signed by `Buffer.alloc(32, 1)`, which the log then refused
+     * to start against as a head somebody else wrote.
+     */
+    this.signingKey = signingKey === null ? null : signingKey;
+    this.publicKey = signingKey === null ? null : rawPublicKey(signingKey);
     this.resignMs = resignMs;
     this.now = now;
-    /**
-     * Whether the head beside the file must be this key's. The log itself
-     * always requires it; `tools/repair.js` opens a file with a throwaway
-     * key to ask only whether it parses, and says so.
-     */
-    this.verifyHead = verifyHead;
     this.tree = new MerkleLog();
     this.map = new SparseMerkleMap();
     /** @type {object[]} entries by index */
@@ -578,8 +644,47 @@ class KtLog {
     this._sth = null;
     /** Index of the first entry that carried a signature, or null. */
     this._signedFrom = null;
+    /** The `ts` of the last head written to the store, or null. */
+    this._recordedTs = null;
+    // When this start began — before the replay, which at a few hundred
+    // thousand entries takes minutes and is not downtime.
+    this._openedAt = now();
+    this._open = { minSize, maxHeadAgeMs, confirmHead };
+    if (deferReplay) return; // `KtLog.open` replays and finishes
     for (const e of store.readAll()) this._apply(e, true);
-    this._checkAgainstLastHead(minSize);
+    this._finishOpen();
+  }
+
+  /**
+   * The constructor's work, in slices: [onProgress] is told how many entries
+   * have replayed every [every] of them, and the event loop runs in between
+   * — which is what lets `server.js` answer `/health` while a large log
+   * replays, instead of a port that is not bound until it is done. Same
+   * entries, same checks, same refusals, in the same order.
+   */
+  static async open(opts, { onProgress = () => {}, every = 1000 } = {}) {
+    const log = new KtLog({ ...opts, deferReplay: true });
+    let n = 0;
+    for (const e of log.store.readAll()) {
+      log._apply(e, true);
+      n += 1;
+      if (n % every === 0) {
+        onProgress(n);
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+    onProgress(n);
+    log._finishOpen();
+    return log;
+  }
+
+  /** True when opened without the log's key: nothing can be signed or written. */
+  get readOnly() {
+    return this.signingKey === null;
+  }
+
+  _finishOpen() {
+    this._checkAgainstLastHead(this._open.minSize);
   }
 
   /**
@@ -631,6 +736,9 @@ class KtLog {
       // closes that too, because the derived rule refuses an unsigned line
       // after a signed one whatever the head says.
       this._boundary = this._signedFrom === null ? size : this._signedFrom;
+      // Opened without the key: there is nothing to check against, and the
+      // head is the log's to write, with its own key, at its next start.
+      if (this.readOnly) return;
       if (size > 0) {
         console.warn(`z-kt: ${size} entries and no head file — recording one; unsigned entries are accepted below ${this._boundary} only`);
       }
@@ -654,9 +762,9 @@ class KtLog {
           'the file is not a prefix of the history this key has already committed to'
       );
     }
-    if (!this.verifyHead) {
-      // A tool asking whether the file parses. The head's signatures are the
-      // log's business, at its next start.
+    if (this.readOnly) {
+      // A tool asking whether the file replays. The head's signatures are the
+      // log's business, at its next start, and so is writing one.
       return;
     }
     // The head is this key's, or it is not a head. A root is something the
@@ -669,6 +777,10 @@ class KtLog {
           '(a different KT_SEED, or a head somebody else wrote): refusing to start against it'
       );
     }
+    // Before anything below writes a new head over the evidence of how long
+    // ago this log last ran.
+    const resumed = this._checkResumed(last, size);
+    this._recordedTs = last.ts;
     // The boundary: the index from which every entry must carry a signature.
     // RECORDED in the head, under the log's key, rather than derived from
     // the file — because a boundary derived from the file being defended is
@@ -701,6 +813,90 @@ class KtLog {
         }
       }
     }
+    // A confirmation is spent the moment it is used: the head on disk is now
+    // this start's, and the old one it named is gone from it. (And a head an
+    // older build wrote is replaced by one that promises to stay current.)
+    if (resumed) this._recordHead();
+  }
+
+  /**
+   * Refuse to sign on from a history that may not be the latest this key
+   * signed — the one case the head beside the entries cannot catch.
+   *
+   * That head holds the log to what it has signed, but a whole-disk snapshot
+   * brings the head back WITH the entries: the two agree with each other and
+   * are both out of date. `KT_MIN_SIZE` sees it only if it was raised past
+   * the snapshot's size, and on the reference deployment it is 1. So a
+   * restored snapshot started, signed on from the snapshot's size, and every
+   * client and witness that held a later head read the next one as a fork —
+   * permanently, and rightly, because that is what it was.
+   *
+   * Nothing on the disk can tell a restored snapshot from a log that stopped
+   * a minute ago: the snapshot IS the disk, and on a host like Render there is
+   * no second place the log could write to that the restore leaves alone.
+   * What tells them apart is the time. A running log re-records its head at
+   * least every `resignMs` (`keepAlive`) and at a clean stop, so the head on
+   * disk says when the log last ran, to within minutes; a snapshot is older
+   * than the moment it is restored by at least the time it took somebody to
+   * notice the disk was gone. A start whose head is older than
+   * `maxHeadAgeMs` is refused until the operator has checked — a witness, a
+   * mirror, the history of `/health`'s `size` — that nothing ever saw a
+   * larger head, and says so by NAMING this one: KT_CONFIRM_HEAD=<size>@<ts>.
+   * A name rather than a switch, so that a confirmation is good for one
+   * start: left in the environment it matches no head the log writes later,
+   * and cannot wave the next restore through unchecked.
+   *
+   * What this cannot see: a snapshot restored within `maxHeadAgeMs` of being
+   * taken, and an operator who confirms without checking. A witness sees
+   * both — it holds the larger head, and the first head signed on from the
+   * snapshot does not extend it. `head_floor.test.js` (7, 8).
+   *
+   * Returns true when this start must record its head at once — a
+   * confirmation was used, or the head came from a build that did not keep
+   * it current — and false when nothing needs to be.
+   */
+  _checkResumed(last, size) {
+    if (!(this._open.maxHeadAgeMs < Infinity)) return false;
+    // A head written before 2026-10-04 was re-recorded only by a publish, so
+    // its age is how long since the last publish — hours, on a quiet day —
+    // and says nothing about when the log last ran. Judging it would refuse
+    // the first start of this version on every quiet log. It is not judged;
+    // this start records one at once, and the check holds from there on. A
+    // snapshot taken before the upgrade is the one it cannot catch.
+    if (!(last.everyMs > 0)) {
+      console.warn('z-kt: the head on disk was written by an older build that did not keep it current; recording a current one, and the restored-snapshot check holds from this start on');
+      return true;
+    }
+    const age = this._openedAt - last.ts;
+    // Never tighter than twice the interval the head was promised at.
+    if (age <= Math.max(this._open.maxHeadAgeMs, 2 * last.everyMs)) return false;
+    const c = this._open.confirmHead;
+    if (c && c.size === size && c.ts === last.ts) {
+      console.warn(`z-kt: resuming at size ${size} from a head ${describeAge(age)} old, as KT_CONFIRM_HEAD says`);
+      return true;
+    }
+    throw new Error(
+      `the last head this log recorded is ${describeAge(age)} old (size ${last.size}, ts ${last.ts}), and a ` +
+        'restored disk snapshot looks exactly like that: signing on from one signs a fork that every client ' +
+        'and witness holding a later head reads as one, permanently. ' +
+        (c ? `KT_CONFIRM_HEAD=${c.size}@${c.ts} names a different head. ` : '') +
+        `If no witness, mirror or client has ever seen a head larger than ${size}, start once with ` +
+        `KT_CONFIRM_HEAD=${size}@${last.ts}; if one has, do not — SELF_HOSTING.md, "If the log will not start"`
+    );
+  }
+
+  /**
+   * Re-sign the head and record it, when the one on disk is older than
+   * `resignMs` — or now, with [force]. The server calls it on a timer and at
+   * a clean stop, so that the head on disk always says when the log last ran
+   * (`_checkResumed`). Returns whether it wrote.
+   */
+  keepAlive({ force = false } = {}) {
+    if (this.readOnly) return false;
+    if (!force && this._recordedTs !== null && this.now() - this._recordedTs < this.resignMs) return false;
+    this._sth = null;
+    this._recordHead();
+    return true;
   }
 
   /**
@@ -762,7 +958,11 @@ class KtLog {
     if (this._boundary === undefined) this._boundary = this._signedFrom === null ? this.entries.length : this._signedFrom;
     head.signedFrom = this._boundary;
     head.signedFromSig = sign(this.signingKey, boundaryInput(this._boundary));
+    // The promise `keepAlive` keeps: re-recorded at least this often while
+    // the log runs, so the head's age is how long ago it last ran.
+    head.everyMs = this.resignMs;
     this.store.writeHead(head);
+    this._recordedTs = head.ts;
   }
 
   get size() {
@@ -806,6 +1006,17 @@ class KtLog {
     // for the life of the process, and the trees need none of it. What stays
     // is where to find it again.
     if (entry.valueAt) entry.value = null;
+    else entry.value = owned(entry.value)[0];
+    // And what stays is the log's own, whatever it arrived in — slices of
+    // the shared pool from the file and from the wire alike (`owned`). Before
+    // the map is told, because its leaf keeps the label.
+    [entry.label, entry.fp, entry.valueHash, entry.acct, entry.sig] = owned(
+      entry.label,
+      entry.fp,
+      entry.valueHash,
+      entry.acct,
+      entry.sig
+    );
     this.tree.append(leafHashOf(entry));
     this.map.set(entry.label, entry.index, entry.version);
     this.entries.push(entry);
@@ -844,6 +1055,7 @@ class KtLog {
    * Returns the new entry. Throws PublishError with an HTTP status.
    */
   publish(req) {
+    if (this.readOnly) throw new Error('this log was opened without its key: it accepts nothing');
     const { label, valueHash } = this.checkPublish(req);
     const { acct, version, fp, value } = req;
     const prev = this.latest(label);
@@ -858,6 +1070,7 @@ class KtLog {
 
   /** The current signed tree head; re-signed after growth or when older than resignMs. */
   sth() {
+    if (this.readOnly) throw new Error('this log was opened without its key: it signs nothing');
     const now = this.now();
     if (this._sth && this._sth.size === this.entries.length && now - this._sth.ts < this.resignMs) return this._sth;
     const head = { size: this.entries.length, logRoot: this.tree.root, mapRoot: this.map.root, ts: now };
@@ -1096,6 +1309,7 @@ function b64(s, len) {
 module.exports = {
   EntryShapeError,
   MAX_VALUE_BYTES,
+  owned,
   KtLog,
   PublishError,
   MemoryStore,

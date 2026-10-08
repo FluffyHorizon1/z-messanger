@@ -188,3 +188,65 @@ test('an oversized body is refused before it is parsed', async () => {
     await s.stop();
   }
 });
+
+test('a request target that is not a URL is a 400, and the log is still up', async () => {
+  // The log as it runs: its own process, so that a handler that throws is a
+  // process that dies — which is what an unhandled rejection is in Node 22,
+  // and what one request did to it until 2026-10-04.
+  const { spawn } = require('node:child_process');
+  const net = require('node:net');
+  const path = require('node:path');
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: path.join(__dirname, '..'),
+    env: { PATH: process.env.PATH, KT_SEED: 'ab'.repeat(32), KT_EPHEMERAL: '1', KT_PORT: '0' },
+  });
+  let out = '';
+  child.stdout.on('data', (d) => (out += d));
+  child.stderr.on('data', (d) => (out += d));
+  const exited = new Promise((r) => child.on('close', r));
+  try {
+    const port = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`the log did not start: ${out}`)), 20_000);
+      child.stdout.on('data', () => {
+        const m = /listening on http:\/\/127\.0\.0\.1:(\d+)/.exec(out);
+        if (m) {
+          clearTimeout(timer);
+          resolve(+m[1]);
+        }
+      });
+      exited.then(() => reject(new Error(`the log exited: ${out}`)));
+    });
+    // An absolute-form target that the URL parser refuses.
+    const status = await new Promise((resolve, reject) => {
+      const sock = net.connect(port, '127.0.0.1', () => sock.write('GET http://[ HTTP/1.1\r\nhost: x\r\n\r\n'));
+      let got = '';
+      const timer = setTimeout(() => {
+        sock.destroy();
+        resolve(null);
+      }, 5_000);
+      sock.on('data', (d) => {
+        got += d;
+        const m = /^HTTP\/1\.1 (\d+)/.exec(got);
+        if (m) {
+          clearTimeout(timer);
+          sock.destroy();
+          resolve(+m[1]);
+        }
+      });
+      sock.on('error', () => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+      sock.on('end', () => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+    });
+    assert.equal(status, 400, `answered ${status}; the log said: ${out}`);
+    const health = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal(health.status, 200, 'and it is still serving');
+  } finally {
+    child.kill('SIGTERM');
+    await exited;
+  }
+});

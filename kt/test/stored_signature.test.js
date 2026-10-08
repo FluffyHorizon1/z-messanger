@@ -66,6 +66,8 @@ const {
   privateKeyFromSeed,
   rawPublicKey,
   entryToJson,
+  sign,
+  sthInput,
 } = require('../lib/log.js');
 
 const logKey = privateKeyFromSeed(crypto.createHash('sha256').update('stored signature').digest());
@@ -291,14 +293,17 @@ test('8. the boundary cannot be moved by editing the head', (t) => {
   // file's root, which whoever wrote the file could compute, so the floor
   // it holds could be lowered by rewriting it.
   const other = privateKeyFromSeed(crypto.createHash('sha256').update('somebody else').digest());
-  const forgedLog = new KtLog({ store: new FileStore(file), signingKey: other, verifyHead: false });
-  forgedLog.close();
-  const theirs = forgedLog.sth();
+  const theirs = {
+    size: good.size,
+    logRoot: Buffer.from(good.logRoot, 'base64'),
+    mapRoot: Buffer.from(good.mapRoot, 'base64'),
+    ts: Date.now(),
+  };
   fs.writeFileSync(
     headFile,
     JSON.stringify({
       ...good,
-      sig: theirs.sig.toString('base64'),
+      sig: sign(other, sthInput(theirs)).toString('base64'),
       ts: theirs.ts,
       signedFromSig: good.signedFromSig,
     })

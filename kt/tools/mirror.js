@@ -32,16 +32,28 @@
  * 200 — a host that restarted an "unhealthy" witness would only make it
  * reload the same head and diverge again.
  *
+ * /health also says when the witness has stopped keeping up: `stale` once
+ * no sync has verified a head for --stale-after seconds (KT_STALE_AFTER;
+ * three intervals by default), and `ok` is false then too. It used to say
+ * `ok` whatever happened short of a divergence (review finding 47), so a
+ * witness held by a request that never ended looked exactly like one that
+ * was working. Every request now has a deadline (--fetch-timeout,
+ * KT_FETCH_TIMEOUT, 30 s), every response a size, and the log's head a
+ * ceiling on the entries it may claim (--max-entries, KT_MIRROR_MAX_ENTRIES;
+ * by default what this machine's memory holds) — so what the log sends
+ * cannot run the witness out of memory either (finding 48).
+ *
  * The public key to pin comes from the log's operator out of band (it is also
  * at GET /kt/v1/pub, which is fine for a first look and no good as a pin).
  */
 
 const http = require('http');
 
-const { Mirror, Divergence } = require('../lib/mirror.js');
+const { Mirror, Divergence, makeFetchJson, defaultMaxEntries, FETCH_TIMEOUT_MS } = require('../lib/mirror.js');
 const { privateKeyFromSeed } = require('../lib/log.js');
 
 function parseArgs(argv, env) {
+  const num = (v) => (v !== undefined && v !== '' ? Number(v) : undefined);
   const o = {
     log: env.KT_LOG_URL,
     pub: env.KT_LOG_PUB,
@@ -49,6 +61,9 @@ function parseArgs(argv, env) {
     every: env.KT_EVERY !== undefined ? Number(env.KT_EVERY) : undefined,
     witnessSeedEnv: env.KT_WITNESS_SEED !== undefined ? 'KT_WITNESS_SEED' : undefined,
     serve: env.KT_SERVE_PORT !== undefined ? Number(env.KT_SERVE_PORT) : env.PORT !== undefined ? Number(env.PORT) : undefined,
+    maxEntries: num(env.KT_MIRROR_MAX_ENTRIES),
+    fetchTimeout: num(env.KT_FETCH_TIMEOUT),
+    staleAfter: num(env.KT_STALE_AFTER),
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -62,23 +77,41 @@ function parseArgs(argv, env) {
     else if (a === '--witness-seed-env') o.witnessSeedEnv = next();
     else if (a === '--every') o.every = Number(next());
     else if (a === '--serve') o.serve = Number(next());
+    else if (a === '--max-entries') o.maxEntries = Number(next());
+    else if (a === '--fetch-timeout') o.fetchTimeout = Number(next());
+    else if (a === '--stale-after') o.staleAfter = Number(next());
     else if (a === '--help' || a === '-h') o.help = true;
     else throw new Error(`unknown argument ${a}`);
   }
   if (o.serve !== undefined && o.every === undefined) o.every = 300;
   if (o.every === undefined) o.every = 0;
+  if (o.maxEntries === undefined) o.maxEntries = defaultMaxEntries();
+  if (o.fetchTimeout === undefined) o.fetchTimeout = FETCH_TIMEOUT_MS / 1000;
+  if (o.staleAfter === undefined) o.staleAfter = 3 * o.every;
   return o;
 }
 
 function usage() {
   console.error(
     'usage: node tools/mirror.js --log URL --pub BASE64 --dir DIR [--witness-seed-env NAME] [--every SECONDS] [--serve PORT]\n' +
-      '       (or KT_LOG_URL, KT_LOG_PUB, KT_MIRROR_DIR, KT_WITNESS_SEED, KT_EVERY, KT_SERVE_PORT in the environment)'
+      '         [--max-entries N] [--fetch-timeout SECONDS] [--stale-after SECONDS]\n' +
+      '       (or KT_LOG_URL, KT_LOG_PUB, KT_MIRROR_DIR, KT_WITNESS_SEED, KT_EVERY, KT_SERVE_PORT,\n' +
+      '        KT_MIRROR_MAX_ENTRIES, KT_FETCH_TIMEOUT, KT_STALE_AFTER in the environment)'
   );
 }
 
+/**
+ * Whether the witness has stopped keeping up: nothing verified for longer
+ * than [staleAfterMs] — counting from the start when nothing has been yet.
+ * Never, when there is no interval to keep up with.
+ */
+function isStale(state, staleAfterMs, now = Date.now()) {
+  if (!(staleAfterMs > 0)) return false;
+  return now - (state.verifiedAt ?? state.startedAt) > staleAfterMs;
+}
+
 /** The witness service: the last verified, co-signed head, and what the mirror knows. */
-function serveWitness(mirror, port, state) {
+function serveWitness(mirror, port, state, staleAfterMs) {
   const server = http.createServer((req, res) => {
     const url = (req.url || '/').split('?')[0];
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -104,10 +137,14 @@ function serveWitness(mirror, port, state) {
       return;
     }
     if (url === '/health') {
+      // Still 200 when stale, as when diverged: a restart does not make an
+      // unreachable log reachable. The alarm is on `ok` and `stale`.
+      const stale = isStale(state, staleAfterMs);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({
-          ok: !state.diverged,
+          ok: !state.diverged && !stale,
+          stale,
           size: mirror.head ? mirror.head.size : 0,
           verifiedAt: state.verifiedAt,
           lastSyncAt: state.lastSyncAt,
@@ -171,10 +208,25 @@ async function main() {
     console.error('--serve needs a witness key (KT_WITNESS_SEED, or --witness-seed-env): a served head nobody co-signed attests nothing');
     return 1;
   }
+  if (!(Number.isInteger(o.maxEntries) && o.maxEntries > 0)) {
+    console.error('--max-entries must be a positive whole number');
+    return 1;
+  }
+  if (!(o.fetchTimeout > 0) || !(o.staleAfter >= 0)) {
+    console.error('--fetch-timeout must be a positive number of seconds and --stale-after a non-negative one');
+    return 1;
+  }
 
   let mirror;
   try {
-    mirror = new Mirror({ dir: o.dir, logUrl: o.log, logPub, witnessKey }).load();
+    mirror = new Mirror({
+      dir: o.dir,
+      logUrl: o.log,
+      logPub,
+      witnessKey,
+      maxEntries: o.maxEntries,
+      fetchJson: makeFetchJson({ timeoutMs: o.fetchTimeout * 1000 }),
+    }).load();
   } catch (e) {
     console.error(`mirror: ${e.message}`);
     return 1;
@@ -186,11 +238,11 @@ async function main() {
     console.log(`mirror: dropped ${mirror.repaired} byte(s) of entries the stored head of size ${mirror.head.size} does not cover — a commit that did not finish; they will be fetched again and re-verified`);
   }
 
-  const state = { diverged: false, verifiedAt: null, lastSyncAt: null, lastError: null };
+  const state = { diverged: false, verifiedAt: null, lastSyncAt: null, lastError: null, startedAt: Date.now() };
   let server = null;
   if (o.serve !== undefined) {
     try {
-      server = await serveWitness(mirror, o.serve, state);
+      server = await serveWitness(mirror, o.serve, state, o.staleAfter * 1000);
     } catch (e) {
       console.error(`mirror: cannot serve: ${e.message}`);
       return 1;

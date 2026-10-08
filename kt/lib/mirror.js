@@ -48,9 +48,21 @@
  *      disk and the head, and the NEXT sync asked the log to prove
  *      consistency from a size this mirror had never had a head for. The log
  *      cannot, so the mirror reported a fork and latched.
+ *
+ *   C. NOTHING THE LOG SENDS DECIDES WHAT THE MIRROR HOLDS. The log is the
+ *      party being watched, and a witness it can run out of memory is one it
+ *      can remove without signing anything: it dies, restarts, reloads, asks
+ *      again and dies again. And a witness it can keep waiting is removed
+ *      more quietly still. So every request has a deadline, every response a
+ *      size, every value the protocol's cap, and a head a ceiling on the
+ *      entries it may claim (review findings 47 and 48; until 2026-10-04 there
+ *      was none of the four). Past any of them is an ordinary error: the head
+ *      is kept, the next sync tries again, and `/health` says the witness has
+ *      stopped keeping up.
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const { MerkleLog, verifyConsistency } = require('./merkle.js');
@@ -67,6 +79,8 @@ const {
   witnessInput,
   sign,
   rawPublicKey,
+  owned,
+  MAX_VALUE_BYTES,
 } = require('./log.js');
 
 /** How much of the entries file is read at a time while replaying. */
@@ -76,9 +90,15 @@ const REPLAY_WINDOW = 1024 * 1024;
  * The part of an entry the trees need: everything `leafHashOf` and the map
  * read, and nothing else. The value is on disk; keeping it in memory as well
  * is what made a witness cost the size of its file.
+ *
+ * Copied into memory the mirror owns (`owned` in log.js): the fields arrive
+ * as slices of Node's shared 8 KiB pool, decoded from base64 beside a
+ * kilobyte of value, and an entry that keeps a slice keeps the slab — the
+ * same ~10 KB an entry the log's own replay cost until 2026-10-04.
  */
 function leafOf(e) {
-  return { index: e.index, label: e.label, version: e.version, fp: e.fp, valueHash: e.valueHash, ts: e.ts };
+  const [label, fp, valueHash] = owned(e.label, e.fp, e.valueHash);
+  return { index: e.index, label, version: e.version, fp, valueHash, ts: e.ts };
 }
 
 /** Write every byte or throw: `fs.writeSync` may write a prefix and return. */
@@ -108,6 +128,79 @@ const RETRY_AFTER_MAX_MS = 60_000;
 const RETRIES_PER_PAGE = 20;
 
 /**
+ * How long one request may take, whole — connecting, the headers and every
+ * byte of the body. Review finding 47: there was no bound at all, so a log
+ * (or anything in front of it) that accepted the connection and never
+ * answered held `sync()` for ever, and the witness stopped witnessing while
+ * its `/health` said `ok`. A page is at most 4 MiB; thirty seconds is that
+ * on a slow link, and a request past it is a transport failure like any
+ * other — the sync fails, the head is kept, and the next one starts over.
+ */
+const FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * The most one response may weigh. Review finding 48: the mirror read
+ * whatever came back into memory before looking at it, so the operator the
+ * witness exists to watch could kill it — again on every restart — with one
+ * answer of any size it chose, and remove a witness without ever signing a
+ * fork. The log bounds a page at 4 MiB (`MAX_PAGE_BYTES`); twice that is
+ * room for any honest answer, and past it the response is abandoned unread.
+ */
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * How many entries a mirror will hold by default: what the machine's memory
+ * takes at 4 KiB an entry, after 128 MiB for everything else — measured, a
+ * mirror load costs 2.0 KB an entry retained and ~6 KB of resident growth
+ * at the live log's size (`bench/memory.js`), and the log itself is killed
+ * at ~131,000 entries in 512 MiB. A head that claims more is refused as an
+ * ordinary error, before anything is fetched: the alternative was fetching
+ * until the process died, from a log that can sign any size it likes. On a
+ * 512 MiB instance that is ~98,000; a deployment with more memory, or a log
+ * that has legitimately grown, sets KT_MIRROR_MAX_ENTRIES.
+ */
+function defaultMaxEntries() {
+  const total = os.totalmem();
+  const limit = typeof process.constrainedMemory === 'function' ? process.constrainedMemory() : 0;
+  const mem = limit > 0 && limit < total ? limit : total;
+  return Math.max(10_000, Math.floor((mem - 128 * 1024 * 1024) / 4096));
+}
+
+/**
+ * A response's body as JSON, abandoned unread past [maxBytes] — by the
+ * length it declares or by what actually arrives, whichever says so first.
+ */
+async function readJsonBounded(res, maxBytes, url) {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`${url}: a response of ${declared} bytes; this mirror reads at most ${maxBytes}`);
+  }
+  const chunks = [];
+  let got = 0;
+  if (res.body) {
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      got += value.length;
+      if (got > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new Error(`${url}: the response passed ${maxBytes} bytes; this mirror reads at most that`);
+      }
+      chunks.push(value);
+    }
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    // What a captive portal or an error page in front produces: rule A's
+    // transport failure, not anything the log signed.
+    throw new Error(`${url}: the response is not JSON`);
+  }
+}
+
+/**
  * A fetch that honours `retry-after`. The log budgets `/kt/v1/entries` in
  * bytes a minute and answers 429 when a reader is over it, saying how long
  * until it is not; a first sync of a large log is over it by design after a
@@ -120,16 +213,31 @@ const RETRIES_PER_PAGE = 20;
  * `fetch` and `sleep` are injectable so the waiting can be tested without
  * waiting.
  */
-function makeFetchJson({ fetch: fetchImpl = fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), retries = RETRIES_PER_PAGE } = {}) {
+function makeFetchJson({
+  fetch: fetchImpl = fetch,
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  retries = RETRIES_PER_PAGE,
+  timeoutMs = FETCH_TIMEOUT_MS,
+  maxBytes = MAX_RESPONSE_BYTES,
+} = {}) {
   return async function fetchJson(url) {
     for (let attempt = 0; ; attempt++) {
-      const res = await fetchImpl(url, { headers: { accept: 'application/json' } });
-      if (res.ok) return res.json();
-      if (res.status === 429 && attempt < retries) {
-        await sleep(retryAfterMs(res.headers.get('retry-after')));
-        continue;
+      // One deadline for the whole request, body included: a log that sends
+      // headers and then trickles is the same as one that never answers.
+      const signal = AbortSignal.timeout(timeoutMs);
+      try {
+        const res = await fetchImpl(url, { headers: { accept: 'application/json' }, signal });
+        if (res.ok) return await readJsonBounded(res, maxBytes, url);
+        await res.body?.cancel().catch(() => {});
+        if (res.status === 429 && attempt < retries) {
+          await sleep(retryAfterMs(res.headers.get('retry-after')));
+          continue;
+        }
+        throw new Error(`${url}: HTTP ${res.status}`);
+      } catch (e) {
+        if (signal.aborted) throw new Error(`${url}: no complete answer within ${timeoutMs} ms`);
+        throw e;
       }
-      throw new Error(`${url}: HTTP ${res.status}`);
     }
   };
 }
@@ -153,8 +261,9 @@ class Mirror {
    * @param {(url: string) => Promise<object>} [o.fetchJson]
    * @param {number} [o.pageSize]
    * @param {() => number} [o.now]
+   * @param {number} [o.maxEntries]  the largest log this mirror will hold (`defaultMaxEntries`)
    */
-  constructor({ dir, logUrl, logPub, witnessKey = null, fetchJson = defaultFetchJson, pageSize = 500, now = Date.now }) {
+  constructor({ dir, logUrl, logPub, witnessKey = null, fetchJson = defaultFetchJson, pageSize = 500, now = Date.now, maxEntries = defaultMaxEntries() }) {
     this.dir = dir;
     this.logUrl = logUrl.replace(/\/+$/, '');
     this.logPub = logPub;
@@ -162,6 +271,7 @@ class Mirror {
     this.fetchJson = fetchJson;
     this.pageSize = pageSize;
     this.now = now;
+    this.maxEntries = maxEntries;
     this.entriesFile = path.join(dir, 'entries.jsonl');
     this.sthFile = path.join(dir, 'sth.json');
     /** where a sync spools the pages it has fetched, before any is believed */
@@ -363,6 +473,17 @@ class Mirror {
     const sthJ = await this.fetchJson(`${this.logUrl}/kt/v1/sth`);
     const sth = sthFromJson(sthJ);
     if (!verifySth(sth, this.logPub)) throw new Divergence('the head is not signed by the pinned log key');
+    // Finding 48 again: the log signs any size it likes, and a mirror must
+    // hold every entry up to it to check the roots. So a head larger than
+    // this mirror can hold is refused before anything is fetched — said, and
+    // retried at the next sync, where it used to be fetched page after page
+    // until the process died, and again after every restart.
+    if (sth.size > this.maxEntries) {
+      throw new Error(
+        `the log's head says ${sth.size} entries and this mirror holds at most ${this.maxEntries} ` +
+          '(KT_MIRROR_MAX_ENTRIES): size its memory for the log and raise that, or this witness has stopped'
+      );
+    }
     try {
       if (sth.size < from) throw new Divergence(`the log shrank: it had ${from} entries, its head now says ${sth.size}`, { from, to: sth.size });
       if (sth.size === from) {
@@ -433,6 +554,15 @@ class Mirror {
                 throw new Error(`entry ${next} from ${this.logUrl} is malformed: ${err.message}`);
               }
               throw new Divergence(`entry ${next}: ${err.message}`);
+            }
+            // No reader is obliged to open a value past the protocol's cap,
+            // and a mirror that spooled one would let the log choose how fast
+            // its disk fills as well as its memory (finding 48). Refused as
+            // what it is — an answer this mirror will not hold — and retried;
+            // a log that keeps serving it keeps this witness stopped, which
+            // its /health says.
+            if (e.value.length > MAX_VALUE_BYTES) {
+              throw new Error(`entry ${next} from ${this.logUrl} carries a ${e.value.length}-byte value, past the protocol's ${MAX_VALUE_BYTES}`);
             }
             lines.push(JSON.stringify(entryToJson(e)) + '\n');
             fetched.push(leafOf(e));
@@ -590,4 +720,4 @@ class Mirror {
   }
 }
 
-module.exports = { Mirror, Divergence, makeFetchJson, retryAfterMs };
+module.exports = { Mirror, Divergence, makeFetchJson, retryAfterMs, defaultMaxEntries, FETCH_TIMEOUT_MS, MAX_RESPONSE_BYTES };

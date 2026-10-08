@@ -370,10 +370,12 @@ test("7. the mirror's fetch waits out a 429 for as long as retry-after says, and
   // A log that says "not yet" twice, then answers.
   const waits = [];
   const sleep = async (ms) => waits.push(ms);
+  // Real responses: the fetch reads the body itself, a bounded number of
+  // bytes (witness_bounds.test.js 3), rather than asking for `json()`.
   const answers = [
-    { ok: false, status: 429, headers: new Headers({ 'retry-after': '7' }) },
-    { ok: false, status: 429, headers: new Headers({ 'retry-after': '3' }) },
-    { ok: true, status: 200, headers: new Headers(), json: async () => ({ entries: [1] }) },
+    new Response(null, { status: 429, headers: { 'retry-after': '7' } }),
+    new Response(null, { status: 429, headers: { 'retry-after': '3' } }),
+    new Response(JSON.stringify({ entries: [1] }), { status: 200 }),
   ];
   let calls = 0;
   const fetchImpl = async () => answers[calls++];
@@ -391,7 +393,7 @@ test("7. the mirror's fetch waits out a 429 for as long as retry-after says, and
   assert.equal(retryAfterMs('86400'), 60_000);
 
   // Any other status is the error it always was, at once.
-  const notFound = makeFetchJson({ fetch: async () => ({ ok: false, status: 404, headers: new Headers() }), sleep });
+  const notFound = makeFetchJson({ fetch: async () => new Response(null, { status: 404 }), sleep });
   await assert.rejects(notFound('http://log/x'), /HTTP 404/);
 
   // And a 429 that never lifts is given up on after `retries` waits — the
@@ -399,7 +401,7 @@ test("7. the mirror's fetch waits out a 429 for as long as retry-after says, and
   // rather than a socket held open for ever.
   let asked = 0;
   const never = makeFetchJson({
-    fetch: async () => (asked++, { ok: false, status: 429, headers: new Headers({ 'retry-after': '1' }) }),
+    fetch: async () => (asked++, new Response(null, { status: 429, headers: { 'retry-after': '1' } })),
     sleep: async () => {},
     retries: 3,
   });

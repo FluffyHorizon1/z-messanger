@@ -28,7 +28,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { KtLog, FileStore, privateKeyFromSeed } = require('../lib/log.js');
+const { KtLog, FileStore } = require('../lib/log.js');
 
 /**
  * The file's last newline, or -1. Read backwards in windows so a large log
@@ -124,13 +124,20 @@ function main(argv) {
   console.log(`Truncated to ${at} bytes; the dropped bytes are in ${keep}.`);
 
   // And say whether it worked, which is the only answer the operator wants.
-  // A throwaway key: replaying checks the file, and nothing here is served.
-  // `verifyHead: false`, because the head is signed by the real key and this
-  // tool does not have it; whether the head is the log's own is the log's
-  // question, at its next start.
+  // Opened READ-ONLY (no key): every line is replayed and checked, a head
+  // beside the file holds it to that head's size and root, and nothing is
+  // signed or written. The head is the log's to sign, with its own key, at
+  // its next start. Until 2026-10-04 this opened the file with a throwaway
+  // key instead, and a file with no head beside it was given one — signed by
+  // `Buffer.alloc(32, 1)`, which the log then refused to start against as a
+  // head somebody else wrote, leaving the operator to delete the very file
+  // that holds the log to its own history.
   try {
-    const log = new KtLog({ store: new FileStore(file), signingKey: privateKeyFromSeed(Buffer.alloc(32, 1)), verifyHead: false });
+    const log = new KtLog({ store: new FileStore(file), signingKey: null });
     console.log(`It opens: ${log.size} entries, ${log.map.size} labels.`);
+    if (!log.store.readHead()) {
+      console.log('There is no head beside it; the log records one, with its own key, when it next starts.');
+    }
     log.close();
     return 0;
   } catch (e) {

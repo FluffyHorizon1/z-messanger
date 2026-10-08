@@ -1,9 +1,10 @@
 # Capacity planning, measured
 
-Roadmap Phase 25.2. Two things in this system have a documented ceiling: the
+Roadmap Phase 25.2. Three things in this system have a documented ceiling: the
 relay's memory (the RAM queue's `MAX_STORE_BYTES`, 192 MB, in single-instance
-mode; the shared store's own `maxmemory` in Redis mode) and the transparency
-log's disk (`kt/`, where **entries never expire** — R31). This page turns both
+mode; the shared store's own `maxmemory` in Redis mode), the transparency
+log's disk (`kt/`, where **entries never expire** — R31) and the log's memory,
+which holds every one of those entries. This page turns them
 into numbers an operator can size a box against, from costs measured here
 rather than estimated. Every figure says what produced it; reproduce them on
 your own hardware with the commands named.
@@ -21,6 +22,7 @@ show are listed at the end.
 | A queued envelope, **Redis mode** | **≈ 177 B + 1.23 × the payload**, in the store | `node bench/capacity.js` — the store's own `used_memory`, two payload sizes |
 | A connected device | **≈ 11 KB per socket** of relay RSS; a device is **two sockets** (§12.1, 16.1), so **≈ 22 KB** | `node bench/capacity.js` — a forked relay's own RSS across 2 000 authenticated sockets |
 | A published device list | **≈ 336 B + 1.33 × the value**, on disk (base64 is ~1.33×); a real three-device list (1.1 KB sealed) is **≈ 1.8 KB** | `cd kt && node bench/disk.js` — a real `FileStore`, two value sizes |
+| A published device list, in the log's memory | **≈ 2.4 KB retained, ≈ 6.5 KB of resident growth**, for the life of the process, whatever the value's size; a mirror ≈ 2.0 / 6.1 KB | `cd kt && node bench/memory.js` — a fresh process replays 22,094 real-size entries (forced GC; heap and external) |
 
 The relay **charges** an envelope `payload.length + 256` against its byte caps
 (`MAX_QUEUE_BYTES_PER_USER`, `MAX_STORE_BYTES`); that is the number the caps
@@ -106,6 +108,20 @@ whole history should the operator's disk be lost. Below `KT_MIN_FREE_BYTES`
 (64 MiB) the log serves reads and refuses publishes `503 log_full` rather than
 meeting `ENOSPC` mid-line (SELF_HOSTING.md, "The disk is the bound").
 
+**And its memory.** The disk holds the entries; the process holds every one
+of them too, in both trees, from a replay that runs before it listens — so
+the log's memory grows exactly as its disk does and never shrinks, and an
+instance that is too small is killed during that replay on every start.
+**Size RAM at ≈ 4 KB an entry plus 128 MiB.** Measured: 22,094 entries (the
+live log, 2026-10-03) replay in ≈ 187 MiB resident, and a 512 MiB instance is
+killed at **≈ 131,000** entries — measured in a 512 MiB cgroup. Until
+2026-10-04 an entry cost 11.6 KB (each pinned a slab of Node's shared buffer
+pool), the same 22,094 took 376 MiB, and the 512 MiB ceiling was ≈ 39,000.
+`/health` reports `rssBytes` beside `memLimitBytes`; alarm at three quarters
+(`KtMemoryHigh`). At 100 000 accounts that each publish four times a year the
+log adds 400 000 entries a year: ≈ 1.6 GB of RAM a year, beside the 721 MB of
+disk above — memory, not disk, is the first ceiling such a log meets.
+
 ## (c) Sizing the Redis store, and `noeviction`
 
 The shared store (`render.ha.yaml`'s Key Value instance, or any Redis you run)
@@ -162,6 +178,7 @@ objectives and the exact alarm expressions are in `docs/SLO.md` and
 ```bash
 cd server && node bench/capacity.js      # envelope RAM + Redis, per-connection
 cd kt && node bench/disk.js              # bytes on disk per published list
+cd kt && node bench/memory.js            # memory per entry, log and mirror
 cd server && NEW_MAILBOX_PER_MIN=100000 node bench/ha_load.js --instances 2 --clients 200 --seconds 60 --rate 20 --offline 0.5   # queue growth → store memory
 ```
 

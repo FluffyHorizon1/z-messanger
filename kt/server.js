@@ -15,23 +15,31 @@
  *   GET  /kt/v1/entries?start=&count=        head + a page of entries (mirrors); count ≤ 1000
  *   POST /kt/v1/publish                      {acct, v, fp, value, sig} → {index, sth} — see lib/log.js
  *   GET  /kt/v1/pub                          the log's public key (for a first pin; clients ship it)
- *   GET  /health                             {size, labels, sthTs, diskBytes, diskFreeBytes, full}
+ *   GET  /health                             {state, size, labels, sthTs, rssBytes, memLimitBytes,
+ *                                            diskBytes, diskFreeBytes, full}; while the log replays,
+ *                                            503 {state: "replaying", replayed, rssBytes, memLimitBytes}
  *
  * Run it:
  *   KT_SEED=<64 hex>  KT_DATA=/var/lib/z-kt  KT_PORT=8443  node server.js
  *   KT_MIN_SIZE=<n> refuses to start if fewer than n entries replay — the
  *   floor for a data directory that did not mount, which the head file
- *   beside the entries cannot catch because it goes missing with them
+ *   beside the entries cannot catch because it goes missing with them;
+ *   KT_MAX_HEAD_AGE_MIN (default 30; 0 is off) refuses a start whose last
+ *   recorded head is older than that — what a restored whole-disk snapshot
+ *   looks like, head file and all — until KT_CONFIRM_HEAD=<size>@<ts> names
+ *   that head, once somebody has checked nothing ever saw a larger one.
  *   KT_SEED_FILE=/etc/z-kt/seed (32 raw bytes or 64 hex) is the alternative
  *   to KT_SEED; PORT is honoured when KT_PORT is unset (a cloud host injects
  *   it); KT_EPHEMERAL=1 keeps entries in memory (development only —
  *   a restart forgets the log, which is exactly what a log must not do).
  *
- * Abuse: publishes pass four gates — a per-address rate (PUBLISH_PER_MIN,
- * default 30), a total rate (PUBLISH_PER_MIN_TOTAL, default 120), a
- * per-account daily ceiling (PUBLISH_PER_ACCT_PER_DAY, default 20) and a
- * first-publish rate for accounts the log has never held
- * (PUBLISH_NEW_ACCOUNTS_PER_MIN, default 10). Every one is charged after
+ * Abuse: publishes pass five gates — a per-address rate (PUBLISH_PER_MIN,
+ * default 30), a total rate (PUBLISH_PER_MIN_TOTAL, default 120, of which a
+ * minute of first publishes is kept back for them), a per-account daily
+ * ceiling (PUBLISH_PER_ACCT_PER_DAY, default 20), a first-publish rate for
+ * accounts the log has never held (PUBLISH_NEW_ACCOUNTS_PER_MIN, default 10)
+ * and one address's share of that (PUBLISH_NEW_ACCOUNTS_PER_ADDR_PER_MIN,
+ * default a quarter of it). Every one is charged after
  * the signature verifies and only by a publish that is written: nothing
  * unsigned can spend them and nothing refused does, because a gate that a
  * request could spend is a gate that everybody shares behind an
@@ -59,6 +67,7 @@
 
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const {
@@ -143,6 +152,25 @@ function fail(res, status, code, message) {
   json(res, status, { error: code, message });
 }
 
+/**
+ * What the process holds and what it may, for `/health`.
+ *
+ * The log's memory is a function of its entries and nothing else — every
+ * one of them is in both trees for the life of the process — so it grows
+ * for as long as the log does, and the replay that rebuilds the trees runs
+ * before anything listens. A log that outgrows its instance does not slow
+ * down; it is killed during the replay, on every start, and until 2026-10-04
+ * the first anyone heard of it was the crash-loop (`docs/CAPACITY.md` (b)).
+ * `rssBytes` beside `size` is the per-entry figure; `memLimitBytes` is the
+ * container's limit where there is one (cgroup), the machine's memory where
+ * there is not, so `rssBytes / memLimitBytes` can be alarmed on as it is.
+ */
+function memory() {
+  const total = os.totalmem();
+  const limit = typeof process.constrainedMemory === 'function' ? process.constrainedMemory() : 0;
+  return { rssBytes: process.memoryUsage.rss(), memLimitBytes: limit > 0 && limit < total ? limit : total };
+}
+
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -200,6 +228,14 @@ class RateLimiter {
   take(key) {
     return this.takeN(key, 1);
   }
+  /**
+   * Take one token only while more than [reserve] would be left: the part of
+   * a shared bucket kept back for what must not be starved by everything
+   * else. Spends nothing when it refuses, like `take`.
+   */
+  takeAbove(key, reserve) {
+    return this.takeN(key, 1, reserve);
+  }
   /** Whether a take would succeed now. Spends nothing. */
   open(key) {
     return this.takeN(key, 0);
@@ -209,13 +245,13 @@ class RateLimiter {
    * What a 429 puts in `retry-after`, so a well-behaved reader waits exactly
    * as long as it must and no longer.
    */
-  waitMs(key) {
+  waitMs(key, reserve = 0) {
     if (!(this.perWindow > 0)) return this.windowMs; // a limit of nothing: a window, not for ever
     const b = this.buckets.get(key);
     if (!b) return 0;
     const tokens = Math.min(this.perWindow, b.tokens + ((this.now() - b.at) / this.windowMs) * this.perWindow);
-    if (tokens >= 1) return 0;
-    return Math.ceil(((1 - tokens) / this.perWindow) * this.windowMs);
+    if (tokens >= 1 + reserve) return 0;
+    return Math.ceil(((1 + reserve - tokens) / this.perWindow) * this.windowMs);
   }
   /**
    * Spend [n] tokens: allowed while the bucket holds at least one, and the
@@ -224,7 +260,7 @@ class RateLimiter {
    * response is built: the request that crosses zero is served, and the
    * bucket stays shut until the window has refilled the debt.
    */
-  takeN(key, n) {
+  takeN(key, n, reserve = 0) {
     const t = this.now();
     let b = this.buckets.get(key);
     if (!b) {
@@ -240,7 +276,7 @@ class RateLimiter {
     this.buckets.set(key, b);
     b.tokens = Math.min(this.perWindow, b.tokens + ((t - b.at) / this.windowMs) * this.perWindow);
     b.at = t;
-    if (b.tokens < 1) return false;
+    if (b.tokens < 1 + reserve) return false;
     b.tokens -= n;
     return true;
   }
@@ -272,9 +308,36 @@ function clientKey(req, header) {
     const v = req.headers[header];
     const first = (Array.isArray(v) ? v[0] : v || '').split(',')[0].trim();
     // A plausible address and nothing else: this value becomes a map key.
-    if (first && first.length <= 45 && /^[0-9a-fA-F:.]+$/.test(first)) return first;
+    if (first && first.length <= 45 && /^[0-9a-fA-F:.]+$/.test(first)) return clientOf(first);
   }
-  return req.socket.remoteAddress || 'unknown';
+  return clientOf(req.socket.remoteAddress || 'unknown');
+}
+
+/**
+ * What one client is, given its address: the address itself for IPv4, and
+ * for IPv6 the /64 it sits in. A host is handed a /64 and picks addresses
+ * inside it at will, so a limit keyed on the whole IPv6 address is one a
+ * single machine can step around by changing its last 64 bits — and a
+ * per-address gate it can step around is no gate. IPv4 mapped into IPv6
+ * (`::ffff:a.b.c.d`, how a dual-stack socket reports an IPv4 peer) is its
+ * IPv4 address. Anything that does not parse is returned as it came: it is
+ * still a bounded key, and still one key.
+ */
+function clientOf(addr) {
+  if (!addr.includes(':')) return addr;
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(addr);
+  if (mapped) return mapped[1];
+  const halves = addr.split('::');
+  if (halves.length > 2) return addr;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  // An IPv4 tail (`64:ff9b::1.2.3.4`) is two groups.
+  const width = (gs) => gs.reduce((n, g) => n + (g.includes('.') ? 2 : 1), 0);
+  const missing = 8 - width(head) - width(tail);
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return addr;
+  const groups = [...head, ...new Array(halves.length === 2 ? missing : 0).fill('0'), ...tail].slice(0, 4);
+  if (!groups.every((g) => /^[0-9a-fA-F]{1,4}$/.test(g))) return addr;
+  return `${groups.map((g) => parseInt(g, 16).toString(16)).join(':')}::/64`;
 }
 
 /**
@@ -287,6 +350,7 @@ function createServer({
   publishPerMinuteTotal = 120,
   publishPerAccountPerDay = 20,
   newAccountsPerMinute = 10,
+  newAccountsPerAddressPerMinute = Math.max(1, Math.ceil(newAccountsPerMinute / 4)),
   maxValueBytes = 32 * 1024,
   minFreeBytes = 64 * 1024 * 1024,
   readBytesPerMinute = 32 * 1024 * 1024,
@@ -348,6 +412,26 @@ function createServer({
     now,
   });
   const newAccounts = new RateLimiter(newAccountsPerMinute, { now });
+  // First publishes again, and the two ways they were starved (the
+  // 2026-10-03 analysis; `publish_limits.test.js` 10). The new-account gate
+  // is one bucket for the internet, and even with `clientIpHeader` set, one
+  // client's address gate (30) was three times its size (10): one client
+  // could take every first publish there was, and a genuine new account
+  // waited for as long as it kept asking. So one address gets a share of it
+  // — a quarter, by default, so it takes four to empty it. And the total was
+  // spent first-come by every publish: a few addresses republishing their
+  // own accounts' lists could hold it at zero (four at the defaults, 4 × 30
+  // being the total's 120), which starves first publishes by another road.
+  // So the total keeps a
+  // reserve that only first publishes may spend — a minute's worth of them,
+  // never more than half the bucket — and still counts every publish, so it
+  // bounds the disk exactly as it did. Neither is about the ORDER the gates
+  // are charged in: every gate is given back when a later one refuses, so
+  // which publishes get in never depended on it, only which refusal is
+  // named. Behind a proxy with no `clientIpHeader`, every request is one
+  // address, so this share is the whole log's first-publish rate.
+  const newPerAddress = new RateLimiter(newAccountsPerAddressPerMinute, { now });
+  const firstPublishReserve = Math.min(newAccountsPerMinute, Math.floor(publishPerMinuteTotal / 2));
   // Reads of `/kt/v1/entries`, in bytes: per address and in total. A page is
   // bounded at MAX_PAGE_BYTES and nothing bounded how often one could be
   // asked for: a 46-byte request returned 3.9 MiB — measured, 89,000:1 —
@@ -383,6 +467,7 @@ function createServer({
     total.sweep();
     perAccount.sweep();
     newAccounts.sweep();
+    newPerAddress.sweep();
     reads.sweep();
     readsTotal.sweep();
   }, 60000);
@@ -418,7 +503,17 @@ function createServer({
       connectionsCheckingInterval: Math.max(100, Math.min(30_000, requestTimeoutMs)),
     },
     async (req, res) => {
-    const url = new URL(req.url, 'http://localhost');
+    // Until 2026-10-04 this parse sat outside every try: an absolute-form
+    // request target that URL cannot parse (`GET http://[ HTTP/1.1`) threw
+    // out of this async handler as an unhandled rejection, which ends a
+    // Node 22 process — one request, from anyone, and the log was down for a
+    // restart and a full replay (`server.test.js`, the request target).
+    let url;
+    try {
+      url = new URL(req.url, 'http://localhost');
+    } catch {
+      return fail(res, 400, 'bad_request', 'the request target is not a URL');
+    }
     const p = url.pathname;
     try {
       if (req.method === 'GET') {
@@ -430,9 +525,11 @@ function createServer({
           // restart a log whose only problem is a disk it cannot grow, and
           // the restart changes nothing. The alarm is on the numbers.
           return json(res, 200, {
+            state: 'serving',
             size: log.size,
             labels: log.map.size,
             sthTs: sth.ts,
+            ...memory(),
             ...(d ? { diskBytes: d.bytes, diskFreeBytes: d.free, full: d.full } : {}),
           });
         }
@@ -568,14 +665,14 @@ function createServer({
         // and a signature that costs nothing to make buys nothing it did not
         // write. The order only decides which refusal is named.
         const taken = [];
-        /** Take from [lim], or answer 429 and give back what was taken. */
-        const gate = (lim, k, message) => {
-          if (lim.take(k)) {
+        /** Take from [lim] (above [reserve]), or answer 429 and give back what was taken. */
+        const gate = (lim, k, message, reserve = 0) => {
+          if (lim.takeAbove(k, reserve)) {
             taken.push([lim, k]);
             return true;
           }
           for (const [l, kk] of taken) l.refund(kk);
-          res.setHeader('retry-after', String(Math.max(1, Math.ceil(lim.waitMs(k) / 1000))));
+          res.setHeader('retry-after', String(Math.max(1, Math.ceil(lim.waitMs(k, reserve) / 1000))));
           fail(res, 429, 'rate_limited', message);
           return false;
         };
@@ -586,9 +683,12 @@ function createServer({
         // build, so a refused publish cannot make an account look known.
         const fresh = !log.hasLabel(labelFor(req_.acct));
         if (!gate(limiter, key, `at most ${publishPerMinute} publishes a minute from one address`)) return undefined;
-        if (!gate(total, 'all', `at most ${publishPerMinuteTotal} publishes a minute in total`)) return undefined;
         if (!gate(perAccount, acctKey, `at most ${publishPerAccountPerDay} publishes a day for one account`)) return undefined;
-        if (fresh && !gate(newAccounts, 'all', `at most ${newAccountsPerMinute} new accounts a minute`)) return undefined;
+        if (fresh) {
+          if (!gate(newPerAddress, key, `at most ${newAccountsPerAddressPerMinute} new accounts a minute from one address`)) return undefined;
+          if (!gate(newAccounts, 'all', `at most ${newAccountsPerMinute} new accounts a minute`)) return undefined;
+        }
+        if (!gate(total, 'all', `at most ${publishPerMinuteTotal} publishes a minute in total`, fresh ? 0 : firstPublishReserve)) return undefined;
         let entry;
         try {
           entry = log.publish(req_);
@@ -628,7 +728,59 @@ function seedFromEnv() {
   throw new Error('set KT_SEED (64 hex) or KT_SEED_FILE; generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
 }
 
-function main() {
+/** KT_CONFIRM_HEAD, as a refusal prints it: `<size>@<ts>`. Null when unset. */
+function confirmHeadFromEnv(v) {
+  const s = (v || '').trim();
+  if (!s) return null;
+  const m = /^(\d{1,15})@(\d{1,16})$/.exec(s);
+  if (!m) throw new Error('KT_CONFIRM_HEAD must be <size>@<ts>, exactly as the refusal printed it');
+  return { size: Number(m[1]), ts: Number(m[2]) };
+}
+
+/**
+ * What answers while the log replays: `GET /health` says how far it has got
+ * and what it holds, and everything is 503 — the log is not serving, and a
+ * host's health check should say so.
+ *
+ * Until 2026-10-04 nothing listened until the replay was done. A large log
+ * took minutes to come up with its port closed, which a host and an uptime
+ * monitor read exactly as they read a dead process; and a log that had
+ * outgrown its instance was killed during the replay with nothing to show
+ * for it but a restart counter. Now a slow replay is visible as one, with
+ * its progress and its resident memory climbing toward the limit beside it.
+ * Nothing about the log is served or signed until the replay has passed
+ * every check a start makes; then this server is closed and the log's own
+ * takes the port. Every response says `connection: close`, so nothing holds
+ * a socket open into the gap.
+ */
+function replayServer(progress) {
+  return http.createServer((req, res) => {
+    res.setHeader('connection', 'close');
+    res.setHeader('retry-after', '5');
+    let p = '';
+    try {
+      p = new URL(req.url, 'http://localhost').pathname;
+    } catch {
+      // A request target URL cannot parse is not /health; it gets the 503.
+    }
+    if (req.method === 'GET' && p === '/health') {
+      return json(res, 503, { state: 'replaying', replayed: progress.replayed, ...memory() });
+    }
+    return fail(res, 503, 'starting', 'the log is replaying its entries and serves nothing until it has');
+  });
+}
+
+function listen(server, port, host) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, host, () => {
+      server.off('error', reject);
+      resolve(server.address().port);
+    });
+  });
+}
+
+async function main() {
   const seed = seedFromEnv();
   const signingKey = privateKeyFromSeed(seed);
   let store;
@@ -648,13 +800,34 @@ function main() {
   // passed; it is a floor, so it stays true as the log grows.
   const minSize = Number(process.env.KT_MIN_SIZE || 0);
   if (!Number.isInteger(minSize) || minSize < 0) throw new Error('KT_MIN_SIZE must be a non-negative integer');
-  const log = new KtLog({ store, signingKey, minSize });
+  // And the floor the disk cannot hold for itself: a whole-disk snapshot
+  // brings its head back with it. A start whose last recorded head is older
+  // than this is refused until KT_CONFIRM_HEAD names that head (KtLog
+  // `_checkResumed`). Minutes; 0 turns it off.
+  const maxHeadAgeMin = Number(process.env.KT_MAX_HEAD_AGE_MIN || 30);
+  if (!(maxHeadAgeMin >= 0)) throw new Error('KT_MAX_HEAD_AGE_MIN must be a number of minutes (0 turns the check off)');
+  const confirmHead = confirmHeadFromEnv(process.env.KT_CONFIRM_HEAD);
+  // KT_PORT first; then PORT, which cloud hosts inject (render.kt.yaml).
+  const host = process.env.KT_HOST || '127.0.0.1';
+  const progress = { replayed: 0 };
+  const replaying = replayServer(progress);
+  const port = await listen(replaying, +(process.env.KT_PORT || process.env.PORT || 8085), host);
+  console.log(`z-kt: replaying; GET http://${host}:${port}/health says how far`);
+  const log = await KtLog.open(
+    { store, signingKey, minSize, maxHeadAgeMs: maxHeadAgeMin > 0 ? maxHeadAgeMin * 60_000 : Infinity, confirmHead },
+    { onProgress: (n) => (progress.replayed = n) }
+  );
+  replaying.closeAllConnections();
+  await new Promise((resolve) => replaying.close(resolve));
   const { httpServer } = createServer({
     log,
     publishPerMinute: +(process.env.PUBLISH_PER_MIN || 30),
     publishPerMinuteTotal: +(process.env.PUBLISH_PER_MIN_TOTAL || 120),
     publishPerAccountPerDay: +(process.env.PUBLISH_PER_ACCT_PER_DAY || 20),
     newAccountsPerMinute: +(process.env.PUBLISH_NEW_ACCOUNTS_PER_MIN || 10),
+    ...(process.env.PUBLISH_NEW_ACCOUNTS_PER_ADDR_PER_MIN
+      ? { newAccountsPerAddressPerMinute: +process.env.PUBLISH_NEW_ACCOUNTS_PER_ADDR_PER_MIN }
+      : {}),
     maxValueBytes: +(process.env.KT_MAX_VALUE_BYTES || 32 * 1024),
     minFreeBytes: +(process.env.KT_MIN_FREE_BYTES || 64 * 1024 * 1024),
     readBytesPerMinute: +(process.env.READ_BYTES_PER_MIN || 32 * 1024 * 1024),
@@ -662,14 +835,23 @@ function main() {
     maxPublishInFlight: +(process.env.KT_MAX_PUBLISH_IN_FLIGHT || 256),
     clientIpHeader: (process.env.KT_CLIENT_IP_HEADER || '').trim().toLowerCase() || null,
   });
-  // KT_PORT first; then PORT, which cloud hosts inject (render.kt.yaml).
-  const port = +(process.env.KT_PORT || process.env.PORT || 8085);
-  const host = process.env.KT_HOST || '127.0.0.1';
-  httpServer.listen(port, host, () => {
-    console.log(`z-kt: ${log.size} entries, ${log.map.size} labels; public key ${log.publicKey.toString('base64')}`);
-    console.log(`z-kt: listening on http://${host}:${port}`);
-  });
+  await listen(httpServer, port, host);
+  // The head on disk says when the log last ran: re-recorded every
+  // `resignMs` while it does, and once more at a clean stop. A head that
+  // cannot be written is said, and serving goes on — the cost is only that
+  // the next start may have to be confirmed.
+  const keepAlive = (opts) => {
+    try {
+      log.keepAlive(opts);
+    } catch (e) {
+      console.error(`z-kt: could not record the head: ${e.message}`);
+    }
+  };
+  const alive = setInterval(keepAlive, 60_000);
+  alive.unref();
   const stop = () => {
+    clearInterval(alive);
+    keepAlive({ force: true });
     httpServer.close(() => {
       log.close();
       process.exit(0);
@@ -677,15 +859,17 @@ function main() {
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+  // Said only once a stop is a clean one: whatever reads this and stops the
+  // log from then on gets the head recorded, as the next start expects.
+  console.log(`z-kt: ${log.size} entries, ${log.map.size} labels; public key ${log.publicKey.toString('base64')}`);
+  console.log(`z-kt: listening on http://${host}:${port}`);
 }
 
 module.exports = { createServer, RateLimiter, MAX_BODY, MAX_PAGE, MAX_PAGE_BYTES, MAX_HISTORY_PAGE_BYTES };
 
 if (require.main === module) {
-  try {
-    main();
-  } catch (e) {
+  main().catch((e) => {
     console.error(`z-kt: ${e.message}`);
     process.exit(1);
-  }
+  });
 }

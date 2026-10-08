@@ -327,7 +327,14 @@ and who is online copied into the metrics system), and keep it, and its
   head on the way up (the log, step 4). `KtHealthUnread` means the disk figures
   are not arriving — the exporter, its mapping, or a log that reports `full:
   null` because it cannot read its own free space — and the two disk alarms are
-  blind until they do.
+  blind until they do (and, since 2026‑10‑04, the memory one).
+- **KtMemoryHigh** — the log's resident memory is past three quarters of its
+  limit. The log holds every entry in memory for its whole life, so this only
+  grows: give the instance more memory before the log outgrows it, because an
+  instance that runs out does not slow down — it is killed during the replay,
+  on every start, until it is grown (the log's memory, "Running the
+  transparency log"). A `KtLogDown` that will not clear, with `/health`
+  answering `503 replaying` with `rssBytes` climbing, is this, too late.
 - **KtWitnessDiverged** — the one that matters most and the rarest: the witness
   saw the log sign a head that does not extend what it verified. A network blip
   does **not** cause this (it is reserved for what the log signed). Treat it as
@@ -339,6 +346,11 @@ and who is online copied into the metrics system), and keep it, and its
   **KtWitnessBehind** is the softer cousin: the witness has stopped following
   (network, or the log unreachable to it), the head is unattested until it
   catches up; check the witness and the path between it and the log.
+  **KtWitnessStale** says the same from the witness's side, and sooner on a
+  quiet log: nothing has verified for `KT_STALE_AFTER`. Its `/health`
+  `lastError` says why — the log unreachable or past its deadline, an answer
+  too large, or a head past `KT_MIRROR_MAX_ENTRIES`, which means the witness
+  needs more memory and a higher ceiling, not a restart.
 
 This is files in the repository only; wiring these rules into your Prometheus
 and routing their pages is yours, as everything that touches a live system is.
@@ -576,6 +588,27 @@ replay reads a fixed window at a time and an entry keeps the byte range of
 its own line rather than its value. Size the disk for the entries; size the
 memory for how many accounts you expect, not how much they publish.
 
+**Memory is the other bound, and it is per entry.** Every entry is in both
+trees for the life of the process, and the replay that rebuilds them from the
+file runs before the log listens. Measured (`cd kt && node bench/memory.js`,
+a real list's 1.1 KB value): **~2.4 KB retained and ~6.5 KB of resident
+growth an entry**. The live log's size on 2026‑10‑03 (22,094 entries) replays
+in ~187 MiB, and a 512 MiB instance is killed during the replay at **about
+131,000 entries** (measured in a 512 MiB cgroup). Until 2026‑10‑04 that was
+about 39,000: each entry's small fields were slices of Node's shared 8 KiB
+buffer pool and pinned about a slab each — 11.6 KB an entry, 376 MiB for the
+same 22,094. An instance that is too small does not slow down; it dies during
+the replay, on every start. So **size RAM at 4 KB an entry plus 128 MiB** and
+grow it with the log, as the disk. `/health` reports `rssBytes` beside
+`memLimitBytes` (the container's limit, or the machine's memory): **alarm
+when `rssBytes` passes three quarters of `memLimitBytes`** (`KtMemoryHigh` in
+`server/alerts.example.yml`). While the log replays, `/health` answers `503`
+with `{"state":"replaying","replayed":n,"rssBytes":…,"memLimitBytes":…}` and
+every other route answers `503 starting`, so a slow replay — about a
+millisecond an entry on a small machine — shows as one rather than as a port
+that will not open; give a host's health check a start‑up grace longer than
+that.
+
 **The disk is the bound, and it has to be watched.** Entries never expire —
 that is what a log is — so a disk fills and stays full. Nobody had multiplied
 the limits through until 2026‑09‑14: at the protocol's 256 KiB value cap a
@@ -599,14 +632,15 @@ fourteen hours and two thousand minted accounts to reach the floor, where it
 needed a hundred minutes and a hundred and fifty — and it now ends in a log
 that is read‑only and says so, not one that is down.
 
-**Publishing is limited four ways, and the defaults assume a hostile
+**Publishing is limited five ways, and the defaults assume a hostile
 internet**, because the log accepts a signature from any Ed25519 key and
 generating keys is free:
 
-| `PUBLISH_PER_MIN_TOTAL` | 120 | every publish, whatever the source. The gate that stops a flood — a flood uses many accounts, so a per‑account limit does not see one |
+| `PUBLISH_PER_MIN_TOTAL` | 120 | every publish, whatever the source. The gate that stops a flood — a flood uses many accounts, so a per‑account limit does not see one. A minute of first publishes (`PUBLISH_NEW_ACCOUNTS_PER_MIN`, at most half the total) is kept back for first publishes alone, so addresses republishing their own accounts cannot hold it at zero against a new one; it still counts every publish |
 | `PUBLISH_PER_MIN` | 30 | per source address. Only per‑**client** if `KT_CLIENT_IP_HEADER` is set (below); otherwise the TLS front is the address and this is one bucket for everybody |
 | `PUBLISH_PER_ACCT_PER_DAY` | 20 | per account key, charged only once the signature verifies, so nobody can spend an account's budget but that account |
 | `PUBLISH_NEW_ACCOUNTS_PER_MIN` | 10 | first publishes from accounts the log has never held, in total. Charged after the signature and only for a label the index does not have — and the index is built by accepted publishes, so a refused first publish leaves the account unknown |
+| `PUBLISH_NEW_ACCOUNTS_PER_ADDR_PER_MIN` | a quarter of the above (3) | one address's share of the first‑publish rate, so that one client cannot take all of it and starve every new account. Behind a proxy with `KT_CLIENT_IP_HEADER` empty every request is one address, and this is then the whole log's first‑publish rate |
 | `KT_MAX_VALUE_BYTES` | 32768 | what this log accepts; at most the protocol's 262 144. Sets entries‑per‑gigabyte |
 | `KT_MIN_FREE_BYTES` | 67108864 | below this much free space, publishes are refused `503 log_full` and reads continue. `/health` still answers 200 with `full: true`, so a host's health check does not restart a log whose only problem is a disk it cannot grow |
 | `KT_MAX_PUBLISH_IN_FLIGHT` | 256 | publish bodies being read at once; a further one is told `503 busy` before anything is read. Not a rate — a request that finishes frees its slot in milliseconds — so it bounds memory (256 × 400 KB) against sockets held open, which the request timeout (a minute) then lets go of |
@@ -617,7 +651,14 @@ generating keys is free:
 stay empty until the service is reachable **only** through the proxy that sets
 it. A forwarded address is the caller's to choose unless something in front
 overwrites it, and a limiter keyed on a value the caller picks is worse than
-one keyed on a value they cannot.
+one keyed on a value they cannot. **Behind Cloudflare it must then be set.**
+Empty, every request arrives from Cloudflare's address and every gate above
+that says "per address" is one bucket for the internet: one client publishing
+thirty times a minute holds every other publish off, new accounts included
+(the 2026‑10‑03 analysis). Set, each client has its own, and an IPv6 client
+is keyed by its /64, since a host chooses its own last 64 bits. The reference
+Blueprint ships it empty (`render.kt.yaml`); setting it on the live log is
+item 1 of the housekeeping below.
 
 The public deployment ran for a day with the per‑address gate keyed on the
 proxy's address and nothing else: 3,853 entries from 3,579 distinct account
@@ -698,6 +739,7 @@ endpoint is for reading it off once, not for clients to trust.
 **Option A — Node directly**, as a system service:
 
 ```bash
+sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin z-kt
 sudo install -d -o z-kt -g z-kt /var/lib/z-kt
 sudo cp -r kt /opt/z-kt
 sudo cp kt/deploy/z-kt.service /etc/systemd/system/
@@ -705,9 +747,19 @@ sudo systemctl enable --now z-kt
 journalctl -u z-kt -n 3     # "z-kt: N entries, M labels; public key …"
 ```
 
-The unit runs `node server.js` as an unprivileged user with
-`KT_SEED_FILE=/etc/z-kt/seed`, `KT_DATA=/var/lib/z-kt` and `KT_PORT=8085`
-bound to localhost; the reverse proxy in step 3 is what the world reaches.
+The unit runs `node server.js` as that unprivileged user with
+`KT_DATA=/var/lib/z-kt` and `KT_PORT=8085` bound to localhost; the reverse
+proxy in step 3 is what the world reaches. The seed stays root's: systemd
+reads `/etc/z-kt/seed` when the unit starts and hands the service a private
+copy (`LoadCredential=kt-seed:/etc/z-kt/seed`), which
+`KT_SEED_FILE=%d/kt-seed` names. Until 2026‑10‑04 the unit pointed
+`KT_SEED_FILE` at `/etc/z-kt/seed` itself, which the service user cannot
+read, and these steps never created the user: followed exactly, they ended
+in `EACCES`. `%d` needs systemd 248 or later (Debian 12, Ubuntu 22.04,
+RHEL 9). On an older one, replace the unit's two credential lines with
+`Environment=KT_SEED_FILE=/etc/z-kt/seed` and let the service's group read
+the seed: `sudo chgrp z-kt /etc/z-kt /etc/z-kt/seed && sudo chmod 750
+/etc/z-kt && sudo chmod 640 /etc/z-kt/seed`.
 
 **Option B — Docker:**
 
@@ -748,7 +800,8 @@ clients retry), and it means a paid instance: about $7 a month plus the
 disk. `autoDeployTrigger` is `"off"`, so a push to `main` does not redeploy
 a live log — deploy at release tags from the dashboard, as the HA relay
 does. Render keeps daily snapshots of the disk; the witness below is the
-backup that also verifies you.
+backup that also verifies you. A restored snapshot does not start until its
+head is confirmed ("If the log will not start", below).
 
 ### 3. TLS
 
@@ -802,11 +855,10 @@ refuses to start unless the head is signed by its own key and the entries it
 replays reproduce that head's root at that size — so a truncated file, a
 half-finished copy, entries restored without the head they were signed
 under, or a head somebody else wrote is refused rather than signed as a
-smaller history. A whole-disk snapshot is not: it brings back the head it
-was taken with, the two agree, and the log starts at the snapshot's size and
-signs a history smaller than one it has already published — a fork to every
-client holding a later head. Only `KT_MIN_SIZE` above the snapshot's size,
-below, refuses that. **Back both files up
+smaller history. A whole-disk snapshot passes this check: it brings back
+the head it was taken with, and the two agree. What refuses it is the
+head's age, or `KT_MIN_SIZE` above the snapshot's size (both below).
+**Back both files up
 together**; a copy of the entries without the head is a log that will start
 and a copy of the head without the entries is one that will not, and the
 second is the safer of the two.
@@ -833,6 +885,25 @@ key — which every client holding a head reads as a fork, permanently. Set
 start instead. It is a floor rather than an expected size, so it stays true
 as the log grows; raise it when convenient. `0` disables it.
 
+Neither floor sees a **whole‑disk snapshot** restored: the head comes back
+with the entries, the two agree, and both are out of date. Until 2026‑10‑04
+such a log started, signed on from the snapshot's size, and every client and
+witness holding a later head read the next head as a fork — under the
+Blueprint's `KT_MIN_SIZE=1`, every time. Nothing on the disk can tell a
+restored snapshot from a log that stopped a minute ago, but the time can: a
+running log re‑records its head every ten minutes and at a clean stop, so
+the head says when the log last ran, and a start whose head is older than
+`KT_MAX_HEAD_AGE_MIN` (default 30; `0` turns the check off) is refused. The
+refusal names the head, as `KT_CONFIRM_HEAD=<size>@<ts>`; what to check
+before using it is under "If the log will not start", below. A log stopped
+on purpose for longer than that — suspended, or down for maintenance — is
+refused the same way, and confirmed the same way. A snapshot
+restored within half an hour of being taken, and a confirmation given without
+checking, still get through — a witness catches both. So does a snapshot
+taken before this version first ran: a head an older build wrote was kept
+current only by publishes, so the first start after upgrading does not judge
+its age, and records a head that carries the promise instead.
+
 A file an older build tore — a last line that starts and never finishes — is
 what `tools/repair.js` is for. Stop the log first; then
 
@@ -846,6 +917,11 @@ It removes the bytes after the file's last newline, keeps them in a
 will **not** touch anything else: damage inside a complete line is refused
 by name, because dropping whole entries to make a log start is a rewrite of
 the history rather than a repair — that case needs the backup or the mirror.
+Nor does it sign anything: it opens the file without the log's key, so a
+file with no head beside it is left without one, and the log records its own
+when it next starts. Until 2026‑10‑04 it opened the file with a throwaway
+key and wrote a head signed by that, which the log then refused to start
+against as a head somebody else wrote.
 
 ### 5. Run a witness — and have someone else run it
 
@@ -880,6 +956,21 @@ last head it verified, so nothing it has attested to is touched. The
 opposite case, a file with **fewer** entries than the head, it refuses: those
 are under a root the log signed, and no witness may invent them. That needs
 the file back from a backup, or a fresh directory and a resync.
+
+Nor can the log it watches stop it quietly. Every request has a deadline
+(`KT_FETCH_TIMEOUT`, 30 s), every response a size (8 MiB), every value the
+protocol's 256 KiB, and a head a ceiling on the entries it may claim
+(`KT_MIRROR_MAX_ENTRIES`; by default what the machine's memory holds at 4 KB
+an entry, ~98,000 on 512 MiB). Past any of them the sync fails as an
+ordinary error, the head is kept, and the next sync tries again. Until
+2026‑10‑04 there was none of the four: a log that accepted the connection
+and never answered held the witness for ever, and one answer of whatever
+size its operator chose ran it out of memory on every restart — a witness
+removed without a fork ever being signed. So `/health` now also says when
+the witness has stopped keeping up: `stale: true`, and `ok: false`, once
+nothing has verified for `KT_STALE_AFTER` seconds (three intervals). Alarm on
+it (`KtWitnessStale`); a witness that has stopped is one nobody is checking
+the log against.
 
 **As a command:**
 
@@ -937,6 +1028,57 @@ answers that address — the log's own operator included — agrees with the log
 using a key nobody chose. The client now ignores a half‑set pair outright
 and Settings refuses to save one, which is why they are edited on one screen
 rather than two.
+
+### Housekeeping for the public log — runbook, 2026‑10‑04
+
+What the 2026‑10‑03 analysis found `kt.zmessengers.com` needs, in the order
+to do it. None of it happens by deploying this code: each step is an
+operator's change to a live system, and the Blueprint (`render.kt.yaml`)
+still ships the old values.
+
+1. **Set `KT_CLIENT_IP_HEADER=cf-connecting-ip`.** Until it is set, every
+   per‑address gate is one bucket for everybody (above). One caution: a
+   Render service also answers at its `onrender.com` name, where a caller
+   sends any header they like. Through that door the per‑address gates are
+   no stronger than with the header empty — the total and first‑publish
+   gates still bound everything — and closing it takes something in front
+   that the origin can check (a secret header added by a Cloudflare rule),
+   which the log does not have yet.
+2. **Raise `KT_MIN_SIZE`** from 1 to a size the log has comfortably passed:
+   `/health`'s `size` less a margin — 20000 against the 22,094 entries of
+   2026‑10‑03. It is a floor, so it stays true as the log grows.
+3. **Keep an off‑box copy.** Render's daily snapshots live with the disk
+   and restore all of it. Copy `entries.jsonl.head.json` and then
+   `entries.jsonl` to somewhere else on a schedule — in that order: the
+   head is written after its entries and the file only grows, so a copy
+   made that way is never shorter than its head. The newer the copy, the
+   less a restore can lose. A witness run by somebody else ("Run a
+   witness", above) is the better copy, because it verifies as it goes.
+4. **Rotate the log key** — about 98% of the live log is CI test identities
+   published before the 2026‑09‑14 guard, and a log never forgets, so the
+   only clean log is a new one: a new seed ("Generate the signing key"), a
+   new service with an empty disk, and a client release that pins its
+   public key. It is a release, not a setting, and where the release
+   changes the pin it must also forget the old log's head
+   (`KeyTransparency.resetHistory`): a client holding a head of 22,000
+   entries reads a new log's first head as the log shrinking, a fault
+   until the user resets it. Leave the old log running until no shipped
+   client pins it.
+5. **Watch its memory.** The 22,094 entries hold ~187 MiB, and the Blueprint's
+   512 MB instance reaches its end at about 131,000 (above): alarm on
+   `rssBytes / memLimitBytes`, and grow the instance before the log needs it.
+
+**If the log will not start** and says its last head is old, that is the
+restored‑snapshot check. Before confirming anything, find the largest head
+the log has ever signed: a witness's `/health` and `sth.json`, a mirror's
+`sth.json`, your monitoring's history of `/health`'s `size`. If none of them
+has seen a head larger than the size in the message, start once with the
+`KT_CONFIRM_HEAD=<size>@<ts>` it printed, then remove it. If any has, the
+snapshot lost entries the log had already signed, and confirming it signs a
+fork that every holder of a later head reports, permanently: restore a newer
+copy of both files (item 3) and start again. If there is none, that history
+is gone, and the honest course is item 4 — a new log and a new key, shipped
+in a release — rather than a confirmation.
 
 ### What "live" means
 

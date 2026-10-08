@@ -2703,7 +2703,7 @@ All responses are JSON; error responses are `{ "error":code, "message":text }`.
 | `GET /kt/v1/entries?start=i&count=k` | `{ "sth", "start":i, "total":n, "entries":[<entry>…] }` — `k ≤ 1000`, clipped to the head's size (mirrors); `n` is the head's size |
 | `POST /kt/v1/publish` | §19.6 |
 | `GET /kt/v1/pub` | `{ "pub":b64 }` — informative |
-| `GET /health` | `{ "size", "labels", "sthTs", "diskBytes", "diskFreeBytes", "full" }` — informative |
+| `GET /health` | `{ "state", "size", "labels", "sthTs", "rssBytes", "memLimitBytes", "diskBytes", "diskFreeBytes", "full" }` — informative; while the log replays its entries at start, `503 { "state": "replaying", "replayed", "rssBytes", "memLimitBytes" }`, and every other route `503` |
 
 An `<entry>` is `{ "index":i, "label":b64, "v":version, "fp":b64,
 "valueHash":b64, "value":b64, "ts":ms }`; a reader MUST check
