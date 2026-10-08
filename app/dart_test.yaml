@@ -11,3 +11,7 @@ tags:
     # The numbers they produce live in docs/PERFORMANCE.md.
     timeout: 6x
     skip: "benchmark — run with: flutter test --run-skipped --tags bench"
+  screenshots:
+    # Renders the theme screenshots (test/screenshots_test.dart) into
+    # build/screenshots/, which CI uploads. It runs with everything else;
+    # declared so the runner does not warn about an unknown tag.

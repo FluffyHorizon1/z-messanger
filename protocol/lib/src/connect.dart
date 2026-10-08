@@ -39,7 +39,6 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
-import 'identity.dart';
 import 'identity_v3.dart';
 import 'util.dart';
 

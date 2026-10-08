@@ -17,12 +17,21 @@ final Random _sysRandom = Random.secure();
 /// in `docs/vectors/` are reproducible — the same pattern NIST KATs use
 /// (a seeded DRBG in place of the RNG). The override is scoped to that zone
 /// and cannot leak into or be switched on from anywhere else.
-const Symbol randomOverrideKey = #z_protocol_random_override;
+///
+/// That last sentence was not true while the key was a symbol: a `#symbol`
+/// literal is the same value wherever it is written, so any code in the
+/// process could switch the override on without importing anything from this
+/// package, and it stayed live in release builds. The key is now an object only
+/// code importing this file can name, and the lookup is compiled out of a
+/// product (release) build altogether.
+final Object randomOverrideKey = Object();
 
 Uint8List randomBytes(int n) {
-  final override = Zone.current[randomOverrideKey];
-  if (override != null) {
-    return (override as Uint8List Function(int))(n);
+  if (!const bool.fromEnvironment('dart.vm.product')) {
+    final override = Zone.current[randomOverrideKey];
+    if (override != null) {
+      return (override as Uint8List Function(int))(n);
+    }
   }
   final b = Uint8List(n);
   for (var i = 0; i < n; i++) {

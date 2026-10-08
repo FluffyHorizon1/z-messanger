@@ -1,0 +1,5 @@
+tags:
+  integration:
+    # Talks to a real relay process: these suites start server/server.js, so
+    # server/node_modules must be installed. Declared so the runner does not
+    # warn about an unknown tag; it changes nothing about how they run.

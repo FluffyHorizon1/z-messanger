@@ -5856,8 +5856,12 @@ class ChatService extends ChangeNotifier implements KtHost {
             heldMembers.add(rid);
           } catch (e) {
             // Leave the row. The next drain retries it; the message stays
-            // `pending`, which is the truth.
-            debugPrint('group fan-out to $rid failed, will retry: $e');
+            // `pending`, which is the truth. Said in a debug build only:
+            // `debugPrint` is not stripped from a release build, and this line
+            // names a group member's routing id in the system log.
+            if (kDebugMode) {
+              debugPrint('group fan-out to $rid failed, will retry: $e');
+            }
           }
         }
         if (progressed) {
