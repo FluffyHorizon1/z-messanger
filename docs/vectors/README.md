@@ -62,6 +62,7 @@ protocol version directories; it is frozen on the same terms
 | File | Covers | Spec |
 |---|---|---|
 | `archive.json` | `.zbk` backup: the recovery code (entropy → Crockford base32 → checksum, and a mangled transcription parsed back), the Argon2id KAT, the header, and a complete four‑frame archive with every nonce, AAD rule, ciphertext and tag — plus the two cases that must fail (a frame moved to another index, the wrong code) | `BACKUP.md` §3–§4 |
+| `archive_1_1.json` | `.zbk` format 1.1 (`adr/0025`): the same frame layer under a header naming its minor revision (`mv`), one record of each kind 1.1 adds — a linked device's `identity` with its `account` (whose certificate the Node verifier checks with its own Ed25519), `state`, a `contact` with `req`, `kv` and `sids`, `blocked`, `request` — a record of a type no reader knows marked `keep`, and the same header at major version 2, which a reader of this major refuses | `BACKUP.md` §4.1, §5 |
 
 ## Conventions
 

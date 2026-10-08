@@ -300,6 +300,8 @@ class _BootstrapperState extends State<Bootstrapper>
           _unlockError = const BiometricInvalidated();
         });
       }
+    } on VaultTooNewException catch (e) {
+      if (mounted) setState(() => _fatal = e);
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -339,6 +341,10 @@ class _BootstrapperState extends State<Bootstrapper>
         _unlocking = false;
         _unlockError = const WrongPassphrase();
       });
+    } on VaultTooNewException catch (e) {
+      // Not a wrong passphrase and not something trying again fixes: the
+      // full-screen message says what does.
+      setState(() => _fatal = e);
     } catch (e) {
       setState(() {
         _unlocking = false;
@@ -409,7 +415,9 @@ class _BootstrapperState extends State<Bootstrapper>
                 child: Padding(
                   padding: const EdgeInsets.all(24),
                   child: Text(
-                    l.startupFailed('$_fatal'),
+                    _fatal is VaultTooNewException
+                        ? l.vaultTooNew
+                        : l.startupFailed('$_fatal'),
                     textAlign: TextAlign.center,
                     style: TextStyle(color: ctx.z.danger),
                   ),

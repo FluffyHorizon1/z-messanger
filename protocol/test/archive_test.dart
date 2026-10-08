@@ -177,4 +177,53 @@ void main() {
           reason: 'no oracle beyond "it did not open"');
     });
   });
+
+  group('archive versions', () {
+    Map<String, Object?> parse(Uint8List h) =>
+        (jsonDecode(utf8.decode(h)) as Map).cast<String, Object?>();
+
+    test('a header names its minor revision only when asked to', () {
+      final salt = Uint8List(16), np = Uint8List(16);
+      final plain = ZArchive.buildHeader(
+          salt: salt, noncePrefix: np, schema: 13, createdMs: 1);
+      expect(parse(plain).containsKey('mv'), isFalse,
+          reason: 'a minor-0 header is byte for byte what 1.0 wrote');
+      expect(ZArchive.minorOf(ZArchive.parseHeader(plain)), 0);
+      final minor = ZArchive.buildHeader(
+          salt: salt,
+          noncePrefix: np,
+          schema: 13,
+          createdMs: 1,
+          minor: ZArchive.minorVersion);
+      expect(ZArchive.minorOf(ZArchive.parseHeader(minor)),
+          ZArchive.minorVersion);
+      // A later minor of this major is still this major: read, not refused.
+      final later = parse(minor)..['mv'] = ZArchive.minorVersion + 5;
+      expect(
+          ZArchive.minorOf(ZArchive.parseHeader(
+              Uint8List.fromList(utf8.encode(jsonEncode(later))))),
+          ZArchive.minorVersion + 5);
+    });
+
+    test('a newer major is refused as such, before any key; others as damage',
+        () {
+      final base = parse(ZArchive.buildHeader(
+          salt: Uint8List(16), noncePrefix: Uint8List(16), schema: 13,
+          createdMs: 1));
+      Uint8List withV(Object? v) =>
+          Uint8List.fromList(utf8.encode(jsonEncode({...base, 'v': v})));
+      expect(ZArchive.isNewerMajor({...base, 'v': ZArchive.version + 1}),
+          isTrue);
+      expect(() => ZArchive.parseHeader(withV(ZArchive.version + 1)),
+          throwsA(isA<ArchiveTooNewException>().having(
+              (e) => e.message, 'message', contains('Update Z first'))));
+      for (final v in [0, '1', null]) {
+        expect(() => ZArchive.parseHeader(withV(v)),
+            throwsA(allOf(isA<FormatException>(),
+                isNot(isA<ArchiveTooNewException>()))),
+            reason: 'v = $v is a damaged header, not a newer one');
+      }
+      expect(ZArchive.isNewerMajor({...base, 'z': 'other', 'v': 9}), isFalse);
+    });
+  });
 }

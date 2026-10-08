@@ -368,6 +368,30 @@ class KtOwnAlert {
       version: (j['v'] as num).toInt(), fpB64: j['f'] as String, atMs: (j['at'] as num?)?.toInt() ?? 0);
 }
 
+/// One entry the log holds for an account's label, verified under an
+/// accepted head: its version and fingerprint, where it sits in the log, and
+/// the list it opens to — null when it does not open, or does not verify, as
+/// that account's list at that (version, fingerprint).
+class KtOwnEntry {
+  final int version;
+  final String fpB64;
+  final int index;
+  final SignedDeviceList? list;
+  KtOwnEntry(
+      {required this.version,
+      required this.fpB64,
+      required this.index,
+      required this.list});
+}
+
+/// What the log holds for an account: its latest entry (null for a label
+/// the log has never held) and every entry in its history.
+class KtOwnRecord {
+  final KtOwnEntry? latest;
+  final List<KtOwnEntry> history;
+  KtOwnRecord({required this.latest, required this.history});
+}
+
 /// Thrown by the service when a send to a contact in conflict is attempted.
 class KtSendHeldException implements Exception {
   final String rid;
@@ -627,6 +651,102 @@ class KeyTransparency {
   /// one is. The service never records a second one for a version
   /// (`_recordOwnList`); this is what it asks first.
   String? knownOwnFingerprint(int version) => _knownOwn[version];
+
+  /// Every version of this device's own account it has a record of.
+  Iterable<int> get knownOwnVersions => _knownOwn.keys;
+
+  /// What the log holds for [accountEdPub] — its latest entry and its whole
+  /// history, every item verified under a head this client accepts (§19.5),
+  /// exactly as the own-account check reads them — for a device resuming
+  /// after a restore (`ChatService._resumeAfterRestore`), which has to know
+  /// what the account published before it signs anything itself.
+  ///
+  /// Null when the log cannot be asked — off, off-limits in a test, already
+  /// faulted, unreachable — or answered with something that does not verify
+  /// (which faults it, as the check would). Serialised with [check].
+  Future<KtOwnRecord?> ownRecord(Uint8List accountEdPub) {
+    final prev = _running;
+    final run = () async {
+      if (prev != null) await prev;
+      if (_disposed || !config.enabled || _offLimitsInTest || fault != null) {
+        return null;
+      }
+      try {
+        return await _ownRecordOnce(accountEdPub, config.logPub!);
+      } catch (_) {
+        return null;
+      }
+    }();
+    _running = run.then((_) {});
+    return run;
+  }
+
+  Future<KtOwnRecord?> _ownRecordOnce(
+      Uint8List accountEdPub, Uint8List logPub) async {
+    if (!await _acceptHead(logPub)) return null;
+    final label = await ktLabel(accountEdPub);
+    final j = await _getJson(_url('/kt/v1/lookup/${_hex(label)}'));
+    if (j == null) {
+      await _fail();
+      return null;
+    }
+    KtLookupResult r;
+    try {
+      r = await ktVerifyLookup(await KtLookup.fromJson(j),
+          label: label, logPub: logPub);
+    } on KtVerifyException catch (e) {
+      await _setFault('lookup for this account: ${e.reason}');
+      return null;
+    }
+    if (!await _adopt(r.head, logPub)) return null;
+    Future<KtOwnEntry> entry(KtEntry e) async => KtOwnEntry(
+        version: e.version,
+        fpB64: b64(e.fp),
+        index: e.index,
+        list: await _openList(accountEdPub, e));
+    final latest = r.latest == null ? null : await entry(r.latest!);
+    final history = <KtOwnEntry>[];
+    var start = 0;
+    while (true) {
+      final hj =
+          await _getJson(_url('/kt/v1/history/${_hex(label)}?start=$start'));
+      if (hj == null) {
+        await _fail();
+        return null;
+      }
+      KtTreeHead hh;
+      try {
+        hh = KtTreeHead.fromJson((hj['sth'] as Map).cast<String, Object?>());
+      } on KtVerifyException catch (e) {
+        await _setFault('history for this account: ${e.reason}');
+        return null;
+      } catch (_) {
+        await _setFault('history for this account could not be read');
+        return null;
+      }
+      if (!await _adopt(hh, logPub)) return null;
+      final items = hj['entries'] as List? ?? const [];
+      final t = hj['total'];
+      final total = t is int ? t : start + items.length;
+      for (final item in items) {
+        KtEntry e;
+        try {
+          e = await ktVerifyHistoryItem((item as Map).cast<String, Object?>(),
+              head: hh, label: label);
+        } on KtVerifyException catch (err) {
+          await _setFault('history for this account: ${err.reason}');
+          return null;
+        } catch (_) {
+          await _setFault('history for this account could not be read');
+          return null;
+        }
+        history.add(await entry(e));
+      }
+      start += items.length;
+      if (items.isEmpty || start >= total) break;
+    }
+    return KtOwnRecord(latest: latest, history: history);
+  }
 
   /// The service records every list this device signed or learned for its
   /// own account, so an entry in the log's history that is none of them can

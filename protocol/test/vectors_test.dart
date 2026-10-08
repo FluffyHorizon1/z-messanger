@@ -59,6 +59,7 @@ void main() {
       ('v3', 'contact_code_v3'),
       ('v3', 'device_cert_v3'),
       ('backup', 'archive'),
+      ('backup', 'archive_1_1'),
     ]) {
       test('$ver/$suite', () {
         final onDisk = readVectors(suite, ver);
@@ -600,6 +601,94 @@ void main() {
                   '${(v['frames'] as List).first['mac']}')),
           throwsA(isA<FormatException>()),
           reason: 'the wrong recovery code must not open a frame');
+    });
+
+    test(
+        'backup archive 1.1: a minor revision reads with the same frame '
+        'layer, its records are what they say, and a newer major is refused',
+        () async {
+      final v = readVectors('archive_1_1', 'backup');
+      final rc = v['recovery_code'] as Map;
+      final kdf = v['kdf'] as Map;
+      final head = v['header'] as Map;
+      final parsed = await RecoveryCode.parse(rc['formatted'] as String);
+      expect(hex(parsed.entropy), rc['entropy']);
+      final key = await ZArchive.deriveKey(
+          await parsed.keyMaterial(), unhex(kdf['salt'] as String));
+      expect(hex(await key.extractBytes()), kdf['key']);
+
+      final bytes = unhex((v['file'] as Map)['bytes'] as String);
+      final nl = bytes.indexOf(0x0a);
+      final header = Uint8List.fromList(bytes.sublist(0, nl));
+      expect(hex(header), head['bytes']);
+      final h = ZArchive.parseHeader(header);
+      expect(h['v'], head['major']);
+      expect(ZArchive.minorOf(h), head['minor']);
+      expect(ZArchive.isNewerMajor(h), isFalse);
+      final np = unb64(h['np'] as String);
+
+      var off = nl + 1;
+      var index = 0;
+      final types = <String>[];
+      for (final f in (v['frames'] as List).cast<Map>()) {
+        final len =
+            ByteData.view(Uint8List.fromList(bytes).buffer).getUint32(off);
+        off += 4;
+        final sealed = Uint8List.fromList(bytes.sublist(off, off + len));
+        off += len;
+        expect(hex(sealed), '${f['ciphertext']}${f['mac']}');
+        final (kind, payload) = await ZArchive.openFrame(
+            key: key,
+            header: header,
+            noncePrefix: np,
+            index: index++,
+            sealed: sealed);
+        expect(kind, f['kind']);
+        expect(utf8.decode(payload), f['payload_json']);
+        final r = jsonDecode(utf8.decode(payload)) as Map;
+        types.add(r['t'] as String);
+        if (kind == ZArchive.kindEnd) {
+          expect(r['records'], (v['frames'] as List).length - 1);
+        }
+      }
+      expect(off, bytes.length, reason: 'the file is exactly its frames');
+      expect(types, [
+        'meta',
+        'identity',
+        'state',
+        'contact',
+        'blocked',
+        'request',
+        'example',
+        'end',
+      ]);
+
+      // The linked device's identity names the account it belongs to, and
+      // the account's certificate for it verifies: what keeps a restore from
+      // making it a root of its own.
+      final identity = jsonDecode(
+          ((v['frames'] as List)[1] as Map)['payload_json'] as String) as Map;
+      final account = await AccountIdentity.fromJson(
+          (identity['account'] as Map).cast<String, Object?>());
+      expect(account.holdsAccountRoot, isFalse);
+      expect(await account.deviceCert.verify(account.accountEdPub), isTrue);
+      expect(b64(account.deviceEdSeed),
+          (identity['identity'] as Map)['edSeed']);
+
+      // The record a reader does not know, marked to be kept.
+      final kept = jsonDecode(((v['frames'] as List)[v['kept_record_index']
+          as int] as Map)['payload_json'] as String) as Map;
+      expect(kept[v['keep_member']], 1);
+
+      // And the same header one major version on: refused before any key.
+      final newer =
+          unhex((v['must_fail'] as Map)['newer_major_header'] as String);
+      expect(
+          ZArchive.isNewerMajor(
+              (jsonDecode(utf8.decode(newer)) as Map).cast<String, Object?>()),
+          isTrue);
+      expect(() => ZArchive.parseHeader(Uint8List.fromList(newer)),
+          throwsA(isA<ArchiveTooNewException>()));
     });
   });
 }

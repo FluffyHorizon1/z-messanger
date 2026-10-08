@@ -226,9 +226,19 @@ void main() {
     expect(summary.contacts, 1);
     expect(summary.attachments, 1);
 
-    // Session state is NOT restored: that is the point.
-    expect(await freshVault.db.query('conversations'), isEmpty,
-        reason: 'a restored ratchet could be used twice');
+    // Session state is NOT restored: that is the point. What a restored
+    // conversation holds is the ids of the sessions it had, as retired, so
+    // an opening envelope someone kept cannot re-create one (phase 31) — and
+    // not one session, not one key.
+    for (final row in await freshVault.db.query('conversations')) {
+      final state = jsonDecode(
+          await freshVault.unseal(row['enc_state'] as String)) as Map;
+      expect(state['sessions'], isEmpty,
+          reason: 'a restored ratchet could be used twice');
+      expect(state['outboundSid'], isNull);
+      expect(state['retired'], isNotEmpty);
+      expect(row['enc_skipped'], isNull);
+    }
 
     await freshVault.db.close();
     final revived = await start(aliceDir, 'Alice', identity: aliceIdentity);

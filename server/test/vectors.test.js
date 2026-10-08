@@ -1277,6 +1277,79 @@ test('backup archive: every frame opens at its own index and nowhere else', () =
     cat(header, u64be(0))));
 });
 
+test('backup archive 1.1: the minor revision opens with the same frame layer, and a newer major is not this format', () => {
+  const v = loadBk('archive_1_1');
+  const key = unhex(v.kdf.key);
+  const file = unhex(v.file.bytes);
+  assert.equal(file.length, v.file.len);
+  assert.equal(hex(sha256(file)), v.file.sha256);
+
+  // Header: same line, one more member. A reader of major 1 reads `mv`; one
+  // that predates it ignores it, which is what makes the revision minor.
+  const nl = file.indexOf(0x0a);
+  const header = file.subarray(0, nl);
+  assert.equal(hex(header), v.header.bytes);
+  const h = JSON.parse(header.toString('utf8'));
+  assert.equal(h.z, 'zbk');
+  assert.equal(h.v, 1);
+  assert.equal(h.v, v.header.major);
+  assert.equal(h.mv, 1);
+  assert.equal(h.mv, v.header.minor);
+  assert.equal(hex(Buffer.from(h.salt, 'base64')), v.kdf.salt);
+  const np = Buffer.from(h.np, 'base64');
+  assert.equal(hex(np), v.header.nonce_prefix);
+
+  // Frames exactly as in 1.0: nonce = np || u64be(i), aad = header || u64be(i).
+  let off = nl + 1;
+  const types = [];
+  let records = 0;
+  for (let i = 0; i < v.frames.length; i++) {
+    const f = v.frames[i];
+    const len = file.readUInt32BE(off); off += 4;
+    const sealed = file.subarray(off, off + len); off += len;
+    assert.equal(hex(sealed), f.ciphertext + f.mac, `frame ${i} bytes`);
+    const nonce = cat(np, u64be(i));
+    assert.equal(hex(nonce), f.nonce, `frame ${i} nonce`);
+    const plain = xchachaOpen(key, nonce,
+      sealed.subarray(0, sealed.length - 16),
+      sealed.subarray(sealed.length - 16),
+      cat(header, u64be(i)));
+    assert.equal(hex(plain), f.plaintext, `frame ${i} plaintext`);
+    assert.equal(plain[0], f.kind, `frame ${i} kind byte`);
+    const body = plain.subarray(1).toString('utf8');
+    assert.equal(body, f.payload_json, `frame ${i} json`);
+    const rec = JSON.parse(body);
+    types.push(rec.t);
+    if (f.kind === v.frame_kinds.end) assert.equal(rec.records, records);
+    else records++;
+  }
+  assert.equal(off, file.length, 'the file is exactly its frames');
+  assert.deepEqual(types,
+    ['meta', 'identity', 'state', 'contact', 'blocked', 'request', 'example', 'end']);
+
+  // The linked device's identity carries its account — the account key and
+  // this device's certificate, never the account's seed — and the
+  // certificate is the account's Ed25519 signature over the device's keys.
+  const id = JSON.parse(v.frames[1].payload_json);
+  assert.equal(id.account.accountEdSeed, undefined);
+  const cert = id.account.deviceCert;
+  const certOk = crypto.verify(null,
+    cat(utf8('z-device-cert-v1:'), Buffer.from(cert.ded, 'base64'),
+      Buffer.from(cert.dx, 'base64'), utf8(cert.id)),
+    edPubKey(Buffer.from(id.account.accountEdPub, 'base64')),
+    Buffer.from(cert.sig, 'base64'));
+  assert.ok(certOk, "the account's certificate for the device verifies");
+
+  // A record no reader knows, marked to be carried.
+  const kept = JSON.parse(v.frames[v.kept_record_index].payload_json);
+  assert.equal(kept[v.keep_member], 1);
+
+  // The same header one major on is not this format.
+  const newer = JSON.parse(unhex(v.must_fail.newer_major_header).toString('utf8'));
+  assert.equal(newer.z, 'zbk');
+  assert.ok(newer.v > h.v, 'a newer major is refused by a reader of this one');
+});
+
 test('backup archive: the recovery code decodes to the recorded entropy', () => {
   const v = loadBk('archive');
   const A = v.recovery_code.alphabet;

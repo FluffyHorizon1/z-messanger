@@ -1,8 +1,19 @@
 // Encrypted backup archive (phase 9): export the whole vault to a `.zbk`
 // file the user holds, and restore it onto a wiped device.
 //
-// What travels: the identity, contacts, groups, every message, reactions and
-// attachment bytes. What does NOT travel, deliberately:
+// What travels: the identity — and, on a linked device, the account it is a
+// device of — contacts, groups, every message, reactions and attachment
+// bytes; and since minor 1 of the format (phase 31) what the account's
+// device-list and transparency machinery needs to RESUME rather than start
+// again: the list this account last signed or learned and every
+// (version, fingerprint) it knows it issued, its linked devices, the log's
+// head and configuration, each contact's list with its signature floor, the
+// block list, pending requests and the push preference. A restore that
+// carried none of it began again at device-list version 1 and told the user
+// to reset their identity: its own log monitor found the versions it had
+// signed before the backup and called them lists it never issued, and every
+// contact saw its devices claim a version below one they had already seen
+// (the 2026-10-03 analysis, P0-3). What does NOT travel, deliberately:
 //
 //   * **session state** (`conversations`). Those rows are live double-ratchet
 //     state. Restoring them could put the same ratchet on two devices —
@@ -10,15 +21,19 @@
 //     socket per routing id, so the two copies would also fight over the
 //     mailbox. A restored device re-handshakes instead: the first message to
 //     each contact opens a fresh session, which costs one round trip and is
-//     the only safe answer.
+//     the only safe answer. What does travel is every session's ID, so the
+//     restored device holds each one as retired: an opening envelope someone
+//     kept cannot re-create a session it ended (see [BackupArchive.export]).
 //   * the outbox and inbox dedupe table, which are in-flight state, not
 //     history.
 //   * anything device-bound: the vault's own master key and device secret,
-//     the biometric pass key, the device id. A restore builds a fresh vault
-//     with fresh device keys.
+//     the biometric pass key. A restore builds a fresh vault with fresh
+//     device keys. (A root's device id travels: it is part of the
+//     certificate every list the account signs names it by.)
 //
 // The file layout and its guarantees live in `ZArchive` (protocol package)
-// and `docs/BACKUP.md`.
+// and `docs/BACKUP.md`; what a restored device does first, in
+// `ChatService` (`_resumeAfterRestore`).
 
 import 'dart:convert';
 import 'dart:io';
@@ -29,6 +44,7 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import 'key_transparency.dart' show KtConfig;
 import 'relay_url.dart';
 import 'vault.dart';
 
@@ -50,6 +66,12 @@ class ArchiveSummary {
   final int contacts;
   final int groups;
   final int attachments;
+
+  /// Records of a type this build does not know, kept to be written into
+  /// the next archive because their writer marked them so
+  /// ([ZArchive.keepField]), and the ones skipped because it did not.
+  final int kept;
+  final int skipped;
   const ArchiveSummary({
     required this.schema,
     required this.createdMs,
@@ -57,7 +79,17 @@ class ArchiveSummary {
     required this.contacts,
     required this.groups,
     required this.attachments,
+    this.kept = 0,
+    this.skipped = 0,
   });
+}
+
+/// What a restore knows when it judges a `state` value: whose account the
+/// archive's identity is — its own key on a root, the `account` record's on
+/// a linked device.
+class _Ctx {
+  final Uint8List? account;
+  const _Ctx(this.account);
 }
 
 class ArchiveIncompleteException implements Exception {
@@ -82,6 +114,86 @@ class BackupArchive {
   /// See [import]; `restore_memory_test.dart` measures it.
   static const int blobChunkBytes = 256 * 1024;
 
+  /// Set by [import] (and by the `.zid` path in `Restore`): this vault was
+  /// restored and its first start has not yet re-asserted the account.
+  /// `ChatService` clears it once it has (`_resumeAfterRestore`).
+  static const String resumeKey = 'restore_resume';
+
+  /// Records of a type this build does not know whose writer marked them
+  /// [ZArchive.keepField]: their JSON text, in arrival order, sealed, until
+  /// [export] writes them into the next archive.
+  static const String keptKey = 'archive_kept';
+
+  /// The account-level `kv` rows the `state` record carries (format minor 1),
+  /// each with the shape a restore insists on before writing it: an archive
+  /// is a file that can come from anywhere, and several of these are read at
+  /// start-up by code that trusts what it finds.
+  ///
+  /// What is here and why: the account's own device list — its version, the
+  /// list last signed or learned and its fingerprint, the linked devices, the
+  /// post-quantum signature over it, which migrations have run — and the
+  /// alarms about it the user has not dismissed; the transparency log's
+  /// configuration (a self-hoster's own log), its accepted head (so a fork
+  /// the old device would have seen is still seen) and every own
+  /// (version, fingerprint) this account knows it issued, without which its
+  /// monitor reads its own history as lists it never issued; the root's
+  /// device id, which its certificate — named in every one of those lists —
+  /// is signed over; and the push preference, which defaults to on.
+  /// Deliberately absent: the publish queue and the log's timings, which
+  /// re-derive; a log fault, which the carried head re-derives; and
+  /// "this device was removed", which is about the device the backup was
+  /// taken on.
+  static final Map<String, Future<bool> Function(String, _Ctx)> _stateKeys = {
+    'device_id': (v, _) async => _isShortText(v),
+    'my_devices': (v, c) => _isOwnCertList(v, c),
+    'my_devlist_version': (v, _) async => _isCount(v),
+    'own_list_v': (v, _) async => _isCount(v),
+    'own_list_h': (v, _) async => _isShortText(v),
+    'own_list_json': (v, c) => _isOwnList(v, c),
+    'own_list_mlsig': (v, _) async => _isPqListSig(v),
+    'devlist_v2_migrated': (v, _) async => v == '1',
+    'devlist_v2only_migrated': (v, _) async => v == '1',
+    'own_alert': (v, _) async => _isText(v),
+    'own_alert_echo': (v, _) async => _isText(v),
+    'kt_config': (v, _) async => _isKtConfig(v),
+    'kt_head': (v, _) async => _isJsonMap(v),
+    'kt_own_known': (v, _) async => _isVersionMap(v),
+    'kt_own_first_v': (v, _) async => _isCount(v),
+    'kt_own_alert': (v, _) async => _isJsonMap(v),
+    'push_enabled': (v, _) async => v == '0' || v == '1',
+  };
+
+  /// The per-contact `kv` families a `contact` record carries (format minor
+  /// 1), under its `kv` member keyed by family: the contact's device list and
+  /// the floor it has reached (without which a list stripped of its
+  /// ratchet-key signature is admitted again), when it arrived (the log's
+  /// grace runs from there), its post-quantum list signature, what its
+  /// devices last claimed (so a rollback is still a rollback), the log's
+  /// standing for it — including a "send anyway" the user chose — any alarm
+  /// not yet dismissed, and when the chat was last opened. Every one is in
+  /// `ChatService.contactKvFamilies`, so deleting the contact still removes
+  /// it. Not `cextra_`: those are ratchets (see [export]).
+  static final Map<String, Future<bool> Function(String, _Ctx, Uint8List)>
+      _contactFamilies = {
+    'cdev_': (v, _, acct) => _isListOf(v, acct),
+    'cdev_ver_': (v, _, __) async => _isCount(v),
+    'cdev_at_': (v, _, __) async => _isCount(v),
+    'cdev_sigfloor_': (v, _, __) async => _isCount(v),
+    'cdev_pq_': (v, _, __) async => _isPqListSig(v),
+    'cdev_pq_ver_': (v, _, __) async => _isCount(v),
+    'cdl_claims_': (v, _, __) async => _isClaims(v),
+    'cdl_alert_': (v, _, __) async => _isText(v),
+    'pql_alert_': (v, _, __) async => _isText(v),
+    'ktc_': (v, _, __) async => _isJsonMap(v),
+    'last_open_': (v, _, __) async => _isCount(v),
+  };
+
+  /// The account-level keys a `state` record may carry, for tests and docs.
+  static Iterable<String> get stateKeys => _stateKeys.keys;
+
+  /// The per-contact families a `contact` record may carry.
+  static Iterable<String> get contactFamilies => _contactFamilies.keys;
+
   // ------------------------------------------------------------------
   // Export
   // ------------------------------------------------------------------
@@ -103,6 +215,7 @@ class BackupArchive {
       noncePrefix: noncePrefix,
       schema: schema,
       createdMs: DateTime.now().millisecondsSinceEpoch,
+      minor: ZArchive.minorVersion,
     );
     out.add(header);
     out.add(const [0x0a]);
@@ -146,18 +259,69 @@ class BackupArchive {
       // restored device would generate a DIFFERENT post-quantum key, and
       // every contact holding a commitment to the old one would see a
       // mismatch — indistinguishable, to them, from an attack.
+      //
+      // `account` (phase 31): on a LINKED device, the account this identity
+      // is a device of — the account's public keys, this device's
+      // certificate, and the device seeds the identity already carries;
+      // never the account root, which no device this app links is given and
+      // which is left out here even so: a linked device's archive is that
+      // device and never more. Without it a restore read the device key as
+      // an account root of its own: it signed device lists for a one-device
+      // account nobody had, published them to the log under its own key, and
+      // every contact who knew it as one of its account's devices saw it
+      // claim lists that were not its account's (the 2026-10-03 analysis,
+      // P1-8). With it the restore is that linked device again.
+      final account = await vault.kvGet('account');
       await record({
         't': 'identity',
         'identity': jsonDecode(idJson),
         if (await vault.kvGet('pq_seed') != null)
           'pq_seed': await vault.kvGet('pq_seed'),
+        if (account != null)
+          'account': (Map<String, Object?>.from(jsonDecode(account) as Map)
+            ..remove('accountEdSeed')),
       });
+    }
+
+    // The account's device-list and transparency state (format minor 1):
+    // the allow-list and the reason for each key are at [_stateKeys].
+    // Written before the contacts so a reader meets the account before the
+    // lists its contacts hold for it.
+    final state = <String, String>{};
+    for (final k in _stateKeys.keys) {
+      final v = await vault.kvGet(k);
+      if (v != null) state[k] = v;
+    }
+    // This account's own devices' sessions, as ids only (see below).
+    final syncIds = _accountSessionIds(await vault.kvGet('sync_session'));
+    await record({
+      't': 'state',
+      'kv': state,
+      if (syncIds.isNotEmpty) 'sync': syncIds,
+    });
+
+    // Per-contact state, read once by family rather than once per contact
+    // (see `kvScanMany`), and every conversation's session ids.
+    final perContact = await vault.kvScanMany(_contactFamilies.keys.toList());
+    final extras = await vault.kvScan('cextra_');
+    final convIds = <String, List<String>>{};
+    for (final row in await vault.db.query('conversations')) {
+      try {
+        final j = (jsonDecode(await vault.unseal(row['enc_state'] as String))
+                as Map)
+            .cast<String, Object?>();
+        convIds[row['rid'] as String] = _conversationIds(j);
+      } catch (_) {
+        // An unreadable cell: that conversation's ids are lost, which costs
+        // only the replay protection below for it.
+      }
     }
 
     // Contacts, including their v3 state: the commitment from the code that
     // was scanned and the post-quantum key that matched it. Losing those on a
     // restore would silently downgrade every verified contact to classical.
     for (final c in await vault.db.query('contacts')) {
+      final rid = c['rid'] as String;
       String? pqPub;
       if (c['enc_pq_pub'] != null) {
         try {
@@ -208,6 +372,28 @@ class BackupArchive {
         // dropped it would present a contact nobody scanned here as one the
         // user added themselves.
         if (c['added_by'] != null) 'addedby': c['added_by'],
+        // ADR 0011: a contact this account added and is still waiting on.
+        if ((c['requested'] as int? ?? 0) == 1) 'req': 1,
+        // Phase 31: what this account knows about the contact's devices and
+        // their standing in the log ([_contactFamilies]).
+        'kv': {
+          for (final f in _contactFamilies.keys)
+            if (perContact['$f$rid'] != null) f: perContact['$f$rid'],
+        },
+        // And the ids — ids only, never a key — of every session this
+        // device held with them, live or retired, and with each of their
+        // other devices. A session's opening envelope re-derives its keys
+        // from the two identities and its own ephemeral alone, so anyone who
+        // kept one could replay it to a device that remembered nothing, and
+        // the session it opened would be re-created: the message it carried
+        // read again, a deleted one restored, and the pair's traffic pinned
+        // to a session the peer had moved on from (the 2026-10-03
+        // analysis's backup P2). A live device already refuses an opener for
+        // a session it retired; a restored one now holds every id it had as
+        // retired, so it refuses the same envelopes.
+        if (convIds[rid]?.isNotEmpty ?? false) 'sids': convIds[rid],
+        if (_accountSessionIds(extras['cextra_$rid']).isNotEmpty)
+          'xsids': _accountSessionIds(extras['cextra_$rid']),
       });
     }
 
@@ -215,6 +401,38 @@ class BackupArchive {
     final groupsJson = await vault.kvGet('groups');
     if (groupsJson != null) {
       await record({'t': 'groups', 'groups': jsonDecode(groupsJson)});
+    }
+
+    // ADR 0011: who is blocked, and who is waiting for an answer. A restore
+    // that dropped the first let a blocked person reach the user again;
+    // one that dropped the second lost a request the user had not yet seen
+    // to (the 2026-10-03 analysis's backup P2).
+    for (final b in await vault.db.query('blocked')) {
+      await record(
+          {'t': 'blocked', 'rid': b['rid'], 'created': b['created_ms']});
+    }
+    for (final q in await vault.db.query('requests')) {
+      try {
+        await record({
+          't': 'request',
+          'rid': q['rid'],
+          'bundle': jsonDecode(await vault.unseal(q['enc_bundle'] as String)),
+          'name': await vault.unseal(q['enc_name'] as String),
+          'created': q['created_ms'],
+        });
+      } catch (_) {
+        continue; // unreadable cell: the request re-arrives if they ask again
+      }
+    }
+
+    // Records an earlier restore could not read and kept because their
+    // writer said to: back into the archive as they came, byte for byte.
+    final kept = await vault.kvGet(keptKey);
+    if (kept != null) {
+      for (final text in (jsonDecode(kept) as List).cast<String>()) {
+        await frame(ZArchive.kindRecord, utf8.encode(text));
+        records++;
+      }
     }
 
     // Messages. Bodies are decrypted out of the vault and re-sealed by the
@@ -327,6 +545,170 @@ class BackupArchive {
     return {'k': meta['fk'], 'n': meta['fn']};
   }
 
+  /// Every session id a stored conversation knows: the ones it retired,
+  /// oldest first, then the ones it holds — last, so they are the last a
+  /// bounded list drops (`Conversation.maxRetiredSids`).
+  static List<String> _conversationIds(Map<String, Object?> conv) {
+    final out = <String>[];
+    for (final r in (conv['retired'] as List?) ?? const []) {
+      if (r is String && !out.contains(r)) out.add(r);
+    }
+    final sessions = conv['sessions'];
+    if (sessions is Map) {
+      for (final k in sessions.keys) {
+        if (k is String && !out.contains(k)) out.add(k);
+      }
+    }
+    return out;
+  }
+
+  /// The same for an account session — this account's own devices
+  /// (`sync_session`) or a contact's other devices (`cextra_<rid>`): per
+  /// device, its public bundle and its session ids. Nothing else of the
+  /// session is read.
+  static Map<String, Object?> _accountSessionIds(String? json) {
+    if (json == null) return const {};
+    try {
+      final convs =
+          ((jsonDecode(json) as Map)['convs'] as Map).cast<String, Object?>();
+      final out = <String, Object?>{};
+      for (final e in convs.entries) {
+        final conv = e.value;
+        if (conv is! Map) continue;
+        final ids = _conversationIds(conv.cast<String, Object?>());
+        if (ids.isEmpty || conv['them'] is! Map) continue;
+        out[e.key] = {'them': conv['them'], 'sids': ids};
+      }
+      return out;
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// A conversation that holds no session and remembers [sids] as retired:
+  /// what a restored device keeps of every session the archive names. Built
+  /// by the protocol's own reader, so it is the shape any later load
+  /// expects, bound included.
+  static Future<Map<String, Object?>> _retiredOnly(
+      ZIdentity me, Object? them, Object? sids) async {
+    final conv = await Conversation.fromJson(me, {
+      'them': them,
+      'outboundSid': null,
+      'sessions': <String, Object?>{},
+      'retired': [
+        for (final s in (sids as List?) ?? const [])
+          if (s is String) s
+      ],
+    });
+    return conv.toJson(includeSkipped: false);
+  }
+
+  /// An account session of [_retiredOnly] conversations, one per device
+  /// [ids] names (as [_accountSessionIds] wrote it). Null when none is
+  /// usable.
+  static Future<Map<String, Object?>?> _retiredAccountSession(
+      ZIdentity me, Object? ids) async {
+    if (ids is! Map) return null;
+    final convs = <String, Object?>{};
+    for (final e in ids.entries) {
+      final v = e.value;
+      if (e.key is! String || v is! Map) continue;
+      try {
+        final them = ContactBundle.fromJson((v['them'] as Map).cast());
+        if (await them.routingId() != e.key) continue; // not that device
+        convs[e.key as String] = await _retiredOnly(me, v['them'], v['sids']);
+      } catch (_) {
+        continue;
+      }
+    }
+    return convs.isEmpty ? null : {'convs': convs};
+  }
+
+  // ---- the shapes a restore insists on --------------------------------------
+
+  static bool _isText(String v) => v.length <= 64 * 1024;
+  static bool _isShortText(String v) => v.isNotEmpty && v.length <= 256;
+  static bool _isCount(String v) => (int.tryParse(v) ?? -1) >= 0;
+
+  static Object? _json(String v) {
+    try {
+      return jsonDecode(v);
+    } on FormatException {
+      return null;
+    }
+  }
+
+  static bool _isJsonMap(String v) => _json(v) is Map;
+
+  static bool _isVersionMap(String v) {
+    final m = _json(v);
+    return m is Map &&
+        m.entries.every(
+            (e) => int.tryParse('${e.key}') != null && e.value is String);
+  }
+
+  static bool _isKtConfig(String v) {
+    final m = _json(v);
+    if (m is! Map) return false;
+    try {
+      final c = KtConfig.fromJson(m.cast<String, Object?>());
+      return c.witnessProblem == null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static bool _isPqListSig(String v) {
+    final m = _json(v);
+    if (m is! Map) return false;
+    try {
+      HybridDeviceListSignature.fromJson(m.cast<String, Object?>());
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static bool _isClaims(String v) {
+    final m = _json(v);
+    return m is Map &&
+        m.values.every((c) =>
+            c is Map && c['v'] is num && c['h'] is String && c['mx'] is num);
+  }
+
+  /// A signed list for the account [acct]: it parses, names that account and
+  /// verifies under it.
+  static Future<bool> _isListOf(String v, Uint8List? acct) async {
+    final m = _json(v);
+    if (m is! Map || acct == null) return false;
+    try {
+      final list = SignedDeviceList.fromJson(m.cast<String, Object?>());
+      return constantTimeEquals(list.accountEdPub, acct) &&
+          await list.verify();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> _isOwnList(String v, _Ctx c) => _isListOf(v, c.account);
+
+  /// This account's other devices: certificates its account key signed.
+  static Future<bool> _isOwnCertList(String v, _Ctx c) async {
+    final l = _json(v);
+    final acct = c.account;
+    if (l is! List || acct == null) return false;
+    try {
+      for (final d in l) {
+        final cert =
+            DeviceCertificate.fromJson((d as Map).cast<String, Object?>());
+        if (!await cert.verify(acct)) return false;
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // ------------------------------------------------------------------
   // Import
   // ------------------------------------------------------------------
@@ -391,6 +773,22 @@ class BackupArchive {
       var sawEnd = false;
       var records = 0;
       final fileMeta = <String, Map<String, Object?>>{};
+      // Phase 31 (format minor 1). The `state` record and each contact's
+      // state are judged against the account the identity belongs to, so
+      // they are applied after the last record, once that is known; so are
+      // the block list and the requests, which name no contact.
+      ZIdentity? me;
+      Uint8List? accountPub;
+      Map<String, Object?>? state;
+      final contactAcct = <String, Uint8List>{};
+      final contactBundle = <String, Object?>{};
+      final contactKv = <String, Map>{};
+      final contactSids = <String, Object?>{};
+      final contactXsids = <String, Object?>{};
+      final blocked = <Map<String, Object?>>[];
+      final requests = <Map<String, Object?>>[];
+      final kept = <String>[];
+      var skipped = 0;
 
       await vault.db.transaction((txn) async {
         // Everything below runs inside this transaction, so every write must
@@ -438,8 +836,13 @@ class BackupArchive {
             await spill.append(out, bytes);
             continue;
           }
-          final r =
-              (jsonDecode(utf8.decode(payload)) as Map).cast<String, Object?>();
+          // A frame kind is a major-version matter: a minor revision adds
+          // record types inside `kindRecord` frames, never a kind of frame.
+          if (kind != ZArchive.kindRecord && kind != ZArchive.kindEnd) {
+            throw FormatException('unknown archive frame kind $kind');
+          }
+          final text = utf8.decode(payload);
+          final r = (jsonDecode(text) as Map).cast<String, Object?>();
           if (kind == ZArchive.kindEnd) {
             sawEnd = true;
             if (((r['records'] as num?)?.toInt() ?? -1) != records) {
@@ -463,10 +866,47 @@ class BackupArchive {
                 if (isSecureOrLocalRelay(url)) await kv('server_url', url);
               }
             case 'identity':
+              final idMap = (r['identity'] as Map).cast<String, Object?>();
+              me = await ZIdentity.fromJson(idMap);
+              accountPub = me!.edPub;
               await kv('identity', jsonEncode(r['identity']));
               if (r['pq_seed'] is String) {
                 await kv('pq_seed', r['pq_seed'] as String);
               }
+              final account = r['account'];
+              if (account != null) {
+                // A linked device's backup: the account it is a device of.
+                // Checked before it is believed — this record is what keeps
+                // the restore from making the device a root of its own, so a
+                // record that does not describe THIS identity as a device of
+                // THAT account refuses the archive rather than being dropped
+                // into exactly that.
+                final acct = await AccountIdentity.fromJson(
+                    (account as Map).cast<String, Object?>());
+                final seed = acct.accountEdSeed;
+                final consistent = idMap['edSeed'] == b64(acct.deviceEdSeed) &&
+                    idMap['xSeed'] == b64(acct.deviceXSeed) &&
+                    constantTimeEquals(
+                        acct.deviceCert.deviceEdPub, acct.deviceEdPub) &&
+                    constantTimeEquals(
+                        acct.deviceCert.deviceXPub, acct.deviceXPub) &&
+                    await acct.deviceCert.verify(acct.accountEdPub) &&
+                    (seed == null ||
+                        constantTimeEquals(
+                            (await ZIdentity.fromSeeds(
+                                    edSeed: seed, xSeed: acct.deviceXSeed))
+                                .edPub,
+                            acct.accountEdPub));
+                if (!consistent) {
+                  throw const FormatException(
+                      'the archive names an account its identity is not a '
+                      'device of');
+                }
+                accountPub = acct.accountEdPub;
+                await kv('account', jsonEncode(account));
+              }
+            case 'state':
+              state = r;
             case 'contact':
               contacts++;
               await txn.insert(
@@ -490,8 +930,22 @@ class BackupArchive {
                     'acct_ed': r['acct'],
                     if (r['cert'] != null) 'dev_cert': jsonEncode(r['cert']),
                     'added_by': r['addedby'],
+                    'requested': r['req'] == 1 ? 1 : 0,
                   },
                   conflictAlgorithm: ConflictAlgorithm.replace);
+              final rid = r['rid'];
+              if (rid is String) {
+                final bundle = (r['bundle'] as Map).cast<String, Object?>();
+                // The account this contact IS: the one the record names, or
+                // — for a contact from a v1 code — its own key (§3.5).
+                contactAcct[rid] = r['acct'] is String
+                    ? unb64(r['acct'] as String)
+                    : unb64(bundle['ed'] as String);
+                contactBundle[rid] = bundle;
+                if (r['kv'] is Map) contactKv[rid] = r['kv'] as Map;
+                if (r['sids'] != null) contactSids[rid] = r['sids'];
+                if (r['xsids'] != null) contactXsids[rid] = r['xsids'];
+              }
             case 'groups':
               groups = (r['groups'] as List?)?.length ?? 0;
               await kv('groups', jsonEncode(r['groups']));
@@ -534,10 +988,127 @@ class BackupArchive {
               if (fid is! String || !isWellFormedFid(fid)) break;
               attachments++;
               fileMeta[fid] = r;
+            case 'blocked':
+              blocked.add(r);
+            case 'request':
+              requests.add(r);
+            default:
+              // A record type this build does not know: written by a newer
+              // build of this major version. Kept for the next archive when
+              // its writer said that is safe ([ZArchive.keepField]) — as the
+              // text it arrived as, byte for byte — and skipped otherwise, as
+              // every unknown record was before.
+              if (r[ZArchive.keepField] == 1) {
+                kept.add(text);
+              } else {
+                skipped++;
+              }
           }
         }
 
         if (!sawEnd) throw ArchiveIncompleteException();
+
+        // Phase 31: the account's state and each contact's, now that the
+        // account is known. Every value is held to the shape the code that
+        // reads it at start-up needs ([_stateKeys], [_contactFamilies]); one
+        // that is not is left out, which costs what it would have restored
+        // and nothing else.
+        final ctx = _Ctx(accountPub);
+        final stateKv = state?['kv'];
+        if (stateKv is Map) {
+          for (final e in stateKv.entries) {
+            final check = _stateKeys[e.key];
+            final v = e.value;
+            if (check == null || v is! String) continue;
+            if (await check(v, ctx)) await kv(e.key as String, v);
+          }
+        }
+        for (final e in contactKv.entries) {
+          final rid = e.key;
+          for (final f in e.value.entries) {
+            final check = _contactFamilies[f.key];
+            final v = f.value;
+            if (check == null || v is! String) continue;
+            if (await check(v, ctx, contactAcct[rid]!)) {
+              await kv('${f.key}$rid', v);
+            }
+          }
+        }
+
+        // Every session id the archive names, held as retired by a
+        // conversation that has no session (see [export]): the contact's
+        // own, each of its other devices', and this account's own devices'.
+        final ident = me;
+        if (ident != null) {
+          final now = DateTime.now().millisecondsSinceEpoch;
+          for (final e in contactSids.entries) {
+            try {
+              final conv =
+                  await _retiredOnly(ident, contactBundle[e.key], e.value);
+              await txn.insert(
+                  'conversations',
+                  {
+                    'rid': e.key,
+                    'enc_state': await vault.seal(jsonEncode(conv)),
+                    'updated_ms': now,
+                  },
+                  conflictAlgorithm: ConflictAlgorithm.replace);
+            } catch (_) {
+              continue; // a malformed list costs this contact's protection
+            }
+          }
+          for (final e in contactXsids.entries) {
+            final session = await _retiredAccountSession(ident, e.value);
+            if (session != null) {
+              await kv('cextra_${e.key}', jsonEncode(session));
+            }
+          }
+          final sync = await _retiredAccountSession(ident, state?['sync']);
+          if (sync != null) await kv('sync_session', jsonEncode(sync));
+        }
+
+        // ADR 0011's two lists. Never a contact: adding a blocked id clears
+        // the block and accepting a request makes the contact, so a row that
+        // names one is not one this account could have held.
+        for (final b in blocked) {
+          final rid = b['rid'];
+          if (rid is! String || !_isShortText(rid)) continue;
+          if (contactBundle.containsKey(rid)) continue;
+          await txn.insert(
+              'blocked',
+              {
+                'rid': rid,
+                'created_ms': (b['created'] as num?)?.toInt() ?? 0,
+              },
+              conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+        for (final q in requests) {
+          final rid = q['rid'];
+          if (rid is! String || contactBundle.containsKey(rid)) continue;
+          try {
+            final bundle =
+                ContactBundle.fromJson((q['bundle'] as Map).cast());
+            // As the request was when it arrived: signed by the identity it
+            // names. A `.zid` contact is held to the same rule.
+            if (!await bundle.verify() || await bundle.routingId() != rid) {
+              continue;
+            }
+            await txn.insert(
+                'requests',
+                {
+                  'rid': rid,
+                  'enc_bundle': await vault.seal(jsonEncode(bundle.toJson())),
+                  'enc_name': await vault.seal(q['name'] as String? ?? '?'),
+                  'created_ms': (q['created'] as num?)?.toInt() ?? 0,
+                },
+                conflictAlgorithm: ConflictAlgorithm.replace);
+          } catch (_) {
+            continue;
+          }
+        }
+        if (kept.isNotEmpty) await kv(keptKey, jsonEncode(kept));
+        // The first start re-asserts the account before it sends anything.
+        await kv(resumeKey, '1');
 
         // Attachments last: the bytes are re-sealed under THIS device's vault
         // key, with fresh per-file key material. One at a time -- a blob is a
@@ -586,6 +1157,8 @@ class BackupArchive {
         contacts: contacts,
         groups: groups,
         attachments: attachments,
+        kept: kept.length,
+        skipped: skipped,
       );
     } finally {
       await raf.close();

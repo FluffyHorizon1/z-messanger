@@ -31,7 +31,7 @@ user‑supplied storage that the client writes finished ciphertext into.
 | Streaming | Neither direction ever holds the archive in memory: it is read and written frame by frame, 256 KiB at a time. Each direction does hold **one attachment**, which is a floor rather than a choice — a blob is sealed as a single AEAD message at rest, so producing one means having the whole plaintext and opening one means the same. The app's 24 MiB attachment cap is therefore the peak. Until 2026‑09‑13 this row promised that not even one attachment was held, and import held *every* attachment in the archive at once (`restore_memory_test.dart`) |
 | Integrity | Every frame is bound to its index and to this archive's header; the file ends with a terminator |
 | Reference | `protocol/lib/src/archive.dart` (format), `app/lib/core/archive.dart` (contents) |
-| Vectors | [`vectors/backup/archive.json`](vectors/backup/archive.json) |
+| Vectors | [`vectors/backup/archive.json`](vectors/backup/archive.json) (format 1.0), [`vectors/backup/archive_1_1.json`](vectors/backup/archive_1_1.json) (format 1.1) |
 
 ---
 
@@ -43,6 +43,21 @@ it cannot account for, and any post‑quantum key refusal, which must survive a
 restore or the warning is lost),
 group state, every message with its phase‑8 structure (replies, reactions,
 edits, deletions, forward marks), and attachment bytes.
+
+Since format 1.1 (phase 31, `adr/0025`), also what the account needs to
+**resume** rather than start again: on a linked device, the account it is a
+device of; the account's own device list — its version, the list last signed
+or learned, its linked devices, its post‑quantum signature — and every
+(version, fingerprint) it knows it issued; the transparency log's
+configuration and accepted head; each contact's device list with the
+signature floor it has reached, its devices' last claims and its standing in
+the log; the block list and pending requests; the push preference; alarms not
+yet dismissed; and the **ids** of past sessions (below). An archive without
+them restored the history and none of this, and the restored device began
+again at device‑list version 1: its own log monitor called the versions it
+had signed before the backup lists it never issued and told the user to reset
+their identity, and its contacts saw a rollback (the 2026‑10‑03 analysis,
+P0‑3). §2.3 says what the restored device does with them.
 
 **Deliberately not in the archive:**
 
@@ -57,14 +72,30 @@ edits, deletions, forward marks), and attachment bytes.
   This is not a limitation to be engineered away later. A backup that faithfully
   restored ratchet state would be a worse backup.
 
+  What does travel is each session's **id** — the contact's, each of their
+  other devices', and this account's own devices' — and the restored device
+  holds every one as *retired*, in a conversation with no session at all. A
+  session's opening envelope derives its keys from the two identities and its
+  own ephemeral alone, so whoever kept one (the relay, say) could replay it to
+  a device that remembered nothing, and the session would be re‑created: its
+  message read again — a deleted one back on the screen — and the pair pinned
+  to a session the peer had long left (the analysis's backup P2). A live
+  device already refuses an opener for a session it retired (`PROTOCOL.md`
+  §4); a restored one now refuses the same envelopes, and counts them as
+  unreadable (§2.2).
+
 * **The outbox and the inbound dedupe table.** In‑flight state, not history.
   A message that was queued when the backup was taken is not resurrected onto a
   device the peer has never spoken to.
 
 * **Anything device‑bound**: the vault's master key and device secret, the
-  biometric pass key, the device id. A restore builds a **fresh vault** with
+  biometric pass key. A restore builds a **fresh vault** with
   fresh device keys, so two devices restored from one archive never share a
-  vault key either.
+  vault key either. (A root's device id travels since format 1.1: it is
+  signed into the certificate every one of the account's lists names it by.)
+* **The publish queue, the log's timings and a log fault**, which re‑derive —
+  the fault from the carried head — and *this device was removed*, which is
+  about the device the archive was taken on.
 
 ### 2.1 What the peer sees when you restore
 
@@ -104,6 +135,49 @@ counts: an envelope, which may have been a receipt. The device also sends the
 peer one *hello* to re‑open the session, at most once every ten seconds for
 that contact, so a burst of stale envelopes does not become a burst of
 hellos and a lost hello is re‑sent by the next one.
+
+### 2.3 What the restored device does first
+
+A restore marks the vault, and the first start re‑asserts the account
+**before anything is sent** — before the transport starts, so before any
+message, receipt or hello can carry the device's claim about its own list
+(`ChatService._resumeAfterRestore`; `app/test/restore_truth_test.dart`).
+
+* **A root** asks the transparency log what the account has published
+  (verified as every answer is, `PROTOCOL.md` §19.5), then signs one new list
+  at **max(the log's latest version, the archive's) + 1** and records,
+  publishes and queues it — to its own devices, which also opens a fresh
+  session with each, and to every contact. The versions the log holds that
+  the archive does not know were signed between the backup and the restore —
+  by the device that was lost, or by someone holding its root key; a restore
+  cannot tell which. Each one that opens and verifies as this account's list
+  is recorded as the account's own history, so its monitor does not report the
+  user's own past to them as an attack; one the old device had already
+  reported stays reported, and one that does not open as the account's list
+  at all is reported, as before. The new list names the devices the archive
+  knew **that the log's newest list still names**: a removal made after the
+  backup stands, and a device linked after it is not adopted — it is linked
+  again (THREAT_MODEL R45). To a contact this is an ordinary device‑list
+  update; to the log, the next version. The list is v2‑only if the
+  account's already was (`adr/0017`), whether the archive or the log's
+  newest list says so. An archive written before format 1.1 carries none of
+  this state, and its restore takes all of it from the log: every backup
+  taken before 1.1 restores as quietly, while the log can be asked.
+* **A linked device** (format 1.1 carries the account it belongs to) comes
+  back as that linked device of that account: it holds no root, so it signs
+  nothing and publishes nothing. It reads the account's newest list from the
+  log, adopts it if it still names this device, and raises *this device was
+  removed* if it does not; then it asks its root for the list, which opens a
+  fresh session with each of the account's devices. A backup taken on a
+  linked device before format 1.1 says nothing about which device it came
+  from, and restores, as it always did, as an account of its own (R45).
+* **If the log cannot be asked** — it is switched off, unreachable within
+  twenty seconds, or faulted — the root signs at the archive's version + 1
+  (version 2 from an archive written before 1.1, which records none). That is
+  right unless the account's list moved on after the backup, in which case a
+  contact holding the newer version can see a conflict (THREAT_MODEL R45).
+
+Restarting changes nothing: the mark is cleared once the list is signed.
 
 ---
 
@@ -158,14 +232,25 @@ and covers a user who supplies a code from somewhere else.
 A single line of plaintext JSON, then `\n`:
 
 ```json
-{"z":"zbk","v":1,"app":"z","kdf":"argon2id","m":19456,"t":2,"p":1,
- "salt":"…base64…","np":"…base64…","schema":3,"created":1700000000000}
+{"z":"zbk","v":1,"mv":1,"app":"z","kdf":"argon2id","m":19456,"t":2,"p":1,
+ "salt":"…base64…","np":"…base64…","schema":13,"created":1700000000000}
 ```
 
 It is plaintext because a reader must be able to derive the key before it can
 read anything, and it says nothing an observer does not already know from the
 file's existence. `schema` records the vault schema the records were written
 at. `np` is the 16‑byte nonce prefix.
+
+`v` is the format's **major** version and `mv` its **minor** revision (absent
+— every archive before phase 31 — is minor 0). A minor revision adds record
+types and optional members inside record frames and nothing else; a reader
+of the same major restores what it knows of a newer minor (§5). Anything an
+older reader would get *wrong* — a new frame kind, a record whose meaning
+changed — is a major bump, and a reader **refuses** an archive whose major
+version it does not know, on sight, before asking for the recovery code:
+"made by a newer version of Z — update Z first" (`ArchiveTooNewException`;
+`BackupKind.newerFormat`). Builds before phase 31 refuse a newer major too,
+with a plainer message ("unsupported archive version").
 
 ### 4.2 Key derivation
 
@@ -236,9 +321,12 @@ leaves the device.
 | `t` | Carries |
 |---|---|
 | `meta` | display name, server URL, schema |
-| `identity` | the identity key material |
-| `contact` | routing id, contact bundle, name, TTL, verified flag, the v3 identity state (`pqc` commitment, `pqk` established key, and — ADR 0021 — `pqcand`, a post‑quantum key held for the safety number that no commitment has checked, with `pqack` and `pqtold`, whether each side has told the other it holds their key, which is what decides whether the post‑quantum number is the one shown), and the 13.3 verification state — `vsn`, the safety number the user actually compared, and `pqbad`, set once a post‑quantum key has been refused; and the §18.7 anchor — `acct`, the account this contact IS, with `cert`, the certificate for the device that was scanned; and `addedby`, which of the user's own devices added it (§18.8) |
+| `identity` | the identity key material; on a linked device (1.1) `account`, the account it is a device of — its public keys, this device's certificate and the device seeds, never an account root. A record whose `account` does not describe this identity as a device of that account refuses the archive |
+| `state` (1.1) | `kv`: the account‑level state of §2 — `my_devlist_version`, `my_devices`, `own_list_v`/`_h`/`_json`/`_mlsig`, the migration flags, `kt_config`, `kt_head`, `kt_own_known`, `kt_own_first_v`, `device_id` (on a root, signed into the certificate every list names it by), `push_enabled` and any own‑account alarm not yet dismissed; `sync`: the ids of the sessions with this account's own devices. Each value is held on restore to the shape the code that reads it at start‑up needs — a list must verify under the account — and one that is not is left out |
+| `contact` | routing id, contact bundle, name, TTL, verified flag, the v3 identity state (`pqc` commitment, `pqk` established key, and — ADR 0021 — `pqcand`, a post‑quantum key held for the safety number that no commitment has checked, with `pqack` and `pqtold`, whether each side has told the other it holds their key, which is what decides whether the post‑quantum number is the one shown), and the 13.3 verification state — `vsn`, the safety number the user actually compared, and `pqbad`, set once a post‑quantum key has been refused; and the §18.7 anchor — `acct`, the account this contact IS, with `cert`, the certificate for the device that was scanned; and `addedby`, which of the user's own devices added it (§18.8); and since 1.1 `req` (added and still waiting on them), `kv` — the per‑contact state of §2 by family (`cdev_` with its version, arrival, floor and post‑quantum signature, `cdl_claims_`, `ktc_`, standing alarms, `last_open_`; a list must verify under the contact's account) — `sids`, the ids of every session held with them, and `xsids`, the same per device for their other devices |
 | `groups` | the group list blob |
+| `blocked` (1.1) | a blocked routing id and when |
+| `request` (1.1) | a pending inbound request: routing id, the requester's bundle (it must verify and name that routing id), the name offered, when |
 | `message` | mid, rid, direction, kind, body, timestamp, status, expiry, and the phase‑8 fields (`rt` reply target, `edited`, `deleted`, `fw`) |
 | `reaction` | rid, mid, sender, emoji, timestamp |
 | `file` | attachment metadata; the bytes follow in `kind = 1` frames |
@@ -252,14 +340,22 @@ archive taken after a deletion carried the deleted attachment under the name
 it was deleted by; the delete path now removes the row, and a vault sweeps
 rows no message names when it opens (`app/test/delete_message_test.dart`).
 
-**Forward and backward compatibility.** A reader skips record types it does not
-know and fields it does not know, and missing fields take their column
-defaults. So an archive written at schema 1 restores onto a current build (the
-phase‑8 columns simply default), and an archive written by a *newer* build
-restores onto this one, minus the parts it cannot represent — rather than
-locking a user out of their own history because their install is a version
-behind. `app/test/backup_test.dart` tests both directions on a hand‑built
-archive.
+**Forward and backward compatibility.** A reader skips fields it does not
+know, and missing fields take their column defaults. So an archive written at
+schema 1 restores onto a current build (the phase‑8 columns simply default),
+and an archive of a *newer minor* revision restores onto this one, minus the
+parts it cannot represent — rather than locking a user out of their own
+history because their install is a version behind. A record *type* it does
+not know it skips — unless the record says `"keep":1`: then the reader stores
+it, as the text it arrived as, and writes it unchanged into every archive it
+takes later, so a record a newer build depends on survives a restore and a
+re‑backup on an older one (since 1.1; a build before 1.1 skips it). The
+writer sets `keep` only where a copy that went stale in an older build's
+hands is still right to restore — a key, say, and not a counter; and a field
+a later revision adds to a KNOWN record is not carried, so what has to
+survive goes in a record of its own. A newer *major* is refused (§4.1).
+`app/test/backup_test.dart` tests both directions on a hand‑built archive;
+`restore_truth_test.dart` 7 and 9 the refusal and the keep rule.
 
 Unreadable cells are skipped rather than aborting the whole backup: a single
 corrupt row should cost one message, not the archive.
@@ -276,6 +372,9 @@ corrupt row should cost one message, not the archive.
 | Flipped byte anywhere | The containing frame's tag fails |
 | Frame reordered or duplicated | The tag fails: the index is in both the nonce and the AAD |
 | Frame from another archive spliced in | The tag fails: the header is in the AAD |
+| Archive of a newer major format version | Refused on sight, before the code is asked for: "update Z first" (§4.1); nothing is written |
+| A frame of a kind this build does not know | `FormatException`: a new frame kind is a major bump, never a minor one |
+| A linked device's `account` that does not match its identity | `FormatException`; nothing is written — restoring it as a root of its own is the failure the record exists to prevent |
 | Restoring over a vault that already has data | Not supported; import expects a fresh vault, since interleaving two histories is not a restore |
 
 ---
@@ -286,7 +385,12 @@ The vector [`vectors/backup/archive.json`](vectors/backup/archive.json) records
 a complete four‑frame archive: the recovery code and its entropy, the Argon2id
 inputs *and* output, the header bytes, every frame's nonce, plaintext,
 ciphertext and tag, the whole file's bytes and SHA‑256, and the two cases that
-must fail.
+must fail. It is format 1.0 and frozen. Format 1.1 has a file of its own,
+[`vectors/backup/archive_1_1.json`](vectors/backup/archive_1_1.json): the same
+frame layer under a header with `mv`, one record of each kind 1.1 adds — a
+linked device's `identity` with its `account`, `state`, a `contact` with
+`req`, `kv` and `sids`, `blocked`, `request` — a record no reader knows,
+marked `keep`, and the same header at major version 2, which must be refused.
 
 Three independent checks run in CI:
 
@@ -304,6 +408,16 @@ Three independent checks run in CI:
 * `app/test/backup_test.dart` runs the real thing end to end: an archive taken
   on one device restores onto a wiped one, which then talks to a contact who
   knows nothing about the restore.
+
+Both test files check `archive_1_1.json` the same way, the Node one with its
+own Ed25519 for the linked device's certificate. And
+`app/test/restore_truth_test.dart` runs a restore against a real relay and a
+real transparency log: an account whose list is at v3 restores with no alarm
+anywhere and signs v4 before its transport starts, from a 1.1 archive and
+from one written before 1.1; a log ahead of the archive; a linked device's
+backup; an account moved to v2‑only signing; the block list, requests,
+push‑off and a custom log surviving; a replayed opener; and both refusals
+(§4.1, and a vault from a newer build).
 
 ---
 

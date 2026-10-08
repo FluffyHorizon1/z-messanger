@@ -128,6 +128,12 @@ abstract class AppLocalizations {
   /// **'Your fingerprints or face changed, so biometric unlock was reset. Enter your passphrase, then turn it on again in Settings.'**
   String get unlockBiometricInvalidated;
 
+  /// Full-screen message at launch when the local encrypted store was written by a newer build than this one (the app was downgraded). The store is left exactly as it was; updating the app opens it again.
+  ///
+  /// In en, this message translates to:
+  /// **'The data on this device was saved by a newer version of Z. Update Z to open it — nothing has been changed.'**
+  String get vaultTooNew;
+
   /// Full-screen message when the app cannot start at all. {detail} is a raw diagnostic (an exception), shown untranslated.
   ///
   /// In en, this message translates to:
@@ -493,6 +499,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Restore failed: wrong secret, or the file is damaged.'**
   String get onbRestoreFailed;
+
+  /// Restore refused on sight, before the recovery code is asked for: the chosen .zbk archive is of a newer format version than this build can read. Updating the app and choosing the same file again restores it.
+  ///
+  /// In en, this message translates to:
+  /// **'This backup was made by a newer version of Z. Update Z first, then restore it — the backup itself is untouched.'**
+  String get onbBackupTooNew;
 
   /// Label on the recovery-code field.
   ///

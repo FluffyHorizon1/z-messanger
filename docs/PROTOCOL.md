@@ -1686,7 +1686,24 @@ file  = JSON{ "z":"backup", "v":1, "kdf":"argon2id", "m":19456, "t":2, "p":1,
               "salt":b64, "nonce":b64(24 bytes), "ct":b64, "mac":b64 }      // XChaCha20Poly1305(key, nonce, ∅, inner)
 ```
 
-Backups contain identity and contacts only — never messages.
+A `.zid` contains identity and contacts only — never messages. The `.zbk`
+archive that replaced it (`BACKUP.md`) contains every message and attachment
+too, sealed under a recovery code, and since format 1.1 the state the account
+needs to resume: its own device list and every (version, fingerprint) it knows
+it issued, its linked devices, each contact's list and signature floor, the
+log's head, and the ids — never the keys — of past sessions, which a restored
+device holds as retired (§4) so a kept opening envelope cannot re‑create one.
+
+What a restore looks like on the wire is a device‑list update, never a
+rollback. The first start of a restored root, before it sends anything, asks
+the log what the account has published (§19.5) and signs its list at
+**max(the log's latest version, the archive's) + 1** over the devices the
+archive knew that the newest list still names; versions in between that open
+and verify as the account's list are recorded as its own (§19.8). A restored
+linked device signs nothing: it adopts the account's newest list if that list
+names it, and otherwise reports that it was removed (§3.6). Contacts see a
+higher version from the same account, as after any link; the log sees the
+next version. `adr/0025` records the decision.
 
 ## 14. Versioning and the v1 freeze
 

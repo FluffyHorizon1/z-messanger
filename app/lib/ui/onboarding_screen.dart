@@ -116,6 +116,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       setState(() => _error = l.onbNotABackup);
       return;
     }
+    // A newer build wrote it: say so before asking for a code this build
+    // would only run Argon2id over to refuse the file anyway.
+    if (preview.kind == BackupKind.newerFormat) {
+      setState(() => _error = l.onbBackupTooNew);
+      await _clearPickerCache();
+      return;
+    }
     final secret = preview.kind == BackupKind.archive
         ? await _askRecoveryCode(context)
         : await _askPassphrase(context);
@@ -139,6 +146,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         serverUrl: _server.text.trim(),
       );
       await widget.onDone();
+    } on ArchiveTooNewException {
+      setState(() {
+        _busy = false;
+        _error = l.onbBackupTooNew;
+      });
     } on FormatException catch (e) {
       // The message is the useful part here: a mistyped recovery code is
       // caught by its checksum and says so, which a generic "wrong secret"

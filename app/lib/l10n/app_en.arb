@@ -20,6 +20,10 @@
   "@unlockBiometricInvalidated": {
     "description": "Unlock-screen error: the device's biometric hardware key was invalidated (fingerprints or face re-enrolled), so biometric unlock is off."
   },
+  "vaultTooNew": "The data on this device was saved by a newer version of Z. Update Z to open it — nothing has been changed.",
+  "@vaultTooNew": {
+    "description": "Full-screen message at launch when the local encrypted store was written by a newer build than this one (the app was downgraded). The store is left exactly as it was; updating the app opens it again."
+  },
   "startupFailed": "Z could not start:\n{detail}",
   "@startupFailed": {
     "description": "Full-screen message when the app cannot start at all. {detail} is a raw diagnostic (an exception), shown untranslated.",
@@ -301,6 +305,10 @@
   "onbRestoreFailed": "Restore failed: wrong secret, or the file is damaged.",
   "@onbRestoreFailed": {
     "description": "Restore failed. Deliberately does NOT say which of the two, because saying so would tell an attacker holding the file whether a guess was close."
+  },
+  "onbBackupTooNew": "This backup was made by a newer version of Z. Update Z first, then restore it — the backup itself is untouched.",
+  "@onbBackupTooNew": {
+    "description": "Restore refused on sight, before the recovery code is asked for: the chosen .zbk archive is of a newer format version than this build can read. Updating the app and choosing the same file again restores it."
   },
   "onbRecoveryCode": "Recovery code",
   "@onbRecoveryCode": {

@@ -27,6 +27,10 @@ class AppLocalizationsEs extends AppLocalizations {
       'Tus huellas o tu rostro cambiaron, así que el desbloqueo biométrico se restableció. Introduce tu frase de contraseña y vuelve a activarlo en Ajustes.';
 
   @override
+  String get vaultTooNew =>
+      'Los datos de este dispositivo los guardó una versión más reciente de Z. Actualiza Z para abrirlos; no se ha cambiado nada.';
+
+  @override
   String startupFailed(String detail) {
     return 'Z no pudo iniciarse:\n$detail';
   }
@@ -237,6 +241,10 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get onbRestoreFailed =>
       'La restauración falló: secreto incorrecto o archivo dañado.';
+
+  @override
+  String get onbBackupTooNew =>
+      'Esta copia de seguridad la hizo una versión más reciente de Z. Actualiza Z primero y luego restáurala; la copia no se ha modificado.';
 
   @override
   String get onbRecoveryCode => 'Código de recuperación';

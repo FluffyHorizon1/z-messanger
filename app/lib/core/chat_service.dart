@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import 'archive.dart' show BackupArchive;
 import 'backup_store.dart';
 import 'device_sync.dart';
 import 'key_transparency.dart';
@@ -314,6 +315,11 @@ class ChatService extends ChangeNotifier implements KtHost {
     await svc._initSync();
     await svc._loadContactDeviceLists(kv: kv);
     await svc._loadDevlistState(kv: kv);
+    // Phase 31: the first start after a restore re-asserts the account — a
+    // list signed above every version the log and the archive know, or for
+    // a linked device the account's newest list — before ANYTHING below can
+    // sign, encrypt or send. Before the migrations too, which sign.
+    await svc._resumeAfterRestore();
     // ADR 0010: re-sign this account's device list once under the v2 format
     // (bumping the version) BEFORE the transport or the log check start below,
     // so no other re-sign publishes a v2 fingerprint at a version the log
@@ -8134,6 +8140,205 @@ class ChatService extends ChangeNotifier implements KtHost {
       if (contact == null) continue;
       await _sendInner(contact, _devlistInner(data));
     }
+  }
+
+  /// How long the first start after a restore waits for the transparency log
+  /// before it re-asserts the account without it (see
+  /// [_resumeAfterRestore]).
+  @visibleForTesting
+  static Duration restoreLogTimeout = const Duration(seconds: 20);
+
+  /// Phase 31: the first start after a restore (`BackupArchive.resumeKey`,
+  /// set by the `.zbk` and the `.zid` import alike) re-asserts this account
+  /// before anything is sent — called from [init] ahead of every path that
+  /// signs, encrypts or sends.
+  ///
+  /// A restored device is the same account, and until this it did not say
+  /// so. It came back holding none of the account's device-list state, so a
+  /// root signed version 1 again: its own log monitor met the versions it had
+  /// signed before the backup and called them lists it never issued ("reset
+  /// your identity now"), its contacts saw its devices claim a version below
+  /// one they had already seen from them (a rollback), and the next device
+  /// it linked landed on a version the log already held — every start, and
+  /// every six hours (the 2026-10-03 analysis, P0-3). The archive now
+  /// carries that state, and this is the other half: the version the
+  /// restored device signs first is above everything the account has
+  /// published, whenever the archive was taken.
+  ///
+  /// A root ([_resumeRoot]) signs at max(the log's latest, what the archive
+  /// held) + 1; a linked device ([_resumeLinked]) adopts the account's
+  /// newest list if it still names this device. Either way the log is asked
+  /// first, bounded by [restoreLogTimeout]; a log that cannot be asked
+  /// leaves only what the archive knew. The key is cleared once this has
+  /// run, and left for the next start if it threw.
+  Future<void> _resumeAfterRestore() async {
+    if (await vault.kvGet(BackupArchive.resumeKey) == null) return;
+    try {
+      final me = await accountIdentity();
+      if (me.holdsAccountRoot) {
+        await _resumeRoot(me);
+      } else {
+        await _resumeLinked(me);
+      }
+      await vault.kvDelete(BackupArchive.resumeKey);
+    } catch (_) {
+      // The flag stays: the next start tries again. What this start does
+      // without it is what every start did before phase 31.
+    }
+  }
+
+  /// What the log holds for [account], or null — waited for at most
+  /// [restoreLogTimeout].
+  Future<KtOwnRecord?> _logRecordFor(Uint8List account) =>
+      kt.ownRecord(account).timeout(restoreLogTimeout, onTimeout: () => null);
+
+  /// A restored root: one new list, signed above every version the account
+  /// has published, over the devices the archive knew that the account's
+  /// newest list still names — and then to its own devices and to every
+  /// contact, through the outbox, which nothing empties until the transport
+  /// starts after [init] returns.
+  ///
+  /// The versions the log holds that the archive does not know were signed
+  /// between the backup and the restore — by the device that was lost, or by
+  /// someone else holding the account's root key; a restore cannot tell
+  /// which. Each one that opens and verifies as this account's list is
+  /// recorded as its own, so the monitor does not report the user's own
+  /// history to them as an attack; the list signed here supersedes them all.
+  /// One that does not open as this account's list is left unknown, and the
+  /// monitor says so — an honest device never publishes one. A removal made
+  /// after the backup stands: a device the newer list dropped is not put
+  /// back. A device added after it is not adopted: the archive never knew
+  /// it, and it is linked again from here if it was the user's (THREAT_MODEL
+  /// R45).
+  Future<void> _resumeRoot(AccountIdentity me) async {
+    // A moved account stays moved ([_signsV2Only]): decided from what the
+    // archive brought, before anything is signed.
+    final ownJson = await vault.kvGet('own_list_json');
+    var ownV2Only = false;
+    if (ownJson != null) {
+      try {
+        ownV2Only = SignedDeviceList.fromJson(
+                (jsonDecode(ownJson) as Map).cast<String, Object?>())
+            .isV2Only;
+      } catch (_) {}
+    }
+    if (ownV2Only || await vault.kvGet('devlist_v2only_migrated') == '1') {
+      _signsV2Only = true;
+    }
+    var held = await _myDevlistVersion();
+    final ownV = int.tryParse(await vault.kvGet('own_list_v') ?? '');
+    if (ownV != null && ownV > held) held = ownV;
+    for (final v in kt.knownOwnVersions) {
+      if (v > held) held = v;
+    }
+    var top = held;
+    SignedDeviceList? newer;
+    final record = await _logRecordFor(me.accountEdPub);
+    if (record != null) {
+      final latest = record.latest;
+      // A moved account stays moved even when the archive cannot say so — one
+      // written before format 1.1 carries no list at all — because the log's
+      // newest list, verified as this account's, does.
+      if (latest?.list?.isV2Only ?? false) _signsV2Only = true;
+      // An entry the device the backup was taken on had already reported as
+      // one it never issued stays reported: the restore carried that alert,
+      // and the entry is not the restored device's to absolve.
+      final flagged = kt.ownAlert;
+      for (final e in [...record.history, if (latest != null) latest]) {
+        if (e.list == null || kt.knownOwnFingerprint(e.version) != null) {
+          continue;
+        }
+        if (flagged != null &&
+            flagged.version == e.version &&
+            flagged.fpB64 == e.fpB64) {
+          continue;
+        }
+        await kt.recordOwnList(e.version, e.fpB64);
+      }
+      if (latest != null) {
+        if (latest.version > top) top = latest.version;
+        if (latest.version > held) newer = latest.list;
+      }
+    }
+    final keep = newer == null
+        ? null
+        : {for (final d in newer.devices) b64(d.deviceEdPub)};
+    await _withOwnListLock(() async {
+      if (keep != null) {
+        final devices = [
+          for (final d in await _myDevices())
+            if (keep.contains(b64(d.deviceEdPub))) d
+        ];
+        await vault.kvPut(
+            'my_devices', jsonEncode([for (final d in devices) d.toJson()]),
+            sensitive: false);
+      }
+      await vault.kvPut('my_devlist_version', '${top + 1}', sensitive: false);
+      _forgetOwnListClaim();
+    });
+    if (keep != null) await _initSync(); // the device set changed
+    final data = await _signCurrentDeviceList();
+    if (data == null) {
+      throw StateError('a restored root could not sign its device list');
+    }
+    // Awaited, so these are the first rows in the outbox: the list reaches a
+    // contact no later than the first message that claims it. The self-sync
+    // also opens a fresh session with each of this account's own devices,
+    // which is what lets them reach this one again.
+    await _selfSyncDeviceList(data);
+    for (final rid in contacts.keys.toList()) {
+      final c = contacts[rid];
+      if (c == null) continue;
+      try {
+        await _sendInner(c, _devlistInner(data));
+      } catch (_) {
+        // Delivered by the self-healing path instead: a contact whose echo
+        // is behind is handed the list on its next message.
+      }
+    }
+  }
+
+  /// A restored linked device: it signs nothing (it holds no root), so it
+  /// cannot publish anything either. What it does is catch up — the
+  /// account's newest list from the log, if it is newer than the archive's
+  /// and still names this device; and if it does not, this device was
+  /// removed after the backup, and it says so (the "this device was removed"
+  /// alarm, whose remedy is linking it again). Then it asks its root for the
+  /// list, which also opens a fresh session with each of the account's
+  /// devices.
+  Future<void> _resumeLinked(AccountIdentity me) async {
+    var held = await _myDevlistVersion();
+    final ownV = int.tryParse(await vault.kvGet('own_list_v') ?? '');
+    if (ownV != null && ownV > held) held = ownV;
+    final record = await _logRecordFor(me.accountEdPub);
+    final latest = record?.latest;
+    final list = latest?.list;
+    if (latest != null && list != null && latest.version > held) {
+      final mine = list.devices
+          .any((d) => constantTimeEquals(d.deviceEdPub, me.deviceEdPub));
+      if (mine) {
+        final others = [
+          for (final d in list.devices)
+            if (!constantTimeEquals(d.deviceEdPub, me.deviceEdPub)) d
+        ];
+        await _withOwnListLock(() async {
+          await vault.kvPut(
+              'my_devices', jsonEncode([for (final d in others) d.toJson()]),
+              sensitive: false);
+          await vault.kvPut('my_devlist_version', '${list.version}',
+              sensitive: false);
+          _forgetOwnListClaim();
+        });
+        await _recordOwnList(list);
+        await _initSync();
+      } else {
+        removedDeviceAlert =
+            ownAlertBody(OwnAlertKind.removed, {'v': latest.version});
+        await vault.kvPut('removed_alert', removedDeviceAlert!,
+            sensitive: false);
+      }
+    }
+    await _requestOwnDeviceList();
   }
 
   /// ADR 0010: on the first start after upgrade, re-sign this account's device

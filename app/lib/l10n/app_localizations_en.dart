@@ -26,6 +26,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'Your fingerprints or face changed, so biometric unlock was reset. Enter your passphrase, then turn it on again in Settings.';
 
   @override
+  String get vaultTooNew =>
+      'The data on this device was saved by a newer version of Z. Update Z to open it — nothing has been changed.';
+
+  @override
   String startupFailed(String detail) {
     return 'Z could not start:\n$detail';
   }
@@ -233,6 +237,10 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get onbRestoreFailed =>
       'Restore failed: wrong secret, or the file is damaged.';
+
+  @override
+  String get onbBackupTooNew =>
+      'This backup was made by a newer version of Z. Update Z first, then restore it — the backup itself is untouched.';
 
   @override
   String get onbRecoveryCode => 'Recovery code';

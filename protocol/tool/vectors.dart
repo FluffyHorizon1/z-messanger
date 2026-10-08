@@ -2543,6 +2543,241 @@ Future<Map<String, Object?>> suiteBackup() async {
   };
 }
 
+/// Format 1.1 of the backup archive (phase 31, `BACKUP.md` §4.1 and §5): the
+/// same frame layer as [suiteBackup], under a header that names its minor
+/// revision (`mv`), carrying the records minor 1 adds — a linked device's
+/// identity with the account it belongs to, the account's device-list and
+/// transparency `state`, a contact with its own state and its past session
+/// ids, a blocked id, a pending request — and a record of a type no reader
+/// knows, marked `keep`, which a reader of this major that does not know it
+/// carries into its next archive byte for byte. Plus the refusal: the same
+/// header at major version 2.
+Future<Map<String, Object?>> suiteBackupMinor1() async {
+  final d = Drbg(0x000A);
+  final code = await d.run(() async => RecoveryCode.generate());
+  d.takeDraws();
+  final formatted = await code.format();
+  final material = await code.keyMaterial();
+  final salt = d.next(16);
+  final noncePrefix = d.next(16);
+  final key = await ZArchive.deriveKey(material, salt);
+  final keyBytes = Uint8List.fromList(await key.extractBytes());
+  const createdMs = 1700000000000;
+  const schema = 13;
+  final header = ZArchive.buildHeader(
+      salt: salt,
+      noncePrefix: noncePrefix,
+      schema: schema,
+      createdMs: createdMs,
+      minor: ZArchive.minorVersion);
+  check(ZArchive.minorVersion == 1, 'this suite pins minor 1');
+  final parsedHead = ZArchive.parseHeader(header);
+  check(ZArchive.minorOf(parsedHead) == 1 && !ZArchive.isNewerMajor(parsedHead),
+      'a minor-1 header reads as minor 1 of this major');
+
+  // The account (a root on a phone) and the device this backup was taken on
+  // (a laptop it linked): fixed seeds, Ed25519 signing is deterministic.
+  final root = await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+  final account = await AccountIdentity.fromV1(root, deviceId: 'phone');
+  final laptopId =
+      await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+  final laptopCert = await account.signDeviceCert(
+      deviceEdPub: laptopId.edPub,
+      deviceXPub: laptopId.xPub,
+      deviceId: 'laptop');
+  final laptop = await AccountIdentity.fromEnrollment(
+    accountEdPub: account.accountEdPub,
+    deviceEdSeed: laptopId.edSeed,
+    deviceXSeed: laptopId.xSeed,
+    deviceId: 'laptop',
+    deviceCert: laptopCert,
+  );
+  // Dual-signed, named rather than defaulted, so the vector does not move
+  // when the stage-2b signer is switched on (ADR 0017).
+  final list = await account
+      .signDeviceList([account.deviceCert, laptopCert], 2, v2Only: false);
+  check(await list.verify(), 'the account list verifies');
+  final fp = b64(await list.fingerprint());
+
+  final bob = await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+  final carol =
+      await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+  final mallory =
+      await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+  final sid = await sessionIdFromEk(d.next(32));
+
+  final records = <Map<String, Object?>>[
+    {'t': 'meta', 'app': 'z', 'schema': schema, 'name': 'Alice'},
+    {
+      't': 'identity',
+      'identity': laptopId.toJson(),
+      'account': laptop.toJson(),
+    },
+    {
+      't': 'state',
+      'kv': {
+        'my_devices': jsonEncode([account.deviceCert.toJson()]),
+        'my_devlist_version': '2',
+        'own_list_v': '2',
+        'own_list_h': fp,
+        'own_list_json': jsonEncode(list.toJson()),
+        'kt_own_known': jsonEncode({'2': fp}),
+        'kt_own_first_v': '2',
+        'kt_config': jsonEncode({
+          'url': 'https://kt.example',
+          'pub': b64(Uint8List(32)..fillRange(0, 32, 7)),
+          'wurl': '',
+          'wpub': '',
+        }),
+        'push_enabled': '0',
+      },
+    },
+    {
+      't': 'contact',
+      'rid': await bob.routingId(),
+      'bundle': (await bob.bundle(displayName: 'Bob')).toJson(),
+      'name': 'Bob',
+      'ttl': 0,
+      'verified': 0,
+      'created': createdMs,
+      'req': 1,
+      'kv': {'cdev_sigfloor_': '1', 'last_open_': '$createdMs'},
+      'sids': [sid],
+    },
+    {'t': 'blocked', 'rid': await mallory.routingId(), 'created': createdMs},
+    {
+      't': 'request',
+      'rid': await carol.routingId(),
+      'bundle': (await carol.bundle(displayName: 'Carol')).toJson(),
+      'name': 'Carol',
+      'created': createdMs,
+    },
+    {
+      't': 'example',
+      ZArchive.keepField: 1,
+      'note': 'a reader that does not know this type writes it into its '
+          'next archive as it is',
+    },
+  ];
+  final bodies = <(int, List<int>)>[
+    for (final r in records)
+      (ZArchive.kindRecord, utf8.encode(jsonEncode(r))),
+    (
+      ZArchive.kindEnd,
+      utf8.encode(jsonEncode({'t': 'end', 'records': records.length}))
+    ),
+  ];
+
+  final frames = <Map<String, Object?>>[];
+  final file = BytesBuilder()
+    ..add(header)
+    ..addByte(0x0a);
+  for (var i = 0; i < bodies.length; i++) {
+    final (kind, payload) = bodies[i];
+    final sealed = await ZArchive.sealFrame(
+        key: key,
+        header: header,
+        noncePrefix: noncePrefix,
+        index: i,
+        kind: kind,
+        payload: payload);
+    final (gotKind, gotPayload) = await ZArchive.openFrame(
+        key: key,
+        header: header,
+        noncePrefix: noncePrefix,
+        index: i,
+        sealed: sealed);
+    check(gotKind == kind && eq(gotPayload, payload), 'frame $i round trip');
+    final nonce = Uint8List(24)..setRange(0, 16, noncePrefix);
+    ByteData.view(nonce.buffer).setUint64(16, i);
+    final len = ByteData(4)..setUint32(0, sealed.length);
+    file
+      ..add(len.buffer.asUint8List())
+      ..add(sealed);
+    frames.add({
+      'index': i,
+      'kind': kind,
+      'nonce': hex(nonce),
+      'plaintext': hex([kind, ...payload]),
+      'payload_json': utf8.decode(payload),
+      'ciphertext': hex(sealed.sublist(0, sealed.length - 16)),
+      'mac': hex(sealed.sublist(sealed.length - 16)),
+    });
+  }
+
+  // The refusal: the same header one major version on. A reader of this
+  // major refuses it on sight, before any key is derived.
+  final newer = (jsonDecode(utf8.decode(header)) as Map).cast<String, Object?>()
+    ..['v'] = ZArchive.version + 1;
+  final newerBytes = Uint8List.fromList(utf8.encode(jsonEncode(newer)));
+  var refused = false;
+  try {
+    ZArchive.parseHeader(newerBytes);
+  } on ArchiveTooNewException {
+    refused = true;
+  }
+  check(refused && ZArchive.isNewerMajor(newer), 'a newer major is refused');
+
+  final fileBytes = file.takeBytes();
+  return {
+    'suite': 'backup_archive_1_1',
+    'version': vectorsVersion,
+    'description':
+        'Backup archive (.zbk), format 1.1: the frame layer of archive.json '
+            'unchanged, under a header that names its minor revision ("mv"). '
+            'Minor 1 adds a linked device\'s "account" beside its identity, '
+            'the account\'s device-list and transparency "state", a '
+            'contact\'s own state ("kv"), past session ids ("sids") and '
+            'pending flag ("req"), "blocked" and "request" records, and the '
+            '"keep" member: a record whose type a reader does not know is '
+            'carried into that reader\'s next archive, as the same text, '
+            'when it says "keep":1, and skipped when it does not. A header '
+            'whose "v" is above the reader\'s major is refused before any '
+            'key is derived.',
+    'recovery_code': {
+      'entropy': hex(code.entropy),
+      'formatted': formatted,
+      'key_material': hex(material),
+    },
+    'kdf': {
+      'name': 'argon2id',
+      'rfc': 9106,
+      'memory_kib': ZArchive.kdfMemoryKib,
+      'iterations': ZArchive.kdfIterations,
+      'parallelism': ZArchive.kdfParallelism,
+      'password': hex(material),
+      'salt': hex(salt),
+      'tag_len': 32,
+      'key': hex(keyBytes),
+    },
+    'header': {
+      'bytes': hex(header),
+      'json': utf8.decode(header),
+      'nonce_prefix': hex(noncePrefix),
+      'major': ZArchive.version,
+      'minor': ZArchive.minorVersion,
+      'aad_rule': 'header_bytes || uint64be(frame_index)',
+    },
+    'frame_kinds': {
+      'record': ZArchive.kindRecord,
+      'blob': ZArchive.kindBlob,
+      'end': ZArchive.kindEnd,
+    },
+    'keep_member': ZArchive.keepField,
+    'kept_record_index': records.length - 1,
+    'frames': frames,
+    'must_fail': {
+      'newer_major_header': hex(newerBytes),
+      'newer_major_header_json': utf8.decode(newerBytes),
+    },
+    'file': {
+      'bytes': hex(fileBytes),
+      'len': fileBytes.length,
+      'sha256': hex(await refSha256(fileBytes)),
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // ML-DSA-65 (FIPS 204) — the v3 hybrid-signature primitive
 // ---------------------------------------------------------------------------
@@ -3201,6 +3436,7 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     },
     'backup': {
       'archive': await suiteBackup(),
+      'archive_1_1': await suiteBackupMinor1(),
     },
   };
 }

@@ -348,6 +348,18 @@ and your history.
 Your contacts' safety numbers **do not change** — it is the same identity, so
 nobody sees an alarm. This is why restoring beats starting over.
 
+What they do see is an ordinary device-list update: before it sends anything,
+the restored device signs your account's device list again at its next
+version, and your contacts and the transparency log take it as they take
+linking a laptop. A device you linked *after* the backup was taken has to be
+linked again; one you removed after it stays removed. A backup made on a
+linked device (a laptop) comes back as that linked device — and if your phone
+has removed it since, it says "this device was removed", and you link it
+again. Until this release a restore told you to reset your identity over
+nothing; the one case that can still show a contact a conflict is a restore
+while the transparency log cannot be reached, after your device list changed
+since the backup — so restore while you are online.
+
 The archive restores history but never live session state, on purpose: a
 restored device re-handshakes rather than reusing keys that may have been used
 since. You may see the first message or two take a moment.

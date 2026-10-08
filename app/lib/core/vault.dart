@@ -39,6 +39,26 @@ class WrongPassphraseException implements Exception {
   String toString() => 'WrongPassphraseException: incorrect passphrase';
 }
 
+/// Thrown by [Vault.open] for a database a NEWER build wrote: its schema is
+/// past [Vault.schemaVersion]. Nothing has been changed — the version stays
+/// what it was, so the newer build opens it as it left it.
+///
+/// It used to open. SQLite's version is one number, and opening at a lower
+/// one sets it there (sqflite's rule when no downgrade handler is given),
+/// with every table and column the newer build added still in place; that
+/// build's next start then ran its migrations again over columns that
+/// already existed, failed on the first, and failed the same way at every
+/// start after — a vault that could no longer be opened by any build.
+class VaultTooNewException implements Exception {
+  final int found;
+  final int supported;
+  const VaultTooNewException(this.found, this.supported);
+  @override
+  String toString() => 'VaultTooNewException: this data was saved by a newer '
+      'version of Z (schema $found; this build reads up to $supported). '
+      'Update Z to open it — nothing has been changed.';
+}
+
 /// Result of [Vault.inspect]: whether a vault exists and whether opening it
 /// needs the user's passphrase.
 class VaultStatus {
@@ -109,9 +129,43 @@ class Vault {
               PRIMARY KEY (rid, mid, sender_rid)
             )''';
 
+  /// A vault a newer build wrote: refused, and left exactly as it was.
+  ///
+  /// Throwing here rolls back the transaction sqflite opens the database in,
+  /// so the version is not lowered; the open fails, sqflite closes the
+  /// database, and the caller is told why (`VaultTooNewException`). Without
+  /// a handler sqflite lowers the version and changes nothing else — see
+  /// [VaultTooNewException] for what that used to cost.
+  static Future<void> _refuseDowngrade(Database db, int from, int to) async =>
+      throw VaultTooNewException(from, to);
+
+  /// Adds [column] (`name TYPE ...`) to [table] unless it is already there.
+  ///
+  /// A vault can reach a migration with the column present: a build older
+  /// than [_refuseDowngrade] opened it, set the version back and left the
+  /// newer build's columns in place, so the step that added a column runs a
+  /// second time. `ALTER TABLE ... ADD COLUMN` on an existing column throws,
+  /// and threw at every start after (the 2026-10-03 analysis, reproduced in
+  /// `restore_truth_test.dart` 8). Every step is therefore idempotent.
+  static Future<bool> _addColumn(
+      Database db, String table, String column) async {
+    final name = column.split(' ').first;
+    final have = await db.rawQuery('PRAGMA table_info($table)');
+    if (have.any((r) => r['name'] == name)) return false;
+    await db.execute('ALTER TABLE $table ADD COLUMN $column');
+    return true;
+  }
+
+  /// [create] — a `CREATE TABLE name(...)` statement — unless the table
+  /// exists; idempotent for the same reason as [_addColumn].
+  static Future<void> _createTable(Database db, String create) => db.execute(
+      create.replaceFirst('CREATE TABLE ', 'CREATE TABLE IF NOT EXISTS '));
+
   /// Schema migrations. Each step is additive (new nullable/defaulted columns
-  /// and new tables) so an interrupted upgrade cannot lose messages, and a
-  /// vault written by a newer build still opens read-compatible rows.
+  /// and new tables) so an interrupted upgrade cannot lose messages — and
+  /// idempotent, so a step that meets what it adds already there (a vault an
+  /// older build set back, see [_addColumn]) does nothing rather than fail.
+  /// A vault written by a newer build is refused, not read: [_refuseDowngrade].
   static Future<void> _migrate(Database db, int from, int to) async {
     if (from < 2) {
       for (final column in const [
@@ -119,13 +173,13 @@ class Vault {
         'edited_ms INTEGER NOT NULL DEFAULT 0',
         'deleted INTEGER NOT NULL DEFAULT 0',
       ]) {
-        await db.execute('ALTER TABLE messages ADD COLUMN $column');
+        await _addColumn(db, 'messages', column);
       }
-      await db.execute(_createReactions);
+      await _createTable(db, _createReactions);
     }
     if (from < 3) {
-      await db.execute(
-          'ALTER TABLE messages ADD COLUMN forwarded INTEGER NOT NULL DEFAULT 0');
+      await _addColumn(
+          db, 'messages', 'forwarded INTEGER NOT NULL DEFAULT 0');
     }
     if (from < 4) {
       // v3 identity (§18). Two columns, both nullable, both meaning "not
@@ -136,7 +190,7 @@ class Vault {
       // neither, classical. The pair is what decides which safety number is
       // shown, so neither may be inferred from the other.
       for (final column in const ['pq_commit TEXT', 'enc_pq_pub TEXT']) {
-        await db.execute('ALTER TABLE contacts ADD COLUMN $column');
+        await _addColumn(db, 'contacts', column);
       }
     }
     if (from < 5) {
@@ -153,7 +207,7 @@ class Vault {
       // backfills the classical one on first load, since that is what every
       // earlier build showed. See `_backfillVerifiedSn`.
       for (final column in const ['verified_sn TEXT', 'pq_mismatch INTEGER']) {
-        await db.execute('ALTER TABLE contacts ADD COLUMN $column');
+        await _addColumn(db, 'contacts', column);
       }
     }
     if (from < 6) {
@@ -165,14 +219,14 @@ class Vault {
       // the account (§3.5) — the reading that was already implied, so no
       // safety number moves and no device list stops verifying.
       for (final column in const ['acct_ed TEXT', 'dev_cert TEXT']) {
-        await db.execute('ALTER TABLE contacts ADD COLUMN $column');
+        await _addColumn(db, 'contacts', column);
       }
     }
     if (from < 7) {
       // 13.7: which of MY OWN devices added this contact, when it was not
       // this one. Null — the value for every existing row — means the user
       // added it here, which is what was true of all of them.
-      await db.execute('ALTER TABLE contacts ADD COLUMN added_by TEXT');
+      await _addColumn(db, 'contacts', 'added_by TEXT');
     }
     if (from < 8) {
       // 15.3: the group fan-out queue. A group message costs one ratchet
@@ -181,7 +235,7 @@ class Vault {
       // a second. It is now recorded here first and worked off in the
       // background, which also means a fan-out that does not finish is
       // resumed rather than silently abandoned.
-      await db.execute(_createGroupFanout);
+      await _createTable(db, _createGroupFanout);
     }
     if (from < 9) {
       // 15.3: the ratchet's cache of out-of-order message keys moves out of
@@ -193,7 +247,7 @@ class Vault {
       // No data migration: a row written before this keeps its cache inside
       // `enc_state`, which still loads, and the next receive writes it here.
       // Nothing is lost in between, because the old location is still read.
-      await db.execute('ALTER TABLE conversations ADD COLUMN enc_skipped TEXT');
+      await _addColumn(db, 'conversations', 'enc_skipped TEXT');
     }
     if (from < 10) {
       // 17-review: the relay envelope id stops being the message id.
@@ -209,18 +263,22 @@ class Vault {
       // group send, the contact for a 1:1 — which is not the mailbox the
       // envelope goes to, and conflating the two is why a group message's
       // status never reached `sent`.
+      var added = false;
       for (final column in const ['mid TEXT', 'thread_rid TEXT']) {
-        await db.execute('ALTER TABLE outbox ADD COLUMN $column');
+        if (await _addColumn(db, 'outbox', column)) added = true;
       }
       // Backfill exactly the rows the old convention applied to: one whose
       // id matches a pending outgoing message to the same party. Offer and
       // chunk rows already carried a fresh id and are left alone rather than
-      // given a mid that names nothing.
-      await db.execute('''
+      // given a mid that names nothing. Only when the columns were added
+      // just now: rows written since already say which message they carry.
+      if (added) {
+        await db.execute('''
         UPDATE outbox SET mid = id, thread_rid = rid
         WHERE EXISTS (SELECT 1 FROM messages m
                       WHERE m.mid = outbox.id AND m.rid = outbox.rid
                         AND m.outgoing = 1)''');
+      }
     }
     if (from < 11) {
       // 17-review: who has confirmed each outgoing message.
@@ -233,7 +291,7 @@ class Vault {
       //
       // No backfill: an existing message keeps the status it has (the tick
       // never moves backwards), and this table fills from the next receipt.
-      await db.execute(_createDelivery);
+      await _createTable(db, _createDelivery);
     }
     if (from < 12) {
       // ADR 0011: contact requests. Being added stops being silent — a request
@@ -243,10 +301,10 @@ class Vault {
       //   requests           — pending INBOUND requests, not yet contacts.
       //   blocked            — routing ids whose requests and traffic are
       //     dropped in silence.
-      await db.execute(
-          'ALTER TABLE contacts ADD COLUMN requested INTEGER NOT NULL DEFAULT 0');
-      await db.execute(_createRequests);
-      await db.execute(_createBlocked);
+      await _addColumn(
+          db, 'contacts', 'requested INTEGER NOT NULL DEFAULT 0');
+      await _createTable(db, _createRequests);
+      await _createTable(db, _createBlocked);
     }
     if (from < 13) {
       // ADR 0021: the post-quantum half can be established in-session.
@@ -260,11 +318,9 @@ class Vault {
       //     or a `pqack`); until it is set, their next message earns one, so
       //     a side that learned to keep candidates after the exchange ran
       //     still gets told.
-      await db.execute('ALTER TABLE contacts ADD COLUMN enc_pq_cand TEXT');
-      await db.execute(
-          'ALTER TABLE contacts ADD COLUMN pq_acked INTEGER NOT NULL DEFAULT 0');
-      await db.execute(
-          'ALTER TABLE contacts ADD COLUMN pq_told INTEGER NOT NULL DEFAULT 0');
+      await _addColumn(db, 'contacts', 'enc_pq_cand TEXT');
+      await _addColumn(db, 'contacts', 'pq_acked INTEGER NOT NULL DEFAULT 0');
+      await _addColumn(db, 'contacts', 'pq_told INTEGER NOT NULL DEFAULT 0');
     }
   }
 
@@ -416,6 +472,7 @@ class Vault {
         // because the migration below deletes rows.
         onConfigure: (db) => db.execute('PRAGMA secure_delete = ON'),
         onUpgrade: _migrate,
+        onDowngrade: _refuseDowngrade,
         onCreate: (db, v) async {
           await db.execute('''
             CREATE TABLE contacts(

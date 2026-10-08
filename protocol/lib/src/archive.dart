@@ -26,11 +26,33 @@ import 'util.dart';
 /// importer refuses the archive, so a truncated file — the most likely way a
 /// backup goes wrong — fails loudly instead of restoring a silently shorter
 /// history.
+///
+/// **Versions.** The header's `v` is the format's MAJOR version: a reader
+/// refuses any major version it does not know ([ArchiveTooNewException]),
+/// because a major bump is by definition a file an older reader would get
+/// wrong. `mv` counts MINOR revisions within a major: new record types and
+/// new optional fields, which an older reader of the same major skips —
+/// except that a record whose writer marked it [keepField] is one a reader
+/// that does not know its type stores and writes back, byte for byte, into
+/// the archives it takes later (`BACKUP.md` §5). An archive with no `mv` is
+/// minor 0, which is what every build before minor 1 wrote.
 class ZArchive {
   static final _aead = Xchacha20.poly1305Aead();
 
   static const magic = 'zbk';
   static const version = 1;
+
+  /// The minor revision this build writes (see the class comment). 1 adds
+  /// the account's device-list and transparency state, the block list and
+  /// pending requests, the ids of past sessions, and [keepField].
+  static const minorVersion = 1;
+
+  /// A record member: `"keep": 1` says a reader that does not know this
+  /// record's type may carry it into the next archive unchanged. Its writer
+  /// sets it only where a copy that has gone stale — kept by a build that
+  /// could not read it, through whatever that build did meanwhile — is
+  /// still right to restore.
+  static const keepField = 'keep';
 
   /// Argon2id parameters, matching the vault's (OWASP guidance). The recovery
   /// code is already 120 random bits; this is defence in depth, not the thing
@@ -57,17 +79,21 @@ class ZArchive {
       _kdf().deriveKey(secretKey: SecretKey(codeMaterial), nonce: salt);
 
   /// The plaintext header. `schema` records the vault schema the records were
-  /// written at, so a newer build knows what it is reading.
+  /// written at, so a newer build knows what it is reading. [minor] is
+  /// written as `mv` when given; the app passes [minorVersion], and a minor-0
+  /// header (the frozen `archive.json` vector's) leaves it out.
   static Uint8List buildHeader({
     required Uint8List salt,
     required Uint8List noncePrefix,
     required int schema,
     required int createdMs,
     String app = 'z',
+    int? minor,
   }) =>
       Uint8List.fromList(utf8.encode(jsonEncode({
         'z': magic,
         'v': version,
+        if (minor != null) 'mv': minor,
         'app': app,
         'kdf': 'argon2id',
         'm': kdfMemoryKib,
@@ -79,11 +105,27 @@ class ZArchive {
         'created': createdMs,
       })));
 
+  /// Whether [header] — a parsed header line, or anything carrying its `z`
+  /// and `v` — is an archive of a major version newer than this build reads.
+  /// Answerable from the plaintext header alone, so before any key is
+  /// derived.
+  static bool isNewerMajor(Map<String, Object?> header) {
+    final v = header['v'];
+    return header['z'] == magic && v is int && v > version;
+  }
+
+  /// The header's minor revision; 0 when it names none.
+  static int minorOf(Map<String, Object?> header) {
+    final mv = header['mv'];
+    return mv is int && mv >= 0 ? mv : 0;
+  }
+
   static Map<String, Object?> parseHeader(Uint8List headerLine) {
     final j = jsonDecode(utf8.decode(headerLine)) as Map<String, Object?>;
     if (j['z'] != magic) {
       throw const FormatException('not a Z backup archive');
     }
+    if (isNewerMajor(j)) throw ArchiveTooNewException(j['v'] as int);
     if (j['v'] != version) {
       throw FormatException('unsupported archive version ${j['v']}');
     }
@@ -179,4 +221,16 @@ class ZArchive {
       Uint8List.fromList(payload.sublist(1 + idLen)),
     );
   }
+}
+
+/// An archive of a major format version this build does not read — written
+/// by a newer build. Refused rather than read in part: a major bump is a
+/// change an older reader would get wrong, and what it would get wrong is
+/// the user's history. A [FormatException], so every caller that already
+/// refuses a damaged file refuses this one too; the message says what to do.
+class ArchiveTooNewException extends FormatException {
+  final int major;
+  ArchiveTooNewException(this.major)
+      : super('This backup was made by a newer version of Z (archive format '
+            '$major). Update Z first, then restore it.');
 }

@@ -35,6 +35,12 @@ enum BackupKind {
   /// passphrase the user chose. Read for compatibility; never written.
   legacyIdentity,
 
+  /// A `.zbk` archive of a format major version this build does not read:
+  /// a newer build wrote it. Said on sight — the header is plaintext — so
+  /// the app asks the user to update Z rather than for a recovery code it
+  /// would then run Argon2id over for nothing ([ArchiveTooNewException]).
+  newerFormat,
+
   /// Not a Z backup, or damaged past recognition.
   unknown,
 }
@@ -92,6 +98,9 @@ class Restore {
       final j = jsonDecode(utf8.decode(line)) as Map<String, Object?>;
       switch (j['z']) {
         case 'zbk':
+          if (ZArchive.isNewerMajor(j)) {
+            return const RestorePreview(BackupKind.newerFormat);
+          }
           return RestorePreview(
             BackupKind.archive,
             schema: (j['schema'] as num?)?.toInt(),
@@ -113,8 +122,9 @@ class Restore {
   /// recovery code for an archive and the passphrase for a legacy identity
   /// backup — [identify] tells the UI which to ask for.
   ///
-  /// Throws [FormatException] for a wrong secret or a damaged file, and
-  /// [ArchiveIncompleteException] for a truncated archive.
+  /// Throws [FormatException] for a wrong secret or a damaged file — its
+  /// subtype [ArchiveTooNewException] for an archive a newer build wrote —
+  /// and [ArchiveIncompleteException] for a truncated archive.
   static Future<RestoreSummary> run({
     required Vault vault,
     required File file,
@@ -142,6 +152,19 @@ class Restore {
         );
       case BackupKind.legacyIdentity:
         return _legacy(vault, await file.readAsBytes(), secret, serverUrl);
+      case BackupKind.newerFormat:
+        final raf = await file.open();
+        try {
+          final head = await raf.read(_sniffBytes);
+          final nl = head.indexOf(0x0a);
+          ZArchive.parseHeader(
+              Uint8List.fromList(nl >= 0 ? head.sublist(0, nl) : head));
+        } finally {
+          await raf.close();
+        }
+        // parseHeader threw for it when identify said so; a file changed in
+        // between is not a backup this path knows what to do with.
+        throw const FormatException('that file is not a Z backup');
       case BackupKind.unknown:
         throw const FormatException('that file is not a Z backup');
     }
@@ -156,6 +179,10 @@ class Restore {
     final idJson = (restored['identity'] as Map).cast<String, Object?>();
     await vault.kvPut('identity', jsonEncode(idJson));
     await vault.kvPut('display_name', restored['name'] as String? ?? 'Me');
+    // The account comes back with none of its device-list state — a `.zid`
+    // never carried any — so its first start re-asserts it from the log, as
+    // an archive's does (`ChatService._resumeAfterRestore`).
+    await vault.kvPut(BackupArchive.resumeKey, '1');
     if (serverUrl != null && serverUrl.isNotEmpty) {
       await setRelayUrl(vault, serverUrl, acceptedInsecure: true);
     }
