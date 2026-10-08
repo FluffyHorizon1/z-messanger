@@ -184,6 +184,30 @@ If your contacts start seeing a device you did not add, Z tells them, and it
 tells you. That alert is the whole point of the design, so please do not
 dismiss it as noise.
 
+Four banners at the top of the chat list are about your own account, and each
+appears only when Z holds a list of your devices signed with your account's
+key — something no contact, group member or server can make up:
+
+* *"A contact was given a device list for your account that this device never
+  issued"* — a contact holds a list of your devices that none of yours made.
+  Z asks their app for that list before saying anything, so the banner comes
+  a few seconds after their message, and only if their app is recent enough
+  to answer.
+* *"Your main device published an older device list"* — your main phone sent
+  this device a list older than one it already has, so the newer one was
+  signed somewhere else.
+* *"This device was removed from your account"* — a list of your devices
+  without this one, newer than the one this device has, signed by your
+  account. It comes with the notice from a contact who stopped writing to
+  this device, or from the transparency log.
+* *"A device list you did not issue has been published to the transparency
+  log"* — your account's entry in the log is a list your devices never made.
+
+Dismiss one and it stays dismissed for that list, even after a restart; a
+different list brings it back. If you cannot explain it — you did not just
+link or remove a device — take it seriously: someone may hold your account
+key, and resetting your identity is the remedy.
+
 A device belongs to one account. If a contact's device list names a device
 that another of your contacts' lists already names — or one of your own
 devices — Z does not use that list, and their chat says so, naming both of

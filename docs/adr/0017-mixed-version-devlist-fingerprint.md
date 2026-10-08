@@ -416,12 +416,20 @@ What the review of stage 2 left, and where each stands.
   `app/test/own_list_race_test.dart`, the probe run for 24 rounds).
   `devlist_v2_only_test.dart` 10 links its device only after the restart to
   stay out of this race; it no longer has to.
-- **A removal notice and the extras session — open.** The notice in
+- **A removal notice and the extras session — closed but for one path
+  (2026‑10‑04).** The notice in
   `_installContactDeviceList` is encrypted on a contact's extras session
   under the install's lock, while the fan‑out and the inbound path work on the
   same session under the conversation's, so the two can interleave; the
   comment at the notice says how. Taking the conversation's lock inside the
-  install is not the fix: it is not re‑entrant.
+  install is not the fix: it is not re‑entrant. *Since 2026‑10‑04 the install
+  does take it, around everything it does to the session, and that cannot
+  deadlock: nothing that holds a conversation's lock — or any other — ever
+  waits for the install's, since installs are reached only after the inbound
+  path has released the conversation's lock, from the log's check and at
+  start‑up; the comment at the notice gives the argument. What stays open is
+  the inbound path's rollback when a dispatch fails after its lock is
+  released: it restores the whole session, outside the lock.*
 - **The log's install path, superseded — open.** `ktInstallFromLog` answers
   "refused" when an in‑band list replaced the log's between the install and
   its answer, which reads, until the next check, as a conflict.

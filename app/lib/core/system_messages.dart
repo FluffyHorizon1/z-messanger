@@ -179,8 +179,10 @@ abstract final class OwnAlertKind {
   /// never issued. No params.
   static const unissued = 'own_unissued';
 
-  /// T3: this device was told by a contact that it was removed from its own
-  /// account's device list. Param: `v` (the list version).
+  /// T3: this device was removed from its own account's device list — shown
+  /// on that list, signed by the account's key, which a contact's removal
+  /// notice carries or the log serves (ADR 0026). Param: `v` (the list
+  /// version).
   static const removed = 'own_removed';
 }
 

@@ -20,9 +20,17 @@ import 'util.dart';
 ///            `ack` without a key; ignored by clients that predate it
 ///   'pqek'   (v2) post-quantum key offer { alg, ek } — consumed by the
 ///            session layer, never shown; ignored by v1 clients
-///   'dlrm'   (7.7a) device-list removal notice { acct, v, h } — a contact
-///            tells a device it just dropped from an account's list that it
-///            was removed; ignored by v1 clients
+///   'dlrm'   (7.7a) device-list removal notice { acct, v, h[, list] } — a
+///            contact tells a device it just dropped from an account's list
+///            that it was removed; ignored by v1 clients. `list` (ADR 0026)
+///            is the signed list that dropped it, the evidence the device
+///            needs: a notice without one says nothing it can check
+///   'pdlreq' (ADR 0026) { v, h } — "send me the list you hold for MY
+///            account": asked of a contact whose echo ('pdl') named a list
+///            the asking device does not hold. Keyless. Answered with a
+///            'devlist' whose list is the receiver's ACCOUNT's, not the
+///            sender's (told apart by its `acct`); ignored by clients that
+///            predate it
 ///
 ///   'edit'   (8.1c) new text for one of the SENDER'S OWN messages
 ///            { rt, body }; 'gedit' adds { gid }
@@ -180,13 +188,31 @@ class InnerMessage {
   /// 7.7a device-list removal notice: sent by a contact to a device it just
   /// dropped from account [acct]'s list (at version [v], fingerprint [h]), so
   /// a device silently excluded by whoever holds the account root learns of it.
+  ///
+  /// [list] (ADR 0026) is that list's JSON: the account-signed statement the
+  /// device can check, and the only thing that makes the notice evidence.
+  /// Optional on the wire — a notice from a client before it carries none,
+  /// and the bytes without it are exactly what those clients send.
   static InnerMessage deviceListRemoved(String mid, int ts,
-          {required Uint8List acct, required int v, required Uint8List h}) =>
-      InnerMessage(
-          kind: 'dlrm',
-          mid: mid,
-          ts: ts,
-          data: {'acct': b64(acct), 'v': v, 'h': b64(h)});
+          {required Uint8List acct,
+          required int v,
+          required Uint8List h,
+          String? list}) =>
+      InnerMessage(kind: 'dlrm', mid: mid, ts: ts, data: {
+        'acct': b64(acct),
+        'v': v,
+        'h': b64(h),
+        if (list != null) 'list': list,
+      });
+
+  /// ADR 0026: ask a contact for the list it holds for the SENDER's own
+  /// account, whose (version [v], fingerprint [h]) its echo named. Keyless:
+  /// the answer is an ordinary 'devlist' carrying that list, which the asker
+  /// verifies under its own account key — an echo is a claim, the list is
+  /// the evidence.
+  static InnerMessage ownListRequest(String mid, int ts,
+          {required int v, required String h}) =>
+      InnerMessage(kind: 'pdlreq', mid: mid, ts: ts, data: {'v': v, 'h': h});
 
   /// The `mid` this message replies to (8.1), or null when it is not a reply
   /// or the member is malformed. Length-capped: a reply id is one of our own

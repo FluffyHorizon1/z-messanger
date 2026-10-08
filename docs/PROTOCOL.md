@@ -407,14 +407,40 @@ device of that account):
 
 **Owner rule.** On each `pdl` a device receives about its *own* account, it
 compares with the newest list it issued or learned by self‑sync (§9): an echo
-`v` higher than known, or the same `v` with a different `h`, means a device
-holding the account key issued a list this device never saw — surfaced loudly
-(the T1/T2 signal, actionable only by the owner).
+`v` higher than known, or the same `v` with a different `h`, says a device
+holding the account key issued a list this device never saw — the T1/T2
+signal, actionable only by the owner, and surfaced loudly. But it only *says*
+so (ADR 0026): an echo is two numbers any contact can type, so a receiver
+MUST NOT raise anything on the echo itself. It MAY ask the echoing contact for
+the list behind it — `pdlreq {v, h}` (§6.2) — and a device that receives a
+`pdlreq` and holds a signed list for the asker's account answers with a
+`devlist` carrying exactly that list; the asker tells the answer from the
+contact's own list by its `acct`, and installs it nowhere. The signal is raised
+only on **evidence**: a list for the account that verifies under its key
+(§3.4) and that the device's own records do not explain — not its current
+list; not one it signed, learned by self‑sync or reconciled (§19.8) at a
+version it has reached; not one from before it knew the account; and, on a
+device that cannot sign — which learns by self‑sync and may skip versions — not
+a version below its own that it never saw. It is raised after the same short
+grace as the receiver rules above, and a device that cannot sign asks its root
+first (root discipline, below). An echo no list backs within that grace is
+dropped (the reference client counts it and shows nothing). A receiver SHOULD
+bound what one contact can make it do; the reference client asks one contact
+at most three times in ten minutes and never about the same echo twice in that
+window, weighs an answer only if it is the list one of that contact's echoes
+named (asked about in that window, or still unexplained), verifies at most
+eight lists from one contact in a window, and answers one account at most
+three times in a window, whichever of its devices asks. A user's dismissal of
+the signal holds for the evidence it was raised on — the same list, before or
+after a restart, raises nothing — and new evidence raises it again. A contact
+whose client predates ADR 0026 cannot answer, so its echo raises nothing at
+all (`THREAT_MODEL.md` R46).
 
 **Removal notice.** When a contact installs a verified list that *drops*
 devices it previously held, it sends each dropped device one final inner
 message of kind `dlrm` (§6.2) over the still‑known pairwise session before
-forgetting it. A rogue cannot suppress it: it is sent by the contact, not the
+forgetting it, carrying that list (`list`, ADR 0026). A rogue cannot suppress
+it: it is sent by the contact, not the
 account. It SHOULD be queued with the same durability as a message — the
 reference client's outbox — since it is sent exactly once and a client whose
 link happens to be down at that moment would otherwise never send it. And
@@ -422,6 +448,22 @@ whatever else was queued for the dropped device MUST be discarded at the same
 moment: a durable queue must not deliver, after the list said otherwise, what
 a down link happened to be holding. The same applies to a root removing one
 of its own devices and the self‑sync traffic queued for it.
+
+**Receiving a removal notice (ADR 0026).** A notice is a claim as well. A
+device MUST NOT tell its user it was removed on a notice alone; it tells them
+only on a list for its own account that verifies under the account key, does
+not name the device, and is at a version above the one the device holds. The
+version is what keeps the account's own lists from before the device was
+linked — which omit it, and which anyone holding the account's public key can
+read from the log (§19.1) — from counting; a device that has learned no list
+for its account yet (one just linked, before its root's list reaches it) holds
+no version, and is told nothing. The list is the notice's `list`, or
+the account's latest entry in the log (§19), opened and verified (§19.3):
+that is the same evidence wherever it is found, whether or not a contact sends
+a notice. A notice without `list` — what clients before ADR 0026 send — is not
+evidence; it MAY move the device's own check of the log forward (the reference
+client does, at most once in ten minutes). A dismissal holds for the list it
+was raised on, as above.
 
 **Root discipline.** A root‑holding device MUST self‑sync every new signed
 list to the account's own other devices (§9, envelope `dir:"acct"`) before or
@@ -643,7 +685,7 @@ Unknown kinds MUST be ignored.
 | `timer` | `sec:int` | set the disappearing timer for the conversation (0 = off) |
 | `read` | `mids:[string]` | read receipts |
 | `dlv` | `mids:[string]` | end‑to‑end delivery receipts (§6.3) |
-| `devlist` | `list:string` (the JSON of §3.4, as a string) | account device‑set update |
+| `devlist` | `list:string` (the JSON of §3.4, as a string) | account device‑set update — or, answering a `pdlreq`, the list the sender holds for the RECEIVER's account (§3.6, ADR 0026), told apart by its `acct` and installed nowhere |
 | `ginvite` | `gid, name, ver:int, members:[{ "b":ContactBundleJSON, "n":string }]`, opt. `owner:string, admins:[string], rv:int` | group create/update (§11); `owner`/`admins` = who may issue lists, `rv` = the version of those roles — left out while the group's roles have never changed (§11.1) |
 | `gmsg` | `gid, body`, opt. `rt` | group text (§11) |
 | `gfile` | `gid` + the `file` members, opt. `rt` | group attachment offer (§7, §11) |
@@ -652,7 +694,8 @@ Unknown kinds MUST be ignored.
 | `pqek` | `alg:"ML-KEM-768", ek:b64` | v2 post‑quantum key offer (§17); consumed by the session layer, never shown |
 | `pqid` | `alg:"ML-DSA-65", pk:b64`, opt. `ack:true` | v3 post‑quantum identity key (§18.2); checked against the commitment from the scanned code, or kept as a candidate when none is held. `ack` = the sender holds the receiver's key |
 | `pqack` | — | the sender holds the receiver's post‑quantum key (§18.2); the `ack` above without a key, for when no `pqid` is going out to carry it |
-| `dlrm` | `acct:b64, v:int, h:b64` | device‑list removal notice (§3.6); tells a device it was dropped from account `acct`'s list |
+| `dlrm` | `acct:b64, v:int, h:b64`, opt. `list:string` | device‑list removal notice (§3.6); tells a device it was dropped from account `acct`'s list. `list` (ADR 0026) is that list, the JSON of §3.4 as a string — the evidence a receiver acts on; a notice without it is a claim |
+| `pdlreq` | `v:int, h:b64` | "send me the list you hold for my account" (ADR 0026): asked of a contact whose echo `pdl` (§3.6) named (`v`, `h`); answered with a `devlist` carrying that list. Keyless; ignored by clients that predate it |
 | `react` | `rt:string, emo:string` | reaction to one message (§6.5); `emo:""` withdraws |
 | `greact` | `gid` + the `react` members | reaction inside a group (§6.5, §11) |
 | `edit` | `rt:string, body:string` | new text for one of the sender's own messages (§6.6) |
@@ -2834,6 +2877,33 @@ does not adopt a second list at a version it holds — the record it keeps is
 what lets it see the other one in the log. Until 2026‑10‑02 it did none of
 this, and the overwritten record turned the account's own genuine entry into
 an alert at the next start.
+
+**What raises it, and for how long (ADR 0026).** An entry is evidence of a
+list the account did not issue only if it opens as the account's list,
+verifies, and carries the entry's fingerprint (§19.3). One that does not was
+signed by nobody the reader can name — the log never serves the publish
+signature (§19.6), and its operator can put any value under any label, since
+it can open values (§19.1) — so the account's own device raises nothing on it
+(the reference client keeps it as a diagnostic, `kt_own_unverified`), while
+the account's contacts still treat it as a conflict (`adr/0006`). A user's
+dismissal of the alert holds for that entry's (version, fingerprint), across
+restarts, and a different entry raises it again.
+
+Vaults that the own‑list race above had already damaged — whose record of one
+of their versions holds a second list the root signed at it, while the log
+holds the first — are repaired by one rule, and only by it: a mismatch at
+version `v` is reconciled quietly, kept beside the record and not over it,
+when (1) the entry is inside the log head the device held when the repairing
+build first ran on its vault and `v` was recorded then, (2) it opens and
+verifies as the account's list, and (3) every device it names is one the
+account is known to have held — the device's own records, and the devices of
+every entry in the log that matches its record. Nothing can enter the set (1)
+describes afterwards: the log takes no version at or below one it holds, and a
+head that does not extend the held one is a fault — and a reset of the
+history, which takes the next head as it comes, ends the repair. When the
+reconciled entry is the log's latest and not the root's current list, the root
+moves to the next version with its current devices, as the migrations above
+did.
 
 ### 19.9 Mirrors and witnesses
 

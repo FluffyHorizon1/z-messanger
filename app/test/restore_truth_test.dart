@@ -50,7 +50,13 @@
 //      quietly as criterion 1, from what the log holds;
 //  11. an account that has moved to v2-only signing (ADR 0017 stage 2b)
 //      restores as one: the list it signs next is v2-only too, one version
-//      above, and nobody is alarmed.
+//      above, and nobody is alarmed;
+//  12. what the owner's alarms stand on (ADR 0026) survives the restore: a
+//      standing banner's evidence, every dismissal, and the own-list
+//      repair's record of the head and versions held when it first ran —
+//      which a restored vault must not record again from the archive's head,
+//      or the repair would reconcile entries the device it came from still
+//      reports.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -64,6 +70,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:zapp/core/alarm_evidence.dart';
 import 'package:zapp/core/archive.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/key_transparency.dart';
@@ -1203,5 +1210,58 @@ void main() {
         (await logVersions(account.accountEdPub))
             .where((v) => v >= moved.version),
         [moved.version, next.version]);
+  });
+
+  test(
+      "12. what the owner's alarms stand on survives the restore: a banner's "
+      "evidence, every dismissal and the own-list repair's record", () async {
+    final (alice, aliceDir) = await fresh('alice12');
+    final account = await alice.accountIdentity();
+    await waitUntil(() => up(alice), what: 'Alice up');
+    // This build made the vault, so its first start recorded the own-list
+    // repair's window empty (ADR 0026): no head was held then, and the
+    // repair can never apply to this account.
+    const emptyWindow = {'size': 0, 'v': <int>[]};
+    expect(jsonDecode((await alice.vault.kvGet('kt_own_legacy'))!),
+        emptyWindow);
+    // By the backup the log holds the account's first list under a head
+    // this device has accepted: the head and versions a restore that
+    // recorded the window again would take.
+    await logReaches(account.accountEdPub, 1);
+    await waitUntil(
+        () =>
+            (alice.kt.head?.size ?? 0) > 0 &&
+            alice.kt.knownOwnVersions.isNotEmpty,
+        what: 'a head and a recorded version of the account');
+    // A banner standing on its evidence, a dismissed one, and an entry the
+    // repair reconciled.
+    final shown = unissuedEvidence(9, b64(Uint8List(32)));
+    final dismissed =
+        logEntryEvidence(8, b64(Uint8List.fromList(List.filled(32, 1))));
+    final reconciledFp = b64(Uint8List.fromList(List.filled(32, 2)));
+    await alice.vault.kvPut(
+        'own_alert', ownAlertBody(OwnAlertKind.unissued),
+        sensitive: false);
+    await alice.vault.kvPut('own_alert_ev', jsonEncode([shown]));
+    await alice.kt.dismissals.add(dismissed);
+    await alice.vault
+        .kvPut('kt_own_reconciled', jsonEncode({'7': reconciledFp}));
+
+    final (file, code) = await backup(alice, 'alice12');
+    await lose(alice, aliceDir);
+    final revived = await boot(
+        await restoreInto(aliceDir, file, code), 'alice12');
+    expect(jsonDecode((await revived.vault.kvGet('kt_own_legacy'))!),
+        emptyWindow,
+        reason: "the restored vault recorded the repair's window again from "
+            "the archive's head, so the repair would now reconcile entries "
+            'the device it came from still reports');
+    expect(revived.kt.dismissals.contains(dismissed), isTrue,
+        reason: 'a dismissal did not survive the restore');
+    expect(jsonDecode((await revived.vault.kvGet('own_alert_ev'))!), [shown],
+        reason: "the banner came back without what it stands on");
+    expect(revived.ownAccountAlert, ownAlertBody(OwnAlertKind.unissued));
+    expect(revived.kt.ownListReconciled(7, reconciledFp), isTrue,
+        reason: "the repair's reconciled entries did not survive");
   });
 }

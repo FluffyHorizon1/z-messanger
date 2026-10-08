@@ -44,6 +44,7 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import 'alarm_evidence.dart' show OwnAlarmDismissals;
 import 'key_transparency.dart' show KtConfig;
 import 'relay_url.dart';
 import 'vault.dart';
@@ -138,11 +139,16 @@ class BackupArchive {
   /// (version, fingerprint) this account knows it issued, without which its
   /// monitor reads its own history as lists it never issued; the root's
   /// device id, which its certificate — named in every one of those lists —
-  /// is signed over; and the push preference, which defaults to on.
-  /// Deliberately absent: the publish queue and the log's timings, which
-  /// re-derive; a log fault, which the carried head re-derives; and
-  /// "this device was removed", which is about the device the backup was
-  /// taken on.
+  /// is signed over; and the push preference, which defaults to on. With
+  /// ADR 0026, what each alarm stands on, the evidence of every one the user
+  /// dismissed, and the own-list repair's record — the head and versions
+  /// held when the repairing build first ran, and what it reconciled —
+  /// without which the restored vault would start that record again from the
+  /// archive's head, and reconcile entries the device it came from would
+  /// still have reported. Deliberately absent: the publish queue and the
+  /// log's timings, which re-derive; a log fault, which the carried head
+  /// re-derives; and "this device was removed", which is about the device the
+  /// backup was taken on.
   static final Map<String, Future<bool> Function(String, _Ctx)> _stateKeys = {
     'device_id': (v, _) async => _isShortText(v),
     'my_devices': (v, c) => _isOwnCertList(v, c),
@@ -155,11 +161,16 @@ class BackupArchive {
     'devlist_v2only_migrated': (v, _) async => v == '1',
     'own_alert': (v, _) async => _isText(v),
     'own_alert_echo': (v, _) async => _isText(v),
+    'own_alert_ev': (v, _) async => _isTextList(v, OwnAlarmDismissals.cap),
+    'own_alarm_dismissed': (v, _) async =>
+        _isTextList(v, OwnAlarmDismissals.cap),
     'kt_config': (v, _) async => _isKtConfig(v),
     'kt_head': (v, _) async => _isJsonMap(v),
     'kt_own_known': (v, _) async => _isVersionMap(v),
     'kt_own_first_v': (v, _) async => _isCount(v),
     'kt_own_alert': (v, _) async => _isJsonMap(v),
+    'kt_own_legacy': (v, _) async => _isLegacyRecord(v),
+    'kt_own_reconciled': (v, _) async => _isVersionMap(v),
     'push_enabled': (v, _) async => v == '0' || v == '1',
   };
 
@@ -645,6 +656,25 @@ class BackupArchive {
     return m is Map &&
         m.entries.every(
             (e) => int.tryParse('${e.key}') != null && e.value is String);
+  }
+
+  /// A JSON list of at most [max] short strings: an alarm's evidence keys.
+  static bool _isTextList(String v, int max) {
+    final l = _json(v);
+    return l is List &&
+        l.length <= max &&
+        l.every((e) => e is String && _isShortText(e));
+  }
+
+  /// The own-list repair's record of its first run (`kt_own_legacy`): a
+  /// head size and the versions recorded then.
+  static bool _isLegacyRecord(String v) {
+    final m = _json(v);
+    return m is Map &&
+        m['size'] is int &&
+        (m['size'] as int) >= 0 &&
+        m['v'] is List &&
+        (m['v'] as List).every((e) => e is int && e >= 0);
   }
 
   static bool _isKtConfig(String v) {

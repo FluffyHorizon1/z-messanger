@@ -364,8 +364,23 @@ void main() {
     final rogue = await ZIdentity.generate();
     final cert = await acct.signDeviceCert(
         deviceEdPub: rogue.edPub, deviceXPub: rogue.xPub, deviceId: 'rogue');
+    // Every message Alice reads from here is handled to its end before the
+    // checks below. `heldVersion` sees the install's first write, and the
+    // install goes on — to the extras session, under the conversation's lock
+    // since phase 32 — before it tells the log client a list arrived; told
+    // inside the second check's grace pass, that left the hold set with its
+    // clock cleared (one run in six).
+    final handling = <Future<void>>{};
+    alice.transport.onMessage = (m) {
+      late final Future<void> f;
+      f = alice.debugInbound(m).whenComplete(() => handling.remove(f));
+      handling.add(f);
+    };
     await ben.addMyDevice(cert);
     await heldVersion(alice, ben.myRid, 2);
+    while (handling.isNotEmpty) {
+      await Future.wait(handling.toList());
+    }
     // Two checks, as test 2 does: the first records when the list went
     // unconfirmed, the second measures the grace against it.
     alice.kt.grace = const Duration(hours: 24);
@@ -461,14 +476,25 @@ void main() {
     await alice.kt.check();
     await ben.kt.check();
     // Someone holding Ben's account seed publishes a v2 list to the log that
-    // Ben's own device never issued — then Ben's root issues an honest v2.
+    // Ben's own device never issued — a device of theirs beside his — then
+    // Ben's root issues an honest v2. A real list, signed by his key: since
+    // ADR 0026 an entry that does not open as one of his lists is evidence
+    // of nothing his key signed and raises nothing at its owner, while his
+    // contacts still hold it a conflict (alarm_evidence_test.dart 6).
     final acct = await ben.accountIdentity();
-    final fakeFp = Uint8List.fromList(List<int>.filled(16, 0x42));
+    final rogueId = await ZIdentity.generate();
+    final rogueList = await acct.signDeviceList([
+      acct.deviceCert,
+      await acct.signDeviceCert(
+          deviceEdPub: rogueId.edPub, deviceXPub: rogueId.xPub, deviceId: 'rogue'),
+    ], 2);
+    final rogueFp = await rogueList.fingerprint();
     final req = await ktPublishRequest(
         accountEdSeed: acct.accountEdSeed!,
         version: 2,
-        fp: fakeFp,
-        value: await ktSealValue(acct.accountEdPub, utf8.encode('{"not":"a list"}')));
+        fp: rogueFp,
+        value: await ktSealValue(
+            acct.accountEdPub, utf8.encode(jsonEncode(rogueList.toJson()))));
     final post = await (await HttpClient().postUrl(Uri.parse('http://127.0.0.1:$logPort/kt/v1/publish'))
           ..headers.contentType = ContentType.json
           ..write(jsonEncode(req)))
@@ -491,7 +517,7 @@ void main() {
     await reloaded.load();
     expect(reloaded.ownAlert, isNotNull, reason: 'the alert survived the service that raised it');
     expect(reloaded.ownAlert!.version, 2);
-    expect(reloaded.ownAlert!.fpB64, b64(fakeFp));
+    expect(reloaded.ownAlert!.fpB64, b64(rogueFp));
     await reloaded.acknowledgeOwnAlert();
     final again = KeyTransparency(
         vault: ben.vault, host: _EmptyHost(), fetcher: _CountingFetcher(), config: cfg());
@@ -685,15 +711,22 @@ void main() {
     await ben.kt.check();
     expect(ben.kt.ownAlert, isNull, reason: 'nothing wrong yet');
 
-    // Someone holding Ben's account seed publishes a list he never issued.
+    // Someone holding Ben's account seed publishes a list he never issued
+    // (a real one, signed by his key — see criterion 4).
     final acct = await ben.accountIdentity();
-    final fakeFp = Uint8List.fromList(List<int>.filled(16, 0x77));
+    final rogueId = await ZIdentity.generate();
+    final rogueList = await acct.signDeviceList([
+      acct.deviceCert,
+      await acct.signDeviceCert(
+          deviceEdPub: rogueId.edPub, deviceXPub: rogueId.xPub, deviceId: 'rogue'),
+    ], 9);
+    final rogueFp = await rogueList.fingerprint();
     final req = await ktPublishRequest(
         accountEdSeed: acct.accountEdSeed!,
         version: 9,
-        fp: fakeFp,
+        fp: rogueFp,
         value: await ktSealValue(
-            acct.accountEdPub, utf8.encode('{"not":"his list"}')));
+            acct.accountEdPub, utf8.encode(jsonEncode(rogueList.toJson()))));
     final post = await (await HttpClient()
             .postUrl(Uri.parse('http://127.0.0.1:$honestPort/kt/v1/publish'))
           ..headers.contentType = ContentType.json
@@ -714,7 +747,7 @@ void main() {
     expect(ben.kt.ownAlert, isNotNull,
         reason: 'the authenticated latest is judged, not only the history');
     expect(ben.kt.ownAlert!.version, 9);
-    expect(ben.kt.ownAlert!.fpB64, b64(fakeFp));
+    expect(ben.kt.ownAlert!.fpB64, b64(rogueFp));
   });
 
   test('8. a test process contacts a log on loopback and no other', () async {

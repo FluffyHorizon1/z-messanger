@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import 'alarm_evidence.dart';
 import 'archive.dart' show BackupArchive;
 import 'backup_store.dart';
 import 'device_sync.dart';
@@ -178,8 +179,10 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// it is.
   String? ownAccountAlert;
 
-  /// This device was told by a contact that it was removed from its own
-  /// account's device list (T3). Null when clear. The stored form, as above.
+  /// This device was removed from its own account's device list (T3), as a
+  /// list signed by the account's key shows — carried in a contact's notice,
+  /// or served by the log (ADR 0026). Null when clear. The stored form, as
+  /// above.
   String? removedDeviceAlert;
 
   /// Latest claim each of a contact's devices has made about that account's
@@ -195,9 +198,70 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// Deferred owner-echo checks. source contactRid → (echoed version, fp, seen).
   final Map<String, ({int v, String h, DateTime seen})> _pendingOwnerEcho = {};
 
-  /// The (version, fingerprint) echo that raised [ownAccountAlert], kept so a
-  /// later honest list from my root can clear the alert if it explains it.
+  /// The (version, fingerprint) of the list that raised [ownAccountAlert] as
+  /// "unissued", kept so a later honest list from my root can clear the
+  /// alert if it explains it.
   (int, String)? _ownAlertEcho;
+
+  // ---- ADR 0026: an owner alarm is raised on evidence ---------------------
+  //
+  // An echo ('pdl') is a contact's CLAIM about the list it holds for my
+  // account; anybody can type one. The evidence is the list itself, signed
+  // by my account's key, and a contact on a current build hands it over when
+  // asked ('pdlreq'). The removal notice ('dlrm') is the same: a notice is a
+  // claim, the list that dropped this device is the evidence — carried in the
+  // notice, or read from the log.
+
+  /// Verified evidence behind a contact's echo that this device cannot
+  /// explain: a list for my account, signed by its key, that this device
+  /// never issued or learned. contactRid → (version, fingerprint, since).
+  /// The "unissued" alarm is raised on this after the grace, never on an echo.
+  final Map<String, ({int v, String fp, DateTime since})> _ownEvidence = {};
+
+  /// When this device last asked each contact for the list behind its echo,
+  /// and what about: contactRid → (window start, echoes asked about). At
+  /// most [_maxOwnListAsks] questions per contact per [ownEvidenceWindow],
+  /// and never the same echo twice in one, so a contact who echoes nonsense
+  /// with every message buys a handful of questions, not one per message.
+  final Map<String, ({int atMs, Set<(int, String)> asked})> _ownListAsked =
+      {};
+
+  /// How long a question about an echo stays open, and the window the
+  /// per-contact limits are counted over. Tests shorten it.
+  Duration ownEvidenceWindow = const Duration(minutes: 10);
+  static const int _maxOwnListAsks = 3;
+
+  /// The answering side: contactRid → (window start, answers given). The
+  /// answer goes to the asker's whole account, so it is counted per account,
+  /// whichever of its devices asks: more than [_maxOwnListAsks] in a window
+  /// is asking for nothing new — and counted per device, a contact with many
+  /// devices could have each of them ask, for an answer that goes to all.
+  final Map<String, ({int atMs, int n})> _ownListAnswered = {};
+
+  /// Lists a contact handed over for my account (asked for, or carried in a
+  /// removal notice) that this device verified, per contact per window —
+  /// each is a signature check, and a contact does not get to buy those in
+  /// bulk.
+  final Map<String, ({int atMs, int n})> _ownListJudged = {};
+  static const int _maxOwnListJudged = 8;
+
+  /// The quiet diagnostic (ADR 0026): per contact, how many echoes, removal
+  /// notices and handed-over lists turned out to have nothing this account
+  /// signed behind them. Counted here, shown nowhere: they are not evidence
+  /// of anything, and an alarm on them is what a contact could raise at will.
+  final Map<String, int> ownEvidenceRefused = {};
+
+  /// The evidence ([unissuedEvidence], [olderListEvidence]) that
+  /// [ownAccountAlert] stands on, and ([removalEvidence]) that
+  /// [removedDeviceAlert] does: what a dismissal records. A list, because one
+  /// banner can stand on more than one piece — evidence that arrives while it
+  /// is up joins it rather than waiting, as an echo always did.
+  final List<String> _ownAlertEvidence = [];
+  final List<String> _removedAlertEvidence = [];
+
+  /// When a bare removal notice last moved this device's own log check
+  /// forward: once per [ownEvidenceWindow] at most.
+  int _ownCheckNudgedMs = 0;
 
   Timer? _devlistTimer;
 
@@ -276,6 +340,10 @@ class ChatService extends ChangeNotifier implements KtHost {
       config: ktConfig,
       now: ktNow,
     );
+    // ADR 0026: the log's latest list for this account, verified, is
+    // evidence this device can act on — that it was removed, or (on a root)
+    // that the latest entry is one the own-list repair reconciled.
+    svc.kt.onOwnLatest = svc._onOwnLatestFromLog;
     await svc.kt.load();
     await svc._loadContacts();
     await svc._loadRequests(); // ADR 0011: pending inbound requests + blocklist
@@ -1704,6 +1772,14 @@ class ChatService extends ChangeNotifier implements KtHost {
     _pokeSentMs.remove(rid);
     _heardFrom.remove(rid);
     _dlResentAtMs.remove(rid);
+    // ADR 0026: what this device asked them about my account, what they
+    // handed over, and what it counted against them.
+    _pendingOwnerEcho.remove(rid);
+    _ownEvidence.remove(rid);
+    _ownListAsked.remove(rid);
+    _ownListJudged.remove(rid);
+    ownEvidenceRefused.remove(rid);
+    _ownListAnswered.remove(rid);
     _pqSent.remove(rid);
     _pqAckSent.remove(rid);
     _pqAckInFlight.remove(rid);
@@ -1780,12 +1856,31 @@ class ChatService extends ChangeNotifier implements KtHost {
       listJson = await _signCurrentDeviceList();
     }
     final (v, fp) = await _ownListClaim();
+    // The devices this account is known, from this device's own records, to
+    // have held — what the own-list repair asks of a list (ADR 0026). The
+    // log check adds the devices of every entry matching its record.
+    final held = <String>{
+      b64(me.accountEdPub),
+      b64(me.deviceCert.deviceEdPub),
+      for (final d in await _myDevices()) b64(d.deviceEdPub),
+    };
+    if (listJson != null) {
+      try {
+        final own = SignedDeviceList.fromJson(
+            (jsonDecode(listJson) as Map).cast<String, Object?>());
+        for (final d in own.devices) {
+          held.add(b64(d.deviceEdPub));
+        }
+      } catch (_) {}
+    }
     return KtOwnInput(
       accountEdPub: me.accountEdPub,
       version: v,
       fpB64: fp,
       listJson: listJson,
       accountEdSeed: me.accountEdSeed,
+      deviceEdPub: me.deviceCert.deviceEdPub,
+      devicesHeld: held,
     );
   }
 
@@ -3081,8 +3176,14 @@ class ChatService extends ChangeNotifier implements KtHost {
         await _observePqListClaim(contact, pql.toInt()); // §18.9
       }
       if (inner.kind == 'dlrm') {
-        await _handleRemovalNotice(
-            inner); // 7.7a: I was removed from my account
+        // 7.7a: I was removed from my account — if the notice carries the
+        // list to show it (ADR 0026).
+        await _handleRemovalNotice(contact, inner);
+      }
+      if (inner.kind == 'pdlreq') {
+        // ADR 0026: they want the list I hold for their account, to check
+        // an echo of mine against their own key.
+        await _answerOwnListRequest(contact);
       }
       // 7.7a: cross-check the device-list claim/echo on EVERY inbound. Runs
       // after any devlist install above so the "held" list is current.
@@ -8331,11 +8432,11 @@ class ChatService extends ChangeNotifier implements KtHost {
         });
         await _recordOwnList(list);
         await _initSync();
-      } else {
-        removedDeviceAlert =
-            ownAlertBody(OwnAlertKind.removed, {'v': latest.version});
-        await vault.kvPut('removed_alert', removedDeviceAlert!,
-            sensitive: false);
+      } else if (await _isRemovalEvidence(list)) {
+        // Raised as every removal banner is (ADR 0026): on the list that
+        // omits this device, above a version it learned, and kept with that
+        // evidence, so dismissing it holds across restarts.
+        await _raiseRemoved(latest.version, latest.fpB64);
       }
     }
     await _requestOwnDeviceList();
@@ -9141,94 +9242,125 @@ class ChatService extends ChangeNotifier implements KtHost {
 
     final extras = _extrasOf(contact, list);
     final acct = await accountIdentity();
-    var session = _contactExtras[rid];
-    if (session == null) {
-      final stored =
-          kv != null ? kv['cextra_$rid'] : await vault.kvGet('cextra_$rid');
-      session = stored != null
-          ? await AccountSession.fromJson(
-              acct, (jsonDecode(stored) as Map).cast<String, Object?>())
-          : await AccountSession.create(acct, const []);
-      _contactExtras[rid] = session;
-    }
-
-    final newRids = <String>{};
-    for (final d in extras) {
-      final r = await d.routingId();
-      newRids.add(r);
-      _sealKeys[r] = d.deviceXPub; // sealed sender to their extra devices too
-    }
-    // 7.7a removal notice (T3): a device we previously held and that this
-    // verified list drops is told once, over the still-open pairwise session,
-    // that it was removed — so a device silently excluded by whoever holds the
-    // account root hears of it from the people who stopped delivering to it. A
-    // rogue cannot suppress this: it is sent by the contact, not the account.
-    final removed = [
-      for (final r in session.targetRoutingIds.toList())
-        if (!newRids.contains(r)) r
-    ];
-    // Not under the conversation's lock. This install holds its own key
-    // ('devlist'), while `_fanToContactExtras` and `_handleExtraInbound`
-    // work on the same AccountSession under `_withLock(rid)`, and the two do
-    // not exclude each other: a fan-out can step a removed device's ratchet
-    // while the notice below does. And `_handleExtraInbound`'s rollback
-    // (`_restoreExtra` — under that lock after a failed decrypt or store,
-    // after it when a dispatch fails, and a dispatch may itself have
-    // installed a list here) replaces `_contactExtras[rid]` with a snapshot
-    // taken before this install, dropping the notice's ratchet step and the
-    // target changes below until the next install rebuilds them. This
-    // predates the install's lock — installs used to take none — and is a
-    // follow-up, not a fix to make here: `_withLock(rid)` is not re-entrant,
-    // so taking it inside this one would deadlock any path that reached an
-    // install while holding it (which is why inbound post-processing, where
-    // in-band lists are installed, runs only after the conversation lock is
-    // released).
-    if (persist && removed.isNotEmpty) {
-      final fp = await list.fingerprint();
-      var queued = false;
-      for (final r in removed) {
-        // Nothing queued for a dropped device is delivered to it: the list
-        // that dropped it is the account's statement that it is no longer
-        // theirs, and a durable outbox must not deliver after the fact what
-        // a down link happened to hold. The notice below is the one thing
-        // it still gets.
-        await vault.db.delete('outbox', where: 'rid = ?', whereArgs: [r]);
-        try {
-          final note = InnerMessage.deviceListRemoved(newMessageId(), _now(),
-              acct: list.accountEdPub, v: list.version, h: fp);
-          final fm = await session.encryptFor(r, note.toBytes());
-          await _saveExtra(rid);
-          if (fm != null) {
-            // Through the outbox: this notice is the whole of what tells a
-            // silently excluded device it was excluded (T3), and a direct
-            // send with the link down was a notice never sent.
-            await vault.db.insert('outbox', {
-              'id': newMessageId(),
-              'rid': r,
-              'payload': await _sealFor(r, fm.payload),
-              'created_ms': _now(),
-            });
-            queued = true;
-          }
-        } catch (_) {}
+    // The contact's extras session is changed under the conversation's lock
+    // as well as this one: `_fanToContactExtras` and `_handleExtraInbound`
+    // work on the same AccountSession under `_withLock(rid)`, and until
+    // 2026-10-04 this did not, so the two interleaved at every await. A
+    // fan-out iterates the session's devices across awaits, and the target
+    // changes below made it throw part-way (the message silently not sent to
+    // the contact's other devices); a fan-out and the removal notice could
+    // step the removed device's ratchet at once; and `_handleExtraInbound`'s
+    // rollback after a failed decrypt or store replaced the session object
+    // with a snapshot while this install was still changing the old one, so
+    // the changes — a removed device among them, still fanned out to — were
+    // lost until the next install. (ADR 0017's follow-ups list it.)
+    //
+    // Nesting the two cannot deadlock, although `_withLock` is not
+    // re-entrant: this is the only place either is taken inside the other,
+    // always in this order ('devlist', then the conversation), and nothing
+    // that holds a conversation's lock — or the own-list lock, or a chunk
+    // lock — ever waits for 'devlist'. An install is reached only from
+    // inbound post-processing, which runs after the conversation's lock is
+    // released (the primary path's post-processing, `_dispatchExtraInner`),
+    // from the log's check (`ktInstallFromLog`, run on its own timer, never
+    // under a lock), and at start-up (`_loadContactDeviceLists`). Nor does
+    // anything inside the section below take a lock: what it calls are the
+    // session's own methods, the vault, `_sealFor`, and `flushOutbox` and
+    // `_offerPqIdentity` unawaited.
+    //
+    // What remains (not changed here): `_handleExtraInbound` puts the whole
+    // session back to its pre-decrypt snapshot when the dispatch AFTER the
+    // lock fails, outside the lock — which can undo what anything did to the
+    // session in between, an install's target changes and a fan-out's
+    // sending chains included. Rolling back only what that decrypt advanced
+    // needs the dispatch's stores moved under the lock, as the primary path
+    // has them.
+    final appeared = await _withLock(rid, () async {
+      // Deleted while this waited for the lock: the session goes with them,
+      // and is not to be rebuilt and stored again for someone forgotten.
+      if (!contacts.containsKey(rid)) return const <String>[];
+      var session = _contactExtras[rid];
+      if (session == null) {
+        final stored =
+            kv != null ? kv['cextra_$rid'] : await vault.kvGet('cextra_$rid');
+        session = stored != null
+            ? await AccountSession.fromJson(
+                acct, (jsonDecode(stored) as Map).cast<String, Object?>())
+            : await AccountSession.create(acct, const []);
+        _contactExtras[rid] = session;
       }
-      if (queued) unawaited(flushOutbox());
-    }
-    final appeared = [
-      for (final r in newRids)
-        if (!session.targetRoutingIds.contains(r)) r
-    ];
-    for (final r in removed) {
-      session.removeTarget(r);
-    }
-    for (final d in extras) {
-      await session.addTarget(DeviceTarget.fromCert(d));
-    }
-    _extraRidToContact.removeWhere((k, v) => v == rid);
-    for (final r in newRids) {
-      _extraRidToContact[r] = rid;
-    }
-    if (persist) await _saveExtra(rid);
+
+      final newRids = <String>{};
+      for (final d in extras) {
+        final r = await d.routingId();
+        newRids.add(r);
+        _sealKeys[r] = d.deviceXPub; // sealed sender to their extra devices too
+      }
+      // 7.7a removal notice (T3): a device we previously held and that this
+      // verified list drops is told once, over the still-open pairwise
+      // session, that it was removed — so a device silently excluded by
+      // whoever holds the account root hears of it from the people who
+      // stopped delivering to it. A rogue cannot suppress this: it is sent by
+      // the contact, not the account.
+      final removed = [
+        for (final r in session.targetRoutingIds.toList())
+          if (!newRids.contains(r)) r
+      ];
+      if (persist && removed.isNotEmpty) {
+        final fp = await list.fingerprint();
+        var queued = false;
+        for (final r in removed) {
+          // Nothing queued for a dropped device is delivered to it: the list
+          // that dropped it is the account's statement that it is no longer
+          // theirs, and a durable outbox must not deliver after the fact what
+          // a down link happened to hold. The notice below is the one thing
+          // it still gets.
+          await vault.db.delete('outbox', where: 'rid = ?', whereArgs: [r]);
+          try {
+            // With the list itself (ADR 0026): the dropped device believes a
+            // notice only on a list its own account signed, and this is that
+            // list. A notice without it — every build before this one sent
+            // none — is a claim the device has no way to check.
+            final note = InnerMessage.deviceListRemoved(newMessageId(), _now(),
+                acct: list.accountEdPub,
+                v: list.version,
+                h: fp,
+                list: jsonEncode(list.toJson()));
+            final fm = await session.encryptFor(r, note.toBytes());
+            await _saveExtra(rid);
+            if (fm != null) {
+              // Through the outbox: this notice is the whole of what tells a
+              // silently excluded device it was excluded (T3), and a direct
+              // send with the link down was a notice never sent.
+              await vault.db.insert('outbox', {
+                'id': newMessageId(),
+                'rid': r,
+                'payload': await _sealFor(r, fm.payload),
+                'created_ms': _now(),
+              });
+              queued = true;
+            }
+          } catch (_) {}
+        }
+        if (queued) unawaited(flushOutbox());
+      }
+      final appeared = [
+        for (final r in newRids)
+          if (!session.targetRoutingIds.contains(r)) r
+      ];
+      for (final r in removed) {
+        session.removeTarget(r);
+      }
+      for (final d in extras) {
+        await session.addTarget(DeviceTarget.fromCert(d));
+      }
+      _extraRidToContact.removeWhere((k, v) => v == rid);
+      for (final r in newRids) {
+        _extraRidToContact[r] = rid;
+      }
+      if (persist) await _saveExtra(rid);
+      return appeared;
+    });
 
     // §18.2: a device that has just appeared has never heard our post-quantum
     // key, because the offer went out before it existed. Left alone it shows
@@ -9550,6 +9682,11 @@ class ChatService extends ChangeNotifier implements KtHost {
       // Put the ratchet back and leave the envelope with the relay, exactly
       // as the primary path does — the alternative is an acknowledged
       // message that was never stored.
+      //
+      // Not under the conversation's lock, and the WHOLE session: whatever
+      // touched it since the snapshot — a fan-out's sending chains, an
+      // install's target changes — is put back too. Known and not fixed
+      // here; see the note in `_installContactDeviceListLocked`.
       await _restoreExtra(rid, snapshot, persist: true);
       return;
     }
@@ -9577,7 +9714,12 @@ class ChatService extends ChangeNotifier implements KtHost {
     final inner = message;
     // 7.7a: a removal notice about my own account can ride here too.
     if (inner.kind == 'dlrm') {
-      await _handleRemovalNotice(inner);
+      await _handleRemovalNotice(contact, inner);
+    }
+    // ADR 0026: and a question about the list I hold for their account,
+    // asked by whichever of their devices saw my echo.
+    if (inner.kind == 'pdlreq') {
+      await _answerOwnListRequest(contact);
     }
     if (inner.kind == 'pqid') {
       // §18.2 on the extra-device path. A contact's linked device runs its own
@@ -9682,6 +9824,16 @@ class ChatService extends ChangeNotifier implements KtHost {
       final list = SignedDeviceList.fromJson(
           (jsonDecode(inner.data['list'] as String) as Map)
               .cast<String, Object?>());
+      // ADR 0026: a list for MY account is not theirs to install. It is
+      // their answer to my question about an echo of theirs ('pdlreq') —
+      // evidence, judged against this device's own records and installed
+      // nowhere. (Every build refuses to install it anyway: it is not signed
+      // by the contact's account key.)
+      if (base64Encode(list.accountEdPub) ==
+          base64Encode((await accountIdentity()).accountEdPub)) {
+        await _onOwnListEvidence(contact, list);
+        return;
+      }
       if (!await _installContactDeviceList(contact, list, persist: true)) {
         // Refused: not this account's list, or not verifiable, or a replay of
         // a version already held. It said nothing, so the log is told nothing
@@ -9730,6 +9882,24 @@ class ChatService extends ChangeNotifier implements KtHost {
       _ownAlertEcho =
           (int.tryParse(ae.substring(0, i)) ?? 0, ae.substring(i + 1));
     }
+    // What each banner stands on (ADR 0026). A banner an earlier build
+    // raised has none recorded: it is shown, and dismissing it records
+    // nothing — that build raised it on no evidence anyone could name.
+    List<String> evidence(String? stored) {
+      if (stored == null) return const [];
+      try {
+        return (jsonDecode(stored) as List).whereType<String>().toList();
+      } catch (_) {
+        return const [];
+      }
+    }
+
+    _ownAlertEvidence
+      ..clear()
+      ..addAll(evidence(await vault.kvGet('own_alert_ev')));
+    _removedAlertEvidence
+      ..clear()
+      ..addAll(evidence(await vault.kvGet('removed_alert_ev')));
     for (final rid in contacts.keys.toList()) {
       final a = await get('cdl_alert_$rid');
       if (a != null && isDevlistAlertBody(a)) {
@@ -9885,10 +10055,17 @@ class ChatService extends ChangeNotifier implements KtHost {
         // so the newer list this device holds was signed by someone else
         // holding the account key — the split-view attacker answering this
         // device's own request, or a device enrolled behind the root's back.
-        ownAccountAlert ??= ownAlertBody(OwnAlertKind.olderList,
-            {'sent': list.version, 'held': knownV});
-        await vault.kvPut('own_alert', ownAccountAlert!, sensitive: false);
-        notifyListeners();
+        //
+        // Raised on that list and the version held (ADR 0026): the list
+        // verified under this account's key above, and only this account's
+        // own devices can send on this channel. The same older list
+        // re-asserted at every reconnect is the same evidence, so a banner
+        // the user dismissed does not come back for it.
+        await _raiseOwnAccountAlert(
+            ownAlertBody(OwnAlertKind.olderList,
+                {'sent': list.version, 'held': knownV}),
+            olderListEvidence(
+                list.version, b64(await list.fingerprint()), knownV));
         return;
       }
       if (list.version == knownV &&
@@ -9917,15 +10094,9 @@ class ChatService extends ChangeNotifier implements KtHost {
       await _initSync();
       // Catching up may resolve a pending owner-echo (the normal-update case),
       // or explain an alert already raised while the root was unreachable: if
-      // the echo that raised it is consistent with what the root just sent,
+      // the list that raised it is consistent with what the root just sent,
       // it was an honest update this device had merely missed.
-      final alertEcho = _ownAlertEcho;
-      if (ownAccountAlert != null && alertEcho != null) {
-        final (knownV, knownH) = await _ownListClaim();
-        final explained = alertEcho.$1 < knownV ||
-            (alertEcho.$1 == knownV && alertEcho.$2 == knownH);
-        if (explained) await acknowledgeOwnAccountAlert();
-      }
+      await _clearOwnAlertIfExplained();
       await _reevaluateDevlistPending();
       notifyListeners();
     } catch (_) {}
@@ -9966,9 +10137,17 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   /// Owner rule: a contact echoes the list it holds for MY account. A version
   /// higher than this device knows, or the same version with a different
-  /// fingerprint, means a device holding my account key issued a list this
-  /// device never saw (T1/T2). Deferred through the grace period so a normal
-  /// bump seen before my own self-sync arrives does not cry wolf.
+  /// fingerprint, would mean a device holding my account key issued a list
+  /// this device never saw (T1/T2) — IF the contact can show the list.
+  ///
+  /// The echo itself is a claim (ADR 0026): two numbers any contact can type,
+  /// and until 2026-10-04 typing them was enough to put "reset your identity
+  /// now" on this device's screen, again after every dismissal. So the echo
+  /// is never the alarm. It is a reason to ask the contact for the list
+  /// behind it ([_askForOwnList]); the list, which verifies under my
+  /// account's key or does not, is the evidence ([_onOwnListEvidence]), and
+  /// the alarm is raised on it after the grace — so a normal bump seen before
+  /// my own self-sync arrives still does not cry wolf.
   Future<void> _observeOwnEcho(String rid, int echoV, String echoH) async {
     final (knownV, knownH) = await _ownListClaim();
     if (echoV < knownV) {
@@ -9983,16 +10162,353 @@ class ChatService extends ChangeNotifier implements KtHost {
       _pendingOwnerEcho.remove(rid);
       return;
     }
+    // Ahead of, or beside, what this device holds. A linked device asks its
+    // root for the account's current list whatever comes of the echo: if it
+    // simply missed an honest update, the answer arrives inside the grace
+    // and settles this.
+    await _requestOwnDeviceList();
+    if (echoV <= knownV && kt.ownListKnown(echoV, echoH)) {
+      // A list this device holds as its own at that version — one the
+      // own-list repair reconciled (ADR 0026).
+      _pendingOwnerEcho.remove(rid);
+      return;
+    }
     _pendingOwnerEcho[rid] = (
       v: echoV,
       h: echoH,
       seen: _pendingOwnerEcho[rid]?.seen ?? DateTime.now()
     );
-    // Before treating this as a rogue list, ask my root for the account's
-    // current list: if this device simply missed an honest update, the answer
-    // arrives inside the grace period and the pending check clears.
-    await _requestOwnDeviceList();
+    await _askForOwnList(rid, echoV, echoH);
     await _reevaluateDevlistPending();
+  }
+
+  /// ADR 0026: ask [rid] for the list it holds for my account — the one its
+  /// echo ([v], [h]) named. At most [_maxOwnListAsks] questions per contact
+  /// per [ownEvidenceWindow], and never the same echo twice in one: a
+  /// contact echoing nonsense with every message buys a handful of
+  /// questions, and the relay sees a handful of envelopes.
+  Future<void> _askForOwnList(String rid, int v, String h) async {
+    final contact = contacts[rid];
+    if (contact == null) return;
+    final now = _now();
+    var asked = _ownListAsked[rid];
+    if (asked == null ||
+        now - asked.atMs >= ownEvidenceWindow.inMilliseconds) {
+      asked = (atMs: now, asked: <(int, String)>{});
+    }
+    _ownListAsked[rid] = asked;
+    final echo = (v, h);
+    if (asked.asked.contains(echo) ||
+        asked.asked.length >= _maxOwnListAsks) {
+      return;
+    }
+    asked.asked.add(echo);
+    try {
+      await _sendInner(
+          contact, InnerMessage.ownListRequest(newMessageId(), now, v: v, h: h));
+    } catch (_) {
+      // Best-effort: with no question asked, no answer comes, and an echo
+      // with no list behind it raises nothing.
+    }
+  }
+
+  /// ADR 0026: one of [contact]'s devices asks for the list this device
+  /// holds for their account. The answer is that list, exactly as their
+  /// account signed it, in an ordinary `devlist` — they verify it under their
+  /// own key and tell it from a list of mine by its `acct`. It goes to their
+  /// whole account, so at most [_maxOwnListAsks] answers go to one account in
+  /// a window, whichever of its devices asks. A device holding only the
+  /// baseline (their contact code's one device) has nothing signed to hand
+  /// over, and says nothing.
+  Future<void> _answerOwnListRequest(Contact contact) async {
+    final rid = contact.rid;
+    final now = _now();
+    final prev = _ownListAnswered[rid];
+    final fresh =
+        prev == null || now - prev.atMs >= ownEvidenceWindow.inMilliseconds;
+    final n = fresh ? 0 : prev.n;
+    if (n >= _maxOwnListAsks) return;
+    _ownListAnswered[rid] = (atMs: fresh ? now : prev.atMs, n: n + 1);
+    final held = await vault.kvGet('cdev_${contact.rid}');
+    if (held == null) return;
+    try {
+      await _sendInner(contact, _devlistInner(held));
+    } catch (_) {}
+  }
+
+  /// ADR 0026: [contact] handed over a list for MY account — the answer to a
+  /// question this device asked about their echo. The list is the evidence:
+  /// it verifies under my account's key, or it is nothing.
+  ///
+  /// Weighed only when it is the list an echo of theirs named — one this
+  /// device asked them about in the window, or the one it is still waiting
+  /// on — and at most [_maxOwnListJudged] per contact per window: verifying
+  /// lists is work, and a contact does not get to order it in bulk by
+  /// sending answers nobody asked for. Holding the answer to the echo also
+  /// keeps what a contact can present to the lists an echo can raise a
+  /// question about, ahead of or beside this device's own: not some old list
+  /// of the account's, dug up to be judged against records that may not
+  /// reach back that far.
+  Future<void> _onOwnListEvidence(
+      Contact contact, SignedDeviceList list) async {
+    final rid = contact.rid;
+    // The version first, and the fingerprint only of a list that verified:
+    // nothing is computed from a list before it is admitted.
+    if (!_askedAbout(rid, list.version) ||
+        !_judgeBudget(rid) ||
+        !await list.verify()) {
+      _refusedOwnEvidence(rid);
+      return;
+    }
+    final fp = b64(await list.fingerprint());
+    if (!_askedAbout(rid, list.version, fp)) {
+      _refusedOwnEvidence(rid);
+      return;
+    }
+    if (await _ownListExplained(list.version, fp)) {
+      // A list this device holds as its own, or one it cannot judge: the
+      // echo was honest, or is not this device's to call.
+      _pendingOwnerEcho.remove(rid);
+      _ownEvidence.remove(rid);
+      return;
+    }
+    final prev = _ownEvidence[rid];
+    _ownEvidence[rid] = (
+      v: list.version,
+      fp: fp,
+      since: prev != null && prev.v == list.version && prev.fp == fp
+          ? prev.since
+          : DateTime.now()
+    );
+    await _reevaluateDevlistPending();
+  }
+
+  /// Whether ([v], [fp]) — a list for my account that verified under its key
+  /// — is explained by this device's own records: its current claim; a list
+  /// it signed, learned or reconciled at a version it has reached; one from
+  /// before it knew the account; or, on a linked device, a version below its
+  /// own that it never saw (it learns by self-sync and may skip some). Only
+  /// an unexplained list is evidence of one issued behind this device's
+  /// back. (A version above the claim is never explained by the record:
+  /// nothing honest records a version without moving the claim to it.)
+  Future<bool> _ownListExplained(int v, String fp) async {
+    final (knownV, knownH) = await _ownListClaim();
+    if (v == knownV && fp == knownH) return true;
+    if (v <= knownV && kt.ownListKnown(v, fp)) return true;
+    if (kt.ownVersionBeforeMyTime(v)) return true;
+    if (v < knownV && !kt.ownVersionRecorded(v) && !await holdsAccountRoot()) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Whether an echo from [rid] at version [v] — with fingerprint [fp], when
+  /// given — is one this device asked them about in the current window, or
+  /// the one of theirs it is still waiting on.
+  bool _askedAbout(String rid, int v, [String? fp]) {
+    bool named(int ev, String eh) => ev == v && (fp == null || eh == fp);
+    final asked = _ownListAsked[rid];
+    if (asked != null &&
+        _now() - asked.atMs < ownEvidenceWindow.inMilliseconds &&
+        asked.asked.any((e) => named(e.$1, e.$2))) {
+      return true;
+    }
+    final pending = _pendingOwnerEcho[rid];
+    return pending != null && named(pending.v, pending.h);
+  }
+
+  /// One more list from [rid] verified this window, if the budget allows.
+  bool _judgeBudget(String rid) {
+    final now = _now();
+    final prev = _ownListJudged[rid];
+    final fresh =
+        prev == null || now - prev.atMs >= ownEvidenceWindow.inMilliseconds;
+    final n = fresh ? 0 : prev.n;
+    if (n >= _maxOwnListJudged) return false;
+    _ownListJudged[rid] = (atMs: fresh ? now : prev.atMs, n: n + 1);
+    return true;
+  }
+
+  /// The quiet diagnostic (ADR 0026): something [rid] sent about my account
+  /// had nothing my account's key signed behind it. Counted; never shown.
+  void _refusedOwnEvidence(String rid) =>
+      ownEvidenceRefused[rid] = (ownEvidenceRefused[rid] ?? 0) + 1;
+
+  /// Raise [ownAccountAlert] ([body]) on [evidence] — unless the user
+  /// dismissed it for that evidence, or it already stands on it. A banner
+  /// already up keeps its words and takes the new evidence too, so that
+  /// dismissing it dismisses everything it was showing.
+  Future<void> _raiseOwnAccountAlert(String body, String evidence,
+      {(int, String)? echo}) async {
+    if (kt.dismissals.contains(evidence)) return;
+    if (_ownAlertEvidence.contains(evidence)) return;
+    ownAccountAlert ??= body;
+    _ownAlertEvidence.add(evidence);
+    if (echo != null &&
+        (_ownAlertEcho == null || echo.$1 >= _ownAlertEcho!.$1)) {
+      _ownAlertEcho = echo;
+      await vault.kvPut('own_alert_echo', '${echo.$1}|${echo.$2}',
+          sensitive: false);
+    }
+    await vault.kvPut('own_alert', ownAccountAlert!, sensitive: false);
+    await vault.kvPut('own_alert_ev', jsonEncode(_ownAlertEvidence));
+    notifyListeners();
+  }
+
+  /// Clear [ownAccountAlert] — not dismiss it: the user decided nothing —
+  /// once every list it stands on is one this device can now explain: its
+  /// root's later answer, or the own-list repair, accounted for it. A banner
+  /// standing on an older list from the root stays; that is not explained by
+  /// anything this device learns. One an earlier build raised has no
+  /// evidence recorded, and is judged, as it always was, by the echo kept
+  /// beside it.
+  Future<void> _clearOwnAlertIfExplained() async {
+    if (ownAccountAlert == null) return;
+    if (_ownAlertEvidence.isEmpty) {
+      final echo = _ownAlertEcho;
+      if (echo == null || !await _ownListExplained(echo.$1, echo.$2)) return;
+      await _clearOwnAccountAlert();
+      return;
+    }
+    for (final e in _ownAlertEvidence) {
+      final parts = e.split('|');
+      final v = parts.length == 3 && parts[0] == 'list'
+          ? int.tryParse(parts[1])
+          : null;
+      if (v == null || !await _ownListExplained(v, parts[2])) return;
+    }
+    await _clearOwnAccountAlert();
+  }
+
+  Future<void> _clearOwnAccountAlert() async {
+    ownAccountAlert = null;
+    _ownAlertEcho = null;
+    _ownAlertEvidence.clear();
+    await vault.kvDelete('own_alert');
+    await vault.kvDelete('own_alert_echo');
+    await vault.kvDelete('own_alert_ev');
+    notifyListeners();
+  }
+
+  /// Whether [list] is evidence that this device was removed from its own
+  /// account (ADR 0026): a list for the account that verifies under its key,
+  /// does not name this device, and is at a version above the one this
+  /// device holds. A list from before this device was linked omits it too —
+  /// anyone holding the account's public key can read those from the log —
+  /// which is what the version is for.
+  ///
+  /// So the version held has to be one this device learned: a list it
+  /// signed, or its root's list naming it. A device just linked has learned
+  /// none until its root's list reaches it — its claim meanwhile is a
+  /// stand-in at version 1, which every list the account signed before it
+  /// is above, the log's latest among them, read by the check that runs the
+  /// moment it starts. It is told nothing until it holds one.
+  Future<bool> _isRemovalEvidence(SignedDeviceList list) async {
+    final me = await accountIdentity();
+    if (base64Encode(list.accountEdPub) != base64Encode(me.accountEdPub)) {
+      return false;
+    }
+    final mine = base64Encode(me.deviceCert.deviceEdPub);
+    if (list.devices.any((d) => base64Encode(d.deviceEdPub) == mine)) {
+      return false;
+    }
+    final held = int.tryParse(await vault.kvGet('own_list_v') ?? '');
+    if (held == null || list.version <= held) return false;
+    return list.verify();
+  }
+
+  /// Raise [removedDeviceAlert] on the list ([v], [fp]) that removed this
+  /// device — unless dismissed for it, or already standing on it. A newer
+  /// removal replaces the version shown.
+  Future<void> _raiseRemoved(int v, String fp) async {
+    final evidence = removalEvidence(v, fp);
+    if (kt.dismissals.contains(evidence)) return;
+    if (_removedAlertEvidence.contains(evidence)) return;
+    _removedAlertEvidence.add(evidence);
+    final shownV = removedDeviceAlert == null
+        ? null
+        : _storedVersion(removedDeviceAlert!);
+    if (shownV == null || v >= shownV) {
+      removedDeviceAlert = ownAlertBody(OwnAlertKind.removed, {'v': v});
+    }
+    await vault.kvPut('removed_alert', removedDeviceAlert!, sensitive: false);
+    await vault.kvPut('removed_alert_ev', jsonEncode(_removedAlertEvidence));
+    notifyListeners();
+  }
+
+  /// The `v` of a stored removal banner, or null for one an earlier build
+  /// wrote as a sentence.
+  static int? _storedVersion(String stored) {
+    try {
+      final d = jsonDecode(stored);
+      return d is Map && d['v'] is num ? (d['v'] as num).toInt() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The log's latest entry for this account, opened and verified (ADR
+  /// 0026) — handed over by every check of the log that reads one.
+  ///
+  /// It is how a removed device learns it was removed when no contact tells
+  /// it: the account's own statement, in the log, that it is no longer on
+  /// the list. And on a root it finishes the own-list repair: when the
+  /// latest entry is one the repair reconciled — this root's own list,
+  /// signed at the version it claims but over another device set — the log,
+  /// and every contact that took the list from it, hold a list other than
+  /// the one this root claims, and the root moves to the next version.
+  Future<void> _onOwnLatestFromLog(SignedDeviceList list,
+      {required bool reconciled}) async {
+    try {
+      if (await _isRemovalEvidence(list)) {
+        await _raiseRemoved(list.version, b64(await list.fingerprint()));
+      }
+      // A banner raised from a contact's copy of a list the repair has just
+      // reconciled — the gossip can get there before the log check does.
+      await _clearOwnAlertIfExplained();
+      if (reconciled && await holdsAccountRoot()) {
+        final (v, h) = await _ownListClaim();
+        if (list.version >= v && b64(await list.fingerprint()) != h) {
+          unawaited(_supersedeOwnList(list.version)
+              .then((_) {}, onError: (_) {}));
+        }
+      }
+    } catch (_) {
+      // A check of the log must not be taken down by what it hands over.
+    }
+  }
+
+  /// The own-list repair's last step, on a root (ADR 0026): move past the
+  /// reconciled version [above] to the next one with the current device set
+  /// — signed, recorded and published once — and hand it to this account's
+  /// devices and its contacts, as the ADR 0010 and 0017 migrations moved.
+  /// The version moves rather than being re-signed because a version keeps
+  /// the list it was first recorded with (§19.8).
+  bool _superseding = false;
+  Future<void> _supersedeOwnList(int above) async {
+    if (_superseding) return;
+    _superseding = true;
+    try {
+      final moved = await _withOwnListLock(() async {
+        if (await _myDevlistVersion() > above) return false;
+        await vault.kvPut('my_devlist_version', '${above + 1}',
+            sensitive: false);
+        _forgetOwnListClaim();
+        return true;
+      });
+      if (!moved) return;
+      final data = await _signCurrentDeviceList();
+      if (data == null) return;
+      unawaited(_selfSyncDeviceList(data).then((_) {}, onError: (_) {}));
+      for (final rid in contacts.keys.toList()) {
+        final c = contacts[rid];
+        if (c == null) continue;
+        unawaited(
+            _sendInner(c, _devlistInner(data)).then((_) {}, onError: (_) {}));
+      }
+    } finally {
+      _superseding = false;
+    }
   }
 
   Future<void> _evaluateContact(String rid) async {
@@ -10080,23 +10596,43 @@ class ChatService extends ChangeNotifier implements KtHost {
     var anyPending = false;
 
     final (knownV, knownH) = await _ownListClaim();
+    // Echoes (ADR 0026) are claims. One that what this device now holds
+    // explains is settled; one it does not waits, for the grace, for the
+    // list it was asked about — and then goes, raising nothing. An echo is
+    // never the alarm.
     for (final key in _pendingOwnerEcho.keys.toList()) {
       final ec = _pendingOwnerEcho[key]!;
-      final consistent = ec.v < knownV || (ec.v == knownV && ec.h == knownH);
+      final consistent = ec.v < knownV ||
+          (ec.v == knownV && ec.h == knownH) ||
+          (ec.v <= knownV && kt.ownListKnown(ec.v, ec.h));
       if (consistent) {
         _pendingOwnerEcho.remove(key);
+      } else if (_ownEvidence.containsKey(key)) {
+        // The list behind it is in hand, and judged below.
       } else if (now.difference(ec.seen) >= devlistGrace) {
-        ownAccountAlert ??= ownAlertBody(OwnAlertKind.unissued);
-        await vault.kvPut('own_alert', ownAccountAlert!, sensitive: false);
-        // Remember the strongest echo behind the alert, so that if my root
-        // later proves it honest (its answer makes the echo consistent) the
-        // alert clears itself instead of demanding a needless identity reset.
-        if (_ownAlertEcho == null || ec.v >= _ownAlertEcho!.$1) {
-          _ownAlertEcho = (ec.v, ec.h);
-          await vault.kvPut('own_alert_echo', '${ec.v}|${ec.h}',
-              sensitive: false);
-        }
-        _pendingOwnerEcho.remove(key); // recorded; the alert stays until ack
+        _pendingOwnerEcho.remove(key);
+        _refusedOwnEvidence(key);
+      } else {
+        anyPending = true;
+      }
+    }
+    // Evidence: a list my account's key signed that this device cannot
+    // explain. Raised after the grace an echo always had — a linked device's
+    // root may yet send it the list — unless what this device has learned
+    // since explains it. The banner stands on the list, so that dismissing
+    // it is dismissing that list, and the strongest such list is what lets
+    // an honest root's later answer clear it (`_applyOwnDeviceList`).
+    for (final key in _ownEvidence.keys.toList()) {
+      final ev = _ownEvidence[key]!;
+      if (await _ownListExplained(ev.v, ev.fp)) {
+        _ownEvidence.remove(key);
+        _pendingOwnerEcho.remove(key);
+      } else if (now.difference(ev.since) >= devlistGrace) {
+        _ownEvidence.remove(key);
+        _pendingOwnerEcho.remove(key);
+        await _raiseOwnAccountAlert(ownAlertBody(OwnAlertKind.unissued),
+            unissuedEvidence(ev.v, ev.fp),
+            echo: (ev.v, ev.fp));
       } else {
         anyPending = true;
       }
@@ -10144,18 +10680,47 @@ class ChatService extends ChangeNotifier implements KtHost {
   }
 
   /// A contact told this device it was dropped from its own account's list.
-  Future<void> _handleRemovalNotice(InnerMessage inner) async {
+  ///
+  /// The notice is a claim (ADR 0026). Until 2026-10-04 its `acct` alone put
+  /// "this device was removed … reset your identity" on the screen: any
+  /// contact, or any member of a group this device is in, could send one,
+  /// and send it again after every dismissal. Now the banner needs the list
+  /// that removed this device — signed by the account's key, not naming this
+  /// device, at a version above the one it holds ([_isRemovalEvidence]) —
+  /// which a current contact carries in the notice. A notice with none,
+  /// which is what a contact on an earlier build sends, is not evidence: it
+  /// moves this device's own look at the log forward, where the account's
+  /// list would be, at most once per [ownEvidenceWindow].
+  Future<void> _handleRemovalNotice(Contact contact, InnerMessage inner) async {
     try {
       final acctB64 = inner.data['acct'];
       if (acctB64 is! String) return;
       final me = await accountIdentity();
       if (acctB64 != b64(me.accountEdPub)) return; // not about my account
-      final v = (inner.data['v'] as num?)?.toInt() ?? 0;
-      removedDeviceAlert = ownAlertBody(OwnAlertKind.removed, {'v': v});
-      await vault.kvPut('removed_alert', removedDeviceAlert!, sensitive: false);
-      notifyListeners();
+      final carried = inner.data['list'];
+      if (carried is! String) {
+        _refusedOwnEvidence(contact.rid);
+        final now = _now();
+        if (now - _ownCheckNudgedMs >= ownEvidenceWindow.inMilliseconds) {
+          _ownCheckNudgedMs = now;
+          unawaited(kt.checkOwn());
+        }
+        return;
+      }
+      if (!_judgeBudget(contact.rid)) {
+        _refusedOwnEvidence(contact.rid);
+        return;
+      }
+      final list = SignedDeviceList.fromJson(
+          (jsonDecode(carried) as Map).cast<String, Object?>());
+      if (!await _isRemovalEvidence(list)) {
+        _refusedOwnEvidence(contact.rid);
+        return;
+      }
+      await _raiseRemoved(list.version, b64(await list.fingerprint()));
     } catch (_) {
-      // Best-effort; a redelivery will surface it again.
+      // A notice that does not parse is not evidence of anything.
+      _refusedOwnEvidence(contact.rid);
     }
   }
 
@@ -10203,17 +10768,30 @@ class ChatService extends ChangeNotifier implements KtHost {
     notifyListeners();
   }
 
+  /// The user dismissed [ownAccountAlert]: it stays dismissed for the
+  /// evidence it stood on — the same list echoed again, the same older list
+  /// re-asserted, before or after a restart, raises nothing — and new
+  /// evidence raises it again (ADR 0026). Until 2026-10-04 the next echo
+  /// raised it again, whatever it carried.
   Future<void> acknowledgeOwnAccountAlert() async {
-    ownAccountAlert = null;
-    _ownAlertEcho = null;
-    await vault.kvDelete('own_alert');
-    await vault.kvDelete('own_alert_echo');
-    notifyListeners();
+    for (final e in _ownAlertEvidence) {
+      await kt.dismissals.add(e);
+    }
+    await _clearOwnAccountAlert();
   }
 
+  /// The user dismissed [removedDeviceAlert]: dismissed for the removal it
+  /// stood on, as above. The same list heard again — another contact's
+  /// notice, the log's copy — raises nothing; a later list without this
+  /// device is a new removal and does.
   Future<void> acknowledgeRemovedDeviceAlert() async {
+    for (final e in _removedAlertEvidence) {
+      await kt.dismissals.add(e);
+    }
     removedDeviceAlert = null;
+    _removedAlertEvidence.clear();
     await vault.kvDelete('removed_alert');
+    await vault.kvDelete('removed_alert_ev');
     notifyListeners();
   }
 

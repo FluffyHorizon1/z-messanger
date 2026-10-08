@@ -29,6 +29,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import 'alarm_evidence.dart';
 import 'vault.dart';
 
 /// Build-time defaults. The production log's key is set with
@@ -311,12 +312,25 @@ class KtOwnInput {
   /// can publish.
   final Uint8List? accountEdSeed;
 
+  /// This device's own Ed25519 key: a list for the account that omits it,
+  /// at a version above [version], is this device's evidence that it was
+  /// removed (ADR 0026). Null when the host does not say.
+  final Uint8List? deviceEdPub;
+
+  /// The Ed25519 keys (b64) of every device this account is known, from this
+  /// device's own records, to have held. The own-list repair reconciles only
+  /// a list that names nothing else (ADR 0026); the check adds the devices of
+  /// every log entry that matches this device's record of its own lists.
+  final Set<String> devicesHeld;
+
   KtOwnInput({
     required this.accountEdPub,
     required this.version,
     required this.fpB64,
     required this.listJson,
     required this.accountEdSeed,
+    this.deviceEdPub,
+    this.devicesHeld = const {},
   });
 }
 
@@ -479,6 +493,40 @@ class KeyTransparency {
   final Map<int, String> _knownOwn = {};
   int? _firstKnownV;
 
+  /// v → fp (b64) of the log's entry at a version [_knownOwn] records under
+  /// another fingerprint, reconciled by the own-list repair (ADR 0026): a
+  /// list this account's key signed, over devices it held, that the signing
+  /// race of patch 42 overwrote in this device's record before this build
+  /// ran. Kept beside the record, not over it — the record is what a second
+  /// list at a version is refused against.
+  final Map<int, String> _reconciledOwn = {};
+
+  /// What this device held when this build first ran on its vault: the size
+  /// of the log head it had accepted, and the versions it had recorded. Only
+  /// an entry inside that head, at a version recorded then, can be one the
+  /// race left; the record has kept the first list at each version since.
+  int _legacySize = 0;
+  Set<int> _legacyVersions = const {};
+
+  /// The last entry for this account that the log served and that does not
+  /// open as one of its lists (§19.3): not signed by the account, so not
+  /// evidence of anything the account issued, and not an alarm — a quiet
+  /// diagnostic, kept for whoever looks (ADR 0026). The account's contacts
+  /// treat the same entry as a conflict (adr/0006), unchanged.
+  KtOwnAlert? ownUnverified;
+
+  /// The evidence of every own-account alarm the user dismissed — this
+  /// object's [ownAlert] and the service's banners alike (ADR 0026).
+  late final OwnAlarmDismissals dismissals = OwnAlarmDismissals(vault);
+
+  /// Handed the log's latest entry for this account, opened and verified as
+  /// one of its lists, at every check that reads one — which is how a device
+  /// the list omits learns it was removed when no contact tells it (ADR
+  /// 0026), and how a root learns that the latest entry is one the own-list
+  /// repair reconciled rather than its current list ([reconciled]).
+  Future<void> Function(SignedDeviceList list, {required bool reconciled})?
+      onOwnLatest;
+
   Timer? _timer;
   Timer? _recheck;
   Timer? _publishRetry;
@@ -538,6 +586,12 @@ class KeyTransparency {
         ownAlert = KtOwnAlert.fromJson((jsonDecode(a) as Map).cast<String, Object?>());
       } catch (_) {}
     }
+    final u = await vault.kvGet('kt_own_unverified');
+    if (u != null) {
+      try {
+        ownUnverified = KtOwnAlert.fromJson((jsonDecode(u) as Map).cast<String, Object?>());
+      } catch (_) {}
+    }
     lastOkMs = int.tryParse(await vault.kvGet('kt_last_ok_ms') ?? '') ?? 0;
     lastFailMs = int.tryParse(await vault.kvGet('kt_last_fail_ms') ?? '') ?? 0;
     final w = await vault.kvGet('kt_witness_ok_ms');
@@ -558,6 +612,49 @@ class KeyTransparency {
       } catch (_) {}
     }
     _firstKnownV = int.tryParse(await vault.kvGet('kt_own_first_v') ?? '');
+    final rec = await vault.kvGet('kt_own_reconciled');
+    if (rec != null) {
+      try {
+        final m = (jsonDecode(rec) as Map).cast<String, Object?>();
+        for (final e in m.entries) {
+          _reconciledOwn[int.parse(e.key)] = e.value as String;
+        }
+      } catch (_) {}
+    }
+    // The first start of this build on this vault, recorded once: what the
+    // log held then (the size of the head this device had accepted) and
+    // which versions this device had recorded. A vault this build creates
+    // records an empty head and no versions — there is no head yet — so the
+    // own-list repair can never apply to it.
+    final legacy = await vault.kvGet('kt_own_legacy');
+    if (legacy == null) {
+      _legacySize = head?.size ?? 0;
+      _legacyVersions = _knownOwn.keys.toSet();
+      await vault.kvPut(
+          'kt_own_legacy',
+          jsonEncode({
+            'size': _legacySize,
+            'v': _legacyVersions.toList()..sort(),
+          }));
+    } else {
+      try {
+        final m = (jsonDecode(legacy) as Map).cast<String, Object?>();
+        _legacySize = (m['size'] as num).toInt();
+        _legacyVersions = {
+          for (final v in (m['v'] as List)) (v as num).toInt()
+        };
+      } catch (_) {
+        _legacySize = 0;
+        _legacyVersions = const {};
+      }
+    }
+    await dismissals.load();
+    final shown = ownAlert;
+    if (shown != null &&
+        dismissals.contains(logEntryEvidence(shown.version, shown.fpB64))) {
+      ownAlert = null;
+      await vault.kvDelete('kt_own_alert');
+    }
     for (final e in (await vault.kvScan('ktc_')).entries) {
       try {
         contacts[e.key.substring(4)] =
@@ -602,6 +699,17 @@ class KeyTransparency {
     fault = null;
     lastOkMs = 0;
     lastFailMs = 0;
+    // The own-list repair (ADR 0026) reconciles only entries inside the head
+    // this device held when this build first ran: a set nothing can join
+    // while every head the log serves has to extend the one held. A reset
+    // takes the next head as it comes, from this log or another, so what sits
+    // at those indices afterwards need not be what sat there — the repair
+    // ends here. What it has already reconciled stays: a fingerprint commits
+    // to its device set, so the same (version, fingerprint) is the same list
+    // in any log.
+    _legacySize = 0;
+    _legacyVersions = const {};
+    await vault.kvPut('kt_own_legacy', jsonEncode({'size': 0, 'v': <int>[]}));
     await vault.kvDelete('kt_head');
     await vault.kvDelete('kt_fault');
     await vault.kvDelete('kt_last_ok_ms');
@@ -641,7 +749,17 @@ class KeyTransparency {
     host.ktChanged();
   }
 
+  /// The user dismissed [ownAlert]. It is dismissed for its evidence — this
+  /// entry, this version and fingerprint — and only for that: the same entry
+  /// read again at the next check, or the next start, raises nothing, and
+  /// another entry the account never issued raises it again (ADR 0026).
+  /// Until 2026-10-04 the next check raised it again whatever it was, which
+  /// is how a vault the own-list race had damaged showed it at every start.
   Future<void> acknowledgeOwnAlert() async {
+    final shown = ownAlert;
+    if (shown != null) {
+      await dismissals.add(logEntryEvidence(shown.version, shown.fpB64));
+    }
     ownAlert = null;
     await vault.kvDelete('kt_own_alert');
     host.ktChanged();
@@ -651,6 +769,23 @@ class KeyTransparency {
   /// one is. The service never records a second one for a version
   /// (`_recordOwnList`); this is what it asks first.
   String? knownOwnFingerprint(int version) => _knownOwn[version];
+
+  /// Whether ([version], [fpB64]) is a list this device signed or learned
+  /// for its own account, or one the own-list repair reconciled.
+  bool ownListKnown(int version, String fpB64) =>
+      _knownOwn[version] == fpB64 || _reconciledOwn[version] == fpB64;
+
+  /// Whether ([version], [fpB64]) was reconciled by the own-list repair.
+  bool ownListReconciled(int version, String fpB64) =>
+      _reconciledOwn[version] == fpB64;
+
+  /// Whether this device has recorded any list at [version].
+  bool ownVersionRecorded(int version) => _knownOwn.containsKey(version);
+
+  /// Whether [version] is from before this device knew its account: a linked
+  /// device joins part-way through the account's history.
+  bool ownVersionBeforeMyTime(int version) =>
+      _firstKnownV != null && version < _firstKnownV!;
 
   /// Every version of this device's own account it has a record of.
   Iterable<int> get knownOwnVersions => _knownOwn.keys;
@@ -842,6 +977,30 @@ class KeyTransparency {
         // A check must never take the service down; the next one runs on
         // schedule and the health reflects what happened.
       }
+    }();
+    _running = run;
+    return run;
+  }
+
+  /// This account's own label alone, now: what a removal notice that carries
+  /// no list moves forward (ADR 0026) — the list that removed this device,
+  /// if one did, is the account's latest entry. Serialised with [check], and
+  /// no contact is looked up, so it adds nothing to what the log learns of
+  /// who this device's contacts are.
+  Future<void> checkOwn() {
+    final prev = _running;
+    final run = () async {
+      if (prev != null) await prev;
+      if (_disposed || !config.enabled || _offLimitsInTest || fault != null) {
+        return;
+      }
+      try {
+        final logPub = config.logPub!;
+        if (await _acceptHead(logPub)) await _checkOwn(logPub);
+      } catch (_) {
+        // As [check]: never takes the service down.
+      }
+      host.ktChanged();
     }();
     _running = run;
     return run;
@@ -1292,6 +1451,13 @@ class KeyTransparency {
         );
       }
     }
+    // The whole history first, judged after: the own-list repair (ADR 0026)
+    // asks which devices this device's own records name, and those are in
+    // the entries that match the record. A walk that fails or faults has
+    // said so; the authenticated latest is judged all the same, below.
+    final history = <KtEntry>[];
+    final walked = await _ownHistory(label, logPub, history);
+    final judge = _OwnJudgement(this, own, history);
     // Self-monitoring, on the AUTHENTICATED latest first.
     //
     // `latest` is proved to be what the log is serving for this label, and
@@ -1305,89 +1471,144 @@ class KeyTransparency {
     // as current, and hidden from its owner. That is the exact failure
     // `adr/0006` says the log exists to make impossible.
     if (latest != null) {
-      await _judgeOwnEntry(latest.version, b64(latest.fp), own);
-      if (ownAlert != null) return;
+      final raised = await _judgeOwnEntry(latest, judge);
+      // And the latest, where it opens as one of this account's lists, to
+      // the service: a list that omits this device, at a version above the
+      // one it holds, is this device's evidence that it was removed (ADR
+      // 0026) — whether or not any contact ever says so.
+      final list = await judge.open(latest);
+      final hook = onOwnLatest;
+      if (list != null && hook != null) {
+        await hook(list,
+            reconciled: ownListReconciled(latest.version, b64(latest.fp)));
+      }
+      if (raised) return;
     }
+    if (!walked) return;
     // And then every entry in our history must be one we know.
-    //
-    // Read as pages, because the log may answer with one. A version this
-    // device did not issue is what this walk exists to find, so stopping
-    // early would be a log able to hide an entry by serving a short page —
-    // the same failure as the empty `entries` above, reached by a different
-    // road. The page says how many the label has in total, and we keep asking
-    // until we have seen them all; a page that carries nothing new, or a
-    // `total` that shrinks under us, is a log that is not answering the
-    // question, which is a fault rather than a clean bill.
+    for (final e in history) {
+      if (await _judgeOwnEntry(e, judge)) return;
+    }
+    // An alert raised on an entry this device now holds as its own — one the
+    // repair reconciled, or a list learned since — is not one to go on
+    // showing. Cleared, not dismissed: the user decided nothing.
+    final shown = ownAlert;
+    if (shown != null && ownListKnown(shown.version, shown.fpB64)) {
+      ownAlert = null;
+      await vault.kvDelete('kt_own_alert');
+    }
+  }
+
+  /// Every entry of this account's history, page by page, into [out]. False
+  /// when the walk could not finish — the log unreachable, or a page that
+  /// does not verify, which is a fault and is recorded as one here.
+  ///
+  /// Read as pages, because the log may answer with one. A version this
+  /// device did not issue is what this walk exists to find, so stopping
+  /// early would be a log able to hide an entry by serving a short page —
+  /// the same failure as an empty `entries`, reached by a different road.
+  /// The page says how many the label has in total, and we keep asking until
+  /// we have seen them all; a page that does not verify is a log that is not
+  /// answering the question, which is a fault rather than a clean bill.
+  Future<bool> _ownHistory(
+      Uint8List label, Uint8List logPub, List<KtEntry> out) async {
     var start = 0;
     var total = -1;
     while (true) {
       final hj = await _getJson(_url('/kt/v1/history/${_hex(label)}?start=$start'));
       if (hj == null) {
         await _fail();
-        return;
+        return false;
       }
       KtTreeHead hh;
       try {
         hh = KtTreeHead.fromJson((hj['sth'] as Map).cast<String, Object?>());
       } on KtVerifyException catch (e) {
         await _setFault('history for this account: ${e.reason}');
-        return;
+        return false;
       } catch (_) {
         await _setFault('history for this account could not be read');
-        return;
+        return false;
       }
-      if (!await _adopt(hh, logPub)) return;
+      if (!await _adopt(hh, logPub)) return false;
       final items = hj['entries'] as List? ?? const [];
       // An older log served no `total`; then one response is the whole
       // history and this loop runs once, exactly as it did before.
       final t = hj['total'];
       total = t is int ? t : start + items.length;
       for (final item in items) {
-        KtEntry e;
         try {
-          e = await ktVerifyHistoryItem((item as Map).cast<String, Object?>(), head: hh, label: label);
+          out.add(await ktVerifyHistoryItem((item as Map).cast<String, Object?>(), head: hh, label: label));
         } on KtVerifyException catch (err) {
           await _setFault('history for this account: ${err.reason}');
-          return;
+          return false;
         } catch (_) {
           await _setFault('history for this account could not be read');
-          return;
+          return false;
         }
-        await _judgeOwnEntry(e.version, b64(e.fp), own);
-        if (ownAlert != null) return;
       }
       start += items.length;
       // A log that stops short is NOT a fault, and the difference matters.
       // `fault` is sticky and suppresses every later check, the judgement of
-      // the authenticated `latest` above included — so a log that wanted to
-      // stop being watched could do it by serving one short page. What a log
+      // the authenticated `latest` included — so a log that wanted to stop
+      // being watched could do it by serving one short page. What a log
       // refuses to show is already covered, and covered better: `latest` is
-      // map-proven under a signed head and is judged before this walk runs,
-      // which is why an empty history says nothing here.
-      if (items.isEmpty || start >= total) return;
+      // map-proven under a signed head and is judged whatever this walk
+      // returns, which is why an empty history says nothing here.
+      if (items.isEmpty || start >= total) return true;
     }
   }
 
-  /// Is (version, fp) something this account issued? Raise the alert if not.
+  /// Is this entry something this account issued? Raise the alert if it is
+  /// not — and only on evidence. True when the alert now stands on it.
   ///
   /// One judgement, used for the authenticated `latest` AND for every history
   /// entry, because having it in only one of those places is how a log got to
   /// serve a rogue current value with an empty history and be believed.
-  Future<void> _judgeOwnEntry(int version, String fp, KtOwnInput own) async {
+  Future<bool> _judgeOwnEntry(KtEntry e, _OwnJudgement judge) async {
+    final version = e.version;
+    final fp = b64(e.fp);
+    final own = judge.own;
     // Versions before this device knew the account are before its time — a
     // linked device joins mid-history.
     final first = _firstKnownV;
-    if (first != null && version < first) return;
-    final known = _knownOwn[version];
-    if (known == fp) return;
-    if (known == null && own.accountEdSeed == null) {
+    if (first != null && version < first) return false;
+    if (ownListKnown(version, fp)) return false;
+    final recorded = _knownOwn.containsKey(version);
+    if (!recorded && own.accountEdSeed == null) {
       // A linked device learns lists by self-sync and can skip versions (v4
       // to v6 while it was off), so a version it never saw is not evidence;
       // only the root, which signs every list, can say an unknown version is
       // one it did not issue. A KNOWN version with another fingerprint is a
       // contradiction on any device.
-      return;
+      return false;
     }
+    // Evidence, or not (ADR 0026). The alert tells the owner a device list
+    // was issued for their account behind their back, so it is raised on a
+    // list the account's key signed: the entry's value opened as this
+    // account's list, verified, at this version, with this fingerprint
+    // (§19.3). An entry that does not open is not that. The log does not
+    // serve the publish signature (§19.6), so nothing here says who put it
+    // there, and its operator can put one under any label without anybody's
+    // key — it can open values (§19.1) — which made this banner one the
+    // operator could raise against every account at will. Kept as a quiet
+    // diagnostic; the account's contacts still treat the entry as a conflict
+    // and hold sends (adr/0006), and nothing about it installs a device
+    // anywhere.
+    final list = await judge.open(e);
+    if (list == null) {
+      await _noteOwnUnverified(version, fp);
+      return false;
+    }
+    if (recorded && await _reconcilable(e, list, judge)) {
+      _reconciledOwn[version] = fp;
+      await vault.kvPut(
+          'kt_own_reconciled',
+          jsonEncode(
+              {for (final r in _reconciledOwn.entries) '${r.key}': r.value}));
+      return false;
+    }
+    if (dismissals.contains(logEntryEvidence(version, fp))) return false;
     if (ownAlert == null ||
         ownAlert!.version != version ||
         ownAlert!.fpB64 != fp) {
@@ -1395,6 +1616,56 @@ class KeyTransparency {
       await vault.kvPut('kt_own_alert', jsonEncode(ownAlert!.toJson()),
           sensitive: false);
     }
+    return true;
+  }
+
+  /// The own-list repair (ADR 0026): may the log's entry [e], at a version
+  /// this device recorded under another fingerprint, be taken as the
+  /// account's own list rather than raised as one it never issued?
+  ///
+  /// The signing race of patch 42 (fixed in 3.9.10) left vaults whose record
+  /// of a version was overwritten by a second list the root signed at it —
+  /// the version before a link with the devices after it, or the reverse —
+  /// after the first had reached the log. Such a vault judged its own
+  /// genuine entry never issued, and said so at every start. The record
+  /// cannot say which of two lists at one version came first; these three
+  /// conditions are what the race's end state always meets and an attack
+  /// that wants to stay hidden cannot meet any more:
+  ///
+  ///  * it is from before this build: the entry was in the log under the
+  ///    head this device held when this build first ran on its vault, and
+  ///    the version was recorded then. The log takes no version at or below
+  ///    one it holds, and a head that does not extend the held one is a
+  ///    fault, so nothing can join that set afterwards — and since 3.9.10 a
+  ///    version keeps the first list recorded at it, so no record made since
+  ///    can have been overwritten;
+  ///  * it is a list the account's key signed — opened and verified, which
+  ///    the caller has done;
+  ///  * every device it names is one this account is known to have held:
+  ///    this device's records (`KtOwnInput.devicesHeld`) and the devices of
+  ///    every entry in the log that matches its record of its own lists. The
+  ///    race only ever signed the account's own devices.
+  ///
+  /// What whoever holds the root seed can still do under it is no more than
+  /// before it: an entry they put in the log before this build ran, at a
+  /// version this device had signed differently, naming only devices the
+  /// account had held, no longer raises the banner — the same banner the race
+  /// was raising at every start for the same reason, and which therefore
+  /// told such a vault's owner nothing. Anything they publish from now on,
+  /// and anything naming a device the account never held, alarms as before.
+  Future<bool> _reconcilable(
+      KtEntry e, SignedDeviceList list, _OwnJudgement judge) async {
+    if (e.index >= _legacySize) return false;
+    if (!_legacyVersions.contains(e.version)) return false;
+    final held = await judge.held();
+    return list.devices.every((d) => held.contains(b64(d.deviceEdPub)));
+  }
+
+  Future<void> _noteOwnUnverified(int version, String fp) async {
+    final seen = ownUnverified;
+    if (seen != null && seen.version == version && seen.fpB64 == fp) return;
+    ownUnverified = KtOwnAlert(version: version, fpB64: fp, atMs: now());
+    await vault.kvPut('kt_own_unverified', jsonEncode(ownUnverified!.toJson()));
   }
 
   Future<void>? _publishRun;
@@ -1500,4 +1771,46 @@ class KeyTransparency {
   }
 
   static String _hex(Uint8List b) => [for (final x in b) x.toRadixString(16).padLeft(2, '0')].join();
+}
+
+/// One own-label check's view of the log (ADR 0026): the entries it read,
+/// each opened at most once, and — computed only when the own-list repair
+/// needs it — the devices this account is known to have held.
+class _OwnJudgement {
+  _OwnJudgement(this._kt, this.own, this._history);
+
+  final KeyTransparency _kt;
+  final KtOwnInput own;
+  final List<KtEntry> _history;
+  final Map<int, SignedDeviceList?> _opened = {};
+  Set<String>? _held;
+
+  /// [e] opened and verified as this account's list (§19.3), or null.
+  Future<SignedDeviceList?> open(KtEntry e) async {
+    if (_opened.containsKey(e.index)) return _opened[e.index];
+    return _opened[e.index] = await _kt._openList(own.accountEdPub, e);
+  }
+
+  /// The devices (Ed25519 keys, b64) this account is known to have held:
+  /// what the host's records say, the account key itself (device #1), and
+  /// every device named by an entry in the log whose (version, fingerprint)
+  /// is this device's own record of that version. The fingerprint commits
+  /// to the device set, so such an entry names exactly the devices this
+  /// device recorded — the log cannot widen it.
+  Future<Set<String>> held() async {
+    final known = _held;
+    if (known != null) return known;
+    final out = <String>{...own.devicesHeld, b64(own.accountEdPub)};
+    final mine = own.deviceEdPub;
+    if (mine != null) out.add(b64(mine));
+    for (final e in _history) {
+      if (_kt._knownOwn[e.version] != b64(e.fp)) continue;
+      final list = await open(e);
+      if (list == null) continue;
+      for (final d in list.devices) {
+        out.add(b64(d.deviceEdPub));
+      }
+    }
+    return _held = out;
+  }
 }

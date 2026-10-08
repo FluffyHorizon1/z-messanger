@@ -52,7 +52,9 @@ or learned, its linked devices, its post‑quantum signature — and every
 configuration and accepted head; each contact's device list with the
 signature floor it has reached, its devices' last claims and its standing in
 the log; the block list and pending requests; the push preference; alarms not
-yet dismissed; and the **ids** of past sessions (below). An archive without
+yet dismissed, with what each stands on, the evidence of every one dismissed
+and the own‑list repair's record (`adr/0026`); and the **ids** of past
+sessions (below). An archive without
 them restored the history and none of this, and the restored device began
 again at device‑list version 1: its own log monitor called the versions it
 had signed before the backup lists it never issued and told the user to reset
@@ -322,7 +324,7 @@ leaves the device.
 |---|---|
 | `meta` | display name, server URL, schema |
 | `identity` | the identity key material; on a linked device (1.1) `account`, the account it is a device of — its public keys, this device's certificate and the device seeds, never an account root. A record whose `account` does not describe this identity as a device of that account refuses the archive |
-| `state` (1.1) | `kv`: the account‑level state of §2 — `my_devlist_version`, `my_devices`, `own_list_v`/`_h`/`_json`/`_mlsig`, the migration flags, `kt_config`, `kt_head`, `kt_own_known`, `kt_own_first_v`, `device_id` (on a root, signed into the certificate every list names it by), `push_enabled` and any own‑account alarm not yet dismissed; `sync`: the ids of the sessions with this account's own devices. Each value is held on restore to the shape the code that reads it at start‑up needs — a list must verify under the account — and one that is not is left out |
+| `state` (1.1) | `kv`: the account‑level state of §2 — `my_devlist_version`, `my_devices`, `own_list_v`/`_h`/`_json`/`_mlsig`, the migration flags, `kt_config`, `kt_head`, `kt_own_known`, `kt_own_first_v`, `device_id` (on a root, signed into the certificate every list names it by), `push_enabled` and any own‑account alarm not yet dismissed, with its evidence (`own_alert_ev`), the evidence of every dismissed one (`own_alarm_dismissed`) and the own‑list repair's record (`kt_own_legacy`, `kt_own_reconciled`; `adr/0026`); `sync`: the ids of the sessions with this account's own devices. Each value is held on restore to the shape the code that reads it at start‑up needs — a list must verify under the account — and one that is not is left out |
 | `contact` | routing id, contact bundle, name, TTL, verified flag, the v3 identity state (`pqc` commitment, `pqk` established key, and — ADR 0021 — `pqcand`, a post‑quantum key held for the safety number that no commitment has checked, with `pqack` and `pqtold`, whether each side has told the other it holds their key, which is what decides whether the post‑quantum number is the one shown), and the 13.3 verification state — `vsn`, the safety number the user actually compared, and `pqbad`, set once a post‑quantum key has been refused; and the §18.7 anchor — `acct`, the account this contact IS, with `cert`, the certificate for the device that was scanned; and `addedby`, which of the user's own devices added it (§18.8); and since 1.1 `req` (added and still waiting on them), `kv` — the per‑contact state of §2 by family (`cdev_` with its version, arrival, floor and post‑quantum signature, `cdl_claims_`, `ktc_`, standing alarms, `last_open_`; a list must verify under the contact's account) — `sids`, the ids of every session held with them, and `xsids`, the same per device for their other devices |
 | `groups` | the group list blob |
 | `blocked` (1.1) | a blocked routing id and when |
