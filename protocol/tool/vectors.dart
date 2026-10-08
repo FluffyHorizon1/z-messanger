@@ -1098,8 +1098,10 @@ Future<Map<String, Object?>> suiteConnect(List<Actor> a) async {
     final mlSeed = d.next(32);
     final zid = await ZIdentity.fromSeeds(edSeed: edSeed, xSeed: xSeed);
     final pq = await HybridKeyPair.fromSeeds(edSeed: edSeed, mlSeed: mlSeed);
-    final bundle =
-        await ContactBundleV3.forIdentity(zid, pq.publicKey, displayName: name);
+    // The code as a client before ADR 0027 emits it, with no `pqcs`: what
+    // this frozen file records.
+    final bundle = await ContactBundleV3.forIdentity(zid, pq.publicKey,
+        displayName: name, signCommitment: false);
     final ci = await ConnectIdentity.fromCode(bundle.encode(), displayName: name);
     check(eq(ci.accountEdPub, zid.edPub), '$tag account key');
     check(eq(ci.pqCommit, await refSha256(concatBytes([
@@ -1267,8 +1269,10 @@ Future<Map<String, Object?>> suiteConnectGroup() async {
     final mlSeed = d.next(32);
     final zid = await ZIdentity.fromSeeds(edSeed: edSeed, xSeed: xSeed);
     final pq = await HybridKeyPair.fromSeeds(edSeed: edSeed, mlSeed: mlSeed);
-    final bundle =
-        await ContactBundleV3.forIdentity(zid, pq.publicKey, displayName: name);
+    // The code as a client before ADR 0027 emits it, with no `pqcs`: what
+    // this frozen file records.
+    final bundle = await ContactBundleV3.forIdentity(zid, pq.publicKey,
+        displayName: name, signCommitment: false);
     final ci = await ConnectIdentity.fromCode(bundle.encode(), displayName: name);
     ids.add(ci);
     raw.add({
@@ -2871,8 +2875,11 @@ Future<Map<String, Object?>> suiteContactCodeV3() async {
   check(draws.length == 2, 'identity draws ed and x seeds');
   final mlSeed = d.next(32);
   final pq = await HybridKeyPair.fromSeeds(edSeed: id.edSeed, mlSeed: mlSeed);
-  final code =
-      await ContactBundleV3.forIdentity(id, pq.publicKey, displayName: 'Finn');
+  // The code as a client before ADR 0027 emits it — no `pqcs` — which is
+  // what this frozen file records; `contact_code_pqc_sig.json` has the
+  // signed one.
+  final code = await ContactBundleV3.forIdentity(id, pq.publicKey,
+      displayName: 'Finn', signCommitment: false);
   final encoded = code.encode();
 
   // The properties a third implementation must reproduce.
@@ -2915,7 +2922,10 @@ Future<Map<String, Object?>> suiteContactCodeV3() async {
   final laptopCert = await account.signDeviceCert(
       deviceEdPub: laptop.edPub, deviceXPub: laptop.xPub, deviceId: 'laptop');
   final anchored = await ContactBundleV3.forIdentity(laptop, pq.publicKey,
-      displayName: 'Finn', accountEdPub: id.edPub, cert: laptopCert);
+      displayName: 'Finn',
+      accountEdPub: id.edPub,
+      cert: laptopCert,
+      signCommitment: false);
   final anchoredCode = anchored.encode();
   final anchoredScan = await scanContactCode(anchoredCode);
   check(eq(anchoredScan.classical.edPub, laptop.edPub),
@@ -3002,6 +3012,187 @@ Future<Map<String, Object?>> suiteContactCodeV3() async {
       'ml_seed': hex(wrongSeed),
       'ml_pub': hex(wrong.publicKey.mlPub),
       'commitment': hex(await wrong.publicKey.pqCommitment()),
+    },
+  };
+}
+
+/// A code's JSON with one edit applied, re-encoded under its own prefix —
+/// what anyone holding a public code can produce.
+String _editCode(String code, void Function(Map<String, Object?> j) edit) {
+  final prefix = code.substring(0, 4);
+  final j = (jsonDecode(utf8.decode(unb64url(code.substring(4)))) as Map)
+      .cast<String, Object?>();
+  edit(j);
+  return prefix + b64url(utf8.encode(jsonEncode(j)));
+}
+
+/// Decodes [code] and reports whether the v3 decoder REFUSED it.
+Future<bool> _refused(String code) async {
+  try {
+    await scanContactCode(code);
+    return false;
+  } on FormatException {
+    return true;
+  }
+}
+
+/// ADR 0027 (§18.10): the contact code's signature over its post-quantum
+/// commitment. A new file beside `contact_code_v3.json`, which stays what a
+/// client before ADR 0027 emits.
+Future<Map<String, Object?>> suiteContactCodePqcSig() async {
+  final d = Drbg(0x0027);
+  final id = await d.run(() async => ZIdentity.generate());
+  check(d.takeDraws().length == 2, 'identity draws ed and x seeds');
+  final mlSeed = d.next(32);
+  final pq = await HybridKeyPair.fromSeeds(edSeed: id.edSeed, mlSeed: mlSeed);
+  final code =
+      await ContactBundleV3.forIdentity(id, pq.publicKey, displayName: 'Finn');
+  final encoded = code.encode();
+  final commit = code.pqCommit;
+
+  // The signing input, rebuilt from the formula rather than read back.
+  final input = concatBytes([utf8b('z-pqc-sig-v1:'), id.edPub, commit]);
+  check(eq(input, pqCommitSigningInput(id.edPub, commit)), 'signing input');
+  check(input.length == 13 + 32 + 32, 'fixed-width input');
+  final sig = code.pqCommitSig!;
+  check(eq(sig, await refEdSign(id.edSeed, input)),
+      'Ed25519 by the code\'s own key over the input (RFC 8032, deterministic)');
+  final decoded = await ContactBundleV3.decode(encoded);
+  check(decoded.commitSigned, 'a decoded code says its commitment is signed');
+  check(await decoded.commitSignatureValid(), 'and the signature verifies');
+  final scanned = await scanContactCode(encoded);
+  check(scanned.commitSigned, 'scanContactCode reports it');
+
+  // Compatibility, checkable by a third party: still a v1 code to an older
+  // client, and the same code without `pqcs` is every code issued before.
+  final asV1 = await ContactBundle.decode(encoded);
+  check(eq(asV1.edPub, id.edPub) && eq(asV1.xPub, id.xPub),
+      'the v1 decoder reads the signed code');
+  final unsigned = (await ContactBundleV3.forIdentity(id, pq.publicKey,
+          displayName: 'Finn', signCommitment: false))
+      .encode();
+  check(unsigned == _editCode(encoded, (j) => j.remove('pqcs')),
+      'the code without pqcs is the pre-0027 code byte for byte');
+  check(!(await scanContactCode(unsigned)).commitSigned,
+      'which decodes, as an unsigned commitment');
+  final strict = code.encodeStrict();
+  check((await ContactBundleV3.decode(strict)).commitSigned,
+      'the strict form carries the signature too');
+
+  // §18.7 from a LINKED device: the device signs, over the ACCOUNT's key.
+  d.takeDraws();
+  final laptop = await d.run(() async => ZIdentity.generate());
+  check(d.takeDraws().length == 2, 'laptop draws ed and x seeds');
+  final account = await AccountIdentity.fromV1(id, deviceId: 'phone');
+  final laptopCert = await account.signDeviceCert(
+      deviceEdPub: laptop.edPub, deviceXPub: laptop.xPub, deviceId: 'laptop');
+  final anchored = await ContactBundleV3.forIdentity(laptop, pq.publicKey,
+      displayName: 'Finn', accountEdPub: id.edPub, cert: laptopCert);
+  final anchoredCode = anchored.encode();
+  final anchoredInput =
+      concatBytes([utf8b('z-pqc-sig-v1:'), id.edPub, commit]);
+  check(eq(anchored.pqCommitSig!, await refEdSign(laptop.edSeed, anchoredInput)),
+      'the linked device signs the account\'s commitment under the account key');
+  check((await scanContactCode(anchoredCode)).commitSigned,
+      'and the anchored code decodes as signed');
+
+  // What must be refused — each is a code anyone holding the public one
+  // could make.
+  final otherMlSeed = d.next(32);
+  final otherCommit = await (await HybridKeyPair.fromSeeds(
+          edSeed: id.edSeed, mlSeed: otherMlSeed))
+      .publicKey
+      .pqCommitment();
+  final rewritten =
+      _editCode(encoded, (j) => j['pqc'] = b64(otherCommit));
+  final deviceAnchoredSig = await refEdSign(laptop.edSeed,
+      concatBytes([utf8b('z-pqc-sig-v1:'), laptop.edPub, commit]));
+  final wrongAnchor = _editCode(
+      anchoredCode, (j) => j['pqcs'] = b64(deviceAnchoredSig));
+  final transplanted =
+      _editCode(anchoredCode, (j) => j['pqcs'] = b64(sig));
+  final noCommit = _editCode(encoded, (j) => j.remove('pqc'));
+  final short = _editCode(
+      encoded, (j) => j['pqcs'] = b64(sig.sublist(0, 63)));
+  final notAString = _editCode(encoded, (j) => j['pqcs'] = 7);
+  final refusals = {
+    'pqc_rewritten': (
+      rewritten,
+      'the commitment replaced and the signature kept: the signature does '
+          'not cover the new commitment'
+    ),
+    'signed_over_device_key': (
+      wrongAnchor,
+      'a linked device\'s code whose pqcs names the DEVICE key in the input '
+          'rather than the account the code names (acct)'
+    ),
+    'signature_transplanted': (
+      transplanted,
+      'the root device\'s valid pqcs moved into the linked device\'s code: '
+          'right input, wrong signer'
+    ),
+    'pqc_removed': (
+      noCommit,
+      'pqcs with no pqc: a commitment that was stripped, refused rather than '
+          'read as a classical code'
+    ),
+    'pqcs_63_bytes': (short, 'a signature one byte short'),
+    'pqcs_not_a_string': (notAString, 'a member of the wrong type'),
+  };
+  for (final e in refusals.entries) {
+    check(await _refused(e.value.$1), 'refused: ${e.key}');
+  }
+  check(_editCode(anchoredCode, (_) {}) == anchoredCode,
+      'an edit that changes nothing re-encodes the code byte for byte');
+
+  return {
+    'suite': 'contact_code_pqc_sig',
+    'version': vectorsVersionV3,
+    'description':
+        'ADR 0027 (PROTOCOL 18.10): a contact code\'s post-quantum commitment '
+            'signed by the key the code names, so it cannot be rewritten by '
+            'anyone holding the public code. pqcs = Ed25519 by `ed` over '
+            'utf8("z-pqc-sig-v1:") || account_ed (32) || pqc (32), where '
+            'account_ed is `acct` when the code names one and `ed` otherwise. '
+            'An optional member, ignored by every client before it; a code '
+            'that carries it and does not verify is refused, and a code '
+            'without it is an unsigned commitment — every code issued before.',
+    'context': pqCommitSigContext,
+    'identity': {
+      'ed_seed': hex(id.edSeed),
+      'x_seed': hex(id.xSeed),
+      'ed_pub': hex(id.edPub),
+      'x_pub': hex(id.xPub),
+      'binding_sig': hex(await id.bindingSignature()),
+    },
+    'pq': {
+      'ml_seed': hex(mlSeed),
+      'ml_pub': hex(pq.publicKey.mlPub),
+      'commitment': hex(commit),
+    },
+    'signing_input': hex(input),
+    'pqcs': hex(sig),
+    'code': encoded,
+    'code_json': utf8.decode(unb64url(encoded.substring(4))),
+    'code_len': encoded.length,
+    'unsigned_code': unsigned,
+    'strict_code': strict,
+    'anchored': {
+      'device_ed_seed': hex(laptop.edSeed),
+      'device_ed': hex(laptop.edPub),
+      'account_ed': hex(id.edPub),
+      'cert': laptopCert.toJson(),
+      'signing_input': hex(anchoredInput),
+      'pqcs': hex(anchored.pqCommitSig!),
+      'code': anchoredCode,
+      'code_json': utf8.decode(unb64url(anchoredCode.substring(4))),
+      'code_len': anchoredCode.length,
+    },
+    'must_refuse': {
+      'other_ml_seed': hex(otherMlSeed),
+      'other_commitment': hex(otherCommit),
+      for (final e in refusals.entries)
+        e.key: {'code': e.value.$1, 'why': e.value.$2},
     },
   };
 }
@@ -3425,6 +3616,7 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     'v3': {
       'mldsa65': await suiteMlDsa(),
       'contact_code_v3': await suiteContactCodeV3(),
+      'contact_code_pqc_sig': await suiteContactCodePqcSig(),
       'device_cert_v3': await suiteDeviceCertV3(a),
     },
     'pair-v2': {

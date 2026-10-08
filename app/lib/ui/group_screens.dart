@@ -7,8 +7,10 @@ import 'package:provider/provider.dart';
 
 import '../core/chat_service.dart';
 import '../core/connect_invites.dart';
+import '../core/models.dart';
 import 'add_contact_screen.dart';
 import 'chat_screen.dart';
+import 'contact_info_screen.dart' show MessagePqNotice;
 import 'theme.dart';
 
 /// Pick a name and members (from existing contacts) and create the group.
@@ -582,6 +584,13 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
             ),
           ),
           const SizedBox(height: 14),
+          // 26.3: which members' channels are not post-quantum yet. A group
+          // message is a pairwise copy per member, so the group is exactly
+          // as post-quantum as its weakest channel, and that one is named.
+          if (!g.left && members.isNotEmpty) ...[
+            _groupMessagePq(l, chat, g),
+            const SizedBox(height: 14),
+          ],
           if (g.iAmAdmin && !g.left)
             OutlinedButton.icon(
               icon: const Icon(Icons.group_add_outlined),
@@ -621,4 +630,14 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       ),
     );
   }
+}
+
+/// 26.3: the group's message-level post-quantum line, with the members it
+/// names as the group screen names them, in order.
+Widget _groupMessagePq(AppLocalizations l, ChatService chat, Group g) {
+  final pq = chat.groupMessagePq(g.gid);
+  final names = [
+    for (final rid in pq.notYet) chat.groupMemberName(g, rid) ?? l.grpUnknown
+  ]..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  return MessagePqNotice.group(l, pq, names);
 }

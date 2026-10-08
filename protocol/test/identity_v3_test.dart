@@ -34,7 +34,9 @@ void main() {
               'so every build already in the field can still read it');
       // A comfortable QR is a few hundred bytes; the key this commits to is
       // 1952 on its own, and a full hybrid account code would be ~7.4 KB.
-      expect(s.length, lessThan(400),
+      // ADR 0027's signature over the commitment is 64 bytes more, ~130
+      // characters once encoded: 500 for this code, from 370.
+      expect(s.length, lessThan(520),
           reason: 'encoded v3 code must stay scannable');
       expect(code.pqCommit.length, 32);
     });
@@ -70,18 +72,29 @@ void main() {
     });
 
     test(
-        'a code whose commitment was altered still parses but accepts '
-        'nothing', () async {
-      // Tampering with the commitment does not break the binding signature
-      // (which covers the X25519 key, not the commitment), so the code still
-      // decodes — and then no key on earth satisfies it, which is the correct
+        'a code whose commitment was altered is refused when it was signed, '
+        'and accepts nothing when it was not', () async {
+      String bend(String c) {
+        final j = jsonDecode(utf8.decode(unb64url(c.substring(4))))
+            as Map<String, Object?>;
+        final bent = Uint8List.fromList(unb64(j['pqc'] as String))
+          ..[0] ^= 0x01;
+        j['pqc'] = b64(bent);
+        return 'zc1.${b64url(utf8.encode(jsonEncode(j)))}';
+      }
+
+      // ADR 0027: the code signs its commitment, so altering it is caught
+      // at decode like any other tampering.
+      expect(() => ContactBundleV3.decode(bend(code.encode())),
+          throwsFormatException);
+      // A code from before ADR 0027 carries no such signature — the binding
+      // signature covers the X25519 key, not the commitment — so it still
+      // decodes, and then no key on earth satisfies it, which is the correct
       // failure: refuse the identity rather than fall back to classical.
-      final j = jsonDecode(utf8.decode(unb64url(code.encode().substring(4))))
-          as Map<String, Object?>;
-      final bent = Uint8List.fromList(unb64(j['pqc'] as String))..[0] ^= 0x01;
-      j['pqc'] = b64(bent);
-      final tampered = 'zc1.${b64url(utf8.encode(jsonEncode(j)))}';
-      final parsed = await ContactBundleV3.decode(tampered);
+      final unsigned = await ContactBundleV3.forIdentity(me, pq.publicKey,
+          displayName: 'Finn', signCommitment: false);
+      final parsed = await ContactBundleV3.decode(bend(unsigned.encode()));
+      expect(parsed.commitSigned, isFalse);
       expect(await parsed.acceptsPqKey(pq.publicKey), isFalse);
     });
 
@@ -306,9 +319,11 @@ void main() {
       final code = await ContactBundleV3.forIdentity(root, accountPq.publicKey);
       expect(code.declaredAccountEdPub, isNull);
       expect(code.accountEdPub, root.edPub);
-      expect(code.encode().length, lessThan(400));
-      // The linked device's code is bigger, and still comfortably scannable.
-      expect((await laptopCode()).encode().length, lessThan(800));
+      expect(code.encode().length, lessThan(520)); // ADR 0027: 482
+      // The linked device's code is bigger, and still scannable: 872
+      // characters with the commitment's signature (742 without), a version-21
+      // QR symbol at error correction L.
+      expect((await laptopCode()).encode().length, lessThan(900));
     });
   });
 

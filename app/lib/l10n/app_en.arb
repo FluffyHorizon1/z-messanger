@@ -217,6 +217,15 @@
       }
     }
   },
+  "contactUpgradedUnsigned": "{name} was already in your contacts. The post-quantum commitment in this code is not signed, so it will only be used if the key their app sends matches it.",
+  "@contactUpgradedUnsigned": {
+    "description": "ADR 0027: confirmation after scanning an older-format code of someone already held, before their key has arrived. Unlike contactUpgraded, the commitment was NOT taken as binding — anyone could have written it — and the sentence says what it is used for instead.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
   "addMyCode": "MY CODE",
   "@addMyCode": {
     "description": "Tab: show my own contact code. Upper case in the design."
@@ -265,9 +274,27 @@
   "@addVerifyAndAdd": {
     "description": "Button that checks the code's signature and adds the contact."
   },
-  "addSignatureNote": "The code's signature is checked before the contact is added — a tampered code is rejected.",
+  "addSignatureNote": "The code's signatures are checked before the contact is added, and a code whose keys were altered is rejected. Its post-quantum part is checked too: against its own signature where it carries one, against anything you already hold for them, and against their key when it arrives. The name in a code is only a suggestion.",
   "@addSignatureNote": {
-    "description": "Reassurance under the add button. It is a statement about what the app does, not advice."
+    "description": "Statement under the add button about what the app checks. Until ADR 0027 it said 'a tampered code is rejected', which was not true: nothing signed the post-quantum commitment, and the display name is not signed at all. Codes from a current version sign the commitment and codes from older versions do not, so the post-quantum part is checked in three places rather than 'rejected' outright — and each of the three is real. Keep 'only a suggestion': the name is not checked by anything."
+  },
+  "addRefusedCommitStripped": "This code is missing the signed post-quantum commitment that {name}'s codes carry. It may be an old code of theirs, or someone removed it. Nothing was changed — ask {name} for their current code.",
+  "@addRefusedCommitStripped": {
+    "description": "ADR 0027: a code for someone whose codes are known to sign their post-quantum commitment, carrying no signed one. Both explanations are named because both happen; the instruction is the safe one either way.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "addRefusedUnsignedCommit": "The post-quantum commitment in this code does not match the key {name}'s app sent, and nothing in the code signs it, so it may have been altered. Nothing was changed. Compare the safety number with {name} instead.",
+  "@addRefusedUnsignedCommit": {
+    "description": "ADR 0027: an unsigned commitment (a code from an older version, or one whose signature was removed) that disagrees with the key already held. 'Nothing was changed' is the point: before ADR 0027 this flagged the contact 'do not rely on this chat' for good, on the word of whoever wrote the code.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
   },
   "addScanPrompt": "Point the camera at their Z code.",
   "@addScanPrompt": {
@@ -505,6 +532,10 @@
   "grpFootnote": "Groups have no server-side existence: the relay never learns the group's name or member list. Each message is sent as separate end-to-end encrypted copies over your verified 1:1 channels.",
   "@grpFootnote": {
     "description": "Footnote on the group screen. This is the whole group design in three clauses; keep all three."
+  },
+  "grpMsgPqBody": "New messages in this group, in both directions, are protected by the post-quantum key exchange (ML-KEM-768) as well as X25519, on every device they reach.",
+  "@grpMsgPqBody": {
+    "description": "The group screen's version of ciMsgPqBody, under ciMsgPqTitle: every member's channels, and the user's own other devices, are post-quantum both ways. A group message is one pairwise copy per member, so this is only true when it is true of each of them. It does not say 'with every member': a member who is not a contact on this device is sent nothing, so has no channel to describe."
   },
   "onbRelayUnreachableAt": "Could not reach a relay at {url}.\nCheck the address and that it shows Live in your host dashboard.",
   "@onbRelayUnreachableAt": {
@@ -956,13 +987,68 @@
   "@ciSafetyCompare": {
     "description": "How to use the number, and what it proves. '60' is fixed by the protocol, not by the locale. 'not even the relay' is the point of the whole screen: the relay is Z's own server, and the number is what makes trusting it unnecessary."
   },
-  "ciDevListHybrid": "Their device list is signed post-quantum too, so the set of devices you send to cannot be forged or quietly reduced.",
+  "ciDevListHybrid": "Their device list is signed post-quantum too, so no device can be added to the set you send to, or taken out of it, without that signature failing. It does not yet cover the key each of their linked devices receives messages on: that key is signed classically only, so someone holding their account key — or, one day, a quantum computer — could swap it without anything here changing.",
   "@ciDevListHybrid": {
-    "description": "Shown when the contact's device list carries a post-quantum signature. 'quietly reduced' names the specific attack — removing a device from the list so a message reaches fewer places than the user believes — and is worth keeping concrete."
+    "description": "Shown when the contact's device list carries a verified post-quantum signature over its membership only — every list signed today (ADR 0017 stage 1). The first sentence is what that signature covers: which devices are in the set ('taken out of it' names the attack of removing a device so a message reaches fewer places than the user believes). The second is what it does not: a linked device's ratchet key is covered by the classical signature alone until stage 2b, so the sentence must not say the set 'cannot be forged'. The device they were added from is not exposed, which is why it says 'linked devices'."
   },
   "ciDevListClassical": "Their device list is signed classically only. That is correct today; the post-quantum signature for it travels separately and may not have arrived yet.",
   "@ciDevListClassical": {
     "description": "The same fact in its unfinished state. 'That is correct today' must survive translation: without it this reads as a warning, and it is not one."
+  },
+  "ciDevListHybridKeys": "Their device list is signed post-quantum too, including the key each of their devices receives messages on, so the set you send to cannot be forged or quietly changed.",
+  "@ciDevListHybridKeys": {
+    "description": "Shown instead of ciDevListHybrid when the contact's list is v2-only (ADR 0017 stage 2, signed with sig3 alone): only then does the post-quantum signature also cover each device's ratchet key, and only then is 'cannot be forged' true of the keys messages are encrypted to."
+  },
+  "ciMsgPqTitle": "Messages: post-quantum",
+  "@ciMsgPqTitle": {
+    "description": "Heading of the line under the safety-number card that says whether MESSAGES are protected by the post-quantum key exchange right now (26.3). Deliberately not the same words as ciPillPq, which is about the identity: this one is about the ratchets the messages travel on."
+  },
+  "ciMsgPqBody": "New messages in this chat, in both directions, are protected by the post-quantum key exchange (ML-KEM-768) as well as X25519, on every device they reach.",
+  "@ciMsgPqBody": {
+    "description": "Shown when every channel this chat's messages travel on — their device, their other devices, the user's own other devices — is post-quantum both ways. 'New' is load-bearing: messages sent before the exchange completed were not covered, and the sentence must not claim they were."
+  },
+  "ciMsgNotYetTitle": "Messages: not post-quantum yet",
+  "@ciMsgNotYetTitle": {
+    "description": "Heading when at least one channel this chat (or group) uses has not completed the post-quantum key exchange. Normal right after two people connect; not an alarm, and it must not read as one."
+  },
+  "ciMsgNotYetBody": "The post-quantum key exchange has not completed with {channels}, so messages there are not yet protected by it in both directions. It needs messages to go both ways; until it completes, someone recording that traffic today could read some or all of it with a future quantum computer.",
+  "@ciMsgNotYetBody": {
+    "description": "Body under ciMsgNotYetTitle. {channels} is a comma-separated list built from ciMsgChanContact, ciMsgChanTheirOther and ciMsgChanMine (or, in a group, member names). The last sentence is the reason it matters (harvest-now-decrypt-later) and must stay; it does not promise the exchange will complete, because a channel can stay classical. 'Not yet ... in both directions' and 'some or all' rather than 'X25519 alone': the side that answered the offer covers its own messages at once, before the other side can, so in that state one direction is protected and the other is not, and the sentence has to be true of it too.",
+    "placeholders": {
+      "channels": {
+        "type": "String"
+      }
+    }
+  },
+  "ciMsgChanContact": "{name}'s device",
+  "@ciMsgChanContact": {
+    "description": "One item in ciMsgNotYetBody's list: the device the contact was added from.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "ciMsgChanTheirOther": "{count, plural, =1{1 of {name}'s other devices} other{{count} of {name}'s other devices}}",
+  "@ciMsgChanTheirOther": {
+    "description": "One item in ciMsgNotYetBody's list: how many of the contact's linked devices have not completed the exchange.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "ciMsgChanMine": "{count, plural, =1{1 of your other devices} other{{count} of your other devices}}",
+  "@ciMsgChanMine": {
+    "description": "One item in ciMsgNotYetBody's list: how many of the user's OWN other devices (which receive a copy of every message) have not completed it.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "ciRename": "Rename",
   "@ciRename": {

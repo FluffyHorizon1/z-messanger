@@ -268,6 +268,12 @@ class DeviceSyncService {
     }
   }
 
+  /// 26.3: whether the mirror to my device [deviceRid] — which carries every
+  /// message this one sends or receives — is post-quantum both ways right
+  /// now. False before the sync session exists.
+  bool postQuantumWith(String deviceRid) =>
+      _session?.postQuantumWith(deviceRid) ?? false;
+
   /// Decrypt a self-sync payload from one of my devices.
   ///
   /// Returns what was mirrored (null if the payload carried no message) and a

@@ -2,7 +2,7 @@
 
 **A messenger where the operator is not part of the trust model.**
 
-`PROTOCOL.md` is the normative wire format: some twenty-nine thousand words of byte
+`PROTOCOL.md` is the normative wire format: some thirty-three thousand words of byte
 layouts and MUSTs, with test vectors. This is the other document — the one for
 someone deciding whether Z is worth trusting or worth auditing, who reasonably
 will not read the wire format first.

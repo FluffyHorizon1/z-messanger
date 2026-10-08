@@ -2133,7 +2133,8 @@ pq_commit = SHA-256( utf8("z-pqid-v3:") || ml_dsa_public_key )     32 bytes
 
 `ed`, `x` and `sig` are exactly the v1 fields with the same meanings (§2.4),
 so the classical view is a v1 bundle and every existing path — routing id,
-handshake, sessions — consumes it unchanged. The encoded code is ~370 bytes.
+handshake, sessions — consumes it unchanged. The encoded code is ~370 bytes,
+and ~500 since it signs its commitment (§18.10).
 
 **The commitment is carried as an optional member of a v1 code, and that is
 what clients emit:**
@@ -2142,6 +2143,9 @@ what clients emit:**
 zc1.<base64url(json)>
 json = { "v":1, "ed":…, "x":…, "sig":…, "pqc":b64(pq_commit), "name"?:string }
 ```
+
+The commitment is signed by the key the code names — `pqcs`, another optional
+member (§18.10, ADR 0027) — since nothing else in the code covers it.
 
 §14 is explicit that a new optional JSON member is compatible evolution and
 does **not** warrant a version bump — only a change to bytes an existing
@@ -2470,6 +2474,15 @@ compared numbers is a statement about a *particular* number, so a client:
   benefits from, so it has to be earned rather than assumed from "different".
 * SHOULD say, before the number moves, that it will — a `pendingPostQuantum`
   identity is a warning the client already has and the user does not.
+* MAY carry a confirmation made by the connect ceremony (§20.4) onto the
+  post‑quantum number when the key that moves it matches the commitment the
+  eight digits covered — the one exception to the rule two points above.
+  Those digits bound both commitments, so that comparison already covered the
+  key; asking for it again made every connect‑verified contact read "compare
+  again" seconds after it was verified (ADR 0027). A key the digits did not
+  cover is no exception: one that misses that commitment is refused (§18.2)
+  and moves no tick, and a key after a ceremony that covered no commitment
+  asks for a comparison like any other.
 
 A client upgrading from a build that recorded no number MAY record the v1
 number for its existing confirmations, since that is what any such build
@@ -2544,8 +2557,10 @@ no existing safety number moves.
 
 A client SHOULD omit both members on a device that holds the account root,
 where the two identities are the same key and saying so twice only makes the
-QR bigger. Measured: ~370 bytes for a root device's code, ~640 for a linked
-device's, against a ceiling near 800 for a symbol that scans reliably.
+QR bigger. Measured: ~500 bytes for a root device's code and ~870 for a
+linked device's, each with the signature over its commitment (§18.10; 370 and
+742 without it) — the second past the ~800 a symbol scans most reliably at,
+and far inside what a QR code holds.
 
 `acct` also implies `pqc`: a code that anchors to an account MUST carry the
 commitment, and a decoder MUST refuse one that does not, rather than falling
@@ -2726,6 +2741,70 @@ and the sender answers a `dlpqreq` with the signature it already holds. Only
 when asking (bounded; the reference client asks three times) has not produced
 it within the grace period is the user told. The list stays `classical`
 throughout: nothing is ever accepted on the strength of a claim.
+
+### 18.10 The commitment's signature (`pqcs`)
+
+`pqc` (§18.2) was covered by nothing: `sig` binds `x` to `ed` (§2.3) and
+`cert` binds the device to `acct` (§18.7). Anyone holding a person's public
+code — everyone they ever gave it to — could write any commitment into it, and
+the code still decoded and verified. Pasted into a contact holding a candidate
+key (ADR 0021), or no key yet, it had that contact's genuine key refused,
+permanently. So the code signs its commitment (ADR 0027):
+
+```
+pqcs       = Ed25519.Sign(ed_sk, input)                     64 bytes, base64
+input      = utf8("z-pqc-sig-v1:") || account_ed (32) || pq_commit (32)
+account_ed = acct when the code carries it (§18.7), else ed
+json       = { "v":1, "ed":…, "x":…, "sig":…, "pqc":…, "pqcs":…,
+               ["acct":…, "cert":…,] "name"?:string }
+```
+
+The signer is the code's own `ed`: the key that signs `sig`, and the only one
+a linked device holds — its authority over `acct` is the certificate in the
+same code. The input names the account the commitment is about, so a
+signature cannot be carried to a code that names another; it is fixed‑width,
+so the concatenation is unambiguous. The `zc3.` form carries the member the
+same way.
+
+`pqcs` is an optional member (§14): a client that predates it ignores it, and
+a code without it is what every code issued before looks like. A decoder:
+
+* MUST refuse a code whose `pqcs` is present and is not a string, does not
+  decode to 64 bytes, or does not verify over `input` under `ed` — checked
+  after `sig` and `cert`, so the account `input` names is already proven;
+* MUST refuse a `zc1.` code that carries `pqcs` and no `pqc`, rather than read
+  it as a classical code: a signature over a commitment the code no longer
+  carries is a commitment that was removed;
+* MUST accept a code with `pqc` and no `pqcs`, as an **unsigned** commitment.
+
+What a client does with the two:
+
+* A **signed** commitment is evidence, and is treated as every commitment was
+  (§18.2, ADR 0021): held, a delivered key checked against it, a key that
+  misses it refused, a code for the same identity carrying a different one
+  refused.
+* An **unsigned** commitment in a code for someone the client ALREADY holds is
+  not evidence — anyone could have written it — and MUST be treated as a
+  candidate, as a key with no commitment is (§18.2): a key it matches is
+  established, as ADR 0021's re‑scan always was, and a key it misses MUST NOT
+  be refused on its strength. The code is refused instead, and nothing held
+  changes. With nothing yet to check it against, it is held for the key and
+  dropped if the key misses it.
+* An unsigned commitment in a code that ADDS someone is held as before: there
+  is nothing to poison, and someone able to alter a code before its first scan
+  could replace the whole identity in it, which comparing the number catches.
+* Once a client has seen a contact's commitment in a signed code — the one
+  it holds, or one that established their key — it MUST refuse a later code
+  for that contact that carries no `pqcs` — `pqc` present or not — and change
+  nothing: it is an old code of theirs, or one somebody stripped.
+
+The signature is Ed25519, because the ML‑DSA key is not in the code (ADR
+0003): against the §18 adversary it is forgeable like anything classical, and
+what it stops is everyone without the code owner's key. It costs 64 bytes,
+~130 characters once encoded: a root device's code goes from ~370 characters to
+~500 and a linked device's from ~740 to ~870 — at error correction L, QR
+version 13 to 15 and 19 to 21 (ADR 0027).
+Vectors: `v3/contact_code_pqc_sig.json`.
 
 ## 19. The transparency log (7.7b)
 

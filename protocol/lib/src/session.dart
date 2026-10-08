@@ -338,6 +338,24 @@ class Conversation {
     return _encryptOn(s, plaintext, nowMs: nowMs);
   }
 
+  /// 26.3: true once messages in BOTH directions are mixed with the ML-KEM
+  /// secret — what a screen may honestly call "post-quantum right now".
+  ///
+  /// [isPostQuantum] alone says only that this side holds the secret, and on
+  /// the encapsulating side that is true from the moment it answers the
+  /// offer, before the offerer has the ciphertext that gives it the secret:
+  /// until then the peer's messages are classical. So the peer must be shown
+  /// to hold it too — it offered the key the secret was encapsulated to
+  /// (this side is the offerer), it has sent a message mixed with the
+  /// current generation ([PqState.acked]), or a re-key has completed, so it
+  /// holds an earlier generation's secret and mixes with that until the new
+  /// ciphertext reaches it.
+  bool get isPostQuantumBothWays {
+    final p = pq;
+    if (p.k == null) return false;
+    return isPqOfferer || p.acked || p.gen > 0;
+  }
+
   String get _designatedInitiatorRid =>
       myRid.compareTo(theirRid) < 0 ? myRid : theirRid;
 

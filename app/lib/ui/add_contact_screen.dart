@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/chat_service.dart';
+import '../core/models.dart';
 import '../core/qr_image.dart';
 import '../core/share_text.dart';
 import 'connect_tab.dart';
@@ -73,12 +74,30 @@ class _AddContactScreenState extends State<AddContactScreen>
       final contact = await svc.addContactFromCode(code, alias: _aliasCtrl.text);
       if (!mounted) return;
       final l = AppLocalizations.of(context);
-      final added = before.contains(contact.rid)
-          ? l.contactUpgraded(contact.name)
-          : l.contactAdded(contact.name);
+      // ADR 0027: an unsigned commitment for someone already held is kept
+      // only as a candidate for their key to be checked against, and the
+      // confirmation says that rather than that it was "taken".
+      final added = !before.contains(contact.rid)
+          ? l.contactAdded(contact.name)
+          : (contact.pqCommit == null && contact.pqcHint != null)
+              ? l.contactUpgradedUnsigned(contact.name)
+              : l.contactUpgraded(contact.name);
       Navigator.pop(context);
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(added)));
+    } on ContactCodeRefused catch (e) {
+      if (!mounted) return;
+      final l = AppLocalizations.of(context);
+      setState(() {
+        _busy = false;
+        _scanned = false;
+        _error = switch (e.kind) {
+          ContactCodeRefusal.commitStripped =>
+            l.addRefusedCommitStripped(e.name),
+          ContactCodeRefusal.unsignedCommitMismatch =>
+            l.addRefusedUnsignedCommit(e.name),
+        };
+      });
     } on FormatException catch (e) {
       setState(() {
         _busy = false;

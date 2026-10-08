@@ -57,6 +57,7 @@ void main() {
       ('v2', 'pq_rekey'),
       ('v3', 'mldsa65'),
       ('v3', 'contact_code_v3'),
+      ('v3', 'contact_code_pqc_sig'),
       ('v3', 'device_cert_v3'),
       ('backup', 'archive'),
       ('backup', 'archive_1_1'),
@@ -512,6 +513,53 @@ void main() {
           () => old.accept(frame('open')));
       expect(oldSession.sas, v['sas']);
       expect(oldSession.group, isNull);
+    });
+
+    test('contact code pqc signature: the recorded code verifies, and every '
+        'recorded alteration is refused', () async {
+      final v = readVectors('contact_code_pqc_sig', 'v3');
+      expect(v['context'], pqCommitSigContext);
+      final idj = (v['identity'] as Map).cast<String, Object?>();
+      final me = await ZIdentity.fromSeeds(
+          edSeed: unhex(idj['ed_seed'] as String),
+          xSeed: unhex(idj['x_seed'] as String));
+      expect(hex(me.edPub), idj['ed_pub']);
+      final pqj = (v['pq'] as Map).cast<String, Object?>();
+      final pq = await HybridKeyPair.fromSeeds(
+          edSeed: me.edSeed, mlSeed: unhex(pqj['ml_seed'] as String));
+      expect(hex(await pq.publicKey.pqCommitment()), pqj['commitment']);
+
+      // The signing input from §18.10's formula, and the signature over it.
+      final input =
+          pqCommitSigningInput(me.edPub, unhex(pqj['commitment'] as String));
+      expect(hex(input), v['signing_input']);
+      final rebuilt = await ContactBundleV3.forIdentity(me, pq.publicKey,
+          displayName: 'Finn');
+      expect(hex(rebuilt.pqCommitSig!), v['pqcs']);
+      expect(rebuilt.encode(), v['code']);
+
+      final decoded = await ContactBundleV3.decode(v['code'] as String);
+      expect(decoded.commitSigned, isTrue);
+      expect((await scanContactCode(v['unsigned_code'] as String)).commitSigned,
+          isFalse,
+          reason: 'the code issued before ADR 0027 still decodes, unsigned');
+      expect(
+          (await scanContactCode(v['strict_code'] as String)).commitSigned,
+          isTrue);
+      final anchored = (v['anchored'] as Map).cast<String, Object?>();
+      expect((await scanContactCode(anchored['code'] as String)).commitSigned,
+          isTrue);
+
+      final refuse = (v['must_refuse'] as Map).cast<String, Object?>();
+      var n = 0;
+      for (final e in refuse.entries) {
+        if (e.value is! Map) continue;
+        n++;
+        final code = (e.value as Map)['code'] as String;
+        await expectLater(scanContactCode(code), throwsA(isA<FormatException>()),
+            reason: e.key);
+      }
+      expect(n, 6, reason: 'every recorded alteration was tried');
     });
 
     test('backup archive: the recorded code opens every frame of the file',

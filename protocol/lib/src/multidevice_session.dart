@@ -209,6 +209,13 @@ class AccountSession {
     }
   }
 
+  /// 26.3: whether messages to and from [routingId] are post-quantum both
+  /// ways right now ([Conversation.isPostQuantumBothWays]). False for a
+  /// device this session holds no ratchet with: nothing protects what has
+  /// not been set up.
+  bool postQuantumWith(String routingId) =>
+      _convs[routingId]?.isPostQuantumBothWays ?? false;
+
   Map<String, Object?> toJson() => {
         'convs': {
           for (final e in _convs.entries) e.key: e.value.toJson(),

@@ -13,6 +13,10 @@
 // session, and the receiver checks one against the other. An attacker who
 // wants to substitute a post-quantum key must find a SHA-256 preimage.
 //
+// The commitment is also SIGNED by the key the code names (ADR 0027): until
+// it was, nothing covered `pqc`, so anyone holding a person's public code
+// could rewrite it, and the rewritten code still verified.
+//
 // Two things this file is careful about:
 //
 //   * **A commitment, not a reference.** A lookup identifier — a URL, a key
@@ -31,12 +35,28 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
+
 import 'identity.dart';
 import 'multidevice.dart';
 import 'pqsign.dart';
 import 'util.dart';
 
 const String contactCodePrefixV3 = 'zc3.';
+
+/// The context of a contact code's signature over its post-quantum
+/// commitment (ADR 0027, PROTOCOL §18.10). Distinct from every other context
+/// in the protocol, and a prefix of none of them.
+const String pqCommitSigContext = 'z-pqc-sig-v1:';
+
+/// The bytes a code's `pqcs` signs: the context, the ACCOUNT key the
+/// commitment is about (`acct`, or `ed` where the code names none — §18.7),
+/// and the commitment. Every field is fixed-length, so the concatenation is
+/// unambiguous. The signer is the code's own `ed`: the key that already signs
+/// `sig`, and the one a linked device holds — it has no account seed — whose
+/// authority over the account is the certificate beside it.
+Uint8List pqCommitSigningInput(Uint8List accountEdPub, Uint8List pqCommit) =>
+    concatBytes([utf8.encode(pqCommitSigContext), accountEdPub, pqCommit]);
 
 /// How much is known about the authenticity of a contact's identity.
 enum IdentityAssurance {
@@ -61,6 +81,15 @@ class ContactBundleV3 {
   final Uint8List xPub; // 32 — that device's X25519 key
   final Uint8List bindingSig; // 64 — binds xPub to edPub, as in v1
   final Uint8List pqCommit; // 32 — SHA-256("z-pqid-v3:" || ml_pub)
+
+  /// ADR 0027: Ed25519 by [edPub] over [pqCommitSigningInput] — what makes
+  /// [pqCommit] part of what the code's owner signed. Null for a code from a
+  /// build before ADR 0027, whose commitment nothing covers: anyone holding
+  /// the public code can rewrite it, and a reader must treat it accordingly
+  /// (see [commitSigned]). A decoded code never carries one that failed to
+  /// verify; [decode] refuses the code instead.
+  final Uint8List? pqCommitSig;
+
   final String? displayName;
 
   /// The ACCOUNT's Ed25519 key, when the code says one (§18.7).
@@ -79,10 +108,32 @@ class ContactBundleV3 {
     required this.xPub,
     required this.bindingSig,
     required this.pqCommit,
+    this.pqCommitSig,
     this.displayName,
     this.declaredAccountEdPub,
     this.deviceCert,
   });
+
+  /// Whether the commitment is covered by the code's own signature (ADR
+  /// 0027). True only on a code that [decode] verified, or one built here.
+  bool get commitSigned => pqCommitSig != null;
+
+  /// Checks [pqCommitSig] — false when there is none. [decode] has already
+  /// refused any code whose signature does not verify; this is for a bundle
+  /// that arrived some other way.
+  Future<bool> commitSignatureValid() async {
+    final sig = pqCommitSig;
+    if (sig == null || sig.length != 64) return false;
+    try {
+      return await Ed25519().verify(
+        pqCommitSigningInput(accountEdPub, pqCommit),
+        signature: Signature(sig,
+            publicKey: SimplePublicKey(edPub, type: KeyPairType.ed25519)),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// The identity this code is ABOUT: an account, not a device.
   ///
@@ -109,12 +160,18 @@ class ContactBundleV3 {
   /// contact scans is the person rather than the laptop in front of them.
   /// Omit both on a root device, where the two are the same identity and
   /// saying so twice only makes the code bigger.
+  ///
+  /// The commitment is signed by [me] (ADR 0027), so a code cannot carry a
+  /// commitment its owner did not make. [signCommitment] false builds the
+  /// code a client before ADR 0027 emits — what the frozen vectors record,
+  /// and nothing a current client should hand out.
   static Future<ContactBundleV3> forIdentity(
     ZIdentity me,
     HybridPublicKey pqPublic, {
     String? displayName,
     Uint8List? accountEdPub,
     DeviceCertificate? cert,
+    bool signCommitment = true,
   }) async {
     if ((accountEdPub == null) != (cert == null)) {
       // One without the other is either an unprovable claim or a proof of
@@ -144,11 +201,19 @@ class ContactBundleV3 {
             'the certificate is not signed by that account');
       }
     }
+    final commit = await pqPublic.pqCommitment();
+    final Uint8List? commitSig = signCommitment
+        ? Uint8List.fromList((await Ed25519().sign(
+                pqCommitSigningInput(anchor, commit),
+                keyPair: me.edKeyPair))
+            .bytes)
+        : null;
     return ContactBundleV3(
       edPub: me.edPub,
       xPub: me.xPub,
       bindingSig: await me.bindingSignature(),
-      pqCommit: await pqPublic.pqCommitment(),
+      pqCommit: commit,
+      pqCommitSig: commitSig,
       displayName: displayName,
       declaredAccountEdPub: accountEdPub,
       deviceCert: cert,
@@ -163,6 +228,7 @@ class ContactBundleV3 {
       'x': b64(xPub),
       'sig': b64(bindingSig),
       'pqc': b64(pqCommit),
+      if (pqCommitSig != null) 'pqcs': b64(pqCommitSig!),
       if (declaredAccountEdPub != null) 'acct': b64(declaredAccountEdPub!),
       if (deviceCert != null) 'cert': deviceCert!.toJson(),
       if (displayName != null && displayName!.isNotEmpty) 'name': displayName,
@@ -183,6 +249,8 @@ class ContactBundleV3 {
   /// So the commitment rides in a `zc1.` code. An older client reads the
   /// classical identity and ignores `pqc`; a v3 client sees the commitment
   /// and knows a post-quantum key is coming. Same information, no flag day.
+  /// The commitment's signature (`pqcs`, ADR 0027) rides the same way: one
+  /// more optional member, ignored by every build that predates it.
   String encode() {
     final j = <String, Object?>{
       'v': 1,
@@ -190,6 +258,7 @@ class ContactBundleV3 {
       'x': b64(xPub),
       'sig': b64(bindingSig),
       'pqc': b64(pqCommit),
+      if (pqCommitSig != null) 'pqcs': b64(pqCommitSig!),
       if (declaredAccountEdPub != null) 'acct': b64(declaredAccountEdPub!),
       if (deviceCert != null) 'cert': deviceCert!.toJson(),
       if (displayName != null && displayName!.isNotEmpty) 'name': displayName,
@@ -284,6 +353,14 @@ class ContactBundleV3 {
     if (name != null && name is! String) {
       throw const FormatException('malformed display name');
     }
+    // ADR 0027: the commitment's signature, when the code carries one. Its
+    // absence is a code from before it, and is the reader's to weigh (an
+    // unsigned commitment is a candidate, not evidence); a member that is
+    // present and wrong is a malformed or altered code, never "unsigned".
+    final pqcs = j['pqcs'];
+    if (pqcs != null && pqcs is! String) {
+      throw const FormatException('malformed commitment signature');
+    }
     final ContactBundleV3 b;
     try {
       b = ContactBundleV3(
@@ -291,6 +368,7 @@ class ContactBundleV3 {
         xPub: unb64(x),
         bindingSig: unb64(sig),
         pqCommit: unb64(pqc),
+        pqCommitSig: pqcs == null ? null : unb64(pqcs as String),
         displayName: name as String?,
         declaredAccountEdPub: acctEd,
         deviceCert: deviceCert,
@@ -305,6 +383,9 @@ class ContactBundleV3 {
     }
     if (b.pqCommit.length != 32) {
       throw const FormatException('bad commitment length');
+    }
+    if (b.pqCommitSig != null && b.pqCommitSig!.length != 64) {
+      throw const FormatException('bad commitment signature length');
     }
     if (!await b.classical.verify()) {
       throw const FormatException(
@@ -324,6 +405,14 @@ class ContactBundleV3 {
         throw const FormatException(
             'this device is not certified by the account it claims');
       }
+    }
+    // Last, so the account the input names has already been proven: the
+    // signature is the device's, over the ACCOUNT's commitment, and the
+    // certificate above is what lets the device speak for that account.
+    if (b.pqCommitSig != null && !await b.commitSignatureValid()) {
+      throw const FormatException(
+          'the post-quantum commitment in this code is not the one its owner '
+          'signed (possible tampering)');
     }
     return b;
   }
@@ -348,6 +437,7 @@ class ContactBundleV3 {
         'x': b64(xPub),
         'sig': b64(bindingSig),
         'pqc': b64(pqCommit),
+        if (pqCommitSig != null) 'pqcs': b64(pqCommitSig!),
         'name': displayName,
         // The account anchor, if this code has one — the same `acct`/`cert`
         // pair `encode`/`decode` carry. Dropping it here (the 2026-09-14
@@ -358,13 +448,17 @@ class ContactBundleV3 {
         if (deviceCert != null) 'cert': deviceCert!.toJson(),
       };
 
+  /// Reads back what [toJson] wrote. `pqcs` is carried but NOT re-verified
+  /// here, as nothing else in a persisted bundle is: [commitSignatureValid]
+  /// is the check for a caller that did not write it.
   static ContactBundleV3 fromJson(Map<String, Object?> j) {
-    final acct = j['acct'], cert = j['cert'];
+    final acct = j['acct'], cert = j['cert'], pqcs = j['pqcs'];
     return ContactBundleV3(
       edPub: unb64(j['ed'] as String),
       xPub: unb64(j['x'] as String),
       bindingSig: unb64(j['sig'] as String),
       pqCommit: unb64(j['pqc'] as String),
+      pqCommitSig: pqcs == null ? null : unb64(pqcs as String),
       displayName: j['name'] as String?,
       declaredAccountEdPub: acct == null ? null : unb64(acct as String),
       deviceCert: cert == null
@@ -398,6 +492,10 @@ class ScannedIdentity {
   /// one. It is the evidence behind [accountEdPub], and it is what lets this
   /// contact's device list be checked later.
   DeviceCertificate? get deviceCert => v3?.deviceCert;
+
+  /// Whether the code's commitment is one its owner signed (ADR 0027). False
+  /// for a classical code and for a code from a build before ADR 0027.
+  bool get commitSigned => v3?.commitSigned ?? false;
 }
 
 /// Parses a `zc1.`, `zc2.` or `zc3.` code, so a caller never has to ask the
@@ -730,12 +828,16 @@ bool _lexLessBytes(Uint8List a, Uint8List b) {
 /// device they were standing at. Routing it here instead means the v3 decoder
 /// gets it, and a code that anchors to an account without also committing to
 /// its post-quantum key is refused rather than quietly downgraded.
+///
+/// `pqcs` counts for the same reason (ADR 0027): a signature over a
+/// commitment the code no longer carries is a code with its `pqc` removed,
+/// and the v3 decoder refuses it where the v1 decoder would read on.
 bool _carriesV3Members(String code) {
   try {
     final j = jsonDecode(
             utf8.decode(unb64url(code.substring(contactCodePrefix.length))))
         as Map<String, Object?>;
-    return j['pqc'] is String || j['acct'] is String;
+    return j['pqc'] is String || j['acct'] is String || j['pqcs'] != null;
   } catch (_) {
     return false;
   }

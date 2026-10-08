@@ -170,6 +170,11 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String contactUpgradedUnsigned(String name) {
+    return '$name was already in your contacts. The post-quantum commitment in this code is not signed, so it will only be used if the key their app sends matches it.';
+  }
+
+  @override
   String get addMyCode => 'MY CODE';
 
   @override
@@ -208,7 +213,17 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get addSignatureNote =>
-      'The code\'s signature is checked before the contact is added — a tampered code is rejected.';
+      'The code\'s signatures are checked before the contact is added, and a code whose keys were altered is rejected. Its post-quantum part is checked too: against its own signature where it carries one, against anything you already hold for them, and against their key when it arrives. The name in a code is only a suggestion.';
+
+  @override
+  String addRefusedCommitStripped(String name) {
+    return 'This code is missing the signed post-quantum commitment that $name\'s codes carry. It may be an old code of theirs, or someone removed it. Nothing was changed — ask $name for their current code.';
+  }
+
+  @override
+  String addRefusedUnsignedCommit(String name) {
+    return 'The post-quantum commitment in this code does not match the key $name\'s app sent, and nothing in the code signs it, so it may have been altered. Nothing was changed. Compare the safety number with $name instead.';
+  }
 
   @override
   String get addScanPrompt => 'Point the camera at their Z code.';
@@ -402,6 +417,10 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get grpFootnote =>
       'Groups have no server-side existence: the relay never learns the group\'s name or member list. Each message is sent as separate end-to-end encrypted copies over your verified 1:1 channels.';
+
+  @override
+  String get grpMsgPqBody =>
+      'New messages in this group, in both directions, are protected by the post-quantum key exchange (ML-KEM-768) as well as X25519, on every device they reach.';
 
   @override
   String onbRelayUnreachableAt(String url) {
@@ -749,11 +768,57 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get ciDevListHybrid =>
-      'Their device list is signed post-quantum too, so the set of devices you send to cannot be forged or quietly reduced.';
+      'Their device list is signed post-quantum too, so no device can be added to the set you send to, or taken out of it, without that signature failing. It does not yet cover the key each of their linked devices receives messages on: that key is signed classically only, so someone holding their account key — or, one day, a quantum computer — could swap it without anything here changing.';
 
   @override
   String get ciDevListClassical =>
       'Their device list is signed classically only. That is correct today; the post-quantum signature for it travels separately and may not have arrived yet.';
+
+  @override
+  String get ciDevListHybridKeys =>
+      'Their device list is signed post-quantum too, including the key each of their devices receives messages on, so the set you send to cannot be forged or quietly changed.';
+
+  @override
+  String get ciMsgPqTitle => 'Messages: post-quantum';
+
+  @override
+  String get ciMsgPqBody =>
+      'New messages in this chat, in both directions, are protected by the post-quantum key exchange (ML-KEM-768) as well as X25519, on every device they reach.';
+
+  @override
+  String get ciMsgNotYetTitle => 'Messages: not post-quantum yet';
+
+  @override
+  String ciMsgNotYetBody(String channels) {
+    return 'The post-quantum key exchange has not completed with $channels, so messages there are not yet protected by it in both directions. It needs messages to go both ways; until it completes, someone recording that traffic today could read some or all of it with a future quantum computer.';
+  }
+
+  @override
+  String ciMsgChanContact(String name) {
+    return '$name\'s device';
+  }
+
+  @override
+  String ciMsgChanTheirOther(int count, String name) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count of $name\'s other devices',
+      one: '1 of $name\'s other devices',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String ciMsgChanMine(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count of your other devices',
+      one: '1 of your other devices',
+    );
+    return '$_temp0';
+  }
 
   @override
   String get ciRename => 'Rename';

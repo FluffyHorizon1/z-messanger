@@ -101,6 +101,29 @@ class Contact {
   /// authenticity; it is purely "have they answered yet".
   bool requested;
 
+  /// ADR 0027: a code of theirs carried a SIGNED commitment (`pqcs`) — the
+  /// one held in [pqCommit], or one that established [pqPub]. From then on
+  /// a code for them that carries no signed commitment had it removed, or is
+  /// an old code of theirs, and is refused rather than read as less.
+  /// Kept in `kv` as `pqcs_<rid>`.
+  bool pqcSigned;
+
+  /// 26.3: the commitment a CONNECT ceremony's eight digits covered when the
+  /// tick was recorded (`adr/0009`). The key that matches it arrives in-band
+  /// afterwards; when it does, the tick moves onto the post-quantum number
+  /// with it, because the digits already covered that key. Null for a tick
+  /// recorded any other way, which asks for a new comparison as 13.3 says.
+  /// Kept in `kv` as `vpqc_<rid>` until the key lands.
+  Uint8List? verifiedPqc;
+
+  /// ADR 0027: a commitment from an UNSIGNED code scanned or pasted for this
+  /// contact once they were already held. Nothing signs it, so anyone could
+  /// have written it, and it is treated as ADR 0021 treats a key nothing
+  /// commits to: a candidate. A key that matches it is established; one that
+  /// does not is kept as an ordinary candidate, and this is dropped — it is
+  /// never a reason to refuse a key. Kept in `kv` as `pqcc_<rid>`.
+  Uint8List? pqcHint;
+
   Contact({
     required this.rid,
     required this.bundle,
@@ -119,6 +142,9 @@ class Contact {
     this.deviceCert,
     this.addedByDevice,
     this.requested = false,
+    this.pqcSigned = false,
+    this.verifiedPqc,
+    this.pqcHint,
   });
 
   /// What is actually known about this identity's authenticity.
@@ -205,6 +231,86 @@ enum PqDisplay {
   /// A key was refused (did not match the commitment); the classical number
   /// is shown and the warning stays.
   mismatch,
+}
+
+/// ADR 0027: the two ways a contact's code is refused that are new with the
+/// commitment's signature. Carried as a kind so the add screen says it in the
+/// reader's language; [ContactCodeRefused.message] is the English for logs.
+enum ContactCodeRefusal {
+  /// A code for a contact whose codes sign their commitment, carrying no
+  /// signed one: an old code of theirs, or one somebody stripped.
+  commitStripped,
+
+  /// An unsigned commitment that misses the key their app sent: refused as
+  /// the code, never held against the key.
+  unsignedCommitMismatch,
+}
+
+/// A refused contact code, with the reason as a [ContactCodeRefusal]. Still a
+/// [FormatException], so every existing handler of a refused code handles it.
+class ContactCodeRefused extends FormatException {
+  final ContactCodeRefusal kind;
+
+  /// The contact the code was for, as they are named here.
+  final String name;
+
+  const ContactCodeRefused(this.kind, this.name, String message)
+      : super(message);
+}
+
+/// 26.3: whether the messages of a chat are protected by the post-quantum key
+/// exchange RIGHT NOW, channel by channel — distinct from [PqDisplay], which
+/// is about the identity and the safety number.
+///
+/// A message to a contact travels on several ratchets: the one with the
+/// device the contact was added from, one with each of their other devices,
+/// and the self-sync mirror to each of this account's own other devices,
+/// which carries every message's content. A channel counts only when it is
+/// post-quantum BOTH WAYS (`Conversation.isPostQuantumBothWays`); one that
+/// does not exist yet counts as not post-quantum, because nothing protects
+/// what has not been set up. So [all] is never more than the session state
+/// says.
+class MessagePq {
+  /// The ratchet with the contact's own device — the one they were added
+  /// from.
+  final bool contact;
+
+  /// The contact's other devices, and how many of those are post-quantum.
+  final int theirOther, theirOtherPq;
+
+  /// This account's own other devices, and how many of those are.
+  final int mine, minePq;
+
+  const MessagePq({
+    required this.contact,
+    this.theirOther = 0,
+    this.theirOtherPq = 0,
+    this.mine = 0,
+    this.minePq = 0,
+  });
+
+  /// Every channel the contact's devices are reached on.
+  bool get theirs => contact && theirOtherPq == theirOther;
+
+  /// Every channel this chat's messages travel on.
+  bool get all => theirs && minePq == mine;
+}
+
+/// 26.3: [MessagePq] for a group — the members some of whose channels are not
+/// post-quantum yet, and this account's own devices.
+class GroupMessagePq {
+  /// Routing ids of the members whose own channels are not all post-quantum,
+  /// in no particular order. Members who are not contacts here have no
+  /// channel at all and are not listed: nothing is sent to them.
+  final List<String> notYet;
+
+  /// This account's own other devices, and how many of those are.
+  final int mine, minePq;
+
+  const GroupMessagePq(
+      {required this.notYet, required this.mine, required this.minePq});
+
+  bool get all => notYet.isEmpty && minePq == mine;
 }
 
 /// ADR 0011: a pending INBOUND contact request — someone who added us and is

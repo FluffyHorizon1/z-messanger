@@ -75,7 +75,10 @@ reach, stop there instead of adding them.
 
 So:
 
-* **They match** — you are added and verified. Done.
+* **They match** — you are added and verified. Done. A few seconds later
+  their post-quantum key arrives and the safety number changes to the
+  post-quantum one; the tick stays, because the eight digits covered that key
+  too.
 * **We have not compared yet** — you are added, and Z says plainly that the
   contact is unverified. You can compare safety numbers later from the chat.
   This is no worse than pasting codes, which is what it replaces; it is just
@@ -138,7 +141,11 @@ wrong on theirs is worse than no number at all.
   it out to them the usual way; if the digits match on their screen, the key
   really is theirs, and ticking "verified" records it for good. If you happen
   to be in the same room, scanning their code again does the same job on the
-  spot, and you can do either — neither is better than the other.
+  spot, and you can do either — neither is better than the other. A code from
+  an older version of Z does it only when it agrees with the key their app
+  sent: nothing in such a code signs its post-quantum part, so when the two
+  disagree Z refuses the code and changes nothing, rather than taking a code
+  anyone could have edited over their app's word.
 
 Before version 3.9.2 the second situation had no way out at all. One of you
 saw one number, the other saw a different one, and no amount of comparing,
@@ -166,6 +173,20 @@ on the post-quantum number in two common cases:
 Until then, numbers that differ between you and someone on an older app are
 not by themselves a sign of an attack — and they are not a check either: you
 cannot verify each other by the number until you both show the same one.
+
+**Messages, not just identities.** Everything above is about *who* they are.
+Below the number, one more line says whether your *messages* are protected by
+the post-quantum key exchange right now. **"Messages: post-quantum"** means
+every channel this chat uses — to their device, to each of their other
+devices, and to each of your own other devices, which get a copy of every
+message — has completed it in both directions, so new messages are protected
+against someone who records them today and has a quantum computer later.
+**"Messages: not post-quantum yet"** names the channels that have not. That is
+normal for the first moments of a chat, and of every newly linked device: the
+exchange needs messages in both directions. Until it completes, some or all
+of those messages rely on the ordinary key exchange alone — enough against
+anyone today, not against that future recording. A group's screen says the
+same, and names the members whose channels are not post-quantum yet.
 
 ## Your other devices
 

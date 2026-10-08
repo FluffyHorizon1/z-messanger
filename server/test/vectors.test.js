@@ -1525,6 +1525,100 @@ test('v3 contact_code_v3: the code parses, binds, and commits — checked here '
     v.pq.commitment, 'the delivered key satisfies the scanned commitment');
 });
 
+// ADR 0027 (PROTOCOL §18.10): the commitment's signature, judged here from
+// the section's rule alone. A code without `pqcs` is unsigned (every code
+// issued before); one with it must carry `pqc`, a 64-byte signature, and
+// verify under `ed` over the context, the ACCOUNT key (`acct`, else `ed`) and
+// the commitment — anything else is refused.
+function pqcsVerdict(code) {
+  let j;
+  try {
+    j = JSON.parse(unb64url(code.slice(4)).toString('utf8'));
+  } catch {
+    return 'malformed';
+  }
+  if (!('pqcs' in j)) return 'unsigned';
+  if (typeof j.pqcs !== 'string' || typeof j.pqc !== 'string') return 'refuse';
+  const sig = unb64(j.pqcs);
+  if (sig.length !== 64) return 'refuse';
+  const anchor = unb64(typeof j.acct === 'string' ? j.acct : j.ed);
+  const input = cat(utf8('z-pqc-sig-v1:'), anchor, unb64(j.pqc));
+  return edVerify(unb64(j.ed), input, sig) ? 'signed' : 'refuse';
+}
+
+test('v3 contact_code_pqc_sig: the commitment\'s signature, re-derived and '
+  + 'checked with Node\'s own Ed25519', () => {
+  const v = loadV3('contact_code_pqc_sig');
+  assert.equal(v.suite, 'contact_code_pqc_sig');
+  assert.equal(v.context, 'z-pqc-sig-v1:');
+
+  // The identity and the commitment, from the recorded seeds and key.
+  const id = v.identity;
+  assert.equal(hex(edPub(unhex(id.ed_seed))), id.ed_pub);
+  assert.equal(hex(xPub(unhex(id.x_seed))), id.x_pub);
+  assert.equal(hex(sha256(cat(utf8('z-pqid-v3:'), unhex(v.pq.ml_pub)))),
+    v.pq.commitment, 'the commitment is the ADR 0003 one');
+
+  // The signing input from the formula, and the signature: Ed25519 is
+  // deterministic (RFC 8032), so signing it here reproduces the bytes.
+  const input = cat(utf8(v.context), unhex(id.ed_pub), unhex(v.pq.commitment));
+  assert.equal(input.length, 77, 'fixed width: 13 + 32 + 32');
+  assert.equal(hex(input), v.signing_input);
+  assert.equal(hex(edSign(unhex(id.ed_seed), input)), v.pqcs);
+
+  // The code carries exactly that, and the rule above says signed.
+  assert.equal(v.code.length, v.code_len);
+  assert.ok(v.code_len < 520, 'a root device\'s code is ~500 characters');
+  const c = JSON.parse(unb64url(v.code.slice(4)).toString('utf8'));
+  assert.equal(JSON.stringify(c), v.code_json);
+  assert.equal(c.v, 1, 'still a v1 code to every older reader');
+  assert.equal(hex(unb64(c.pqcs)), v.pqcs);
+  assert.equal(hex(unb64(c.pqc)), v.pq.commitment);
+  assert.ok(edVerify(unb64(c.ed), cat(utf8('z-bind-v1:'), unb64(c.x)),
+    unb64(c.sig)), 'the binding signature is untouched');
+  assert.equal(pqcsVerdict(v.code), 'signed');
+
+  // Compatibility: the code without `pqcs` is the code issued before ADR
+  // 0027, member for member and in order, and it is merely unsigned.
+  const unsigned = JSON.parse(unb64url(v.unsigned_code.slice(4)).toString('utf8'));
+  const minus = { ...c };
+  delete minus.pqcs;
+  assert.equal(JSON.stringify(unsigned), JSON.stringify(minus));
+  assert.equal(pqcsVerdict(v.unsigned_code), 'unsigned');
+  const strict = JSON.parse(unb64url(v.strict_code.slice(4)).toString('utf8'));
+  assert.equal(strict.v, 3);
+  assert.equal(strict.pqcs, c.pqcs, 'the strict form carries it too');
+  assert.equal(pqcsVerdict(v.strict_code), 'signed');
+
+  // A linked device's code: the DEVICE signs, over the ACCOUNT's key.
+  const a = v.anchored;
+  const ac = JSON.parse(unb64url(a.code.slice(4)).toString('utf8'));
+  assert.equal(a.code.length, a.code_len);
+  assert.equal(hex(unb64(ac.ed)), a.device_ed);
+  assert.equal(hex(edPub(unhex(a.device_ed_seed))), a.device_ed);
+  assert.equal(hex(unb64(ac.acct)), a.account_ed);
+  const ain = cat(utf8(v.context), unb64(ac.acct), unb64(ac.pqc));
+  assert.equal(hex(ain), a.signing_input);
+  assert.equal(hex(edSign(unhex(a.device_ed_seed), ain)), a.pqcs);
+  assert.equal(pqcsVerdict(a.code), 'signed');
+  assert.equal(ac.pqc, c.pqc, 'one account, one commitment');
+
+  // Every recorded alteration is refused by the same rule.
+  const refused = Object.entries(v.must_refuse)
+    .filter(([, e]) => e && typeof e === 'object' && 'code' in e);
+  assert.equal(refused.length, 6);
+  for (const [name, e] of refused) {
+    assert.equal(pqcsVerdict(e.code), 'refuse', name);
+  }
+  // The rewritten commitment is a real one, to another key: not noise.
+  assert.equal(unhex(v.must_refuse.other_commitment).length, 32);
+  assert.notEqual(v.must_refuse.other_commitment, v.pq.commitment);
+  const rewritten = JSON.parse(unb64url(v.must_refuse.pqc_rewritten.code.slice(4))
+    .toString('utf8'));
+  assert.equal(hex(unb64(rewritten.pqc)), v.must_refuse.other_commitment);
+  assert.equal(rewritten.pqcs, c.pqcs, 'the signature was kept as it was');
+});
+
 test('v3 device_cert_v3: both halves cover the same input, and the classical '
   + 'half alone is not enough', () => {
   const v = loadV3('device_cert_v3');

@@ -174,6 +174,11 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String contactUpgradedUnsigned(String name) {
+    return '$name ya estaba en tus contactos. El compromiso poscuántico de este código no está firmado, así que solo se usará si coincide con la clave que envíe su app.';
+  }
+
+  @override
   String get addMyCode => 'MI CÓDIGO';
 
   @override
@@ -212,7 +217,17 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get addSignatureNote =>
-      'La firma del código se comprueba antes de añadir el contacto; un código manipulado se rechaza.';
+      'Las firmas del código se comprueban antes de añadir el contacto, y se rechaza un código cuyas claves se hayan alterado. Su parte poscuántica también se comprueba: con su propia firma cuando la lleva, con lo que ya tengas de esa persona y con su clave cuando llegue. El nombre de un código es solo una sugerencia.';
+
+  @override
+  String addRefusedCommitStripped(String name) {
+    return 'A este código le falta el compromiso poscuántico firmado que llevan los códigos de $name. Puede ser un código antiguo suyo, o alguien lo quitó. No se ha cambiado nada: pide a $name su código actual.';
+  }
+
+  @override
+  String addRefusedUnsignedCommit(String name) {
+    return 'El compromiso poscuántico de este código no coincide con la clave que envió la app de $name, y nada en el código lo firma, así que puede haberse alterado. No se ha cambiado nada. Comparad el número de seguridad con $name en su lugar.';
+  }
 
   @override
   String get addScanPrompt => 'Apunta la cámara a su código Z.';
@@ -407,6 +422,10 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get grpFootnote =>
       'Los grupos no existen en ningún servidor: el relay nunca conoce el nombre del grupo ni la lista de miembros. Cada mensaje se envía como copias separadas cifradas de extremo a extremo por vuestros canales 1:1 verificados.';
+
+  @override
+  String get grpMsgPqBody =>
+      'Los mensajes nuevos de este grupo, en ambos sentidos, están protegidos por el intercambio de claves poscuántico (ML-KEM-768) además de X25519, en todos los dispositivos a los que llegan.';
 
   @override
   String onbRelayUnreachableAt(String url) {
@@ -756,11 +775,57 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get ciDevListHybrid =>
-      'Su lista de dispositivos también está firmada de forma poscuántica, así que el conjunto de dispositivos al que envías no puede falsificarse ni reducirse en silencio.';
+      'Su lista de dispositivos también está firmada de forma poscuántica, así que no se puede añadir ni quitar un dispositivo del conjunto al que envías sin que esa firma falle. Todavía no cubre la clave con la que cada uno de sus dispositivos vinculados recibe los mensajes: esa clave solo está firmada de forma clásica, así que alguien con la clave de su cuenta —o, algún día, un ordenador cuántico— podría cambiarla sin que aquí cambie nada.';
 
   @override
   String get ciDevListClassical =>
       'Su lista de dispositivos está firmada solo de forma clásica. Hoy es correcto; la firma poscuántica viaja por separado y puede que aún no haya llegado.';
+
+  @override
+  String get ciDevListHybridKeys =>
+      'Su lista de dispositivos también está firmada de forma poscuántica, incluida la clave con la que cada uno de sus dispositivos recibe los mensajes, así que el conjunto al que envías no puede falsificarse ni cambiarse en silencio.';
+
+  @override
+  String get ciMsgPqTitle => 'Mensajes: poscuánticos';
+
+  @override
+  String get ciMsgPqBody =>
+      'Los mensajes nuevos de este chat, en ambos sentidos, están protegidos por el intercambio de claves poscuántico (ML-KEM-768) además de X25519, en todos los dispositivos a los que llegan.';
+
+  @override
+  String get ciMsgNotYetTitle => 'Mensajes: aún no poscuánticos';
+
+  @override
+  String ciMsgNotYetBody(String channels) {
+    return 'El intercambio de claves poscuántico no se ha completado con $channels, así que esos mensajes aún no están protegidos por él en los dos sentidos. Para completarse necesita mensajes en ambos sentidos; hasta entonces, alguien que grabe ese tráfico hoy podría leer parte de él, o todo, con un futuro ordenador cuántico.';
+  }
+
+  @override
+  String ciMsgChanContact(String name) {
+    return 'el dispositivo de $name';
+  }
+
+  @override
+  String ciMsgChanTheirOther(int count, String name) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count de los otros dispositivos de $name',
+      one: '1 de los otros dispositivos de $name',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String ciMsgChanMine(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count de tus otros dispositivos',
+      one: '1 de tus otros dispositivos',
+    );
+    return '$_temp0';
+  }
 
   @override
   String get ciRename => 'Renombrar';

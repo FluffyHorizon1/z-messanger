@@ -185,6 +185,15 @@ class ConnectInvites extends ChangeNotifier {
   @visibleForTesting
   bool debugStopAfterAdd = false;
 
+  /// Test seam: the contact code this device reveals in the ceremonies it
+  /// starts or opens from now on, in place of [ChatService.myContactCode] —
+  /// a peer whose revealed code says something other than what its app then
+  /// sends (no commitment at all, or a commitment to some other key), which
+  /// an honest client never produces and the receiving side must still get
+  /// right.
+  @visibleForTesting
+  String? debugMyCode;
+
   final List<PendingInvite> _invites = [];
   bool _loaded = false;
 
@@ -215,7 +224,7 @@ class ConnectInvites extends ChangeNotifier {
   }
 
   Future<ConnectIdentity> _me() async => ConnectIdentity.fromCode(
-      await _svc.myContactCode(),
+      debugMyCode ?? await _svc.myContactCode(),
       displayName: _svc.displayName);
 
   /// Make an invite. Nothing is posted until the first [pump].
@@ -441,6 +450,13 @@ class ConnectInvites extends ChangeNotifier {
   /// drop the [ChatService.setVerified] call and the contact lands exactly
   /// where [defer] leaves it.
   ///
+  /// The commitment the digits covered goes with the tick (26.3). The key it
+  /// commits to arrives in-band seconds later and moves the number to the
+  /// post-quantum one; until 2026-10-04 that read as a number nobody had
+  /// compared, and every connect-verified contact flipped to "re-verify" as
+  /// soon as its key landed. The digits had compared it, so the tick moves
+  /// with the key that matches — and only with that key.
+  ///
   /// [join]: for a group link opened here (ADR 0020), whether going ahead
   /// also joins the group — false makes the inviter a contact only, and
   /// tells them so. Ignored on any other invite.
@@ -449,7 +465,10 @@ class ConnectInvites extends ChangeNotifier {
     // A contact this answer did not add is left exactly as it was: marking
     // an existing record as compared, from a ceremony run at a distance, is
     // the trust-model change [_add] describes.
-    if (ours) await _svc.setVerified(contact.rid, true);
+    if (ours) {
+      await _svc.setVerified(contact.rid, true,
+          ceremonyCommit: invite.peer?.pqCommit);
+    }
     try {
       await _goAhead(invite, contact, join: join);
     } finally {

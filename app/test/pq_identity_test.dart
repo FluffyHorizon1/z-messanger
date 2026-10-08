@@ -137,7 +137,9 @@ void main() {
     final code = await a.myContactCode();
     expect(code, startsWith('zc1.'),
         reason: 'the emitted code stays readable by builds in the field');
-    expect(code.length, lessThan(400), reason: 'still QR-sized');
+    // ADR 0027's signature over the commitment adds ~130 characters: ~500,
+    // from ~370 — a version-15 symbol at error correction L.
+    expect(code.length, lessThan(520), reason: 'still QR-sized');
     // An older client reads it as an ordinary v1 identity.
     expect((await ContactBundle.decode(code)).edPub, a.identity.edPub);
 

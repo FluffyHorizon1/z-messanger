@@ -581,6 +581,18 @@ class ChatService extends ChangeNotifier implements KtHost {
       );
       _sealKeys[r['rid'] as String] = bundle.xPub;
     }
+    // ADR 0027 and 26.3: three per-contact facts that live in `kv` rather
+    // than in a column — whether their codes sign their commitment, the
+    // commitment a connect ceremony's digits covered, and an unsigned
+    // commitment held as a candidate. One query each, for every contact.
+    final kv = await vault.kvScanMany(['pqcs_', 'vpqc_', 'pqcc_']);
+    for (final c in contacts.values) {
+      c.pqcSigned = kv['pqcs_${c.rid}'] == '1';
+      final covered = kv['vpqc_${c.rid}'];
+      c.verifiedPqc = covered == null ? null : unb64(covered);
+      final hint = kv['pqcc_${c.rid}'];
+      c.pqcHint = hint == null ? null : unb64(hint);
+    }
   }
 
   /// Re-read the contact table from disk. Tests use it after writing a row
@@ -590,6 +602,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     contacts.clear();
     _verification.clear();
     _deviceAssurance.clear();
+    _devListCoversKeys.clear();
     await _loadContacts();
     await _refreshAllVerification();
     for (final rid in contacts.keys.toList()) {
@@ -1004,6 +1017,12 @@ class ChatService extends ChangeNotifier implements KtHost {
       throw FormatException(
           'already in your contacts as "${contacts[rid]!.name}"');
     }
+    // ADR 0027: their code signs its commitment, so from now on one that
+    // does not is told apart from it. An unsigned commitment on a NEW
+    // contact is held exactly as before: there is nothing yet to poison, and
+    // someone able to alter the code before its first scan could replace the
+    // whole identity in it, which is what comparing the number is for.
+    if (scanned.commitSigned) await _markPqcSigned(contact);
     await _onContactAdded(contact);
     // ADR 0011: hand them a signed request so they can accept without scanning
     // us back. (On a mutual scan they already added us; their side folds the
@@ -1023,9 +1042,34 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// change under the same classical identity unless something is wrong, and
   /// "delete the contact and add them again" is the honest path for a real
   /// reset. A code that brings nothing new is reported as it always was.
+  ///
+  /// ADR 0027 divides codes by whether their owner SIGNED the commitment in
+  /// them. A signed commitment is evidence and is treated as every commitment
+  /// was before. An unsigned one — every code from a build before ADR 0027,
+  /// and any code whose `pqcs` was removed — is not: anyone holding the
+  /// person's public code can write one, and pasting such a code used to set
+  /// a permanent "do not rely on this chat" on a contact who had done nothing.
+  /// So it is treated as ADR 0021 treats a key nothing commits to, a
+  /// candidate: a key it matches is established, and one it misses is never
+  /// refused on its strength — the CODE is refused, and nothing changes. And
+  /// once a contact's codes are known to sign ([Contact.pqcSigned]), a code
+  /// for them that does not is refused as one somebody may have stripped.
   Future<Contact> _upgradeContactFromCode(
       Contact c, ScannedIdentity scanned) async {
     final already = FormatException('already in your contacts as "${c.name}"');
+    final signed = scanned.commitSigned;
+    if (c.pqcSigned && !signed) {
+      // The routing id matched, so this is their device's own key, with its
+      // binding signature intact: an old code of theirs, or a current one with
+      // the commitment or its signature taken out. Either way it is not read
+      // as less than what is held, and nothing is changed by it.
+      throw ContactCodeRefused(
+          ContactCodeRefusal.commitStripped,
+          c.name,
+          'this code does not carry the signed post-quantum commitment that '
+          '"${c.name}"\'s codes carry: it may be an old code of theirs, or '
+          'someone removed it. Nothing was changed.');
+    }
     final v3 = scanned.v3;
     if (v3 == null) throw already; // a classical code: nothing to upgrade
     final same = constantTimeEquals(v3.edPub, c.bundle.edPub) &&
@@ -1038,7 +1082,11 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     final held = c.pqCommit;
     if (held != null) {
-      if (constantTimeEquals(held, v3.pqCommit)) throw already;
+      if (constantTimeEquals(held, v3.pqCommit)) {
+        // The commitment already held — and now known to be one they sign.
+        if (signed) await _markPqcSigned(c);
+        throw already;
+      }
       throw FormatException(
           'the post-quantum commitment in this code is not the one you hold '
           'for "${c.name}". If they reset their identity, delete the contact '
@@ -1063,16 +1111,29 @@ class ChatService extends ChangeNotifier implements KtHost {
       await vault.db.update('contacts', {'pq_commit': b64(v3.pqCommit)},
           where: 'rid = ?', whereArgs: [c.rid]);
       c.pqCommit = v3.pqCommit;
+      if (signed) await _markPqcSigned(c);
+      await _setPqcHint(c, null);
       notifyListeners();
       return c;
     }
     final cand = c.pqCandidate;
     if (cand == null) {
+      if (!signed) {
+        // ADR 0027: nothing to check it against yet, and nothing signs it.
+        // Held as a candidate for the key to be checked against when it
+        // arrives — never as a commitment a key could be refused for.
+        await _setPqcHint(c, v3.pqCommit);
+        _offerPqIdentity(c, _PqReason.nudge);
+        notifyListeners();
+        return c;
+      }
       // Nothing held yet: the commitment waits for the key, as after any v3
       // scan, and we ask for it now rather than on their next message.
       await vault.db.update('contacts', {'pq_commit': b64(v3.pqCommit)},
           where: 'rid = ?', whereArgs: [c.rid]);
       c.pqCommit = v3.pqCommit;
+      await _markPqcSigned(c);
+      await _setPqcHint(c, null);
       _offerPqIdentity(c, _PqReason.nudge);
       notifyListeners();
       return c;
@@ -1088,18 +1149,34 @@ class ChatService extends ChangeNotifier implements KtHost {
             'pq_commit': b64(v3.pqCommit),
             'enc_pq_pub': await vault.seal(b64(cand)),
             'enc_pq_cand': null,
+            if (tick?.moveTo != null) 'verified_sn': tick!.moveTo,
           },
           where: 'rid = ?',
           whereArgs: [c.rid]);
+      await _forgetCovered(c, tick);
       c.pqCommit = v3.pqCommit;
       c.pqPub = cand;
       c.pqCandidate = null;
-      if (tick != null) _setVerificationState(c.rid, tick);
+      _applyTick(c, tick);
+      if (signed) await _markPqcSigned(c);
+      await _setPqcHint(c, null);
       unawaited(_refreshDeviceAssurance(c.rid).then((_) {}, onError: (_) {}));
+    } else if (!signed) {
+      // ADR 0027: the key their app sent and a commitment nobody signed
+      // disagree, and only one of the two came from them. The code is what is
+      // refused; the contact, its key and its number stay exactly as they
+      // were — no flag, no line in the chat.
+      throw ContactCodeRefused(
+          ContactCodeRefusal.unsignedCommitMismatch,
+          c.name,
+          'the post-quantum commitment in this code does not match the key '
+          '"${c.name}"\'s app sent, and nothing in the code signs it, so it '
+          'may have been altered. Nothing was changed: compare the safety '
+          'number with them instead.');
     } else {
-      // The key that arrived in-band is not the one this code commits to: the
-      // same refusal an in-band mismatch gets, and it takes the candidate's
-      // number off the screen with it.
+      // The key that arrived in-band is not the one this code commits to — a
+      // commitment its owner signed: the same refusal an in-band mismatch
+      // gets, and it takes the candidate's number off the screen with it.
       await vault.db.update(
           'contacts',
           {
@@ -1112,6 +1189,8 @@ class ChatService extends ChangeNotifier implements KtHost {
       c.pqCommit = v3.pqCommit;
       c.pqCandidate = null;
       c.pqMismatch = true;
+      await _markPqcSigned(c);
+      await _setPqcHint(c, null);
       await _refreshVerification(c.rid, notify: false);
       await _insertSystemMessage(
           c.rid, systemBody(SystemKind.pqMismatch, {'name': c.name}));
@@ -1129,6 +1208,37 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     notifyListeners();
     return c;
+  }
+
+  /// ADR 0027: record that a code of [c]'s carried a signed commitment.
+  /// Best-effort: a write that fails leaves the contact where every contact
+  /// was before, and the next signed code of theirs records it again.
+  Future<void> _markPqcSigned(Contact c) async {
+    if (c.pqcSigned || _disposed) return;
+    try {
+      await vault.kvPut('pqcs_${c.rid}', '1');
+    } catch (_) {
+      return;
+    }
+    c.pqcSigned = true;
+  }
+
+  /// ADR 0027: hold [hint] — an unsigned commitment — as a candidate for
+  /// [c]'s key to be checked against, or drop the one held (null). The
+  /// latest code wins: a hint moves no number and can refuse nothing, so
+  /// there is nothing a second one could unsettle.
+  Future<void> _setPqcHint(Contact c, Uint8List? hint) async {
+    if (hint == null && c.pqcHint == null) return;
+    try {
+      if (hint == null) {
+        await vault.kvDelete('pqcc_${c.rid}');
+      } else {
+        await vault.kvPut('pqcc_${c.rid}', b64(hint));
+      }
+    } catch (_) {
+      return; // shutting down; a stale hint can only fail to match
+    }
+    c.pqcHint = hint;
   }
 
   /// The steps shared by every path that adds a NEW contact (a scan/paste, or
@@ -1583,7 +1693,17 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// app knows a number was checked but not which, so when the identity gains
   /// its post-quantum half and the number moves it can neither keep the tick
   /// honestly nor explain why it is dropping one.
-  Future<void> setVerified(String rid, bool v) async {
+  ///
+  /// [ceremonyCommit] (26.3): the contact's post-quantum commitment as a
+  /// CONNECT ceremony's eight digits covered it (`adr/0009`, §20.4) — passed
+  /// only by that ceremony. When it is the commitment this record holds and
+  /// the key has not arrived yet, it is kept with the tick: the digits have
+  /// already covered the key that will match it, so when that key lands the
+  /// tick moves onto the post-quantum number with it instead of asking for a
+  /// comparison that was made minutes ago. Any other confirmation, and any
+  /// withdrawal, clears it.
+  Future<void> setVerified(String rid, bool v,
+      {Uint8List? ceremonyCommit}) async {
     final c = contacts[rid];
     if (c == null) return;
     // ADR 0021: confirming the post-quantum number confirms the candidate it
@@ -1606,7 +1726,27 @@ class ChatService extends ChangeNotifier implements KtHost {
     final theirs = c.showsPostQuantumNumber ? c.numberKey : null;
     final Uint8List? promoted =
         (v && c.pqPub == null && theirs != null) ? c.pqCandidate : null;
+    // 26.3: what the digits covered, kept only while the number recorded is
+    // the classical one and the commitment it must match is the one held.
+    final held = c.pqCommit;
+    final Uint8List? covered = (v &&
+            theirs == null &&
+            ceremonyCommit != null &&
+            held != null &&
+            constantTimeEquals(held, ceremonyCommit))
+        ? Uint8List.fromList(ceremonyCommit)
+        : null;
     final sn = v ? await _safetyNumberOver(c, theirs) : null;
+    // Written BEFORE the tick: a tick on disk with no record of what its
+    // ceremony covered asks for a comparison again when the key lands — the
+    // old behaviour, and the safe way to be wrong — while the reverse leaves
+    // a record with no tick behind it, which nothing reads.
+    if (covered != null) {
+      await vault.kvPut('vpqc_${c.rid}', b64(covered));
+    } else if (c.verifiedPqc != null) {
+      await vault.kvDelete('vpqc_${c.rid}');
+    }
+    c.verifiedPqc = covered;
     await vault.db.update(
         'contacts',
         {
@@ -1655,11 +1795,28 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (c == null || !c.verified || c.verifiedSn == null) {
       return VerificationState.unverified;
     }
-    return _classifyVerification(
-        c,
-        await safetyNumberWith(rid),
-        await safetyNumber(
-            (await accountIdentity()).accountEdPub, c.accountEd));
+    final current = await safetyNumberWith(rid);
+    final state = _classifyVerification(c, current,
+        await safetyNumber((await accountIdentity()).accountEdPub, c.accountEd));
+    // 26.3: the same rule `_tickAfterMove` applies as a key lands, applied
+    // here too, so the outcome does not depend on order — a key that landed
+    // while a connect ceremony's tick was still being written (the two sides
+    // answer the digits independently, and the peer's key can arrive between
+    // the add and the tick), or a restart in between. A tick whose ceremony
+    // covered the key that is now established moves onto its number.
+    final covered = c.verifiedPqc, key = c.hybridKey;
+    if (state == VerificationState.upgradedReverify &&
+        covered != null &&
+        key != null &&
+        constantTimeEquals(covered, await key.pqCommitment())) {
+      final tick = (state: VerificationState.verified, moveTo: current);
+      if (await _writeMovedTick(c, tick)) {
+        await _forgetCovered(c, tick);
+        _applyTick(c, tick);
+        return VerificationState.verified;
+      }
+    }
+    return state;
   }
 
   /// The judgement itself, given the two numbers — kept synchronous and
@@ -1717,6 +1874,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     'cdev_', 'cdev_ver_', 'cdev_at_', 'cdev_sigfloor_', 'cdev_pq_',
     'cdev_pq_ver_', 'cdl_alert_', 'cdl_claims_', 'cextra_', 'dlpq_sent_',
     'ktc_', 'last_open_', 'pql_alert_',
+    'pqcc_', 'pqcs_', 'vpqc_', // ADR 0027 and 26.3: see `Contact`
   ];
 
   /// Forget a contact: every row, every blob, every `kv` family, and every
@@ -1834,6 +1992,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     _sealKeys.remove(rid);
     _deviceAssurance.remove(rid);
+    _devListCoversKeys.remove(rid);
     _verification.remove(rid);
     _pendingDlv.remove(rid);
     _helloSentMs.remove(rid);
@@ -1977,6 +2136,56 @@ class ChatService extends ChangeNotifier implements KtHost {
     final c = contacts[rid];
     if (c == null) return false;
     return (await _convFor(c)).isPostQuantum;
+  }
+
+  /// 26.3: whether the messages of the chat with [rid] are protected by the
+  /// post-quantum key exchange right now — on the ratchet with their device,
+  /// on each of their other devices', and on the self-sync mirror to each of
+  /// this account's own other devices, which carries every message. A
+  /// channel counts only when it is post-quantum both ways
+  /// (`Conversation.isPostQuantumBothWays`), and one that does not exist yet
+  /// counts as not: the screen may say no more than the sessions do.
+  ///
+  /// Synchronous, read from the sessions in memory, so the screen can ask on
+  /// every rebuild — and it is rebuilt by the inbound path, which is where
+  /// a session's post-quantum state changes.
+  MessagePq messagePqWith(String rid) {
+    final mine = _myDevicesPq();
+    final extras = _contactExtras[rid];
+    final others = extras?.targetRoutingIds ?? const <String>[];
+    return MessagePq(
+      contact: _convs[rid]?.isPostQuantumBothWays ?? false,
+      theirOther: others.length,
+      theirOtherPq: others.where((d) => extras!.postQuantumWith(d)).length,
+      mine: mine.$1,
+      minePq: mine.$2,
+    );
+  }
+
+  /// 26.3: [messagePqWith] for a group: which members' channels are not all
+  /// post-quantum yet, and this account's own devices. A member who is not a
+  /// contact here has no channel — nothing is sent to them — and is not
+  /// listed.
+  GroupMessagePq groupMessagePq(String gid) {
+    final g = groups[gid];
+    final mine = _myDevicesPq();
+    final notYet = <String>[
+      for (final rid in g?.memberRids ?? const <String>{})
+        if (contacts[rid] != null && !messagePqWith(rid).theirs) rid
+    ];
+    return GroupMessagePq(notYet: notYet, mine: mine.$1, minePq: mine.$2);
+  }
+
+  /// This account's other devices, and how many of their mirrors are
+  /// post-quantum both ways.
+  (int, int) _myDevicesPq() {
+    final sync = _sync;
+    if (sync == null) return (0, 0);
+    final devices = sync.deviceRoutingIds;
+    return (
+      devices.length,
+      devices.where((d) => sync.postQuantumWith(d)).length,
+    );
   }
 
   /// 7.5b: the current post-quantum generation with [rid] (0 after the first
@@ -2321,14 +2530,18 @@ class ChatService extends ChangeNotifier implements KtHost {
     } catch (_) {
       return false;
     }
-    VerificationState? tick;
+    _Tick? tick;
     final cand = contact.pqCandidate;
     if (cand != null && contact.pqPub == null && !contact.pqMismatch) {
       tick = await _tickAfterMove(
           contact, HybridPublicKey(edPub: contact.accountEd, mlPub: cand));
     }
+    if (tick?.moveTo != null && !await _writeMovedTick(contact, tick!)) {
+      tick = null; // not written: leave the tick where disk has it
+    }
+    await _forgetCovered(contact, tick);
     contact.pqAcked = true;
-    if (tick != null) _setVerificationState(contact.rid, tick);
+    _applyTick(contact, tick);
     return true;
   }
 
@@ -2337,8 +2550,16 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// reclassification are one step with no await between them, and nothing
   /// can observe a green tick against a number the user never compared.
   /// Null when no tick is recorded.
-  Future<VerificationState?> _tickAfterMove(
-      Contact contact, HybridPublicKey key) async {
+  ///
+  /// 26.3: a tick recorded by a CONNECT ceremony whose eight digits covered
+  /// [key]'s commitment ([Contact.verifiedPqc]) was a comparison of this key
+  /// already — the digits bind both commitments, and a commitment binds its
+  /// key. So that tick does not ask to be compared again: it moves onto the
+  /// post-quantum number (`moveTo`), which the caller writes as
+  /// `verified_sn` in the same update that installs the key. Every other tick
+  /// is classified as before, so one recorded against a key the digits did
+  /// not cover — a classical code's ceremony, a candidate — still asks.
+  Future<_Tick?> _tickAfterMove(Contact contact, HybridPublicKey key) async {
     if (!contact.verified || contact.verifiedSn == null) return null;
     final acctEd = (await accountIdentity()).accountEdPub;
     final myMl = await pqAccountPublic();
@@ -2347,7 +2568,49 @@ class ChatService extends ChangeNotifier implements KtHost {
         ? classical
         : await safetyNumberV3(
             HybridPublicKey(edPub: acctEd, mlPub: myMl), key);
-    return _classifyVerification(contact, after, classical);
+    final state = _classifyVerification(contact, after, classical);
+    final covered = contact.verifiedPqc;
+    if (state == VerificationState.upgradedReverify &&
+        covered != null &&
+        constantTimeEquals(covered, await key.pqCommitment())) {
+      return (state: VerificationState.verified, moveTo: after);
+    }
+    return (state: state, moveTo: null);
+  }
+
+  /// Lands what [_tickAfterMove] decided, in memory — after the caller has
+  /// written a moved tick to disk, and [_forgetCovered] what it consumed.
+  void _applyTick(Contact c, _Tick? tick) {
+    if (tick == null) return;
+    final moved = tick.moveTo;
+    if (moved != null) {
+      c.verifiedSn = moved;
+      c.verifiedPqc = null;
+    }
+    _setVerificationState(c.rid, tick.state);
+  }
+
+  /// A moved tick has used what its ceremony covered: drop it from disk.
+  /// Best-effort — one left behind is never read again, because the tick it
+  /// was kept for already stands on the number it was for.
+  Future<void> _forgetCovered(Contact c, _Tick? tick) async {
+    if (tick?.moveTo == null || c.verifiedPqc == null) return;
+    try {
+      await vault.kvDelete('vpqc_${c.rid}');
+    } catch (_) {}
+  }
+
+  /// Writes a moved tick on its own, for the paths that do not install a key
+  /// in the same update. False if it could not be written.
+  Future<bool> _writeMovedTick(Contact c, _Tick tick) async {
+    try {
+      if (_disposed) return false;
+      await vault.db.update('contacts', {'verified_sn': tick.moveTo},
+          where: 'rid = ?', whereArgs: [c.rid]);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Handles an inbound `pqid`. Returns true if what the contact screen shows
@@ -2392,20 +2655,48 @@ class ChatService extends ChangeNotifier implements KtHost {
       // contact's), and swapping would move a number the user may be reading
       // aloud. A refused key is not replaced by a candidate either.
       if (contact.pqCandidate != null || contact.pqMismatch) return changed;
-      try {
-        if (_disposed) return changed;
-        await vault.db.update('contacts',
-            {'enc_pq_cand': await vault.seal(b64(candidate.mlPub))},
-            where: 'rid = ?', whereArgs: [contact.rid]);
-      } catch (_) {
-        return changed; // shutting down; the key arrives again on traffic
+      // ADR 0027: a commitment from an unsigned code of theirs, scanned once
+      // they were already held, is a candidate too. Two candidates that agree
+      // — the key the ratchet authenticated as theirs, and a commitment to
+      // exactly that key — establish it, as a re-scan with a candidate held
+      // always has (ADR 0021). Two that disagree are not evidence against
+      // the key: only the commitment could have been written by someone
+      // else, so it is the commitment that goes, and the key is kept as the
+      // candidate it would have been without it.
+      final hint = contact.pqcHint;
+      if (hint != null) {
+        final hinted = ContactBundleV3(
+          edPub: contact.accountEd,
+          xPub: contact.bundle.xPub,
+          bindingSig: contact.bundle.bindingSig,
+          pqCommit: hint,
+        );
+        if (await hinted.acceptsPqKey(candidate)) {
+          return await _establishPqKey(contact, candidate, commit: hint) ||
+              changed;
+        }
+        await _setPqcHint(contact, null);
       }
       // If they have already acknowledged ours, the number moves the moment
       // this lands (13.3): reclassify in the same step.
       final tick =
           contact.pqAcked ? await _tickAfterMove(contact, candidate) : null;
+      try {
+        if (_disposed) return changed;
+        await vault.db.update(
+            'contacts',
+            {
+              'enc_pq_cand': await vault.seal(b64(candidate.mlPub)),
+              if (tick?.moveTo != null) 'verified_sn': tick!.moveTo,
+            },
+            where: 'rid = ?',
+            whereArgs: [contact.rid]);
+      } catch (_) {
+        return changed; // shutting down; the key arrives again on traffic
+      }
+      await _forgetCovered(contact, tick);
       contact.pqCandidate = candidate.mlPub;
-      if (tick != null) _setVerificationState(contact.rid, tick);
+      _applyTick(contact, tick);
       return true;
     }
     final scanned = ContactBundleV3(
@@ -2432,32 +2723,61 @@ class ChatService extends ChangeNotifier implements KtHost {
           systemBody(SystemKind.pqMismatch, {'name': contact.name}));
       return true;
     }
+    return await _establishPqKey(contact, candidate) || changed;
+  }
+
+  /// Installs [key] as [contact]'s ESTABLISHED post-quantum key — it matched
+  /// the commitment held, or ([commit]) an unsigned commitment held as a
+  /// candidate (ADR 0027), which becomes the commitment with it. False if
+  /// nothing could be written.
+  Future<bool> _establishPqKey(Contact contact, HybridPublicKey key,
+      {Uint8List? commit}) async {
+    // The number is about to move, which is the one moment in a contact's
+    // life when a tick can go stale (13.3). Work out what it becomes BEFORE
+    // installing the key, so the key and the reclassification land together
+    // and nothing can observe a green tick against the new number — and so a
+    // tick that moves with it (26.3) is written in the same update.
+    final tick = await _tickAfterMove(contact, key);
     // Persist FIRST, then update memory. If the write fails the contact stays
     // pending and the key simply arrives again — whereas setting the field
     // first would leave memory claiming hybrid while disk says classical, so
     // a restart would silently downgrade an identity the user had been told
     // was upgraded.
     try {
-      if (_disposed) return changed;
+      if (_disposed) return false;
       await vault.db.update(
-          'contacts', {'enc_pq_pub': await vault.seal(b64(candidate.mlPub))},
-          where: 'rid = ?', whereArgs: [contact.rid]);
+          'contacts',
+          {
+            'enc_pq_pub': await vault.seal(b64(key.mlPub)),
+            if (commit != null) 'pq_commit': b64(commit),
+            if (tick?.moveTo != null) 'verified_sn': tick!.moveTo,
+          },
+          where: 'rid = ?',
+          whereArgs: [contact.rid]);
     } catch (_) {
       // Shutting down, or the vault is gone. Best-effort: the nudge re-runs
       // the exchange next time.
-      return changed;
+      return false;
     }
-    // The number is about to move, which is the one moment in a contact's
-    // life when a tick can go stale (13.3). Work out what it becomes BEFORE
-    // installing the key, so the key and the reclassification land together
-    // and nothing can observe a green tick against the new number.
-    final tick = await _tickAfterMove(contact, candidate);
-    contact.pqPub = candidate.mlPub;
+    await _forgetCovered(contact, tick);
+    // A hint that matched is the commitment now (ADR 0027). Its row goes
+    // before memory changes, and memory changes in one step, so nothing can
+    // read an established key beside a hint still held. A row a failed
+    // delete leaves behind is never read: a hint is consulted only while no
+    // commitment is held.
+    if (commit != null) {
+      try {
+        await vault.kvDelete('pqcc_${contact.rid}');
+      } catch (_) {}
+      contact.pqCommit = commit;
+      contact.pqcHint = null;
+    }
+    contact.pqPub = key.mlPub;
+    _applyTick(contact, tick);
     // §18.9: a device-list signature that arrived before this key was held
     // rather than discarded. It can be checked now.
     unawaited(
         _refreshDeviceAssurance(contact.rid).then((_) {}, onError: (_) {}));
-    if (tick != null) _setVerificationState(contact.rid, tick);
     return true;
   }
 
@@ -9210,40 +9530,57 @@ class ChatService extends ChangeNotifier implements KtHost {
   DeviceAssurance deviceAssuranceWith(String rid) =>
       _deviceAssurance[rid] ?? DeviceAssurance.classical;
 
+  /// 26.3: whether the post-quantum signature over this contact's device list
+  /// also covers each device's ratchet key — true only for a hybrid-verified
+  /// v2-only list (`sig3` alone, ADR 0017 stage 2), whose ML-DSA is over the
+  /// v3 input. On a dual-signed list, every list signed today, the ML-DSA is
+  /// held at the v1 input: it fixes which devices are in the set and the
+  /// version, and a device's ratchet key is covered classically only.
+  bool deviceListCoversKeys(String rid) => _devListCoversKeys.contains(rid);
+  final Set<String> _devListCoversKeys = {};
+
   Future<void> _refreshDeviceAssurance(String rid,
       {bool notify = true, Map<String, String>? kv}) async {
     final was = _deviceAssurance[rid];
-    final now = await _computeDeviceAssurance(rid, kv: kv);
+    final wasKeys = _devListCoversKeys.contains(rid);
+    final (now, keys) = await _computeDeviceAssurance(rid, kv: kv);
     if (now == DeviceAssurance.classical) {
       _deviceAssurance.remove(rid);
     } else {
       _deviceAssurance[rid] = now;
     }
-    if (notify && was != now) notifyListeners();
+    if (keys) {
+      _devListCoversKeys.add(rid);
+    } else {
+      _devListCoversKeys.remove(rid);
+    }
+    if (notify && (was != now || wasKeys != keys)) notifyListeners();
   }
 
   /// [kv] is a startup snapshot of the per-contact keys (see `init`); without
-  /// it the two values are read individually.
-  Future<DeviceAssurance> _computeDeviceAssurance(String rid,
+  /// it the two values are read individually. The second value is
+  /// [deviceListCoversKeys].
+  Future<(DeviceAssurance, bool)> _computeDeviceAssurance(String rid,
       {Map<String, String>? kv}) async {
+    const none = (DeviceAssurance.classical, false);
     final contact = contacts[rid];
     final mlPub = contact?.pqPub;
-    if (contact == null || mlPub == null) return DeviceAssurance.classical;
+    if (contact == null || mlPub == null) return none;
     final listJson =
         kv != null ? kv['cdev_$rid'] : await vault.kvGet('cdev_$rid');
     final sigJson =
         kv != null ? kv['cdev_pq_$rid'] : await vault.kvGet('cdev_pq_$rid');
-    if (listJson == null || sigJson == null) return DeviceAssurance.classical;
+    if (listJson == null || sigJson == null) return none;
     try {
       final list = SignedDeviceList.fromJson(
           (jsonDecode(listJson) as Map).cast<String, Object?>());
       final sig = HybridDeviceListSignature.fromJson(
           (jsonDecode(sigJson) as Map).cast<String, Object?>());
       return await sig.verifies(list, mlPub)
-          ? DeviceAssurance.hybrid
-          : DeviceAssurance.classical;
+          ? (DeviceAssurance.hybrid, list.isV2Only)
+          : none;
     } catch (_) {
-      return DeviceAssurance.classical;
+      return none;
     }
   }
 
@@ -11220,6 +11557,11 @@ class _FileOffer {
         durSec: durSec,
       );
 }
+
+/// What a tick becomes when the number moves (13.3): its new state, and —
+/// when a connect ceremony had already covered the key the number moves to
+/// (26.3) — the number it now stands on, which is written with the key.
+typedef _Tick = ({VerificationState state, String? moveTo});
 
 /// A `ginvite`'s fields as [ChatService._parseList] read them.
 class _WireList {

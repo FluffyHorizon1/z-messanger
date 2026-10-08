@@ -183,10 +183,16 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                   if (contact.assurance == IdentityAssurance.hybrid) ...[
                     const SizedBox(height: 8),
                     Text(
-                      svc.deviceAssuranceWith(widget.rid) ==
+                      // 26.3: "cannot be forged" is said of the keys messages
+                      // are encrypted to only when the signature covers them
+                      // — a v2-only list (ADR 0017 stage 2); a list signed
+                      // today is covered post-quantum for its membership.
+                      svc.deviceAssuranceWith(widget.rid) !=
                               DeviceAssurance.hybrid
-                          ? l.ciDevListHybrid
-                          : l.ciDevListClassical,
+                          ? l.ciDevListClassical
+                          : svc.deviceListCoversKeys(widget.rid)
+                              ? l.ciDevListHybridKeys
+                              : l.ciDevListHybrid,
                       style: TextStyle(
                           fontSize: 12,
                           color: context.z.textSecondary,
@@ -213,6 +219,12 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
               ),
             ),
           ),
+          const SizedBox(height: 12),
+          // 26.3: the card above is about who they are; this is about the
+          // messages, which travel on ratchets with a post-quantum state of
+          // their own.
+          MessagePqNotice.contact(
+              l, svc.messagePqWith(widget.rid), contact.name),
           const SizedBox(height: 8),
           ListTile(
             leading: const Icon(Icons.timer_outlined),
@@ -510,6 +522,107 @@ class _Banner extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 26.3: whether the MESSAGES of a chat are protected by the post-quantum key
+/// exchange right now — the question the green "Post-quantum" pill does not
+/// answer, because the pill is about the identity (ML-DSA-65) and the safety
+/// number, not about the ratchets the messages travel on.
+///
+/// It says no more than the sessions do ([MessagePq]): post-quantum only when
+/// every channel the messages use is post-quantum both ways, and otherwise
+/// which channels are not, in words. A channel that does not exist yet is
+/// not post-quantum, and is said to be so.
+class MessagePqNotice extends StatelessWidget {
+  final bool protected;
+  final String body;
+
+  const MessagePqNotice._({required this.protected, required this.body});
+
+  /// For the chat with [name].
+  factory MessagePqNotice.contact(
+      AppLocalizations l, MessagePq pq, String name) {
+    if (pq.all) {
+      return MessagePqNotice._(protected: true, body: l.ciMsgPqBody);
+    }
+    final missing = [
+      if (!pq.contact) l.ciMsgChanContact(name),
+      if (pq.theirOtherPq < pq.theirOther)
+        l.ciMsgChanTheirOther(pq.theirOther - pq.theirOtherPq, name),
+      if (pq.minePq < pq.mine) l.ciMsgChanMine(pq.mine - pq.minePq),
+    ];
+    return MessagePqNotice._(
+        protected: false, body: l.ciMsgNotYetBody(missing.join(', ')));
+  }
+
+  /// For a group: [names] are the members [GroupMessagePq.notYet] lists, as
+  /// the group screen names them.
+  factory MessagePqNotice.group(
+      AppLocalizations l, GroupMessagePq pq, List<String> names) {
+    if (pq.all) {
+      return MessagePqNotice._(protected: true, body: l.grpMsgPqBody);
+    }
+    final missing = [
+      ...names,
+      if (pq.minePq < pq.mine) l.ciMsgChanMine(pq.mine - pq.minePq),
+    ];
+    return MessagePqNotice._(
+        protected: false, body: l.ciMsgNotYetBody(missing.join(', ')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final title = protected ? l.ciMsgPqTitle : l.ciMsgNotYetTitle;
+    // The protected state in the success colour, the other in the warning
+    // one: it is not an alarm — it is normal for the first moments of a
+    // chat — but it is a weaker protection than the rest of the screen
+    // implies, and it should not look like the good state.
+    final tone = protected ? context.z.ok : context.z.warn;
+    return Semantics(
+      container: true,
+      excludeSemantics: true,
+      label: [title, body].join('\n'),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: tone.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: tone.withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+                protected
+                    ? Icons.enhanced_encryption_outlined
+                    : Icons.lock_clock_outlined,
+                size: 18,
+                color: tone),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: tone)),
+                  const SizedBox(height: 4),
+                  Text(body,
+                      style: TextStyle(
+                          fontSize: 12,
+                          height: 1.5,
+                          color: context.z.textPrimary)),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
