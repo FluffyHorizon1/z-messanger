@@ -23,6 +23,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sys
 
 try:
@@ -642,11 +643,280 @@ def check_devlist_fingerprints():
         ok(devlist_admitted(absent, acct), f"must refuse: with the null {m} read as absent it would be admitted")
 
 
+# --- bucket.json: §19.9 lookups by bucket, §21.5 the handle log -----------------------
+
+HOUR = 3_600_000
+
+
+def handle_sth_input(h):
+    return b"z-handle-sth-v1:" + u64be(h["size"]) + b64(h["logRoot"]) + b64(h["mapRoot"]) + u64be(h["ts"])
+
+
+def handle_leaf_input(label, version, value_hash, ts):
+    return b"z-handle-leaf-v1:" + label + u64be(version) + value_hash + u64be(ts)
+
+
+def handle_publish_input(label, version, value_hash):
+    return b"z-handle-publish-v1:" + label + u64be(version) + value_hash
+
+
+def handle_recover_input(label, version, owner, rc):
+    return b"z-handle-recover-v1:" + label + u64be(version) + owner + rc
+
+
+def handle_rc(recovery_pub):
+    return sha256(b"z-handle-rc-v1:", recovery_pub)
+
+
+def parse_prefix(hexs, bits):
+    """⌈bits/4⌉ hex digits, the unused low bits zero; None otherwise."""
+    if not isinstance(hexs, str) or len(hexs) != (bits + 3) // 4 or not re.fullmatch(r"[0-9a-fA-F]*", hexs):
+        return None
+    raw = bytes.fromhex(hexs + ("0" if len(hexs) % 2 else ""))
+    p = raw + bytes(32 - len(raw))
+    if any(bit(p, d) for d in range(bits, len(hexs) * 4)):
+        return None
+    return p
+
+
+def bucket_subtree(leaves, depth):
+    """The subtree at [depth] holding exactly [leaves], by the definition: recurse to depth 256."""
+    if not leaves:
+        return EMPTY[depth]
+    if depth == DEPTH:
+        assert len(leaves) == 1
+        label, index, version = leaves[0]
+        return map_leaf(label, index, version)
+    left = [x for x in leaves if bit(x[0], depth) == 0]
+    right = [x for x in leaves if bit(x[0], depth) == 1]
+    return map_node(bucket_subtree(left, depth + 1), bucket_subtree(right, depth + 1))
+
+
+def bucket_answer(mode, log_pub, asked, resp):
+    """The verified leaves of every bucket in [resp], or None if anything in it fails."""
+    h = resp["sth"]
+    head_input = handle_sth_input(h) if mode == "handles" else sth_input(h)
+    if not ed_verify(log_pub, head_input, b64(h["sig"])):
+        return None
+    served = resp["buckets"] if "buckets" in resp else [resp]
+    if len(served) != len(asked):
+        return None
+    out = []
+    for want, b in zip(asked, served):
+        prefix = parse_prefix(want["prefix"], want["bits"])
+        if prefix is None or b["bits"] != want["bits"] or b["prefix"].lower() != want["prefix"].lower():
+            return None
+        k = want["bits"]
+        if len(b["siblings"]) != k or len(b["leaves"]) > 4096:
+            return None
+        leaves = [(b64(x["label"]), x["index"], x["version"]) for x in b["leaves"]]
+        if any(len(l[0]) != 32 for l in leaves):
+            return None
+        if any(leaves[i][0] >= leaves[i + 1][0] for i in range(len(leaves) - 1)):
+            return None
+        if any(bit(l[0], d) != bit(prefix, d) for l in leaves for d in range(k)):
+            return None
+        node = bucket_subtree(leaves, k)
+        for i, s in enumerate(b["siblings"]):
+            d = k - 1 - i
+            node = map_node(node, b64(s)) if bit(prefix, d) == 0 else map_node(b64(s), node)
+        if node != b64(h["mapRoot"]):
+            return None
+        if mode == "handles":
+            for x in b["leaves"]:
+                value = b64(x["value"])
+                if x["ts"] % HOUR != 0 or len(value) > 1024 or len(b64(x["sig"])) != 64:
+                    return None
+                lh = leaf_hash(handle_leaf_input(b64(x["label"]), x["version"], sha256(value), x["ts"]))
+                if not verify_inclusion(lh, x["index"], h["size"], b64(h["logRoot"]), [b64(p) for p in x["audit"]]):
+                    return None
+        out.append(b["leaves"])
+    return out
+
+
+class Refused(Exception):
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+def b64url_exact(s, n):
+    if not isinstance(s, str) or len(s) != (n * 4 + 2) // 3 or not re.fullmatch(r"[A-Za-z0-9_-]+", s):
+        raise Refused("bad_record")
+    raw = base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+    if len(raw) != n or base64.urlsafe_b64encode(raw).rstrip(b"=").decode() != s:
+        raise Refused("bad_record")
+    return raw
+
+
+def parse_record(value):
+    """§21.5's record, or Refused: one canonical encoding, members in range."""
+    if len(value) > 1024:
+        raise Refused("too_large")
+    try:
+        j = json.loads(value.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise Refused("bad_record")
+    if not isinstance(j, dict) or j.get("k") not in ("claim", "update", "recover") or "intro" not in j:
+        raise Refused("bad_record")
+    rec = {"k": j["k"], "owner": b64url_exact(j.get("owner"), 32)}
+    rec["intro"] = None if j["intro"] is None else b64url_exact(j["intro"], 32)
+    # Amendment 1: the mailbox's X25519 key, present exactly when intro is.
+    if "xintro" not in j:
+        raise Refused("bad_record")
+    rec["xintro"] = None if j["xintro"] is None else b64url_exact(j["xintro"], 32)
+    if (rec["intro"] is None) != (rec["xintro"] is None):
+        raise Refused("bad_record")
+    if type(j.get("pow")) is not int or not 16 <= j["pow"] <= 28:
+        raise Refused("bad_record")
+    rec["pow"] = j["pow"]
+    rec["rc"] = b64url_exact(j.get("rc"), 32)
+    canon = {"k": j["k"], "owner": j["owner"], "intro": j["intro"], "xintro": j["xintro"], "pow": j["pow"], "rc": j["rc"]}
+    if j["k"] == "recover":
+        rec["rpub"] = b64url_exact(j.get("rpub"), 32)
+        rec["rsig"] = b64url_exact(j.get("rsig"), 64)
+        canon["rpub"] = j["rpub"]
+        canon["rsig"] = j["rsig"]
+    if json.dumps(canon, separators=(",", ":")).encode() != value:
+        raise Refused("bad_record")
+    return rec
+
+
+def owner_rule(state, label, version, value, sig):
+    """One publish against the labels' state {label: (version, owner, rc)}, in the
+    order the reference log refuses: what needs no history, then taken, then the
+    version, then the rule. Returns the label's new state or raises Refused."""
+    rec = parse_record(value)
+    if not ed_verify(rec["owner"], handle_publish_input(label, version, sha256(value)), sig):
+        raise Refused("bad_signature")
+    if rec["k"] == "recover" and not ed_verify(rec["rpub"], handle_recover_input(label, version, rec["owner"], rec["rc"]), rec["rsig"]):
+        raise Refused("bad_recovery")
+    prev = state.get(label)
+    if rec["k"] == "claim" and prev:
+        raise Refused("taken")
+    if prev and not version > prev[0]:
+        raise Refused("stale_version")
+    if rec["k"] != "claim":
+        if not prev:
+            raise Refused("owner_rule")
+        if rec["k"] == "update" and (rec["owner"] != prev[1] or rec["rc"] != prev[2]):
+            raise Refused("owner_rule")
+        if rec["k"] == "recover" and handle_rc(rec["rpub"]) != prev[2]:
+            raise Refused("bad_recovery")
+    return (version, rec["owner"], rec["rc"])
+
+
+def check_bucket():
+    v = json.load(open(os.path.join(DIR, "bucket.json")))
+    for mode in ("kt", "handles"):
+        part = v[mode]
+        pub = bytes.fromhex(part["log"]["pub"])
+        eq(Ed25519PrivateKey.from_private_bytes(bytes.fromhex(part["log"]["seed"])).public_key().public_bytes_raw().hex(), part["log"]["pub"], f"{mode}: the log key from its seed")
+        for b in part["buckets"]:
+            got = bucket_answer(mode, pub, [b["asked"]], json.loads(b["response_json"]))
+            ok(got is not None, f"{mode}: bucket {b['asked']} verifies")
+            eq([b64(x["label"]).hex() for x in got[0]], b["expect_labels"], f"{mode}: bucket {b['asked']} holds the labels expected")
+        for m in part["must_refuse"]:
+            ok(bucket_answer(mode, pub, m["asked"], json.loads(m["response_json"])) is None, f"{mode} must refuse: {m['why']}")
+        # A head of one log under the other's context never verifies.
+        other = "kt" if mode == "handles" else "handles"
+        ok(bucket_answer(other, pub, [part["buckets"][0]["asked"]], json.loads(part["buckets"][0]["response_json"])) is None,
+           f"{mode}: its head is not a {other} head")
+
+    kt = v["kt"]
+    pub = bytes.fromhex(kt["log"]["pub"])
+    # Every bucket at k = 0 holds every label; the k = 0 answer is the whole map.
+    eq(sorted(kt["buckets"][0]["expect_labels"]), sorted(kt["labels"]), "kt: the k = 0 bucket is every label")
+    for b in kt["buckets"]:
+        prefix = parse_prefix(b["asked"]["prefix"], b["asked"]["bits"])
+        want = sorted(l for l in kt["labels"] if all(bit(bytes.fromhex(l), d) == bit(prefix, d) for d in range(b["asked"]["bits"])))
+        eq(b["expect_labels"], want, f"kt: bucket {b['asked']} is exactly the labels with its prefix")
+    e = kt["empty_bucket"]
+    got = bucket_answer("kt", pub, [e["asked"]], json.loads(e["response_json"]))
+    ok(got == [[]], "kt: an empty bucket verifies, empty")
+    ok(e["absent_label_example"][:2] == e["asked"]["prefix"], "kt: the absent label falls in the empty bucket")
+    req = json.loads(kt["post_buckets"]["request_json"])["buckets"]
+    ok(bucket_answer("kt", pub, req, json.loads(kt["post_buckets"]["response_json"])) is not None, "kt: three buckets under one head")
+    ei = json.loads(kt["entries_by_index"]["response_json"])
+    ok(verify_sth(ei["sth"], pub), "kt: entries by index, the head")
+    eq([x["entry"]["index"] for x in ei["entries"]], json.loads(kt["entries_by_index"]["request_json"])["indexes"], "kt: entries by index, in the order asked")
+    for x in ei["entries"]:
+        ok(sha256(b64(x["entry"]["value"])) == b64(x["entry"]["valueHash"]), "kt: entry by index, value hash")
+        ok(verify_inclusion(entry_leaf_hash(x["entry"]), x["inclusion"]["index"], ei["sth"]["size"], b64(ei["sth"]["logRoot"]),
+                            [b64(p) for p in x["inclusion"]["path"]]), f"kt: entry {x['entry']['index']} by index is included")
+
+    hl = v["handles"]
+    pub = bytes.fromhex(hl["log"]["pub"])
+    for ctx, s in (("handle_leaf", "z-handle-leaf-v1:"), ("handle_sth", "z-handle-sth-v1:"), ("handle_witness", "z-handle-witness-v1:"),
+                   ("handle_publish", "z-handle-publish-v1:"), ("handle_recover", "z-handle-recover-v1:"), ("handle_rc", "z-handle-rc-v1:"),
+                   ("handle_intro_x_salt", "z-handle-intro-x-v1")):
+        eq(v["contexts"][ctx], s, f"context {ctx}")
+    keys = {}
+    for name, seed in hl["seeds"].items():
+        keys[name] = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed)).public_key().public_bytes_raw()
+        eq(keys[name].hex(), hl["keys"][name]["pub"], f"handles: the {name} key from its seed")
+    eq(handle_rc(keys["recovery"]).hex(), hl["rc"], "handles: rc from the recovery key")
+    eq(handle_rc(keys["recovery2"]).hex(), hl["rc_after_recover"], "handles: rc after the recover")
+    eq(handle_sth_input(hl["head"]).hex(), hl["head_input"], "handles: the head input")
+    ok(ed_verify(pub, handle_sth_input(hl["head"]), b64(hl["head"]["sig"])), "handles: the head, in the handle context")
+    ok(not verify_sth(hl["head"], pub), "handles: and not in the key-transparency one")
+    # The publishes, each re-derived, and the owner rule run over them in order.
+    state = {}
+    leaves = []
+    for p in hl["publishes"]:
+        r = json.loads(p["request_json"])
+        # The label is unpadded base64url on the wire (§21.5); value and sig base64.
+        label, value, sig = b64url_exact(r["label"], 32), b64(r["value"]), b64(r["sig"])
+        eq(label.hex(), p["label"], "handles: the request's label (b64url)")
+        eq(value.decode(), p["record_json"], "handles: the request carries the record")
+        rec = parse_record(value)
+        eq(rec["k"], p["k"], "handles: the record's kind")
+        # Amendment 1: both introduction keys from the one seed — the Ed25519
+        # key of the seed, and the X25519 key of HKDF-SHA256(seed, salt
+        # "z-handle-intro-x-v1", info "", 32). The log does not check this;
+        # the vectors pin the derivation the owner is to use.
+        if "intro_seed" in p:
+            iseed = bytes.fromhex(p["intro_seed"])
+            eq(rec["intro"], Ed25519PrivateKey.from_private_bytes(iseed).public_key().public_bytes_raw(), "handles: intro from the intro seed")
+            xseed = HKDF(algorithm=hashes.SHA256(), length=32, salt=b"z-handle-intro-x-v1", info=b"").derive(iseed)
+            eq(rec["xintro"], X25519PrivateKey.from_private_bytes(xseed).public_key().public_bytes_raw(), "handles: xintro from the intro seed")
+        else:
+            ok(rec["intro"] is None and rec["xintro"] is None, "handles: no intro seed, no introduction keys")
+        eq(handle_publish_input(label, p["version"], sha256(value)).hex(), p["publish_input"], "handles: the publish input")
+        eq(sig.hex(), p["sig"], "handles: the publish signature")
+        if p["k"] == "recover":
+            eq(handle_recover_input(label, p["version"], rec["owner"], rec["rc"]).hex(), p["recover_input"], "handles: the recover input")
+            eq(rec["rpub"].hex(), p["rpub"], "handles: rpub")
+            eq(rec["rsig"].hex(), p["rsig"], "handles: rsig")
+        state[label] = owner_rule(state, label, p["version"], value, sig)
+        ts = (p["accepted_ms"] // HOUR) * HOUR
+        eq(p["entry"]["json"]["ts"], ts, "handles: the entry keeps the hour it was accepted in")
+        li = handle_leaf_input(label, p["version"], sha256(value), ts)
+        eq(li.hex(), p["entry"]["leaf_input"], "handles: the leaf input")
+        eq(leaf_hash(li).hex(), p["entry"]["leaf_hash"], "handles: the leaf hash")
+        eq(p["entry"]["json"]["sig"], r["sig"], "handles: the entry serves the owner's signature")
+        leaves.append(leaf_hash(li))
+    eq(mth(leaves), b64(hl["head"]["logRoot"]), "handles: the publishes give the head's log root")
+    latest = {}
+    for i, p in enumerate(hl["publishes"]):
+        latest[bytes.fromhex(p["label"])] = (i, p["version"])
+    eq(map_root(latest), b64(hl["head"]["mapRoot"]), "handles: and its map root")
+    eq(state[bytes.fromhex(hl["publishes"][3]["label"])][1], keys["owner2"], "handles: the recover moved the label to its new owner")
+    for r in hl["owner_rule_refusals"]:
+        j = json.loads(r["request_json"])
+        try:
+            owner_rule(state, b64url_exact(j["label"], 32), j["v"], b64(j["value"]), b64(j["sig"]))
+            ok(False, f"handles: the owner rule refuses {r['why']}")
+        except Refused as x:
+            eq(x.code, r["code"], f"handles: {r['why']}: refused as")
+
+
 def main():
     check_log_tree()
     check_map_tree()
     check_kt_log()
     check_devlist_fingerprints()
+    check_bucket()
     print(f"docs/vectors/kt: {checks} values reproduced or refused by an independent implementation")
     return 0
 

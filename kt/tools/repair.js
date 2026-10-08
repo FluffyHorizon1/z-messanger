@@ -23,12 +23,14 @@
  *   node tools/repair.js /var/lib/z-kt/entries.jsonl --write  # do it
  *
  * Stop the log first: it holds the file open for append, and a repair under
- * a running log would be undone by the next publish.
+ * a running log would be undone by the next publish. For the handle log, run
+ * it with KT_MODE=handles, as the log runs.
  */
 const fs = require('fs');
 const path = require('path');
 
 const { KtLog, FileStore } = require('../lib/log.js');
+const { modeFromEnv } = require('../lib/handles.js');
 
 /**
  * The file's last newline, or -1. Read backwards in windows so a large log
@@ -133,7 +135,9 @@ function main(argv) {
   // head somebody else wrote, leaving the operator to delete the very file
   // that holds the log to its own history.
   try {
-    const log = new KtLog({ store: new FileStore(file), signingKey: null });
+    // KT_MODE as the log itself reads it: a handle log's file replays under
+    // the handle log's rules, the owner rule included.
+    const log = new KtLog({ store: new FileStore(file), signingKey: null, mode: modeFromEnv(process.env.KT_MODE) });
     console.log(`It opens: ${log.size} entries, ${log.map.size} labels.`);
     if (!log.store.readHead()) {
       console.log('There is no head beside it; the log records one, with its own key, when it next starts.');

@@ -45,12 +45,19 @@
  *
  * The public key to pin comes from the log's operator out of band (it is also
  * at GET /kt/v1/pub, which is fine for a first look and no good as a pin).
+ *
+ * --mode handles (KT_MODE=handles) mirrors and witnesses the HANDLE log
+ * (PROTOCOL §21.5) instead: its contexts, its entries, and the owner rule
+ * over every one of them — a log that accepted an update its owner did not
+ * sign is a divergence here like a fork. A witness of the handle log is a
+ * witness of that log alone, with its own directory and its own key.
  */
 
 const http = require('http');
 
 const { Mirror, Divergence, makeFetchJson, defaultMaxEntries, FETCH_TIMEOUT_MS } = require('../lib/mirror.js');
 const { privateKeyFromSeed } = require('../lib/log.js');
+const { modeFromEnv } = require('../lib/handles.js');
 
 function parseArgs(argv, env) {
   const num = (v) => (v !== undefined && v !== '' ? Number(v) : undefined);
@@ -64,6 +71,7 @@ function parseArgs(argv, env) {
     maxEntries: num(env.KT_MIRROR_MAX_ENTRIES),
     fetchTimeout: num(env.KT_FETCH_TIMEOUT),
     staleAfter: num(env.KT_STALE_AFTER),
+    mode: env.KT_MODE,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -80,9 +88,11 @@ function parseArgs(argv, env) {
     else if (a === '--max-entries') o.maxEntries = Number(next());
     else if (a === '--fetch-timeout') o.fetchTimeout = Number(next());
     else if (a === '--stale-after') o.staleAfter = Number(next());
+    else if (a === '--mode') o.mode = next();
     else if (a === '--help' || a === '-h') o.help = true;
     else throw new Error(`unknown argument ${a}`);
   }
+  o.mode = modeFromEnv(o.mode);
   if (o.serve !== undefined && o.every === undefined) o.every = 300;
   if (o.every === undefined) o.every = 0;
   if (o.maxEntries === undefined) o.maxEntries = defaultMaxEntries();
@@ -94,9 +104,9 @@ function parseArgs(argv, env) {
 function usage() {
   console.error(
     'usage: node tools/mirror.js --log URL --pub BASE64 --dir DIR [--witness-seed-env NAME] [--every SECONDS] [--serve PORT]\n' +
-      '         [--max-entries N] [--fetch-timeout SECONDS] [--stale-after SECONDS]\n' +
+      '         [--max-entries N] [--fetch-timeout SECONDS] [--stale-after SECONDS] [--mode handles]\n' +
       '       (or KT_LOG_URL, KT_LOG_PUB, KT_MIRROR_DIR, KT_WITNESS_SEED, KT_EVERY, KT_SERVE_PORT,\n' +
-      '        KT_MIRROR_MAX_ENTRIES, KT_FETCH_TIMEOUT, KT_STALE_AFTER in the environment)'
+      '        KT_MIRROR_MAX_ENTRIES, KT_FETCH_TIMEOUT, KT_STALE_AFTER, KT_MODE in the environment)'
   );
 }
 
@@ -151,13 +161,14 @@ function serveWitness(mirror, port, state, staleAfterMs) {
           lastError: state.lastError,
           diverged: state.diverged,
           log: mirror.logUrl,
+          ...(mirror.mode === 'handles' ? { mode: 'handles' } : {}),
         }) + '\n'
       );
       return;
     }
     if (url === '/') {
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
-      res.end(`Z transparency-log witness for ${mirror.logUrl}. GET /sth.json for the last co-signed head, /health for state.\n`);
+      res.end(`Z ${mirror.mode === 'handles' ? 'handle-log' : 'transparency-log'} witness for ${mirror.logUrl}. GET /sth.json for the last co-signed head, /health for state.\n`);
       return;
     }
     res.writeHead(404, { 'content-type': 'text/plain' });
@@ -226,6 +237,7 @@ async function main() {
       witnessKey,
       maxEntries: o.maxEntries,
       fetchJson: makeFetchJson({ timeoutMs: o.fetchTimeout * 1000 }),
+      mode: o.mode,
     }).load();
   } catch (e) {
     console.error(`mirror: ${e.message}`);

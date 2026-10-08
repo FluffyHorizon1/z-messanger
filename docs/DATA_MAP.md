@@ -170,6 +170,20 @@ Named here so this document does not silently go stale as the roadmap moves:
   `adr/0005` proposes the answer — direct after accept by default, nothing
   before accept, relay one switch away — with a table of who sees what on
   each path; the rows land here when it is accepted.
+* **Handles (phase 38)** will add a third service: the handle log (`kt/` with
+  `KT_MODE=handles`, PROTOCOL.md §21.5), whose server side is built (36.2) and
+  which no client uses yet. What it holds, and serves to anyone, is what a
+  user who opted in published for their handle — under a 32‑byte label
+  derived from the handle by Argon2id, the handle itself never sent: each of
+  its records (the owner's public key, the introduction mailbox's two keys —
+  Ed25519 and X25519 — or none while paused, the proof‑of‑work level, the
+  recovery commitment, and on a recovery
+  the recovery key and its signature), the owner's signature over each, and
+  the hour each was accepted, never finer. It stores nothing it does not
+  serve. Its operator also sees the address a record is published from, and
+  for a lookup the bucket asked for — one of 32 to 64 handles (§19.9,
+  `adr/0023`) — and the address asking. The rows land in the tables above
+  when the app ships handles.
 
 ---
 

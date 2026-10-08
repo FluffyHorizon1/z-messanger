@@ -160,6 +160,79 @@ class SparseMerkleMap {
     }
     return { leaf: this.get(label), bitmap, siblings };
   }
+
+  /**
+   * The bucket of every label whose first [bits] bits are [prefix]'s
+   * (PROTOCOL §19.9): its leaves in label order, the hash of the subtree
+   * that holds exactly them (at depth [bits]), and the siblings that fold
+   * that hash to the root, from depth bits−1 up to depth 0. [prefix] is a
+   * 32‑byte buffer whose bits past [bits] are ignored (`parsePrefix`).
+   *
+   * Returns null when the bucket holds more than [max] leaves — found by
+   * stopping at max + 1, so a bucket too large to serve costs what a bucket
+   * of [max] does and never what the whole map does.
+   *
+   * Everything comes out of the tree as it stands: the path to depth [bits]
+   * is ~log₂ N internal nodes whose hashes are already known, and the only
+   * hashing is a chain, when one label sits alone above depth [bits].
+   */
+  bucket(prefix, bits, max = Infinity) {
+    if (!Number.isInteger(bits) || bits < 0 || bits > DEPTH) throw new Error('bits is 0..256');
+    const sibs = new Array(bits);
+    let node = this._root;
+    let hash = null;
+    let d = 0;
+    while (d < bits) {
+      if (node === null) {
+        for (; d < bits; d++) sibs[d] = EMPTY[d + 1];
+        break;
+      }
+      if (node instanceof Single) {
+        // One label below depth d. It is in the bucket if it agrees with the
+        // prefix down to depth [bits]; if not, they part at depth e, where
+        // the sibling is the label's own subtree and everything else is
+        // empty — and so is the bucket.
+        const one = node;
+        let e = d;
+        while (e < bits && bit(one.label, e) === bit(prefix, e)) e++;
+        for (; d < bits; d++) {
+          sibs[d] = d === e ? chainHash(one.label, one.index, one.version, e + 1) : EMPTY[d + 1];
+        }
+        if (e === bits) {
+          hash = chainHash(one.label, one.index, one.version, bits);
+        } else {
+          node = null;
+        }
+        break;
+      }
+      const b = bit(prefix, d);
+      const sib = b === 0 ? node.right : node.left;
+      sibs[d] = sib ? sib.hash : EMPTY[d + 1];
+      node = b === 0 ? node.left : node.right;
+      d++;
+    }
+    const leaves = [];
+    if (!collect(node, leaves, max)) return null;
+    if (hash === null) hash = node === null ? EMPTY[bits] : node.hash;
+    const siblings = [];
+    for (let k = bits - 1; k >= 0; k--) siblings.push(sibs[k]);
+    return { leaves, hash, siblings };
+  }
+}
+
+/**
+ * Every label under [node], in label order, into [out] — or false as soon as
+ * there are more than [max]. A left‑first walk visits labels in ascending
+ * byte order, because bit 0 is the most significant bit of byte 0.
+ */
+function collect(node, out, max) {
+  if (node === null) return true;
+  if (node instanceof Single) {
+    if (out.length >= max) return false;
+    out.push({ label: node.label, index: node.index, version: node.version });
+    return true;
+  }
+  return collect(node.left, out, max) && collect(node.right, out, max);
 }
 
 /** Insert or update `label` in the subtree `node` rooted at `depth`; returns the new subtree. */
@@ -203,6 +276,84 @@ function verifyMapProof({ root, label, leaf, bitmap, siblings }) {
   return h.equals(root);
 }
 
+// --- Buckets (PROTOCOL §19.9) ---------------------------------------------------
+
+/**
+ * A bucket's prefix as the protocol writes it: the first [bits] bits of a
+ * label as ⌈bits/4⌉ lowercase hex digits, the unused low bits zero ("" for
+ * bits = 0).
+ */
+function prefixHex(label, bits) {
+  const digits = Math.ceil(bits / 4);
+  const b = Buffer.alloc(32);
+  for (let d = 0; d < bits; d++) if (bit(label, d)) b[d >> 3] |= 1 << (7 - (d & 7));
+  return b.toString('hex').slice(0, digits);
+}
+
+/**
+ * The prefix [hex] names at [bits], as a 32‑byte buffer with every later bit
+ * zero — or null unless it is exactly ⌈bits/4⌉ hex digits with the unused
+ * low bits zero, so that every bucket has one spelling (either case is read).
+ */
+function parsePrefix(hex, bits) {
+  if (!Number.isInteger(bits) || bits < 0 || bits > DEPTH) return null;
+  if (typeof hex !== 'string' || hex.length !== Math.ceil(bits / 4) || !/^[0-9a-fA-F]*$/.test(hex)) return null;
+  const b = Buffer.alloc(32);
+  Buffer.from(hex.length % 2 ? hex + '0' : hex, 'hex').copy(b);
+  for (let d = bits; d < hex.length * 4; d++) if (bit(b, d)) return null;
+  return b;
+}
+
+/** Whether [label]'s first [bits] bits are [prefix]'s. */
+function hasPrefix(label, prefix, bits) {
+  for (let d = 0; d < bits; d++) if (bit(label, d) !== bit(prefix, d)) return false;
+  return true;
+}
+
+/**
+ * The hash, at [depth], of the subtree holding exactly [leaves] — labels in
+ * strictly ascending order that share their first [depth] bits — with every
+ * other position empty. No leaves is EMPTY[depth]; one is its chain. What a
+ * reader recomputes from a bucket, and what makes the bucket complete: a
+ * label left out changes it.
+ */
+function bucketRoot(leaves, depth) {
+  if (leaves.length === 0) return EMPTY[depth];
+  if (leaves.length === 1) return chainHash(leaves[0].label, leaves[0].index, leaves[0].version, depth);
+  if (depth >= DEPTH) throw new Error('two leaves for one label');
+  let split = 0;
+  while (split < leaves.length && bit(leaves[split].label, depth) === 0) split++;
+  return mapNodeHash(bucketRoot(leaves.slice(0, split), depth + 1), bucketRoot(leaves.slice(split), depth + 1));
+}
+
+/**
+ * Verify a bucket against a map root: every leaf has the prefix, the labels
+ * are strictly ascending, there are exactly [bits] siblings (depth bits−1 up
+ * to 0), and the subtree the leaves make, folded up through the siblings by
+ * the prefix's bits, is [root]. The same text the Dart and Python verifiers
+ * implement. `leaves` are {label, index, version}.
+ */
+function verifyBucket({ root, prefix, bits, leaves, siblings }) {
+  if (!Buffer.isBuffer(root) || root.length !== 32) return false;
+  if (!Buffer.isBuffer(prefix) || prefix.length !== 32) return false;
+  if (!Number.isInteger(bits) || bits < 0 || bits > DEPTH) return false;
+  if (!Array.isArray(leaves) || !Array.isArray(siblings) || siblings.length !== bits) return false;
+  for (let i = 0; i < leaves.length; i++) {
+    const l = leaves[i];
+    if (!Buffer.isBuffer(l.label) || l.label.length !== 32) return false;
+    if (!Number.isInteger(l.index) || l.index < 0 || !Number.isInteger(l.version) || l.version < 0) return false;
+    if (!hasPrefix(l.label, prefix, bits)) return false;
+    if (i > 0 && Buffer.compare(leaves[i - 1].label, l.label) >= 0) return false;
+  }
+  for (const s of siblings) if (!Buffer.isBuffer(s) || s.length !== 32) return false;
+  let h = bucketRoot(leaves, bits);
+  for (let i = 0; i < bits; i++) {
+    const d = bits - 1 - i;
+    h = bit(prefix, d) === 0 ? mapNodeHash(h, siblings[i]) : mapNodeHash(siblings[i], h);
+  }
+  return h.equals(root);
+}
+
 module.exports = {
   DEPTH,
   EMPTY,
@@ -212,4 +363,9 @@ module.exports = {
   SparseMerkleMap,
   verifyMapProof,
   u64be,
+  prefixHex,
+  parsePrefix,
+  hasPrefix,
+  bucketRoot,
+  verifyBucket,
 };

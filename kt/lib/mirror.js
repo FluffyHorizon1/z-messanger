@@ -59,6 +59,17 @@
  *      was none of the four). Past any of them is an ordinary error: the head
  *      is kept, the next sync tries again, and `/health` says the witness has
  *      stopped keeping up.
+ *
+ * A mirror of the HANDLE log (`mode: 'handles'`, PROTOCOL §21.5) does all of
+ * that under the handle log's contexts, and one thing more: it holds the log
+ * to the owner rule over every entry it replicates (`handles.js`). A log that
+ * accepted an update its owner did not sign — a foreign update, the one
+ * thing a handle registry exists to prevent — has signed a head over it, and
+ * the record names the key that should have signed; so once the roots show
+ * the log signed that history, the entry that breaks the rule is a
+ * divergence like any fork. Found while the pages arrive, it is held until
+ * then: an answer the roots do not reproduce is the log's fault too, but a
+ * page that fails to arrive says nothing, and is retried as rule A says.
  */
 
 const fs = require('fs');
@@ -69,19 +80,23 @@ const { MerkleLog, verifyConsistency } = require('./merkle.js');
 const { SparseMerkleMap } = require('./smt.js');
 const {
   labelFor,
-  leafHashOf,
   sthToJson,
   sthFromJson,
   entryToJson,
   entryFromJson,
+  handleEntryToJson,
+  handleEntryFromJson,
   EntryShapeError,
-  verifySth,
-  witnessInput,
+  verifySthFor,
+  witnessInputFor,
+  leafHashFor,
+  OwnerTable,
   sign,
   rawPublicKey,
   owned,
   MAX_VALUE_BYTES,
 } = require('./log.js');
+const { ownerRuleStep, RuleError } = require('./handles.js');
 
 /** How much of the entries file is read at a time while replaying. */
 const REPLAY_WINDOW = 1024 * 1024;
@@ -97,6 +112,11 @@ const REPLAY_WINDOW = 1024 * 1024;
  * same ~10 KB an entry the log's own replay cost until 2026-10-04.
  */
 function leafOf(e) {
+  // A handle entry has no fp: its leaf is label, version, valueHash and ts.
+  if (e.fp === undefined) {
+    const [label, valueHash] = owned(e.label, e.valueHash);
+    return { index: e.index, label, version: e.version, valueHash, ts: e.ts };
+  }
   const [label, fp, valueHash] = owned(e.label, e.fp, e.valueHash);
   return { index: e.index, label, version: e.version, fp, valueHash, ts: e.ts };
 }
@@ -262,8 +282,12 @@ class Mirror {
    * @param {number} [o.pageSize]
    * @param {() => number} [o.now]
    * @param {number} [o.maxEntries]  the largest log this mirror will hold (`defaultMaxEntries`)
+   * @param {'kt'|'handles'} [o.mode] which log it mirrors (KT_MODE): the key-transparency log, or
+   *                                 the handle log, held to the owner rule
    */
-  constructor({ dir, logUrl, logPub, witnessKey = null, fetchJson = defaultFetchJson, pageSize = 500, now = Date.now, maxEntries = defaultMaxEntries() }) {
+  constructor({ dir, logUrl, logPub, witnessKey = null, fetchJson = defaultFetchJson, pageSize = 500, now = Date.now, maxEntries = defaultMaxEntries(), mode = 'kt' }) {
+    if (mode !== 'kt' && mode !== 'handles') throw new Error(`a mirror follows a "kt" or a "handles" log, not ${JSON.stringify(mode)}`);
+    this.mode = mode;
     this.dir = dir;
     this.logUrl = logUrl.replace(/\/+$/, '');
     this.logPub = logPub;
@@ -280,6 +304,8 @@ class Mirror {
     this.map = new SparseMerkleMap();
     this.entries = [];
     this.latestVersion = new Map(); // label hex → version
+    /** the handle log's owner ‖ rc per label (`OwnerTable`); null for the key-transparency log */
+    this.owners = mode === 'handles' ? new OwnerTable() : null;
     /** the last head this mirror verified, or null before the first sync */
     this.head = null;
     this.poisoned = false;
@@ -340,7 +366,7 @@ class Mirror {
       if (e.code !== 'ENOENT') throw e;
       this.head = null;
     }
-    if (this.head && !verifySth(this.head, this.logPub)) {
+    if (this.head && !verifySthFor(this.mode, this.head, this.logPub)) {
       throw new Error(`${this.sthFile}: the stored head is not signed by the pinned log key`);
     }
     const want = this.head ? this.head.size : 0;
@@ -391,7 +417,11 @@ class Mirror {
             from = nl + 1;
             at = restAt + from;
             if (line.length === 0) continue;
-            this._append(leafOf(entryFromJson(JSON.parse(line.toString('utf8')))));
+            const e = this._fromJson(JSON.parse(line.toString('utf8')));
+            // What this mirror wrote, it verified; a line that breaks the
+            // owner rule now was put there by something else.
+            if (this.owners) this._holdToRule(e, this.owners, (msg) => new Error(`${this.entriesFile}: entry ${e.index}: ${msg}`));
+            this._append(leafOf(e));
           }
           rest = Buffer.from(rest.subarray(from));
           restAt += from;
@@ -440,8 +470,34 @@ class Mirror {
     this.map = new SparseMerkleMap();
     this.entries = [];
     this.latestVersion = new Map();
+    this.owners = this.mode === 'handles' ? new OwnerTable() : null;
     this.head = null;
     return this.load();
+  }
+
+  _fromJson(j) {
+    return this.mode === 'handles' ? handleEntryFromJson(j) : entryFromJson(j);
+  }
+
+  _toJson(e) {
+    return this.mode === 'handles' ? handleEntryToJson(e) : entryToJson(e);
+  }
+
+  /**
+   * The owner rule (`handles.ownerRuleStep`) for entry [e] against [table] —
+   * the mirror's own, or a sync's overlay of it — and the label's new state
+   * written to [table]. A refusal is thrown as [fail] makes it.
+   */
+  _holdToRule(e, table, fail) {
+    const key = e.label.toString('hex');
+    let next;
+    try {
+      next = ownerRuleStep(table.get(key), e);
+    } catch (err) {
+      if (err instanceof RuleError) throw fail(`${err.message} (${err.code})`);
+      throw err;
+    }
+    table.set(key, next);
   }
 
   _append(e) {
@@ -451,7 +507,10 @@ class Mirror {
     if (prev !== undefined && !(e.version > prev)) {
       throw new Divergence(`entry ${e.index}: version ${e.version} does not exceed ${prev} for its label`);
     }
-    this.tree.append(leafHashOf(e));
+    if (this.mode === 'handles' && !(Number.isInteger(e.ts) && e.ts >= 0 && e.ts % 3_600_000 === 0)) {
+      throw new Divergence(`entry ${e.index}: ts ${e.ts} is not a whole hour — a handle log keeps no finer time, and this one signed one`);
+    }
+    this.tree.append(leafHashFor(this.mode, e));
     this.map.set(e.label, e.index, e.version);
     this.entries.push(e);
     this.latestVersion.set(key, e.version);
@@ -472,7 +531,7 @@ class Mirror {
     const from = this.entries.length;
     const sthJ = await this.fetchJson(`${this.logUrl}/kt/v1/sth`);
     const sth = sthFromJson(sthJ);
-    if (!verifySth(sth, this.logPub)) throw new Divergence('the head is not signed by the pinned log key');
+    if (!verifySthFor(this.mode, sth, this.logPub)) throw new Divergence('the head is not signed by the pinned log key');
     // Finding 48 again: the log signs any size it likes, and a mirror must
     // hold every entry up to it to check the roots. So a head larger than
     // this mirror can hold is refused before anything is fetched — said, and
@@ -523,6 +582,15 @@ class Mirror {
         // The spool is nothing until every page is in hand and both roots
         // have matched; a fetch that fails or a divergence just deletes it.
         const fetched = [];
+        // The handle log's owner rule, run as the pages arrive (the records
+        // are not kept: `fetched` holds leaves), over an overlay of the
+        // mirror's own per-label state, so nothing is mutated until the
+        // whole delta is in hand — rule B. The first entry that breaks it is
+        // held, not thrown: it becomes a divergence once the roots show the
+        // log signed it, and is nothing if a page then fails to arrive.
+        const overlay = this.owners ? new OwnerTable() : null;
+        const rule = overlay ? { get: (k) => overlay.get(k) || this.owners.get(k), set: (k, s) => overlay.set(k, s) } : null;
+        let broken = null;
         const spool = fs.openSync(this.spoolFile, 'w');
         let next = from;
         try {
@@ -538,7 +606,7 @@ class Mirror {
             if (next >= sth.size) break;
             let e;
             try {
-              e = entryFromJson(j);
+              e = this._fromJson(j);
             } catch (err) {
               // Two different things come out of `entryFromJson`, and the
               // comment here used to claim it was one. A malformed element —
@@ -564,7 +632,15 @@ class Mirror {
             if (e.value.length > MAX_VALUE_BYTES) {
               throw new Error(`entry ${next} from ${this.logUrl} carries a ${e.value.length}-byte value, past the protocol's ${MAX_VALUE_BYTES}`);
             }
-            lines.push(JSON.stringify(entryToJson(e)) + '\n');
+            if (rule && broken === null) {
+              try {
+                this._holdToRule(e, rule, (msg) => new Divergence(`entry ${next}: the log signed an entry the owner rule refuses — ${msg}`, { from, to: sth.size }));
+              } catch (d) {
+                if (!(d instanceof Divergence)) throw d;
+                broken = d;
+              }
+            }
+            lines.push(JSON.stringify(this._toJson(e)) + '\n');
             fetched.push(leafOf(e));
             next++;
           }
@@ -577,6 +653,10 @@ class Mirror {
         for (const e of fetched) this._append(e);
         if (!this.tree.root.equals(sth.logRoot)) throw new Divergence(`the entries do not hash to the signed log root at size ${sth.size}`, { from, to: sth.size });
         if (!this.map.root.equals(sth.mapRoot)) throw new Divergence(`the entries do not give the signed map root at size ${sth.size}`, { from, to: sth.size });
+        // The log signed exactly these entries; if one of them breaks the
+        // owner rule, the log accepted what its owner did not sign.
+        if (broken) throw broken;
+        if (overlay) for (const k of overlay.slots.keys()) this.owners.set(k, overlay.get(k));
       }
     } catch (e) {
       if (e instanceof Divergence) this.poisoned = true;
@@ -632,7 +712,7 @@ class Mirror {
     if (this.witnessKey) {
       record.witness = {
         pub: rawPublicKey(this.witnessKey).toString('base64'),
-        sig: sign(this.witnessKey, witnessInput(sth)).toString('base64'),
+        sig: sign(this.witnessKey, witnessInputFor(this.mode, sth)).toString('base64'),
       };
     }
     try {

@@ -17,6 +17,13 @@
 //     node bench/memory.js              # 22,094 entries: the live log on 2026-10-03
 //     N=50000 node bench/memory.js
 //
+// Then the same for the HANDLE log (KT_MODE=handles): N entries of real
+// records — a claim for every other label and an update of each, so N/2
+// labels — replayed, and loaded by a mirror. What the owner rule keeps is
+// per LABEL (`OwnerTable` in lib/log.js: 64 bytes a label in 1024-label
+// chunks) and an entry keeps nothing of it, which the per-entry figure here
+// shows beside the key-transparency log's.
+//
 // Until 2026-10-04 an entry cost ~11.6 KB: its five small fields were slices
 // of Node's shared 8 KiB buffer pool, and each entry pinned about a slab of
 // its own (log.js, `owned`). Run it one at a time on an otherwise idle
@@ -40,6 +47,7 @@ const {
   sthToJson,
 } = require('../lib/log.js');
 const { sha256 } = require('../lib/merkle.js');
+const handles = require('../lib/handles.js');
 
 const VALUE_BYTES = 1100;
 
@@ -56,12 +64,13 @@ function child(kind, target, pubB64) {
   const t0 = Date.now();
   let n;
   let keep;
-  if (kind === 'log') {
-    keep = new KtLog({ store: new FileStore(target), signingKey: null });
+  const mode = kind.startsWith('handle-') ? 'handles' : 'kt';
+  if (kind === 'log' || kind === 'handle-log') {
+    keep = new KtLog({ store: new FileStore(target), signingKey: null, mode });
     n = keep.size;
   } else {
     const { Mirror } = require('../lib/mirror.js');
-    keep = new Mirror({ dir: target, logUrl: 'http://127.0.0.1:9', logPub: Buffer.from(pubB64, 'base64') }).load();
+    keep = new Mirror({ dir: target, logUrl: 'http://127.0.0.1:9', logPub: Buffer.from(pubB64, 'base64'), mode }).load();
     n = keep.entries.length;
   }
   const ms = Date.now() - t0;
@@ -132,14 +141,64 @@ function main() {
     log.close();
 
     const kb = (b) => `${(b / 1024).toFixed(2)} KB`;
+    const report = (rows, pub) => {
+      for (const [name, kind, target] of rows) {
+        const r = measure(kind, target, pub);
+        console.log(
+          `  ${name.padEnd(11)} retained ${kb(r.retained)} (heap ${kb(r.heap)}, external ${kb(r.external)}), ` +
+            `resident +${kb(r.rss)}; ${r.rssMiB} MiB resident in all; ${(r.ms / 1000).toFixed(1)} s`
+        );
+      }
+    };
     console.log(`${N} entries of a ${VALUE_BYTES}-byte sealed list; per entry, after a forced collection:`);
-    for (const [name, kind, target] of [['log replay', 'log', file], ['mirror load', 'mirror', mdir]]) {
-      const r = measure(kind, target, rawPublicKey(logKey).toString('base64'));
-      console.log(
-        `  ${name.padEnd(11)} retained ${kb(r.retained)} (heap ${kb(r.heap)}, external ${kb(r.external)}), ` +
-          `resident +${kb(r.rss)}; ${r.rssMiB} MiB resident in all; ${(r.ms / 1000).toFixed(1)} s`
+    report([['log replay', 'log', file], ['mirror load', 'mirror', mdir]], rawPublicKey(logKey).toString('base64'));
+
+    // The handle log: real records, every label claimed and then updated once.
+    const hfile = path.join(dir, 'handles.jsonl');
+    const hKey = privateKeyFromSeed(crypto.randomBytes(32));
+    const owner = privateKeyFromSeed(crypto.randomBytes(32));
+    const rc = handles.rcOf(crypto.randomBytes(32));
+    const hfd = fs.openSync(hfile, 'w');
+    const labels = [];
+    let hlines = [];
+    for (let i = 0; i < N; i++) {
+      const first = i < Math.ceil(N / 2);
+      const label = first ? crypto.randomBytes(32) : labels[i - Math.ceil(N / 2)];
+      if (first) labels.push(label);
+      const p = handles.makeHandlePublish({ label, version: first ? 1 : 2, ownerKey: owner, k: first ? 'claim' : 'update', introSeed: crypto.randomBytes(32), pow: 20, rc });
+      hlines.push(
+        JSON.stringify({
+          i,
+          label: label.toString('base64'),
+          v: p.version,
+          vh: sha256(p.value).toString('base64'),
+          val: p.value.toString('base64'),
+          ts: 1_790_000_000_000 - (1_790_000_000_000 % handles.HOUR),
+          sig: p.sig.toString('base64'),
+        }) + '\n'
       );
+      if (hlines.length === 1000 || i === N - 1) {
+        fs.writeSync(hfd, hlines.join(''));
+        hlines = [];
+      }
     }
+    fs.closeSync(hfd);
+    const hmdir = path.join(dir, 'handle-mirror');
+    fs.mkdirSync(hmdir);
+    const hlog = new KtLog({ store: new FileStore(hfile), signingKey: hKey, mode: 'handles' });
+    const hout = fs.openSync(path.join(hmdir, 'entries.jsonl'), 'w');
+    for (let i = 0; i < hlog.size; i += 1000) {
+      fs.writeSync(hout, hlog.range(i, 1000).entries.map((e) => JSON.stringify(hlog.entryJson(e)) + '\n').join(''));
+    }
+    fs.closeSync(hout);
+    const hsth = hlog.sth();
+    fs.writeFileSync(path.join(hmdir, 'sth.json'), JSON.stringify({ sth: sthToJson(hsth), verifiedAt: hsth.ts, size: hsth.size }));
+    console.log(
+      `${N} handle-log entries over ${hlog.map.size} labels (a claim and an update each); the owner rule's table holds ` +
+        `${hlog.owners.size} labels in ${hlog.owners.bytes} bytes; per entry, after a forced collection:`
+    );
+    hlog.close();
+    report([['log replay', 'handle-log', hfile], ['mirror load', 'handle-mirror', hmdir]], rawPublicKey(hKey).toString('base64'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

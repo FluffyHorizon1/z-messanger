@@ -43,6 +43,7 @@ export 'src/ratchet.dart'
         ratchetInitResponder;
 export 'src/session.dart';
 export 'src/transparency.dart';
+export 'src/transparency_bucket.dart';
 export 'src/util.dart'
     show
         b64,

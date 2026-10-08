@@ -103,7 +103,7 @@ one-time `accounts × 1.8 KB` for the first publish of each:
 year: `180 MB` once, then `721 MB` every year, for ever. A 10 GB disk lasts
 about **thirteen years** at that rate and then stays full — so the answer is
 never "a big enough disk", it is **an alarm on `diskFreeBytes`** (`/health`)
-and a disk grown before the floor, plus a witness (§19.9, G3) that holds the
+and a disk grown before the floor, plus a witness (§19.10, G3) that holds the
 whole history should the operator's disk be lost. Below `KT_MIN_FREE_BYTES`
 (64 MiB) the log serves reads and refuses publishes `503 log_full` rather than
 meeting `ENOSPC` mid-line (SELF_HOSTING.md, "The disk is the bound").

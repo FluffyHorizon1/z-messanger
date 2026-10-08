@@ -63,8 +63,9 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const { sha256, hashLeaf, MerkleLog } = require('./merkle.js');
-const { SparseMerkleMap, u64be } = require('./smt.js');
+const { sha256, hashLeaf, MerkleLog, verifyInclusion } = require('./merkle.js');
+const { SparseMerkleMap, u64be, prefixHex, parsePrefix, verifyBucket } = require('./smt.js');
+const handles = require('./handles.js');
 
 const LABEL_CONTEXT = Buffer.from('z-kt-label-v1:', 'utf8');
 const LEAF_CONTEXT = Buffer.from('z-kt-leaf-v1:', 'utf8');
@@ -79,6 +80,27 @@ const VALUE_INFO = Buffer.from('value', 'utf8');
 /** The largest value accepted: a signed list with hybrid certificates for several devices is tens of KB. */
 const MAX_VALUE_BYTES = 256 * 1024;
 const MIN_VALUE_BYTES = 12 + 16; // nonce + tag, an empty plaintext
+
+/**
+ * Buckets (PROTOCOL §19.9). A bucket is asked for by its first `bits` bits,
+ * at most MAX_BUCKET_BITS of them; one holding more than MAX_BUCKET_LEAVES
+ * labels is refused `bucket_too_large` and the reader asks a narrower one;
+ * one `POST /kt/v1/buckets` names at most MAX_BUCKETS.
+ */
+const MAX_BUCKET_BITS = 24;
+const MAX_BUCKET_LEAVES = 4096;
+const MAX_BUCKETS = 64;
+
+/**
+ * The bucket size a log recommends in `/kt/v1/sth`: max(0, ⌊log₂(labels / 32)⌋),
+ * which puts 32 to 64 labels in a bucket on average — and never past what a
+ * reader may ask for.
+ */
+function bucketBits(labels) {
+  if (!(labels >= 64)) return 0;
+  if (labels >= 2 ** (MAX_BUCKET_BITS + 5)) return MAX_BUCKET_BITS;
+  return 31 - Math.clz32(labels) - 5;
+}
 
 // --- Ed25519 raw ↔ KeyObject -------------------------------------------------
 
@@ -148,6 +170,36 @@ function verifySth(sth, logPub) {
   if (sth.logRoot.length !== 32 || sth.mapRoot.length !== 32) return false;
   if (!Number.isInteger(sth.size) || sth.size < 0 || !Number.isInteger(sth.ts) || sth.ts < 0) return false;
   return verify(logPub, sthInput(sth), sth.sig);
+}
+
+/**
+ * The bytes each kind of log signs and hashes. The key-transparency log's
+ * are this file's own functions, untouched; the handle log's are
+ * `handles.js`'s, every one under a context of its own.
+ */
+const MODES = {
+  kt: { sthInput, witnessInput, boundaryInput, leafHashOf },
+  handles: {
+    sthInput: handles.sthInput,
+    witnessInput: handles.witnessInput,
+    boundaryInput: handles.boundaryInput,
+    leafHashOf: (e) => hashLeaf(handles.leafInput(e)),
+  },
+};
+
+function modeOf(mode) {
+  const m = MODES[mode];
+  if (!m) throw new Error(`a log is "kt" or "handles", not ${JSON.stringify(mode)}`);
+  return m;
+}
+
+/** `verifySth` for a log of either kind: a handle head never verifies as a KT head, nor the reverse. */
+function verifySthFor(mode, sth, logPub) {
+  if (mode === 'kt') return verifySth(sth, logPub);
+  if (!sth || !Buffer.isBuffer(sth.logRoot) || !Buffer.isBuffer(sth.mapRoot) || !Buffer.isBuffer(sth.sig)) return false;
+  if (sth.logRoot.length !== 32 || sth.mapRoot.length !== 32) return false;
+  if (!Number.isInteger(sth.size) || sth.size < 0 || !Number.isInteger(sth.ts) || sth.ts < 0) return false;
+  return verify(logPub, modeOf(mode).sthInput(sth), sth.sig);
 }
 
 // --- The value: what the account seals, what its contacts open ----------------
@@ -301,8 +353,11 @@ class FileStore {
    *
    * A fixed window with a carried remainder has neither property: peak is
    * one chunk plus the longest line, whatever the file's size.
+   *
+   * [fromStored] reads one line's JSON as an entry: the key-transparency
+   * log's form by default, the handle log's when the log says so.
    */
-  *readAll() {
+  *readAll(fromStored = entryFromStored) {
     let fd;
     try {
       fd = fs.openSync(this.file, 'r');
@@ -330,7 +385,7 @@ class FileStore {
           const len = nl - from;
           line += 1;
           if (len === 0) throw new Error(`${this.file}: blank line ${line}`);
-          yield this._parse(rest.subarray(from, nl), line, off, len);
+          yield this._parse(rest.subarray(from, nl), line, off, len, fromStored);
           from = nl + 1;
         }
         // Whatever follows the last newline is the start of the next line.
@@ -347,14 +402,14 @@ class FileStore {
     }
   }
 
-  _parse(bytes, line, off, len) {
+  _parse(bytes, line, off, len, fromStored = entryFromStored) {
     let j;
     try {
       j = JSON.parse(bytes.toString('utf8'));
     } catch {
       throw new Error(`${this.file}: line ${line} is not JSON (a torn write?)`);
     }
-    const e = entryFromStored(j);
+    const e = fromStored(j);
     e.valueAt = { off, len };
     return e;
   }
@@ -410,11 +465,11 @@ class FileStore {
     return path.dirname(this.file);
   }
 
-  append(entry) {
+  append(entry, toStored = entryToStored) {
     const fresh = this.fd === null && !fs.existsSync(this.file);
     if (this.fd === null) this.fd = fs.openSync(this.file, 'a');
     const off = fs.fstatSync(this.fd).size;
-    const line = Buffer.from(JSON.stringify(entryToStored(entry)) + '\n', 'utf8');
+    const line = Buffer.from(JSON.stringify(toStored(entry)) + '\n', 'utf8');
     let put = 0;
     try {
       while (put < line.length) {
@@ -588,6 +643,93 @@ function entryFromStored(j) {
   };
 }
 
+/**
+ * A handle log's line: the key-transparency line without `fp` and `acct`.
+ * There is no account — the owner is in the record, and the record is the
+ * value — and every field here is one the log serves (PROTOCOL §21.5: a
+ * handle log stores nothing it does not serve).
+ */
+function handleEntryToStored(e) {
+  return {
+    i: e.index,
+    label: e.label.toString('base64'),
+    v: e.version,
+    vh: e.valueHash.toString('base64'),
+    val: e.value.toString('base64'),
+    ts: e.ts,
+    sig: e.sig.toString('base64'),
+  };
+}
+
+function handleEntryFromStored(j) {
+  // The two logs' files must not be mistaken for each other: a line that
+  // names an account is a key-transparency log's, and KT_MODE or KT_DATA
+  // is pointing at the wrong service.
+  if (j.acct !== undefined || j.fp !== undefined) {
+    throw new Error(`entry ${j.i}: this line names an account and a fingerprint — it is a key-transparency log's, not a handle log's (KT_MODE and KT_DATA disagree)`);
+  }
+  for (const f of ['label', 'vh', 'val']) {
+    if (typeof j[f] !== 'string') throw new Error(`entry ${j.i}: ${f} is missing`);
+  }
+  return {
+    index: j.i,
+    label: Buffer.from(j.label, 'base64'),
+    version: j.v,
+    valueHash: Buffer.from(j.vh, 'base64'),
+    value: Buffer.from(j.val, 'base64'),
+    ts: j.ts,
+    // Null when absent, so a missing signature is reported as one (`_applyHandle`).
+    sig: typeof j.sig === 'string' ? Buffer.from(j.sig, 'base64') : null,
+  };
+}
+
+/**
+ * Per-label state for the owner rule (`handles.js`): owner ‖ rc for every
+ * label, 64 bytes a label in chunks of 1024 labels, and a slot number in a
+ * map keyed by the label. What a label costs here is a map entry and 64
+ * bytes, however many versions it has — an entry costs nothing. A Buffer per
+ * label would have been ~300 bytes of bookkeeping for 64 of data, which is
+ * the slab lesson of `owned` again (2026-10-03 analysis, P1-17).
+ */
+class OwnerTable {
+  constructor() {
+    /** label hex → slot */
+    this.slots = new Map();
+    this.chunks = [];
+  }
+
+  get size() {
+    return this.slots.size;
+  }
+
+  /** {owner, rc} as views of the table, or null for a label it does not hold. */
+  get(key) {
+    const s = this.slots.get(key);
+    if (s === undefined) return null;
+    const c = this.chunks[s >> 10];
+    const o = (s & 1023) * 64;
+    return { owner: c.subarray(o, o + 32), rc: c.subarray(o + 32, o + 64) };
+  }
+
+  set(key, { owner, rc }) {
+    let s = this.slots.get(key);
+    if (s === undefined) {
+      s = this.slots.size;
+      if (s >> 10 >= this.chunks.length) this.chunks.push(Buffer.allocUnsafeSlow(1024 * 64));
+      this.slots.set(key, s);
+    }
+    const c = this.chunks[s >> 10];
+    const o = (s & 1023) * 64;
+    owner.copy(c, o);
+    rc.copy(c, o + 32);
+  }
+
+  /** What the table occupies besides its map: the chunks, whole. */
+  get bytes() {
+    return this.chunks.length * 1024 * 64;
+  }
+}
+
 // --- The log -----------------------------------------------------------------
 
 /** What a refusal says about an age in milliseconds: "45 minutes", "26.3 hours", "3.1 days". */
@@ -611,6 +753,8 @@ class KtLog {
    * @param {number} [o.maxHeadAgeMs]        refuse a start whose last recorded head is older than
    *                                         this, unless [o.confirmHead] names it (`_checkResumed`)
    * @param {{size: number, ts: number}|null} [o.confirmHead]  KT_CONFIRM_HEAD, parsed
+   * @param {'kt'|'handles'} [o.mode]       which log this is (KT_MODE): the key-transparency log,
+   *                                         or the handle log (`handles.js`, PROTOCOL §21.5)
    */
   constructor({
     store,
@@ -621,7 +765,15 @@ class KtLog {
     maxHeadAgeMs = Infinity,
     confirmHead = null,
     deferReplay = false,
+    mode = 'kt',
   }) {
+    this.mode = mode;
+    this._bytes = modeOf(mode);
+    /**
+     * The handle log's per-LABEL state for the owner rule; null in KT mode,
+     * which has no owner but the account key the label is derived from.
+     */
+    this.owners = mode === 'handles' ? new OwnerTable() : null;
     this.store = store;
     /**
      * Null when the log was opened without its key: `tools/repair.js` asks
@@ -651,8 +803,13 @@ class KtLog {
     this._openedAt = now();
     this._open = { minSize, maxHeadAgeMs, confirmHead };
     if (deferReplay) return; // `KtLog.open` replays and finishes
-    for (const e of store.readAll()) this._apply(e, true);
+    for (const e of store.readAll(this._fromStored())) this._apply(e, true);
     this._finishOpen();
+  }
+
+  /** How this log's lines read: `readAll`'s argument. */
+  _fromStored() {
+    return this.mode === 'handles' ? handleEntryFromStored : entryFromStored;
   }
 
   /**
@@ -665,7 +822,7 @@ class KtLog {
   static async open(opts, { onProgress = () => {}, every = 1000 } = {}) {
     const log = new KtLog({ ...opts, deferReplay: true });
     let n = 0;
-    for (const e of log.store.readAll()) {
+    for (const e of log.store.readAll(log._fromStored())) {
       log._apply(e, true);
       n += 1;
       if (n % every === 0) {
@@ -771,7 +928,7 @@ class KtLog {
     // writer of the file can compute, so a head that matched the file's root
     // was not proof of anything until 2026-09-17: a head written by whoever
     // could write the file could lower the floor the head exists to hold.
-    if (!verifySth(last, this.publicKey)) {
+    if (!verifySthFor(this.mode, last, this.publicKey)) {
       throw new Error(
         `the head beside this file is not signed by this log's key ` +
           '(a different KT_SEED, or a head somebody else wrote): refusing to start against it'
@@ -798,7 +955,7 @@ class KtLog {
       this._boundary = this._signedFrom === null ? size : this._signedFrom;
       this._recordHead();
     } else {
-      if (!verify(rawPublicKey(this.signingKey), boundaryInput(last.signedFrom), last.signedFromSig)) {
+      if (!verify(rawPublicKey(this.signingKey), this._bytes.boundaryInput(last.signedFrom), last.signedFromSig)) {
         throw new Error(`${'head.json'}: the signature boundary is not signed by this log's key — refusing a boundary the log did not set`);
       }
       this._boundary = last.signedFrom;
@@ -957,7 +1114,7 @@ class KtLog {
     const head = { ...this.sth() };
     if (this._boundary === undefined) this._boundary = this._signedFrom === null ? this.entries.length : this._signedFrom;
     head.signedFrom = this._boundary;
-    head.signedFromSig = sign(this.signingKey, boundaryInput(this._boundary));
+    head.signedFromSig = sign(this.signingKey, this._bytes.boundaryInput(this._boundary));
     // The promise `keepAlive` keeps: re-recorded at least this often while
     // the log runs, so the head's age is how long ago it last ran.
     head.everyMs = this.resignMs;
@@ -988,6 +1145,7 @@ class KtLog {
   }
 
   _apply(entry, replaying) {
+    if (this.mode === 'handles') return this._applyHandle(entry, replaying);
     if (entry.index !== this.entries.length) {
       throw new Error(`entry ${entry.index} where ${this.entries.length} was expected`);
     }
@@ -1028,6 +1186,67 @@ class KtLog {
   }
 
   /**
+   * `_apply` for the handle log: the same order — check everything, write,
+   * then tell the trees — with the owner rule where KT mode checks the
+   * account signature, and on the way back from the file as on the way in
+   * from the wire. A line appended to the file by anything but this log is
+   * refused at the next start by whichever rule it breaks: an update or a
+   * recover the record's history does not allow, a signature that is not the
+   * owner's, a time finer than an hour, a record in any encoding but the one.
+   */
+  _applyHandle(entry, replaying) {
+    const i = entry.index;
+    if (i !== this.entries.length) throw new Error(`entry ${i} where ${this.entries.length} was expected`);
+    if (!Buffer.isBuffer(entry.label) || entry.label.length !== 32) throw new Error(`entry ${i}: a label is 32 bytes`);
+    if (!Number.isInteger(entry.version) || entry.version < 1) throw new Error(`entry ${i}: a version is a positive integer`);
+    if (!sha256(entry.value).equals(entry.valueHash)) throw new Error(`entry ${i}: value hash does not match value`);
+    if (!Number.isInteger(entry.ts) || entry.ts < 0 || entry.ts % handles.HOUR !== 0) {
+      throw new Error(`entry ${i}: ts ${entry.ts} is not a whole hour — a handle log keeps no finer time than that`);
+    }
+    if (!Buffer.isBuffer(entry.sig) || entry.sig.length !== 64) {
+      throw new Error(`entry ${i}: no owner's signature — every entry in a handle log carries one`);
+    }
+    const prev = this.latest(entry.label);
+    if (prev && !(entry.version > prev.version)) {
+      throw new Error(`entry ${i}: version ${entry.version} does not exceed ${prev.version}`);
+    }
+    const key = entry.label.toString('hex');
+    let state;
+    try {
+      state = this._ownerRule(this.owners.get(key), entry);
+    } catch (e) {
+      if (e instanceof handles.RuleError) throw new Error(`entry ${i}: ${e.message} (${e.code})`);
+      throw e;
+    }
+    // Every handle entry is signed, from the first: the boundary the head
+    // records for KT mode's legacy lines is 0 here, always.
+    if (this._signedFrom === null) this._signedFrom = i;
+    if (!replaying) entry.valueAt = this.store.append(entry, handleEntryToStored);
+    if (entry.valueAt) entry.value = null;
+    else entry.value = owned(entry.value)[0];
+    [entry.label, entry.valueHash, entry.sig] = owned(entry.label, entry.valueHash, entry.sig);
+    this.tree.append(this._bytes.leafHashOf(entry));
+    this.map.set(entry.label, i, entry.version);
+    this.entries.push(entry);
+    const list = this.byLabel.get(key);
+    if (list) list.push(i);
+    else this.byLabel.set(key, [i]);
+    this.owners.set(key, state);
+    this._sth = null;
+  }
+
+  /**
+   * The owner rule for one entry, given its label's state before it:
+   * `handles.ownerRuleStep`, and nothing else. A method rather than a call
+   * written into `_applyHandle` so that a test can stand in for a log whose
+   * operator removed it — the log a mirror has to catch
+   * (`handle_mode.test.js`).
+   */
+  _ownerRule(prev, entry) {
+    return handles.ownerRuleStep(prev, entry);
+  }
+
+  /**
    * Everything [publish] refuses, without accepting anything.
    *
    * Separated so a caller can find out whether a request is genuine before
@@ -1035,7 +1254,9 @@ class KtLog {
    * charged here, and charging it any earlier would let an unsigned request
    * naming somebody else's account spend that account's budget.
    */
-  checkPublish({ acct, version, fp, value, sig }) {
+  checkPublish(req) {
+    if (this.mode === 'handles') return this._checkHandlePublish(req);
+    const { acct, version, fp, value, sig } = req;
     if (!Buffer.isBuffer(acct) || acct.length !== 32) throw new PublishError(400, 'bad_request', 'acct must be a 32-byte Ed25519 public key');
     if (!Number.isInteger(version) || version < 1 || version > Number.MAX_SAFE_INTEGER) throw new PublishError(400, 'bad_request', 'v must be a positive integer');
     if (!Buffer.isBuffer(fp) || fp.length !== 16) throw new PublishError(400, 'bad_request', 'fp must be 16 bytes');
@@ -1051,11 +1272,63 @@ class KtLog {
   }
 
   /**
+   * `checkPublish` for the handle log: `{label, version, value, sig}`, and
+   * everything that does not depend on the label's history — the shape, the
+   * 1 KiB cap, the record's one encoding, `sig` under the owner the record
+   * names, and a recover's `rsig` under the recovery key it names. What does
+   * depend on history is `publish`'s.
+   */
+  _checkHandlePublish({ label, version, value, sig }) {
+    if (!Buffer.isBuffer(label) || label.length !== 32) throw new PublishError(400, 'bad_request', 'label must be 32 bytes');
+    if (!Number.isInteger(version) || version < 1 || version > Number.MAX_SAFE_INTEGER) throw new PublishError(400, 'bad_request', 'v must be a positive integer');
+    if (!Buffer.isBuffer(value) || value.length === 0) throw new PublishError(400, 'bad_request', 'value must be a record');
+    if (!Buffer.isBuffer(sig) || sig.length !== 64) throw new PublishError(400, 'bad_request', 'sig must be a 64-byte Ed25519 signature');
+    let record;
+    try {
+      record = handles.checkEntry({ label, version, value, sig });
+    } catch (e) {
+      if (e instanceof handles.RuleError) throw new PublishError(e.status, e.code, e.message);
+      throw e;
+    }
+    return { label, valueHash: sha256(value), record };
+  }
+
+  /**
+   * `publish` for the handle log. The order of the refusals is the order a
+   * client can act on: a claim on a held label is `taken` whatever its
+   * version, a stale version is `stale_version`, and only then is an update
+   * or a recover held against the history it would extend.
+   */
+  _publishHandle(req) {
+    const { label, valueHash, record } = this.checkPublish(req);
+    const { version, value, sig } = req;
+    const prev = this.latest(label);
+    const key = label.toString('hex');
+    try {
+      if (record.k === 'claim' && prev) throw new handles.RuleError(409, 'taken', 'this label has been claimed');
+      if (prev && !(version > prev.version)) {
+        throw new handles.RuleError(409, 'stale_version', `the log holds version ${prev.version} for this label; ${version} does not exceed it`);
+      }
+      handles.ownerRuleTransition(this.owners.get(key), record);
+    } catch (e) {
+      if (e instanceof handles.RuleError) throw new PublishError(e.status, e.code, e.message);
+      throw e;
+    }
+    // The leaf keeps the hour and no finer: that it was this hour is all the
+    // log will ever say about when a handle was claimed (PROTOCOL §21.5).
+    const entry = { index: this.entries.length, label, version, valueHash, value, sig, ts: handles.hourOf(this.now()) };
+    this._apply(entry, false);
+    this._recordHead();
+    return entry;
+  }
+
+  /**
    * Accept a publish request (buffers, not base64: the server decodes).
    * Returns the new entry. Throws PublishError with an HTTP status.
    */
   publish(req) {
     if (this.readOnly) throw new Error('this log was opened without its key: it accepts nothing');
+    if (this.mode === 'handles') return this._publishHandle(req);
     const { label, valueHash } = this.checkPublish(req);
     const { acct, version, fp, value } = req;
     const prev = this.latest(label);
@@ -1074,7 +1347,7 @@ class KtLog {
     const now = this.now();
     if (this._sth && this._sth.size === this.entries.length && now - this._sth.ts < this.resignMs) return this._sth;
     const head = { size: this.entries.length, logRoot: this.tree.root, mapRoot: this.map.root, ts: now };
-    head.sig = sign(this.signingKey, sthInput(head));
+    head.sig = sign(this.signingKey, this._bytes.sthInput(head));
     this._sth = head;
     return head;
   }
@@ -1175,6 +1448,92 @@ class KtLog {
     };
   }
 
+  /** An entry as this log serves it: `entryToJson`, or the handle log's form with `sig` and no `fp`. */
+  entryJson(e) {
+    return this.mode === 'handles' ? handleEntryToJson(e) : entryToJson(e);
+  }
+
+  /**
+   * Buckets under ONE head (PROTOCOL §19.9): for each {prefix, bits}, every
+   * label whose first `bits` bits are the prefix's, with the map siblings
+   * that prove nothing was left out. In the handle log each leaf also
+   * carries its entry's value, ts, sig and audit path, so a resolver reads
+   * the record it was looking for without a second request that names it.
+   *
+   * Bounded before anything is read: the leaves of all the buckets together
+   * at MAX_BUCKET_LEAVES — found by stopping one past it — and, in the handle
+   * log, where a leaf is a record and an audit path rather than eighty bytes,
+   * the estimated answer at [maxBytes]. Past either it is `bucket_too_large`,
+   * and the reader asks for narrower buckets or fewer of them. A bucket is
+   * never cut short: a partial bucket is one whose proof fails.
+   */
+  buckets(queries, { maxLeaves = MAX_BUCKET_LEAVES, maxBytes = Infinity } = {}) {
+    const sth = this.sth();
+    const out = [];
+    let total = 0;
+    for (const { prefix, bits } of queries) {
+      const b = this.map.bucket(prefix, bits, maxLeaves - total);
+      if (b === null) {
+        throw new PublishError(
+          400,
+          'bucket_too_large',
+          queries.length === 1
+            ? `this bucket holds more than ${maxLeaves} labels: ask for more bits`
+            : `these buckets hold more than ${maxLeaves} labels between them: ask for more bits, or fewer buckets at once`
+        );
+      }
+      total += b.leaves.length;
+      out.push({ bits, prefix, leaves: b.leaves, siblings: b.siblings });
+    }
+    if (this.mode === 'handles' && total > 0) {
+      const all = [];
+      for (const b of out) for (const l of b.leaves) all.push(l);
+      // An audit path is ⌈log₂ size⌉ hashes of 47 bytes in JSON; a stored
+      // line is the served form, near enough (`_fit`).
+      const auditBytes = 47 * Math.ceil(Math.log2(Math.max(2, sth.size)));
+      let bytes = 0;
+      for (const l of all) {
+        const e = this.entries[l.index];
+        bytes += (e.valueAt ? e.valueAt.len : servedBytes(e)) + auditBytes;
+      }
+      if (bytes > maxBytes) {
+        throw new PublishError(400, 'bucket_too_large', `the records in ${queries.length === 1 ? 'this bucket' : 'these buckets'} come to more than ${maxBytes} bytes: ask for more bits, or fewer buckets at once`);
+      }
+      const audits = this.tree.inclusionProofs(all.map((l) => l.index), sth.size);
+      all.forEach((l, n) => {
+        const e = this.withValue(this.entries[l.index]);
+        l.value = e.value;
+        l.ts = e.ts;
+        l.sig = e.sig;
+        l.audit = audits[n];
+      });
+    }
+    return { sth, buckets: out };
+  }
+
+  /**
+   * Entries by index, each with its inclusion proof under the returned head
+   * — `POST /kt/v1/entries`, how a client reads the value of an entry a
+   * bucket named without naming the label (with decoys beside it: phase 35).
+   * In request order; as many as fit in [maxBytes] (at least one), decided
+   * before any value is read, and `total` says how many were asked for.
+   */
+  entriesAt(indexes, { maxBytes = Infinity } = {}) {
+    const sth = this.sth();
+    for (const i of indexes) {
+      if (!Number.isInteger(i) || i < 0 || i >= sth.size) {
+        throw new PublishError(400, 'bad_request', `indexes must be integers 0 <= i < ${sth.size}, the head's size`);
+      }
+    }
+    const idx = indexes.slice(0, this._fit(indexes, maxBytes));
+    const proofs = this.tree.inclusionProofs(idx, sth.size);
+    return {
+      sth,
+      total: indexes.length,
+      entries: idx.map((i, n) => ({ entry: this.withValue(this.entries[i]), inclusion: { index: i, size: sth.size, path: proofs[n] } })),
+    };
+  }
+
   /** A page of entries for a mirror; [start, start + count) clipped to the head's size. */
   range(start, count, { maxBytes = Infinity } = {}) {
     const sth = this.sth();
@@ -1258,6 +1617,48 @@ function entryFromJson(j) {
   return e;
 }
 
+/**
+ * The handle log's public form of an entry: the KT form without `fp`, with
+ * `sig` — the owner's signature over the publish, which every mirror needs
+ * to hold the log to the owner rule and which the log therefore serves
+ * (PROTOCOL §21.5). The record itself is `value`, in the clear.
+ */
+function handleEntryToJson(e) {
+  return {
+    index: e.index,
+    label: e.label.toString('base64'),
+    v: e.version,
+    valueHash: e.valueHash.toString('base64'),
+    value: e.value.toString('base64'),
+    ts: e.ts,
+    sig: e.sig.toString('base64'),
+  };
+}
+
+/** `entryFromJson` for the handle log's form; the same split between shape and content. */
+function handleEntryFromJson(j) {
+  if (!j || typeof j !== 'object') throw new EntryShapeError('entry: not an object');
+  let e;
+  try {
+    e = {
+      index: j.index,
+      label: b64(j.label, 32),
+      version: j.v,
+      valueHash: b64(j.valueHash, 32),
+      value: b64(j.value),
+      ts: j.ts,
+      sig: b64(j.sig, 64),
+    };
+  } catch (err) {
+    throw new EntryShapeError(`entry: ${err.message}`);
+  }
+  if (!Number.isInteger(e.index) || !Number.isInteger(e.version) || !Number.isInteger(e.ts)) {
+    throw new EntryShapeError('entry: bad integers');
+  }
+  if (!sha256(e.value).equals(e.valueHash)) throw new Error('entry: value hash does not match value');
+  return e;
+}
+
 function sthToJson(s) {
   return {
     size: s.size,
@@ -1306,9 +1707,103 @@ function b64(s, len) {
   return b;
 }
 
+// --- Buckets on the wire (PROTOCOL §19.9) ----------------------------------------
+
+/** One bucket as served: `{bits, prefix, leaves, siblings}`; a handle leaf adds value, ts, sig, audit. */
+function bucketToJson(b) {
+  return {
+    bits: b.bits,
+    prefix: prefixHex(b.prefix, b.bits),
+    leaves: b.leaves.map((l) => {
+      const j = { label: l.label.toString('base64'), index: l.index, version: l.version };
+      if (l.value !== undefined) {
+        j.value = l.value.toString('base64');
+        j.ts = l.ts;
+        j.sig = l.sig.toString('base64');
+        j.audit = l.audit.map((h) => h.toString('base64'));
+      }
+      return j;
+    }),
+    siblings: b.siblings.map((h) => h.toString('base64')),
+  };
+}
+
+/**
+ * What a reader does with a bucket answer — the Node twin of the Dart
+ * verifier (`transparency_bucket.dart`), used by the tests and by
+ * `tools/gen_vectors.js` to check what it writes. [asked] is the
+ * `{prefix (hex), bits}` list in the order asked; [json] the response, either
+ * form (`GET /kt/v1/bucket` or `POST /kt/v1/buckets`). Returns
+ * `{sth, buckets: [{bits, prefix, leaves}]}` with every leaf proved, or
+ * throws saying what failed:
+ *   - the head verifies under [logPub] with [mode]'s context;
+ *   - each bucket is the one asked for, holds at most MAX_BUCKET_LEAVES,
+ *     and its leaves fold to the head's mapRoot (`verifyBucket`) — so none
+ *     is missing, none is extra, and each (index, version) is the map's;
+ *   - in the handle log, each leaf's record is the entry at `index`: its
+ *     leaf (label, version, SHA-256(value), ts on a whole hour) is included
+ *     at that index under the head's logRoot, by its audit path.
+ */
+function verifyBucketAnswer({ mode, logPub, asked, json }) {
+  if (!json || typeof json !== 'object') throw new Error('bucket answer: not an object');
+  const sth = sthFromJson(json.sth);
+  if (!verifySthFor(mode, sth, logPub)) throw new Error('bucket answer: the head is not signed by the pinned key in this log\'s context');
+  const served = Array.isArray(json.buckets) ? json.buckets : [json];
+  if (served.length !== asked.length) throw new Error(`bucket answer: ${served.length} buckets for ${asked.length} asked`);
+  const buckets = served.map((b, n) => {
+    const want = asked[n];
+    const prefix = parsePrefix(want.prefix, want.bits);
+    if (!prefix) throw new Error(`bucket ${n}: asked for a malformed prefix`);
+    if (b.bits !== want.bits || typeof b.prefix !== 'string' || b.prefix.toLowerCase() !== want.prefix.toLowerCase()) {
+      throw new Error(`bucket ${n}: not the bucket asked for`);
+    }
+    if (!Array.isArray(b.leaves) || !Array.isArray(b.siblings)) throw new Error(`bucket ${n}: leaves and siblings are required`);
+    if (b.leaves.length > MAX_BUCKET_LEAVES) throw new Error(`bucket ${n}: more than ${MAX_BUCKET_LEAVES} leaves`);
+    const leaves = b.leaves.map((l) => {
+      const leaf = { label: b64(l.label, 32), index: l.index, version: l.version };
+      if (mode === 'handles') {
+        leaf.value = b64(l.value);
+        leaf.ts = l.ts;
+        leaf.sig = b64(l.sig, 64);
+        if (!Array.isArray(l.audit)) throw new Error(`bucket ${n}: a handle leaf carries its audit path`);
+        leaf.audit = l.audit.map((h) => b64(h, 32));
+      }
+      return leaf;
+    });
+    const siblings = b.siblings.map((h) => b64(h, 32));
+    if (!verifyBucket({ root: sth.mapRoot, prefix, bits: want.bits, leaves, siblings })) {
+      throw new Error(`bucket ${n}: the leaves and siblings do not fold to the head's mapRoot — a label was left out, added, or changed`);
+    }
+    if (mode === 'handles') {
+      for (const l of leaves) {
+        if (!Number.isInteger(l.ts) || l.ts < 0 || l.ts % handles.HOUR !== 0) throw new Error(`bucket ${n}: a ts that is not a whole hour`);
+        if (l.value.length > handles.MAX_RECORD_BYTES) throw new Error(`bucket ${n}: a record over ${handles.MAX_RECORD_BYTES} bytes`);
+        const leafHash = hashLeaf(handles.leafInput({ label: l.label, version: l.version, valueHash: sha256(l.value), ts: l.ts }));
+        if (!verifyInclusion({ leafHash, index: l.index, size: sth.size, root: sth.logRoot, path: l.audit })) {
+          throw new Error(`bucket ${n}: the record at index ${l.index} is not the one the log tree holds there`);
+        }
+      }
+    }
+    return { bits: want.bits, prefix, leaves };
+  });
+  return { sth, buckets };
+}
+
 module.exports = {
   EntryShapeError,
   MAX_VALUE_BYTES,
+  MAX_BUCKET_BITS,
+  MAX_BUCKET_LEAVES,
+  MAX_BUCKETS,
+  bucketBits,
+  bucketToJson,
+  verifyBucketAnswer,
+  verifySthFor,
+  witnessInputFor: (mode, sth) => modeOf(mode).witnessInput(sth),
+  leafHashFor: (mode, e) => modeOf(mode).leafHashOf(e),
+  handleEntryToJson,
+  handleEntryFromJson,
+  OwnerTable,
   owned,
   KtLog,
   PublishError,

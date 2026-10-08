@@ -57,8 +57,12 @@ class MerkleLog {
     return this.leaves.length - 1;
   }
 
-  /** MTH(D[lo:hi]) — the RFC's Merkle Tree Hash of a range. */
-  hashRange(lo, hi) {
+  /**
+   * MTH(D[lo:hi]) — the RFC's Merkle Tree Hash of a range. [local], when
+   * given, remembers the ragged ranges too, for as long as the caller keeps
+   * it (`inclusionProofs`).
+   */
+  hashRange(lo, hi, local = null) {
     const n = hi - lo;
     if (n === 0) return sha256();
     if (n === 1) return this.leaves[lo];
@@ -70,14 +74,15 @@ class MerkleLog {
     // particular size are never asked for again once the log has grown past
     // it, and remembering them too made the memo grow as N log N.
     const perfect = (n & (n - 1)) === 0 && lo % n === 0;
-    const key = perfect ? `${lo}:${hi}` : null;
+    const memo = perfect ? this._memo : local;
+    const key = memo !== null ? `${lo}:${hi}` : null;
     if (key !== null) {
-      const cached = this._memo.get(key);
+      const cached = memo.get(key);
       if (cached) return cached;
     }
     const k = largestPowerOfTwoBelow(n);
-    const h = hashNode(this.hashRange(lo, lo + k), this.hashRange(lo + k, hi));
-    if (key !== null) this._memo.set(key, h);
+    const h = hashNode(this.hashRange(lo, lo + k, local), this.hashRange(lo + k, hi, local));
+    if (key !== null) memo.set(key, h);
     return h;
   }
 
@@ -92,7 +97,7 @@ class MerkleLog {
   }
 
   /** PATH(m, D[n]) — RFC 9162 §2.1.3.1, the audit path for leaf m at size n. */
-  inclusionProof(m, n) {
+  inclusionProof(m, n, local = null) {
     if (!(m >= 0 && m < n && n <= this.leaves.length)) {
       throw new Error('inclusion proof out of range');
     }
@@ -100,10 +105,23 @@ class MerkleLog {
       const len = hi - lo;
       if (len === 1) return [];
       const k = largestPowerOfTwoBelow(len);
-      if (idx < k) return [...path(lo, lo + k, idx), this.hashRange(lo + k, hi)];
-      return [...path(lo + k, hi, idx - k), this.hashRange(lo, lo + k)];
+      if (idx < k) return [...path(lo, lo + k, idx), this.hashRange(lo + k, hi, local)];
+      return [...path(lo + k, hi, idx - k), this.hashRange(lo, lo + k, local)];
     };
     return path(0, n, m);
+  }
+
+  /**
+   * PATH(m, D[n]) for every m in [indices], at one size — the same paths
+   * `inclusionProof` gives one at a time. What they share is the ragged
+   * right‑hand edge of the tree at size n, which the memo above deliberately
+   * forgets: one proof recomputes it, about log₂ n hashes, and a bucket that
+   * carries an audit path per leaf (PROTOCOL §19.9) would recompute it for
+   * every leaf. Here it is computed once for the call and dropped with it.
+   */
+  inclusionProofs(indices, n) {
+    const local = new Map();
+    return indices.map((m) => this.inclusionProof(m, n, local));
   }
 
   /** PROOF(m, D[n]) — RFC 9162 §2.1.4.1, consistency between sizes m and n. */

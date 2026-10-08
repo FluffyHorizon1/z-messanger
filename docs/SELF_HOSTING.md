@@ -1088,3 +1088,108 @@ a mirror run by someone other than the operator has verified a head; and
 the operator's own account appears in it. Each is one of the steps above —
 with the two Blueprints, steps 2 and 5 are a Blueprint each, and what is
 left is a key generated on your machine, a domain, a build, and a friend.
+
+### Running the handle log
+
+Handles (`adr/0015`, PROTOCOL.md §21.5) are registered in a log of their own:
+the same `kt/` code and the same Docker image, started with
+**`KT_MODE=handles`**. It is a **second service, with its own signing key,
+its own disk and its own host name** — never the transparency log's key or
+data: heads name no log, so two logs under one key would have
+interchangeable heads. A handle log pointed at the transparency log's file
+refuses to start and says so; the reverse refuses too, as a file it cannot
+read (the transparency log's start is unchanged). `KT_MODE` unset is
+the transparency log exactly as above; any value but `handles` refuses to
+start.
+
+What it holds and serves: for each handle, the records its owner published —
+the owner's key, the introduction mailbox's two keys (Ed25519 and X25519),
+the proof‑of‑work level, the recovery commitment — in the clear, because handles are public by design; each
+entry's time only to the hour; the owner's signature; nothing else (DATA_MAP).
+It holds every update to the owner rule: a publish its owner did not sign is
+refused, on the wire and when the log replays its own file, and a witness of
+it (below) refuses a log that accepted one. Clients find a handle with the
+bucket query (§19.9), which the transparency log answers too.
+
+Everything above about running the transparency log applies — TLS, backups,
+the head file and `KT_MIN_SIZE`, `KT_MAX_HEAD_AGE_MIN`, the client‑address
+header, `/health` and its alarms — with these differences:
+
+- **Memory and disk.** A record is at most 1 KiB (~155–390 bytes in
+  practice), so an entry is a ~0.6 KB line on disk; `KT_MAX_VALUE_BYTES` does
+  not matter here. Measured (`node bench/memory.js`, 22,094 entries over
+  11,047 handles): **1.81 KB retained an entry**, 167.9 MiB resident; what the
+  owner rule keeps is per handle — 64 bytes each (720,896 bytes for 11,047),
+  nothing per entry. Size it like the transparency log, at 4 KB an entry plus
+  128 MiB.
+- **The gates count handles.** `PUBLISH_PER_ACCT_PER_DAY` is one handle's
+  publishes a day; `PUBLISH_NEW_ACCOUNTS_PER_MIN` and its per‑address share
+  are claims a minute — the rate at which anyone can take names. They bound
+  the rate of squatting, not its total (`adr/0015`).
+- **The witness.** `node tools/mirror.js --mode handles` (or `KT_MODE=handles`
+  for the witness service) mirrors and co‑signs the handle log under its own
+  contexts, with its own directory and its own witness key. Until someone runs
+  one, the handle log is unwitnessed, as the transparency log is (G3).
+- **Repairs.** `KT_MODE=handles node tools/repair.js <entries.jsonl>`, so the
+  file is checked under the handle log's rules.
+
+A Blueprint for it — **an operator action**: this repository does not ship
+one, because a service's Blueprint is the operator's to create. Save it as a
+file of its own in your fork (for example `render.handles.yaml`) and create it
+from Dashboard → New → Blueprint, or create the same service by hand:
+
+```yaml
+services:
+  - type: web
+    name: z-handles
+    runtime: docker
+    dockerfilePath: ./kt/Dockerfile
+    dockerContext: ./kt
+    plan: starter               # a disk needs a paid instance
+    region: frankfurt
+    healthCheckPath: /health
+    autoDeployTrigger: "off"    # deploy at release tags, as the transparency log
+    disk:
+      name: z-handles-data
+      mountPath: /data
+      sizeGB: 10                # ~0.6 KB an entry: millions of handles
+    envVars:
+      - key: KT_MODE
+        value: handles          # the handle log; unset would be the transparency log
+      - key: KT_SEED
+        sync: false             # a NEW seed, generated on your machine — never the transparency log's
+      - key: KT_DATA
+        value: /data
+      - key: KT_MIN_SIZE
+        value: "0"              # raise to a size the log has passed, once it has one
+      - key: KT_PORT
+        value: "10000"
+      - key: KT_HOST
+        value: 0.0.0.0
+      - key: PUBLISH_PER_MIN
+        value: "30"
+      - key: PUBLISH_PER_MIN_TOTAL
+        value: "120"
+      - key: PUBLISH_PER_ACCT_PER_DAY
+        value: "20"             # per handle
+      - key: PUBLISH_NEW_ACCOUNTS_PER_MIN
+        value: "10"             # claims a minute, in total
+      - key: KT_MIN_FREE_BYTES
+        value: "67108864"
+      - key: KT_CLIENT_IP_HEADER
+        value: ""               # cf-connecting-ip once it is reachable only through Cloudflare
+```
+
+What the operator has to do, none of it done by deploying this code:
+
+1. **Generate a new seed** for it (step 1 above), and keep it apart from the
+   transparency log's.
+2. **Create the service** from the Blueprint above, with its own host name
+   (e.g. `handles.zmessengers.com`) and TLS, and read its public key off its
+   log (`z-kt: handle log, … public key …`) or `/kt/v1/pub`.
+3. **Pin that key in the app** — phase 38, which ships handles, adds the build
+   setting; until then no client reads the handle log.
+4. **Set `KT_CLIENT_IP_HEADER`** as for the transparency log, once only
+   Cloudflare can reach it.
+5. **Find a witness operator** for it (`--mode handles`); THREAT_MODEL will
+   record the handle log as unwitnessed until one co‑signs (phase 38).

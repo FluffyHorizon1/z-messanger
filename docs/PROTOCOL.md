@@ -1822,7 +1822,7 @@ strings are lowercase hex; wire strings
 (codes, envelopes, payloads) are given verbatim; every random draw the
 reference implementation made is recorded (`random_draws`, `*_seed`, `nonce`)
 so any implementation can replay a vector exactly. `docs/vectors/kt/` pins
-the transparency log (§19.10) on the same terms. See
+the transparency log (§19.11) on the same terms. See
 [`vectors/README.md`](vectors/README.md) for the file layout and how to run
 the verifiers. The vectors were produced by `protocol/tool/gen_vectors.dart`
 with the library's RNG replaced by a seeded splitmix64 DRBG (the standard
@@ -2969,7 +2969,7 @@ A client keeps the last head it verified. On each check it MUST:
    `/kt/v1/consistency?first=<held size>&second=<size>` and verify the proof
    between the held `logRoot` and the new one; if `size` equals the held
    size, require both roots to be equal;
-3. if a witness is configured (§19.9), fetch its record, verify the log's
+3. if a witness is configured (§19.10), fetch its record, verify the log's
    signature and the witness's over it **against the witness key this client
    pinned**, and require it to be consistent with the head: equal roots at
    equal size, or a verifying consistency proof from the log between the two
@@ -3023,11 +3023,14 @@ All responses are JSON; error responses are `{ "error":code, "message":text }`.
 
 | method and path | response |
 |---|---|
-| `GET /kt/v1/sth` | the current head (§19.4) |
+| `GET /kt/v1/sth` | the current head (§19.4), and `bucketBits` (§19.9) |
 | `GET /kt/v1/consistency?first=m&second=n` | `{ "sth", "first":m, "second":n, "proof":[b64…] }` — `PROOF(m, D[n])`; `second` defaults to the head's size |
 | `GET /kt/v1/lookup/<label hex>` | `{ "sth", "map":{ "leaf":{index,v}\|null, "bitmap":b64, "siblings":[b64…] }, "entry":<entry>\|null, "inclusion":{ "index", "size", "path":[b64…] }\|null }` |
 | `GET /kt/v1/history/<label hex>?start=i&count=k` | `{ "sth", "start":i, "total":n, "entries":[ { "entry":<entry>, "inclusion":… } … ] }`, oldest first — `n` is how many versions the label has |
 | `GET /kt/v1/entries?start=i&count=k` | `{ "sth", "start":i, "total":n, "entries":[<entry>…] }` — `k ≤ 1000`, clipped to the head's size (mirrors); `n` is the head's size |
+| `POST /kt/v1/entries` | `{ "indexes":[i…] }` (1 to 1000, each below the head's size) → `{ "sth", "total":n, "entries":[ { "entry":<entry>, "inclusion":… } … ] }` — entries by index for a client (§19.9), in the order asked, as many as fit a page; `n` is how many were asked |
+| `GET /kt/v1/bucket?prefix=p&bits=k` | `{ "sth", "bits":k, "prefix":p, "leaves":[…], "siblings":[b64…] }` — §19.9 |
+| `POST /kt/v1/buckets` | `{ "buckets":[ { "prefix", "bits" } … ] }` (1 to 64) → `{ "sth", "buckets":[ { "bits", "prefix", "leaves", "siblings" } … ] }` under one head — §19.9 |
 | `POST /kt/v1/publish` | §19.6 |
 | `GET /kt/v1/pub` | `{ "pub":b64 }` — informative |
 | `GET /health` | `{ "state", "size", "labels", "sthTs", "rssBytes", "memLimitBytes", "diskBytes", "diskFreeBytes", "full" }` — informative; while the log replays its entries at start, `503 { "state": "replaying", "replayed", "rssBytes", "memLimitBytes" }`, and every other route `503` |
@@ -3044,7 +3047,9 @@ entry when the range it was asked for is non-empty, and MUST report `total`.
 A reader that has not seen `total` entries MUST ask again from where the page
 stopped rather than treat the page as the whole — and a log that stops short
 is not by itself a fault, because §19.8's judgement of the authenticated
-`latest` is what an incomplete history cannot defeat.
+`latest` is what an incomplete history cannot defeat. `POST /kt/v1/entries`
+pages the same way, at the bound of a label's history, and its `total` is the
+number of indexes asked for.
 
 A log MAY answer `429` with a `retry-after` header (delta‑seconds) on
 `/kt/v1/entries` when a reader is over a byte budget, and a mirror MUST treat
@@ -3053,7 +3058,8 @@ says (bounded), then ask for the same page again. A log MUST NOT refuse the
 routes a client's check depends on — the head, a consistency proof, a lookup,
 a label's history — on a budget that other readers can spend, because behind
 a front that sets no client address every reader shares one; those routes
-are bounded by the size of one answer instead. A page of entries below the
+are bounded by the size of one answer instead. The bucket routes and
+`POST /kt/v1/entries` are such routes (§19.9). A page of entries below the
 head and a consistency proof between two sizes are immutable and MAY carry
 `cache-control: public`; a reader MUST NOT rely on the `sth` or `total`
 carried in such a page being current, and a log MUST NOT mark an empty page
@@ -3132,7 +3138,86 @@ reconciled entry is the log's latest and not the root's current list, the root
 moves to the next version with its current devices, as the migrations above
 did.
 
-### 19.9 Mirrors and witnesses
+### 19.9 Lookups by bucket
+
+*For this log and for the handle log (§21.5) alike. Design, the
+alternatives and what it leaves: `adr/0023`.*
+
+A lookup (§19.7) names its label, so the log — and whatever terminates its
+TLS — learns which accounts a reader asks about: for a client checking its
+contacts, its contact list. A bucket query names only the first `k` bits of
+the label, and is answered with every label that has them and the proof
+that none was left out:
+
+```
+GET  /kt/v1/bucket?prefix=<hex>&bits=<k>
+POST /kt/v1/buckets   { "buckets":[ { "prefix":hex, "bits":k } … ] }        1 to 64 buckets, one head
+
+k      = 0 … 24
+prefix = the first k bits of a label, as ⌈k/4⌉ hex digits, the unused low bits zero ("" for k = 0)
+
+GET  → { "sth":<head>, "bits":k, "prefix":hex, "leaves":[ <leaf>… ], "siblings":[ b64 × k ] }
+POST → { "sth":<head>, "buckets":[ { "bits", "prefix", "leaves", "siblings" } … ] }      in the order asked
+<leaf> = { "label":b64, "index":n, "version":v }                                          this log
+         { "label", "index", "version", "value":b64, "ts":ms, "sig":b64, "audit":[b64…] }   the handle log
+```
+
+`leaves` are every label in the map whose first `k` bits are `prefix`, in
+ascending label order, each with its map leaf's `(index, version)` — the
+label's latest entry. `siblings` are the map siblings along the prefix's
+path from depth `k−1` up to depth 0, uncompressed: an empty one is
+`empty(d+1)`. A reader:
+
+```
+1. verifies sth under the pinned key (§19.4; for the handle log, its own context, §21.5);
+2. checks that the bucket is the one it asked for, that it has at most 4096 leaves,
+   that every label has the prefix, and that the labels strictly ascend;
+3. computes h = subtree(leaves, k), the map's hash at depth k of the subtree holding exactly them:
+       subtree([], d)   = empty(d)
+       subtree([l], d)  = mapLeaf(l.label, l.index, l.version) hashed up to depth d through empty siblings
+       subtree(ls, d)   = mapNode(subtree(ls with bit d = 0, d+1), subtree(ls with bit d = 1, d+1))
+4. folds it: for i = 0 … k−1:  d = k−1−i;
+       h = bit(prefix, d) == 0 ? mapNode(h, siblings[i]) : mapNode(siblings[i], h)
+5. accepts iff h == sth.mapRoot.
+```
+
+A bucket that verifies is complete: a label left out or added, or given
+another `(index, version)`, changes the subtree, and the fold no longer
+reaches the root the log signed. So a label with the prefix that is not among
+the leaves is a verified absence, as a map proof of absence is; a label
+without the prefix is not answered by the bucket at all.
+
+The handle log's leaves also carry the latest entry's record (`value`), its
+`ts` and the owner's `sig` (§21.5), and `audit`, the RFC 9162 path of entry
+`index` in the log tree at `sth.size`; there a reader also checks that `ts`
+is a whole hour and the record at most 1 KiB, and that the handle leaf of
+`(label, version, SHA-256(value), ts)` is included at `index` under `logRoot`
+— so it reads a record without a second request that would name the label.
+This log's leaves carry no value; a reader that needs one asks
+`POST /kt/v1/entries {"indexes":[…]}` (§19.7), with decoys beside it
+(phase 35 says which and how many).
+
+A log MUST answer a bucket with every leaf it holds or refuse it, never with
+part of it. It MUST refuse a malformed prefix, or a `k` past 24, with
+`400 bad_request`; and a bucket of more than 4096 leaves — or the buckets of
+one `POST` with more than 4096 between them — with `400 bucket_too_large`.
+It MAY refuse an answer past a size it states with the same code (the
+reference handle log refuses one past 256 KiB, the bound of a label's
+history). The reader then asks with more bits, or for fewer buckets at once.
+These are routes a client's check depends on: a log MUST NOT refuse them on
+a budget other readers can spend (§19.7). `/kt/v1/sth` carries `bucketBits`,
+the log's recommendation `max(0, ⌊log₂(labels / 32)⌋)`, at most 24 — 32 to 64
+labels a bucket — and a bucket answer's head carries it too; it is advisory,
+outside the signed bytes, and a log answers other buckets the same way.
+
+What a bucket does not hide: which bucket — about one label in 2^k — and
+when, and from which address; and how many buckets a reader asks for, so a
+client that asks one per contact says how many contacts it has unless it
+pads with decoys. `adr/0023` sets this against exact lookups, a full
+snapshot, the anonymous path and PIR; phase 35 decides how a client pads and
+how often it asks. `vectors/kt/bucket.json` pins both logs' answers (§19.11).
+
+### 19.10 Mirrors and witnesses
 
 A mirror holds every entry and the last head it verified. On each sync it
 MUST verify the head's signature; require the head to extend the held one
@@ -3164,7 +3249,7 @@ last head it accepted: after an incomplete sync its next one begins from
 that head, and entries persisted without the head that covers them are
 discarded on load.
 
-### 19.10 Vectors and versioning
+### 19.11 Vectors and versioning
 
 `vectors/kt/` pins §19: `log_tree.json` (RFC 9162 against the CT reference
 data), `map_tree.json` (roots after each of fourteen sets, proofs of presence
@@ -3179,7 +3264,13 @@ verify and must find its fingerprint equal to the entry's. Generated by
 and re‑derived by `kt/tools/verify_vectors.py` from this section with no
 shared code. The §14 rule applies: bytes an existing implementation would
 compute differently mean new context strings (`…-v2`), new vector files
-beside the untouched ones, and a new subsection here.
+beside the untouched ones, and a new subsection here. `bucket.json` (36.2)
+is such a file: both logs' bucket answers as served (k = 0, 1 and 8, an
+empty bucket, a `POST` of three), entries by index, the handle log of §21.5
+— its publishes byte for byte, its head, and the owner rule's refusals with
+their codes — and the answers a reader must refuse; the three files above
+are byte‑identical, and the Dart reader (`transparency_bucket.dart`) reads it
+too.
 
 ## 20. Connecting without meeting (17)
 
@@ -3742,6 +3833,126 @@ as unresolvable, and a mirror reports the log.
 
 *Implementation note:* `applyHandleEntry` and `checkHandleHistory` in
 `protocol/lib/src/handles.dart`; `kt/` applies the same rule (§21.5).
+
+### 21.5 The handle log
+
+*Normative for `kt/` run with `KT_MODE=handles`, for its mirrors and
+witnesses, and for every client that resolves a handle. Built in 36.2.*
+
+The registry is a log of its own: `kt/` in handle mode, a separate service
+with its own key and its own data, never the key‑transparency log of §19 —
+heads name no log, so two logs under one key would have interchangeable
+heads. It has §19's two trees, heads, proofs and routes, the bucket query of
+§19.9 among them, with these differences.
+
+**Labels and values.** A label is 32 bytes the client derives from a handle
+(Argon2id, `adr/0015`); the log never sees a handle and cannot compute a
+label. A value is the handle's record — canonical JSON, members in exactly
+this order, no whitespace, base64url without padding, at most 1 KiB:
+
+```
+{ "k":"claim"|"update"|"recover", "owner":b64url(ownerPub), "intro":b64url(introPub)|null,
+  "xintro":b64url(xintroPub)|null, "pow":16…28, "rc":b64url(32)
+  [, "rpub":b64url(recoveryPub), "rsig":b64url(64)] }                                rpub, rsig: recover only
+```
+
+`owner` and `rc` are the owner and recovery commitment AFTER the entry.
+`intro` and `xintro` are the introduction mailbox's Ed25519 key and the
+X25519 key a request to it is sealed to (§8): both 32‑byte keys, or both
+null while the handle is paused or retired — a record with one and not the
+other is refused. The owner derives both from one introduction seed, `xintro`
+from `HKDF-SHA256(ikm = introSeed, salt = "z-handle-intro-x-v1", info = "",
+L = 32)` as an X25519 private key; the log cannot check that relation and
+does not try. Whoever reads a record — the log, a mirror, a client —
+re‑encodes what it parsed and refuses it unless the bytes are identical, so a
+record has one encoding and nothing in it is malleable.
+
+**The bytes.**
+
+```
+leafInput = utf8("z-handle-leaf-v1:")    || label || u64be(v) || SHA-256(value) || u64be(tsHour)
+sthInput  = utf8("z-handle-sth-v1:")     || u64be(size) || logRoot || mapRoot || u64be(ts)
+witness   = utf8("z-handle-witness-v1:") || sthInput
+sig       = Ed25519(owner the record names, utf8("z-handle-publish-v1:") || label || u64be(v) || SHA-256(value))
+rsig      = Ed25519(recovery key, utf8("z-handle-recover-v1:") || label || u64be(v) || owner || rc)    owner, rc: the new ones
+rc        = SHA-256( utf8("z-handle-rc-v1:") || recoveryPub )
+tsHour    = ⌊acceptedMs / 3 600 000⌋ × 3 600 000
+```
+
+The map tree (§19.2), the RFC 9162 log tree (§19.3) and the head's JSON
+(§19.4) are §19's. Every context differs from §19's, so a handle head never
+verifies as a key‑transparency head under any key, nor the reverse. A head's
+`ts` is when it was signed, as in §19.4 — it is what a reader judges
+freshness by; an entry keeps only the hour it was accepted in.
+
+**Publishing.**
+
+```
+POST /kt/v1/publish  { "label":b64url(label), "v":version, "value":b64(record), "sig":b64(sig) }
+```
+
+(The reference log decodes either base64 alphabet in any of these fields, as
+on every route of §19.) It refuses, the first that applies:
+
+| status and code | when |
+|---|---|
+| `400 bad_request` | a field is missing, `label` is not 32 bytes, `v` not a positive integer, `sig` not 64 bytes |
+| `413 too_large` | the record is over 1 KiB |
+| `400 bad_record` | the record is not its canonical encoding, a member is out of range, or one of `intro` and `xintro` is null and the other is not |
+| `403 bad_signature` | `sig` is not the signature of the owner the record names |
+| `403 bad_recovery` | a recover's `rsig` is not the signature of the `rpub` it names |
+| `409 taken` | a claim on a label that has an entry |
+| `409 stale_version` | `v` does not exceed the label's latest (a claim may carry any `v ≥ 1`) |
+| `403 owner_rule` | an update or a recover on a label with no entry; an update whose `owner` or `rc` is not the current one |
+| `403 bad_recovery` | a recover whose `rpub` is not the one the current `rc` commits to |
+
+and answers a publish it accepts `201 { "index", "sth" }`, as §19.6. The
+entry's `ts` is `tsHour`. The gates of `kt/server.js` count handles where
+they count accounts: one handle's publishes a day, and first publishes —
+claims — a minute.
+
+**The owner rule** — enforced by the log on the wire AND on replay of its own
+file, by every mirror and witness, and by a client over whatever history it
+holds:
+
+1. the first entry for a label is a claim; it fixes `owner` and `rc`;
+2. a claim on a label that has an entry is refused (`taken`);
+3. an update is signed by the CURRENT owner and keeps `owner` and `rc` —
+   changing either is a recover;
+4. a recover carries `rpub` with `SHA-256("z-handle-rc-v1:" ‖ rpub)` equal to
+   the current `rc` and a valid `rsig`, is signed (`sig`) by the NEW owner it
+   names, and sets the new `owner` and `rc`;
+5. versions strictly increase;
+6. a record over 1 KiB is refused.
+
+The log keeps the current `owner` and `rc` per LABEL — 64 bytes a label,
+nothing on an entry — and replays its own file under the same rule: a line it
+did not write (an update or recover the history does not allow, a signature
+that is not the owner's, a time finer than an hour, a record in any other
+encoding, an unsigned line, a key‑transparency log's line) refuses the start
+and names the rule.
+
+**Serving.** Handles are public by design, so the log serves values in the
+clear, and it stores nothing it does not serve: an `<entry>` is
+`{ "index", "label", "v", "valueHash", "value", "ts", "sig" }` — no `fp`, no
+`acct`, and `sig`, because a mirror needs it to hold the log to the owner
+rule. Every route of §19.7 answers in that form, and a bucket's leaves carry
+the record, `ts`, `sig` and `audit` (§19.9). A resolver MUST resolve a handle
+by bucket: `/kt/v1/lookup` and `/kt/v1/history` name the label. `/health`
+says `"mode": "handles"`.
+
+**Mirrors and witnesses.** A mirror of the handle log does §19.10's checks
+under these contexts, and holds every entry it replicates to the owner rule.
+An entry that breaks it, under a head whose roots the mirror reproduced, is
+a divergence like a fork: the log signed it, and the record names the key
+that should have — a log that accepted a foreign update is caught there. A
+`sig` that is not 64 bytes of base64 is a transport failure (§19.10); one
+that is, and does not verify, is the log's. A witness co‑signs with the
+handle witness context, and a client verifies its record with it.
+
+**Vectors.** `vectors/kt/bucket.json` pins this log's publishes byte for
+byte, its head, its bucket answers and the owner rule's refusals with their
+codes (§19.11).
 
 ### 21.7 Requests and the acknowledgement
 

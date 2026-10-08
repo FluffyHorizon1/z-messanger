@@ -13,7 +13,13 @@
  *   GET  /kt/v1/history/<label hex>          head + a page of the label's entries, each with an inclusion
  *                                            proof, plus `total`; ?start=&count= page it
  *   GET  /kt/v1/entries?start=&count=        head + a page of entries (mirrors); count ≤ 1000
+ *   POST /kt/v1/entries                      {indexes: [...]} → head + those entries, each with an
+ *                                            inclusion proof, plus `total` (clients; ≤ 1000 indexes)
+ *   GET  /kt/v1/bucket?prefix=&bits=         head + every label whose first `bits` bits are `prefix`,
+ *                                            with the map siblings that prove none is missing (§19.9)
+ *   POST /kt/v1/buckets                      {buckets: [{prefix, bits}…]} → up to 64 buckets, one head
  *   POST /kt/v1/publish                      {acct, v, fp, value, sig} → {index, sth} — see lib/log.js
+ *                                            (the handle log: {label, v, value, sig} — lib/handles.js)
  *   GET  /kt/v1/pub                          the log's public key (for a first pin; clients ship it)
  *   GET  /health                             {state, size, labels, sthTs, rssBytes, memLimitBytes,
  *                                            diskBytes, diskFreeBytes, full}; while the log replays,
@@ -32,6 +38,12 @@
  *   to KT_SEED; PORT is honoured when KT_PORT is unset (a cloud host injects
  *   it); KT_EPHEMERAL=1 keeps entries in memory (development only —
  *   a restart forgets the log, which is exactly what a log must not do).
+ *   KT_MODE=handles runs the HANDLE log instead (PROTOCOL §21.5): the same
+ *   trees and routes, records that resolve a handle as values, the owner
+ *   rule, and contexts of its own — a separate service with its own key and
+ *   its own KT_DATA, never the key-transparency log's. Unset is the
+ *   key-transparency log, exactly as it was; any other value refuses to
+ *   start.
  *
  * Abuse: publishes pass five gates — a per-address rate (PUBLISH_PER_MIN,
  * default 30), a total rate (PUBLISH_PER_MIN_TOTAL, default 120, of which a
@@ -76,16 +88,28 @@ const {
   MemoryStore,
   FileStore,
   privateKeyFromSeed,
-  entryToJson,
   sthToJson,
   mapProofToJson,
   inclusionToJson,
   labelFor,
+  bucketBits,
+  bucketToJson,
   MAX_VALUE_BYTES,
+  MAX_BUCKET_BITS,
+  MAX_BUCKET_LEAVES,
+  MAX_BUCKETS,
 } = require('./lib/log.js');
+const { parsePrefix } = require('./lib/smt.js');
+const { modeFromEnv } = require('./lib/handles.js');
 
 const MAX_BODY = 400 * 1024;
 const MAX_PAGE = 1000;
+/**
+ * The body of a POST that READS — a list of buckets or of indexes. At most
+ * 64 buckets or 1000 indexes, so a few kilobytes; this is room for them and
+ * nothing else, and a body is never a reason to hold memory a publish has.
+ */
+const MAX_READ_BODY = 64 * 1024;
 /**
  * The most a read route will put in one response.
  *
@@ -199,6 +223,20 @@ function intParam(v, fallback) {
   if (!/^\d{1,15}$/.test(v)) return NaN;
   return Number(v);
 }
+
+/**
+ * One bucket a reader asked for — `{prefix, bits}` with `prefix` the hex the
+ * protocol writes — as {prefix: Buffer, bits}, or null when it is not one:
+ * bits 0..24, and the prefix exactly ⌈bits/4⌉ hex digits with its unused low
+ * bits zero (`parsePrefix`), so that a bucket has one spelling.
+ */
+function bucketQuery(prefix, bits) {
+  if (!Number.isInteger(bits) || bits < 0 || bits > MAX_BUCKET_BITS) return null;
+  const p = parsePrefix(prefix === null || prefix === undefined ? '' : prefix, bits);
+  return p ? { prefix: p, bits } : null;
+}
+
+const BUCKET_QUERY_RULE = `bits is 0..${MAX_BUCKET_BITS} and prefix is the first bits of a label as ⌈bits/4⌉ hex digits, the unused low bits zero`;
 
 /**
  * A token bucket per key, refilled at `perWindow` tokens every `windowMs`,
@@ -462,6 +500,48 @@ function createServer({
   // in milliseconds — so junk cannot spend it; only sockets held open can,
   // and the request timeout below lets go of those.
   let inFlight = 0;
+  // The read routes' bodies (`POST /kt/v1/buckets`, `POST /kt/v1/entries`)
+  // are counted apart from the publishes', under the same bound: a few
+  // kilobytes each, but a client still decides how slowly one arrives, and
+  // sharing the publishes' count would let held read bodies refuse
+  // publishing with `busy` — or the reverse.
+  let readsInFlight = 0;
+  const handleMode = log.mode === 'handles';
+  /**
+   * The head as `/kt/v1/sth` serves it: the signed head, and `bucketBits`,
+   * the bucket size this log recommends for its number of labels (§19.9).
+   * Not signed and not a promise — a reader that asks for other buckets is
+   * answered the same way — and the same JSON in a bucket answer.
+   */
+  const headJson = (sth) => ({ ...sthToJson(sth), bucketBits: bucketBits(log.map.size) });
+  // A bucket answer is bounded by its leaves in both logs, and in the handle
+  // log — where a leaf is a record, a signature and an audit path — by its
+  // size as well, at the bound a label's history is held to: these are
+  // routes a client's check depends on, so what bounds them is the cost of
+  // one answer, never a budget somebody else can spend (`reads` below).
+  const bucketLimits = { maxLeaves: MAX_BUCKET_LEAVES, maxBytes: handleMode ? MAX_HISTORY_PAGE_BYTES : Infinity };
+  /** A read route's body, under its own in-flight bound; null when `busy` was answered. */
+  const readBodyOf = async (req, res) => {
+    if (readsInFlight >= maxPublishInFlight) {
+      res.setHeader('retry-after', '1');
+      fail(res, 503, 'busy', `${maxPublishInFlight} requests are already being read`);
+      return null;
+    }
+    readsInFlight += 1;
+    try {
+      const body = await readBody(req, MAX_READ_BODY);
+      let j;
+      try {
+        j = JSON.parse(body.toString('utf8'));
+      } catch {
+        throw new PublishError(400, 'bad_request', 'body is not JSON');
+      }
+      if (!j || typeof j !== 'object' || Array.isArray(j)) throw new PublishError(400, 'bad_request', 'body is not an object');
+      return j;
+    } finally {
+      readsInFlight -= 1;
+    }
+  };
   const sweeper = setInterval(() => {
     limiter.sweep();
     total.sweep();
@@ -526,6 +606,7 @@ function createServer({
           // the restart changes nothing. The alarm is on the numbers.
           return json(res, 200, {
             state: 'serving',
+            ...(handleMode ? { mode: 'handles' } : {}),
             size: log.size,
             labels: log.map.size,
             sthTs: sth.ts,
@@ -533,7 +614,13 @@ function createServer({
             ...(d ? { diskBytes: d.bytes, diskFreeBytes: d.free, full: d.full } : {}),
           });
         }
-        if (p === '/kt/v1/sth') return json(res, 200, sthToJson(log.sth()));
+        if (p === '/kt/v1/sth') return json(res, 200, headJson(log.sth()));
+        if (p === '/kt/v1/bucket') {
+          const q = bucketQuery(url.searchParams.get('prefix'), intParam(url.searchParams.get('bits'), NaN));
+          if (!q) return fail(res, 400, 'bad_request', BUCKET_QUERY_RULE);
+          const r = log.buckets([q], bucketLimits);
+          return json(res, 200, { sth: headJson(r.sth), ...bucketToJson(r.buckets[0]) });
+        }
         if (p === '/kt/v1/pub') return json(res, 200, { pub: log.publicKey.toString('base64') });
         if (p === '/kt/v1/consistency') {
           const sth = log.sth();
@@ -551,7 +638,7 @@ function createServer({
           return json(res, 200, {
             sth: sthToJson(r.sth),
             map: mapProofToJson(r.map),
-            entry: r.entry ? entryToJson(r.entry) : null,
+            entry: r.entry ? log.entryJson(r.entry) : null,
             inclusion: r.inclusion ? inclusionToJson(r.inclusion) : null,
           });
         }
@@ -566,7 +653,7 @@ function createServer({
             sth: sthToJson(r.sth),
             start: r.start,
             total: r.total,
-            entries: r.entries.map((x) => ({ entry: entryToJson(x.entry), inclusion: inclusionToJson(x.inclusion) })),
+            entries: r.entries.map((x) => ({ entry: log.entryJson(x.entry), inclusion: inclusionToJson(x.inclusion) })),
           });
         }
         if (p === '/kt/v1/entries') {
@@ -586,7 +673,7 @@ function createServer({
           const bytes = json(
             res,
             200,
-            { sth: sthToJson(r.sth), start, total: r.total, entries: r.entries.map(entryToJson) },
+            { sth: sthToJson(r.sth), start, total: r.total, entries: r.entries.map((e) => log.entryJson(e)) },
             r.entries.length > 0 ? CACHEABLE : {}
           );
           reads.takeN(readKey, bytes);
@@ -639,14 +726,19 @@ function createServer({
           return fail(res, 400, 'bad_request', 'body is not JSON');
         }
         if (!j || typeof j !== 'object') return fail(res, 400, 'bad_request', 'body is not an object');
+        // Node's base64 decoder reads the URL-safe alphabet too, so the
+        // handle log's `label` (b64url, §21.5) and every other field decode
+        // the same way; the lengths are the log's to check.
         const field = (name) => (typeof j[name] === 'string' ? Buffer.from(j[name], 'base64') : null);
-        const req_ = {
-          acct: field('acct'),
-          version: j.v,
-          fp: field('fp'),
-          value: field('value'),
-          sig: field('sig'),
-        };
+        const req_ = handleMode
+          ? { label: field('label'), version: j.v, value: field('value'), sig: field('sig') }
+          : {
+              acct: field('acct'),
+              version: j.v,
+              fp: field('fp'),
+              value: field('value'),
+              sig: field('sig'),
+            };
         // Checked BEFORE any gate is charged: an unsigned request naming
         // somebody else's account must not be able to spend their budget,
         // and the only thing that tells the two apart is the signature.
@@ -677,16 +769,21 @@ function createServer({
           return false;
         };
         const key = clientKey(req, clientIpHeader);
-        const acctKey = req_.acct.toString('base64');
+        // In the handle log the gates count handles where they count
+        // accounts here: one handle's publishes a day, and first publishes —
+        // claims — a minute, which is what bounds how fast a squatter can
+        // take names (rate, not total: ADR 0015's arithmetic).
+        const acctKey = handleMode ? req_.label.toString('base64') : req_.acct.toString('base64');
+        const who = handleMode ? 'handle' : 'account';
         // First contact costs a token; an account the log already holds
         // costs nothing there. `hasLabel` reads the index accepted publishes
         // build, so a refused publish cannot make an account look known.
-        const fresh = !log.hasLabel(labelFor(req_.acct));
+        const fresh = !log.hasLabel(handleMode ? req_.label : labelFor(req_.acct));
         if (!gate(limiter, key, `at most ${publishPerMinute} publishes a minute from one address`)) return undefined;
-        if (!gate(perAccount, acctKey, `at most ${publishPerAccountPerDay} publishes a day for one account`)) return undefined;
+        if (!gate(perAccount, acctKey, `at most ${publishPerAccountPerDay} publishes a day for one ${who}`)) return undefined;
         if (fresh) {
-          if (!gate(newPerAddress, key, `at most ${newAccountsPerAddressPerMinute} new accounts a minute from one address`)) return undefined;
-          if (!gate(newAccounts, 'all', `at most ${newAccountsPerMinute} new accounts a minute`)) return undefined;
+          if (!gate(newPerAddress, key, `at most ${newAccountsPerAddressPerMinute} new ${who}s a minute from one address`)) return undefined;
+          if (!gate(newAccounts, 'all', `at most ${newAccountsPerMinute} new ${who}s a minute`)) return undefined;
         }
         if (!gate(total, 'all', `at most ${publishPerMinuteTotal} publishes a minute in total`, fresh ? 0 : firstPublishReserve)) return undefined;
         let entry;
@@ -698,6 +795,41 @@ function createServer({
           throw e;
         }
         return json(res, 201, { index: entry.index, sth: sthToJson(log.sth()) });
+      }
+      if (req.method === 'POST' && p === '/kt/v1/buckets') {
+        const j = await readBodyOf(req, res);
+        if (j === null) return undefined;
+        const list = j.buckets;
+        if (!Array.isArray(list) || list.length < 1 || list.length > MAX_BUCKETS) {
+          return fail(res, 400, 'bad_request', `buckets is a list of 1..${MAX_BUCKETS} {prefix, bits}`);
+        }
+        const qs = list.map((b) => (b && typeof b === 'object' ? bucketQuery(b.prefix, b.bits) : null));
+        if (qs.some((q) => q === null)) return fail(res, 400, 'bad_request', BUCKET_QUERY_RULE);
+        const r = log.buckets(qs, bucketLimits);
+        return json(res, 200, { sth: headJson(r.sth), buckets: r.buckets.map(bucketToJson) });
+      }
+      if (req.method === 'POST' && p === '/kt/v1/entries') {
+        // The by-index form of the mirrors' route: the entries a client
+        // needs the values of — named by a bucket, with decoys beside them
+        // (phase 35) — each with its inclusion proof under the head served,
+        // which a page for a mirror does not carry because a mirror rebuilds
+        // the tree. A route a client's check depends on, so it is bounded as
+        // a label's history is — a thousand indexes, MAX_HISTORY_PAGE_BYTES
+        // of entries, `total` so a short answer can be told from the whole —
+        // and is not charged to the mirrors' budget, which every reader
+        // behind an unconfigured front shares.
+        const j = await readBodyOf(req, res);
+        if (j === null) return undefined;
+        const ix = j.indexes;
+        if (!Array.isArray(ix) || ix.length < 1 || ix.length > MAX_PAGE) {
+          return fail(res, 400, 'bad_request', `indexes is a list of 1..${MAX_PAGE} entry indexes`);
+        }
+        const r = log.entriesAt(ix, { maxBytes: MAX_HISTORY_PAGE_BYTES });
+        return json(res, 200, {
+          sth: sthToJson(r.sth),
+          total: r.total,
+          entries: r.entries.map((x) => ({ entry: log.entryJson(x.entry), inclusion: inclusionToJson(x.inclusion) })),
+        });
       }
       if (req.method === 'POST') return fail(res, 404, 'not_found', 'no such route');
       return fail(res, 405, 'method_not_allowed', 'GET or POST');
@@ -753,7 +885,7 @@ function confirmHeadFromEnv(v) {
  * takes the port. Every response says `connection: close`, so nothing holds
  * a socket open into the gap.
  */
-function replayServer(progress) {
+function replayServer(progress, mode = 'kt') {
   return http.createServer((req, res) => {
     res.setHeader('connection', 'close');
     res.setHeader('retry-after', '5');
@@ -764,7 +896,7 @@ function replayServer(progress) {
       // A request target URL cannot parse is not /health; it gets the 503.
     }
     if (req.method === 'GET' && p === '/health') {
-      return json(res, 503, { state: 'replaying', replayed: progress.replayed, ...memory() });
+      return json(res, 503, { state: 'replaying', ...(mode === 'handles' ? { mode } : {}), replayed: progress.replayed, ...memory() });
     }
     return fail(res, 503, 'starting', 'the log is replaying its entries and serves nothing until it has');
   });
@@ -781,6 +913,8 @@ function listen(server, port, host) {
 }
 
 async function main() {
+  // First: a mistyped KT_MODE must not start either log under this key.
+  const mode = modeFromEnv(process.env.KT_MODE);
   const seed = seedFromEnv();
   const signingKey = privateKeyFromSeed(seed);
   let store;
@@ -810,11 +944,11 @@ async function main() {
   // KT_PORT first; then PORT, which cloud hosts inject (render.kt.yaml).
   const host = process.env.KT_HOST || '127.0.0.1';
   const progress = { replayed: 0 };
-  const replaying = replayServer(progress);
+  const replaying = replayServer(progress, mode);
   const port = await listen(replaying, +(process.env.KT_PORT || process.env.PORT || 8085), host);
-  console.log(`z-kt: replaying; GET http://${host}:${port}/health says how far`);
+  console.log(`z-kt: ${mode === 'handles' ? 'the HANDLE log (KT_MODE=handles), ' : ''}replaying; GET http://${host}:${port}/health says how far`);
   const log = await KtLog.open(
-    { store, signingKey, minSize, maxHeadAgeMs: maxHeadAgeMin > 0 ? maxHeadAgeMin * 60_000 : Infinity, confirmHead },
+    { store, signingKey, minSize, maxHeadAgeMs: maxHeadAgeMin > 0 ? maxHeadAgeMin * 60_000 : Infinity, confirmHead, mode },
     { onProgress: (n) => (progress.replayed = n) }
   );
   replaying.closeAllConnections();
@@ -861,11 +995,11 @@ async function main() {
   process.on('SIGTERM', stop);
   // Said only once a stop is a clean one: whatever reads this and stops the
   // log from then on gets the head recorded, as the next start expects.
-  console.log(`z-kt: ${log.size} entries, ${log.map.size} labels; public key ${log.publicKey.toString('base64')}`);
+  console.log(`z-kt: ${mode === 'handles' ? 'handle log, ' : ''}${log.size} entries, ${log.map.size} labels; public key ${log.publicKey.toString('base64')}`);
   console.log(`z-kt: listening on http://${host}:${port}`);
 }
 
-module.exports = { createServer, RateLimiter, MAX_BODY, MAX_PAGE, MAX_PAGE_BYTES, MAX_HISTORY_PAGE_BYTES };
+module.exports = { createServer, RateLimiter, MAX_BODY, MAX_READ_BODY, MAX_PAGE, MAX_PAGE_BYTES, MAX_HISTORY_PAGE_BYTES };
 
 if (require.main === module) {
   main().catch((e) => {

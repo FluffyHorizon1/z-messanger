@@ -11,7 +11,8 @@ const path = require('path');
 const { generate, OUT } = require('../tools/gen_vectors.js');
 const { verifyInclusion, verifyConsistency, hashLeaf } = require('../lib/merkle.js');
 const { verifyMapProof } = require('../lib/smt.js');
-const { verifySth, sthFromJson, mapProofFromJson, entryFromJson, inclusionFromJson, leafHashOf, labelFor, openValue } = require('../lib/log.js');
+const { verifySth, sthFromJson, mapProofFromJson, entryFromJson, inclusionFromJson, leafHashOf, labelFor, openValue, verifyBucketAnswer, KtLog, MemoryStore, privateKeyFromSeed } = require('../lib/log.js');
+const handles = require('../lib/handles.js');
 
 const hexb = (h) => Buffer.from(h, 'hex');
 
@@ -109,5 +110,50 @@ test('kt_log.json: heads, lookups, history, the witness, and must_refuse', () =>
         assert.ok(!verifyConsistency({ first: held.size, second: forkHead.size, firstRoot: held.logRoot, secondRoot: forkHead.logRoot, proof: m.consistency_from_fork.map((x) => Buffer.from(x, 'base64')) }), m.why);
       }
     }
+  }
+});
+
+test('bucket.json: every answer verifies, every must_refuse fails, and the handle log\'s publishes and refusals reproduce', () => {
+  const v = JSON.parse(fs.readFileSync(path.join(OUT, 'bucket.json'), 'utf8'));
+  for (const [mode, part] of [['kt', v.kt], ['handles', v.handles]]) {
+    const logPub = hexb(part.log.pub);
+    for (const b of part.buckets) {
+      const r = verifyBucketAnswer({ mode, logPub, asked: [b.asked], json: JSON.parse(b.response_json) });
+      assert.deepEqual(r.buckets[0].leaves.map((l) => l.label.toString('hex')), b.expect_labels);
+    }
+    for (const m of part.must_refuse) {
+      assert.throws(() => verifyBucketAnswer({ mode, logPub, asked: m.asked, json: JSON.parse(m.response_json) }), Error, m.why);
+    }
+  }
+  const ktPub = hexb(v.kt.log.pub);
+  const empty = verifyBucketAnswer({ mode: 'kt', logPub: ktPub, asked: [v.kt.empty_bucket.asked], json: JSON.parse(v.kt.empty_bucket.response_json) });
+  assert.equal(empty.buckets[0].leaves.length, 0, 'a verified empty bucket: absence for every label in it');
+  const post = JSON.parse(v.kt.post_buckets.request_json).buckets;
+  assert.equal(verifyBucketAnswer({ mode: 'kt', logPub: ktPub, asked: post, json: JSON.parse(v.kt.post_buckets.response_json) }).buckets.length, 3);
+  const byIndex = JSON.parse(v.kt.entries_by_index.response_json);
+  const sth = sthFromJson(byIndex.sth);
+  assert.ok(verifySth(sth, ktPub));
+  assert.deepEqual(byIndex.entries.map((x) => x.entry.index), JSON.parse(v.kt.entries_by_index.request_json).indexes);
+  for (const x of byIndex.entries) {
+    const inc = inclusionFromJson(x.inclusion);
+    assert.ok(verifyInclusion({ leafHash: leafHashOf(entryFromJson(x.entry)), index: inc.index, size: inc.size, root: sth.logRoot, path: inc.path }));
+  }
+  // The handle log's publishes, replayed into a log of the same key and
+  // clock, give the same entries and the same head; and every refusal is
+  // refused with the status and code recorded.
+  let t = v.handles.publishes[0].accepted_ms;
+  const h = new KtLog({ store: new MemoryStore(), signingKey: privateKeyFromSeed(hexb(v.handles.log.seed)), mode: 'handles', now: () => t });
+  const body = (j) => ({ label: Buffer.from(j.label, 'base64'), version: j.v, value: Buffer.from(j.value, 'base64'), sig: Buffer.from(j.sig, 'base64') });
+  for (const p of v.handles.publishes) {
+    t = p.accepted_ms;
+    const e = h.publish(body(JSON.parse(p.request_json)));
+    assert.equal(h.withValue(e).value.toString('utf8'), p.record_json);
+    assert.deepEqual(h.entryJson(h.withValue(e)), p.entry.json);
+    assert.equal(handles.parseRecord(Buffer.from(p.record_json)).k, p.k);
+  }
+  assert.ok(h.tree.root.equals(Buffer.from(v.handles.head.logRoot, 'base64')));
+  assert.ok(h.map.root.equals(Buffer.from(v.handles.head.mapRoot, 'base64')));
+  for (const r of v.handles.owner_rule_refusals) {
+    assert.throws(() => h.publish(body(JSON.parse(r.request_json))), (e) => e.status === r.http && e.code === r.code, r.why);
   }
 });
