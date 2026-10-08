@@ -110,6 +110,15 @@ class InnerMessage {
     if (decoded is! Map) {
       throw const FormatException('inner message is not an object');
     }
+    // A JSON number with a huge exponent (`1e999`) decodes to a non-finite
+    // double, and the first `.toInt()` on it — `ts`, `ttl`, a kind's `sec`,
+    // `dur`, `v`, `g`, or the `pql` decoration read after the envelope is
+    // acknowledged — throws an `UnsupportedError`. That is an Error, not an
+    // Exception, so it escaped every `on FormatException` the caller has and
+    // left the envelope unacknowledged: the same wedge `fromBytes`'s type
+    // checks exist to stop, through a value no honest client sends. One pass
+    // rejects a non-finite number wherever it sits, nested members included.
+    _assertFinite(decoded);
     final j = decoded.cast<String, Object?>();
     final k = j['k'], mid = j['mid'], ts = j['ts'], ttl = j['ttl'];
     if (k is! String || mid is! String || ts is! num) {
@@ -119,16 +128,109 @@ class InnerMessage {
       throw const FormatException('inner message ttl is not a number');
     }
     const known = {'k', 'mid', 'ts', 'ttl'};
+    final data = <String, Object?>{
+      for (final e in j.entries)
+        if (!known.contains(e.key)) e.key: e.value
+    };
+    // The members each kind acts on, checked for type and shape before any
+    // caller reads them (§6.8). A peer's own client can put anything inside a
+    // validly-encrypted envelope, and a member of the wrong type reached
+    // unguarded — `mids` that is not a list of strings is the one a receiver
+    // iterated — throws a `TypeError` deep in the receive transaction, which
+    // escapes as an Error and leaves the envelope to be redelivered until the
+    // queue TTL. A wrong-typed member is a [FormatException] the caller
+    // catches and drops, the ratchet kept.
+    _validateKind(k, data);
     return InnerMessage(
       kind: k,
       mid: mid,
       ts: ts.toInt(),
       ttlSec: (ttl as num?)?.toInt() ?? 0,
-      data: {
-        for (final e in j.entries)
-          if (!known.contains(e.key)) e.key: e.value
-      },
+      data: data,
     );
+  }
+
+  /// Rejects a non-finite JSON number anywhere in the decoded message.
+  static void _assertFinite(Object? v) {
+    if (v is double && !v.isFinite) {
+      throw const FormatException('inner message holds a non-finite number');
+    }
+    if (v is Map) {
+      for (final e in v.values) {
+        _assertFinite(e);
+      }
+    } else if (v is List) {
+      for (final e in v) {
+        _assertFinite(e);
+      }
+    }
+  }
+
+  /// Per-kind member validation (§6.8). Every member is checked only when
+  /// present — an absent member keeps the meaning it had before the member
+  /// existed, which is how §6.2 extends kinds compatibly — and an unknown
+  /// kind passes untouched (§6.2: unknown kinds are ignored, not refused).
+  ///
+  /// This checks ONLY the members a receiver reads through a cast that throws
+  /// on the wrong type — `body` and `gid` (`as String?`), `sec` (`as num?`),
+  /// and `mids` (`as List?`, then iterated element by element). Members a
+  /// receiver is specified to ignore when malformed rather than reject —
+  /// `rt`, `emo` (§6.4/§6.5), and an attachment offer's own fields, which the
+  /// offer reader defaults or refuses without throwing (§7) — are left to
+  /// those tolerant readers, so a message is never dropped for a member the
+  /// spec says to overlook. Non-finite numbers are rejected globally above.
+  static void _validateKind(String kind, Map<String, Object?> d) {
+    void str(String key) {
+      if (d.containsKey(key) && d[key] is! String) {
+        throw FormatException('$kind.$key must be a string');
+      }
+    }
+
+    void num_(String key) {
+      if (d.containsKey(key) && d[key] is! num) {
+        throw FormatException('$kind.$key must be a number');
+      }
+    }
+
+    // A list of strings, iterated element by element by the receiver — the
+    // one shape whose wrong element type threw inside the receive
+    // transaction (`read`/`dlv` read it as `List` and cast each element).
+    void strList(String key) {
+      final v = d[key];
+      if (v == null) return;
+      if (v is! List || v.any((e) => e is! String)) {
+        throw FormatException('$kind.$key must be a list of strings');
+      }
+    }
+
+    switch (kind) {
+      case 'text':
+        str('body');
+        break;
+      case 'gmsg':
+        str('gid');
+        str('body');
+        break;
+      case 'gedit':
+        str('gid');
+        break;
+      case 'gdel':
+        str('gid');
+        break;
+      case 'greact':
+        str('gid');
+        break;
+      case 'timer':
+        num_('sec');
+        break;
+      case 'read':
+      case 'dlv':
+        strList('mids');
+        break;
+      default:
+        break; // other kinds read their members safely (getters, is-guards,
+      // try/catch, or the offer reader); nothing throws on a wrong type
+    }
   }
 
   static InnerMessage text(String mid, int ts, String body,

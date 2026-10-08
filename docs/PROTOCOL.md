@@ -837,6 +837,50 @@ Delivery is at‑least‑once (§12.5). Receivers MUST deduplicate on
 `(senderRoutingId, mid)` after decryption; a duplicate is acknowledged to the
 relay but not processed again.
 
+### 6.8 What a receiver does with an inner message it cannot use
+
+An envelope that decrypts has authenticated: the ratchet proved who sent it,
+and the step cannot be un-taken. But the plaintext inside is still the
+sender's say-so — a peer's own client, buggy or hostile toward its own
+contact, can put anything in a validly-encrypted envelope — so a receiver
+MUST decide every inner message's fate and acknowledge it **once that fate is
+decided**, never leaving it for the relay to redeliver on every connect. An
+envelope that is neither acknowledged nor stored is redelivered until the
+queue TTL (§12.4) and, across a restart, fails the same way every time: a
+single one wedges a mailbox slot for 72 h, and enough of them fill the byte
+cap so that valid messages are refused.
+
+Two outcomes, and the receiver MUST tell them apart:
+
+* **Permanent** — the envelope can never be processed: an inner message whose
+  members have the wrong type or a non-finite number, a shape no kind defines,
+  or (at the session layer) an opener whose ephemeral or ratchet key is the
+  wrong length. The receiver **validates every inner message against §6.2
+  before acting on it** (`InnerMessage.fromBytes`: a wrong-typed member or a
+  non-finite number is a parse error, not a raw exception that escapes the
+  caller), and `Conversation.decrypt` raises its documented decrypt exception
+  for a malformed payload or key rather than letting a library Error through.
+  A permanent failure is **acknowledged and counted**. For a message that
+  authenticated and whose content alone is unusable, the ratchet step is
+  **kept** and only the content dropped; for an opener that never decrypts, no
+  session is created (so a forged opener leaves nothing behind — it cannot
+  accumulate dead sessions or displace a contact's genuine pending one).
+
+* **Transient** — the operation can succeed on a later delivery: the vault
+  busy, closing, full or erroring; a file-system error; a send held by a
+  transparency conflict (§3.6/ADR 0006). The envelope is **left with the
+  relay**, unacknowledged, and the advanced ratchet is rolled back so the
+  redelivery decrypts. A receiver MUST NOT acknowledge a transient failure
+  away: doing so loses a message it has not stored.
+
+One classifier decides this for every receive path — the contact's, a
+contact's additional device's, and self-sync — so a vault-write failure is
+never acknowledged on one path while it is redelivered on another.
+
+A held message a peer could not send while a transparency conflict stood
+(an edit, delete, reaction or timer change, which apply locally at once) is
+queued durably and sent when the hold lifts, not dropped.
+
 ## 7. Attachments
 
 A file is encrypted once under a random per‑file key and relayed as chunks

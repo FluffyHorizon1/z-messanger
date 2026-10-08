@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show FileSystemException;
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -157,6 +158,17 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// not wait a minute.
   Duration outboxRetryDelay = const Duration(seconds: 60);
   Timer? _outboxRetry;
+
+  /// A refusal the relay could not attribute to one envelope — `internal`
+  /// (the store unreachable), a send timeout, or any other code that is not
+  /// one of the four the outbox treats specially — stops the pass with rows
+  /// still queued. It used to return and wait for the next reconnect, so an
+  /// `internal` from an otherwise-healthy link left the outbox stopped until
+  /// the user sent again or the socket dropped. Now the pass comes back on
+  /// its own timer while the link stays up, backing off from [_otherRetryMin]
+  /// to [outboxRetryDelay] and resetting the moment anything sends.
+  static const Duration _otherRetryMin = Duration(seconds: 1);
+  Duration _otherRetryBackoff = _otherRetryMin;
 
   /// Self-sync across my own linked devices. Null until built; inert when I
   /// have no linked devices, so single-device behaviour is unchanged.
@@ -2125,7 +2137,15 @@ class ChatService extends ChangeNotifier implements KtHost {
   }
 
   @override
-  void ktChanged() => notifyListeners();
+  void ktChanged() {
+    notifyListeners();
+    // A transparency conflict lifting (answered, or resolved by the log
+    // agreeing) is the moment a held send becomes sendable. The 1:1 mutators
+    // queue a held edit/delete/reaction/timer in the fan-out queue; kicking
+    // the drain here delivers it without waiting for the next send. Cheap
+    // when nothing is held: one query that finds an empty queue.
+    if (!_disposed) unawaited(_drainGroupFanout());
+  }
 
   /// Settings: where the log is. Persisted; takes effect at once.
   Future<void> setKtConfig(KtConfig c) => kt.setConfig(c);
@@ -2909,6 +2929,50 @@ class ChatService extends ChangeNotifier implements KtHost {
     return inner.mid;
   }
 
+  /// Send [inner] to a 1:1 [contact], but if a transparency conflict holds
+  /// sends to them (ADR 0006), queue it durably instead of losing it.
+  ///
+  /// An `edit`, `del`, `react` or `timer` applies to the local copy the
+  /// instant the user makes it and only then asks the peer to follow. While
+  /// sends are held those four threw [KtSendHeldException] out of [_sendInner]
+  /// and were simply dropped: the local copy changed, the peer's never did,
+  /// and answering the conflict re-sent nothing — the group path already
+  /// queues its fan-out durably and drains it on answer, and the 1:1 path did
+  /// not. The queue is the same `group_fanout` table, with the thread and the
+  /// recipient both the contact (a 1:1 is a group of one for this purpose);
+  /// the drain skips a held row and [ktChanged] kicks it when the hold lifts.
+  Future<void> _sendInnerOrHold(Contact contact, InnerMessage inner) async {
+    if (_ktHeldKinds.contains(inner.kind) && kt.sendsHeld(contact.rid)) {
+      await _queueHeldInner(contact, inner);
+      return;
+    }
+    try {
+      await _sendInner(contact, inner);
+    } on KtSendHeldException {
+      // A conflict appeared between the check above and the send: durable, so
+      // answering it delivers this rather than dropping it.
+      await _queueHeldInner(contact, inner);
+    }
+  }
+
+  /// Record a 1:1 inner held by a transparency conflict in the durable
+  /// fan-out queue (thread and recipient both the contact) and kick the
+  /// drain, which skips it while the hold stands and sends it once it lifts.
+  Future<void> _queueHeldInner(Contact contact, InnerMessage inner) async {
+    await vault.db.insert(
+      'group_fanout',
+      {
+        'mid': inner.mid,
+        'gid': contact.rid, // a 1:1: the thread IS the contact
+        'rid': contact.rid,
+        'payload': await vault.seal(utf8.decode(inner.toBytes())),
+        'created_ms': _now(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    unawaited(_drainGroupFanout());
+  }
+
   /// [replyTo] (8.1) is the `mid` of a message in this same conversation;
   /// only the id is sent, and it is dropped if it names nothing we hold.
   Future<void> sendText(String rid, String body,
@@ -3111,7 +3175,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         seconds == 0
             ? systemBody(SystemKind.ttlOffYou)
             : systemBody(SystemKind.ttlSetYou, {'sec': seconds}));
-    await _sendInner(
+    await _sendInnerOrHold(
         contact, InnerMessage.timer(newMessageId(), _now(), seconds));
     notifyListeners();
   }
@@ -3132,6 +3196,12 @@ class ChatService extends ChangeNotifier implements KtHost {
     // The relay asked this connection to slow down: not one mailbox's
     // problem and not a reason to wait for a reconnect.
     var rateLimited = false;
+    // An unattributable refusal (`internal`, a send timeout, …) while the
+    // link is up: stop the pass and come back on a backoff timer, rather than
+    // wait for a reconnect.
+    var otherRefused = false;
+    // Whether this flush delivered anything, so the backoff can reset.
+    var sentAny = false;
     try {
       while (true) {
         final rows = full.isEmpty
@@ -3152,6 +3222,7 @@ class ChatService extends ChangeNotifier implements KtHost {
                 to: rid, id: id, payload: row['payload'] as String);
             await vault.db
                 .delete('outbox', where: 'seq = ?', whereArgs: [row['seq']]);
+            sentAny = true;
             await _markSentIfLast(row);
           } on RelayException catch (e) {
             if (e.message.contains('too_large') ||
@@ -3191,8 +3262,17 @@ class ChatService extends ChangeNotifier implements KtHost {
               // link that is working perfectly well.
               rateLimited = true;
               return;
+            } else if (transport.isConnected) {
+              // The link is up but the relay refused this envelope for a
+              // reason it did not attribute (`internal`, a send timeout, a
+              // malformed-frame code). The row stays queued and the relay
+              // dedupes a retry on (id, sender), so stop the pass and come
+              // back on the backoff timer rather than stall until a reconnect
+              // that a healthy link will not produce.
+              otherRefused = true;
+              return;
             } else {
-              return; // connection trouble: retry on next connect
+              return; // the link dropped: the reconnect flushes
             }
           }
         }
@@ -3205,8 +3285,22 @@ class ChatService extends ChangeNotifier implements KtHost {
       return;
     } finally {
       _flushing = false;
-      if ((full.isNotEmpty || storeFull || rateLimited) && !_disposed) {
+      // Anything sent clears the backoff, whatever else happened this pass.
+      if (sentAny) _otherRetryBackoff = _otherRetryMin;
+      if (_disposed) {
+        // No timer on the way out.
+      } else if (full.isNotEmpty || storeFull || rateLimited) {
         _outboxRetry ??= Timer(outboxRetryDelay, () {
+          _outboxRetry = null;
+          unawaited(flushOutbox());
+        });
+      } else if (otherRefused) {
+        final delay = _otherRetryBackoff;
+        // Double for next time, capped at the full/store retry delay.
+        final nextMs = min(delay.inMilliseconds * 2,
+            outboxRetryDelay.inMilliseconds);
+        _otherRetryBackoff = Duration(milliseconds: nextMs);
+        _outboxRetry ??= Timer(delay, () {
           _outboxRetry = null;
           unawaited(flushOutbox());
         });
@@ -3233,6 +3327,45 @@ class ChatService extends ChangeNotifier implements KtHost {
   // ------------------------------------------------------------------
   // Receiving
   // ------------------------------------------------------------------
+
+  /// Whether a failure raised while processing an inbound envelope is
+  /// TRANSIENT — the operation can succeed on a later delivery, so the
+  /// envelope is left with the relay unacknowledged — or PERMANENT — the
+  /// envelope can never be processed, so it is acknowledged and counted and
+  /// stops being redelivered (PROTOCOL §6.8). One place decides it for every
+  /// inbound path (the contact's, a contact's extra device's, self-sync),
+  /// rather than a different catch on each branch deciding differently, which
+  /// is how one path ([DeviceSyncService.handleInbound]) came to acknowledge
+  /// a vault-write failure away and lose the message it had already advanced
+  /// its ratchet past.
+  ///
+  /// Transient: the vault busy, locked, closing, full, read-only or erroring;
+  /// a file-system error; a send held by a transparency conflict; the relay
+  /// or link refusing. Permanent: malformed plaintext, a wrong-typed member,
+  /// a bad key or header (which the protocol library now raises as a
+  /// [FormatException] or [RatchetDecryptException] before they reach here).
+  /// The default is transient: an unforeseen failure is redelivered rather
+  /// than dropped, because losing a message is worse than redelivering one.
+  static bool _isTransientInboundFailure(Object e) {
+    if (e is RatchetDecryptException) return false;
+    if (e is FormatException) return false;
+    if (e is ArgumentError || e is RangeError || e is TypeError) return false;
+    if (e is KtSendHeldException) return true;
+    if (e is RelayException) return true;
+    if (e is FileSystemException) return true;
+    if (e is TimeoutException) return true;
+    if (e is DatabaseException) {
+      // A constraint, schema or syntax fault is a logic error a redelivery
+      // would hit again; everything else a vault throws on this path (busy,
+      // locked, closed, full, read-only, I/O) clears on its own.
+      return !(e.isUniqueConstraintError() ||
+          e.isNotNullConstraintError() ||
+          e.isNoSuchTableError() ||
+          e.isDuplicateColumnError() ||
+          e.isSyntaxError());
+    }
+    return true;
+  }
 
   Future<void> _onInbound(RelayInbound m) async {
     // Sealed sender: an envelope with no relay-level sender. Open it with our
@@ -3282,6 +3415,13 @@ class ChatService extends ChangeNotifier implements KtHost {
       // redelivery undecryptable, so a failure rolls the ratchet back and
       // leaves the envelope with the relay.
       final r = await sync.handleInbound(from, payload);
+      if (r.transientFailure) {
+        // The sync ratchet advanced but could not be persisted (the vault
+        // busy or closing). It has been rolled back; leaving the envelope
+        // un-acked means the relay redelivers it onto the restored ratchet,
+        // rather than the message being lost from everywhere.
+        return;
+      }
       final mirrored = r.mirrored;
       if (mirrored != null) {
         try {
@@ -3435,20 +3575,40 @@ class ChatService extends ChangeNotifier implements KtHost {
             }
             offerFate = await _persistInboundKind(txn, contact, parsed, now);
           });
-        } catch (_) {
-          // Persist failed: roll the in-memory ratchet back so the relay's
-          // redelivery can be decrypted again. Do NOT ack.
-          _convs[contact.rid] = await _convFromSnapshot(snapshot);
+        } catch (e) {
+          // A transient persist failure (the vault busy or closing) rolls the
+          // in-memory ratchet back so the relay's redelivery can be decrypted
+          // again, and is not acknowledged (handled below). A PERMANENT
+          // failure keeps the validly-advanced ratchet — the decryption was
+          // real — so the content is dropped rather than the step lost
+          // (§6.8), and the envelope is acknowledged rather than redelivered
+          // for ever.
+          if (_isTransientInboundFailure(e)) {
+            _convs[contact.rid] = await _convFromSnapshot(snapshot);
+          }
           rethrow;
         }
         return (kOk, parsed);
       });
       status = s;
       inner = parsedInner;
-    } catch (_) {
-      // Persistence failed and the ratchet was rolled back; leaving the
-      // envelope un-acked means the relay will redeliver it.
-      return;
+    } catch (e) {
+      if (_isTransientInboundFailure(e)) {
+        // Transient: the ratchet was rolled back above; leaving the envelope
+        // un-acked means the relay redelivers it when the condition clears.
+        return;
+      }
+      // Permanent: the ratchet advanced and was NOT rolled back. Persist that
+      // advance (the transaction that failed rolled back its content), then
+      // treat the envelope as a malformed drop — acknowledged and counted —
+      // so it is not redelivered until the queue TTL.
+      try {
+        await _withLock(contact.rid, () => _saveConv(contact.rid));
+      } catch (_) {
+        return; // could not even persist the ratchet: redeliver instead
+      }
+      status = kMalformed;
+      inner = null;
     }
 
     if (status == kWithheld) {
@@ -4661,7 +4821,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (isGroup) {
       await _queueGroupFanout(groups[rid]!, inner);
     } else {
-      await _sendInner(contacts[rid]!, inner);
+      await _sendInnerOrHold(contacts[rid]!, inner);
     }
     unawaited(_sync?.mirror(threadRid: rid, dir: 'out', inner: inner) ??
         Future<void>.value());
@@ -4748,7 +4908,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (isGroup) {
       await _queueGroupFanout(groups[rid]!, inner);
     } else {
-      await _sendInner(contacts[rid]!, inner);
+      await _sendInnerOrHold(contacts[rid]!, inner);
     }
     unawaited(_sync?.mirror(threadRid: rid, dir: 'out', inner: inner) ??
         Future<void>.value());
@@ -4976,7 +5136,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       await _queueGroupFanout(groups[rid]!, inner);
     } else {
       // _sendInner already fans out to the contact's other devices.
-      await _sendInner(contacts[rid]!, inner);
+      await _sendInnerOrHold(contacts[rid]!, inner);
     }
     unawaited(_sync?.mirror(threadRid: rid, dir: 'out', inner: inner) ??
         Future<void>.value());
@@ -4992,6 +5152,23 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// what happens AFTER the bytes arrive, without a network in the number.
   @visibleForTesting
   Future<void> debugInbound(RelayInbound m) => _onInbound(m);
+
+  /// Test seam: make the next self-sync vault write throw once, to prove a
+  /// transient failure on the self-sync receive path leaves the envelope with
+  /// the relay rather than acknowledging it away. Returns false if this
+  /// device has no self-sync (nothing linked), so a test can skip.
+  @visibleForTesting
+  bool debugFailNextSyncSave() {
+    final s = _sync;
+    if (s == null) return false;
+    s.debugFailNextInboundSave = true;
+    return true;
+  }
+
+  /// How many times the self-sync one-shot save failure has fired. Test seam
+  /// paired with [debugFailNextSyncSave].
+  @visibleForTesting
+  int get debugSyncSaveFailures => _sync?.debugSaveFailures ?? 0;
 
   /// Encrypt arbitrary bytes to [rid] through the established conversation and
   /// seal them as a sealed-sender envelope, persisting the advanced ratchet.
@@ -6769,7 +6946,13 @@ class ChatService extends ChangeNotifier implements KtHost {
             // answering the conflict delivers it, and it does not count
             // towards progress or towards what the message is still waiting
             // for.
-            heldMembers.add(rid);
+            //
+            // A 1:1 held inner (an edit/delete/reaction/timer queued here
+            // because the group path's durability is the mechanism it reuses)
+            // has gid == rid: it is a conversation of one, surfaced by the
+            // 1:1 screen's own conflict banner, so it is not folded into the
+            // group screen's held-members set.
+            if (r['gid'] != rid) heldMembers.add(rid);
             continue;
           }
           try {
@@ -6813,8 +6996,9 @@ class ChatService extends ChangeNotifier implements KtHost {
                 where: 'seq = ?', whereArgs: [r['seq']]);
             progressed = true;
           } on KtSendHeldException {
-            // The check above raced with a conflict appearing. Same answer.
-            heldMembers.add(rid);
+            // The check above raced with a conflict appearing. Same answer
+            // (and, as above, a 1:1 held row is not a group-screen concern).
+            if (r['gid'] != rid) heldMembers.add(rid);
           } catch (e) {
             // Leave the row. The next drain retries it; the message stays
             // `pending`, which is the truth. Said in a debug build only:
@@ -10300,16 +10484,23 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     try {
       await _dispatchExtraInner(contact, rid, fromDeviceRid, inner!);
-    } catch (_) {
-      // Put the ratchet back and leave the envelope with the relay, exactly
-      // as the primary path does — the alternative is an acknowledged
-      // message that was never stored.
-      //
-      // Not under the conversation's lock, and the WHOLE session: whatever
-      // touched it since the snapshot — a fan-out's sending chains, an
-      // install's target changes — is put back too. Known and not fixed
-      // here; see the note in `_installContactDeviceListLocked`.
-      await _restoreExtra(rid, snapshot, persist: true);
+    } catch (e) {
+      if (_isTransientInboundFailure(e)) {
+        // Put the ratchet back and leave the envelope with the relay, exactly
+        // as the primary path does — the alternative is an acknowledged
+        // message that was never stored.
+        //
+        // Not under the conversation's lock, and the WHOLE session: whatever
+        // touched it since the snapshot — a fan-out's sending chains, an
+        // install's target changes — is put back too. Known and not fixed
+        // here; see the note in `_installContactDeviceListLocked`.
+        await _restoreExtra(rid, snapshot, persist: true);
+        return;
+      }
+      // Permanent: the ratchet was saved before dispatch (above) and the
+      // content cannot be stored. Keep the saved ratchet and acknowledge,
+      // rather than redeliver an envelope that will fail here every time.
+      transport.ackReceived(id: m.id, from: m.from);
       return;
     }
     transport.ackReceived(id: m.id, from: m.from);

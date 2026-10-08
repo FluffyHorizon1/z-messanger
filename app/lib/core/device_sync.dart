@@ -147,6 +147,26 @@ class DeviceSyncService {
     });
   }
 
+  /// Test seam: make the next INBOUND save (the one that persists the ratchet
+  /// a self-sync envelope advanced, in [handleInbound]) throw once, to
+  /// exercise the transient vault-write failure on the receive path — it must
+  /// leave the envelope with the relay, not acknowledge it away. Scoped to
+  /// the inbound save so it does not also trip [prime] or [mirror], which run
+  /// on reconnect. [debugSaveFailures] counts how many times it has fired, so
+  /// a test can wait for the failure before forcing the redelivery.
+  bool debugFailNextInboundSave = false;
+  int debugSaveFailures = 0;
+
+  /// Persist the inbound-advanced ratchet, failing once under the seam above.
+  Future<void> _saveInbound() async {
+    if (debugFailNextInboundSave) {
+      debugFailNextInboundSave = false;
+      debugSaveFailures++;
+      throw _SyncSaveException();
+    }
+    await _save();
+  }
+
   Future<void> _save() async {
     final s = _session;
     if (s != null) {
@@ -312,22 +332,45 @@ class DeviceSyncService {
           // Undecryptable on the copy too: the real attempt below says so.
         }
       }
+      final DecryptResult dec;
       try {
-        final dec = await s.decryptFrom(fromDeviceRid, payload);
-        await _save();
-        offer = dec.pqOfferPayload;
-        // v2: a post-quantum key offer from my other device is consumed by
-        // the session layer above; it carries no mirrored message.
-        if (InnerMessage.looksLikeKind(dec.plaintext, 'pqek')) {
-          // 26.2 (§17.8): and it is answered at once. The other device has
-          // no secret until a message of ours carrying the ciphertext
-          // arrives, and on this channel nothing else may be said for a
-          // long time — a laptop just linked has nothing of its own to
-          // mirror, and the history replay waits for exactly this. A ping,
-          // which every build ignores on receipt, on the session the offer
-          // came on: that session's ciphertext is the one the other device
-          // needs, and right after linking it is not always the session
-          // this side would otherwise send on.
+        dec = await s.decryptFrom(fromDeviceRid, payload);
+      } catch (_) {
+        // Undecryptable, an unknown session, or a malformed payload: nothing
+        // advanced to persist and nothing to store, and a redelivery fails
+        // the same way — so the caller acknowledges.
+        return const SyncInbound(null, null);
+      }
+      // The ratchet advanced; persist it BEFORE the caller acts on what was
+      // mirrored. A failure here is transient (the vault busy or closing):
+      // roll the ratchet back and tell the caller NOT to acknowledge, so the
+      // relay redelivers onto the restored ratchet. Until this split that
+      // failure fell into the catch above, which returned "nothing mirrored"
+      // and the caller acknowledged — the advanced ratchet was kept in
+      // memory, unsaved, and the message was lost from the relay and from
+      // this device both.
+      try {
+        await _saveInbound();
+      } catch (_) {
+        _session = await AccountSession.fromJson(
+            account, (jsonDecode(snapshot) as Map).cast<String, Object?>(),
+            intervals: pqIntervals());
+        return const SyncInbound.transient();
+      }
+      offer = dec.pqOfferPayload;
+      // v2: a post-quantum key offer from my other device is consumed by the
+      // session layer above; it carries no mirrored message.
+      if (InnerMessage.looksLikeKind(dec.plaintext, 'pqek')) {
+        // 26.2 (§17.8): and it is answered at once. The other device has
+        // no secret until a message of ours carrying the ciphertext
+        // arrives, and on this channel nothing else may be said for a
+        // long time — a laptop just linked has nothing of its own to
+        // mirror, and the history replay waits for exactly this. A ping,
+        // which every build ignores on receipt, on the session the offer
+        // came on: that session's ciphertext is the one the other device
+        // needs, and right after linking it is not always the session
+        // this side would otherwise send on.
+        try {
           final conv = s.targetConversation(fromDeviceRid);
           if (conv != null && conv.pqAnswerOwedOn(dec.sid)) {
             final ping = await s.encryptFor(fromDeviceRid,
@@ -338,23 +381,28 @@ class DeviceSyncService {
               answer = ping;
             }
           }
-          return const SyncInbound(null, null);
+        } catch (_) {
+          // A courtesy: the offer is taken and saved above, and the other
+          // device says it again on its own clock (§17.4). A failure here —
+          // the vault busy when the answer is saved — sends nothing, and the
+          // envelope, whose offer is already taken, is acknowledged.
         }
+        return const SyncInbound(null, null);
+      }
+      try {
         final j =
             jsonDecode(utf8.decode(dec.plaintext)) as Map<String, Object?>;
         final inner =
             InnerMessage.fromBytes(base64Decode(j['inner'] as String));
-        return SyncInbound(
-          (
-            thread: j['thread'] as String,
-            dir: j['dir'] as String,
-            inner: inner,
-          ),
-          snapshot,
-        );
+        final thread = j['thread'], dir = j['dir'];
+        if (thread is! String || dir is! String) {
+          return const SyncInbound(null, null);
+        }
+        return SyncInbound((thread: thread, dir: dir, inner: inner), snapshot);
       } catch (_) {
-        // Undecryptable or malformed: there is nothing to store, and a
-        // redelivery would fail the same way, so the caller acknowledges.
+        // The ratchet is already saved and a redelivery would parse no
+        // better, so the caller acknowledges; there is simply nothing to
+        // store.
         return const SyncInbound(null, null);
       }
     });
@@ -373,6 +421,12 @@ class DeviceSyncService {
       });
 }
 
+/// Thrown by [DeviceSyncService._save] under [DeviceSyncService.debugFailNextSave].
+class _SyncSaveException implements Exception {
+  @override
+  String toString() => '_SyncSaveException';
+}
+
 /// The outcome of [DeviceSyncService.handleInbound].
 class SyncInbound {
   /// What was mirrored, or null if this payload carried no message.
@@ -383,7 +437,18 @@ class SyncInbound {
   /// is nothing to store and so nothing to roll back.
   final String? snapshot;
 
-  const SyncInbound(this.mirrored, this.snapshot);
+  /// A TRANSIENT failure (the vault write failed): the ratchet has been rolled
+  /// back and the caller must NOT acknowledge the envelope, so the relay
+  /// redelivers it. Distinct from "nothing mirrored" (ack): that is a decrypt
+  /// or parse failure a redelivery would repeat, this is one it would not.
+  final bool transientFailure;
+
+  const SyncInbound(this.mirrored, this.snapshot) : transientFailure = false;
+
+  const SyncInbound.transient()
+      : mirrored = null,
+        snapshot = null,
+        transientFailure = true;
 }
 
 /// What a [DeviceSyncService] built for a new device list takes over from

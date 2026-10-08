@@ -410,7 +410,13 @@ class Conversation {
     return session;
   }
 
-  Future<Session> _acceptSession(Uint8List ekPub) async {
+  /// Build the responder session an opener describes, WITHOUT adding it to
+  /// [sessions] or touching [outboundSid]. The caller commits it only once it
+  /// has decrypted the opener ([decrypt]): a session whose first message never
+  /// decrypts must leave nothing behind, or a stranger's forged opener — which
+  /// can never decrypt, lacking the keys — would add a dead session to the map
+  /// and, through [_converge], could move outbound traffic onto it.
+  Future<Session> _buildResponderSession(Uint8List ekPub) async {
     final dh1 = await _dhRaw(me.xSeed, them.xPub); // DH(IK_B, IK_A)
     final dh2 = await _dhRaw(me.xSeed, ekPub); // DH(IK_B, EK_A)
     final sk = await _deriveSk(dh1, dh2);
@@ -418,15 +424,12 @@ class Conversation {
 
     final ratchet = await ratchetInitResponder(
         sk: sk, myXSeed: me.xSeed, myXPub: me.xPub, ad: ad);
-    final session = Session(
+    return Session(
       sid: await sessionIdFromEk(ekPub),
       initiatorRid: theirRid,
       ekPub: Uint8List.fromList(ekPub),
       ratchet: ratchet,
     );
-    sessions[session.sid] = session;
-    _converge();
-    return session;
   }
 
   static Future<Uint8List> _dhRaw(Uint8List seed, Uint8List remotePub) async {
@@ -672,6 +675,10 @@ class Conversation {
     var created = false;
 
     var session = sessions[sid];
+    // A responder session built from an opener but NOT yet committed: it is
+    // added to [sessions] only after its first message decrypts (below), so a
+    // failure leaves the conversation exactly as it was.
+    Session? pending;
     if (session == null) {
       // A session this conversation has retired is not re-created by its own
       // opening envelope arriving again — that is a replay, and accepting it
@@ -682,13 +689,40 @@ class Conversation {
       if (retiredSids.contains(sid)) {
         throw RatchetDecryptException('retired session');
       }
-      final ekB64 = j['ek'] as String?;
+      final ekB64 = j['ek'];
       if (ekB64 == null) throw UnknownSessionException(sid);
-      final ekPub = unb64(ekB64);
+      if (ekB64 is! String) {
+        throw RatchetDecryptException('malformed ek');
+      }
+      final Uint8List ekPub;
+      try {
+        ekPub = unb64(ekB64);
+      } catch (_) {
+        throw RatchetDecryptException('malformed ek');
+      }
+      // An ephemeral key is an X25519 public key: 32 bytes. A wrong length
+      // can never open a session, and handed to the DH it throws an
+      // `ArgumentError` (an Error, not a `RatchetDecryptException`) that used
+      // to escape the receiver and leave the opener unacknowledged — a
+      // stranger who knew a contact's routing id could wedge the mailbox with
+      // one. The length is checked before the key is used, so no session is
+      // built and the opener is a drop.
+      if (ekPub.length != 32) {
+        throw RatchetDecryptException('opener ephemeral key is not 32 bytes');
+      }
       if (await sessionIdFromEk(ekPub) != sid) {
         throw RatchetDecryptException('session id does not match ek');
       }
-      session = await _acceptSession(ekPub);
+      // Building the responder state runs a DH against the opener's key; a
+      // key of the right length but off the curve is still the peer's say-so,
+      // so an `ArgumentError` from it is the drop it should be rather than an
+      // escaping Error.
+      try {
+        pending = await _buildResponderSession(ekPub);
+      } on ArgumentError {
+        throw RatchetDecryptException('malformed opener key');
+      }
+      session = pending;
       created = true;
     }
 
@@ -712,7 +746,28 @@ class Conversation {
     }
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     _expirePqWindows(session.pq, now);
-    final plain = await ratchetDecrypt(session.ratchet, msg, pq: session.pq);
+    // The ratchet step runs on the opener's header, whose `dh` the peer chose
+    // and whose length the header parse does not fix: a 31-byte `dh` makes the
+    // X25519 ratchet throw an `ArgumentError`. That used to escape — and,
+    // because the session had already been added to the map, it left a dead
+    // session behind that convergence could pin outbound traffic onto. The
+    // session is still uncommitted here, so mapping the Error to the
+    // documented exception drops the envelope and leaves nothing behind.
+    final Uint8List plain;
+    try {
+      plain = await ratchetDecrypt(session.ratchet, msg, pq: session.pq);
+    } on RatchetDecryptException {
+      rethrow;
+    } on ArgumentError {
+      // A RangeError is an ArgumentError, so an out-of-range header value
+      // lands here too.
+      throw RatchetDecryptException('malformed ratchet header');
+    }
+    // Decryption succeeded, so a newly built responder session is real: commit
+    // it now (never before — see [_buildResponderSession]).
+    if (pending != null) {
+      sessions[sid] = pending;
+    }
     _notePqHeard(session.pq, now);
     session.receivedAny = true;
     session.lastUsedMs = now;
@@ -849,6 +904,33 @@ class Conversation {
     conv.pinnedSid = j['pinnedSid'] as String?;
     for (final r in (j['retired'] as List? ?? const [])) {
       conv._retire(r as String);
+    }
+    // Drop a session that never carried anything: no sending chain, no
+    // receiving chain and never received. Before the commit-after-decrypt
+    // rule above, an opener whose first message failed to decrypt was added
+    // to the map anyway and then sat there for good; a vault written by such
+    // a build holds that junk, and [_converge] could pin outbound traffic
+    // onto it. A real session always has a chain or has received, so this
+    // removes only the dead ones. If outbound named one, it is reset and
+    // reconverged onto a session that works.
+    final dead = <String>[
+      for (final e in conv.sessions.entries)
+        if (!e.value.receivedAny &&
+            e.value.ratchet.cks == null &&
+            e.value.ratchet.ckr == null)
+          e.key
+    ];
+    if (dead.isNotEmpty) {
+      for (final sid in dead) {
+        conv.sessions.remove(sid);
+      }
+      if (conv.outboundSid != null && !conv.sessions.containsKey(conv.outboundSid!)) {
+        conv.outboundSid = null;
+      }
+      if (conv.pinnedSid != null && !conv.sessions.containsKey(conv.pinnedSid!)) {
+        conv.pinnedSid = null;
+      }
+      conv._converge();
     }
     return conv;
   }

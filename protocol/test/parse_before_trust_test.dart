@@ -46,6 +46,86 @@ void main() {
       expect(() => InnerMessage.fromBytes(_bytes([1, 2, 3])),
           throwsA(isA<FormatException>()));
     });
+
+    // The members a receiver reads through a throwing cast — these ARE
+    // rejected, because reaching them unguarded was the escaping Error.
+    test('a member read through a throwing cast is a FormatException (§6.8)',
+        () {
+      final bad = <Map<String, Object?>>[
+        {'k': 'text', 'mid': 'm', 'ts': 1, 'body': 5}, // body not a string
+        {'k': 'read', 'mid': 'm', 'ts': 1, 'mids': 5}, // mids not a list
+        {'k': 'read', 'mid': 'm', 'ts': 1, 'mids': [1, 2]}, // not strings
+        {'k': 'dlv', 'mid': 'm', 'ts': 1, 'mids': ['ok', 7]}, // one wrong
+        {'k': 'timer', 'mid': 'm', 'ts': 1, 'sec': 'soon'}, // sec not a number
+        {'k': 'gmsg', 'mid': 'm', 'ts': 1, 'gid': 9, 'body': 'x'}, // gid
+        {'k': 'gedit', 'mid': 'm', 'ts': 1, 'gid': 9}, // group-kind gid
+        {'k': 'gdel', 'mid': 'm', 'ts': 1, 'gid': 9}, // group-kind gid
+        {'k': 'greact', 'mid': 'm', 'ts': 1, 'gid': 9}, // group-kind gid
+      ];
+      for (final j in bad) {
+        expect(() => InnerMessage.fromBytes(_bytes(j)),
+            throwsA(isA<FormatException>()),
+            reason: '$j');
+      }
+    });
+
+    // The members a receiver is specified to IGNORE when malformed (§6.4/§6.5)
+    // or that the offer reader defaults/refuses (§7) — a malformed one of
+    // these must NOT drop the whole message. It parses; the tolerant reader
+    // overlooks the bad member.
+    test('a leniently-ignored member does not drop the message', () {
+      final ok = <Map<String, Object?>>[
+        {'k': 'text', 'mid': 'm', 'ts': 1, 'body': 'hi', 'rt': 9}, // bad rt
+        {'k': 'react', 'mid': 'm', 'ts': 1, 'rt': 'x', 'emo': 7}, // bad emo
+        {'k': 'del', 'mid': 'm', 'ts': 1, 'mids': {'x': 1}}, // del is tolerant
+        {'k': 'file', 'mid': 'm', 'ts': 1, 'fid': 9, 'size': 'big'}, // offer
+        {'k': 'gjoin', 'mid': 'm', 'ts': 1, 't': 5, 'go': 1}, // handler-guarded
+        {'k': 'ginvite', 'mid': 'm', 'ts': 1, 'members': 'nope'}, // _parseList
+      ];
+      for (final j in ok) {
+        expect(() => InnerMessage.fromBytes(_bytes(j)), returnsNormally,
+            reason: '$j');
+      }
+    });
+
+    test('a non-finite number anywhere is a FormatException, not an Error', () {
+      // `1e999` decodes to a non-finite double; `.toInt()` on it throws an
+      // `UnsupportedError`, which is an Error. jsonEncode cannot emit one, so
+      // these are raw bytes.
+      final raw = <String>[
+        '{"k":"text","mid":"m","ts":1e999}', // ts
+        '{"k":"text","mid":"m","ts":1,"ttl":1e999}', // ttl
+        '{"k":"timer","mid":"m","ts":1,"sec":1e999}', // a kind member
+        '{"k":"text","mid":"m","ts":1,"dl":{"v":1e999,"h":"x"}}', // nested
+      ];
+      for (final s in raw) {
+        expect(
+            () => InnerMessage.fromBytes(Uint8List.fromList(utf8.encode(s))),
+            throwsA(isA<FormatException>()),
+            reason: s);
+      }
+    });
+
+    test('valid messages of every shape still parse', () {
+      final good = <Map<String, Object?>>[
+        {'k': 'hello', 'mid': 'm', 'ts': 1},
+        {'k': 'text', 'mid': 'm', 'ts': 1, 'body': 'hi', 'rt': 'q'},
+        {'k': 'read', 'mid': 'm', 'ts': 1, 'mids': ['a', 'b']},
+        {'k': 'dlv', 'mid': 'm', 'ts': 1, 'mids': <String>[]},
+        {'k': 'timer', 'mid': 'm', 'ts': 1, 'sec': 86400},
+        {'k': 'gmsg', 'mid': 'm', 'ts': 1, 'gid': 'g', 'body': 'x'},
+        {'k': 'gjoin', 'mid': 'm', 'ts': 1, 't': 'tag', 'go': 1},
+        {'k': 'pqid', 'mid': 'm', 'ts': 1, 'alg': 'ML-DSA-65', 'pk': 'z', 'ack': true},
+        // an unknown (forward-compat) kind passes untouched
+        {'k': 'brand_new', 'mid': 'm', 'ts': 1, 'whatever': 42},
+        // decorations ride on any kind
+        {'k': 'text', 'mid': 'm', 'ts': 1, 'body': 'x', 'dl': {'v': 3, 'h': 'f'}},
+      ];
+      for (final j in good) {
+        expect(() => InnerMessage.fromBytes(_bytes(j)), returnsNormally,
+            reason: '$j');
+      }
+    });
   });
 
   group('finding 42 — Conversation.decrypt', () {
@@ -61,6 +141,76 @@ void main() {
       // Not base64 / not JSON at all.
       await expectLater(conv.decrypt('!!!not base64!!!'),
           throwsA(isA<RatchetDecryptException>()));
+    });
+
+    test('an opener with a wrong-length ephemeral key leaves no session behind',
+        () async {
+      final a = await ZIdentity.generate();
+      final b = await ZIdentity.generate();
+      final conv = await Conversation.create(a, await b.bundle(),
+          intervals: PqIntervals.disabled);
+      // 31 bytes, not 32: it can never open a session, and handed to the DH
+      // it would throw an ArgumentError. The sid matches the key, so the
+      // check it fails is the length, not the sid.
+      final ek = randomBytes(31);
+      final sid = await sessionIdFromEk(ek);
+      final payload = base64Encode(utf8.encode(jsonEncode({
+        'v': 1,
+        't': 'r',
+        'sid': sid,
+        'ek': b64(ek),
+        'h': {'dh': b64(randomBytes(32)), 'n': 0, 'pn': 0},
+        'n': b64(Uint8List(24)),
+        'ct': b64(Uint8List(16)),
+        'mac': b64(Uint8List(16)),
+      })));
+      await expectLater(
+          conv.decrypt(payload), throwsA(isA<RatchetDecryptException>()));
+      expect(conv.sessions, isEmpty,
+          reason: 'a failed opener commits no session');
+    });
+
+    test('an opener whose ratchet header is malformed leaves no session behind',
+        () async {
+      final a = await ZIdentity.generate();
+      final b = await ZIdentity.generate();
+      final conv = await Conversation.create(a, await b.bundle(),
+          intervals: PqIntervals.disabled);
+      // A valid 32-byte ephemeral key — so the responder session is built —
+      // but a 31-byte ratchet `dh`, which makes the DH ratchet throw. The
+      // session must not survive the failure (it used to, and convergence
+      // could then pin outbound traffic onto it).
+      final ek = randomBytes(32);
+      final sid = await sessionIdFromEk(ek);
+      final payload = base64Encode(utf8.encode(jsonEncode({
+        'v': 1,
+        't': 'r',
+        'sid': sid,
+        'ek': b64(ek),
+        'h': {'dh': b64(randomBytes(31)), 'n': 0, 'pn': 0},
+        'n': b64(Uint8List(24)),
+        'ct': b64(Uint8List(16)),
+        'mac': b64(Uint8List(16)),
+      })));
+      await expectLater(
+          conv.decrypt(payload), throwsA(isA<RatchetDecryptException>()));
+      expect(conv.sessions, isEmpty,
+          reason: 'a session whose first message never decrypts is not kept');
+    });
+
+    test('a conversation with a genuine opener still works end to end',
+        () async {
+      // The guard above must not refuse a real first message.
+      final a = await ZIdentity.generate();
+      final b = await ZIdentity.generate();
+      final ca = await Conversation.create(a, await b.bundle(),
+          intervals: PqIntervals.disabled);
+      final cb = await Conversation.create(b, await a.bundle(),
+          intervals: PqIntervals.disabled);
+      final wire = await ca.encrypt(InnerMessage.text('m1', 1, 'hello').toBytes());
+      final dec = await cb.decrypt(wire);
+      expect(InnerMessage.fromBytes(dec.plaintext).data['body'], 'hello');
+      expect(cb.sessions, isNotEmpty, reason: 'the real session is committed');
     });
   });
 
