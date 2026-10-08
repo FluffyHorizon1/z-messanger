@@ -1518,7 +1518,7 @@ default; a `ping` counts, so an anonymous sender that pings is never closed)
 with code 4003, refuses a connection past its connection caps with 1013, and
 drops without a close frame one whose unread output passes its send‑buffer
 caps; in every case what is queued stays queued for the next connection.
-Before `ready`, `push-register` and a `send` whose
+Before `ready`, `push-register`, `intro` (§21.6) and a `send` whose
 payload is not sealed are answered with `error{not_authed}`, `recv` and
 `push-unregister` are ignored, and `ping` is answered; a repeated `auth` is
 ignored.
@@ -1551,15 +1551,16 @@ counts sealed envelopes that arrived on anonymous connections
 ### 12.2 Frames after authentication
 
 ```
-C→S  { "t":"send", "to":routingId, "id":envelopeId, "payload":string }
+C→S  { "t":"send", "to":routingId, "id":envelopeId, "payload":string, "pow"?:b64url(16 bytes) }   // pow: only to an introduction mailbox (§21.6)
 S→C  { "t":"sent", "id":envelopeId, "queued":true }               // always true since 2026‑09‑17: held until acknowledged; whether a socket took it is not the sender's to know
 S→C  { "t":"msg", "id":envelopeId, "from"?:routingId, "payload":string, "ts":int }
 C→S  { "t":"recv", "id":envelopeId, "from"?:routingId }           // "I persisted it" — drop it
 S→C  { "t":"delivered", "id":envelopeId, "to":routingId, "ts":int }   // attributed envelopes only
 C→S  { "t":"push-register", "token":string, "platform":string }   S→C { "t":"push-ok" }
 C→S  { "t":"push-unregister" }                                     S→C { "t":"push-ok" }
+C→S  { "t":"intro", "pow":int }                                    S→C { "t":"intro_ok" }      // §21.6
 C→S  { "t":"ping" }                                                S→C { "t":"pong", "ts":int }
-S→C  { "t":"error", "code":string, "id"?:envelopeId }
+S→C  { "t":"error", "code":string, "id"?:envelopeId, "bits"?:int, "day"?:int }  // bits, day: pow_required only
 ```
 
 `envelopeId` is 1–64 characters, chosen by the sender (*implementation note:*
@@ -1572,8 +1573,8 @@ worse, a `mid` is plaintext to every member, so any one of them could name a
 message to the operator and be told who else received it. This was the rule
 from the start and the client broke it until 2026‑09‑13. `payload` is an opaque
 string ≤ `MAX_ENVELOPE_BYTES` (default 1,000,000) characters; the WebSocket
-frame limit is that plus 4096. Only four error codes carry `id`, because only those four are refusals OF an
-envelope: `too_large`, `bad_send`, `queue_full` and `store_full`. The rest
+frame limit is that plus 4096. Only five error codes carry `id`, because only those five are refusals OF an
+envelope: `too_large`, `bad_send`, `queue_full`, `store_full` and `pow_required`. The rest
 refuse a frame before, or regardless of, what it names. A client MUST
 therefore treat an error without an `id` as refusing whatever it has in
 flight, rather than waiting for one it can match: a connection processes
@@ -1583,7 +1584,9 @@ message behind it until its own timeout. Error codes: `rate_limited`,
 `bad_push`, `unknown_frame`, and — since 2026‑09‑11, compatible extensions
 under §14 —
 `queue_full` and `store_full` (§12.4), each carrying the `id` of the `send`
-it answers. A `payload` over the cap is answered `too_large` whatever else
+it answers, and — since phase 37, likewise — `pow_required`, carrying the
+`id`, the `bits` the recipient asks for and the relay's `day`, `bad_intro`
+and `push_refused` (§21.6). A `payload` over the cap is answered `too_large` whatever else
 is wrong with the frame: it is the one refusal a client must not retry, so
 it is decided before the recipient is looked at. A `to` that is not a
 routing id (43 characters of `b64url`) is `bad_send` — the relay will not
@@ -1616,6 +1619,7 @@ relay cannot make.
 `PUSH_TTL_DAYS` (30) days from its last registration, in every coordinator. When a `send` is queued because the
 recipient is offline, the relay sends the token a **content‑free** wake signal
 ("you have mail"): no sender, no id, no payload. Retired tokens are deleted.
+An introduction mailbox (§21.6) holds no token and is never woken.
 
 A relay that runs as several instances MUST NOT treat having handed an
 envelope to another instance as a delivery: the publish says the message bus
@@ -3953,6 +3957,110 @@ handle witness context, and a client verifies its record with it.
 **Vectors.** `vectors/kt/bucket.json` pins this log's publishes byte for
 byte, its head, its bucket answers and the owner rule's refusals with their
 codes (§19.11).
+
+### 21.6 Introduction mailboxes at the relay (phase 37)
+
+A handle resolves to an **introduction mailbox**: the routing id (§2.2) of an
+introduction key — an Ed25519 key of its own, unrelated to the account's —
+whose holder, the account's primary device, drains it like any mailbox.
+Anybody who resolves the handle can address it, so once its owner has flagged
+it the relay treats it differently in four ways: a send to it needs a proof
+of work, it takes neither a large envelope nor a second copy of one it holds,
+it is never woken by push, and it has a byte cap of its own.
+
+**Flagging.** On a connection authenticated with the bound form (`v:2`,
+§12.1) as the introduction key, the owner sends
+
+```
+C→S  { "t":"intro", "pow":N }      // an integer, 16 ≤ N ≤ 28
+S→C  { "t":"intro_ok" }
+```
+
+The relay records the difficulty N for **that connection's own routing id** —
+the frame names none — and answers `intro_ok`. The flag lasts
+`OWNED_TTL_DAYS` (30) from the frame that set it, the lifetime phase 29 gives
+a mailbox's ownership, and the same frame renews that ownership, so a flagged
+mailbox always has the owned caps and its flag never outlives its ownership;
+a later login renews the ownership and not the flag. A client therefore
+sends `intro` after each authentication as the introduction key, and a handle
+nobody drains any more stops being guarded on its own. Repeating the frame
+changes nothing; a new N replaces the old. On a connection that has not
+authenticated, or that authenticated with v1 — a signature another relay can
+have drawn out of the device (§12.1) — `intro` is answered
+`error{not_authed}`; an N that is not an integer from 16 to 28,
+`error{bad_intro}`; neither flags anything. A relay
+that predates this answers `error{unknown_frame}`, which tells a client that
+its introduction mailbox is not guarded there. What the relay keeps is a
+routing id and a number: in memory, bounded with the owners it remembers
+(`OWNED_CAP`) and lost with the queue on a restart; with a shared store, the
+key `intro:{routingId}`, which survives one.
+
+**Proof of work.** A `send` to a flagged routing id MUST carry `pow`, the
+`b64url` of a 16‑byte nonce — exactly 22 characters, the canonical encoding —
+such that
+
+```
+h = SHA256( utf8("z-intro-pow-v1:") || rid || u32be(day) || SHA256(utf8(payload)) || nonce )
+```
+
+has at least N leading zero bits, counted from the most significant bit of
+`h[0]`. `rid` is the 32 bytes the `to` routing id encodes; `payload` is the
+frame's `payload` exactly as sent — the sealed envelope, `zs1.` included (§8);
+`day = floor(unixTimeMs / 86 400 000)`, UTC days since the epoch. The relay
+takes `day` to be its own today or yesterday, so a stamp is good for one to
+two days of the relay's clock; a client whose clock is ahead of the relay's
+past midnight makes one the relay refuses, and the refusal names the relay's
+day so that one stamp re‑made for it is taken. A send without such a stamp —
+none, one that is not 22 `b64url` characters decoding to 16 bytes, one made
+for another recipient, another payload or another day, or one with fewer
+bits — is refused before anything is stored and before any limit or
+allowance is charged:
+
+```
+S→C  { "t":"error", "code":"pow_required", "id":envelopeId, "bits":N, "day":D }   // D: the relay's day
+```
+
+The same frame cannot succeed: the sender makes a stamp — a search of about
+2^N SHA‑256 operations; checking one costs the relay a SHA‑256 over the
+envelope and two over 99 bytes — and sends again. The stamp binds the
+recipient, the envelope and the day and **nothing about the sender**: a sealed
+request on a connection that never authenticated (§12.1) carries one like any
+other, and the relay keeps nothing of it once it is checked — it is not stored
+with the envelope, logged or forwarded, and the delivered `msg` has no `pow`.
+A `pow` on a send to a mailbox nobody flagged is ignored, and a receipt the
+relay queues itself (§12.5) is asked for none. The relay counts the refusals
+(`z_intro_pow_refused_total`) and the stamped sends it took
+(`z_intro_accepted_total`); `z_intro_mailboxes` is how many mailboxes are
+flagged.
+
+**Size, and copies.** A flagged mailbox refuses a `payload` larger than
+64 KiB — 65 536, counted as the relay charges an envelope less its 256 of
+overhead (§12.4): the payload's length, for any payload the protocol
+produces, and more for one the relay would have to hold escaped — with
+`error{too_large, id}`, before the stamp is
+looked at and before anything is stored or charged, and a client does not
+retry it. A contact request is a few KiB, and a stamp is priced per envelope:
+at the frame cap five would fill the mailbox. And it holds an envelope once:
+a send whose `payload` is byte‑identical to one the mailbox holds — a retry
+under the same `id`, or the same envelope and stamp under another — is
+answered `sent` as if it had been stored, and is neither stored nor delivered
+again, so a retry stays idempotent and a stamp, which binds the envelope,
+cannot be replayed into copies. It must carry its stamp like any send (a
+retry does), and it is not refused at the mailbox's cap, since it adds
+nothing. The relay recognises a copy by the payload's SHA‑256 — the hash the
+stamp is made over — which it keeps beside each envelope it holds for an
+introduction mailbox and drops with it, so once the held envelope is
+acknowledged or expires the same payload is new again. Copies are counted
+apart (`z_intro_duplicate_total`). The relay decides in this order: size,
+stamp, copy, then the caps.
+
+**No push, and a cap of its own.** A flagged routing id's `push-register` is
+refused `error{push_refused}`, flagging deletes any token it had, and no send
+to it fires a wake: a wake per request would tell the push provider when
+strangers write to a handle, and let anyone who can make a stamp ring the
+owner's phone. A flagged mailbox is also held to `INTRO_MAILBOX_BYTES`
+(4 MiB) on top of the owned caps; a send past it is refused
+`error{queue_full, id}`, as at any per‑mailbox cap.
 
 ### 21.7 Requests and the acknowledgement
 
