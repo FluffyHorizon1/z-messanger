@@ -4,8 +4,8 @@ Everything else in `docs/` is written for people reading the code. This one is
 for people using the app.
 
 Z is a messenger with no accounts. There is no sign-up, no phone number, no
-email, no password to a server — because there is no server that holds
-anything about you. That buys real privacy and it costs a few things that will
+email, no password to a server — because no server holds an account for
+you. That buys real privacy and it costs a few things that will
 surprise you if nobody says them out loud, so they are said out loud here.
 
 ---
@@ -126,8 +126,9 @@ wrong on theirs is worse than no number at all.
 
 * **"Waiting for them"** — you have their post-quantum key, they do not yet
   have yours, so you are both still on the older number. Nothing is wrong and
-  there is nothing to do. It resolves itself the next time they use the app,
-  and when it does, both numbers change at the same moment.
+  there is nothing to do. It resolves itself the next time they use the app —
+  if their app is 3.9.2 or later (below) — and when it does, both numbers
+  change at the same moment.
 * **"Post-quantum, unconfirmed"** — you each have the other's key and the
   number you are looking at covers both of them, but Z has never had anything
   to check that key against. You added them from a code that came before this
@@ -142,8 +143,28 @@ Before version 3.9.2 the second situation had no way out at all. One of you
 saw one number, the other saw a different one, and no amount of comparing,
 re-scanning or waiting would bring them together; deleting the contact and the
 conversation with it was the only thing that worked. If you have a contact
-stuck like that, you both need to be on 3.9.2 or later, and then it sorts
-itself out.
+stuck like that, the one of you who accepted the other's request needs to be
+on 3.9.2 or later (updating both is simplest), and then it sorts itself out
+the next time the other sends them anything.
+
+**If one of you is still on an older app.** Google Play was still serving
+3.9.1 in October 2026, and an app older than 3.9.2 cannot meet a current one
+on the post-quantum number in two common cases:
+
+* **You scanned or pasted their code, and they accepted your request on the
+  older app.** Your screen shows the post-quantum number; theirs shows the
+  older one and says your app has not published a post-quantum key — it has;
+  theirs dropped it. Comparing cannot work until they update. Once they have,
+  it sorts itself out the next time you send them anything.
+* **They scanned your code with the older app, and you accepted.** You may
+  see "Waiting for them" for as long as they stay on it, while their screen
+  may already show the post-quantum number — an older app usually never says
+  it holds your key. It does not resolve the next time they use the app, only
+  when they update.
+
+Until then, numbers that differ between you and someone on an older app are
+not by themselves a sign of an attack — and they are not a check either: you
+cannot verify each other by the number until you both show the same one.
 
 ## Your other devices
 
@@ -153,7 +174,10 @@ between them.
 
 A linked device is a full peer, not a mirror. It has its own keys and its own
 encrypted sessions, and your contacts see all of them. History from before the
-link is copied across; nothing about the link goes through a server.
+link is copied across. The link itself goes through the relay — two
+throwaway mailboxes the code derives, everything in them end-to-end
+encrypted — and the matching code on both screens is what shows nobody is in
+between.
 
 If your contacts start seeing a device you did not add, Z tells them, and it
 tells you. That alert is the whole point of the design, so please do not
@@ -180,6 +204,13 @@ asks you again. It is rare and worth a phone call. If the log
 itself misbehaves — shows two different histories — Z says so at the top of
 the chat list and confirms nothing new until you reset it in Settings; your
 conversations continue on the checks that existed before the log.
+
+Checking costs something, and it is worth knowing: Z asks the log about each
+of your contacts, from your own internet address, when it starts, every six
+hours and soon after a contact's devices change. Whoever runs the log — for
+the built-in one, the people who run the relay — therefore learns who your
+contacts are. The log is on by default; turning on Developer mode in Settings
+lets you point it at another log or at none.
 
 ## Groups
 
@@ -271,7 +302,9 @@ key to your group, sitting in whatever chat history it ended up in.
 Set a timer per conversation and messages delete on both sides when it
 expires — on every device on both sides: a copy on your other device, a
 message sent from a contact's other device, and the history a newly linked
-device receives all keep the timer.
+device receives all keep the timer. A timer you set on one of your devices
+is not passed to your others, though: what you send from another device
+carries no timer until you set it there too.
 
 This is a tidiness feature, not a security one. It works because the other
 person's app cooperates. Someone who wants a copy can photograph the screen,
@@ -283,8 +316,10 @@ short. Do not use it to send something you would mind existing.
 * **Screen lock** — Z asks for your fingerprint, face or device PIN before it
   opens. Messages still arrive while it is locked.
 * **App passphrase** — a separate secret that encrypts the vault key. Without
-  it the database cannot be opened *at all*, including by someone who copies
-  the file off your disk.
+  it nothing sealed in the database can be read, including by someone who
+  copies the file off your disk. The file's structure is not sealed: which
+  conversations exist, when each message was sent or received, and the
+  routing ids are readable to anyone who has it (`DATA_MAP.md`).
 
 Biometrics alone protect against someone picking up your unlocked phone. A
 passphrase protects against someone taking the storage. They are different
@@ -386,9 +421,13 @@ nobody on it is ever prompted.
 ## What Z never asks for
 
 No phone number, no email, no contacts-list upload, no analytics, no crash
-reporter, no advertising identifier. The app talks to the relay you configure
-and — if you turn on push — your platform's notification service, which learns
-that a device should wake and nothing else.
+reporter, no advertising identifier. The app talks to the relay you configure,
+to the transparency log (which learns who your contacts are, above), and to
+your platform's notification service, which learns that a device should wake
+and nothing else. On Android push is on unless you turn it off in Settings,
+and the app registers for it even if you did not allow notifications; the
+relay keeps that registration until 30 days after the app was last online, or
+until you turn push off.
 
 The full inventory is `DATA_MAP.md`: every piece of data Z creates, where it
 lives, who can read it, how long it lasts.

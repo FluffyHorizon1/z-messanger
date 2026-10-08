@@ -70,7 +70,8 @@ A **self‑hosted, identity‑free, user‑triggered** check.
   already sends.
 - **Self‑hosting:** `SELF_HOSTING.md` documents `Z_LATEST_VERSION` — set it to
   your release version to prompt your users, leave it unset to prompt nobody.
-  The official relay sets it on each release.
+  The official relay does not set it yet: no Blueprint does, and its
+  `/latest.json` answered 404 on 2026‑10‑03, so its users are not prompted.
 - **Dependency:** `package_info_plus` (+ its platform interface), small and
   reading only build metadata the bundle already carries; no `.so` on Android,
   so the reproducibility fingerprint is unchanged.

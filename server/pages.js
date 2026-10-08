@@ -257,7 +257,7 @@ const LANDING_HTML = page(
   <span class="gone">no "from" field</span></div>
   <p class="caption">An identifier, a padded blob it cannot read, a timestamp —
   held in memory, deleted on delivery. There is no sender field because the
-  relay never learns who sent it, and no account to attach it to.</p>
+  relay is never told who sent it, and no account to attach it to.</p>
 
   <div class="btns">
     <a class="btn" href="/download">Get Z</a>
@@ -271,7 +271,7 @@ const LANDING_HTML = page(
   <div class="grid two">
     <div class="card"><h3>The server knows nothing</h3>
     <p>The relay holds ciphertext addressed to opaque mailbox IDs, in RAM, until
-    delivery. It never learns who sent a message, never writes to disk, and
+    delivery. It is never told who sent a message, never writes to disk, and
     keeps no account list — because none exists. A full copy of the server
     reveals no messages and no names.</p></div>
 
@@ -281,9 +281,12 @@ const LANDING_HTML = page(
     claims rather than take them.</p></div>
 
     <div class="card"><h3>Ready for quantum</h3>
-    <p>Key agreement is hybrid: classical X25519 combined with ML-KEM-768, so
-    traffic captured today cannot be unlocked by a future quantum computer.
-    Identities are moving to hybrid signatures the same way.</p></div>
+    <p>From a conversation's first round trip, every message key mixes in an
+    ML-KEM-768 secret, so the messages after it, captured today, stay closed to
+    a future quantum computer. The opening exchange and a few other steps —
+    adding a contact, linking a device — are still classical, and the threat
+    model lists them. Identities carry an ML-DSA-65 key beside the classical
+    one.</p></div>
 
     <div class="card"><h3>Your devices, one identity</h3>
     <p>Link a laptop to your phone by comparing a short code. Both send and
@@ -294,7 +297,7 @@ const LANDING_HTML = page(
   <h2>What we don't collect</h2>
   <ul>
     <li class="no">No phone number, email address or username — there is no sign-up.</li>
-    <li class="no">No contact list on the server, and no access to your address book.</li>
+    <li class="no">No contact list stored on our servers, and no access to your address book — though the transparency log learns whose keys your app checks (<a href="/privacy">privacy policy</a>).</li>
     <li class="no">No analytics, no advertising SDKs, no crash reporting.</li>
     <li class="yes">Only ciphertext, briefly, in memory. <a href="/privacy">Read the full data map</a>.</li>
   </ul>
@@ -331,8 +334,10 @@ const HOW_IT_WORKS_HTML = page(
     <li>Their app checks the signature inside the code, which proves the two
     keys in it belong together.</li>
     <li>The first message establishes a shared secret using an X3DH-style
-    handshake, combined with an ML-KEM-768 post-quantum key so recorded traffic
-    stays safe against a future quantum computer.</li>
+    handshake. Inside the conversation that follows, the two devices agree an
+    ML-KEM-768 post-quantum secret and mix it into every message key from then
+    on, so recorded traffic after that first round trip stays safe against a
+    future quantum computer.</li>
     <li>From then on every message advances a <b>double ratchet</b>: keys move
     forward constantly, so a key compromised today unlocks neither yesterday's
     messages nor tomorrow's.</li>
@@ -342,7 +347,7 @@ const HOW_IT_WORKS_HTML = page(
   <div class="card">
   <p>Each envelope arrives <b>sealed</b>: an anonymous outer layer addressed to
   the recipient's mailbox, with the sender's identity inside the encrypted
-  payload. The relay cannot tell who sent it. Envelopes are padded to fixed
+  payload. The relay is not told who sent it. Envelopes are padded to fixed
   size buckets, so their length says little about their contents. Queued mail
   is held in memory only, dropped the moment the recipient confirms it, and
   expires within 72 hours regardless.</p>
@@ -368,7 +373,7 @@ const HOW_IT_WORKS_HTML = page(
   <p>A compromised device. If someone controls your phone, encryption in
   transit is beside the point — they can read what you can read. Disappearing
   messages and the encrypted vault protect a lost or seized device, not one
-  running someone else's software. Timing. The relay never learns who sent an
+  running someone else's software. Timing. The relay is never told who sent an
   envelope, but it sees when each mailbox is busy, and mailboxes that are
   always busy together — a group's members, one person's phone and laptop —
   are groupable from that alone. We state the limits plainly on the
@@ -448,9 +453,11 @@ const DOWNLOAD_HTML = page(
     <a class="btn alt" href="${RELEASES}">Linux</a>
   </div>
   <p class="muted">Android 7.0 or newer. Play keeps you updated automatically;
-  the APK is there if you would rather not use Play, and is the same build.
-  Desktop builds are unsigned for now, so your system may warn on first
-  run.</p>
+  the APK is there if you would rather not use Play. It is built from the same
+  source, but it is not the same file: Google re-signs the Play copy, so neither
+  installs over the other — to switch, make a backup, uninstall, install the
+  other and restore. Play can also be several versions behind the APK. Desktop
+  builds are unsigned for now, so your system may warn on first run.</p>
 
   <h2>Verify what you downloaded</h2>
   <p>Every release publishes <code>SHA256SUMS.txt</code> alongside the files.
@@ -462,9 +469,13 @@ const DOWNLOAD_HTML = page(
 
   <h2>Google Play</h2>
   <p>Z is on Google Play as
-  <a href="${PLAY}">Z Messenger</a>. The Play build and the APK above come from
-  the same tagged release and the same CI pipeline, so you can check either
-  against the published checksums.</p>
+  <a href="${PLAY}">Z Messenger</a>. The Play build comes from the same source
+  but is not the APK above: Google re-signs it with the key it holds (Play App
+  Signing) and serves its own split of it, so it cannot be checked against the
+  published checksums. The APK above can be, and it can be rebuilt from the
+  source and compared, as
+  <a href="${REPO}/blob/main/docs/REPRODUCIBLE_BUILDS.md">reproducible builds</a>
+  describes.</p>
   <p class="muted">Google Play and the Google Play logo are trademarks of
   Google LLC.</p>
 
@@ -489,10 +500,13 @@ const SECURITY_HTML = page(
   <h2>What Z is designed to withstand</h2>
   <ul>
     <li class="yes">A hostile or seized relay: it holds only ciphertext, in RAM,
-    addressed to hashes — and with sealed sender it cannot tell who sent
+    addressed to hashes — and with sealed sender it is not told who sent
     what.</li>
-    <li class="yes">Recorded traffic decrypted later, including by a quantum
-    computer: key agreement is hybrid X25519 + ML-KEM-768.</li>
+    <li class="yes">Recorded messages decrypted later, including by a quantum
+    computer: from a conversation's first round trip, every message key mixes
+    in an ML-KEM-768 secret. The opening exchange, contact requests, the invite
+    ceremony and linking a device are classical; the threat model lists
+    them.</li>
     <li class="yes">A stolen key: the double ratchet moves keys forward
     constantly, so a compromise reaches neither past nor future messages.</li>
     <li class="yes">A substituted key: safety numbers let two people detect it
@@ -527,6 +541,14 @@ const SECURITY_HTML = page(
     <li class="no"><b>Group membership is asserted by the group's admin</b>
     over their authenticated channel — there is no cryptographic group
     state.</li>
+    <li class="no"><b>The transparency log learns your contacts.</b> Checking a
+    contact's device list means asking the log about them, so whoever runs it —
+    us, for the built-in log — learns who your contacts are. It is on by
+    default; Developer mode in Settings turns it off.</li>
+    <li class="no"><b>Cloudflare sits in front of this service.</b> It
+    terminates the encrypted connection to the relay and the log, so it sees
+    connection metadata — your IP address, the mailbox IDs you use and send to,
+    and which contacts' keys you look up — though never message contents.</li>
   </ul>
   </div>
 
@@ -608,7 +630,7 @@ const DEVICES_HTML = page(
   <ol class="steps">
     <li>On the new device, choose to link to an existing one.</li>
     <li>Scan the QR code shown, or type the pairing code.</li>
-    <li>Compare the six digits that appear on both screens, then confirm. That
+    <li>Compare the eight digits that appear on both screens, then confirm. That
     comparison is what stops a machine in the middle.</li>
     <li>The new device receives your account identity and your contacts over
     that verified channel, plus recent history so it does not start empty.</li>
@@ -773,12 +795,14 @@ const PRIVACY_HTML = page(
   "No number, email or contacts. See the full data map of what exists and where it lives.",
   `
   <h1>Privacy policy</h1>
-  <p class="muted">Effective 8 September 2026 · applies to the Z app and the
-  relay service at zmessengers.com</p>
+  <p class="muted">Effective 4 October 2026 · applies to the Z app, the relay
+  service at zmessengers.com and the transparency log at kt.zmessengers.com</p>
 
-  <p>Z is built so that we <i>cannot</i> know things about you, rather than
-  merely promising not to look. This page describes exactly what data exists,
-  where it lives, and what the relay operator can and cannot see.</p>
+  <p>Z is built so that, wherever it can be, we <i>cannot</i> know things about
+  you, rather than merely promising not to look — and where we can, this page
+  says so. It describes exactly what data exists, where it lives, and what the
+  operator of the relay and the transparency log, and Cloudflare in front of
+  both, can and cannot see.</p>
 
   <h2>What we never collect</h2>
   <ul>
@@ -787,8 +811,10 @@ const PRIVACY_HTML = page(
     <li>No message content: every message and attachment is end-to-end
     encrypted on your device (double-ratchet, forward-secret). The relay can
     never decrypt it and holds no keys.</li>
-    <li>No contact lists, address-book access, or social graph on the server —
-    contacts exist only inside your device's encrypted vault.</li>
+    <li>No contact lists, address-book access, or social graph stored on our
+    servers — contacts exist only inside your device's encrypted vault. The
+    transparency log does learn whose device lists your app checks, which is
+    your contact list: see below.</li>
     <li>No analytics, no advertising, no tracking SDKs, no crash reporting.</li>
   </ul>
 
@@ -804,7 +830,7 @@ const PRIVACY_HTML = page(
   <p>To move a message from you to a recipient, the relay momentarily handles:
   ciphertext (undecryptable to it), the opaque mailbox ID it is addressed to
   (a hash, not a key or a name), and the network connection carrying it.
-  Envelopes are sealed, so the relay does not learn which mailbox sent them,
+  Envelopes are sealed, so the relay is not told which mailbox sent them,
   and padded to fixed size buckets. Queued ciphertext for offline recipients is
   held <b>in RAM only</b>, is deleted the moment the recipient confirms
   delivery, and expires after at most 72 hours. The relay writes nothing to
@@ -815,12 +841,30 @@ const PRIVACY_HTML = page(
   anywhere. Restarting that memory erases everything it held. Operational logs
   contain aggregate connection counts only, never message data.</p>
 
-  <h2>Push notifications (optional, Android)</h2>
-  <p>If you enable push, the app registers an opaque Firebase Cloud Messaging
-  token with the relay so it can send a <b>content-free wake signal</b> ("you
-  have mail") when a message arrives while the app is closed. The notification
+  <h2>The transparency log</h2>
+  <p>To check that the devices your contacts' apps announce are the ones their
+  accounts published, the app uses a public transparency log at
+  kt.zmessengers.com. It is on by default. When your account's device list
+  changes, the app publishes it there: your account's public key, the list's
+  version and fingerprint, and the list itself, sealed under a key derived from
+  your public key — which we receive with it, so we can read it. And the app
+  looks up each of your contacts there, one request per contact, from your IP
+  address, when it starts, every six hours and soon after a contact's devices
+  change — so the log's operator, which is us, and its host can see your
+  contact list beside your IP address. The log keeps what is published for
+  good; that is what makes it a log. The log service does not record lookups;
+  the infrastructure in front of it keeps request logs under its own terms. You
+  can point the app at another log, or at none, in Settings once Developer mode
+  is on.</p>
+
+  <h2>Push notifications (Android)</h2>
+  <p>Push is on by default on Android. The app registers an opaque Firebase
+  Cloud Messaging token with the relay — whether or not you have allowed
+  notifications — so it can send a <b>content-free wake signal</b> ("you have
+  mail") when a message arrives while the app is closed. The notification
   contains no message content and no sender. The token is held in relay RAM
-  with a 30-day expiry and is deleted when you disable push. Delivery of the
+  until 30 days after your app last connected, and is deleted when you turn
+  push off in Settings. Delivery of the
   wake signal is performed by Google Firebase under
   <a href="https://firebase.google.com/support/privacy">Google's privacy
   terms</a>; Google never receives message content. With push off, none of
@@ -834,11 +878,22 @@ const PRIVACY_HTML = page(
   historical record to hand over: a subpoena for stored data would yield
   nothing, because nothing is stored. Sealed sender and size padding are
   implemented, so an envelope in transit does not identify its sender and its
-  length reveals little; what remains is that a mailbox is active.</p>
+  length reveals little; what remains is that a mailbox is active — and the
+  timing of delivery receipts, which can pair a sender with a recipient.</p>
+  <p>This service — the relay and the transparency log — is reached through
+  Cloudflare, which terminates the encrypted connection (TLS) in front of it.
+  Cloudflare therefore sees, beside your IP address, the same connection
+  metadata the relay does: the mailbox ID your device connects as, the mailbox
+  each envelope is addressed to and its padded size, your push token, and
+  which contacts' keys your app looks up in the log. It never sees message
+  contents, which are end-to-end encrypted inside that connection. Running
+  your own relay and log removes it from the path.</p>
 
   <h2>Your choices</h2>
   <ul>
-    <li>Use the app fully without push — it is optional.</li>
+    <li>Turn push off in Settings; the app works fully without it.</li>
+    <li>Turn the transparency log off, or point it at your own, in Settings
+    once Developer mode is on.</li>
     <li><a href="/self-host">Point the app at your own relay</a> so no traffic
     touches ours.</li>
     <li>Delete everything at any time with Settings → Wipe everything. There is

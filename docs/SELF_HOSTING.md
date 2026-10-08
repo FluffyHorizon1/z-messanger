@@ -138,7 +138,7 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 | `RELAY_AUTH_V1` | `on` | whether the unbound v1 authentication is still accepted. A v1 signature is over the challenge alone, so one obtained by any relay a user was talking to authenticated them here (R33); v2 (relay and app from 2026‑09‑17 on) signs the relay's name with it, and a client from then on never produces v1. Every v1 authentication is counted in `z_auth_v1_total`; set `off` once that has stayed at zero for as long as you care to wait — after which a client from before then cannot receive until it updates |
 | `RELAY_AUTHORITIES` | — | names a v2 signature may carry besides the `Host` header the connection arrived with, comma‑separated (`relay.example`, `relay.example:8443`). Only for a front that rewrites `Host`; the shipped ones — `nginx.ha.conf`, Cloudflare, Render — pass it through, and then the header alone is right |
 | `LOG_LEVEL` | `info` | `info` logs counts/timing only, never content |
-| `Z_LATEST_VERSION` | — | the newest app version you want your users prompted to update to (24.4). Set it to a plain `x.y.z` and `/latest.json` serves `{"version","url"}`; leave it unset (or non‑semver) and the route 404s, so your users are never prompted. The app checks it at most once a day when Settings is opened, against the host it already dials — no third party, nothing per‑user. The official relay sets it on each release; a self‑hoster who does not track releases can ignore it |
+| `Z_LATEST_VERSION` | — | the newest app version you want your users prompted to update to (24.4). Set it to a plain `x.y.z` and `/latest.json` serves `{"version","url"}`; leave it unset (or non‑semver) and the route 404s, so your users are never prompted. The app checks it at most once a day when Settings is opened, against the host it already dials — no third party, nothing per‑user. The official relay does not set it yet — no Blueprint in this repository does, and its `/latest.json` answered 404 on 2026‑10‑03 — so nobody on it is prompted; a self‑hoster who does not track releases can ignore it |
 
 **Authentication names the relay (2026‑09‑17).** A client signs its challenge
 answer over the relay's authority as it dialled it — the URL's host, lower
@@ -720,8 +720,13 @@ written before the publish that produced it was answered — and, since
 2026‑09‑17, at the very first start, at size 0. On the way back up the log
 refuses to start unless the head is signed by its own key and the entries it
 replays reproduce that head's root at that size — so a truncated file, a
-restored snapshot, a half-finished copy or a head somebody else wrote is
-refused rather than signed as a smaller history. **Back both files up
+half-finished copy, entries restored without the head they were signed
+under, or a head somebody else wrote is refused rather than signed as a
+smaller history. A whole-disk snapshot is not: it brings back the head it
+was taken with, the two agree, and the log starts at the snapshot's size and
+signs a history smaller than one it has already published — a fork to every
+client holding a later head. Only `KT_MIN_SIZE` above the snapshot's size,
+below, refuses that. **Back both files up
 together**; a copy of the entries without the head is a log that will start
 and a copy of the head without the entries is one that will not, and the
 second is the safer of the two.

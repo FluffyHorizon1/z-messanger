@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run the release job's shell, here, against a staged release.
 
-`AUDIT_SCOPE.md` C26 says the attestation path "has still never executed", and
-that is true of more than the attestation: the three `run:` steps before it —
+`AUDIT_SCOPE.md` C26 said, when this was written, that the attestation path
+"has still never executed", and that was true of more than the attestation: the three `run:` steps before it —
 collecting the artefacts, computing the content digest, and comparing that
 digest against an independently signed build — are reachable only from a
 pushed tag, so the first time they run is the moment a version number has
@@ -13,7 +13,7 @@ anything), and `tool/check_workflow.py` exists because of it.
 This runs the same shell. It reads the step bodies OUT OF THE WORKFLOW rather
 than restating them, so there is one copy and a drift between the two is not
 possible; it stages a workspace shaped like the one a tagged run produces; and
-it checks what comes out. Four passes:
+it checks what comes out. Five passes:
 
   1. a normal release — every artefact present, the reproducibility slot
      matching;

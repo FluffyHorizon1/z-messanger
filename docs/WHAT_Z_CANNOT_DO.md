@@ -71,7 +71,20 @@ patterns in that are not nothing: the members of a group all receive their
 copy of a message within a fraction of a second of each other, every time,
 and so does each of your own devices. We measured it (`THREAT_MODEL.md`, R18
 and R19). A relay that keeps timestamps can work out which mailboxes belong
-together; it still cannot put a name to any of them.
+together; it still cannot put a name to any of them. The same timing pairs
+a sender with the person they wrote to, despite sealed sender: the delivery
+receipt goes back to the sender within a fraction of a second of the message
+arriving (R41).
+
+Two more parties see some of this. **The transparency log**, which Z uses by
+default, is asked about each of your contacts — one question per contact,
+from your own address, every six hours and whenever a contact's devices
+change — so whoever runs it learns who your contacts are, and for
+the built-in log that is the people who run the relay (R40). Turning it off
+takes Developer mode. And **Cloudflare**, in front of the built-in relay and
+log, ends their encryption in transit (not the messages', which is
+end-to-end): it sees your address beside your mailbox, which mailbox each
+envelope you send is for, and which contacts you look up (R44).
 
 Someone watching **both ends** can correlate timing and volume regardless of
 any of it. That is a property of the internet, not of Z. If being seen to use
@@ -111,7 +124,14 @@ identities, which is exactly the thing this design refuses to build.
 
 An unverified conversation is still encrypted, but you are trusting that
 nobody interfered when you exchanged codes. Verifying takes a minute and it is
-the only step that closes that gap.
+the only step that closes that gap. Until you do, adding someone — by their
+code, or by accepting their request — trusts whatever arrived first: a code
+swapped on its way to you is simply who you added (trust on first use).
+
+A CONNECT invite has the same edge, said differently: until it is used it is
+a bearer token, and whoever opens the link first is who it reaches — whoever
+saw it in the chat it was pasted into included. The eight digits are what
+catch that, and only if the two of you compare them.
 
 Key transparency (`docs/adr/0006-key-transparency-log.md`) catches some of
 this automatically: every device list an account publishes is recorded where
@@ -138,8 +158,9 @@ until a review happens, "unaudited" is the accurate word.
 
 ## It cannot promise the app you installed is the app we wrote
 
-It can get closer than most. Builds are reproducible on any machine at a
-stated path, releases carry signed provenance recorded in a public
+It can get closer than most. The Android release build (the universal APK)
+is reproducible on any machine at a stated path — the desktop builds have not
+been measured — releases carry signed provenance recorded in a public
 transparency log, and anyone can rebuild and compare a single digest
 (`REPRODUCIBLE_BUILDS.md`).
 
@@ -161,9 +182,15 @@ who compromises it, by anyone on the network between you, or by anyone who
 seizes the server — because none of them ever hold anything but padded
 ciphertext addressed to a hash, in memory, deleted on delivery and within
 seventy‑two hours regardless.** A
-recording made today does not become readable when quantum computers arrive.
-An identity cannot be forged, now or later, without breaking two independent
-signature schemes.
+recording made today of a conversation's messages after its first round trip
+does not become readable when quantum computers arrive — the opening exchange,
+contact requests, the CONNECT ceremony, linking a device and the sealed outer
+layer of each envelope are classical, and so, today, are the channels to
+linked devices — yours and your contacts' — if their first key offer is lost
+(`THREAT_MODEL.md`, "The quantum layer's edges"). Who belongs to your account
+cannot be forged unnoticed, now or later, without breaking two independent
+signature schemes; a session with a device already on it is authenticated
+classically.
 
 That is a strong and unusual position, and it is worth being precise about,
 because a claim that is too broad gets someone hurt and a claim that is too

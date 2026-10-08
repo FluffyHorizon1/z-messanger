@@ -510,8 +510,9 @@ than none — it invites people to stop looking.
   *before* signing. The desktop bundles are unmeasured.
 * **`flutter clean` was used between builds, not a fresh checkout.** Untracked
   state in the working tree could in principle influence a build.
-* **Cross-machine reproducibility is not merely unestablished — it has been
-  measured and it failed.** See the section above; this list was written before
+* **Reproducibility across checkout paths is not merely unestablished — it
+  has been measured and it fails** (R16); across machines at one path it
+  holds. See the section above; this list was written before
   that run and the entry that used to sit here ("path-independence has not been
   checked") understated it.
 * Only the debug signing key was exercised, because the release keystore is not

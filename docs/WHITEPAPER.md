@@ -2,7 +2,7 @@
 
 **A messenger where the operator is not part of the trust model.**
 
-`PROTOCOL.md` is the normative wire format: twelve thousand words of byte
+`PROTOCOL.md` is the normative wire format: some twenty-nine thousand words of byte
 layouts and MUSTs, with test vectors. This is the other document — the one for
 someone deciding whether Z is worth trusting or worth auditing, who reasonably
 will not read the wire format first.
@@ -62,7 +62,8 @@ identical. Making the relay hold prekeys would buy that one message at the cost
 of the relay mattering.
 
 **How to check it.** `PROTOCOL.md` §4–5, with vectors in `docs/vectors/v1`
-replayed by three independent implementations (§7 below).
+replayed byte for byte by an implementation that shares no code with ours,
+the Node clean-room verifier (§7 below).
 
 **Not covered.** A compromised endpoint. If an attacker has your unlocked
 device they have what you can see, and no messaging protocol changes that.
@@ -113,6 +114,15 @@ your threat model, self-host the relay or front it with Tor. This is R1 and
 R21 in the residual-risk register and it is the most important limitation in
 this document.
 
+Three more belong beside it. A delivery receipt goes back to the sender
+within a fraction of a second of a message arriving, so a relay that watches
+timing can pair a sealed sender with the recipient anyway (R41). The
+transparency log (§6), which the app uses by default, is asked about each of
+a user's contacts from that user's address, four times a day: its operator —
+for the public log, the relay's operator too — learns the contact list
+outright (R40). And the public relay and log sit behind Cloudflare, which
+terminates their TLS and sees all of the above beside every address (R44).
+
 The same applies to the connect ceremony's shape (§6): the relay sees a pair
 of mailboxes exchange four envelopes and go quiet. Neither ties to an
 account, and nothing in the exchange carries a routing id, an account key or
@@ -140,10 +150,17 @@ stolen device state kept the quantum-safe secret for ever. Rotation bounds it.
 a third-party implementation that shares no code with this project.
 
 **Not covered.** The opening `hello`, the key offer itself, and anything sent
-before the offer is answered (R5). ML-KEM in pure Dart is best-effort
-constant-time; a timing leak there reduces security to v1, never below it.
+before the offer is answered (R5). Nor anything that never enters the
+ratchet: contact requests, the connect ceremony, the enrolment a newly
+linked device receives (which carries the contact list), and the sealed
+outer layer that says who sent an envelope are X25519 only
+(`THREAT_MODEL.md`, "The quantum layer's edges"). And today the channels to a
+person's own other devices, and to a contact's, are never re-keyed, and are
+not offered a key again if the first offer is lost. ML-KEM in pure Dart is
+best-effort constant-time; a timing leak there reduces security to v1, never
+below it (R43).
 
-## 5. Claim: an identity cannot be forged, now or later
+## 5. Claim: who belongs to an account cannot be forged, now or later
 
 This is the part that took the longest and the part where the design changed
 most under measurement.
@@ -199,6 +216,14 @@ the commitment binds the in-band key to the scan; it does not make the scan
 post-quantum. And the post-quantum device-list signature can be *dropped* by an
 on-path attacker, leaving a list verified classically (R3). That is not
 preventable at the network layer; it is detected and surfaced instead.
+
+Sessions are authenticated classically too (§4), as with Signal's PQXDH: an
+adversary who can derive a device's private key from its public half cannot
+add a device to the account, but can open a new session as one that is
+already there. And until ADR 0017's stage 2b the list's post-quantum
+signature covers its version and its members and not each device's ratchet
+key, so whoever holds the account root's Ed25519 seed — or that adversary —
+can swap a linked device's ratchet key without anything noticing (R42).
 
 ## 6. Claim: verification means something, and a changed number is explained
 
@@ -397,6 +422,10 @@ assume it does is where harm happens:
   machines at a stated checkout path, measured in CI — but no one outside the
   project has checked, and a reproducibility claim verified only by its author
   is a claim about intentions.
+* **Not a private transparency log.** Checking a contact's device list against
+  the log means asking the log about that contact, so its operator learns
+  whom each user is in contact with (R40). The app does this by default;
+  turning it off takes Developer mode.
 * **Not yet a witnessed transparency log.** The log runs and the client
   pins it (§6), so a device list handed to one contact and not another is
   recorded where both can look. What is missing is the second party: nobody

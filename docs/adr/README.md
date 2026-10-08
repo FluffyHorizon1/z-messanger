@@ -1,14 +1,16 @@
 # Architecture decision records
 
 One file per decision that changes the security model, the wire format or
-the operating model. Numbered in order of acceptance; superseded records
-stay in place with their status updated.
+the operating model. Numbered in the order they were first written,
+proposals included; superseded records stay in place with their status
+updated. 0002 was reserved for an iOS push decision that was never written;
+the number stays unused rather than being given to something else.
 
 | # | Decision | Status |
 |---|---|---|
-| [0001](0001-key-transparency.md) | Key transparency: device‑list transparency by gossip first, public log later | Accepted 2026‑09‑04 |
-| [0003](0003-pq-identity-qr.md) | Post‑quantum identity: the QR carries a commitment, the ML‑DSA half travels in‑session | Accepted 2026‑09‑07 |
-| [0004](0004-hybrid-device-list-distribution.md) | Post‑quantum device lists: the account signs the LIST, because per‑certificate halves do not authenticate the set | Accepted 2026‑09‑08 · addendum 2026‑09‑10 (bucket column measured; decision unchanged) |
+| [0001](0001-key-transparency.md) | Key transparency: device‑list transparency by gossip first, public log later | Accepted 2026‑09‑04 · amended by 0006 |
+| [0003](0003-pq-identity-qr.md) | Post‑quantum identity: the QR carries a commitment, the ML‑DSA half travels in‑session | Accepted 2026‑09‑07 · amended by 0021 |
+| [0004](0004-hybrid-device-list-distribution.md) | Post‑quantum device lists: the account signs the LIST, because per‑certificate halves do not authenticate the set | Accepted 2026‑09‑08 · addendum 2026‑09‑10 (bucket column measured; decision unchanged) · amended by 0010 and 0017 |
 | [0005](0005-call-media-path.md) | Calls: direct after accept by default, nothing before accept, relay one switch away — because relaying through the operator's TURN hands it who‑calls‑whom | **Proposed** 2026‑09‑10 — awaiting decision before 12.2 |
 | [0006](0006-key-transparency-log.md) | The public transparency log: an RFC 9162 log plus a sparse map under one signed head, values sealed to the account's contacts, a mirror as witness, and what a client does with every answer it can get — G3 defined precisely enough to tick | Accepted 2026‑09‑11 |
 | [0007](0007-anonymous-sender-connection.md) | Sealed envelopes are sent on a connection that never authenticated — the relay was being handed the sender by the socket while the envelope withheld it; what remains is an address (R21) | Accepted 2026‑09‑11 |

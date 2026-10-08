@@ -33,7 +33,7 @@ nobody outside the project.
 
 ### G1 — External cryptographic audit ❌
 
-The *package* is ready: `AUDIT_SCOPE.md` states thirty-six claims with where each
+The *package* is ready: `AUDIT_SCOPE.md` states thirty-eight claims with where each
 is specified and tested, `tool/audit_verify.sh` reproduces every one in a
 single command, and §8.1 defines severity anchored to those claims rather than
 to a generic scale.
@@ -138,7 +138,7 @@ C14, C19, C21, C22.
 
 ### G6 — Published threat model ✅
 
-`THREAT_MODEL.md` including a thirty-three-row residual-risk register, `DATA_MAP.md`
+`THREAT_MODEL.md` including a forty-four-row residual-risk register, `DATA_MAP.md`
 for the inventory beneath it, `WHITEPAPER.md` for the argument, and
 `WHAT_Z_CANNOT_DO.md` for the version a user can act on. Claims C28, C29.
 
@@ -149,8 +149,9 @@ there is no `app/ios/` directory. It is separate work with its own file
 ownership (`app/ios/**`, `app/macos/**`, push and app‑lock native code),
 and 1.0 "on iOS" is blocked on it.
 
-Play submission is separately gated on the maintainer: the 16 KB page-alignment
-blocker is cleared, and the re-upload has not happened.
+Android ships on Google Play (`com.zmessenger.www`), but Play lags: it served
+3.9.1 on 2026-10-03, ten tagged releases behind `main`, and promoting a
+current build is the maintainer's.
 
 ### G8 — Accessibility ✅, with a caveat worth stating
 
@@ -173,7 +174,7 @@ description on every string, and `tool/check_l10n.py` holding the migrated
 screens — **21 of 21 screens** — to zero hardcoded literals and, now,
 holding every other locale to exactly the English key set with the same
 placeholders and plural cases.
-The service stores its sixteen kinds of system message as a kind and its
+The service stores its thirty-seven kinds of system message as a kind and its
 parameters (`core/system_messages.dart`), rendered through the ARB when
 shown, so they read in the user's language too — and, since 2026‑09‑13, the
 five device‑list banners as well, which had been built as English sentences by
@@ -181,7 +182,7 @@ the service and handed to two migrated screens, where the check could not see
 them.
 
 **The app ships in two languages: English and Spanish** (`app_es.arb`,
-408 strings, every claim carried across — `locale_es_test.dart` checks the
+572 strings, every claim carried across — `locale_es_test.dart` checks the
 plurals, the stored system messages and that no string was copied through
 untranslated). Spanish was chosen because it is the second language Z's
 release notes have been published in since 2.0.

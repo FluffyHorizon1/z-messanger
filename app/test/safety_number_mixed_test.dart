@@ -26,7 +26,11 @@
 //      cannot fix, pinned: an old peer that DID scan our code establishes our
 //      key, shows the post-quantum number and never acknowledges, so the two
 //      still differ until it updates. Criteria 3 and 3b are the two halves of
-//      what "mixed version" means here;
+//      what "mixed version" means here; and (3c) the third shape, pinned with
+//      its end: we scanned an old peer's code and it accepted our request, so
+//      we establish its key and show the post-quantum number while it drops
+//      ours and shows the classical one — until the side that ACCEPTED
+//      updates, after which our next message brings both to one number;
 //   4. confirming the number establishes the candidate: hybrid assurance, the
 //      number that was actually compared recorded, and both surviving a
 //      restart;
@@ -280,6 +284,58 @@ void main() {
             ? 'it acknowledged, so both screens show the post-quantum number'
             : 'it never acknowledged, so the numbers differ — the documented '
               'limit, which ends when that side updates');
+  });
+
+  test('3c. an old peer that accepted our request: the other limit, and its end',
+      () async {
+    // The shape 3b does not cover, and the one Google Play's 3.9.1 produces
+    // with every current user who adds a Play user by code. WE scanned the old
+    // peer's current code, so we hold its commitment: its key is established
+    // and we show the post-quantum number whatever it says, because an
+    // established key does not wait for an acknowledgement (3b's working case
+    // is why). It accepted our request, which carries no commitment, so it
+    // drops our key and shows the classical number. No rule of ours closes
+    // that; it ends when the side that ACCEPTED updates.
+    final alice = await makeClient('alice3c');
+    final old = await makeClient('old3c');
+    old.debugPreAdr0021 = true;
+    await waitUntil(
+        () => alice.transport.isConnected && old.transport.isConnected);
+    await alice.addContactFromCode(await old.myContactCode());
+    await old.addContactFromCode(await classicalCodeOf(alice, 'alice3c'));
+
+    await waitUntil(() => alice.contacts[old.myRid]!.pqPub != null,
+        what: 'we establish its key against the commitment we scanned');
+    // `ack` on a pqid of ours is recorded whatever the old rule then does
+    // with the key beside it — so this says our key has reached it.
+    await waitUntil(() => old.contacts[alice.myRid]!.pqAcked,
+        what: 'our key reaches the old peer');
+    await waitUntil(() => !alice.pqSendPending && !old.pqSendPending,
+        what: 'no key exchange still in flight on either side');
+
+    final ours = alice.contacts[old.myRid]!;
+    final theirs = old.contacts[alice.myRid]!;
+    expect(ours.pqDisplay, PqDisplay.postQuantum,
+        reason: 'an established key: the post-quantum number, at once');
+    expect(theirs.pqPub, isNull);
+    expect(theirs.pqCandidate, isNull,
+        reason: 'the old build drops a key it holds no commitment for');
+    expect(theirs.pqDisplay, PqDisplay.classical,
+        reason: 'the screen that says our app has not published a key');
+    expect(await alice.safetyNumberWith(old.myRid),
+        isNot(await old.safetyNumberWith(alice.myRid)),
+        reason: 'two numbers: the limit, as it stands');
+
+    // The peer that accepted updates: the same vault, a current build.
+    await old.transport.stop();
+    final updated = await makeClient('old3c', reuse: dirs['old3c']);
+    updated.pqSendDebounce = const Duration(milliseconds: 100);
+    await waitUntil(() => updated.transport.isConnected,
+        what: 'the updated peer is back on the relay');
+    await alice.sendText(updated.myRid, 'still there?');
+    await expectOneNumber(alice, updated, postQuantum: true);
+    expect(updated.contacts[alice.myRid]!.pqDisplay, PqDisplay.unverified,
+        reason: 'our key is a candidate there: it held no commitment to check');
   });
 
   test('4. confirming the number establishes the key it was derived from',

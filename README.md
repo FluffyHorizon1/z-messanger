@@ -13,8 +13,10 @@ of a key you generate; nobody is registered anywhere.
 
 **Android:** [Z on Google Play](https://play.google.com/store/apps/details?id=com.zmessenger.www).
 **Windows, Linux, macOS:** the [latest release](https://github.com/FluffyHorizon1/z-messanger/releases/latest)
-carries a build for each, with a `SHA256SUMS.txt` you can check against
-[`docs/REPRODUCIBLE_BUILDS.md`](docs/REPRODUCIBLE_BUILDS.md).
+carries a build for each, with a `SHA256SUMS.txt` listing every file's digest.
+Only the universal Android APK has been measured to rebuild byte for byte
+([`docs/REPRODUCIBLE_BUILDS.md`](docs/REPRODUCIBLE_BUILDS.md)); the desktop
+builds have not.
 
 ![Two Z clients holding an encrypted conversation](docs/screenshot_conversation.png)
 
@@ -22,19 +24,28 @@ carries a build for each, with a `SHA256SUMS.txt` you can check against
 
 - **Nothing to trust on the server.** The relay sees routing hashes and
   ciphertext in one of a few padded sizes. Sealed sender hides who sent
-  each message even from the relay. There is no directory, no key server,
-  no metadata store — and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)
-  says exactly what the relay *can* still observe.
+  each message even from the relay. There is no directory and no key
+  server. The one server that keeps a record is the public transparency
+  log: it holds every device list an account publishes, for good, and the
+  app's lookups there tell it whom each user is in contact with —
+  [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) says exactly what the
+  relay and the log *can* still observe (R1, R21, R40).
 - **Signal‑style cryptography, post‑quantum on top.** X3DH‑style handshake,
   the Double Ratchet (X25519, HKDF, HMAC) with XChaCha20‑Poly1305, and a
-  hybrid ML‑KEM‑768 layer with periodic re‑keying so recorded traffic stays
-  closed to a future quantum computer. Identities carry an ML‑DSA‑65 half.
+  hybrid ML‑KEM‑768 layer with periodic re‑keying so a conversation's
+  messages after its first round trip stay closed to a future quantum
+  computer — the exceptions are listed in
+  [`docs/WHAT_Z_CANNOT_DO.md`](docs/WHAT_Z_CANNOT_DO.md). Identities carry an
+  ML‑DSA‑65 half.
 - **Device lists you can check.** Linked devices are signed by your account
   key, your contacts cross‑check every list they are handed inside the
   encrypted channel, and the app checks each list against a public
   transparency log when one is configured — so a device quietly added to an
   account shows up on the screens of the people it talks to, and cannot stay
-  hidden by being shown to only some of them.
+  hidden by being shown to only some of them — unless the log itself shows
+  different readers different histories, which only a witness outside the
+  project would catch, and none runs yet
+  ([`docs/GA_CHECKLIST.md`](docs/GA_CHECKLIST.md), G3).
 - **Everything on the device is encrypted.** An on‑device vault with every
   sensitive cell sealed under a key in the OS keystore, an optional
   passphrase (Argon2id), biometric app lock, and encrypted backups you can

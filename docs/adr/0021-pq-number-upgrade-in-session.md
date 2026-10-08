@@ -143,6 +143,25 @@ send in which to set `ack`. That is luck, and the fix does not rest on it. Crite
 of the test file pin both halves, the second by asserting the display rule
 rather than an outcome that depends on which envelope won.
 
+**A second limit, not stated here until 2026‑10‑04.** The table at the top
+puts the scanner on the current side and the paragraph above puts the older
+peer there; the remaining shape has a *current* client scan the code of a
+peer on a build from before this ADR — 3.9.1, which Google Play was still
+serving in October 2026 — and that peer **accept the request**. We hold its
+commitment, so its key is established and we show the post‑quantum number at
+once: rule 2 does not wait for an acknowledgement over an established key,
+for the reason the rejected symmetric rule gives. It holds no commitment of
+ours, so it discards our key as §18.2 used to require, shows the classical
+number, and tells its user our app has not published a post‑quantum key. The
+same two screens as the report, with one side updated — the side whose update
+does not help — and nothing a current client may do reaches them. It ends when the peer that **accepted**
+updates: holding no key of ours, an updated build re‑sends its own on our
+traffic, our answer carries `ack` because we hold its key, it keeps ours as a
+candidate, and both screens show the post‑quantum number. A pair stuck while
+both ran a build from before this ADR heals the same way — the side that
+accepted is the side that has to update. Criterion 3c pins it, the update
+included; `USING_Z.md` says what each person sees.
+
 **3. Confirming a candidate‑derived number establishes the key.** When the
 user ticks "verified" against a number computed over a candidate, that
 candidate becomes `pqPub`: hybrid assurance, usable for device lists, durable.
@@ -207,4 +226,4 @@ reset.
 
 ## Exit criteria
 
-The exit criteria are the eleven tests in `app/test/safety_number_mixed_test.dart`.
+The exit criteria are the twelve tests in `app/test/safety_number_mixed_test.dart`.

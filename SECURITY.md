@@ -51,8 +51,15 @@ Get-FileHash z-windows-x64.zip -Algorithm SHA256
 Platform code-signatures, when a release is signed (see `docs/SIGNING.md`):
 
 - **Android** — `apksigner verify --print-certs app-release.apk` shows the
-  signing certificate. Compare its SHA-256 fingerprint to the one published with
-  the release.
+  signing certificate. No fingerprint is published to compare it with yet, so
+  that line proves less than it looks: rely on the attestation below and the
+  content digest in `SHA256SUMS.txt` (`docs/REPRODUCIBLE_BUILDS.md`), and know
+  that once one release is installed, Android refuses an update signed by any
+  other certificate. A certificate reading `CN=Android Debug` is not a release
+  key: the build falls back to the debug key without failing when the release
+  key is missing. The copy on Google Play is re-signed by Google (Play App
+  Signing), so its certificate differs from the APK on the releases page, and
+  neither installs over the other.
 - **macOS** — `codesign --verify --deep --strict Z.app` and
   `spctl -a -vv Z.app` (Gatekeeper) should both pass on a notarized build.
 - **Windows** — right-click `zapp.exe` → Properties → Digital Signatures, or

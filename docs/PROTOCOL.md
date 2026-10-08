@@ -504,7 +504,7 @@ session for a recorded id, reporting the envelope as undecryptable rather than
 as an unknown session (there is nothing for the peer to re‑open). Without it,
 a relay holding a captured opener could make the plaintext of that first chain
 arrive again after a reset — the receiver's own duplicate‑suppression window
-(§6.4) is 30 days, so an older capture read as new messages — and could have a
+(§6.7) is 30 days, so an older capture read as new messages — and could have a
 pruned session re‑created and then *pinned* by the rule above, moving the
 receiver's outbound traffic onto a session the peer had discarded. The record
 is bounded (the oldest ids are dropped; the reference client keeps 64), which
@@ -573,7 +573,7 @@ success (a failure leaves the state untouched).
    this **distinguishably** from a decryption failure and MUST NOT continue:
    deriving from `ckr` would produce the key for `nr`, not for `header.n`, and
    fail authentication indistinguishably from a chain that has genuinely
-   diverged. The two want opposite answers from the client (§6.5), which is
+   diverged. The two want opposite answers from the client (§5.4a), which is
    why the wire carries no flag for it and the receiver decides.
 3. Skip to `header.n` on the receiving chain (step 4), then
    `(mk, ckr) = KDF_CK(ckr); nr += 1`, decrypt, unpad.
@@ -602,7 +602,7 @@ things and were one until 2026‑09‑14:
   warning nobody believes.
 
 The notice and the `hello` MUST be coalesced: one notice per episode carrying
-a count, and at most one `hello` per interval (the reference client uses 60
+a count, and at most one `hello` per interval (the reference client uses 10
 seconds). Anything that can put an envelope in the mailbox can therefore cost
 the receiver one row and one `hello` per interval, and no more.
 
@@ -667,6 +667,31 @@ every bundle in a `ginvite` MUST be verified (§2.3) before use.
 Independently of kind, an inner message MAY also carry the device‑list
 transparency members `dl` and `pdl` (§3.6), each `{ "v":int, "h":b64 }`;
 clients that do not implement 7.7a ignore them.
+
+### 6.3 Receipts
+
+On persisting an inbound `text`, `file`, `gmsg` or `gfile`, the recipient
+sends `dlv{mids:[mid]}` back over the same pairwise session (best effort). This
+replaces the relay's `delivered` frame, which sealed sender (§8) makes
+impossible. `read` is sent when the user views the message. A receipt goes
+back promptly — the reference client waits at most 300 ms, to let a burst
+share one — and that promptness lets a relay that watches timing pair a sealed
+sender with the recipient (`THREAT_MODEL.md` R41).
+
+A receipt is a claim, and a sender MUST bound what each party may claim. A
+`mid` is plaintext to everyone who received the message, so in a group every
+member holds every member's ids; a sender that acts on a receipt without
+checking the thread lets any contact mark any of its outgoing messages —
+including one in a conversation that party is not in — delivered. So a receipt
+from party P for message M counts only if M is outgoing in a thread P is a
+party to: P's own pairwise thread, or a group P is currently in.
+
+For a group message, "delivered" means **every** member, not the first to
+answer: the sender records one confirmation per (message, member) and moves
+the state only when the current membership has all confirmed. Membership
+shrinks, so this is re-evaluated when a member is removed or leaves —
+otherwise a message waits for ever on somebody who is gone, which is a worse
+failure than the one it replaces because it never resolves.
 
 ### 6.4 Replies (8.1)
 
@@ -760,29 +785,7 @@ clients render an inline player. The pipeline is unchanged — same keys,
 chunks and limits (§7) — and a client that ignores the members shows an
 ordinary audio file attachment.
 
-### 6.3 Receipts
-
-On persisting an inbound `text`, `file`, `gmsg` or `gfile`, the recipient
-sends `dlv{mids:[mid]}` back over the same pairwise session (best effort). This
-replaces the relay's `delivered` frame, which sealed sender (§8) makes
-impossible. `read` is sent when the user views the message.
-
-A receipt is a claim, and a sender MUST bound what each party may claim. A
-`mid` is plaintext to everyone who received the message, so in a group every
-member holds every member's ids; a sender that acts on a receipt without
-checking the thread lets any contact mark any of its outgoing messages —
-including one in a conversation that party is not in — delivered. So a receipt
-from party P for message M counts only if M is outgoing in a thread P is a
-party to: P's own pairwise thread, or a group P is currently in.
-
-For a group message, "delivered" means **every** member, not the first to
-answer: the sender records one confirmation per (message, member) and moves
-the state only when the current membership has all confirmed. Membership
-shrinks, so this is re-evaluated when a member is removed or leaves —
-otherwise a message waits for ever on somebody who is gone, which is a worse
-failure than the one it replaces because it never resolves.
-
-### 6.4 Deduplication
+### 6.7 Deduplication
 
 Delivery is at‑least‑once (§12.5). Receivers MUST deduplicate on
 `(senderRoutingId, mid)` after decryption; a duplicate is acknowledged to the
@@ -1459,7 +1462,7 @@ lost `sent` — and is answered `sent` without being queued again. For a sealed
 envelope the relay has nothing to tell a retry from a second envelope that
 happens to share an id, so it keeps both (up to `ID_SLOTS`, 8, per id per
 mailbox, after which a further one is refused `queue_full`) and the client
-drops the duplicate on the inner `mid` (§6.4) — the safe side of a guess the
+drops the duplicate on the inner `mid` (§6.7) — the safe side of a guess the
 relay cannot make.
 
 ### 12.3 Push
@@ -1552,7 +1555,7 @@ own knowledge regardless. The relay counts refusals of this kind
 2. The envelope stays queued until the recipient sends `recv` (meaning it is
    safely in the recipient's encrypted local store). On (re)connect the whole
    queue is flushed again, so delivery is **at‑least‑once** and receivers
-   deduplicate (§6.4). A client MUST NOT `recv` before persisting. A `recv`
+   deduplicate (§6.7). A client MUST NOT `recv` before persisting. A `recv`
    that names nothing the mailbox holds is not an error — the relay may
    already have removed the entry — and is answered with no frame at all.
    A relay MUST apply to `recv` the same bounds it applies to `send` on the
@@ -1808,7 +1811,10 @@ regenerated).
 * The first messages of a conversation (the session‑opening `hello`, the
   offer itself, and anything sent before the offer is answered) are
   classical. The reference app sends the contact‑add hello and answers it
-  with the offer, so in the normal flow everything the user types is mixed.
+  with the offer, so in the normal flow most of what the user types is mixed
+  — but not all of it: a message typed before that round trip completes (to
+  a peer who is offline, say) goes out before any offer exists, and the
+  offerer's own messages are classical until the answer reaches it.
 * Generation 0's `K` is established once. Left there it is static for the
   conversation's life; §17.7 adds periodic re‑encapsulation so a device state
   stolen at one generation does not keep the next generation's secret
@@ -1858,7 +1864,7 @@ reordering given the interval dwarfs a round trip. Everything is a compatible
 extension: `pqg` is a new optional header member and `g` a new optional offer
 member, both ignored by a generation‑0‑only implementation, no version bump.
 
-## 18. Protocol v3 — post‑quantum identity *(in progress)*
+## 18. Protocol v3 — post‑quantum identity
 
 v2 (§17) protects **confidentiality** against a future quantum adversary: a
 recording made today is not readable once a CRQC exists, because every message
@@ -1868,9 +1874,12 @@ numbers are all Ed25519, so the same adversary could forge a device
 certificate — mint a device that appears to belong to an account — without
 reading a word of what it recorded. v3 closes that.
 
-Status: §18.1 and §18.2 are implemented and vectored (`docs/vectors/v3/`);
-device certificates, safety number v2 and the compatibility window are not yet
-written. Nothing in v1 or v2 changes.
+Status: everything below is written, implemented and shipping, with its wire
+forms vectored in `docs/vectors/v3/` — except the hybrid device certificate
+of §18.4, which is specified, implemented in the protocol library and
+vectored, and which no client issues or checks (ADR 0010 marked it unused):
+the device set gets its post‑quantum signature from §18.9 instead. Nothing in
+v1 or v2 changes.
 
 ### 18.1 Hybrid signatures
 
@@ -2199,6 +2208,23 @@ side updates. A client MUST NOT try to close that case by withholding the v2
 number over an *established* key until the peer acknowledges: a pre‑0021 peer
 that already holds ours will never say so, so the rule would create a fresh
 disagreement in the case that works today.
+
+The paragraph above puts the older peer on the scanning side. A current
+client can be the scanner instead: it scans the code of a peer still on a
+build from before ADR 0021 — 3.9.1, which Google Play was still serving in
+October 2026 — and that peer accepts the request (§8.1), which carries no
+commitment. The current client holds the peer's commitment, so the peer's key
+is established and the v2 number shown at once, acknowledged or not, for the
+reason just given. The older peer holds no commitment, so it discards our key
+as §18.2 once required, shows the v1 number, and tells its user that our app
+has not published a post‑quantum key. The screens disagree, and nothing a
+current client may do closes it. It ends when the peer that **accepted**
+updates: holding no key of ours, an updated client re‑sends its own on our
+traffic (the reference client once per run, and when its user opens the
+contact), our answer to that `pqid` carries `ack` because we hold its key, it
+keeps ours as a candidate, and both screens show the v2 number. A pair that
+was stuck while both ran a build from before ADR 0021 heals the same way: the
+side that accepted is the side that must update.
 
 **Confirming a candidate‑derived number establishes the key.** A user's
 confirmation that the digits matched is the statement that the key the number

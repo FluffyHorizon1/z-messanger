@@ -382,15 +382,22 @@ def main():
     tm = ROOT / "docs" / "THREAT_MODEL.md"
     if tm.exists():
         rows_r = len(re.findall(r"^\| R\d+ \|", tm.read_text(), re.M))
-        words = {"twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
-                 "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
-                 "twenty": 20, "twenty-one": 21, "twenty-two": 22,
-                 "twenty-three": 23, "twenty-four": 24, "twenty-five": 25,
-                 "twenty-six": 26, "twenty-seven": 27, "twenty-eight": 28,
-                 "twenty-nine": 29, "thirty": 30, "thirty-one": 31,
-                 "thirty-two": 32, "thirty-three": 33, "thirty-four": 34,
-                 "thirty-five": 35, "thirty-six": 36, "thirty-seven": 37,
-                 "thirty-eight": 38, "thirty-nine": 39, "forty": 40}
+        # Every number word from twelve to ninety-nine. This was a table that
+        # stopped at "forty", so the row that took the register past forty
+        # would have failed this check for want of a word rather than for a
+        # wrong count — and ten branches adding rows at once would each have
+        # had to extend the table in the same lines.
+        units = ["one", "two", "three", "four", "five", "six", "seven",
+                 "eight", "nine"]
+        teens = ["twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+                 "seventeen", "eighteen", "nineteen"]
+        tens = ["twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+                "eighty", "ninety"]
+        words = {w: 12 + i for i, w in enumerate(teens)}
+        for i, t in enumerate(tens):
+            words[t] = 20 + 10 * i
+            for j, u in enumerate(units):
+                words[f"{t}-{u}"] = 20 + 10 * i + j + 1
         m = re.search(r"\b([a-z]+(?:-[a-z]+)?)-row residual-risk register", text)
         if m:
             said = words.get(m.group(1))

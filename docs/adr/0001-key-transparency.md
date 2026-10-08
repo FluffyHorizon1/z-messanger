@@ -2,6 +2,7 @@
 
 **Status:** Accepted (2026‑09‑04) · **Roadmap:** 7.7 · **Supersedes:** the
 "key transparency, design note first" placeholder in ROADMAP.md.
+**Amended by:** ADR 0006, which builds the public log this record deferred.
 
 ## Context
 

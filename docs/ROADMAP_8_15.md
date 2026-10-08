@@ -1,5 +1,11 @@
 # Z — roadmap, phases 8–15
 
+> **Historical, as of 2026‑10‑04.** This plan is kept as the record of phases
+> 8–17 and of the reasoning in its revisions, and is not edited further. Its
+> revision log stops at 2026‑09‑17 and parts of it are out of date — it still
+> says the transparency log is not deployed, where it has run at
+> `kt.zmessengers.com` since 2026‑09‑13. `ROADMAP.md` supersedes it.
+
 **Status:** adopted · September 2026 · revised after code review (see
 *Revisions after review* at the end for what changed and why)
 **Basis:** phases 0–7 done or externally gated (`ROADMAP.md`), phase 8

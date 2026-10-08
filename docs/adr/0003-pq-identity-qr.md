@@ -2,6 +2,7 @@
 
 **Status:** Accepted (2026‑09‑07) · **Roadmap:** 13.2 · **Decides:** the open
 problem the roadmap requires settling *before* 13.1 hardens the v3 format.
+**Amended by:** ADR 0021 — a key that arrives with no commitment is kept as a candidate, not discarded.
 
 > ADR 0002 is reserved for the iOS push architecture, being written in
 > parallel. This is 0003 to avoid collision.
