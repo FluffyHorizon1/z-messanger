@@ -9,6 +9,7 @@ export 'src/attachments.dart';
 export 'src/connect.dart';
 export 'src/connect_relay.dart';
 export 'src/contact_request.dart';
+export 'src/handles.dart';
 export 'src/identity.dart';
 export 'src/messages.dart';
 export 'src/multidevice.dart';

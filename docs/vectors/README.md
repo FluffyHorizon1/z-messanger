@@ -65,6 +65,14 @@ protocol version directories; it is frozen on the same terms
 | `archive.json` | `.zbk` backup: the recovery code (entropy → Crockford base32 → checksum, and a mangled transcription parsed back), the Argon2id KAT, the header, and a complete four‑frame archive with every nonce, AAD rule, ciphertext and tag — plus the two cases that must fail (a frame moved to another index, the wrong code) | `BACKUP.md` §3–§4 |
 | `archive_1_1.json` | `.zbk` format 1.1 (`adr/0025`): the same frame layer under a header naming its minor revision (`mv`), one record of each kind 1.1 adds — a linked device's `identity` with its `account` (whose certificate the Node verifier checks with its own Ed25519), `state`, a `contact` with `req`, `kv` and `sids`, `blocked`, `request` — a record of a type no reader knows marked `keep`, and the same header at major version 2, which a reader of this major refuses | `BACKUP.md` §4.1, §5 |
 
+`handles/` pins the protocol half of handles (PROTOCOL.md §21, `adr/0015`),
+frozen on the same terms; the handle log (§21.5) and the relay's
+introduction mailboxes (§21.6) pin their own halves:
+
+| File | Covers | Spec |
+|---|---|---|
+| `handles.json` | the grammar — inputs that are handles with their canonical forms, and inputs that are not with the reason, among them Unicode look‑alikes (Cyrillic letters, the Kelvin sign, long s, dotted I, fullwidth forms, Arabic‑Indic digits, a combining accent, invisible spaces) and every reserved nick; labels at the production Argon2id parameters and at four small ones; owner, introduction and recovery keys from seeds — each introduction seed with its X25519 half, `xintro` — with the printed recovery codes and the commitments; claim, update and recover entries with every signing input and signature; seventeen owner‑rule histories with their verdicts, sixteen of them refusals; twenty‑six values that are not records, among them every way `intro` and `xintro` can disagree about being null; a contact request sealed to `xintro`, with its draws, that the introduction identity opens; proof‑of‑work stamps at 16 and 18 bits over that envelope, with the four a relay refuses and its today‑or‑yesterday window; and an introduction acknowledgement with the four a requester refuses | §21.1–§21.4, §21.7 |
+
 ## Conventions
 
 * Byte strings are lowercase hex. Strings that are literally on the wire —
@@ -88,7 +96,9 @@ that share no code with it:
 cd protocol && dart test test/vectors_test.dart   # reference implementation reproduces the files bit-for-bit,
                                                   # then consumes them through the public API only
 cd server   && node --test test/vectors.test.js   # clean-room Node.js implementation (Node crypto only,
-                                                  # no shared code) re-derives every vector from PROTOCOL.md
+                                                  # no shared code) re-derives every vector from PROTOCOL.md —
+                                                  # handles' labels too, with an Argon2id and a BLAKE2b written
+                                                  # there and checked against RFC 9106 and RFC 7693 first
 pip install kyber-py==1.2.0 && python3 protocol/tool/verify_mlkem.py
                                                   # v2: ML-KEM-768 values re-derived by an independent
                                                   # FIPS 203 implementation (kyber-py)

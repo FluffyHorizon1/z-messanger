@@ -3595,6 +3595,740 @@ Future<Map<String, Object?>> suiteConnectMailboxes() async {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Handles (PROTOCOL 21, ADR 0015 revision 2)
+// ---------------------------------------------------------------------------
+
+/// Argon2id through the `cryptography` package directly — the reference the
+/// library's [handleLabel] is checked against, and the source of the
+/// small-parameter answers an independent Argon2id is checked against.
+Future<Uint8List> refArgon2id(List<int> password, List<int> salt,
+    {required int memoryKib,
+    required int iterations,
+    required int parallelism,
+    int length = 32,
+    List<int> secret = const [],
+    List<int> ad = const []}) async {
+  final k = await Argon2id(
+          memory: memoryKib,
+          parallelism: parallelism,
+          iterations: iterations,
+          hashLength: length)
+      .deriveKey(
+          secretKey: SecretKey(password),
+          nonce: salt,
+          optionalSecret: secret,
+          associatedData: ad);
+  return Uint8List.fromList(await k.extractBytes());
+}
+
+Future<Map<String, Object?>> suiteHandles() async {
+  final d = Drbg(0x0036);
+
+  // The KDF instance first: the package reproduces RFC 9106 §5.3 (Argon2id,
+  // with a secret and associated data, four lanes) before it is trusted
+  // with anything below.
+  check(
+      hex(await refArgon2id(List.filled(32, 1), List.filled(16, 2),
+              memoryKib: 32,
+              iterations: 3,
+              parallelism: 4,
+              secret: List.filled(8, 3),
+              ad: List.filled(12, 4))) ==
+          '0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659',
+      'Argon2id reproduces RFC 9106 \u00a75.3');
+
+  // --- §21.1 the grammar ----------------------------------------------------
+  final valid = <(String, String)>[
+    ('alice.42', 'already canonical'),
+    ('@Alice.42', 'one leading @ removed and A-Z lower-cased'),
+    (' \t@ALICE.42\r\n', 'surrounding ASCII whitespace trimmed first'),
+    ('alice.042', 'digits are a string: 042 is a different handle from 42'),
+    ('bob_smith.07', 'an underscore inside the nick, and a leading zero kept'),
+    ('a1b.123456', 'six digits, and a digit inside the nick'),
+    ('abc.00', 'the shortest nick and the fewest digits'),
+    ('abcdefghijklmnopqrst.99', 'twenty characters, the longest nick'),
+    ('admins.12', 'a reserved nick with a letter added is not reserved'),
+  ];
+  final invalid = <(String, HandleProblem, String)>[
+    ('', HandleProblem.empty, 'nothing'),
+    (' \t ', HandleProblem.empty, 'only whitespace'),
+    ('@', HandleProblem.empty, 'only the @'),
+    ('@@alice.42', HandleProblem.badCharacter, 'only ONE leading @ is removed'),
+    ('@ alice.42', HandleProblem.badCharacter,
+        'trimming happens before the @ is removed, not after'),
+    ('ali ce.42', HandleProblem.badCharacter, 'a space inside'),
+    ('alice-x.42', HandleProblem.badCharacter, 'punctuation other than _ and one .'),
+    ('alice.42\u00a0', HandleProblem.badCharacter,
+        'a no-break space (U+00A0) is not trimmed: only ASCII whitespace is'),
+    ('alice.42\u200b', HandleProblem.badCharacter, 'a zero-width space (U+200B)'),
+    ('f\u0456nn\u0456an.42', HandleProblem.badCharacter,
+        'Cyrillic \u0456 (U+0456) in place of Latin i'),
+    ('\u0430dmin.12', HandleProblem.badCharacter,
+        'Cyrillic \u0430 (U+0430) in place of Latin a: a reserved nick\'s look-alike'),
+    ('\u212aate.42', HandleProblem.badCharacter,
+        'the Kelvin sign (U+212A), which Unicode lower-cases to ASCII k'),
+    ('\u017fam.42', HandleProblem.badCharacter,
+        'long s (U+017F), which Unicode upper-cases to ASCII S'),
+    ('\u0130nan.42', HandleProblem.badCharacter,
+        'dotted capital I (U+0130), which Unicode lower-cases to i + a combining dot'),
+    ('\uff41lice.42', HandleProblem.badCharacter, 'a fullwidth a (U+FF41)'),
+    ('alice\uff0e42', HandleProblem.badCharacter, 'a fullwidth full stop (U+FF0E)'),
+    ('alice.\u0664\u0662', HandleProblem.badCharacter,
+        'Arabic-Indic digits (U+0664 U+0662)'),
+    ('ali\u0301ce.42', HandleProblem.badCharacter,
+        'a combining acute accent (U+0301)'),
+    ('alice', HandleProblem.missingDigits, 'no discriminator'),
+    ('alice.', HandleProblem.missingDigits, 'nothing after the dot'),
+    ('alice.4a', HandleProblem.digitsNotDigits, 'a letter after the dot'),
+    ('alice.42.42', HandleProblem.digitsNotDigits, 'a second dot'),
+    ('alice.7', HandleProblem.digitsTooShort, 'one digit'),
+    ('alice.1234567', HandleProblem.digitsTooLong, 'seven digits'),
+    ('al.42', HandleProblem.nickTooShort, 'two characters'),
+    ('.42', HandleProblem.nickTooShort, 'no nick at all'),
+    ('abcdefghijklmnopqrstu.42', HandleProblem.nickTooLong, 'twenty-one characters'),
+    ('1alice.42', HandleProblem.nickStartsWithNonLetter, 'a digit first'),
+    ('_alice.42', HandleProblem.nickStartsWithNonLetter, 'an underscore first'),
+    ('ali__ce.42', HandleProblem.nickDoubleUnderscore, 'two underscores in a row'),
+    ('alice_.42', HandleProblem.nickEndsWithUnderscore, 'a trailing underscore'),
+    for (final n in reservedHandleNicks)
+      ('$n.12', HandleProblem.reserved, 'reserved'),
+    for (final n in reservedHandleNicks)
+      ('@${n[0].toUpperCase()}${n.substring(1)}.99', HandleProblem.reserved,
+          'reserved, after normalisation'),
+  ];
+  final validOut = <Map<String, Object?>>[];
+  for (final (input, note) in valid) {
+    final h = Handle.parse(input);
+    final norm = normaliseHandleInput(input);
+    check(norm == h.canonical, 'valid input normalises to its canonical form');
+    validOut.add({
+      'input': input,
+      'canonical': h.canonical,
+      'display': h.display,
+      'note': note,
+    });
+  }
+  final invalidOut = <Map<String, Object?>>[];
+  for (final (input, problem, note) in invalid) {
+    check(Handle.problemWith(input) == problem, 'refused as $problem: $input');
+    invalidOut.add({
+      'input': input,
+      'normalised': normaliseHandleInput(input),
+      'problem': problem.name,
+      'note': note,
+    });
+  }
+
+  // --- §21.2 labels -----------------------------------------------------------
+  final saltBytes = utf8.encode(handleLabelSalt);
+  final labels = <String, Uint8List>{};
+  final labelOut = <Map<String, Object?>>[];
+  for (final name in ['alice.42', 'alice.042', 'bob_smith.07']) {
+    final h = Handle.parse(name);
+    final label = await handleLabel(h);
+    check(
+        eq(
+            label,
+            await refArgon2id(h.canonicalBytes, saltBytes,
+                memoryKib: handleLabelMemoryKib,
+                iterations: handleLabelIterations,
+                parallelism: handleLabelParallelism)),
+        'label of $name');
+    labels[name] = label;
+    labelOut.add({
+      'handle': name,
+      'password': hex(h.canonicalBytes),
+      'label': hex(label),
+    });
+  }
+  check(!eq(labels['alice.42']!, labels['alice.042']!),
+      '42 and 042 are different handles');
+  final smallOut = <Map<String, Object?>>[];
+  for (final (pw, m, t, p) in [
+    ('alice.42', 8, 1, 1),
+    ('alice.42', 64, 2, 1),
+    ('bob_smith.07', 256, 3, 1),
+    ('abc.00', 64, 2, 2),
+  ]) {
+    smallOut.add({
+      'password': hex(utf8.encode(pw)),
+      'salt': hex(saltBytes),
+      'memory_kib': m,
+      'iterations': t,
+      'parallelism': p,
+      'tag_len': 32,
+      'tag': hex(await refArgon2id(utf8.encode(pw), saltBytes,
+          memoryKib: m, iterations: t, parallelism: p)),
+    });
+  }
+
+  // --- §21.3 keys ----------------------------------------------------------------
+  final label = labels['alice.42']!;
+  final otherLabel = labels['bob_smith.07']!;
+  final seeds = <String, Uint8List>{};
+  final pubs = <String, Uint8List>{};
+  for (final name in [
+    'owner_a', 'intro_a1', 'intro_a2', 'owner_b', 'intro_b', //
+    'owner_m', 'intro_m',
+  ]) {
+    seeds[name] = d.next(32);
+    pubs[name] = await handleKeyPublic(seeds[name]!);
+    check(eq(pubs[name]!, await refEdPub(seeds[name]!)), '$name pub');
+  }
+  // Each introduction seed's X25519 half (Amendment 1): the key a request
+  // is sealed to, `xintro` in the record.
+  final xseeds = <String, Uint8List>{};
+  final xpubs = <String, Uint8List>{};
+  for (final name in seeds.keys.where((n) => n.startsWith('intro'))) {
+    final xs = await refHkdf(
+        seeds[name]!, utf8b(handleIntroXSalt), Uint8List(0), 32);
+    final id = await handleIntroIdentity(seeds[name]!);
+    check(eq(xs, await handleIntroXSeed(seeds[name]!)), '$name x seed');
+    check(eq(id.xSeed, xs) && eq(id.edPub, pubs[name]!), '$name identity');
+    xseeds[name] = xs;
+    xpubs[name] = await refXPub(xs);
+    check(eq(id.xPub, xpubs[name]!), '$name x pub');
+  }
+  final keyOut = <Map<String, Object?>>[
+    for (final name in seeds.keys)
+      {
+        'name': name,
+        'seed': hex(seeds[name]!),
+        'pub': hex(pubs[name]!),
+        if (name.startsWith('intro')) ...{
+          'routing_id': await introRoutingId(pubs[name]!),
+          'rid_bytes': hex(await refSha256(pubs[name]!)),
+          'x_hkdf_salt': handleIntroXSalt,
+          'x_seed': hex(xseeds[name]!),
+          'x_pub': hex(xpubs[name]!),
+        },
+      },
+  ];
+  final codes = <String, RecoveryCode>{
+    'r1': RecoveryCode(d.next(15)),
+    'r2': RecoveryCode(d.next(15)),
+    'r_m': RecoveryCode(d.next(15)),
+  };
+  final rkeys = <String, HandleRecoveryKey>{};
+  final recoveryOut = <Map<String, Object?>>[];
+  for (final e in codes.entries) {
+    final rk = await handleRecoveryKey(e.value, label);
+    rkeys[e.key] = rk;
+    final seed = await refHkdf(e.value.entropy, utf8b(handleRecoverySalt), label, 32);
+    check(eq(seed, rk.seed), '${e.key} recovery seed');
+    check(eq(rk.pub, await refEdPub(seed)), '${e.key} recovery pub');
+    final rcInput = concatBytes([utf8.encode(handleRcContext), rk.pub]);
+    check(eq(rk.rc, await refSha256(rcInput)), '${e.key} rc');
+    final formatted = await formatHandleRecoveryCode(e.value);
+    check(formatted.startsWith('$handleRecoveryCodePrefix-'), 'prefix');
+    check(eq((await parseHandleRecoveryCode(formatted)).entropy, e.value.entropy),
+        'the formatted code parses back');
+    recoveryOut.add({
+      'name': e.key,
+      'entropy': hex(e.value.entropy),
+      'formatted': formatted,
+      'canonical': formatted.substring(4).replaceAll('-', ''),
+      'for_label': 'alice.42',
+      'hkdf_salt': handleRecoverySalt,
+      'hkdf_info': hex(label),
+      'seed': hex(rk.seed),
+      'pub': hex(rk.pub),
+      'rc_input': hex(rcInput),
+      'rc': hex(rk.rc),
+    });
+  }
+  // The same code for another handle derives another key: one code, one handle.
+  check(!eq((await handleRecoveryKey(codes['r1']!, otherLabel)).pub, rkeys['r1']!.pub),
+      'a recovery key is per label');
+
+  // --- §21.4 records, entries, histories -------------------------------------------
+  final entries = <String, HandleEntry>{};
+  final entryOut = <Map<String, Object?>>[];
+  Future<void> add(String name, String note, String signer, HandleEntry e,
+      {Map<String, Object?>? extra}) async {
+    entries[name] = e;
+    final pi = await handlePublishInput(
+        label: e.label, version: e.version, value: e.value);
+    final want = concatBytes([
+      utf8.encode(handlePublishContext),
+      e.label,
+      _u64(e.version),
+      await refSha256(e.value),
+    ]);
+    check(eq(pi, want), '$name publish input');
+    check(eq(e.sig, await refEdSign(seeds[signer]!, pi)), '$name sig');
+    entryOut.add({
+      'name': name,
+      'note': note,
+      'label': hex(e.label),
+      'v': e.version,
+      'value_text': utf8.decode(e.value, allowMalformed: true),
+      'value': hex(e.value),
+      'value_sha256': hex(await refSha256(e.value)),
+      'publish_input': hex(pi),
+      'signer': signer,
+      'sig': hex(e.sig),
+      'publish_json': e.toPublishJson(),
+      ...?extra,
+    });
+  }
+
+  /// An entry whose value is [value] verbatim (to record what must be
+  /// refused), signed by [signer] the way an honest one would be.
+  Future<HandleEntry> signRaw(Uint8List lbl, int v, Uint8List value, String signer) async {
+    final pi = await handlePublishInput(label: lbl, version: v, value: value);
+    return HandleEntry(
+        label: lbl, version: v, value: value, sig: await refEdSign(seeds[signer]!, pi));
+  }
+
+  Future<HandleEntry> signed(Uint8List lbl, int v, HandleRecord r, String signer) =>
+      signRaw(lbl, v, r.encode(), signer);
+
+  final rc1 = rkeys['r1']!.rc, rc2 = rkeys['r2']!.rc, rcM = rkeys['r_m']!.rc;
+  final claim = HandleRecord.claim(
+      owner: pubs['owner_a']!, intro: pubs['intro_a1']!, xintro: xpubs['intro_a1']!, pow: 20, rc: rc1);
+  await add('claim', 'Alice claims alice.42: owner A, introduction key A1, 20 bits, rc from r1',
+      'owner_a', await signHandleEntry(label: label, version: 1, record: claim, ownerSeed: seeds['owner_a']!));
+  final rotate = HandleRecord.update(
+      owner: pubs['owner_a']!, intro: pubs['intro_a2']!, xintro: xpubs['intro_a2']!, pow: 22, rc: rc1);
+  await add('update_rotate', 'Alice rotates the introduction key to A2 and raises the difficulty',
+      'owner_a', await signHandleEntry(label: label, version: 2, record: rotate, ownerSeed: seeds['owner_a']!));
+  final pause = HandleRecord.update(owner: pubs['owner_a']!, intro: null, xintro: null, pow: 22, rc: rc1);
+  await add('update_pause', 'Alice pauses the handle: it resolves, and cannot be reached',
+      'owner_a', await signHandleEntry(label: label, version: 3, record: pause, ownerSeed: seeds['owner_a']!));
+  final rsig = await signHandleRecovery(
+      recoverySeed: rkeys['r1']!.seed, label: label, version: 4, owner: pubs['owner_b']!, rc: rc2);
+  final rInput = handleRecoverInput(label: label, version: 4, owner: pubs['owner_b']!, rc: rc2);
+  check(eq(rInput, concatBytes([utf8.encode(handleRecoverContext), label, _u64(4), pubs['owner_b']!, rc2])),
+      'recover input');
+  check(eq(rsig, await refEdSign(rkeys['r1']!.seed, rInput)), 'rsig');
+  final recover = HandleRecord.recover(
+      owner: pubs['owner_b']!, intro: pubs['intro_b']!, xintro: xpubs['intro_b']!, pow: 20, rc: rc2,
+      rpub: rkeys['r1']!.pub, rsig: rsig);
+  await add('recover', 'Alice, without key A, recovers with the code r1: new owner B, new rc from r2',
+      'owner_b', await signHandleEntry(label: label, version: 4, record: recover, ownerSeed: seeds['owner_b']!),
+      extra: {'recover_input': hex(rInput), 'rsig_by': 'r1', 'rsig': hex(rsig)});
+  final after = HandleRecord.update(owner: pubs['owner_b']!, intro: pubs['intro_b']!, xintro: xpubs['intro_b']!, pow: 24, rc: rc2);
+  await add('update_after_recover', 'the new owner B updates', 'owner_b',
+      await signHandleEntry(label: label, version: 5, record: after, ownerSeed: seeds['owner_b']!));
+
+  // Entries every reader must refuse, each where it would land.
+  await add('m_claim_taken', "Mallory's claim on alice.42 at v2", 'owner_m',
+      await signed(label, 2, HandleRecord.claim(owner: pubs['owner_m']!, intro: pubs['intro_m']!, xintro: xpubs['intro_m']!, pow: 16, rc: rcM), 'owner_m'));
+  await add('m_update_foreign_sig', "an update keeping Alice's owner and rc, signed by Mallory", 'owner_m',
+      await signed(label, 2, HandleRecord.update(owner: pubs['owner_a']!, intro: pubs['intro_m']!, xintro: xpubs['intro_m']!, pow: 16, rc: rc1), 'owner_m'));
+  await add('m_update_foreign_owner', 'an update naming Mallory as the owner, signed by Mallory', 'owner_m',
+      await signed(label, 2, HandleRecord.update(owner: pubs['owner_m']!, intro: pubs['intro_m']!, xintro: xpubs['intro_m']!, pow: 16, rc: rc1), 'owner_m'));
+  await add('a_update_rc_change', 'an update by Alice that changes rc: only a recover may', 'owner_a',
+      await signed(label, 2, HandleRecord.update(owner: pubs['owner_a']!, intro: pubs['intro_a2']!, xintro: xpubs['intro_a2']!, pow: 22, rc: rcM), 'owner_a'));
+  await add('a_update_stale', 'a second update at v2, after the one at v2', 'owner_a',
+      await signed(label, 2, HandleRecord.update(owner: pubs['owner_a']!, intro: pubs['intro_a1']!, xintro: xpubs['intro_a1']!, pow: 20, rc: rc1), 'owner_a'));
+  final padded = Uint8List.fromList([...rotate.encode(), ...List.filled(handleMaxValueBytes + 1 - rotate.encode().length, 0x20)]);
+  check(padded.length == handleMaxValueBytes + 1, 'one byte over');
+  await add('a_update_oversize', 'an update padded to 1025 bytes', 'owner_a', await signRaw(label, 2, padded, 'owner_a'));
+  final spaced = Uint8List.fromList(utf8.encode(utf8.decode(rotate.encode()).replaceFirst('"k":', '"k": ')));
+  await add('a_update_not_canonical', 'an update with one space added', 'owner_a', await signRaw(label, 2, spaced, 'owner_a'));
+  final rM = rkeys['r_m']!;
+  final mRsig = await signHandleRecovery(recoverySeed: rM.seed, label: label, version: 4, owner: pubs['owner_m']!, rc: rcM);
+  await add('m_recover_wrong_key', "Mallory recovers with a code of her own (r_m): its rpub is not the one rc commits to", 'owner_m',
+      await signed(label, 4, HandleRecord.recover(owner: pubs['owner_m']!, intro: pubs['intro_m']!, xintro: xpubs['intro_m']!, pow: 16, rc: rcM, rpub: rM.pub, rsig: mRsig), 'owner_m'));
+  final wrongRsig = await signHandleRecovery(recoverySeed: rkeys['r1']!.seed, label: label, version: 4, owner: pubs['owner_b']!, rc: rcM);
+  await add('recover_rsig_other_rc', 'the right rpub, with an rsig over a different rc than the record installs', 'owner_b',
+      await signed(label, 4, HandleRecord.recover(owner: pubs['owner_b']!, intro: pubs['intro_b']!, xintro: xpubs['intro_b']!, pow: 20, rc: rc2, rpub: rkeys['r1']!.pub, rsig: wrongRsig), 'owner_b'));
+  final noRsigText = utf8.decode(recover.encode()).replaceFirst(',"rsig":"${b64url(rsig)}"', '');
+  check(!noRsigText.contains('rsig'), 'rsig removed');
+  await add('recover_without_rsig', 'a recover that changes owner and rc with no rsig', 'owner_b',
+      await signRaw(label, 4, Uint8List.fromList(utf8.encode(noRsigText)), 'owner_b'));
+  await add('recover_signed_by_old_owner', 'a correct rpub and rsig, the entry signed by the OLD owner A', 'owner_a',
+      await signed(label, 4, recover, 'owner_a'));
+  await add('a_update_after_recover', 'the old owner A, after the recover, signing an update that names B', 'owner_a',
+      await signed(label, 5, after, 'owner_a'));
+  await add('m_claim_names_a', "a claim naming Alice's key, signed by Mallory", 'owner_m',
+      await signed(label, 1, claim, 'owner_m'));
+  await add('a_update_other_label', "Alice's update, for another handle's label, inside alice.42's history", 'owner_a',
+      await signed(otherLabel, 2, rotate, 'owner_a'));
+
+  final histories = <(String, List<String>, int?, HandleRefusal?)>[
+    ('claim, rotate, pause, recover, update', ['claim', 'update_rotate', 'update_pause', 'recover', 'update_after_recover'], null, null),
+    ('an update as the first entry', ['update_rotate'], 0, HandleRefusal.notClaimed),
+    ('a claim on a label that exists', ['claim', 'm_claim_taken'], 1, HandleRefusal.taken),
+    ("a foreign key signs an update keeping the owner", ['claim', 'm_update_foreign_sig'], 1, HandleRefusal.badSignature),
+    ('an update that names a new owner', ['claim', 'm_update_foreign_owner'], 1, HandleRefusal.ownerChanged),
+    ('an update that changes rc', ['claim', 'a_update_rc_change'], 1, HandleRefusal.rcChanged),
+    ('a version that does not increase', ['claim', 'update_rotate', 'a_update_stale'], 2, HandleRefusal.staleVersion),
+    ('an entry replayed', ['claim', 'update_rotate', 'update_rotate'], 2, HandleRefusal.staleVersion),
+    ('an oversize value', ['claim', 'a_update_oversize'], 1, HandleRefusal.tooLarge),
+    ('a value that is not canonical', ['claim', 'a_update_not_canonical'], 1, HandleRefusal.malformed),
+    ('a recover with the wrong recovery key', ['claim', 'update_rotate', 'update_pause', 'm_recover_wrong_key'], 3, HandleRefusal.wrongRecoveryKey),
+    ('a recover whose rsig is over another rc', ['claim', 'update_rotate', 'update_pause', 'recover_rsig_other_rc'], 3, HandleRefusal.badRecoverySignature),
+    ('a recover without rsig', ['claim', 'update_rotate', 'update_pause', 'recover_without_rsig'], 3, HandleRefusal.malformed),
+    ('a recover signed by the old owner', ['claim', 'update_rotate', 'update_pause', 'recover_signed_by_old_owner'], 3, HandleRefusal.badSignature),
+    ('the old owner after a recover', ['claim', 'update_rotate', 'update_pause', 'recover', 'a_update_after_recover'], 4, HandleRefusal.badSignature),
+    ('a claim not signed by the owner it names', ['m_claim_names_a'], 0, HandleRefusal.badSignature),
+    ("another label's entry in the history", ['claim', 'a_update_other_label'], 1, HandleRefusal.otherLabel),
+  ];
+  final historyOut = <Map<String, Object?>>[];
+  for (final (name, names, at, reason) in histories) {
+    final v = await checkHandleHistory([for (final n in names) entries[n]!]);
+    check(v.refusedAt == at && v.reason == reason, 'history: $name');
+    historyOut.add({
+      'name': name,
+      'entries': names,
+      'verdict': at == null
+          ? {
+              'ok': true,
+              'version': v.state!.version,
+              'owner': hex(v.state!.owner),
+              'rc': hex(v.state!.rc),
+              'intro': v.state!.record.intro == null ? null : hex(v.state!.record.intro!),
+              'pow': v.state!.record.pow,
+            }
+          : {'ok': false, 'refused_at': at, 'reason': reason!.name},
+    });
+  }
+
+  // Values that are not records: each the canonical claim with one thing
+  // changed, every one of which a lenient parser would read as the same
+  // record or as a record at all.
+  final canon = utf8.decode(claim.encode());
+  final cj = claim.toJson();
+  String swapAlphabet(String s) => s.replaceAll('-', '+').replaceAll('_', '/');
+  final b64member = ['owner', 'intro', 'xintro', 'rc'].firstWhere(
+      (m) => (cj[m] as String).contains(RegExp(r'[-_]')),
+      orElse: () => throw StateError('no member with - or _'));
+  final ownerB64 = cj['owner'] as String;
+  final lastIx = _b64urlAlphabet.indexOf(ownerB64[42]);
+  final noncanonicalTail = ownerB64.substring(0, 42) + _b64urlAlphabet[lastIx | 1];
+  check(lastIx & 3 == 0 && noncanonicalTail != ownerB64, 'unused bits flipped');
+  final notRecords = <(String, String)>[
+    (canon.replaceFirst('"k":', '"k": '), 'whitespace'),
+    ('$canon\n', 'a trailing newline'),
+    ('\ufeff$canon', 'a byte-order mark'),
+    (canon.replaceFirst('{"k":"claim",', '{').replaceFirst('}', ',"k":"claim"}'), 'members out of order'),
+    (canon.replaceFirst(',"intro":"${cj['intro']}"', ''), 'intro absent rather than present'),
+    (canon.replaceFirst('}', ',"x":1}'), 'an extra member'),
+    (canon.replaceFirst('}', ',"rpub":null}'), 'rpub, as null, on a claim'),
+    (canon.replaceFirst('}', ',"rpub":"${cj['owner']}","rsig":"${b64url(rsig)}"}'), 'rpub and rsig on a claim'),
+    (canon.replaceFirst('"k":"claim"', '"k":"Claim"'), 'k in another case'),
+    (canon.replaceFirst('"k":"claim"', '"k":"\\u0063laim"'), 'an escaped character'),
+    (canon.replaceFirst('"k":"claim",', '"k":"claim","k":"claim",'), 'a duplicated member'),
+    (canon.replaceFirst('"pow":20', '"pow":20.0'), 'pow as 20.0'),
+    (canon.replaceFirst('"pow":20', '"pow":15'), 'pow below 16'),
+    (canon.replaceFirst('"pow":20', '"pow":29'), 'pow above 28'),
+    (canon.replaceFirst('"pow":20', '"pow":"20"'), 'pow as a string'),
+    (canon.replaceFirst(ownerB64, '$ownerB64='), 'padded base64url'),
+    (canon.replaceFirst(cj[b64member] as String, swapAlphabet(cj[b64member] as String)), 'the standard base64 alphabet'),
+    (canon.replaceFirst(ownerB64, noncanonicalTail), 'base64url whose unused low bits are set'),
+    (canon.replaceFirst(ownerB64, ownerB64.substring(0, 42)), 'an owner key one byte short'),
+    (canon.replaceFirst('"rc":"${cj['rc']}"', '"rc":null'), 'rc as null'),
+    (canon.replaceFirst('"xintro":"${cj['xintro']}"', '"xintro":null'), 'xintro null while intro is not'),
+    (canon.replaceFirst('"intro":"${cj['intro']}"', '"intro":null'), 'intro null while xintro is not'),
+    (canon.replaceFirst(',"xintro":"${cj['xintro']}"', ''), 'xintro absent'),
+    (canon.replaceFirst('"intro":"${cj['intro']}","xintro":"${cj['xintro']}"',
+        '"xintro":"${cj['xintro']}","intro":"${cj['intro']}"'), 'xintro before intro'),
+    (canon.replaceFirst(cj['xintro'] as String, (cj['xintro'] as String).substring(0, 42)),
+        'an xintro key one byte short'),
+    (utf8.decode(pause.encode()).replaceFirst('"xintro":null', '"xintro":"${cj['xintro']}"'),
+        'a paused record that still names an xintro'),
+  ];
+  final notRecordOut = <Map<String, Object?>>[];
+  for (final (text, why) in notRecords) {
+    check(text != canon, 'changed: $why');
+    var refused = false;
+    try {
+      HandleRecord.decode(utf8.encode(text));
+    } on HandleRecordFormatException {
+      refused = true;
+    }
+    check(refused, 'refused: $why');
+    notRecordOut.add({'why': why, 'value': hex(utf8.encode(text))});
+  }
+
+  // --- §21.7 the request, sealed to xintro ---------------------------------------------
+  const nowMs = 1791460800000; // 2026-10-08T12:00:00Z
+  final day = introPowDay(nowMs);
+  check(day == 20734, 'day');
+  final rid = await introRoutingId(pubs['intro_a1']!);
+  final ridBytes = await refSha256(pubs['intro_a1']!);
+  final otherRid = await introRoutingId(pubs['intro_a2']!);
+  final bob = await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+  final alice = await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+  final carol = await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+  final bobRid = await bob.routingId();
+  final creq = await ContactRequest.create(
+      me: bob, toRid: rid, displayName: 'Bob', ts: nowMs);
+  d.takeDraws();
+  final envelope = await d.run(() => SealedEnvelope.seal(
+      toXPub: xpubs['intro_a1']!, fromRid: bobRid, payload: creq.encode()));
+  final sealDraws = d.takeDraws();
+  check(sealDraws.length == 2 && sealDraws[0].length == 32 && sealDraws[1].length == 12,
+      'a seal draws an ephemeral seed and a nonce, nothing else');
+  final introId = await handleIntroIdentity(seeds['intro_a1']!);
+  final opened = await SealedEnvelope.open(
+      myXSeed: introId.xSeed, myXPub: introId.xPub, blob: envelope);
+  check(opened != null && opened.fromRid == bobRid && opened.payload == creq.encode(),
+      'the introduction identity opens the request');
+  check(
+      await SealedEnvelope.open(
+              myXSeed: xseeds['intro_a2']!, myXPub: xpubs['intro_a2']!, blob: envelope) ==
+          null,
+      'another introduction key does not');
+  check(
+      await ContactRequest.tryParse(opened!.payload)!
+          .verify(expectedTo: rid, sealedFrom: opened.fromRid),
+      'the request is addressed to the introduction mailbox');
+
+  // --- §21.7 the proof-of-work stamp, over that envelope ------------------------------
+  final envBytes = utf8.encode(envelope);
+  final stampsOut = <Map<String, Object?>>[];
+  Uint8List? firstNonce;
+  var firstZeros = 0;
+  for (final bits in [16, 18]) {
+    final start = d.next(16);
+    final nonce = createIntroPowStamp(
+        introRid: rid, day: day, envelope: envBytes, bits: bits, startNonce: start);
+    final input = concatBytes([
+      utf8.encode(introPowContext),
+      ridBytes,
+      (ByteData(4)..setUint32(0, day)).buffer.asUint8List(),
+      await refSha256(envBytes),
+      nonce,
+    ]);
+    check(eq(input, introPowInput(ridBytes: ridBytes, day: day, envelopeHash: await refSha256(envBytes), nonce: nonce)),
+        'pow input');
+    final digest = await refSha256(input);
+    final zeros = introPowZeroBits(digest);
+    check(zeros >= bits, 'stamp has $bits bits');
+    firstNonce ??= nonce;
+    if (bits == 16) firstZeros = zeros;
+    stampsOut.add({
+      'routing_id': rid,
+      'rid_bytes': hex(ridBytes),
+      'day': day,
+      'envelope': envelope,
+      'envelope_sha256': hex(await refSha256(envBytes)),
+      'bits': bits,
+      'start_nonce': hex(start),
+      'nonce': hex(nonce),
+      'frame_member': b64url(nonce),
+      'input': hex(input),
+      'digest': hex(digest),
+      'zero_bits': zeros,
+    });
+  }
+  Future<Map<String, Object?>> refusal(String why,
+      {String? r, int? dy, String? env, int? bits}) async {
+    final rr = r ?? rid;
+    final dd = dy ?? day;
+    final ee = utf8.encode(env ?? envelope);
+    final bb = bits ?? 16;
+    check(
+        !await verifyIntroPowStamp(
+            introRid: rr, day: dd, envelope: ee, nonce: firstNonce!, bits: bb),
+        'refused: $why');
+    final digest = await refSha256(concatBytes([
+      utf8.encode(introPowContext),
+      unb64url(rr),
+      (ByteData(4)..setUint32(0, dd)).buffer.asUint8List(),
+      await refSha256(ee),
+      firstNonce!,
+    ]));
+    check(introPowZeroBits(digest) < bb, 'the refusal is the bits');
+    return {
+      'why': why,
+      'routing_id': rr,
+      'day': dd,
+      'envelope': env ?? envelope,
+      'bits': bb,
+      'digest': hex(digest),
+    };
+  }
+
+  final powRefusals = <Map<String, Object?>>[];
+  final wrongRid = await refusal('the stamp sent to another mailbox', r: otherRid);
+  powRefusals.add(wrongRid);
+  powRefusals.add(await refusal('the stamp on another envelope', env: '${envelope}A'));
+  powRefusals.add(await refusal('the stamp read for another day', dy: day - 2));
+  powRefusals.add(await refusal('one bit more than the stamp has', bits: firstZeros + 1));
+  final window = <Map<String, Object?>>[];
+  for (final (offsetDays, ok) in [(0, true), (1, true), (2, false), (-1, false)]) {
+    final at = nowMs + offsetDays * 86400000;
+    check(
+        await introPowAcceptable(
+                introRid: rid,
+                envelope: envBytes,
+                nonce: firstNonce!,
+                bits: 16,
+                nowMs: at) ==
+            ok,
+        'window $offsetDays');
+    window.add({'relay_now_ms': at, 'relay_day': introPowDay(at), 'accepted': ok});
+  }
+
+  // --- §21.7 the acknowledgement ------------------------------------------------------
+  final creqInput = ContactRequest.signingInput(creq.bundle, creq.toRid, creq.ts);
+  final creqId = await contactRequestId(creq);
+  check(eq(creqId, await refSha256(creqInput)), 'creq id');
+  final again = await ContactRequest.create(
+      me: bob, toRid: rid, displayName: 'Bob', ts: nowMs + 1);
+  final otherCreqId = await contactRequestId(again);
+  final ia = await signIntroAck(
+      introSeed: seeds['intro_a1']!,
+      requesterRid: bobRid,
+      ownerAccountEdPub: alice.edPub,
+      creqId: creqId);
+  final ackInput = concatBytes([
+    utf8.encode(introAckContext),
+    unb64url(bobRid),
+    alice.edPub,
+    creqId,
+  ]);
+  check(eq(unb64url(ia), await refEdSign(seeds['intro_a1']!, ackInput)), 'ia');
+  final accept = await ContactRequest.create(
+      me: alice, toRid: bobRid, displayName: 'Alice', ts: nowMs + 60000);
+  final acceptJson = {
+    'v': 1,
+    't': 'creq',
+    'to': accept.toRid,
+    'ts': accept.ts,
+    'bundle': accept.bundle.toJson(),
+    'sig': b64(accept.sig),
+    'ia': ia,
+  };
+  final acceptPayload = base64Encode(utf8.encode(jsonEncode(acceptJson)));
+  final reparsed = ContactRequest.tryParse(acceptPayload);
+  check(reparsed != null && await reparsed.verify(expectedTo: bobRid),
+      'the acceptance with ia is still a valid creq to a reader that ignores ia');
+  final ackRefusals = <Map<String, Object?>>[];
+  for (final (why, pub, req, owner, id) in [
+    ('verified against another introduction key', pubs['intro_a2']!, bobRid, alice.edPub, creqId),
+    ('presented to another requester', pubs['intro_a1']!, await carol.routingId(), alice.edPub, creqId),
+    ('worn by another account', pubs['intro_a1']!, bobRid, carol.edPub, creqId),
+    ("matched to the requester's other request", pubs['intro_a1']!, bobRid, alice.edPub, otherCreqId),
+  ]) {
+    check(
+        !await verifyIntroAck(
+            ia: ia, introPub: pub, requesterRid: req, ownerAccountEdPub: owner, creqId: id),
+        'ack refused: $why');
+    ackRefusals.add({
+      'why': why,
+      'intro_pub': hex(pub),
+      'requester_rid': req,
+      'owner_account_ed_pub': hex(owner),
+      'creq_id': hex(id),
+    });
+  }
+
+  return {
+    'suite': 'handles',
+    'version': vectorsVersion,
+    'description':
+        'Handles (PROTOCOL 21, ADR 0015 revision 2): the grammar (what a person '
+            'types -> a canonical nick.digits, or why not, including Unicode '
+            'look-alikes and every reserved nick); labels (Argon2id of the '
+            'canonical handle, production parameters, plus small-parameter '
+            'answers for checking an independent Argon2id); owner, '
+            'introduction and recovery keys from seeds, the introduction '
+            'seed giving both intro (Ed25519) and xintro (X25519, by HKDF); '
+            'claim, update and recover records with their publish inputs and '
+            'signatures; owner-rule histories with their verdicts; values '
+            'that are not records; a contact request sealed to xintro and '
+            'opened with the introduction identity; proof-of-work stamps at '
+            'low difficulty over that envelope, with the cases a relay '
+            'refuses; and an introduction acknowledgement with the cases a '
+            'requester refuses. The log (21.5) and the relay (21.6) pin their '
+            'own halves elsewhere.',
+    'grammar': {
+      'nick': '3-20 of [a-z0-9_], first a letter, no "__", not ending "_"',
+      'digits': '2-6 ASCII digits, compared as a string',
+      'normalisation':
+          'trim ASCII whitespace (U+0009-U+000D, U+0020), remove ONE leading '
+              '"@", lower-case A-Z; nothing else is folded',
+      'reserved': reservedHandleNicks,
+      'valid': validOut,
+      'invalid': invalidOut,
+    },
+    'labels': {
+      'kdf': {
+        'name': 'argon2id',
+        'rfc': 9106,
+        'version': 19,
+        'salt': handleLabelSalt,
+        'memory_kib': handleLabelMemoryKib,
+        'iterations': handleLabelIterations,
+        'parallelism': handleLabelParallelism,
+        'tag_len': handleLabelLength,
+        'password': 'the canonical handle, ASCII',
+      },
+      'production': labelOut,
+      'small_parameters': smallOut,
+    },
+    'keys': keyOut,
+    'recovery': recoveryOut,
+    'record_rules': {
+      'publish_context': handlePublishContext,
+      'recover_context': handleRecoverContext,
+      'rc_context': handleRcContext,
+      'max_value_bytes': handleMaxValueBytes,
+      'pow_min': handlePowMinBits,
+      'pow_max': handlePowMaxBits,
+    },
+    'entries': entryOut,
+    'histories': historyOut,
+    'not_records': notRecordOut,
+    'request': {
+      'sealed_to': 'x_pub of intro_a1: the record\'s xintro',
+      'to_x_pub': hex(xpubs['intro_a1']!),
+      'to_routing_id': rid,
+      'from_rid': bobRid,
+      'payload': creq.encode(),
+      'eph_seed': hex(sealDraws[0]),
+      'nonce': hex(sealDraws[1]),
+      'envelope': envelope,
+    },
+    'pow': {
+      'context': introPowContext,
+      'input_rule':
+          'utf8(context) || rid_bytes(32) || u32be(day) || SHA-256(utf8(envelope)) || nonce(16)',
+      'now_ms': nowMs,
+      'stamps': stampsOut,
+      'must_refuse': powRefusals,
+      'acceptance_window': window,
+    },
+    'intro_ack': {
+      'context': introAckContext,
+      'intro_key': 'intro_a1',
+      'intro_pub': hex(pubs['intro_a1']!),
+      'requester': {
+        'ed_seed': hex(bob.edSeed),
+        'x_seed': hex(bob.xSeed),
+        'ed_pub': hex(bob.edPub),
+        'routing_id': bobRid,
+      },
+      'owner_account': {
+        'ed_seed': hex(alice.edSeed),
+        'x_seed': hex(alice.xSeed),
+        'ed_pub': hex(alice.edPub),
+        'routing_id': await alice.routingId(),
+      },
+      'creq_payload': creq.encode(),
+      'creq_signing_input': hex(creqInput),
+      'creq_id': hex(creqId),
+      'ack_input': hex(ackInput),
+      'ia': ia,
+      'acceptance_json': jsonEncode(acceptJson),
+      'acceptance_payload': acceptPayload,
+      'must_refuse': ackRefusals,
+    },
+  };
+}
+
+const String _b64urlAlphabet =
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+Uint8List _u64(int n) => (ByteData(8)..setUint64(0, n)).buffer.asUint8List();
+
 Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
   final a = await actors();
   return {
@@ -3633,6 +4367,9 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     'backup': {
       'archive': await suiteBackup(),
       'archive_1_1': await suiteBackupMinor1(),
+    },
+    'handles': {
+      'handles': await suiteHandles(),
     },
   };
 }

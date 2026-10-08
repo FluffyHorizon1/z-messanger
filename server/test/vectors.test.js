@@ -1762,3 +1762,553 @@ test('v3 device_cert_v3: both halves cover the same input, and the classical '
   assert.ok(sn.value.split(' ').every((g) => /^[0-9]{5}$/.test(g)));
   assert.notEqual(sn.value, sn.v1_value_for_comparison);
 });
+
+// ===========================================================================
+// Handles (§21, ADR 0015 revision 2). Node has no Argon2id, and its BLAKE2b
+// gives 64 bytes and nothing shorter, while Argon2id's tag is BLAKE2b with a
+// 32-byte output (a different parameter block, not a truncation). So both
+// are written here from RFC 7693 and RFC 9106 and checked first against
+// those RFCs' own test vectors, and then every label in the file is
+// re-derived with them — the production-parameter ones included, at 19 MiB
+// and two passes each. The rest is §21 on Node's own Ed25519, SHA-256 and
+// HKDF.
+// ===========================================================================
+const HD_DIR = path.join(__dirname, '..', '..', 'docs', 'vectors', 'handles');
+const loadHd = (name) => JSON.parse(fs.readFileSync(path.join(HD_DIR, `${name}.json`), 'utf8'));
+
+// --- BLAKE2b (RFC 7693), unkeyed, any output length 1..64. BigInt: Argon2id
+// calls it a few dozen times per hash, so clarity wins over speed here.
+const B2B_MASK = (1n << 64n) - 1n;
+const B2B_IV = [
+  0x6a09e667f3bcc908n, 0xbb67ae8584caa73bn, 0x3c6ef372fe94f82bn, 0xa54ff53a5f1d36f1n,
+  0x510e527fade682d1n, 0x9b05688c2b3e6c1fn, 0x1f83d9abfb41bd6bn, 0x5be0cd19137e2179n,
+];
+const B2B_SIGMA = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+  [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4],
+  [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
+  [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13],
+  [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
+  [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11],
+  [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
+  [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5],
+  [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
+];
+const b2bRotr = (x, n) => ((x >> BigInt(n)) | (x << BigInt(64 - n))) & B2B_MASK;
+
+function blake2b(input, outLen) {
+  assert.ok(outLen >= 1 && outLen <= 64);
+  const h = B2B_IV.slice();
+  h[0] ^= 0x01010000n ^ BigInt(outLen); // digest length, no key, fanout = depth = 1
+  const blocks = Math.max(1, Math.ceil(input.length / 128));
+  for (let bi = 0; bi < blocks; bi++) {
+    const block = Buffer.alloc(128);
+    input.copy(block, 0, bi * 128, Math.min(input.length, (bi + 1) * 128));
+    const m = [];
+    for (let i = 0; i < 16; i++) m.push(block.readBigUInt64LE(8 * i));
+    const last = bi === blocks - 1;
+    const t = BigInt(last ? input.length : (bi + 1) * 128);
+    const v = h.concat(B2B_IV);
+    v[12] ^= t & B2B_MASK;
+    v[13] ^= t >> 64n;
+    if (last) v[14] ^= B2B_MASK;
+    const G = (a, b, c, d, x, y) => {
+      v[a] = (v[a] + v[b] + x) & B2B_MASK; v[d] = b2bRotr(v[d] ^ v[a], 32);
+      v[c] = (v[c] + v[d]) & B2B_MASK; v[b] = b2bRotr(v[b] ^ v[c], 24);
+      v[a] = (v[a] + v[b] + y) & B2B_MASK; v[d] = b2bRotr(v[d] ^ v[a], 16);
+      v[c] = (v[c] + v[d]) & B2B_MASK; v[b] = b2bRotr(v[b] ^ v[c], 63);
+    };
+    for (let r = 0; r < 12; r++) {
+      const s = B2B_SIGMA[r % 10];
+      G(0, 4, 8, 12, m[s[0]], m[s[1]]); G(1, 5, 9, 13, m[s[2]], m[s[3]]);
+      G(2, 6, 10, 14, m[s[4]], m[s[5]]); G(3, 7, 11, 15, m[s[6]], m[s[7]]);
+      G(0, 5, 10, 15, m[s[8]], m[s[9]]); G(1, 6, 11, 12, m[s[10]], m[s[11]]);
+      G(2, 7, 8, 13, m[s[12]], m[s[13]]); G(3, 4, 9, 14, m[s[14]], m[s[15]]);
+    }
+    for (let i = 0; i < 8; i++) h[i] ^= v[i] ^ v[i + 8];
+  }
+  const out = Buffer.alloc(64);
+  h.forEach((w, i) => out.writeBigUInt64LE(w, 8 * i));
+  return out.subarray(0, outLen);
+}
+
+// --- Argon2id (RFC 9106, version 0x13). A block is 128 64-bit words held as
+// 256 uint32 halves, little-endian: word k is [2k] (low) and [2k+1] (high).
+const le32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0); return b; };
+
+/** H' (RFC 9106 §3.3), the variable-length hash over BLAKE2b. */
+function argon2HPrime(x, T) {
+  const input = Buffer.concat([le32(T), x]);
+  if (T <= 64) return blake2b(input, T);
+  const r = Math.ceil(T / 32) - 2;
+  const out = [];
+  let v = blake2b(input, 64);
+  out.push(v.subarray(0, 32));
+  for (let i = 2; i <= r; i++) { v = blake2b(v, 64); out.push(v.subarray(0, 32)); }
+  out.push(blake2b(v, T - 32 * r));
+  return Buffer.concat(out);
+}
+
+/** a = a + b + 2·lo32(a)·lo32(b) mod 2^64 (fBlaMka), on words a, b of B. */
+function argon2BlaMka(B, a, b) {
+  const al = B[2 * a], ah = B[2 * a + 1], bl = B[2 * b], bh = B[2 * b + 1];
+  // lo32(a)·lo32(b) as 64 bits, from 16-bit halves so every partial is < 2^32.
+  const xl = al & 0xffff, xh = al >>> 16, yl = bl & 0xffff, yh = bl >>> 16;
+  const ll = xl * yl, lh = xl * yh, hl = xh * yl, hh = xh * yh;
+  const mid = (ll >>> 16) + (lh & 0xffff) + (hl & 0xffff);
+  const pl = (((mid & 0xffff) << 16) | (ll & 0xffff)) >>> 0;
+  const ph = (hh + (lh >>> 16) + (hl >>> 16) + (mid >>> 16)) >>> 0;
+  const dl = (pl << 1) >>> 0, dh = ((ph << 1) | (pl >>> 31)) >>> 0; // doubled
+  const lo = al + bl + dl; // below 3·2^32: exact
+  B[2 * a] = lo >>> 0;
+  B[2 * a + 1] = (ah + bh + dh + Math.floor(lo / 4294967296)) >>> 0;
+}
+/** d = rotr64(d ^ a, n). */
+function argon2XorRotr(B, d, a, n) {
+  const l = (B[2 * d] ^ B[2 * a]) >>> 0, h = (B[2 * d + 1] ^ B[2 * a + 1]) >>> 0;
+  let nl, nh;
+  if (n === 32) { nl = h; nh = l; }
+  else if (n < 32) { nl = (l >>> n) | (h << (32 - n)); nh = (h >>> n) | (l << (32 - n)); }
+  else { const k = n - 32; nl = (h >>> k) | (l << (32 - k)); nh = (l >>> k) | (h << (32 - k)); }
+  B[2 * d] = nl >>> 0; B[2 * d + 1] = nh >>> 0;
+}
+function argon2GB(B, a, b, c, d) {
+  argon2BlaMka(B, a, b); argon2XorRotr(B, d, a, 32);
+  argon2BlaMka(B, c, d); argon2XorRotr(B, b, c, 24);
+  argon2BlaMka(B, a, b); argon2XorRotr(B, d, a, 16);
+  argon2BlaMka(B, c, d); argon2XorRotr(B, b, c, 63);
+}
+/** The permutation P over the sixteen words w[0..15] (BLAKE2b's round, no message). */
+function argon2P(B, w) {
+  argon2GB(B, w[0], w[4], w[8], w[12]); argon2GB(B, w[1], w[5], w[9], w[13]);
+  argon2GB(B, w[2], w[6], w[10], w[14]); argon2GB(B, w[3], w[7], w[11], w[15]);
+  argon2GB(B, w[0], w[5], w[10], w[15]); argon2GB(B, w[1], w[6], w[11], w[12]);
+  argon2GB(B, w[2], w[7], w[8], w[13]); argon2GB(B, w[3], w[4], w[9], w[14]);
+}
+// RFC 9106 §3.5: the block as an 8×8 matrix of 16-byte registers; P on each
+// row (words 16i..16i+15), then on each column (registers i, i+8, …, i+56).
+const ARGON2_ROWS = [], ARGON2_COLS = [];
+for (let i = 0; i < 8; i++) {
+  ARGON2_ROWS.push(Array.from({ length: 16 }, (_, k) => 16 * i + k));
+  ARGON2_COLS.push(Array.from({ length: 16 }, (_, k) => 2 * i + 16 * (k >> 1) + (k & 1)));
+}
+const argon2R = new Uint32Array(256), argon2Q = new Uint32Array(256);
+/** out = G(X, Y), or out ^= G(X, Y) on a pass after the first (version 0x13). */
+function argon2G(X, Y, out, xorInto) {
+  for (let i = 0; i < 256; i++) argon2R[i] = X[i] ^ Y[i];
+  argon2Q.set(argon2R);
+  for (const w of ARGON2_ROWS) argon2P(argon2Q, w);
+  for (const w of ARGON2_COLS) argon2P(argon2Q, w);
+  if (xorInto) for (let i = 0; i < 256; i++) out[i] ^= argon2Q[i] ^ argon2R[i];
+  else for (let i = 0; i < 256; i++) out[i] = argon2Q[i] ^ argon2R[i];
+}
+
+function argon2id({ password, salt, secret = Buffer.alloc(0), ad = Buffer.alloc(0), m, t, p, T }) {
+  const H0 = blake2b(Buffer.concat([
+    le32(p), le32(T), le32(m), le32(t), le32(0x13), le32(2 /* Argon2id */),
+    le32(password.length), password, le32(salt.length), salt,
+    le32(secret.length), secret, le32(ad.length), ad,
+  ]), 64);
+  const blocks = 4 * p * Math.floor(m / (4 * p));
+  const q = blocks / p; // columns per lane
+  const seg = q / 4; // four slices
+  const mem = new Uint32Array(256 * blocks);
+  const at = (lane, col) => mem.subarray(256 * (lane * q + col), 256 * (lane * q + col + 1));
+  const load = (buf, dst) => { for (let i = 0; i < 256; i++) dst[i] = buf.readUInt32LE(4 * i); };
+  for (let l = 0; l < p; l++) {
+    load(argon2HPrime(Buffer.concat([H0, le32(0), le32(l)]), 1024), at(l, 0));
+    load(argon2HPrime(Buffer.concat([H0, le32(1), le32(l)]), 1024), at(l, 1));
+  }
+  const zero = new Uint32Array(256), input = new Uint32Array(256), addr = new Uint32Array(256);
+  const nextAddresses = () => { input[12]++; argon2G(zero, input, addr, false); argon2G(zero, addr, addr, false); };
+  for (let pass = 0; pass < t; pass++) {
+    for (let slice = 0; slice < 4; slice++) {
+      for (let l = 0; l < p; l++) {
+        // Argon2id: data-independent addressing for the first half of the
+        // first pass (Argon2i), data-dependent after it (Argon2d).
+        const independent = pass === 0 && slice < 2;
+        if (independent) {
+          input.fill(0);
+          input[0] = pass; input[2] = l; input[4] = slice; input[6] = blocks; input[8] = t; input[10] = 2;
+        }
+        const first = pass === 0 && slice === 0 ? 2 : 0;
+        if (independent && first === 2) nextAddresses();
+        for (let j = first; j < seg; j++) {
+          const col = slice * seg + j;
+          const prev = col === 0 ? q - 1 : col - 1;
+          let J1, J2;
+          if (independent) {
+            if (j % 128 === 0) nextAddresses();
+            J1 = addr[2 * (j % 128)]; J2 = addr[2 * (j % 128) + 1];
+          } else {
+            const pb = at(l, prev);
+            J1 = pb[0]; J2 = pb[1];
+          }
+          const refLane = pass === 0 && slice === 0 ? l : J2 % p;
+          const done = pass === 0 ? slice * seg : 3 * seg;
+          const W = refLane === l ? done + j - 1 : done - (j === 0 ? 1 : 0);
+          const x = (BigInt(J1) * BigInt(J1)) >> 32n;
+          const rel = W - 1 - Number((BigInt(W) * x) >> 32n);
+          const start = pass === 0 ? 0 : ((slice + 1) * seg) % q;
+          argon2G(at(l, prev), at(refLane, (start + rel) % q), at(l, col), pass > 0);
+        }
+      }
+    }
+  }
+  const C = Buffer.alloc(1024);
+  for (let i = 0; i < 256; i++) {
+    let w = 0;
+    for (let l = 0; l < p; l++) w ^= at(l, q - 1)[i];
+    C.writeUInt32LE(w >>> 0, 4 * i);
+  }
+  return argon2HPrime(C, T);
+}
+
+test('handles: BLAKE2b and Argon2id as written here reproduce RFC 7693 and RFC 9106', () => {
+  // RFC 7693 Appendix A, and the 32-byte variant Argon2id's tag uses.
+  assert.equal(hex(blake2b(utf8('abc'), 64)),
+    'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923');
+  assert.equal(hex(blake2b(utf8('abc'), 32)), 'bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319');
+  assert.equal(hex(blake2b(Buffer.alloc(0), 32)), '0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8');
+  // Node's own BLAKE2b-512 wherever both apply: every block-boundary case.
+  for (const n of [0, 1, 127, 128, 129, 255, 256, 257, 1000]) {
+    const x = Buffer.from(Array.from({ length: n }, (_, i) => (i * 31 + 7) & 0xff));
+    assert.equal(hex(blake2b(x, 64)), crypto.createHash('blake2b512').update(x).digest('hex'), `length ${n}`);
+  }
+  // RFC 9106 §5.3: Argon2id with a secret and associated data, four lanes.
+  assert.equal(hex(argon2id({
+    password: Buffer.alloc(32, 1), salt: Buffer.alloc(16, 2), secret: Buffer.alloc(8, 3),
+    ad: Buffer.alloc(12, 4), m: 32, t: 3, p: 4, T: 32,
+  })), '0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659');
+});
+
+test('handles: every label, at small parameters and at the production ones', () => {
+  const v = loadHd('handles');
+  const kdf = v.labels.kdf;
+  // §21.2's parameters, from the text rather than the file.
+  assert.deepEqual([kdf.salt, kdf.memory_kib, kdf.iterations, kdf.parallelism, kdf.tag_len, kdf.version],
+    ['z-handle-label-v1', 19456, 2, 1, 32, 19]);
+  for (const c of v.labels.small_parameters) {
+    assert.equal(hex(argon2id({
+      password: unhex(c.password), salt: unhex(c.salt), m: c.memory_kib, t: c.iterations, p: c.parallelism, T: c.tag_len,
+    })), c.tag, JSON.stringify(c));
+  }
+  for (const c of v.labels.production) {
+    assert.equal(c.password, hex(utf8(c.handle)), 'the password is the canonical handle');
+    assert.equal(hex(argon2id({
+      password: utf8(c.handle), salt: utf8('z-handle-label-v1'), m: 19456, t: 2, p: 1, T: 32,
+    })), c.label, c.handle);
+  }
+});
+
+// §21.1, from the text: trim ASCII whitespace, ONE leading "@", A-Z
+// lower-cased and nothing else folded; then the checks in the order given,
+// the first that fails naming the reason.
+const HANDLE_RESERVED = ['z', 'zm', 'zmessenger', 'zmessengers', 'support', 'help', 'admin',
+  'administrator', 'official', 'security', 'team', 'staff', 'mod', 'moderator', 'system', 'root',
+  'everyone', 'here', 'null', 'undefined', 'abuse', 'privacy', 'legal', 'info', 'contact',
+  'noreply', 'verify', 'verified'];
+function normaliseHandle(s) {
+  const ws = (c) => c === 0x20 || (c >= 0x09 && c <= 0x0d);
+  let a = 0, b = s.length;
+  while (a < b && ws(s.charCodeAt(a))) a++;
+  while (b > a && ws(s.charCodeAt(b - 1))) b--;
+  let x = s.slice(a, b);
+  if (x.startsWith('@')) x = x.slice(1);
+  return x.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+}
+function handleProblem(input) {
+  const s = normaliseHandle(input);
+  if (s === '') return 'empty';
+  if (!/^[a-z0-9_.]+$/.test(s)) return 'badCharacter';
+  const dot = s.indexOf('.');
+  if (dot < 0 || dot === s.length - 1) return 'missingDigits';
+  const nick = s.slice(0, dot), digits = s.slice(dot + 1);
+  if (!/^[0-9]+$/.test(digits)) return 'digitsNotDigits';
+  if (HANDLE_RESERVED.includes(nick)) return 'reserved';
+  if (nick.length < 3) return 'nickTooShort';
+  if (nick.length > 20) return 'nickTooLong';
+  if (!/^[a-z]/.test(nick)) return 'nickStartsWithNonLetter';
+  if (nick.includes('__')) return 'nickDoubleUnderscore';
+  if (nick.endsWith('_')) return 'nickEndsWithUnderscore';
+  if (digits.length < 2) return 'digitsTooShort';
+  if (digits.length > 6) return 'digitsTooLong';
+  return null;
+}
+
+test('handles: the grammar, from §21.1 alone', () => {
+  const g = loadHd('handles').grammar;
+  assert.deepEqual(g.reserved, HANDLE_RESERVED);
+  for (const c of g.valid) {
+    assert.equal(handleProblem(c.input), null, c.note);
+    assert.equal(normaliseHandle(c.input), c.canonical, c.note);
+    assert.equal(c.display, `@${c.canonical}`);
+  }
+  let lookalikes = 0;
+  for (const c of g.invalid) {
+    assert.equal(handleProblem(c.input), c.problem, `${JSON.stringify(c.input)}: ${c.note}`);
+    assert.equal(normaliseHandle(c.input), c.normalised);
+    if (/[^\x00-\x7f]/.test(c.input)) lookalikes++;
+  }
+  assert.ok(lookalikes >= 10, 'the file carries the non-ASCII cases');
+  for (const n of HANDLE_RESERVED) {
+    assert.ok(g.invalid.some((c) => c.input === `${n}.12` && c.problem === 'reserved'), n);
+  }
+});
+
+// Crockford base32 as §21.3 reuses it from the backup code: 24 data
+// characters (120 bits, big-endian) and a checksum character.
+function crockfordEntropy(printed) {
+  const A = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  const canonical = printed.toUpperCase().replace(/^ZHR-/, '').replace(/-/g, '');
+  assert.equal(canonical.length, 25);
+  let bits = '';
+  for (let i = 0; i < 24; i++) bits += A.indexOf(canonical[i]).toString(2).padStart(5, '0');
+  const entropy = Buffer.from(bits.match(/.{8}/g).map((b) => parseInt(b, 2)));
+  assert.equal(canonical[24], A[sha256(entropy)[0] & 0x1f], 'checksum character');
+  return { canonical, entropy };
+}
+
+test('handles: keys, introduction identities, recovery codes and commitments', () => {
+  const v = loadHd('handles');
+  const label = unhex(v.labels.production.find((c) => c.handle === 'alice.42').label);
+  for (const k of v.keys) {
+    assert.equal(hex(edPub(unhex(k.seed))), k.pub, k.name);
+    if (k.name.startsWith('intro')) {
+      assert.equal(k.routing_id, b64url(sha256(unhex(k.pub))));
+      assert.equal(k.rid_bytes, hex(sha256(unhex(k.pub))));
+      // The X25519 half from the same seed: HKDF, then used as the private key.
+      assert.equal(k.x_hkdf_salt, 'z-handle-intro-x-v1');
+      const xs = hkdf(unhex(k.seed), utf8('z-handle-intro-x-v1'), Buffer.alloc(0), 32);
+      assert.equal(hex(xs), k.x_seed, k.name);
+      assert.equal(hex(xPub(xs)), k.x_pub, k.name);
+    }
+  }
+  for (const r of v.recovery) {
+    assert.ok(r.formatted.startsWith('ZHR-'), 'the handle prefix, not the backup one');
+    const { canonical, entropy } = crockfordEntropy(r.formatted);
+    assert.equal(canonical, r.canonical);
+    assert.equal(hex(entropy), r.entropy);
+    assert.equal(r.hkdf_info, hex(label));
+    const seed = hkdf(entropy, utf8('z-handle-recovery-v1'), label, 32);
+    assert.equal(hex(seed), r.seed);
+    assert.equal(hex(edPub(seed)), r.pub);
+    assert.equal(r.rc_input, hex(cat(utf8('z-handle-rc-v1:'), edPub(seed))));
+    assert.equal(hex(sha256(unhex(r.rc_input))), r.rc);
+  }
+});
+
+// §21.4: a record is read only if re-encoding what was read gives back the
+// same bytes — members in the one order (k, owner, intro, xintro, pow, rc,
+// then rpub and rsig on a recover), b64url without padding, nothing else.
+// Returns null for anything that is not a record.
+function decodeHandleRecord(value) {
+  if (value.length > 1024) return null;
+  let j;
+  try { j = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value)); } catch { return null; }
+  if (j === null || typeof j !== 'object' || Array.isArray(j)) return null;
+  if (!['claim', 'update', 'recover'].includes(j.k)) return null;
+  const bytes = (s, n) => (typeof s === 'string' && unb64url(s).length === n ? unb64url(s) : undefined);
+  const r = {
+    k: j.k, owner: bytes(j.owner, 32), intro: j.intro === null ? null : bytes(j.intro, 32),
+    xintro: j.xintro === null ? null : bytes(j.xintro, 32), pow: j.pow, rc: bytes(j.rc, 32),
+  };
+  if (r.k === 'recover') { r.rpub = bytes(j.rpub, 32); r.rsig = bytes(j.rsig, 64); }
+  if (r.owner === undefined || r.intro === undefined || r.xintro === undefined || r.rc === undefined) return null;
+  // The introduction mailbox's two keys come and go together (Amendment 1).
+  if ((r.intro === null) !== (r.xintro === null)) return null;
+  if (r.k === 'recover' && (r.rpub === undefined || r.rsig === undefined)) return null;
+  if (!Number.isInteger(r.pow) || r.pow < 16 || r.pow > 28) return null;
+  const again = {
+    k: r.k, owner: b64url(r.owner), intro: r.intro === null ? null : b64url(r.intro),
+    xintro: r.xintro === null ? null : b64url(r.xintro), pow: r.pow, rc: b64url(r.rc),
+  };
+  if (r.k === 'recover') { again.rpub = b64url(r.rpub); again.rsig = b64url(r.rsig); }
+  return Buffer.from(JSON.stringify(again), 'utf8').equals(value) ? r : null;
+}
+
+const edOk = (pub, msg, sig) => { try { return edVerify(pub, msg, sig); } catch { return false; } };
+
+/** The owner rule, §21.4, in its order. Returns the new state, or { refused }. */
+function applyHandleEntry(state, e) {
+  const no = (refused) => ({ refused });
+  if (e.value.length > 1024) return no('tooLarge');
+  if (e.label.length !== 32 || !Number.isInteger(e.v) || e.v < 1 || e.v > Number.MAX_SAFE_INTEGER
+    || e.sig.length !== 64) return no('malformed');
+  const r = decodeHandleRecord(e.value);
+  if (r === null) return no('malformed');
+  if (state && !state.label.equals(e.label)) return no('otherLabel');
+  if (!state && r.k !== 'claim') return no('notClaimed');
+  if (state && r.k === 'claim') return no('taken');
+  if (state && e.v <= state.v) return no('staleVersion');
+  const publishInput = cat(utf8('z-handle-publish-v1:'), e.label, u64be(e.v), sha256(e.value));
+  if (r.k === 'claim' && !edOk(r.owner, publishInput, e.sig)) return no('badSignature');
+  if (r.k === 'update') {
+    if (!r.owner.equals(state.owner)) return no('ownerChanged');
+    if (!r.rc.equals(state.rc)) return no('rcChanged');
+    if (!edOk(state.owner, publishInput, e.sig)) return no('badSignature');
+  }
+  if (r.k === 'recover') {
+    if (!sha256(cat(utf8('z-handle-rc-v1:'), r.rpub)).equals(state.rc)) return no('wrongRecoveryKey');
+    const recoverInput = cat(utf8('z-handle-recover-v1:'), e.label, u64be(e.v), r.owner, r.rc);
+    if (!edOk(r.rpub, recoverInput, r.rsig)) return no('badRecoverySignature');
+    if (!edOk(r.owner, publishInput, e.sig)) return no('badSignature');
+  }
+  return { label: e.label, v: e.v, owner: r.owner, rc: r.rc, intro: r.intro, pow: r.pow };
+}
+
+test('handles: every entry\'s bytes, and the owner rule over every history, from §21.4 alone', () => {
+  const v = loadHd('handles');
+  const pubOf = Object.fromEntries(v.keys.map((k) => [k.name, unhex(k.pub)]));
+  const entries = {};
+  for (const e of v.entries) {
+    const entry = { label: unhex(e.label), v: e.v, value: unhex(e.value), sig: unhex(e.sig) };
+    entries[e.name] = entry;
+    assert.equal(e.value_text, entry.value.toString('utf8'));
+    assert.equal(e.value_sha256, hex(sha256(entry.value)));
+    const pi = cat(utf8('z-handle-publish-v1:'), entry.label, u64be(e.v), sha256(entry.value));
+    assert.equal(hex(pi), e.publish_input, e.name);
+    assert.ok(edOk(pubOf[e.signer], pi, entry.sig), `${e.name}: signed by ${e.signer}`);
+    // The body a handle-mode log takes: label b64url, value and sig b64.
+    assert.deepEqual(e.publish_json, { label: b64url(entry.label), v: e.v, value: b64(entry.value), sig: b64(entry.sig) });
+    if (e.rsig) {
+      const r = decodeHandleRecord(entry.value);
+      assert.equal(hex(r.rsig), e.rsig);
+      const ri = cat(utf8('z-handle-recover-v1:'), entry.label, u64be(e.v), r.owner, r.rc);
+      assert.equal(hex(ri), e.recover_input);
+      assert.ok(edOk(r.rpub, ri, r.rsig));
+    }
+  }
+  for (const h of v.histories) {
+    let state = null;
+    let refusedAt = null, reason = null;
+    for (const [i, name] of h.entries.entries()) {
+      const next = applyHandleEntry(state, entries[name]);
+      if (next.refused) { refusedAt = i; reason = next.refused; break; }
+      state = next;
+    }
+    if (h.verdict.ok) {
+      assert.equal(refusedAt, null, `${h.name}: refused ${reason}`);
+      assert.equal(state.v, h.verdict.version);
+      assert.equal(hex(state.owner), h.verdict.owner);
+      assert.equal(hex(state.rc), h.verdict.rc);
+      assert.equal(state.intro === null ? null : hex(state.intro), h.verdict.intro);
+      assert.equal(state.pow, h.verdict.pow);
+    } else {
+      assert.equal(refusedAt, h.verdict.refused_at, h.name);
+      assert.equal(reason, h.verdict.reason, h.name);
+    }
+  }
+  assert.ok(v.histories.some((h) => h.verdict.ok) && v.histories.filter((h) => !h.verdict.ok).length >= 15);
+  for (const n of v.not_records) {
+    assert.equal(decodeHandleRecord(unhex(n.value)), null, n.why);
+  }
+  // Every valid entry's record does decode, so the refusals above are not a
+  // decoder that refuses everything.
+  for (const name of ['claim', 'update_rotate', 'update_pause', 'recover', 'update_after_recover']) {
+    assert.notEqual(decodeHandleRecord(entries[name].value), null, name);
+  }
+});
+
+test('handles: proof-of-work stamps, and every stamp a relay refuses', () => {
+  const p = loadHd('handles').pow;
+  assert.equal(p.context, 'z-intro-pow-v1:');
+  const u32be = (n) => { const b = Buffer.alloc(4); b.writeUInt32BE(n); return b; };
+  const digestFor = (rid, day, envelope, nonce) =>
+    sha256(cat(utf8('z-intro-pow-v1:'), unb64url(rid), u32be(day), sha256(utf8(envelope)), nonce));
+  const zeroBits = (d) => {
+    let n = 0;
+    for (const byte of d) { if (byte === 0) { n += 8; continue; } n += Math.clz32(byte) - 24; break; }
+    return n;
+  };
+  for (const s of p.stamps) {
+    assert.equal(unb64url(s.routing_id).length, 32);
+    assert.equal(hex(unb64url(s.routing_id)), s.rid_bytes);
+    assert.equal(s.day, Math.floor(p.now_ms / 86400000));
+    assert.equal(hex(sha256(utf8(s.envelope))), s.envelope_sha256);
+    const nonce = unhex(s.nonce);
+    assert.equal(nonce.length, 16);
+    assert.equal(s.frame_member, b64url(nonce));
+    const d = digestFor(s.routing_id, s.day, s.envelope, nonce);
+    assert.equal(hex(d), s.digest);
+    assert.equal(zeroBits(d), s.zero_bits);
+    assert.ok(zeroBits(d) >= s.bits, `${s.bits} bits`);
+  }
+  const first = p.stamps[0];
+  for (const r of p.must_refuse) {
+    const d = digestFor(r.routing_id, r.day, r.envelope, unhex(first.nonce));
+    assert.equal(hex(d), r.digest, r.why);
+    assert.ok(zeroBits(d) < r.bits, r.why);
+  }
+  // Accepted for the relay's today or yesterday, by the relay's clock.
+  for (const w of p.acceptance_window) {
+    const today = Math.floor(w.relay_now_ms / 86400000);
+    assert.equal(today, w.relay_day);
+    const ok = [today, today - 1].some((day) =>
+      zeroBits(digestFor(first.routing_id, day, first.envelope, unhex(first.nonce))) >= first.bits);
+    assert.equal(ok, w.accepted, `relay day ${today}`);
+  }
+});
+
+test('handles: the request sealed to xintro, and the acknowledgement and who it does not vouch for', () => {
+  const v = loadHd('handles');
+  const a = v.intro_ack;
+  // The request travels as a §8 envelope sealed to the record's xintro and
+  // addressed to its intro routing id: re-sealed here from the recorded
+  // draws, opened with the introduction seed's X25519 half, and refused by
+  // the rotated key's.
+  const q = v.request;
+  const introKey = v.keys.find((k) => k.x_pub === q.to_x_pub);
+  const claimRecord = decodeHandleRecord(unhex(v.entries.find((e) => e.name === 'claim').value));
+  assert.equal(hex(claimRecord.xintro), q.to_x_pub, 'sealed to the xintro the record names');
+  assert.equal(b64url(claimRecord.intro), b64url(unhex(introKey.pub)));
+  assert.equal(q.to_routing_id, b64url(sha256(claimRecord.intro)), 'addressed to its intro routing id');
+  const toPub = unhex(q.to_x_pub), ephSeed = unhex(q.eph_seed), ephPub = xPub(ephSeed);
+  const sealKey = hkdf(x25519(ephSeed, toPub), Buffer.alloc(0), cat(utf8('z-sealed-v1'), ephPub, toPub), 32);
+  const { ct, mac } = chachaSeal(sealKey, unhex(q.nonce),
+    padSealed(utf8(JSON.stringify({ f: q.from_rid, p: q.payload }))), utf8('z-sealed-v1'));
+  assert.equal('zs1.' + b64url(cat(ephPub, unhex(q.nonce), ct, mac)), q.envelope);
+  const openWith = (xSeedHex) => {
+    const raw = unb64url(q.envelope.slice(4));
+    const xs = unhex(xSeedHex);
+    const k = hkdf(x25519(xs, raw.subarray(0, 32)), Buffer.alloc(0), cat(utf8('z-sealed-v1'), raw.subarray(0, 32), xPub(xs)), 32);
+    return JSON.parse(unpadSealed(chachaOpen(k, raw.subarray(32, 44), raw.subarray(44, raw.length - 16),
+      raw.subarray(raw.length - 16), utf8('z-sealed-v1'))).toString('utf8'));
+  };
+  assert.deepEqual(openWith(introKey.x_seed), { f: q.from_rid, p: q.payload });
+  assert.throws(() => openWith(v.keys.find((k) => k.name === 'intro_a2').x_seed), 'the rotated key opens nothing');
+  assert.equal(q.payload, a.creq_payload, 'the request the acknowledgement answers');
+  const u16be = (n) => Buffer.from([(n >> 8) & 0xff, n & 0xff]);
+  const creqInput = (j) => {
+    const to = utf8(j.to), name = utf8(j.bundle.name ?? '');
+    return cat(utf8('z-contact-request-v1:'), unb64(j.bundle.ed), unb64(j.bundle.x),
+      u16be(to.length), to, u64be(j.ts), u16be(name.length), name);
+  };
+  // The request, as §8.1 defines it: its signing input and its id.
+  const creq = JSON.parse(unb64(a.creq_payload).toString('utf8'));
+  assert.equal(creq.t, 'creq');
+  assert.equal(hex(creqInput(creq)), a.creq_signing_input);
+  assert.ok(edOk(unb64(creq.bundle.ed), creqInput(creq), unb64(creq.sig)));
+  assert.equal(hex(unb64(creq.bundle.ed)), a.requester.ed_pub);
+  assert.equal(a.requester.routing_id, b64url(sha256(unb64(creq.bundle.ed))));
+  assert.equal(creq.to, b64url(sha256(unhex(a.intro_pub))), 'addressed to the introduction mailbox');
+  assert.equal(a.creq_id, hex(sha256(creqInput(creq))));
+  // The acknowledgement over (requester, owner account, request).
+  assert.equal(hex(edPub(unhex(a.owner_account.ed_seed))), a.owner_account.ed_pub);
+  const ackInput = cat(utf8('z-intro-ack-v1:'), unb64url(a.requester.routing_id), unhex(a.owner_account.ed_pub), unhex(a.creq_id));
+  assert.equal(hex(ackInput), a.ack_input);
+  assert.ok(edOk(unhex(a.intro_pub), ackInput, unb64url(a.ia)));
+  for (const r of a.must_refuse) {
+    const input = cat(utf8('z-intro-ack-v1:'), unb64url(r.requester_rid), unhex(r.owner_account_ed_pub), unhex(r.creq_id));
+    assert.ok(!edOk(unhex(r.intro_pub), input, unb64url(a.ia)), r.why);
+  }
+  // It rides on the creq the acceptance sends back, as a member §8.1's
+  // signature does not cover and an older reader ignores.
+  const acc = JSON.parse(unb64(a.acceptance_payload).toString('utf8'));
+  assert.equal(JSON.stringify(acc), a.acceptance_json);
+  assert.equal(acc.ia, a.ia);
+  assert.equal(acc.to, a.requester.routing_id);
+  assert.ok(edOk(unb64(acc.bundle.ed), creqInput(acc), unb64(acc.sig)), 'still a genuine creq');
+  assert.equal(hex(unb64(acc.bundle.ed)), a.owner_account.ed_pub, 'from the account the ack names');
+});

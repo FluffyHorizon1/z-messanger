@@ -61,6 +61,7 @@ void main() {
       ('v3', 'device_cert_v3'),
       ('backup', 'archive'),
       ('backup', 'archive_1_1'),
+      ('handles', 'handles'),
     ]) {
       test('$ver/$suite', () {
         final onDisk = readVectors(suite, ver);
@@ -737,6 +738,245 @@ void main() {
           isTrue);
       expect(() => ZArchive.parseHeader(Uint8List.fromList(newer)),
           throwsA(isA<ArchiveTooNewException>()));
+    });
+
+    test('handles: the grammar, labels, keys, entries, histories, stamps and '
+        'the acknowledgement replay from the recorded inputs', () async {
+      final v = readVectors('handles', 'handles');
+
+      // §21.1: every input, valid or not, through the public parser.
+      final g = v['grammar'] as Map;
+      expect(g['reserved'], reservedHandleNicks);
+      for (final c in (g['valid'] as List).cast<Map>()) {
+        final h = Handle.parse(c['input'] as String);
+        expect(h.canonical, c['canonical'], reason: c['note'] as String);
+        expect(h.display, c['display']);
+      }
+      for (final c in (g['invalid'] as List).cast<Map>()) {
+        expect(Handle.problemWith(c['input'] as String)?.name, c['problem'],
+            reason: c['note'] as String);
+        expect(normaliseHandleInput(c['input'] as String), c['normalised']);
+      }
+
+      // §21.2: the production labels, and the small-parameter answers the
+      // independent Argon2id is checked against.
+      final l = v['labels'] as Map;
+      final kdf = l['kdf'] as Map;
+      expect([kdf['memory_kib'], kdf['iterations'], kdf['parallelism'], kdf['tag_len']],
+          [handleLabelMemoryKib, handleLabelIterations, handleLabelParallelism, handleLabelLength]);
+      expect(kdf['salt'], handleLabelSalt);
+      for (final c in (l['production'] as List).cast<Map>()) {
+        final h = Handle.parse(c['handle'] as String);
+        expect(hex(h.canonicalBytes), c['password']);
+        expect(hex(await handleLabel(h)), c['label']);
+      }
+      for (final c in (l['small_parameters'] as List).cast<Map>()) {
+        final k = await Argon2id(
+                memory: c['memory_kib'] as int,
+                parallelism: c['parallelism'] as int,
+                iterations: c['iterations'] as int,
+                hashLength: c['tag_len'] as int)
+            .deriveKey(
+                secretKey: SecretKey(unhex(c['password'] as String)),
+                nonce: unhex(c['salt'] as String));
+        expect(hex(await k.extractBytes()), c['tag']);
+      }
+
+      // §21.3: keys from seeds; recovery codes from their printed form.
+      final seeds = <String, Uint8List>{};
+      final pubs = <String, Uint8List>{};
+      for (final k in (v['keys'] as List).cast<Map>()) {
+        final name = k['name'] as String;
+        seeds[name] = unhex(k['seed'] as String);
+        pubs[name] = await handleKeyPublic(seeds[name]!);
+        expect(hex(pubs[name]!), k['pub'], reason: name);
+        if (k.containsKey('routing_id')) {
+          expect(await introRoutingId(pubs[name]!), k['routing_id']);
+          expect(hex(unb64url(k['routing_id'] as String)), k['rid_bytes']);
+          expect(k['x_hkdf_salt'], handleIntroXSalt);
+          final id = await handleIntroIdentity(seeds[name]!);
+          expect(hex(id.xSeed), k['x_seed']);
+          expect(hex(await handleIntroXSeed(seeds[name]!)), k['x_seed']);
+          expect(hex(id.xPub), k['x_pub']);
+          expect(hex(id.edPub), k['pub']);
+        }
+      }
+      final aliceLabel =
+          await handleLabel(Handle.parse('alice.42'));
+      for (final r in (v['recovery'] as List).cast<Map>()) {
+        final code = await parseHandleRecoveryCode(r['formatted'] as String);
+        expect(hex(code.entropy), r['entropy']);
+        expect(await formatHandleRecoveryCode(code), r['formatted']);
+        expect(hex(aliceLabel), r['hkdf_info']);
+        final rk = await handleRecoveryKey(code, aliceLabel);
+        expect(hex(rk.seed), r['seed']);
+        expect(hex(rk.pub), r['pub']);
+        expect(hex(rk.rc), r['rc']);
+      }
+
+      // §21.4: every entry's bytes, and the owner rule over every history.
+      final entries = <String, HandleEntry>{};
+      for (final e in (v['entries'] as List).cast<Map>()) {
+        final entry = HandleEntry(
+            label: unhex(e['label'] as String),
+            version: e['v'] as int,
+            value: unhex(e['value'] as String),
+            sig: unhex(e['sig'] as String));
+        entries[e['name'] as String] = entry;
+        expect(utf8.decode(entry.value), e['value_text']);
+        expect(
+            hex(await handlePublishInput(
+                label: entry.label, version: entry.version, value: entry.value)),
+            e['publish_input']);
+        expect(entry.toPublishJson(), e['publish_json']);
+        if (e.containsKey('rsig')) {
+          final r = HandleRecord.decode(entry.value);
+          expect(hex(r.rsig!), e['rsig']);
+          expect(
+              hex(handleRecoverInput(
+                  label: entry.label, version: entry.version, owner: r.owner, rc: r.rc)),
+              e['recover_input']);
+        }
+      }
+      for (final h in (v['histories'] as List).cast<Map>()) {
+        final verdict = await checkHandleHistory(
+            [for (final n in (h['entries'] as List).cast<String>()) entries[n]!]);
+        final want = h['verdict'] as Map;
+        expect(verdict.ok, want['ok'], reason: h['name'] as String);
+        if (want['ok'] == true) {
+          expect(verdict.state!.version, want['version']);
+          expect(hex(verdict.state!.owner), want['owner']);
+          expect(hex(verdict.state!.rc), want['rc']);
+          final intro = verdict.state!.record.intro;
+          expect(intro == null ? null : hex(intro), want['intro']);
+          expect(verdict.state!.record.pow, want['pow']);
+        } else {
+          expect(verdict.refusedAt, want['refused_at'], reason: h['name'] as String);
+          expect(verdict.reason!.name, want['reason'], reason: h['name'] as String);
+        }
+      }
+      for (final n in (v['not_records'] as List).cast<Map>()) {
+        expect(() => HandleRecord.decode(unhex(n['value'] as String)),
+            throwsA(isA<HandleRecordFormatException>()),
+            reason: n['why'] as String);
+      }
+
+      // §21.7: the request, sealed to xintro — re-sealed from its recorded
+      // draws, and opened with the introduction identity.
+      final req = v['request'] as Map;
+      final introKey = (v['keys'] as List)
+          .cast<Map>()
+          .firstWhere((k) => k['x_pub'] == req['to_x_pub']);
+      expect(
+          await runScripted(
+              [unhex(req['eph_seed'] as String), unhex(req['nonce'] as String)],
+              () => SealedEnvelope.seal(
+                  toXPub: unhex(req['to_x_pub'] as String),
+                  fromRid: req['from_rid'] as String,
+                  payload: req['payload'] as String)),
+          req['envelope']);
+      final introId = await handleIntroIdentity(unhex(introKey['seed'] as String));
+      final opened = (await SealedEnvelope.open(
+          myXSeed: introId.xSeed,
+          myXPub: introId.xPub,
+          blob: req['envelope'] as String))!;
+      expect(opened.fromRid, req['from_rid']);
+      expect(opened.payload, req['payload']);
+      expect(await introId.routingId(), req['to_routing_id']);
+      expect(
+          await ContactRequest.tryParse(opened.payload)!.verify(
+              expectedTo: req['to_routing_id'] as String,
+              sealedFrom: opened.fromRid),
+          isTrue);
+
+      // §21.7: stamps re-found from their start, and the refusals.
+      final pow = v['pow'] as Map;
+      for (final s in (pow['stamps'] as List).cast<Map>()) {
+        final env = utf8.encode(s['envelope'] as String);
+        final nonce = createIntroPowStamp(
+            introRid: s['routing_id'] as String,
+            day: s['day'] as int,
+            envelope: env,
+            bits: s['bits'] as int,
+            startNonce: unhex(s['start_nonce'] as String));
+        expect(hex(nonce), s['nonce']);
+        expect(b64url(nonce), s['frame_member']);
+        expect(
+            await verifyIntroPowStamp(
+                introRid: s['routing_id'] as String,
+                day: s['day'] as int,
+                envelope: env,
+                nonce: nonce,
+                bits: s['bits'] as int),
+            isTrue);
+        final digest = await sha256Bytes(unhex(s['input'] as String));
+        expect(hex(digest), s['digest']);
+        expect(introPowZeroBits(digest), s['zero_bits']);
+      }
+      final first = unhex(((pow['stamps'] as List).first as Map)['nonce'] as String);
+      for (final r in (pow['must_refuse'] as List).cast<Map>()) {
+        expect(
+            await verifyIntroPowStamp(
+                introRid: r['routing_id'] as String,
+                day: r['day'] as int,
+                envelope: utf8.encode(r['envelope'] as String),
+                nonce: first,
+                bits: r['bits'] as int),
+            isFalse,
+            reason: r['why'] as String);
+      }
+      final firstStamp = (pow['stamps'] as List).first as Map;
+      for (final w in (pow['acceptance_window'] as List).cast<Map>()) {
+        expect(introPowDay(w['relay_now_ms'] as int), w['relay_day']);
+        expect(
+            await introPowAcceptable(
+                introRid: firstStamp['routing_id'] as String,
+                envelope: utf8.encode(firstStamp['envelope'] as String),
+                nonce: first,
+                bits: firstStamp['bits'] as int,
+                nowMs: w['relay_now_ms'] as int),
+            w['accepted']);
+      }
+
+      // §21.7: the acknowledgement, from the recorded request.
+      final ack = v['intro_ack'] as Map;
+      final creq = ContactRequest.tryParse(ack['creq_payload'] as String)!;
+      expect(hex(ContactRequest.signingInput(creq.bundle, creq.toRid, creq.ts)),
+          ack['creq_signing_input']);
+      expect(hex(await contactRequestId(creq)), ack['creq_id']);
+      final owner = ack['owner_account'] as Map;
+      final requester = ack['requester'] as Map;
+      expect(
+          await signIntroAck(
+              introSeed: seeds[ack['intro_key']]!,
+              requesterRid: requester['routing_id'] as String,
+              ownerAccountEdPub: unhex(owner['ed_pub'] as String),
+              creqId: unhex(ack['creq_id'] as String)),
+          ack['ia']);
+      expect(
+          await verifyIntroAck(
+              ia: ack['ia'] as String,
+              introPub: unhex(ack['intro_pub'] as String),
+              requesterRid: requester['routing_id'] as String,
+              ownerAccountEdPub: unhex(owner['ed_pub'] as String),
+              creqId: unhex(ack['creq_id'] as String)),
+          isTrue);
+      for (final r in (ack['must_refuse'] as List).cast<Map>()) {
+        expect(
+            await verifyIntroAck(
+                ia: ack['ia'] as String,
+                introPub: unhex(r['intro_pub'] as String),
+                requesterRid: r['requester_rid'] as String,
+                ownerAccountEdPub: unhex(r['owner_account_ed_pub'] as String),
+                creqId: unhex(r['creq_id'] as String)),
+            isFalse,
+            reason: r['why'] as String);
+      }
+      final accepted = ContactRequest.tryParse(ack['acceptance_payload'] as String)!;
+      expect(await accepted.verify(expectedTo: requester['routing_id'] as String),
+          isTrue);
+      expect(hex(accepted.bundle.edPub), owner['ed_pub']);
+      expect((jsonDecode(ack['acceptance_json'] as String) as Map)['ia'], ack['ia']);
     });
   });
 }

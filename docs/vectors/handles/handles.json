@@ -1,0 +1,1625 @@
+{
+  "suite": "handles",
+  "version": 1,
+  "description": "Handles (PROTOCOL 21, ADR 0015 revision 2): the grammar (what a person types -> a canonical nick.digits, or why not, including Unicode look-alikes and every reserved nick); labels (Argon2id of the canonical handle, production parameters, plus small-parameter answers for checking an independent Argon2id); owner, introduction and recovery keys from seeds, the introduction seed giving both intro (Ed25519) and xintro (X25519, by HKDF); claim, update and recover records with their publish inputs and signatures; owner-rule histories with their verdicts; values that are not records; a contact request sealed to xintro and opened with the introduction identity; proof-of-work stamps at low difficulty over that envelope, with the cases a relay refuses; and an introduction acknowledgement with the cases a requester refuses. The log (21.5) and the relay (21.6) pin their own halves elsewhere.",
+  "grammar": {
+    "nick": "3-20 of [a-z0-9_], first a letter, no \"__\", not ending \"_\"",
+    "digits": "2-6 ASCII digits, compared as a string",
+    "normalisation": "trim ASCII whitespace (U+0009-U+000D, U+0020), remove ONE leading \"@\", lower-case A-Z; nothing else is folded",
+    "reserved": [
+      "z",
+      "zm",
+      "zmessenger",
+      "zmessengers",
+      "support",
+      "help",
+      "admin",
+      "administrator",
+      "official",
+      "security",
+      "team",
+      "staff",
+      "mod",
+      "moderator",
+      "system",
+      "root",
+      "everyone",
+      "here",
+      "null",
+      "undefined",
+      "abuse",
+      "privacy",
+      "legal",
+      "info",
+      "contact",
+      "noreply",
+      "verify",
+      "verified"
+    ],
+    "valid": [
+      {
+        "input": "alice.42",
+        "canonical": "alice.42",
+        "display": "@alice.42",
+        "note": "already canonical"
+      },
+      {
+        "input": "@Alice.42",
+        "canonical": "alice.42",
+        "display": "@alice.42",
+        "note": "one leading @ removed and A-Z lower-cased"
+      },
+      {
+        "input": " \t@ALICE.42\r\n",
+        "canonical": "alice.42",
+        "display": "@alice.42",
+        "note": "surrounding ASCII whitespace trimmed first"
+      },
+      {
+        "input": "alice.042",
+        "canonical": "alice.042",
+        "display": "@alice.042",
+        "note": "digits are a string: 042 is a different handle from 42"
+      },
+      {
+        "input": "bob_smith.07",
+        "canonical": "bob_smith.07",
+        "display": "@bob_smith.07",
+        "note": "an underscore inside the nick, and a leading zero kept"
+      },
+      {
+        "input": "a1b.123456",
+        "canonical": "a1b.123456",
+        "display": "@a1b.123456",
+        "note": "six digits, and a digit inside the nick"
+      },
+      {
+        "input": "abc.00",
+        "canonical": "abc.00",
+        "display": "@abc.00",
+        "note": "the shortest nick and the fewest digits"
+      },
+      {
+        "input": "abcdefghijklmnopqrst.99",
+        "canonical": "abcdefghijklmnopqrst.99",
+        "display": "@abcdefghijklmnopqrst.99",
+        "note": "twenty characters, the longest nick"
+      },
+      {
+        "input": "admins.12",
+        "canonical": "admins.12",
+        "display": "@admins.12",
+        "note": "a reserved nick with a letter added is not reserved"
+      }
+    ],
+    "invalid": [
+      {
+        "input": "",
+        "normalised": "",
+        "problem": "empty",
+        "note": "nothing"
+      },
+      {
+        "input": " \t ",
+        "normalised": "",
+        "problem": "empty",
+        "note": "only whitespace"
+      },
+      {
+        "input": "@",
+        "normalised": "",
+        "problem": "empty",
+        "note": "only the @"
+      },
+      {
+        "input": "@@alice.42",
+        "normalised": "@alice.42",
+        "problem": "badCharacter",
+        "note": "only ONE leading @ is removed"
+      },
+      {
+        "input": "@ alice.42",
+        "normalised": " alice.42",
+        "problem": "badCharacter",
+        "note": "trimming happens before the @ is removed, not after"
+      },
+      {
+        "input": "ali ce.42",
+        "normalised": "ali ce.42",
+        "problem": "badCharacter",
+        "note": "a space inside"
+      },
+      {
+        "input": "alice-x.42",
+        "normalised": "alice-x.42",
+        "problem": "badCharacter",
+        "note": "punctuation other than _ and one ."
+      },
+      {
+        "input": "alice.42 ",
+        "normalised": "alice.42 ",
+        "problem": "badCharacter",
+        "note": "a no-break space (U+00A0) is not trimmed: only ASCII whitespace is"
+      },
+      {
+        "input": "alice.42​",
+        "normalised": "alice.42​",
+        "problem": "badCharacter",
+        "note": "a zero-width space (U+200B)"
+      },
+      {
+        "input": "fіnnіan.42",
+        "normalised": "fіnnіan.42",
+        "problem": "badCharacter",
+        "note": "Cyrillic і (U+0456) in place of Latin i"
+      },
+      {
+        "input": "аdmin.12",
+        "normalised": "аdmin.12",
+        "problem": "badCharacter",
+        "note": "Cyrillic а (U+0430) in place of Latin a: a reserved nick's look-alike"
+      },
+      {
+        "input": "Kate.42",
+        "normalised": "Kate.42",
+        "problem": "badCharacter",
+        "note": "the Kelvin sign (U+212A), which Unicode lower-cases to ASCII k"
+      },
+      {
+        "input": "ſam.42",
+        "normalised": "ſam.42",
+        "problem": "badCharacter",
+        "note": "long s (U+017F), which Unicode upper-cases to ASCII S"
+      },
+      {
+        "input": "İnan.42",
+        "normalised": "İnan.42",
+        "problem": "badCharacter",
+        "note": "dotted capital I (U+0130), which Unicode lower-cases to i + a combining dot"
+      },
+      {
+        "input": "ａlice.42",
+        "normalised": "ａlice.42",
+        "problem": "badCharacter",
+        "note": "a fullwidth a (U+FF41)"
+      },
+      {
+        "input": "alice．42",
+        "normalised": "alice．42",
+        "problem": "badCharacter",
+        "note": "a fullwidth full stop (U+FF0E)"
+      },
+      {
+        "input": "alice.٤٢",
+        "normalised": "alice.٤٢",
+        "problem": "badCharacter",
+        "note": "Arabic-Indic digits (U+0664 U+0662)"
+      },
+      {
+        "input": "alíce.42",
+        "normalised": "alíce.42",
+        "problem": "badCharacter",
+        "note": "a combining acute accent (U+0301)"
+      },
+      {
+        "input": "alice",
+        "normalised": "alice",
+        "problem": "missingDigits",
+        "note": "no discriminator"
+      },
+      {
+        "input": "alice.",
+        "normalised": "alice.",
+        "problem": "missingDigits",
+        "note": "nothing after the dot"
+      },
+      {
+        "input": "alice.4a",
+        "normalised": "alice.4a",
+        "problem": "digitsNotDigits",
+        "note": "a letter after the dot"
+      },
+      {
+        "input": "alice.42.42",
+        "normalised": "alice.42.42",
+        "problem": "digitsNotDigits",
+        "note": "a second dot"
+      },
+      {
+        "input": "alice.7",
+        "normalised": "alice.7",
+        "problem": "digitsTooShort",
+        "note": "one digit"
+      },
+      {
+        "input": "alice.1234567",
+        "normalised": "alice.1234567",
+        "problem": "digitsTooLong",
+        "note": "seven digits"
+      },
+      {
+        "input": "al.42",
+        "normalised": "al.42",
+        "problem": "nickTooShort",
+        "note": "two characters"
+      },
+      {
+        "input": ".42",
+        "normalised": ".42",
+        "problem": "nickTooShort",
+        "note": "no nick at all"
+      },
+      {
+        "input": "abcdefghijklmnopqrstu.42",
+        "normalised": "abcdefghijklmnopqrstu.42",
+        "problem": "nickTooLong",
+        "note": "twenty-one characters"
+      },
+      {
+        "input": "1alice.42",
+        "normalised": "1alice.42",
+        "problem": "nickStartsWithNonLetter",
+        "note": "a digit first"
+      },
+      {
+        "input": "_alice.42",
+        "normalised": "_alice.42",
+        "problem": "nickStartsWithNonLetter",
+        "note": "an underscore first"
+      },
+      {
+        "input": "ali__ce.42",
+        "normalised": "ali__ce.42",
+        "problem": "nickDoubleUnderscore",
+        "note": "two underscores in a row"
+      },
+      {
+        "input": "alice_.42",
+        "normalised": "alice_.42",
+        "problem": "nickEndsWithUnderscore",
+        "note": "a trailing underscore"
+      },
+      {
+        "input": "z.12",
+        "normalised": "z.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "zm.12",
+        "normalised": "zm.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "zmessenger.12",
+        "normalised": "zmessenger.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "zmessengers.12",
+        "normalised": "zmessengers.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "support.12",
+        "normalised": "support.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "help.12",
+        "normalised": "help.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "admin.12",
+        "normalised": "admin.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "administrator.12",
+        "normalised": "administrator.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "official.12",
+        "normalised": "official.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "security.12",
+        "normalised": "security.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "team.12",
+        "normalised": "team.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "staff.12",
+        "normalised": "staff.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "mod.12",
+        "normalised": "mod.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "moderator.12",
+        "normalised": "moderator.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "system.12",
+        "normalised": "system.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "root.12",
+        "normalised": "root.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "everyone.12",
+        "normalised": "everyone.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "here.12",
+        "normalised": "here.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "null.12",
+        "normalised": "null.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "undefined.12",
+        "normalised": "undefined.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "abuse.12",
+        "normalised": "abuse.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "privacy.12",
+        "normalised": "privacy.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "legal.12",
+        "normalised": "legal.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "info.12",
+        "normalised": "info.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "contact.12",
+        "normalised": "contact.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "noreply.12",
+        "normalised": "noreply.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "verify.12",
+        "normalised": "verify.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "verified.12",
+        "normalised": "verified.12",
+        "problem": "reserved",
+        "note": "reserved"
+      },
+      {
+        "input": "@Z.99",
+        "normalised": "z.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Zm.99",
+        "normalised": "zm.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Zmessenger.99",
+        "normalised": "zmessenger.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Zmessengers.99",
+        "normalised": "zmessengers.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Support.99",
+        "normalised": "support.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Help.99",
+        "normalised": "help.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Admin.99",
+        "normalised": "admin.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Administrator.99",
+        "normalised": "administrator.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Official.99",
+        "normalised": "official.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Security.99",
+        "normalised": "security.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Team.99",
+        "normalised": "team.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Staff.99",
+        "normalised": "staff.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Mod.99",
+        "normalised": "mod.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Moderator.99",
+        "normalised": "moderator.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@System.99",
+        "normalised": "system.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Root.99",
+        "normalised": "root.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Everyone.99",
+        "normalised": "everyone.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Here.99",
+        "normalised": "here.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Null.99",
+        "normalised": "null.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Undefined.99",
+        "normalised": "undefined.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Abuse.99",
+        "normalised": "abuse.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Privacy.99",
+        "normalised": "privacy.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Legal.99",
+        "normalised": "legal.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Info.99",
+        "normalised": "info.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Contact.99",
+        "normalised": "contact.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Noreply.99",
+        "normalised": "noreply.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Verify.99",
+        "normalised": "verify.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      },
+      {
+        "input": "@Verified.99",
+        "normalised": "verified.99",
+        "problem": "reserved",
+        "note": "reserved, after normalisation"
+      }
+    ]
+  },
+  "labels": {
+    "kdf": {
+      "name": "argon2id",
+      "rfc": 9106,
+      "version": 19,
+      "salt": "z-handle-label-v1",
+      "memory_kib": 19456,
+      "iterations": 2,
+      "parallelism": 1,
+      "tag_len": 32,
+      "password": "the canonical handle, ASCII"
+    },
+    "production": [
+      {
+        "handle": "alice.42",
+        "password": "616c6963652e3432",
+        "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f"
+      },
+      {
+        "handle": "alice.042",
+        "password": "616c6963652e303432",
+        "label": "caa69441cb5e106a75cbe2a4b1618c1d810ddd6115b919ec73f82cf68eb364de"
+      },
+      {
+        "handle": "bob_smith.07",
+        "password": "626f625f736d6974682e3037",
+        "label": "38dfb890ffd312c94c0ab89805e75f9eb7f5e9a4b887fedb47906153ff14f668"
+      }
+    ],
+    "small_parameters": [
+      {
+        "password": "616c6963652e3432",
+        "salt": "7a2d68616e646c652d6c6162656c2d7631",
+        "memory_kib": 8,
+        "iterations": 1,
+        "parallelism": 1,
+        "tag_len": 32,
+        "tag": "f413db9ad4836095905b68f6128c832d2d5e9c65a622e1030ad7681dc9cb2c82"
+      },
+      {
+        "password": "616c6963652e3432",
+        "salt": "7a2d68616e646c652d6c6162656c2d7631",
+        "memory_kib": 64,
+        "iterations": 2,
+        "parallelism": 1,
+        "tag_len": 32,
+        "tag": "89cafdfbb05f84bdb8c776a7a03a451e13b88496733a51a99a0607706644b13d"
+      },
+      {
+        "password": "626f625f736d6974682e3037",
+        "salt": "7a2d68616e646c652d6c6162656c2d7631",
+        "memory_kib": 256,
+        "iterations": 3,
+        "parallelism": 1,
+        "tag_len": 32,
+        "tag": "52b526b0586401f65b3de149f1915183cba8652a3823ba297ef4d4f9008ba4c9"
+      },
+      {
+        "password": "6162632e3030",
+        "salt": "7a2d68616e646c652d6c6162656c2d7631",
+        "memory_kib": 64,
+        "iterations": 2,
+        "parallelism": 2,
+        "tag_len": 32,
+        "tag": "bf5052913a6a9ba2439420f392568602b706bbc280254bc676ca4b0d3e153f9b"
+      }
+    ]
+  },
+  "keys": [
+    {
+      "name": "owner_a",
+      "seed": "75f3d3e910b646bcbedebc35c420754e3711c68d5bd77875c6d979ff35efbcf4",
+      "pub": "7790c0b8bae6a83c416514888d3cad283357ed4440b93df534b384f1860f8774"
+    },
+    {
+      "name": "intro_a1",
+      "seed": "c8a1fc57fd1d62c2cc23217e9ee93e475a39811128b668b355768b724310f933",
+      "pub": "fc3d7735fe97cc5863e0061edb7d277a1881d4e15cf58802a4f7fb20f894f59f",
+      "routing_id": "T-u-Laizk4shgdylkC9YLQRnVeQGeLThRvOBSZxzbA4",
+      "rid_bytes": "4febbe2da8b3938b2181dca5902f582d046755e40678b4e146f381499c736c0e",
+      "x_hkdf_salt": "z-handle-intro-x-v1",
+      "x_seed": "82355be91e3b3f0f85becbb018207ac87d013d547db4b8af7e378175a5ff2f1f",
+      "x_pub": "ef1ecf8223e4091eb22437b1f83f9704fbbe34640e995fd3eb118b23cb7bcf59"
+    },
+    {
+      "name": "intro_a2",
+      "seed": "84b4802b4d4607f74f83de496990291f5168c4c9483e483f395de621aed851bb",
+      "pub": "f3dda17d8da6810452f3a202d928560adfb24cfdcd0fc5b63ebde78a45e82573",
+      "routing_id": "NVLvlQ8-Zr25p3BsxrqjAQUxEhvswQpNLYKCSAqITTw",
+      "rid_bytes": "3552ef950f3e66bdb9a7706cc6baa3010531121becc10a4d2d8282480a884d3c",
+      "x_hkdf_salt": "z-handle-intro-x-v1",
+      "x_seed": "f16750926ab78de5d52ee380cafaf0f0ac88243871d8b289b3553c70089af099",
+      "x_pub": "da259905cbc4ca1c7b8abca7870255abf738a9dcdfd57cd1632a64691d8efc6a"
+    },
+    {
+      "name": "owner_b",
+      "seed": "f10a37fca496bf845805a5ac4beaa959162d3498276865d061427bea5dfb9f39",
+      "pub": "8de09b3ad1bc374df303e87cebc97ca35d2587e5c7f1576e686365526fadc17b"
+    },
+    {
+      "name": "intro_b",
+      "seed": "fc308bd3f5fb66c2c3b9be46326bcc524dc02aa96ecdb3130645fe34a87e9800",
+      "pub": "9f74b8e11e7ac7d1cd651859281fd81e3ddb8209563d8e1b63450d414ab92137",
+      "routing_id": "ONYbp3NMHBDRkmiNTQ5Ac-rfdfjLPOOwy-jIYS-xwNM",
+      "rid_bytes": "38d61ba7734c1c10d192688d4d0e4073eadf75f8cb3ce3b0cbe8c8612fb1c0d3",
+      "x_hkdf_salt": "z-handle-intro-x-v1",
+      "x_seed": "57f0110b75c9bcae968e941ca99f2ba15c5a251e54cc05feb8503c6f6593a636",
+      "x_pub": "5aaf2d0b24258af071186ca7eea1c83b42929460deadc6e1421d6a2827780670"
+    },
+    {
+      "name": "owner_m",
+      "seed": "acc81799a48da43f7ce8f5f262a845661c0074cdc7a1386e45fd6e527be3e5d8",
+      "pub": "8d22f3833f2b3de1444f4671e4b68715dfebd4b406700ad463457371b3b8fe73"
+    },
+    {
+      "name": "intro_m",
+      "seed": "334bcbc853f6d8d333d10a640c6e555e9b9bd4f65eba0adefee35aa73ebbb73b",
+      "pub": "b67466be44a7cda9dbafa7b5a903986e5d8835844422865ee226a667923c1a36",
+      "routing_id": "b7QQ7Xrdpx9zJTyx25uxSCDKSYKsXC_qppQ1abUC1wI",
+      "rid_bytes": "6fb410ed7adda71f73253cb1db9bb14820ca4982ac5c2feaa6943569b502d702",
+      "x_hkdf_salt": "z-handle-intro-x-v1",
+      "x_seed": "6218b46dfd8c4e9c2a9e0ce122ce1fff1076a337cc765df9859d22f2c9fb4bf9",
+      "x_pub": "673df70e19b2cf6b5c98544c48a48fe4033ae2d6636fb1f35da1e83e3aaba44c"
+    }
+  ],
+  "recovery": [
+    {
+      "name": "r1",
+      "entropy": "b1294a7c289a83e1e38d179facb49c",
+      "formatted": "ZHR-P4MMM-Z18KA-1Y3RW-D2YFT-SD4WR",
+      "canonical": "P4MMMZ18KA1Y3RWD2YFTSD4WR",
+      "for_label": "alice.42",
+      "hkdf_salt": "z-handle-recovery-v1",
+      "hkdf_info": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "seed": "bf881bbf9ebfb9d6e4bc8c77dceb152ac313d57ddc6b04bc28a37c82034f16f7",
+      "pub": "5e0084000ead1f7ba11e039470f1b5fd7563e2024ffa34ae6479e5c70fba08f1",
+      "rc_input": "7a2d68616e646c652d72632d76313a5e0084000ead1f7ba11e039470f1b5fd7563e2024ffa34ae6479e5c70fba08f1",
+      "rc": "49c7e244ed416a0847c3560fecddbb8533e6d0f5701752c0d8bd4bac5807e82f"
+    },
+    {
+      "name": "r2",
+      "entropy": "3a95d3a7f45e910413e93f4d6c2b87",
+      "formatted": "ZHR-7AAX7-9ZMBT-8G84Z-97X6P-RAW77",
+      "canonical": "7AAX79ZMBT8G84Z97X6PRAW77",
+      "for_label": "alice.42",
+      "hkdf_salt": "z-handle-recovery-v1",
+      "hkdf_info": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "seed": "1e1810bf4770f5cb6c9b892169113c9b29b59a0a38ff6d8bee61b12666c79e5c",
+      "pub": "e12c57d3f99077ae053fb9386f6ffbbc538e53f04f896821d84b9c01dd414e1c",
+      "rc_input": "7a2d68616e646c652d72632d76313ae12c57d3f99077ae053fb9386f6ffbbc538e53f04f896821d84b9c01dd414e1c",
+      "rc": "0e46af8cd339eea76f5f99192b0b89d8a113afa6aa373c8bc57c9ca11ed3f85d"
+    },
+    {
+      "name": "r_m",
+      "entropy": "6240f097de58fc68666b772f151f9b",
+      "formatted": "ZHR-C90F1-5YYB3-Y6GSK-BEWQH-A7WVN",
+      "canonical": "C90F15YYB3Y6GSKBEWQHA7WVN",
+      "for_label": "alice.42",
+      "hkdf_salt": "z-handle-recovery-v1",
+      "hkdf_info": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "seed": "488612fb7ee364f72c5d2b7331c0ed8396df0b8294ce636b17ec1a7b4648d032",
+      "pub": "8b393231970868c9ed643c5b5ece8b3bde8083637eb47592edaf01fee4da1bc9",
+      "rc_input": "7a2d68616e646c652d72632d76313a8b393231970868c9ed643c5b5ece8b3bde8083637eb47592edaf01fee4da1bc9",
+      "rc": "1b2c86c8c879e3ff1973e019babb5801f6bbec66e58402e3b3496caa140d1710"
+    }
+  ],
+  "record_rules": {
+    "publish_context": "z-handle-publish-v1:",
+    "recover_context": "z-handle-recover-v1:",
+    "rc_context": "z-handle-rc-v1:",
+    "max_value_bytes": 1024,
+    "pow_min": 16,
+    "pow_max": 28
+  },
+  "entries": [
+    {
+      "name": "claim",
+      "note": "Alice claims alice.42: owner A, introduction key A1, 20 bits, rc from r1",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 1,
+      "value_text": "{\"k\":\"claim\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"_D13Nf6XzFhj4AYe230nehiB1OFc9YgCpPf7IPiU9Z8\",\"xintro\":\"7x7PgiPkCR6yJDex-D-XBPu-NGQOmV_T6xGLI8t7z1k\",\"pow\":20,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "9d5d41e992ff6f9ec0dbaff291f32cab76d6dc2ae32d8d25c14933ccedc68501",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f00000000000000019d5d41e992ff6f9ec0dbaff291f32cab76d6dc2ae32d8d25c14933ccedc68501",
+      "signer": "owner_a",
+      "sig": "17387440d48646a5d542ac7ff76374997487b5279ff999d8a0a9e158f54833c375110dde01efbd91ae892440eba4eebf538dfc1938a652883820838d902d490d",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 1,
+        "value": "eyJrIjoiY2xhaW0iLCJvd25lciI6ImQ1REF1THJtcUR4QlpSU0lqVHl0S0ROWDdVUkF1VDMxTkxPRThZWVBoM1EiLCJpbnRybyI6Il9EMTNOZjZYekZoajRBWWUyMzBuZWhpQjFPRmM5WWdDcFBmN0lQaVU5WjgiLCJ4aW50cm8iOiI3eDdQZ2lQa0NSNnlKRGV4LUQtWEJQdS1OR1FPbVZfVDZ4R0xJOHQ3ejFrIiwicG93IjoyMCwicmMiOiJTY2ZpUk8xQmFnaEh3MVlQN04yN2hUUG0wUFZ3RjFMQTJMMUxyRmdINkM4In0=",
+        "sig": "Fzh0QNSGRqXVQqx/92N0mXSHtSef+ZnYoKnhWPVIM8N1EQ3eAe+9ka6JJEDrpO6/U438GTimUog4IIONkC1JDQ=="
+      }
+    },
+    {
+      "name": "update_rotate",
+      "note": "Alice rotates the introduction key to A2 and raises the difficulty",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 2,
+      "value_text": "{\"k\":\"update\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"892hfY2mgQRS86IC2ShWCt-yTP3ND8W2Pr3nikXoJXM\",\"xintro\":\"2iWZBcvEyhx7irynhwJVq_c4qdzf1XzRYypkaR2O_Go\",\"pow\":22,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a22383932686659326d67515253383649433253685743742d795450334e443857325072336e696b586f4a584d222c2278696e74726f223a223269575a42637645796878376972796e68774a56715f633471647a6631587a525979706b6152324f5f476f222c22706f77223a32322c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "c51f1a8b7bc31e8cf1ee59b0f7912636e3357f150d0c809dae9faf335e9273e4",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000002c51f1a8b7bc31e8cf1ee59b0f7912636e3357f150d0c809dae9faf335e9273e4",
+      "signer": "owner_a",
+      "sig": "d679970607d7c332266b59c5e9e6688f70a9c4e4777650a5bd6c89bfd7971b74299949022067254ef4f9263faedc6aa71f808976f8ab118cfe22274b58470f0a",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 2,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJkNURBdUxybXFEeEJaUlNJalR5dEtETlg3VVJBdVQzMU5MT0U4WVlQaDNRIiwiaW50cm8iOiI4OTJoZlkybWdRUlM4NklDMlNoV0N0LXlUUDNORDhXMlByM25pa1hvSlhNIiwieGludHJvIjoiMmlXWkJjdkV5aHg3aXJ5bmh3SlZxX2M0cWR6ZjFYelJZeXBrYVIyT19HbyIsInBvdyI6MjIsInJjIjoiU2NmaVJPMUJhZ2hIdzFZUDdOMjdoVFBtMFBWd0YxTEEyTDFMckZnSDZDOCJ9",
+        "sig": "1nmXBgfXwzIma1nF6eZoj3CpxOR3dlClvWyJv9eXG3QpmUkCIGclTvT5Jj+u3GqnH4CJdvirEYz+IidLWEcPCg=="
+      }
+    },
+    {
+      "name": "update_pause",
+      "note": "Alice pauses the handle: it resolves, and cannot be reached",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 3,
+      "value_text": "{\"k\":\"update\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":null,\"xintro\":null,\"pow\":22,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a6e756c6c2c2278696e74726f223a6e756c6c2c22706f77223a32322c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "cebe5eb0af749d91e35e8506b82b624ec9042d2521cffbf7b7d3431a56875eec",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000003cebe5eb0af749d91e35e8506b82b624ec9042d2521cffbf7b7d3431a56875eec",
+      "signer": "owner_a",
+      "sig": "f5242b033a9a8a3a82d90024286ee25d81072d12c66e956e57e31ce129b2646b6e1d78e7db18a7796502a76b3fbbbd7aa7f6caab08db2d92c3a5178bf64e6600",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 3,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJkNURBdUxybXFEeEJaUlNJalR5dEtETlg3VVJBdVQzMU5MT0U4WVlQaDNRIiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwicG93IjoyMiwicmMiOiJTY2ZpUk8xQmFnaEh3MVlQN04yN2hUUG0wUFZ3RjFMQTJMMUxyRmdINkM4In0=",
+        "sig": "9SQrAzqaijqC2QAkKG7iXYEHLRLGbpVuV+Mc4SmyZGtuHXjn2xineWUCp2s/u716p/bKqwjbLZLDpReL9k5mAA=="
+      }
+    },
+    {
+      "name": "recover",
+      "note": "Alice, without key A, recovers with the code r1: new owner B, new rc from r2",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 4,
+      "value_text": "{\"k\":\"recover\",\"owner\":\"jeCbOtG8N03zA-h868l8o10lh-XH8VduaGNlUm-twXs\",\"intro\":\"n3S44R56x9HNZRhZKB_YHj3bgglWPY4bY0UNQUq5ITc\",\"xintro\":\"Wq8tCyQlivBxGGyn7qHIO0KSlGDercbhQh1qKCd4BnA\",\"pow\":20,\"rc\":\"DkavjNM57qdvX5kZKwuJ2KETr6aqNzyLxXycoR7T-F0\",\"rpub\":\"XgCEAA6tH3uhHgOUcPG1_XVj4gJP-jSuZHnlxw-6CPE\",\"rsig\":\"aEv4qblJyFzpAdRGdc2jUCR7qHX9wv6Rh1QIpzMCLaWnQ0pnFpCebptit5inRKyS7fbLaiZy0bg_PT3MEyqMAg\"}",
+      "value": "7b226b223a227265636f766572222c226f776e6572223a226a6543624f7447384e30337a412d683836386c386f31306c682d58483856647561474e6c556d2d74775873222c22696e74726f223a226e335334345235367839484e5a52685a4b425f59486a336267676c57505934625930554e51557135495463222c2278696e74726f223a22577138744379516c697642784747796e377148494f304b536c47446572636268516831714b436434426e41222c22706f77223a32302c227263223a22446b61766a4e4d353771647658356b5a4b77754a324b4554723661714e7a794c785879636f5237542d4630222c2272707562223a2258674345414136744833756848674f55635047315f58566a34674a502d6a53755a486e6c78772d36435045222c2272736967223a226145763471626c4a79467a70416452476463326a55435237714858397776365268315149707a4d434c61576e5130706e46704365627074697435696e524b79533766624c61695a793062675f5054334d4579714d4167227d",
+      "value_sha256": "aa1c76c9bba4aa48388f890d0b77af4bc97bf13edca2a666a94511725e0ee848",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000004aa1c76c9bba4aa48388f890d0b77af4bc97bf13edca2a666a94511725e0ee848",
+      "signer": "owner_b",
+      "sig": "5c017b452e4f271c63f047a7afadc6bd7983322e16de09bb739cd74269a158e15b63430bba0dcf80c6e56e059ded47fad45535e0dc71642162387a6dcf47f50b",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 4,
+        "value": "eyJrIjoicmVjb3ZlciIsIm93bmVyIjoiamVDYk90RzhOMDN6QS1oODY4bDhvMTBsaC1YSDhWZHVhR05sVW0tdHdYcyIsImludHJvIjoibjNTNDRSNTZ4OUhOWlJoWktCX1lIajNiZ2dsV1BZNGJZMFVOUVVxNUlUYyIsInhpbnRybyI6IldxOHRDeVFsaXZCeEdHeW43cUhJTzBLU2xHRGVyY2JoUWgxcUtDZDRCbkEiLCJwb3ciOjIwLCJyYyI6IkRrYXZqTk01N3Fkdlg1a1pLd3VKMktFVHI2YXFOenlMeFh5Y29SN1QtRjAiLCJycHViIjoiWGdDRUFBNnRIM3VoSGdPVWNQRzFfWFZqNGdKUC1qU3VaSG5seHctNkNQRSIsInJzaWciOiJhRXY0cWJsSnlGenBBZFJHZGMyalVDUjdxSFg5d3Y2UmgxUUlwek1DTGFXblEwcG5GcENlYnB0aXQ1aW5SS3lTN2ZiTGFpWnkwYmdfUFQzTUV5cU1BZyJ9",
+        "sig": "XAF7RS5PJxxj8Eenr63GvXmDMi4W3gm7c5zXQmmhWOFbY0MLug3PgMblbgWd7Uf61FU14NxxZCFiOHptz0f1Cw=="
+      },
+      "recover_input": "7a2d68616e646c652d7265636f7665722d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f00000000000000048de09b3ad1bc374df303e87cebc97ca35d2587e5c7f1576e686365526fadc17b0e46af8cd339eea76f5f99192b0b89d8a113afa6aa373c8bc57c9ca11ed3f85d",
+      "rsig_by": "r1",
+      "rsig": "684bf8a9b949c85ce901d44675cda350247ba875fdc2fe91875408a733022da5a7434a6716909e6e9b62b798a744ac92edf6cb6a2672d1b83f3d3dcc132a8c02"
+    },
+    {
+      "name": "update_after_recover",
+      "note": "the new owner B updates",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 5,
+      "value_text": "{\"k\":\"update\",\"owner\":\"jeCbOtG8N03zA-h868l8o10lh-XH8VduaGNlUm-twXs\",\"intro\":\"n3S44R56x9HNZRhZKB_YHj3bgglWPY4bY0UNQUq5ITc\",\"xintro\":\"Wq8tCyQlivBxGGyn7qHIO0KSlGDercbhQh1qKCd4BnA\",\"pow\":24,\"rc\":\"DkavjNM57qdvX5kZKwuJ2KETr6aqNzyLxXycoR7T-F0\"}",
+      "value": "7b226b223a22757064617465222c226f776e6572223a226a6543624f7447384e30337a412d683836386c386f31306c682d58483856647561474e6c556d2d74775873222c22696e74726f223a226e335334345235367839484e5a52685a4b425f59486a336267676c57505934625930554e51557135495463222c2278696e74726f223a22577138744379516c697642784747796e377148494f304b536c47446572636268516831714b436434426e41222c22706f77223a32342c227263223a22446b61766a4e4d353771647658356b5a4b77754a324b4554723661714e7a794c785879636f5237542d4630227d",
+      "value_sha256": "f30a71bbbe4f4949b90c4c2e5a13b918483c5190d35acc22e8e343683cdb7e74",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000005f30a71bbbe4f4949b90c4c2e5a13b918483c5190d35acc22e8e343683cdb7e74",
+      "signer": "owner_b",
+      "sig": "9eb50000e5ad4e3c3a62b3c3aaa6012590e74ebe036c5fb3615005ad788377b61dad80e333cdcc738ae7fa76ac324c6a06bc4648409c4a22c7da12e8bb5d5b08",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 5,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJqZUNiT3RHOE4wM3pBLWg4NjhsOG8xMGxoLVhIOFZkdWFHTmxVbS10d1hzIiwiaW50cm8iOiJuM1M0NFI1Nng5SE5aUmhaS0JfWUhqM2JnZ2xXUFk0YlkwVU5RVXE1SVRjIiwieGludHJvIjoiV3E4dEN5UWxpdkJ4R0d5bjdxSElPMEtTbEdEZXJjYmhRaDFxS0NkNEJuQSIsInBvdyI6MjQsInJjIjoiRGthdmpOTTU3cWR2WDVrWkt3dUoyS0VUcjZhcU56eUx4WHljb1I3VC1GMCJ9",
+        "sig": "nrUAAOWtTjw6YrPDqqYBJZDnTr4DbF+zYVAFrXiDd7YdrYDjM83Mc4rn+nasMkxqBrxGSECcSiLH2hLou11bCA=="
+      }
+    },
+    {
+      "name": "m_claim_taken",
+      "note": "Mallory's claim on alice.42 at v2",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 2,
+      "value_text": "{\"k\":\"claim\",\"owner\":\"jSLzgz8rPeFET0Zx5LaHFd_r1LQGcArUY0VzcbO4_nM\",\"intro\":\"tnRmvkSnzanbr6e1qQOYbl2INYREIoZe4iamZ5I8GjY\",\"xintro\":\"Zz33Dhmyz2tcmFRMSKSP5AM64tZjb7HzXaHoPjqrpEw\",\"pow\":16,\"rc\":\"GyyGyMh54_8Zc-AZurtYAfa77GblhALjs0lsqhQNFxA\"}",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a226a534c7a677a38725065464554305a78354c614846645f72314c5147634172555930567a63624f345f6e4d222c22696e74726f223a22746e526d766b536e7a616e627236653171514f59626c32494e595245496f5a653469616d5a354938476a59222c2278696e74726f223a225a7a333344686d797a3274636d46524d534b535035414d3634745a6a6237487a5861486f506a7172704577222c22706f77223a31362c227263223a2247797947794d6835345f385a632d415a75727459416661373747626c68414c6a73306c737168514e467841227d",
+      "value_sha256": "c4ac938c17645015b0aa9bf96c5e8c3456a615917a74aea834257ce2d6252d1d",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000002c4ac938c17645015b0aa9bf96c5e8c3456a615917a74aea834257ce2d6252d1d",
+      "signer": "owner_m",
+      "sig": "19010747d6d4cdd61a6d60c90de0ca1c856e0a5a8f9d12d947d1773b30193c20e29c305565c80628302cf4f5ecd8af083f73d661baabb526d735ae1d3c3cb00e",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 2,
+        "value": "eyJrIjoiY2xhaW0iLCJvd25lciI6ImpTTHpnejhyUGVGRVQwWng1TGFIRmRfcjFMUUdjQXJVWTBWemNiTzRfbk0iLCJpbnRybyI6InRuUm12a1NuemFuYnI2ZTFxUU9ZYmwySU5ZUkVJb1plNGlhbVo1SThHalkiLCJ4aW50cm8iOiJaejMzRGhteXoydGNtRlJNU0tTUDVBTTY0dFpqYjdIelhhSG9QanFycEV3IiwicG93IjoxNiwicmMiOiJHeXlHeU1oNTRfOFpjLUFadXJ0WUFmYTc3R2JsaEFManMwbHNxaFFORnhBIn0=",
+        "sig": "GQEHR9bUzdYabWDJDeDKHIVuClqPnRLZR9F3OzAZPCDinDBVZcgGKDAs9PXs2K8IP3PWYbqrtSbXNa4dPDywDg=="
+      }
+    },
+    {
+      "name": "m_update_foreign_sig",
+      "note": "an update keeping Alice's owner and rc, signed by Mallory",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 2,
+      "value_text": "{\"k\":\"update\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"tnRmvkSnzanbr6e1qQOYbl2INYREIoZe4iamZ5I8GjY\",\"xintro\":\"Zz33Dhmyz2tcmFRMSKSP5AM64tZjb7HzXaHoPjqrpEw\",\"pow\":16,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a22746e526d766b536e7a616e627236653171514f59626c32494e595245496f5a653469616d5a354938476a59222c2278696e74726f223a225a7a333344686d797a3274636d46524d534b535035414d3634745a6a6237487a5861486f506a7172704577222c22706f77223a31362c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "18b9cadd5f4870186dfffa91dada046e56bc470757aafec3690d74b07b73b9d2",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f000000000000000218b9cadd5f4870186dfffa91dada046e56bc470757aafec3690d74b07b73b9d2",
+      "signer": "owner_m",
+      "sig": "fd86a87628a87d462336c8ad586babd1781913b16432891ff8cb8c957e5a0ff7dcba5292b4d9cd1aeade77d76abd748176d569f3596c872ad09c0c8d22b6880e",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 2,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJkNURBdUxybXFEeEJaUlNJalR5dEtETlg3VVJBdVQzMU5MT0U4WVlQaDNRIiwiaW50cm8iOiJ0blJtdmtTbnphbmJyNmUxcVFPWWJsMklOWVJFSW9aZTRpYW1aNUk4R2pZIiwieGludHJvIjoiWnozM0RobXl6MnRjbUZSTVNLU1A1QU02NHRaamI3SHpYYUhvUGpxcnBFdyIsInBvdyI6MTYsInJjIjoiU2NmaVJPMUJhZ2hIdzFZUDdOMjdoVFBtMFBWd0YxTEEyTDFMckZnSDZDOCJ9",
+        "sig": "/YaodiiofUYjNsitWGur0XgZE7FkMokf+MuMlX5aD/fculKStNnNGured9dqvXSBdtVp81lshyrQnAyNIraIDg=="
+      }
+    },
+    {
+      "name": "m_update_foreign_owner",
+      "note": "an update naming Mallory as the owner, signed by Mallory",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 2,
+      "value_text": "{\"k\":\"update\",\"owner\":\"jSLzgz8rPeFET0Zx5LaHFd_r1LQGcArUY0VzcbO4_nM\",\"intro\":\"tnRmvkSnzanbr6e1qQOYbl2INYREIoZe4iamZ5I8GjY\",\"xintro\":\"Zz33Dhmyz2tcmFRMSKSP5AM64tZjb7HzXaHoPjqrpEw\",\"pow\":16,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22757064617465222c226f776e6572223a226a534c7a677a38725065464554305a78354c614846645f72314c5147634172555930567a63624f345f6e4d222c22696e74726f223a22746e526d766b536e7a616e627236653171514f59626c32494e595245496f5a653469616d5a354938476a59222c2278696e74726f223a225a7a333344686d797a3274636d46524d534b535035414d3634745a6a6237487a5861486f506a7172704577222c22706f77223a31362c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "e9235a3020d92831a87110aae19f8022921719d16636e05064d147a376a002f6",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000002e9235a3020d92831a87110aae19f8022921719d16636e05064d147a376a002f6",
+      "signer": "owner_m",
+      "sig": "3efa5db3169cd356ccbec1b67e12d16ee573dcf35f44dc5679fe8318067b4ea55cdb441acd05286af9d370936834d97702adb3fcfd422b31cd983ed3df13170f",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 2,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJqU0x6Z3o4clBlRkVUMFp4NUxhSEZkX3IxTFFHY0FyVVkwVnpjYk80X25NIiwiaW50cm8iOiJ0blJtdmtTbnphbmJyNmUxcVFPWWJsMklOWVJFSW9aZTRpYW1aNUk4R2pZIiwieGludHJvIjoiWnozM0RobXl6MnRjbUZSTVNLU1A1QU02NHRaamI3SHpYYUhvUGpxcnBFdyIsInBvdyI6MTYsInJjIjoiU2NmaVJPMUJhZ2hIdzFZUDdOMjdoVFBtMFBWd0YxTEEyTDFMckZnSDZDOCJ9",
+        "sig": "Pvpdsxac01bMvsG2fhLRbuVz3PNfRNxWef6DGAZ7TqVc20QazQUoavnTcJNoNNl3Aq2z/P1CKzHNmD7T3xMXDw=="
+      }
+    },
+    {
+      "name": "a_update_rc_change",
+      "note": "an update by Alice that changes rc: only a recover may",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 2,
+      "value_text": "{\"k\":\"update\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"892hfY2mgQRS86IC2ShWCt-yTP3ND8W2Pr3nikXoJXM\",\"xintro\":\"2iWZBcvEyhx7irynhwJVq_c4qdzf1XzRYypkaR2O_Go\",\"pow\":22,\"rc\":\"GyyGyMh54_8Zc-AZurtYAfa77GblhALjs0lsqhQNFxA\"}",
+      "value": "7b226b223a22757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a22383932686659326d67515253383649433253685743742d795450334e443857325072336e696b586f4a584d222c2278696e74726f223a223269575a42637645796878376972796e68774a56715f633471647a6631587a525979706b6152324f5f476f222c22706f77223a32322c227263223a2247797947794d6835345f385a632d415a75727459416661373747626c68414c6a73306c737168514e467841227d",
+      "value_sha256": "b4681cd91789b6122cd9b1fbfd651985d4faab7bd9c35b85cab7de871080b832",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000002b4681cd91789b6122cd9b1fbfd651985d4faab7bd9c35b85cab7de871080b832",
+      "signer": "owner_a",
+      "sig": "2f62182ce4608ca7e17b2e83b4dda5addedb1a5a21c28c1ea7fdd2cbfb1927cc28482438ad59d432d2ba37ac157cb72b17358d41fb08b720ff5f5c30e6de6b07",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 2,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJkNURBdUxybXFEeEJaUlNJalR5dEtETlg3VVJBdVQzMU5MT0U4WVlQaDNRIiwiaW50cm8iOiI4OTJoZlkybWdRUlM4NklDMlNoV0N0LXlUUDNORDhXMlByM25pa1hvSlhNIiwieGludHJvIjoiMmlXWkJjdkV5aHg3aXJ5bmh3SlZxX2M0cWR6ZjFYelJZeXBrYVIyT19HbyIsInBvdyI6MjIsInJjIjoiR3l5R3lNaDU0XzhaYy1BWnVydFlBZmE3N0dibGhBTGpzMGxzcWhRTkZ4QSJ9",
+        "sig": "L2IYLORgjKfhey6DtN2lrd7bGlohwowep/3Sy/sZJ8woSCQ4rVnUMtK6N6wVfLcrFzWNQfsItyD/X1ww5t5rBw=="
+      }
+    },
+    {
+      "name": "a_update_stale",
+      "note": "a second update at v2, after the one at v2",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 2,
+      "value_text": "{\"k\":\"update\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"_D13Nf6XzFhj4AYe230nehiB1OFc9YgCpPf7IPiU9Z8\",\"xintro\":\"7x7PgiPkCR6yJDex-D-XBPu-NGQOmV_T6xGLI8t7z1k\",\"pow\":20,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "0ba7a910736a611b62c48854c11666045ea4fb2c4c709ba8d2f18c595d02ee72",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f00000000000000020ba7a910736a611b62c48854c11666045ea4fb2c4c709ba8d2f18c595d02ee72",
+      "signer": "owner_a",
+      "sig": "f4388a45beab6666399fb13b73dc9def75fd339f16beb4faddb24279bd1db466929092083a99a9f8c635c03e3746c1914bcd6418c2135336de59e07ac339c500",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 2,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJkNURBdUxybXFEeEJaUlNJalR5dEtETlg3VVJBdVQzMU5MT0U4WVlQaDNRIiwiaW50cm8iOiJfRDEzTmY2WHpGaGo0QVllMjMwbmVoaUIxT0ZjOVlnQ3BQZjdJUGlVOVo4IiwieGludHJvIjoiN3g3UGdpUGtDUjZ5SkRleC1ELVhCUHUtTkdRT21WX1Q2eEdMSTh0N3oxayIsInBvdyI6MjAsInJjIjoiU2NmaVJPMUJhZ2hIdzFZUDdOMjdoVFBtMFBWd0YxTEEyTDFMckZnSDZDOCJ9",
+        "sig": "9DiKRb6rZmY5n7E7c9yd73X9M58WvrT63bJCeb0dtGaSkJIIOpmp+MY1wD43RsGRS81kGMITUzbeWeB6wznFAA=="
+      }
+    },
+    {
+      "name": "a_update_oversize",
+      "note": "an update padded to 1025 bytes",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 2,
+      "value_text": "{\"k\":\"update\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"892hfY2mgQRS86IC2ShWCt-yTP3ND8W2Pr3nikXoJXM\",\"xintro\":\"2iWZBcvEyhx7irynhwJVq_c4qdzf1XzRYypkaR2O_Go\",\"pow\":22,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    ",
+      "value": "7b226b223a22757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a22383932686659326d67515253383649433253685743742d795450334e443857325072336e696b586f4a584d222c2278696e74726f223a223269575a42637645796878376972796e68774a56715f633471647a6631587a525979706b6152324f5f476f222c22706f77223a32322c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d2020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020",
+      "value_sha256": "da22d374fff72a226f2421d745f83330cb18a55d31d35180c9c65db91d96840c",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000002da22d374fff72a226f2421d745f83330cb18a55d31d35180c9c65db91d96840c",
+      "signer": "owner_a",
+      "sig": "5bb68af90bcc2f5c39195d6de61e82b9f31a612fb2c4dc162b211791e1079db6e568145e0aa4fa9656656a9f189161d02bd6aee3a51defe70f19d5bcbbc44907",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 2,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJkNURBdUxybXFEeEJaUlNJalR5dEtETlg3VVJBdVQzMU5MT0U4WVlQaDNRIiwiaW50cm8iOiI4OTJoZlkybWdRUlM4NklDMlNoV0N0LXlUUDNORDhXMlByM25pa1hvSlhNIiwieGludHJvIjoiMmlXWkJjdkV5aHg3aXJ5bmh3SlZxX2M0cWR6ZjFYelJZeXBrYVIyT19HbyIsInBvdyI6MjIsInJjIjoiU2NmaVJPMUJhZ2hIdzFZUDdOMjdoVFBtMFBWd0YxTEEyTDFMckZnSDZDOCJ9ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA=",
+        "sig": "W7aK+QvML1w5GV1t5h6CufMaYS+yxNwWKyEXkeEHnbblaBReCqT6llZlap8YkWHQK9au46Ud7+cPGdW8u8RJBw=="
+      }
+    },
+    {
+      "name": "a_update_not_canonical",
+      "note": "an update with one space added",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 2,
+      "value_text": "{\"k\": \"update\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"892hfY2mgQRS86IC2ShWCt-yTP3ND8W2Pr3nikXoJXM\",\"xintro\":\"2iWZBcvEyhx7irynhwJVq_c4qdzf1XzRYypkaR2O_Go\",\"pow\":22,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a2022757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a22383932686659326d67515253383649433253685743742d795450334e443857325072336e696b586f4a584d222c2278696e74726f223a223269575a42637645796878376972796e68774a56715f633471647a6631587a525979706b6152324f5f476f222c22706f77223a32322c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "f5c3039a07b4dd03bb03b2b65ade04719ad304b32689adc67c62ebbc3c01796a",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000002f5c3039a07b4dd03bb03b2b65ade04719ad304b32689adc67c62ebbc3c01796a",
+      "signer": "owner_a",
+      "sig": "9697836afba8a9edfdbc70a9123e3d29e8dbe0927cb98c1a69cc1d2e0b6bc421c7204924f3ae20e3e1632679b651724b1cfc6158735c1f909b4715e45accc00e",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 2,
+        "value": "eyJrIjogInVwZGF0ZSIsIm93bmVyIjoiZDVEQXVMcm1xRHhCWlJTSWpUeXRLRE5YN1VSQXVUMzFOTE9FOFlZUGgzUSIsImludHJvIjoiODkyaGZZMm1nUVJTODZJQzJTaFdDdC15VFAzTkQ4VzJQcjNuaWtYb0pYTSIsInhpbnRybyI6IjJpV1pCY3ZFeWh4N2lyeW5od0pWcV9jNHFkemYxWHpSWXlwa2FSMk9fR28iLCJwb3ciOjIyLCJyYyI6IlNjZmlSTzFCYWdoSHcxWVA3TjI3aFRQbTBQVndGMUxBMkwxTHJGZ0g2QzgifQ==",
+        "sig": "lpeDavuoqe39vHCpEj49Kejb4JJ8uYwaacwdLgtrxCHHIEkk864g4+FjJnm2UXJLHPxhWHNcH5CbRxXkWszADg=="
+      }
+    },
+    {
+      "name": "m_recover_wrong_key",
+      "note": "Mallory recovers with a code of her own (r_m): its rpub is not the one rc commits to",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 4,
+      "value_text": "{\"k\":\"recover\",\"owner\":\"jSLzgz8rPeFET0Zx5LaHFd_r1LQGcArUY0VzcbO4_nM\",\"intro\":\"tnRmvkSnzanbr6e1qQOYbl2INYREIoZe4iamZ5I8GjY\",\"xintro\":\"Zz33Dhmyz2tcmFRMSKSP5AM64tZjb7HzXaHoPjqrpEw\",\"pow\":16,\"rc\":\"GyyGyMh54_8Zc-AZurtYAfa77GblhALjs0lsqhQNFxA\",\"rpub\":\"izkyMZcIaMntZDxbXs6LO96Ag2N-tHWS7a8B_uTaG8k\",\"rsig\":\"h7tqoS8Whc1YFSeQV0GQHuZBRMm5qW7LBvKvJe5Y5r4DIJwo3pZCAXOj8GoHLTVHfgDkrWQ_jT27OvmpI9fmAw\"}",
+      "value": "7b226b223a227265636f766572222c226f776e6572223a226a534c7a677a38725065464554305a78354c614846645f72314c5147634172555930567a63624f345f6e4d222c22696e74726f223a22746e526d766b536e7a616e627236653171514f59626c32494e595245496f5a653469616d5a354938476a59222c2278696e74726f223a225a7a333344686d797a3274636d46524d534b535035414d3634745a6a6237487a5861486f506a7172704577222c22706f77223a31362c227263223a2247797947794d6835345f385a632d415a75727459416661373747626c68414c6a73306c737168514e467841222c2272707562223a22697a6b794d5a6349614d6e745a4478625873364c4f39364167324e2d74485753376138425f75546147386b222c2272736967223a22683774716f53385768633159465365515630475148755a42524d6d357157374c42764b764a65355935723444494a776f33705a4341584f6a38476f484c5456486667446b7257515f6a5432374f766d704939666d4177227d",
+      "value_sha256": "479281bca63c2f3ae6d6af4e99babbc57c6b62a7da1e86528e5929e76cb05417",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000004479281bca63c2f3ae6d6af4e99babbc57c6b62a7da1e86528e5929e76cb05417",
+      "signer": "owner_m",
+      "sig": "9f6af463592deed15cc86c384340a7711e4e62f27e6b215a833025f188e601d3ce4585a8290c7acbde4a2587403dde3d6e98bf3fd85d6c78806b4d696fad4809",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 4,
+        "value": "eyJrIjoicmVjb3ZlciIsIm93bmVyIjoialNMemd6OHJQZUZFVDBaeDVMYUhGZF9yMUxRR2NBclVZMFZ6Y2JPNF9uTSIsImludHJvIjoidG5SbXZrU256YW5icjZlMXFRT1libDJJTllSRUlvWmU0aWFtWjVJOEdqWSIsInhpbnRybyI6Ilp6MzNEaG15ejJ0Y21GUk1TS1NQNUFNNjR0WmpiN0h6WGFIb1BqcXJwRXciLCJwb3ciOjE2LCJyYyI6Ikd5eUd5TWg1NF84WmMtQVp1cnRZQWZhNzdHYmxoQUxqczBsc3FoUU5GeEEiLCJycHViIjoiaXpreU1aY0lhTW50WkR4YlhzNkxPOTZBZzJOLXRIV1M3YThCX3VUYUc4ayIsInJzaWciOiJoN3Rxb1M4V2hjMVlGU2VRVjBHUUh1WkJSTW01cVc3TEJ2S3ZKZTVZNXI0RElKd28zcFpDQVhPajhHb0hMVFZIZmdEa3JXUV9qVDI3T3ZtcEk5Zm1BdyJ9",
+        "sig": "n2r0Y1kt7tFcyGw4Q0CncR5OYvJ+ayFagzAl8YjmAdPORYWoKQx6y95KJYdAPd49bpi/P9hdbHiAa01pb61ICQ=="
+      }
+    },
+    {
+      "name": "recover_rsig_other_rc",
+      "note": "the right rpub, with an rsig over a different rc than the record installs",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 4,
+      "value_text": "{\"k\":\"recover\",\"owner\":\"jeCbOtG8N03zA-h868l8o10lh-XH8VduaGNlUm-twXs\",\"intro\":\"n3S44R56x9HNZRhZKB_YHj3bgglWPY4bY0UNQUq5ITc\",\"xintro\":\"Wq8tCyQlivBxGGyn7qHIO0KSlGDercbhQh1qKCd4BnA\",\"pow\":20,\"rc\":\"DkavjNM57qdvX5kZKwuJ2KETr6aqNzyLxXycoR7T-F0\",\"rpub\":\"XgCEAA6tH3uhHgOUcPG1_XVj4gJP-jSuZHnlxw-6CPE\",\"rsig\":\"SpDrkIxWPrFgrJqjZfuqBQY2mYq-Iol-mOOqeTZQ0qvog341K8VNtrxgxIMfoSN1-PIwoQje4SWG_eKoP1izDw\"}",
+      "value": "7b226b223a227265636f766572222c226f776e6572223a226a6543624f7447384e30337a412d683836386c386f31306c682d58483856647561474e6c556d2d74775873222c22696e74726f223a226e335334345235367839484e5a52685a4b425f59486a336267676c57505934625930554e51557135495463222c2278696e74726f223a22577138744379516c697642784747796e377148494f304b536c47446572636268516831714b436434426e41222c22706f77223a32302c227263223a22446b61766a4e4d353771647658356b5a4b77754a324b4554723661714e7a794c785879636f5237542d4630222c2272707562223a2258674345414136744833756848674f55635047315f58566a34674a502d6a53755a486e6c78772d36435045222c2272736967223a22537044726b49785750724667724a716a5a667571425159326d59712d496f6c2d6d4f4f7165545a513071766f673334314b38564e7472786778494d666f534e312d5049776f516a65345357475f654b6f5031697a4477227d",
+      "value_sha256": "5af141c6afc6286796e424c311a25bbd1908e8dd29cdabacbd4ec141915bf1f2",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f00000000000000045af141c6afc6286796e424c311a25bbd1908e8dd29cdabacbd4ec141915bf1f2",
+      "signer": "owner_b",
+      "sig": "589e5e3c6912fcfec5be87d41950dfedd1cac7aecf9fdcf83c5abd57d1b98bd9643a26859ff5b65320717daa4effe989da8fffad1c8b0ecd2343e910cc4df10d",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 4,
+        "value": "eyJrIjoicmVjb3ZlciIsIm93bmVyIjoiamVDYk90RzhOMDN6QS1oODY4bDhvMTBsaC1YSDhWZHVhR05sVW0tdHdYcyIsImludHJvIjoibjNTNDRSNTZ4OUhOWlJoWktCX1lIajNiZ2dsV1BZNGJZMFVOUVVxNUlUYyIsInhpbnRybyI6IldxOHRDeVFsaXZCeEdHeW43cUhJTzBLU2xHRGVyY2JoUWgxcUtDZDRCbkEiLCJwb3ciOjIwLCJyYyI6IkRrYXZqTk01N3Fkdlg1a1pLd3VKMktFVHI2YXFOenlMeFh5Y29SN1QtRjAiLCJycHViIjoiWGdDRUFBNnRIM3VoSGdPVWNQRzFfWFZqNGdKUC1qU3VaSG5seHctNkNQRSIsInJzaWciOiJTcERya0l4V1ByRmdySnFqWmZ1cUJRWTJtWXEtSW9sLW1PT3FlVFpRMHF2b2czNDFLOFZOdHJ4Z3hJTWZvU04xLVBJd29RamU0U1dHX2VLb1AxaXpEdyJ9",
+        "sig": "WJ5ePGkS/P7FvofUGVDf7dHKx67Pn9z4PFq9V9G5i9lkOiaFn/W2UyBxfapO/+mJ2o//rRyLDs0jQ+kQzE3xDQ=="
+      }
+    },
+    {
+      "name": "recover_without_rsig",
+      "note": "a recover that changes owner and rc with no rsig",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 4,
+      "value_text": "{\"k\":\"recover\",\"owner\":\"jeCbOtG8N03zA-h868l8o10lh-XH8VduaGNlUm-twXs\",\"intro\":\"n3S44R56x9HNZRhZKB_YHj3bgglWPY4bY0UNQUq5ITc\",\"xintro\":\"Wq8tCyQlivBxGGyn7qHIO0KSlGDercbhQh1qKCd4BnA\",\"pow\":20,\"rc\":\"DkavjNM57qdvX5kZKwuJ2KETr6aqNzyLxXycoR7T-F0\",\"rpub\":\"XgCEAA6tH3uhHgOUcPG1_XVj4gJP-jSuZHnlxw-6CPE\"}",
+      "value": "7b226b223a227265636f766572222c226f776e6572223a226a6543624f7447384e30337a412d683836386c386f31306c682d58483856647561474e6c556d2d74775873222c22696e74726f223a226e335334345235367839484e5a52685a4b425f59486a336267676c57505934625930554e51557135495463222c2278696e74726f223a22577138744379516c697642784747796e377148494f304b536c47446572636268516831714b436434426e41222c22706f77223a32302c227263223a22446b61766a4e4d353771647658356b5a4b77754a324b4554723661714e7a794c785879636f5237542d4630222c2272707562223a2258674345414136744833756848674f55635047315f58566a34674a502d6a53755a486e6c78772d36435045227d",
+      "value_sha256": "c27653e4f3a06fdc36943b7ea3bdebb10abbfd7ce2d4951a39641f8f8f5ada83",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000004c27653e4f3a06fdc36943b7ea3bdebb10abbfd7ce2d4951a39641f8f8f5ada83",
+      "signer": "owner_b",
+      "sig": "507cfb17ba0753e1a2582050517a1ca056dc93494899b754dff927ecf677331ed6b4619f42167cf194eca6c1fd9e3ff5843508dd468e552a5ce67520b0419900",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 4,
+        "value": "eyJrIjoicmVjb3ZlciIsIm93bmVyIjoiamVDYk90RzhOMDN6QS1oODY4bDhvMTBsaC1YSDhWZHVhR05sVW0tdHdYcyIsImludHJvIjoibjNTNDRSNTZ4OUhOWlJoWktCX1lIajNiZ2dsV1BZNGJZMFVOUVVxNUlUYyIsInhpbnRybyI6IldxOHRDeVFsaXZCeEdHeW43cUhJTzBLU2xHRGVyY2JoUWgxcUtDZDRCbkEiLCJwb3ciOjIwLCJyYyI6IkRrYXZqTk01N3Fkdlg1a1pLd3VKMktFVHI2YXFOenlMeFh5Y29SN1QtRjAiLCJycHViIjoiWGdDRUFBNnRIM3VoSGdPVWNQRzFfWFZqNGdKUC1qU3VaSG5seHctNkNQRSJ9",
+        "sig": "UHz7F7oHU+GiWCBQUXocoFbck0lImbdU3/kn7PZ3Mx7WtGGfQhZ88ZTspsH9nj/1hDUI3UaOVSpc5nUgsEGZAA=="
+      }
+    },
+    {
+      "name": "recover_signed_by_old_owner",
+      "note": "a correct rpub and rsig, the entry signed by the OLD owner A",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 4,
+      "value_text": "{\"k\":\"recover\",\"owner\":\"jeCbOtG8N03zA-h868l8o10lh-XH8VduaGNlUm-twXs\",\"intro\":\"n3S44R56x9HNZRhZKB_YHj3bgglWPY4bY0UNQUq5ITc\",\"xintro\":\"Wq8tCyQlivBxGGyn7qHIO0KSlGDercbhQh1qKCd4BnA\",\"pow\":20,\"rc\":\"DkavjNM57qdvX5kZKwuJ2KETr6aqNzyLxXycoR7T-F0\",\"rpub\":\"XgCEAA6tH3uhHgOUcPG1_XVj4gJP-jSuZHnlxw-6CPE\",\"rsig\":\"aEv4qblJyFzpAdRGdc2jUCR7qHX9wv6Rh1QIpzMCLaWnQ0pnFpCebptit5inRKyS7fbLaiZy0bg_PT3MEyqMAg\"}",
+      "value": "7b226b223a227265636f766572222c226f776e6572223a226a6543624f7447384e30337a412d683836386c386f31306c682d58483856647561474e6c556d2d74775873222c22696e74726f223a226e335334345235367839484e5a52685a4b425f59486a336267676c57505934625930554e51557135495463222c2278696e74726f223a22577138744379516c697642784747796e377148494f304b536c47446572636268516831714b436434426e41222c22706f77223a32302c227263223a22446b61766a4e4d353771647658356b5a4b77754a324b4554723661714e7a794c785879636f5237542d4630222c2272707562223a2258674345414136744833756848674f55635047315f58566a34674a502d6a53755a486e6c78772d36435045222c2272736967223a226145763471626c4a79467a70416452476463326a55435237714858397776365268315149707a4d434c61576e5130706e46704365627074697435696e524b79533766624c61695a793062675f5054334d4579714d4167227d",
+      "value_sha256": "aa1c76c9bba4aa48388f890d0b77af4bc97bf13edca2a666a94511725e0ee848",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000004aa1c76c9bba4aa48388f890d0b77af4bc97bf13edca2a666a94511725e0ee848",
+      "signer": "owner_a",
+      "sig": "fafd1df1e4dab0514e294817cc2311ab0f5bf9484b02456bb145d4688036cd724f6d6599b4d6235704976cf65893e154a6f57ef2e4606dec685d9bb372c2760b",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 4,
+        "value": "eyJrIjoicmVjb3ZlciIsIm93bmVyIjoiamVDYk90RzhOMDN6QS1oODY4bDhvMTBsaC1YSDhWZHVhR05sVW0tdHdYcyIsImludHJvIjoibjNTNDRSNTZ4OUhOWlJoWktCX1lIajNiZ2dsV1BZNGJZMFVOUVVxNUlUYyIsInhpbnRybyI6IldxOHRDeVFsaXZCeEdHeW43cUhJTzBLU2xHRGVyY2JoUWgxcUtDZDRCbkEiLCJwb3ciOjIwLCJyYyI6IkRrYXZqTk01N3Fkdlg1a1pLd3VKMktFVHI2YXFOenlMeFh5Y29SN1QtRjAiLCJycHViIjoiWGdDRUFBNnRIM3VoSGdPVWNQRzFfWFZqNGdKUC1qU3VaSG5seHctNkNQRSIsInJzaWciOiJhRXY0cWJsSnlGenBBZFJHZGMyalVDUjdxSFg5d3Y2UmgxUUlwek1DTGFXblEwcG5GcENlYnB0aXQ1aW5SS3lTN2ZiTGFpWnkwYmdfUFQzTUV5cU1BZyJ9",
+        "sig": "+v0d8eTasFFOKUgXzCMRqw9b+UhLAkVrsUXUaIA2zXJPbWWZtNYjVwSXbPZYk+FUpvV+8uRgbexoXZuzcsJ2Cw=="
+      }
+    },
+    {
+      "name": "a_update_after_recover",
+      "note": "the old owner A, after the recover, signing an update that names B",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 5,
+      "value_text": "{\"k\":\"update\",\"owner\":\"jeCbOtG8N03zA-h868l8o10lh-XH8VduaGNlUm-twXs\",\"intro\":\"n3S44R56x9HNZRhZKB_YHj3bgglWPY4bY0UNQUq5ITc\",\"xintro\":\"Wq8tCyQlivBxGGyn7qHIO0KSlGDercbhQh1qKCd4BnA\",\"pow\":24,\"rc\":\"DkavjNM57qdvX5kZKwuJ2KETr6aqNzyLxXycoR7T-F0\"}",
+      "value": "7b226b223a22757064617465222c226f776e6572223a226a6543624f7447384e30337a412d683836386c386f31306c682d58483856647561474e6c556d2d74775873222c22696e74726f223a226e335334345235367839484e5a52685a4b425f59486a336267676c57505934625930554e51557135495463222c2278696e74726f223a22577138744379516c697642784747796e377148494f304b536c47446572636268516831714b436434426e41222c22706f77223a32342c227263223a22446b61766a4e4d353771647658356b5a4b77754a324b4554723661714e7a794c785879636f5237542d4630227d",
+      "value_sha256": "f30a71bbbe4f4949b90c4c2e5a13b918483c5190d35acc22e8e343683cdb7e74",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000005f30a71bbbe4f4949b90c4c2e5a13b918483c5190d35acc22e8e343683cdb7e74",
+      "signer": "owner_a",
+      "sig": "fd2e60b208d749676c0be16fca25200da4c6211aba90f055bb1656fe58ddd1defeb4d87646f457075ab700c60e57bbfe564e5f53c0e39e4e87736e3e421e9b03",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 5,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJqZUNiT3RHOE4wM3pBLWg4NjhsOG8xMGxoLVhIOFZkdWFHTmxVbS10d1hzIiwiaW50cm8iOiJuM1M0NFI1Nng5SE5aUmhaS0JfWUhqM2JnZ2xXUFk0YlkwVU5RVXE1SVRjIiwieGludHJvIjoiV3E4dEN5UWxpdkJ4R0d5bjdxSElPMEtTbEdEZXJjYmhRaDFxS0NkNEJuQSIsInBvdyI6MjQsInJjIjoiRGthdmpOTTU3cWR2WDVrWkt3dUoyS0VUcjZhcU56eUx4WHljb1I3VC1GMCJ9",
+        "sig": "/S5gsgjXSWdsC+FvyiUgDaTGIRq6kPBVuxZW/ljd0d7+tNh2RvRXB1q3AMYOV7v+Vk5fU8Djnk6Hc24+Qh6bAw=="
+      }
+    },
+    {
+      "name": "m_claim_names_a",
+      "note": "a claim naming Alice's key, signed by Mallory",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 1,
+      "value_text": "{\"k\":\"claim\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"_D13Nf6XzFhj4AYe230nehiB1OFc9YgCpPf7IPiU9Z8\",\"xintro\":\"7x7PgiPkCR6yJDex-D-XBPu-NGQOmV_T6xGLI8t7z1k\",\"pow\":20,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "9d5d41e992ff6f9ec0dbaff291f32cab76d6dc2ae32d8d25c14933ccedc68501",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f00000000000000019d5d41e992ff6f9ec0dbaff291f32cab76d6dc2ae32d8d25c14933ccedc68501",
+      "signer": "owner_m",
+      "sig": "f649606fb74d3c0aab3f867818c992ae88d4942b2cc85285022819072d66b3687bc3ff859833c0ddf4f16106b71365d03e9a564cda375b627fd89f71f9bbfc06",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 1,
+        "value": "eyJrIjoiY2xhaW0iLCJvd25lciI6ImQ1REF1THJtcUR4QlpSU0lqVHl0S0ROWDdVUkF1VDMxTkxPRThZWVBoM1EiLCJpbnRybyI6Il9EMTNOZjZYekZoajRBWWUyMzBuZWhpQjFPRmM5WWdDcFBmN0lQaVU5WjgiLCJ4aW50cm8iOiI3eDdQZ2lQa0NSNnlKRGV4LUQtWEJQdS1OR1FPbVZfVDZ4R0xJOHQ3ejFrIiwicG93IjoyMCwicmMiOiJTY2ZpUk8xQmFnaEh3MVlQN04yN2hUUG0wUFZ3RjFMQTJMMUxyRmdINkM4In0=",
+        "sig": "9klgb7dNPAqrP4Z4GMmSrojUlCssyFKFAigZBy1ms2h7w/+FmDPA3fTxYQa3E2XQPppWTNo3W2J/2J9x+bv8Bg=="
+      }
+    },
+    {
+      "name": "a_update_other_label",
+      "note": "Alice's update, for another handle's label, inside alice.42's history",
+      "label": "38dfb890ffd312c94c0ab89805e75f9eb7f5e9a4b887fedb47906153ff14f668",
+      "v": 2,
+      "value_text": "{\"k\":\"update\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"892hfY2mgQRS86IC2ShWCt-yTP3ND8W2Pr3nikXoJXM\",\"xintro\":\"2iWZBcvEyhx7irynhwJVq_c4qdzf1XzRYypkaR2O_Go\",\"pow\":22,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a22383932686659326d67515253383649433253685743742d795450334e443857325072336e696b586f4a584d222c2278696e74726f223a223269575a42637645796878376972796e68774a56715f633471647a6631587a525979706b6152324f5f476f222c22706f77223a32322c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "c51f1a8b7bc31e8cf1ee59b0f7912636e3357f150d0c809dae9faf335e9273e4",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a38dfb890ffd312c94c0ab89805e75f9eb7f5e9a4b887fedb47906153ff14f6680000000000000002c51f1a8b7bc31e8cf1ee59b0f7912636e3357f150d0c809dae9faf335e9273e4",
+      "signer": "owner_a",
+      "sig": "47c6afef0b3389b80d85f112af2f34b8865c38691c2f37cbf64696ebdb6a4f4896fdb5b3ab3aa7c75ce4cc51852d6371dcda369287b97b16224d036a7e418f06",
+      "publish_json": {
+        "label": "ON-4kP_TEslMCriYBedfnrf16aS4h_7bR5BhU_8U9mg",
+        "v": 2,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJkNURBdUxybXFEeEJaUlNJalR5dEtETlg3VVJBdVQzMU5MT0U4WVlQaDNRIiwiaW50cm8iOiI4OTJoZlkybWdRUlM4NklDMlNoV0N0LXlUUDNORDhXMlByM25pa1hvSlhNIiwieGludHJvIjoiMmlXWkJjdkV5aHg3aXJ5bmh3SlZxX2M0cWR6ZjFYelJZeXBrYVIyT19HbyIsInBvdyI6MjIsInJjIjoiU2NmaVJPMUJhZ2hIdzFZUDdOMjdoVFBtMFBWd0YxTEEyTDFMckZnSDZDOCJ9",
+        "sig": "R8av7wszibgNhfESry80uIZcOGkcLzfL9kaW69tqT0iW/bWzqzqnx1zkzFGFLWNx3No2koe5exYiTQNqfkGPBg=="
+      }
+    }
+  ],
+  "histories": [
+    {
+      "name": "claim, rotate, pause, recover, update",
+      "entries": [
+        "claim",
+        "update_rotate",
+        "update_pause",
+        "recover",
+        "update_after_recover"
+      ],
+      "verdict": {
+        "ok": true,
+        "version": 5,
+        "owner": "8de09b3ad1bc374df303e87cebc97ca35d2587e5c7f1576e686365526fadc17b",
+        "rc": "0e46af8cd339eea76f5f99192b0b89d8a113afa6aa373c8bc57c9ca11ed3f85d",
+        "intro": "9f74b8e11e7ac7d1cd651859281fd81e3ddb8209563d8e1b63450d414ab92137",
+        "pow": 24
+      }
+    },
+    {
+      "name": "an update as the first entry",
+      "entries": [
+        "update_rotate"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 0,
+        "reason": "notClaimed"
+      }
+    },
+    {
+      "name": "a claim on a label that exists",
+      "entries": [
+        "claim",
+        "m_claim_taken"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 1,
+        "reason": "taken"
+      }
+    },
+    {
+      "name": "a foreign key signs an update keeping the owner",
+      "entries": [
+        "claim",
+        "m_update_foreign_sig"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 1,
+        "reason": "badSignature"
+      }
+    },
+    {
+      "name": "an update that names a new owner",
+      "entries": [
+        "claim",
+        "m_update_foreign_owner"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 1,
+        "reason": "ownerChanged"
+      }
+    },
+    {
+      "name": "an update that changes rc",
+      "entries": [
+        "claim",
+        "a_update_rc_change"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 1,
+        "reason": "rcChanged"
+      }
+    },
+    {
+      "name": "a version that does not increase",
+      "entries": [
+        "claim",
+        "update_rotate",
+        "a_update_stale"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 2,
+        "reason": "staleVersion"
+      }
+    },
+    {
+      "name": "an entry replayed",
+      "entries": [
+        "claim",
+        "update_rotate",
+        "update_rotate"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 2,
+        "reason": "staleVersion"
+      }
+    },
+    {
+      "name": "an oversize value",
+      "entries": [
+        "claim",
+        "a_update_oversize"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 1,
+        "reason": "tooLarge"
+      }
+    },
+    {
+      "name": "a value that is not canonical",
+      "entries": [
+        "claim",
+        "a_update_not_canonical"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 1,
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "a recover with the wrong recovery key",
+      "entries": [
+        "claim",
+        "update_rotate",
+        "update_pause",
+        "m_recover_wrong_key"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 3,
+        "reason": "wrongRecoveryKey"
+      }
+    },
+    {
+      "name": "a recover whose rsig is over another rc",
+      "entries": [
+        "claim",
+        "update_rotate",
+        "update_pause",
+        "recover_rsig_other_rc"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 3,
+        "reason": "badRecoverySignature"
+      }
+    },
+    {
+      "name": "a recover without rsig",
+      "entries": [
+        "claim",
+        "update_rotate",
+        "update_pause",
+        "recover_without_rsig"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 3,
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "a recover signed by the old owner",
+      "entries": [
+        "claim",
+        "update_rotate",
+        "update_pause",
+        "recover_signed_by_old_owner"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 3,
+        "reason": "badSignature"
+      }
+    },
+    {
+      "name": "the old owner after a recover",
+      "entries": [
+        "claim",
+        "update_rotate",
+        "update_pause",
+        "recover",
+        "a_update_after_recover"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 4,
+        "reason": "badSignature"
+      }
+    },
+    {
+      "name": "a claim not signed by the owner it names",
+      "entries": [
+        "m_claim_names_a"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 0,
+        "reason": "badSignature"
+      }
+    },
+    {
+      "name": "another label's entry in the history",
+      "entries": [
+        "claim",
+        "a_update_other_label"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 1,
+        "reason": "otherLabel"
+      }
+    }
+  ],
+  "not_records": [
+    {
+      "why": "whitespace",
+      "value": "7b226b223a2022636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "a trailing newline",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d0a"
+    },
+    {
+      "why": "a byte-order mark",
+      "value": "efbbbf7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "members out of order",
+      "value": "7b226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338222c226b223a22636c61696d227d"
+    },
+    {
+      "why": "intro absent rather than present",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an extra member",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338222c2278223a317d"
+    },
+    {
+      "why": "rpub, as null, on a claim",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338222c2272707562223a6e756c6c7d"
+    },
+    {
+      "why": "rpub and rsig on a claim",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338222c2272707562223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c2272736967223a226145763471626c4a79467a70416452476463326a55435237714858397776365268315149707a4d434c61576e5130706e46704365627074697435696e524b79533766624c61695a793062675f5054334d4579714d4167227d"
+    },
+    {
+      "why": "k in another case",
+      "value": "7b226b223a22436c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an escaped character",
+      "value": "7b226b223a225c75303036336c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "a duplicated member",
+      "value": "7b226b223a22636c61696d222c226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "pow as 20.0",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302e302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "pow below 16",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a31352c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "pow above 28",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32392c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "pow as a string",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a223230222c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "padded base64url",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f45385959506833513d222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "the standard base64 alphabet",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a222f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "base64url whose unused low bits are set",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683352222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an owner key one byte short",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f45385959506833222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "rc as null",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a6e756c6c7d"
+    },
+    {
+      "why": "xintro null while intro is not",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a6e756c6c2c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "intro null while xintro is not",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a6e756c6c2c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "xintro absent",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "xintro before intro",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an xintro key one byte short",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a31222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "a paused record that still names an xintro",
+      "value": "7b226b223a22757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a6e756c6c2c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32322c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    }
+  ],
+  "request": {
+    "sealed_to": "x_pub of intro_a1: the record's xintro",
+    "to_x_pub": "ef1ecf8223e4091eb22437b1f83f9704fbbe34640e995fd3eb118b23cb7bcf59",
+    "to_routing_id": "T-u-Laizk4shgdylkC9YLQRnVeQGeLThRvOBSZxzbA4",
+    "from_rid": "4QUdDgJRebpLLG4CPnLgysn2iVembf_8FNw8SdB6I_U",
+    "payload": "eyJ2IjoxLCJ0IjoiY3JlcSIsInRvIjoiVC11LUxhaXprNHNoZ2R5bGtDOVlMUVJuVmVRR2VMVGhSdk9CU1p4emJBNCIsInRzIjoxNzkxNDYwODAwMDAwLCJidW5kbGUiOnsiZWQiOiIvbi9odDNkNGhEMG12UjFyc3VwaEthbUd0ZHpsTXhzWmVKQ1AycFFoRjFZPSIsIngiOiJGK0hNV0xrblhYc2F0TWtBSW8ycTMrSmJLbTBrR0VHeklwTGlmMkhZVVhrPSIsInNpZyI6Im04RDd6dHI5K3FON3doV04reGlBalZDNDdRTlkzK1pxcjBlSzI3YlVEMjkwdXVVRWIwYjBKdC9RZGpUS3BTb3g2QU4xamFVRU1NRkpTVUZJR0FVSENBPT0iLCJuYW1lIjoiQm9iIn0sInNpZyI6IlpjY29QSzllTnBqRWNaZjFvdFlsb3lIa1kyNkVnYVM2TUhQWGlQU1RMTjgyM0N5YnVLNWFCZU9kd0kvZVo3TVBKZmxCMTVFaldFSFc5eGJCUngyWURnPT0ifQ==",
+    "eph_seed": "00d6409b004c026e668288399f8414d287b2497b07c68f1e485fb707538fb51f",
+    "nonce": "88bbbf559ae21c02aff23bac",
+    "envelope": "zs1.Ej4cBu40czzb1aPdZSa_MGuCNiDb_T2KPjJnx94oXHCIu79VmuIcAq_yO6zNUOR7-rjaoBpwWKK6oDCzOS8YkaX6MJdYy7NHhPVSUWd_2f9RwKlpbB1Es6z8RbCcb9_mFV4usagBGL6g8L3EueaEZC4_KdAgabosyyVScF8JMS-eMP70wCJUw0QGbvil4x-dlYGxbGZpNidjhhHMNey4QD6pm_uu3aL_BgnlSN6g8bCPJFk1tAYr9JV-8SeB9T5-Auw2xUiSjBgsDXrIv8L-pgVFyHW1hOC4S_dYC2wRrqEXdfjNQGKHxlGfyZBFwTc6Cx94sez2KlPxoReWZqGnELozyskC-B6gwTrboWMcw1PY1AVjBtMBM5uhR4EIKHqbm610gdOATMKoJs0TgXjWML49qXuYWOv41ZYHl_wwsvS4fROv5SROJAykzYHDSP8udtvgBcn3rxaA2t-DCvLWjdq9ixGKEDn0cLaYUHQEcC3Uk6jUI_slFDROd0hblWoWrmNFmrHyAnisMQMmW_YkAWnWziZwBpVbJLl7JSf4KPFAkC6ecAhzp-_ilFkSgNxsv2kkbQjajjQBFDAS-0pqAQwbQVF6Su0LCGVmC_fn55ikUhBqrsrr7_yThQId9oBVN0Rr8n258_zpeijULhb2P0yGQp8Lp4JeRGIRKuXxm8ugKoK5SV86lTZTYAh7mLIaL9SLUFenmwh-OfRo_b66ZtoVM18gHWbv_k8VoeDJsZNz-Na1_NPSNEI15WcBOddWLK1Ma3HkcOBS-J3cDpXMR-ETQp2i_17riqbO_HDSkrtZSgbZCqkBbid-vprze8A2OJnD6bUQf0XZe8rMskB7FkGYV2bvqaiuRO3gFZyh1DnA8HTECUzIlsHVXPa5wG0lSq_a0hy633tFXKUfrcYVJMFCqiNUZRab56sp8n1B9oYbfbNj1YP7CpnzQaRGrN-8jpZU2yEPDQ1MKYDUuiCuXiy1td_QJkWYpZ9ZicniP639KZEk3Y6rf-tK3j5wesmexpKf3nHnIjtF6G4KDl2G4HED7wtyXU1zzcS9g97jF3-vYISyUSbs9pfSpwpqJ4FwPitkK15TdFzkcvqZdMi6USVQNcBD3ODx7ifVRm5RksmrPln5K45HkQU_6i2vyWouBVHA5N4VCnXAXbfdi-q-jq8YOy_iWS2qyZknzwt2x6eoRtlS0S53JzPfjy5OH7GeRD3S7WgLOasWwft_QD67wA6K9fqRfkQfUJG8hbOaCfDcg6VQ7dmugx2NCrBOkmLPHjGJhodLeltVgMoORgE7v_pj3dvSrfy8spPYSaOc8Xx5B33fahYaV2kbb0yhH0sNMNKeAXVSl3tc8_nwv9LfjkOK5vKGw1GvPUyhLzNlMRkNpuJlUYZdiiG1iTTsOVVjo0DOwZ34eDHb8e_-MgWNbA9IhfUWNImxaLHwfg"
+  },
+  "pow": {
+    "context": "z-intro-pow-v1:",
+    "input_rule": "utf8(context) || rid_bytes(32) || u32be(day) || SHA-256(utf8(envelope)) || nonce(16)",
+    "now_ms": 1791460800000,
+    "stamps": [
+      {
+        "routing_id": "T-u-Laizk4shgdylkC9YLQRnVeQGeLThRvOBSZxzbA4",
+        "rid_bytes": "4febbe2da8b3938b2181dca5902f582d046755e40678b4e146f381499c736c0e",
+        "day": 20734,
+        "envelope": "zs1.Ej4cBu40czzb1aPdZSa_MGuCNiDb_T2KPjJnx94oXHCIu79VmuIcAq_yO6zNUOR7-rjaoBpwWKK6oDCzOS8YkaX6MJdYy7NHhPVSUWd_2f9RwKlpbB1Es6z8RbCcb9_mFV4usagBGL6g8L3EueaEZC4_KdAgabosyyVScF8JMS-eMP70wCJUw0QGbvil4x-dlYGxbGZpNidjhhHMNey4QD6pm_uu3aL_BgnlSN6g8bCPJFk1tAYr9JV-8SeB9T5-Auw2xUiSjBgsDXrIv8L-pgVFyHW1hOC4S_dYC2wRrqEXdfjNQGKHxlGfyZBFwTc6Cx94sez2KlPxoReWZqGnELozyskC-B6gwTrboWMcw1PY1AVjBtMBM5uhR4EIKHqbm610gdOATMKoJs0TgXjWML49qXuYWOv41ZYHl_wwsvS4fROv5SROJAykzYHDSP8udtvgBcn3rxaA2t-DCvLWjdq9ixGKEDn0cLaYUHQEcC3Uk6jUI_slFDROd0hblWoWrmNFmrHyAnisMQMmW_YkAWnWziZwBpVbJLl7JSf4KPFAkC6ecAhzp-_ilFkSgNxsv2kkbQjajjQBFDAS-0pqAQwbQVF6Su0LCGVmC_fn55ikUhBqrsrr7_yThQId9oBVN0Rr8n258_zpeijULhb2P0yGQp8Lp4JeRGIRKuXxm8ugKoK5SV86lTZTYAh7mLIaL9SLUFenmwh-OfRo_b66ZtoVM18gHWbv_k8VoeDJsZNz-Na1_NPSNEI15WcBOddWLK1Ma3HkcOBS-J3cDpXMR-ETQp2i_17riqbO_HDSkrtZSgbZCqkBbid-vprze8A2OJnD6bUQf0XZe8rMskB7FkGYV2bvqaiuRO3gFZyh1DnA8HTECUzIlsHVXPa5wG0lSq_a0hy633tFXKUfrcYVJMFCqiNUZRab56sp8n1B9oYbfbNj1YP7CpnzQaRGrN-8jpZU2yEPDQ1MKYDUuiCuXiy1td_QJkWYpZ9ZicniP639KZEk3Y6rf-tK3j5wesmexpKf3nHnIjtF6G4KDl2G4HED7wtyXU1zzcS9g97jF3-vYISyUSbs9pfSpwpqJ4FwPitkK15TdFzkcvqZdMi6USVQNcBD3ODx7ifVRm5RksmrPln5K45HkQU_6i2vyWouBVHA5N4VCnXAXbfdi-q-jq8YOy_iWS2qyZknzwt2x6eoRtlS0S53JzPfjy5OH7GeRD3S7WgLOasWwft_QD67wA6K9fqRfkQfUJG8hbOaCfDcg6VQ7dmugx2NCrBOkmLPHjGJhodLeltVgMoORgE7v_pj3dvSrfy8spPYSaOc8Xx5B33fahYaV2kbb0yhH0sNMNKeAXVSl3tc8_nwv9LfjkOK5vKGw1GvPUyhLzNlMRkNpuJlUYZdiiG1iTTsOVVjo0DOwZ34eDHb8e_-MgWNbA9IhfUWNImxaLHwfg",
+        "envelope_sha256": "ae0fb1896c5c57a3816ff8558b2144f6347c9558951a43bbf3377908c0d9b7a1",
+        "bits": 16,
+        "start_nonce": "7df23ada87da33873592514058f49a92",
+        "nonce": "7df23ada87da33873592514058f59c24",
+        "frame_member": "ffI62ofaM4c1klFAWPWcJA",
+        "input": "7a2d696e74726f2d706f772d76313a4febbe2da8b3938b2181dca5902f582d046755e40678b4e146f381499c736c0e000050feae0fb1896c5c57a3816ff8558b2144f6347c9558951a43bbf3377908c0d9b7a17df23ada87da33873592514058f59c24",
+        "digest": "00006de6f432c00e4b3a40eb0947e2602755e8a2ffd76bcbcf1daefc66f5a857",
+        "zero_bits": 17
+      },
+      {
+        "routing_id": "T-u-Laizk4shgdylkC9YLQRnVeQGeLThRvOBSZxzbA4",
+        "rid_bytes": "4febbe2da8b3938b2181dca5902f582d046755e40678b4e146f381499c736c0e",
+        "day": 20734,
+        "envelope": "zs1.Ej4cBu40czzb1aPdZSa_MGuCNiDb_T2KPjJnx94oXHCIu79VmuIcAq_yO6zNUOR7-rjaoBpwWKK6oDCzOS8YkaX6MJdYy7NHhPVSUWd_2f9RwKlpbB1Es6z8RbCcb9_mFV4usagBGL6g8L3EueaEZC4_KdAgabosyyVScF8JMS-eMP70wCJUw0QGbvil4x-dlYGxbGZpNidjhhHMNey4QD6pm_uu3aL_BgnlSN6g8bCPJFk1tAYr9JV-8SeB9T5-Auw2xUiSjBgsDXrIv8L-pgVFyHW1hOC4S_dYC2wRrqEXdfjNQGKHxlGfyZBFwTc6Cx94sez2KlPxoReWZqGnELozyskC-B6gwTrboWMcw1PY1AVjBtMBM5uhR4EIKHqbm610gdOATMKoJs0TgXjWML49qXuYWOv41ZYHl_wwsvS4fROv5SROJAykzYHDSP8udtvgBcn3rxaA2t-DCvLWjdq9ixGKEDn0cLaYUHQEcC3Uk6jUI_slFDROd0hblWoWrmNFmrHyAnisMQMmW_YkAWnWziZwBpVbJLl7JSf4KPFAkC6ecAhzp-_ilFkSgNxsv2kkbQjajjQBFDAS-0pqAQwbQVF6Su0LCGVmC_fn55ikUhBqrsrr7_yThQId9oBVN0Rr8n258_zpeijULhb2P0yGQp8Lp4JeRGIRKuXxm8ugKoK5SV86lTZTYAh7mLIaL9SLUFenmwh-OfRo_b66ZtoVM18gHWbv_k8VoeDJsZNz-Na1_NPSNEI15WcBOddWLK1Ma3HkcOBS-J3cDpXMR-ETQp2i_17riqbO_HDSkrtZSgbZCqkBbid-vprze8A2OJnD6bUQf0XZe8rMskB7FkGYV2bvqaiuRO3gFZyh1DnA8HTECUzIlsHVXPa5wG0lSq_a0hy633tFXKUfrcYVJMFCqiNUZRab56sp8n1B9oYbfbNj1YP7CpnzQaRGrN-8jpZU2yEPDQ1MKYDUuiCuXiy1td_QJkWYpZ9ZicniP639KZEk3Y6rf-tK3j5wesmexpKf3nHnIjtF6G4KDl2G4HED7wtyXU1zzcS9g97jF3-vYISyUSbs9pfSpwpqJ4FwPitkK15TdFzkcvqZdMi6USVQNcBD3ODx7ifVRm5RksmrPln5K45HkQU_6i2vyWouBVHA5N4VCnXAXbfdi-q-jq8YOy_iWS2qyZknzwt2x6eoRtlS0S53JzPfjy5OH7GeRD3S7WgLOasWwft_QD67wA6K9fqRfkQfUJG8hbOaCfDcg6VQ7dmugx2NCrBOkmLPHjGJhodLeltVgMoORgE7v_pj3dvSrfy8spPYSaOc8Xx5B33fahYaV2kbb0yhH0sNMNKeAXVSl3tc8_nwv9LfjkOK5vKGw1GvPUyhLzNlMRkNpuJlUYZdiiG1iTTsOVVjo0DOwZ34eDHb8e_-MgWNbA9IhfUWNImxaLHwfg",
+        "envelope_sha256": "ae0fb1896c5c57a3816ff8558b2144f6347c9558951a43bbf3377908c0d9b7a1",
+        "bits": 18,
+        "start_nonce": "1736bbdc3ec6015541649aaddf6742c5",
+        "nonce": "1736bbdc3ec6015541649aaddf676b14",
+        "frame_member": "Fza73D7GAVVBZJqt32drFA",
+        "input": "7a2d696e74726f2d706f772d76313a4febbe2da8b3938b2181dca5902f582d046755e40678b4e146f381499c736c0e000050feae0fb1896c5c57a3816ff8558b2144f6347c9558951a43bbf3377908c0d9b7a11736bbdc3ec6015541649aaddf676b14",
+        "digest": "000017470bdbc756594bd9257159d7455e58ab6a24d09819087e2d84679d2e17",
+        "zero_bits": 19
+      }
+    ],
+    "must_refuse": [
+      {
+        "why": "the stamp sent to another mailbox",
+        "routing_id": "NVLvlQ8-Zr25p3BsxrqjAQUxEhvswQpNLYKCSAqITTw",
+        "day": 20734,
+        "envelope": "zs1.Ej4cBu40czzb1aPdZSa_MGuCNiDb_T2KPjJnx94oXHCIu79VmuIcAq_yO6zNUOR7-rjaoBpwWKK6oDCzOS8YkaX6MJdYy7NHhPVSUWd_2f9RwKlpbB1Es6z8RbCcb9_mFV4usagBGL6g8L3EueaEZC4_KdAgabosyyVScF8JMS-eMP70wCJUw0QGbvil4x-dlYGxbGZpNidjhhHMNey4QD6pm_uu3aL_BgnlSN6g8bCPJFk1tAYr9JV-8SeB9T5-Auw2xUiSjBgsDXrIv8L-pgVFyHW1hOC4S_dYC2wRrqEXdfjNQGKHxlGfyZBFwTc6Cx94sez2KlPxoReWZqGnELozyskC-B6gwTrboWMcw1PY1AVjBtMBM5uhR4EIKHqbm610gdOATMKoJs0TgXjWML49qXuYWOv41ZYHl_wwsvS4fROv5SROJAykzYHDSP8udtvgBcn3rxaA2t-DCvLWjdq9ixGKEDn0cLaYUHQEcC3Uk6jUI_slFDROd0hblWoWrmNFmrHyAnisMQMmW_YkAWnWziZwBpVbJLl7JSf4KPFAkC6ecAhzp-_ilFkSgNxsv2kkbQjajjQBFDAS-0pqAQwbQVF6Su0LCGVmC_fn55ikUhBqrsrr7_yThQId9oBVN0Rr8n258_zpeijULhb2P0yGQp8Lp4JeRGIRKuXxm8ugKoK5SV86lTZTYAh7mLIaL9SLUFenmwh-OfRo_b66ZtoVM18gHWbv_k8VoeDJsZNz-Na1_NPSNEI15WcBOddWLK1Ma3HkcOBS-J3cDpXMR-ETQp2i_17riqbO_HDSkrtZSgbZCqkBbid-vprze8A2OJnD6bUQf0XZe8rMskB7FkGYV2bvqaiuRO3gFZyh1DnA8HTECUzIlsHVXPa5wG0lSq_a0hy633tFXKUfrcYVJMFCqiNUZRab56sp8n1B9oYbfbNj1YP7CpnzQaRGrN-8jpZU2yEPDQ1MKYDUuiCuXiy1td_QJkWYpZ9ZicniP639KZEk3Y6rf-tK3j5wesmexpKf3nHnIjtF6G4KDl2G4HED7wtyXU1zzcS9g97jF3-vYISyUSbs9pfSpwpqJ4FwPitkK15TdFzkcvqZdMi6USVQNcBD3ODx7ifVRm5RksmrPln5K45HkQU_6i2vyWouBVHA5N4VCnXAXbfdi-q-jq8YOy_iWS2qyZknzwt2x6eoRtlS0S53JzPfjy5OH7GeRD3S7WgLOasWwft_QD67wA6K9fqRfkQfUJG8hbOaCfDcg6VQ7dmugx2NCrBOkmLPHjGJhodLeltVgMoORgE7v_pj3dvSrfy8spPYSaOc8Xx5B33fahYaV2kbb0yhH0sNMNKeAXVSl3tc8_nwv9LfjkOK5vKGw1GvPUyhLzNlMRkNpuJlUYZdiiG1iTTsOVVjo0DOwZ34eDHb8e_-MgWNbA9IhfUWNImxaLHwfg",
+        "bits": 16,
+        "digest": "e04f11524d2f87df7435a83502002665453bd355405a5392419f651a1c1c6181"
+      },
+      {
+        "why": "the stamp on another envelope",
+        "routing_id": "T-u-Laizk4shgdylkC9YLQRnVeQGeLThRvOBSZxzbA4",
+        "day": 20734,
+        "envelope": "zs1.Ej4cBu40czzb1aPdZSa_MGuCNiDb_T2KPjJnx94oXHCIu79VmuIcAq_yO6zNUOR7-rjaoBpwWKK6oDCzOS8YkaX6MJdYy7NHhPVSUWd_2f9RwKlpbB1Es6z8RbCcb9_mFV4usagBGL6g8L3EueaEZC4_KdAgabosyyVScF8JMS-eMP70wCJUw0QGbvil4x-dlYGxbGZpNidjhhHMNey4QD6pm_uu3aL_BgnlSN6g8bCPJFk1tAYr9JV-8SeB9T5-Auw2xUiSjBgsDXrIv8L-pgVFyHW1hOC4S_dYC2wRrqEXdfjNQGKHxlGfyZBFwTc6Cx94sez2KlPxoReWZqGnELozyskC-B6gwTrboWMcw1PY1AVjBtMBM5uhR4EIKHqbm610gdOATMKoJs0TgXjWML49qXuYWOv41ZYHl_wwsvS4fROv5SROJAykzYHDSP8udtvgBcn3rxaA2t-DCvLWjdq9ixGKEDn0cLaYUHQEcC3Uk6jUI_slFDROd0hblWoWrmNFmrHyAnisMQMmW_YkAWnWziZwBpVbJLl7JSf4KPFAkC6ecAhzp-_ilFkSgNxsv2kkbQjajjQBFDAS-0pqAQwbQVF6Su0LCGVmC_fn55ikUhBqrsrr7_yThQId9oBVN0Rr8n258_zpeijULhb2P0yGQp8Lp4JeRGIRKuXxm8ugKoK5SV86lTZTYAh7mLIaL9SLUFenmwh-OfRo_b66ZtoVM18gHWbv_k8VoeDJsZNz-Na1_NPSNEI15WcBOddWLK1Ma3HkcOBS-J3cDpXMR-ETQp2i_17riqbO_HDSkrtZSgbZCqkBbid-vprze8A2OJnD6bUQf0XZe8rMskB7FkGYV2bvqaiuRO3gFZyh1DnA8HTECUzIlsHVXPa5wG0lSq_a0hy633tFXKUfrcYVJMFCqiNUZRab56sp8n1B9oYbfbNj1YP7CpnzQaRGrN-8jpZU2yEPDQ1MKYDUuiCuXiy1td_QJkWYpZ9ZicniP639KZEk3Y6rf-tK3j5wesmexpKf3nHnIjtF6G4KDl2G4HED7wtyXU1zzcS9g97jF3-vYISyUSbs9pfSpwpqJ4FwPitkK15TdFzkcvqZdMi6USVQNcBD3ODx7ifVRm5RksmrPln5K45HkQU_6i2vyWouBVHA5N4VCnXAXbfdi-q-jq8YOy_iWS2qyZknzwt2x6eoRtlS0S53JzPfjy5OH7GeRD3S7WgLOasWwft_QD67wA6K9fqRfkQfUJG8hbOaCfDcg6VQ7dmugx2NCrBOkmLPHjGJhodLeltVgMoORgE7v_pj3dvSrfy8spPYSaOc8Xx5B33fahYaV2kbb0yhH0sNMNKeAXVSl3tc8_nwv9LfjkOK5vKGw1GvPUyhLzNlMRkNpuJlUYZdiiG1iTTsOVVjo0DOwZ34eDHb8e_-MgWNbA9IhfUWNImxaLHwfgA",
+        "bits": 16,
+        "digest": "04774edfbb5f5e2bc7f78a12cc7f9d64956aa205e13e179a779f48e7929bd365"
+      },
+      {
+        "why": "the stamp read for another day",
+        "routing_id": "T-u-Laizk4shgdylkC9YLQRnVeQGeLThRvOBSZxzbA4",
+        "day": 20732,
+        "envelope": "zs1.Ej4cBu40czzb1aPdZSa_MGuCNiDb_T2KPjJnx94oXHCIu79VmuIcAq_yO6zNUOR7-rjaoBpwWKK6oDCzOS8YkaX6MJdYy7NHhPVSUWd_2f9RwKlpbB1Es6z8RbCcb9_mFV4usagBGL6g8L3EueaEZC4_KdAgabosyyVScF8JMS-eMP70wCJUw0QGbvil4x-dlYGxbGZpNidjhhHMNey4QD6pm_uu3aL_BgnlSN6g8bCPJFk1tAYr9JV-8SeB9T5-Auw2xUiSjBgsDXrIv8L-pgVFyHW1hOC4S_dYC2wRrqEXdfjNQGKHxlGfyZBFwTc6Cx94sez2KlPxoReWZqGnELozyskC-B6gwTrboWMcw1PY1AVjBtMBM5uhR4EIKHqbm610gdOATMKoJs0TgXjWML49qXuYWOv41ZYHl_wwsvS4fROv5SROJAykzYHDSP8udtvgBcn3rxaA2t-DCvLWjdq9ixGKEDn0cLaYUHQEcC3Uk6jUI_slFDROd0hblWoWrmNFmrHyAnisMQMmW_YkAWnWziZwBpVbJLl7JSf4KPFAkC6ecAhzp-_ilFkSgNxsv2kkbQjajjQBFDAS-0pqAQwbQVF6Su0LCGVmC_fn55ikUhBqrsrr7_yThQId9oBVN0Rr8n258_zpeijULhb2P0yGQp8Lp4JeRGIRKuXxm8ugKoK5SV86lTZTYAh7mLIaL9SLUFenmwh-OfRo_b66ZtoVM18gHWbv_k8VoeDJsZNz-Na1_NPSNEI15WcBOddWLK1Ma3HkcOBS-J3cDpXMR-ETQp2i_17riqbO_HDSkrtZSgbZCqkBbid-vprze8A2OJnD6bUQf0XZe8rMskB7FkGYV2bvqaiuRO3gFZyh1DnA8HTECUzIlsHVXPa5wG0lSq_a0hy633tFXKUfrcYVJMFCqiNUZRab56sp8n1B9oYbfbNj1YP7CpnzQaRGrN-8jpZU2yEPDQ1MKYDUuiCuXiy1td_QJkWYpZ9ZicniP639KZEk3Y6rf-tK3j5wesmexpKf3nHnIjtF6G4KDl2G4HED7wtyXU1zzcS9g97jF3-vYISyUSbs9pfSpwpqJ4FwPitkK15TdFzkcvqZdMi6USVQNcBD3ODx7ifVRm5RksmrPln5K45HkQU_6i2vyWouBVHA5N4VCnXAXbfdi-q-jq8YOy_iWS2qyZknzwt2x6eoRtlS0S53JzPfjy5OH7GeRD3S7WgLOasWwft_QD67wA6K9fqRfkQfUJG8hbOaCfDcg6VQ7dmugx2NCrBOkmLPHjGJhodLeltVgMoORgE7v_pj3dvSrfy8spPYSaOc8Xx5B33fahYaV2kbb0yhH0sNMNKeAXVSl3tc8_nwv9LfjkOK5vKGw1GvPUyhLzNlMRkNpuJlUYZdiiG1iTTsOVVjo0DOwZ34eDHb8e_-MgWNbA9IhfUWNImxaLHwfg",
+        "bits": 16,
+        "digest": "98e8fea28d187c8e8549828fef343f68b8faff61183ed71ae539111fddd8abfa"
+      },
+      {
+        "why": "one bit more than the stamp has",
+        "routing_id": "T-u-Laizk4shgdylkC9YLQRnVeQGeLThRvOBSZxzbA4",
+        "day": 20734,
+        "envelope": "zs1.Ej4cBu40czzb1aPdZSa_MGuCNiDb_T2KPjJnx94oXHCIu79VmuIcAq_yO6zNUOR7-rjaoBpwWKK6oDCzOS8YkaX6MJdYy7NHhPVSUWd_2f9RwKlpbB1Es6z8RbCcb9_mFV4usagBGL6g8L3EueaEZC4_KdAgabosyyVScF8JMS-eMP70wCJUw0QGbvil4x-dlYGxbGZpNidjhhHMNey4QD6pm_uu3aL_BgnlSN6g8bCPJFk1tAYr9JV-8SeB9T5-Auw2xUiSjBgsDXrIv8L-pgVFyHW1hOC4S_dYC2wRrqEXdfjNQGKHxlGfyZBFwTc6Cx94sez2KlPxoReWZqGnELozyskC-B6gwTrboWMcw1PY1AVjBtMBM5uhR4EIKHqbm610gdOATMKoJs0TgXjWML49qXuYWOv41ZYHl_wwsvS4fROv5SROJAykzYHDSP8udtvgBcn3rxaA2t-DCvLWjdq9ixGKEDn0cLaYUHQEcC3Uk6jUI_slFDROd0hblWoWrmNFmrHyAnisMQMmW_YkAWnWziZwBpVbJLl7JSf4KPFAkC6ecAhzp-_ilFkSgNxsv2kkbQjajjQBFDAS-0pqAQwbQVF6Su0LCGVmC_fn55ikUhBqrsrr7_yThQId9oBVN0Rr8n258_zpeijULhb2P0yGQp8Lp4JeRGIRKuXxm8ugKoK5SV86lTZTYAh7mLIaL9SLUFenmwh-OfRo_b66ZtoVM18gHWbv_k8VoeDJsZNz-Na1_NPSNEI15WcBOddWLK1Ma3HkcOBS-J3cDpXMR-ETQp2i_17riqbO_HDSkrtZSgbZCqkBbid-vprze8A2OJnD6bUQf0XZe8rMskB7FkGYV2bvqaiuRO3gFZyh1DnA8HTECUzIlsHVXPa5wG0lSq_a0hy633tFXKUfrcYVJMFCqiNUZRab56sp8n1B9oYbfbNj1YP7CpnzQaRGrN-8jpZU2yEPDQ1MKYDUuiCuXiy1td_QJkWYpZ9ZicniP639KZEk3Y6rf-tK3j5wesmexpKf3nHnIjtF6G4KDl2G4HED7wtyXU1zzcS9g97jF3-vYISyUSbs9pfSpwpqJ4FwPitkK15TdFzkcvqZdMi6USVQNcBD3ODx7ifVRm5RksmrPln5K45HkQU_6i2vyWouBVHA5N4VCnXAXbfdi-q-jq8YOy_iWS2qyZknzwt2x6eoRtlS0S53JzPfjy5OH7GeRD3S7WgLOasWwft_QD67wA6K9fqRfkQfUJG8hbOaCfDcg6VQ7dmugx2NCrBOkmLPHjGJhodLeltVgMoORgE7v_pj3dvSrfy8spPYSaOc8Xx5B33fahYaV2kbb0yhH0sNMNKeAXVSl3tc8_nwv9LfjkOK5vKGw1GvPUyhLzNlMRkNpuJlUYZdiiG1iTTsOVVjo0DOwZ34eDHb8e_-MgWNbA9IhfUWNImxaLHwfg",
+        "bits": 18,
+        "digest": "00006de6f432c00e4b3a40eb0947e2602755e8a2ffd76bcbcf1daefc66f5a857"
+      }
+    ],
+    "acceptance_window": [
+      {
+        "relay_now_ms": 1791460800000,
+        "relay_day": 20734,
+        "accepted": true
+      },
+      {
+        "relay_now_ms": 1791547200000,
+        "relay_day": 20735,
+        "accepted": true
+      },
+      {
+        "relay_now_ms": 1791633600000,
+        "relay_day": 20736,
+        "accepted": false
+      },
+      {
+        "relay_now_ms": 1791374400000,
+        "relay_day": 20733,
+        "accepted": false
+      }
+    ]
+  },
+  "intro_ack": {
+    "context": "z-intro-ack-v1:",
+    "intro_key": "intro_a1",
+    "intro_pub": "fc3d7735fe97cc5863e0061edb7d277a1881d4e15cf58802a4f7fb20f894f59f",
+    "requester": {
+      "ed_seed": "636bd8263b7d7e53cb3e91d3fdf56d9bb06b548175411620f24bb0cfae1f3d91",
+      "x_seed": "c1ea992ffc20ffc7dccd6735e4779f797dc7dd7dd26a1e3b2db82dbf457bab83",
+      "ed_pub": "fe7fe1b77778843d26bd1d6bb2ea6129a986b5dce5331b1978908fda94211756",
+      "routing_id": "4QUdDgJRebpLLG4CPnLgysn2iVembf_8FNw8SdB6I_U"
+    },
+    "owner_account": {
+      "ed_seed": "b11e641b9c8b501f5514027b934a9683f02291ee854f9483a1020c146c8ec3ed",
+      "x_seed": "162172260af8ac6eb65e4cea2ad927af1ac0d340ec5cacff3329efb3695c0201",
+      "ed_pub": "55dc8a0ee69a0d5574df2c09dc5bec0567e16d9636eb62a28d1ab84a46fea8d2",
+      "routing_id": "D1W0HcbHmHGFIDPN9eZXzjR0Pb5bMb63MDC8TtvIQm4"
+    },
+    "creq_payload": "eyJ2IjoxLCJ0IjoiY3JlcSIsInRvIjoiVC11LUxhaXprNHNoZ2R5bGtDOVlMUVJuVmVRR2VMVGhSdk9CU1p4emJBNCIsInRzIjoxNzkxNDYwODAwMDAwLCJidW5kbGUiOnsiZWQiOiIvbi9odDNkNGhEMG12UjFyc3VwaEthbUd0ZHpsTXhzWmVKQ1AycFFoRjFZPSIsIngiOiJGK0hNV0xrblhYc2F0TWtBSW8ycTMrSmJLbTBrR0VHeklwTGlmMkhZVVhrPSIsInNpZyI6Im04RDd6dHI5K3FON3doV04reGlBalZDNDdRTlkzK1pxcjBlSzI3YlVEMjkwdXVVRWIwYjBKdC9RZGpUS3BTb3g2QU4xamFVRU1NRkpTVUZJR0FVSENBPT0iLCJuYW1lIjoiQm9iIn0sInNpZyI6IlpjY29QSzllTnBqRWNaZjFvdFlsb3lIa1kyNkVnYVM2TUhQWGlQU1RMTjgyM0N5YnVLNWFCZU9kd0kvZVo3TVBKZmxCMTVFaldFSFc5eGJCUngyWURnPT0ifQ==",
+    "creq_signing_input": "7a2d636f6e746163742d726571756573742d76313afe7fe1b77778843d26bd1d6bb2ea6129a986b5dce5331b1978908fda9421175617e1cc58b9275d7b1ab4c900228daadfe25b2a6d241841b32292e27f61d85179002b542d752d4c61697a6b3473686764796c6b4339594c51526e56655147654c546852764f42535a787a624134000001a11b6276000003426f62",
+    "creq_id": "87473916137c787c1b03d4f492df51bea6acbf2de925aec28f6c5e794de32d53",
+    "ack_input": "7a2d696e74726f2d61636b2d76313ae1051d0e025179ba4b2c6e023e72e0cac9f68957a66dfffc14dc3c49d07a23f555dc8a0ee69a0d5574df2c09dc5bec0567e16d9636eb62a28d1ab84a46fea8d287473916137c787c1b03d4f492df51bea6acbf2de925aec28f6c5e794de32d53",
+    "ia": "ksEMH51YaA7BiEkkUoFdGDxmao7-918aBJu1PMhUAPNPnR-vWOfwKVUhr82aAq8m21Btf_Z_5jjQf5y5fi4DCw",
+    "acceptance_json": "{\"v\":1,\"t\":\"creq\",\"to\":\"4QUdDgJRebpLLG4CPnLgysn2iVembf_8FNw8SdB6I_U\",\"ts\":1791460860000,\"bundle\":{\"ed\":\"VdyKDuaaDVV03ywJ3FvsBWfhbZY262KijRq4Skb+qNI=\",\"x\":\"Y9820OvIlBtD6uRjkUpNwd6698uPiCCT94LBv7R+HxQ=\",\"sig\":\"eouBrACIvxjCV1pzqBQ+C4E0V9eMIHDsThO4tE3+WAuknkduU93+p9Y13pRPnXUqSYA7ylQ/v29v67+UWO58Aw==\",\"name\":\"Alice\"},\"sig\":\"FgrbvxTReABWy5OLE1hCcEIYEAA2x/vItvKEwviW90TcQ4SPHRUGPvAOsyOPh9OP1xERDFHrhIrP+MtwHB7DBQ==\",\"ia\":\"ksEMH51YaA7BiEkkUoFdGDxmao7-918aBJu1PMhUAPNPnR-vWOfwKVUhr82aAq8m21Btf_Z_5jjQf5y5fi4DCw\"}",
+    "acceptance_payload": "eyJ2IjoxLCJ0IjoiY3JlcSIsInRvIjoiNFFVZERnSlJlYnBMTEc0Q1BuTGd5c24yaVZlbWJmXzhGTnc4U2RCNklfVSIsInRzIjoxNzkxNDYwODYwMDAwLCJidW5kbGUiOnsiZWQiOiJWZHlLRHVhYURWVjAzeXdKM0Z2c0JXZmhiWlkyNjJLaWpScTRTa2IrcU5JPSIsIngiOiJZOTgyME92SWxCdEQ2dVJqa1VwTndkNjY5OHVQaUNDVDk0TEJ2N1IrSHhRPSIsInNpZyI6ImVvdUJyQUNJdnhqQ1YxcHpxQlErQzRFMFY5ZU1JSERzVGhPNHRFMytXQXVrbmtkdVU5MytwOVkxM3BSUG5YVXFTWUE3eWxRL3YyOXY2NytVV081OEF3PT0iLCJuYW1lIjoiQWxpY2UifSwic2lnIjoiRmdyYnZ4VFJlQUJXeTVPTEUxaENjRUlZRUFBMngvdkl0dktFd3ZpVzkwVGNRNFNQSFJVR1B2QU9zeU9QaDlPUDF4RVJERkhyaElyUCtNdHdIQjdEQlE9PSIsImlhIjoia3NFTUg1MVlhQTdCaUVra1VvRmRHRHhtYW83LTkxOGFCSnUxUE1oVUFQTlBuUi12V09md0tWVWhyODJhQXE4bTIxQnRmX1pfNWpqUWY1eTVmaTREQ3cifQ==",
+    "must_refuse": [
+      {
+        "why": "verified against another introduction key",
+        "intro_pub": "f3dda17d8da6810452f3a202d928560adfb24cfdcd0fc5b63ebde78a45e82573",
+        "requester_rid": "4QUdDgJRebpLLG4CPnLgysn2iVembf_8FNw8SdB6I_U",
+        "owner_account_ed_pub": "55dc8a0ee69a0d5574df2c09dc5bec0567e16d9636eb62a28d1ab84a46fea8d2",
+        "creq_id": "87473916137c787c1b03d4f492df51bea6acbf2de925aec28f6c5e794de32d53"
+      },
+      {
+        "why": "presented to another requester",
+        "intro_pub": "fc3d7735fe97cc5863e0061edb7d277a1881d4e15cf58802a4f7fb20f894f59f",
+        "requester_rid": "gek_uHJ8ESV125LQoYb27q0IzLFL5PyndeQmRA7dRyk",
+        "owner_account_ed_pub": "55dc8a0ee69a0d5574df2c09dc5bec0567e16d9636eb62a28d1ab84a46fea8d2",
+        "creq_id": "87473916137c787c1b03d4f492df51bea6acbf2de925aec28f6c5e794de32d53"
+      },
+      {
+        "why": "worn by another account",
+        "intro_pub": "fc3d7735fe97cc5863e0061edb7d277a1881d4e15cf58802a4f7fb20f894f59f",
+        "requester_rid": "4QUdDgJRebpLLG4CPnLgysn2iVembf_8FNw8SdB6I_U",
+        "owner_account_ed_pub": "1e75ec34f8eb838c71242769f1284529eb5c48db81921c08e54e06e0d4d07de5",
+        "creq_id": "87473916137c787c1b03d4f492df51bea6acbf2de925aec28f6c5e794de32d53"
+      },
+      {
+        "why": "matched to the requester's other request",
+        "intro_pub": "fc3d7735fe97cc5863e0061edb7d277a1881d4e15cf58802a4f7fb20f894f59f",
+        "requester_rid": "4QUdDgJRebpLLG4CPnLgysn2iVembf_8FNw8SdB6I_U",
+        "owner_account_ed_pub": "55dc8a0ee69a0d5574df2c09dc5bec0567e16d9636eb62a28d1ab84a46fea8d2",
+        "creq_id": "d8dfb0c67fe3ca90d76656e1a3f298aea33439a508b9d7cb401adc48f10362c9"
+      }
+    ]
+  }
+}
