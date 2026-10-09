@@ -84,6 +84,10 @@ class ConnectRun {
 
   /// Make an invite: generates the code and the ephemeral, posts nothing yet.
   ///
+  /// Without a [code], the invite is a fresh one of [connectInviteVersion]:
+  /// bound to its secret (ADR 0024). Nothing here ever makes one of
+  /// version 1 unless handed a version-1 code.
+  ///
   /// [group] is the group bit message 3 carries (ADR 0020,
   /// [connectGroupMember]): whether this invite also brings the acceptor
   /// into a group. Never which one — the run does not know, and the bit is
@@ -136,6 +140,10 @@ class ConnectRun {
         'me': _me.contactCode,
         if (_me.displayName != null) 'name': _me.displayName,
         'code': b64(code.secret),
+        // The invite's version (ADR 0024), only when it is not 1: a record
+        // without it is a version-1 invite, as every record written before
+        // ADR 0024 is.
+        if (code.version != 1) 'cv': code.version,
         if (_groupAware) 'ga': true,
         if (_inviter != null) 'i': _inviter!.toJson(),
         if (_acceptor != null) 'a': _acceptor!.toJson(),
@@ -155,6 +163,8 @@ class ConnectRun {
   static Future<ConnectRun> fromJson(Map<String, Object?> j) async {
     final me = await ConnectIdentity.fromCode(j['me'] as String,
         displayName: j['name'] as String?);
+    final code = ConnectCode(unb64(j['code'] as String),
+        version: connectRecordVersion(j['cv']));
     ConnectSession? session;
     final sj = j['session'];
     if (sj is Map) {
@@ -178,11 +188,12 @@ class ConnectRun {
       j['a'] == null
           ? null
           : await ConnectAcceptor.fromJson(
-              (j['a'] as Map).cast<String, Object?>()),
+              (j['a'] as Map).cast<String, Object?>(),
+              code: code),
       session,
       j['spent'] as bool? ?? false,
     );
-    run._code = ConnectCode(unb64(j['code'] as String));
+    run._code = code;
     run._groupAware = j['ga'] == true;
     run.abortReason = j['abort'] as String?;
     return run;
@@ -198,10 +209,19 @@ class ConnectRun {
   /// not one of those, so it is thrown rather than returned: an unreachable
   /// relay means try again, and nothing about the invite has changed.
   /// Persist the run after each call — see [toJson].
+  ///
+  /// [refusePeer]: asked about the identity the other side revealed, the
+  /// moment this side has it checked against its commitment — and, on the
+  /// acceptor's side, BEFORE this side reveals its own. True ends the
+  /// ceremony there, as an abort: no session, the invite spent, and an
+  /// acceptor's message 4 never sent. It is how a person who has blocked
+  /// that identity is kept from it — and it from them — through an invite
+  /// (ADR 0024).
   Future<ConnectProgress> step(
       {required String relayUrl,
       int? nowMs,
-      Duration poll = const Duration(milliseconds: 1500)}) async {
+      Duration poll = const Duration(milliseconds: 1500),
+      Future<bool> Function(ConnectIdentity peer)? refusePeer}) async {
     if (_spent) return ConnectProgress.spent;
     if (session != null) return ConnectProgress.done;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
@@ -223,8 +243,8 @@ class ConnectRun {
       // Give the relay's flush a moment to deliver whatever was waiting.
       await Future<void>.delayed(poll);
       final progress = inviter
-          ? await _stepInviter(client, theirs, inbox, spent)
-          : await _stepAcceptor(client, theirs, inbox, spent);
+          ? await _stepInviter(client, theirs, inbox, spent, refusePeer)
+          : await _stepAcceptor(client, theirs, inbox, spent, refusePeer);
       // Nothing this side has read will be read again, and the ceremony is
       // over for good once the session exists: acknowledge, so the relay
       // wipes it from RAM. Two reasons, neither cosmetic. A mailbox left
@@ -259,8 +279,12 @@ class ConnectRun {
     }
   }
 
-  Future<ConnectProgress> _stepInviter(RelayClient client, String theirs,
-      List<RelayInbound> inbox, List<RelayInbound> spent) async {
+  Future<ConnectProgress> _stepInviter(
+      RelayClient client,
+      String theirs,
+      List<RelayInbound> inbox,
+      List<RelayInbound> spent,
+      Future<bool> Function(ConnectIdentity peer)? refusePeer) async {
     final i = _inviter!;
     if (!i.opened) {
       final reply = _take(inbox, 'x2', spent);
@@ -281,17 +305,25 @@ class ConnectRun {
     }
     final reveal = _take(inbox, 'x4', spent);
     if (reveal == null) return ConnectProgress.waiting;
-    session = await i.complete(reveal);
+    final s = await i.complete(reveal);
+    if (refusePeer != null && await refusePeer(s.peer)) {
+      throw const ConnectAbort('refused: whoever answered is refused here');
+    }
+    session = s;
     return ConnectProgress.confirm;
   }
 
-  Future<ConnectProgress> _stepAcceptor(RelayClient client, String theirs,
-      List<RelayInbound> inbox, List<RelayInbound> spent) async {
+  Future<ConnectProgress> _stepAcceptor(
+      RelayClient client,
+      String theirs,
+      List<RelayInbound> inbox,
+      List<RelayInbound> spent,
+      Future<bool> Function(ConnectIdentity peer)? refusePeer) async {
     if (_acceptor == null) {
       final commit = _take(inbox, 'x1', spent);
       if (commit == null) return ConnectProgress.waiting;
       final (reply, acceptor) = await ConnectAcceptor.reply(commit,
-          me: _me, groupAware: _groupAware);
+          me: _me, code: code, groupAware: _groupAware);
       _acceptor = acceptor;
       await client.send(
           to: theirs,
@@ -302,6 +334,11 @@ class ConnectRun {
     final open = _take(inbox, 'x3', spent);
     if (open == null) return ConnectProgress.waiting;
     final (reveal, s) = await _acceptor!.accept(open);
+    // Asked before this side's own reveal goes: a refused inviter is never
+    // shown who opened its invite.
+    if (refusePeer != null && await refusePeer(s.peer)) {
+      throw const ConnectAbort('refused: whoever made it is refused here');
+    }
     await client.send(
         to: theirs,
         id: 'z-connect-c4',
@@ -354,12 +391,15 @@ class ConnectRun {
 ///
 /// `role` is `'i'` for the inviter and `'r'` for the acceptor. Disjoint from
 /// pairing's mailboxes by context, so an invite can never address a pairing
-/// rendezvous or the reverse.
+/// rendezvous or the reverse — and a version-2 invite's from a version-1
+/// invite's of the same ten bytes ([connectRelayCtxV2]), so a run of one
+/// version never meets, or waits on, a run of the other (ADR 0024).
 Future<ZIdentity> mailboxIdentity(ConnectCode code, String role) async {
+  final ctx = code.bound ? connectRelayCtxV2 : connectRelayCtx;
   final k = await Hkdf(hmac: Hmac.sha256(), outputLength: 64).deriveKey(
     secretKey: SecretKey(code.secret),
     nonce: Uint8List(0),
-    info: utf8.encode('$connectRelayCtx$role'),
+    info: utf8.encode('$ctx$role'),
   );
   final b = await k.extractBytes();
   return ZIdentity.fromSeeds(

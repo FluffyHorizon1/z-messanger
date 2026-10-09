@@ -73,6 +73,19 @@ class PendingInvite {
   /// compared, which is what the screen then says. In memory only.
   bool peerWasHeld = false;
 
+  /// The person said yes to this invite on their own screen (ADR 0024).
+  ///
+  /// Always true for one made here, and for one opened by typing or pasting
+  /// it and pressing Open — that press is the yes. False for one that
+  /// arrived by tapping a link, until the person presses Connect: nothing
+  /// of the ceremony is sent before that, not even message 2, so a link
+  /// tapped by accident, or in someone else's message, tells nobody that it
+  /// reached this device. Until 2026-10-09 a tapped link stepped the
+  /// ceremony at once, and the contact code went out with message 4 before
+  /// the person had seen anything. Durable: a held invite stays held across
+  /// a restart.
+  bool consented;
+
   PendingInvite({
     required this.id,
     required this.mine,
@@ -81,7 +94,17 @@ class PendingInvite {
     this.gid,
     this.progress = ConnectProgress.waiting,
     this.addedMs,
+    this.consented = true,
   });
+
+  /// Opened from a link and waiting for its person's yes ([consented]).
+  bool get held => !mine && !consented;
+
+  /// A version-1 invite (ADR 0024): made by a client from before invites
+  /// were bound to their secret. It runs as it always did — and until the
+  /// digits are compared, the relay could be in the middle of it too, which
+  /// the comparison screen says.
+  bool get unbound => !run.code.bound;
 
   /// A group invite link (ADR 0020) on either side: made here for a group,
   /// or opened here and saying a group is attached.
@@ -118,6 +141,9 @@ class PendingInvite {
         'progress': progress.name,
         'run': run.toJson(),
         if (addedMs != null) 'addedMs': addedMs,
+        // Written only while held: a record without it was opened with a
+        // yes, as every record written before ADR 0024 was.
+        if (!consented) 'held': true,
       };
 
   static Future<PendingInvite> fromJson(Map<String, Object?> j) async =>
@@ -132,6 +158,7 @@ class PendingInvite {
             (p) => p.name == j['progress'],
             orElse: () => ConnectProgress.waiting),
         addedMs: (j['addedMs'] as num?)?.toInt(),
+        consented: j['held'] != true,
       );
 }
 
@@ -178,6 +205,13 @@ class ConnectInvites extends ChangeNotifier {
   /// the inviter has to recognise and refuse to add.
   @visibleForTesting
   bool debugBeforeGroupLinks = false;
+
+  /// Test seam: make and open invites as a client from before ADR 0024 —
+  /// it mints version 1, and refuses a version-2 invite as its parser does
+  /// ("that is not a Z invite"), because the marker that starts one is not
+  /// base32. That is the old client either side of a new one meets.
+  @visibleForTesting
+  bool debugBeforeBinding = false;
 
   /// Test seam: an answer stops right after it has added the contact and
   /// written that down — where an app killed between the add and the rest
@@ -243,13 +277,18 @@ class ConnectInvites extends ChangeNotifier {
     }
     await load();
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    // ADR 0024: a fresh invite is version 2, bound to its secret — never
+    // version 1, which a client before it still mints.
     final invite = PendingInvite(
       id: b64url(randomBytes(9)),
       mine: true,
       createdMs: now,
       gid: gid,
       run: await ConnectRun.invite(
-          me: await _me(), nowMs: now, group: gid != null),
+          me: await _me(),
+          nowMs: now,
+          group: gid != null,
+          code: debugBeforeBinding ? ConnectCode.generate(version: 1) : null),
     );
     _invites.add(invite);
     await _save();
@@ -264,10 +303,20 @@ class ConnectInvites extends ChangeNotifier {
   /// Consumes the link entirely on this device — the code is in the URL
   /// fragment, which no browser sends to a server, and nothing here fetches
   /// the link either. This method touches no network at all.
-  Future<PendingInvite> open(String linkOrCode, {int? nowMs}) async {
+  ///
+  /// [consented]: whether the person has said yes to connecting (ADR 0024).
+  /// The CONNECT tab's Open button is that yes — the person typed or pasted
+  /// the invite and pressed it — so it is the default. An invite that
+  /// arrived by tapping a link has had no yes yet: it is held, and nothing
+  /// of the ceremony leaves the device until [consent].
+  ///
+  /// Either version: one a client before ADR 0024 made runs as version 1,
+  /// as it always did.
+  Future<PendingInvite> open(String linkOrCode,
+      {int? nowMs, bool consented = true}) async {
     await load();
     final code = parseInvite(linkOrCode);
-    if (code == null) {
+    if (code == null || (debugBeforeBinding && code.bound)) {
       throw const FormatException('that is not a Z invite');
     }
     for (final existing in _invites) {
@@ -285,12 +334,34 @@ class ConnectInvites extends ChangeNotifier {
           code: code,
           nowMs: now,
           groupAware: !debugBeforeGroupLinks),
+      consented: consented,
     );
     _invites.add(invite);
     await _save();
     _arm();
     notifyListeners();
     return invite;
+  }
+
+  /// **The person said yes** to an invite that arrived by link ([open]
+  /// with `consented: false`): from now on it is carried forward like any
+  /// other, starting at once.
+  ///
+  /// What the yes lets go: this side's message 2 now, and — once the
+  /// inviter's reveal has arrived and been checked — its own contact code,
+  /// sealed to whoever made the invite. With a version-2 invite that is
+  /// someone holding the link, and nobody else.
+  Future<void> consent(PendingInvite invite) async {
+    if (invite.consented) return;
+    invite.consented = true;
+    await _save();
+    _arm();
+    notifyListeners();
+    // A round already in flight passed this invite over while it was held:
+    // let it finish, then run one that carries it.
+    final running = _inFlight;
+    if (running != null) await running;
+    await pump();
   }
 
   /// A link or a printed code, whichever was handed over. Null if neither.
@@ -350,10 +421,14 @@ class ConnectInvites extends ChangeNotifier {
       // which the card does not distinguish and the poll should not pay for.)
       if (invite.run.finished) continue;
       if (invite.progress == ConnectProgress.done) continue;
+      // Waiting for its person's yes (ADR 0024): not even a connection.
+      if (invite.held) continue;
       final ConnectProgress next;
       try {
-        next = await invite.run
-            .step(relayUrl: _svc.transport.serverUrl, nowMs: nowMs);
+        next = await invite.run.step(
+            relayUrl: _svc.transport.serverUrl,
+            nowMs: nowMs,
+            refusePeer: _blockedHere);
       } on RelayException catch (e) {
         // The relay refused something, or nothing answered: not a fact about
         // the invite. Leave it alone, say why, and try again next time.
@@ -412,9 +487,24 @@ class ConnectInvites extends ChangeNotifier {
     _disarm();
   }
 
-  /// True while anything is worth a round trip.
-  bool get _anythingPending => _invites
-      .any((i) => !i.run.finished && i.progress != ConnectProgress.done);
+  /// True while anything is worth a round trip. A held invite is not: it
+  /// waits for its person, not for the network.
+  bool get _anythingPending => _invites.any((i) =>
+      !i.run.finished && i.progress != ConnectProgress.done && !i.held);
+
+  /// Whether the identity a ceremony revealed is someone this device has
+  /// blocked (ADR 0011). Asked by the run the moment it has that identity,
+  /// and on the side that opened the invite before its own reveal goes: a
+  /// block is every future request from them dropped without a trace, and
+  /// an invite answered — or made — by them is one (ADR 0024). The invite
+  /// ends there, refused; nothing is added, and they are not told.
+  Future<bool> _blockedHere(ConnectIdentity peer) async {
+    try {
+      return _svc.isBlocked(await _peerRid(peer));
+    } on FormatException {
+      return false; // the run refuses an unusable code on its own
+    }
+  }
 
   void _arm() {
     if (!_foreground || !_anythingPending) {

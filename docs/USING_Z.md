@@ -35,6 +35,10 @@ that is all: they cannot read anything, impersonate you, or find out who else
 you talk to — and a request that names someone really is from them, because it
 is signed with their own key, so nobody can put a stranger's face on it. If you
 did not want it, **Decline** drops it quietly and **Block** stops any more.
+A request you declined does not come back on its own — only a new one, made
+later, is shown — and Z ignores a request more than 30 days old. At most 100
+wait at a time: when more arrive, the oldest you have not looked at goes
+first, never one you have.
 
 Accepting adds them, but it does not confirm *who* they are — for that, compare
 safety numbers. What matters, when you *scan* someone in person, is that the
@@ -58,6 +62,9 @@ the room. It works like this:
    afterwards. They can also paste either form into their own CONNECT tab —
    and if the link opened in a browser even though Z is installed, that is
    the way in: copy the address and paste it under **I have an invite**.
+   Z asks them first: nothing of a tapped invite leaves their phone until
+   they press **Connect**, under a line saying what connecting sends and to
+   whom.
 4. From here neither of you has to do anything. While Z is open it carries
    the invite forward on its own, a step every twenty seconds or so, and
    "Check now" only hurries it. An invite the other person has not opened yet
@@ -72,6 +79,14 @@ eight digits on your friend's screen. An impostor in the middle produces two
 *different* strings, and the comparison is what catches it. Z names whoever
 took the invite, right above the digits — so if it is not who you meant to
 reach, stop there instead of adding them.
+
+The relay in between cannot answer it at all: the invite is bound to a secret
+the relay never sees, so a relay that tried to sit in the middle would stop
+the invite rather than finish it. An invite made by an older version of Z
+lacks that binding — it still works, and its comparison screen says that until
+you compare the digits, even the relay could be in the middle. An older version
+of Z cannot open an invite made now, and says it is not a Z invite: ask them to
+update.
 
 So:
 
@@ -317,6 +332,11 @@ make sense of one, and catches up.
 A member still on a version of Z from before admins existed follows only the
 person who added them, until they update — and Z already tells them they are
 behind.
+
+Someone you blocked stays blocked in a group too. If they are in one you are
+in, the group lists them, but your messages to it do not reach them and
+theirs do not reach you; and if they take an invite of yours — a group link
+included — Z refuses it and adds nobody.
 
 ### Inviting someone to a group by link
 

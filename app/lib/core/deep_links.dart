@@ -29,8 +29,9 @@ class DeepLinks {
 
   final _opened = StreamController<PendingInvite>.broadcast();
 
-  /// Invites that arrived by link and were accepted. The UI listens so it can
-  /// show the ceremony; nothing here navigates on its own.
+  /// Invites that arrived by link and were taken — held until their person
+  /// says yes (ADR 0024). The UI listens so it can show them; nothing here
+  /// navigates on its own.
   Stream<PendingInvite> get opened => _opened.stream;
 
   /// The link-opened invite no screen has shown yet, if any.
@@ -90,18 +91,16 @@ class DeepLinks {
       return null;
     }
     try {
-      final invite = await _invites.open(url);
+      // Held (ADR 0024): a tap is not a yes. The invite is recorded and put
+      // in front of the person, and nothing of the ceremony leaves the
+      // device — no round, not even a connection — until they press
+      // Connect. Until 2026-10-09 this stepped the ceremony at once, and the
+      // contact code went out in message 4 before anyone had looked; the
+      // tab now carries it forward from the yes (`ConnectInvites.consent`).
+      final invite = await _invites.open(url, consented: false);
       lastRejected = null;
       _unshown = invite;
       if (!_opened.isClosed) _opened.add(invite);
-      // Carry it forward at once. Opening records the invite and touches no
-      // network; this is the ceremony's first round for this side — the same
-      // connect-read-leave a "Check now" does — and without it a link-opened
-      // invite sat at "waiting" until somebody found the tab. Awaited, so a
-      // caller that is about to tear down (a test, a closing app) is not
-      // left with a round in flight; the platform side does not wait on the
-      // reply to `link`, and nothing waits on [start].
-      await _invites.pump();
       return invite;
     } on FormatException {
       // Already open, or no longer usable. The tab shows what is pending, so

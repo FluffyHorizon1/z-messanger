@@ -32,6 +32,17 @@
 /// Transport-agnostic: this produces and consumes the wire maps and the sealed
 /// bytes. The rendezvous choreography over a real relay is `connect_relay.dart`
 /// (17.2); the invite's life in the app is 17.3.
+///
+/// **An invite of version 2 is bound to its secret** (ADR 0024, PROTOCOL
+/// §20.8). In version 1 the secret named the two mailboxes and nothing else:
+/// the frames are plaintext, so whoever carries them — the relay, or the CDN
+/// in front of it — could run one leg with each side under keys of its own,
+/// and only a comparison of the digits would show it. Version 2 keys both
+/// commitments and the channel with a key derived from the secret, so that
+/// only someone holding the invite can produce a frame either side will
+/// take: a carrier that substitutes them stops the ceremony before either
+/// side has the other's identity. What remains is the person who holds the
+/// link — the bearer token (R23) — which is what the digits are for.
 library;
 
 import 'dart:convert';
@@ -47,10 +58,46 @@ const String _channelCtx = 'z-connect-channel-v1';
 const String _sasCtx = 'z-connect-sas-v1';
 const String _commitCtx = 'z-connect-commit-v1:';
 
+// Version 2 (ADR 0024, §20.8): every value that is computed differently has
+// a context of its own, so nothing of one version can be read as the other.
+const String _rendezvousCtxV2 = 'z-connect-rendezvous-v2:';
+const String _channelCtxV2 = 'z-connect-channel-v2';
+const String _sasCtxV2 = 'z-connect-sas-v2';
+const String _commitCtxV2 = 'z-connect-commit-v2:';
+
+/// The context of a version-2 invite's key, derived from its secret
+/// ([ConnectCode.inviteKey]), which keys both commitments and salts the
+/// channel key (§20.8).
+const String connectInviteKeyCtx = 'z-connect-invite-v2';
+
 /// The context the throwaway relay mailboxes are derived from (17.2). Here
 /// rather than in the transport so every context string for this ceremony is
 /// in one place and visibly disjoint from `z-pair-*`.
 const String connectRelayCtx = 'z-connect-relay-v1:';
+
+/// The same for an invite of version 2: its mailboxes are not the ones a
+/// version-1 invite of the same ten bytes names, so the two versions never
+/// meet in a mailbox — a client that runs one cannot be made to answer, or
+/// to wait on, the other (§20.8).
+const String connectRelayCtxV2 = 'z-connect-relay-v2:';
+
+/// The invite version this library mints ([ConnectCode.generate]).
+///
+/// A client that mints version 2 never runs version 1 for it: there is no
+/// fallback, because the party that would choose to fall back is the one in
+/// the middle (ADR 0009's "Rejected", ADR 0024). Version 1 is still
+/// RECEIVED — an invite an older client made works as it always did — and
+/// that is the whole compatibility surface.
+const int connectInviteVersion = 2;
+
+/// The first character of both renderings of a version-2 invite, `9`.
+///
+/// Not in RFC 4648's base32 alphabet, so every parser from before ADR 0024
+/// refuses a version-2 invite outright — "not a connect code" — rather than
+/// running version 1 on its ten bytes and waiting on mailboxes nobody
+/// answers. Among the four characters base32 lacks (`0 1 8 9`) it is the
+/// one that reads as itself: `0` is `O`, `1` is `I` or `L`, `8` is `B`.
+const String connectV2Marker = '9';
 
 /// Where a `/i#…` invite link points by default.
 const String connectLinkHost = 'www.zmessengers.com';
@@ -72,8 +119,8 @@ const String connectLinkHost = 'www.zmessengers.com';
 /// attached would be a group invite announcing itself by eight bytes. A
 /// client from before ADR 0020 neither writes nor reads it (§14), and
 /// [ConnectInviter.create] and [ConnectAcceptor.reply] produce that client's
-/// bytes when not asked for the bit, which is what keeps
-/// `vectors/connect/connect.json` what it was.
+/// bytes when not asked for the bit — with a version-1 code, the bytes that
+/// keep `vectors/connect/connect.json` what it was.
 const String connectGroupMember = 'grp';
 
 /// RFC 4648 base32, as code units — what [ConnectCode.parse] will accept.
@@ -99,19 +146,46 @@ class ConnectAbort implements Exception {
 /// to a server, so the site that serves the landing page never receives it.
 /// Both renderings are the same secret; [text] and [link] cannot drift apart
 /// because they are computed from the same bytes here.
+///
+/// [version] is part of the invite, carried in both renderings: a version-2
+/// invite starts with [connectV2Marker] (`9ABCD-EFGHI-JKLMN-OP`), a
+/// version-1 invite is base32 and nothing else, as it always was. The
+/// version travels with the secret, outside the relay, because the relay is
+/// the party a version read from the frames could be chosen by.
 class ConnectCode {
   final Uint8List secret;
-  ConnectCode(this.secret) {
+
+  /// 1 — the ceremony as ADR 0009 built it — or 2, bound to the secret
+  /// (ADR 0024). The constructor's default is 1: ten bytes on their own, as
+  /// every record and vector from before ADR 0024 holds them, are a
+  /// version-1 invite. [generate] mints [connectInviteVersion].
+  final int version;
+
+  ConnectCode(this.secret, {this.version = 1}) {
     if (secret.length != 10) {
       throw const FormatException('a connect code is 10 bytes');
     }
+    if (version != 1 && version != 2) {
+      throw const FormatException('not an invite version this build knows');
+    }
   }
 
-  static ConnectCode generate() => ConnectCode(randomBytes(10));
+  static ConnectCode generate({int version = connectInviteVersion}) =>
+      ConnectCode(randomBytes(10), version: version);
 
-  String get text => base32Groups(secret);
+  /// Whether this invite binds its secret into the ceremony (version 2).
+  bool get bound => version >= 2;
 
-  /// A printed code back into its ten bytes.
+  String get text {
+    if (!bound) return base32Groups(secret);
+    final raw = '$connectV2Marker${base32Encode(secret)}';
+    return [
+      for (var i = 0; i < raw.length; i += 5)
+        raw.substring(i, i + 5 > raw.length ? raw.length : i + 5)
+    ].join('-');
+  }
+
+  /// A printed code back into its ten bytes, and its version.
   ///
   /// [base32Decode] skips whatever it does not recognise, which is right for
   /// something read down a phone line — dashes, spaces, the wrong case — and
@@ -121,10 +195,27 @@ class ConnectCode {
   /// app on the device can send a VIEW intent) would fill the user's list
   /// with ceremonies nobody can answer. So the separators are named, and
   /// anything else is a refusal rather than a character to skip.
+  ///
+  /// A code that starts with [connectV2Marker] is version 2, and must then
+  /// be exactly the sixteen base32 characters of its ten bytes: no build has
+  /// ever written one any other way, so there is no leniency to keep. One
+  /// that does not is read by the version-1 rule, unchanged — which is also
+  /// what every build from before ADR 0024 does with a version-2 code: the
+  /// marker is not base32, so it refuses it.
   static ConnectCode parse(String code) {
-    for (final ch in code.toUpperCase().codeUnits) {
-      const separators = [0x2D, 0x20, 0x09, 0x0A, 0x0D]; // - space tab nl cr
-      if (separators.contains(ch)) continue;
+    const separators = [0x2D, 0x20, 0x09, 0x0A, 0x0D]; // - space tab nl cr
+    final chars = <int>[
+      for (final ch in code.toUpperCase().codeUnits)
+        if (!separators.contains(ch)) ch
+    ];
+    if (chars.isNotEmpty && chars.first == connectV2Marker.codeUnitAt(0)) {
+      final rest = chars.sublist(1);
+      if (rest.length != 16 || !rest.every(_b32Chars.contains)) {
+        throw const FormatException('not a connect code');
+      }
+      return ConnectCode(base32Decode(String.fromCharCodes(rest)), version: 2);
+    }
+    for (final ch in chars) {
       if (!_b32Chars.contains(ch)) {
         throw const FormatException('not a connect code');
       }
@@ -162,9 +253,37 @@ class ConnectCode {
   /// [connectRelayCtx] — see `mailboxIdentity`, and `connect/mailboxes.json`
   /// for the bytes. Two rather than one so that neither side is handed back
   /// its own frames on the relay's flush, and so the pair the relay sees is
-  /// the shape §20 describes.
-  Future<String> rendezvousRoutingId() async => b64url(
-      await sha256Bytes(concatBytes([utf8.encode(_rendezvousCtx), secret])));
+  /// the shape §20 describes. A version-2 code names its own, under a
+  /// context of its own.
+  Future<String> rendezvousRoutingId() async {
+    final ctx = bound ? _rendezvousCtxV2 : _rendezvousCtx;
+    return b64url(
+        await sha256Bytes(concatBytes([utf8.encode(ctx), secret])));
+  }
+
+  Future<Uint8List>? _inviteKey;
+
+  /// The key a version-2 invite binds into its ceremony (§20.8):
+  /// HKDF-SHA256 of the secret, an empty salt, [connectInviteKeyCtx] as its
+  /// info, 32 bytes. It keys both commitments and salts the channel key, so
+  /// nobody without the invite can make a frame either side will take — the
+  /// relay included, which sees every frame and never the invite.
+  ///
+  /// Null for version 1, which binds nothing: that is what ADR 0024 changes,
+  /// and what an invite made by an older client still is.
+  Future<Uint8List?> inviteKey() {
+    if (!bound) return Future.value(null);
+    return _inviteKey ??= _deriveInviteKey(secret);
+  }
+
+  static Future<Uint8List> _deriveInviteKey(Uint8List secret) async {
+    final k = await Hkdf(hmac: Hmac.sha256(), outputLength: 32).deriveKey(
+      secretKey: SecretKey(secret),
+      nonce: Uint8List(0),
+      info: utf8.encode(connectInviteKeyCtx),
+    );
+    return Uint8List.fromList(await k.extractBytes());
+  }
 }
 
 /// What one side reveals about itself: the contact code it would have shown in
@@ -231,15 +350,29 @@ class ConnectIdentity {
   /// The bytes a commitment covers: this side's ephemeral and everything it
   /// will reveal. The code is length-prefixed because it is variable and is
   /// not last; the name is last.
-  Future<Uint8List> _commitment(Uint8List ephPub) {
+  ///
+  /// With an [inviteKey] (version 2, §20.8) the commitment is keyed:
+  /// HMAC-SHA256 under the invite key, over the same fields after a context
+  /// of its own. Then only a holder of the invite can make a commitment
+  /// either side will hold the other's reveal to — and only a holder can test
+  /// a guess against one. Unkeyed, anyone with the frames and a candidate
+  /// contact code could confirm who had committed, as soon as message 3 had
+  /// shown the ephemeral.
+  Future<Uint8List> _commitment(Uint8List ephPub, Uint8List? inviteKey) async {
     final code = utf8.encode(contactCode);
-    return sha256Bytes(concatBytes([
-      utf8.encode(_commitCtx),
+    final fields = <List<int>>[
       ephPub,
       u16be(code.length),
       code,
       utf8.encode(displayName ?? ''),
-    ]));
+    ];
+    if (inviteKey == null) {
+      return sha256Bytes(concatBytes([utf8.encode(_commitCtx), ...fields]));
+    }
+    final mac = await Hmac.sha256().calculateMac(
+        concatBytes([utf8.encode(_commitCtxV2), ...fields]),
+        secretKey: SecretKey(inviteKey));
+    return Uint8List.fromList(mac.bytes);
   }
 
   /// What this side seals into its message 3 or 4. [group] is the group
@@ -341,6 +474,10 @@ class ConnectInviter {
 
   ConnectInviter._(this.code, this.me, this.ephSeed, this.ephPub, this.group);
 
+  /// A new invite, made with [code] or, without one, with a fresh code of
+  /// [connectInviteVersion] — so an invite this library makes on its own is
+  /// bound to its secret (§20.8). A version-1 [code] runs the ceremony as
+  /// ADR 0009 built it, which is what the recorded vectors are.
   static Future<ConnectInviter> create(
       {required ConnectIdentity me, ConnectCode? code, bool? group}) async {
     final seed = randomBytes(32);
@@ -356,8 +493,13 @@ class ConnectInviter {
   /// cannot live only in memory the way device pairing's can — that is the
   /// whole difference between linking two devices you are holding and
   /// reaching someone three time zones away (17.2).
+  ///
+  /// `cv` is the invite's version, written only for version 2, so a record
+  /// of a version-1 invite is what it was before ADR 0024 — and one written
+  /// before then reads back as the version-1 invite it is.
   Map<String, Object?> toJson() => {
         'code': b64(code.secret),
+        if (code.version != 1) 'cv': code.version,
         'me': me.contactCode,
         if (me.displayName != null) 'name': me.displayName,
         'eph': b64(ephSeed),
@@ -373,8 +515,10 @@ class ConnectInviter {
     final pub = Uint8List.fromList(
         (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
     final grp = j['grp'];
-    final out = ConnectInviter._(ConnectCode(unb64(j['code'] as String)), me,
-        seed, pub, grp is bool ? grp : null);
+    final code = ConnectCode(unb64(j['code'] as String),
+        version: connectRecordVersion(j['cv']));
+    final out =
+        ConnectInviter._(code, me, seed, pub, grp is bool ? grp : null);
     final pe = j['peerEph'], pc = j['peerC'];
     if (pe is String && pc is String) {
       try {
@@ -382,7 +526,7 @@ class ConnectInviter {
         out._peerEph = unb64(pe);
         out._peerCommitment = unb64(pc);
         out._dh = dh;
-        out._channelKey = await _deriveChannelKey(dh);
+        out._channelKey = await _deriveChannelKey(dh, await code.inviteKey());
       } on ConnectAbort {
         // A reply a build from before the small-order check took in. Read
         // back unopened: the run is spent or about to be, and the next step
@@ -398,7 +542,7 @@ class ConnectInviter {
 
   /// Message 1: the commitment, and nothing else.
   Future<Map<String, Object?>> commit() async =>
-      {'c': b64(await me._commitment(ephPub))};
+      {'c': b64(await me._commitment(ephPub, await code.inviteKey()))};
 
   /// Message 3, from the acceptor's reply (message 2): this side's opening,
   /// with its identity sealed under the channel the reply completes.
@@ -414,7 +558,7 @@ class ConnectInviter {
     _peerEph = eph;
     _peerCommitment = commitment;
     _dh = dh;
-    _channelKey = await _deriveChannelKey(dh);
+    _channelKey = await _deriveChannelKey(dh, await code.inviteKey());
     return {
       'ephx': b64(ephPub),
       'blob': b64(await _seal(_channelKey!, me._reveal(group: group))),
@@ -438,7 +582,8 @@ class ConnectInviter {
     final (peer, echo) =
         await _openReveal(key, reveal, readGroup: group != null);
     if (!constantTimeEquals(
-        await peer._commitment(_peerEph!), _peerCommitment!)) {
+        await peer._commitment(_peerEph!, await code.inviteKey()),
+        _peerCommitment!)) {
       throw const ConnectAbort(
           'the other side revealed something it had not committed to');
     }
@@ -448,7 +593,8 @@ class ConnectInviter {
     }
     return ConnectSession(
       channelKey: key,
-      sas: await _deriveSas(_dh!, me, ephPub, peer, _peerEph!),
+      sas: await _deriveSas(_dh!, me, ephPub, peer, _peerEph!,
+          version: code.version),
       peer: peer,
       group: echo,
     );
@@ -458,6 +604,12 @@ class ConnectInviter {
 /// The side that opened the invite. Sends messages 2 and 4.
 class ConnectAcceptor {
   final ConnectIdentity me;
+
+  /// The invite this side was handed: its version decides how every value
+  /// of the ceremony is computed, and a version-2 invite's key is in all of
+  /// them (§20.8).
+  final ConnectCode code;
+
   final Uint8List _ephSeed, _ephPub, _peerCommitment;
 
   /// Whether this side reads the group bit in message 3 and repeats it in
@@ -466,13 +618,15 @@ class ConnectAcceptor {
   /// vectors are and what a test standing in for such a client needs.
   final bool groupAware;
 
-  ConnectAcceptor._(this.me, this._ephSeed, this._ephPub, this._peerCommitment,
-      this.groupAware);
+  ConnectAcceptor._(this.me, this.code, this._ephSeed, this._ephPub,
+      this._peerCommitment, this.groupAware);
 
   Uint8List get ephPub => _ephPub;
 
   /// As [ConnectInviter.toJson]: the acceptor may also be closed and
-  /// reopened between the inviter's messages.
+  /// reopened between the inviter's messages. The invite itself is not in
+  /// it: the run that holds this side keeps it, and hands it back to
+  /// [fromJson].
   Map<String, Object?> toJson() => {
         'me': me.contactCode,
         if (me.displayName != null) 'name': me.displayName,
@@ -481,31 +635,40 @@ class ConnectAcceptor {
         if (groupAware) 'ga': true,
       };
 
-  static Future<ConnectAcceptor> fromJson(Map<String, Object?> j) async {
+  static Future<ConnectAcceptor> fromJson(Map<String, Object?> j,
+      {required ConnectCode code}) async {
     final me = await ConnectIdentity.fromCode(j['me'] as String,
         displayName: j['name'] as String?);
     final seed = unb64(j['eph'] as String);
     final pub = Uint8List.fromList(
         (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
     return ConnectAcceptor._(
-        me, seed, pub, unb64(j['peerC'] as String), j['ga'] == true);
+        me, code, seed, pub, unb64(j['peerC'] as String), j['ga'] == true);
   }
 
   /// Message 2: a fresh ephemeral and this side's own commitment, chosen
   /// while holding only a hash of the inviter's — which is what stops either
   /// side steering the confirmation string.
+  ///
+  /// [code] is the invite this side was handed. Required: the version, and
+  /// for version 2 the key, come from it and from nowhere else — not from
+  /// the frames, which whoever carries them can write.
   static Future<(Map<String, Object?>, ConnectAcceptor)> reply(
       Map<String, Object?> commit,
       {required ConnectIdentity me,
+      required ConnectCode code,
       bool groupAware = false}) async {
     final c = _need(commit, 'c');
     if (c.length != 32) throw const ConnectAbort('malformed commitment');
     final seed = randomBytes(32);
     final pub = Uint8List.fromList(
         (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
-    final acceptor = ConnectAcceptor._(me, seed, pub, c, groupAware);
+    final acceptor = ConnectAcceptor._(me, code, seed, pub, c, groupAware);
     return (
-      {'ephx': b64(pub), 'c': b64(await me._commitment(pub))},
+      {
+        'ephx': b64(pub),
+        'c': b64(await me._commitment(pub, await code.inviteKey()))
+      },
       acceptor,
     );
   }
@@ -521,10 +684,12 @@ class ConnectAcceptor {
       Map<String, Object?> open) async {
     final eph = _need(open, 'ephx');
     if (eph.length != 32) throw const ConnectAbort('malformed opening');
+    final inviteKey = await code.inviteKey();
     final dh = await _dhOf(_ephSeed, eph);
-    final key = await _deriveChannelKey(dh);
+    final key = await _deriveChannelKey(dh, inviteKey);
     final (peer, group) = await _openReveal(key, open, readGroup: groupAware);
-    if (!constantTimeEquals(await peer._commitment(eph), _peerCommitment)) {
+    if (!constantTimeEquals(
+        await peer._commitment(eph, inviteKey), _peerCommitment)) {
       throw const ConnectAbort(
           'the other side revealed something it had not committed to');
     }
@@ -535,12 +700,22 @@ class ConnectAcceptor {
       },
       ConnectSession(
         channelKey: key,
-        sas: await _deriveSas(dh, peer, eph, me, _ephPub),
+        sas: await _deriveSas(dh, peer, eph, me, _ephPub,
+            version: code.version),
         peer: peer,
         group: group,
       ),
     );
   }
+}
+
+/// The invite version a stored record names in its `cv` member: absent is
+/// version 1, which is every record written before ADR 0024. Anything this
+/// build does not know is refused rather than read as one it does.
+int connectRecordVersion(Object? cv) {
+  if (cv == null || cv == 1) return 1;
+  if (cv == 2) return 2;
+  throw const FormatException('not an invite version this build knows');
 }
 
 // ---------------------------------------------------------------------------
@@ -584,11 +759,20 @@ Future<Uint8List> _dhOf(Uint8List seed, Uint8List peerPub) async {
   return out;
 }
 
-Future<Uint8List> _deriveChannelKey(Uint8List dh) async {
+/// The channel key: HKDF-SHA256 of the X25519 output.
+///
+/// Version 1 salts it with 32 zero bytes, so it is a function of the two
+/// ephemerals alone — and a party that substitutes both of them, which is
+/// what carrying the frames lets it do, holds a key for each leg. Version 2
+/// salts it with the invite key ([ConnectCode.inviteKey]) under a context of
+/// its own (§20.8), so a key for either leg also needs the invite: whoever
+/// substitutes an ephemeral without it holds a key neither side has, and the
+/// reveal it seals, or the one it is sent, does not open.
+Future<Uint8List> _deriveChannelKey(Uint8List dh, Uint8List? inviteKey) async {
   final k = await Hkdf(hmac: Hmac.sha256(), outputLength: 32).deriveKey(
     secretKey: SecretKey(dh),
-    nonce: Uint8List(32),
-    info: utf8.encode(_channelCtx),
+    nonce: inviteKey ?? Uint8List(32),
+    info: utf8.encode(inviteKey == null ? _channelCtx : _channelCtxV2),
   );
   return Uint8List.fromList(await k.extractBytes());
 }
@@ -601,8 +785,12 @@ Future<Uint8List> _deriveChannelKey(Uint8List dh) async {
 /// come from seven bytes because the modulo of a 31-bit value by 10^8 is
 /// visibly biased, and the width is the point: with both sides committed, an
 /// attacker in the middle has one blind guess, and it should be a bad one.
+///
+/// [version] 2 computes the same thing under a context of its own (§20.8),
+/// so digits of one version are never the digits of the other.
 Future<String> _deriveSas(Uint8List dh, ConnectIdentity a, Uint8List ephA,
-    ConnectIdentity b, Uint8List ephB) async {
+    ConnectIdentity b, Uint8List ephB,
+    {required int version}) async {
   final aFirst = _lexLess(a.accountEdPub, b.accountEdPub);
   final lo = aFirst ? a : b, hi = aFirst ? b : a;
   final loEph = aFirst ? ephA : ephB, hiEph = aFirst ? ephB : ephA;
@@ -610,7 +798,7 @@ Future<String> _deriveSas(Uint8List dh, ConnectIdentity a, Uint8List ephA,
     secretKey: SecretKey(dh),
     nonce: concatBytes([loEph, hiEph]),
     info: concatBytes([
-      utf8.encode(_sasCtx),
+      utf8.encode(version == 1 ? _sasCtx : _sasCtxV2),
       lo.accountEdPub,
       lo.pqCommit,
       hi.accountEdPub,

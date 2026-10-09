@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:test/test.dart';
 import 'package:z_protocol/z_protocol.dart';
 
@@ -44,9 +45,22 @@ import 'package:z_protocol/z_protocol.dart';
 //     reads it and says so back, one from before the bit completes the
 //     same ceremony without it, both runs survive storage with the bit
 //     intact, and the message 3 the relay carried is the same length with
-//     the bit set and clear.
+//     the bit set and clear;
+//  7. (ADR 0024) a relay in the middle — the tap rewriting every frame it
+//     carries, with identities of its own toward each side, and everything
+//     the relay holds except the invite — cannot complete an invite made
+//     now: the acceptor stops at message 3 without revealing itself, and
+//     the relay opens nothing it carried;
+//  8. the same relay DOES complete an invite of version 1 — one made by a
+//     client from before ADR 0024, which a new client still opens: both
+//     legs finish, each side holds the relay's identity under the name it
+//     expected, and only the digits differ. That is the residual R25 states
+//     for such an invite, pinned here so it cannot change unnoticed;
+//  9. a side that refuses the identity the other revealed ends the
+//     ceremony there: an acceptor that refuses the inviter never sends
+//     message 4, and an inviter that refuses the acceptor holds no session.
 //
-// Criteria 5 and 6 are asserted against what the relay actually saw, not
+// Criteria 5, 6 and 7 are asserted against what the relay actually saw, not
 // against what the client meant to send: every frame passes through a
 // recording WebSocket tap standing between the clients and the relay.
 //
@@ -61,6 +75,9 @@ void main() {
   // Every frame that crossed the tap, decoded and raw. Cleared per test.
   final seen = <Map<String, Object?>>[];
   final raw = <String>[];
+
+  // When set, the tap is the relay in the middle (criterion 7).
+  RelayInTheMiddle? mitm;
 
   setUpAll(() async {
     final serverDir =
@@ -122,10 +139,35 @@ void main() {
         } catch (_) {}
       }
 
+      // A ceremony frame on its way in is handed to the relay in the
+      // middle, when there is one, and what it returns is what the relay
+      // stores. Each connection's frames keep their order: a rewrite is
+      // awaited before the next frame goes, and the close after both.
+      var inOrder = Future<void>.value();
       down.listen((d) {
-        note(d);
-        upstream.add(d);
-      }, onDone: () => upstream.close(), onError: (_) => upstream.close());
+        inOrder = inOrder.then((_) async {
+          note(d);
+          final m = mitm;
+          Map<String, Object?>? f;
+          try {
+            final j = jsonDecode(d as String);
+            if (j is Map) f = j.cast<String, Object?>();
+          } catch (_) {}
+          final payload = f?['payload'];
+          if (m != null &&
+              f != null &&
+              f['t'] == 'send' &&
+              '${f['id']}'.startsWith('z-connect-c') &&
+              payload is String) {
+            upstream
+                .add(jsonEncode({...f, 'payload': await m.rewrite(payload)}));
+          } else {
+            upstream.add(d);
+          }
+        });
+      },
+          onDone: () => inOrder = inOrder.then((_) => upstream.close()),
+          onError: (_) => inOrder = inOrder.then((_) => upstream.close()));
       upstream.listen((d) {
         note(d);
         down.add(d);
@@ -142,6 +184,7 @@ void main() {
   setUp(() {
     seen.clear();
     raw.clear();
+    mitm = null;
   });
 
   const p = Duration(milliseconds: 500);
@@ -484,6 +527,120 @@ void main() {
         'bit clear ${x3Clear.length} bytes');
   }, timeout: const Timeout(Duration(minutes: 3)));
 
+  test('7. a relay in the middle cannot complete an invite made now',
+      () async {
+    final (alice, _) = await person('Alice');
+    final (bob, _) = await person('Bob');
+    final (m1, _) = await person('Bob');
+    final (m2, _) = await person('Alice');
+    final middle = RelayInTheMiddle(
+        asInviter: (code: m2.contactCode, name: 'Alice'),
+        asAcceptor: (code: m1.contactCode, name: 'Bob'));
+    mitm = middle;
+
+    final inv = await ConnectRun.invite(me: alice);
+    final acc = ConnectRun.accept(me: bob, code: inv.code);
+    final progress = <ConnectProgress>[];
+    for (var i = 0; i < 3; i++) {
+      progress.add(await inv.step(relayUrl: url, poll: p));
+      progress.add(await acc.step(relayUrl: url, poll: p));
+    }
+
+    expect(middle.replaced, containsAll(['x1', 'x2', 'x3']),
+        reason: 'the relay rewrote what it carried');
+    expect(acc.session, isNull, reason: 'the acceptor never had a peer');
+    expect(acc.abortReason, isNotNull,
+        reason: 'it stopped at the opening it could not open');
+    expect(acc.finished, isTrue, reason: 'and the invite is spent');
+    expect(inv.session, isNull, reason: 'nor did the inviter');
+    expect(sends('z-connect-c4'), 0,
+        reason: 'the acceptor revealed itself to nobody');
+    expect(middle.readFromInviter, isNull,
+        reason: "the relay could not open the inviter's reveal");
+    expect(middle.readFromAcceptor, isNull);
+    print('relay in the middle, an invite made now: $progress');
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('8. the same relay completes an invite of version 1', () async {
+    final (alice, _) = await person('Alice');
+    final (bob, _) = await person('Bob');
+    final (m1, _) = await person('Bob');
+    final (m2, _) = await person('Alice');
+    final middle = RelayInTheMiddle(
+        asInviter: (code: m2.contactCode, name: 'Alice'),
+        asAcceptor: (code: m1.contactCode, name: 'Bob'));
+    mitm = middle;
+
+    // An inviter from before ADR 0024 makes version 1; this client opens it.
+    final inv = await ConnectRun.invite(
+        me: alice, code: ConnectCode.generate(version: 1));
+    final acc = ConnectRun.accept(
+        me: bob, code: ConnectCode.parse(inv.code.text), groupAware: true);
+    expect(acc.code.version, 1);
+    for (var i = 0; i < 3 && (inv.session == null || acc.session == null); i++) {
+      await inv.step(relayUrl: url, poll: p);
+      await acc.step(relayUrl: url, poll: p);
+    }
+
+    expect(middle.replaced, ['x1', 'x2', 'x3', 'x4']);
+    expect(inv.session, isNotNull, reason: 'the inviter reached the digits');
+    expect(acc.session, isNotNull, reason: 'and so did the acceptor');
+    expect(inv.session!.peer.displayName, 'Bob');
+    expect(acc.session!.peer.displayName, 'Alice');
+    expect(b64(inv.session!.peer.accountEdPub), b64(m1.accountEdPub),
+        reason: "the inviter's \"Bob\" is the relay");
+    expect(b64(acc.session!.peer.accountEdPub), b64(m2.accountEdPub),
+        reason: "the acceptor's \"Alice\" is the relay");
+    expect(middle.readFromInviter?['code'], alice.contactCode,
+        reason: "the relay read the inviter's reveal");
+    expect(middle.readFromAcceptor?['code'], bob.contactCode,
+        reason: "and the acceptor's");
+    expect(acc.session!.sas, isNot(inv.session!.sas),
+        reason: 'what a comparison of the digits would have caught');
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('9. a side that refuses whom the other revealed ends it there',
+      () async {
+    final (alice, _) = await person('Alice');
+    final (bob, _) = await person('Bob');
+    Future<bool> isAlice(ConnectIdentity p) async =>
+        b64(p.accountEdPub) == b64(alice.accountEdPub);
+    Future<bool> isBob(ConnectIdentity p) async =>
+        b64(p.accountEdPub) == b64(bob.accountEdPub);
+
+    // Bob refuses Alice the moment her reveal opens: no message 4.
+    final inv = await ConnectRun.invite(me: alice);
+    final acc = ConnectRun.accept(me: bob, code: inv.code);
+    expect(await inv.step(relayUrl: url, poll: p), ConnectProgress.waiting);
+    expect(await acc.step(relayUrl: url, poll: p, refusePeer: isAlice),
+        ConnectProgress.waiting);
+    expect(await inv.step(relayUrl: url, poll: p), ConnectProgress.waiting);
+    expect(await acc.step(relayUrl: url, poll: p, refusePeer: isAlice),
+        ConnectProgress.aborted);
+    expect(acc.session, isNull);
+    expect(acc.finished, isTrue, reason: 'the invite is spent');
+    expect(sends('z-connect-c4'), 0, reason: 'Bob never revealed himself');
+    expect(await inv.step(relayUrl: url, poll: p), ConnectProgress.waiting,
+        reason: 'Alice is left waiting, and is told nothing');
+
+    // Alice refuses Bob the moment his reveal opens: no session.
+    final inv2 = await ConnectRun.invite(me: alice);
+    final acc2 = ConnectRun.accept(me: bob, code: inv2.code);
+    expect(await inv2.step(relayUrl: url, poll: p, refusePeer: isBob),
+        ConnectProgress.waiting);
+    expect(await acc2.step(relayUrl: url, poll: p), ConnectProgress.waiting);
+    expect(await inv2.step(relayUrl: url, poll: p, refusePeer: isBob),
+        ConnectProgress.waiting);
+    expect(await acc2.step(relayUrl: url, poll: p), ConnectProgress.confirm);
+    expect(await inv2.step(relayUrl: url, poll: p, refusePeer: isBob),
+        ConnectProgress.aborted);
+    expect(inv2.session, isNull);
+    expect(inv2.finished, isTrue);
+    // And the refusal outlives the app: read back, the run is spent.
+    expect(await (await reopen(inv2)).step(relayUrl: url, poll: p),
+        ConnectProgress.spent);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
   test('a refused frame spends the invite, and the refusal is durable',
       () async {
     final (alice, _) = await person('Alice');
@@ -513,4 +670,138 @@ void main() {
     expect(inv.finished, isTrue);
     expect(await inv.step(relayUrl: url, poll: p), ConnectProgress.spent);
   }, timeout: const Timeout(Duration(minutes: 2)));
+}
+
+/// The relay in the middle of a ceremony: it rewrites the four frames as
+/// they pass, running one leg with each side under identities of its own.
+///
+/// It holds everything the relay holds — the frames, the mailboxes they go
+/// to, the order they come in — and nothing it does not: the invite secret
+/// travels in a link the relay never carries. So it derives every key the
+/// way §20.3 does for an invite of version 1, which is the only way that
+/// needs no secret: the channel key from the two ephemerals alone, the
+/// commitments from what they commit to alone. Written from the primitives,
+/// sharing no code with the library, so what it can do is what the
+/// specification lets it do.
+class RelayInTheMiddle {
+  RelayInTheMiddle({required this.asInviter, required this.asAcceptor});
+
+  /// What it reveals to the acceptor, and to the inviter.
+  final ({String code, String name}) asInviter, asAcceptor;
+
+  final _x = X25519();
+  final _aead = Chacha20.poly1305Aead();
+  SimpleKeyPair? _towardAcceptor, _towardInviter;
+  Uint8List? _acceptorEph;
+  int _inviterGroup = 0;
+  Uint8List? _keyWithInviter, _keyWithAcceptor;
+
+  /// What it read of each side's reveal, if it could open it.
+  Map<String, Object?>? readFromInviter, readFromAcceptor;
+
+  /// The frames it replaced, by kind.
+  final List<String> replaced = [];
+
+  Future<Uint8List> _pub(SimpleKeyPair k) async =>
+      Uint8List.fromList((await k.extractPublicKey()).bytes);
+
+  Future<Uint8List> _commit(Uint8List eph, String code, String name) async {
+    final c = utf8.encode(code);
+    return Uint8List.fromList((await Sha256().hash([
+      ...utf8.encode('z-connect-commit-v1:'),
+      ...eph,
+      (c.length >> 8) & 0xff,
+      c.length & 0xff,
+      ...c,
+      ...utf8.encode(name),
+    ]))
+        .bytes);
+  }
+
+  Future<Uint8List> _channel(SimpleKeyPair mine, Uint8List theirs) async {
+    final dh = await _x.sharedSecretKey(
+        keyPair: mine,
+        remotePublicKey: SimplePublicKey(theirs, type: KeyPairType.x25519));
+    final k = await Hkdf(hmac: Hmac.sha256(), outputLength: 32).deriveKey(
+        secretKey: SecretKey(await dh.extractBytes()),
+        nonce: Uint8List(32),
+        info: utf8.encode('z-connect-channel-v1'));
+    return Uint8List.fromList(await k.extractBytes());
+  }
+
+  Future<Map<String, Object?>?> _open(Uint8List key, String blob) async {
+    try {
+      final clear = await _aead.decrypt(
+          SecretBox.fromConcatenation(base64Decode(blob),
+              nonceLength: 12, macLength: 16),
+          secretKey: SecretKey(key));
+      return (jsonDecode(utf8.decode(clear)) as Map).cast<String, Object?>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String> _seal(Uint8List key, Map<String, Object?> m) async {
+    final box = await _aead.encrypt(utf8.encode(jsonEncode(m)),
+        secretKey: SecretKey(key), nonce: _aead.newNonce());
+    return base64Encode(box.concatenation());
+  }
+
+  /// The payload the relay stores in place of [payload], a frame of the
+  /// ceremony on its way in. Every rewrite of one kind is the same, so a
+  /// side re-posting its frame meets the same substitute.
+  Future<String> rewrite(String payload) async {
+    final j = (jsonDecode(payload) as Map).cast<String, Object?>();
+    switch (j['k']) {
+      case 'x1':
+        _towardAcceptor ??= await _x.newKeyPair();
+        replaced.add('x1');
+        return jsonEncode({
+          'k': 'x1',
+          'c': base64Encode(await _commit(await _pub(_towardAcceptor!),
+              asInviter.code, asInviter.name)),
+        });
+      case 'x2':
+        _acceptorEph = base64Decode(j['ephx'] as String);
+        _towardInviter ??= await _x.newKeyPair();
+        replaced.add('x2');
+        final eph = await _pub(_towardInviter!);
+        return jsonEncode({
+          'k': 'x2',
+          'ephx': base64Encode(eph),
+          'c': base64Encode(
+              await _commit(eph, asAcceptor.code, asAcceptor.name)),
+        });
+      case 'x3':
+        _keyWithInviter = await _channel(
+            _towardInviter!, base64Decode(j['ephx'] as String));
+        readFromInviter = await _open(_keyWithInviter!, j['blob'] as String);
+        final grp = readFromInviter?['grp'];
+        _inviterGroup = grp is int ? grp : 0;
+        _keyWithAcceptor = await _channel(_towardAcceptor!, _acceptorEph!);
+        replaced.add('x3');
+        return jsonEncode({
+          'k': 'x3',
+          'ephx': base64Encode(await _pub(_towardAcceptor!)),
+          'blob': await _seal(_keyWithAcceptor!, {
+            'code': asInviter.code,
+            'name': asInviter.name,
+            'grp': _inviterGroup,
+          }),
+        });
+      case 'x4':
+        readFromAcceptor =
+            await _open(_keyWithAcceptor!, j['blob'] as String);
+        replaced.add('x4');
+        return jsonEncode({
+          'k': 'x4',
+          'blob': await _seal(_keyWithInviter!, {
+            'code': asAcceptor.code,
+            'name': asAcceptor.name,
+            'grp': _inviterGroup,
+          }),
+        });
+    }
+    return payload;
+  }
 }

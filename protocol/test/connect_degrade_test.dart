@@ -153,7 +153,8 @@ void main() {
     // The ceremony, honestly, up to the point where the acceptor reveals.
     final inviter = await ConnectInviter.create(me: alice);
     final (reply, acceptor) =
-        await ConnectAcceptor.reply(await inviter.commit(), me: bob);
+        await ConnectAcceptor.reply(await inviter.commit(),
+            me: bob, code: inviter.code);
     final opening = await inviter.open(reply);
     final (_, session) = await acceptor.accept(opening);
 
@@ -179,7 +180,8 @@ void main() {
     // not about the frame.
     final inviter2 = await ConnectInviter.create(me: alice);
     final (reply2, acceptor2) =
-        await ConnectAcceptor.reply(await inviter2.commit(), me: bob);
+        await ConnectAcceptor.reply(await inviter2.commit(),
+            me: bob, code: inviter2.code);
     final opening2 = await inviter2.open(reply2);
     final (honest, session2) = await acceptor2.accept(opening2);
     final done = await inviter2.complete(honest);

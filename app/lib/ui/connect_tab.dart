@@ -190,7 +190,9 @@ class _ConnectTabState extends State<ConnectTab> {
       ConnectProgress.spent => l.connectAborted,
       _ => invite.run.session != null
           ? l.connectConfirmTitle
-          : (invite.mine ? l.connectPending : l.connectPendingOpened),
+          : invite.held
+              ? l.connectHeldStatus
+              : (invite.mine ? l.connectPending : l.connectPendingOpened),
     };
     // What is left of the 24 hours (§20, R23).
     //
@@ -254,6 +256,24 @@ class _ConnectTabState extends State<ConnectTab> {
               // had refused every step since the invite was made.
               Text(l.connectLastFailure(invite.lastFailure!),
                   style: TextStyle(fontSize: 12, color: context.z.warn)),
+            ],
+            // ADR 0024: opened from a link, and nothing sent yet. What
+            // connecting sends, and to whom, said before the person says
+            // yes — and the yes is this button, not the tap on the link.
+            if (live && invite.held) ...[
+              const SizedBox(height: 10),
+              Text(l.connectHeldBody,
+                  style: const TextStyle(fontSize: 13, height: 1.4)),
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FilledButton(
+                  key: ValueKey('connect-consent-${invite.id}'),
+                  onPressed:
+                      _busy ? null : () => _run(() => invites.consent(invite)),
+                  child: Text(l.connectHeldGo),
+                ),
+              ),
             ],
             if (invite.mine && live) ...[
               const SizedBox(height: 12),
@@ -430,6 +450,16 @@ class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
                   ],
                 ),
               ),
+            ],
+            // ADR 0024: an invite of version 1 — made by a client from before
+            // invites were bound to their secret — can be answered by the
+            // relay itself, so skipping the comparison trusts it too.
+            if (invite.unbound) ...[
+              const SizedBox(height: 12),
+              Text(l.connectOldInvite,
+                  key: const ValueKey('connect-old-invite'),
+                  style: TextStyle(
+                      fontSize: 13, height: 1.4, color: context.z.warn)),
             ],
             // ADR 0012: who actually took the invite, and the bearer-token
             // caveat — the person who accepted may not be who you sent it to.

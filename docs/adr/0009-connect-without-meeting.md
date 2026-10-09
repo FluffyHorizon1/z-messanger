@@ -2,7 +2,9 @@
 
 **Status:** **Accepted** (2026‑09‑13) — the ceremony (17.1), its transport
 (17.2), the CONNECT tab (17.3), the deep link (17.3b), the landing page (17.4)
-and `PROTOCOL.md` §20 are built ·
+and `PROTOCOL.md` §20 are built · amended by ADR 0024 (2026‑10‑09): an invite
+of version 2 binds its secret into the ceremony, because in this one a skipped
+comparison trusted the relay as well as whoever carried the link ·
 **Roadmap:** Phase 17 · **Decides:** how two people who cannot meet add each
 other, what a confirmed comparison is then worth, and what is deliberately
 left out.

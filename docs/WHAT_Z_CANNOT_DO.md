@@ -131,7 +131,11 @@ swapped on its way to you is simply who you added (trust on first use).
 A CONNECT invite has the same edge, said differently: until it is used it is
 a bearer token, and whoever opens the link first is who it reaches — whoever
 saw it in the chat it was pasted into included. The eight digits are what
-catch that, and only if the two of you compare them.
+catch that, and only if the two of you compare them. An invite made by an
+older version of Z has a second edge, which its comparison screen states:
+until the digits are compared, the relay that carried it could be in the
+middle too. One made now is bound to a secret the relay never sees, so the
+relay cannot answer it — but the person holding the link still can.
 
 Key transparency (`docs/adr/0006-key-transparency-log.md`) catches some of
 this automatically: every device list an account publishes is recorded where

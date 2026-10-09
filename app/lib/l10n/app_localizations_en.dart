@@ -2054,6 +2054,20 @@ class AppLocalizationsEn extends AppLocalizations {
       'No share sheet here — the link is on the clipboard instead.';
 
   @override
+  String get connectHeldStatus => 'Opened from a link — nothing sent yet';
+
+  @override
+  String get connectHeldBody =>
+      'Connecting sends your contact code to whoever made this invite, and then the two of you compare eight digits. If you were not expecting an invite, discard it.';
+
+  @override
+  String get connectHeldGo => 'Connect';
+
+  @override
+  String get connectOldInvite =>
+      'This invite was made by an older version of Z. Until you compare the digits, even the relay could be in the middle.';
+
+  @override
   String get requestsTitle => 'Requests';
 
   @override

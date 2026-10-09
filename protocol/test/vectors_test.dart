@@ -52,6 +52,7 @@ void main() {
       ('connect', 'connect'),
       ('connect', 'mailboxes'),
       ('connect', 'group'),
+      ('connect', 'invite_v2'),
       ('v2', 'mlkem768'),
       ('v2', 'pq_ratchet'),
       ('v2', 'pq_rekey'),
@@ -386,7 +387,8 @@ void main() {
           [unhex((v['acceptor_ephemeral'] as Map)['seed'] as String)],
           () => ConnectAcceptor.reply(
               (frames['commit'] as Map).cast<String, Object?>()..remove('k'),
-              me: ids[1]));
+              me: ids[1],
+              code: code));
       expect(b64(unb64(reply['ephx'] as String)),
           (frames['reply'] as Map)['ephx']);
       expect(reply['c'], (frames['reply'] as Map)['c']);
@@ -473,7 +475,7 @@ void main() {
       final (reply, acceptor) = await runScripted(
           [unhex((v['acceptor_ephemeral'] as Map)['seed'] as String)],
           () => ConnectAcceptor.reply(frame('commit'),
-              me: ids[1], groupAware: true));
+              me: ids[1], code: code, groupAware: true));
       expect({'k': 'x2', ...reply}, frames['reply']);
       final open = await runScripted(
           [unhex(reveals['open_nonce'] as String)], () => inviter.open(reply));
@@ -508,12 +510,98 @@ void main() {
       // same ceremony, from the same recorded inputs, without noticing it.
       final (_, old) = await runScripted(
           [unhex((v['acceptor_ephemeral'] as Map)['seed'] as String)],
-          () => ConnectAcceptor.reply(frame('commit'), me: ids[1]));
+          () => ConnectAcceptor.reply(frame('commit'),
+              me: ids[1], code: code));
       final (_, oldSession) = await runScripted(
           [unhex(reveals['reveal_nonce'] as String)],
           () => old.accept(frame('open')));
       expect(oldSession.sas, v['sas']);
       expect(oldSession.group, isNull);
+    });
+
+    test('connect v2: the recorded ceremony replays, bound to its secret',
+        () async {
+      final v = readVectors('invite_v2', 'connect');
+      final cc = (v['connect_code'] as Map).cast<String, Object?>();
+      final code = ConnectCode(unhex(cc['secret'] as String), version: 2);
+      expect(code.text, cc['text']);
+      expect(code.link(), cc['link']);
+      expect((cc['text'] as String).startsWith(cc['marker'] as String), isTrue);
+      for (final r in [cc['text'] as String, cc['link'] as String]) {
+        final back = r.startsWith('https://')
+            ? ConnectCode.fromLink(r)!
+            : ConnectCode.parse(r);
+        expect(back.version, 2, reason: r);
+        expect(hex(back.secret), cc['secret']);
+      }
+      expect(ConnectCode(code.secret).text, cc['text_as_version_1']);
+      expect(await code.rendezvousRoutingId(), cc['rendezvous_routing_id']);
+      final key = (v['invite_key'] as Map).cast<String, Object?>();
+      expect(hex(utf8.encode(connectInviteKeyCtx)), key['info']);
+      expect(hex((await code.inviteKey())!), key['key']);
+
+      // Both mailboxes, under the version-2 context, and none of them one
+      // that version 1 derives from the same ten bytes.
+      final ids = <String>{};
+      for (final m in (v['mailboxes'] as List).cast<Map<String, Object?>>()) {
+        final id = await mailboxIdentity(code, m['role'] as String);
+        expect(hex(id.edSeed), m['ed_seed']);
+        expect(hex(id.xSeed), m['x_seed']);
+        expect(await id.routingId(), m['routing_id']);
+        ids.add(await id.routingId());
+      }
+      final others = (v['distinct_from'] as Map).cast<String, Object?>();
+      expect(others['v1_mailbox_i'],
+          await (await mailboxIdentity(ConnectCode(code.secret), 'i')).routingId());
+      expect(ids.intersection(others.values.cast<String>().toSet()), isEmpty);
+
+      // All four messages from the recorded ephemerals and nonces.
+      final parties = (v['parties'] as List).cast<Map<String, Object?>>();
+      final who = [
+        for (final p in parties)
+          await ConnectIdentity.fromCode(p['contact_code'] as String,
+              displayName: p['display_name'] as String?)
+      ];
+      final frames = (v['frames'] as Map).cast<String, Object?>();
+      final reveals = (v['reveals'] as Map).cast<String, Object?>();
+      Map<String, Object?> frame(String k) =>
+          (frames[k] as Map).cast<String, Object?>()..remove('k');
+      final iEph = unhex((v['inviter_ephemeral'] as Map)['seed'] as String);
+      final rEph = unhex((v['acceptor_ephemeral'] as Map)['seed'] as String);
+      final inviter = await runScripted([iEph],
+          () => ConnectInviter.create(me: who[0], code: code, group: false));
+      expect({'k': 'x1', ...await inviter.commit()}, frames['commit']);
+      final (reply, acceptor) = await runScripted(
+          [rEph],
+          () => ConnectAcceptor.reply(frame('commit'),
+              me: who[1], code: code, groupAware: true));
+      expect({'k': 'x2', ...reply}, frames['reply']);
+      final open = await runScripted(
+          [unhex(reveals['open_nonce'] as String)], () => inviter.open(reply));
+      expect({'k': 'x3', ...open}, frames['open']);
+      final (reveal, sessionR) = await runScripted(
+          [unhex(reveals['reveal_nonce'] as String)],
+          () => acceptor.accept(open));
+      expect({'k': 'x4', ...reveal}, frames['reveal']);
+      final sessionI = await inviter.complete(reveal);
+      expect(sessionI.sas, v['sas']);
+      expect(sessionR.sas, v['sas']);
+      expect(hex(sessionI.channelKey), v['channel_key']);
+      expect(hex(await sessionR.goAheadTag()), v['go_ahead_tag']);
+      final commits = (v['commitments'] as Map).cast<String, Object?>();
+      expect(hex(base64Decode((frames['commit'] as Map)['c'] as String)),
+          commits['inviter']);
+
+      // Version 1's values from the same inputs are none of these, and a
+      // reader of version 1 cannot run the recorded frames: it aborts.
+      final v1 = (v['version_1_of_the_same_inputs'] as Map).cast<String, Object?>();
+      expect(v1['channel_key'], isNot(v['channel_key']));
+      expect(v1['inviter_commitment'], isNot(commits['inviter']));
+      final (_, old) = await runScripted(
+          [rEph],
+          () => ConnectAcceptor.reply(frame('commit'),
+              me: who[1], code: ConnectCode(code.secret), groupAware: true));
+      await expectLater(old.accept(frame('open')), throwsA(isA<ConnectAbort>()));
     });
 
     test('contact code pqc signature: the recorded code verifies, and every '

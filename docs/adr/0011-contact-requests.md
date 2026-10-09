@@ -2,7 +2,9 @@
 
 **Status:** **Accepted** (2026‑09‑18) — the protocol (`creq`, §8.1), the model
 (`ChatService` requests/blocklist and the `requests`/`blocked` tables), and the
-Requests surface are built. Scope: the **scan / paste** add paths. The CONNECT
+Requests surface are built. Amended by ADR 0024 (2026‑10‑09): `ts` is read —
+a request 30 days old, or no newer than one already declined, is refused —
+at most 100 are pending, and a block holds against groups and invites. Scope: the **scan / paste** add paths. The CONNECT
 invite (ADR 0009) is left as‑is (auto‑add + optional safety number); a consent
 gate for it is a possible follow‑on.
 **Decides:** what happens on the *receiving* side when someone adds you, what a

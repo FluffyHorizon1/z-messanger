@@ -9,8 +9,9 @@ import 'add_contact_screen.dart';
 
 /// Shows an invite that arrived by link (17.3b).
 ///
-/// [DeepLinks] opens the invite and pumps it; this is the part that puts it in
-/// front of the person. Until 2026-09-17 nothing did: a tapped link wrote an
+/// [DeepLinks] opens the invite and holds it — nothing is sent until the
+/// person says yes (ADR 0024); this is the part that puts it in front of
+/// them, where the yes is. Until 2026-09-17 nothing did: a tapped link wrote an
 /// invite into the vault and the app came up on the home screen as if nothing
 /// had happened, and the ceremony waited there for somebody to find the
 /// CONNECT tab. Sits inside the `MaterialApp`, wrapping the home screen, so it

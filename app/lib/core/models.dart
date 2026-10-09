@@ -535,7 +535,9 @@ class Group {
   static const maxHeld = 8;
 
   /// Member entries — `{b: bundle, n: name}`, as a list carries them — for
-  /// members whose CONTACT I deleted, while they are in a group I am in. My
+  /// members whose CONTACT I deleted, while they are in a group I am in —
+  /// and for members this device has blocked, whom a list never makes a
+  /// contact (ADR 0024). My
   /// lists must keep naming them: a list of mine that silently dropped a
   /// member would remove them, and one that dropped an admin would be
   /// refused by every member. Gone when they are out of the group, and when

@@ -1076,6 +1076,18 @@ their account's devices is their answer, as one from the same device always
 was. A client that does not read the three members reads the request as the
 device's own, as it always did.
 
+**Its time** (`adr/0024`). `ts` is signed, and a recipient MUST read it: it
+drops a request whose `ts` is more than 30 days before its own clock or more
+than one day after it, and one whose `ts` is not later than that of the last
+request it took in from the same requester, still pending or declined — so a
+copy the relay kept cannot put a declined request back in front of anyone,
+while a new request, made later, is shown. Accepting the requester, blocking
+them or deleting them ends that memory, and it need not outlive 30 days from
+`ts`, after which the first rule refuses the request anyway. A recipient
+holds at most 100 pending requests, whichever way they came (§21.7 sets the
+same number); one more pushes out the oldest its person has not been shown,
+which is the new one when they have been shown every other.
+
 ## 9. Multi‑device messaging and self‑sync
 
 From one device's point of view, messaging an account is running one §5
@@ -1385,7 +1397,9 @@ tell group messages from direct ones.
   for a known group only under §11.1's rules; for an unknown group it
   creates it as the list describes, the sender being trusted by
   construction. Unknown members are auto‑added as contacts (unverified) so
-  the receiver can decrypt from them — only once the list is accepted. A
+  the receiver can decrypt from them — only once the list is accepted — and
+  never one the receiver has blocked (§8.1, `adr/0024`), whom it holds as a
+  member, sends nothing and takes nothing from. A
   list that no longer includes the receiver means they were removed.
 * `gmsg` is accepted only from a current member of a known, not‑left group.
 * `gfile` is a group attachment offer under the same rule: one file key and
@@ -2845,9 +2859,13 @@ which settles a request held for that routing id; the device it was sent to —
 the one its sender holds — answers it then, as it answers one accepted on it,
 and no other device does: to a client from before phase 33 an answer from a
 device it never added is a second request. `cdecl` removes the request, and is
-remembered with its time for the relay's queue lifetime (§12.4), because the
-two records reach a third device in either order: a request signed before the
-decline is dropped when it arrives. `cblock` blocks the routing id as the
+remembered with its time for 30 days — §8.1's bound, past which the request
+is refused anyway — because the two records reach a third device in either
+order, and a relay can hand a request over again long after its queue
+lifetime: a request signed before the decline is dropped when it arrives. The
+decline's time is also the receiver's §8.1 mark for that routing id, if it is
+later than the one it holds, so a copy refused on the device that declined is
+refused on every other. `cblock` blocks the routing id as the
 user's own block does, unless the receiver holds it as a contact (`contacts`
 and `blocked` never name one id, ADR 0011); a `cadd` lifts a block of its
 routing id, as adding someone on the device does.
@@ -3467,7 +3485,8 @@ no relay change, and the contact this produces is the same `zc1.`/`zc3.`
 bundle a scan produces. Design and the trust‑model decision: `adr/0009`. A
 group invite link (`adr/0020`) is this ceremony with one optional sealed
 member in each reveal (20.3) and one inner kind afterwards (§6.2, `gjoin`),
-bound to the ceremony by a tag derived from its channel key (20.6).*
+bound to the ceremony by a tag derived from its channel key (20.6). An invite
+of version 2 (`adr/0024`) binds its secret into the ceremony's keys (20.8).*
 
 In person, adding someone is a QR code and **the QR is the verification**: the
 channel is your eyes. Remotely there was one path — copy your code, send it
@@ -3493,6 +3512,9 @@ z-connect-channel-v1       the channel key (20.3)
 z-connect-sas-v1           the eight digits (20.4)
 ```
 
+Version 2 (20.8) has one more, `z-connect-invite-v2`, and a `-v2` twin of
+each of these.
+
 ### 20.2 The invite
 
 Ten random bytes, in two renderings computed from one secret:
@@ -3501,6 +3523,8 @@ Ten random bytes, in two renderings computed from one secret:
 text  = base32Groups(secret)                    e.g. ABCDE-FGHIJ-KLMNO-P
 link  = "https://" || host || "/i#" || base32(secret)     (no group dashes)
 ```
+
+An invite of version 2 starts both renderings with `9` (20.8).
 
 `host` defaults to `www.zmessengers.com` and is part of the deployment, not of the
 protocol: a self‑hosted relay serves its own landing page and its links carry
@@ -3684,7 +3708,9 @@ sending mailbox, with the JSON object as its payload and an envelope id of
 re-post its message; the relay dedupes an attributed envelope on (id, sender),
 so a retry costs nothing and leaves one envelope. Anyone holding the invite
 holds both mailbox key pairs — that is what makes the invite a bearer token
-(R23), and why it is one‑time and short‑lived.
+(R23), and why it is one‑time and short‑lived. In the middle of an invite of
+version 1 the relay needs neither: it writes into both mailboxes as the relay,
+and completes both legs (20.8).
 
 A client MUST acknowledge (§12.3) every ceremony envelope it has consumed, and
 MUST acknowledge whatever remains in its mailbox once the ceremony completes.
@@ -3713,7 +3739,8 @@ in the comparison being done properly:
   holds the keys they revealed, and nothing about who that is;
 * on a confirmed comparison the contact is added verified (20.4);
 * skipping the comparison MUST add the contact **unverified** and say so —
-  this is trust‑on‑first‑use over whatever channel carried the link (R25);
+  this is trust‑on‑first‑use over whatever channel carried the link (R25),
+  and for an invite of version 1 over the relay as well (20.8);
 * a **mismatch** MUST offer no path that ends with a contact, and MUST spend
   the invite.
 
@@ -3782,7 +3809,98 @@ id and from both pairing rendezvous). Generated by `protocol/tool/vectors.dart`
 and replayed by `protocol/test/vectors_test.dart`. The §14 rule applies:
 bytes an existing implementation would compute differently mean new context
 strings (`…-v2`), new vector files beside the untouched ones, and a new
-subsection here.
+subsection here. Version 2 (20.8) is that: `invite_v2.json` beside the three,
+which are byte for byte what they were.
+
+### 20.8 Version 2: the invite bound to its secret (`adr/0024`)
+
+In version 1 the secret names the two mailboxes and nothing else (20.5). The
+frames are plaintext, a commitment is a hash of what it commits to, and the
+channel key is a function of the two ephemerals alone — so whoever carries
+the frames, the relay or a CDN in front of it, can substitute both
+ephemerals, commit and reveal under identities of its own, and hold a
+channel key for each leg, and only the digits show it. Version 2 binds the
+secret into the keys, so that nobody without the invite can make a frame
+either side will take:
+
+```
+inviteKey   = HKDF(secret = invite secret, salt = "" (empty),
+                   info = "z-connect-invite-v2", 32)
+commit(me, eph) = HMAC-SHA256(key = inviteKey, "z-connect-commit-v2:"
+                     || eph.pub || u16be(len(code)) || code || name)
+channelKey  = HKDF(secret = dh, salt = inviteKey,
+                   info = "z-connect-channel-v2", 32)
+okm (20.4)  = as 20.4, with info "z-connect-sas-v2" || lo… || hi…
+mailboxes   = as 20.5, with info "z-connect-relay-v2:" || role
+rendezvousRoutingId = b64url(SHA-256("z-connect-rendezvous-v2:" || secret))
+```
+
+Everything else is 20.1–20.6 as written: the four messages and their
+members, the seal, the group bit, the all‑zero check, both commitment
+checks, every abort, the lifetime, and the go‑ahead tag — still HKDF of the
+channel key under `z-connect-gjoin-v1`, and so bound to the invite through
+it. A version‑2 frame has the members and the length of a version‑1 frame
+for the same two identities: the relay cannot tell the versions apart by what
+it carries.
+
+A party without the invite that substitutes an ephemeral holds a channel key
+neither side derives. The reveal it seals does not open where it is sent,
+and the reveal sealed to it does not open for it. The acceptor aborts at
+message 3, before its own reveal, message 4, is sent; the inviter aborts at
+message 4. No identity is exchanged. A keyed commitment also says nothing to
+anyone without the invite, where a version‑1 commitment let anyone holding
+the frames and a candidate contact code test it once message 3 had shown the
+ephemeral.
+
+**Renderings.** Both start with the marker `9`:
+
+```
+text  = "9" || base32(secret), grouped in fives by "-"     e.g. 9ABCD-EFGHI-JKLMN-OP
+link  = "https://" || host || "/i#9" || base32(secret)
+```
+
+`9` is not in RFC 4648's base32 alphabet, so a parser of 20.2 alone refuses
+either rendering as not a connect code. A parser of this section removes the
+separators and folds the case as 20.2 does; a code whose first character is
+then `9` is version 2, and MUST be refused unless the rest is exactly sixteen
+base32 characters. Any other code is version 1, read by 20.2.
+
+**Versions meeting.**
+
+* A client of this section MUST mint version 2, and MUST NOT run version 1
+  for an invite it made as version 2, whatever arrives: there is no
+  fallback, because the party that would choose one is the one in the
+  middle (`adr/0009`, Rejected).
+* It MUST accept a version‑1 invite and run it by 20.1–20.6, on version 1's
+  mailboxes; its comparison screen MUST say, for such an invite, that until
+  the digits are compared the relay could be in the middle too.
+* A client of 20.2 alone refuses a version‑2 invite and sends nothing; the
+  invite waits until its inviter discards it or it expires.
+* A stored ceremony keeps its version, and one stored without a version is
+  version 1. The two versions name disjoint mailboxes, so a run of one never
+  meets, or waits on, a run of the other.
+
+**The joiner's yes.** A client MUST NOT send any message of a ceremony — nor
+connect to the relay for it — for an invite that reached it without its
+person's own action on its screen (a link handed to it by the platform, say)
+until that person says yes there. Typing or pasting an invite and opening it
+is that yes.
+
+**A blocked identity.** A client that has blocked the identity a ceremony
+reveals (§8.1) SHOULD end the ceremony the moment that reveal opens, as an
+abort: the acceptor before it sends message 4, the inviter on reading it.
+Nothing is added.
+
+What remains is the bearer token (R23): whoever holds the invite is the one
+the ceremony reaches, and a party that holds it AND carries the frames can
+still run both legs, with two different strings — what the digits are for
+(R25).
+
+`vectors/connect/invite_v2.json` records every value this section changes —
+the invite key, both mailboxes and the rendezvous, both keyed commitments
+with their inputs, all four frames with both reveals' plaintexts and
+nonces, the channel key, the digits — and, from the same inputs, what
+version 1 computes instead.
 
 ## 21. Handles (36–38)
 

@@ -1145,7 +1145,7 @@ Future<Map<String, Object?>> suiteConnect(List<Actor> a) async {
 
   // Message 2: the acceptor answers, committing to itself against a hash.
   final (reply, acceptor) =
-      await d.run(() => ConnectAcceptor.reply(commitFrame, me: bob));
+      await d.run(() => ConnectAcceptor.reply(commitFrame, me: bob, code: code));
   final rDraws = d.takeDraws();
   check(rDraws.length == 1, 'acceptor ephemeral draw');
   final rEphSeed = rDraws[0];
@@ -1292,7 +1292,8 @@ Future<Map<String, Object?>> suiteConnectGroup() async {
   final iEphSeed = d.takeDraws().single;
   final commitFrame = await inviter.commit();
   final (reply, acceptor) = await d.run(() =>
-      ConnectAcceptor.reply(commitFrame, me: joe, groupAware: true));
+      ConnectAcceptor.reply(commitFrame,
+          me: joe, code: code, groupAware: true));
   final rEphSeed = d.takeDraws().single;
   final rEphPub = await refXPub(rEphSeed);
   final open = await d.run(() => inviter.open(reply));
@@ -1379,6 +1380,279 @@ Future<Map<String, Object?>> suiteConnectGroup() async {
       'reveal': {'k': 'x4', ...reveal},
     },
     'sas': sessionA.sas,
+  };
+}
+
+/// An invite of version 2: the ceremony bound to its secret (ADR 0024,
+/// PROTOCOL §20.8).
+///
+/// `connect.json`, `mailboxes.json` and `group.json` are version 1 and stay
+/// exactly as they were; this file is the new version beside them. Every
+/// value §20.8 changes is recomputed here from the primitives — the invite
+/// key from the secret, the two keyed commitments, the channel key salted
+/// with the invite key, the digits under their own context, both mailboxes
+/// under theirs — and checked against what the library produced. The
+/// version-1 value of each, from the same inputs, is recorded beside it, so
+/// a second implementation that computes the old one by mistake sees it.
+Future<Map<String, Object?>> suiteConnectV2() async {
+  final d = Drbg(0x0024);
+  final code = ConnectCode(d.next(10), version: 2);
+  final v1 = ConnectCode(code.secret);
+  check(code.text.startsWith(connectV2Marker), 'the marker leads the text');
+  check(ConnectCode.parse(code.text).version == 2, 'text parses as v2');
+  final fromLink = ConnectCode.fromLink(code.link())!;
+  check(fromLink.version == 2 && eq(fromLink.secret, code.secret),
+      'link parses as v2');
+
+  // The invite key.
+  final keyInfo = utf8b(connectInviteKeyCtx);
+  final inviteKey = await refHkdf(code.secret, Uint8List(0), keyInfo, 32);
+  check(eq((await code.inviteKey())!, inviteKey), 'invite key');
+
+  // Both mailboxes, and the rendezvous, under the version-2 contexts.
+  final mailboxes = <Map<String, Object?>>[];
+  final v1Mailboxes = <String>[];
+  for (final (role, who) in [('i', 'inviter'), ('r', 'acceptor')]) {
+    final info = concatBytes([utf8.encode(connectRelayCtxV2), utf8.encode(role)]);
+    final okm = await refHkdf(code.secret, Uint8List(0), info, 64);
+    final edSeed = Uint8List.fromList(okm.sublist(0, 32));
+    final xSeed = Uint8List.fromList(okm.sublist(32, 64));
+    final edPub = await refEdPub(edSeed);
+    final routingId =
+        base64Url.encode(await refSha256(edPub)).replaceAll('=', '');
+    final id = await mailboxIdentity(code, role);
+    check(eq(id.edPub, edPub), '$who v2 mailbox');
+    check(await id.routingId() == routingId, '$who v2 mailbox routing id');
+    mailboxes.add({
+      'role': role,
+      'who': who,
+      'info': hex(info),
+      'okm': hex(okm),
+      'ed_seed': hex(edSeed),
+      'x_seed': hex(xSeed),
+      'ed_pub': hex(edPub),
+      'x_pub': hex(await refXPub(xSeed)),
+      'routing_id': routingId,
+    });
+    v1Mailboxes.add(await (await mailboxIdentity(v1, role)).routingId());
+  }
+  final rvInput =
+      concatBytes([utf8.encode('z-connect-rendezvous-v2:'), code.secret]);
+  final rendezvous =
+      base64Url.encode(await refSha256(rvInput)).replaceAll('=', '');
+  check(await code.rendezvousRoutingId() == rendezvous, 'v2 rendezvous');
+  final distinct = {
+    'v1_mailbox_i': v1Mailboxes[0],
+    'v1_mailbox_r': v1Mailboxes[1],
+    'v1_rendezvous': await v1.rendezvousRoutingId(),
+  };
+  for (final m in mailboxes) {
+    for (final e in distinct.entries) {
+      check(m['routing_id'] != e.value, 'v2 mailbox vs ${e.key}');
+    }
+  }
+  check(rendezvous != distinct['v1_rendezvous'], 'v2 rendezvous vs v1');
+
+  // Two v3 identities, with the codes a client emits today (`pqcs` signed).
+  final ids = <ConnectIdentity>[];
+  final raw = <Map<String, Object?>>[];
+  for (final (name, tag) in [('Ivy', 'inviter'), ('Rob', 'acceptor')]) {
+    final edSeed = d.next(32);
+    final xSeed = d.next(32);
+    final mlSeed = d.next(32);
+    final zid = await ZIdentity.fromSeeds(edSeed: edSeed, xSeed: xSeed);
+    final pq = await HybridKeyPair.fromSeeds(edSeed: edSeed, mlSeed: mlSeed);
+    final bundle = await ContactBundleV3.forIdentity(zid, pq.publicKey,
+        displayName: name);
+    final ci =
+        await ConnectIdentity.fromCode(bundle.encode(), displayName: name);
+    ids.add(ci);
+    raw.add({
+      'role': tag,
+      'display_name': name,
+      'ed_seed': hex(edSeed),
+      'x_seed': hex(xSeed),
+      'ml_seed': hex(mlSeed),
+      'account_ed_pub': hex(ci.accountEdPub),
+      'pq_commit': hex(ci.pqCommit),
+      'contact_code': ci.contactCode,
+    });
+  }
+  final ivy = ids[0], rob = ids[1];
+
+  // The four messages, as a client of this version sends them: the group
+  // bit written, 0, in both reveals (ADR 0020).
+  d.takeDraws();
+  final inviter = await d.run(
+      () => ConnectInviter.create(me: ivy, code: code, group: false));
+  final iEphSeed = d.takeDraws().single;
+  final iEphPub = await refXPub(iEphSeed);
+  final commitFrame = await inviter.commit();
+  final (reply, acceptor) = await d.run(() => ConnectAcceptor.reply(
+      commitFrame,
+      me: rob,
+      code: code,
+      groupAware: true));
+  final rEphSeed = d.takeDraws().single;
+  final rEphPub = await refXPub(rEphSeed);
+  final open = await d.run(() => inviter.open(reply));
+  final openNonce = d.takeDraws().single;
+  final (reveal, sessionR) = await d.run(() => acceptor.accept(open));
+  final revealNonce = d.takeDraws().single;
+  final sessionI = await inviter.complete(reveal);
+  check(sessionI.sas == sessionR.sas, 'v2 agreement');
+
+  // The commitments: HMAC-SHA256 under the invite key.
+  Uint8List committed(Uint8List eph, ConnectIdentity id) {
+    final c = utf8.encode(id.contactCode);
+    return concatBytes([
+      eph,
+      [(c.length >> 8) & 0xff, c.length & 0xff],
+      c,
+      utf8.encode(id.displayName ?? ''),
+    ]);
+  }
+
+  final commitInputI =
+      concatBytes([utf8.encode('z-connect-commit-v2:'), committed(iEphPub, ivy)]);
+  final commitInputR =
+      concatBytes([utf8.encode('z-connect-commit-v2:'), committed(rEphPub, rob)]);
+  final commitI = await refHmac(inviteKey, commitInputI);
+  final commitR = await refHmac(inviteKey, commitInputR);
+  check(base64Encode(commitI) == commitFrame['c'], 'v2 inviter commitment');
+  check(base64Encode(commitR) == reply['c'], 'v2 acceptor commitment');
+
+  // The channel key: the X25519 output, salted with the invite key.
+  final dh = await refDh(iEphSeed, rEphPub);
+  final channelKey =
+      await refHkdf(dh, inviteKey, utf8b('z-connect-channel-v2'), 32);
+  check(eq(sessionI.channelKey, channelKey), 'v2 channel key');
+  final aead = Chacha20.poly1305Aead();
+  Future<String> sealed(String plain, Uint8List nonce) async => base64Encode(
+      (await aead.encrypt(utf8.encode(plain),
+              secretKey: SecretKey(channelKey), nonce: nonce))
+          .concatenation());
+  final openPlain = jsonEncode(
+      {'code': ivy.contactCode, 'name': 'Ivy', connectGroupMember: 0});
+  final revealPlain = jsonEncode(
+      {'code': rob.contactCode, 'name': 'Rob', connectGroupMember: 0});
+  check(await sealed(openPlain, openNonce) == open['blob'], 'v2 message 3');
+  check(await sealed(revealPlain, revealNonce) == reveal['blob'],
+      'v2 message 4');
+
+  // The digits, under their own context.
+  final aFirst = hex(ivy.accountEdPub).compareTo(hex(rob.accountEdPub)) < 0;
+  final lo = aFirst ? ivy : rob, hi = aFirst ? rob : ivy;
+  final sasSalt =
+      concatBytes([aFirst ? iEphPub : rEphPub, aFirst ? rEphPub : iEphPub]);
+  Uint8List sasInfo(String ctx) => concatBytes([
+        utf8.encode(ctx),
+        lo.accountEdPub,
+        lo.pqCommit,
+        hi.accountEdPub,
+        hi.pqCommit,
+      ]);
+  String digits(Uint8List okm) {
+    var n = 0;
+    for (var i = 0; i < 7; i++) {
+      n = (n << 8) | okm[i];
+    }
+    final s = (n % 100000000).toString().padLeft(8, '0');
+    return '${s.substring(0, 4)} ${s.substring(4)}';
+  }
+
+  final sasOkm = await refHkdf(dh, sasSalt, sasInfo('z-connect-sas-v2'), 8);
+  check(digits(sasOkm) == sessionI.sas, 'v2 SAS');
+
+  // What version 1 computes from the very same inputs — none of it is used.
+  final v1Commit = await refSha256(
+      concatBytes([utf8.encode('z-connect-commit-v1:'), committed(iEphPub, ivy)]));
+  final v1Channel =
+      await refHkdf(dh, Uint8List(32), utf8b('z-connect-channel-v1'), 32);
+  final v1Sas =
+      digits(await refHkdf(dh, sasSalt, sasInfo('z-connect-sas-v1'), 8));
+  check(!eq(v1Commit, commitI) && !eq(v1Channel, channelKey),
+      'v2 is not v1');
+
+  final tag = await sessionI.goAheadTag();
+  check(eq(tag, await sessionR.goAheadTag()), 'one tag at both ends');
+
+  return {
+    'suite': 'connect_invite_v2',
+    'version': vectorsVersion,
+    'description':
+        'An invite of version 2 (PROTOCOL 20.8, ADR 0024): the connect '
+            'ceremony bound to its secret. Both renderings start with the '
+            'marker "9", which no base32 parser accepts, so a client from '
+            'before it refuses the invite rather than running version 1. '
+            'invite_key = HKDF-SHA256(secret, salt="", '
+            'info="z-connect-invite-v2", 32). Each commitment is '
+            'HMAC-SHA256(invite_key, "z-connect-commit-v2:" || eph || '
+            'u16be(len(code)) || code || name); the channel key is '
+            'HKDF-SHA256(dh, salt=invite_key, info="z-connect-channel-v2", 32); '
+            'the digits are computed as in connect.json under '
+            '"z-connect-sas-v2"; the mailboxes and the rendezvous id as in '
+            'mailboxes.json and connect.json under "z-connect-relay-v2:" and '
+            '"z-connect-rendezvous-v2:". The frames have the same members and '
+            'lengths as version 1. A party without the secret — the relay '
+            'carrying the frames — can derive none of these keys, so a frame '
+            'it substitutes is refused before either side has the other\'s '
+            'identity. version_1_of_the_same_inputs records what version 1 '
+            'computes from the same ephemerals and identities; a client of '
+            'version 2 computes none of it. The go-ahead tag is derived from '
+            'the channel key exactly as group.json shows.',
+    'connect_code': {
+      'secret': hex(code.secret),
+      'version': 2,
+      'text': code.text,
+      'link': code.link(),
+      'marker': connectV2Marker,
+      'text_as_version_1': v1.text,
+      'rendezvous_input': hex(rvInput),
+      'rendezvous_routing_id': rendezvous,
+    },
+    'invite_key': {
+      'info': hex(keyInfo),
+      'salt': '',
+      'key': hex(inviteKey),
+    },
+    'mailboxes': mailboxes,
+    'distinct_from': distinct,
+    'parties': raw,
+    'inviter_ephemeral': {'seed': hex(iEphSeed), 'pub': hex(iEphPub)},
+    'acceptor_ephemeral': {'seed': hex(rEphSeed), 'pub': hex(rEphPub)},
+    'commitments': {
+      'inviter_input': hex(commitInputI),
+      'inviter': hex(commitI),
+      'acceptor_input': hex(commitInputR),
+      'acceptor': hex(commitR),
+    },
+    'reveals': {
+      'open_plaintext': openPlain,
+      'open_nonce': hex(openNonce),
+      'reveal_plaintext': revealPlain,
+      'reveal_nonce': hex(revealNonce),
+    },
+    'frames': {
+      'commit': {'k': 'x1', ...commitFrame},
+      'reply': {'k': 'x2', ...reply},
+      'open': {'k': 'x3', ...open},
+      'reveal': {'k': 'x4', ...reveal},
+    },
+    'dh': hex(dh),
+    'channel_key': hex(channelKey),
+    'sas_salt': hex(sasSalt),
+    'sas_info': hex(sasInfo('z-connect-sas-v2')),
+    'sas_okm': hex(sasOkm),
+    'sas': sessionI.sas,
+    'canonical_order':
+        aFirst ? ['inviter', 'acceptor'] : ['acceptor', 'inviter'],
+    'go_ahead_tag': hex(tag),
+    'version_1_of_the_same_inputs': {
+      'inviter_commitment': hex(v1Commit),
+      'channel_key': hex(v1Channel),
+      'sas': v1Sas,
+    },
   };
 }
 
@@ -4363,6 +4637,7 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
       'connect': await suiteConnect(a),
       'mailboxes': await suiteConnectMailboxes(),
       'group': await suiteConnectGroup(),
+      'invite_v2': await suiteConnectV2(),
     },
     'backup': {
       'archive': await suiteBackup(),

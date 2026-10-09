@@ -43,6 +43,7 @@ same terms:
 | `connect.json` | the code and both renderings, two v3 identities, both ephemerals and commitments, all four frames, the channel key and the eight digits in canonical order — the ceremony as a client before `adr/0020` runs it | §20.2–20.4 |
 | `mailboxes.json` | the two per‑role relay mailboxes an invite derives, and their distinctness from every other id the same secret names | §20.5 |
 | `group.json` | `adr/0020`: the same four messages with the group bit — `"grp":1` sealed in message 3 and repeated in message 4 — with both reveals' plaintexts and seal nonces, so the member's bytes can be checked, and the ceremony's go‑ahead tag (HKDF‑SHA256 of the channel key, 16 bytes) that its answer carries | §20.3, §20.6 |
+| `invite_v2.json` | `adr/0024`: an invite of version 2, bound to its secret — both renderings with their `9` marker, the invite key, both mailboxes and the rendezvous id under the version‑2 contexts, both keyed commitments with their inputs, all four frames with both reveals' plaintexts and nonces, the channel key salted with the invite key, the digits under their own context and the go‑ahead tag — and, beside them, what version 1 computes from the same inputs. The three files above are version 1 and unchanged | §20.8 |
 
 `kt/` pins the transparency log (PROTOCOL.md §19, `adr/0006`) — a service
 beside the protocol rather than a version of it, frozen on the same terms.

@@ -3302,6 +3302,30 @@ abstract class AppLocalizations {
   /// **'No share sheet here — the link is on the clipboard instead.'**
   String get connectSharedToClipboard;
 
+  /// ADR 0024, status line of an invite that arrived by tapping a link and is waiting for the person's yes. Load-bearing: 'nothing sent yet' must stay true and plain — until they press Connect, nothing about this invite has left the device.
+  ///
+  /// In en, this message translates to:
+  /// **'Opened from a link — nothing sent yet'**
+  String get connectHeldStatus;
+
+  /// ADR 0024, shown on an invite opened from a link, before the person says yes. Load-bearing: it must say that connecting SENDS the person's contact code, to whoever made the invite (which may not be who they think), and that an unexpected invite should be discarded.
+  ///
+  /// In en, this message translates to:
+  /// **'Connecting sends your contact code to whoever made this invite, and then the two of you compare eight digits. If you were not expecting an invite, discard it.'**
+  String get connectHeldBody;
+
+  /// ADR 0024, button on an invite opened from a link: the person's yes. Pressing it is what lets the ceremony start; nothing is sent before.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect'**
+  String get connectHeldGo;
+
+  /// ADR 0024, shown above the digits for an invite made by a version of Z from before invites were bound to their secret. Load-bearing: 'even the relay' — for such an invite, skipping the comparison trusts the relay as well as whoever carried the link.
+  ///
+  /// In en, this message translates to:
+  /// **'This invite was made by an older version of Z. Until you compare the digits, even the relay could be in the middle.'**
+  String get connectOldInvite;
+
   /// Title of the screen listing people who have added you and are waiting for you to accept or decline (ADR 0011 contact requests).
   ///
   /// In en, this message translates to:

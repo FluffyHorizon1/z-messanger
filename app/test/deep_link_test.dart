@@ -17,10 +17,12 @@
 //  3. anything that is not an invite is ignored in silence, and a platform
 //     with no deep links at all (desktop, or a test) starts cleanly;
 //  4. the same invite arriving twice opens one ceremony, not two;
-//  5. an invite that arrived by link is carried forward at once and handed
-//     to the UI to show — until 2026-09-17 it was written to the vault and
-//     nothing else happened: no round, no screen, the app came up on the
-//     home screen as if nothing had been tapped.
+//  5. an invite that arrived by link is handed to the UI to show — until
+//     2026-09-17 it was written to the vault and nothing else happened: no
+//     screen, the app came up on the home screen as if nothing had been
+//     tapped — and is HELD there: no round runs, not even when the poll
+//     does, until its person says yes (ADR 0024; until 2026-10-09 the tap
+//     itself ran the first round, and the code went out without a yes).
 import 'dart:convert';
 import 'dart:io';
 
@@ -215,8 +217,7 @@ void main() {
     await links.dispose();
   });
 
-  test('5. an opened link is carried forward at once, and handed to the UI',
-      () async {
+  test('5. an opened link is held, and handed to the UI', () async {
     final code = ConnectCode.generate();
     initial = code.link();
     final links = DeepLinks(invites, channel: channel);
@@ -224,13 +225,14 @@ void main() {
     await links.start();
 
     final invite = invites.invites.single;
-    // The first round ran without anybody opening the tab. There is no relay
-    // on port 1, so what it recorded is the refusal — the point is that it
-    // ran, and that the refusal is on the invite rather than swallowed.
-    expect(invite.lastFailure, isNotNull,
-        reason: 'the ceremony was stepped as soon as the link was opened');
-    expect(invite.progress, ConnectProgress.waiting,
-        reason: 'a refused round leaves the invite where it was');
+    // No round ran: a tap is not the person's yes (ADR 0024). One that ran
+    // would have recorded the refusal from port 1 on the invite.
+    expect(invite.held, isTrue);
+    expect(invite.lastFailure, isNull,
+        reason: 'nothing was stepped when the link was opened');
+    await invites.pump();
+    expect(invite.lastFailure, isNull, reason: 'nor when the poll ran');
+    expect(invite.progress, ConnectProgress.waiting);
 
     // The launch intent is drained before any screen exists to listen, so
     // the invite is held for the first screen that asks — once.

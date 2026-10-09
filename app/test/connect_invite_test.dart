@@ -246,7 +246,8 @@ void main() {
 
     // A link and a printed code, computed from the same ten bytes.
     expect(invite.link, startsWith('https://www.zmessengers.com/i#'));
-    expect(invite.code, matches(RegExp(r'^[A-Z2-7-]{16,}$')));
+    // An invite made now is version 2 (ADR 0024): its marker, then base32.
+    expect(invite.code, matches(RegExp(r'^9[A-Z2-7-]{16,}$')));
     final fromLink = ConnectCode.fromLink(invite.link);
     final fromCode = ConnectCode.parse(invite.code);
     expect(fromLink, isNotNull);

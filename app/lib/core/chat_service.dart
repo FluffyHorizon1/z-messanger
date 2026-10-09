@@ -1046,8 +1046,10 @@ class ChatService extends ChangeNotifier implements KtHost {
           },
           conflictAlgorithm: ConflictAlgorithm.replace);
       // Adding someone we had blocked is a change of mind: the block goes, so
-      // `contacts` and `blocked` never both name one id (ADR 0011).
+      // `contacts` and `blocked` never both name one id (ADR 0011) — in
+      // memory too, which ADR 0024's checks read.
       await vault.db.delete('blocked', where: 'rid = ?', whereArgs: [rid]);
+      _blocked.remove(rid);
       contacts[rid] = contact;
       return true;
     });
@@ -1343,6 +1345,49 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   bool isBlocked(String rid) => _blocked.contains(rid);
 
+  // ADR 0024: a request is signed with its `ts`, and this device holds it to
+  // it. Before, nothing read `ts`, so a request already declined came back
+  // whenever the relay — which keeps every envelope it carries, for as long
+  // as it likes — delivered its copy again, and a request two years old was
+  // as good as one made a minute ago.
+
+  /// How far behind this device's clock a request's signed `ts` may be.
+  /// Ten times the relay's queue lifetime: a request waits in the
+  /// requester's outbox while they are offline, then up to 72 hours at the
+  /// relay, and an add made on a plane should still arrive. Older than this
+  /// it is refused, whoever delivers it.
+  static const Duration requestMaxAge = Duration(days: 30);
+
+  /// How far ahead of this device's clock a request's `ts` may be: a phone's
+  /// clock can be wrong by hours, and a request dated further ahead than
+  /// this would stay new for longer than [requestMaxAge] says.
+  static const Duration requestMaxSkew = Duration(days: 1);
+
+  /// The most pending requests this device holds, whichever way they came —
+  /// a code someone scanned or pasted, and (§21.7) a handle. One number for
+  /// both, 100, the one §21.7 set for handle requests: what it bounds is one
+  /// person's attention and one table, not a door. When a request would be
+  /// the 101st, the oldest the person has not seen goes — the newcomer, if
+  /// every other has been seen — so a flood of new identities can push out
+  /// only what nobody has looked at yet.
+  static const int maxPendingRequests = 100;
+
+  /// The `ts` of the newest request taken in from each requester, pending
+  /// or answered: one whose `ts` is not newer is a copy, or an older one
+  /// late, and is refused. Kept until [requestMaxAge] has passed `ts` — the
+  /// age rule refuses it from then on — and dropped when the request is
+  /// accepted, blocked, pushed out by the cap, or erased with the contact.
+  /// Sealed, in the vault's `requests_meta` cell with [_requestsSeen].
+  final Map<String, int> _requestMarks = {};
+
+  /// Pending requests the person has had in front of them (the Requests
+  /// screen): the ones the cap pushes out last.
+  final Set<String> _requestsSeen = {};
+
+  /// When the last request arrived, so each arrival is strictly later than
+  /// the one before and "oldest" never depends on two sharing a millisecond.
+  int _lastRequestMs = 0;
+
   Future<void> _loadRequests() async {
     for (final r in await vault.db.query('blocked')) {
       _blocked.add(r['rid'] as String);
@@ -1359,9 +1404,76 @@ class ChatService extends ChangeNotifier implements KtHost {
           bundle: bundle,
           createdMs: r['created_ms'] as int,
         );
+        _lastRequestMs = max(_lastRequestMs, r['created_ms'] as int);
       } catch (_) {
         // A row we cannot open is not one we can act on; erasure still sweeps it.
       }
+    }
+    try {
+      final raw = await vault.kvGet('requests_meta');
+      if (raw != null) {
+        final j = (jsonDecode(raw) as Map).cast<String, Object?>();
+        for (final e in ((j['marks'] as Map?) ?? const {}).entries) {
+          _requestMarks[e.key as String] = (e.value as num).toInt();
+        }
+        for (final rid in (j['seen'] as List?) ?? const []) {
+          if (requestsByRid.containsKey(rid)) _requestsSeen.add(rid as String);
+        }
+      }
+    } catch (_) {
+      // Unreadable: no marks and nothing seen. Copies of answered requests
+      // within their 30 days can show once more; nothing else changes.
+      _requestMarks.clear();
+      _requestsSeen.clear();
+    }
+  }
+
+  /// Write [_requestMarks] and [_requestsSeen], dropping marks old enough
+  /// that the age rule refuses their requests anyway.
+  Future<void> _saveRequestMeta() async {
+    final now = _now();
+    _requestMarks.removeWhere(
+        (_, ts) => now - ts > requestMaxAge.inMilliseconds);
+    _requestsSeen.removeWhere((rid) => !requestsByRid.containsKey(rid));
+    await vault.kvPut(
+        'requests_meta',
+        jsonEncode({
+          'marks': _requestMarks,
+          'seen': _requestsSeen.toList(),
+        }));
+  }
+
+  /// The person has the Requests screen in front of them: every request on
+  /// it is seen, so it is among the last the cap would push out. Changes
+  /// nothing on screen, and so tells no listener.
+  Future<void> markRequestsSeen() async {
+    final unseen = [
+      for (final rid in requestsByRid.keys)
+        if (!_requestsSeen.contains(rid)) rid
+    ];
+    if (unseen.isEmpty) return;
+    _requestsSeen.addAll(unseen);
+    await _saveRequestMeta();
+  }
+
+  /// Test seam: whether the person has seen [rid]'s pending request.
+  @visibleForTesting
+  bool debugRequestSeen(String rid) => _requestsSeen.contains(rid);
+
+  /// Hold no more than [maxPendingRequests]: the oldest the person has not
+  /// seen goes first, by arrival here — and with it its mark, so a flood of
+  /// one-off identities cannot grow the marks either.
+  Future<void> _capRequests() async {
+    while (requestsByRid.length > maxPendingRequests) {
+      PendingRequest? out;
+      for (final r in requestsByRid.values) {
+        if (_requestsSeen.contains(r.rid)) continue;
+        if (out == null || r.createdMs < out.createdMs) out = r;
+      }
+      // Every one seen, which the newest arrival never is: the oldest.
+      out ??= requestsByRid.values
+          .reduce((a, b) => a.createdMs <= b.createdMs ? a : b);
+      await _removeRequest(out.rid);
     }
   }
 
@@ -1484,10 +1596,21 @@ class ChatService extends ChangeNotifier implements KtHost {
     // to this device itself outranks one passed on, because this device is
     // the one its sender holds and the one that answers it ([acceptRequest]).
     if (mirroredBy != null && requestsByRid.containsKey(rid)) return;
+    // ADR 0024: the signed `ts`. Too old or too far ahead is refused, and so
+    // is one no newer than the last request taken in from them — the copy of
+    // a request already declined, or still pending, that the relay hands
+    // over again, or an older one arriving late. In silence, as a decline.
+    final arrived = _now();
+    if (arrived - req.ts > requestMaxAge.inMilliseconds ||
+        req.ts - arrived > requestMaxSkew.inMilliseconds) {
+      return;
+    }
+    final mark = _requestMarks[rid];
+    if (mark != null && req.ts <= mark) return;
     final name = (req.bundle.displayName?.trim().isNotEmpty ?? false)
         ? req.bundle.displayName!.trim()
         : 'Unknown';
-    final now = _now();
+    final now = _lastRequestMs = max(arrived, _lastRequestMs + 1);
     await vault.db.insert(
         'requests',
         {
@@ -1504,6 +1627,11 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
     requestsByRid[rid] =
         PendingRequest(rid: rid, name: name, bundle: bundle, createdMs: now);
+    _requestMarks[rid] = req.ts;
+    // A newer request from someone already on the list is new to look at.
+    _requestsSeen.remove(rid);
+    await _capRequests();
+    await _saveRequestMeta();
     notifyListeners();
     if (mirroredBy == null) {
       unawaited(_sync
@@ -1520,10 +1648,14 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
   }
 
-  /// How long a decline outranks a request made before it (§18.8): the
-  /// relay's queue lifetime (§12.4). A request older than the decline that
-  /// has not arrived by then never will — it has expired at the relay.
-  static const Duration _declineHold = Duration(hours: 72);
+  /// How long a decline outranks a request made before it (§18.8):
+  /// [requestMaxAge], the age past which a request is refused whatever else
+  /// is true (ADR 0024). It was the relay's queue lifetime, 72 hours, on the
+  /// view that a request older than its decline that had not arrived by then
+  /// never would — but a relay can keep a copy and hand it over later, which
+  /// ADR 0024 is about, and on a device the decline reached first the
+  /// request would then be shown again.
+  static const Duration _declineHold = requestMaxAge;
 
   /// Whether a request made at [ts] (its signed time) for [rid] was declined
   /// after it was made — on this device or, by `cdecl`, on another.
@@ -1595,6 +1727,7 @@ class ChatService extends ChangeNotifier implements KtHost {
           },
           conflictAlgorithm: ConflictAlgorithm.replace);
       await vault.db.delete('blocked', where: 'rid = ?', whereArgs: [rid]);
+      _blocked.remove(rid);
       contacts[rid] = contact;
       return true;
     });
@@ -1609,10 +1742,13 @@ class ChatService extends ChangeNotifier implements KtHost {
   }
 
   /// Decline a pending request: drop it, in silence to the sender (ADR 0011)
-  /// — on every device of this account (§18.8, phase 33).
+  /// — on every device of this account (§18.8, phase 33). Its mark stays
+  /// (ADR 0024), so the relay handing the same request over again does not
+  /// put it back in front of the person; a NEW request from them, made
+  /// later, is shown — declining is not blocking.
   Future<void> declineRequest(String rid) async {
     await vault.kvPut('reqdecl_$rid', '${_now()}');
-    await _removeRequest(rid);
+    await _removeRequest(rid, keepMark: true);
     _mirrorRequestOutcome('cdecl', rid);
     notifyListeners();
   }
@@ -1631,12 +1767,18 @@ class ChatService extends ChangeNotifier implements KtHost {
     notifyListeners();
   }
 
-  /// Drops a pending request, and the record of which of my devices it was
-  /// sent to ([acceptRequest]).
-  Future<void> _removeRequest(String rid) async {
+  /// [rid]'s request goes from the list, with the record of which of my
+  /// devices it was sent to ([acceptRequest]). Its mark goes too unless
+  /// [keepMark] — a decline, whose request must not come back (ADR 0024);
+  /// an accepted requester is a contact, whose requests fold, and a blocked
+  /// one is refused before any mark is read.
+  Future<void> _removeRequest(String rid, {bool keepMark = false}) async {
     await vault.db.delete('requests', where: 'rid = ?', whereArgs: [rid]);
     await vault.kvDelete('reqto_$rid');
     requestsByRid.remove(rid);
+    final hadMeta = _requestsSeen.remove(rid) |
+        (!keepMark && _requestMarks.remove(rid) != null);
+    if (hadMeta || keepMark) await _saveRequestMeta();
   }
 
   /// Clear "waiting for them to accept" once they have answered.
@@ -1751,10 +1893,18 @@ class ChatService extends ChangeNotifier implements KtHost {
         if (r is! String || r.isEmpty || r.length > 256) return;
         if (contacts.containsKey(r) || _myAccountRids.contains(r)) return;
         // Recorded whether or not the request is here yet ([_declinedSince]).
-        await vault.kvPut('reqdecl_$r', '${min(inner.ts, _now())}');
+        final declined = min(inner.ts, _now());
+        await vault.kvPut('reqdecl_$r', '$declined');
+        // And as this device's mark for them (ADR 0024): a request no newer
+        // than the decline — a copy of the one declined there, delivered
+        // here before or after this — is refused here as it is there, for
+        // as long as the age rule would take it in at all.
+        _requestMarks[r] = max(_requestMarks[r] ?? 0, declined);
         if (requestsByRid.containsKey(r)) {
-          await _removeRequest(r);
+          await _removeRequest(r, keepMark: true);
           notifyListeners();
+        } else {
+          await _saveRequestMeta();
         }
         return;
       case 'cblock':
@@ -2244,6 +2394,10 @@ class ChatService extends ChangeNotifier implements KtHost {
     // contact is never on it, and a genuine block should outlive a delete).
     await vault.db.delete('requests', where: 'rid = ?', whereArgs: [rid]);
     requestsByRid.remove(rid);
+    // ADR 0024: and what this device remembered of a request of theirs.
+    if ((_requestMarks.remove(rid) != null) | _requestsSeen.remove(rid)) {
+      await _saveRequestMeta();
+    }
     // ADR 0020: group links waiting on their answer, and answers owed to
     // them, name them too.
     final links = _linkAdds.length + _linkJoins.length;
@@ -9266,6 +9420,14 @@ class ChatService extends ChangeNotifier implements KtHost {
     var includesMe = mirroredOwn;
     final memberRids = <String>{};
     final unknown = <(String, ContactBundle, String)>[];
+    // ADR 0024: members this device has blocked. Members all the same — the
+    // list is the group's, and a list of mine that dropped one would take
+    // them out for everyone — but not taken in: kept as an entry, as a
+    // member whose contact I deleted is ([Group.orphans]), never made a
+    // contact. So my group messages skip them, theirs find no session here,
+    // and the block stands. Until 2026-10-09 the list made them a contact,
+    // and they could write to me directly.
+    final blockedEntries = <String, Map<String, Object?>>{};
     for (final m in list.members) {
       ContactBundle bundle;
       String cname;
@@ -9285,7 +9447,12 @@ class ChatService extends ChangeNotifier implements KtHost {
         continue;
       }
       memberRids.add(rid);
-      if (!contacts.containsKey(rid)) unknown.add((rid, bundle, cname));
+      if (contacts.containsKey(rid)) continue;
+      if (_blocked.contains(rid)) {
+        blockedEntries[rid] = {'b': bundle.toJson(), 'n': cname};
+        continue;
+      }
+      unknown.add((rid, bundle, cname));
     }
     if (!mirroredOwn) memberRids.add(fromRid); // the sender is a member too
 
@@ -9406,7 +9573,8 @@ class ChatService extends ChangeNotifier implements KtHost {
             const <MapEntry<String, Map<String, Object?>>>[])
           if ((memberRids.contains(e.key) || admins.contains(e.key)) &&
               !contacts.containsKey(e.key))
-            e.key: e.value
+            e.key: e.value,
+        ...blockedEntries,
       },
     );
     unread.putIfAbsent(gid, () => 0);

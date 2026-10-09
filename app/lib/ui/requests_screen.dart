@@ -19,6 +19,13 @@ class RequestsScreen extends StatelessWidget {
     final l = AppLocalizations.of(context);
     final service = context.watch<ChatService>();
     final requests = service.requests;
+    // ADR 0024: what is on this screen has been seen, so it is among the
+    // last the cap on pending requests pushes out. Marking changes nothing
+    // on screen and tells no listener, so this does not rebuild itself.
+    if (requests.isNotEmpty) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => service.markRequestsSeen());
+    }
 
     return Scaffold(
       appBar: AppBar(title: Text(l.requestsTitle)),

@@ -2072,6 +2072,21 @@ class AppLocalizationsEs extends AppLocalizations {
       'Aquí no hay menú de compartir: el enlace se copió al portapapeles.';
 
   @override
+  String get connectHeldStatus =>
+      'Abierta desde un enlace: aún no se ha enviado nada';
+
+  @override
+  String get connectHeldBody =>
+      'Al conectar, tu código de contacto se envía a quien creó esta invitación, y después comparáis ocho dígitos. Si no esperabas una invitación, descártala.';
+
+  @override
+  String get connectHeldGo => 'Conectar';
+
+  @override
+  String get connectOldInvite =>
+      'Esta invitación la creó una versión anterior de Z. Hasta que comparéis los dígitos, incluso el relé podría estar en medio.';
+
+  @override
   String get requestsTitle => 'Solicitudes';
 
   @override

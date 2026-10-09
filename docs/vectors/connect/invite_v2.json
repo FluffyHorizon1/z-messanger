@@ -1,0 +1,127 @@
+{
+  "suite": "connect_invite_v2",
+  "version": 1,
+  "description": "An invite of version 2 (PROTOCOL 20.8, ADR 0024): the connect ceremony bound to its secret. Both renderings start with the marker \"9\", which no base32 parser accepts, so a client from before it refuses the invite rather than running version 1. invite_key = HKDF-SHA256(secret, salt=\"\", info=\"z-connect-invite-v2\", 32). Each commitment is HMAC-SHA256(invite_key, \"z-connect-commit-v2:\" || eph || u16be(len(code)) || code || name); the channel key is HKDF-SHA256(dh, salt=invite_key, info=\"z-connect-channel-v2\", 32); the digits are computed as in connect.json under \"z-connect-sas-v2\"; the mailboxes and the rendezvous id as in mailboxes.json and connect.json under \"z-connect-relay-v2:\" and \"z-connect-rendezvous-v2:\". The frames have the same members and lengths as version 1. A party without the secret — the relay carrying the frames — can derive none of these keys, so a frame it substitutes is refused before either side has the other's identity. version_1_of_the_same_inputs records what version 1 computes from the same ephemerals and identities; a client of version 2 computes none of it. The go-ahead tag is derived from the channel key exactly as group.json shows.",
+  "connect_code": {
+    "secret": "1bba24072916b3e9096b",
+    "version": 2,
+    "text": "9DO5C-IBZJC-2Z6SC-LL",
+    "link": "https://www.zmessengers.com/i#9DO5CIBZJC2Z6SCLL",
+    "marker": "9",
+    "text_as_version_1": "DO5CI-BZJC2-Z6SCL-L",
+    "rendezvous_input": "7a2d636f6e6e6563742d72656e64657a766f75732d76323a1bba24072916b3e9096b",
+    "rendezvous_routing_id": "vTelWv99dFcx-6dWEwOAR8UyH9fll3IPYZrRKz-HbP8"
+  },
+  "invite_key": {
+    "info": "7a2d636f6e6e6563742d696e766974652d7632",
+    "salt": "",
+    "key": "3ed8caa25074a74bf7e14eba214f164457121650b22a3e1b503f65c17c260305"
+  },
+  "mailboxes": [
+    {
+      "role": "i",
+      "who": "inviter",
+      "info": "7a2d636f6e6e6563742d72656c61792d76323a69",
+      "okm": "7c55368cfb137ed21f3dbd3be55b5f7ade1c6dea32ddb0892b2f8f096606ab84be090929d5bd48768dec9cabb585daf15e41615d743d89c58a48747492fc63d9",
+      "ed_seed": "7c55368cfb137ed21f3dbd3be55b5f7ade1c6dea32ddb0892b2f8f096606ab84",
+      "x_seed": "be090929d5bd48768dec9cabb585daf15e41615d743d89c58a48747492fc63d9",
+      "ed_pub": "db649771b49817437fed286ebd2e17337bdce18061ef508823cb6723283111a5",
+      "x_pub": "9e5482745afe5b0daf212f8ff94883230a99bb604959b5a3d06949c50dfb3853",
+      "routing_id": "_jCE8qCsbJXj9RSxl0F3k7D0535Muw_LiMpUi_rY8_k"
+    },
+    {
+      "role": "r",
+      "who": "acceptor",
+      "info": "7a2d636f6e6e6563742d72656c61792d76323a72",
+      "okm": "8d3b51ca54e2b13daf94c39661b446ae5b55a45714d5d73fc923e94fb4637bc232ea385f10bc227bf01a67e116b756f1389d5f8782deb5a4abd2c8fbd7f08052",
+      "ed_seed": "8d3b51ca54e2b13daf94c39661b446ae5b55a45714d5d73fc923e94fb4637bc2",
+      "x_seed": "32ea385f10bc227bf01a67e116b756f1389d5f8782deb5a4abd2c8fbd7f08052",
+      "ed_pub": "4230d8eea5446d457af48485320a83de4ef2363425a00361016ff7c1203fe1be",
+      "x_pub": "2bd05695b3c3db016613dff30e37d8c416b027b2f4b32f434b03f3fd68ca9b78",
+      "routing_id": "kNRbdnytNM-Lcf1DE4eM4Mv6eULW1T7KH0QrqDk5GbE"
+    }
+  ],
+  "distinct_from": {
+    "v1_mailbox_i": "ihDNvOWGTHtLVgUZkP54-dWRBkhYgel3-uGskfb9H2g",
+    "v1_mailbox_r": "NCyAiLvMpM0HJ6k5k-v0bJ8zCtLCw5cpfUpVJ4sZYbE",
+    "v1_rendezvous": "CNa8E-JecfO4CDLAsauLInhrOKAXVyXM3y4x0ZUcW_c"
+  },
+  "parties": [
+    {
+      "role": "inviter",
+      "display_name": "Ivy",
+      "ed_seed": "118b7baf6c759d4b1cbb7993e5a19f5947cddeb9b461fb934bf3066acf1efca8",
+      "x_seed": "cefc66813ba80cd6650a6ec06aca57a86b2c41d9a254bad2b25a41d87731806f",
+      "ml_seed": "1d7b51ee1a6b03c1f7c9c73f4a294b26e3d5deed1e6667998933d3fbcc27242b",
+      "account_ed_pub": "e7ca94b02d513f158a017b2b323b95b08755f1a657bcfd52bfee49fd9a652ebf",
+      "pq_commit": "5e5e392d610748a6c4d944eeff9fff3e0a7f81b68438dd9cb0fe7b9f26f030ed",
+      "contact_code": "zc1.eyJ2IjoxLCJlZCI6IjU4cVVzQzFSUHhXS0FYc3JNanVWc0lkVjhhWlh2UDFTdis1Si9acGxMcjg9IiwieCI6Ii9PdGhvY2U4MFk5UU5yZ01WbFh1K2NQang2ZHBOaGhUdUhxTjlHekh0aDA9Iiwic2lnIjoiWHpzelpQNm5XNkplZjhyQlhTelgxZmE1bktrYStqbENOTlF6YTl0OWNQVVZiMVVieW9HYUZiQXdQQUNVSGprQWNENXpGYTFvbEc3UE1qbUhCWk11QWc9PSIsInBxYyI6IlhsNDVMV0VIU0tiRTJVVHUvNS8vUGdwL2diYUVPTjJjc1A1N255YndNTzA9IiwicHFjcyI6IlVCc2IzckFtRFd1cGF2cGFzNlFvTUtzcE5sWWJrS3RuRWhiV1d4eTBmSDlLVkg3QnVxRWpjNmJSRnJRT2t0b3E2UXRCMmtVWU9MclF2ZnhnRmk5UUJBPT0iLCJuYW1lIjoiSXZ5In0"
+    },
+    {
+      "role": "acceptor",
+      "display_name": "Rob",
+      "ed_seed": "a545760705905ae57ad7edf5c9f5f7627d59301e012dea1ff66e9cea709cbf6d",
+      "x_seed": "e0bf596adbe6c8328e8fe2de2548f71b40d0b628f82a72c22036db5b137af1d3",
+      "ml_seed": "f8807eea897a0c07a5ff944140544c4cd802b121012bd74d0211c36781f4b594",
+      "account_ed_pub": "e6f8e2a4092c8d01b4b5274ca373a7029928a74fad667ff6efbe1d104ef52fc3",
+      "pq_commit": "fb8a5e4aba2da4b5fbc5c9a1b02390a15025da4110862905110eb48211242654",
+      "contact_code": "zc1.eyJ2IjoxLCJlZCI6IjV2amlwQWtzalFHMHRTZE1vM09uQXBrb3AwK3Rabi8yNzc0ZEVFNzFMOE09IiwieCI6Ik4zQUYxUzBGUnYzalBVQ05qaHNQVzhIdll0WndmNFVlZDFBZGlrVU9oVHM9Iiwic2lnIjoiNTlMNzl6cnE4ZDZwSHQ3eWdDNEwxdzdBSlhyS3NVcXBKalNBeTNHczlqWXhYOXRBZ1pyYVp3OWdGNEdtQjI0ZGJnVGRmT2lPcStLeUpXQjBCTGI2Q2c9PSIsInBxYyI6Iis0cGVTcm90cExYN3hjbWhzQ09Rb1ZBbDJrRVFoaWtGRVE2MGdoRWtKbFE9IiwicHFjcyI6IktHeWtZUWQ2UGlqUFkzZG16ajNjN1B5UlVCeXg1M1F2TXpPWnh1a0tqWXJ5U21mdW54YXBmb0R0ZVpZd01iSmdzaXpUMnIrRlV4NUtYeXFCWXpoUEJRPT0iLCJuYW1lIjoiUm9iIn0"
+    }
+  ],
+  "inviter_ephemeral": {
+    "seed": "3db06ed983219abffc2322811407a0878e823ad8161ef19560699f41f25d9115",
+    "pub": "de8ccb972fbf8a340f30c4fa1a20d8201d9337fc74adcdd4b04704cd889c0a78"
+  },
+  "acceptor_ephemeral": {
+    "seed": "abcb148c66e6990e263e163e57d21c28dbac2357a59b5de36684d6370bd0dc76",
+    "pub": "049f322c3769361faf714575bfc0be4907f59d57d49b900d7a249946816d8763"
+  },
+  "commitments": {
+    "inviter_input": "7a2d636f6e6e6563742d636f6d6d69742d76323ade8ccb972fbf8a340f30c4fa1a20d8201d9337fc74adcdd4b04704cd889c0a7801f37a63312e65794a32496a6f784c434a6c5a434936496a55346356567a517a4653554868585330465963334a4e616e565763306c6b566a6868576c68325544465464697331536939616347784d636a673949697769654349364969395064476876593255344d466b35555535795a303157624668314b324e51616e67325a48424f6147685564556878546a6c48656b6830614441394969776963326c6e496a6f695748707a656c70514e6d35584e6b706c5a6a6879516c6854656c67785a6d4531626b74725953747162454e4f546c463659546c304f574e5156565a694d5656696557394859555a695158645151554e565347707251574e454e58704759544676624563335545317162556843576b31315157633950534973496e427859794936496c68734e44564d563056495530746952544a56564855764e533876554764774c32646959555650546a4a6a633141314e323535596e644e547a4139496977696348466a63794936496c56436332497a636b467452466431634746326347467a4e6c46765455747a6345357357574a725333527552576869563164346554426d53446c4c566b6733516e56785257706a4e6d4a53526e4a525432743062334532555852434d6d74565755394d636c46325a6e686e526d6b3555554a42505430694c434a755957316c496a6f6953585a35496e30497679",
+    "inviter": "c5dfc13bc2e045c64263fbefe0f7001b0fe561c378e216dc2aec921cc0b85043",
+    "acceptor_input": "7a2d636f6e6e6563742d636f6d6d69742d76323a049f322c3769361faf714575bfc0be4907f59d57d49b900d7a249946816d876301f37a63312e65794a32496a6f784c434a6c5a434936496a5632616d6c775157747a616c46484d4852545a4531764d30397551584272623341774b335261626938794e7a63305a4556464e7a464d4f4530394969776965434936496b347a51555978557a4247556e597a616c42565130357161484e51567a6849646c6c30576e646d4e46566c5a4446425a476c725655396f56484d394969776963326c6e496a6f694e546c4d4e7a6c36636e45345a445a7753485133655764444e457778647a6442536c687953334e566358424b616c4e4265544e48637a6c71575868594f5852425a317079595670334f5764474e456474516a49305a474a6e5647526d54326c506353744c65557058516a4243544749325132633950534973496e4278597949364969733063475654636d3930634578594e33686a6257687a5130395262315a4262444a725256466f61577447525645324d47646f5257744b62464539496977696348466a63794936496b74486557745a5557513255476c7155466b7a5a473136616a4e6a4e314235556c5643655867314d31463254587050576e68316130747157584a355532316d645735345958426d623052305a56705a64303169536d647a615870554d6e4972526c56344e557459655846435758706f55454a52505430694c434a755957316c496a6f69556d3969496e30526f62",
+    "acceptor": "4f29484f75afaeb3c99e1dc0427708df1a4e341afcb4e7fc91a6a7fa1c3fe6a1"
+  },
+  "reveals": {
+    "open_plaintext": "{\"code\":\"zc1.eyJ2IjoxLCJlZCI6IjU4cVVzQzFSUHhXS0FYc3JNanVWc0lkVjhhWlh2UDFTdis1Si9acGxMcjg9IiwieCI6Ii9PdGhvY2U4MFk5UU5yZ01WbFh1K2NQang2ZHBOaGhUdUhxTjlHekh0aDA9Iiwic2lnIjoiWHpzelpQNm5XNkplZjhyQlhTelgxZmE1bktrYStqbENOTlF6YTl0OWNQVVZiMVVieW9HYUZiQXdQQUNVSGprQWNENXpGYTFvbEc3UE1qbUhCWk11QWc9PSIsInBxYyI6IlhsNDVMV0VIU0tiRTJVVHUvNS8vUGdwL2diYUVPTjJjc1A1N255YndNTzA9IiwicHFjcyI6IlVCc2IzckFtRFd1cGF2cGFzNlFvTUtzcE5sWWJrS3RuRWhiV1d4eTBmSDlLVkg3QnVxRWpjNmJSRnJRT2t0b3E2UXRCMmtVWU9MclF2ZnhnRmk5UUJBPT0iLCJuYW1lIjoiSXZ5In0\",\"name\":\"Ivy\",\"grp\":0}",
+    "open_nonce": "46b67dcc0337ddba6a4e002e",
+    "reveal_plaintext": "{\"code\":\"zc1.eyJ2IjoxLCJlZCI6IjV2amlwQWtzalFHMHRTZE1vM09uQXBrb3AwK3Rabi8yNzc0ZEVFNzFMOE09IiwieCI6Ik4zQUYxUzBGUnYzalBVQ05qaHNQVzhIdll0WndmNFVlZDFBZGlrVU9oVHM9Iiwic2lnIjoiNTlMNzl6cnE4ZDZwSHQ3eWdDNEwxdzdBSlhyS3NVcXBKalNBeTNHczlqWXhYOXRBZ1pyYVp3OWdGNEdtQjI0ZGJnVGRmT2lPcStLeUpXQjBCTGI2Q2c9PSIsInBxYyI6Iis0cGVTcm90cExYN3hjbWhzQ09Rb1ZBbDJrRVFoaWtGRVE2MGdoRWtKbFE9IiwicHFjcyI6IktHeWtZUWQ2UGlqUFkzZG16ajNjN1B5UlVCeXg1M1F2TXpPWnh1a0tqWXJ5U21mdW54YXBmb0R0ZVpZd01iSmdzaXpUMnIrRlV4NUtYeXFCWXpoUEJRPT0iLCJuYW1lIjoiUm9iIn0\",\"name\":\"Rob\",\"grp\":0}",
+    "reveal_nonce": "9dab6c49c5c13925dd63271b"
+  },
+  "frames": {
+    "commit": {
+      "k": "x1",
+      "c": "xd/BO8LgRcZCY/vv4PcAGw/lYcN44hbcKuySHMC4UEM="
+    },
+    "reply": {
+      "k": "x2",
+      "ephx": "BJ8yLDdpNh+vcUV1v8C+SQf1nVfUm5ANeiSZRoFth2M=",
+      "c": "TylIT3WvrrPJnh3AQncI3xpONBr8tOf8kaan+hw/5qE="
+    },
+    "open": {
+      "k": "x3",
+      "ephx": "3ozLly+/ijQPMMT6GiDYIB2TN/x0rc3UsEcEzYicCng=",
+      "blob": "RrZ9zAM33bpqTgAu97l2DXEs7pt95jh2Pl52lC9jcwu/56FPNyGGPeFnXHgxUDqSRypJh0bA93r5RMxfx6IIpYY2t+EPeE8mwUl5Vfex/xb/beHVbsVMGtuKRE0q944oluihp4h0kLpmnm+ErweePf2u4LOi85Tow062JHkPbr/EdCDKHp+3W8eMiYbQNNUp3bFXrc+MRhipsdkpdGgZNPFTVn10NnTgZ+2jT0N4yi7Yufg0C7Uh22hZr+5oLwyXDD8u3mcaBB0wtbDv/G0gwYKRMS9i3d7E2Y4RxuwogbXL1J6g61R6I/EqDYmyEtrsdf38pJIHJMoYnFI11bSMIXM49Jewn3TdzPW4WYReui59dxxWH+uQFtX4NqxviFtRjrleDxFjdPns/by43Gq4T6YVdCZrbhTAfXN6Wnu2sFcBh3wJMNW2Az9sgn308ILNGcp4ZR474hq8g7otzsijqSnWpakAvky2Bc/Ukeoa2AemgHwbFNrhCCqao08INcO4yyHKJFU9+9R0ZiQoHnH6Qme/Sfs2u6/e04nvK+1SeemEK7PflGHb0GUH2Y3KIaiZTZh/9aiFMV3UXKdkrofwEphNxO/I57FgqzlyVhBCunMtMx+Bhz7qzkJcGWUxRYgivyZSRa41BFb+ZLYbtgBbZNwWW4LdbpOhCe5qtuFqXSK77TTFfQWbvrskxBcNOeYNbP6DfHqpHncX98QKuI5p64UsxVEVDN70OPFUd0m7Gg=="
+    },
+    "reveal": {
+      "k": "x4",
+      "blob": "natsScXBOSXdYycbApbZDNmtMSQNT6OYcLrh5n0VSjrCuIEJOvXEv/36iRbDW6LyfRlRSrQ66c4oTGHZpI6KCh2x3rtiiesOAIFiZzigllZt/8Un2hFUOcszE62UfD8u39OjWCMTiJX02ldXTYpbXvoeUbmdDLWUccY64jZcYIK8Dbxqrh7WHNLABGZitFNLAA4etPdFn3YOEVTLrJVhUmH3sx/VjBVBDvaeH05EtubefXJNAMD9I5RY/M0CbQ/8fUAqfOnJNSVR4JHgyMcrTtaobhH5+eh4EIOXtvWzaSB3BWT3ltKy8vnd1Y1usTkgJ2PeaE1OCu6/mR7PTnZmJCYCeLQgV6rEewSdS7Zgd/SWCS7nsZ/B11a0fB7nY6K+mjT6PJxHQrfkHkHiRIVxHf3G0RweFjUKtTAktPeCdU2rupIMRBHvQEnLKQI+hTz3IxmfaO5EwyU8l489oGpxpWHgyUQxad74BO42Sx1Mks/8EpCGW8ZMQMzzPLW0JLM6vuxJMULNGO/WA8L6cln0zurP06O81JLqGIHWK6bZjRxI7EkjOytsc4bS41BxxyyXIjry85zHkz0+DKPFhOI/gsvfr9/byvlx+3KYvxIA/EnfVeNLXrSTqAzWW9Lgw03WX1RVwPBfxLEQ11E5Aqm42lZ4j78RanVfgavTZCFezOFoiXp6xlMj3ivntHsgyP2t8QDp2+cLZer+9d2dwDgDVBlBlur69P6TOyHKDuMf/w=="
+    }
+  },
+  "dh": "ff0c12318b572680beffc985ba13434163ec181096139b8bfb67abda59c51a0d",
+  "channel_key": "4caf2583b234c8dd2bc86c6d3ca6f88a1087a156cc223c9fac9f9e8decf564f6",
+  "sas_salt": "049f322c3769361faf714575bfc0be4907f59d57d49b900d7a249946816d8763de8ccb972fbf8a340f30c4fa1a20d8201d9337fc74adcdd4b04704cd889c0a78",
+  "sas_info": "7a2d636f6e6e6563742d7361732d7632e6f8e2a4092c8d01b4b5274ca373a7029928a74fad667ff6efbe1d104ef52fc3fb8a5e4aba2da4b5fbc5c9a1b02390a15025da4110862905110eb48211242654e7ca94b02d513f158a017b2b323b95b08755f1a657bcfd52bfee49fd9a652ebf5e5e392d610748a6c4d944eeff9fff3e0a7f81b68438dd9cb0fe7b9f26f030ed",
+  "sas_okm": "84f54741a1c15b5b",
+  "sas": "1840 9563",
+  "canonical_order": [
+    "acceptor",
+    "inviter"
+  ],
+  "go_ahead_tag": "333668283ac4cf22ec82d0405e16be2c",
+  "version_1_of_the_same_inputs": {
+    "inviter_commitment": "50d443025c3c15c8b390ecc8b5b2ff360b46c48035efc37d514eb298c071dee9",
+    "channel_key": "707a22a4f5c03e1e23a767e2a84a5580516252aa6966bcf4339ab1e8385c3061",
+    "sas": "8926 7209"
+  }
+}
