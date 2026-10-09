@@ -6,10 +6,12 @@ import 'package:provider/provider.dart';
 
 import '../core/update_check.dart';
 import '../l10n/app_localizations.dart';
+import '../l10n/handle_text.dart';
 import '../l10n/ttl_text.dart';
 import '../l10n/when_text.dart';
 import '../core/app_lock.dart';
 import '../core/chat_service.dart';
+import '../core/handles.dart';
 import '../core/key_transparency.dart';
 import '../core/models.dart';
 import '../core/prefs.dart';
@@ -20,6 +22,7 @@ import '../core/transport.dart';
 import '../core/vault.dart';
 import 'backup_screen.dart';
 import 'crypto_bench_screen.dart';
+import 'handle_screen.dart';
 import 'link_device_screen.dart';
 import 'theme.dart';
 
@@ -156,6 +159,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
               }
             },
           ),
+          // Phase 38 (ADR 0015): a handle is claimed here, later, if at all —
+          // never during onboarding. The row says plainly when this build has
+          // no handle service, and when this device is not the one that holds
+          // the account's handle.
+          _SectionHeader(l.stHandleSection),
+          ListTile(
+            leading: const Icon(Icons.alternate_email),
+            title: Text(l.hdlYourHandle),
+            subtitle: Text(handleRowText(l, svc.handles),
+                style: const TextStyle(fontSize: 12)),
+            onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const HandleScreen())),
+          ),
+          // Where the handle log is and which key signs it: developer-mode
+          // rows like the transparency log's, empty until a log is deployed.
+          if (svc.devMode) ...[
+            ListTile(
+              leading: const Icon(Icons.dns_outlined),
+              title: Text(l.stHdlLogAddress),
+              subtitle: Text(
+                  svc.handles.config.logUrl.isEmpty
+                      ? l.stKtNone
+                      : svc.handles.config.logUrl,
+                  style: const TextStyle(fontSize: 12)),
+              onTap: () => _editHandles(
+                  context,
+                  svc,
+                  l.stHdlLogUrlTitle,
+                  svc.handles.config.logUrl,
+                  (v) => HandleConfig(
+                      logUrl: v, logPubB64: svc.handles.config.logPubB64)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.key_outlined),
+              title: Text(l.stHdlLogKey),
+              subtitle: Text(
+                  svc.handles.config.logPubB64.isEmpty
+                      ? l.stKtNone
+                      : svc.handles.config.logPubB64,
+                  style: const TextStyle(fontSize: 12)),
+              onTap: () => _editHandles(
+                  context,
+                  svc,
+                  l.stHdlLogKeyTitle,
+                  svc.handles.config.logPubB64,
+                  (v) => HandleConfig(
+                      logUrl: svc.handles.config.logUrl, logPubB64: v)),
+            ),
+          ],
           _SectionHeader(l.stAppearance),
           ListTile(
             leading: Icon(switch (prefs.themeMode) {
@@ -549,6 +601,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (v != null) await svc.setKtConfig(update(v));
+  }
+
+  Future<void> _editHandles(BuildContext context, ChatService svc, String title,
+      String current, HandleConfig Function(String) update) async {
+    final l = AppLocalizations.of(context);
+    final ctrl = TextEditingController(text: current);
+    final v = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: TextField(controller: ctrl, autofocus: true),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+              child: Text(l.stKtSave)),
+        ],
+      ),
+    );
+    if (v != null) await svc.handles.setConfig(update(v));
   }
 
   /// The witness address and its pinned key, edited and saved together.

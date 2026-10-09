@@ -14,6 +14,7 @@ import '../core/models.dart';
 import '../core/qr_image.dart';
 import '../core/share_text.dart';
 import 'connect_tab.dart';
+import 'find_handle_screen.dart';
 import 'theme.dart';
 
 class AddContactScreen extends StatefulWidget {
@@ -47,9 +48,10 @@ class _AddContactScreenState extends State<AddContactScreen>
   @override
   void initState() {
     super.initState();
-    // CONNECT is fourth and last: the three that came before it are for a
-    // code you can hand over, and this one is for when you cannot.
-    final tabs = _canScan ? 4 : 3;
+    // CONNECT is last: the tabs before it are for a code you can hand over,
+    // or a handle someone told you (phase 38), and this one is for when you
+    // have neither.
+    final tabs = _canScan ? 5 : 4;
     _tabs = TabController(
         length: tabs, vsync: this, initialIndex: widget.connect ? tabs - 1 : 0);
     _loadMyCode();
@@ -163,6 +165,7 @@ class _AddContactScreenState extends State<AddContactScreen>
         title: Text(l.homeAddContact),
         bottom: TabBar(
           controller: _tabs,
+          isScrollable: _canScan,
           indicatorColor: context.z.accent,
           labelColor: context.z.accent,
           unselectedLabelColor: context.z.textSecondary,
@@ -170,6 +173,7 @@ class _AddContactScreenState extends State<AddContactScreen>
             Tab(text: l.addMyCode),
             Tab(text: l.addPaste),
             if (_canScan) Tab(text: l.addScan),
+            Tab(text: l.addHandle),
             Tab(text: l.addConnect),
           ],
         ),
@@ -180,6 +184,7 @@ class _AddContactScreenState extends State<AddContactScreen>
           _myCodeTab(l),
           _pasteTab(l),
           if (_canScan) _scanTab(l),
+          const FindHandleView(),
           const ConnectTab(),
         ],
       ),

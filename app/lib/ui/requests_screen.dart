@@ -20,8 +20,9 @@ class RequestsScreen extends StatelessWidget {
     final service = context.watch<ChatService>();
     final requests = service.requests;
     // ADR 0024: what is on this screen has been seen, so it is among the
-    // last the cap on pending requests pushes out. Marking changes nothing
-    // on screen and tells no listener, so this does not rebuild itself.
+    // last the cap on pending requests pushes out — handle requests
+    // (PROTOCOL §21.8) with every other. Marking changes nothing on screen
+    // and tells no listener, so this does not rebuild itself.
     if (requests.isNotEmpty) {
       WidgetsBinding.instance
           .addPostFrameCallback((_) => service.markRequestsSeen());
@@ -91,7 +92,12 @@ class _RequestCard extends StatelessWidget {
                           style: const TextStyle(
                               fontWeight: FontWeight.w600, fontSize: 16)),
                       const SizedBox(height: 2),
-                      Text(l.requestsWantsToConnect,
+                      // Phase 38: a request that came through the handle
+                      // says which, so the person knows how they were found.
+                      Text(
+                          request.via == null
+                              ? l.requestsWantsToConnect
+                              : l.requestsVia(request.via!),
                           style: TextStyle(
                               color: context.z.textSecondary, fontSize: 13)),
                     ],

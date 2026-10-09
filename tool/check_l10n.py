@@ -70,6 +70,10 @@ MIGRATED = {
     # Shows an invite that arrived by link. No strings of its own; listed so
     # that one added later is caught.
     "invite_link_watcher.dart",
+    # Handles (phase 38): Settings › Your handle, and Add contact's Handle
+    # tab. Localised from the start.
+    "handle_screen.dart",
+    "find_handle_screen.dart",
 }
 
 # Literals that look user-visible and are not.

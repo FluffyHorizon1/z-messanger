@@ -171,10 +171,10 @@ doing before 1.0 and is not something a test replaces.
 
 The foundation is in — `flutter_localizations`, `gen-l10n`, an ARB with a
 description on every string, and `tool/check_l10n.py` holding the migrated
-screens — **21 of 21 screens** — to zero hardcoded literals and, now,
+screens — **23 of 23 screens** — to zero hardcoded literals and, now,
 holding every other locale to exactly the English key set with the same
 placeholders and plural cases.
-The service stores its thirty-seven kinds of system message as a kind and its
+The service stores its thirty-eight kinds of system message as a kind and its
 parameters (`core/system_messages.dart`), rendered through the ARB when
 shown, so they read in the user's language too — and, since 2026‑09‑13, the
 five device‑list banners as well, which had been built as English sentences by

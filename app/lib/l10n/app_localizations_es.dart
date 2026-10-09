@@ -2311,4 +2311,469 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get grpInviteByLinkNote =>
       'Funciona una sola vez, durante 24 horas. Quien lo abra primero será tu contacto y entrará en este grupo cuando acepte. El enlace en sí no dice nada del grupo.';
+
+  @override
+  String get stHandleSection => 'Alias';
+
+  @override
+  String get hdlYourHandle => 'Tu alias';
+
+  @override
+  String get hdlRowUnavailable => 'No disponible en esta versión';
+
+  @override
+  String get hdlRowLinked => 'Lo tiene tu dispositivo principal';
+
+  @override
+  String get hdlRowNone => 'Ninguno. Te añaden con tu código o una invitación';
+
+  @override
+  String hdlRowPending(String handle) {
+    return '@$handle, pendiente de publicar';
+  }
+
+  @override
+  String hdlRowHeld(String handle) {
+    return '@$handle, sin publicar';
+  }
+
+  @override
+  String hdlRowPaused(String handle) {
+    return '@$handle, en pausa';
+  }
+
+  @override
+  String hdlRowTaken(String handle) {
+    return '@$handle, ya lo tiene otra persona';
+  }
+
+  @override
+  String hdlRowLost(String handle) {
+    return '@$handle, en manos de otra clave';
+  }
+
+  @override
+  String get stHdlLogAddress => 'Dirección del servicio de alias';
+
+  @override
+  String get stHdlLogKey => 'Clave del servicio de alias';
+
+  @override
+  String get stHdlLogUrlTitle => 'URL del servicio de alias';
+
+  @override
+  String get stHdlLogKeyTitle => 'Clave pública del servicio de alias (base64)';
+
+  @override
+  String get hdlTitle => 'Tu alias';
+
+  @override
+  String get hdlUnavailable =>
+      'Los alias aún no están disponibles. Esta versión de Z no tiene un servicio de alias configurado, así que no puedes reservar un alias ni buscar a nadie por uno.';
+
+  @override
+  String get hdlLinkedDevice =>
+      'Solo tu dispositivo principal puede tener un alias. Resérvalo o gestiónalo allí; las personas que conozcas a través de él también aparecerán aquí.';
+
+  @override
+  String get hdlIntro =>
+      'Un alias es un nombre por el que la gente puede encontrarte, como @alex.42. Es opcional, y puedes pausarlo o renunciar a él más adelante.';
+
+  @override
+  String get hdlWhatItShows =>
+      'Cualquiera puede buscar un alias y enviarle una solicitud. Las solicitudes llegan a un buzón propio del alias, no a tu cuenta, y tú decides si aceptas cada una. Un alias es público: cualquiera puede saber que existe, y quienes gestionan el servicio de alias y el relé pueden ver la dirección de internet de tu dispositivo cuando lo reservas, lo consultas o lo usas.';
+
+  @override
+  String get hdlClaim => 'Reservar un alias';
+
+  @override
+  String get hdlRecover => 'Recuperar un alias';
+
+  @override
+  String get hdlNickLabel => 'Nombre';
+
+  @override
+  String get hdlNickHelp =>
+      'De 3 a 20 letras, dígitos o _, empezando por una letra';
+
+  @override
+  String get hdlDigitsRandom => 'Dígitos al azar';
+
+  @override
+  String get hdlDigitsChoose => 'Elegir dígitos';
+
+  @override
+  String get hdlDigitsLabel => 'Dígitos (de 2 a 6)';
+
+  @override
+  String get hdlCheck => 'Comprobar';
+
+  @override
+  String hdlAvailable(String handle) {
+    return '@$handle está libre.';
+  }
+
+  @override
+  String hdlTaken(String handle) {
+    return '@$handle ya está ocupado.';
+  }
+
+  @override
+  String get hdlNoneFree =>
+      'Todas las opciones al azar estaban ocupadas. Inténtalo de nuevo o elige los dígitos.';
+
+  @override
+  String get hdlTryOtherDigits => 'Probar otros dígitos';
+
+  @override
+  String hdlClaimThis(String handle) {
+    return 'Reservar @$handle';
+  }
+
+  @override
+  String get hdlCodeTitle => 'Código de recuperación de tu alias';
+
+  @override
+  String hdlCodeBody(String handle) {
+    return 'Apúntalo y guárdalo en un lugar seguro. Se muestra una sola vez y Z no lo guarda. Es la única forma de recuperar @$handle si pierdes este dispositivo, y cualquiera que lo tenga puede quedarse con el alias, así que no lo compartas.';
+  }
+
+  @override
+  String get hdlSemCode => 'Código de recuperación';
+
+  @override
+  String get hdlCodeWritten => 'Ya lo he apuntado';
+
+  @override
+  String get hdlCodeConfirmTitle => 'Vuelve a escribir el código';
+
+  @override
+  String get hdlCodeConfirmBody =>
+      'Así comprobamos que lo has apuntado bien. No se publica nada hasta que lo hagas.';
+
+  @override
+  String get hdlCodeLabel => 'Código de recuperación';
+
+  @override
+  String get hdlCodeWrong => 'Ese no es el código que se mostró.';
+
+  @override
+  String hdlPendingBody(String handle, int minutes) {
+    String _temp0 = intl.Intl.pluralLogic(
+      minutes,
+      locale: localeName,
+      other: '@$handle se publicará en unos $minutes minutos.',
+      one: '@$handle se publicará en un minuto, más o menos.',
+      zero: '@$handle se publicará en un momento.',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get hdlPendingWhy =>
+      'Se publica más tarde a propósito, en un momento al azar, para que la hora en que lo reservaste no se pueda relacionar con nada más que hiciste en Z. Mantén Z abierto hasta entonces.';
+
+  @override
+  String get hdlCancelClaim => 'Cancelar la reserva';
+
+  @override
+  String get hdlHeldBody =>
+      'Esta reserva estaba pendiente de publicar cuando se hizo la copia de seguridad que restauraste. No se ha publicado desde este dispositivo.';
+
+  @override
+  String get hdlPublishNow => 'Publicar ahora';
+
+  @override
+  String hdlTakenBody(String handle) {
+    return 'Otra persona reservó @$handle antes de que se publicara tu reserva. No se ha publicado nada a tu nombre.';
+  }
+
+  @override
+  String get hdlChooseOther => 'Elegir otros dígitos';
+
+  @override
+  String get hdlDismiss => 'Descartar';
+
+  @override
+  String get hdlLiveBody =>
+      'Aceptando solicitudes. Cada solicitud le cuesta algo de trabajo a quien la envía, así que no se pueden enviar en masa.';
+
+  @override
+  String get hdlNotVerification =>
+      'Un alias no es una verificación: con quien conozcas a través de él, comparad los números de seguridad para estar seguros de quién es.';
+
+  @override
+  String get hdlRelayUnguarded =>
+      'Tu relé es demasiado antiguo para proteger el buzón del alias: las solicitudes llegan sin ningún trabajo.';
+
+  @override
+  String get hdlIntroUnknown =>
+      'El buzón del alias se cambió en otro dispositivo después de la copia que restauraste. Elige Buzón nuevo para recibir solicitudes aquí.';
+
+  @override
+  String get hdlCopy => 'Copiar alias';
+
+  @override
+  String get hdlCopied => 'Alias copiado';
+
+  @override
+  String hdlSemHandle(String handle) {
+    return 'Tu alias, @$handle';
+  }
+
+  @override
+  String get hdlPause => 'Pausar';
+
+  @override
+  String get hdlPauseHelp =>
+      'Dejar de recibir solicitudes. A quien lo busque se le dirá que está en pausa.';
+
+  @override
+  String get hdlResume => 'Reanudar';
+
+  @override
+  String get hdlPausedBody =>
+      'En pausa: a quien lo busque se le dice, y no puede enviar solicitudes.';
+
+  @override
+  String get hdlRotate => 'Buzón nuevo';
+
+  @override
+  String get hdlRotateHelp =>
+      'Dar al alias un buzón nuevo, para cortar una oleada de solicitudes no deseadas. El alias sigue siendo el mismo y las solicitudes que ya esperan se quedan.';
+
+  @override
+  String get hdlDifficulty => 'Trabajo por solicitud';
+
+  @override
+  String get hdlDifficultyHelp =>
+      'Cuánto trabajo le cuesta una solicitud a quien la envía. Más trabajo frena más spam y hace esperar más a todos los que preguntan.';
+
+  @override
+  String get hdlPow16 => 'Mínimo: una fracción de segundo';
+
+  @override
+  String get hdlPow18 => 'Bajo: menos de un segundo';
+
+  @override
+  String get hdlPow20 => 'Normal: un segundo, unos pocos en un móvil lento';
+
+  @override
+  String get hdlPow22 => 'Alto: varios segundos';
+
+  @override
+  String get hdlPow24 => 'Máximo: hasta un minuto en un móvil lento';
+
+  @override
+  String get hdlRetire => 'Renunciar al alias';
+
+  @override
+  String hdlRetireConfirmTitle(String handle) {
+    return '¿Renunciar a @$handle?';
+  }
+
+  @override
+  String get hdlRetireConfirmBody =>
+      'Nadie podrá contactarte a través de él, y este dispositivo olvida sus claves. El nombre se queda en el registro público y nadie más puede reservarlo; solo su código de recuperación puede devolvértelo.';
+
+  @override
+  String hdlLostBody(String handle) {
+    return '@$handle está ahora en manos de otra clave: se usó su código de recuperación. Este dispositivo ya no puede cambiarlo.';
+  }
+
+  @override
+  String get hdlForget => 'Olvidarlo';
+
+  @override
+  String get hdlRecoverTitle => 'Recuperar un alias';
+
+  @override
+  String get hdlRecoverBody =>
+      'Escribe el alias y su código de recuperación. El alias pasa a esta cuenta con claves nuevas y recibirás un código nuevo.';
+
+  @override
+  String get hdlHandleLabel => 'Alias';
+
+  @override
+  String get hdlRecoverAction => 'Recuperar';
+
+  @override
+  String hdlRecovered(String handle) {
+    return '@$handle vuelve a ser tuyo.';
+  }
+
+  @override
+  String get hdlBadEmpty => 'Escribe un alias, como alex.42.';
+
+  @override
+  String hdlBadCharacter(String char) {
+    return '“$char” no puede ir en un alias. Usa de la a a la z, del 0 al 9 y _.';
+  }
+
+  @override
+  String get hdlBadMissingDigits =>
+      'Añade los dígitos tras un punto, como alex.42.';
+
+  @override
+  String get hdlBadDigitsNotDigits => 'Tras el punto solo van dígitos.';
+
+  @override
+  String get hdlBadReserved => 'Ese nombre está reservado.';
+
+  @override
+  String get hdlBadNickShort => 'El nombre necesita al menos 3 caracteres.';
+
+  @override
+  String get hdlBadNickLong =>
+      'El nombre puede tener como mucho 20 caracteres.';
+
+  @override
+  String get hdlBadNickStart => 'El nombre debe empezar por una letra.';
+
+  @override
+  String get hdlBadNickDoubleUnderscore =>
+      'El nombre no puede tener dos _ seguidos.';
+
+  @override
+  String get hdlBadNickEndUnderscore => 'El nombre no puede terminar en _.';
+
+  @override
+  String get hdlBadDigitsShort => 'Un alias tiene al menos 2 dígitos.';
+
+  @override
+  String get hdlBadDigitsLong => 'Un alias tiene como mucho 6 dígitos.';
+
+  @override
+  String get hdlErrUnreachable =>
+      'No se pudo contactar con el servicio de alias. Inténtalo más tarde.';
+
+  @override
+  String get hdlErrBadAnswer =>
+      'La respuesta del servicio de alias no superó la comprobación, así que no se usó nada de lo que dijo.';
+
+  @override
+  String get hdlErrRefused => 'El servicio de alias lo rechazó.';
+
+  @override
+  String get hdlErrTaken => 'Ese alias ya lo tiene otra persona.';
+
+  @override
+  String get hdlErrChanged =>
+      'El alias cambió mientras lo hacías. Inténtalo de nuevo.';
+
+  @override
+  String get hdlErrLost => 'Ese alias está ahora en manos de otra clave.';
+
+  @override
+  String get hdlErrNotConnected =>
+      'Sin conexión con el relé. Inténtalo cuando tengas conexión.';
+
+  @override
+  String get hdlErrPowRefused =>
+      'El relé no aceptó la prueba de trabajo de la solicitud. No se entregó nada; inténtalo más tarde.';
+
+  @override
+  String get hdlErrRelayRefused => 'El relé rechazó la solicitud.';
+
+  @override
+  String get hdlErrPaused =>
+      'Ese alias está en pausa, así que no se envió nada.';
+
+  @override
+  String get hdlErrNotClaimed => 'Nadie tiene ese alias.';
+
+  @override
+  String get hdlErrWrongCode => 'Ese código no recupera este alias.';
+
+  @override
+  String get hdlErrBadCode =>
+      'Eso no es un código de recuperación. Revísalo e inténtalo de nuevo.';
+
+  @override
+  String get hdlErrBackupCode =>
+      'Ese es un código de recuperación de copia de seguridad. Un alias tiene su propio código, que empieza por ZHR.';
+
+  @override
+  String get hdlErrAlreadyHasOne => 'Esta cuenta ya tiene un alias.';
+
+  @override
+  String get hdlErrNoHandle => 'Aquí no hay ningún alias que cambiar.';
+
+  @override
+  String get addHandle => 'Alias';
+
+  @override
+  String get hdlFindHelp =>
+      'Si alguien te dijo su alias, búscalo aquí y envíale una solicitud. Esa persona decide si la acepta.';
+
+  @override
+  String get hdlFindLabel => 'Su alias';
+
+  @override
+  String get hdlFindHint => '@ana.42';
+
+  @override
+  String get hdlFind => 'Buscar';
+
+  @override
+  String get hdlLookingUp => 'Buscando…';
+
+  @override
+  String hdlFound(String handle) {
+    return 'Encontrado: @$handle.';
+  }
+
+  @override
+  String get hdlFoundNote =>
+      'Un alias no es una verificación. Si acepta, comparad los números de seguridad para estar seguros de quién es.';
+
+  @override
+  String get hdlSendRequest => 'Enviar solicitud';
+
+  @override
+  String get hdlSending => 'Enviando. Esto tarda unos segundos a propósito…';
+
+  @override
+  String hdlRequestSent(String handle) {
+    return 'Solicitud enviada a @$handle. Si la acepta, aparecerá en tus chats.';
+  }
+
+  @override
+  String hdlNotFound(String handle) {
+    return 'Nadie ha reservado @$handle.';
+  }
+
+  @override
+  String hdlFoundPaused(String handle) {
+    return '@$handle está en pausa: ahora mismo no acepta solicitudes.';
+  }
+
+  @override
+  String hdlFoundInvalid(String handle) {
+    return 'La respuesta del servicio de alias para @$handle no superó la comprobación. No se envió nada.';
+  }
+
+  @override
+  String get hdlFoundOwn => 'Ese es tu propio alias.';
+
+  @override
+  String hdlSemFound(String handle) {
+    return 'Alias @$handle';
+  }
+
+  @override
+  String get hdlWaiting => 'Esperando respuesta';
+
+  @override
+  String get hdlForgetRequest => 'Olvidar';
+
+  @override
+  String requestsVia(String handle) {
+    return 'A través de @$handle';
+  }
+
+  @override
+  String sysHandleAccepted(String handle) {
+    return '@$handle aceptó. Comparad los números de seguridad para verificar.';
+  }
 }

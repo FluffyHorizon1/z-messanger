@@ -3655,6 +3655,762 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Works once, for 24 hours. Whoever opens it first becomes your contact, and joins this group once they agree. The link itself says nothing about the group.'**
   String get grpInviteByLinkNote;
+
+  /// Settings section header (phase 38): the account's handle, a name people can find you by.
+  ///
+  /// In en, this message translates to:
+  /// **'Handle'**
+  String get stHandleSection;
+
+  /// Settings row and its meaning: the account's handle (a name like @alex.42 that people can find you by). Opens the handle screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Your handle'**
+  String get hdlYourHandle;
+
+  /// Settings row subtitle when this build has no handle service configured, so handles cannot be used at all.
+  ///
+  /// In en, this message translates to:
+  /// **'Not available in this version'**
+  String get hdlRowUnavailable;
+
+  /// Settings row subtitle on a linked device: only the account's main device can hold and manage a handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Held by your main device'**
+  String get hdlRowLinked;
+
+  /// Settings row subtitle when the account has no handle: how people reach you without one.
+  ///
+  /// In en, this message translates to:
+  /// **'None. People add you with your code or an invite'**
+  String get hdlRowNone;
+
+  /// Settings row subtitle: the handle is claimed and will be published to the handle service shortly (a deliberate random delay).
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle}, waiting to be published'**
+  String hdlRowPending(String handle);
+
+  /// Settings row subtitle: a claim restored from a backup that has not been published from this device.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle}, not published'**
+  String hdlRowHeld(String handle);
+
+  /// Settings row subtitle: the handle exists but is not taking requests.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle}, paused'**
+  String hdlRowPaused(String handle);
+
+  /// Settings row subtitle: somebody else's claim of this handle reached the handle service first.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle}, taken by someone else'**
+  String hdlRowTaken(String handle);
+
+  /// Settings row subtitle: the handle's recovery code was used and it now belongs to another key; this device cannot change it.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle}, held by another key'**
+  String hdlRowLost(String handle);
+
+  /// Developer-mode settings row: the address of the handle log (the service that holds handles).
+  ///
+  /// In en, this message translates to:
+  /// **'Handle service address'**
+  String get stHdlLogAddress;
+
+  /// Developer-mode settings row: the public key this device pins for the handle log.
+  ///
+  /// In en, this message translates to:
+  /// **'Handle service key'**
+  String get stHdlLogKey;
+
+  /// Title of the developer dialog editing the handle log's address.
+  ///
+  /// In en, this message translates to:
+  /// **'Handle service URL'**
+  String get stHdlLogUrlTitle;
+
+  /// Title of the developer dialog editing the handle log's pinned public key, written in base64.
+  ///
+  /// In en, this message translates to:
+  /// **'Handle service public key (base64)'**
+  String get stHdlLogKeyTitle;
+
+  /// Title of the handle screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Your handle'**
+  String get hdlTitle;
+
+  /// Shown on every handle surface when this build has no handle service configured. Plain and complete: nothing about handles works yet.
+  ///
+  /// In en, this message translates to:
+  /// **'Handles are not available yet. This version of Z has no handle service set up, so you cannot claim a handle or find anyone by one.'**
+  String get hdlUnavailable;
+
+  /// Shown on a linked device: in this version only the account's main device holds and manages the handle; contacts made through it still sync to this device.
+  ///
+  /// In en, this message translates to:
+  /// **'Only your main device can hold a handle. Claim or manage it there; the people you meet through it appear here too.'**
+  String get hdlLinkedDevice;
+
+  /// Opening paragraph of the handle screen when the account has none: what a handle is.
+  ///
+  /// In en, this message translates to:
+  /// **'A handle is a name people can find you by, like @alex.42. It is optional, and you can pause it or give it up later.'**
+  String get hdlIntro;
+
+  /// What claiming a handle makes public, stated before the claim: requests from anyone, an inbox separate from the account, the handle's existence public, and the operators seeing the device's IP address. Load-bearing; keep every clause.
+  ///
+  /// In en, this message translates to:
+  /// **'Anyone can look a handle up and send it a request. Requests go to an inbox of the handle\'s own, not to your account, and you decide whether to accept each one. A handle is public: anyone can learn that it exists, and the people who run the handle service and the relay can see your device\'s internet address when you claim, check or use it.'**
+  String get hdlWhatItShows;
+
+  /// Button on the handle screen: start claiming a handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Claim a handle'**
+  String get hdlClaim;
+
+  /// Button on the handle screen: take a handle back with its recovery code.
+  ///
+  /// In en, this message translates to:
+  /// **'Recover a handle'**
+  String get hdlRecover;
+
+  /// Label of the field for the name part of a handle (the part before the dot and digits).
+  ///
+  /// In en, this message translates to:
+  /// **'Name'**
+  String get hdlNickLabel;
+
+  /// Helper text under the handle name field: the rules for the name part.
+  ///
+  /// In en, this message translates to:
+  /// **'3 to 20 letters, digits or _, starting with a letter'**
+  String get hdlNickHelp;
+
+  /// Choice in the claim form: let the app pick two random digits for the handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Random digits'**
+  String get hdlDigitsRandom;
+
+  /// Choice in the claim form: type the digits of the handle yourself.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose digits'**
+  String get hdlDigitsChoose;
+
+  /// Label of the field for the digits part of a handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Digits (2 to 6)'**
+  String get hdlDigitsLabel;
+
+  /// Button in the claim form: check whether the handle is free.
+  ///
+  /// In en, this message translates to:
+  /// **'Check'**
+  String get hdlCheck;
+
+  /// Result in the claim form: nobody holds this handle.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle} is free.'**
+  String hdlAvailable(String handle);
+
+  /// Result in the claim form: somebody already holds this handle.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle} is taken.'**
+  String hdlTaken(String handle);
+
+  /// Shown when several random digit choices were all taken.
+  ///
+  /// In en, this message translates to:
+  /// **'Every random choice was taken. Try again, or choose the digits.'**
+  String get hdlNoneFree;
+
+  /// Button after a taken result: pick other random digits and check again.
+  ///
+  /// In en, this message translates to:
+  /// **'Try other digits'**
+  String get hdlTryOtherDigits;
+
+  /// Button that claims the free handle shown.
+  ///
+  /// In en, this message translates to:
+  /// **'Claim @{handle}'**
+  String hdlClaimThis(String handle);
+
+  /// Title of the dialog that shows the handle's recovery code once.
+  ///
+  /// In en, this message translates to:
+  /// **'Your handle\'s recovery code'**
+  String get hdlCodeTitle;
+
+  /// Body of the recovery-code dialog. Load-bearing: shown once and not stored; the only way back; and whoever holds it can take the handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Write this down and keep it somewhere safe. It is shown once and Z does not keep it. It is the only way to get @{handle} back if you lose this device, and anyone who has it can take the handle, so keep it private.'**
+  String hdlCodeBody(String handle);
+
+  /// Screen-reader label for the recovery code shown in the dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Recovery code'**
+  String get hdlSemCode;
+
+  /// Button closing the recovery-code dialog once the code is written down.
+  ///
+  /// In en, this message translates to:
+  /// **'I have written it down'**
+  String get hdlCodeWritten;
+
+  /// Title of the dialog where the recovery code is typed back to prove it was written down.
+  ///
+  /// In en, this message translates to:
+  /// **'Type the code back'**
+  String get hdlCodeConfirmTitle;
+
+  /// Body of the confirm-code dialog: why the code is typed back, and that nothing is published before.
+  ///
+  /// In en, this message translates to:
+  /// **'This makes sure it was written down correctly. Nothing is published until you do.'**
+  String get hdlCodeConfirmBody;
+
+  /// Label of the field where a handle's recovery code is typed.
+  ///
+  /// In en, this message translates to:
+  /// **'Recovery code'**
+  String get hdlCodeLabel;
+
+  /// Error in the confirm-code dialog: what was typed is not the code shown.
+  ///
+  /// In en, this message translates to:
+  /// **'That is not the code that was shown.'**
+  String get hdlCodeWrong;
+
+  /// The handle is claimed and waits for its publish time. minutes: whole minutes left.
+  ///
+  /// In en, this message translates to:
+  /// **'{minutes, plural, =0{@{handle} will be published in a moment.} =1{@{handle} will be published in about a minute.} other{@{handle} will be published in about {minutes} minutes.}}'**
+  String hdlPendingBody(String handle, int minutes);
+
+  /// Why a claim is not published at once: a random delay so its timing cannot be linked to the person's other activity; and that the app must be open to publish it.
+  ///
+  /// In en, this message translates to:
+  /// **'It is published later on purpose, at a random moment, so that the time you claimed it cannot be matched with anything else you did in Z. Keep Z open until then.'**
+  String get hdlPendingWhy;
+
+  /// Button: drop a claim that has not been published.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel claim'**
+  String get hdlCancelClaim;
+
+  /// Shown for a claim restored from a backup: a restore never publishes anything by itself, so the person decides.
+  ///
+  /// In en, this message translates to:
+  /// **'This claim was waiting to be published when the backup you restored was made. It has not been published from this device.'**
+  String get hdlHeldBody;
+
+  /// Button: publish a claim restored from a backup.
+  ///
+  /// In en, this message translates to:
+  /// **'Publish now'**
+  String get hdlPublishNow;
+
+  /// Shown when the claim lost the race to the handle service.
+  ///
+  /// In en, this message translates to:
+  /// **'Someone else claimed @{handle} before your claim was published. Nothing was published for you.'**
+  String hdlTakenBody(String handle);
+
+  /// Button after a lost claim: claim the same name with other digits.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose other digits'**
+  String get hdlChooseOther;
+
+  /// Button after a lost claim: forget it.
+  ///
+  /// In en, this message translates to:
+  /// **'Dismiss'**
+  String get hdlDismiss;
+
+  /// Status of a published handle, and what limits spam: each request needs a proof of work.
+  ///
+  /// In en, this message translates to:
+  /// **'Taking requests. Each request costs the sender some work, so they cannot be sent in bulk.'**
+  String get hdlLiveBody;
+
+  /// Load-bearing reminder on the handle screen: a handle proves nothing about identity; the safety number does.
+  ///
+  /// In en, this message translates to:
+  /// **'A handle is not a verification: whoever you meet through it, compare safety numbers to be sure who they are.'**
+  String get hdlNotVerification;
+
+  /// Warning: the relay does not support introduction mailboxes, so requests need no proof of work there.
+  ///
+  /// In en, this message translates to:
+  /// **'Your relay is too old to protect the handle\'s inbox: requests reach it without any work.'**
+  String get hdlRelayUnguarded;
+
+  /// Warning: the handle service names an inbox key this device does not hold; a new inbox fixes it. 'New inbox' must match the hdlRotate button.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle\'s inbox was changed on another device after the backup you restored. Choose New inbox to take requests here.'**
+  String get hdlIntroUnknown;
+
+  /// Tooltip of the copy button next to the handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy handle'**
+  String get hdlCopy;
+
+  /// Snackbar after copying the handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Handle copied'**
+  String get hdlCopied;
+
+  /// Screen-reader label for the handle shown on the handle screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Your handle, @{handle}'**
+  String hdlSemHandle(String handle);
+
+  /// Button: stop taking requests through the handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Pause'**
+  String get hdlPause;
+
+  /// What pausing does.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop taking requests. People who look it up are told it is paused.'**
+  String get hdlPauseHelp;
+
+  /// Button: take requests through the handle again.
+  ///
+  /// In en, this message translates to:
+  /// **'Resume'**
+  String get hdlResume;
+
+  /// Status of a paused handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Paused: people who look it up are told so, and cannot send requests.'**
+  String get hdlPausedBody;
+
+  /// Button and confirmation title: give the handle a new inbox (new introduction keys).
+  ///
+  /// In en, this message translates to:
+  /// **'New inbox'**
+  String get hdlRotate;
+
+  /// What a new inbox does.
+  ///
+  /// In en, this message translates to:
+  /// **'Give the handle a new inbox, to end a wave of unwanted requests. The handle stays the same, and requests already waiting stay.'**
+  String get hdlRotateHelp;
+
+  /// Row and dialog title: how much proof of work a request to the handle must carry.
+  ///
+  /// In en, this message translates to:
+  /// **'Work per request'**
+  String get hdlDifficulty;
+
+  /// Explanation in the work-per-request dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'How much work a request costs whoever sends it. More stops more spam and makes everyone who asks wait longer.'**
+  String get hdlDifficultyHelp;
+
+  /// Work level 16 bits: what a sender waits.
+  ///
+  /// In en, this message translates to:
+  /// **'Lowest: a fraction of a second'**
+  String get hdlPow16;
+
+  /// Work level 18 bits.
+  ///
+  /// In en, this message translates to:
+  /// **'Low: under a second'**
+  String get hdlPow18;
+
+  /// Work level 20 bits, the default.
+  ///
+  /// In en, this message translates to:
+  /// **'Normal: about a second, a few on a slow phone'**
+  String get hdlPow20;
+
+  /// Work level 22 bits.
+  ///
+  /// In en, this message translates to:
+  /// **'High: several seconds'**
+  String get hdlPow22;
+
+  /// Work level 24 bits.
+  ///
+  /// In en, this message translates to:
+  /// **'Highest: up to a minute on a slow phone'**
+  String get hdlPow24;
+
+  /// Button (destructive): give the handle up for good.
+  ///
+  /// In en, this message translates to:
+  /// **'Give up handle'**
+  String get hdlRetire;
+
+  /// Title of the confirmation before giving the handle up.
+  ///
+  /// In en, this message translates to:
+  /// **'Give up @{handle}?'**
+  String hdlRetireConfirmTitle(String handle);
+
+  /// Body of the give-up confirmation. Load-bearing: unreachable, keys forgotten, the name stays in the append-only log, only the code brings it back.
+  ///
+  /// In en, this message translates to:
+  /// **'Nobody will be able to reach you through it, and this device forgets its keys. The name stays in the public log and nobody else can claim it; only its recovery code can bring it back.'**
+  String get hdlRetireConfirmBody;
+
+  /// Shown when the handle service names another owner for the handle.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle} is now held by another key: its recovery code was used. This device can no longer change it.'**
+  String hdlLostBody(String handle);
+
+  /// Button: forget a handle this device can no longer manage.
+  ///
+  /// In en, this message translates to:
+  /// **'Forget it'**
+  String get hdlForget;
+
+  /// Title of the recover dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Recover a handle'**
+  String get hdlRecoverTitle;
+
+  /// Body of the recover dialog: what recovering does.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter the handle and its recovery code. The handle moves to this account with new keys, and you get a new code.'**
+  String get hdlRecoverBody;
+
+  /// Label of the handle field in the recover dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Handle'**
+  String get hdlHandleLabel;
+
+  /// Button in the recover dialog.
+  ///
+  /// In en, this message translates to:
+  /// **'Recover'**
+  String get hdlRecoverAction;
+
+  /// Snackbar after a successful recovery.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle} is yours again.'**
+  String hdlRecovered(String handle);
+
+  /// A typed handle is empty.
+  ///
+  /// In en, this message translates to:
+  /// **'Type a handle, like alex.42.'**
+  String get hdlBadEmpty;
+
+  /// A typed handle contains a character no handle has (anything but a-z, 0-9 and _, including look-alike letters from other alphabets). char: that character.
+  ///
+  /// In en, this message translates to:
+  /// **'“{char}” cannot be in a handle. Use a to z, 0 to 9 and _.'**
+  String hdlBadCharacter(String char);
+
+  /// A typed handle has no .digits part.
+  ///
+  /// In en, this message translates to:
+  /// **'Add the digits after a dot, like alex.42.'**
+  String get hdlBadMissingDigits;
+
+  /// A typed handle has something other than digits after the dot.
+  ///
+  /// In en, this message translates to:
+  /// **'Only digits go after the dot.'**
+  String get hdlBadDigitsNotDigits;
+
+  /// A typed handle uses a reserved name (support, admin and the like), which nobody can claim or look up.
+  ///
+  /// In en, this message translates to:
+  /// **'That name is reserved.'**
+  String get hdlBadReserved;
+
+  /// The name part is too short.
+  ///
+  /// In en, this message translates to:
+  /// **'The name needs at least 3 characters.'**
+  String get hdlBadNickShort;
+
+  /// The name part is too long.
+  ///
+  /// In en, this message translates to:
+  /// **'The name can have at most 20 characters.'**
+  String get hdlBadNickLong;
+
+  /// The name part starts with a digit or _.
+  ///
+  /// In en, this message translates to:
+  /// **'The name must start with a letter.'**
+  String get hdlBadNickStart;
+
+  /// The name part has __.
+  ///
+  /// In en, this message translates to:
+  /// **'The name cannot have two _ in a row.'**
+  String get hdlBadNickDoubleUnderscore;
+
+  /// The name part ends with _.
+  ///
+  /// In en, this message translates to:
+  /// **'The name cannot end with _.'**
+  String get hdlBadNickEndUnderscore;
+
+  /// One digit after the dot.
+  ///
+  /// In en, this message translates to:
+  /// **'A handle has at least 2 digits.'**
+  String get hdlBadDigitsShort;
+
+  /// More than six digits after the dot.
+  ///
+  /// In en, this message translates to:
+  /// **'A handle has at most 6 digits.'**
+  String get hdlBadDigitsLong;
+
+  /// The handle service could not be reached or answered with an error.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not reach the handle service. Try again later.'**
+  String get hdlErrUnreachable;
+
+  /// The handle service's answer failed verification against the pinned key or was incomplete.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service\'s answer did not check out, so nothing it said was used.'**
+  String get hdlErrBadAnswer;
+
+  /// The handle service refused an entry for a reason waiting will not fix.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service refused that.'**
+  String get hdlErrRefused;
+
+  /// Somebody else holds the handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Someone else holds that handle.'**
+  String get hdlErrTaken;
+
+  /// The log moved on between reading the handle and publishing to it.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle changed while you were doing that. Try again.'**
+  String get hdlErrChanged;
+
+  /// The handle service names another owner.
+  ///
+  /// In en, this message translates to:
+  /// **'That handle is held by another key now.'**
+  String get hdlErrLost;
+
+  /// The request could not be sent: the relay is unreachable.
+  ///
+  /// In en, this message translates to:
+  /// **'Not connected to the relay. Try again when you are online.'**
+  String get hdlErrNotConnected;
+
+  /// The relay refused the request's proof-of-work stamp twice.
+  ///
+  /// In en, this message translates to:
+  /// **'The relay did not accept the request\'s proof of work. Nothing was delivered; try again later.'**
+  String get hdlErrPowRefused;
+
+  /// The relay refused the request for another reason.
+  ///
+  /// In en, this message translates to:
+  /// **'The relay refused the request.'**
+  String get hdlErrRelayRefused;
+
+  /// A request to a paused handle was not sent.
+  ///
+  /// In en, this message translates to:
+  /// **'That handle is paused, so nothing was sent.'**
+  String get hdlErrPaused;
+
+  /// The handle is not in the handle service.
+  ///
+  /// In en, this message translates to:
+  /// **'Nobody holds that handle.'**
+  String get hdlErrNotClaimed;
+
+  /// The recovery code does not match the handle's commitment.
+  ///
+  /// In en, this message translates to:
+  /// **'That code does not recover this handle.'**
+  String get hdlErrWrongCode;
+
+  /// What was typed does not parse as a recovery code.
+  ///
+  /// In en, this message translates to:
+  /// **'That is not a recovery code. Check it and try again.'**
+  String get hdlErrBadCode;
+
+  /// A backup code (ZBK-) was typed where a handle's code (ZHR-) belongs.
+  ///
+  /// In en, this message translates to:
+  /// **'That is a backup recovery code. A handle has a code of its own, starting ZHR.'**
+  String get hdlErrBackupCode;
+
+  /// Claiming or recovering a second handle is refused.
+  ///
+  /// In en, this message translates to:
+  /// **'This account already has a handle.'**
+  String get hdlErrAlreadyHasOne;
+
+  /// A management action with no published handle.
+  ///
+  /// In en, this message translates to:
+  /// **'There is no handle here to change.'**
+  String get hdlErrNoHandle;
+
+  /// Tab of the add-contact screen: find someone by their handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Handle'**
+  String get addHandle;
+
+  /// Intro of the find-by-handle tab.
+  ///
+  /// In en, this message translates to:
+  /// **'If someone told you their handle, find them here and send a request. They decide whether to accept.'**
+  String get hdlFindHelp;
+
+  /// Label of the field where the handle to find is typed.
+  ///
+  /// In en, this message translates to:
+  /// **'Their handle'**
+  String get hdlFindLabel;
+
+  /// Example handle shown as a hint in the find field. Keep the @name.digits shape; the name may be localised.
+  ///
+  /// In en, this message translates to:
+  /// **'@alex.42'**
+  String get hdlFindHint;
+
+  /// Button: look the handle up.
+  ///
+  /// In en, this message translates to:
+  /// **'Find'**
+  String get hdlFind;
+
+  /// Button label while the handle is being looked up.
+  ///
+  /// In en, this message translates to:
+  /// **'Looking it up…'**
+  String get hdlLookingUp;
+
+  /// The handle exists and takes requests.
+  ///
+  /// In en, this message translates to:
+  /// **'Found @{handle}.'**
+  String hdlFound(String handle);
+
+  /// Load-bearing note under a found handle, where it is read: a handle proves nothing about who someone is.
+  ///
+  /// In en, this message translates to:
+  /// **'A handle is not a verification. If they accept, compare safety numbers to be sure who they are.'**
+  String get hdlFoundNote;
+
+  /// Button: send a contact request to the handle found.
+  ///
+  /// In en, this message translates to:
+  /// **'Send request'**
+  String get hdlSendRequest;
+
+  /// Button label while the request's proof of work is computed and sent.
+  ///
+  /// In en, this message translates to:
+  /// **'Sending. This takes a few seconds on purpose…'**
+  String get hdlSending;
+
+  /// Snackbar after the request was sent.
+  ///
+  /// In en, this message translates to:
+  /// **'Request sent to @{handle}. If they accept, they will appear in your chats.'**
+  String hdlRequestSent(String handle);
+
+  /// The handle is not in the handle service (proved by the lookup).
+  ///
+  /// In en, this message translates to:
+  /// **'Nobody has claimed @{handle}.'**
+  String hdlNotFound(String handle);
+
+  /// The handle exists but is paused; nothing is sent.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle} is paused: its owner is not taking requests right now.'**
+  String hdlFoundPaused(String handle);
+
+  /// The record found for the handle failed its checks.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service\'s answer for @{handle} did not check out. Nothing was sent.'**
+  String hdlFoundInvalid(String handle);
+
+  /// The handle looked up is this account's own.
+  ///
+  /// In en, this message translates to:
+  /// **'That is your own handle.'**
+  String get hdlFoundOwn;
+
+  /// Screen-reader label for the lookup result.
+  ///
+  /// In en, this message translates to:
+  /// **'Handle @{handle}'**
+  String hdlSemFound(String handle);
+
+  /// Heading of the list of handles this device sent requests to.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for an answer'**
+  String get hdlWaiting;
+
+  /// Button: stop waiting for an answer from a handle.
+  ///
+  /// In en, this message translates to:
+  /// **'Forget'**
+  String get hdlForgetRequest;
+
+  /// On a pending request that came through the account's handle: which handle the person found the account by.
+  ///
+  /// In en, this message translates to:
+  /// **'Via @{handle}'**
+  String requestsVia(String handle);
+
+  /// System line in a chat: the owner of a handle you sent a request to accepted, proven by the handle's own key; who they are is for the safety number to confirm.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle} accepted. Compare safety numbers to verify.'**
+  String sysHandleAccepted(String handle);
 }
 
 class _AppLocalizationsDelegate

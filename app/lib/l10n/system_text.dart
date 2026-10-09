@@ -86,6 +86,8 @@ String systemText(AppLocalizations l, String body) {
     SystemKind.linkRefused => l.sysLinkRefused(s('name', l.sysSomeone)),
     SystemKind.linkDeclined => l.sysLinkDeclined(s('name', l.sysSomeone)),
     SystemKind.linkCancelled => l.sysLinkCancelled(s('name', l.sysSomeone)),
+    // Handles (phase 38).
+    SystemKind.handleAccepted => l.sysHandleAccepted(s('h', '?')),
     // A kind this build does not know — written by a newer one. The stored
     // object is the only thing there is to show; better than nothing, and
     // it says plainly that something happened here.

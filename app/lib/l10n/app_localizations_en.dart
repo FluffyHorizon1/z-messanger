@@ -2292,4 +2292,466 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get grpInviteByLinkNote =>
       'Works once, for 24 hours. Whoever opens it first becomes your contact, and joins this group once they agree. The link itself says nothing about the group.';
+
+  @override
+  String get stHandleSection => 'Handle';
+
+  @override
+  String get hdlYourHandle => 'Your handle';
+
+  @override
+  String get hdlRowUnavailable => 'Not available in this version';
+
+  @override
+  String get hdlRowLinked => 'Held by your main device';
+
+  @override
+  String get hdlRowNone => 'None. People add you with your code or an invite';
+
+  @override
+  String hdlRowPending(String handle) {
+    return '@$handle, waiting to be published';
+  }
+
+  @override
+  String hdlRowHeld(String handle) {
+    return '@$handle, not published';
+  }
+
+  @override
+  String hdlRowPaused(String handle) {
+    return '@$handle, paused';
+  }
+
+  @override
+  String hdlRowTaken(String handle) {
+    return '@$handle, taken by someone else';
+  }
+
+  @override
+  String hdlRowLost(String handle) {
+    return '@$handle, held by another key';
+  }
+
+  @override
+  String get stHdlLogAddress => 'Handle service address';
+
+  @override
+  String get stHdlLogKey => 'Handle service key';
+
+  @override
+  String get stHdlLogUrlTitle => 'Handle service URL';
+
+  @override
+  String get stHdlLogKeyTitle => 'Handle service public key (base64)';
+
+  @override
+  String get hdlTitle => 'Your handle';
+
+  @override
+  String get hdlUnavailable =>
+      'Handles are not available yet. This version of Z has no handle service set up, so you cannot claim a handle or find anyone by one.';
+
+  @override
+  String get hdlLinkedDevice =>
+      'Only your main device can hold a handle. Claim or manage it there; the people you meet through it appear here too.';
+
+  @override
+  String get hdlIntro =>
+      'A handle is a name people can find you by, like @alex.42. It is optional, and you can pause it or give it up later.';
+
+  @override
+  String get hdlWhatItShows =>
+      'Anyone can look a handle up and send it a request. Requests go to an inbox of the handle\'s own, not to your account, and you decide whether to accept each one. A handle is public: anyone can learn that it exists, and the people who run the handle service and the relay can see your device\'s internet address when you claim, check or use it.';
+
+  @override
+  String get hdlClaim => 'Claim a handle';
+
+  @override
+  String get hdlRecover => 'Recover a handle';
+
+  @override
+  String get hdlNickLabel => 'Name';
+
+  @override
+  String get hdlNickHelp =>
+      '3 to 20 letters, digits or _, starting with a letter';
+
+  @override
+  String get hdlDigitsRandom => 'Random digits';
+
+  @override
+  String get hdlDigitsChoose => 'Choose digits';
+
+  @override
+  String get hdlDigitsLabel => 'Digits (2 to 6)';
+
+  @override
+  String get hdlCheck => 'Check';
+
+  @override
+  String hdlAvailable(String handle) {
+    return '@$handle is free.';
+  }
+
+  @override
+  String hdlTaken(String handle) {
+    return '@$handle is taken.';
+  }
+
+  @override
+  String get hdlNoneFree =>
+      'Every random choice was taken. Try again, or choose the digits.';
+
+  @override
+  String get hdlTryOtherDigits => 'Try other digits';
+
+  @override
+  String hdlClaimThis(String handle) {
+    return 'Claim @$handle';
+  }
+
+  @override
+  String get hdlCodeTitle => 'Your handle\'s recovery code';
+
+  @override
+  String hdlCodeBody(String handle) {
+    return 'Write this down and keep it somewhere safe. It is shown once and Z does not keep it. It is the only way to get @$handle back if you lose this device, and anyone who has it can take the handle, so keep it private.';
+  }
+
+  @override
+  String get hdlSemCode => 'Recovery code';
+
+  @override
+  String get hdlCodeWritten => 'I have written it down';
+
+  @override
+  String get hdlCodeConfirmTitle => 'Type the code back';
+
+  @override
+  String get hdlCodeConfirmBody =>
+      'This makes sure it was written down correctly. Nothing is published until you do.';
+
+  @override
+  String get hdlCodeLabel => 'Recovery code';
+
+  @override
+  String get hdlCodeWrong => 'That is not the code that was shown.';
+
+  @override
+  String hdlPendingBody(String handle, int minutes) {
+    String _temp0 = intl.Intl.pluralLogic(
+      minutes,
+      locale: localeName,
+      other: '@$handle will be published in about $minutes minutes.',
+      one: '@$handle will be published in about a minute.',
+      zero: '@$handle will be published in a moment.',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get hdlPendingWhy =>
+      'It is published later on purpose, at a random moment, so that the time you claimed it cannot be matched with anything else you did in Z. Keep Z open until then.';
+
+  @override
+  String get hdlCancelClaim => 'Cancel claim';
+
+  @override
+  String get hdlHeldBody =>
+      'This claim was waiting to be published when the backup you restored was made. It has not been published from this device.';
+
+  @override
+  String get hdlPublishNow => 'Publish now';
+
+  @override
+  String hdlTakenBody(String handle) {
+    return 'Someone else claimed @$handle before your claim was published. Nothing was published for you.';
+  }
+
+  @override
+  String get hdlChooseOther => 'Choose other digits';
+
+  @override
+  String get hdlDismiss => 'Dismiss';
+
+  @override
+  String get hdlLiveBody =>
+      'Taking requests. Each request costs the sender some work, so they cannot be sent in bulk.';
+
+  @override
+  String get hdlNotVerification =>
+      'A handle is not a verification: whoever you meet through it, compare safety numbers to be sure who they are.';
+
+  @override
+  String get hdlRelayUnguarded =>
+      'Your relay is too old to protect the handle\'s inbox: requests reach it without any work.';
+
+  @override
+  String get hdlIntroUnknown =>
+      'The handle\'s inbox was changed on another device after the backup you restored. Choose New inbox to take requests here.';
+
+  @override
+  String get hdlCopy => 'Copy handle';
+
+  @override
+  String get hdlCopied => 'Handle copied';
+
+  @override
+  String hdlSemHandle(String handle) {
+    return 'Your handle, @$handle';
+  }
+
+  @override
+  String get hdlPause => 'Pause';
+
+  @override
+  String get hdlPauseHelp =>
+      'Stop taking requests. People who look it up are told it is paused.';
+
+  @override
+  String get hdlResume => 'Resume';
+
+  @override
+  String get hdlPausedBody =>
+      'Paused: people who look it up are told so, and cannot send requests.';
+
+  @override
+  String get hdlRotate => 'New inbox';
+
+  @override
+  String get hdlRotateHelp =>
+      'Give the handle a new inbox, to end a wave of unwanted requests. The handle stays the same, and requests already waiting stay.';
+
+  @override
+  String get hdlDifficulty => 'Work per request';
+
+  @override
+  String get hdlDifficultyHelp =>
+      'How much work a request costs whoever sends it. More stops more spam and makes everyone who asks wait longer.';
+
+  @override
+  String get hdlPow16 => 'Lowest: a fraction of a second';
+
+  @override
+  String get hdlPow18 => 'Low: under a second';
+
+  @override
+  String get hdlPow20 => 'Normal: about a second, a few on a slow phone';
+
+  @override
+  String get hdlPow22 => 'High: several seconds';
+
+  @override
+  String get hdlPow24 => 'Highest: up to a minute on a slow phone';
+
+  @override
+  String get hdlRetire => 'Give up handle';
+
+  @override
+  String hdlRetireConfirmTitle(String handle) {
+    return 'Give up @$handle?';
+  }
+
+  @override
+  String get hdlRetireConfirmBody =>
+      'Nobody will be able to reach you through it, and this device forgets its keys. The name stays in the public log and nobody else can claim it; only its recovery code can bring it back.';
+
+  @override
+  String hdlLostBody(String handle) {
+    return '@$handle is now held by another key: its recovery code was used. This device can no longer change it.';
+  }
+
+  @override
+  String get hdlForget => 'Forget it';
+
+  @override
+  String get hdlRecoverTitle => 'Recover a handle';
+
+  @override
+  String get hdlRecoverBody =>
+      'Enter the handle and its recovery code. The handle moves to this account with new keys, and you get a new code.';
+
+  @override
+  String get hdlHandleLabel => 'Handle';
+
+  @override
+  String get hdlRecoverAction => 'Recover';
+
+  @override
+  String hdlRecovered(String handle) {
+    return '@$handle is yours again.';
+  }
+
+  @override
+  String get hdlBadEmpty => 'Type a handle, like alex.42.';
+
+  @override
+  String hdlBadCharacter(String char) {
+    return '“$char” cannot be in a handle. Use a to z, 0 to 9 and _.';
+  }
+
+  @override
+  String get hdlBadMissingDigits => 'Add the digits after a dot, like alex.42.';
+
+  @override
+  String get hdlBadDigitsNotDigits => 'Only digits go after the dot.';
+
+  @override
+  String get hdlBadReserved => 'That name is reserved.';
+
+  @override
+  String get hdlBadNickShort => 'The name needs at least 3 characters.';
+
+  @override
+  String get hdlBadNickLong => 'The name can have at most 20 characters.';
+
+  @override
+  String get hdlBadNickStart => 'The name must start with a letter.';
+
+  @override
+  String get hdlBadNickDoubleUnderscore =>
+      'The name cannot have two _ in a row.';
+
+  @override
+  String get hdlBadNickEndUnderscore => 'The name cannot end with _.';
+
+  @override
+  String get hdlBadDigitsShort => 'A handle has at least 2 digits.';
+
+  @override
+  String get hdlBadDigitsLong => 'A handle has at most 6 digits.';
+
+  @override
+  String get hdlErrUnreachable =>
+      'Could not reach the handle service. Try again later.';
+
+  @override
+  String get hdlErrBadAnswer =>
+      'The handle service\'s answer did not check out, so nothing it said was used.';
+
+  @override
+  String get hdlErrRefused => 'The handle service refused that.';
+
+  @override
+  String get hdlErrTaken => 'Someone else holds that handle.';
+
+  @override
+  String get hdlErrChanged =>
+      'The handle changed while you were doing that. Try again.';
+
+  @override
+  String get hdlErrLost => 'That handle is held by another key now.';
+
+  @override
+  String get hdlErrNotConnected =>
+      'Not connected to the relay. Try again when you are online.';
+
+  @override
+  String get hdlErrPowRefused =>
+      'The relay did not accept the request\'s proof of work. Nothing was delivered; try again later.';
+
+  @override
+  String get hdlErrRelayRefused => 'The relay refused the request.';
+
+  @override
+  String get hdlErrPaused => 'That handle is paused, so nothing was sent.';
+
+  @override
+  String get hdlErrNotClaimed => 'Nobody holds that handle.';
+
+  @override
+  String get hdlErrWrongCode => 'That code does not recover this handle.';
+
+  @override
+  String get hdlErrBadCode =>
+      'That is not a recovery code. Check it and try again.';
+
+  @override
+  String get hdlErrBackupCode =>
+      'That is a backup recovery code. A handle has a code of its own, starting ZHR.';
+
+  @override
+  String get hdlErrAlreadyHasOne => 'This account already has a handle.';
+
+  @override
+  String get hdlErrNoHandle => 'There is no handle here to change.';
+
+  @override
+  String get addHandle => 'Handle';
+
+  @override
+  String get hdlFindHelp =>
+      'If someone told you their handle, find them here and send a request. They decide whether to accept.';
+
+  @override
+  String get hdlFindLabel => 'Their handle';
+
+  @override
+  String get hdlFindHint => '@alex.42';
+
+  @override
+  String get hdlFind => 'Find';
+
+  @override
+  String get hdlLookingUp => 'Looking it up…';
+
+  @override
+  String hdlFound(String handle) {
+    return 'Found @$handle.';
+  }
+
+  @override
+  String get hdlFoundNote =>
+      'A handle is not a verification. If they accept, compare safety numbers to be sure who they are.';
+
+  @override
+  String get hdlSendRequest => 'Send request';
+
+  @override
+  String get hdlSending => 'Sending. This takes a few seconds on purpose…';
+
+  @override
+  String hdlRequestSent(String handle) {
+    return 'Request sent to @$handle. If they accept, they will appear in your chats.';
+  }
+
+  @override
+  String hdlNotFound(String handle) {
+    return 'Nobody has claimed @$handle.';
+  }
+
+  @override
+  String hdlFoundPaused(String handle) {
+    return '@$handle is paused: its owner is not taking requests right now.';
+  }
+
+  @override
+  String hdlFoundInvalid(String handle) {
+    return 'The handle service\'s answer for @$handle did not check out. Nothing was sent.';
+  }
+
+  @override
+  String get hdlFoundOwn => 'That is your own handle.';
+
+  @override
+  String hdlSemFound(String handle) {
+    return 'Handle @$handle';
+  }
+
+  @override
+  String get hdlWaiting => 'Waiting for an answer';
+
+  @override
+  String get hdlForgetRequest => 'Forget';
+
+  @override
+  String requestsVia(String handle) {
+    return 'Via @$handle';
+  }
+
+  @override
+  String sysHandleAccepted(String handle) {
+    return '@$handle accepted. Compare safety numbers to verify.';
+  }
 }

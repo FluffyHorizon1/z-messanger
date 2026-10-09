@@ -60,6 +60,7 @@ void main() {
       SystemKind.linkRefused,
       SystemKind.linkDeclined,
       SystemKind.linkCancelled,
+      SystemKind.handleAccepted,
     ];
     for (final k in kinds) {
       final out = systemText(
