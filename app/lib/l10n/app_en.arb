@@ -296,6 +296,59 @@
       }
     }
   },
+  "addRefusedOwnCode": "That is your own contact code.",
+  "@addRefusedOwnCode": {
+    "description": "42.3: the pasted or scanned code is this account's own — any of its devices'. Nothing is added."
+  },
+  "addRefusedAlreadyContact": "{name} is already in your contacts.",
+  "@addRefusedAlreadyContact": {
+    "description": "42.3: a code for someone already in the contact list that brings nothing new, or someone already held answering a connect invite (the ceremony never changes a contact already held). {name} is the contact as named on this device.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "addRefusedOtherIdentity": "This code is for a different identity than the one you hold for {name}. Nothing was changed.",
+  "@addRefusedOtherIdentity": {
+    "description": "42.3 security warning: the code names the device of {name}, a contact already held, but a different identity key. A device does not change identity, so the code is refused and the contact left as it was.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "addRefusedCommitChanged": "The post-quantum commitment in this code is not the one you hold for {name}. If they reset their identity, delete the contact and add them again; otherwise do not trust this code.",
+  "@addRefusedCommitChanged": {
+    "description": "42.3 security warning: the code carries a SIGNED post-quantum commitment other than the one held for {name}. Either they reset their identity (the honest path is deleting and re-adding them) or the key was substituted. 'commitment' is the protocol's term — the code holds a hash of the key.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "addRefusedCommitMissesKey": "The post-quantum commitment in this code does not match the key you confirmed for {name}. Do not trust this code.",
+  "@addRefusedCommitMissesKey": {
+    "description": "42.3 security warning: the key behind {name}'s post-quantum safety number was confirmed by comparing it, and the commitment in this code does not commit to it. The code is what is wrong; nothing was changed.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "addRefusedKeyMismatch": "The post-quantum key held for {name} does not match the commitment in this code. It has been refused and the contact is flagged. Do not rely on this chat until you have spoken to {name} on another channel.",
+  "@addRefusedKeyMismatch": {
+    "description": "42.3 security warning, the strongest of these: {name}'s app sent a post-quantum key, and the commitment {name} signed in this code does not match it — evidence of a substituted key. The key is refused, the contact flagged and a warning put in the chat; this sentence says so at the moment of the scan.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "addRefusedInvalidCode": "This code did not verify: it is not a Z contact code, or it was damaged or changed after its owner made it. Nothing was added — ask them for their code again.",
+  "@addRefusedInvalidCode": {
+    "description": "42.3: the code failed the protocol's checks — not a contact code, unreadable, or a signature, certificate or commitment signature that does not verify (possible tampering). One sentence for all of them: what the person should do is the same."
+  },
   "addScanPrompt": "Point the camera at their Z code.",
   "@addScanPrompt": {
     "description": "Instruction on the camera scanning screen."
@@ -1733,6 +1786,30 @@
   "lockImmediately": "Immediately",
   "@lockImmediately": {
     "description": "Lock-after option: lock the moment the app goes to the background."
+  },
+  "stScreenSecurity": "Screen security",
+  "@stScreenSecurity": {
+    "description": "42.1, Android only: toggle for keeping Z's window from capture while the vault is open (FLAG_SECURE) — no screenshots or screen recordings, and a blank card in the recent-apps screen. Not the screen lock above it, which asks for a fingerprint or PIN."
+  },
+  "stScreenSecurityOnHelp": "Screenshots and screen recordings of Z are blocked, and the recent-apps screen shows a blank card instead of your chats.",
+  "@stScreenSecurityOnHelp": {
+    "description": "Under the screen-security toggle when it is on, which it is until the person turns it off."
+  },
+  "stScreenSecurityOffHelp": "Screenshots are allowed. A screenshot is a copy of the chat outside Z, in your gallery, and the recent-apps screen shows the chat you were in — even with the screen lock on.",
+  "@stScreenSecurityOffHelp": {
+    "description": "Under the toggle when it is off: what turning it off costs. The last clause matters — the system takes the recent-apps picture as Z leaves the screen, before the screen lock is drawn, so the lock does not hide it."
+  },
+  "lockPromptUnlock": "Unlock Z",
+  "@lockPromptUnlock": {
+    "description": "42.3: the reason line of the system's fingerprint / face / PIN prompt when Z opens or comes back from the background. Short: the system shows it under a title of its own."
+  },
+  "lockPromptEnableScreenLock": "Confirm to enable screen lock",
+  "@lockPromptEnableScreenLock": {
+    "description": "The reason line of the system prompt shown once when the screen lock is turned on, so that nobody turns on a lock they cannot open."
+  },
+  "lockPromptEnableBiometric": "Confirm to enable biometric unlock",
+  "@lockPromptEnableBiometric": {
+    "description": "The reason line of the system prompt shown when unlocking with biometrics is turned on for a passphrase-protected vault."
   },
   "stPassphraseOn": "App passphrase — on",
   "@stPassphraseOn": {

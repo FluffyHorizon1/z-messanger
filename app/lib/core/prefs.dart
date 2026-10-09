@@ -18,6 +18,10 @@ class AppPrefs extends ChangeNotifier {
   // fetch. Nothing here is secret; it sits in the same plaintext prefs.json.
   int _lastUpdateCheckMs = 0;
   String? _latestVersion;
+  // 42.1: whether Z's window is kept from capture while the vault is open
+  // (core/screen_security.dart). Here rather than in the vault for the same
+  // reason as the theme: it is not secret, and it is read as the vault opens.
+  bool _screenSecurity = true;
 
   AppPrefs({required this.root});
 
@@ -37,6 +41,11 @@ class AppPrefs extends ChangeNotifier {
   /// a build before 2026-10-04 stored here (`upd.url`) is not read back.
   String? get latestVersion => _latestVersion;
 
+  /// Screen security (42.1): on Android, while the vault is open, no
+  /// screenshot, no screen recording, and a blank card in the recent-apps
+  /// screen. On unless the person turns it off.
+  bool get screenSecurity => _screenSecurity;
+
   static ThemeMode _parseMode(Object? v) => switch (v) {
         'light' => ThemeMode.light,
         'dark' => ThemeMode.dark,
@@ -49,6 +58,8 @@ class AppPrefs extends ChangeNotifier {
         final j = (jsonDecode(await _file.readAsString()) as Map)
             .cast<String, Object?>();
         _themeMode = _parseMode(j['theme']);
+        // Absent in a file an earlier build wrote: on, the default.
+        _screenSecurity = j['screen'] != false;
         final upd = j['upd'];
         if (upd is Map) {
           _lastUpdateCheckMs = (upd['ts'] as num?)?.toInt() ?? 0;
@@ -68,6 +79,7 @@ class AppPrefs extends ChangeNotifier {
           jsonEncode({
             'v': 1,
             'theme': _themeMode.name,
+            'screen': _screenSecurity,
             'upd': {
               'ts': _lastUpdateCheckMs,
               if (_latestVersion != null) 'ver': _latestVersion,
@@ -81,6 +93,12 @@ class AppPrefs extends ChangeNotifier {
 
   Future<void> setThemeMode(ThemeMode mode) async {
     _themeMode = mode;
+    notifyListeners();
+    await _save();
+  }
+
+  Future<void> setScreenSecurity(bool on) async {
+    _screenSecurity = on;
     notifyListeners();
     await _save();
   }

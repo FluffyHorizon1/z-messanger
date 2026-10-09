@@ -226,6 +226,38 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get addRefusedOwnCode => 'That is your own contact code.';
+
+  @override
+  String addRefusedAlreadyContact(String name) {
+    return '$name is already in your contacts.';
+  }
+
+  @override
+  String addRefusedOtherIdentity(String name) {
+    return 'This code is for a different identity than the one you hold for $name. Nothing was changed.';
+  }
+
+  @override
+  String addRefusedCommitChanged(String name) {
+    return 'The post-quantum commitment in this code is not the one you hold for $name. If they reset their identity, delete the contact and add them again; otherwise do not trust this code.';
+  }
+
+  @override
+  String addRefusedCommitMissesKey(String name) {
+    return 'The post-quantum commitment in this code does not match the key you confirmed for $name. Do not trust this code.';
+  }
+
+  @override
+  String addRefusedKeyMismatch(String name) {
+    return 'The post-quantum key held for $name does not match the commitment in this code. It has been refused and the contact is flagged. Do not rely on this chat until you have spoken to $name on another channel.';
+  }
+
+  @override
+  String get addRefusedInvalidCode =>
+      'This code did not verify: it is not a Z contact code, or it was damaged or changed after its owner made it. Nothing was added — ask them for their code again.';
+
+  @override
   String get addScanPrompt => 'Point the camera at their Z code.';
 
   @override
@@ -1366,6 +1398,26 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get lockImmediately => 'Immediately';
+
+  @override
+  String get stScreenSecurity => 'Screen security';
+
+  @override
+  String get stScreenSecurityOnHelp =>
+      'Screenshots and screen recordings of Z are blocked, and the recent-apps screen shows a blank card instead of your chats.';
+
+  @override
+  String get stScreenSecurityOffHelp =>
+      'Screenshots are allowed. A screenshot is a copy of the chat outside Z, in your gallery, and the recent-apps screen shows the chat you were in — even with the screen lock on.';
+
+  @override
+  String get lockPromptUnlock => 'Unlock Z';
+
+  @override
+  String get lockPromptEnableScreenLock => 'Confirm to enable screen lock';
+
+  @override
+  String get lockPromptEnableBiometric => 'Confirm to enable biometric unlock';
 
   @override
   String get stPassphraseOn => 'App passphrase — on';

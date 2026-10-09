@@ -125,8 +125,16 @@ recipient device so the relay does not learn who sent it.
   file the user chose — it copies it into the app's cache directory and hands
   over the copy — so **every attachment ever sent had an unencrypted copy
   outside the vault**, surviving the sweeper, the disappearing‑message timer
-  and "reset identity" alike; both picker call sites now delete it, and a
-  test refuses a call site that does not. And the app had never set
+  and "reset identity" alike; every picker call site now deletes it, and a
+  test refuses a call site that does not. Phase 42 closed what that left: a
+  copy no read reached — Android killed the app while the camera was open, a
+  capture cancelled — and the restore screen's ways out before the delete.
+  Those are swept at the next start and by "Wipe everything", which fails
+  rather than report a clean device while one remains, and no pick asks the
+  file picker for the recompressed copy of an image it writes to the shared
+  Pictures folder. The recent‑apps card is a copy too, taken by the system
+  of whatever was on screen: on Android the window is kept from capture
+  while the vault is open (screen security, below). And the app had never set
   `android:allowBackup="false"`, so the platform default put the whole vault
   directory in Android's Auto Backup set: the database seals *cells* and not
   its structure, so the copy carried the contact graph and every message's
@@ -262,7 +270,7 @@ exists, gated on something), *open* (should be closed and is not yet).
 | R10 | Reproducibility is proven on one machine, not across machines | — | *Settled on 2026‑09‑09, and the answer was no.* The first run failed | **Superseded by R16**, which records what was actually measured. Kept here rather than deleted: this row said the first CI run would settle it, and a register that quietly removes a row once its answer turns out to be unwelcome is not a register | superseded |
 | R11 | Google holds the Play app‑signing key and can sign an APK as Z | Google, or anyone who compels Google | Play App Signing is a condition of distributing through Play | Reproducible builds plus provenance let anyone compare what Play serves against what the source produces — the substitution is detectable, not preventable | accepted |
 | R12 | A push notification tells Google (FCM) that *some* device should wake | Google | Waking a sleeping device requires the platform's push service | Notifications are **contentless** — no text, no sender; the device then fetches from the mailbox as usual, and tokens live in relay RAM and expire | accepted |
-| R13 | A malicious contact can retain, screenshot or leak anything sent to them | Your contact | Nothing cryptographic can prevent it | Disappearing messages are a courtesy against accidental retention, and are described as exactly that | accepted |
+| R13 | A malicious contact can retain, screenshot or leak anything sent to them | Your contact | Nothing cryptographic can prevent it | Disappearing messages are a courtesy against accidental retention, and are described as exactly that. Screen security (phase 42) is the same kind of thing on their side: it keeps *their* phone from copying the chat by itself — screenshots, the recent‑apps card — and they can turn it off, or photograph the screen | accepted |
 | R14 | A hostile relay can refuse to deliver, or drop queued ciphertext | Relay operator | Availability depends on the relay you choose | Self‑host; the relay cannot read what it drops. (An *honest* relay no longer drops anything to make room — R22.) Where instances share a store, the store is a second place the same operator can drop the same ciphertext from, and a second thing that must be run without persistence — the same trust, more of its surface: `/health` names the coordinator, and the store's configuration is in the repository's Blueprint rather than in an assurance | accepted |
 | R15 | Timing and volume correlation by someone watching both ends | A global passive adversary | Z is not an anonymity network and does not claim to be | Tor for the transport, if that is your threat model | accepted |
 | R16 | The shipped APK is reproducible **only at a fixed checkout path**: building in a directory not named `z` changes `libapp.so` and `libdartjni.so` | A verifier who builds somewhere else and reads the mismatch as tampering | The Dart AOT snapshot embeds its absolute build directory as a source URI (`.dart_tool/flutter_build/dart_plugin_registrant.dart`), and the two libraries compiled during the build inherit it. Measured 2026-09-09: two runners at one path are byte-identical, so the **machine is not a variable**; only the path is | The path is stated in the build recipe, as Debian records `Build-Path`. CI asserts machine-independence and asserts that a path change moves those two libraries and no others, so the leak cannot spread unnoticed. `verify_reproducible.py` names what differs, so a verifier who ignores the recipe gets a known deviation rather than a mystery | **accepted** — with the real fix (a relative URI) upstream in the Flutter tool |
@@ -441,7 +449,14 @@ each of them had produced a plausible table (`ROADMAP_8_15.md`, revision
     time in the background. It is a **UI gate**, like the phone's own lock
     screen: the vault stays open underneath so messages keep arriving, and
     it does not change what is stored or how it is encrypted. Someone who
-    can read the app's storage is not stopped by it.
+    can read the app's storage is not stopped by it. Nor, on its own, is
+    someone holding the unlocked phone who opens the recent‑apps screen:
+    the system takes that card's picture as Z leaves the front, before the
+    lock is drawn, so it shows the chat the lock hides. On Android, *screen
+    security* keeps the window from capture while the vault is open —
+    FLAG_SECURE: no screenshot, no screen recording, a blank card. It is on
+    unless turned off in Settings › Security, for someone who needs a
+    screenshot of their own chat, and the switch says what that costs.
   - *Unlock with biometrics* (only when an app passphrase is set) lets the
     prompt open the vault instead of typing the passphrase. To do that, Z
     keeps the Argon2id output for the current passphrase — never the
@@ -483,7 +498,8 @@ each of them had produced a plausible table (`ROADMAP_8_15.md`, revision
    you can explain it.
 4. Enable disappearing messages for sensitive threads.
 5. Keep your OS and device encryption on; use a strong device passcode and
-   the app passphrase. Turn on the screen lock; on macOS / Windows leave
+   the app passphrase. Turn on the screen lock, and on Android leave screen
+   security on; on macOS / Windows leave
    "unlock with biometrics" off if you rely on the passphrase against
    someone who can image the machine (on Android it is hardware‑bound).
 6. Understand that metadata (which mailbox, when, how much) is the residual

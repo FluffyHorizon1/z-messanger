@@ -233,9 +233,14 @@ enum PqDisplay {
   mismatch,
 }
 
-/// ADR 0027: the two ways a contact's code is refused that are new with the
-/// commitment's signature. Carried as a kind so the add screen says it in the
-/// reader's language; [ContactCodeRefused.message] is the English for logs.
+/// Why a contact's code was refused, as a kind, so the screen says it in the
+/// reader's language (`lib/l10n/refusal_text.dart`);
+/// [ContactCodeRefused.message] is the English, for logs and tests.
+///
+/// ADR 0027 made the first two kinds. The rest were thrown as English
+/// sentences built in the service, which the add screen and the CONNECT tab
+/// showed as they were — in every language, and among them the warnings that
+/// a code names someone else's key (42.3).
 enum ContactCodeRefusal {
   /// A code for a contact whose codes sign their commitment, carrying no
   /// signed one: an old code of theirs, or one somebody stripped.
@@ -244,6 +249,34 @@ enum ContactCodeRefusal {
   /// An unsigned commitment that misses the key their app sent: refused as
   /// the code, never held against the key.
   unsignedCommitMismatch,
+
+  /// The code is this account's own (any of its devices'). No name.
+  ownCode,
+
+  /// The contact is already held, and the code brings nothing new — or it
+  /// came through a CONNECT ceremony, which does not change a held contact.
+  alreadyContact,
+
+  /// The code names the device of a contact held under a different identity.
+  otherIdentity,
+
+  /// A signed commitment other than the one held for the contact: a reset
+  /// identity, or a substituted key.
+  commitChanged,
+
+  /// The code's commitment does not commit to the key the contact's number
+  /// was confirmed over.
+  commitMissesConfirmedKey,
+
+  /// The key held for the contact misses the commitment the contact signed in
+  /// this code: the key is refused and the contact flagged, as an in-band
+  /// mismatch is (the chat's line is a `pqMismatch` system message).
+  keyMismatch,
+
+  /// The code did not verify: not a Z contact code, damaged, or altered — a
+  /// signature, a device certificate or the commitment's signature failed.
+  /// The protocol library's reason, in English, is the message. No name.
+  invalidCode,
 }
 
 /// A refused contact code, with the reason as a [ContactCodeRefusal]. Still a
@@ -251,7 +284,8 @@ enum ContactCodeRefusal {
 class ContactCodeRefused extends FormatException {
   final ContactCodeRefusal kind;
 
-  /// The contact the code was for, as they are named here.
+  /// The contact the code was for, as they are named here; empty for
+  /// [ContactCodeRefusal.ownCode].
   final String name;
 
   const ContactCodeRefused(this.kind, this.name, String message)

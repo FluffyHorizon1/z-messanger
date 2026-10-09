@@ -553,6 +553,14 @@ only ever meant "the relay has it", never "it has not arrived".
 
 * **Screen lock** — Z asks for your fingerprint, face or device PIN before it
   opens. Messages still arrive while it is locked.
+* **Screen security** (Android) — once Z has opened your vault, the phone
+  takes no screenshot or screen recording of it, and the recent‑apps screen
+  shows a blank card for Z instead of the chat you were in. It is on until
+  you turn it off (Settings › Security), which you can do when you need a
+  screenshot of your own chat. Off, the recent‑apps screen shows that chat
+  even with the screen lock on: the phone takes the picture as Z leaves the
+  screen, before the lock is drawn. And a screenshot is a copy of the chat
+  outside Z, in your gallery, which many phones then back up to the cloud.
 * **App passphrase** — a separate secret that encrypts the vault key. Without
   it nothing sealed in the database can be read, including by someone who
   copies the file off your disk. The file's structure is not sealed: which

@@ -1,6 +1,7 @@
 package com.zmessenger.www
 
 import android.content.Intent
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -9,6 +10,10 @@ import io.flutter.plugin.common.MethodChannel
 // the app lock (7.8) are built on androidx.biometric, which needs a
 // FragmentActivity to host its dialog.
 class MainActivity : FlutterFragmentActivity() {
+    companion object {
+        const val SCREEN_CHANNEL = "z/screen"
+    }
+
     private val deeplink = Deeplink()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -31,6 +36,28 @@ class MainActivity : FlutterFragmentActivity() {
         deeplink.attach(
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, Deeplink.CHANNEL)
         )
+
+        // 42.1: screen security. FLAG_SECURE keeps the window out of
+        // screenshots, screen recordings and screen sharing, and makes its
+        // card in the recent-apps screen blank — which is otherwise a
+        // picture of the open chat, taken as the app leaves the front and
+        // so before the app lock is drawn. Dart decides when
+        // (core/screen_security.dart: while the vault is open, unless the
+        // setting is off); this only applies it. Channel `z/screen`:
+        //   secure(Boolean) -> null
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SCREEN_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                if (call.method != "secure") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                if (call.arguments == true) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                }
+                result.success(null)
+            }
     }
 
     override fun onNewIntent(intent: Intent) {

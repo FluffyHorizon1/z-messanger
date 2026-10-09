@@ -130,9 +130,10 @@ void main() {
 
   tearDownAll(() async {
     // Disposed, which stops every timer of theirs, and their vaults left
-    // open, as the other relay-driven files leave them: closing one under a
-    // periodic sweep that has just started fails that sweep against a closed
-    // database, and the error lands on whichever test made the service.
+    // open, as the other relay-driven files leave them: until phase 42,
+    // closing one under a periodic sweep that had just started failed that
+    // sweep against a closed database, and the error landed on whichever
+    // test made the service.
     for (final p in live) {
       p.invites.pause();
       await p.svc.transport.stop();
@@ -600,8 +601,8 @@ void main() {
         .encode();
     await expectLater(ivy.svc.addContactFromCode(reset),
         throwsA(predicate((e) =>
-            e is FormatException &&
-            e is! ContactCodeRefused &&
+            e is ContactCodeRefused &&
+            e.kind == ContactCodeRefusal.commitChanged &&
             e.message.contains('not the one you hold'))));
     expect(ivy.svc.contacts[jonRid]!.pqCommit, heldCommit);
     expect(ivy.svc.contacts[jonRid]!.pqMismatch, isFalse);
@@ -668,8 +669,8 @@ void main() {
     // Her current code is what it always was: nothing new.
     await expectLater(eve.svc.addContactFromCode(current),
         throwsA(predicate((e) =>
-            e is FormatException &&
-            e is! ContactCodeRefused &&
+            e is ContactCodeRefused &&
+            e.kind == ContactCodeRefusal.alreadyContact &&
             e.message.contains('already in your contacts'))));
 
     // What is known survives the app restarting.

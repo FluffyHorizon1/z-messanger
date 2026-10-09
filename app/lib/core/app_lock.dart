@@ -295,6 +295,43 @@ class LockSettings {
       );
 }
 
+/// The words the OS prompt shows as its reason — opening Z, turning the
+/// screen lock on, turning biometric unlock on — in the reader's language.
+///
+/// 42.3: they were English literals here, so every locale's prompt said
+/// "Unlock Z". The bootstrapper hands [AppLock] the app's own strings
+/// (`lockPromptsFor`, `lib/l10n/lock_text.dart`), chosen for the device's
+/// language because the first prompt can come before any screen is drawn;
+/// until it does — and in tests — they are English.
+///
+/// The rest of the prompt is not ours to word from here. Its title and its
+/// cancel button are `local_auth`'s defaults (English; setting them needs the
+/// platform package's own message class, a dependency this app does not
+/// declare), and the hardware-bound prompt (7.8b) is built in `BioKey.kt`,
+/// whose title is a literal there.
+class LockPrompts {
+  /// Opening Z, or coming back to it.
+  final String unlock;
+
+  /// Turning the screen lock on.
+  final String enableScreenLock;
+
+  /// Turning biometric unlock on.
+  final String enableBiometric;
+
+  const LockPrompts({
+    required this.unlock,
+    required this.enableScreenLock,
+    required this.enableBiometric,
+  });
+
+  static const english = LockPrompts(
+    unlock: 'Unlock Z',
+    enableScreenLock: 'Confirm to enable screen lock',
+    enableBiometric: 'Confirm to enable biometric unlock',
+  );
+}
+
 /// Whether returning to the foreground at [nowMs], having gone to the
 /// background at [backgroundedAtMs], must lock the app.
 bool lockDue(
@@ -317,6 +354,9 @@ class AppLock extends ChangeNotifier {
 
   LockSettings _settings = const LockSettings();
   LockSettings get settings => _settings;
+
+  /// What the OS prompt says it is for ([LockPrompts]).
+  LockPrompts prompts = LockPrompts.english;
 
   bool _locked = false;
   bool _authInFlight = false;
@@ -377,7 +417,7 @@ class AppLock extends ChangeNotifier {
   /// setting is saved only for [GateResult.ok].
   Future<GateResult> enableScreenLock() async {
     if (!await gate.isAvailable) return GateResult.unavailable;
-    final r = await gate.authenticate('Confirm to enable screen lock');
+    final r = await gate.authenticate(prompts.enableScreenLock);
     if (r == GateResult.ok) await save(_settings.copyWith(screenLock: true));
     return r;
   }
@@ -452,14 +492,14 @@ class AppLock extends ChangeNotifier {
   /// can pass — so the app opens and the feature switches itself off, to be
   /// re-enabled once a device lock exists again.
   Future<GateResult> requestUnlock(
-      {String reason = 'Unlock Z', bool passphraseFallback = false}) async {
+      {String? reason, bool passphraseFallback = false}) async {
     if (!_locked) return GateResult.ok;
     if (_authInFlight) return GateResult.cancelled;
     _authInFlight = true;
     notifyListeners();
     GateResult r;
     try {
-      r = await gate.authenticate(reason);
+      r = await gate.authenticate(reason ?? prompts.unlock);
     } finally {
       _authInFlight = false;
     }
@@ -529,7 +569,7 @@ class AppLock extends ChangeNotifier {
       }
     }
     if (!useBound) {
-      final r = await gate.authenticate('Confirm to enable biometric unlock');
+      final r = await gate.authenticate(prompts.enableBiometric);
       if (r != GateResult.ok) return false;
       await _storePassKey(passKey, useBound: false);
     }
@@ -601,7 +641,7 @@ class AppLock extends ChangeNotifier {
           invalidated = e.code == 'invalidated';
         }
       } else {
-        _lastResult = await gate.authenticate('Unlock Z');
+        _lastResult = await gate.authenticate(prompts.unlock);
         if (_lastResult == GateResult.ok) passKey = payload as Uint8List;
       }
     } finally {

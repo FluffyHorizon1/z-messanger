@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 
 import 'l10n/app_localizations.dart';
+import 'l10n/lock_text.dart';
 import 'package:flutter/services.dart'
     show SystemChrome, SystemUiMode, SystemUiOverlayStyle;
 import 'package:provider/provider.dart';
@@ -19,9 +20,12 @@ import 'core/chat_service.dart';
 import 'core/connect_invites.dart';
 import 'core/deep_links.dart';
 import 'core/desktop_audio.dart';
+import 'core/picked_file.dart';
 import 'core/prefs.dart';
 import 'core/push_service.dart';
+import 'core/release_log.dart';
 import 'core/relay_url.dart';
+import 'core/screen_security.dart';
 import 'core/transport.dart';
 import 'core/vault.dart';
 import 'ui/home_screen.dart';
@@ -41,6 +45,9 @@ void main() => startApp();
 @visibleForTesting
 void startApp({String? operatingSystem, MediaKitLoader? loadAudio}) {
   WidgetsFlutterBinding.ensureInitialized();
+  // 42.5: a release build writes nothing of its own to the system log — an
+  // error's text is where routing ids and message ids would be.
+  quietReleaseLog();
   // 24.1: register the media_kit audio backend on Linux/Windows (a no-op on
   // every other platform), so voice notes play on desktop instead of falling
   // back to the Save action. Bytes still reach the player over just_audio's
@@ -67,6 +74,10 @@ void startApp({String? operatingSystem, MediaKitLoader? loadAudio}) {
     // this is the one-off for what is already there.
     FilePicker.platform.clearTemporaryFiles().catchError((_) => null);
   }
+  // 42.2: and the camera/gallery picker's, which nothing swept: a photo
+  // taken while Android killed the app in the background, a capture
+  // cancelled. Android only — it decides that itself (core/picked_file.dart).
+  unawaited(sweepPickersAtStart());
   runApp(const ZApp());
 }
 
@@ -170,6 +181,8 @@ class _BootstrapperState extends State<Bootstrapper>
   PushService? _push;
   AppLock? _appLock;
   AppPrefs? _prefs;
+  // 42.1: FLAG_SECURE while the vault is open (core/screen_security.dart).
+  ScreenSecurity? _screen;
   bool _needsOnboarding = false;
   bool _locked = false; // vault exists but needs a passphrase
   bool _biometricOffered = false; // biometric unlock is on: offer the prompt
@@ -200,11 +213,19 @@ class _BootstrapperState extends State<Bootstrapper>
     WidgetsBinding.instance.removeObserver(this);
     _appLock?.removeListener(_onLockChanged);
     _prefs?.removeListener(_onLockChanged);
+    _screen?.dispose();
     super.dispose();
   }
 
   void _onLockChanged() {
     if (mounted) setState(() {});
+  }
+
+  @override
+  void didChangeLocales(List<Locale>? locales) {
+    // The device's language changed under a running app: the screens follow
+    // it by themselves, and the OS prompt's words follow it from here.
+    _appLock?.prompts = lockPromptsFor(deviceLocalizations(locales));
   }
 
   @override
@@ -247,8 +268,12 @@ class _BootstrapperState extends State<Bootstrapper>
       await prefs.load();
       prefs.addListener(_onLockChanged);
       _prefs = prefs;
+      _screen = ScreenSecurity(prefs);
 
       final lock = AppLock(root: root);
+      // 42.3: the OS prompt's words in the device's language — the first
+      // prompt can come before anything is drawn (biometric unlock at launch).
+      lock.prompts = lockPromptsFor(deviceLocalizations());
       await lock.load();
       lock.addListener(_onLockChanged);
       _appLock = lock;
@@ -321,6 +346,9 @@ class _BootstrapperState extends State<Bootstrapper>
 
   Future<void> _openAndStart(String? passphrase, {Uint8List? passKey}) async {
     final vault = await Vault.open(passphrase: passphrase, passKey: passKey);
+    // Before anything from the vault can be drawn: from here the window is
+    // kept from screenshots and the recent-apps card (42.1).
+    await _screen?.vaultOpened();
     // Typing the passphrase (or passing the biometric prompt) satisfies the
     // screen lock too — no second prompt at launch.
     if (passphrase != null || passKey != null) _appLock?.markAuthenticated();

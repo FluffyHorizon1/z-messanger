@@ -42,6 +42,14 @@ per‑platform camera config.
 then unlinks it, best effort; `_attachFile` does the same for the file path via
 `FilePicker.clearTemporaryFiles()`. Nothing the picker copied outlives the read.
 
+*2026‑10‑09 (phase 42):* but a pick can end without a read. Android may kill
+the app while the camera is in front of it, and a capture the person cancels
+leaves the file the picker made for it; those copies stayed for the life of
+the install. What no read reached is now swept when the app next starts and by
+"Wipe everything" (`core/picked_file.dart`, `device_hardening_test.dart`
+6–8). The delete at read time is still the rule; the sweep is for what it
+cannot reach, not the "swept later" rejected below.
+
 **Picked media rides the same pipeline as any attachment.** `_attachFromPicker`
 and `_attachFile` both end at `_sendPicked`, which calls the existing
 `sendFile` / `sendGroupFile`. The `maxAttachmentBytes` cap, the sealing, and the

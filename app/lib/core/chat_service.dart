@@ -15,6 +15,7 @@ import 'enrollment.dart' show enrollmentKvFamilies, isRootBundle, rootBundleKey;
 import 'handles.dart';
 import 'key_transparency.dart';
 import 'models.dart';
+import 'picked_file.dart' show pickerCacheDir, sweepPickerCopies;
 import 'receipts.dart';
 import 'system_messages.dart';
 import 'relay_url.dart';
@@ -164,6 +165,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   String? openChatRid;
 
   Timer? _sweeper;
+
+  /// The disappearing-message sweep while one runs — the timer's or a
+  /// test's ([debugSweep]) — so a tick never starts a second beside it and
+  /// [wipeEverything] can wait for it before the vault goes.
+  Future<void>? _sweeping;
   bool _flushing = false;
 
   /// A mailbox the relay reported full (`queue_full`), or a relay whose
@@ -426,6 +432,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // test that is not about the delay passes a shorter one, from the start,
     // so that receipts a previous run left are timed by it too.
     ReceiptTiming receiptTiming = ReceiptTiming.standard,
+    // How often the disappearing-message sweep runs. Production never passes
+    // it; a test of what a tick does passes a short one rather than wait.
+    Duration sweepEvery = const Duration(seconds: 20),
   }) async {
     final svc = ChatService._(
       vault: vault,
@@ -538,8 +547,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     transport.onDelivered = (r) => unawaited(svc._onDelivered(r));
     transport.onConnected = () => unawaited(svc._onConnected());
 
-    svc._sweeper =
-        Timer.periodic(const Duration(seconds: 20), (_) => svc._sweep());
+    svc._sweeper = Timer.periodic(sweepEvery, (_) => svc._sweepTick());
     transport.start();
     // The transparency log: a first check now, then on its own clock. A
     // no-op until a log is configured.
@@ -584,6 +592,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
 
   @override
   void dispose() {
+    _stopClocks();
+    super.dispose();
+  }
+
+  /// Everything this service runs on its own clock, stopped, so that nothing
+  /// it starts from here on touches the vault: the disappearing-message
+  /// sweep, the outbox retry, the device-list, receipt, history and
+  /// post-quantum timers, the transparency log's and the handle's clocks.
+  /// [dispose] does it; so does [wipeEverything], which must not have a
+  /// sweep or a retry start against a vault it is deleting. Safe to call
+  /// twice.
+  void _stopClocks() {
     _disposed = true;
     kt.dispose();
     _handles?.dispose();
@@ -595,6 +615,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     }
     _receiptTimers.clear();
     _historyTimer?.cancel();
+    _pqListTimer?.cancel();
     for (final t in _pqTimers.values) {
       t.cancel();
     }
@@ -612,7 +633,6 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // they are held in the vault (`rcpt_<rid>`), so the next start sends
     // them, at a moment of its own (ADR 0028).
     _receipts.clear();
-    super.dispose();
   }
 
   @override
@@ -1038,14 +1058,24 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // The CONNECT ceremony passes false: both sides add each other as the
     // ceremony completes, so there is no one-sided limbo to show and no request
     // to send — the redundant creq would only fold on an existing contact.
-    final scanned = await scanContactCode(code);
+    final ScannedIdentity scanned;
+    try {
+      scanned = await scanContactCode(code);
+    } on FormatException catch (e) {
+      // 42.3: the protocol library says why in English — "signature invalid
+      // (possible tampering)" among its reasons — and the add screen used to
+      // show that sentence in every language. The kind is what it shows now;
+      // the reason stays the message, for logs.
+      throw ContactCodeRefused(ContactCodeRefusal.invalidCode, '', e.message);
+    }
     final bundle = scanned.classical;
     final rid = await bundle.routingId();
     if (_myAccountRids.contains(rid)) {
       // Mine, whichever of my devices the code names — a linked device
       // scanning the account's own code would otherwise add the account to
       // its own contact list.
-      throw const FormatException('that is your own contact code');
+      throw const ContactCodeRefused(
+          ContactCodeRefusal.ownCode, '', 'that is your own contact code');
     }
     if (contacts.containsKey(rid)) {
       // ADR 0021: scanning a contact's CURRENT code again is the other way to
@@ -1061,8 +1091,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // its own ADR (`connect_invites.dart`); it is not something this one
       // should change by widening a method the ceremony happens to call.
       if (!upgradeExisting) {
-        throw FormatException(
-            'already in your contacts as "${contacts[rid]!.name}"');
+        throw _alreadyContact(contacts[rid]!.name);
       }
       return _upgradeContactFromCode(contacts[rid]!, scanned);
     }
@@ -1138,8 +1167,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if (!claimed) {
       // It landed from another of my devices while this scan was in flight.
       // The user gets the same answer either way, and it is true.
-      throw FormatException(
-          'already in your contacts as "${contacts[rid]!.name}"');
+      throw _alreadyContact(contacts[rid]!.name);
     }
     // ADR 0027: their code signs its commitment, so from now on one that
     // does not is told apart from it. An unsigned commitment on a NEW
@@ -1155,6 +1183,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if (requested) await _sendContactRequest(contact);
     return contact;
   }
+
+  /// The refusal of a code for someone already held as [name] (42.3: a
+  /// kind, for the screen to word; the English is for logs).
+  static ContactCodeRefused _alreadyContact(String name) => ContactCodeRefused(
+      ContactCodeRefusal.alreadyContact,
+      name,
+      'already in your contacts as "$name"');
 
   /// ADR 0021: a contact's code scanned again. If it carries a post-quantum
   /// commitment the record lacks, the record takes it — and a key already
@@ -1180,7 +1215,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// for them that does not is refused as one somebody may have stripped.
   Future<Contact> _upgradeContactFromCode(
       Contact c, ScannedIdentity scanned) async {
-    final already = FormatException('already in your contacts as "${c.name}"');
+    final already = _alreadyContact(c.name);
     final signed = scanned.commitSigned;
     if (c.pqcSigned && !signed) {
       // The routing id matched, so this is their device's own key, with its
@@ -1200,7 +1235,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         constantTimeEquals(v3.xPub, c.bundle.xPub) &&
         constantTimeEquals(scanned.accountEdPub, c.accountEd);
     if (!same) {
-      throw FormatException(
+      throw ContactCodeRefused(
+          ContactCodeRefusal.otherIdentity,
+          c.name,
           'this code is for a different identity than the one you hold for '
           '"${c.name}"');
     }
@@ -1211,7 +1248,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         if (signed) await _markPqcSigned(c);
         throw already;
       }
-      throw FormatException(
+      throw ContactCodeRefused(
+          ContactCodeRefusal.commitChanged,
+          c.name,
           'the post-quantum commitment in this code is not the one you hold '
           'for "${c.name}". If they reset their identity, delete the contact '
           'and add them again; otherwise do not trust this code.');
@@ -1228,7 +1267,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // code is the thing that is wrong.
       if (!await commitFor.acceptsPqKey(
           HybridPublicKey(edPub: c.accountEd, mlPub: established))) {
-        throw FormatException(
+        throw ContactCodeRefused(
+            ContactCodeRefusal.commitMissesConfirmedKey,
+            c.name,
             'the post-quantum commitment in this code does not match the key '
             'you confirmed for "${c.name}". Do not trust this code.');
       }
@@ -1324,7 +1365,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // "their commitment was taken from this code" confirmation at the one
       // moment the app holds hard evidence of a substituted key — the state
       // is the warning, and the user has to see it.
-      throw FormatException(
+      throw ContactCodeRefused(
+          ContactCodeRefusal.keyMismatch,
+          c.name,
           'the post-quantum key held for "${c.name}" does not match the '
           'commitment in this code. It has been refused and the contact is '
           'flagged. Do not rely on this chat until you have spoken to them '
@@ -6275,7 +6318,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// The disappearing-message sweep, on demand: tests assert what it removes
   /// rather than wait twenty seconds for the timer that normally runs it.
   @visibleForTesting
-  Future<void> debugSweep() => _sweep();
+  Future<void> debugSweep() => _sweepSerial();
+
+  /// Whether the sweep's timer is still running — it stops itself once the
+  /// service is disposed or its vault closed (42.4).
+  @visibleForTesting
+  bool get debugSweeperActive => _sweeper?.isActive ?? false;
 
   /// The live conversation object for [rid], or null. Test seam for the
   /// receive-side benchmark, which times the ratchet step on its own.
@@ -6794,7 +6842,63 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   // Disappearing messages sweeper
   // ------------------------------------------------------------------
 
+  /// One tick of the sweep's timer.
+  ///
+  /// 42.4: the timer runs for the life of the service, and the service does
+  /// not own its vault — whoever made it closes it, and nothing made them
+  /// call [dispose] first. A tick that found the vault closed used to query
+  /// it anyway, and the error had nowhere to go: on a device an unhandled
+  /// exception in the system log, in a test a failure pinned on whichever
+  /// test happened to be running. So a tick does nothing once the service is
+  /// disposed or its vault closed, and stops the timer; and it never starts
+  /// a sweep beside one still running.
+  void _sweepTick() {
+    if (_disposed || !vault.db.isOpen) {
+      _sweeper?.cancel();
+      return;
+    }
+    if (_sweeping != null) return;
+    unawaited(_sweepSerial());
+  }
+
+  /// One sweep, after any already running; [_sweeping] while it runs.
+  Future<void> _sweepSerial() {
+    final before = _sweeping;
+    late final Future<void> run;
+    run = (before == null ? _sweep() : _sweepAfter(before)).whenComplete(() {
+      if (identical(_sweeping, run)) _sweeping = null;
+    });
+    _sweeping = run;
+    return run;
+  }
+
+  Future<void> _sweepAfter(Future<void> before) async {
+    try {
+      await before;
+    } catch (_) {
+      // That sweep's failure is its own caller's to see.
+    }
+    await _sweep();
+  }
+
+  /// The sweep itself, on a vault that may close under it.
+  ///
+  /// The owner can close the vault between any two of the sweep's queries —
+  /// it is closed after [dispose], which cannot wait for anything — and then
+  /// the next query fails with SQLite's "database closed". That is not a
+  /// fault to report: there is nothing left to sweep, and no later tick will
+  /// find anything either.
   Future<void> _sweep() async {
+    if (_disposed || !vault.db.isOpen) return;
+    try {
+      await _sweepOnce();
+    } on DatabaseException catch (e) {
+      if (!e.isDatabaseClosedError()) rethrow;
+      _sweeper?.cancel();
+    }
+  }
+
+  Future<void> _sweepOnce() async {
     await _sweepLinks(); // ADR 0020: a link's go-ahead that never came
     final now = _now();
     final doomed = await vault.db.query('messages',
@@ -13975,10 +14079,37 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   /// Full local wipe: identity, contacts, messages, keys. Irreversible.
+  ///
+  /// 42.4: everything the service runs on its own clock stops first — the
+  /// sweep, the retries, the log's and the handle's clocks — and a sweep
+  /// already running is waited for, so nothing it started reads or writes
+  /// the vault while the vault is being deleted.
+  ///
+  /// 42.2: the pickers' copies go too. They are not in the vault's
+  /// directory but in the app's cache, where nothing here used to look, so a
+  /// copy a pick had left there survived "Wipe everything". One that cannot
+  /// be deleted fails the wipe, as a file left in the vault's directory
+  /// does ([Vault.wipe]): the screen ends the process on the strength of
+  /// this returning.
   Future<void> wipeEverything() async {
-    _handles?.dispose(); // no publish or drain may start under the wipe
+    _stopClocks(); // no sweep, retry, publish or drain may start under it
     await transport.stop();
+    final sweeping = _sweeping;
+    if (sweeping != null) {
+      try {
+        await sweeping;
+      } catch (_) {
+        // Its failure does not matter now: everything it touched goes next.
+      }
+    }
+    final cache = await pickerCacheDir();
+    final left =
+        cache == null ? const <String>[] : await sweepPickerCopies(cache);
     await vault.wipe();
+    if (left.isNotEmpty) {
+      throw StateError('wipe left ${left.length} picker copy(ies) in the '
+          'app cache: the device is not clean');
+    }
   }
 }
 

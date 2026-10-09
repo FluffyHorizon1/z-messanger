@@ -435,18 +435,26 @@ class _ChatScreenState extends State<ChatScreen> {
   /// file into the app cache and returns that, and a copy left there outlives
   /// the sweeper, the disappearing timer and "reset identity" alike.
   Future<void> _attachFile() async {
-    final picked = await FilePicker.platform.pickFiles(withData: true);
-    final f = picked?.files.single;
-    if (f == null) {
+    final Uint8List? bytes;
+    final PlatformFile? f;
+    try {
+      // Moot for a pick of any type, which the picker never compresses —
+      // but an image pick with compression on writes a copy into the shared
+      // Pictures folder on Android, so no pick in the app leaves it on (42.2).
+      final picked = await FilePicker.platform
+          .pickFiles(withData: true, allowCompression: false);
+      f = picked?.files.single;
+      var read = f?.bytes;
+      if (read == null && f?.path != null) {
+        read = await File(f!.path!).readAsBytes();
+      }
+      bytes = read;
+    } finally {
+      // Whether or not the read worked: a copy that could not be read is
+      // still a copy (42.2).
       await _clearPickerCache();
-      return;
     }
-    Uint8List? bytes = f.bytes;
-    if (bytes == null && f.path != null) {
-      bytes = await File(f.path!).readAsBytes();
-    }
-    await _clearPickerCache();
-    if (bytes == null) return;
+    if (f == null || bytes == null) return;
     await _sendPicked(f.name, bytes, _guessMime(f.name));
   }
 

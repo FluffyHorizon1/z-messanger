@@ -179,7 +179,11 @@ parameters (`core/system_messages.dart`), rendered through the ARB when
 shown, so they read in the user's language too — and, since 2026‑09‑13, the
 five device‑list banners as well, which had been built as English sentences by
 the service and handed to two migrated screens, where the check could not see
-them.
+them. Since phase 42 so do the service's refusals of a contact's code — among
+them the warnings that a code names a different identity or post‑quantum key,
+or does not verify at all — which reached the add screen and the CONNECT tab
+as English sentences the same way, and the reason the system's unlock prompt
+gives, which was an English literal in the app‑lock code.
 
 **The app ships in two languages: English and Spanish** (`app_es.arb`,
 572 strings, every claim carried across — `locale_es_test.dart` checks the
@@ -195,6 +199,13 @@ that in mind, but a review by someone who lives in the language is the
 step that remains, the way a screen reader run by a person remains for G8.
 It is a review, not a blocker: the criterion is that the app is localised,
 and it is.
+
+Still English, and named so that nobody meets them by surprise: the title and
+the cancel button of the system's fingerprint prompt — `local_auth`'s
+defaults, which this app cannot word without a dependency it does not declare,
+and the hardware‑bound prompt's title, written in `BioKey.kt`; the two lines of
+the push notification; and the one‑line diagnosis inside the transparency
+log's fault warning, English on purpose, for reports.
 
 ---
 

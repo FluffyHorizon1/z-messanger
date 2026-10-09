@@ -470,6 +470,48 @@ abstract class AppLocalizations {
   /// **'The post-quantum commitment in this code does not match the key {name}\'s app sent, and nothing in the code signs it, so it may have been altered. Nothing was changed. Compare the safety number with {name} instead.'**
   String addRefusedUnsignedCommit(String name);
 
+  /// 42.3: the pasted or scanned code is this account's own — any of its devices'. Nothing is added.
+  ///
+  /// In en, this message translates to:
+  /// **'That is your own contact code.'**
+  String get addRefusedOwnCode;
+
+  /// 42.3: a code for someone already in the contact list that brings nothing new, or someone already held answering a connect invite (the ceremony never changes a contact already held). {name} is the contact as named on this device.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} is already in your contacts.'**
+  String addRefusedAlreadyContact(String name);
+
+  /// 42.3 security warning: the code names the device of {name}, a contact already held, but a different identity key. A device does not change identity, so the code is refused and the contact left as it was.
+  ///
+  /// In en, this message translates to:
+  /// **'This code is for a different identity than the one you hold for {name}. Nothing was changed.'**
+  String addRefusedOtherIdentity(String name);
+
+  /// 42.3 security warning: the code carries a SIGNED post-quantum commitment other than the one held for {name}. Either they reset their identity (the honest path is deleting and re-adding them) or the key was substituted. 'commitment' is the protocol's term — the code holds a hash of the key.
+  ///
+  /// In en, this message translates to:
+  /// **'The post-quantum commitment in this code is not the one you hold for {name}. If they reset their identity, delete the contact and add them again; otherwise do not trust this code.'**
+  String addRefusedCommitChanged(String name);
+
+  /// 42.3 security warning: the key behind {name}'s post-quantum safety number was confirmed by comparing it, and the commitment in this code does not commit to it. The code is what is wrong; nothing was changed.
+  ///
+  /// In en, this message translates to:
+  /// **'The post-quantum commitment in this code does not match the key you confirmed for {name}. Do not trust this code.'**
+  String addRefusedCommitMissesKey(String name);
+
+  /// 42.3 security warning, the strongest of these: {name}'s app sent a post-quantum key, and the commitment {name} signed in this code does not match it — evidence of a substituted key. The key is refused, the contact flagged and a warning put in the chat; this sentence says so at the moment of the scan.
+  ///
+  /// In en, this message translates to:
+  /// **'The post-quantum key held for {name} does not match the commitment in this code. It has been refused and the contact is flagged. Do not rely on this chat until you have spoken to {name} on another channel.'**
+  String addRefusedKeyMismatch(String name);
+
+  /// 42.3: the code failed the protocol's checks — not a contact code, unreadable, or a signature, certificate or commitment signature that does not verify (possible tampering). One sentence for all of them: what the person should do is the same.
+  ///
+  /// In en, this message translates to:
+  /// **'This code did not verify: it is not a Z contact code, or it was damaged or changed after its owner made it. Nothing was added — ask them for their code again.'**
+  String get addRefusedInvalidCode;
+
   /// Instruction on the camera scanning screen.
   ///
   /// In en, this message translates to:
@@ -2257,6 +2299,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Immediately'**
   String get lockImmediately;
+
+  /// 42.1, Android only: toggle for keeping Z's window from capture while the vault is open (FLAG_SECURE) — no screenshots or screen recordings, and a blank card in the recent-apps screen. Not the screen lock above it, which asks for a fingerprint or PIN.
+  ///
+  /// In en, this message translates to:
+  /// **'Screen security'**
+  String get stScreenSecurity;
+
+  /// Under the screen-security toggle when it is on, which it is until the person turns it off.
+  ///
+  /// In en, this message translates to:
+  /// **'Screenshots and screen recordings of Z are blocked, and the recent-apps screen shows a blank card instead of your chats.'**
+  String get stScreenSecurityOnHelp;
+
+  /// Under the toggle when it is off: what turning it off costs. The last clause matters — the system takes the recent-apps picture as Z leaves the screen, before the screen lock is drawn, so the lock does not hide it.
+  ///
+  /// In en, this message translates to:
+  /// **'Screenshots are allowed. A screenshot is a copy of the chat outside Z, in your gallery, and the recent-apps screen shows the chat you were in — even with the screen lock on.'**
+  String get stScreenSecurityOffHelp;
+
+  /// 42.3: the reason line of the system's fingerprint / face / PIN prompt when Z opens or comes back from the background. Short: the system shows it under a title of its own.
+  ///
+  /// In en, this message translates to:
+  /// **'Unlock Z'**
+  String get lockPromptUnlock;
+
+  /// The reason line of the system prompt shown once when the screen lock is turned on, so that nobody turns on a lock they cannot open.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirm to enable screen lock'**
+  String get lockPromptEnableScreenLock;
+
+  /// The reason line of the system prompt shown when unlocking with biometrics is turned on for a passphrase-protected vault.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirm to enable biometric unlock'**
+  String get lockPromptEnableBiometric;
 
   /// Row label when a passphrase is set.
   ///

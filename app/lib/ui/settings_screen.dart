@@ -17,6 +17,7 @@ import '../core/models.dart';
 import '../core/prefs.dart';
 import '../core/push_service.dart';
 import '../core/relay_url.dart';
+import '../core/screen_security.dart' show screenSecurityAvailable;
 import 'relay_warning.dart';
 import '../core/transport.dart';
 import '../core/vault.dart';
@@ -366,6 +367,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onTap: () => _pickLockAfter(context, lock),
               ),
           ],
+          // 42.1: FLAG_SECURE while the vault is open, on until it is turned
+          // off; Android only, the one platform here with the flag
+          // (core/screen_security.dart). The bootstrapper follows the pref.
+          if (screenSecurityAvailable)
+            SwitchListTile(
+              key: const ValueKey('screen-security'),
+              secondary: Icon(
+                prefs.screenSecurity
+                    ? Icons.no_photography_outlined
+                    : Icons.screenshot_outlined,
+                color: prefs.screenSecurity
+                    ? context.z.ok
+                    : context.z.textSecondary,
+              ),
+              title: Text(l.stScreenSecurity),
+              subtitle: Text(
+                prefs.screenSecurity
+                    ? l.stScreenSecurityOnHelp
+                    : l.stScreenSecurityOffHelp,
+                style: const TextStyle(fontSize: 12),
+              ),
+              value: prefs.screenSecurity,
+              activeThumbColor: context.z.accent,
+              onChanged: (v) => prefs.setScreenSecurity(v),
+            ),
           ListTile(
             leading: Icon(
               svc.vault.hasPassphrase

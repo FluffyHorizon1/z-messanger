@@ -6,8 +6,10 @@ import 'package:z_protocol/z_protocol.dart';
 
 import '../core/chat_service.dart';
 import '../core/connect_invites.dart';
+import '../core/models.dart' show ContactCodeRefused;
 import '../core/share_text.dart';
 import '../l10n/app_localizations.dart';
+import '../l10n/refusal_text.dart';
 import '../l10n/remaining_text.dart';
 import 'theme.dart';
 
@@ -56,6 +58,12 @@ class _ConnectTabState extends State<ConnectTab> {
     });
     try {
       await action();
+    } on ContactCodeRefused catch (e) {
+      // 42.3: the service's refusal is a kind; the words are the reader's.
+      if (mounted) {
+        setState(() =>
+            _error = contactCodeRefusalText(AppLocalizations.of(context), e));
+      }
     } on FormatException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (e) {
@@ -373,6 +381,11 @@ class _ConnectConfirmPanelState extends State<ConnectConfirmPanel> {
     String? said;
     try {
       said = await action();
+    } on ContactCodeRefused catch (e) {
+      // 42.3: someone already in the contacts, or this account's own code —
+      // a kind from the service, in the reader's words.
+      if (!mounted) return;
+      said = contactCodeRefusalText(AppLocalizations.of(context), e);
     } on FormatException catch (e) {
       // The message, not the type name: these reach the user verbatim.
       said = e.message;

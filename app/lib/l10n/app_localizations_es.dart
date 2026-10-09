@@ -230,6 +230,38 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String get addRefusedOwnCode => 'Ese es tu propio código de contacto.';
+
+  @override
+  String addRefusedAlreadyContact(String name) {
+    return '$name ya está en tus contactos.';
+  }
+
+  @override
+  String addRefusedOtherIdentity(String name) {
+    return 'Este código es de una identidad distinta de la que tienes para $name. No se ha cambiado nada.';
+  }
+
+  @override
+  String addRefusedCommitChanged(String name) {
+    return 'El compromiso poscuántico de este código no es el que tienes para $name. Si ha restablecido su identidad, elimina el contacto y vuelve a añadirlo; si no, no confíes en este código.';
+  }
+
+  @override
+  String addRefusedCommitMissesKey(String name) {
+    return 'El compromiso poscuántico de este código no coincide con la clave que confirmaste para $name. No confíes en este código.';
+  }
+
+  @override
+  String addRefusedKeyMismatch(String name) {
+    return 'La clave poscuántica que tienes para $name no coincide con el compromiso de este código. Se ha rechazado y el contacto queda marcado. No confíes en este chat hasta que hayas hablado con $name por otro canal.';
+  }
+
+  @override
+  String get addRefusedInvalidCode =>
+      'Este código no se ha podido verificar: no es un código de contacto de Z, o se dañó o se modificó después de que su dueño lo creara. No se ha añadido nada; pídele su código de nuevo.';
+
+  @override
   String get addScanPrompt => 'Apunta la cámara a su código Z.';
 
   @override
@@ -1381,6 +1413,28 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get lockImmediately => 'Inmediatamente';
+
+  @override
+  String get stScreenSecurity => 'Seguridad de pantalla';
+
+  @override
+  String get stScreenSecurityOnHelp =>
+      'Las capturas y grabaciones de pantalla de Z están bloqueadas, y la pantalla de apps recientes muestra una tarjeta en blanco en lugar de tus chats.';
+
+  @override
+  String get stScreenSecurityOffHelp =>
+      'Se permiten las capturas de pantalla. Una captura es una copia del chat fuera de Z, en tu galería, y la pantalla de apps recientes muestra el chat en el que estabas, incluso con el bloqueo de pantalla activado.';
+
+  @override
+  String get lockPromptUnlock => 'Desbloquear Z';
+
+  @override
+  String get lockPromptEnableScreenLock =>
+      'Confirma para activar el bloqueo de pantalla';
+
+  @override
+  String get lockPromptEnableBiometric =>
+      'Confirma para activar el desbloqueo biométrico';
 
   @override
   String get stPassphraseOn => 'Frase de contraseña de la app: activada';

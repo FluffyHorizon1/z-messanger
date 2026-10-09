@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/refusal_text.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -93,12 +94,7 @@ class _AddContactScreenState extends State<AddContactScreen>
       setState(() {
         _busy = false;
         _scanned = false;
-        _error = switch (e.kind) {
-          ContactCodeRefusal.commitStripped =>
-            l.addRefusedCommitStripped(e.name),
-          ContactCodeRefusal.unsignedCommitMismatch =>
-            l.addRefusedUnsignedCommit(e.name),
-        };
+        _error = contactCodeRefusalText(l, e);
       });
     } on FormatException catch (e) {
       setState(() {
@@ -133,8 +129,12 @@ class _AddContactScreenState extends State<AddContactScreen>
   Future<void> _importFromImage() async {
     if (_busy) return;
     final l = AppLocalizations.of(context);
-    final files = (await FilePicker.platform
-            .pickFiles(type: FileType.image, withData: false))
+    // An image pick, and with compression on (file_picker's default) the
+    // picker on Android writes a recompressed copy of the chosen image into
+    // the shared Pictures folder — outside the app, in the gallery, where
+    // nothing of the app's ever deletes it (42.2).
+    final files = (await FilePicker.platform.pickFiles(
+            type: FileType.image, withData: false, allowCompression: false))
         ?.files;
     final path = (files != null && files.isNotEmpty) ? files.first.path : null;
     if (path == null) return; // cancelled, or no path (e.g. web)
@@ -142,12 +142,18 @@ class _AddContactScreenState extends State<AddContactScreen>
       _busy = true;
       _error = null;
     });
-    final code = await readQrImage(path);
-    // The picker copied the image into the app cache — a plaintext copy of a QR
-    // that encodes a contact code. Delete it now that it is decoded, the same
-    // rule every pick site follows (client_review_p0_test 5). On desktop the
-    // picker returns the original path and this is a no-op.
-    await FilePicker.platform.clearTemporaryFiles();
+    final String? code;
+    try {
+      code = await readQrImage(path);
+    } finally {
+      // The picker copied the image into the app cache — a plaintext copy of
+      // a QR that encodes a contact code. Delete it now that it is decoded,
+      // the same rule every pick site follows (client_review_p0_test 5). On
+      // desktop the picker returns the original path and this is a no-op.
+      try {
+        await FilePicker.platform.clearTemporaryFiles();
+      } catch (_) {}
+    }
     if (!mounted) return;
     setState(() => _busy = false); // release before _import re-acquires it
     if (code == null) {

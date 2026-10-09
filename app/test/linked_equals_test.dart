@@ -180,8 +180,9 @@ void main() {
 
   // Every service a test started is stopped when it ends, so nothing one
   // test left running speaks into the next. Vaults are left open, as the
-  // other relay-driven files leave them: a periodic sweep that has just
-  // started would otherwise fail against a closed database.
+  // other relay-driven files leave them: until phase 42, a periodic sweep
+  // that had just started would otherwise have failed against a closed
+  // database.
   tearDown(() async {
     for (final x in live) {
       x.svc.dispose();

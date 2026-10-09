@@ -98,18 +98,30 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final picked = await FilePicker.platform.pickFiles(
       dialogTitle: l.onbChooseBackup,
       withData: false,
+      // Moot for a backup, which is never an image — but an image pick with
+      // compression on writes a copy into the shared Pictures folder on
+      // Android, so no pick in the app leaves it on (42.2).
+      allowCompression: false,
     );
-    final path = picked?.files.single.path;
-    if (path == null) {
+    try {
+      final path = picked?.files.single.path;
+      if (path == null) return;
+      await _restoreFrom(File(path), l);
+    } finally {
+      // 42.2: whichever way the restore ends — a file that is not a backup,
+      // a code or passphrase not given, a relay declined, a restore that
+      // failed or one that finished — the picker's copy goes. Three of those
+      // ways used to return before the delete.
       await _clearPickerCache();
-      return;
     }
-    // That path is the picker's own COPY of the file the user chose, in the
-    // app's cache directory: the restore reads it from there, so it cannot be
-    // dropped until the restore is done — see the `finally` below. An
-    // archive is encrypted, but it is also the one file that, with its
-    // secret, is the whole account, and nothing used to delete the copy.
-    final file = File(path);
+  }
+
+  /// The restore of [file], which is the picker's own COPY of the file the
+  /// user chose, in the app's cache directory: the restore reads it from
+  /// there, so it cannot be dropped until the restore is done ([_restore]
+  /// drops it after). An archive is encrypted, but it is also the one file
+  /// that, with its secret, is the whole account.
+  Future<void> _restoreFrom(File file, AppLocalizations l) async {
     final preview = await Restore.identify(file);
     if (!mounted) return;
     if (preview.kind == BackupKind.unknown) {
@@ -120,7 +132,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     // would only run Argon2id over to refuse the file anyway.
     if (preview.kind == BackupKind.newerFormat) {
       setState(() => _error = l.onbBackupTooNew);
-      await _clearPickerCache();
       return;
     }
     final secret = preview.kind == BackupKind.archive
@@ -164,8 +175,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         _busy = false;
         _error = l.onbRestoreFailed;
       });
-    } finally {
-      await _clearPickerCache();
     }
   }
 
