@@ -220,9 +220,13 @@ class _BootstrapperState extends State<Bootstrapper>
       // not worth doing from the background for a ceremony nobody is
       // looking at.
       _invites?.resume();
+      // The handle's introduction mailbox likewise (phase 38): drained a few
+      // seconds after the app comes to the front, then on a jittered timer.
+      _service?.handles.onForeground();
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
       _invites?.pause();
+      _service?.handles.onBackground();
       // Came back to an app that was already locked (the prompt had been
       // dismissed before leaving): ask again. A lock that was just applied
       // by onLifecycle prompts itself when its screen appears.

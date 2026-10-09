@@ -214,6 +214,37 @@ class Transport extends ChangeNotifier {
     return c.send(to: to, id: id, payload: payload);
   }
 
+  /// A request to an introduction mailbox (PROTOCOL §21.7, §21.8): a sealed
+  /// envelope with its proof-of-work stamp [pow], on an anonymous connection
+  /// opened for it alone and closed after — never the authenticated link,
+  /// which would put this account's routing id beside the handle's mailbox,
+  /// and not the long-lived anonymous one either: once the request is
+  /// accepted, that link carries this account's envelopes to the account the
+  /// handle introduced, and one connection sending to both the handle's
+  /// mailbox and that account would tell the relay which account holds the
+  /// handle. Throws a [RelayPowRequired] when the relay wants another stamp,
+  /// and `RelayException('not connected')` when the relay cannot be reached.
+  Future<void> sendStamped(
+      {required String to,
+      required String id,
+      required String payload,
+      required String pow}) async {
+    if (!SealedEnvelope.looksSealed(payload)) {
+      throw ArgumentError('a stamped send is a sealed envelope');
+    }
+    final RelayClient c;
+    try {
+      c = await RelayClient.connectAnonymous(serverUrl, identity);
+    } catch (_) {
+      throw RelayException('not connected');
+    }
+    try {
+      await c.send(to: to, id: id, payload: payload, pow: pow);
+    } finally {
+      await c.close();
+    }
+  }
+
   void ackReceived({required String id, required String from}) {
     try {
       _client?.ackReceived(id: id, from: from);

@@ -71,6 +71,14 @@ class ContactRequest {
   final ContactBundle? root;
   final DeviceCertificate? cert;
   final Uint8List? anchorSig;
+  /// The introduction acknowledgement (PROTOCOL §21.7), or null: on the
+  /// `creq` an owner's acceptance of a handle request sends back, the
+  /// introduction key's signature saying that this account accepted that
+  /// request. Outside [sig], whose input §8.1 fixes; it needs no cover,
+  /// being a signature itself over the account that signed this request.
+  /// Absent from every other request, and ignored by a reader that predates
+  /// handles — so a request without it encodes exactly as it always did.
+  final String? ia;
 
   ContactRequest({
     required this.bundle,
@@ -80,6 +88,7 @@ class ContactRequest {
     this.root,
     this.cert,
     this.anchorSig,
+    this.ia,
   });
 
   static const String context = 'z-contact-request-v1:';
@@ -140,6 +149,7 @@ class ContactRequest {
     int? ts,
     ContactBundle? root,
     DeviceCertificate? cert,
+    String? ia,
   }) async {
     if ((root == null) != (cert == null)) {
       throw ArgumentError('an account anchor needs both the root bundle and '
@@ -164,6 +174,7 @@ class ContactRequest {
       cert: cert,
       anchorSig:
           anchorSig == null ? null : Uint8List.fromList(anchorSig.bytes),
+      ia: ia,
     );
   }
 
@@ -171,7 +182,8 @@ class ContactRequest {
   /// envelope. Shares the versioned `{v,t}` shape file chunks use, with
   /// `t: 'creq'`, so [tryParse] and `tryParseChunk` never claim each other's
   /// payloads and neither is a ratchet message. The anchor's members come
-  /// after the ones every reader has always read.
+  /// after the ones every reader has always read, and [ia], when present,
+  /// is the last member; without them the bytes are what they always were.
   String encode() => base64Encode(utf8.encode(jsonEncode({
         'v': 1,
         't': 'creq',
@@ -182,6 +194,7 @@ class ContactRequest {
         if (root != null) 'root': root!.toJson(),
         if (cert != null) 'cert': cert!.toJson(),
         if (anchorSig != null) 'asig': b64(anchorSig!),
+        if (ia != null) 'ia': ia,
       })));
 
   /// Parse a transport payload as a request, or null if it is not one — so a
@@ -208,6 +221,10 @@ class ContactRequest {
         cert = null;
         anchorSig = null;
       }
+      // `ia` is optional and a reader only ever checks it against a request
+      // of its own: anything but a string is read as no acknowledgement,
+      // never as a malformed request (§0).
+      final ia = j['ia'];
       return ContactRequest(
         bundle:
             ContactBundle.fromJson((j['bundle'] as Map).cast<String, Object?>()),
@@ -217,6 +234,7 @@ class ContactRequest {
         root: root,
         cert: cert,
         anchorSig: anchorSig,
+        ia: ia is String ? ia : null,
       );
     } catch (_) {
       return null;

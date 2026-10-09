@@ -72,6 +72,13 @@ abstract final class SystemKind {
   static const linkDeclined = 'link_declined';
   // name? — I stopped waiting for them to join from my link
   static const linkCancelled = 'link_cancelled';
+
+  /// Phase 38 (PROTOCOL §21.7): the owner of a handle this account sent a
+  /// request to accepted it, and the acceptance carried the introduction
+  /// key's acknowledgement — so this contact is the account the handle
+  /// introduced, and nothing more: their identity is still the safety
+  /// number's to confirm. Param `h`: the handle, canonical.
+  static const handleAccepted = 'handle_accepted';
 }
 
 /// The stored form of a system message.

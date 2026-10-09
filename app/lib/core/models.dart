@@ -323,11 +323,21 @@ class PendingRequest {
   final String name;
   final ContactBundle bundle;
   final int createdMs;
+
+  /// Phase 38: the handle this request came through, canonical (`nick.digits`),
+  /// when it arrived at this account's introduction mailbox rather than its
+  /// own — what the Requests screen shows as "via @nick.digits". Null for a
+  /// request from someone holding this account's code. Set from the handle
+  /// service's record of it, which is what accepting signs the acknowledgement
+  /// from.
+  String? via;
+
   PendingRequest({
     required this.rid,
     required this.name,
     required this.bundle,
     required this.createdMs,
+    this.via,
   });
 }
 

@@ -13,7 +13,11 @@
 // to reset their identity: its own log monitor found the versions it had
 // signed before the backup and called them lists it never issued, and every
 // contact saw its devices claim a version below one they had already seen
-// (the 2026-10-03 analysis, P0-3). What does NOT travel, deliberately:
+// (the 2026-10-03 analysis, P0-3). Since phase 38, the account's handle —
+// its owner and introduction keys, the requests that came through it, the
+// ones sent to handles and still waiting — in one `handle` record marked
+// for older builds to keep ([HandleBackup]); never its recovery code, which
+// no device holds. What does NOT travel, deliberately:
 //
 //   * **session state** (`conversations`). Those rows are live double-ratchet
 //     state. Restoring them could put the same ratchet on two devices —
@@ -45,6 +49,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 import 'alarm_evidence.dart' show OwnAlarmDismissals;
+import 'handles.dart' show HandleBackup;
 import 'key_transparency.dart' show KtConfig;
 import 'kt_private_lookups.dart' show KtDecoys;
 import 'relay_url.dart';
@@ -216,6 +221,8 @@ class BackupArchive {
     'pqcs_': (v, _, __) async => v == '1',
     'vpqc_': (v, _, __) async => _isCommitment(v),
     'pqcc_': (v, _, __) async => _isCommitment(v),
+    // Phase 38: the handle this contact was made through.
+    'hvia_': (v, _, __) async => Handle.tryParse(v)?.canonical == v,
   };
 
   /// The account-level keys a `state` record may carry, for tests and docs.
@@ -467,6 +474,10 @@ class BackupArchive {
         continue; // unreadable cell: the request re-arrives if they ask again
       }
     }
+
+    // Phase 38: the handle, as one record older builds keep and write back.
+    final handle = await HandleBackup.export(vault);
+    if (handle != null) await record(handle);
 
     // Records an earlier restore could not read and kept because their
     // writer said to: back into the archive as they came, byte for byte.
@@ -864,6 +875,8 @@ class BackupArchive {
       final contactXsids = <String, Object?>{};
       final blocked = <Map<String, Object?>>[];
       final requests = <Map<String, Object?>>[];
+      // Phase 38: applied last, once the requests it describes are restored.
+      Map<String, Object?>? handle;
       final kept = <String>[];
       var skipped = 0;
 
@@ -1069,6 +1082,8 @@ class BackupArchive {
               blocked.add(r);
             case 'request':
               requests.add(r);
+            case HandleBackup.recordType when r['v'] == 1:
+              handle = r;
             default:
               // A record type this build does not know: written by a newer
               // build of this major version. Kept for the next archive when
@@ -1159,6 +1174,7 @@ class BackupArchive {
               },
               conflictAlgorithm: ConflictAlgorithm.replace);
         }
+        final restoredRequests = <String>{};
         for (final q in requests) {
           final rid = q['rid'];
           if (rid is! String || contactBundle.containsKey(rid)) continue;
@@ -1179,8 +1195,18 @@ class BackupArchive {
                   'created_ms': (q['created'] as num?)?.toInt() ?? 0,
                 },
                 conflictAlgorithm: ConflictAlgorithm.replace);
+            restoredRequests.add(rid);
           } catch (_) {
             continue;
+          }
+        }
+        // Phase 38: the handle, each part held to the shape the service
+        // reads; a claim still waiting to be published comes back held, for
+        // the person to publish — a restore publishes nothing by itself.
+        final h = handle;
+        if (h != null) {
+          for (final e in HandleBackup.restore(h, restoredRequests).entries) {
+            await kv(e.key, e.value);
           }
         }
         if (kept.isNotEmpty) await kv(keptKey, jsonEncode(kept));

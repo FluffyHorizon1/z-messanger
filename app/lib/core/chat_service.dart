@@ -12,6 +12,7 @@ import 'archive.dart' show BackupArchive;
 import 'backup_store.dart';
 import 'device_sync.dart';
 import 'enrollment.dart' show enrollmentKvFamilies, isRootBundle, rootBundleKey;
+import 'handles.dart';
 import 'key_transparency.dart';
 import 'models.dart';
 import 'system_messages.dart';
@@ -78,10 +79,13 @@ enum LinkWaitStop {
 ///      is safely inside the local encrypted vault.
 ///   3. Plaintext never touches disk: message bodies, names, metadata and
 ///      attachment bytes are sealed before insert/write.
-class ChatService extends ChangeNotifier implements KtHost {
+class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   final Vault vault;
+  @override
   final ZIdentity identity;
+  @override
   final String myRid;
+  @override
   String displayName;
   final Transport transport;
 
@@ -95,6 +99,14 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// confirmed. This service is its host: it hands over contacts and the own
   /// list, installs lists the log serves, and consults it before fanning out.
   late final KeyTransparency kt;
+
+  /// Handles (phase 38, ADR 0015 revision 2, PROTOCOL §21): this account's
+  /// handle, its introduction mailbox, and finding other people by theirs.
+  /// Inert until a handle log is configured. This service is its host: it
+  /// files the requests that come through the handle beside every other
+  /// request, and sends what the handle service stamps.
+  HandleService get handles => _handles!;
+  HandleService? _handles;
 
   /// Inner kinds a transparency conflict holds (ADR 0006): what a person
   /// says, not what the protocol says on their behalf — receipts, hellos,
@@ -391,6 +403,12 @@ class ChatService extends ChangeNotifier implements KtHost {
     KtFetcher? ktFetcher,
     KtConfig ktConfig = KtConfig.defaults,
     int Function()? ktNow,
+    // Phase 38: the handle log (`kt/` with KT_MODE=handles). The build-time
+    // defaults are empty, so handles are unavailable until a log is
+    // configured; a test passes one on loopback.
+    HandleConfig handleConfig = HandleConfig.defaults,
+    KtFetcher? handleFetcher,
+    int Function()? handleNow,
     // The ADR 0017 stage-2b signer for this service. Production never passes
     // it, so it is the protocol's constant — off; a test passes true to start
     // one account as a build with the signer on (see [debugDevlistSignV2Only]).
@@ -473,6 +491,22 @@ class ChatService extends ChangeNotifier implements KtHost {
     // the seed race left — is made again before anything offers it.
     await svc._repairOwnListPqSignature();
     svc._schedulePqListDelivery(); // §18.9, on its own clock
+    // Phase 38: the handle service, after the account's root-ness is known
+    // (only the primary device holds a handle) and the requests are loaded
+    // (it says which of them came through the handle).
+    final handles = HandleService(
+      vault: vault,
+      host: svc,
+      fetcher: handleFetcher ?? HttpKtFetcher(),
+      config: handleConfig,
+      now: handleNow,
+    );
+    await handles.load();
+    await handles.keepInboundFor(svc.requestsByRid.keys.toSet());
+    for (final e in svc.requestsByRid.entries) {
+      e.value.via = handles.inboundFor(e.key)?.handle;
+    }
+    svc._handles = handles;
 
     transport.onMessage = (m) => unawaited(svc._onInbound(m));
     transport.onDelivered = (r) => unawaited(svc._onDelivered(r));
@@ -484,6 +518,9 @@ class ChatService extends ChangeNotifier implements KtHost {
     // The transparency log: a first check now, then on its own clock. A
     // no-op until a log is configured.
     svc.kt.start();
+    // Handles: a claim waiting for its moment, and the introduction mailbox
+    // on its own clock — on the primary device, once a log is configured.
+    svc.handles.start();
     // 9.5: a scheduled backup, if the user asked for one. Off by default, in
     // which case this costs two key-value reads and stops. Unawaited and
     // failure-swallowing on purpose — a backup is never worth delaying or
@@ -523,6 +560,7 @@ class ChatService extends ChangeNotifier implements KtHost {
   void dispose() {
     _disposed = true;
     kt.dispose();
+    _handles?.dispose();
     _sweeper?.cancel();
     _outboxRetry?.cancel();
     _devlistTimer?.cancel();
@@ -1445,8 +1483,11 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   /// The person has the Requests screen in front of them: every request on
   /// it is seen, so it is among the last the cap would push out. Changes
-  /// nothing on screen, and so tells no listener.
+  /// nothing on screen, and so tells no listener. The handle service keeps
+  /// its own record of the ones that came through the handle (§21.8), which
+  /// a backup carries; it is marked too.
   Future<void> markRequestsSeen() async {
+    await _handles?.markInboundSeen();
     final unseen = [
       for (final rid in requestsByRid.keys)
         if (!_requestsSeen.contains(rid)) rid
@@ -1479,8 +1520,9 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   /// Seal a signed request to [contact] and queue it. It travels outside any
   /// ratchet (there is none yet) and is recognised by the receiver before it
-  /// would be dropped as an unknown sender.
-  Future<void> _sendContactRequest(Contact contact) async {
+  /// would be dropped as an unknown sender. [ia]: the introduction
+  /// acknowledgement an acceptance of a handle request carries (§21.7).
+  Future<void> _sendContactRequest(Contact contact, {String? ia}) async {
     // Not under the send lock (there is no session yet), so the membership
     // check is the whole fence here: a request queued for someone deleted
     // in the meantime would put their routing id back in `outbox`.
@@ -1493,7 +1535,8 @@ class ChatService extends ChangeNotifier implements KtHost {
         toRid: contact.rid,
         displayName: displayName,
         root: anchor?.root,
-        cert: anchor?.cert);
+        cert: anchor?.cert,
+        ia: ia);
     final sealed = await SealedEnvelope.seal(
         toXPub: key, fromRid: myRid, payload: req.encode());
     await vault.db.insert('outbox', {
@@ -1576,6 +1619,20 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (_myAccountRids.contains(rid) || _myAccountRids.contains(sender)) {
       return; // one of my own devices: nothing to accept
     }
+    // Phase 38 (§21.7): the acceptance of a request this device sent to a
+    // handle carries the introduction key's acknowledgement. One that
+    // verifies against a request still waiting here — that introduction key,
+    // this device, the account this creq is signed by, that request — is the
+    // answer to it. One that does not (absent, forged, made for another
+    // account) is ignored, and this creq is what it would be without it. A
+    // request another of my devices passed on is not an answer to one of
+    // this device's.
+    final ia = req.ia;
+    final handles = _handles;
+    final answered = mirroredBy != null || ia == null || handles == null
+        ? null
+        : await handles.matchAcknowledgement(
+            ia: ia, ownerAccountEdPub: req.bundle.edPub);
     final known = contacts[rid] ??
         contacts[sender] ??
         _contactOfAccount(anchor?.accountEdPub ?? req.bundle.edPub);
@@ -1589,6 +1646,11 @@ class ChatService extends ChangeNotifier implements KtHost {
       if (mirroredBy != null) return;
       await _clearRequested(known.rid);
       await _pokeHello(known);
+      if (answered != null) await _noteHandleAccepted(known.rid, answered);
+      return;
+    }
+    if (answered != null) {
+      await _addFromHandleAcceptance(rid, req, answered);
       return;
     }
     if (await _declinedSince(rid, req.ts)) return; // declined, here or there
@@ -1625,6 +1687,9 @@ class ChatService extends ChangeNotifier implements KtHost {
     } else {
       await vault.kvPut('reqto_$rid', req.toRid);
     }
+    // The newest request from them is this one, and it did not come through
+    // the handle: accepting it is today's accept, with no acknowledgement.
+    await handles?.forgetInbound(rid);
     requestsByRid[rid] =
         PendingRequest(rid: rid, name: name, bundle: bundle, createdMs: now);
     _requestMarks[rid] = req.ts;
@@ -1692,10 +1757,73 @@ class ChatService extends ChangeNotifier implements KtHost {
         Future<void>.value());
   }
 
+  /// Phase 38: the owner of a handle this device asked accepted, and said so
+  /// with the introduction key (§21.7) — add them as a contact, at the
+  /// classical floor and unverified, exactly as accepting their request
+  /// would; record the handle they came through; say what it means in the
+  /// chat; and hand them a request back, which is how a hello of theirs that
+  /// arrived before this device held them gets sent again (ADR 0011).
+  Future<void> _addFromHandleAcceptance(
+      String rid, ContactRequest req, OutgoingHandleRequest answered) async {
+    final name = (req.bundle.displayName?.trim().isNotEmpty ?? false)
+        ? req.bundle.displayName!.trim()
+        : 'Unknown';
+    final contact =
+        Contact(rid: rid, bundle: req.bundle, name: name, createdMs: _now());
+    final claimed = await _withLock<bool>(rid, () async {
+      if (contacts.containsKey(rid)) return false;
+      await vault.db.insert(
+          'contacts',
+          {
+            'rid': rid,
+            'enc_bundle': await vault.seal(jsonEncode(contact.bundle.toJson())),
+            'enc_name': await vault.seal(contact.name),
+            'ttl_seconds': 0,
+            'verified': 0,
+            'created_ms': contact.createdMs,
+            'requested': 0, // they accepted us; nobody is waiting
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      await vault.db.delete('blocked', where: 'rid = ?', whereArgs: [rid]);
+      _blocked.remove(rid); // in memory too, which ADR 0024's checks read
+      // Which handle they came through, before they are anybody's contact:
+      // the record is never visible without it.
+      await vault.kvPut('hvia_$rid', answered.handle);
+      contacts[rid] = contact;
+      return true;
+    });
+    if (!claimed) return;
+    await _onContactAdded(contact);
+    await _noteHandleAccepted(rid, answered);
+    await _sendContactRequest(contact);
+  }
+
+  /// The contact [rid] is the account the handle [answered] introduced:
+  /// remember which handle, stop waiting, and say so in the chat — "accepted,
+  /// compare safety numbers to verify", because the acknowledgement proves
+  /// which account answered and nothing about who it is.
+  Future<void> _noteHandleAccepted(
+      String rid, OutgoingHandleRequest answered) async {
+    await vault.kvPut('hvia_$rid', answered.handle);
+    await _insertSystemMessage(
+        rid, systemBody(SystemKind.handleAccepted, {'h': answered.handle}));
+    await handles.completeOutgoing(answered);
+    notifyListeners();
+  }
+
+  /// The handle a contact was made through — an acceptance that carried the
+  /// acknowledgement of a request this device sent to it — or null.
+  Future<String?> handleViaOf(String rid) => vault.kvGet('hvia_$rid');
+
   /// Accept a pending request: add the requester as a contact — at the
   /// classical floor, exactly as scanning their code would — and hand them a
   /// request back, so their side stops waiting and the session establishes both
   /// ways. The account identity and post-quantum key follow in-band (§18.2).
+  ///
+  /// Phase 38: a request that came through the handle is answered with the
+  /// introduction key's acknowledgement on that request back (§21.7), and
+  /// it goes FIRST — the first message this account sends them — so that
+  /// their app holds this account as a contact before the hello arrives.
   Future<Contact?> acceptRequest(String rid) async {
     final pending = requestsByRid[rid];
     if (pending == null) return contacts[rid];
@@ -1706,6 +1834,14 @@ class ChatService extends ChangeNotifier implements KtHost {
     // from before phase 33, a second request. One this device received
     // itself it answers now, as always. Read before the add, which clears it.
     final addressedHere = await vault.kvGet('reqto_$rid') == null;
+    // Signed before anything below forgets which mailbox the request reached.
+    // The account key it names is this device's own key, which is what the
+    // acceptance is signed with and carries as its bundle — the account key
+    // itself, since only the primary device holds a handle (§21.8).
+    final ia = pending.via == null
+        ? null
+        : await _handles?.acknowledgement(rid,
+            ownerAccountEdPub: identity.edPub);
     final contact = Contact(
       rid: rid,
       bundle: pending.bundle,
@@ -1732,13 +1868,98 @@ class ChatService extends ChangeNotifier implements KtHost {
       return true;
     });
     if (claimed) {
-      await _onContactAdded(contact); // also removes the pending request
-      if (addressedHere) await _sendContactRequest(contact);
+      if (ia != null) {
+        _sealKeys[rid] = contact.bundle.xPub;
+        await _sendContactRequest(contact, ia: ia);
+        await _onContactAdded(contact); // also removes the pending request
+      } else {
+        await _onContactAdded(contact); // also removes the pending request
+        if (addressedHere) await _sendContactRequest(contact);
+      }
     } else {
       await _removeRequest(rid);
     }
     notifyListeners();
     return contacts[rid];
+  }
+
+  // ---- HandleHost (phase 38) ----------------------------------------------
+
+  @override
+  String get relayUrl => transport.serverUrl;
+
+  @override
+  bool get holdsRoot => _holdsRoot;
+
+  @override
+  Future<void> sendStamped(
+          {required String to,
+          required String id,
+          required String payload,
+          required String pow}) =>
+      transport.sendStamped(to: to, id: id, payload: payload, pow: pow);
+
+  @override
+  bool isTransientFailure(Object e) => _isTransientInboundFailure(e);
+
+  @override
+  void handlesChanged() => notifyListeners();
+
+  /// A verified request that reached the introduction mailbox for [handle]:
+  /// filed beside every other pending request, saying which handle it came
+  /// through. Dropped like any other from someone blocked; from a contact it
+  /// is what a contact's request always is — their answer (ADR 0011). And
+  /// held to what every other request is held to (ADR 0024): its signed
+  /// `ts`, the mark of the last request taken in from them — so a stamped
+  /// request the relay hands over again after a drain, or one declined, does
+  /// not come back — and the one cap on pending requests, which pushes out
+  /// the oldest unseen of every kind together. False when it was not filed,
+  /// or the cap pushed it straight out again.
+  @override
+  Future<bool> addHandleRequest(ContactRequest request,
+      {required String requesterRid, required String handle}) async {
+    final rid = requesterRid;
+    if (_blocked.contains(rid) || _myAccountRids.contains(rid)) return false;
+    final known = contacts[rid];
+    if (known != null) {
+      await _clearRequested(rid);
+      await _pokeHello(known);
+      return false;
+    }
+    if (await _declinedSince(rid, request.ts)) return false;
+    final arrived = _now();
+    if (arrived - request.ts > requestMaxAge.inMilliseconds ||
+        request.ts - arrived > requestMaxSkew.inMilliseconds) {
+      return false;
+    }
+    final mark = _requestMarks[rid];
+    if (mark != null && request.ts <= mark) return false;
+    final name = (request.bundle.displayName?.trim().isNotEmpty ?? false)
+        ? request.bundle.displayName!.trim()
+        : 'Unknown';
+    final now = _lastRequestMs = max(arrived, _lastRequestMs + 1);
+    await vault.db.insert(
+        'requests',
+        {
+          'rid': rid,
+          'enc_bundle': await vault.seal(jsonEncode(request.bundle.toJson())),
+          'enc_name': await vault.seal(name),
+          'created_ms': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+    await vault.kvDelete('reqto_$rid');
+    requestsByRid[rid] = PendingRequest(
+        rid: rid,
+        name: name,
+        bundle: request.bundle,
+        createdMs: now,
+        via: handle);
+    _requestMarks[rid] = request.ts;
+    _requestsSeen.remove(rid);
+    await _capRequests();
+    await _saveRequestMeta();
+    notifyListeners();
+    return requestsByRid.containsKey(rid);
   }
 
   /// Decline a pending request: drop it, in silence to the sender (ADR 0011)
@@ -1779,6 +2000,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     final hadMeta = _requestsSeen.remove(rid) |
         (!keepMark && _requestMarks.remove(rid) != null);
     if (hadMeta || keepMark) await _saveRequestMeta();
+    await _handles?.forgetInbound(rid);
   }
 
   /// Clear "waiting for them to accept" once they have answered.
@@ -2300,6 +2522,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     // Phase 33: which of my devices a pending request was sent to, and when
     // one from them was last declined (§18.8).
     'reqto_', 'reqdecl_',
+    'hvia_', // phase 38: the handle a contact was made through
   ];
 
   /// Forget a contact: every row, every blob, every `kv` family, and every
@@ -2398,6 +2621,8 @@ class ChatService extends ChangeNotifier implements KtHost {
     if ((_requestMarks.remove(rid) != null) | _requestsSeen.remove(rid)) {
       await _saveRequestMeta();
     }
+    // Phase 38: and what the handle service kept about that request.
+    await _handles?.forgetInbound(rid);
     // ADR 0020: group links waiting on their answer, and answers owed to
     // them, name them too.
     final links = _linkAdds.length + _linkJoins.length;
@@ -12707,6 +12932,7 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   /// Full local wipe: identity, contacts, messages, keys. Irreversible.
   Future<void> wipeEverything() async {
+    _handles?.dispose(); // no publish or drain may start under the wipe
     await transport.stop();
     await vault.wipe();
   }

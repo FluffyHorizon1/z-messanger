@@ -37,6 +37,9 @@ class RelayClient {
   final _messages = StreamController<RelayInbound>();
   final _delivered = StreamController<DeliveredReceipt>();
   final _sendAcks = <String, Completer<void>>{};
+
+  /// The `intro` frame waiting for its `intro_ok` (§21.6), if one is.
+  Completer<void>? _introAck;
   final void Function()? _onClosed;
   Timer? _pinger;
 
@@ -240,6 +243,11 @@ class RelayClient {
         final id = str('id');
         if (id != null) _sendAcks.remove(id)?.complete();
         break;
+      case 'intro_ok':
+        final c = _introAck;
+        _introAck = null;
+        if (c != null && !c.isCompleted) c.complete();
+        break;
       case 'delivered':
         final id = str('id');
         if (id == null) break;
@@ -251,9 +259,9 @@ class RelayClient {
       case 'error':
         final id = str('id');
         if (id == null) {
-          // Only four of the relay's refusals name the envelope they are
+          // Only five of the relay's refusals name the envelope they are
           // about (§12.2): `too_large`, `bad_send`, `queue_full`,
-          // `store_full`. The rest — `rate_limited` above all, and
+          // `store_full` and `pow_required`. The rest — `rate_limited` above all, and
           // `bad_json`, `internal`, `bad_auth`, `not_authed`,
           // `unknown_frame` — arrive with nothing to match a send against,
           // and used to leave the sender's future pending until its
@@ -266,6 +274,12 @@ class RelayClient {
           // dedupes a retry on (id, sender), so re-sending is idempotent.
           final pending = _sendAcks.values.toList();
           _sendAcks.clear();
+          // An `intro` frame is refused the same way (`not_authed`,
+          // `bad_intro`, and `unknown_frame` from a relay that predates
+          // §21.6), and fails with it.
+          final intro = _introAck;
+          _introAck = null;
+          if (intro != null) pending.add(intro);
           for (final c in pending) {
             if (!c.isCompleted) {
               c.completeError(
@@ -275,9 +289,15 @@ class RelayClient {
           break;
         }
         {
-          _sendAcks
-              .remove(id)
-              ?.completeError(RelayException(str('code') ?? '?'));
+          final code = str('code') ?? '?';
+          // §21.6: a send to an introduction mailbox without the work its
+          // owner asked for. The frame names the difficulty and the relay's
+          // own day, so the sender can stamp again — once — for that day.
+          final bits = frame['bits'], day = frame['day'];
+          _sendAcks.remove(id)?.completeError(
+              code == 'pow_required' && bits is int && day is int
+                  ? RelayPowRequired(bits: bits, day: day)
+                  : RelayException(code));
         }
         break;
       default:
@@ -291,17 +311,52 @@ class RelayClient {
   /// moment, which is presence: the relay stopped saying on 2026-09-17
   /// (finding 12), and nothing here ever needed it — delivery is the peer's
   /// own receipt inside the ratchet (§15.3).
+  ///
+  /// [pow] is a proof-of-work stamp (§21.7), the `b64url` of its nonce: a
+  /// send to an introduction mailbox carries one, and the relay refuses it
+  /// with [RelayPowRequired] when it does not do the work the mailbox's
+  /// owner asked for. Every other send carries none.
   Future<void> send({
     required String to,
     required String id,
     required String payload,
+    String? pow,
   }) {
     final completer = Completer<void>();
     _sendAcks[id] = completer;
-    _send({'t': 'send', 'id': id, 'to': to, 'payload': payload});
+    _send({
+      't': 'send',
+      'id': id,
+      'to': to,
+      'payload': payload,
+      if (pow != null) 'pow': pow,
+    });
     return completer.future.timeout(const Duration(seconds: 20), onTimeout: () {
       _sendAcks.remove(id);
       throw RelayException('send timeout');
+    });
+  }
+
+  /// Flags this connection's own mailbox as an introduction mailbox that
+  /// takes a send only with a stamp of [bits] leading zero bits (§21.6), and
+  /// resolves on the relay's `intro_ok`. Only meaningful on a connection
+  /// authenticated as an introduction key; the relay answers `not_authed`
+  /// on any other, `bad_intro` for bits outside 16–28, and — a relay that
+  /// predates §21.6 — `unknown_frame`, each a [RelayException] here. Sent
+  /// after every authentication: the flag lasts the ownership's lifetime
+  /// from the last frame that set it.
+  Future<void> intro(int bits,
+      {Duration timeout = const Duration(seconds: 15)}) {
+    final previous = _introAck;
+    if (previous != null && !previous.isCompleted) {
+      previous.completeError(RelayException('intro superseded'));
+    }
+    final c = Completer<void>();
+    _introAck = c;
+    _send({'t': 'intro', 'pow': bits});
+    return c.future.timeout(timeout, onTimeout: () {
+      if (identical(_introAck, c)) _introAck = null;
+      throw RelayException('intro timeout');
     });
   }
 
@@ -336,6 +391,11 @@ class RelayClient {
       if (!c.isCompleted) c.completeError(RelayException('connection closed'));
     }
     _sendAcks.clear();
+    final intro = _introAck;
+    _introAck = null;
+    if (intro != null && !intro.isCompleted) {
+      intro.completeError(RelayException('connection closed'));
+    }
     _onClosed?.call();
   }
 
@@ -376,4 +436,18 @@ class RelayException implements Exception {
   RelayException(this.message);
   @override
   String toString() => 'RelayException: $message';
+}
+
+/// The relay's `pow_required` (§21.6): a send to an introduction mailbox did
+/// not carry a stamp of [bits] leading zero bits for the relay's today or
+/// yesterday. [day] is the relay's own today (UTC days since the epoch), so
+/// a sender whose clock disagrees near midnight can stamp again, once, for
+/// it (§21.7). Its [message] is the code, as for every other refusal.
+class RelayPowRequired extends RelayException {
+  final int bits;
+  final int day;
+  RelayPowRequired({required this.bits, required this.day})
+      : super('pow_required');
+  @override
+  String toString() => 'RelayPowRequired(bits: $bits, day: $day)';
 }
