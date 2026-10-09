@@ -1,8 +1,9 @@
 # Z — Encrypted backup (`.zbk`)
 
 Z holds no copy of anything. The relay is RAM‑only and forgets an envelope the
-moment it is delivered; there is no account on a server and no directory. That
-is the point of the design, and it has one unavoidable consequence: **if the
+moment it is delivered; there is no account on a server, and the one
+directory — the handles people choose to claim — holds a handle's public keys
+and nothing else. That is the point of the design, and it has one unavoidable consequence: **if the
 only device is lost, the history is gone.** Nothing can be restored from
 somewhere else, because there is no somewhere else.
 
@@ -65,6 +66,14 @@ again at device‑list version 1: its own log monitor called the versions it
 had signed before the backup lists it never issued and told the user to reset
 their identity, and its contacts saw a rollback (the 2026‑10‑03 analysis,
 P0‑3). §2.3 says what the restored device does with them.
+
+Since phase 38, also the account's **handle**, if it has one (`PROTOCOL.md`
+§21.8): its owner and introduction keys and where it stands, the records of
+requests that came through it, and the requests sent to handles that are
+still waiting for an answer — never its recovery code, which no device holds.
+A restore publishes nothing by itself: a published handle comes back as it
+was and its mailbox is read again, and a claim that was still waiting to be
+published comes back held until the person publishes it.
 
 **Deliberately not in the archive:**
 
@@ -330,10 +339,11 @@ leaves the device.
 | `meta` | display name, server URL, schema |
 | `identity` | the identity key material; on a linked device (1.1) `account`, the account it is a device of — its public keys, this device's certificate and the device seeds, never an account root. A record whose `account` does not describe this identity as a device of that account refuses the archive |
 | `state` (1.1) | `kv`: the account‑level state of §2 — `my_devlist_version`, `my_devices`, `own_list_v`/`_h`/`_json`/`_mlsig`, the migration flags, `kt_config`, `kt_head`, `kt_own_known`, `kt_own_first_v`, `device_id` (on a root, signed into the certificate every list names it by), `push_enabled` and any own‑account alarm not yet dismissed, with its evidence (`own_alert_ev`), the evidence of every dismissed one (`own_alarm_dismissed`) and the own‑list repair's record (`kt_own_legacy`, `kt_own_reconciled`; `adr/0026`); `sync`: the ids of the sessions with this account's own devices. Each value is held on restore to the shape the code that reads it at start‑up needs — a list must verify under the account — and one that is not is left out |
-| `contact` | routing id, contact bundle, name, TTL, verified flag, the v3 identity state (`pqc` commitment, `pqk` established key, and — ADR 0021 — `pqcand`, a post‑quantum key held for the safety number that no commitment has checked, with `pqack` and `pqtold`, whether each side has told the other it holds their key, which is what decides whether the post‑quantum number is the one shown), and the 13.3 verification state — `vsn`, the safety number the user actually compared, and `pqbad`, set once a post‑quantum key has been refused; and the §18.7 anchor — `acct`, the account this contact IS, with `cert`, the certificate for the device that was scanned; and `addedby`, which of the user's own devices added it (§18.8); and since 1.1 `req` (added and still waiting on them), `kv` — the per‑contact state of §2 by family (`cdev_` with its version, arrival, floor and post‑quantum signature, `cdl_claims_`, `ktc_`, standing alarms, `last_open_`, and since phase 33 `pqcs_`, `vpqc_` and `pqcc_`, each held to its shape on restore — `"1"`, and a 32‑byte commitment; a list must verify under the contact's account; an importer from before a family skips it, as it skips any it does not know) — `sids`, the ids of every session held with them, and `xsids`, the same per device for their other devices |
+| `contact` | routing id, contact bundle, name, TTL, verified flag, the v3 identity state (`pqc` commitment, `pqk` established key, and — ADR 0021 — `pqcand`, a post‑quantum key held for the safety number that no commitment has checked, with `pqack` and `pqtold`, whether each side has told the other it holds their key, which is what decides whether the post‑quantum number is the one shown), and the 13.3 verification state — `vsn`, the safety number the user actually compared, and `pqbad`, set once a post‑quantum key has been refused; and the §18.7 anchor — `acct`, the account this contact IS, with `cert`, the certificate for the device that was scanned; and `addedby`, which of the user's own devices added it (§18.8); and since 1.1 `req` (added and still waiting on them), `kv` — the per‑contact state of §2 by family (`cdev_` with its version, arrival, floor and post‑quantum signature, `cdl_claims_`, `ktc_`, standing alarms, `last_open_`, and since phase 33 `pqcs_`, `vpqc_` and `pqcc_`, each held to its shape on restore — `"1"`, and a 32‑byte commitment — and since phase 38 `hvia_`, the handle the contact was met through; a list must verify under the contact's account; an importer from before a family skips it, as it skips any it does not know) — `sids`, the ids of every session held with them, and `xsids`, the same per device for their other devices |
 | `groups` | the group list blob |
 | `blocked` (1.1) | a blocked routing id and when |
 | `request` (1.1) | a pending inbound request: routing id, the requester's bundle (it must verify and name that routing id), the name offered, when |
+| `handle` (phase 38, `"keep":1`, `"v":1`) | `kv`: the account's handle (`handle` — the handle, its label, the owner and introduction seeds, the work a request costs, the recovery commitment, the version and where it stands; never the recovery code), the requests that came through it (`handle_in` — for each, the mailbox it reached and the request's id — and the seeds of mailboxes since replaced that one of them still needs), the requests sent to handles still waiting (`handle_out`) and where the handle log is (`handle_config`). Written after the requests and applied after them: a request's record is restored only if its request was, a claim waiting to be published comes back held, and a part that is not the shape the service reads is left out. Marked `keep`, so a build that predates handles carries it into its next archive unread |
 | `message` | mid, rid, direction, kind, body, timestamp, status, expiry, and the phase‑8 fields (`rt` reply target, `edited`, `deleted`, `fw`) |
 | `reaction` | rid, mid, sender, emoji, timestamp |
 | `file` | attachment metadata; the bytes follow in `kind = 1` frames |

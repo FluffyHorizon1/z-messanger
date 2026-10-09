@@ -6,11 +6,14 @@ revised the same day (shape E recommended, C rejected); revision 2 rewrites
 the Decision and the Consequences after the 2026‑10‑03 analysis found E, as
 written, not buildable — five flaws (F1–F5) and six lesser points. The
 reasoning that chose E, the Context and the shapes, stands as it was.
-**Built:** the protocol library (36.1 — `PROTOCOL.md` §21.0–§21.4, §21.7).
-**Being built beside it:** the handle log (36.2, §21.5) and introduction
-mailboxes at the relay (37, §21.6). **Not built:** the app (38). Nothing
-about handles reaches a user until the claims bill below is paid; what
-Finnian may still veto is listed at the end of the Decision.
+**Built:** the protocol library (36.1 — `PROTOCOL.md` §21.0–§21.4, §21.7),
+the handle log (36.2, §21.5), introduction mailboxes at the relay (37,
+§21.6) and the app (38, §21.8), with the claims bill below paid in the
+repository. **Not deployed:** no handle log runs yet, and the app's defaults
+name none, so until one is deployed and pinned the app says handles are
+unavailable; the Play listing and the Data safety form change before the
+release that ships them. What Finnian may still veto is listed at the end of
+the Decision.
 **Decides:** whether an account can claim a searchable name, where such a
 registry would live, what would have to stop being true for it to exist —
 and, since revision 2, what exactly is built.
@@ -144,7 +147,7 @@ idea made durable and one‑sided.
 |---|---|---|---|---|---|
 | R20's unenumerability premise | **broken** — reopens `adr/0006`'s VRF rejection | intact for KT; absent for handles | intact for KT; handles enumerable by dictionary, not by listing | intact | **intact** — the account key is never in the registry |
 | a public roster of who uses Z | yes, plus their device‑list history | yes | recoverable by dictionary; no listing endpoint | none | a roster of **volunteers**, and of pseudonyms rather than account keys |
-| squatting | free and permanent | free and permanent | pointless — the namespace is not scarce | n/a | free, and it **harvests** — see R55 |
+| squatting | free and permanent | free and permanent | pointless — the namespace is not scarce | n/a | free, and it **harvests** — see R48 |
 | "no directory" claim | gone | gone | gone | kept | gone |
 | new service to run | none | one | one | none | one, and it needs a witness |
 | lost key | name gone for ever | same | same, but a fresh `alice#…` is available | n/a | name gone for ever (the handle key is in the vault and the backup) |
@@ -203,21 +206,24 @@ makes both (§21.3). What changes is everything the analysis found missing:
 | Found (analysis, 2026‑10‑03) | What E′ does | Enforced by | Left over |
 |---|---|---|---|
 | **F1** The log had no owner rule: with `label = H(handle)` anyone could publish v2 of `@finnian` under their own key, and mirrors check only version order — a P0 had it been built | The owner rule (§21.4): a claim fixes owner and `rc`; an update only by the current owner, changing neither; a recover only with an `rpub` that hashes to `rc` and an `rsig` over the new owner and `rc`; versions increase; 1 KiB at most. The owner key and the signature are in the entry | the log on the wire and on replay, mirrors (36.2); clients (`applyHandleEntry`, 36.1) — every check of the rule disabled in turn makes `handles_test.dart` fail, and the Node clean‑room verifier (`server/test/vectors.test.js`) re‑derives every verdict in the vectors from §21.4's text | — |
-| **F2** The operator can link a handle to its owner: one connection draining both mailboxes pairs them (R21's own rule); a push token on the introduction mailbox links them at once; the KT operator sees the account key at publish | The introduction mailbox is drained on its own connection, authenticated as the introduction identity (§21.6); push registration for it is refused; the handle log is a separate service and never sees the account key | relay (37), client (38) | the same device's address on both connections, at the relay and at the log: **R56** |
+| **F2** The operator can link a handle to its owner: one connection draining both mailboxes pairs them (R21's own rule); a push token on the introduction mailbox links them at once; the KT operator sees the account key at publish | The introduction mailbox is drained on its own connection, authenticated as the introduction identity (§21.6); push registration for it is refused; the handle log is a separate service and never sees the account key | relay (37), client (38) | the same device's address on both connections, at the relay and at the log: **R49** |
 | **F3** The spam bound was wrong: `NEW_MAILBOX_PER_MIN` charges only first contact, limits are per socket, the client stored every verified request; 5,000 identities cost 0.19 s | A stamp per send, checked before storing; a difficulty the owner sets; a per‑mailbox cap; 100 pending at most on the client | relay (37), client (38) | a stamp is SHA‑256, which native code and GPUs compute far faster than the app's pure Dart (measured here, one core: 46 ms at 16 bits, 0.8 s at 20, 12 s at 24) — a bound on volume, not on a determined sender, until phase 45 |
 | **F4** The return leg was unspecified: the receive path drops a request addressed to an introduction mailbox (`expectedTo: myRid`), and the acceptance comes from an unrelated routing id | The request is sealed to the record's `xintro` and addressed to its `intro` routing id; the owner's app accepts a `creq` to its introduction mailboxes; the acceptance carries `ia` (§21.7), which the requester checks against the key it resolved | client (38), with `signIntroAck`/`verifyIntroAck` (36.1) | — |
-| **F5** A claim at setup links the handle to the account's KT history by millisecond timestamps, reopening R20 | Never at setup; published after a random delay; hour‑granular timestamps; a separate log, so no shared run of indexes | client (38), log (36.2) | timing across many claims is a statistical hint to the operator, part of **R56** |
+| **F5** A claim at setup links the handle to the account's KT history by millisecond timestamps, reopening R20 | Never at setup; published after a random delay; hour‑granular timestamps; a separate log, so no shared run of indexes | client (38), log (36.2) | timing across many claims is a statistical hint to the operator, part of **R49** |
 | Enumeration: SHA‑256 labels at 2.26 M a second enumerate every six‑character handle in twenty minutes | Argon2id labels, the ×100 of the digits, and buckets rather than labels on the wire | §21.2, `adr/0023` | dearer per name, not unenumerable. Measured here: 21 ms a guess on one core with a native Argon2id (127 ms in the app's pure Dart). A dictionary of 100,000 nicks × 100 two‑digit discriminators is 58 core‑hours. A census is expensive; checking whether one person has a handle is not |
 | No recovery: a stolen handle key was a permanent hijack | `rc` committed at claim; the code installs a new owner and a new commitment | §21.3, §21.4 | the code is the stronger secret: whoever holds it can take the handle |
 | No normalisation or confusables rule (Cyrillic `fіnnіan`, `@zsupport`) | An ASCII grammar with no folding; reserved nicks refused for claim and lookup | §21.1, client | ASCII look‑alikes (`rn` for `m`, `finian` for `finnian`) are different names, as on every service; the safety number is still the check |
-| Lookup privacy: resolving tells the operator who searched for whom | Bucket queries: the log learns a prefix of a label, shared with the bucket's other names | log (36.2), client (35, 38) | the address that asked: **R56** |
-| The handle log must be its own instance with its own key | `KT_MODE=handles`, its own seed, `z-handle-sth-v1` and `z-handle-witness-v1`: a handle head never verifies as a KT head | 36.2 | unwitnessed until phase 19 has an operator: **R57** |
+| Lookup privacy: resolving tells the operator who searched for whom | Bucket queries: the log learns a prefix of a label, shared with the bucket's other names | log (36.2), client (35, 38) | the address that asked: **R49** |
+| The handle log must be its own instance with its own key | `KT_MODE=handles`, its own seed, `z-handle-sth-v1` and `z-handle-witness-v1`: a handle head never verifies as a KT head | 36.2 | unwitnessed until phase 19 has an operator: **R50** |
 | Requests and blocks are not synced across devices, and an older build's restore drops archive records it does not know — the handle lost for good | v1 keeps the handle on the root device; its keys go in the vault and the backup archive (38); and if they are lost anyway, the code brings the handle back | 38 | lose the keys and the code together, and the handle is gone |
 
 ### The claims bill — paid in phase 38, before the release that ships handles
 
 E′ is a directory of volunteers. Every sentence that says Z has no directory
-changes first, or handles do not ship:
+changes first, or handles do not ship. Phase 38 changed items 1, 2 and 4 in
+the repository (with the relay's privacy page, `USING_Z.md`,
+`WHAT_Z_CANNOT_DO.md` and `DATA_MAP.md`); item 3 is the Play Console's, and
+is made before the release that ships handles:
 
 1. `THREAT_MODEL.md`, *Design decisions that follow from zero trust*: **"No
    accounts, no phone numbers, no directory, no key server."**
@@ -234,27 +240,28 @@ changes first, or handles do not ship:
    handles when none existed (analysis §5.1). That is corrected in the Play
    Console now.
 
-### Residuals — R54 to R57
+### Residuals — R47 to R50
 
-Written into `THREAT_MODEL.md` when the app ships handles (38); reserved
-until then.
+Written into `THREAT_MODEL.md` by phase 38, which ships handles in the app.
+Reserved as R54–R57 until then; the register ended at R46, so they were
+renumbered when they were written.
 
-- **R54** — Introduction traffic is visible. The relay, and anyone who
+- **R47** — Introduction traffic is visible. The relay, and anyone who
   resolves a handle (and so computes its mailbox), can see how much first
   contact it attracts. A pseudonym, rotatable by an update; the account's own
   mailbox stays unguessable.
-- **R55** — Whoever holds a handle learns who tried to reach it. A `creq`
+- **R48** — Whoever holds a handle learns who tried to reach it. A `creq`
   carries the requester's bundle and name, so a squatter on
   `@finnianbond.07` collects everyone looking for Finnian, and in a sparse
   opt‑in namespace a squatted name looks like a real one. A two‑round opening
   that withheld the bundle until accept would limit it, at the cost of an
   owner deciding with no name in front of them — what `adr/0011` was written
   to end.
-- **R56** — The operator and its CDN can link a handle to an IP address: at
+- **R49** — The operator and its CDN can link a handle to an IP address: at
   the claim and every update (the log), at every drain of the introduction
   mailbox (the relay), and at every lookup (the log — a bucket hides the
   label, not who asked).
-- **R57** — The handle log is unwitnessed until phase 19 has an operator: a
+- **R50** — The handle log is unwitnessed until phase 19 has an operator: a
   log that shows two people different records for one handle is caught only
   by a witness, as R7 says of the KT log.
 
@@ -281,17 +288,38 @@ deletable. Take advice rather than designing around it.
 - **Running the second service.** A handle log with its own key, and in time
   its own witness.
 
-### Open before phase 38 builds the request
+### Open before phase 38 builds the request — settled by phase 38
 
-Questions this revision does not answer:
+Questions this revision did not answer, and how phase 38 answered them
+(`PROTOCOL.md` §21.8):
 
-- **Who picks the digits** — the person, or the app suggesting random ones,
-  and how many — which decides what the ×100 is worth in practice.
-- **A signature per leaf in a bucket answer.** As specified, a resolver gets
-  the latest record without its `sig`: it checks the record's shape and its
-  inclusion under the head, and relies on the log and its witness for the
-  owner rule over that entry. Carrying `sig` would let the resolver check it
-  too.
+- **Who picks the digits.** The app suggests two random digits, each draw
+  checked free (up to five), and the person may choose 2 to 6 instead. So
+  most handles have two — the ×100 — and someone who wants a rarer one can
+  have it.
+- **A signature per leaf in a bucket answer.** The log's leaves carry `sig`
+  (36.2), and the resolver checks it — under the owner the record names, for
+  a claim, an update and a recover alike — and a recover's `rsig`. The
+  owner rule over the label's whole history stays the log's and its
+  mirrors' to hold; a resolver keeps no head between lookups, so a log that
+  shows it another history is caught by a witness only (R50).
+
+Also settled in building it, each argued in §21.8: a claim is published at
+a moment drawn from 10 to 60 minutes after it is confirmed (3 to 20 after a
+start, when the moment passed while the app was closed), and a recover and
+every update at once; the mailbox is drained on its own connection 3 to 30
+seconds after the app comes to the foreground and every 15 minutes, give or
+take a third, while it is in front; a request is sent on an anonymous
+connection opened for it alone — the first build sent it on the account's
+long‑lived anonymous link, which, once the request was accepted, carried the
+account's envelopes to the account the handle introduced: one connection
+naming both the handle's mailbox and that account, which its test
+(`handle_flow_test.dart` 5) caught; at most 100 pending handle requests,
+the oldest unseen dropped first; at most 20 outgoing requests kept for
+matching an acknowledgement, the three latest ids each; pausing keeps the
+introduction keys and resuming reuses them; giving a handle up forgets its
+keys, and only the code brings it back; a claim that was pending when a
+backup was made comes back from it held, not published.
 
 One question the first draft of this revision left open is settled: the key
 a request is sealed to. §8 seals to an X25519 key and the record carried
@@ -304,7 +332,7 @@ would have been a construction new to Z.
 
 1. **A second public service** (36.2): the handle log, its key, its disk and
    in time its witness — G3's question asked again — and an operator who
-   learns the addresses of claimants and resolvers (R56).
+   learns the addresses of claimants and resolvers (R49).
 2. **Wire: additive.** A log mode, a relay frame and a send member (37), one
    optional member in a `creq` (`ia`), a new vector file. Nothing an older
    client computes changes: it never claims or resolves, and it ignores `ia`.
@@ -315,7 +343,7 @@ would have been a construction new to Z.
 5. **Cost on the device, measured:** a label 127 ms (pure Dart, AOT, one
    core of a 2.1 GHz Xeon); a stamp 46 ms at 16 bits to 12 s at 24. Both
    off the UI thread.
-6. **The claims bill and R54–R57,** above.
+6. **The claims bill and R47–R50,** above.
 
 ## Rejected
 
@@ -397,8 +425,8 @@ and the vetoes; the Rejected list, where the first version's refusal of any
 recovery secret is narrowed to a secret the server holds; and the residual
 numbers. The first version named "the next free numbers, R36 and R37" for
 E's two residuals; those numbers have since gone to `adr/0018` and
-`adr/0021`, and the four residuals E′ leaves are R54–R57, reserved until the
-app ships them. The shapes table's pointer for the squatter now says R55.
+`adr/0021`, and the four residuals E′ leaves are R47–R50, reserved until the
+app ships them. The shapes table's pointer for the squatter now says R48.
 What it kept: the Context and the shapes, which are the reasoning that chose
 E and still hold.
 
@@ -431,5 +459,5 @@ parameters stay: a phone has to compute a label too.
   makes durable: "two throwaway relay identities HKDF'd from the invite
   secret, one per role"
 - `protocol/lib/src/contact_request.dart` — the `creq` E′ reuses unchanged,
-  and the bundle disclosure R55 is about
+  and the bundle disclosure R48 is about
 - `GA_CHECKLIST.md` G3 — the witness a second log would also want

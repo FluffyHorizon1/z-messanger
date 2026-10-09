@@ -24,12 +24,15 @@ builds have not.
 
 - **Nothing to trust on the server.** The relay sees routing hashes and
   ciphertext in one of a few padded sizes. Sealed sender hides who sent
-  each message even from the relay. There is no directory and no key
-  server. The one server that keeps a record is the public transparency
-  log: it holds every device list an account publishes, for good, and the
-  app's lookups there tell it whom each user is in contact with —
+  each message even from the relay. There is no key server, and the only
+  directory is one you opt into: a handle, if you claim one, leads to an
+  introduction mailbox made for it, never to your account's key. The
+  servers that keep a record are the public transparency log — it holds
+  every device list an account publishes, for good, and the app's lookups
+  there tell it whom each user is in contact with — and, for a claimed
+  handle, the handle log, which keeps the handle's keys for good;
   [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) says exactly what the
-  relay and the log *can* still observe (R1, R21, R40).
+  relay and the logs *can* still observe (R1, R21, R40, R47–R50).
 - **Signal‑style cryptography, post‑quantum on top.** X3DH‑style handshake,
   the Double Ratchet (X25519, HKDF, HMAC) with XChaCha20‑Poly1305, and a
   hybrid ML‑KEM‑768 layer with periodic re‑keying so a conversation's

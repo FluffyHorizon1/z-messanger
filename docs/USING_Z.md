@@ -110,6 +110,112 @@ invite. Browsers never send that part to a website, so the page it points at
 never receives your invite and cannot know one exists. You can check that in
 your browser's own network tab.
 
+## Being found by a handle
+
+A handle is a name people can find you by: `@alex.42` — a name you choose, a
+dot, and two to six digits. It is optional. Z never offers one when you
+start, and nobody needs yours to add you: your code and CONNECT work as they
+always did.
+
+Handles need a handle service, and this version of Z has none set up yet, so
+Settings › Your handle, and the Handle tab under Add contact, say handles are
+not available. The rest of this section is how they work once there is one.
+
+### Claiming one
+
+Settings → **Your handle** → **Claim a handle**. Type a name — 3 to 20
+letters, digits or `_`, starting with a letter — and Z picks two random
+digits, or choose your own. **Check** asks the handle service whether it is
+free. Claim it, and Z shows the handle's **recovery code**, once: write it
+down, then type it back. Z does not keep it. It is the only way to get the
+handle back if you lose the phone, it is not your backup's code, and anyone
+who has it can take the handle.
+
+The handle is then published at a random moment between ten minutes and an
+hour later, on purpose: the handle service sees when a handle appears, and
+one that appeared the moment you were using Z would be easier to tie to you.
+Keep Z open until then — if it is closed, the handle is published 3 to 20
+minutes after you next open it; **Cancel claim** drops it, and nothing was
+published.
+If someone else's claim on the same handle got there first, Z says so and
+nothing is published for you — choose other digits.
+
+### Finding someone
+
+Add contact → **Handle**. Type the handle they gave you and tap **Find**. If
+it exists and is taking requests, **Send request** sends them an ordinary
+contact request — your display name and your key, as when you paste a code
+— and takes a few seconds on purpose: each request costs its sender some
+work, so nobody can send thousands. If they accept, they appear in your chats
+with "@alex.42 accepted. Compare safety numbers to verify."
+
+**A handle is not a verification.** Z checks that the account that answered
+is the one the handle sent you to, not who that is. Anyone could have claimed
+`@yourfriend.07` before your friend did. Compare safety numbers before you
+trust it — and ask people for their handle rather than guessing it, because
+whoever holds a handle sees the name and key of everyone who sends it a
+request.
+
+### Requests through your handle
+
+They arrive in Requests like any other, marked **Via @alex.42**, and you
+**Accept**, **Decline** or **Block** as usual. The handle has an inbox of its
+own, separate from your account's: your phone reads it a few seconds after
+you open Z and every quarter of an hour or so while Z is open, and never
+wakes for it — so a request through your handle waits at the relay until you
+next open Z, for up to three days like any message. At most 100 wait at a
+time; past that, the oldest you have not yet seen goes.
+
+Only your main device holds a handle and reads its inbox. A linked device can
+find people by handle, and the people you meet through yours appear there
+too, but it cannot claim or change one.
+
+### Managing it
+
+Settings → **Your handle**:
+
+* **Pause** — people who look it up are told it is paused, and cannot send
+  anything. **Resume** undoes it.
+* **New inbox** — the handle gets a new inbox, and the old one is read one
+  last time and left. Use it to end a wave of unwanted requests; the handle
+  stays the same, and requests already waiting stay.
+* **Work per request** — how much work a request costs whoever sends it, from
+  a fraction of a second to up to a minute on a slow phone. More stops more
+  spam and makes everyone who asks wait longer.
+* **Give up handle** — nobody can reach you through it any more, and this
+  device forgets its keys. The name stays in the public log and nobody else
+  can claim it; only its recovery code can bring it back. Wiping Z or
+  resetting your identity does not give a handle up: it stays, taking
+  requests nobody reads, until its recovery code moves it to a new install —
+  so give it up first if you mean it to go.
+
+**Recover a handle**, on a new phone or a new identity, takes the handle and
+its recovery code: the handle moves to this account with new keys, you get a
+new code, and whoever held it before can no longer change it. A backup
+carries the handle too: a restore brings it back as it was, and a claim that
+was still waiting to be published comes back waiting for you to tap
+**Publish now**.
+
+### Who can see what
+
+* **Anyone** can look up any handle, and learn that it exists, whether it is
+  paused, how much work a request costs and the hour it last changed — never
+  your account's key or your own mailbox, which a handle does not lead to.
+* **Whoever holds a handle** sees the display name and key of everyone who
+  sends it a request, before deciding anything — so a stranger who claimed a
+  name you guessed learns that you tried.
+* **Someone you accept** gets what any contact gets. Someone you decline or
+  block gets nothing back.
+* **The handle service** sees the internet address your phone claims,
+  changes and looks up handles from, and of a lookup only the group of 32 to
+  64 handles it was among, not which.
+* **The relay** sees how many requests your handle's inbox gets and when, and
+  the address your phone reads it from — the same address your own
+  connection comes from. Nothing at the relay or the handle service links the
+  inbox to your account, but an address is an address: Tor or a VPN hides it.
+
+`THREAT_MODEL.md` R47–R50 is the long version.
+
 ## The safety number, and when it changes
 
 Open a contact and you will see a safety number — a string of digits derived
@@ -522,7 +628,8 @@ nobody on it is ever prompted.
 
 No phone number, no email, no contacts-list upload, no analytics, no crash
 reporter, no advertising identifier. The app talks to the relay you configure,
-to the transparency log (which learns who your contacts are, above), and to
+to the transparency log (which learns who your contacts are, above), to a
+handle service only when you claim, change or look up a handle (above), and to
 your platform's notification service, which learns that a device should wake
 and nothing else. On Android push is on unless you turn it off in Settings,
 and the app registers for it even if you did not allow notifications; the

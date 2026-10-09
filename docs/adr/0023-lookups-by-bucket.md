@@ -92,7 +92,7 @@ query for both logs (§19.9):
   repeats on every check. Decoys and padding — a fixed number of buckets per
   check, the same buckets each time — are defined below (phase 35).
 - **When and from where.** The address, and the moment, as for every request;
-  R56 records this for the handle log.
+  R49 records this for the handle log.
 
 ## Considered and rejected
 

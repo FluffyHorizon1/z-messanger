@@ -148,8 +148,13 @@ does not serve better, and would change bytes that are frozen.
 
 **A directory of mailbox → relay.** Rejected: a directory is a server that
 knows who exists and where, which is the thing Z's design refuses to
-build (`THREAT_MODEL.md`, "no directory, no key server"). The contact code
-is the directory, one entry at a time, signed by its subject.
+build (`THREAT_MODEL.md`, "Design decisions that follow from zero trust").
+The contact code is the directory, one entry at a time, signed by its
+subject. Since phase 38 Z has one directory, of volunteers: a handle
+(`adr/0015`) is a name someone chose to claim, resolving to an introduction
+mailbox made for it — never to their account, their own mailbox or their
+relay — so the refusal here, of a directory of everybody's mailboxes and
+where they live, stands.
 
 **Relay‑to‑relay (B) for the sender's address.** B hides the sender's
 address from the recipient's relay at the cost of showing every

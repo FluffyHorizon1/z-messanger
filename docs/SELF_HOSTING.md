@@ -1188,9 +1188,11 @@ What the operator has to do, none of it done by deploying this code:
 2. **Create the service** from the Blueprint above, with its own host name
    (e.g. `handles.zmessengers.com`) and TLS, and read its public key off its
    log (`z-kt: handle log, … public key …`) or `/kt/v1/pub`.
-3. **Pin that key in the app** — phase 38, which ships handles, adds the build
-   setting; until then no client reads the handle log.
+3. **Pin that key in the app** — `defaultHandleLogUrl` and
+   `defaultHandleLogPub` in `app/lib/core/handles.dart` (phase 38), or per
+   device in Settings › Developer mode, then Handle service address and key;
+   until then the app says handles are unavailable and reads no handle log.
 4. **Set `KT_CLIENT_IP_HEADER`** as for the transparency log, once only
    Cloudflare can reach it.
-5. **Find a witness operator** for it (`--mode handles`); THREAT_MODEL will
-   record the handle log as unwitnessed until one co‑signs (phase 38).
+5. **Find a witness operator** for it (`--mode handles`); THREAT_MODEL
+   records the handle log as unwitnessed until one co‑signs (R50).

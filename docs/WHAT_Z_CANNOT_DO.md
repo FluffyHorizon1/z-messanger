@@ -89,6 +89,13 @@ log, ends their encryption in transit (not the messages', which is
 end-to-end): it sees your address beside your mailbox, which mailbox each
 envelope you send is for, and which buckets you ask the log about (R44).
 
+If you claim a handle, or look one up, a third does. **The handle service**
+sees the address each claim, change and lookup comes from — a lookup names a
+group of 32 to 64 handles rather than the one asked about, which hides what
+was asked and not who asked — and the relay sees how many requests your handle's
+inbox receives and the address your phone reads them from, the same address
+your own mailbox is held open from (R47, R49).
+
 Someone watching **both ends** can correlate timing and volume regardless of
 any of it. That is a property of the internet, not of Z. If being seen to use
 an encrypted messenger is itself your risk, you need Tor or something built
@@ -104,7 +111,9 @@ your passphrase, restore your history, or prove to a contact that you are you.
 
 If you lose your only device without a backup, the identity and the history
 are gone. This is not a support failure — it is the same fact that means a
-subpoena to us produces nothing.
+subpoena to us produces nothing. A handle is the same: lose the phone and its
+recovery code, and nobody can give the handle back — or take it from
+whoever holds that code.
 
 `USING_Z.md` has the recovery guidance. The short version: make a backup,
 write the recovery code on paper, keep them apart.
@@ -122,8 +131,9 @@ constant.
 ## It cannot make key verification happen for you
 
 Z shows you a safety number and tells you when it changes. It cannot make you
-compare it, and it cannot compare it for you — that would need a directory of
-identities, which is exactly the thing this design refuses to build.
+compare it, and it cannot compare it for you — that would need a directory
+that vouches for identities, which is exactly the thing this design refuses
+to build; a handle (below) vouches for nothing.
 
 An unverified conversation is still encrypted, but you are trusting that
 nobody interfered when you exchanged codes. Verifying takes a minute and it is
@@ -151,6 +161,24 @@ running and the app checks device lists against it. What it does not have
 yet is anyone outside the project co-signing what it says
 (`docs/GA_CHECKLIST.md`, G3) — the part that would catch the log itself
 misbehaving rather than the accounts in it.
+
+## It cannot tell you who is behind a handle
+
+A handle — `@alex.42` — is a name someone claimed, first come, first served.
+Z checks that the account that answers a request is the one the handle sent
+it to; it cannot check whose account that is. Anyone can claim
+`@yourfriend.07` before your friend does, and a request to a handle carries
+your display name and key to whoever holds it before they decide anything —
+so a squatter on a name people expect learns who went looking for it
+(`THREAT_MODEL.md`, R48). The safety number is the check, as it is for every
+contact.
+
+Nobody vouches for the handle service yet, either. It could show you a
+different record for a handle than it shows everyone else, and send your
+request to an inbox of its choosing; the app checks everything in an answer
+it can check, but only a witness comparing what the service tells different
+people would catch that, and none runs yet (R50). There too, the safety
+number is what catches the account that answered.
 
 ## It has not been audited
 

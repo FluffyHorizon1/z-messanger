@@ -296,7 +296,7 @@ const LANDING_HTML = page(
 
   <h2>What we don't collect</h2>
   <ul>
-    <li class="no">No phone number, email address or username — there is no sign-up.</li>
+    <li class="no">No phone number or email address, and no username unless you choose to claim a handle — there is no sign-up.</li>
     <li class="no">No contact list stored on our servers, and no access to your address book — though the transparency log learns which groups of accounts your app checks (<a href="/privacy">privacy policy</a>).</li>
     <li class="no">No analytics, no advertising SDKs, no crash reporting.</li>
     <li class="yes">Only ciphertext, briefly, in memory. <a href="/privacy">Read the full data map</a>.</li>
@@ -799,7 +799,7 @@ const PRIVACY_HTML = page(
   "No number, email or contacts. See the full data map of what exists and where it lives.",
   `
   <h1>Privacy policy</h1>
-  <p class="muted">Effective 4 October 2026 · applies to the Z app, the relay
+  <p class="muted">Effective 9 October 2026 · applies to the Z app, the relay
   service at zmessengers.com and the transparency log at kt.zmessengers.com</p>
 
   <p>Z is built so that, wherever it can be, we <i>cannot</i> know things about
@@ -810,8 +810,9 @@ const PRIVACY_HTML = page(
 
   <h2>What we never collect</h2>
   <ul>
-    <li>No accounts, usernames, passwords, phone numbers or email addresses —
-    the app has no registration at all.</li>
+    <li>No accounts, passwords, phone numbers or email addresses — the app has
+    no registration at all. A <a href="#handles">handle</a>, a public name
+    people can find you by, exists only if you choose to claim one.</li>
     <li>No message content: every message and attachment is end-to-end
     encrypted on your device (double-ratchet, forward-secret). The relay can
     never decrypt it and holds no keys.</li>
@@ -865,6 +866,27 @@ const PRIVACY_HTML = page(
   can point the app at another log, or at none, in Settings once Developer mode
   is on.</p>
 
+  <h2 id="handles">Handles (optional)</h2>
+  <p>A handle is a name, like @alex.42, that people can look up to send you a
+  contact request. The app never asks you for one: you can claim one in
+  Settings, pause it, give it a new inbox or give it up, and nothing about
+  handles is sent anywhere until you claim one or look one up. Handles need a
+  handle service, which is not running yet; until it is, the app says handles
+  are not available.</p>
+  <p>If you claim a handle, the app publishes a record of it to a public
+  handle log: keys made for the handle — never your account's key — how much
+  work a request to it must cost, and a commitment to its recovery code, under
+  a label computed from the handle, with the hour it was published. The
+  recovery code itself is shown to you once and stored nowhere, by us or by
+  the app. Anyone can look a handle up. The log keeps every record for good,
+  as a log must; giving a handle up publishes a last record that takes no
+  requests. When you claim, change or look up a handle, the log's operator
+  sees your IP address — and of a lookup, only a group of 32 to 64 handles,
+  not which one. Requests to your handle go to an inbox at the relay made for
+  the handle, not to your own mailbox: the relay sees how many arrive and when,
+  and the IP address your device reads them from. A request you send to a
+  handle carries your display name and public key to whoever holds it.</p>
+
   <h2>Push notifications (Android)</h2>
   <p>Push is on by default on Android. The app registers an opaque Firebase
   Cloud Messaging token with the relay — whether or not you have allowed
@@ -902,10 +924,14 @@ const PRIVACY_HTML = page(
     <li>Turn push off in Settings; the app works fully without it.</li>
     <li>Turn the transparency log off, or point it at your own, in Settings
     once Developer mode is on.</li>
+    <li>Claim a handle only if you want to be found by one; pause it or give
+    it up in Settings at any time.</li>
     <li><a href="/self-host">Point the app at your own relay</a> so no traffic
     touches ours.</li>
     <li>Delete everything at any time with Settings → Wipe everything. There is
-    nothing server-side to request deletion of.</li>
+    nothing server-side to request deletion of — except a handle's public
+    record, if you claimed one, which the handle log keeps; wiping the app
+    does not give the handle up, so give it up first.</li>
   </ul>
 
   <h2>Children</h2>

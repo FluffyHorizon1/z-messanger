@@ -3956,7 +3956,8 @@ version 1 computes instead.
 
 *Normative for clients that claim, resolve or reach a handle. Opt‑in: an
 account that never claims one is untouched, and nothing in §1–§20 changes.
-The handle log is §21.5 and the relay's introduction mailboxes are §21.6.
+The handle log is §21.5, the relay's introduction mailboxes are §21.6, and
+what the reference client does with all of it is §21.8.
 Design, the flaws of the first design and what may still be vetoed:
 `adr/0015` (revision 2).*
 
@@ -3981,6 +3982,7 @@ account, with an acknowledgement signed by the introduction key.
 | 21.5 | the handle log | `kt/` in handle mode |
 | 21.6 | introduction mailboxes at the relay | relay |
 | 21.7 | the request, its proof‑of‑work stamp, and the acknowledgement | client, relay |
+| 21.8 | the client: configuration, schedules, caps, connections, what it stores | client |
 
 Every context string is disjoint from every other in this document:
 
@@ -4492,3 +4494,159 @@ not verify is ignored, and the acceptance is an ordinary request. The
 acknowledgement proves that whoever holds this handle's introduction key
 accepted this request for this account; it says nothing about who the
 account is, which is what the safety number is for.
+
+### 21.8 The client (phase 38)
+
+*Normative for the reference client (`app/lib/core/handles.dart`). Another
+client may choose other numbers; it must keep the property each one is
+there for, which is said beside it.*
+
+**Configuration.** A handle log is an address and a pinned Ed25519 key, set
+as the transparency log's are (§19.5) — its own key, never the
+transparency log's, and never one fetched from the log. A client with no
+handle log configured says, wherever a handle could be claimed or looked
+up, that handles are unavailable, and does nothing else; the reference
+build's defaults are empty until a log is deployed. A request goes to the
+requester's own relay: as for every envelope today (`adr/0008`, deferred),
+the owner must use the same one.
+
+**Claiming** is never offered during account setup (F5). The client parses
+the handle (21.1) — two random digits by default, each draw checked free,
+up to five draws; or 2 to 6 the person chooses — and checks it is free: a
+bucket (§19.9) at the log's `bucketBits`, verified, with no leaf for the
+label. It draws `ownerSeed`, `introSeed` and the code (21.3), shows the code
+once as `ZHR-…`, and keeps nothing until the code has been typed back;
+then it keeps the claim, and neither the code nor `recoverySeed`. The claim
+(`v` = 1, `pow` 20) is published at a moment drawn uniformly from **10 to 60
+minutes** later: the log keeps only the hour, and its operator also sees
+when the request arrives, so the delay puts the claim's moment apart from
+the moment the person was using the app — the account's relay traffic and
+transparency‑log publishes of that minute. A moment that passed while the
+client was not running is drawn again, from **3 to 20 minutes** after the
+next start, because a start is itself a burst. A pending claim can be
+cancelled: nothing has been published. `409 taken`: the client reads the
+label back, and a record naming its own owner key is its claim, published
+by an earlier attempt whose answer was lost; any other is someone else's,
+and the person picks other digits — a new claim, with a new code, since a
+code's key depends on the label. `429`, `5xx` or no answer: five minutes
+later. A restore never publishes a claim it carries (below).
+
+**The introduction mailbox.** Only the account's root device holds
+`ownerSeed` and `introSeed` and drains the mailbox (v1). A drain is a relay
+connection of its own, authenticated (§12.1, v2) as the introduction
+identity — never one of the account's, so the relay never sees the
+account's routing id and the introduction routing id on one connection —
+which sends `intro` with the record's `pow` after it authenticates
+(§21.6), never registers a push token, reads until nothing has arrived for
+1.5 s (at most 20 s), acknowledges every envelope whose fate is decided
+(§6.8), and closes. Drains run a uniformly drawn **3 to 30 seconds** after
+the app comes to the foreground — not in the second the account's own
+connection reopens — then every **15 minutes, give or take a third**, while
+it stays in front; never in the background; and at once after a publish
+that changes the introduction keys or the difficulty. An envelope that does
+not open with `xintroSeed`, is not a `creq`, is not addressed to the
+mailbox (`to` = `introRid`), or is not signed by the identity that sealed
+it is acknowledged and dropped; one that could not be filed for a reason
+that passes (the vault busy) is left with the relay for the next drain —
+so nothing can wedge the mailbox. A verified request is filed beside every
+other pending request, marked as coming *via @nick.digits*, with its
+`creqId`; one from a blocked routing id is dropped, and one from a contact
+is that contact's answer (§8.1). It is held to §8.1's rules for its signed
+`ts` and for the last request taken in from the same requester, so a stamped
+request the relay hands over again after a drain, or one declined, is not
+filed again. At most **100** pending requests are kept, those through the
+handle counted with every other (§8.1): past that, the oldest the person has
+not seen on the Requests screen goes, so a wave of stamped requests cannot
+push out one already looked at — and when every older one has been seen, the
+newcomer is the one dropped.
+
+**Finding and asking.** Any device. The client parses what was typed
+(reserved nicks refused), computes the label off the UI thread, asks for its
+bucket at the log's `bucketBits` (one more bit for each
+`bucket_too_large`), verifies the answer under the pinned key (§19.9, §21.5),
+and holds the latest record to its one encoding (21.4) and to the leaf's
+`sig` under the record's own `owner` over 21.4's publish input — the owner a
+claim names, an update keeps and a recover installs alike — and, on a
+recover, `rsig` under `rpub`. A record that fails any of this is not used and
+nothing is sent. The owner rule over the label's history is the log's and
+its mirrors' to hold (§21.5); the client keeps no head between lookups, so a
+log that shows it another history is caught only by a witness (R50).
+`intro` null: the handle is paused, and nothing is sent. Otherwise the
+client builds a `creq` to `introRid`, seals it to `xintro`, and keeps the
+handle, its owner and introduction keys and the request's `creqId` — at most
+**20** handles, the three latest ids for each — before sending, so an
+acceptance that comes back can be matched. It stamps the envelope (21.7) at
+the record's `pow` for its own day, off the UI thread, and sends it on an
+anonymous connection **opened for that send alone** and closed after: not
+the account's long‑lived anonymous link, which — once the request is
+accepted — carries the account's envelopes to the account the handle
+introduced, so that one connection would send to both the introduction
+mailbox and that account. On `pow_required` it stamps once more, for the
+relay's `day`, still at the record's `pow`, and stops after that.
+
+**Accepting** is §8.1's accept, plus `ia` (21.7) signed with the
+introduction seed of the mailbox the request reached — kept, after a
+rotation or a retirement, for as long as a pending request needs it — on
+the `creq` the acceptance sends, which is queued ahead of the session's
+opening hello so that the requester holds the account before the hello
+arrives. A request whose introduction seed is no longer held is accepted
+without `ia`, and reaches the requester as an ordinary request.
+
+**The requester's side.** A `creq` carrying `ia` is checked against every
+request kept: its introduction key, the requester's own routing id, the
+`creq`'s `bundle.ed` and each kept `creqId` — at most sixty signature checks,
+which is what one forged acceptance can cost. A match adds the sender as a
+contact at the classical floor, unverified; records the handle it came
+through; puts *@nick.digits accepted — compare safety numbers to verify* in
+the chat; forgets the kept request; and sends a `creq` back (§8.1), so that a
+hello the owner sent before this device held them is sent again. No match —
+no `ia`, a forged one, the genuine one carried by another account — and the
+`creq` is an ordinary request.
+
+**Managing** is the root device's. Each change reads the label's latest
+record first and is refused when its owner is not this device's key (the
+code was used: the handle is lost to this device); it then publishes at the
+latest version + 1, at once — a change answers spam, and binds nothing new
+to the account:
+
+```
+pause       intro, xintro = null; the mailbox is read once more, then not at all; the keys are kept
+resume      the same introduction keys again
+new inbox   a new introSeed; the old mailbox is read once more without `intro`, so its flag lapses
+            with its ownership (§21.6); its seed is kept while a pending request still needs it
+difficulty  16–28 (the reference client offers 16, 18, 20, 22 and 24)
+give up     intro, xintro = null, and the device forgets the handle's keys; the label and its history
+            stay (the log is append-only), and only the code brings the handle back
+```
+
+**Recovering** is the root device's, on the account that held the handle or
+on one that never did: the handle and its code (a `ZBK` code refused by
+name); the label's latest record read; the code's key must give the record's
+`rc`; new owner and introduction seeds and a new code, shown once and typed
+back; then a `recover` at the latest version + 1, published **at once** —
+not after a delay like a claim, because `rsig` covers that version, which an
+update made meanwhile would overtake, and the code is not kept to sign
+again. A device whose handle is recovered elsewhere finds, the next time it
+reads its record, an owner that is not its own, and manages it no more.
+
+**What is stored**, sealed in the vault: the handle (canonical), its label,
+`ownerSeed`, `introSeed`, `pow`, `rc`, the version and where it stands
+(pending with its moment, held, live, paused, taken by another, lost); for
+each pending request that came through the handle, the handle, the mailbox
+it reached, its `creqId`, when it arrived and whether it has been seen; the
+introduction seeds a pending request still needs; the requests kept for
+matching an acceptance; the handle log's address and key; and, for a
+contact made through a handle, which handle. Never the code or
+`recoverySeed`.
+
+**Backup and restore.** The archive carries all of it in one record,
+`{"t":"handle","keep":1,"v":1,"kv":{…}}` (`BACKUP.md` §5), which a build
+that does not know it keeps and writes back. A restore drains the mailbox —
+re‑flagging it — and publishes nothing by itself: a claim that was pending
+when the backup was made comes back held, published only when the person
+asks, since the device it came from may have published it since or been
+overtaken.
+
+**Linked devices** hold no handle keys, drain nothing and manage nothing
+(v1); they may look a handle up and send a request, and they see the
+contacts the root device makes through the handle by self‑sync (§9).
