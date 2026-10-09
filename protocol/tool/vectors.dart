@@ -1079,6 +1079,274 @@ Future<Map<String, Object?>> suiteMultidevice(List<Actor> a) async {
   };
 }
 
+/// ADR 0022: a device certificate's proof of possession (`pop`). A new file
+/// beside `multidevice.json`, which it leaves byte-identical: the same
+/// account and second device, regenerated from the same seed, so the list
+/// here IS that file's dual-signed list with the second device's proof
+/// attached — and its signatures and fingerprint are that file's.
+Future<Map<String, Object?>> suiteDevicePop(List<Actor> a) async {
+  final d = Drbg(0x0006); // multidevice.json's seed: the same account
+  final me = await d.run(() => AccountIdentity.generate());
+  final draws = d.takeDraws();
+  check(draws.length == 3 && eq(draws[0], me.accountEdSeed!), 'account seed');
+  final dev2EdSeed = d.next(32), dev2XSeed = d.next(32);
+  final dev2EdPub = await refEdPub(dev2EdSeed);
+  final dev2XPub = await refXPub(dev2XSeed);
+  const dev2Id = 'second-device';
+  final cert2 = await me.signDeviceCert(
+      deviceEdPub: dev2EdPub, deviceXPub: dev2XPub, deviceId: dev2Id);
+  final acctPub = me.accountEdPub;
+
+  // The proof: the device's own Ed25519 over the context, the account key,
+  // its two keys and its id — rebuilt from the formula, not read back.
+  final popIn = DeviceCertificate.popInput(acctPub, dev2EdPub, dev2XPub, dev2Id);
+  check(
+      eq(
+          popIn,
+          concatBytes(
+              [utf8b('z-device-pop-v1:'), acctPub, dev2EdPub, dev2XPub, utf8b(dev2Id)])),
+      'pop input');
+  check(popIn.length == 16 + 32 * 3 + utf8b(dev2Id).length, 'fixed-width fields');
+  final pop = await cert2.makePop(dev2EdSeed, acctPub);
+  check(eq(pop, await refEdSign(dev2EdSeed, popIn)),
+      'pop is the reference Ed25519 by the DEVICE key (RFC 8032, deterministic)');
+  final proven2 = cert2.withPop(pop);
+  check(await proven2.verify(acctPub), 'the certificate with its proof verifies');
+  check(await proven2.provesPossession(acctPub), 'and proves possession');
+  check(await cert2.verify(acctPub) && !await cert2.provesPossession(acctPub),
+      'the same certificate without it verifies and proves nothing');
+  check(await me.deviceCert.provesPossession(acctPub),
+      'device #1 proves possession with no pop: its key is the account key');
+  // The device's own view of it: a linked device makes the same bytes.
+  final dev2 = await AccountIdentity.fromEnrollment(
+      accountEdPub: acctPub,
+      deviceEdSeed: dev2EdSeed,
+      deviceXSeed: dev2XSeed,
+      deviceId: dev2Id,
+      deviceCert: cert2);
+  check(eq(await dev2.devicePop(), pop), 'AccountIdentity.devicePop');
+  check(eq((await dev2.provenDeviceCert()).pop!, pop), 'provenDeviceCert');
+  check((await me.provenDeviceCert()).pop == null,
+      'device #1 presents its certificate as it is');
+
+  // multidevice.json's dual-signed list, version 3, the devices in the same
+  // (unsorted) order — with and without the proof.
+  final plain =
+      await me.signDeviceList([cert2, me.deviceCert], 3, v2Only: false);
+  final proven =
+      await me.signDeviceList([proven2, me.deviceCert], 3, v2Only: false);
+  check(await proven.verify(), 'the list carrying the proof verifies');
+  check(eq(plain.sig!, proven.sig!) && eq(plain.sig2!, proven.sig2!),
+      'a proof changes no signature the account makes');
+  check(eq(await plain.fingerprint(), await proven.fingerprint()),
+      'nor the fingerprint');
+  Map<String, Object?> withoutPop(Map<String, Object?> listJson) => {
+        ...listJson,
+        'devs': [
+          for (final dv in (listJson['devs'] as List).cast<Map>())
+            {
+              for (final e in dv.cast<String, Object?>().entries)
+                if (e.key != 'pop') e.key: e.value
+            }
+        ],
+      };
+  check(
+      jsonEncode(withoutPop(proven.toJson())) == jsonEncode(plain.toJson()),
+      'with the member taken off, it is the list a reader before it holds');
+  // And the v2-only shape (ADR 0017 stage 2) the same way.
+  final v2oPlain =
+      await me.signDeviceList([cert2, me.deviceCert], 4, v2Only: true);
+  final v2oProven =
+      await me.signDeviceList([proven2, me.deviceCert], 4, v2Only: true);
+  check(await v2oProven.verify() && eq(v2oPlain.sig3!, v2oProven.sig3!),
+      'v2-only: the same sig3, and it verifies');
+  check(eq(await v2oPlain.fingerprint(), await v2oProven.fingerprint()),
+      'v2-only: the same fingerprint');
+  // A zc2. account code carrying it.
+  final code = me
+      .toAccountBundle(displayName: 'Alice', otherDevices: [proven2]).encode();
+  final decoded = await AccountBundle.decode(code);
+  check(decoded.devices.length == 2 && eq(decoded.devices[1].pop!, pop),
+      'zc2 decode keeps the proof');
+
+  // Lists that must be refused by a reader that knows the member. Each is
+  // version 3 of the account's list, signed by the account over whatever
+  // certificates it carries, so that the proof is the only thing wrong.
+  Future<Map<String, Object?>> listWith(DeviceCertificate c2) async =>
+      (await me.signDeviceList([c2, me.deviceCert], 3, v2Only: false))
+          .toJson();
+  final otherAcct = (await AccountIdentity.fromV1(a[1].id, deviceId: 'bob'))
+      .accountEdPub; // Bob's, from the fixed actors
+  final otherXSeed = Uint8List.fromList(List<int>.filled(32, 0x42));
+  final otherXPub = await refXPub(otherXSeed);
+  final swappedCert = await me.signDeviceCert(
+      deviceEdPub: dev2EdPub, deviceXPub: otherXPub, deviceId: dev2Id);
+  final renamedCert = await me.signDeviceCert(
+      deviceEdPub: dev2EdPub, deviceXPub: dev2XPub, deviceId: 'renamed');
+  final refusals = <(String, String, DeviceCertificate)>[
+    (
+      'signed_by_account_key',
+      'the "proof" made by the ACCOUNT key over the right input: what a root '
+          'can make for a device it does not hold',
+      cert2.withPop(await refEdSign(me.accountEdSeed!, popIn))
+    ),
+    (
+      'for_another_account',
+      'the device\'s own signature over the input for ANOTHER account (Bob\'s '
+          'key from identity.json): a proof names one account',
+      cert2.withPop(await refEdSign(dev2EdSeed,
+          DeviceCertificate.popInput(otherAcct, dev2EdPub, dev2XPub, dev2Id)))
+    ),
+    (
+      'ratchet_key_swapped',
+      'the device\'s genuine proof kept while its certificate is re-signed by '
+          'the account over another X25519 key (derived from other_x_seed): '
+          'the proof covers the ratchet key',
+      swappedCert.withPop(pop)
+    ),
+    (
+      'id_changed',
+      'the genuine proof kept while the certificate names another id',
+      renamedCert.withPop(pop)
+    ),
+    (
+      'pop_63_bytes',
+      'a proof one byte short',
+      cert2.withPop(Uint8List.fromList(pop.sublist(0, 63)))
+    ),
+    (
+      'pop_bit_flipped',
+      'the genuine proof with its last byte changed',
+      cert2.withPop(Uint8List.fromList([...pop.sublist(0, 63), pop[63] ^ 1]))
+    ),
+  ];
+  final mustRefuse = <Map<String, Object?>>[];
+  for (final (name, why, c) in refusals) {
+    check(!await c.verify(acctPub), 'refused certificate: $name');
+    final j = await listWith(c);
+    final back = SignedDeviceList.fromJson(j);
+    check(!await back.verify(), 'refused list: $name');
+    mustRefuse.add({'case': name, 'why': why, 'list_json': j});
+  }
+  // A member present as anything but a base64 string does not parse.
+  final notParsed = <Map<String, Object?>>[];
+  for (final (name, value) in <(String, Object?)>[
+    ('pop_null', null),
+    ('pop_number', 7),
+    ('pop_list', <int>[1, 2]),
+  ]) {
+    final j = {...proven2.toJson(), 'pop': value};
+    var threw = false;
+    try {
+      DeviceCertificate.fromJson(j);
+    } on FormatException {
+      threw = true;
+    }
+    check(threw, 'a certificate with $name does not parse');
+    notParsed.add({'case': name, 'cert_json': j});
+  }
+
+  // A claim: another account's list naming device 2's keys. Carol's
+  // account (identity.json's third actor) signs a certificate over them —
+  // an account signs whatever it is handed — and lists it.
+  final carol = await AccountIdentity.fromV1(a[2].id, deviceId: 'carol');
+  final claimedCert = await carol.signDeviceCert(
+      deviceEdPub: dev2EdPub, deviceXPub: dev2XPub, deviceId: dev2Id);
+  final claimBare = await carol
+      .signDeviceList([carol.deviceCert, claimedCert], 2, v2Only: false);
+  final claimWithPop = await carol.signDeviceList(
+      [carol.deviceCert, claimedCert.withPop(pop)], 2,
+      v2Only: false);
+  check(await claimBare.verify(),
+      'the bare claim verifies: the account signed it, which is all §3.1 asks');
+  check(!await claimedCert.provesPossession(carol.accountEdPub),
+      'and proves nothing for device 2');
+  check(!await claimWithPop.verify(),
+      'device 2\'s proof carried into it does not verify: it names Alice\'s account');
+
+  return {
+    'suite': 'device_pop',
+    'version': vectorsVersion,
+    'description':
+        'ADR 0022 (PROTOCOL 3.1, 3.4): a device certificate\'s proof of '
+            'possession. pop = Ed25519 by the DEVICE key over '
+            'utf8("z-device-pop-v1:") || account_ed (32) || device_ed (32) || '
+            'device_x (32) || utf8(device_id), as an optional member of the '
+            'certificate. No signature the account makes covers it, so a list '
+            'or zc2. code with it and the same one without have the same '
+            'signatures and the same fingerprint, and a reader from before it '
+            'admits both. A reader that knows it refuses a certificate whose '
+            'pop is present and does not verify — and with it the list or code '
+            'that carries it. A certificate proves possession when it verifies '
+            'and either carries a pop or its device key IS the account key '
+            '(device #1, a legacy record), where sig is already the device\'s '
+            'own signature. What a receiver then does with a list that names a '
+            'device proven for another account, or names a device it has seen '
+            'proven without the proof, is §3.4\'s receiver rule: state, not a '
+            'property of the bytes, so not vectored here.',
+    'context': devicePopContext,
+    'account_ed_seed': hex(me.accountEdSeed!),
+    'account_ed_pub': hex(acctPub),
+    'device1': {
+      'device_ed_pub': hex(me.deviceEdPub),
+      'device_id': me.deviceId,
+      'proves_possession': true,
+      'why': 'its key is the account key: the certificate is the device '
+          'key\'s own signature, and carries no pop',
+    },
+    'device2': {
+      'ed_seed': hex(dev2EdSeed),
+      'x_seed': hex(dev2XSeed),
+      'device_ed_pub': hex(dev2EdPub),
+      'device_x_pub': hex(dev2XPub),
+      'device_id': dev2Id,
+      'pop_input': hex(popIn),
+      'pop': hex(pop),
+      'cert_json': proven2.toJson(),
+      'cert_json_without_pop': cert2.toJson(),
+    },
+    'device_list': {
+      'note': 'multidevice.json\'s device_list with device 2\'s proof '
+          'attached; json_without_pop is that file\'s device_list.json byte '
+          'for byte, and sig, sig2 and fingerprint are that file\'s.',
+      'version': 3,
+      'sig': hex(proven.sig!),
+      'sig2': hex(proven.sig2!),
+      'fingerprint': hex(await proven.fingerprint()),
+      'json': proven.toJson(),
+      'json_without_pop': plain.toJson(),
+    },
+    'device_list_v2_only': {
+      'note': 'the same, v2-only (ADR 0017 stage 2) at version 4: the same '
+          'sig3 and fingerprint with the proof or without it.',
+      'version': 4,
+      'sig3': hex(v2oProven.sig3!),
+      'fingerprint': hex(await v2oProven.fingerprint()),
+      'json': v2oProven.toJson(),
+      'json_without_pop': v2oPlain.toJson(),
+    },
+    'account_code_json':
+        utf8.decode(base64Url.decode(base64Url.normalize(code.substring(4)))),
+    'account_code': code,
+    'claim': {
+      'note': 'Carol\'s account (identity.json\'s third identity, read as an '
+          'account) lists device 2\'s keys under a certificate of its own. '
+          'Without a pop the list verifies — the account signed it — and '
+          'device 2 proves nothing in it: a receiver that has seen device 2 '
+          'proven for Alice\'s account refuses it, and one that has not holds '
+          'it to the first-come rule (§3.4). With device 2\'s genuine pop '
+          'carried over it does not verify: that proof names Alice\'s account.',
+      'claimant_ed_seed': hex(a[2].id.edSeed),
+      'claimant_account_ed_pub': hex(carol.accountEdPub),
+      'json_without_pop': claimBare.toJson(),
+      'json_with_pop': claimWithPop.toJson(),
+    },
+    'other_x_seed': hex(otherXSeed),
+    'must_refuse': mustRefuse,
+    'must_not_parse': notParsed,
+  };
+}
+
 Future<Map<String, Object?>> suiteConnect(List<Actor> a) async {
   final d = Drbg(0x0019);
   final code = ConnectCode(d.next(10));
@@ -4615,6 +4883,8 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
       'multidevice': await suiteMultidevice(a),
       'pairing': await suitePairing(a),
       'inner_messages': await suiteInnerMessages(a),
+      // ADR 0022: a new file; every one above is unchanged by it.
+      'device_pop': await suiteDevicePop(a),
     },
     'v2': {
       'mlkem768': await suiteMlKem(),

@@ -692,6 +692,93 @@ test('multidevice: device certificates, zc2 account code, signed device list', (
   assert.equal(legacy.legacy, true);
 });
 
+// ADR 0022 (§3.1): a certificate's proof of possession, `pop` — the DEVICE
+// key's Ed25519 over 'z-device-pop-v1:' || account || ded || dx || id. Two
+// readers are written here from the text. `devlistAdmitted` above is §3.1 and
+// §3.4 as they stood before the member existed: it reads `ded`, `dx`, `id`
+// and `sig` and nothing else, which is what every client before ADR 0022
+// does. `popAdmitted` is a reader that knows the member: everything the first
+// checks, and a `pop` that is present must be a string and verify under the
+// device's own key over the input for the list's account.
+const popInput = (acct, ded, dx, id) => cat(utf8('z-device-pop-v1:'), acct, ded, dx, utf8(id));
+const popVerifies = (acct, d) =>
+  edVerify(unb64(d.ded), popInput(acct, unb64(d.ded), unb64(d.dx), d.id), unb64(d.pop));
+const popWellFormed = (d) => !('pop' in d) || typeof d.pop === 'string';
+function popAdmitted(l, acctPub) {
+  if (!l.devs.every(popWellFormed)) return false;
+  if (!devlistAdmitted(l, acctPub)) return false;
+  return l.devs.every((d) => !('pop' in d) || (unb64(d.pop).length === 64 && popVerifies(acctPub, d)));
+}
+// A certificate proves possession when it verifies and its key IS the
+// account key (its `sig` is then the device key's own) or it carries a pop.
+const provesPossession = (acct, d) =>
+  unb64(d.ded).equals(acct) || ('pop' in d && popVerifies(acct, d));
+
+test('device_pop: the device\'s own proof, re-derived; a reader before it admits it unchanged, '
+  + 'and a reader that knows it refuses every alteration', () => {
+  const v = load('device_pop');
+  const md = load('multidevice');
+  const acct = unhex(v.account_ed_pub);
+  assert.equal(hex(edPub(unhex(v.account_ed_seed))), v.account_ed_pub);
+  assert.equal(v.context, 'z-device-pop-v1:');
+  const d2 = v.device2;
+  assert.equal(hex(edPub(unhex(d2.ed_seed))), d2.device_ed_pub);
+  assert.equal(hex(xPub(unhex(d2.x_seed))), d2.device_x_pub);
+  const input = popInput(acct, unhex(d2.device_ed_pub), unhex(d2.device_x_pub), d2.device_id);
+  assert.equal(hex(input), d2.pop_input);
+  assert.equal(hex(edSign(unhex(d2.ed_seed), input)), d2.pop, 'pop re-signed by the device seed');
+  assert.ok(!edVerify(acct, input, unhex(d2.pop)), 'and it is not the account key\'s');
+  assert.deepEqual(d2.cert_json, { ...d2.cert_json_without_pop, pop: b64(unhex(d2.pop)) });
+  assert.ok(provesPossession(acct, d2.cert_json));
+  assert.ok(!provesPossession(acct, d2.cert_json_without_pop));
+  assert.equal(v.device1.device_ed_pub, v.account_ed_pub, 'device #1 proves it by being the account key');
+
+  // The member changes nothing an account signs: without it, each list is
+  // multidevice.json's own; with it, the reader from before admits it on the
+  // same signatures and reports the same fingerprint.
+  for (const k of ['device_list', 'device_list_v2_only']) {
+    const l = v[k];
+    assert.deepEqual(l.json_without_pop, md[k].json, `${k}: multidevice.json's list`);
+    const stripped = { ...l.json, devs: l.json.devs.map(({ pop, ...rest }) => rest) };
+    assert.deepEqual(stripped, l.json_without_pop);
+    assert.ok(devlistAdmitted(l.json, acct), `${k}: a reader before the member admits it`);
+    assert.ok(popAdmitted(l.json, acct), `${k}: and so does one that knows it`);
+    assert.equal(hex(devlistFingerprint(l.json)), l.fingerprint);
+    assert.equal(hex(devlistFingerprint(l.json_without_pop)), l.fingerprint);
+  }
+  const code = JSON.parse(unb64url(v.account_code.slice(4)).toString('utf8'));
+  assert.deepEqual(code, JSON.parse(v.account_code_json));
+  assert.ok(code.devs.every((d) => edVerify(acct, certInput(unb64(d.ded), unb64(d.dx), d.id), unb64(d.sig))),
+    'zc2: every certificate verifies the way §3.3 has always checked it');
+  assert.ok(code.devs.some((d) => 'pop' in d) && code.devs.every((d) => !('pop' in d) || popVerifies(acct, d)));
+
+  // Every alteration: the account's signatures are genuine over the
+  // certificates as they stand, so a reader before the member admits each
+  // one; only the proof is wrong, and a reader that knows it refuses it.
+  assert.deepEqual(v.must_refuse.map((r) => r.case), ['signed_by_account_key', 'for_another_account',
+    'ratchet_key_swapped', 'id_changed', 'pop_63_bytes', 'pop_bit_flipped']);
+  for (const r of v.must_refuse) {
+    assert.ok(devlistAdmitted(r.list_json, acct), `${r.case}: well signed by the account`);
+    assert.ok(!popAdmitted(r.list_json, acct), `${r.case}: refused for its proof`);
+  }
+  const swapped = v.must_refuse.find((r) => r.case === 'ratchet_key_swapped').list_json;
+  assert.equal(hex(unb64(swapped.devs.find((d) => d.id === d2.device_id).dx)), hex(xPub(unhex(v.other_x_seed))));
+  for (const r of v.must_not_parse) {
+    assert.ok('pop' in r.cert_json && !popWellFormed(r.cert_json), `${r.case}: not a signature`);
+  }
+
+  // Another account's list naming device 2's keys: well signed either way;
+  // device 2 proves nothing in it, and its genuine proof does not carry over.
+  const claimant = unhex(v.claim.claimant_account_ed_pub);
+  assert.equal(hex(edPub(unhex(v.claim.claimant_ed_seed))), v.claim.claimant_account_ed_pub);
+  const bare = v.claim.json_without_pop;
+  assert.ok(popAdmitted(bare, claimant), 'the claim verifies: the account signed it');
+  const claimed = bare.devs.find((d) => hex(unb64(d.ded)) === d2.device_ed_pub);
+  assert.ok(!provesPossession(claimant, claimed), 'and proves nothing for device 2');
+  assert.ok(devlistAdmitted(v.claim.json_with_pop, claimant), 'a reader before the member cannot tell');
+  assert.ok(!popAdmitted(v.claim.json_with_pop, claimant), 'device 2\'s proof names Alice\'s account, not this one');
+});
+
 // ===========================================================================
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 function base32(buf) {

@@ -47,6 +47,7 @@ void main() {
       ('v1', 'multidevice'),
       ('v1', 'pairing'),
       ('v1', 'inner_messages'),
+      ('v1', 'device_pop'),
       ('pair-v2', 'pairing_v2'),
       ('relay-auth-v2', 'relay_auth_v2'),
       ('connect', 'connect'),
@@ -209,6 +210,83 @@ void main() {
       final list = SignedDeviceList.fromJson(
           ((v['device_list'] as Map)['json'] as Map).cast<String, Object?>());
       expect(await list.verify(), isTrue);
+    });
+
+    test(
+        'device_pop: the proof is the device\'s, changes no signature or '
+        'fingerprint, and every alteration is refused (ADR 0022)', () async {
+      final v = readVectors('device_pop');
+      final md = readVectors('multidevice');
+      final acct = unhex(v['account_ed_pub'] as String);
+      final d2 = (v['device2'] as Map).cast<String, Object?>();
+      final edSeed = unhex(d2['ed_seed'] as String);
+      // The input from its formula, and the signature by the DEVICE's seed.
+      final input = concatBytes([
+        utf8.encode(v['context'] as String),
+        acct,
+        unhex(d2['device_ed_pub'] as String),
+        unhex(d2['device_x_pub'] as String),
+        utf8.encode(d2['device_id'] as String),
+      ]);
+      expect(hex(input), d2['pop_input']);
+      final kp = await Ed25519().newKeyPairFromSeed(edSeed);
+      expect(hex((await Ed25519().sign(input, keyPair: kp)).bytes), d2['pop']);
+      final cert = DeviceCertificate.fromJson(
+          (d2['cert_json'] as Map).cast<String, Object?>());
+      expect(hex(cert.pop!), d2['pop']);
+      expect(await cert.provesPossession(acct), isTrue);
+      final bare = DeviceCertificate.fromJson(
+          (d2['cert_json_without_pop'] as Map).cast<String, Object?>());
+      expect(await bare.verify(acct), isTrue);
+      expect(await bare.provesPossession(acct), isFalse);
+      // The list, with the proof and without: the same signatures and
+      // fingerprint, and without it, multidevice.json's own list.
+      for (final k in ['device_list', 'device_list_v2_only']) {
+        final l = (v[k] as Map).cast<String, Object?>();
+        final withPop =
+            SignedDeviceList.fromJson((l['json'] as Map).cast<String, Object?>());
+        final without = SignedDeviceList.fromJson(
+            (l['json_without_pop'] as Map).cast<String, Object?>());
+        expect(await withPop.verify(), isTrue, reason: k);
+        expect(await without.verify(), isTrue, reason: k);
+        expect(hex(await withPop.fingerprint()), l['fingerprint'], reason: k);
+        expect(hex(await without.fingerprint()), l['fingerprint'], reason: k);
+        expect(jsonEncode(without.toJson()),
+            jsonEncode((md[k] as Map)['json']),
+            reason: '$k without the member is multidevice.json\'s');
+      }
+      expect((await AccountBundle.decode(v['account_code'] as String))
+          .devices[1]
+          .pop, isNotNull);
+      // A claim by another account: without the proof it verifies and proves
+      // nothing; with device 2's proof carried over it does not verify.
+      final claim = (v['claim'] as Map).cast<String, Object?>();
+      final claimant = unhex(claim['claimant_account_ed_pub'] as String);
+      final bareClaim = SignedDeviceList.fromJson(
+          (claim['json_without_pop'] as Map).cast<String, Object?>());
+      expect(await bareClaim.verify(), isTrue);
+      for (final dc in bareClaim.devices) {
+        if (hex(dc.deviceEdPub) == d2['device_ed_pub']) {
+          expect(await dc.provesPossession(claimant), isFalse);
+        }
+      }
+      expect(
+          await SignedDeviceList.fromJson(
+                  (claim['json_with_pop'] as Map).cast<String, Object?>())
+              .verify(),
+          isFalse);
+      for (final r in (v['must_refuse'] as List).cast<Map>()) {
+        final l = SignedDeviceList.fromJson(
+            (r['list_json'] as Map).cast<String, Object?>());
+        expect(await l.verify(), isFalse, reason: r['case'] as String);
+      }
+      for (final r in (v['must_not_parse'] as List).cast<Map>()) {
+        expect(
+            () => DeviceCertificate.fromJson(
+                (r['cert_json'] as Map).cast<String, Object?>()),
+            throwsFormatException,
+            reason: r['case'] as String);
+      }
     });
 
     test('pairing: both sides derive the recorded channel key and SAS',

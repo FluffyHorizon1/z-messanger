@@ -1,0 +1,365 @@
+{
+  "suite": "device_pop",
+  "version": 1,
+  "description": "ADR 0022 (PROTOCOL 3.1, 3.4): a device certificate's proof of possession. pop = Ed25519 by the DEVICE key over utf8(\"z-device-pop-v1:\") || account_ed (32) || device_ed (32) || device_x (32) || utf8(device_id), as an optional member of the certificate. No signature the account makes covers it, so a list or zc2. code with it and the same one without have the same signatures and the same fingerprint, and a reader from before it admits both. A reader that knows it refuses a certificate whose pop is present and does not verify — and with it the list or code that carries it. A certificate proves possession when it verifies and either carries a pop or its device key IS the account key (device #1, a legacy record), where sig is already the device's own signature. What a receiver then does with a list that names a device proven for another account, or names a device it has seen proven without the proof, is §3.4's receiver rule: state, not a property of the bytes, so not vectored here.",
+  "context": "z-device-pop-v1:",
+  "account_ed_seed": "00e0efadd9a564bd99df5139b29d4172462faa72037d6c0e90dad0ed1298041b",
+  "account_ed_pub": "07c1c9e0833b8ab6f978b69a73e99878c4543d15e4d2ee5c47bad9cd05ddca80",
+  "device1": {
+    "device_ed_pub": "07c1c9e0833b8ab6f978b69a73e99878c4543d15e4d2ee5c47bad9cd05ddca80",
+    "device_id": "W57qYvg6LR7-",
+    "proves_possession": true,
+    "why": "its key is the account key: the certificate is the device key's own signature, and carries no pop"
+  },
+  "device2": {
+    "ed_seed": "616f4fa4af57da1f6166ef45e944827fd408c558789ee532d960065a5b5631e3",
+    "x_seed": "b701baa0973bcc68aa0a55b288d1ae087b79ce20cd586b9d700abc578d491c83",
+    "device_ed_pub": "c2d11c3337180cd910ceb258a1910d51e0cd06a911325fa617441435e40e38bd",
+    "device_x_pub": "4aba1c72ad957a42c86695505d0cf5a2f50a1b1c036d5b6513b41858cad6d731",
+    "device_id": "second-device",
+    "pop_input": "7a2d6465766963652d706f702d76313a07c1c9e0833b8ab6f978b69a73e99878c4543d15e4d2ee5c47bad9cd05ddca80c2d11c3337180cd910ceb258a1910d51e0cd06a911325fa617441435e40e38bd4aba1c72ad957a42c86695505d0cf5a2f50a1b1c036d5b6513b41858cad6d7317365636f6e642d646576696365",
+    "pop": "4eccdc1fd06e0665429d11ee10932eb0e470b2746b8e1002dc05d71a33ecea7863c804aa4c0ffc1288ad9bd81c20db8b1c5cea933a9ac5ee2e1b2dbe699a0804",
+    "cert_json": {
+      "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+      "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+      "id": "second-device",
+      "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==",
+      "pop": "TszcH9BuBmVCnRHuEJMusORwsnRrjhAC3AXXGjPs6nhjyASqTA/8Eoitm9gcINuLHFzqkzqaxe4uGy2+aZoIBA=="
+    },
+    "cert_json_without_pop": {
+      "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+      "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+      "id": "second-device",
+      "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg=="
+    }
+  },
+  "device_list": {
+    "note": "multidevice.json's device_list with device 2's proof attached; json_without_pop is that file's device_list.json byte for byte, and sig, sig2 and fingerprint are that file's.",
+    "version": 3,
+    "sig": "5b62bffe8ed6aebb0ea34a54fdf1eebd91ae931f3b3d5c75a30bee961a3537befa1a5910096bb498579960c7bbf7fa0939cbf7e2c269a0fe283baed21cacd80e",
+    "sig2": "88facc9c030d5355f1b05ca6f9223a6689352b0703e7fee14605ac9e735632d0356217eb896f21c5333f9842c4d37037e89a06674094889651315fa472ecf90f",
+    "fingerprint": "147d6e6fc7a152a416869445b3814780",
+    "json": {
+      "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+      "ver": 3,
+      "devs": [
+        {
+          "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+          "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+          "id": "second-device",
+          "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==",
+          "pop": "TszcH9BuBmVCnRHuEJMusORwsnRrjhAC3AXXGjPs6nhjyASqTA/8Eoitm9gcINuLHFzqkzqaxe4uGy2+aZoIBA=="
+        },
+        {
+          "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+          "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+          "id": "W57qYvg6LR7-",
+          "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+        }
+      ],
+      "sig": "W2K//o7WrrsOo0pU/fHuvZGukx87PVx1owvulho1N776GlkQCWu0mFeZYMe79/oJOcv34sJpoP4oO67SHKzYDg==",
+      "sig2": "iPrMnAMNU1XxsFym+SI6Zok1KwcD5/7hRgWsnnNWMtA1YhfriW8hxTM/mELE03A36JoGZ0CUiJZRMV+kcuz5Dw=="
+    },
+    "json_without_pop": {
+      "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+      "ver": 3,
+      "devs": [
+        {
+          "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+          "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+          "id": "second-device",
+          "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg=="
+        },
+        {
+          "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+          "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+          "id": "W57qYvg6LR7-",
+          "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+        }
+      ],
+      "sig": "W2K//o7WrrsOo0pU/fHuvZGukx87PVx1owvulho1N776GlkQCWu0mFeZYMe79/oJOcv34sJpoP4oO67SHKzYDg==",
+      "sig2": "iPrMnAMNU1XxsFym+SI6Zok1KwcD5/7hRgWsnnNWMtA1YhfriW8hxTM/mELE03A36JoGZ0CUiJZRMV+kcuz5Dw=="
+    }
+  },
+  "device_list_v2_only": {
+    "note": "the same, v2-only (ADR 0017 stage 2) at version 4: the same sig3 and fingerprint with the proof or without it.",
+    "version": 4,
+    "sig3": "5b5d95180249a334cee578fd117e3b9478d1cb51fb1fdf8c1cae6eddcc0f2d26f512016420920025f383feb10770713101e35a1540ca4e5c4bee78282f499607",
+    "fingerprint": "7bb9ee7f1b6135bb70a2e915e2344bd9",
+    "json": {
+      "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+      "ver": 4,
+      "devs": [
+        {
+          "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+          "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+          "id": "second-device",
+          "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==",
+          "pop": "TszcH9BuBmVCnRHuEJMusORwsnRrjhAC3AXXGjPs6nhjyASqTA/8Eoitm9gcINuLHFzqkzqaxe4uGy2+aZoIBA=="
+        },
+        {
+          "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+          "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+          "id": "W57qYvg6LR7-",
+          "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+        }
+      ],
+      "sig3": "W12VGAJJozTO5Xj9EX47lHjRy1H7H9+MHK5u3cwPLSb1EgFkIJIAJfOD/rEHcHExAeNaFUDKTlxL7ngoL0mWBw=="
+    },
+    "json_without_pop": {
+      "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+      "ver": 4,
+      "devs": [
+        {
+          "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+          "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+          "id": "second-device",
+          "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg=="
+        },
+        {
+          "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+          "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+          "id": "W57qYvg6LR7-",
+          "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+        }
+      ],
+      "sig3": "W12VGAJJozTO5Xj9EX47lHjRy1H7H9+MHK5u3cwPLSb1EgFkIJIAJfOD/rEHcHExAeNaFUDKTlxL7ngoL0mWBw=="
+    }
+  },
+  "account_code_json": "{\"v\":2,\"acct\":\"B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=\",\"devs\":[{\"ded\":\"B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=\",\"dx\":\"pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=\",\"id\":\"W57qYvg6LR7-\",\"sig\":\"KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA==\"},{\"ded\":\"wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=\",\"dx\":\"Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=\",\"id\":\"second-device\",\"sig\":\"ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==\",\"pop\":\"TszcH9BuBmVCnRHuEJMusORwsnRrjhAC3AXXGjPs6nhjyASqTA/8Eoitm9gcINuLHFzqkzqaxe4uGy2+aZoIBA==\"}],\"name\":\"Alice\"}",
+  "account_code": "zc2.eyJ2IjoyLCJhY2N0IjoiQjhISjRJTTdpcmI1ZUxhYWMrbVllTVJVUFJYazB1NWNSN3JaelFYZHlvQT0iLCJkZXZzIjpbeyJkZWQiOiJCOEhKNElNN2lyYjVlTGFhYyttWWVNUlVQUlhrMHU1Y1I3clp6UVhkeW9BPSIsImR4IjoicEVYRm9LYU9pUnVBT055azVHM3ZDVW1vdEhnaldmU3cvWDFoeVFGWWpSYz0iLCJpZCI6Ilc1N3FZdmc2TFI3LSIsInNpZyI6IktadEY4VEU5cU5RamJ2VjBDV1RjR3VrVmRxMFNzbjYvMk94Ykp0bjdtMDZXQ3p3Q1FvZzlBd0VvcTl6VmxUK0FUM1dIMlkwSVVEelhXTVNWZy9kNUNBPT0ifSx7ImRlZCI6Ind0RWNNemNZRE5rUXpySllvWkVOVWVETkJxa1JNbCttRjBRVU5lUU9PTDA9IiwiZHgiOiJTcm9jY3EyVmVrTElacFZRWFF6MW92VUtHeHdEYlZ0bEU3UVlXTXJXMXpFPSIsImlkIjoic2Vjb25kLWRldmljZSIsInNpZyI6Im9qbWY2UHhVSHB5SVg0UjB4cG5tUFM4ZjNjY0ttaGc3cjVaOWtsZEVWZTBSTjBCek5mQ2xHbTh0S2tJeFhWTlNLZWNSdVMzOUx5SDY1ekpUU0lOTkRnPT0iLCJwb3AiOiJUc3pjSDlCdUJtVkNuUkh1RUpNdXNPUndzblJyamhBQzNBWFhHalBzNm5oanlBU3FUQS84RW9pdG05Z2NJTnVMSEZ6cWt6cWF4ZTR1R3kyK2Fab0lCQT09In1dLCJuYW1lIjoiQWxpY2UifQ",
+  "claim": {
+    "note": "Carol's account (identity.json's third identity, read as an account) lists device 2's keys under a certificate of its own. Without a pop the list verifies — the account signed it — and device 2 proves nothing in it: a receiver that has seen device 2 proven for Alice's account refuses it, and one that has not holds it to the first-come rule (§3.4). With device 2's genuine pop carried over it does not verify: that proof names Alice's account.",
+    "claimant_ed_seed": "630bfdb7a6a634a5f1aa2b57dad0bad0ee89af30963784ae0865ef73371863e2",
+    "claimant_account_ed_pub": "21c65b5a590ad1a655d205bccba5efc9c28338a2c4a71e08674374fcaf47b1d4",
+    "json_without_pop": {
+      "acct": "IcZbWlkK0aZV0gW8y6XvycKDOKLEpx4IZ0N0/K9HsdQ=",
+      "ver": 2,
+      "devs": [
+        {
+          "ded": "IcZbWlkK0aZV0gW8y6XvycKDOKLEpx4IZ0N0/K9HsdQ=",
+          "dx": "bt6yzyKFsEDYsQjupcTup2o5BQ2dwyMlogVjLr4lIjA=",
+          "id": "carol",
+          "sig": "DDu3LlcDqx8gNKSzUjA8m61P05Q5KcQO63KDiWH/yh3QwHia9Ahrs0wmZO3gZFufAp5Or/kfBC6b6fzvVS3cCw=="
+        },
+        {
+          "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+          "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+          "id": "second-device",
+          "sig": "tX/ALJuvH51PNuMOVVQupmvn5qM/4EXbW/ZSYS+7PXppfIg13vYwhV9G/FkXqIzdKwpG16bnrdgbE0WRO9fuBA=="
+        }
+      ],
+      "sig": "36Uxv090Nmb2jmvRVq0g4TjA+Qbo1SylqYs1GrpdZHksawyNyuVh4DExwpHGbqPqsXeCAdqejX1BHLXM8AAPAQ==",
+      "sig2": "9EojFnsJi2Rm4NJjJ620Vheel4+5i8OFpeoAlM2SJXjGIAXviFm0mE3E5rdYcb+2m/n/16YNYqONZQu+G/uPAQ=="
+    },
+    "json_with_pop": {
+      "acct": "IcZbWlkK0aZV0gW8y6XvycKDOKLEpx4IZ0N0/K9HsdQ=",
+      "ver": 2,
+      "devs": [
+        {
+          "ded": "IcZbWlkK0aZV0gW8y6XvycKDOKLEpx4IZ0N0/K9HsdQ=",
+          "dx": "bt6yzyKFsEDYsQjupcTup2o5BQ2dwyMlogVjLr4lIjA=",
+          "id": "carol",
+          "sig": "DDu3LlcDqx8gNKSzUjA8m61P05Q5KcQO63KDiWH/yh3QwHia9Ahrs0wmZO3gZFufAp5Or/kfBC6b6fzvVS3cCw=="
+        },
+        {
+          "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+          "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+          "id": "second-device",
+          "sig": "tX/ALJuvH51PNuMOVVQupmvn5qM/4EXbW/ZSYS+7PXppfIg13vYwhV9G/FkXqIzdKwpG16bnrdgbE0WRO9fuBA==",
+          "pop": "TszcH9BuBmVCnRHuEJMusORwsnRrjhAC3AXXGjPs6nhjyASqTA/8Eoitm9gcINuLHFzqkzqaxe4uGy2+aZoIBA=="
+        }
+      ],
+      "sig": "36Uxv090Nmb2jmvRVq0g4TjA+Qbo1SylqYs1GrpdZHksawyNyuVh4DExwpHGbqPqsXeCAdqejX1BHLXM8AAPAQ==",
+      "sig2": "9EojFnsJi2Rm4NJjJ620Vheel4+5i8OFpeoAlM2SJXjGIAXviFm0mE3E5rdYcb+2m/n/16YNYqONZQu+G/uPAQ=="
+    }
+  },
+  "other_x_seed": "4242424242424242424242424242424242424242424242424242424242424242",
+  "must_refuse": [
+    {
+      "case": "signed_by_account_key",
+      "why": "the \"proof\" made by the ACCOUNT key over the right input: what a root can make for a device it does not hold",
+      "list_json": {
+        "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+        "ver": 3,
+        "devs": [
+          {
+            "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+            "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+            "id": "second-device",
+            "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==",
+            "pop": "z9FdB7vgw2UVjoN68hYI7wCXOKQJuFZ/I7IEouVSGB4EnOtV+wuHv2T39lKXhv9L7OGZX3X4fQRduzkTYBZjAg=="
+          },
+          {
+            "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+            "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+            "id": "W57qYvg6LR7-",
+            "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+          }
+        ],
+        "sig": "W2K//o7WrrsOo0pU/fHuvZGukx87PVx1owvulho1N776GlkQCWu0mFeZYMe79/oJOcv34sJpoP4oO67SHKzYDg==",
+        "sig2": "iPrMnAMNU1XxsFym+SI6Zok1KwcD5/7hRgWsnnNWMtA1YhfriW8hxTM/mELE03A36JoGZ0CUiJZRMV+kcuz5Dw=="
+      }
+    },
+    {
+      "case": "for_another_account",
+      "why": "the device's own signature over the input for ANOTHER account (Bob's key from identity.json): a proof names one account",
+      "list_json": {
+        "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+        "ver": 3,
+        "devs": [
+          {
+            "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+            "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+            "id": "second-device",
+            "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==",
+            "pop": "C26i9R3hT9cGZG0EsprxMJ1zZyto/SQXS8/kAANn914crlr2CFx0Ut/bn0LbWyGduyZfUynQ4xjOf8FoEjEtDQ=="
+          },
+          {
+            "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+            "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+            "id": "W57qYvg6LR7-",
+            "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+          }
+        ],
+        "sig": "W2K//o7WrrsOo0pU/fHuvZGukx87PVx1owvulho1N776GlkQCWu0mFeZYMe79/oJOcv34sJpoP4oO67SHKzYDg==",
+        "sig2": "iPrMnAMNU1XxsFym+SI6Zok1KwcD5/7hRgWsnnNWMtA1YhfriW8hxTM/mELE03A36JoGZ0CUiJZRMV+kcuz5Dw=="
+      }
+    },
+    {
+      "case": "ratchet_key_swapped",
+      "why": "the device's genuine proof kept while its certificate is re-signed by the account over another X25519 key (derived from other_x_seed): the proof covers the ratchet key",
+      "list_json": {
+        "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+        "ver": 3,
+        "devs": [
+          {
+            "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+            "dx": "EyxEK+AQ+9V+cmAzKKp25x/MwVA6riGTJ9FNnJmT9HI=",
+            "id": "second-device",
+            "sig": "kDDASD8i+2zKnSr4XzuDI0GCzE0q9IuguUuU+1H8m7D42PYvOA5AcjW84AdyEotYdtQYW60nAipLUic/ev+PDA==",
+            "pop": "TszcH9BuBmVCnRHuEJMusORwsnRrjhAC3AXXGjPs6nhjyASqTA/8Eoitm9gcINuLHFzqkzqaxe4uGy2+aZoIBA=="
+          },
+          {
+            "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+            "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+            "id": "W57qYvg6LR7-",
+            "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+          }
+        ],
+        "sig": "W2K//o7WrrsOo0pU/fHuvZGukx87PVx1owvulho1N776GlkQCWu0mFeZYMe79/oJOcv34sJpoP4oO67SHKzYDg==",
+        "sig2": "k09gtcyGTq7X/nsP6RS98+b+Q2WHtPigLpbLGVKCbXpdT2WXq+TpflwpiZcVDlrB86JGLu8vWeDK+SscqvrrDQ=="
+      }
+    },
+    {
+      "case": "id_changed",
+      "why": "the genuine proof kept while the certificate names another id",
+      "list_json": {
+        "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+        "ver": 3,
+        "devs": [
+          {
+            "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+            "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+            "id": "renamed",
+            "sig": "pDrZoLTF8wnzTBPS+vbk0xHtylnORQQJxwC4JncUXbMoigch+Yrun4j/MpHPdLS7NkIg3QFjH8RUJXg1GLTeCA==",
+            "pop": "TszcH9BuBmVCnRHuEJMusORwsnRrjhAC3AXXGjPs6nhjyASqTA/8Eoitm9gcINuLHFzqkzqaxe4uGy2+aZoIBA=="
+          },
+          {
+            "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+            "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+            "id": "W57qYvg6LR7-",
+            "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+          }
+        ],
+        "sig": "W2K//o7WrrsOo0pU/fHuvZGukx87PVx1owvulho1N776GlkQCWu0mFeZYMe79/oJOcv34sJpoP4oO67SHKzYDg==",
+        "sig2": "ndS+tE2Gnvxs80mwr8J55AjuzV5Dj/awGY/fB0NfQvFI2iAZkXMUuVJ1e4DdVILww5kkuZk9jBJfELarG1pBDA=="
+      }
+    },
+    {
+      "case": "pop_63_bytes",
+      "why": "a proof one byte short",
+      "list_json": {
+        "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+        "ver": 3,
+        "devs": [
+          {
+            "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+            "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+            "id": "second-device",
+            "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==",
+            "pop": "TszcH9BuBmVCnRHuEJMusORwsnRrjhAC3AXXGjPs6nhjyASqTA/8Eoitm9gcINuLHFzqkzqaxe4uGy2+aZoI"
+          },
+          {
+            "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+            "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+            "id": "W57qYvg6LR7-",
+            "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+          }
+        ],
+        "sig": "W2K//o7WrrsOo0pU/fHuvZGukx87PVx1owvulho1N776GlkQCWu0mFeZYMe79/oJOcv34sJpoP4oO67SHKzYDg==",
+        "sig2": "iPrMnAMNU1XxsFym+SI6Zok1KwcD5/7hRgWsnnNWMtA1YhfriW8hxTM/mELE03A36JoGZ0CUiJZRMV+kcuz5Dw=="
+      }
+    },
+    {
+      "case": "pop_bit_flipped",
+      "why": "the genuine proof with its last byte changed",
+      "list_json": {
+        "acct": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+        "ver": 3,
+        "devs": [
+          {
+            "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+            "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+            "id": "second-device",
+            "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==",
+            "pop": "TszcH9BuBmVCnRHuEJMusORwsnRrjhAC3AXXGjPs6nhjyASqTA/8Eoitm9gcINuLHFzqkzqaxe4uGy2+aZoIBQ=="
+          },
+          {
+            "ded": "B8HJ4IM7irb5eLaac+mYeMRUPRXk0u5cR7rZzQXdyoA=",
+            "dx": "pEXFoKaOiRuAONyk5G3vCUmotHgjWfSw/X1hyQFYjRc=",
+            "id": "W57qYvg6LR7-",
+            "sig": "KZtF8TE9qNQjbvV0CWTcGukVdq0Ssn6/2OxbJtn7m06WCzwCQog9AwEoq9zVlT+AT3WH2Y0IUDzXWMSVg/d5CA=="
+          }
+        ],
+        "sig": "W2K//o7WrrsOo0pU/fHuvZGukx87PVx1owvulho1N776GlkQCWu0mFeZYMe79/oJOcv34sJpoP4oO67SHKzYDg==",
+        "sig2": "iPrMnAMNU1XxsFym+SI6Zok1KwcD5/7hRgWsnnNWMtA1YhfriW8hxTM/mELE03A36JoGZ0CUiJZRMV+kcuz5Dw=="
+      }
+    }
+  ],
+  "must_not_parse": [
+    {
+      "case": "pop_null",
+      "cert_json": {
+        "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+        "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+        "id": "second-device",
+        "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==",
+        "pop": null
+      }
+    },
+    {
+      "case": "pop_number",
+      "cert_json": {
+        "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+        "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+        "id": "second-device",
+        "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==",
+        "pop": 7
+      }
+    },
+    {
+      "case": "pop_list",
+      "cert_json": {
+        "ded": "wtEcMzcYDNkQzrJYoZENUeDNBqkRMl+mF0QUNeQOOL0=",
+        "dx": "Sroccq2VekLIZpVQXQz1ovUKGxwDbVtlE7QYWMrW1zE=",
+        "id": "second-device",
+        "sig": "ojmf6PxUHpyIX4R0xpnmPS8f3ccKmhg7r5Z9kldEVe0RN0BzNfClGm8tKkIxXVNSKecRuS39LyH65zJTSINNDg==",
+        "pop": [
+          1,
+          2
+        ]
+      }
+    }
+  ]
+}

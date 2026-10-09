@@ -164,6 +164,40 @@ len(dx) == len(A) == 32` and then:
   `Ed25519.verify(A, utf8("z-bind-v1:") || dx, sig)` — i.e. `sig` is the v1
   binding signature. The flag selects the rule; it never bypasses it.
 
+**Proof of possession (ADR 0022).** `sig` proves that the account signed the
+certificate, not that whoever holds the account holds the device key it
+names: an account signs whatever public keys it is handed. A certificate MAY
+carry the device's own signature, naming its account:
+
+```
+popInput = utf8("z-device-pop-v1:") || A || deviceEdPub || deviceXPub || utf8(deviceId)
+pop      = Ed25519.sign(deviceEdSeed, popInput)        // by the DEVICE key
+
+JSON: { "ded", "dx", "id", "sig", "legacy"?, "pop"?:b64(pop) }
+```
+
+`A` is the account key the certificate is for; the three keys are 32 bytes
+each and the id is last, so the input needs no lengths. No signature the
+account makes covers `pop` — `sig`, and a list's `sig`, `sig2` and `sig3`
+(§3.4), are over inputs fixed before it existed — so a certificate, list or
+`zc2.` code with it and the same without it have the same signatures and the
+same fingerprint, and a reader that predates it, which ignores unknown members
+(§0), admits both alike. A reader that knows it MUST, when `pop` is present,
+check that it is a base64 string (any other value, `null` included, makes the
+certificate malformed: it does not parse) and that
+`Ed25519.verify(deviceEdPub, popInput, pop)` holds; one that does not verify
+fails the certificate, and with it the list or code that carries it. A
+certificate **proves possession** for `A` when it verifies and either `ded ==
+A` — device #1 of an account and a `legacy` record, whose `sig` is the device
+key's own signature — or it carries `pop`. The proof covers `dx` by the
+device's Ed25519 key; it does not show possession of the X25519 key, and
+does not need to: a device's routing id and mailbox are its Ed25519 key's
+(§3.2, §12.1), and every session binds both devices' Ed25519 keys in its
+`AD` (§4, §9), so a certificate that pairs someone else's X25519 key with
+one's own Ed25519 key names a device nobody can talk to. What a receiver does
+with a proof is §3.4's; how a device linked before proofs gets one into its
+account's list is §9's (`dir:"pop"`).
+
 ### 3.2 Routing
 
 A device's mailbox is `b64url(SHA256(deviceEdPub))` (§2.2 applied to the device
@@ -1969,7 +2003,8 @@ including implicit rejection) and `pq_ratchet` (the §17 upgrade transcript);
 `docs/vectors/v1/` holds one JSON file per v1 suite: `identity`, `handshake`,
 `ratchet` (a complete two‑party transcript with three DH ratchet steps and an
 out‑of‑order delivery), `sealed_sender`, `attachments`, `multidevice`,
-`pairing`, `inner_messages`. A suite may gain vectors for a compatible
+`pairing`, `inner_messages`, and `device_pop` (§3.1's proof of possession, a
+compatible extension in a file of its own). A suite may gain vectors for a compatible
 extension (a new inner kind, say); existing vectors are never changed. Byte
 strings are lowercase hex; wire strings
 (codes, envelopes, payloads) are given verbatim; every random draw the

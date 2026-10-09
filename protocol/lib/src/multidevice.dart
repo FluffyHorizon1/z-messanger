@@ -26,6 +26,11 @@ import 'util.dart';
 const String deviceCertContext = 'z-device-cert-v1:';
 const String accountCodePrefix = 'zc2.';
 
+/// The context a device's proof of possession is signed under (ADR 0022,
+/// PROTOCOL §3.1). No other input any key in this protocol signs begins with
+/// `z-device-pop-`: it differs from [deviceCertContext] at its tenth byte.
+const String devicePopContext = 'z-device-pop-v1:';
+
 /// Stage 2b of ADR 0017: a root signs its device lists v2-only — with `sig3`
 /// alone, over the v2 content under a context of its own
 /// ([SignedDeviceList.signingInputV3]) — and produces neither the v1 `sig` nor
@@ -103,6 +108,12 @@ Future<Uint8List> _xPubFromSeed(Uint8List seed) async {
 /// The account key's attestation that a device belongs to it. Self-contained:
 /// it carries the device's public keys, so it doubles as the device's public
 /// record inside an [AccountBundle].
+///
+/// What [sig] proves is that the ACCOUNT signed it — not that whoever holds
+/// the account holds the device key it names: an account signs whatever
+/// public keys it is handed, another person's included. [pop] is the other
+/// half (ADR 0022): the device's own signature, saying which account it is a
+/// device of.
 class DeviceCertificate {
   final Uint8List deviceEdPub;
   final Uint8List deviceXPub;
@@ -114,12 +125,33 @@ class DeviceCertificate {
   /// binding signature. [verify] checks exactly that rule for such records.
   final bool legacy;
 
+  /// The device's proof of possession (ADR 0022, PROTOCOL §3.1): the
+  /// DEVICE's own Ed25519 signature over [popInput] — the account key, the
+  /// device's Ed25519 and X25519 keys and its id, under [devicePopContext].
+  /// Only the holder of the device key can make one, and it names exactly one
+  /// account, so a list that puts this device in any other account cannot
+  /// carry it.
+  ///
+  /// Optional, and outside every signature the account makes: [sig] and the
+  /// list's signatures are over inputs fixed before it existed, so adding or
+  /// removing it changes no signature and no fingerprint, and a reader from
+  /// before it — which reads only the members it knows — admits a list
+  /// carrying it exactly as it admits the same list without. A reader that
+  /// knows it holds a present one to [verify]: one that does not verify makes
+  /// the certificate, and so any list or code carrying it, refused.
+  ///
+  /// Absent where the device key IS the account key — device #1 of every
+  /// account, and a `legacy` record — because there [sig] is already the
+  /// device's own signature ([provesPossession]).
+  final Uint8List? pop;
+
   DeviceCertificate({
     required this.deviceEdPub,
     required this.deviceXPub,
     required this.deviceId,
     required this.sig,
     this.legacy = false,
+    this.pop,
   });
 
   static Uint8List signingInput(
@@ -131,6 +163,46 @@ class DeviceCertificate {
         utf8.encode(deviceId),
       ]);
 
+  /// What [pop] is a signature over (ADR 0022): the context, then the
+  /// account's key and the device's two keys — three fixed 32-byte fields —
+  /// then the id, which is last and so needs no length. It is the
+  /// certificate's own statement ([signingInput]) with the account named in
+  /// it, signed the other way round: by the device, about the account.
+  static Uint8List popInput(Uint8List accountEdPub, Uint8List deviceEdPub,
+          Uint8List deviceXPub, String deviceId) =>
+      concatBytes([
+        utf8.encode(devicePopContext),
+        accountEdPub,
+        deviceEdPub,
+        deviceXPub,
+        utf8.encode(deviceId),
+      ]);
+
+  /// The proof of possession [deviceEdSeed] makes for this certificate in
+  /// [accountEdPub]'s account. Only the device can call this usefully: the
+  /// seed is the device's, and a proof made with any other key does not
+  /// verify ([verify]).
+  Future<Uint8List> makePop(
+      Uint8List deviceEdSeed, Uint8List accountEdPub) async {
+    final kp = await _ed.newKeyPairFromSeed(deviceEdSeed);
+    final s = await _ed.sign(
+        popInput(accountEdPub, deviceEdPub, deviceXPub, deviceId),
+        keyPair: kp);
+    return Uint8List.fromList(s.bytes);
+  }
+
+  /// This certificate with [pop] in place of whatever it carried — null
+  /// takes it off. Nothing else changes, and nothing the account signed
+  /// covers it.
+  DeviceCertificate withPop(Uint8List? pop) => DeviceCertificate(
+        deviceEdPub: deviceEdPub,
+        deviceXPub: deviceXPub,
+        deviceId: deviceId,
+        sig: sig,
+        legacy: legacy,
+        pop: pop,
+      );
+
   Future<String> routingId() async => b64url(await sha256Bytes(deviceEdPub));
 
   /// Verify this certificate against an account Ed25519 public key.
@@ -140,6 +212,13 @@ class DeviceCertificate {
   /// to: the device key IS the account key, the id is `legacy-v1`, and [sig]
   /// is the v1 binding signature over the X25519 key. Anything else flagged
   /// legacy (e.g. a crafted `zc2.` code or device list) fails.
+  ///
+  /// A [pop] that is present must verify too (ADR 0022): by the device's own
+  /// key, over [popInput] for THIS account. One that does not — made by
+  /// another key, for another account, over another ratchet key or id, or
+  /// not 64 bytes — fails the certificate, as a forged `sig2` fails a list.
+  /// An absent one is not checked: that is every certificate made before it
+  /// existed, and the account root's own.
   Future<bool> verify(Uint8List accountEdPub) async {
     if (deviceEdPub.length != 32 ||
         deviceXPub.length != 32 ||
@@ -148,23 +227,49 @@ class DeviceCertificate {
     }
     try {
       final key = SimplePublicKey(accountEdPub, type: KeyPairType.ed25519);
+      final bool signed;
       if (legacy) {
         if (deviceId != 'legacy-v1' ||
             !constantTimeEquals(deviceEdPub, accountEdPub)) {
           return false;
         }
-        return await _ed.verify(
+        signed = await _ed.verify(
           concatBytes([utf8.encode(bindContext), deviceXPub]),
           signature: Signature(sig, publicKey: key),
         );
+      } else {
+        signed = await _ed.verify(
+          signingInput(deviceEdPub, deviceXPub, deviceId),
+          signature: Signature(sig, publicKey: key),
+        );
       }
+      if (!signed) return false;
+      final p = pop;
+      if (p == null) return true;
+      if (p.length != 64) return false;
       return await _ed.verify(
-        signingInput(deviceEdPub, deviceXPub, deviceId),
-        signature: Signature(sig, publicKey: key),
+        popInput(accountEdPub, deviceEdPub, deviceXPub, deviceId),
+        signature: Signature(p,
+            publicKey:
+                SimplePublicKey(deviceEdPub, type: KeyPairType.ed25519)),
       );
     } catch (_) {
       return false;
     }
+  }
+
+  /// Whether this certificate shows that the DEVICE — not only the account —
+  /// puts it in [accountEdPub]'s account (ADR 0022): it verifies ([verify],
+  /// which checks a [pop] that is present), and either its key IS the
+  /// account key — device #1 of an account, or a `legacy` record, whose
+  /// [sig] is the device key's own signature — or it carries a [pop].
+  ///
+  /// False is not an accusation. It is what every certificate made before
+  /// ADR 0022 says, and what a device on an older build goes on saying; a
+  /// receiver holds such a device to the first-come rule of §3.4.
+  Future<bool> provesPossession(Uint8List accountEdPub) async {
+    if (!await verify(accountEdPub)) return false;
+    return constantTimeEquals(deviceEdPub, accountEdPub) || pop != null;
   }
 
   Map<String, Object?> toJson() => {
@@ -173,8 +278,14 @@ class DeviceCertificate {
         'id': deviceId,
         'sig': b64(sig),
         if (legacy) 'legacy': true,
+        if (pop != null) 'pop': b64(pop!),
       };
 
+  /// Parses a certificate. `pop` is either absent or a base64 string; one
+  /// that is present with any other value — `null` included — throws a
+  /// [FormatException], as a list's signature members do (§3.4): read as
+  /// absent, a `null` one would make a reader that goes by the members
+  /// present and one that goes by their values reach two answers.
   static DeviceCertificate fromJson(Map<String, Object?> j) =>
       DeviceCertificate(
         deviceEdPub: unb64(j['ded'] as String),
@@ -182,7 +293,18 @@ class DeviceCertificate {
         deviceId: j['id'] as String,
         sig: unb64(j['sig'] as String),
         legacy: j['legacy'] == true,
+        pop: _popMember(j),
       );
+
+  static Uint8List? _popMember(Map<String, Object?> j) {
+    if (!j.containsKey('pop')) return null;
+    final value = j['pop'];
+    if (value is! String) {
+      throw const FormatException(
+          'device certificate member "pop" is present but not a signature');
+    }
+    return unb64(value);
+  }
 }
 
 /// The PUBLIC account: the account key plus the set of member devices. This is
@@ -472,6 +594,28 @@ class AccountIdentity {
     );
   }
 
+  /// Whether this device's key is the account key — device #1 of the
+  /// account, whose certificate the device key signed itself, and so needs
+  /// no proof of possession ([DeviceCertificate.provesPossession]).
+  bool get isAccountKeyDevice => constantTimeEquals(deviceEdPub, accountEdPub);
+
+  /// This device's proof of possession for its own certificate (ADR 0022):
+  /// its own Ed25519 signature over [DeviceCertificate.popInput] for this
+  /// account and the keys and id its certificate names. Deterministic (RFC
+  /// 8032), so the same bytes every time. Made by the device and by nothing
+  /// else — the account root cannot make one for another device, which is
+  /// why a device linked before ADR 0022 hands its own to the root
+  /// (PROTOCOL §9, `dir:"pop"`).
+  Future<Uint8List> devicePop() =>
+      deviceCert.makePop(deviceEdSeed, accountEdPub);
+
+  /// The certificate this device presents for itself in a list: [deviceCert]
+  /// with its proof of possession attached — or as it is, on device #1,
+  /// which proves possession without one.
+  Future<DeviceCertificate> provenDeviceCert() async => isAccountKeyDevice
+      ? deviceCert
+      : deviceCert.withPop(await devicePop());
+
   /// A copy carrying the account's ML-DSA public key. Used when handing an
   /// enrollment to a new device: the key is public, so it travels even though
   /// the account root does not, and without it the new device would have no
@@ -740,7 +884,10 @@ class SignedDeviceList {
   /// so does every signature the list carries, each over its own input — `sig`
   /// over [signingInput], `sig2` over [signingInputV2], `sig3` over
   /// [signingInputV3]. On a dual-signed list BOTH must verify, so a forged
-  /// `sig2` cannot ride beside a genuine `sig`.
+  /// `sig2` cannot ride beside a genuine `sig`. A certificate's proof of
+  /// possession is the device's, not the account's, and no signature here
+  /// covers it; one that is present must verify all the same
+  /// ([DeviceCertificate.verify], ADR 0022).
   ///
   /// The shape comes first, and it is what refuses a dual-signed list with
   /// `sig` deleted: the `sig2` left behind is genuine and verifies over its
