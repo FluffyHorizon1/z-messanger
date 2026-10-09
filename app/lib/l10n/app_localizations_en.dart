@@ -779,6 +779,14 @@ class AppLocalizationsEn extends AppLocalizations {
       'Their device list is signed post-quantum too, including the key each of their devices receives messages on, so the set you send to cannot be forged or quietly changed.';
 
   @override
+  String get ciReaderBehind => 'Their app may not read your device list';
+
+  @override
+  String ciReaderBehindBody(String name) {
+    return 'Your device list is now signed in the newer form, which apps older than 3.9.9 cannot read, and $name\'s app has not said it can read it. If it is that old, it cannot reach your other devices and may warn them about your account until they update. Nothing is wrong with either account.';
+  }
+
+  @override
   String get ciMsgPqTitle => 'Messages: post-quantum';
 
   @override
@@ -1758,6 +1766,43 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get stKtResetConfirm => 'Forget the log\'s history?';
+
+  @override
+  String get stDevlistSigning => 'Device-list signing';
+
+  @override
+  String get stDevlistDual =>
+      'Dual-signed, so every app can read it. Its post-quantum signature covers which devices are on it, not their keys.';
+
+  @override
+  String get stDevlistMoved =>
+      'Signed v2-only. Its post-quantum signature and fingerprint cover every device\'s keys.';
+
+  @override
+  String stDevlistContactsBehind(int count) {
+    return 'Contacts\' devices not yet capable: $count';
+  }
+
+  @override
+  String stDevlistOwnBehind(int count) {
+    return 'Your other devices not yet capable: $count';
+  }
+
+  @override
+  String get stDevlistWaiting => 'Moves to v2-only by itself when both are 0.';
+
+  @override
+  String get stDevlistMoving => 'Moving to v2-only now.';
+
+  @override
+  String get stDevlistNeedsBoth =>
+      'Moves once this account has a linked device and a contact, and every one of them is capable.';
+
+  @override
+  String get stDevlistSwitchedOff => 'Moving is switched off in this build.';
+
+  @override
+  String get stDevlistRootDecides => 'Your main device decides when to move.';
 
   @override
   String get stKtSave => 'Save';

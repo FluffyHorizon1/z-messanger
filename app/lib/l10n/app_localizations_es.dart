@@ -786,6 +786,15 @@ class AppLocalizationsEs extends AppLocalizations {
       'Su lista de dispositivos también está firmada de forma poscuántica, incluida la clave con la que cada uno de sus dispositivos recibe los mensajes, así que el conjunto al que envías no puede falsificarse ni cambiarse en silencio.';
 
   @override
+  String get ciReaderBehind =>
+      'Puede que su app no lea tu lista de dispositivos';
+
+  @override
+  String ciReaderBehindBody(String name) {
+    return 'Tu lista de dispositivos ya se firma en el formato nuevo, que las apps anteriores a la 3.9.9 no pueden leer, y la app de $name no ha dicho que pueda leerlo. Si es tan antigua, no llega a tus otros dispositivos y puede mostrarle avisos sobre tu cuenta hasta que la actualice. No pasa nada malo con ninguna de las dos cuentas.';
+  }
+
+  @override
   String get ciMsgPqTitle => 'Mensajes: poscuánticos';
 
   @override
@@ -1775,6 +1784,46 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get stKtResetConfirm => '¿Olvidar el historial del registro?';
+
+  @override
+  String get stDevlistSigning => 'Firma de la lista de dispositivos';
+
+  @override
+  String get stDevlistDual =>
+      'Con doble firma, para que cualquier versión de la app pueda leerla. Su firma poscuántica cubre qué dispositivos están en ella, no sus claves.';
+
+  @override
+  String get stDevlistMoved =>
+      'Firmada solo en v2. Su firma poscuántica y su huella cubren las claves de cada dispositivo.';
+
+  @override
+  String stDevlistContactsBehind(int count) {
+    return 'Dispositivos de contactos aún no preparados: $count';
+  }
+
+  @override
+  String stDevlistOwnBehind(int count) {
+    return 'Tus otros dispositivos aún no preparados: $count';
+  }
+
+  @override
+  String get stDevlistWaiting =>
+      'Pasará a solo v2 por sí sola cuando ambos estén a 0.';
+
+  @override
+  String get stDevlistMoving => 'Pasando ahora a solo v2.';
+
+  @override
+  String get stDevlistNeedsBoth =>
+      'Pasará cuando esta cuenta tenga un dispositivo vinculado y un contacto, y todos estén preparados.';
+
+  @override
+  String get stDevlistSwitchedOff =>
+      'El paso está desactivado en esta versión.';
+
+  @override
+  String get stDevlistRootDecides =>
+      'Tu dispositivo principal decide cuándo pasar.';
 
   @override
   String get stKtSave => 'Guardar';

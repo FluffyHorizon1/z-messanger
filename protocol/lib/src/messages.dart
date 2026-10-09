@@ -64,6 +64,14 @@ import 'util.dart';
 ///   'pqh'  1       the sender holds the RECIPIENT's post-quantum key — what a
 ///                  'pqack' says, on every message, so a lost 'pqack' cannot
 ///                  leave the two on different safety numbers (§18.2).
+///
+/// And (ADR 0029) one about the sending DEVICE's build, ignored by clients
+/// that predate it:
+///   'dlr'  int     the newest device-list shape the sending device reads —
+///                  `devlistReaderLevel` (multidevice.dart), 3, for the
+///                  v2-only `{sig3}` list. A root moves its account to
+///                  v2-only signing only once every device that reads its
+///                  lists has said at least 3 (§3.7).
 class InnerMessage {
   final String kind;
   final String mid; // sender-chosen message id (unique per sender)

@@ -442,6 +442,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: const TextStyle(fontSize: 12)),
               onTap: () => _editWitness(context, svc),
             ),
+            // ADR 0029: how this account signs its device list, and what its
+            // move to the v2-only form waits on — counted on this device from
+            // what the other devices send it; nothing leaves the device.
+            ListTile(
+              leading: const Icon(Icons.history_edu_outlined),
+              title: Text(l.stDevlistSigning),
+              subtitle: Text(_devlistGateText(l, svc.devlistGate),
+                  style: const TextStyle(fontSize: 12)),
+            ),
             ListTile(
               leading: Icon(Icons.history_toggle_off, color: context.z.warn),
               title: Text(l.stKtReset),
@@ -575,6 +584,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
         KtHealth.fault => context.z.danger,
         _ => context.z.textSecondary,
       };
+
+  /// ADR 0029: the device-list signing row — the form the list is signed in,
+  /// the readers still behind, and what the move waits on.
+  static String _devlistGateText(AppLocalizations l, DevlistGate g) => [
+        g.moved ? l.stDevlistMoved : l.stDevlistDual,
+        l.stDevlistContactsBehind(g.contactDevicesBehind),
+        l.stDevlistOwnBehind(g.ownDevicesBehind),
+        if (!g.moved)
+          !g.decides
+              ? l.stDevlistRootDecides
+              : !g.moveAllowed
+                  ? l.stDevlistSwitchedOff
+                  : g.contacts == 0 || g.ownDevices == 0
+                      ? l.stDevlistNeedsBoth
+                      : g.open
+                          ? l.stDevlistMoving
+                          : l.stDevlistWaiting,
+      ].join('\n');
 
   static String _ktHealthText(BuildContext context, AppLocalizations l, KeyTransparency kt) =>
       switch (kt.health) {

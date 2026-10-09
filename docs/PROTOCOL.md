@@ -399,16 +399,17 @@ when it comes from the log is not silent: the log check reports a conflict — t
 log's list refused by the device‑list rules — which holds sends to the account,
 as an entry that does not open does (§19, `adr/0006`).
 
-**The v2‑only signer (ADR 0017 stage 2b) is built and switched off.** Every
-current client reads all three shapes. None signs `sig3` until the constant
-`devlistSignV2Only` (`protocol/lib/src/multidevice.dart`) is set, which is gated
-on every client running at least the release that taught readers the third shape
-— a client before it cannot parse a list without `sig`. When it is set, a root
-moves its account's list once to the next version, signed with `sig3` alone, and
+**The v2‑only signer (ADR 0017 stage 2b), and when it signs (ADR 0029).** Every
+current client reads all three shapes. A root signs `sig3` only once it has
+moved its account, which it does when every device that reads the account's
+lists has said it can read one (§3.7) — a client before the release that taught
+readers the third shape cannot parse a list without `sig`. It then moves its
+account's list once to the next version, signed with `sig3` alone, and
 sends it to its own devices, its contacts and the log (§19.6); a v2‑only list is
 therefore never at version 1, the baseline a contact computes for itself over
 `input` (§3.6). A root that has signed v2‑only keeps signing `sig3` alone on
-every build that can read it, whatever that build's constant says: re‑signing
+every build that can read it, whatever that build's constant
+(`devlistSignV2Only`, now the kill switch for the move) says: re‑signing
 its current version the other way would give the version a second fingerprint
 (§19.8).
 
@@ -563,6 +564,50 @@ account with `v` below its current version knows that contact never got the
 list (added after a device was linked, or a broadcast lost) and sends it
 again (cooldown‑limited); it also introduces its device set alongside the
 contact‑add hello. Distribution therefore converges without user action.
+
+### 3.7 Who can read a v2‑only list: the capability, and the move (ADR 0029)
+
+```
+"dlr" : 3     // on every inner message (§6.1), and beside "thread", "dir" and "inner"
+              // on every self-sync envelope (§9): the newest device-list shape the
+              // SENDING DEVICE reads — 3 = every shape of §3.4, the v2-only {sig3} included
+```
+
+A client from this release on MUST put `dlr` on every inner message it sends a
+contact's device and on every self‑sync envelope it sends one of its own
+devices, outside anything that can fail, so that nothing it sends goes without
+it. It travels inside the ratchet; the relay never sees it. A receiver records
+it per sending device, under that device's routing id: `dlr` of 3 or more
+reads a v2‑only list; a message that carries the claim `dl` (§3.6) and no
+`dlr` is from a build that decorates what it sends and does not say, and is
+recorded as one that does not read one; a message that carries neither
+teaches nothing. A device not heard from counts as one that does not read
+one. Receivers compare with at‑least: a later shape raises the number, and
+its readers still read `{sig3}`. Clients that predate the member ignore it
+(§6.1, §9).
+
+**The move.** An account's lists are read by every device of every contact —
+the device the contact was added from and every device the contact's installed
+list names — and by the account's own other devices. A root moves its account
+(§3.4) the moment it holds at least one contact, has at least one linked
+device, every one of those devices has said `dlr` of 3 or more, and its build
+allows the move; it checks at start‑up and whenever one of those facts changes
+in the move's favour, and asks nobody anything. A linked device MUST say it to
+its own devices at least once a run and whenever it adopts a newer list for its
+account, so that its root hears it even when it has nothing else to send. A
+one‑device account is not moved: its contacts take its one device's ratchet
+key from the code they scanned, so the v1 input hides nothing from them
+(`THREAT_MODEL.md` R42).
+
+**After the move.** A root that has moved does not move back (§3.4). A device
+that reads its lists without having said `dlr` of 3 or more — a contact added
+later, a device linked later — may be unable to parse them. A client whose own
+account's list is v2‑only MUST NOT send the claim `dl` (§3.6) to a contact none
+of whose devices has said so: a client that cannot parse the list would read a
+claim above the list it holds as an update that never arrived. It sends the
+claim again from the first message after any of that contact's devices says
+it, and never withholds it from a contact one of whose devices has. What such
+a contact still sees, and what the account's user is told, is in `adr/0029`.
 
 ## 4. Session establishment (X3DH‑style, no server prekeys)
 
@@ -792,7 +837,8 @@ transparency members `dl` and `pdl` (§3.6), each `{ "v":int, "h":b64 }`;
 clients that do not implement 7.7a ignore them. It MAY also carry `pqh:1`: the
 sender holds the receiver's post‑quantum key — a `pqack`'s statement, restated
 on every message so that one lost envelope cannot lose it (§18.2); clients that
-predate it ignore the member.
+predate it ignore the member. And `dlr`, the device‑list shape the sending
+device reads (§3.7).
 
 ### 6.3 Receipts
 
@@ -1186,6 +1232,9 @@ devices over the same per‑device sessions, wrapped as:
 ```
 utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping"|"acct"|"acctreq"|"pop"|"hist", "inner":b64(innerMessageBytes) } )
 ```
+
+The wrapper also carries `dlr` (§3.7), the device‑list shape the sending device
+reads; a receiver reads the three members above by name and passes any other by.
 
 `dir = "ping"` with a `hello` inner is the proactive session opener and is
 ignored on receipt; `"out"`/`"in"` insert the inner message into `thread` as

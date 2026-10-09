@@ -225,6 +225,15 @@ void main() {
           transport:
               Transport(identity: id, serverUrl: 'ws://127.0.0.1:$relayPort'),
           ktConfig: ktConfig(),
+          // These cases forge the account's lists by hand, at versions and
+          // in the shape they name: stage 1's, dual-signed. The account is
+          // kept there — ADR 0029's kill switch thrown — so that the move
+          // it would make by itself once every reader here has said it can
+          // read a v2-only list does not take a version or a shape from
+          // under them. What an alarm judges, a list that verifies under the
+          // account's key, does not depend on the shape:
+          // devlist_capability_test.dart 10 raises one after the move.
+          signDevlistV2Only: false,
         );
         made = svc;
         svc.devlistGrace = devlistGrace ?? grace;

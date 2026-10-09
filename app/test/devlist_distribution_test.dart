@@ -92,7 +92,15 @@ void main() {
     final transport =
         Transport(identity: id, serverUrl: 'ws://127.0.0.1:$port');
     return register(await ChatService.init(
-        vault: vault, identity: id, displayName: name, transport: transport));
+        vault: vault,
+        identity: id,
+        displayName: name,
+        transport: transport,
+        // These scenarios count the account's versions by hand (the laptop
+        // makes it 2), so the account is kept at stage 1 — ADR 0029's kill
+        // switch thrown — rather than moving by itself to the next version
+        // once every reader here has said it can read a v2-only list.
+        signDevlistV2Only: false));
   }
 
   Future<ChatService> makeLinked(
@@ -119,7 +127,8 @@ void main() {
         vault: vault,
         identity: devId,
         displayName: name,
-        transport: transport));
+        transport: transport,
+        signDevlistV2Only: false)); // as makePrimary's
   }
 
   // Every wait names what it waits for. A bare 'condition not met' from a

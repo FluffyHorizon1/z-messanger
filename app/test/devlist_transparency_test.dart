@@ -106,7 +106,16 @@ void main() {
     final transport =
         Transport(identity: id, serverUrl: 'ws://127.0.0.1:$port');
     return register(await ChatService.init(
-        vault: vault, identity: id, displayName: name, transport: transport));
+        vault: vault,
+        identity: id,
+        displayName: name,
+        transport: transport,
+        // These scenarios number the honest and the rogue lists by hand
+        // (v2, the rogue's v3), so the account is kept at stage 1 — ADR
+        // 0029's kill switch thrown — rather than moving by itself to the
+        // next version once every reader here has said it can read a
+        // v2-only list.
+        signDevlistV2Only: false));
   }
 
   Future<ChatService> makeLinked(
@@ -133,7 +142,8 @@ void main() {
         vault: vault,
         identity: devId,
         displayName: name,
-        transport: transport));
+        transport: transport,
+        signDevlistV2Only: false)); // as makePrimary's
   }
 
   // A rogue built from the stolen backup: it speaks as device #1 (the phone's
@@ -154,7 +164,8 @@ void main() {
         vault: vault,
         identity: phoneId,
         displayName: 'phone',
-        transport: transport));
+        transport: transport,
+        signDevlistV2Only: false)); // as makePrimary's
   }
 
   // 60 seconds, not 25. A wait returns the moment its condition holds, so a

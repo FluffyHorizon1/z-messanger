@@ -2,7 +2,8 @@
 
 **Status:** **Accepted** (2026‑09‑19) — stage 1 built (3.7.8); stage 2 built
 and switched off (2026‑09‑30, "Stage 2" below); its follow‑ups, one closed
-and two open, at the end (2026‑10‑02). Amends ADR 0010.
+and two open, at the end (2026‑10‑02); the gate of stage 2b measured per
+account by ADR 0029 (2026‑10‑09, at the end). Amends ADR 0010.
 **Decides:** what a current client reports as a device list's fingerprint, and
 what input its ML‑DSA covers, while clients that predate ADR 0010 are still in
 the field.
@@ -433,3 +434,15 @@ What the review of stage 2 left, and where each stands.
 - **The log's install path, superseded — open.** `ktInstallFromLog` answers
   "refused" when an in‑band list replaced the log's between the install and
   its answer, which reads, until the next check, as a conflict.
+
+## The gate, measured (2026‑10‑09)
+
+ADR 0029 replaces "The real floor for the flip" above with a measurement made
+per account. Every device now says, inside the end‑to‑end channel, that it
+can read a v2‑only list (`dlr`, PROTOCOL §3.7), and a root moves its own
+account — the move of "Stage 2b" above, unchanged — the moment every device
+that reads the account's lists has said so: every device of every contact and
+every one of the account's own linked devices, with at least one of each.
+`devlistSignV2Only` is now `true` and is the kill switch for that move alone;
+an account that has moved stays moved, as decided above. The text above is
+left as written.

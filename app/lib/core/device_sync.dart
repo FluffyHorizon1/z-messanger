@@ -32,6 +32,16 @@ class DeviceSyncService {
   /// every message.
   final PqIntervals Function() pqIntervals;
 
+  /// ADR 0029: whether this device says, on every envelope it sends its own
+  /// devices, which device-list shape it reads ([devlistReaderLevel], the
+  /// `dlr` member beside `thread`, `dir` and `inner`). Always, but for a test
+  /// running a device as a build from before the member existed. A root
+  /// moves its account to v2-only signing only once every one of its linked
+  /// devices has said it reads one, and this is where a linked device says
+  /// it: every build reads the envelope by its three members and passes the
+  /// rest by.
+  final bool Function() advertiseReaderLevel;
+
   /// The session with my other devices and the lock every step on it takes:
   /// this service's own, or those of the service it took over from.
   final _SyncState _state;
@@ -52,8 +62,21 @@ class DeviceSyncService {
     required this.account,
     required this.myDevices,
     required this.pqIntervals,
+    bool Function()? advertiseReaderLevel,
     DeviceSyncService? replacing,
-  }) : _state = replacing?._state ?? _SyncState();
+  })  : advertiseReaderLevel = advertiseReaderLevel ?? _always,
+        _state = replacing?._state ?? _SyncState();
+
+  static bool _always() => true;
+
+  /// The envelope every mirror, ping and history batch travels in.
+  String _envelope(String thread, String dir, InnerMessage inner) =>
+      jsonEncode({
+        'thread': thread,
+        'dir': dir,
+        'inner': base64Encode(inner.toBytes()),
+        if (advertiseReaderLevel()) 'dlr': devlistReaderLevel,
+      });
 
   AccountSession? get _session => _state.session;
   set _session(AccountSession? s) => _state.session = s;
@@ -203,11 +226,7 @@ class DeviceSyncService {
     await _lock.run(() async {
       final s = _session;
       if (s == null) return;
-      final envelope = jsonEncode({
-        'thread': threadRid,
-        'dir': dir,
-        'inner': base64Encode(inner.toBytes()),
-      });
+      final envelope = _envelope(threadRid, dir, inner);
       final fan = await s.encrypt(Uint8List.fromList(utf8.encode(envelope)));
       // Persist the advanced ratchet BEFORE handing payloads to the reliable
       // outbox, so any redelivery is still decryptable.
@@ -240,11 +259,7 @@ class DeviceSyncService {
       if (onlyPostQuantum && !(conv?.nextSendIsPostQuantum ?? false)) {
         return false;
       }
-      final envelope = jsonEncode({
-        'thread': threadRid,
-        'dir': dir,
-        'inner': base64Encode(inner.toBytes()),
-      });
+      final envelope = _envelope(threadRid, dir, inner);
       final f = await s.encryptFor(
           deviceRid, Uint8List.fromList(utf8.encode(envelope)));
       if (f == null) return false;
@@ -398,7 +413,12 @@ class DeviceSyncService {
         if (thread is! String || dir is! String) {
           return const SyncInbound(null, null);
         }
-        return SyncInbound((thread: thread, dir: dir, inner: inner), snapshot);
+        // ADR 0029: what the sending device says it reads. An envelope
+        // without the member is from a build that predates it — every
+        // envelope this build sends carries it.
+        final dlr = j['dlr'];
+        return SyncInbound((thread: thread, dir: dir, inner: inner), snapshot,
+            readerLevel: dlr is num && dlr.isFinite ? dlr.toInt() : 0);
       } catch (_) {
         // The ratchet is already saved and a redelivery would parse no
         // better, so the caller acknowledges; there is simply nothing to
@@ -412,13 +432,20 @@ class DeviceSyncService {
   }
 
   /// The proactive opener's envelope (`dir:"ping"`, a `hello` inner), which
-  /// the receiving device ignores — what [prime] sends, and what answers an
-  /// offer.
-  static String _pingEnvelope() => jsonEncode({
-        'thread': '',
-        'dir': 'ping',
-        'inner': base64Encode(InnerMessage.hello(newMessageId(), 0).toBytes()),
-      });
+  /// the receiving device ignores — what [prime] sends, what answers an
+  /// offer, and what [announce] sends.
+  String _pingEnvelope() =>
+      _envelope('', 'ping', InnerMessage.hello(newMessageId(), 0));
+
+  /// ADR 0029: one ping to every one of my other devices, so each hears what
+  /// this device reads ([advertiseReaderLevel]) even when it has nothing to
+  /// mirror. A linked device sends it once a run, when it first connects: a
+  /// root learns its linked devices' builds from what they send it, and a
+  /// laptop that is only switched on to read sends nothing else of its own —
+  /// [prime] pings only the devices this one opens sessions with. Every
+  /// build ignores a ping on receipt.
+  Future<void> announce() => mirror(
+      threadRid: '', dir: 'ping', inner: InnerMessage.hello(newMessageId(), 0));
 }
 
 /// Thrown by [DeviceSyncService._save] under [DeviceSyncService.debugFailNextSave].
@@ -443,11 +470,19 @@ class SyncInbound {
   /// or parse failure a redelivery would repeat, this is one it would not.
   final bool transientFailure;
 
-  const SyncInbound(this.mirrored, this.snapshot) : transientFailure = false;
+  /// ADR 0029: the device-list shape the sending device says it reads — the
+  /// envelope's `dlr`, 0 for an envelope without one (a build from before
+  /// it). Null when nothing was read: not an envelope at all (a key offer),
+  /// or one that did not decrypt or parse.
+  final int? readerLevel;
+
+  const SyncInbound(this.mirrored, this.snapshot, {this.readerLevel})
+      : transientFailure = false;
 
   const SyncInbound.transient()
       : mirrored = null,
         snapshot = null,
+        readerLevel = null,
         transientFailure = true;
 }
 

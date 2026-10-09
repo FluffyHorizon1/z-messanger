@@ -153,7 +153,11 @@ void main() {
         identity: id,
         displayName: name,
         transport: Transport(identity: id, serverUrl: 'ws://127.0.0.1:$port'),
-        signDevlistV2Only: signDevlistV2Only);
+        signDevlistV2Only: signDevlistV2Only,
+        // A v2-only list is what 9b shows, not when an account moves to one
+        // (ADR 0029): with the signer on, it moves at its first start, as it
+        // did before the move waited on the account's readers.
+        debugMoveUngated: signDevlistV2Only);
     // The production delay is hours; what is under test is not the delay.
     svc.pqListDelay = const Duration(milliseconds: 150);
     final p = (

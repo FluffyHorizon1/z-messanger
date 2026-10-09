@@ -134,6 +134,19 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             ),
             const SizedBox(height: 12),
           ],
+          if (svc.readerBehind(widget.rid)) ...[
+            // ADR 0029: this account's list is v2-only now, and one of their
+            // devices has said by what it sends that it runs an older app. A
+            // fact about their app, in the neutral tone the "added on another
+            // device" notice uses — not an alarm about either account.
+            _Banner(
+              tone: context.z.accent,
+              icon: Icons.info_outline,
+              title: l.ciReaderBehind,
+              body: l.ciReaderBehindBody(contact.name),
+            ),
+            const SizedBox(height: 12),
+          ],
           // 7.7b (ADR 0006): where this account stands in the transparency
           // log. One line in the good and neutral cases; a banner when it
           // changes what is sent.

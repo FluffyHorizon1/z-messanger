@@ -1352,6 +1352,18 @@ abstract class AppLocalizations {
   /// **'Their device list is signed post-quantum too, including the key each of their devices receives messages on, so the set you send to cannot be forged or quietly changed.'**
   String get ciDevListHybridKeys;
 
+  /// Neutral notice title on a contact's screen (ADR 0029): the user's account now signs its device list in the v2-only form, and one of this contact's devices runs an app that has not said it can read that form. Informational, not an alarm about either account.
+  ///
+  /// In en, this message translates to:
+  /// **'Their app may not read your device list'**
+  String get ciReaderBehind;
+
+  /// Body of ciReaderBehind. The user's account moved to the v2-only device list and does not move back; an app older than 3.9.9 cannot parse that list, so it only reaches the device it added the user from, and its transparency check may report the user's account until the contact updates. Apps from 3.9.9 read it but do not say so.
+  ///
+  /// In en, this message translates to:
+  /// **'Your device list is now signed in the newer form, which apps older than 3.9.9 cannot read, and {name}\'s app has not said it can read it. If it is that old, it cannot reach your other devices and may warn them about your account until they update. Nothing is wrong with either account.'**
+  String ciReaderBehindBody(String name);
+
   /// Heading of the line under the safety-number card that says whether MESSAGES are protected by the post-quantum key exchange right now (26.3). Deliberately not the same words as ciPillPq, which is about the identity: this one is about the ratchets the messages travel on.
   ///
   /// In en, this message translates to:
@@ -2863,6 +2875,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Forget the log\'s history?'**
   String get stKtResetConfirm;
+
+  /// Developer-mode row title in Settings › Transparency log (ADR 0029): how this account signs its device list, and how far it is from moving to the v2-only form.
+  ///
+  /// In en, this message translates to:
+  /// **'Device-list signing'**
+  String get stDevlistSigning;
+
+  /// Developer-mode row, first line, before the move (ADR 0017 stage 1): the list carries the old and the new classical signature so apps of every age read it; the post-quantum signature covers the device set but not each device's encryption key.
+  ///
+  /// In en, this message translates to:
+  /// **'Dual-signed, so every app can read it. Its post-quantum signature covers which devices are on it, not their keys.'**
+  String get stDevlistDual;
+
+  /// Developer-mode row, first line, after the move (ADR 0017 stage 2b): the list carries only the new signature, and the post-quantum signature and the fingerprint now cover each device's encryption key too. The move is one way.
+  ///
+  /// In en, this message translates to:
+  /// **'Signed v2-only. Its post-quantum signature and fingerprint cover every device\'s keys.'**
+  String get stDevlistMoved;
+
+  /// Developer-mode row: how many of the user's contacts' devices have not yet said (inside the encrypted channel) that they can read a v2-only device list. Nothing is sent anywhere to count them.
+  ///
+  /// In en, this message translates to:
+  /// **'Contacts\' devices not yet capable: {count}'**
+  String stDevlistContactsBehind(int count);
+
+  /// Developer-mode row: how many of this account's own other devices (linked devices, or the main device when this is a linked one) have not yet said they can read a v2-only device list.
+  ///
+  /// In en, this message translates to:
+  /// **'Your other devices not yet capable: {count}'**
+  String stDevlistOwnBehind(int count);
+
+  /// Developer-mode row, last line, on the main device while devices are still not capable: the account moves on its own, without the user doing anything, once every device counted above is.
+  ///
+  /// In en, this message translates to:
+  /// **'Moves to v2-only by itself when both are 0.'**
+  String get stDevlistWaiting;
+
+  /// Developer-mode row, last line, in the moment between every device being capable and the move finishing.
+  ///
+  /// In en, this message translates to:
+  /// **'Moving to v2-only now.'**
+  String get stDevlistMoving;
+
+  /// Developer-mode row, last line, on a main device with no linked device or no contact: the move only protects accounts with a linked device, and waits until it has heard from someone.
+  ///
+  /// In en, this message translates to:
+  /// **'Moves once this account has a linked device and a contact, and every one of them is capable.'**
+  String get stDevlistNeedsBoth;
+
+  /// Developer-mode row, last line, when the build's kill switch for the move is thrown: an account that has not moved stays as it is (one that has moved stays moved).
+  ///
+  /// In en, this message translates to:
+  /// **'Moving is switched off in this build.'**
+  String get stDevlistSwitchedOff;
+
+  /// Developer-mode row, last line, on a linked device: only the main device signs the account's device list, so it makes the move; this device shows what it can see.
+  ///
+  /// In en, this message translates to:
+  /// **'Your main device decides when to move.'**
+  String get stDevlistRootDecides;
 
   /// Dialog confirm button for the log settings.
   ///

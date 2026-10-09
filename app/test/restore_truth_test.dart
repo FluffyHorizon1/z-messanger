@@ -234,7 +234,11 @@ void main() {
         transport:
             transport ?? Transport(identity: id, serverUrl: relayUrl()),
         ktConfig: ktConfig ?? cfg(),
-        signDevlistV2Only: v2Only ?? devlistSignV2Only);
+        signDevlistV2Only: v2Only ?? devlistSignV2Only,
+        // Asked for by name, the signer moves at the first start, as it did
+        // before ADR 0029 made it wait on the account's readers: test 11 is
+        // about a moved account's restore, not about when it moved.
+        debugMoveUngated: v2Only ?? false);
     svc.kt.scheduled = false; // checked when the test says so
     svc.devlistGrace = const Duration(milliseconds: 700);
     services.add(svc);

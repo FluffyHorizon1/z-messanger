@@ -31,66 +31,60 @@ const String accountCodePrefix = 'zc2.';
 /// `z-device-pop-`: it differs from [deviceCertContext] at its tenth byte.
 const String devicePopContext = 'z-device-pop-v1:';
 
-/// Stage 2b of ADR 0017: a root signs its device lists v2-only — with `sig3`
-/// alone, over the v2 content under a context of its own
-/// ([SignedDeviceList.signingInputV3]) — and produces neither the v1 `sig` nor
-/// the `sig2` that sits beside it. **Off.**
+/// Stage 2b of ADR 0017, as ADR 0029 gates it: whether a root of this build
+/// may move its account to v2-only signing — `sig3` alone, over the v2
+/// content under a context of its own ([SignedDeviceList.signingInputV3]),
+/// with neither the v1 `sig` nor the `sig2` beside it. **On**, and now the
+/// kill switch for that move and for nothing else.
 ///
-/// While this is `false` nothing has changed from stage 1: [AccountIdentity
-/// .signDeviceList] dual-signs, every list reports the v1 fingerprint and its
-/// ML-DSA is over the v1 input, byte for byte as before. What the release that
-/// carries it does change is the reading side (stage 2a, always on): every
-/// client now verifies, fingerprints and ML-DSA-checks a list signed with
-/// `sig3` alone, and refuses any list in a shape other than the three the
-/// protocol defines — see [SignedDeviceList.hasValidShape] and
-/// [SignedDeviceList.commitmentInput].
+/// ADR 0017 built the signer and left this `false` until every client could
+/// read what it produces, a condition nobody could measure. ADR 0029 measures
+/// it per account instead: every device says, inside the end-to-end channel,
+/// that it reads a v2-only list ([devlistReaderLevel], the `dlr` member), and
+/// a root moves its own account the moment every device that reads the
+/// account's lists has said so — every device of every contact, and every one
+/// of the account's own linked devices — provided it has at least one of
+/// each (the app's `_migrateDeviceListToV2Only`). The move is ADR 0017's: the
+/// list once more at the next version, signed `sig3` alone, to the account's
+/// own devices, every contact and the log; the fingerprint and the ML-DSA
+/// then cover each device's ratchet key, and every list the account signs
+/// from then on is v2-only. A contact that has seen such a list refuses any
+/// later list from that account that carries a v1 signature.
 ///
-/// Setting it to `true` is the whole of the flip. On its next start each root
-/// re-signs its account's list once, at the next version, with `sig3` alone
-/// (the app's `_migrateDeviceListToV2Only`), and sends it to its own devices,
-/// to every contact and to the log; the list's fingerprint and its ML-DSA then
-/// cover each device's ratchet key, and from then on every list it signs is
-/// v2-only. A contact that has seen such a list refuses any later list from
-/// that account that carries a v1 signature.
+/// Setting this to `false` stops every root that has not moved from moving.
+/// It does not un-flip an account that has: the stored state decides, not
+/// this constant, and a root that has signed v2-only keeps signing v2-only on
+/// any build from the release that taught readers the third shape on — one
+/// that turns the constant back, a downgrade to such a release, a post-flip
+/// backup restored onto it. Were it otherwise, the version it re-signed would
+/// gain a second fingerprint, and every contact would raise a split alarm. A
+/// build OLDER than that release (3.9.9) cannot read a v2-only list at all,
+/// and cannot even start on a vault that holds a contact's: going below it
+/// after the flip is not supported.
 ///
-/// So the flip is one way, by design. Turning this back to `false` does not
-/// un-flip an account that has moved: the stored state decides, not this
-/// constant, and a root that has signed v2-only keeps signing v2-only on any
-/// build from this release on — one that turns the constant back, a
-/// downgrade to this release, a post-flip backup restored onto it. Were it
-/// otherwise, the version it re-signed would gain a second fingerprint, and
-/// every contact would raise a split alarm. Turning the constant off only
-/// stops roots that have not moved from moving. A build OLDER than this
-/// release cannot read a v2-only list at all, and cannot even start on a
-/// vault that holds a contact's: going below this release after the flip is
-/// not supported.
+/// It is not the library's signing default: [AccountIdentity.signDeviceList]
+/// dual-signs unless told otherwise, whatever this says, because whether a
+/// list is v2-only is decided per account by its root, not per build.
 ///
-/// What must be true before flipping it, and both halves matter:
+/// Tests set it per service through `ChatService.init(signDevlistV2Only:)`;
+/// the constant itself is read nowhere else.
+const bool devlistSignV2Only = true;
+
+/// ADR 0029: the newest device-list shape this build reads — 3, for the
+/// v2-only `{sig3}` list (ADR 0017 stage 2a; every build from 3.9.9 reads it).
 ///
-///  * no client from the 3.5.7 era is left. Such a client verifies `sig` and
-///    nothing else; it is what stage 1 dual-signs for. The evidence is the one
-///    `RELAY_AUTH_V1` in `server/server.js` waits on: the relay's
-///    `z_auth_v1_total` at zero for as long as the operator cares to wait.
-///  * no client from before stage 2a is left either — which is the real floor,
-///    and the stricter one. Every build before the release that introduced this
-///    constant reads `sig` unconditionally when it parses a list, so a list
-///    without it is thrown away unread. To that client a flipped account's new
-///    devices do not exist, its user is told after the grace that the
-///    contact's list update never arrived, and the account's new log entry
-///    does not open as its list — which the log check treats as a conflict
-///    and holds sends to that account. Its own linked devices on such a build
-///    never learn the account's list, and raise a false own-account alert
-///    (an unissued list) when contacts echo the version they cannot parse.
-///    "No v1 signer left" is therefore not enough; the flip waits until
-///    everyone — linked devices included — runs at least the release that
-///    shipped this line (ADR 0017, "Stage 2").
-///
-/// Tests turn the signer on for one service at a time through
-/// `ChatService.init(signDevlistV2Only:)` and for one call through
-/// [AccountIdentity.signDeviceList]'s `v2Only`; the constant itself is read
-/// nowhere else. The commit that flips it also updates the tests written for
-/// stage 1 — ADR 0017 lists the ones a run with it on turned up.
-const bool devlistSignV2Only = false;
+/// A device says it, as the member `dlr`, on every inner message it sends a
+/// contact's device and on every self-sync envelope it sends one of its own
+/// devices — inside the end-to-end channel, so the relay never sees it — and
+/// a receiver records it per sending device. A root moves its account to
+/// v2-only signing only once every device that reads its lists has said at
+/// least this (see [devlistSignV2Only]). A device that says nothing, or
+/// sends 7.7a's `dl` without it, is taken as unable to: builds from 3.9.9 up
+/// to the one that introduced the member can read a v2-only list and do not
+/// say so, which costs only time — their account waits until they update.
+/// A later shape would raise the number; a reader of it still reads `{sig3}`,
+/// so a receiver compares with at-least, never equality.
+const int devlistReaderLevel = 3;
 
 final _ed = Ed25519();
 final _x = X25519();
@@ -530,12 +524,13 @@ class AccountIdentity {
   /// the account root.
   ///
   /// Dual-signed (`sig` and `sig2`) unless [v2Only] (ADR 0017 stage 2b), which
-  /// signs `sig3` alone instead. It defaults to [devlistSignV2Only] — off — and
-  /// the app passes it explicitly, so that a test can turn it on for one
-  /// account.
+  /// signs `sig3` alone instead. It defaults to dual-signing, the shape every
+  /// reader can read: whether an account signs v2-only is its root's decision
+  /// (ADR 0029), made once and passed here explicitly by the app, not a
+  /// property of the library or of [devlistSignV2Only].
   Future<SignedDeviceList> signDeviceList(
       List<DeviceCertificate> devices, int version,
-      {bool v2Only = devlistSignV2Only}) async {
+      {bool v2Only = false}) async {
     final seed = accountEdSeed;
     if (seed == null) {
       throw StateError('this device does not hold the account root');
@@ -954,7 +949,8 @@ class SignedDeviceList {
         ],
         // A v2-only list has no `sig`. Every build before stage 2a cast this
         // member to a String unconditionally, so such a list does not even
-        // parse there — the reason the flip waits for those builds to be gone.
+        // parse there — the reason an account moves only once every device
+        // reading its lists has said it reads one (ADR 0029).
         sig: _signatureMember(j, 'sig'),
         sig2: _signatureMember(j, 'sig2'),
         sig3: _signatureMember(j, 'sig3'),

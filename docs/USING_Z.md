@@ -404,6 +404,18 @@ the built-in one, the people who run the relay — therefore learns who your
 contacts are. The log is on by default; turning on Developer mode in Settings
 lets you point it at another log or at none.
 
+Once every device that reads your device list — each of your contacts'
+devices, and each of your own linked devices — has told yours that its app can
+read the newer form of the list, your main device moves your account to it by
+itself, and the list's post‑quantum signature and fingerprint then cover the
+key each of your devices receives messages on, not only which devices there
+are. It does not move back. A contact whose app is older and appears afterwards
+is named on their screen (*"Their app may not read your device list"*): an app
+older than 3.9.9 cannot read the newer form, so it cannot reach your other
+devices and may warn them about your account until they update. With Developer
+mode on, Settings › Transparency log shows which form your list is signed in
+and how many devices it is still waiting for.
+
 ## Groups
 
 A group has no shared key. Every message is encrypted separately for every

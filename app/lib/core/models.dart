@@ -313,6 +313,58 @@ class GroupMessagePq {
   bool get all => notYet.isEmpty && minePq == mine;
 }
 
+/// ADR 0029: where this account stands on the way to v2-only device-list
+/// signing (ADR 0017 stage 2b), as this device sees it — the gate a root
+/// moves on, made observable in Settings' developer view with nothing
+/// leaving the device.
+///
+/// The devices that read this account's lists are its contacts' devices —
+/// the one each contact was added from and every one their list names — and
+/// its own other devices. One counts as behind until it has said, on what it
+/// sends, that it reads a v2-only list.
+class DevlistGate {
+  /// The account's lists are signed v2-only (`sig3` alone): it has moved, and
+  /// does not move back.
+  final bool moved;
+
+  /// This device is the account's root, which signs its lists and makes the
+  /// move. A linked device shows what it sees; its root decides.
+  final bool decides;
+
+  /// This build lets a root move (`devlistSignV2Only`, the kill switch).
+  final bool moveAllowed;
+
+  /// Contacts held, their devices, and how many of those are behind.
+  final int contacts, contactDevices, contactDevicesBehind;
+
+  /// This account's other devices, and how many of those are behind.
+  final int ownDevices, ownDevicesBehind;
+
+  const DevlistGate({
+    required this.moved,
+    required this.decides,
+    required this.moveAllowed,
+    required this.contacts,
+    required this.contactDevices,
+    required this.contactDevicesBehind,
+    required this.ownDevices,
+    required this.ownDevicesBehind,
+  });
+
+  /// Whether a root would move now: it has not moved, its build allows it,
+  /// it holds a contact and has a linked device — the account has something
+  /// the move protects (R42 needs a linked device) and someone it has heard
+  /// from — and no device that reads its lists is behind.
+  bool get open =>
+      !moved &&
+      decides &&
+      moveAllowed &&
+      contacts > 0 &&
+      ownDevices > 0 &&
+      contactDevicesBehind == 0 &&
+      ownDevicesBehind == 0;
+}
+
 /// ADR 0011: a pending INBOUND contact request — someone who added us and is
 /// waiting on our accept/decline. It is not a contact until accepted; the
 /// bundle is what they revealed (self-verifying), and accepting adds them from

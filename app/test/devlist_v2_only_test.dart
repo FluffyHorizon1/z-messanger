@@ -12,7 +12,8 @@
 //   criteria 5 and 6 share a test;
 // and the floor and what the gossip makes of a refusal are one flow, so
 //   criteria 7 and 8 share a test.
-//   1. with the signer off everywhere — as shipped — nothing changes: a list
+//   1. with the signer off everywhere — the kill switch thrown (ADR 0029) —
+//      nothing changes: a list
 //      broadcast after linking a device is dual-signed, both sides report the
 //      v1 fingerprint, the log confirms that fingerprint, and a restart moves
 //      nothing;
@@ -161,7 +162,11 @@ void main() {
 
   /// [name]'s client: a new account the first time, the same vault again
   /// after [stop] — which is how a test starts the next build of an app.
-  /// [v2Only] is the stage-2b signer for this one service.
+  /// [v2Only] is the stage-2b signer for this one service: on, it moves the
+  /// account at its first start as the signer did before ADR 0029 gated the
+  /// move on the account's readers — what this file tests is what the move
+  /// does, and its accounts have readers that never speak (a laptop here is
+  /// a certificate); off, it is the kill switch thrown, and nothing moves.
   Future<ChatService> start(String name, {bool v2Only = false}) async {
     final dir =
         dirs[name] ??= await Directory.systemTemp.createTemp('z_v2only_$name');
@@ -188,6 +193,7 @@ void main() {
           ktConfig: KtConfig(
               logUrl: 'http://127.0.0.1:$logPort', logPubB64: b64(logPub)),
           signDevlistV2Only: v2Only,
+          debugMoveUngated: v2Only,
         );
         made = svc;
         // A contact re-checks the log only when this test says so, so what
@@ -349,9 +355,11 @@ void main() {
       '1. with the signer off everywhere nothing changes: dual-signed, the v1 '
       'fingerprint on both sides and in the log, and a restart moves nothing',
       () async {
-    expect(devlistSignV2Only, isFalse,
-        reason: 'the constant ships off; the release that flips it changes '
-            'this test with it (ADR 0017, "The flip itself")');
+    expect(devlistSignV2Only, isTrue,
+        reason: 'since ADR 0029 the constant ships on, as the kill switch '
+            'of a move each account makes once its readers are ready; this '
+            'file throws it for every service it does not start with the '
+            'signer on');
     var alice = await start('alice1');
     final ben = await start('ben1');
     expect(alice.debugDevlistSignV2Only, isFalse);

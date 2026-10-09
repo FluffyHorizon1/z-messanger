@@ -217,7 +217,13 @@ void main() {
         identity: id,
         displayName: await v.kvGet('display_name') ?? name,
         transport: Transport(identity: id, serverUrl: relayUrl()),
-        ktConfig: KtConfig.off);
+        ktConfig: KtConfig.off,
+        // What is under test is what a linked device shows of each contact
+        // beside its phone, read at one moment on both. An account moving
+        // itself to v2-only lists between the two reads (ADR 0029) would
+        // make them differ for a moment, so accounts here stay at stage 1:
+        // the kill switch thrown.
+        signDevlistV2Only: false);
     // The production delay is hours; what is under test is not the delay.
     svc.pqListDelay = const Duration(milliseconds: 150);
     final x = (svc: svc, vault: v, dir: dir, id: id, name: name);

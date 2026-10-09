@@ -3,9 +3,11 @@
 //
 // Stage 2a is the reading side and is on from this release: such a list is
 // verified, fingerprinted and ML-DSA-checked by every client. Stage 2b is the
-// signer, behind `devlistSignV2Only`, which is off. The rule both halves hang
-// on is `SignedDeviceList.commitmentInput`: the fingerprint and the ML-DSA
-// input follow the strongest signature that is alone — v1 while a v1
+// signer, behind `devlistSignV2Only` — since ADR 0029 on, as the kill switch of
+// a move each account's root makes once every reader of its lists has said it
+// can read one; the library's own default stays dual-signing. The rule both
+// halves hang on is `SignedDeviceList.commitmentInput`: the fingerprint and
+// the ML-DSA input follow the strongest signature that is alone — v1 while a v1
 // signature is produced; once it is not, the input of the one signature the
 // list carries. A list has three shapes and only three — {sig}, {sig, sig2},
 // {sig3} — so that no list with one signature can be made from a list with
@@ -28,10 +30,11 @@
 //      a client from before ADR 0010 checks), v3 for a v2-only one — not v2,
 //      the input ML-DSAs between ADR 0010 and ADR 0017 were made over — where
 //      the ratchet-key swap of criterion 3 fails the post-quantum check too;
-//   7. as shipped the signer is off: the constant is false, and signing the
-//      recorded account's list reproduces the dual-signed stage-1 vector byte
-//      for byte, while `v2Only: true` reproduces the v2-only one — sig3, and
-//      no sig or sig2;
+//   7. the library signs dual by default whatever the build's switch says
+//      (the constant ships true since ADR 0029: the move is the app's, per
+//      account): signing the recorded account's list reproduces the
+//      dual-signed stage-1 vector byte for byte, while `v2Only: true`
+//      reproduces the v2-only one — sig3, and no sig or sig2;
 //   8. the v2-only vectors replay from their recorded inputs alone: admission,
 //      the fingerprint and every refusal from v1/multidevice.json; the ML-DSA
 //      over the v3 input, not the v1 or the v2 one, and the swap refused, from
@@ -255,12 +258,13 @@ void main() {
     expect(await v3Sig.verifies(dual, mlPub), isFalse);
   });
 
-  test('7. as shipped the signer is off, and stage 1 is reproduced exactly',
-      () async {
-    expect(devlistSignV2Only, isFalse,
-        reason: 'stage 2b is built switched off; the flip is a release '
-            'decision, not something a test turns on, and the release that '
-            'makes it changes this test with it (ADR 0017, "The flip itself")');
+  test(
+      '7. the library signs dual by default whatever the switch says, and '
+      'stage 1 is reproduced exactly', () async {
+    expect(devlistSignV2Only, isTrue,
+        reason: 'since ADR 0029 the constant ships on — the kill switch of a '
+            'move each account makes once its readers are ready — and it is '
+            'not the signing default: the dual-signed list below is');
     // The account and devices recorded in v1/multidevice.json, rebuilt from
     // their seeds: device #1's Ed25519 key is the account key.
     final v = _vectors('v1', 'multidevice');
@@ -277,7 +281,7 @@ void main() {
     final dl = _map(v['device_list']);
     final byDefault = await recorded.signDeviceList(given, 3);
     expect(byDefault.toJson(), dl['json'],
-        reason: 'with the constant off, the list is the stage-1 list');
+        reason: 'by default, the list is the stage-1 list');
     expect(_hex(byDefault.sig!), dl['sig']);
     expect(_hex(byDefault.sig2!), dl['sig2']);
     expect(byDefault.sig3, isNull);

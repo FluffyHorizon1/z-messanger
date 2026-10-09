@@ -999,6 +999,15 @@
   "@ciDevListHybridKeys": {
     "description": "Shown instead of ciDevListHybrid when the contact's list is v2-only (ADR 0017 stage 2, signed with sig3 alone): only then does the post-quantum signature also cover each device's ratchet key, and only then is 'cannot be forged' true of the keys messages are encrypted to."
   },
+  "ciReaderBehind": "Their app may not read your device list",
+  "@ciReaderBehind": {
+    "description": "Neutral notice title on a contact's screen (ADR 0029): the user's account now signs its device list in the v2-only form, and one of this contact's devices runs an app that has not said it can read that form. Informational, not an alarm about either account."
+  },
+  "ciReaderBehindBody": "Your device list is now signed in the newer form, which apps older than 3.9.9 cannot read, and {name}'s app has not said it can read it. If it is that old, it cannot reach your other devices and may warn them about your account until they update. Nothing is wrong with either account.",
+  "@ciReaderBehindBody": {
+    "description": "Body of ciReaderBehind. The user's account moved to the v2-only device list and does not move back; an app older than 3.9.9 cannot parse that list, so it only reaches the device it added the user from, and its transparency check may report the user's account until the contact updates. Apps from 3.9.9 read it but do not say so.",
+    "placeholders": {"name": {"type": "String"}}
+  },
   "ciMsgPqTitle": "Messages: post-quantum",
   "@ciMsgPqTitle": {
     "description": "Heading of the line under the safety-number card that says whether MESSAGES are protected by the post-quantum key exchange right now (26.3). Deliberately not the same words as ciPillPq, which is about the identity: this one is about the ratchets the messages travel on."
@@ -2282,6 +2291,48 @@
   "stKtResetConfirm": "Forget the log's history?",
   "@stKtResetConfirm": {
     "description": "Confirmation dialog title for the reset."
+  },
+  "stDevlistSigning": "Device-list signing",
+  "@stDevlistSigning": {
+    "description": "Developer-mode row title in Settings › Transparency log (ADR 0029): how this account signs its device list, and how far it is from moving to the v2-only form."
+  },
+  "stDevlistDual": "Dual-signed, so every app can read it. Its post-quantum signature covers which devices are on it, not their keys.",
+  "@stDevlistDual": {
+    "description": "Developer-mode row, first line, before the move (ADR 0017 stage 1): the list carries the old and the new classical signature so apps of every age read it; the post-quantum signature covers the device set but not each device's encryption key."
+  },
+  "stDevlistMoved": "Signed v2-only. Its post-quantum signature and fingerprint cover every device's keys.",
+  "@stDevlistMoved": {
+    "description": "Developer-mode row, first line, after the move (ADR 0017 stage 2b): the list carries only the new signature, and the post-quantum signature and the fingerprint now cover each device's encryption key too. The move is one way."
+  },
+  "stDevlistContactsBehind": "Contacts' devices not yet capable: {count}",
+  "@stDevlistContactsBehind": {
+    "description": "Developer-mode row: how many of the user's contacts' devices have not yet said (inside the encrypted channel) that they can read a v2-only device list. Nothing is sent anywhere to count them.",
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "stDevlistOwnBehind": "Your other devices not yet capable: {count}",
+  "@stDevlistOwnBehind": {
+    "description": "Developer-mode row: how many of this account's own other devices (linked devices, or the main device when this is a linked one) have not yet said they can read a v2-only device list.",
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "stDevlistWaiting": "Moves to v2-only by itself when both are 0.",
+  "@stDevlistWaiting": {
+    "description": "Developer-mode row, last line, on the main device while devices are still not capable: the account moves on its own, without the user doing anything, once every device counted above is."
+  },
+  "stDevlistMoving": "Moving to v2-only now.",
+  "@stDevlistMoving": {
+    "description": "Developer-mode row, last line, in the moment between every device being capable and the move finishing."
+  },
+  "stDevlistNeedsBoth": "Moves once this account has a linked device and a contact, and every one of them is capable.",
+  "@stDevlistNeedsBoth": {
+    "description": "Developer-mode row, last line, on a main device with no linked device or no contact: the move only protects accounts with a linked device, and waits until it has heard from someone."
+  },
+  "stDevlistSwitchedOff": "Moving is switched off in this build.",
+  "@stDevlistSwitchedOff": {
+    "description": "Developer-mode row, last line, when the build's kill switch for the move is thrown: an account that has not moved stays as it is (one that has moved stays moved)."
+  },
+  "stDevlistRootDecides": "Your main device decides when to move.",
+  "@stDevlistRootDecides": {
+    "description": "Developer-mode row, last line, on a linked device: only the main device signs the account's device list, so it makes the move; this device shows what it can see."
   },
   "stKtSave": "Save",
   "@stKtSave": {

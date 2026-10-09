@@ -409,10 +409,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     HandleConfig handleConfig = HandleConfig.defaults,
     KtFetcher? handleFetcher,
     int Function()? handleNow,
-    // The ADR 0017 stage-2b signer for this service. Production never passes
-    // it, so it is the protocol's constant — off; a test passes true to start
-    // one account as a build with the signer on (see [debugDevlistSignV2Only]).
+    // The ADR 0017 stage-2b signer for this service — since ADR 0029 the kill
+    // switch for the move alone. Production never passes it, so it is the
+    // protocol's constant — on; a test passes false to start one account as
+    // a build with the switch thrown (see [debugDevlistSignV2Only]).
     bool signDevlistV2Only = devlistSignV2Only,
+    // Test-only: start this service as a build from before ADR 0029, which
+    // never says what device-list shape it reads ([debugPreAdr0029]) — set
+    // here so that nothing sent during the start says otherwise.
+    bool debugPreAdr0029 = false,
+    // Test-only: move at the first chance whatever the gate says, as ADR
+    // 0017's signer did before ADR 0029 gave it one ([debugMoveUngated]).
+    bool debugMoveUngated = false,
   }) async {
     final svc = ChatService._(
       vault: vault,
@@ -422,6 +430,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       transport: transport,
     );
     svc._signerV2Only = signDevlistV2Only;
+    svc.debugPreAdr0029 = debugPreAdr0029;
+    svc._debugMoveUngated = debugMoveUngated;
     svc.kt = KeyTransparency(
       vault: vault,
       host: svc,
@@ -488,7 +498,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // distribution to devices and contacts is durable and backgrounded.
     await svc._migrateDeviceListToV2();
     // ADR 0017 stage 2b: the same once more for the v2-only signer, at the
-    // same point and for the same reason. Returns at once while it is off.
+    // same point and for the same reason. Returns at once until this root's
+    // gate is open (ADR 0029), and on a build with the switch off.
     await svc._migrateDeviceListToV2Only();
     // Phase 33: a list signature the vault's own key does not verify — what
     // the seed race left — is made again before anything offers it.
@@ -2556,6 +2567,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // one from them was last declined (§18.8).
     'reqto_', 'reqdecl_',
     'hvia_', // phase 38: the handle a contact was made through
+    'cdl_dlr_', // ADR 0029: what each of their devices said it reads
   ];
 
   /// Forget a contact: every row, every blob, every `kv` family, and every
@@ -2575,8 +2587,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// stops one that was queued behind it from writing afterwards. Between
   /// them, "delete contact — nothing locally" (`DATA_MAP.md`) is true no
   /// matter what was in the air when the user pressed it.
-  Future<void> deleteContact(String rid) =>
-      _withLock(rid, () => _deleteContactLocked(rid));
+  Future<void> deleteContact(String rid) async {
+    await _withLock(rid, () => _deleteContactLocked(rid));
+    // ADR 0029: one reader fewer; it may have been the last one this
+    // account's move was waiting for.
+    unawaited(_maybeMoveToV2Only());
+  }
 
   Future<void> _deleteContactLocked(String rid) async {
     // A group member, deleted as a contact, is still a member of the group:
@@ -2707,6 +2723,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     _pqReqSent.remove(rid);
     _dlpqSent.remove(rid);
     _pqMissingSince.remove(rid);
+    _readerLevels.remove(rid); // ADR 0029
     // Whom I asked about a group, and whom I answered: a contact added back
     // is asked and answered afresh.
     for (final asked in _asked.values) {
@@ -4005,6 +4022,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // whatever went wrong — kicks it.
     unawaited(_drainGroupFanout());
     await _sync?.prime(); // open the sync ratchet deterministically once online
+    // ADR 0029: a linked device tells its root, once a run, which
+    // device-list shape it reads — its root moves the account only once
+    // every linked device has said so, and a device switched on only to
+    // read may say nothing else of its own.
+    final sync = _sync;
+    if (sync != null && !_holdsRoot && !_announcedReader) {
+      _announcedReader = true;
+      unawaited(sync.announce().then((_) {}, onError: (Object _) {
+        _announcedReader = false; // said with the next connection instead
+      }));
+    }
     if (_historyDue.isNotEmpty) unawaited(_runHistoryReplays());
     // 7.7a hardening: on every (re)connect a root re-asserts its newest signed
     // list to its own devices. Cheap, idempotent on the receiving side, and it
@@ -4166,6 +4194,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         }
       }
       transport.ackReceived(id: m.id, from: m.from);
+      // ADR 0029: what that device of mine says it reads.
+      final level = r.readerLevel;
+      if (level != null) await _noteOwnReaderLevel(from, level);
       // 26.2: what just arrived may have made that device's channel
       // post-quantum — its offer, or the answer to ours — which is what a
       // waiting history replay is waiting for.
@@ -4486,6 +4517,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // 7.7a: cross-check the device-list claim/echo on EVERY inbound. Runs
       // after any devlist install above so the "held" list is current.
       await _observeDevlistGossip(contact.rid, contact.rid, inner);
+      // ADR 0029: and what this device of theirs says it reads.
+      await _noteReaderLevel(contact.rid, contact.rid, inner);
       notifyListeners();
     }
   }
@@ -7265,11 +7298,20 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // not delivered to it. Removing it is the statement that it is no longer
     // mine; the outbox being durable must not turn a link that was down at
     // the time into a delivery after the fact.
-    await vault.db.delete('outbox',
-        where: 'rid = ?', whereArgs: [await cert.routingId()]);
+    final gone = await cert.routingId();
+    await vault.db.delete('outbox', where: 'rid = ?', whereArgs: [gone]);
+    // ADR 0029: and what it said it reads is no longer this account's to
+    // count.
+    if (_ownReaderLevels.remove(gone) != null) {
+      try {
+        await vault.kvPut('own_dlr', jsonEncode(_ownReaderLevels));
+      } catch (_) {}
+    }
     await _initSync();
     await broadcastMyDeviceList();
     notifyListeners();
+    // One reader fewer: it may have been the last one the move waited for.
+    unawaited(_maybeMoveToV2Only());
   }
 
   /// The linked (secondary) devices of my account, if any.
@@ -7317,6 +7359,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       account: await accountIdentity(),
       myDevices: devices,
       pqIntervals: () => _pqIntervals,
+      advertiseReaderLevel: () => !debugPreAdr0029, // ADR 0029
       replacing: _sync,
     );
     await next.init();
@@ -10419,13 +10462,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     }
   }
 
-  /// ADR 0017 stage 2b: whether this service's root signs v2-only (`sig3`
-  /// alone) once its account has been moved there — that is, whether this
-  /// build moves an account that has not. Set from `init`'s
-  /// `signDevlistV2Only`, which is the protocol's [devlistSignV2Only] — off —
-  /// unless a test starts this one account as a build with the signer on.
-  /// Whether an account that HAS moved keeps signing v2-only is not this
-  /// switch's to say: see [_signsV2Only].
+  /// ADR 0017 stage 2b: whether this build moves an account that has not
+  /// moved to v2-only signing (`sig3` alone) — once its gate is open (ADR
+  /// 0029, [devlistGate]). Set from `init`'s `signDevlistV2Only`, which is the
+  /// protocol's [devlistSignV2Only] — on — unless a test starts this one
+  /// account as a build with the kill switch thrown. Whether an account that
+  /// HAS moved keeps signing v2-only is not this switch's to say: see
+  /// [_signsV2Only].
   bool _signerV2Only = devlistSignV2Only;
 
   /// The stage-2b signer as this service was started with it.
@@ -10441,10 +10484,223 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// was first published with (PROTOCOL §19.8).
   bool _signsV2Only = false;
 
+  /// ADR 0029: the device-list shape each device of each contact last said it
+  /// reads — contact rid → device rid → the `dlr` its last decorated message
+  /// carried ([devlistReaderLevel] for a build from that ADR on; 0 for one
+  /// that decorates its messages, 7.7a's `dl`, and does not say). A device
+  /// that has said nothing is absent, and counts as unable to read a v2-only
+  /// list until it does. Sealed in the vault as `cdl_dlr_<rid>`, written only
+  /// when a device's answer changes.
+  final Map<String, Map<String, int>> _readerLevels = {};
+
+  /// The same for this account's other devices, from what each sends on the
+  /// self-sync channel (`own_dlr`, sealed).
+  final Map<String, int> _ownReaderLevels = {};
+
+  /// Whether the list this device holds for its own account is v2-only — on
+  /// a root, the same as [_signsV2Only]; on a linked device, what its root
+  /// last self-synced. Kept in memory because the outbound path reads it.
+  bool _ownV2Only = false;
+
+  /// A move in progress ([_maybeMoveToV2Only]), so that two observations
+  /// arriving together start one.
+  bool _moving = false;
+
+  /// Whether this run has told its own devices what it reads
+  /// ([DeviceSyncService.announce]).
+  bool _announcedReader = false;
+
+  /// Test-only: behave like a client from before ADR 0029 — never say which
+  /// device-list shape this device reads, to contacts or to its own devices,
+  /// and never move its own account (that build's signer was off; an
+  /// account it finds moved stays moved, as on any build from 3.9.9). Every
+  /// client from 3.9.9 on reads a v2-only list; one from before ADR 0029
+  /// does so in silence, and the gate below has to be met by — and wait for
+  /// — exactly that. Set through `ChatService.init`, so that not even the
+  /// first ping a start sends says otherwise.
+  @visibleForTesting
+  bool debugPreAdr0029 = false;
+
+  /// Test-only, from `init`'s `debugMoveUngated`: the move waits on the kill
+  /// switch alone, as it did before ADR 0029 — at the first start with the
+  /// signer on. For the tests of what the move does (ADR 0017's), which
+  /// give an account readers that never speak: a linked device that is only
+  /// a certificate, a contact never heard from.
+  bool _debugMoveUngated = false;
+
+  /// What [inner], from one device, says about that device's build (ADR
+  /// 0029): its `dlr`; 0 when it carries 7.7a's claim `dl` and no `dlr` (a
+  /// build that decorates what it sends and does not say); null when it
+  /// carries neither — a message nobody decorated (a removal notice, or one
+  /// whose decoration failed) says nothing either way.
+  static int? _readerLevelOf(InnerMessage inner) {
+    final r = inner.data['dlr'];
+    if (r is num && r.isFinite) return r.toInt();
+    if (inner.data.containsKey('dl')) return 0;
+    return null;
+  }
+
+  /// Records what [inner] from [deviceRid], one of [rid]'s devices, says it
+  /// reads, and re-checks the gate when that device has just said it reads a
+  /// v2-only list. Best-effort and silent: it runs on every inbound path and
+  /// must never be the reason one fails.
+  Future<void> _noteReaderLevel(
+      String rid, String deviceRid, InnerMessage inner) async {
+    final level = _readerLevelOf(inner);
+    if (level == null || !contacts.containsKey(rid)) return;
+    final levels = _readerLevels.putIfAbsent(rid, () => {});
+    if (levels[deviceRid] == level) return;
+    levels[deviceRid] = level;
+    try {
+      await vault.kvPut('cdl_dlr_$rid', jsonEncode(levels));
+    } catch (_) {
+      // Kept in memory; written again with the next change, and said again
+      // by every message that device sends.
+    }
+    notifyListeners();
+    if (level >= devlistReaderLevel) unawaited(_maybeMoveToV2Only());
+  }
+
+  /// The same for [deviceRid], one of this account's own devices, from an
+  /// envelope on the self-sync channel.
+  Future<void> _noteOwnReaderLevel(String deviceRid, int level) async {
+    if (_ownReaderLevels[deviceRid] == level) return;
+    _ownReaderLevels[deviceRid] = level;
+    try {
+      await vault.kvPut('own_dlr', jsonEncode(_ownReaderLevels));
+    } catch (_) {}
+    notifyListeners();
+    if (level >= devlistReaderLevel) unawaited(_maybeMoveToV2Only());
+  }
+
+  /// Every device of [rid]'s account this device holds: the one they were
+  /// added from, and each other device their installed list names — the
+  /// devices this account's lists go to, and so the ones that read them.
+  Map<String, List<String>> _contactDevices() {
+    final out = <String, List<String>>{
+      for (final rid in contacts.keys) rid: [rid]
+    };
+    for (final e in _extraRidToContact.entries) {
+      out[e.value]?.add(e.key);
+    }
+    return out;
+  }
+
+  /// The same for one contact, [rid].
+  Iterable<String> _devicesOf(String rid) sync* {
+    yield rid;
+    for (final e in _extraRidToContact.entries) {
+      if (e.value == rid) yield e.key;
+    }
+  }
+
+  /// Whether this build moves an account (ADR 0029): the kill switch allows
+  /// it, and it is not running as a build from before the move existed.
+  bool get _moveAllowed => _signerV2Only && !debugPreAdr0029;
+
+  /// ADR 0029: where this account stands on the way to v2-only signing —
+  /// for Settings' developer view, and the test of the gate itself.
+  DevlistGate get devlistGate {
+    var devices = 0, behind = 0;
+    for (final e in _contactDevices().entries) {
+      final levels = _readerLevels[e.key];
+      for (final d in e.value) {
+        devices++;
+        if ((levels?[d] ?? 0) < devlistReaderLevel) behind++;
+      }
+    }
+    final own = _sync?.deviceRoutingIds ?? const <String>{};
+    var ownBehind = 0;
+    for (final d in own) {
+      if ((_ownReaderLevels[d] ?? 0) < devlistReaderLevel) ownBehind++;
+    }
+    return DevlistGate(
+      moved: _holdsRoot ? _signsV2Only : _ownV2Only,
+      decides: _holdsRoot,
+      moveAllowed: _moveAllowed,
+      contacts: contacts.length,
+      contactDevices: devices,
+      contactDevicesBehind: behind,
+      ownDevices: own.length,
+      ownDevicesBehind: ownBehind,
+    );
+  }
+
+  /// ADR 0029: this account's lists are v2-only and one of [rid]'s devices
+  /// has said — by what it sends — that it is an older build, which may not
+  /// read them (one older than 3.9.9 cannot). The contact's screen says so;
+  /// it is a fact about their app, not an alarm about either of you. A
+  /// device that has said nothing yet — a contact just added — is not
+  /// counted here: its first message says, and almost always says it can.
+  bool readerBehind(String rid) {
+    if (!_ownV2Only || !contacts.containsKey(rid)) return false;
+    final levels = _readerLevels[rid];
+    if (levels == null) return false;
+    for (final d in _devicesOf(rid)) {
+      final l = levels[d];
+      if (l != null && l < devlistReaderLevel) return true;
+    }
+    return false;
+  }
+
+  /// Whether this device leaves its claim about its own list (7.7a's `dl`)
+  /// off what it sends [rid] (ADR 0029): its account's lists are v2-only and
+  /// none of [rid]'s devices has said it reads one. A claim names a list such
+  /// a device may be unable to read, and a build that cannot read it turns
+  /// "a claim above the list I hold" into "their device list changed and the
+  /// update never arrived". Made again as soon as one of their devices says
+  /// it reads a v2-only list — and never withheld from a contact one of whose
+  /// devices has said so, whose record of the claim has to stay current.
+  bool _withholdsClaimFrom(String rid) {
+    if (!_ownV2Only) return false;
+    final levels = _readerLevels[rid];
+    if (levels == null) return true;
+    for (final d in _devicesOf(rid)) {
+      if ((levels[d] ?? 0) >= devlistReaderLevel) return false;
+    }
+    return true;
+  }
+
+  /// Test seam: what [deviceRid], one of [rid]'s devices, last said it reads
+  /// (ADR 0029); null for a device that has said nothing.
+  @visibleForTesting
+  int? debugReaderLevel(String rid, String deviceRid) =>
+      _readerLevels[rid]?[deviceRid];
+
+  /// Test seam: the same for one of this account's own devices.
+  @visibleForTesting
+  int? debugOwnReaderLevel(String deviceRid) => _ownReaderLevels[deviceRid];
+
+  /// ADR 0029: the move to v2-only signing, now, if this root's gate is open
+  /// — called whenever something the gate reads has changed in the gate's
+  /// favour: a device has said it reads a v2-only list, a contact or a
+  /// device has gone, a contact's list has changed. One at a time.
+  Future<void> _maybeMoveToV2Only() async {
+    if (_moving || _signsV2Only || !_moveAllowed || !_holdsRoot) return;
+    if (_disposed) return;
+    _moving = true;
+    try {
+      await _migrateDeviceListToV2Only();
+    } catch (_) {
+      // Nothing moved that was not recorded; the next change in the gate's
+      // favour, or the next start, tries again.
+    } finally {
+      _moving = false;
+    }
+  }
+
   /// ADR 0017 stage 2b: the one-time republish when the v2-only signer is on —
   /// [_migrateDeviceListToV2] once more, a stage later, for the same reasons.
   ///
-  /// On the first start with the signer on, a root moves its account's list to
+  /// ADR 0029 decides WHEN: at start-up and at the moment anything it reads
+  /// changes ([_maybeMoveToV2Only]), a root moves once its gate is open
+  /// ([DevlistGate.open]) — it holds a contact and has a linked device, and
+  /// every device of every contact and every one of its own linked devices
+  /// has said it reads a v2-only list. Until then nothing moves, with the
+  /// signer on or off; a reader that cannot read the list it would sign has
+  /// not been heard to say it can.
+  ///
+  /// Once the gate is open, a root moves its account's list to
   /// the NEXT version and signs it there with `sig3` alone, then hands it to
   /// its own devices, to every contact and to the log by the paths a new
   /// device's list takes. The version moves rather than the current one being
@@ -10498,7 +10754,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         }
       } catch (_) {}
     }
-    if (!_signerV2Only) return; // the move, and only the move, waits on it
+    // The kill switch: the move, and only the move, waits on it.
+    if (!_moveAllowed) return;
+    // ADR 0029: and on every reader of this account's lists having said it
+    // can read the one the move signs.
+    if (!_debugMoveUngated && !devlistGate.open) return;
     await _withOwnListLock(() async {
       final cur = await _myDevlistVersion();
       await vault.kvPut('my_devlist_version', '${cur + 1}', sensitive: false);
@@ -10510,6 +10770,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // through the durable outbox, as the 0010 migration's was.
     final data = await _signCurrentDeviceList();
     await vault.kvPut('devlist_v2only_migrated', '1', sensitive: false);
+    notifyListeners();
     if (data == null) return;
     unawaited(_selfSyncDeviceList(data).then((_) {}, onError: (_) {}));
     for (final rid in contacts.keys.toList()) {
@@ -11129,16 +11390,22 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// both pass and the second write would take the device. Installs are rare
   /// and short, and nothing that holds this lock installs again.
   Future<bool> _installContactDeviceList(Contact contact, SignedDeviceList list,
-          {required bool persist, Map<String, String>? kv}) =>
-      _withLock('devlist', () async {
-        final ok = await _installContactDeviceListLocked(contact, list,
-            persist: persist, kv: kv);
-        if (persist) {
-          debugJudged
-              ?.add((rid: contact.rid, version: list.version, installed: ok));
-        }
-        return ok;
-      });
+      {required bool persist, Map<String, String>? kv}) async {
+    final installed = await _withLock('devlist', () async {
+      final ok = await _installContactDeviceListLocked(contact, list,
+          persist: persist, kv: kv);
+      if (persist) {
+        debugJudged
+            ?.add((rid: contact.rid, version: list.version, installed: ok));
+      }
+      return ok;
+    });
+    // ADR 0029: their device set has changed, and a device it dropped may
+    // have been the last reader the move was waiting for. After the install
+    // lock, which the move never needs.
+    if (installed && persist) unawaited(_maybeMoveToV2Only());
+    return installed;
+  }
 
   /// Test seam: while a test has set it, every list an install judged —
   /// in-band or from the log — in order: whose, its version, and whether it
@@ -11356,6 +11623,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
                 v: list.version,
                 h: fp,
                 list: jsonEncode(list.toJson()));
+            // ADR 0029: every inner message says what this device reads; the
+            // notice skips the rest of the decoration (§3.6), not this.
+            if (!debugPreAdr0029) note.data['dlr'] = devlistReaderLevel;
             final fm = await session.encryptFor(r, note.toBytes());
             await _saveExtra(rid);
             if (fm != null) {
@@ -12252,6 +12522,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // 7.7a: observe the claim/echo after any devlist install above, so the
     // "held" list this cross-check compares against is current.
     await _observeDevlistGossip(rid, fromDeviceRid, inner);
+    // ADR 0029: and what this device of theirs says it reads.
+    await _noteReaderLevel(rid, fromDeviceRid, inner);
   }
 
   /// [primary]: the list came over the session with the device [contact] was
@@ -12365,6 +12637,37 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   Future<void> _loadDevlistState({Map<String, String>? kv}) async {
     Future<String?> get(String key) async =>
         kv != null ? kv[key] : await vault.kvGet(key);
+    // ADR 0029: what each device that reads this account's lists has said
+    // it reads, and whether the list held for this account is v2-only.
+    Map<String, int> levels(String? stored) {
+      if (stored == null) return {};
+      try {
+        return {
+          for (final e in (jsonDecode(stored) as Map).entries)
+            if (e.key is String && e.value is num)
+              e.key as String: (e.value as num).toInt()
+        };
+      } catch (_) {
+        return {}; // unreadable: each device says it again with its next message
+      }
+    }
+
+    for (final rid in contacts.keys.toList()) {
+      final l = levels(await get('cdl_dlr_$rid'));
+      if (l.isNotEmpty) _readerLevels[rid] = l;
+    }
+    _ownReaderLevels
+      ..clear()
+      ..addAll(levels(await vault.kvGet('own_dlr')));
+    try {
+      final own = await vault.kvGet('own_list_json');
+      _ownV2Only = own != null &&
+          SignedDeviceList.fromJson(
+                  (jsonDecode(own) as Map).cast<String, Object?>())
+              .isV2Only;
+    } catch (_) {
+      _ownV2Only = false;
+    }
     for (final rid in contacts.keys.toList()) {
       final a = await get('pql_alert_$rid');
       // An alert written by a build before 2026-09-13 is an English sentence
@@ -12492,6 +12795,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // over the one its account signed. See [_shareableDeviceList].
     await vault.kvPut('own_list_json', jsonEncode(list.toJson()),
         sensitive: false);
+    _ownV2Only = list.isV2Only; // ADR 0029: what the outbound path reads
     return true;
   }
 
@@ -12512,13 +12816,30 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   /// Stamp an outgoing inner with our own-list claim ('dl') and an echo of the
-  /// recipient's list ('pdl'). Ignored by v1 clients; observed by v2 ones.
+  /// recipient's list ('pdl'), and (ADR 0029) with what this device reads
+  /// ('dlr'). Ignored by v1 clients; observed by v2 ones.
   /// Best-effort: the transparency gossip must never break a send, so a failure
   /// to read local state (e.g. a vault closing on shutdown) just omits it.
   Future<void> _decorateForWire(InnerMessage inner, Contact contact) async {
+    // ADR 0029: which device-list shape this device reads — on every message,
+    // so a device that updates says so with the next one. Before the try
+    // below and not inside it: it reads no state that can fail, and a
+    // message that went out without it would tell its reader "an older
+    // build" ([_readerLevelOf]).
+    if (debugPreAdr0029) {
+      inner.data.remove('dlr');
+    } else {
+      inner.data['dlr'] = devlistReaderLevel;
+    }
     try {
       final (v, h) = await _ownListClaim();
-      inner.data['dl'] = {'v': v, 'h': h};
+      // Set or cleared per recipient, as `pqh` below: one inner can go to
+      // several (a group).
+      if (_withholdsClaimFrom(contact.rid)) {
+        inner.data.remove('dl');
+      } else {
+        inner.data['dl'] = {'v': v, 'h': h};
+      }
       final (pv, ph) = await _heldClaimFor(contact);
       inner.data['pdl'] = {'v': pv, 'h': ph};
       // §18.9: "I have SENT you my post-quantum list signature at this
@@ -12646,6 +12967,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // ADR 0022: a list that names this device without its proof is one the
       // root has not had the proof for.
       await _offerOwnPop();
+      // ADR 0029: a newer list from my root — the one that first names this
+      // device, when it has just been linked — and the devices it names hear
+      // what this one reads. The announcement at connect can reach a root
+      // that has not yet added this device, and is then lost.
+      final sync = _sync;
+      if (sync != null) {
+        unawaited(sync.announce().then((_) {}, onError: (Object _) {}));
+      }
       // Catching up may resolve a pending owner-echo (the normal-update case),
       // or explain an alert already raised while the root was unreachable: if
       // the list that raised it is consistent with what the root just sent,
