@@ -184,6 +184,15 @@ class BackupArchive {
   /// not yet dismissed, and when the chat was last opened. Every one is in
   /// `ChatService.contactKvFamilies`, so deleting the contact still removes
   /// it. Not `cextra_`: those are ratchets (see [export]).
+  ///
+  /// Phase 33 adds the three post-quantum records kept beside a contact
+  /// (`Contact`): that their codes sign their commitment (`pqcs_`, ADR
+  /// 0027), the commitment a connect ceremony's digits covered while its key
+  /// had not landed (`vpqc_`, 26.3), and an unsigned commitment held as a
+  /// candidate (`pqcc_`). A restore that dropped them read a code stripped of
+  /// its signed commitment as an ordinary one again, and asked for a second
+  /// comparison when the covered key landed. An importer from before them
+  /// skips a family it does not know, as it skips any.
   static final Map<String, Future<bool> Function(String, _Ctx, Uint8List)>
       _contactFamilies = {
     'cdev_': (v, _, acct) => _isListOf(v, acct),
@@ -197,6 +206,9 @@ class BackupArchive {
     'pql_alert_': (v, _, __) async => _isText(v),
     'ktc_': (v, _, __) async => _isJsonMap(v),
     'last_open_': (v, _, __) async => _isCount(v),
+    'pqcs_': (v, _, __) async => v == '1',
+    'vpqc_': (v, _, __) async => _isCommitment(v),
+    'pqcc_': (v, _, __) async => _isCommitment(v),
   };
 
   /// The account-level keys a `state` record may carry, for tests and docs.
@@ -204,6 +216,19 @@ class BackupArchive {
 
   /// The per-contact families a `contact` record may carry.
   static Iterable<String> get contactFamilies => _contactFamilies.keys;
+
+  /// Whether [value] has the shape a per-contact [family] insists on, for a
+  /// contact whose account is [contactAccount] — the check a restore makes
+  /// before it writes one, and the one an enrolment's per-contact state is
+  /// held to as well (`enrollment.dart`): both are records handed over from
+  /// elsewhere and read at start-up by code that trusts what it finds. False
+  /// for a family this build does not carry.
+  static Future<bool> contactValueOk(
+      String family, String value, Uint8List contactAccount) async {
+    final check = _contactFamilies[family];
+    if (check == null) return false;
+    return check(value, const _Ctx(null), contactAccount);
+  }
 
   // ------------------------------------------------------------------
   // Export
@@ -646,6 +671,15 @@ class BackupArchive {
   static bool _isText(String v) => v.length <= 64 * 1024;
   static bool _isShortText(String v) => v.isNotEmpty && v.length <= 256;
   static bool _isCount(String v) => (int.tryParse(v) ?? -1) >= 0;
+
+  /// A post-quantum commitment (§18.2): 32 bytes, base64.
+  static bool _isCommitment(String v) {
+    try {
+      return unb64(v).length == 32;
+    } catch (_) {
+      return false;
+    }
+  }
 
   static Object? _json(String v) {
     try {

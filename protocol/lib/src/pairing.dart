@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'identity.dart';
 import 'multidevice.dart';
 import 'util.dart';
 
@@ -109,6 +110,23 @@ class EnrollmentData {
   final DeviceCertificate deviceCert; // this (new) device's cert
   final DeviceCertificate hostDeviceCert; // the existing device that linked us
 
+  /// §10, `cstate` (phase 33): what the host holds about each contact beyond
+  /// the account bundle in [contacts] — the scanned device's own bundle, the
+  /// tick and the number it was given on, the post-quantum commitment and
+  /// key and the records kept beside them, the contact's device list. One
+  /// JSON object per contact, each naming its routing id (`rid`). Null from
+  /// a host that predates it, and from one whose contacts did not fit
+  /// (§10's size rule); the receiving app checks every record before it
+  /// believes any of it, exactly as it checks a restored archive's.
+  final List<Map<String, Object?>>? contactState;
+
+  /// §10, `hostbundle` (phase 33): the host's own contact bundle — its keys
+  /// and the binding signature over them. The host is the account's root, so
+  /// this is the bundle a contact holds the account under; a linked device
+  /// needs it to send a request as the account rather than as itself
+  /// (§8.1). Null from a host that predates it.
+  final ContactBundle? hostBundle;
+
   EnrollmentData({
     required this.accountEdPub,
     required this.accountEdSeed,
@@ -117,6 +135,8 @@ class EnrollmentData {
     required this.displayName,
     required this.deviceCert,
     required this.hostDeviceCert,
+    this.contactState,
+    this.hostBundle,
   });
 }
 
@@ -163,11 +183,19 @@ class PairingSession {
   }
 
   /// EXISTING device: sign the new device's cert and seal the enrollment blob.
+  ///
+  /// [contactState] and [hostBundle] are §10's two optional members (phase
+  /// 33), added after every member a device built before them reads, and
+  /// only when given: without them the plaintext is byte for byte what it
+  /// always was (the `pairing` and `pair-v2` vectors), and a device that
+  /// predates them reads [contacts] and ignores the rest.
   Future<Uint8List> sealEnrollment(
     AccountIdentity me, {
     required List<AccountBundle> contacts,
     required bool includeAccountRoot,
     String? displayName,
+    List<Map<String, Object?>>? contactState,
+    ContactBundle? hostBundle,
   }) async {
     final cert = await signedPeerCert(me);
     final root = includeAccountRoot ? me.accountEdSeed : null;
@@ -179,11 +207,19 @@ class PairingSession {
       'cert': cert.toJson(),
       'hostcert': me.deviceCert.toJson(),
       'contacts': [for (final c in contacts) c.toJson()],
+      if (contactState != null) 'cstate': contactState,
+      if (hostBundle != null) 'hostbundle': hostBundle.toJson(),
     };
     return _seal(Uint8List.fromList(utf8.encode(jsonEncode(payload))));
   }
 
   /// NEW device: open the enrollment blob.
+  ///
+  /// The two optional members are read leniently: one in a shape this build
+  /// does not understand is left out — the enrolment then carries what it
+  /// carried before them — rather than failing a link the user has already
+  /// confirmed on both screens. Each `cstate` record is checked again,
+  /// member by member, by the app that installs it.
   Future<EnrollmentData> openEnrollment(Uint8List sealed) async {
     final j = jsonDecode(utf8.decode(await _open(sealed))) as Map<String, Object?>;
     return EnrollmentData(
@@ -199,7 +235,26 @@ class PairingSession {
         for (final c in (j['contacts'] as List))
           AccountBundle.fromJson((c as Map).cast<String, Object?>())
       ],
+      contactState: _contactState(j['cstate']),
+      hostBundle: _hostBundle(j['hostbundle']),
     );
+  }
+
+  static List<Map<String, Object?>>? _contactState(Object? v) {
+    if (v is! List) return null;
+    return [
+      for (final r in v)
+        if (r is Map && r['rid'] is String) r.cast<String, Object?>()
+    ];
+  }
+
+  static ContactBundle? _hostBundle(Object? v) {
+    if (v is! Map) return null;
+    try {
+      return ContactBundle.fromJson(v.cast<String, Object?>());
+    } catch (_) {
+      return null;
+    }
   }
 }
 

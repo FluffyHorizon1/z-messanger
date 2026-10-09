@@ -11,6 +11,7 @@ import 'alarm_evidence.dart';
 import 'archive.dart' show BackupArchive;
 import 'backup_store.dart';
 import 'device_sync.dart';
+import 'enrollment.dart' show enrollmentKvFamilies, isRootBundle, rootBundleKey;
 import 'key_transparency.dart';
 import 'models.dart';
 import 'system_messages.dart';
@@ -468,6 +469,9 @@ class ChatService extends ChangeNotifier implements KtHost {
     // ADR 0017 stage 2b: the same once more for the v2-only signer, at the
     // same point and for the same reason. Returns at once while it is off.
     await svc._migrateDeviceListToV2Only();
+    // Phase 33: a list signature the vault's own key does not verify — what
+    // the seed race left — is made again before anything offers it.
+    await svc._repairOwnListPqSignature();
     svc._schedulePqListDelivery(); // §18.9, on its own clock
 
     transport.onMessage = (m) => unawaited(svc._onInbound(m));
@@ -888,6 +892,10 @@ class ChatService extends ChangeNotifier implements KtHost {
 
   HybridKeyPair? _pq;
 
+  /// The first [pqIdentity] while it is still running, which every caller
+  /// that arrives meanwhile waits for instead of starting one of its own.
+  Future<HybridKeyPair?>? _pqLoading;
+
   /// This account's hybrid key (§18.1). The ML-DSA half is derived from a
   /// 32-byte seed generated once and sealed in the vault — not from a stored
   /// 4 032-byte secret key, so a backup archive carries 32 more bytes rather
@@ -895,9 +903,24 @@ class ChatService extends ChangeNotifier implements KtHost {
   ///
   /// The classical half IS this identity's Ed25519 key: one identity, two
   /// signature algorithms over it.
-  Future<HybridKeyPair?> pqIdentity() async {
+  ///
+  /// One seed, however many ask first. The seed used to be made by whoever
+  /// asked first, with nothing to stop a second caller doing the same
+  /// between the first one's read and its write — and two callers at once is
+  /// the ordinary first start: the log check signing the account's first
+  /// list, and the screen asking for the contact code. Each made a seed, the
+  /// vault kept whichever was written last, and the code then shown could
+  /// commit to a key the account never sent — which every contact who
+  /// scanned it refuses, for good (phase 31's report; `linked_equals_test`
+  /// 4). Now the first call is shared by everyone who arrives while it runs.
+  Future<HybridKeyPair?> pqIdentity() {
     final cached = _pq;
-    if (cached != null) return cached;
+    if (cached != null) return Future<HybridKeyPair?>.value(cached);
+    return _pqLoading ??=
+        _loadPqIdentity().whenComplete(() => _pqLoading = null);
+  }
+
+  Future<HybridKeyPair?> _loadPqIdentity() async {
     final rootSeed = (await accountIdentity()).accountEdSeed;
     if (rootSeed == null) return null; // linked device: see pqAccountPublic
     var seedB64 = await vault.kvGet('pq_seed');
@@ -1266,8 +1289,10 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> _onContactAdded(Contact contact) async {
     final rid = contact.rid;
     // If a request from them was pending (a mutual scan crossing in flight), it
-    // is answered by the add itself.
+    // is answered by the add itself — and a decline of an earlier one of
+    // theirs is a decision the add has replaced (§18.8).
     await _removeRequest(rid);
+    await vault.kvDelete('reqdecl_$rid');
     _sealKeys[rid] = contact.bundle.xPub;
     messagesByChat[rid] = [];
     unread[rid] = 0;
@@ -1350,8 +1375,13 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (!contacts.containsKey(contact.rid)) return;
     final key = _sealKeys[contact.rid];
     if (key == null) return;
+    final anchor = await _requestAnchor();
     final req = await ContactRequest.create(
-        me: identity, toRid: contact.rid, displayName: displayName);
+        me: identity,
+        toRid: contact.rid,
+        displayName: displayName,
+        root: anchor?.root,
+        cert: anchor?.cert);
     final sealed = await SealedEnvelope.seal(
         toXPub: key, fromRid: myRid, payload: req.encode());
     await vault.db.insert('outbox', {
@@ -1363,23 +1393,97 @@ class ChatService extends ChangeNotifier implements KtHost {
     unawaited(flushOutbox());
   }
 
+  /// Test seam: send requests as a build from before phase 33 did — from
+  /// this device alone, with nothing to say which account it is a device of.
+  @visibleForTesting
+  bool debugPlainContactRequests = false;
+
+  /// What a request from this device names as its account (§8.1): on a
+  /// device that does not hold the root, the root's bundle (§10
+  /// `hostbundle`, or self-synced, [_applyOwnDeviceList]) and this device's
+  /// certificate — so the person who accepts holds the account, under its
+  /// root's routing id, as if the phone had asked. Null on the root, whose
+  /// own bundle already IS the account; and on a linked device that does
+  /// not hold its root's bundle yet, whose request is then the device's own
+  /// and is made the account's in-band ([_reanchorFromList]).
+  Future<({ContactBundle root, DeviceCertificate cert})?>
+      _requestAnchor() async {
+    if (debugPlainContactRequests) return null;
+    final me = await accountIdentity();
+    if (me.holdsAccountRoot) return null;
+    final stored = await vault.kvGet(rootBundleKey);
+    if (stored == null) return null;
+    try {
+      final root = ContactBundle.fromJson(
+          (jsonDecode(stored) as Map).cast<String, Object?>());
+      return (root: root, cert: me.deviceCert);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The contact this vault holds for [account], under whichever routing
+  /// id — the device they were added from, which for a person added from
+  /// their laptop is the laptop (§18.7).
+  Contact? _contactOfAccount(Uint8List account) {
+    for (final c in contacts.values) {
+      if (constantTimeEquals(c.accountEd, account)) return c;
+    }
+    return null;
+  }
+
   /// A `creq` arrived — sealed, but with no session, so it is handled before
   /// the unknown-sender drop. Signed by the identity it names, addressed to us,
   /// and sealed by that same identity: a forged "X wants to connect" cannot
   /// pass [ContactRequest.verify].
-  Future<void> _onContactRequest(String from, ContactRequest req) async {
-    if (!await req.verify(expectedTo: myRid, sealedFrom: from)) return;
-    final rid = await req.fromRid();
-    if (_blocked.contains(rid)) return; // dropped in silence
-    if (contacts.containsKey(rid)) {
+  ///
+  /// Phase 33, three things more. A request that names its account (§8.1,
+  /// [ContactRequest.anchor]) is held as that account's — under its root's
+  /// routing id and bundle, as if the root had sent it — so accepting it adds
+  /// the person, not their laptop. A request from someone already held under
+  /// another of their devices is their answer, as one from the same device
+  /// always was. And a request is the account's, not this device's: it is
+  /// passed to this account's other devices ([mirroredBy] is the device that
+  /// passed it here), which hold it as pending too (§18.8).
+  Future<void> _onContactRequest(String from, ContactRequest req,
+      {String? mirroredBy}) async {
+    if (mirroredBy == null) {
+      if (!await req.verify(expectedTo: myRid, sealedFrom: from)) return;
+    } else {
+      // Passed on by one of my devices: addressed to THAT device (or another
+      // of mine), and signed by whoever asked, as when it arrived there. The
+      // sealed sender was that device's to check, and it checked it.
+      if (req.toRid == myRid || !_myAccountRids.contains(req.toRid)) return;
+      if (!await req.verify(expectedTo: req.toRid)) return;
+    }
+    final sender = await req.fromRid();
+    final anchor = await req.anchor();
+    final bundle = anchor?.root ?? req.bundle;
+    final rid = await bundle.routingId();
+    if (_blocked.contains(rid) || _blocked.contains(sender)) return; // silence
+    if (_myAccountRids.contains(rid) || _myAccountRids.contains(sender)) {
+      return; // one of my own devices: nothing to accept
+    }
+    final known = contacts[rid] ??
+        contacts[sender] ??
+        _contactOfAccount(anchor?.accountEdPub ?? req.bundle.edPub);
+    if (known != null) {
       // Already a contact: this is their ACCEPTANCE of a request we sent (or
-      // the duplicate on a mutual scan). Stop waiting on them, and — if we are
-      // the side that opens the session — re-poke the hello they may have
-      // dropped before they had added us.
-      await _clearRequested(rid);
-      await _pokeHello(contacts[rid]!);
+      // the duplicate on a mutual scan) — from the device we added, or from
+      // another device of the same account. Stop waiting on them, and — if
+      // we are the side that opens the session — re-poke the hello they may
+      // have dropped before they had added us. Passed on by another of my
+      // devices, it was that device's to answer.
+      if (mirroredBy != null) return;
+      await _clearRequested(known.rid);
+      await _pokeHello(known);
       return;
     }
+    if (await _declinedSince(rid, req.ts)) return; // declined, here or there
+    // Passed on: held only if nothing here holds it yet. A request that came
+    // to this device itself outranks one passed on, because this device is
+    // the one its sender holds and the one that answers it ([acceptRequest]).
+    if (mirroredBy != null && requestsByRid.containsKey(rid)) return;
     final name = (req.bundle.displayName?.trim().isNotEmpty ?? false)
         ? req.bundle.displayName!.trim()
         : 'Unknown';
@@ -1388,14 +1492,72 @@ class ChatService extends ChangeNotifier implements KtHost {
         'requests',
         {
           'rid': rid,
-          'enc_bundle': await vault.seal(jsonEncode(req.bundle.toJson())),
+          'enc_bundle': await vault.seal(jsonEncode(bundle.toJson())),
           'enc_name': await vault.seal(name),
           'created_ms': now,
         },
         conflictAlgorithm: ConflictAlgorithm.replace);
+    if (mirroredBy == null) {
+      await vault.kvDelete('reqto_$rid');
+    } else {
+      await vault.kvPut('reqto_$rid', req.toRid);
+    }
     requestsByRid[rid] =
-        PendingRequest(rid: rid, name: name, bundle: req.bundle, createdMs: now);
+        PendingRequest(rid: rid, name: name, bundle: bundle, createdMs: now);
     notifyListeners();
+    if (mirroredBy == null) {
+      unawaited(_sync
+              ?.mirror(
+                  threadRid: '',
+                  dir: 'contact',
+                  inner: InnerMessage(
+                      kind: 'creq',
+                      mid: newMessageId(),
+                      ts: now,
+                      data: {'req': req.encode()}))
+              .then((_) {}, onError: (_) {}) ??
+          Future<void>.value());
+    }
+  }
+
+  /// How long a decline outranks a request made before it (§18.8): the
+  /// relay's queue lifetime (§12.4). A request older than the decline that
+  /// has not arrived by then never will — it has expired at the relay.
+  static const Duration _declineHold = Duration(hours: 72);
+
+  /// Whether a request made at [ts] (its signed time) for [rid] was declined
+  /// after it was made — on this device or, by `cdecl`, on another.
+  ///
+  /// A decline has to outlast the request it answers because the two do not
+  /// arrive in order: a request one device passes on and the decline another
+  /// sends after it reach a third device in one flush, and each is opened
+  /// and decrypted on its own, so the decline can be read first, find
+  /// nothing to remove, and leave the request it declined to arrive and be
+  /// shown. A block needs no such record: it is the block list. A request
+  /// made after the decline is a new one and is shown, as a new request
+  /// always was (ADR 0011).
+  Future<bool> _declinedSince(String rid, int ts) async {
+    final at = int.tryParse(await vault.kvGet('reqdecl_$rid') ?? '');
+    if (at == null) return false;
+    if (_now() - at > _declineHold.inMilliseconds) {
+      await vault.kvDelete('reqdecl_$rid');
+      return false;
+    }
+    return ts <= at;
+  }
+
+  /// Tell this account's other devices what became of a request (§18.8):
+  /// `cdecl` or `cblock`, naming the routing id it was held under. Accepting
+  /// is told by the contact itself (`cadd`, [_mirrorContact]).
+  void _mirrorRequestOutcome(String kind, String rid) {
+    unawaited(_sync
+            ?.mirror(
+                threadRid: '',
+                dir: 'contact',
+                inner: InnerMessage(
+                    kind: kind, mid: newMessageId(), ts: _now(), data: {'rid': rid}))
+            .then((_) {}, onError: (_) {}) ??
+        Future<void>.value());
   }
 
   /// Accept a pending request: add the requester as a contact — at the
@@ -1405,6 +1567,13 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<Contact?> acceptRequest(String rid) async {
     final pending = requestsByRid[rid];
     if (pending == null) return contacts[rid];
+    // §18.8 (phase 33): a request another of my devices passed on was sent
+    // to THAT device, which is the one its sender holds, so that device
+    // answers it — when the contact added here reaches it — and this one
+    // does not: an answer from a device they never added is, to a build
+    // from before phase 33, a second request. One this device received
+    // itself it answers now, as always. Read before the add, which clears it.
+    final addressedHere = await vault.kvGet('reqto_$rid') == null;
     final contact = Contact(
       rid: rid,
       bundle: pending.bundle,
@@ -1431,7 +1600,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     });
     if (claimed) {
       await _onContactAdded(contact); // also removes the pending request
-      await _sendContactRequest(contact);
+      if (addressedHere) await _sendContactRequest(contact);
     } else {
       await _removeRequest(rid);
     }
@@ -1439,24 +1608,34 @@ class ChatService extends ChangeNotifier implements KtHost {
     return contacts[rid];
   }
 
-  /// Decline a pending request: drop it, in silence to the sender (ADR 0011).
+  /// Decline a pending request: drop it, in silence to the sender (ADR 0011)
+  /// — on every device of this account (§18.8, phase 33).
   Future<void> declineRequest(String rid) async {
+    await vault.kvPut('reqdecl_$rid', '${_now()}');
     await _removeRequest(rid);
+    _mirrorRequestOutcome('cdecl', rid);
     notifyListeners();
   }
 
   /// Block a routing id: drop this request and every future one from it without
-  /// a trace.
+  /// a trace — on every device of this account (§18.8, phase 33). A block
+  /// held on one device only let the person reach another: the laptop,
+  /// whose code they could scan as easily as the phone's.
   Future<void> blockRequest(String rid) async {
     await vault.db.insert('blocked', {'rid': rid, 'created_ms': _now()},
         conflictAlgorithm: ConflictAlgorithm.replace);
     _blocked.add(rid);
     await _removeRequest(rid);
+    await vault.kvDelete('reqdecl_$rid');
+    _mirrorRequestOutcome('cblock', rid);
     notifyListeners();
   }
 
+  /// Drops a pending request, and the record of which of my devices it was
+  /// sent to ([acceptRequest]).
   Future<void> _removeRequest(String rid) async {
     await vault.db.delete('requests', where: 'rid = ?', whereArgs: [rid]);
+    await vault.kvDelete('reqto_$rid');
     requestsByRid.remove(rid);
   }
 
@@ -1524,8 +1703,11 @@ class ChatService extends ChangeNotifier implements KtHost {
           // that THIS user compared a number while holding THIS device; it is
           // not a fact one device can assert to another, and forwarding it
           // would let a rogue device inject a contact that already looks
-          // checked. Linking a device has always started every contact
-          // unverified for the same reason.
+          // checked. Linking is the one exception (§10 `cstate`, phase 33):
+          // the root hands the tick over in the enrolment, on the channel
+          // the user's own two screens just confirmed, to the device that
+          // takes its whole account from that same payload — and any linked
+          // device can send this record.
           if (c.pqPub != null) 'pqk': b64(c.pqPub!),
         },
       );
@@ -1545,8 +1727,54 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// the user scans on whichever one is in their hand — so the record is
   /// stored unverified and stamped with the device that sent it, and the
   /// contact screen says so.
+  ///
+  /// Phase 33 (§18.8): requests are the account's too. A request one of my
+  /// devices received is passed on as `creq` and held as pending here; one
+  /// declined there goes here (`cdecl`), one blocked there is blocked here
+  /// (`cblock`); and one accepted there arrives as the contact (`cadd`),
+  /// which settles it here — and if it was sent to THIS device, this device
+  /// answers it ([acceptRequest]). None of the three carries a `bundle`, so
+  /// a build from before them, which took any record with one for a
+  /// contact, passes them by.
   Future<void> _applyMirroredContact(
       String fromDeviceRid, InnerMessage inner) async {
+    switch (inner.kind) {
+      case 'creq':
+        final raw = inner.data['req'];
+        final req = raw is String ? ContactRequest.tryParse(raw) : null;
+        if (req != null) {
+          await _onContactRequest('', req, mirroredBy: fromDeviceRid);
+        }
+        return;
+      case 'cdecl':
+        final r = inner.data['rid'];
+        if (r is! String || r.isEmpty || r.length > 256) return;
+        if (contacts.containsKey(r) || _myAccountRids.contains(r)) return;
+        // Recorded whether or not the request is here yet ([_declinedSince]).
+        await vault.kvPut('reqdecl_$r', '${min(inner.ts, _now())}');
+        if (requestsByRid.containsKey(r)) {
+          await _removeRequest(r);
+          notifyListeners();
+        }
+        return;
+      case 'cblock':
+        final r = inner.data['rid'];
+        if (r is! String || r.isEmpty || r.length > 256) return;
+        // `contacts` and `blocked` never name one id (ADR 0011): a person
+        // held here as a contact is not blocked by another device's word.
+        if (contacts.containsKey(r) || _myAccountRids.contains(r)) return;
+        await vault.db.insert('blocked', {'rid': r, 'created_ms': _now()},
+            conflictAlgorithm: ConflictAlgorithm.replace);
+        _blocked.add(r);
+        await _removeRequest(r);
+        await vault.kvDelete('reqdecl_$r');
+        notifyListeners();
+        return;
+      case 'cadd':
+        break;
+      default:
+        return; // a kind this build does not know
+    }
     final rid = inner.data['rid'];
     final bundleJson = inner.data['bundle'];
     if (rid is! String || bundleJson is! Map) return;
@@ -1666,6 +1894,21 @@ class ChatService extends ChangeNotifier implements KtHost {
     _sealKeys[rid] = bundle.xPub;
     messagesByChat.putIfAbsent(rid, () => []);
     unread.putIfAbsent(rid, () => 0);
+    // Phase 33 (§18.8): the account added them, so a request of theirs held
+    // here was accepted, and a block of them goes, as an add here lifts one
+    // (ADR 0011). A request that was sent to THIS device is answered from
+    // it: this is the device its sender holds.
+    final wasPending = requestsByRid.containsKey(rid);
+    final addressedHere =
+        wasPending && await vault.kvGet('reqto_$rid') == null;
+    await vault.db.delete('blocked', where: 'rid = ?', whereArgs: [rid]);
+    _blocked.remove(rid);
+    await vault.kvDelete('reqdecl_$rid');
+    if (wasPending) await _removeRequest(rid);
+    if (addressedHere) {
+      await _sendContactRequest(contact);
+      await _pokeHello(contact);
+    }
     notifyListeners();
   }
 
@@ -1904,6 +2147,9 @@ class ChatService extends ChangeNotifier implements KtHost {
     'cdev_pq_ver_', 'cdl_alert_', 'cdl_claims_', 'cextra_', 'dlpq_sent_',
     'ktc_', 'last_open_', 'pql_alert_',
     'pqcc_', 'pqcs_', 'vpqc_', // ADR 0027 and 26.3: see `Contact`
+    // Phase 33: which of my devices a pending request was sent to, and when
+    // one from them was last declined (§18.8).
+    'reqto_', 'reqdecl_',
   ];
 
   /// Forget a contact: every row, every blob, every `kv` family, and every
@@ -3789,7 +4035,8 @@ class ChatService extends ChangeNotifier implements KtHost {
         _offerPqAck(contact);
       }
       if (inner.kind == 'devlist') {
-        await _applyDevlistInner(contact, inner); // M4: learn their devices
+        // M4: learn their devices.
+        await _applyDevlistInner(contact, inner, primary: true);
       }
       if (inner.kind == 'dlpq') {
         await _onPqListSignature(contact, inner); // §18.9
@@ -6089,6 +6336,14 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// EXISTING device hosts a link: enter the code shown on the new device,
   /// confirm the safety string, then seal this account + contacts across. On
   /// success, remembers the linked device so messages mirror to it.
+  ///
+  /// Phase 33: each contact goes across as this device holds it (§10
+  /// `cstate`, [enrollmentState]) — the tick and its number, the
+  /// post-quantum commitment and key and the records beside them, the
+  /// contact's device list — and so does this device's own bundle (§10
+  /// `hostbundle`), which a linked device sends its requests as (§8.1). A
+  /// new device used to keep a routing id, the scanned device's keys and a
+  /// name, and showed every contact differently from the phone (P1-5).
   Future<bool> hostDeviceLink(
     String code, {
     required Future<bool> Function(String sas) confirmSas,
@@ -6098,18 +6353,133 @@ class ChatService extends ChangeNotifier implements KtHost {
     // while the phone handed out hybrid ones (§18).
     final acct = await accountIdentity();
     final myMl = await pqAccountPublic();
+    final bundles = contactsAsBundles();
+    final asBefore = debugEnrollAsBefore;
     final linked = await RelayPairing.runExistingDeviceV2(
       relayUrl: transport.serverUrl,
       code: PairingCode.parse(code),
       me: myMl == null ? acct : acct.withAccountMlPub(myMl),
-      contacts: contactsAsBundles(),
+      contacts: bundles,
       includeAccountRoot: false, // the new device cannot enroll further devices
       displayName: displayName,
+      contactState: asBefore ? null : await _enrollmentStateWithin(bundles),
+      hostBundle:
+          asBefore || !acct.holdsAccountRoot ? null : await identity.bundle(),
       confirm: confirmSas,
     );
     if (linked == null) return false;
     await addMyDevice(linked);
     return true;
+  }
+
+  /// Test seam: link as a build from before phase 33 does — no `cstate`, no
+  /// `hostbundle` (§10). What a new device of this build makes of an
+  /// enrolment from an older root is the case it models.
+  @visibleForTesting
+  bool debugEnrollAsBefore = false;
+
+  /// How large the contacts may make an enrolment's plaintext, in bytes.
+  ///
+  /// The enrolment travels as ONE relay frame, and the relay refuses one
+  /// over `MAX_ENVELOPE_BYTES` (1 000 000 by default, §12.4) — after base64,
+  /// which the sealed blob grows by a third. A post-quantum key is 2.6 KB of
+  /// base64 and a list's post-quantum signature 4.4 KB, so the per-contact
+  /// state is the one part of the payload that can push an account that
+  /// linked devices before over that line. 600 KiB leaves room for the rest
+  /// and the encoding; [_enrollmentStateWithin] cuts the state down to fit.
+  /// Tests shrink it.
+  @visibleForTesting
+  int enrollmentBudgetBytes = 600 * 1024;
+
+  /// [enrollmentState] at the first level that fits [enrollmentBudgetBytes]
+  /// beside [bundles], or null — no `cstate` at all, which is what an older
+  /// root sends — when even the last does not.
+  Future<List<Map<String, Object?>>?> _enrollmentStateWithin(
+      List<AccountBundle> bundles) async {
+    final base =
+        utf8.encode(jsonEncode([for (final b in bundles) b.toJson()])).length;
+    for (var level = 0; level <= 3; level++) {
+      final state = await enrollmentState(level: level);
+      if (base + utf8.encode(jsonEncode(state)).length <=
+          enrollmentBudgetBytes) {
+        return state;
+      }
+    }
+    return null;
+  }
+
+  /// Each contact as this device holds it, one record per contact, for a
+  /// device being linked (§10 `cstate`) — the archive's per-contact record
+  /// (`archive.dart`) without what a device keeps for itself: no messages,
+  /// sessions, claims or alarms.
+  ///
+  /// [level] is how much of the bulk goes when the whole will not fit in one
+  /// frame, cut in an order chosen so each cut is made good in-band, with
+  /// nothing anyone sees lost meanwhile: 1 drops each list's post-quantum
+  /// signature, which a contact sends again when the new device asks for it
+  /// (§18.9); 2 the lists themselves too, which come back when the contact
+  /// sees the device's echo of them is behind (§3.6); 3 the post-quantum
+  /// keys too — a key with no commitment beside it goes as its commitment,
+  /// so the key the contact sends the new device is checked against it and
+  /// established, as it was on this device, rather than held as a candidate.
+  ///
+  /// A tick given on the post-quantum number, at 3, goes as the classical
+  /// number with the commitment that comparison covered — 26.3's record for
+  /// a ceremony whose key had not landed. The new device then shows the
+  /// contact verified on the number it can compute, and moves the tick onto
+  /// the post-quantum one when the key arrives and matches, rather than
+  /// calling a number it cannot compute yet a change nobody explained.
+  Future<List<Map<String, Object?>>> enrollmentState({int level = 0}) async {
+    final kv = await vault.kvScanMany(enrollmentKvFamilies);
+    final mine = (await accountIdentity()).accountEdPub;
+    final out = <Map<String, Object?>>[];
+    for (final c in contacts.values.toList()) {
+      final rid = c.rid;
+      var pqCommit = c.pqCommit;
+      if (level >= 3 && pqCommit == null && c.pqPub != null) {
+        pqCommit = await HybridPublicKey(edPub: c.accountEd, mlPub: c.pqPub!)
+            .pqCommitment();
+      }
+      final family = <String, String>{};
+      for (final f in enrollmentKvFamilies) {
+        if (level >= 1 && f == 'cdev_pq_') continue;
+        if (level >= 2 && (f == 'cdev_' || f == 'cdev_sigfloor_')) continue;
+        final v = kv['$f$rid'];
+        if (v != null) family[f] = v;
+      }
+      var verifiedSn = c.verifiedSn;
+      final key = c.showsPostQuantumNumber ? c.numberKey : null;
+      if (level >= 3 &&
+          c.verified &&
+          key != null &&
+          verifiedSn != null &&
+          verifiedSn == await _safetyNumberOver(c, key)) {
+        verifiedSn = await safetyNumber(mine, c.accountEd);
+        family['vpqc_'] = b64(await key.pqCommitment());
+      }
+      out.add({
+        'rid': rid,
+        'bundle': c.bundle.toJson(),
+        'name': c.name,
+        'ttl': c.ttlSec,
+        'verified': c.verified ? 1 : 0,
+        'created': c.createdMs,
+        if (pqCommit != null) 'pqc': b64(pqCommit),
+        if (level < 3 && c.pqPub != null) 'pqk': b64(c.pqPub!),
+        if (level < 3 && c.pqCandidate != null)
+          'pqcand': b64(c.pqCandidate!),
+        if (c.pqAcked) 'pqack': 1,
+        if (c.pqTold) 'pqtold': 1,
+        if (verifiedSn != null) 'vsn': verifiedSn,
+        if (c.pqMismatch) 'pqbad': 1,
+        if (c.accountEdPub != null) 'acct': b64(c.accountEdPub!),
+        if (c.deviceCert != null) 'cert': c.deviceCert!.toJson(),
+        if (c.addedByDevice != null) 'addedby': c.addedByDevice,
+        if (c.requested) 'req': 1,
+        'kv': family,
+      });
+    }
+    return out;
   }
 
   // ---- self-sync plumbing -------------------------------------------------
@@ -9822,6 +10192,70 @@ class ChatService extends ChangeNotifier implements KtHost {
     }
   }
 
+  /// Phase 33: the account's post-quantum signature over its own list, held
+  /// to the key the vault keeps — re-made over the same list when it does
+  /// not verify under it, and offered to every contact again.
+  ///
+  /// The seed race [pqIdentity] now prevents could leave the account's first
+  /// list signed under a seed the vault did not keep: the log check signed
+  /// with the key it made, and the vault kept the other caller's. A root
+  /// re-signs only when its list changes, so an account that never links a
+  /// device kept that signature for good: every contact it reached held a
+  /// signature its key never verified, asked for it again (§18.9), was
+  /// handed the same one, and was told after the grace that it never came.
+  ///
+  /// What can be checked is checked here: the signature is the one thing
+  /// the account published under that seed that the vault also keeps. The
+  /// commitment in a contact code cannot be: a code is made when it is shown
+  /// and kept nowhere, so a code shown during the race committed to a key no
+  /// device of the account can make again, and a contact holding it refuses
+  /// this account's key until they add it again. Nothing on this side sees
+  /// that happen: the refusal is theirs, and it says nothing back.
+  Future<void> _repairOwnListPqSignature() async {
+    final me = await accountIdentity();
+    if (!me.holdsAccountRoot) return;
+    // Nothing signed, nothing to check — and the key is not asked for, so a
+    // fresh account does not make its seed here.
+    if (await vault.kvGet('own_list_mlsig') == null) return;
+    final pq = await pqIdentity();
+    if (pq == null) return;
+    var repaired = false;
+    await _withOwnListLock(() async {
+      final listJson = await vault.kvGet('own_list_json');
+      final sigJson = await vault.kvGet('own_list_mlsig');
+      if (listJson == null || sigJson == null) return;
+      final SignedDeviceList list;
+      try {
+        list = SignedDeviceList.fromJson(
+            (jsonDecode(listJson) as Map).cast<String, Object?>());
+      } catch (_) {
+        return;
+      }
+      if (!constantTimeEquals(list.accountEdPub, me.accountEdPub)) return;
+      try {
+        final sig = HybridDeviceListSignature.fromJson(
+            (jsonDecode(sigJson) as Map).cast<String, Object?>());
+        if (await sig.verifies(list, pq.publicKey.mlPub)) return;
+      } catch (_) {
+        // Unreadable: re-made below like one that does not verify.
+      }
+      await _signListPostQuantum(list);
+      repaired = true;
+    });
+    if (!repaired) return;
+    // Every contact handed the old one is handed the new one: the delivery
+    // skips a contact already sent this version, so that record goes. Until
+    // it is sent again this device claims nothing (`pql`), which a contact
+    // reads as a build that does not sign its lists — never as an attack.
+    for (final rid in _dlpqSent.keys.toList()) {
+      try {
+        await vault.kvDelete('dlpq_sent_$rid');
+      } catch (_) {}
+    }
+    _dlpqSent.clear();
+    _schedulePqListDelivery();
+  }
+
   /// How long after a device list is signed its post-quantum signature is
   /// offered to contacts (§18.9, ADR 0004).
   ///
@@ -10094,9 +10528,21 @@ class ChatService extends ChangeNotifier implements KtHost {
   }
 
   /// Self-sync a signed list to my own other devices (`dir:"acct"`).
+  ///
+  /// From the root it carries the root's own bundle too (`rootb`, phase 33):
+  /// what a linked device sends its requests as (§8.1). A device linked by
+  /// this build has it from its enrolment (§10 `hostbundle`); one linked
+  /// before has it from here, the next time the root re-asserts its list —
+  /// which it does on every connect. Only to my own devices: a contact's
+  /// copy of the list is the list alone.
   Future<void> _selfSyncDeviceList(String listJson) async {
-    await _sync?.mirror(
-        threadRid: '', dir: 'acct', inner: _devlistInner(listJson));
+    final sync = _sync;
+    if (sync == null) return;
+    final inner = _devlistInner(listJson);
+    if ((await accountIdentity()).holdsAccountRoot) {
+      inner.data['rootb'] = (await identity.bundle()).toJson();
+    }
+    await sync.mirror(threadRid: '', dir: 'acct', inner: inner);
   }
 
   /// Root: push the current signed list to my own devices — at startup and
@@ -11002,7 +11448,11 @@ class ChatService extends ChangeNotifier implements KtHost {
     await _observeDevlistGossip(rid, fromDeviceRid, inner);
   }
 
-  Future<void> _applyDevlistInner(Contact contact, InnerMessage inner) async {
+  /// [primary]: the list came over the session with the device [contact] was
+  /// added from — which alone may make that device's account the contact's
+  /// ([_reanchorFromList]).
+  Future<void> _applyDevlistInner(Contact contact, InnerMessage inner,
+      {bool primary = false}) async {
     try {
       final list = SignedDeviceList.fromJson(
           (jsonDecode(inner.data['list'] as String) as Map)
@@ -11017,6 +11467,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         await _onOwnListEvidence(contact, list);
         return;
       }
+      if (primary) await _reanchorFromList(contact, list);
       if (!await _installContactDeviceList(contact, list, persist: true)) {
         // Refused: not this account's list, or not verifiable, or a replay of
         // a version already held. It said nothing, so the log is told nothing
@@ -11030,6 +11481,74 @@ class ChatService extends ChangeNotifier implements KtHost {
       kt.noteContactListChanged(contact.rid,
           stillPresent: await _routingIdsOf(list));
     } catch (_) {}
+  }
+
+  /// Phase 33: a contact held as an account of its own — the device they
+  /// were added from — becomes the account that device belongs to, when that
+  /// account's list reaches this device over that device's own session and
+  /// names it.
+  ///
+  /// Who that is: anyone who accepted a request a linked device sent before
+  /// requests could name their account (§8.1), and anyone who scanned a
+  /// linked device's code from before §18.7. Their safety number was
+  /// computed against the laptop's key, so two people who compared numbers
+  /// read different ones; and every list the account signed was refused as
+  /// not this contact's, so its other devices were never reached. Nothing
+  /// healed it.
+  ///
+  /// Why the list is enough. It verifies under the account's key, and so
+  /// does its certificate for exactly this device — both keys — so the
+  /// account vouches for the device; and it came over the session that
+  /// device's own key authenticates, so the device vouches for the account.
+  /// Whoever holds that key could already sign lists for the record as it
+  /// stood, which named the device itself as the account, so nothing is
+  /// handed to them that they did not hold. What moves is the safety
+  /// number, onto the account's key — where the account's devices had it
+  /// all along — and a tick given on the old number says so (13.3).
+  ///
+  /// Not for a record that holds a post-quantum commitment, or a candidate
+  /// commitment (ADR 0027): each was taken over the identity as it stood,
+  /// and moving the identity under it could turn a key that matches it into
+  /// a refusal.
+  Future<bool> _reanchorFromList(Contact contact, SignedDeviceList list) async {
+    if (contact.accountEdPub != null) return false;
+    if (contact.pqCommit != null || contact.pqcHint != null) return false;
+    if (constantTimeEquals(list.accountEdPub, contact.bundle.edPub)) {
+      return false; // its own list: the device is the account already
+    }
+    DeviceCertificate? cert;
+    for (final d in list.devices) {
+      if (!d.legacy &&
+          constantTimeEquals(d.deviceEdPub, contact.bundle.edPub) &&
+          constantTimeEquals(d.deviceXPub, contact.bundle.xPub)) {
+        cert = d;
+      }
+    }
+    if (cert == null || !await list.verify()) return false;
+    final account = Uint8List.fromList(list.accountEdPub);
+    final moved = await _withLock<bool>(contact.rid, () async {
+      if (!identical(contacts[contact.rid], contact) ||
+          contact.accountEdPub != null) {
+        return false;
+      }
+      try {
+        if (_disposed) return false;
+        await vault.db.update(
+            'contacts',
+            {'acct_ed': b64(account), 'dev_cert': jsonEncode(cert!.toJson())},
+            where: 'rid = ?',
+            whereArgs: [contact.rid]);
+      } catch (_) {
+        return false;
+      }
+      contact.accountEdPub = account;
+      contact.deviceCert = cert;
+      return true;
+    });
+    if (!moved) return false;
+    await _refreshVerification(contact.rid, notify: false);
+    notifyListeners();
+    return true;
   }
 
   // ------------------------------------------------------------------
@@ -11230,6 +11749,34 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> debugApplyOwnDeviceList(SignedDeviceList list) =>
       _applyOwnDeviceList(_devlistInner(jsonEncode(list.toJson())));
 
+  /// A linked device keeps its root's bundle when the root sends it beside
+  /// the account's list (`rootb`, phase 33): checked against that list,
+  /// which this device has just verified under its own account's key — the
+  /// bundle must be the list's root device's, the device whose key IS the
+  /// account key, binding that device's own ratchet key.
+  Future<void> _learnRootBundle(
+      Object? raw, SignedDeviceList list, AccountIdentity me) async {
+    if (raw is! Map || me.holdsAccountRoot) return;
+    try {
+      final root = ContactBundle.fromJson(raw.cast<String, Object?>());
+      DeviceCertificate? rootCert;
+      for (final d in list.devices) {
+        if (constantTimeEquals(d.deviceEdPub, me.accountEdPub)) rootCert = d;
+      }
+      if (rootCert == null ||
+          !await isRootBundle(root, me.accountEdPub, rootCert)) {
+        return;
+      }
+      final json = jsonEncode(ContactBundle(
+              edPub: root.edPub, xPub: root.xPub, bindingSig: root.bindingSig)
+          .toJson());
+      if (await vault.kvGet(rootBundleKey) == json) return;
+      await vault.kvPut(rootBundleKey, json);
+    } catch (_) {
+      // Not a bundle: requests go out as this device's own until one comes.
+    }
+  }
+
   /// A linked device applies the account's latest signed list, self-synced from
   /// the root device (rule 8), keeping its own-account version in step.
   Future<void> _applyOwnDeviceList(InnerMessage inner) async {
@@ -11242,6 +11789,7 @@ class ChatService extends ChangeNotifier implements KtHost {
         return;
       }
       if (!await list.verify()) return;
+      await _learnRootBundle(inner.data['rootb'], list, me);
       final knownV = await _myDevlistVersion();
       if (list.version < knownV) {
         // My root just sent an OLDER list than this device already holds. An

@@ -1047,6 +1047,35 @@ its traffic — is dropped in silence. Older clients, which never send `creq`,
 keep dropping the opening `hello` as before; nothing about the wire is
 incompatible, and only a new client shows the request.
 
+**A request from a linked device names its account (phase 33).** `bundle` is
+the sending device's, so a request from someone's laptop added the laptop: its
+key anchored the safety number, the account's lists were refused as not that
+contact's, and nothing ever moved it. A device that does not hold its
+account's root therefore adds three members, after the six every reader reads:
+
+```
+creq    += { "root":ContactBundleJSON, "cert":deviceCert, "asig":b64 }
+asigIn   = utf8("z-contact-request-acct-v1:") || root.ed || u16be(len(to)) || to || u64be(ts)
+asig     = Ed25519.Sign( bundle.edSk, asigIn )
+```
+
+`root` is the account's root device's bundle (§10 `hostbundle`), whose key IS
+the account key; `cert` is the account's certificate for the sending device.
+A recipient that reads them, after verifying the request as above, MUST check
+that `cert` is not a `legacy` record and names exactly `bundle`'s two keys
+(§18.7's rule 3), that `root` binds its own X25519 key and is not the sender,
+that `cert` verifies under `root.ed`, and that `asig` verifies under
+`bundle.edPub` — which ties the account to this request, so the anchor cannot
+be carried to another request, or replaced by someone who passes the request
+on (§18.8) with another account that certified the same device keys. All of it
+holds, or none of it is used. When it holds, the request is the ACCOUNT's: it
+is held, and accepted, under `root` and its routing id, exactly as a request
+from the root itself would be, and the sender is one of the devices the
+account's list will name. A request from anyone already held under another of
+their account's devices is their answer, as one from the same device always
+was. A client that does not read the three members reads the request as the
+device's own, as it always did.
+
 ## 9. Multi‑device messaging and self‑sync
 
 From one device's point of view, messaging an account is running one §5
@@ -1070,7 +1099,10 @@ utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping"|"acct"|"acctreq"|"h
 ignored on receipt; `"out"`/`"in"` insert the inner message into `thread` as
 sent/received respectively; `"acct"` carries a `devlist` inner and updates the
 receiving device's knowledge of its *own* account's current signed list (§3.6
-root discipline); `"acctreq"` (a `hello` inner) asks the root to send that
+root discipline) — from the root, with one optional member more, `rootb`, the
+root's own contact bundle, which a linked device checks against that list's
+root certificate and keeps for the requests it sends (§8.1, §10
+`hostbundle`); `"acctreq"` (a `hello` inner) asks the root to send that
 list — a root answers with `"acct"`, any other device ignores it; `"hist"`
 carries an inner of kind `hist` whose `items` replay recent history to a
 device that was just linked: each item is
@@ -1181,6 +1213,66 @@ identity to speak for (§18.2). It is absent from an enrollment performed by a
 build that predates v3, and a device that receives none MUST behave as a
 classical identity rather than deriving a key of its own.
 `AccountBundleJSON` is `{ "acct", "devs", "name" }` (§3.3 without the wrapper).
+
+**Each contact as the host holds it (phase 33).** Two optional members follow
+`contacts`, and are absent from an enrollment performed by a build that
+predates them:
+
+```
+enrollment += { "cstate"?: [ ContactStateJSON... ], "hostbundle"?: ContactBundleJSON }
+ContactStateJSON = { "rid", "bundle":ContactBundleJSON, "name", "ttl", "verified":0|1, "created",
+                     "vsn"?, "pqc"?, "pqk"?, "pqcand"?, "pqack"?:1, "pqtold"?:1, "pqbad"?:1,
+                     "acct"?, "cert"?, "addedby"?, "req"?:1,
+                     "kv": { "pqcs_"?, "vpqc_"?, "pqcc_"?, "cdev_"?, "cdev_sigfloor_"?, "cdev_pq_"? } }
+```
+
+`contacts` names each contact's account and the device the host added them
+from; a device that kept only that showed a different safety number for every
+contact added from someone's linked device, and refused their account's lists
+as not theirs. A receiver MUST keep each entry's account key and
+certificate whether or not `cstate` is present: when `devs[0]` is a real
+certificate that verifies under `acct` (not a `legacy` record), the contact is
+anchored to `acct` with that certificate, as a §18.7 code anchors one.
+
+`cstate` is the rest of what the host holds about each contact — the same
+fields, under the same names, as a backup archive's contact record (§13,
+`BACKUP.md`), without what a device keeps for itself: the scanned device's own
+bundle (whose binding signature `devs[0]` does not carry), the tick and the
+number it was given on (13.3), the post-quantum commitment, key or candidate
+and the facts kept beside them (§18.2, ADR 0021, ADR 0027, 26.3), and the
+contact's device list, its signature floor and its post-quantum signature
+(§3.4, §18.9). A receiver MUST check each record against the `contacts` entry
+for the same routing id — the same device keys, and for a `legacy` entry the
+same binding signature — and each member as a restore checks an archive's: a
+key of the right length, a key that matches the commitment beside it, a list
+that verifies under the contact's account; a list's version is read from the
+list. A record or member that fails is left out, and the contact is installed
+from its `contacts` entry as above. The tick travels here and nowhere else: the
+root sends it on the channel both users' screens just confirmed, to the device
+that takes its whole account from the same payload, while the `cadd` any linked
+device can send (§18.8) never carries one.
+
+The whole enrollment is one relay frame (§12.4), and a host MUST keep it under
+the relay's cap: the per-contact state goes in a fixed order of reductions, each
+made good in-band — first each list's post-quantum signature (re-sent on
+request, §18.9), then the lists (re-sent when the new device's echo of them is
+behind, §3.6), then the keys, a key with no commitment beside it sent as its
+commitment so the key the contact sends the new device is established against
+it, and a tick given on the post-quantum number sent as the classical number
+with the commitment that comparison covered (`vpqc_`, 26.3), so the new device
+shows it verified on the number it can compute and moves it when the key
+lands — and if even that is too large, `cstate` is left out.
+
+`hostbundle` is the host's own contact bundle (§2.4): the root device's keys and
+binding signature, which a linked device names in the requests it sends
+(§8.1). The receiver MUST check that its `ed` is `acct` and its `x` is
+`hostcert`'s ratchet key, and that it binds that key. A linked device enrolled
+without it learns it from the root's next self-synced list (§9, `rootb`).
+
+Both members are optional in each direction: a device from before them reads
+`contacts` and ignores the rest, and one of this build linked by an older root
+installs from `contacts` alone. Neither changes the frozen vectors, which are
+of enrollments without them.
 
 **Superseded by §10.1.** The ceremony above is what shipped through 2.8.4 and
 is specified here unchanged, because its vectors are frozen (§14) and a device
@@ -2672,6 +2764,23 @@ read.
 
 Contacts added this way reach the account's other devices under §18.8.
 
+**A device held as its own account learns its account in-band (phase 33).**
+A contact added from a linked device's code from before this section, or from
+a linked device's request from before §8.1's anchor, is held with no `acct`:
+the device IS the account, its key anchors the safety number, and every list
+its real account signs is refused as not this contact's. When a list arrives
+over the session with that very device, signed by an account other than the
+device's own key and naming the device — both its keys — under a certificate
+that is not `legacy`, and the list verifies, a client SHOULD anchor the
+contact to that account with that certificate, and then judge the list as any
+other (§3.4). The account vouches for the device (the certificate) and the
+device for the account (it sent the list, on a session only its key opens);
+whoever holds that key could already sign lists for the record as it stood,
+so nothing is handed to them, and what moves is the safety number — onto the
+key the account's own devices show, with a tick given on the old one shown as
+changed (13.3). A record that holds a commitment or a candidate commitment
+(§18.2, §18.10) is not moved: each was taken over the identity as it stood.
+
 ### 18.8 Contacts across an account's own devices
 
 Contacts travelled only at enrollment (§10, `contacts`), so one added
@@ -2704,13 +2813,44 @@ A receiver MUST:
   records that the user compared a number while holding a particular device;
   it is not a fact one device can assert to another, and forwarding it would
   let a rogue device inject a contact that already looks checked. Enrollment
-  has always started every contact unverified for the same reason.
+  is the one exception (§10 `cstate`, phase 33): the root hands the tick over
+  on the channel both users' screens just confirmed, to the device that takes
+  its whole account from the same payload.
 
 What remains is that any of an account's devices can make a *new* chat appear
 on the others. That is bounded rather than eliminated — any device can add a
 contact, because the user scans on whichever one is in their hand — so a
 client SHOULD show where such a contact came from, and MUST NOT present it as
 something the user did on this device.
+
+**Requests, declines and blocks follow the account (phase 33).** A request
+(§8.1) reaches one device — the one whose code was scanned — and a decline or
+a block was that device's alone, so a person blocked on the phone could reach
+the laptop by scanning its code, and a request accepted on one device stayed
+pending on another. They travel the same channel, as three more records, none
+carrying a `bundle` — a receiver from before them, which takes any record with
+one for a contact, passes them by:
+
+```
+{"k":"creq","mid":…,"ts":…, "req":<the request's transport payload, as it arrived>}
+{"k":"cdecl","mid":…,"ts":…, "rid":…}
+{"k":"cblock","mid":…,"ts":…, "rid":…}
+```
+
+A receiver MUST verify a passed-on `creq` as §8.1 does — addressed to another
+of its own account's devices, signed by whoever asked — and hold it as pending,
+under the routing id §8.1 gives it; one that came to the receiver itself
+outranks one passed on. An accepted request travels as the contact (`cadd`),
+which settles a request held for that routing id; the device it was sent to —
+the one its sender holds — answers it then, as it answers one accepted on it,
+and no other device does: to a client from before phase 33 an answer from a
+device it never added is a second request. `cdecl` removes the request, and is
+remembered with its time for the relay's queue lifetime (§12.4), because the
+two records reach a third device in either order: a request signed before the
+decline is dropped when it arrives. `cblock` blocks the routing id as the
+user's own block does, unless the receiver holds it as a contact (`contacts`
+and `blocked` never name one id, ADR 0011); a `cadd` lifts a block of its
+routing id, as adding someone on the device does.
 
 ### 18.9 A post-quantum signature over the device list
 

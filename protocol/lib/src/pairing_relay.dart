@@ -195,6 +195,9 @@ class RelayPairing {
   /// speaks first, so its `hello` arrives and can be recognised for what it
   /// is. Detect, do not transact — completing a v1 ceremony here would hand
   /// back exactly the assurance v2 exists to replace.
+  ///
+  /// [contactState] and [hostBundle] are the enrolment's optional members
+  /// (§10, phase 33), sealed with the rest when given.
   static Future<DeviceCertificate?> runExistingDeviceV2({
     required String relayUrl,
     required PairingCode code,
@@ -202,6 +205,8 @@ class RelayPairing {
     required List<AccountBundle> contacts,
     required bool includeAccountRoot,
     String? displayName,
+    List<Map<String, Object?>>? contactState,
+    ContactBundle? hostBundle,
     required Future<bool> Function(String sas) confirm,
     Duration timeout = const Duration(seconds: 40),
   }) async {
@@ -232,7 +237,9 @@ class RelayPairing {
       final sealed = await session.sealEnrollment(me,
           contacts: contacts,
           includeAccountRoot: includeAccountRoot,
-          displayName: displayName);
+          displayName: displayName,
+          contactState: contactState,
+          hostBundle: hostBundle);
       await client.send(
           to: iMailbox,
           id: 'z-pair-enroll',

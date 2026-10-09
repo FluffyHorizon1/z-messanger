@@ -204,6 +204,23 @@ throwaway mailboxes the code derives, everything in them end-to-end
 encrypted — and the matching code on both screens is what shows nobody is in
 between.
 
+A newly linked device knows your contacts as your phone does: each one shows
+the same safety number, the same tick if you verified them, the same
+post-quantum state, and their other devices — your phone hands all of it over
+in the link the matching code protects. Until this version a laptop started
+every contact unverified, showed a different number for anyone you had added
+from *their* laptop, and could not reach that person's other devices. Linked
+from a phone on an older version, the new device gets what that version
+sends: every contact under the right account and number, unverified, with
+their post-quantum keys arriving as they next write to it.
+
+Contact requests belong to your account, not to a device: one sent to your
+phone shows on your laptop too, and accepting, declining or blocking it on
+either does it on both — a person you block on your phone cannot reach your
+laptop instead. A request you send from your laptop reaches the other person
+as yours, so accepting it gives them you — the same number your phone shows
+them — and not a separate entry for your laptop.
+
 If your contacts start seeing a device you did not add, Z tells them, and it
 tells you. That alert is the whole point of the design, so please do not
 dismiss it as noise.

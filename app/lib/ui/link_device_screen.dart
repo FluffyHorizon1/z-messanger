@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
@@ -8,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 import '../core/chat_service.dart';
+import '../core/enrollment.dart';
 import '../core/relay_url.dart';
 import 'relay_warning.dart';
 import '../core/vault.dart';
@@ -201,40 +200,10 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
         });
         return;
       }
-      final acct = result.account;
-      await widget.vault.kvPut(
-          'identity',
-          jsonEncode({
-            'edSeed': b64(acct.deviceEdSeed),
-            'xSeed': b64(acct.deviceXSeed)
-          }));
-      await widget.vault.kvPut('account', jsonEncode(acct.toJson()));
-      await widget.vault.kvPut('display_name', result.data.displayName ?? 'Me');
       await setRelayUrl(widget.vault, url, acceptedInsecure: true);
-      // Remember the device that linked us, so our messages mirror back to it.
-      await widget.vault.kvPut(
-          'my_devices', jsonEncode([result.data.hostDeviceCert.toJson()]),
-          sensitive: false);
-      for (final b in result.data.contacts) {
-        final dev = b.devices.first;
-        final rid = b64url(await sha256Bytes(dev.deviceEdPub));
-        await widget.vault.db.insert(
-          'contacts',
-          {
-            'rid': rid,
-            'enc_bundle': await widget.vault.seal(jsonEncode(ContactBundle(
-                    edPub: dev.deviceEdPub,
-                    xPub: dev.deviceXPub,
-                    bindingSig: dev.sig)
-                .toJson())),
-            'enc_name': await widget.vault.seal(b.displayName ?? 'Unknown'),
-            'ttl_seconds': 0,
-            'verified': 0,
-            'created_ms': DateTime.now().millisecondsSinceEpoch,
-          },
-          conflictAlgorithm: null,
-        );
-      }
+      // The account, the device that linked us and every contact as the
+      // phone holds them (§10; `enrollment.dart`).
+      await installEnrollment(widget.vault, result);
       await widget.onDone();
     } on PairingAbort {
       // The other device speaks the older ceremony, whose safety code can be
