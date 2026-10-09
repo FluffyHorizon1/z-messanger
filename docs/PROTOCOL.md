@@ -787,7 +787,9 @@ stands when the reply is sent, not the quoted message's.
 - A reaction to a message that later disappears (§8) or is deleted (§6.6) goes
   with it.
 - Reactions are stored under the reacting device's routing id, so a group
-  member sees who reacted, and one member cannot overwrite another's.
+  member sees who reacted, and one member cannot overwrite another's. One of
+  a contact's other devices reacts as the contact, so its reaction is stored
+  under the contact's and replaces theirs (§9).
 
 ### 6.6 Edit and delete for everyone (8.1c)
 
@@ -1081,10 +1083,51 @@ passed is not stored at all. A mirrored copy of any kind keeps its `ttl` the
 same way a live one does — a disappearing message does not stop disappearing
 because it reached a device through the self-sync or extra-device door. The reference app replays the newest 200 text
 messages per chat in batches of 100, and only once that device's channel is
-post‑quantum (§17.8); attachments are not replayed. Attachment
+post‑quantum (§17.8); attachments are not replayed. Ahead of them, on the same
+terms, `"hist"` carries each 1:1 chat's disappearing timer (30.3): an inner of
+kind `timer` with that chat as `thread`, which the device takes without a
+notice and only while its own timer for that chat is off — enrollment hands
+it every contact with none, so without it what the device sent would never
+disappear. A client that predates it reads an empty batch. Attachment
 chunks are not re‑encrypted for sync: the chunk
 payloads (§7) are forwarded verbatim to each of the user's other devices, which
 decrypt them with the mirrored offer.
+
+**What a person's other devices do (30.3).** A message from one of a
+contact's other devices — one their signed list names (§3.4) — is the
+contact's, and a receiver handles every kind exactly as it would from the
+device the contact was added from: a message is stored, counted unread and
+answered with `dlv` (and with `read` once read, §6.3); `edit`/`gedit`,
+`del`/`gdel`, `react`/`greact`, `timer`, `read` and `dlv` apply with the
+contact as their sender. So §6.6's authorship rule, §6.5's one reaction per
+person and only from a member, and §6.3's scoping of receipts hold whichever
+of the contact's devices a message came from, and a receipt or a reaction from
+any of them counts as the person's: a group message waits for each member
+once. Until 30.3 the reference client applied none of these from a contact's
+other device but messages and (since 30.1) deletes, so an edit made on a
+laptop left the old text on every other device, and a message sent from one
+was never marked delivered.
+
+What a user does on one of their devices, each of their other devices does
+too, on a self-sync mirror with `dir:"out"`: `edit`/`gedit` replaces the text
+of a message of the user's own — sent from any of their devices — that is
+text and not deleted, and nothing else; `del`/`gdel` removes only the user's
+own messages; `react`/`greact` is the user's one reaction to that message;
+`timer` sets that chat's disappearing timer, which what the receiving device
+sends from then on carries, and says so there as on the device it was set
+on; and `read` — its `mids` the messages the user read on the sending device,
+its `thread` the 1:1 chat or the group — makes the receiving device count
+them read and send no receipt of its own for them. A group sends its members
+no read receipts (§6.3), so this mirror is all that its read state travels
+in. A contact's own edit, delete, reaction, timer or receipt is not mirrored:
+it reaches each of the user's devices from the contact. A mirror that names
+nothing the receiving device holds, or nothing that is the user's to change,
+is dropped and acknowledged (§6.8). On both doors a receiver applies what one
+device sent one envelope at a time, in the order it decrypted them, as the
+conversation lock does on the contact's own door — so in a backlog delivered
+in the order it was sent, an edit, a reaction or a receipt is applied after
+the message it names. Every one of these is an existing kind on an existing
+door, and a client that predates it ignores it, as it did.
 
 **Device‑list distribution.** A root‑holding device signs the account's device
 set (§3.4) whenever it changes and sends it to every contact as `devlist` and,

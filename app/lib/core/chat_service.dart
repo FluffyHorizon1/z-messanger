@@ -710,10 +710,15 @@ class ChatService extends ChangeNotifier implements KtHost {
   /// message, 238 → 11 ms for 400 chats of fifty, 33 → 24 ms for 50 chats
   /// of a thousand — never slower, and the per-chat form is what made cold
   /// start linear in the contact count (PERFORMANCE.md, "Cold start").
+  ///
+  /// A message read on another of my devices (30.3), or read here while its
+  /// chat was open, carries `receipt_sent` and is not counted: the time the
+  /// chat was last opened here does not cover either.
   Future<void> _computeUnread() async {
     final rows = await vault.db
         .rawQuery("SELECT m.rid AS rid, COUNT(*) AS n FROM messages m "
             "WHERE m.outgoing = 0 AND m.kind != 'system' "
+            "AND m.receipt_sent = 0 "
             "AND m.ts_ms > COALESCE((SELECT CAST(v AS INTEGER) FROM kv "
             "WHERE k = 'p:last_open_' || m.rid), 0) GROUP BY m.rid");
     final counts = {
@@ -1697,6 +1702,18 @@ class ChatService extends ChangeNotifier implements KtHost {
             if (pqPub != null) 'pqk': b64(pqPub),
           },
         ));
+  }
+
+  /// Mirror [inner] to my own other devices exactly as given, as thread
+  /// [threadRid] in direction [dir]. Exists so a test can send what a
+  /// modified linked device could — a mirror an honest client never builds;
+  /// nothing in the app calls it.
+  @visibleForTesting
+  Future<void> debugMirrorToMyDevices(
+      {required String threadRid,
+      required String dir,
+      required InnerMessage inner}) async {
+    await _sync?.mirror(threadRid: threadRid, dir: dir, inner: inner);
   }
 
   /// Record (or withdraw) the user's confirmation that they compared numbers.
@@ -3175,8 +3192,13 @@ class ChatService extends ChangeNotifier implements KtHost {
         seconds == 0
             ? systemBody(SystemKind.ttlOffYou)
             : systemBody(SystemKind.ttlSetYou, {'sec': seconds}));
-    await _sendInnerOrHold(
-        contact, InnerMessage.timer(newMessageId(), _now(), seconds));
+    final inner = InnerMessage.timer(newMessageId(), _now(), seconds);
+    await _sendInnerOrHold(contact, inner);
+    // 30.3: and on my other devices, so what they send from now on carries
+    // it too. It used to stay on the device it was set on: a timer set on
+    // the phone did not govern what the laptop sent.
+    unawaited(_sync?.mirror(threadRid: rid, dir: 'out', inner: inner) ??
+        Future<void>.value());
     notifyListeners();
   }
 
@@ -3367,6 +3389,28 @@ class ChatService extends ChangeNotifier implements KtHost {
     return true;
   }
 
+  /// 30.3: mirrors from my other devices are applied one at a time, in the
+  /// order the sync ratchet decrypted them — for a backlog the relay hands
+  /// over in the order it was sent, that order. The transport hands over
+  /// envelopes without waiting for the last, and the ratchet's own lock
+  /// orders only the decrypts, so a device catching up could otherwise start
+  /// applying an edit, a reaction or a receipt while the mirror of the
+  /// message it names was still being stored, and drop it. The contact's
+  /// door has its conversation lock around decrypt AND store; this is the
+  /// same promise for this door.
+  Future<void> _mirrorTurn = Future<void>.value();
+
+  Future<void> _inMirrorOrder(Future<void> Function() apply) {
+    final run = _mirrorTurn.then((_) => apply());
+    _mirrorTurn = run.then((_) {}, onError: (Object _) {});
+    return run;
+  }
+
+  /// The same for each contact's other devices ([_handleExtraInbound]): the
+  /// turn of the last envelope from them taken for dispatch, per contact,
+  /// while it is still running.
+  final Map<String, Future<void>> _extraTurns = {};
+
   Future<void> _onInbound(RelayInbound m) async {
     // Sealed sender: an envelope with no relay-level sender. Open it with our
     // private key; the sender's routing id lives INSIDE the ciphertext, so the
@@ -3425,18 +3469,29 @@ class ChatService extends ChangeNotifier implements KtHost {
       final mirrored = r.mirrored;
       if (mirrored != null) {
         try {
-          if (mirrored.dir == 'contact') {
-            // Carries the sending device, which the sync ratchet
-            // authenticates — so the label on an injected contact cannot
-            // itself be forged.
-            await _applyMirroredContact(from, mirrored.inner);
-          } else {
-            await _insertMirrored(
-                mirrored.thread, mirrored.dir, mirrored.inner);
+          await _inMirrorOrder(() async {
+            if (mirrored.dir == 'contact') {
+              // Carries the sending device, which the sync ratchet
+              // authenticates — so the label on an injected contact cannot
+              // itself be forged.
+              await _applyMirroredContact(from, mirrored.inner);
+            } else {
+              await _insertMirrored(
+                  mirrored.thread, mirrored.dir, mirrored.inner);
+            }
+          });
+        } catch (e) {
+          // The one classifier every door uses (§6.8). Transient — the vault
+          // busy or closing — and the ratchet is put back and the envelope
+          // left with the relay, which redelivers it. Permanent — a mirror
+          // whose handler cannot read it — and it never will: the ratchet it
+          // advanced is already saved, so it is acknowledged and dropped,
+          // where every failure here used to be taken as transient and one
+          // such mirror was redelivered, and refused, for the queue's life.
+          if (_isTransientInboundFailure(e)) {
+            if (r.snapshot != null) await sync.restore(r.snapshot!);
+            return; // not acknowledged: the relay redelivers
           }
-        } catch (_) {
-          if (r.snapshot != null) await sync.restore(r.snapshot!);
-          return; // not acknowledged: the relay redelivers
         }
       }
       transport.ackReceived(id: m.id, from: m.from);
@@ -3648,10 +3703,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       if (offerFate == _OfferFate.fresh) {
         await _offerLanded(inner.data['fid'] as String);
       }
-      if (openChatRid == contact.rid &&
-          (inner.kind == 'text' || inner.kind == 'file')) {
-        unawaited(_sendReadReceipts(contact.rid));
-      }
+      _readOnArrival(contact.rid, inner);
       if (!refused &&
           (inner.kind == 'text' ||
               inner.kind == 'file' ||
@@ -4443,8 +4495,17 @@ class ChatService extends ChangeNotifier implements KtHost {
   Future<void> markChatOpened(String rid) async {
     openChatRid = rid;
     unread[rid] = 0;
+    final group = groups.containsKey(rid);
+    // A group's read state goes by when it was last opened (30.3).
+    final before = group
+        ? int.tryParse(await vault.kvGet('last_open_$rid') ?? '') ?? 0
+        : 0;
     await vault.kvPut('last_open_$rid', '${_now()}', sensitive: false);
-    await _sendReadReceipts(rid);
+    if (group) {
+      await _readGroupHere(rid, since: before);
+    } else {
+      await _sendReadReceipts(rid);
+    }
     notifyListeners();
   }
 
@@ -4576,8 +4637,136 @@ class ChatService extends ChangeNotifier implements KtHost {
         where:
             "rid = ? AND outgoing = 0 AND receipt_sent = 0 AND kind IN ('text','file')",
         whereArgs: [rid]);
+    // 30.3: and my other devices count them read — first, so that a receipt
+    // the contact cannot be sent does not leave them unread over there.
+    await _mirrorRead(rid, mids);
     await _sendInner(contact, InnerMessage.read(newMessageId(), _now(), mids));
   }
+
+  // ------------------------------------------------------------------
+  // 30.3: what I read on one of my devices is read on the others.
+  //
+  // A message counts as read on a device — out of the unread count, and no
+  // receipt left to send for it — once it has been read there or on another
+  // device of mine: `receipt_sent` on its row, which a 1:1 chat always set
+  // when its receipt went and a group chat (which sends no receipts, §6.3)
+  // now sets too. Whichever device reads mirrors the ids it read, as a
+  // `read` with dir `out` over self-sync (PROTOCOL §9), and every other
+  // device marks them. Until 30.3 a message read on the laptop stayed unread
+  // on the phone, and the phone, opened, sent a second receipt for it.
+  // ------------------------------------------------------------------
+
+  /// At most this many ids in one mirrored `read`: a long absence must not
+  /// make one envelope larger than the relay takes.
+  static const int _readMirrorBatch = 500;
+
+  /// What has just arrived while its chat is open on this device is read
+  /// here: a 1:1 chat sends its receipt, as it always did; a group, which
+  /// sends none, tells my other devices.
+  void _readOnArrival(String contactRid, InnerMessage inner) {
+    if (inner.kind == 'text' || inner.kind == 'file') {
+      if (openChatRid == contactRid) {
+        unawaited(_sendReadReceipts(contactRid));
+      }
+    } else if (inner.kind == 'gmsg' || inner.kind == 'gfile') {
+      final gid = inner.data['gid'];
+      if (gid is String && openChatRid == gid) {
+        unawaited(_readGroupHere(gid).then((_) {}, onError: (Object _) {}));
+      }
+    }
+  }
+
+  /// A group's messages that arrived here since [since] — by default, since
+  /// its chat was last opened here — and are not yet read here or on another
+  /// of my devices: marked read, and my other devices told. Nothing goes to
+  /// the members.
+  Future<void> _readGroupHere(String gid, {int? since}) async {
+    if (!groups.containsKey(gid)) return;
+    final from = since ??
+        int.tryParse(await vault.kvGet('last_open_$gid') ?? '') ??
+        0;
+    final rows = await vault.db.query('messages',
+        columns: ['mid'],
+        where: "rid = ? AND outgoing = 0 AND receipt_sent = 0 "
+            "AND kind != 'system' AND ts_ms > ?",
+        whereArgs: [gid, from]);
+    if (rows.isEmpty) return;
+    final mids = [for (final r in rows) r['mid'] as String];
+    await _markRead(gid, mids);
+    await _mirrorRead(gid, mids);
+  }
+
+  /// The incoming messages [mids] of [thread], read here or on another of my
+  /// devices.
+  Future<void> _markRead(String thread, List<String> mids) async {
+    for (var i = 0; i < mids.length; i += _readMirrorBatch) {
+      final part = mids.sublist(i, min(i + _readMirrorBatch, mids.length));
+      await vault.db.update('messages', {'receipt_sent': 1},
+          where: 'rid = ? AND outgoing = 0 AND receipt_sent = 0 AND mid IN '
+              '(${List.filled(part.length, '?').join(',')})',
+          whereArgs: [thread, ...part]);
+    }
+  }
+
+  /// Tell my other devices that [mids] in [thread] were read on this one.
+  /// Best effort, like the receipt to the contact: a lost one leaves a count
+  /// over there, which reading there clears.
+  Future<void> _mirrorRead(String thread, List<String> mids) async {
+    final sync = _sync;
+    if (sync == null || mids.isEmpty) return;
+    try {
+      for (var i = 0; i < mids.length; i += _readMirrorBatch) {
+        await sync.mirror(
+            threadRid: thread,
+            dir: 'out',
+            inner: InnerMessage.read(newMessageId(), _now(),
+                mids.sublist(i, min(i + _readMirrorBatch, mids.length))));
+      }
+    } catch (_) {}
+  }
+
+  /// Messages read on another of my devices ([inner] is the `read` it
+  /// mirrored): read here too, so this device's count clears and it sends no
+  /// receipt of its own for them. Only the incoming messages of a chat this
+  /// device holds are touched; the ids are the other device's say-so, and
+  /// one that names nothing here is passed over.
+  Future<void> _readElsewhere(String thread, InnerMessage inner) async {
+    if (!contacts.containsKey(thread) && !groups.containsKey(thread)) return;
+    final mids = [
+      for (final m in (inner.data['mids'] as List?) ?? const [])
+        if (m is String) m
+    ];
+    if (mids.isEmpty) return;
+    await _markRead(thread, mids);
+    if (openChatRid != thread) unread[thread] = await _unreadIn(thread);
+    notifyListeners();
+  }
+
+  /// How many messages in [thread] this device counts unread: the incoming
+  /// ones since the chat was last opened here, that no device of mine has
+  /// read — [_computeUnread]'s rule, for one chat.
+  Future<int> _unreadIn(String thread) async {
+    final since =
+        int.tryParse(await vault.kvGet('last_open_$thread') ?? '') ?? 0;
+    return firstIntValue(await vault.db.rawQuery(
+            "SELECT COUNT(*) FROM messages WHERE rid = ? AND outgoing = 0 "
+            "AND kind != 'system' AND receipt_sent = 0 AND ts_ms > ?",
+            [thread, since])) ??
+        0;
+  }
+
+  /// One more unread message in [thread], unless it is open on this device.
+  void _countUnread(String thread) {
+    if (openChatRid != thread) unread[thread] = (unread[thread] ?? 0) + 1;
+  }
+
+  Future<bool> _holdsMessage(String thread, String mid) async =>
+      (await vault.db.query('messages',
+              columns: ['mid'],
+              where: 'rid = ? AND mid = ?',
+              whereArgs: [thread, mid],
+              limit: 1))
+          .isNotEmpty;
 
   // ------------------------------------------------------------------
   // Message loading & helpers
@@ -6136,6 +6325,27 @@ class ChatService extends ChangeNotifier implements KtHost {
       }
     }
 
+    // 30.3: first, each chat's disappearing timer. The enrolment hands the
+    // new device every contact with none, so without this what it sent
+    // would never disappear, though the chat's timer was on. Through the
+    // same door as the history, and on the same terms: post-quantum or not
+    // at all. Sent again if the replay is begun again; the device takes one
+    // only where it still has none ([_applyMirroredTimer]).
+    for (final c in contacts.values.toList()) {
+      if (c.ttlSec <= 0) continue;
+      try {
+        if (!await sync.mirrorTo(
+            deviceRid: deviceRid,
+            threadRid: c.rid,
+            dir: 'hist',
+            onlyPostQuantum: true,
+            inner: InnerMessage.timer(newMessageId(), _now(), c.ttlSec))) {
+          return false;
+        }
+      } catch (_) {
+        return false; // the vault closing: the next start resumes the replay
+      }
+    }
     for (final thread in [...contacts.keys, ...groups.keys]) {
       final rows = await vault.db.query('messages',
           where: 'rid = ? AND kind IN (?, ?)',
@@ -6354,12 +6564,35 @@ class ChatService extends ChangeNotifier implements KtHost {
       await _selfSyncCurrentDeviceList();
       return;
     }
-    // 7.6b: recent history replayed by my root when this device was linked.
+    // 7.6b: recent history replayed by my root when this device was linked —
+    // and (30.3) each chat's disappearing timer, which this device, handed
+    // its contacts with none, starts from.
     if (dir == 'hist') {
-      await _applyHistoryBatch(inner);
+      if (inner.kind == 'timer') {
+        await _applyMirroredTimer(rid, inner, linked: true);
+      } else {
+        await _applyHistoryBatch(inner);
+      }
       return;
     }
     final outgoing = dir == 'out';
+    // 30.3: what I did on another of my devices — an edit of a message of
+    // mine, a timer set, messages read — is what this device shows too. Each
+    // used to be dropped here. A contact's own edit, timer or receipt is not
+    // mirrored: it reaches each of my devices from them, as their delete
+    // does (below).
+    if (inner.kind == 'edit' || inner.kind == 'gedit') {
+      if (outgoing) await _applyMirroredEdit(rid, inner);
+      return;
+    }
+    if (inner.kind == 'timer') {
+      if (outgoing) await _applyMirroredTimer(rid, inner, linked: false);
+      return;
+    }
+    if (inner.kind == 'read') {
+      if (outgoing) await _readElsewhere(rid, inner);
+      return;
+    }
     // Group kinds route by the gid inside the payload, and an invite may
     // introduce contacts this device doesn't hold yet — so handle them before
     // the contacts guard below.
@@ -6474,20 +6707,27 @@ class ChatService extends ChangeNotifier implements KtHost {
       notifyListeners();
       return;
     }
-    if (!contacts.containsKey(rid)) return;
-    if (inner.kind == 'file') {
-      await _insertMirroredFile(rid, outgoing, inner);
-      return;
-    }
     // 8.1b: a reaction mirrored from one of my devices (or replayed inbound)
-    // applies here too, credited to whoever made it.
+    // applies here too, credited to whoever made it. Ahead of the contacts
+    // guard below, which a group's thread fails — its key is a gid, and no
+    // contact's — so a reaction I made in a group on one device never
+    // reached my others (30.3).
     if (inner.kind == 'react' || inner.kind == 'greact') {
       final r = inner.reactionData;
       if (r == null) return;
-      final gid = inner.data['gid'] as String?;
-      final thread = inner.kind == 'greact' ? gid : rid;
-      if (thread == null) return;
-      if (inner.kind == 'greact' && !groups.containsKey(thread)) return;
+      // Credited to a contact only if they are one, and in a group only if
+      // they are in it — the rules of the door it would have come in by.
+      if (!outgoing && !contacts.containsKey(rid)) return;
+      final String thread;
+      if (inner.kind == 'greact') {
+        final gid = inner.data['gid'];
+        final g = gid is String ? groups[gid] : null;
+        if (g == null || (!outgoing && !g.memberRids.contains(rid))) return;
+        thread = g.gid;
+      } else {
+        if (!contacts.containsKey(rid)) return;
+        thread = rid;
+      }
       final target = await vault.db.query('messages',
           columns: ['mid'],
           where: 'rid = ? AND mid = ?',
@@ -6501,6 +6741,11 @@ class ChatService extends ChangeNotifier implements KtHost {
           emoji: r.emoji);
       await _refreshLoadedReactions(thread, r.target);
       notifyListeners();
+      return;
+    }
+    if (!contacts.containsKey(rid)) return;
+    if (inner.kind == 'file') {
+      await _insertMirroredFile(rid, outgoing, inner);
       return;
     }
     if (inner.kind != 'text') return; // only text/file/group self-sync
@@ -6537,6 +6782,67 @@ class ChatService extends ChangeNotifier implements KtHost {
           replyTo: quoted?.mid,
           quote: quoted,
         ));
+    notifyListeners();
+  }
+
+  /// 30.3: an edit I made on another of my devices. My own devices are me,
+  /// so it applies here — to a message of MINE, and only that: the rule
+  /// [_applyEdit] holds a contact's edit to, with me as the author (§6.6). A
+  /// mirror naming someone else's message, a system notice or an attachment
+  /// is passed over, as their edit of it would be.
+  Future<void> _applyMirroredEdit(String rid, InnerMessage inner) async {
+    final target = inner.replyTo;
+    final body = inner.data['body'];
+    if (target == null || body is! String) return;
+    final String thread;
+    if (inner.kind == 'gedit') {
+      final gid = inner.data['gid'];
+      if (gid is! String || !groups.containsKey(gid)) return;
+      thread = gid;
+    } else {
+      if (!contacts.containsKey(rid)) return;
+      thread = rid;
+    }
+    final rows = await vault.db.query('messages',
+        where: 'rid = ? AND mid = ?', whereArgs: [thread, target], limit: 1);
+    if (rows.isEmpty) return;
+    final r = rows.first;
+    if ((r['outgoing'] as int) != 1) return; // mine, or not at all
+    if (((r['deleted'] as int?) ?? 0) == 1) return;
+    final kind = r['kind'] as String;
+    if (!_editableKinds.contains(kind)) return;
+    await _applyEditLocally(thread, target, kind, body, inner.ts);
+    notifyListeners();
+  }
+
+  /// 30.3: a disappearing timer set on another of my devices, for the chat
+  /// with [rid]: set here too, so what this device sends from now on carries
+  /// it, and said in the chat as the device it was set on said it.
+  ///
+  /// [linked]: not a change but the timer the chat already has, handed to a
+  /// device just linked ([_replayHistoryTo]), whose enrolment gave it every
+  /// contact with none. Taken quietly, and only where this device still has
+  /// none — a timer set here since then is the newer of the two.
+  Future<void> _applyMirroredTimer(String rid, InnerMessage inner,
+      {required bool linked}) async {
+    final c = contacts[rid];
+    final s = inner.data['sec'];
+    if (c == null || s is! num) return;
+    final sec = s.toInt();
+    if (linked && (c.ttlSec != 0 || sec <= 0)) return;
+    await vault.db.transaction((txn) async {
+      await txn.update('contacts', {'ttl_seconds': sec},
+          where: 'rid = ?', whereArgs: [rid]);
+      if (!linked) {
+        await _insertSystemMessage(
+            rid,
+            sec == 0
+                ? systemBody(SystemKind.ttlOffYou)
+                : systemBody(SystemKind.ttlSetYou, {'sec': sec}),
+            txn: txn);
+      }
+    });
+    c.ttlSec = sec;
     notifyListeners();
   }
 
@@ -8903,7 +9209,7 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (g == null || g.left || !g.memberRids.contains(contact.rid)) return;
     final body = inner.data['body'] as String? ?? '';
     final quoted = await _resolveQuote(gid!, inner.replyTo, txn: txn);
-    await (txn ?? vault.db).insert(
+    final inserted = await (txn ?? vault.db).insert(
         'messages',
         {
           'mid': inner.mid,
@@ -8936,7 +9242,12 @@ class ChatService extends ChangeNotifier implements KtHost {
           replyTo: quoted?.mid,
           quote: quoted,
         ));
-    if (openChatRid != gid) unread[gid] = (unread[gid] ?? 0) + 1;
+    // Once per message (30.3). A linked device holds a member's message twice
+    // over — from the member, and mirrored by my other device — and counted
+    // it unread each time, so every group message showed as two there.
+    if (inserted != 0 && openChatRid != gid) {
+      unread[gid] = (unread[gid] ?? 0) + 1;
+    }
   }
 
   /// A member told us (over their authenticated channel) that they left.
@@ -10461,6 +10772,18 @@ class ChatService extends ChangeNotifier implements KtHost {
       notifyListeners();
       return;
     }
+    // 30.3: this envelope's turn to be dispatched, taken before the first
+    // await below, so turns go in the order the session decrypted the
+    // envelopes ([_extraTurns]); it is waited for just before the dispatch,
+    // and given up once that is done. A message is parsed only on the path
+    // that reaches the dispatch.
+    Future<void>? before;
+    Completer<void>? turn;
+    if (inner != null) {
+      before = _extraTurns[rid];
+      final t = turn = Completer<void>();
+      _extraTurns[rid] = t.future;
+    }
     if (offer != null) {
       // v2: our post-quantum key offer for that device — through the outbox,
       // with the durability the primary path gives its offer, so a link that
@@ -10483,6 +10806,7 @@ class ChatService extends ChangeNotifier implements KtHost {
       return;
     }
     try {
+      if (before != null) await before;
       await _dispatchExtraInner(contact, rid, fromDeviceRid, inner!);
     } catch (e) {
       if (_isTransientInboundFailure(e)) {
@@ -10502,6 +10826,12 @@ class ChatService extends ChangeNotifier implements KtHost {
       // rather than redeliver an envelope that will fail here every time.
       transport.ackReceived(id: m.id, from: m.from);
       return;
+    } finally {
+      final t = turn;
+      if (t != null) {
+        t.complete();
+        if (identical(_extraTurns[rid], t.future)) _extraTurns.remove(rid);
+      }
     }
     transport.ackReceived(id: m.id, from: m.from);
   }
@@ -10566,19 +10896,29 @@ class ChatService extends ChangeNotifier implements KtHost {
     if (inner.kind == 'dlpq') {
       await _onPqListSignature(contact, inner); // §18.9, extra-device path
     }
+    // A message this device now holds from them (text, attachment, group or
+    // not): theirs as one from their phone is — acknowledged to them,
+    // counted unread, and read if the chat is open (below).
+    var stored = false;
     if (inner.kind == 'devlist') {
       await _applyDevlistInner(contact, inner);
     } else if (inner.kind == 'text') {
+      final fresh = !await _holdsMessage(rid, inner.mid);
       await _insertMirrored(rid, 'in', inner);
+      if (fresh) _countUnread(rid);
+      stored = true;
     } else if (inner.kind == 'gmsg') {
       // A group message sent from one of the contact's other devices carries
       // the same authority as their primary (the cert bound it to the account).
       await _persistGroupText(contact, inner, _now());
       notifyListeners();
+      stored = true;
     } else if (inner.kind == 'file' && inner.data['fid'] is String) {
       // An attachment offered from the contact's other device: same as a
       // mirrored-in offer — record it, chunks arrive by fid.
-      await _insertMirroredFile(rid, false, inner);
+      final fate = await _insertMirroredFile(rid, false, inner);
+      if (fate == _OfferFate.fresh) _countUnread(rid);
+      stored = fate != _OfferFate.refused;
     } else if (inner.kind == 'gfile' && inner.data['fid'] is String) {
       final fate = await vault.db.transaction(
           (txn) => _persistGroupFile(contact, inner, _now(), txn: txn));
@@ -10586,6 +10926,27 @@ class ChatService extends ChangeNotifier implements KtHost {
       if (fate == _OfferFate.fresh) {
         await _offerLanded(inner.data['fid'] as String);
       }
+      stored = fate != _OfferFate.refused;
+    } else if (inner.kind == 'edit' ||
+        inner.kind == 'gedit' ||
+        inner.kind == 'react' ||
+        inner.kind == 'greact' ||
+        inner.kind == 'timer' ||
+        inner.kind == 'read' ||
+        inner.kind == 'dlv') {
+      // 30.3: an edit, reaction, timer or receipt from one of the contact's
+      // other devices is the CONTACT's, exactly as `del` below: the same
+      // persist step as their phone's, with them as the sender, so §6.6's
+      // authorship rule (only the author edits), §6.5's (only a member
+      // reacts, one reaction per person) and §6.3's (a receipt counts only
+      // for their own chat, or a group they are in, once per person) hold
+      // whichever of their devices it came from. Every one of them used to
+      // be dropped here: an edit on a laptop left the old text on every
+      // other device, a timer set there did not govern what came after, and
+      // a message sent FROM a laptop was never marked delivered or read.
+      await vault.db.transaction(
+          (txn) => _persistInboundKind(txn, contact, inner, _now()));
+      notifyListeners();
     } else if (inner.kind == 'del' || inner.kind == 'gdel') {
       // A delete-for-everyone from one of the contact's other devices is the
       // CONTACT's: their account wrote the messages it names, whichever of
@@ -10611,6 +10972,14 @@ class ChatService extends ChangeNotifier implements KtHost {
       notifyListeners();
     } else if (inner.kind == 'gsync') {
       _answerGroupSync(contact, inner.data);
+    }
+    if (stored) {
+      // The E2E delivery receipt the primary path sends, to their whole
+      // account — so the device that sent it, and their others, see it
+      // delivered. A message sent from a linked device used to get none, from
+      // anyone, and stayed at one tick on every device for good.
+      _queueDeliveryReceipt(contact.rid, inner.mid);
+      _readOnArrival(contact.rid, inner);
     }
     // ADR 0020, from another of a contact's devices: their answer to a
     // group link of mine — given on whichever of their devices opened it —

@@ -196,7 +196,10 @@ between them.
 
 A linked device is a full peer, not a mirror. It has its own keys and its own
 encrypted sessions, and your contacts see all of them. History from before the
-link is copied across. The link itself goes through the relay — two
+link is copied across. What you do on one — edit or delete a message, react,
+set a disappearing timer, read a chat — shows on the others, and your
+contacts see it as yours, whichever device it came from.
+The link itself goes through the relay — two
 throwaway mailboxes the code derives, everything in them end-to-end
 encrypted — and the matching code on both screens is what shows nobody is in
 between.
@@ -348,9 +351,9 @@ key to your group, sitting in whatever chat history it ended up in.
 Set a timer per conversation and messages delete on both sides when it
 expires — on every device on both sides: a copy on your other device, a
 message sent from a contact's other device, and the history a newly linked
-device receives all keep the timer. A timer you set on one of your devices
-is not passed to your others, though: what you send from another device
-carries no timer until you set it there too.
+device receives all keep the timer. A timer set on any device — yours or
+theirs — is set on every device of you both, one either of you links later
+included, so whatever you send from any of them carries it.
 
 This is a tidiness feature, not a security one. It works because the other
 person's app cooperates. Someone who wants a copy can photograph the screen,
