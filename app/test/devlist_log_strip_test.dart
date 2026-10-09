@@ -160,7 +160,7 @@ void main() {
         );
         // The log is checked when this test says so, so a status between two
         // checks is a fact the test can assert.
-        svc.kt.recheckDelay = const Duration(hours: 1);
+        svc.kt.scheduled = false;
         svc.pqListDelay = const Duration(milliseconds: 150);
         live.add(svc);
         ready.complete(svc);

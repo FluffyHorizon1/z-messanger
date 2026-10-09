@@ -46,6 +46,7 @@ import 'package:z_protocol/z_protocol.dart';
 
 import 'alarm_evidence.dart' show OwnAlarmDismissals;
 import 'key_transparency.dart' show KtConfig;
+import 'kt_private_lookups.dart' show KtDecoys;
 import 'relay_url.dart';
 import 'vault.dart';
 
@@ -139,7 +140,9 @@ class BackupArchive {
   /// (version, fingerprint) this account knows it issued, without which its
   /// monitor reads its own history as lists it never issued; the root's
   /// device id, which its certificate — named in every one of those lists —
-  /// is signed over; and the push preference, which defaults to on. With
+  /// is signed over; the decoys the log is asked beside the contacts
+  /// (phase 35), which a restore keeps for the same reason it keeps the
+  /// head; and the push preference, which defaults to on. With
   /// ADR 0026, what each alarm stands on, the evidence of every one the user
   /// dismissed, and the own-list repair's record — the head and versions
   /// held when the repairing build first ran, and what it reconciled —
@@ -171,6 +174,10 @@ class BackupArchive {
     'kt_own_alert': (v, _) async => _isJsonMap(v),
     'kt_own_legacy': (v, _) async => _isLegacyRecord(v),
     'kt_own_reconciled': (v, _) async => _isVersionMap(v),
+    // Phase 35: the decoys the log is asked beside the contacts' buckets. A
+    // restore that drew new ones would be asked beside the old by the same
+    // account, and what two sets of decoys have in common is the contacts.
+    'kt_decoys': (v, _) async => KtDecoys.parse(v) != null,
     'push_enabled': (v, _) async => v == '0' || v == '1',
   };
 

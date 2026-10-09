@@ -190,7 +190,8 @@ void main() {
         displayName: name,
         transport: transport,
         ktConfig: config ?? cfg());
-    svc.kt.recheckDelay = const Duration(milliseconds: 50);
+    // Checked when each test says so (phase 35 refreshes on a schedule).
+    svc.kt.scheduled = false;
     services.add(svc);
     return svc;
   }

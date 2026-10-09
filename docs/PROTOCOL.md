@@ -3400,7 +3400,7 @@ is a whole hour and the record at most 1 KiB, and that the handle leaf of
 — so it reads a record without a second request that would name the label.
 This log's leaves carry no value; a reader that needs one asks
 `POST /kt/v1/entries {"indexes":[…]}` (§19.7), with decoys beside it
-(phase 35 says which and how many).
+(§19.9.1 says which and how many).
 
 A log MUST answer a bucket with every leaf it holds or refuse it, never with
 part of it. It MUST refuse a malformed prefix, or a `k` past 24, with
@@ -3419,8 +3419,58 @@ What a bucket does not hide: which bucket — about one label in 2^k — and
 when, and from which address; and how many buckets a reader asks for, so a
 client that asks one per contact says how many contacts it has unless it
 pads with decoys. `adr/0023` sets this against exact lookups, a full
-snapshot, the anonymous path and PIR; phase 35 decides how a client pads and
+snapshot, the anonymous path and PIR; §19.9.1 says how a client pads and
 how often it asks. `vectors/kt/bucket.json` pins both logs' answers (§19.11).
+
+#### 19.9.1 How a client asks about its contacts (phase 35)
+
+*Not a wire change: the requests are §19.9's and §19.7's. Rationale and what
+the log still learns: `adr/0023`, "The client's refresh policy".*
+
+A client that checks its contacts against this log MUST NOT name a contact's
+label to it — no `lookup` and no `history` of one — and asks by bucket. The
+reference client:
+
+1. maps every contact's label to its bucket at
+   `k = min(bucketBits, ⌊log₂(sth.size / 32)⌋, c)`, where `c` is a ceiling
+   its own answers set (below) — never finer than the log recommends, and
+   never finer than the signed size allows, since `bucketBits` is unsigned;
+2. adds decoys: 32‑byte values drawn at random, mapped to buckets as labels
+   are, kept (sealed in the vault and in a backup) and asked again at every
+   refresh, so that the buckets asked are a multiple of 16 and at least 16 —
+   or every bucket where there are fewer. A bucket asked at the last refresh
+   that no contact and no decoy now covers gets a decoy drawn inside it, so a
+   removed contact's bucket stays; new decoys are drawn only to complete a
+   block;
+3. asks them, sorted by prefix, in one `POST /kt/v1/buckets` (64 at most a
+   request), verifies the answer (§19.9) and adopts its head (§19.5); a
+   bucket refused `bucket_too_large` is asked as both its halves at `k + 1`,
+   a request of several as two halves;
+4. fetches entry values with `POST /kt/v1/entries`: a contact's entry when its
+   `(index, version)` is not the one last judged — a label's versions only
+   rise (§19.6), so the same version is the same entry — and beside it every
+   entry in the asked buckets that it had not seen at its last refresh,
+   whether or not any contact needs one; every entry in the asked buckets
+   instead when a needed one is not new to it; past 1024, and on a first
+   refresh, the needed ones and a sample of the rest (64 on a first refresh)
+   drawn in an order its own key fixes. Each fetched entry MUST be the
+   label's, at the version, that the bucket named for its index;
+5. judges each contact by the table of `adr/0006` exactly as from a lookup;
+6. sets `c = k − 1` when the buckets that hold no contact averaged fewer
+   than 16 labels, and lifts it a bit when they average 64 or more;
+7. runs once in each six‑hour window counted from the epoch, at a random
+   moment in it kept across restarts — never at start and never because a
+   contact's list changed, and a moment the app was suspended through is drawn
+   again when it resumes rather than run then; one that has had none for a
+   whole window catches up at a random moment one to ten minutes after it is
+   next running; and the
+   screen where the user looks at a contact whose list has changed runs one
+   then, of the same shape, as a check the user asks for in Settings does.
+
+The account's own label is still asked by name for §19.8 (its `history` is
+served no other way); that tells the log who asks, which a root's publishes
+tell it anyway, and nothing of whom. A log that refuses the bucket routes is
+unreachable to such a client; it MUST NOT fall back to `lookup`.
 
 ### 19.10 Mirrors and witnesses
 

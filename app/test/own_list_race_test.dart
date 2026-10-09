@@ -177,7 +177,7 @@ void main() {
         );
         made = svc;
         // The log is checked when this file says so.
-        svc.kt.recheckDelay = const Duration(hours: 1);
+        svc.kt.scheduled = false;
         live.add(svc);
         ready.complete(svc);
       } catch (e, st) {

@@ -229,7 +229,7 @@ void main() {
         made = svc;
         svc.devlistGrace = devlistGrace ?? grace;
         // The log is checked when the test says so.
-        svc.kt.recheckDelay = const Duration(hours: 1);
+        svc.kt.scheduled = false;
         live.add(svc);
         ready.complete(svc);
       } catch (e, st) {

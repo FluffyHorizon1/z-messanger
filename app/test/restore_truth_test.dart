@@ -235,7 +235,7 @@ void main() {
             transport ?? Transport(identity: id, serverUrl: relayUrl()),
         ktConfig: ktConfig ?? cfg(),
         signDevlistV2Only: v2Only ?? devlistSignV2Only);
-    svc.kt.recheckDelay = const Duration(milliseconds: 50);
+    svc.kt.scheduled = false; // checked when the test says so
     svc.devlistGrace = const Duration(milliseconds: 700);
     services.add(svc);
     return svc;
@@ -1226,7 +1226,9 @@ void main() {
         emptyWindow);
     // By the backup the log holds the account's first list under a head
     // this device has accepted: the head and versions a restore that
-    // recorded the window again would take.
+    // recorded the window again would take. (Accepted at a check: since
+    // phase 35 none runs at start.)
+    await alice.kt.check();
     await logReaches(account.accountEdPub, 1);
     await waitUntil(
         () =>

@@ -297,7 +297,7 @@ const LANDING_HTML = page(
   <h2>What we don't collect</h2>
   <ul>
     <li class="no">No phone number, email address or username — there is no sign-up.</li>
-    <li class="no">No contact list stored on our servers, and no access to your address book — though the transparency log learns whose keys your app checks (<a href="/privacy">privacy policy</a>).</li>
+    <li class="no">No contact list stored on our servers, and no access to your address book — though the transparency log learns which groups of accounts your app checks (<a href="/privacy">privacy policy</a>).</li>
     <li class="no">No analytics, no advertising SDKs, no crash reporting.</li>
     <li class="yes">Only ciphertext, briefly, in memory. <a href="/privacy">Read the full data map</a>.</li>
   </ul>
@@ -541,14 +541,18 @@ const SECURITY_HTML = page(
     <li class="no"><b>Group membership is asserted by the group's admin</b>
     over their authenticated channel — there is no cryptographic group
     state.</li>
-    <li class="no"><b>The transparency log learns your contacts.</b> Checking a
-    contact's device list means asking the log about them, so whoever runs it —
-    us, for the built-in log — learns who your contacts are. It is on by
-    default; Developer mode in Settings turns it off.</li>
+    <li class="no"><b>The transparency log learns which groups of accounts you
+    check.</b> Checking a contact's device list means asking the log about
+    them. The app asks for groups of 32 to 64 accounts at a time, among decoy
+    groups it keeps, and never for anyone by name — so whoever runs it, us for
+    the built-in log, learns which groups you ask about, not who your contacts
+    are; versions before this one asked by name. It is on by default;
+    Developer mode in Settings turns it off.</li>
     <li class="no"><b>Cloudflare sits in front of this service.</b> It
     terminates the encrypted connection to the relay and the log, so it sees
     connection metadata — your IP address, the mailbox IDs you use and send to,
-    and which contacts' keys you look up — though never message contents.</li>
+    and which groups of accounts you ask the log about — though never message
+    contents.</li>
   </ul>
   </div>
 
@@ -813,8 +817,8 @@ const PRIVACY_HTML = page(
     never decrypt it and holds no keys.</li>
     <li>No contact lists, address-book access, or social graph stored on our
     servers — contacts exist only inside your device's encrypted vault. The
-    transparency log does learn whose device lists your app checks, which is
-    your contact list: see below.</li>
+    transparency log does learn which groups of accounts your app checks your
+    contacts among: see below.</li>
     <li>No analytics, no advertising, no tracking SDKs, no crash reporting.</li>
   </ul>
 
@@ -848,11 +852,15 @@ const PRIVACY_HTML = page(
   changes, the app publishes it there: your account's public key, the list's
   version and fingerprint, and the list itself, sealed under a key derived from
   your public key — which we receive with it, so we can read it. And the app
-  looks up each of your contacts there, one request per contact, from your IP
-  address, when it starts, every six hours and soon after a contact's devices
-  change — so the log's operator, which is us, and its host can see your
-  contact list beside your IP address. The log keeps what is published for
-  good; that is what makes it a log. The log service does not record lookups;
+  checks your contacts there about four times a day, at random moments, from
+  your IP address — asking for groups of 32 to 64 accounts at a time, padded
+  with decoy groups it keeps, and never for a contact by name. So the log's
+  operator, which is us, and its host see which groups your IP address asks
+  about — your contacts' among decoys they cannot tell apart — and when you
+  add a contact outside them, but not your contact list. Versions of the app
+  before this one asked for each contact by name, which did show it. The log
+  keeps what is published for good; that is what makes it a log. The log
+  service does not record requests;
   the infrastructure in front of it keeps request logs under its own terms. You
   can point the app at another log, or at none, in Settings once Developer mode
   is on.</p>
@@ -885,7 +893,7 @@ const PRIVACY_HTML = page(
   Cloudflare therefore sees, beside your IP address, the same connection
   metadata the relay does: the mailbox ID your device connects as, the mailbox
   each envelope is addressed to and its padded size, your push token, and
-  which contacts' keys your app looks up in the log. It never sees message
+  which groups of accounts your app asks the log about. It never sees message
   contents, which are end-to-end encrypted inside that connection. Running
   your own relay and log removes it from the path.</p>
 

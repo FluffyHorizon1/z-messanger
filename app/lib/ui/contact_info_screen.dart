@@ -31,6 +31,12 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
     // not hold asks for it, so the upgrade does not wait for their next
     // message. Bounded like any re-send; nothing if it is already held.
     svc.requestPqIdentity(widget.rid);
+    // Phase 35: a contact whose device list changed is checked against the
+    // log at the next scheduled refresh — or now, when the user opens this
+    // screen to look at it. A whole refresh of the usual shape, every bucket
+    // and decoy, never a question about this contact alone; nothing at all
+    // when their list has not changed since the last one.
+    svc.kt.checkIfListChanged(widget.rid).ignore();
     _load(svc);
   }
 

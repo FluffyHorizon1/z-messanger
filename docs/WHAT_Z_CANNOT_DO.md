@@ -77,14 +77,17 @@ receipt goes back to the sender within a fraction of a second of the message
 arriving (R41).
 
 Two more parties see some of this. **The transparency log**, which Z uses by
-default, is asked about each of your contacts — one question per contact,
-from your own address, every six hours and whenever a contact's devices
-change — so whoever runs it learns who your contacts are, and for
-the built-in log that is the people who run the relay (R40). Turning it off
+default, is asked about your contacts about four times a day, from your own
+address — since phase 35 by bucket and never by name: each question covers
+32 to 64 accounts, your contacts' among decoys the app keeps — so whoever
+runs it, and for the built-in log that is the people who run the relay,
+learns which buckets you ask about and when you add a contact outside them,
+but not who your contacts are; what it learned before phase 35, when the app
+asked by name, it keeps (R40). Turning it off
 takes Developer mode. And **Cloudflare**, in front of the built-in relay and
 log, ends their encryption in transit (not the messages', which is
 end-to-end): it sees your address beside your mailbox, which mailbox each
-envelope you send is for, and which contacts you look up (R44).
+envelope you send is for, and which buckets you ask the log about (R44).
 
 Someone watching **both ends** can correlate timing and volume regardless of
 any of it. That is a property of the internet, not of Z. If being seen to use

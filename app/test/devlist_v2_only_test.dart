@@ -192,7 +192,7 @@ void main() {
         made = svc;
         // A contact re-checks the log only when this test says so, so what
         // its status is between two checks is a fact the test can assert.
-        svc.kt.recheckDelay = const Duration(hours: 1);
+        svc.kt.scheduled = false;
         // Hours in production; the delay is not what is under test here.
         svc.pqListDelay = const Duration(milliseconds: 150);
         // The post-quantum identity exchange runs on this debounce, and a

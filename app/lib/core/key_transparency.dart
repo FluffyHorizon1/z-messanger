@@ -20,16 +20,28 @@
 /// messages to that contact are held until the user says otherwise. The log
 /// being unreachable degrades to in-band verification and says so after a
 /// day; the grace period runs regardless.
+///
+/// How the log is asked (phase 35, `kt_private_lookups.dart`). Contacts are
+/// checked by bucket, never by label: one `POST /kt/v1/buckets` carries the
+/// bucket of every contact and this install's decoys, and an entry whose
+/// value is needed is fetched by index among decoys. The account's own label
+/// is still asked for by name — its history is only served that way, and the
+/// log learns the account key at publish anyway. A refresh runs at a random
+/// moment in each window, never at start and never because a contact's list
+/// changed; a log that refuses buckets is unreachable to this client, with no
+/// fallback to asking by name.
 library;
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 import 'alarm_evidence.dart';
+import 'kt_private_lookups.dart';
 import 'vault.dart';
 
 /// Build-time defaults. The production log's key is set with
@@ -196,6 +208,17 @@ class KtContactStatus {
   int? logVersion;
   String? logFpB64;
 
+  /// Where that entry sits in the log, when a bucket said (phase 35).
+  int? logIndex;
+
+  /// What a later refresh needs from that entry without fetching it again
+  /// (phase 35): whether it failed to open as the account's list, and — when
+  /// it did open and the device-list rules refused it — the list, so the
+  /// next refresh tries again from here. Fetching the same entry at every
+  /// refresh would single it out among the decoys beside it, which change.
+  bool logUnopened;
+  Map<String, Object?>? logList;
+
   /// The in-band version this status was computed against.
   int? heldVersion;
 
@@ -225,6 +248,9 @@ class KtContactStatus {
     required this.state,
     this.logVersion,
     this.logFpB64,
+    this.logIndex,
+    this.logUnopened = false,
+    this.logList,
     this.heldVersion,
     required this.checkedAtMs,
     this.unconfirmedSinceMs,
@@ -241,6 +267,9 @@ class KtContactStatus {
         's': state.name,
         if (logVersion != null) 'lv': logVersion,
         if (logFpB64 != null) 'lf': logFpB64,
+        if (logIndex != null) 'li': logIndex,
+        if (logUnopened) 'lu': true,
+        if (logList != null) 'll': logList,
         if (heldVersion != null) 'hv': heldVersion,
         'at': checkedAtMs,
         if (unconfirmedSinceMs != null) 'since': unconfirmedSinceMs,
@@ -255,6 +284,9 @@ class KtContactStatus {
             orElse: () => KtContactState.unlogged),
         logVersion: (j['lv'] as num?)?.toInt(),
         logFpB64: j['lf'] as String?,
+        logIndex: (j['li'] as num?)?.toInt(),
+        logUnopened: j['lu'] == true,
+        logList: j['ll'] is Map ? (j['ll'] as Map).cast<String, Object?>() : null,
         heldVersion: (j['hv'] as num?)?.toInt(),
         checkedAtMs: (j['at'] as num?)?.toInt() ?? 0,
         unconfirmedSinceMs: (j['since'] as num?)?.toInt(),
@@ -422,14 +454,45 @@ class KeyTransparency {
 
   KtConfig config;
 
-  /// ADR 0006's numbers, settable for tests.
+  /// ADR 0006's numbers, settable for tests. [checkEvery] is the window a
+  /// refresh runs once in, at a random moment (phase 35).
   Duration grace = const Duration(hours: 24);
   Duration checkEvery = const Duration(hours: 6);
   Duration staleHead = const Duration(hours: 24);
   Duration unreachableAfter = const Duration(hours: 24);
 
-  /// How soon after a contact's list changes it is re-checked.
-  Duration recheckDelay = const Duration(seconds: 30);
+  /// A client that has had no refresh for a whole window catches up at a
+  /// random moment this long after it is next running — never at start
+  /// (phase 35). The app may not be running at a window's moment at all;
+  /// these bound how long it has to have been, and how long it waits.
+  ///
+  /// This replaced a recheck 30 seconds after a contact's list changed and a
+  /// check at every start. The first told the log, by its timing alone,
+  /// whose list it was checking: a contact publishes, and 30 seconds later
+  /// their contacts ask — whatever they ask for.
+  Duration catchUpMin = const Duration(minutes: 1);
+  Duration catchUpMax = const Duration(minutes: 10);
+
+  /// Where scheduled refreshes draw their moments from; settable for tests.
+  Random random = Random.secure();
+
+  /// When the next scheduled refresh runs (ms), once one is planned.
+  int? nextRefreshMs;
+
+  /// Whether refreshes run on their own schedule. A test that checks when it
+  /// says so turns them off; a refresh asked for explicitly still runs.
+  bool get scheduled => _scheduled;
+  set scheduled(bool on) {
+    _scheduled = on;
+    if (on) {
+      unawaited(_arm());
+    } else {
+      _timer?.cancel();
+      nextRefreshMs = null;
+    }
+  }
+
+  bool _scheduled = true;
 
   /// How soon a publish the log answered "not now" (429) or could not take
   /// (5xx) is tried again — not at the next check, six hours off.
@@ -528,11 +591,18 @@ class KeyTransparency {
       onOwnLatest;
 
   Timer? _timer;
-  Timer? _recheck;
   Timer? _publishRetry;
-  final Set<String> _dirty = {};
   Future<void>? _running;
   bool _disposed = false;
+  bool _started = false;
+
+  /// The bucket size the log recommends (`bucketBits` beside its head), as
+  /// last served; unsigned, so only an upper bound on what is asked.
+  int? _recommendedBits;
+
+  /// This install's decoys and what it last asked (`kt_decoys`), loaded on
+  /// first use.
+  KtDecoys? _decoys;
 
   KeyTransparency({
     required this.vault,
@@ -663,19 +733,100 @@ class KeyTransparency {
     }
   }
 
-  /// Start the periodic check; the first runs at once.
+  /// Start the scheduled refreshes (phase 35): the first at a random moment,
+  /// never now — a refresh at every start would mark every start.
   void start() {
     _timer?.cancel();
     if (_offLimitsInTest) return;
-    _timer = Timer.periodic(checkEvery, (_) => unawaited(check()));
-    unawaited(check());
+    _started = true;
+    unawaited(_arm());
+    unawaited(_publishUnacknowledged());
+  }
+
+  /// At start, this account's current list goes to the log unless the log
+  /// has acknowledged it: a publish still queued from before, or a list never
+  /// sent — a fresh account's first above all (11.5), which used to wait for
+  /// the check that ran at every start. A publish names this account and no
+  /// other, which the log learns from every publish anyway; and every hour
+  /// one waits is an hour of grace charged to this account's contacts. A
+  /// list the log has acknowledged is not sent again ([publishOwnList]).
+  Future<void> _publishUnacknowledged() async {
+    try {
+      if (!config.enabled) return;
+      if (_pendingPublish == null) {
+        final own = await host.ktOwn();
+        final seed = own?.accountEdSeed;
+        final listJson = own?.listJson;
+        if (own != null && seed != null && listJson != null) {
+          await publishOwnList(
+            accountEdSeed: seed,
+            accountEdPub: own.accountEdPub,
+            version: own.version,
+            fp: unb64(own.fpB64),
+            listJson: listJson,
+          );
+          return;
+        }
+      }
+      await _flushPublish();
+    } catch (_) {
+      // Sent at the next refresh instead.
+    }
   }
 
   void dispose() {
     _disposed = true;
     _timer?.cancel();
-    _recheck?.cancel();
     _publishRetry?.cancel();
+  }
+
+  /// Plan the next scheduled refresh and set the timer for it.
+  Future<void> _arm() async {
+    _timer?.cancel();
+    if (_disposed || !_started || !_scheduled || _offLimitsInTest || !config.enabled) {
+      return;
+    }
+    final stored = await vault.kvGet('kt_refresh');
+    var plan = const KtRefreshSchedule();
+    if (stored != null) {
+      try {
+        plan = KtRefreshSchedule.fromJson((jsonDecode(stored) as Map).cast<String, Object?>());
+      } catch (_) {}
+    }
+    final t = now();
+    final next = plan.next(
+        nowMs: t, every: checkEvery, catchUpMin: catchUpMin, catchUpMax: catchUpMax, random: random);
+    if (next.window != plan.window || next.atMs != plan.atMs) {
+      await vault.kvPut('kt_refresh', jsonEncode(next.toJson()));
+    }
+    if (_disposed || !_scheduled) return;
+    _timer?.cancel();
+    nextRefreshMs = next.atMs;
+    _timer = Timer(Duration(milliseconds: max(0, next.atMs! - t)), () {
+      // A timer that fires well after its moment is one the app slept
+      // through — a phone suspends an app it is not showing — and it fires
+      // the moment the app is back, which is a refresh at start by another
+      // door. Its moment is drawn again instead, from now.
+      if (now() - next.atMs! > _lateTimer.inMilliseconds) {
+        unawaited(_arm());
+        return;
+      }
+      unawaited(check().then((_) => _arm()));
+    });
+  }
+
+  static const Duration _lateTimer = Duration(minutes: 1);
+
+  /// A refresh asked the log: the schedule's next moment counts from here.
+  Future<void> _noteRefreshed() async {
+    final stored = await vault.kvGet('kt_refresh');
+    var plan = const KtRefreshSchedule();
+    if (stored != null) {
+      try {
+        plan = KtRefreshSchedule.fromJson((jsonDecode(stored) as Map).cast<String, Object?>());
+      } catch (_) {}
+    }
+    await vault.kvPut('kt_refresh', jsonEncode(plan.withLast(now()).toJson()));
   }
 
   Future<void> setConfig(KtConfig c) async {
@@ -687,8 +838,11 @@ class KeyTransparency {
     if (problem != null) throw KtConfigInvalid(problem);
     config = c;
     await vault.kvPut('kt_config', jsonEncode(c.toJson()), sensitive: false);
+    // Indexes are one log's; another log's are other entries. The decoys
+    // stay: two logs shown the same buckets learn nothing by comparing.
+    await vault.kvDelete('kt_seen');
     host.ktChanged();
-    unawaited(check());
+    unawaited(check().then((_) => _arm()));
   }
 
   /// Forget the accepted head and any fault — for a deliberate change of log,
@@ -714,6 +868,7 @@ class KeyTransparency {
     await vault.kvDelete('kt_fault');
     await vault.kvDelete('kt_last_ok_ms');
     await vault.kvDelete('kt_last_fail_ms');
+    await vault.kvDelete('kt_seen');
     for (final rid in contacts.keys.toList()) {
       await vault.kvDelete('ktc_$rid');
     }
@@ -819,6 +974,7 @@ class KeyTransparency {
   Future<KtOwnRecord?> _ownRecordOnce(
       Uint8List accountEdPub, Uint8List logPub) async {
     if (!await _acceptHead(logPub)) return null;
+    await _markOk();
     final label = await ktLabel(accountEdPub);
     final j = await _getJson(_url('/kt/v1/lookup/${_hex(label)}'));
     if (j == null) {
@@ -919,7 +1075,10 @@ class KeyTransparency {
     unawaited(_flushPublish());
   }
 
-  /// A contact's held list changed (installed in-band): re-check it soon.
+  /// A contact's held list changed (installed in-band). It is checked at the
+  /// next refresh, not now (phase 35): a check timed by the change would tell
+  /// the log whose list this is, whatever it asked for. The contact's screen
+  /// can ask sooner ([checkIfListChanged]).
   ///
   /// [stillPresent] is the routing ids the NEW list contains. A hold is kept
   /// for every device still on the list and dropped only for devices the new
@@ -952,9 +1111,23 @@ class KeyTransparency {
       s.heldRids = kept;
       unawaited(_saveContact(rid));
     }
-    _dirty.add(rid);
-    _recheck?.cancel();
-    _recheck = Timer(recheckDelay, () => unawaited(check(only: _dirty.toSet())));
+  }
+
+  /// The contact screen's check (phase 35): when [rid]'s list has changed
+  /// since a refresh last looked at it, a refresh now — the whole of one,
+  /// every bucket and every decoy, never a question about this contact
+  /// alone. Nothing when the list has not changed. True when one ran.
+  Future<bool> checkIfListChanged(String rid) async {
+    if (_disposed || !config.enabled || _offLimitsInTest) return false;
+    KtContactInput? input;
+    for (final c in await host.ktContacts()) {
+      if (c.rid == rid) input = c;
+    }
+    if (input == null) return false;
+    final s = contacts[rid];
+    if (s != null && s.heldVersion == input.heldVersion) return false;
+    await check();
+    return true;
   }
 
   Future<void> noteContactRemoved(String rid) async {
@@ -964,23 +1137,32 @@ class KeyTransparency {
 
   // --- the check ------------------------------------------------------------
 
-  /// One full check (§19.5 + ADR 0006's table). Serialised: a check while
-  /// one runs waits for it. [only] limits the contact pass.
-  Future<void> check({Set<String>? only}) {
+  /// One full refresh (§19.5, §19.9.1 + ADR 0006's table) — every contact,
+  /// by bucket, with the decoys. Serialised: a check while one runs waits
+  /// for it.
+  Future<void> check() {
     final prev = _running;
+    _queued++;
     final run = () async {
-      if (prev != null) await prev;
-      if (_disposed) return;
       try {
-        await _checkOnce(only: only);
+        if (prev != null) await prev;
+        if (_disposed) return;
+        await _checkOnce();
       } catch (_) {
         // A check must never take the service down; the next one runs on
         // schedule and the health reflects what happened.
+      } finally {
+        _queued--;
       }
     }();
     _running = run;
     return run;
   }
+
+  /// Whether a refresh is running or waiting to — one a screen started
+  /// included ([checkIfListChanged]).
+  bool get checking => _queued > 0;
+  int _queued = 0;
 
   /// This account's own label alone, now: what a removal notice that carries
   /// no list moves forward (ADR 0026) — the list that removed this device,
@@ -996,7 +1178,10 @@ class KeyTransparency {
       }
       try {
         final logPub = config.logPub!;
-        if (await _acceptHead(logPub)) await _checkOwn(logPub);
+        if (await _acceptHead(logPub)) {
+          await _markOk();
+          await _checkOwn(logPub);
+        }
       } catch (_) {
         // As [check]: never takes the service down.
       }
@@ -1006,14 +1191,18 @@ class KeyTransparency {
     return run;
   }
 
-  Future<void> _checkOnce({Set<String>? only}) async {
+  Future<void> _checkOnce() async {
     if (!config.enabled || _offLimitsInTest) return;
     final logPub = config.logPub!;
-    _dirty.removeAll(only ?? const {});
+    await _noteRefreshed();
     if (fault == null) {
       final accepted = await _acceptHead(logPub);
       if (accepted) {
-        await _checkContacts(logPub, only: only);
+        // The log is reachable to this client when it answers what the
+        // client asks — the buckets — and not merely its head: a log that
+        // refuses buckets (one older than 36.2) checks nobody, and after
+        // `unreachableAfter` says so rather than "ok" for ever.
+        if (await _checkContacts(logPub)) await _markOk();
         await _checkOwn(logPub);
         await _flushPublish();
       }
@@ -1062,7 +1251,15 @@ class KeyTransparency {
       await _setFault('the head could not be read: ${e.reason}');
       return false;
     }
+    final rb = j['bucketBits'];
+    _recommendedBits = rb is int && rb >= 0 && rb <= ktMaxBucketBits ? rb : null;
     return _adopt(fresh, logPub);
+  }
+
+  /// The log answered what this client asked of it.
+  Future<void> _markOk() async {
+    lastOkMs = now();
+    await vault.kvPut('kt_last_ok_ms', '$lastOkMs', sensitive: false);
   }
 
   /// Steps 1–3 of §19.5 for any head the log serves — with a lookup or a
@@ -1101,9 +1298,7 @@ class KeyTransparency {
       if (!ok) return false;
     }
     head = fresh;
-    lastOkMs = now();
     await vault.kvPut('kt_head', jsonEncode(fresh.toJson()), sensitive: false);
-    await vault.kvPut('kt_last_ok_ms', '$lastOkMs', sensitive: false);
     return true;
   }
 
@@ -1226,39 +1421,266 @@ class KeyTransparency {
     await vault.kvPut('ktc_$rid', jsonEncode(s.toJson()), sensitive: false);
   }
 
-  Future<void> _checkContacts(Uint8List logPub, {Set<String>? only}) async {
+  /// The contact pass (phase 35, PROTOCOL §19.9.1): every contact's bucket
+  /// and this install's decoys in one request; the entries whose values are
+  /// needed fetched by index among decoys; then ADR 0006's table for each
+  /// contact, exactly as a lookup used to feed it. False when the log could
+  /// not be asked or did not answer — recorded as a failure, or as a fault
+  /// when what it answered does not verify — and then nothing about any
+  /// contact changes.
+  Future<bool> _checkContacts(Uint8List logPub) async {
     final inputs = await host.ktContacts();
     final present = inputs.map((c) => c.rid).toSet();
     for (final rid in contacts.keys.toList()) {
       if (!present.contains(rid)) await noteContactRemoved(rid);
     }
+    final labels = <String, Uint8List>{
+      for (final c in inputs) c.rid: await ktLabel(c.accountEdPub),
+    };
+    final decoys = await _loadDecoys();
+    final bits = ktRefreshBits(
+        recommended: _recommendedBits,
+        headSize: head!.size,
+        ceiling: decoys.ceiling);
+    final asked = decoys.plan(labels.values, bits);
+    // Kept before asking: a refresh that fails is asked again the same way.
+    await _saveDecoys(decoys);
+    final buckets = await _askBuckets(asked, logPub);
+    if (buckets == null) return false;
+    decoys.observe(buckets, labels.values);
+    await _saveDecoys(decoys);
+
+    final leafAt = <int, KtBucketLeaf>{
+      for (final b in buckets)
+        for (final l in b.leaves) l.index: l,
+    };
+    final leaves = <String, KtBucketLeaf?>{};
+    final needed = <int>{};
     for (final c in inputs) {
-      if (only != null && !only.contains(c.rid)) continue;
-      if (fault != null) return;
-      await _checkContact(c, logPub);
+      final label = labels[c.rid]!;
+      KtVerifiedBucket? holding;
+      for (final b in buckets) {
+        if (b.query.holds(label)) holding = b;
+      }
+      if (holding == null) continue; // every label's bucket was asked
+      final leaf = holding.leafFor(label);
+      leaves[c.rid] = leaf;
+      if (leaf != null && _needsEntry(c, leaf, contacts[c.rid])) {
+        needed.add(leaf.index);
+      }
+    }
+    final want = ktEntriesToFetch(
+        needed: needed,
+        leaves: leafAt.keys.toSet(),
+        seen: await _loadSeen(),
+        key: decoys.key);
+    var entries = const <int, KtEntry>{};
+    if (want.isNotEmpty) {
+      final got = await _fetchEntries(want, leafAt, logPub);
+      if (got == null) return false;
+      entries = got;
+    }
+    await vault.kvPut(
+        'kt_seen', jsonEncode({'i': leafAt.keys.toList()..sort()}));
+
+    for (final c in inputs) {
+      if (fault != null) return false;
+      if (!leaves.containsKey(c.rid)) continue;
+      final leaf = leaves[c.rid];
+      await _checkContact(c, leaf, leaf == null ? null : entries[leaf.index]);
+    }
+    return true;
+  }
+
+  /// Whether ADR 0006's table needs [leaf]'s entry for [c] — its fingerprint,
+  /// or the list in it — or [prev] already holds what it needs from it. A
+  /// label's versions only rise (§19.6), so a version names one entry: the
+  /// same version is the same entry, already judged.
+  static bool _needsEntry(
+      KtContactInput c, KtBucketLeaf leaf, KtContactStatus? prev) {
+    if (prev == null || prev.logVersion != leaf.version || prev.logFpB64 == null) {
+      return true;
+    }
+    if (prev.logIndex != null && prev.logIndex != leaf.index) return true;
+    final kept = prev.logUnopened || prev.logList != null;
+    if (leaf.version == c.heldVersion) {
+      if (c.heldFpB64 == prev.logFpB64 || c.held != null) return false;
+      return !kept;
+    }
+    if (leaf.version > c.heldVersion) return !kept;
+    return prev.confirmedDevs.isEmpty;
+  }
+
+  /// Every bucket in [queries], verified, under heads this client accepts:
+  /// one request for up to [ktMaxBuckets] of them. A request the log refuses
+  /// as too large is asked again as two halves, and a single bucket as its
+  /// two halves one bit finer — both, so together they say what the bucket
+  /// said. Null when the log could not be asked or did not answer.
+  Future<List<KtVerifiedBucket>?> _askBuckets(
+      List<KtBucketQuery> queries, Uint8List logPub) async {
+    final out = <KtVerifiedBucket>[];
+    final todo = <List<KtBucketQuery>>[
+      for (var i = 0; i < queries.length; i += ktMaxBuckets)
+        queries.sublist(i, min(i + ktMaxBuckets, queries.length)),
+    ];
+    while (todo.isNotEmpty) {
+      final chunk = todo.removeAt(0);
+      final r = await _postJson('/kt/v1/buckets', ktBucketsRequest(chunk));
+      if (r == null) {
+        await _fail();
+        return null;
+      }
+      final (status, j) = r;
+      if (status == 400 && j?['error'] == 'bucket_too_large') {
+        if (chunk.length > 1) {
+          final half = chunk.length ~/ 2;
+          todo.insertAll(0, [chunk.sublist(0, half), chunk.sublist(half)]);
+          continue;
+        }
+        final q = chunk.single;
+        if (q.bits < ktMaxBucketBits) {
+          todo.insertAll(0, [
+            [ktChildBucket(q, 0)],
+            [ktChildBucket(q, 1)],
+          ]);
+          continue;
+        }
+      }
+      if (status != 200 || j == null) {
+        // Refused, or not there at all (a log older than 36.2): this client
+        // does not fall back to naming its contacts. Unreachable, as a log
+        // that refused lookups was.
+        await _fail();
+        return null;
+      }
+      // A bucket at a time, with the event loop let through between them: a
+      // bucket is ~250 hashes a label (§19.9), and sixteen of them done in
+      // one go are a quarter of a second on the build box — frames dropped
+      // on a phone, at a moment the user did not choose.
+      final served = j['buckets'];
+      if (served is! List || served.length != chunk.length) {
+        await _setFault(
+            'buckets for contacts: not the ${chunk.length} buckets asked for');
+        return null;
+      }
+      KtTreeHead? at;
+      for (var n = 0; n < chunk.length; n++) {
+        KtVerifiedBuckets v;
+        try {
+          v = await ktVerifyBucketAnswer({
+            'sth': j['sth'],
+            'buckets': [served[n]],
+          }, asked: [chunk[n]], logPub: logPub, mode: KtLogMode.kt);
+        } on KtVerifyException catch (e) {
+          await _setFault('buckets for contacts: ${e.reason}');
+          return null;
+        } catch (_) {
+          await _setFault('buckets for contacts could not be read');
+          return null;
+        }
+        at = v.head;
+        out.addAll(v.buckets);
+        await Future<void>.delayed(Duration.zero);
+      }
+      // Under the accepted head or an extension of it (§19.5), as a lookup.
+      if (at == null || !await _adopt(at, logPub)) return null;
+    }
+    return out;
+  }
+
+  /// The entries at [indexes], each verified under a head this client
+  /// accepts and checked against the leaf a bucket gave for it ([leafAt]):
+  /// the map names an entry for a label, and the entry there must be that
+  /// label's, at that version. Paged as the log pages it. Null when the log
+  /// could not be asked or did not answer.
+  Future<Map<int, KtEntry>?> _fetchEntries(List<int> indexes,
+      Map<int, KtBucketLeaf> leafAt, Uint8List logPub) async {
+    final out = <int, KtEntry>{};
+    var rest = indexes;
+    while (rest.isNotEmpty) {
+      final page = rest.length > 1000 ? rest.sublist(0, 1000) : rest;
+      final r = await _postJson('/kt/v1/entries', ktEntriesRequest(page));
+      if (r == null || r.$1 != 200 || r.$2 == null) {
+        await _fail();
+        return null;
+      }
+      KtVerifiedEntries v;
+      try {
+        v = await ktVerifyEntriesAnswer(r.$2!, asked: page, logPub: logPub);
+      } on KtVerifyException catch (e) {
+        await _setFault('entries for contacts: ${e.reason}');
+        return null;
+      } catch (_) {
+        await _setFault('entries for contacts could not be read');
+        return null;
+      }
+      if (!await _adopt(v.head, logPub)) return null;
+      for (final e in v.entries) {
+        final leaf = leafAt[e.index];
+        if (leaf == null ||
+            !constantTimeEquals(e.label, leaf.label) ||
+            e.version != leaf.version) {
+          await _setFault(
+              'the entry at index ${e.index} is not the one the map names for its label');
+          return null;
+        }
+        out[e.index] = e;
+      }
+      rest = rest.sublist(v.entries.length);
+    }
+    return out;
+  }
+
+  /// A POST to the log: its status and, when it is one, its JSON object.
+  /// Null when the log could not be reached.
+  Future<(int, Map<String, Object?>?)?> _postJson(
+      String path, Map<String, Object?> body) async {
+    final KtResponse r;
+    try {
+      r = await fetcher.post(_url(path), jsonEncode(body));
+    } catch (_) {
+      return null;
+    }
+    try {
+      return (r.status, r.json);
+    } catch (_) {
+      return (r.status, null);
     }
   }
 
-  Future<void> _checkContact(KtContactInput c, Uint8List logPub) async {
-    final label = await ktLabel(c.accountEdPub);
-    final j = await _getJson(_url('/kt/v1/lookup/${_hex(label)}'));
-    if (j == null) {
-      await _fail();
-      return;
-    }
-    KtLookupResult r;
+  Future<KtDecoys> _loadDecoys() async {
+    final held = _decoys;
+    if (held != null) return held;
+    final stored = await vault.kvGet('kt_decoys');
+    return _decoys =
+        (stored == null ? null : KtDecoys.parse(stored)) ?? KtDecoys.fresh();
+  }
+
+  /// Sealed: which buckets are decoys is the one thing the log must not
+  /// learn, and the vault's plain class is for what it may.
+  Future<void> _saveDecoys(KtDecoys d) =>
+      vault.kvPut('kt_decoys', jsonEncode(d.toJson()));
+
+  /// The indexes the asked buckets held at the last refresh, or null.
+  Future<Set<int>?> _loadSeen() async {
+    final s = await vault.kvGet('kt_seen');
+    if (s == null) return null;
     try {
-      r = await ktVerifyLookup(await KtLookup.fromJson(j), label: label, logPub: logPub);
-    } on KtVerifyException catch (e) {
-      // A proof that fails under a good head is the log misbehaving, not the
-      // contact (§19.5).
-      await _setFault('lookup for a contact: ${e.reason}');
-      return;
+      return {
+        for (final i in ((jsonDecode(s) as Map)['i'] as List)) (i as num).toInt()
+      };
+    } catch (_) {
+      return null;
     }
-    // The lookup's head must be the accepted one or an extension of it
-    // (§19.5): a lookup under a newer head goes through the same checks as
-    // a head fetched on its own, and becomes the held head.
-    if (!await _adopt(r.head, logPub)) return;
+  }
+
+  /// ADR 0006's table for one contact, given what the log holds for its
+  /// label: [leaf], the map's latest (index, version) from a verified
+  /// bucket — null for a verified absence — and [entry], that entry when it
+  /// was fetched. When it was not, the status from the refresh that last
+  /// judged the same entry holds what is needed from it (see [_needsEntry]).
+  Future<void> _checkContact(
+      KtContactInput c, KtBucketLeaf? leaf, KtEntry? entry) async {
     final prev = contacts[c.rid];
     final t = now();
     final heldDevs = c.held == null
@@ -1268,8 +1690,7 @@ class KeyTransparency {
     final heldFp = c.heldFpB64;
 
     KtContactStatus next;
-    final latest = r.latest;
-    if (latest == null) {
+    if (leaf == null) {
       // Unlogged: an account that has never published — an older client, or
       // one that has not been online since upgrading. Gossip only, as
       // before the log; nothing is held (ADR 0006, the migration argument).
@@ -1280,9 +1701,32 @@ class KeyTransparency {
         acknowledged: false,
       );
     } else {
-      final lv = latest.version;
-      final lf = b64(latest.fp);
+      final lv = leaf.version;
+      final lf = entry != null ? b64(entry.fp) : prev!.logFpB64!;
       final hv = c.heldVersion;
+      // The entry's list, opened and verified as this account's: from the
+      // entry when it was fetched, or from what the last refresh kept of the
+      // same entry. [unopened] and [refused] are kept in the status for the
+      // next refresh, which will not fetch this entry again.
+      var unopened = false;
+      Map<String, Object?>? refused;
+      Future<SignedDeviceList?> logList() async {
+        SignedDeviceList? list;
+        if (entry != null) {
+          list = await _openList(c.accountEdPub, entry);
+        } else if (prev?.logList != null && !prev!.logUnopened) {
+          list = await _keptList(c.accountEdPub, prev.logList!, lv, lf);
+        }
+        unopened = list == null;
+        return list;
+      }
+
+      Future<bool> install(SignedDeviceList list) async {
+        final ok = await host.ktInstallFromLog(c.rid, list);
+        if (!ok) refused = list.toJson();
+        return ok;
+      }
+
       if (lv == hv) {
         if (heldFp == lf) {
           next = KtContactStatus(
@@ -1303,7 +1747,7 @@ class KeyTransparency {
           // (the floor included). A forged list does not open; a genuine one is
           // the truth the baseline stood in for. (A real held list disagreeing
           // at the same version, below, is a fork.)
-          final list = await _openList(c.accountEdPub, latest);
+          final list = await logList();
           if (list == null) {
             final detail = 'same version $lv, different fingerprint';
             next = KtContactStatus(
@@ -1316,7 +1760,7 @@ class KeyTransparency {
               acknowledged: _stillAcknowledged(prev, lv, lf, detail),
             );
           } else {
-            final installed = await host.ktInstallFromLog(c.rid, list);
+            final installed = await install(list);
             final detail = installed
                 ? null
                 : 'the log\'s list (v$lv) was refused by the device-list rules';
@@ -1349,7 +1793,7 @@ class KeyTransparency {
         }
       } else if (lv > hv) {
         // The log is ahead: it is a source (11.5).
-        final list = await _openList(c.accountEdPub, latest);
+        final list = await logList();
         if (list == null) {
           final detail = 'the log\'s entry (v$lv) does not open or verify as this account\'s list';
           next = KtContactStatus(
@@ -1362,7 +1806,7 @@ class KeyTransparency {
             acknowledged: _stillAcknowledged(prev, lv, lf, detail),
           );
         } else {
-          final installed = await host.ktInstallFromLog(c.rid, list);
+          final installed = await install(list);
           final detail = installed ? null : 'the log\'s list (v$lv) was refused by the device-list rules';
           next = KtContactStatus(
             state: installed ? KtContactState.confirmed : KtContactState.conflict,
@@ -1379,7 +1823,7 @@ class KeyTransparency {
         // the log's last list, opened now if we never had it.
         var confirmed = prev?.confirmedDevs ?? const <String>{};
         if (confirmed.isEmpty || prev?.logVersion != lv) {
-          final list = await _openList(c.accountEdPub, latest);
+          final list = await logList();
           confirmed = list == null ? baseline : {for (final d in list.devices) b64(d.deviceEdPub)};
         }
         next = KtContactStatus(
@@ -1393,12 +1837,33 @@ class KeyTransparency {
           detail: 'held v$hv, log has v$lv',
         );
       }
+      next.logIndex = leaf.index;
+      if (next.state == KtContactState.conflict) {
+        next.logUnopened = unopened;
+        next.logList = refused;
+      }
     }
     // A hold is computed by the grace pass; carry it while the state stays.
     if (next.state != KtContactState.unconfirmed) next.heldRids = {};
     next.heldVersion = c.heldVersion;
     contacts[c.rid] = next;
     await _saveContact(c.rid);
+  }
+
+  /// A list an earlier refresh opened from the log and kept (the device-list
+  /// rules refused it then), held to what [_openList] holds one it opens to.
+  Future<SignedDeviceList?> _keptList(Uint8List accountEdPub,
+      Map<String, Object?> j, int version, String fpB64) async {
+    try {
+      final list = SignedDeviceList.fromJson(j);
+      if (b64(list.accountEdPub) != b64(accountEdPub)) return null;
+      if (list.version != version) return null;
+      if (!await list.verify()) return null;
+      if (b64(await list.fingerprint()) != fpB64) return null;
+      return list;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Open a log entry's value as this account's signed list and verify it;
@@ -1669,12 +2134,42 @@ class KeyTransparency {
   }
 
   Future<void>? _publishRun;
+  bool _flushAgain = false;
 
-  /// One flush at a time; a caller while one runs joins it.
+  /// One flush at a time; a caller while one runs joins it — and is sent.
+  ///
+  /// A caller used to join whatever flush was running, and a flush reads the
+  /// queue once, as it starts. So a list queued after that read — a root
+  /// moving past a reconciled version (ADR 0026) does exactly that while the
+  /// check that prompted it is still flushing — joined a flush that had
+  /// already decided there was nothing to send, and waited in the queue for
+  /// the next check. A check at every start and a recheck after every list
+  /// change hid that; phase 35 runs neither. A caller now marks the queue for
+  /// another look, the flush looks again before it lets go, and it lets go
+  /// in the same step as its last look, so nothing can join it after that.
   Future<void> _flushPublish() {
     final running = _publishRun;
-    if (running != null) return running;
-    final run = _flushPublishOnce().whenComplete(() => _publishRun = null);
+    if (running != null) {
+      _flushAgain = true;
+      return running;
+    }
+    final run = () async {
+      try {
+        Map<String, Object?>? tried;
+        do {
+          _flushAgain = false;
+          tried = _pendingPublish;
+          await _flushPublishOnce();
+          // Again only for a publish queued since: the one just tried, if it
+          // is still queued (429, 5xx), waits for its own retry.
+        } while (_flushAgain &&
+            _pendingPublish != null &&
+            !identical(_pendingPublish, tried) &&
+            !_disposed);
+      } finally {
+        _publishRun = null;
+      }
+    }();
     _publishRun = run;
     return run;
   }

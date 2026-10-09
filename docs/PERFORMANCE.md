@@ -633,8 +633,9 @@ On the client (`protocol/tool/kt_verify_bench.dart`, the VM, pure Dart),
 verifying one lookup — parse, head signature, map proof, inclusion — is
 **4.4 ms**, of which the Ed25519 verification is 3.5 and the map proof's
 256 SHA-256 computations 0.6; a phone will differ, as everywhere in this
-document. A check of four hundred contacts is four hundred HTTPS requests
-every six hours, and that, not the arithmetic, is its cost.
+document. A check of four hundred contacts was four hundred HTTPS requests
+every six hours; since phase 35 a check asks by bucket instead (§19.9.1),
+one request for up to 64 buckets, and the arithmetic is its cost (below).
 
 ## Cryptography on the device (2026-09-11)
 
@@ -691,10 +692,14 @@ the wire decoration were. Where it does add up:
 * **A group send** is one sealed envelope per member device. Fifty members
   is ~75 ms of sealing inside a fan-out that takes 1.2 s for other
   reasons, and no longer blocks the composer at all.
-* **A transparency check** (§19) verifies one Ed25519 signature per
-  contact and one per head: 2.5 ms each in Dart against 0.1 ms native.
-  Four hundred contacts is a second of verification every six hours,
-  against 40 ms. It runs in the background either way.
+* **A transparency check** (§19.9.1) verifies the buckets its contacts
+  fall in, padded with decoys to a multiple of sixteen: about 250 SHA-256 a
+  label in them — 15 ms a bucket of 40 in Dart (`adr/0023`) — and the
+  head's Ed25519 signature once a bucket, 2.5 ms in Dart against 0.1 ms
+  native. Up to sixteen contacts is sixteen buckets, about a quarter of a
+  second every six hours; four hundred, at the live log's k = 9, is about
+  290 buckets, four seconds and a megabyte. It runs in the background, a
+  bucket at a time with the event loop let through between.
 * **An attachment** travels in 140 KiB chunks, each encrypted under the
   file key and then sealed as an envelope of its own — two AEAD passes and
   one X25519 per chunk. Scaling the 64 KB line, a 25 MB file is ~180

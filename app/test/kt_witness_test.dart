@@ -402,22 +402,34 @@ void main() {
       await publish('7-b');
       final witnessUrl = '$realLogUrl/witness-7/sth.json'; // answered by the fetcher; never reaches the log
       late KtTreeHead witnessed;
+      var grown = false;
       final f = _LogFetcher(witnessUrl, () async {
         // Between the client's head and its question to the witness, the log
         // grows and the witness verifies the larger head. That is all it takes.
-        await publish('7-c');
-        await publish('7-d');
-        witnessed = await logHead();
+        if (!grown) {
+          grown = true;
+          await publish('7-c');
+          await publish('7-d');
+          witnessed = await logHead();
+        }
         return KtResponse(200, await record(witnessed, pinned, pinnedPub));
       });
       final kt = await service(configFor(witnessUrl), f, now: DateTime.now().millisecondsSinceEpoch);
       await kt.check();
       expect(kt.head, isNotNull);
-      expect(witnessed.size, kt.head!.size + 2, reason: 'the witness was two entries ahead of the head adopted');
+      // The head the client asked the witness about was two entries behind
+      // it, and the log was asked to prove that head a prefix of the
+      // witness's. (The check goes on to adopt the log's newer head — since
+      // phase 35 a bucket answer carries one even for a client with no
+      // contacts — which agrees with the witness at its size.)
+      final asked = [for (final u in f.gets) u.query.isEmpty ? u.path : '${u.path}?${u.query}'];
+      final w = asked.indexOf(Uri.parse(witnessUrl).path);
+      expect(w, greaterThanOrEqualTo(0), reason: 'the witness was asked');
+      expect(asked[w + 1], '/kt/v1/consistency?first=${witnessed.size - 2}&second=${witnessed.size}',
+          reason: 'the witness was two entries ahead of the head adopted, and the log was asked to prove the way there');
       expect(kt.fault, isNull,
           reason: 'until 2026-10-04: "the log served a head of size ${kt.head?.size}, older than the witness\'s ${witnessed.size}"');
       expect(kt.witnessOkMs, isNotNull, reason: 'the witness counted');
-      expect(f.gets.map((u) => u.path), contains('/kt/v1/consistency'), reason: 'the log was asked to prove the way there');
     });
 
     test('8. a witness ahead with a head the log does not lead to is a fault', () async {
