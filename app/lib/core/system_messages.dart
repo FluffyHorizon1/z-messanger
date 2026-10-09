@@ -126,6 +126,15 @@ abstract final class DevlistAlertKind {
   /// §3.4: their list named one of this account's own devices, so it was not
   /// installed. No params.
   static const sharedWithMe = 'dl_shared_mine';
+
+  /// §3.4, ADR 0022: their list named a device that has PROVED it belongs to
+  /// another account — its certificate in that account's list carried the
+  /// device's own signature naming that account — so their list is not
+  /// used: refused when it arrived, or withdrawn when the proof arrived after
+  /// it. Unlike [sharedDevice] this one knows which list is wrong. Param
+  /// `with`: the routing id of a contact of the account the device proved it
+  /// belongs to, never a name; absent once that contact has been deleted.
+  static const claimedDevice = 'dl_claimed';
 }
 
 /// The stored form of a device-list alert.
@@ -134,21 +143,33 @@ String devlistAlertBody(String kind,
     jsonEncode({'k': kind, ...params});
 
 /// Whether [stored] is the alert a refused list leaves when it named a device
-/// held for another account ([DevlistAlertKind.sharedDevice] or
-/// [DevlistAlertKind.sharedWithMe]).
+/// held for another account ([DevlistAlertKind.sharedDevice],
+/// [DevlistAlertKind.sharedWithMe], or — the device having proved whose it
+/// is — [DevlistAlertKind.claimedDevice]).
 bool isSharedDeviceAlert(String? stored) {
   final k = _alertKind(stored);
   return k == DevlistAlertKind.sharedDevice ||
-      k == DevlistAlertKind.sharedWithMe;
+      k == DevlistAlertKind.sharedWithMe ||
+      k == DevlistAlertKind.claimedDevice;
 }
 
-/// The contact a [DevlistAlertKind.sharedDevice] alert names besides the one
-/// it is stored on, or null.
+/// The contact a [DevlistAlertKind.sharedDevice] or
+/// [DevlistAlertKind.claimedDevice] alert names besides the one it is stored
+/// on, or null.
 String? sharedDeviceAlertOther(String? stored) {
-  if (_alertKind(stored) != DevlistAlertKind.sharedDevice) return null;
+  final k = _alertKind(stored);
+  if (k != DevlistAlertKind.sharedDevice &&
+      k != DevlistAlertKind.claimedDevice) {
+    return null;
+  }
   final w = (jsonDecode(stored!) as Map)['with'];
   return w is String && w.isNotEmpty ? w : null;
 }
+
+/// [stored] with the contact it names besides its own taken out, its kind
+/// kept — what a device-list alert becomes when that contact is deleted.
+String withoutAlertOther(String stored) =>
+    devlistAlertBody(_alertKind(stored) ?? DevlistAlertKind.sharedDevice);
 
 String? _alertKind(String? stored) {
   if (stored == null || !stored.startsWith('{')) return null;

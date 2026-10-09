@@ -9,9 +9,9 @@ import 'app_localizations.dart';
 ///
 /// See [DevlistAlertKind]. [stored] is the value the service holds; [name] is
 /// the contact the banner is about. [nameOf] turns the routing id of a SECOND
-/// contact into a name, for the one kind that names two people
-/// ([DevlistAlertKind.sharedDevice]); the vault holds that contact's routing
-/// id, never their name.
+/// contact into a name, for the two kinds that name two people
+/// ([DevlistAlertKind.sharedDevice], [DevlistAlertKind.claimedDevice]); the
+/// vault holds that contact's routing id, never their name.
 String devlistAlertText(AppLocalizations l, String stored, String name,
     {String? Function(String rid)? nameOf}) {
   if (!stored.startsWith('{')) return stored;
@@ -38,6 +38,14 @@ String devlistAlertText(AppLocalizations l, String stored, String name,
         null => l.alertDlSharedAnother(name),
       },
     DevlistAlertKind.sharedWithMe => l.alertDlSharedMine(name),
+    // ADR 0022: the device proved whose it is, so this one names the list
+    // that is wrong rather than accusing neither.
+    DevlistAlertKind.claimedDevice => switch (m['with'] is String
+        ? nameOf?.call(m['with'] as String)
+        : null) {
+        final String other => l.alertDlClaimed(name, other),
+        null => l.alertDlClaimedAnother(name),
+      },
     // A kind written by a newer build. Showing the object is better than
     // showing nothing: it says plainly that something was raised here.
     _ => stored,

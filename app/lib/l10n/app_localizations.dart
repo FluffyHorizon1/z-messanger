@@ -3248,6 +3248,18 @@ abstract class AppLocalizations {
   /// **'{name}\'s device list names one of your own devices, so it was not used. A device belongs to one account — check with them.'**
   String alertDlSharedMine(String name);
 
+  /// Banner on a contact's chat and screen when that contact's device list named a device that has PROVED, with its own signature, that it belongs to ANOTHER contact's account (ADR 0022, PROTOCOL 3.4), so the first contact's list was refused — or stopped being used, when the proof arrived after it. Unlike alertDlShared the app knows which list is wrong: the device signed for {other}'s account, and nothing signed for {name}'s. It must not say that {name} is lying (their account key may have been misused, or their app modified), only that their list is the one not used and that they are the one to ask. Both names must appear. {name} and {other} take English possessives here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s device list names a device that has proved it belongs to {other}\'s account, so {name}\'s list is not used. A device belongs to one account — ask {name} about it.'**
+  String alertDlClaimed(String name, String other);
+
+  /// The same banner as alertDlClaimed when the other contact has since been deleted, so there is no second name to show. {name} takes an English possessive here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s device list names a device that has proved it belongs to another account, so {name}\'s list is not used. A device belongs to one account — ask {name} about it.'**
+  String alertDlClaimedAnother(String name);
+
   /// Title of the dialog shown before connecting to a public relay address that begins ws:// rather than wss://.
   ///
   /// In en, this message translates to:

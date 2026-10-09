@@ -2026,6 +2026,16 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String alertDlClaimed(String name, String other) {
+    return 'La lista de dispositivos de $name incluye un dispositivo que ha demostrado pertenecer a la cuenta de $other, así que la lista de $name no se usa. Un dispositivo pertenece a una sola cuenta: pregúntaselo a $name.';
+  }
+
+  @override
+  String alertDlClaimedAnother(String name) {
+    return 'La lista de dispositivos de $name incluye un dispositivo que ha demostrado pertenecer a otra cuenta, así que la lista de $name no se usa. Un dispositivo pertenece a una sola cuenta: pregúntaselo a $name.';
+  }
+
+  @override
   String get relayInsecureTitle => 'Este relay no usa TLS';
 
   @override

@@ -2008,6 +2008,16 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String alertDlClaimed(String name, String other) {
+    return '$name\'s device list names a device that has proved it belongs to $other\'s account, so $name\'s list is not used. A device belongs to one account — ask $name about it.';
+  }
+
+  @override
+  String alertDlClaimedAnother(String name) {
+    return '$name\'s device list names a device that has proved it belongs to another account, so $name\'s list is not used. A device belongs to one account — ask $name about it.';
+  }
+
+  @override
   String get relayInsecureTitle => 'This relay is not using TLS';
 
   @override

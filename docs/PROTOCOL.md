@@ -273,14 +273,60 @@ devices. Accounts are compared, not contact records — the same account added
 from two of its devices (§18.7) is two records naming each other's devices,
 and that is not a collision. The rule holds for every list the receiver
 installs: in‑band, from the log (§19), and lists it already held when it
-starts. It is **first come**: a list that arrives before the receiver holds the
-real owner's device for anyone takes it, and the owner's own list, arriving
-second, is the one refused. Closing that needs proof of possession — a device
-key signing its own certificate — which is a change to §3.1, not made. The
+starts. For a device that has proved nothing (below) it is **first come**: a
+list that arrives before the receiver holds the real owner's device for anyone
+takes it, and the owner's own list, arriving second, is the one refused. The
 reference client tells the user, on the chat of the contact whose list was
 refused, that the list named a device another contact's list also names (or
 one of the user's own), naming both: it cannot tell which of the two accounts
 is wrong, and the one refused may be the honest one.
+
+**A device that has proved whose it is (ADR 0022).** A certificate that
+proves possession (§3.1) settles what first come could not. A receiver MUST
+record, for each device a list or a contact's code proves, the account it
+proved itself in — the first proof standing — and MUST then:
+
+* refuse, whole, any list from ANOTHER account that names that device —
+  whether or not anyone holds the device now, and whatever the list carries;
+* once a list from the account itself has carried the device's proof, refuse
+  a later list from that account naming the device without one — the member
+  taken off by whoever passed the list on, or a certificate the account
+  re‑signed over another ratchet key, which the old proof does not cover. In
+  band this refusal is silent, as the signature floor's is; from the log it is
+  a conflict, as any list the rules refuse. (A proof seen only in a contact's
+  code does not start this rule: it says what the device's build makes, not
+  that the account's root carries proofs.) A receiver applies it to lists
+  that arrive, not to the lists it already holds when it starts;
+* install a list that proves a device which another account's installed list
+  holds by the first‑come rule alone, and stop using that other list — whole,
+  as a refused list is refused whole: its devices are no longer that
+  contact's, and whatever was queued for them is not delivered. Nothing the
+  other account signed removed those devices, so no removal notice (§3.6) is
+  sent for them. The same applies when the receiver adds a contact from an
+  account‑anchored code (§18.7) whose device proves the account it names: its
+  certificate carries `pop`, or the code signs its post‑quantum commitment
+  (§18.10), which is the device key's signature over the account key. A code
+  that names no account proves nothing here, though its key is its identity:
+  every identity makes a binding signature (§2.3) — a linked device on a build
+  before §18.7 hands out such a code for its own key — and anyone can present
+  one again;
+* refuse to add a contact from an account‑anchored code that names that
+  device for another account — the account's certificate in it is signed
+  over whatever keys the account was handed, as a list's is. A contact added
+  from such a code before the proof reached the receiver stays: its record IS
+  the device's routing id, and no list moves a contact the user added, so
+  against it the device's own account's list is first come.
+
+A receiver's own account's list is the authority on the receiver's own
+devices, proof or not: a contact's list that named a device of the receiver's
+before the receiver knew it was its own is not used once the receiver's own
+list names it. The reference client keeps what was proven for as long as it
+holds a contact record of the account, and tells the user on the claimant's
+chat that the device has proved it belongs to the other contact's account,
+naming both — this time it can tell which list is wrong. A device that has
+proved nothing to the receiver — its build predates proofs, its account's root
+does not yet carry them, or it is an account's phone the receiver knows only
+from its code — stays first come.
 
 **A second signature (ADR 0010).** The v1 `input` covers the version and the
 membership and nothing more; each device's `deviceXPub` and `id` are bound only
@@ -1138,7 +1184,7 @@ real message.
 devices over the same per‑device sessions, wrapped as:
 
 ```
-utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping"|"acct"|"acctreq"|"hist", "inner":b64(innerMessageBytes) } )
+utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping"|"acct"|"acctreq"|"pop"|"hist", "inner":b64(innerMessageBytes) } )
 ```
 
 `dir = "ping"` with a `hello` inner is the proactive session opener and is
@@ -1149,7 +1195,15 @@ root discipline) — from the root, with one optional member more, `rootb`, the
 root's own contact bundle, which a linked device checks against that list's
 root certificate and keeps for the requests it sends (§8.1, §10
 `hostbundle`); `"acctreq"` (a `hello` inner) asks the root to send that
-list — a root answers with `"acct"`, any other device ignores it; `"hist"`
+list — a root answers with `"acct"`, any other device ignores it; `"pop"`
+(ADR 0022) carries an inner of kind `devpop` whose `pop` is the sending
+device's own proof of possession (§3.1), which only that device can make: a
+device sends it when the account's list it holds names it without one — once
+per list version — and a root keeps it beside the certificate it holds for the
+SENDING device if it verifies for that certificate and the account, and puts
+it in every list it signs from then on; no new version is needed for it, since
+it changes no signature and no fingerprint. Any other device ignores it, and a
+device that predates it drops it as an unknown kind (§6.2); `"hist"`
 carries an inner of kind `hist` whose `items` replay recent history to a
 device that was just linked: each item is
 `{ "t":thread, "mid", "o":outgoing, "k":"text"|"gtext", "b":body, "ts", "sn"?, "x"? }`,

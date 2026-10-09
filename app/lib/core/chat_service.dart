@@ -471,6 +471,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     svc.devMode = (await vault.kvGet('dev_mode')) == '1';
     await svc._initSync();
     await svc._loadHistoryDue(); // 26.2: replays still waiting; run on connect
+    // ADR 0022: which devices have proved whose they are — before the held
+    // lists are installed, which are held to it.
+    await svc._loadProvenDevices();
     await svc._loadContactDeviceLists(kv: kv);
     await svc._loadDevlistState(kv: kv);
     // Phase 31: the first start after a restore re-asserts the account — a
@@ -491,6 +494,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // the seed race left — is made again before anything offers it.
     await svc._repairOwnListPqSignature();
     svc._schedulePqListDelivery(); // §18.9, on its own clock
+    // ADR 0022: a linked device whose account's list does not carry its
+    // proof of possession hands it to its root — the first start of this
+    // build on a device linked before it. Through the outbox, which the
+    // transport empties once it connects.
+    await svc._offerOwnPop();
     // Phase 38: the handle service, after the account's root-ness is known
     // (only the primary device holds a handle) and the requests are loaded
     // (it says which of them came through the handle).
@@ -1037,6 +1045,21 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       }
       return _upgradeContactFromCode(contacts[rid]!, scanned);
     }
+    // ADR 0022: a device that has proved which account it is in is not added
+    // as another account's, whatever a code says — a code naming an account
+    // is that account's certificate for the device, which the account signs
+    // over whatever keys it is handed. A code naming no account is the
+    // device's own identity, which a linked device on a build before §18.7
+    // hands out; phase 33 moves that record onto the device's account.
+    final declared = scanned.v3?.declaredAccountEdPub;
+    final provenFor = _provenDevices[rid]?.acct;
+    if (declared != null &&
+        provenFor != null &&
+        provenFor != base64Encode(declared)) {
+      throw const FormatException(
+          'this code names a device that has proved it belongs to another '
+          'account');
+    }
     final name = (alias?.trim().isNotEmpty ?? false)
         ? alias!.trim()
         : (bundle.displayName ?? 'Unknown');
@@ -1359,6 +1382,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // an unknown sender for ever. Best-effort and unawaited — the contact is
     // already added here whether or not the sync lands.
     unawaited(_mirrorContact(contact).then((_) {}, onError: (_) {}));
+    // ADR 0022: the device they were added from, if what they were added from
+    // proves it is theirs, is not another account's because that account's
+    // list reached this device first.
+    unawaited(_claimAddedDevice(contact).then((_) {}, onError: (_) {}));
     _schedulePqListDelivery(); // §18.9: a new contact is owed the signature
     notifyListeners();
   }
@@ -2179,6 +2206,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             !await cert.verify(acct)) {
           return;
         }
+        // ADR 0022: nor a device that has proved here that it is another
+        // account's — as a scan here refuses it ([addContactFromCode]).
+        final provenFor = _provenDevices[rid]?.acct;
+        if (provenFor != null && provenFor != base64Encode(acct)) return;
       } catch (_) {
         return;
       }
@@ -2281,6 +2312,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       await _sendContactRequest(contact);
       await _pokeHello(contact);
     }
+    // ADR 0022: as an add here would ([_onContactAdded]).
+    unawaited(_claimAddedDevice(contact).then((_) {}, onError: (_) {}));
     notifyListeners();
   }
 
@@ -2683,14 +2716,23 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       answered.remove(rid);
     }
     // Another contact's alert can name this one: "<A>'s list names a device
-    // <this contact>'s list also names" (§3.4). It is kept, without them —
-    // their routing id would otherwise outlive them in the vault.
+    // <this contact>'s list also names" (§3.4), or one that proved it is
+    // theirs (ADR 0022). It is kept, without them — their routing id would
+    // otherwise outlive them in the vault.
     for (final e in contactDevlistAlerts.entries.toList()) {
       if (e.key != rid && sharedDeviceAlertOther(e.value) == rid) {
-        await _setContactAlert(
-            e.key, devlistAlertBody(DevlistAlertKind.sharedDevice));
+        await _setContactAlert(e.key, withoutAlertOther(e.value));
       }
     }
+    // ADR 0022: the devices that proved they are this account's, unless
+    // another record of the same account is still held — their routing ids
+    // do not outlive the account here either.
+    final heldAccounts = {
+      for (final c in contacts.values) base64Encode(c.accountEd),
+    };
+    final provenBefore = _provenDevices.length;
+    _provenDevices.removeWhere((_, v) => !heldAccounts.contains(v.acct));
+    if (_provenDevices.length != provenBefore) await _saveProvenDevices();
     await kt.noteContactRemoved(rid);
     notifyListeners();
   }
@@ -4100,6 +4142,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
               // authenticates — so the label on an injected contact cannot
               // itself be forged.
               await _applyMirroredContact(from, mirrored.inner);
+            } else if (mirrored.dir == 'pop') {
+              // ADR 0022: the sending device's own proof of possession, held
+              // to the certificate the root holds for that device.
+              await _applyDevicePop(from, mirrored.inner);
             } else {
               await _insertMirrored(
                   mirrored.thread, mirrored.dir, mirrored.inner);
@@ -6894,6 +6940,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       return isNew;
     });
     await _initSync();
+    // A contact's list that named this device before it was mine held it by
+    // the first-come rule; it does not now (§3.4).
+    if (isNew) await _withdrawClaimsOnMine();
     await broadcastMyDeviceList(); // tell contacts about the new device
     // 7.6b: a device that just joined starts with the recent history instead
     // of an empty screen (queued through the durable outbox, so it lands even
@@ -10057,9 +10106,31 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   Future<int> _myDevlistVersion() async =>
       int.tryParse(await vault.kvGet('my_devlist_version') ?? '1') ?? 1;
 
-  /// Every device of MY account (this device + linked ones).
+  /// Every device of MY account (this device + linked ones), as a list this
+  /// account signs carries them: each linked device's certificate with the
+  /// proof of possession it handed the root, where it has (ADR 0022,
+  /// [_applyDevicePop]) — and this device's own with its own, where this is
+  /// a linked device ([AccountIdentity.provenDeviceCert]).
   Future<List<DeviceCertificate>> myFullDeviceList() async =>
-      [(await accountIdentity()).deviceCert, ...await _myDevices()];
+      [await _ownPresentedCert(), ...await _myDevices()];
+
+  DeviceCertificate? _ownCertMemo;
+
+  /// This device's certificate as it presents it: with its proof of
+  /// possession unless its key is the account key (device #1, which needs
+  /// none) or it models a build from before ADR 0022. Memoised: the proof is
+  /// a signature, and this is asked on every install's check.
+  Future<DeviceCertificate> _ownPresentedCert() async {
+    final me = await accountIdentity();
+    if (me.isAccountKeyDevice || debugNoDevicePop) return me.deviceCert;
+    final memo = _ownCertMemo;
+    if (memo != null &&
+        constantTimeEquals(memo.deviceEdPub, me.deviceCert.deviceEdPub) &&
+        constantTimeEquals(memo.sig, me.deviceCert.sig)) {
+      return memo;
+    }
+    return _ownCertMemo = await me.provenDeviceCert();
+  }
 
   /// Tell every contact my current device set (account-signed) so they fan
   /// messages out to all my devices and accept from any of them.
@@ -10273,6 +10344,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         });
         await _recordOwnList(list);
         await _initSync();
+        await _withdrawClaimsOnMine();
       } else if (await _isRemovalEvidence(list)) {
         // Raised as every removal banner is (ADR 0026): on the list that
         // omits this device, above a version it learned, and kept with that
@@ -11058,10 +11130,24 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// and short, and nothing that holds this lock installs again.
   Future<bool> _installContactDeviceList(Contact contact, SignedDeviceList list,
           {required bool persist, Map<String, String>? kv}) =>
-      _withLock(
-          'devlist',
-          () => _installContactDeviceListLocked(contact, list,
-              persist: persist, kv: kv));
+      _withLock('devlist', () async {
+        final ok = await _installContactDeviceListLocked(contact, list,
+            persist: persist, kv: kv);
+        if (persist) {
+          debugJudged
+              ?.add((rid: contact.rid, version: list.version, installed: ok));
+        }
+        return ok;
+      });
+
+  /// Test seam: while a test has set it, every list an install judged —
+  /// in-band or from the log — in order: whose, its version, and whether it
+  /// was installed. So that a test can tell a list refused in silence (the
+  /// signature floor, a proof of possession taken off) from one not judged
+  /// yet, whatever else arrives meanwhile. Null, and nothing recorded,
+  /// otherwise.
+  @visibleForTesting
+  List<({String rid, int version, bool installed})>? debugJudged;
 
   Future<bool> _installContactDeviceListLocked(
       Contact contact, SignedDeviceList list,
@@ -11133,22 +11219,29 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     //
     // What the user is told, for a list that arrived: the fact, naming both
     // parties, on the chat of the contact whose list was refused. Not an
-    // accusation — this device cannot tell which of two accounts is lying,
-    // and when the claim came first and the real owner's list second, the
-    // one refused is the honest one. Silence would leave the user nothing to
-    // ask either of them about.
-    final clash = await _deviceHeldElsewhere(contact, list);
-    if (clash != null) {
-      if (persist) {
-        await _setContactAlert(
-            rid,
-            clash.mine
-                ? devlistAlertBody(DevlistAlertKind.sharedWithMe)
-                : devlistAlertBody(
-                    DevlistAlertKind.sharedDevice, {'with': clash.other}));
+    // accusation — without a proof this device cannot tell which of two
+    // accounts is lying, and when the claim came first and the real owner's
+    // list second, the one refused is the honest one. Silence would leave the
+    // user nothing to ask either of them about.
+    //
+    // ADR 0022 settles what a proof of possession can: a device that has
+    // signed for one account is that account's, here, for as long as a
+    // contact of that account is ([_provenDevices]) — and a list proving a
+    // device another contact's list holds only by the first-come rule takes
+    // it from that list, which is then not used ([_judgeListClaims]).
+    final verdict = await _judgeListClaims(contact, list, persist: persist);
+    if (verdict.refused) {
+      final alert = verdict.alert;
+      if (persist && alert != null) {
+        await _setContactAlert(rid, alert);
         notifyListeners();
       }
       return false;
+    }
+    for (final holder in verdict.evict) {
+      await _withdrawContactDeviceList(holder,
+          persist: persist,
+          alert: devlistAlertBody(DevlistAlertKind.claimedDevice, {'with': rid}));
     }
 
     if (persist) {
@@ -11200,7 +11293,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // under a lock), and at start-up (`_loadContactDeviceLists`). Nor does
     // anything inside the section below take a lock: what it calls are the
     // session's own methods, the vault, `_sealFor`, and `flushOutbox` and
-    // `_offerPqIdentity` unawaited.
+    // `_offerPqIdentity` unawaited — and `_saveProvenDevices`, whose own lock
+    // ('devpop') holds nothing but the write, so nothing waits inside it.
     //
     // What remains (not changed here): `_handleExtraInbound` puts the whole
     // session back to its pre-decrypt snapshot when the dispatch AFTER the
@@ -11295,6 +11389,19 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         _extraRidToContact[r] = rid;
       }
       if (persist) await _saveExtra(rid);
+      // ADR 0022: every device this list proves is recorded as this
+      // account's, the first proof standing — from now on no other account's
+      // list may name it, and none of this account's may name it without the
+      // proof. Here, under the conversation's lock, which a deletion of the
+      // contact takes too: one that ran before this has left nothing to
+      // record for (above), and one after it forgets what this records.
+      var provenChanged = false;
+      for (final r in verdict.proven) {
+        if (_noteProven(r, base64Encode(contact.accountEd), inList: true)) {
+          provenChanged = true;
+        }
+      }
+      if (provenChanged) await _saveProvenDevices();
       return appeared;
     });
 
@@ -11320,10 +11427,37 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     return true;
   }
 
-  /// Whether [list] — a list for [contact]'s account — names a device this
-  /// device already holds for ANOTHER account: one of its own ([mine]), or
-  /// another contact's ([other], that contact's routing id), whether as the
-  /// device that contact was added from or one their own list named.
+  /// What §3.4's rules make of the devices [list] — a list for [contact]'s
+  /// account — names, against what this device already holds; decided before
+  /// anything is written, so a list is installed whole or refused whole.
+  ///
+  /// Refused, with the alert to raise for a list that arrived ([persist]):
+  ///  * a device of this account's own — [DevlistAlertKind.sharedWithMe];
+  ///  * a device that has proved it belongs to ANOTHER account (ADR 0022,
+  ///    [_provenDevices]), whether or not anybody holds it now —
+  ///    [DevlistAlertKind.claimedDevice], naming a contact of that account;
+  ///  * on a list that arrived, a device THIS account's lists have carried
+  ///    proven, named here without the proof — silently, as the signature
+  ///    floor refuses: only someone holding the account's key (or passing a
+  ///    list on with the member taken off) makes such a list, and the
+  ///    account's own devices go on claiming the list still held. That is
+  ///    also what refuses a ratchet key swapped under a proven device's
+  ///    certificate, since the proof covers the ratchet key;
+  ///  * the device another contact of another account was added from —
+  ///    [DevlistAlertKind.sharedDevice], first come even when this list
+  ///    proves it: that contact's record IS that device's routing id, and a
+  ///    list does not move a contact the user added (a code naming a device
+  ///    already proven for another account is refused at the scan,
+  ///    [addContactFromCode]);
+  ///  * a device another account's installed list names, unless this list
+  ///    PROVES it — [DevlistAlertKind.sharedDevice]: first come, as before
+  ///    ADR 0022.
+  ///
+  /// Installed otherwise, with [_ClaimVerdict.evict]: the contacts of other
+  /// accounts whose installed lists hold, by the first-come rule alone, a
+  /// device this list proves. Theirs is withdrawn — a list naming a device
+  /// that has proved it is someone else's is not used, whichever arrived
+  /// first — and [_ClaimVerdict.proven] is what this list proves.
   ///
   /// Accounts are compared, not contact records. The same person added from
   /// two of their devices is two records for one account, and each record's
@@ -11331,31 +11465,310 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// twice, not a claim on anybody else's.
   ///
   /// Called under the install lock, which every install takes, so nothing
-  /// else changes [_extraRidToContact] between this answer and the write
-  /// that follows it.
-  Future<({bool mine, String? other})?> _deviceHeldElsewhere(
-      Contact contact, SignedDeviceList list) async {
+  /// else changes [_extraRidToContact] or [_provenDevices] between this
+  /// answer and the writes that follow it.
+  Future<_ClaimVerdict> _judgeListClaims(Contact contact, SignedDeviceList list,
+      {required bool persist}) async {
     final acct = base64Encode(contact.accountEd);
     final mine = {
       ..._myAccountRids,
       for (final d in await myFullDeviceList()) await d.routingId(),
     };
+    final proven = <String>{};
+    final evict = <String>{};
     for (final d in list.devices) {
       final r = await d.routingId();
-      if (mine.contains(r)) return (mine: true, other: null);
+      final p = _carriesProof(d, contact.accountEd);
+      if (p) proven.add(r);
+      if (mine.contains(r)) {
+        return _ClaimVerdict.refuse(
+            devlistAlertBody(DevlistAlertKind.sharedWithMe));
+      }
+      final owner = _provenDevices[r];
+      if (owner != null && owner.acct != acct) {
+        return _ClaimVerdict.refuse(_claimedAlert(owner.acct, r));
+      }
+      if (persist && owner != null && owner.inList && !p) {
+        return const _ClaimVerdict.refuse(null);
+      }
       final added = contacts[r];
       if (added != null && base64Encode(added.accountEd) != acct) {
-        return (mine: false, other: added.rid);
+        return _ClaimVerdict.refuse(devlistAlertBody(
+            DevlistAlertKind.sharedDevice, {'with': added.rid}));
       }
       final listedFor = _extraRidToContact[r];
       final lister = listedFor == null || listedFor == contact.rid
           ? null
           : contacts[listedFor];
       if (lister != null && base64Encode(lister.accountEd) != acct) {
-        return (mine: false, other: lister.rid);
+        // Held for another account by the first-come rule alone: had that
+        // account's list proved it, [_provenDevices] would name that account
+        // and the list in hand would have been refused above.
+        if (!p) {
+          return _ClaimVerdict.refuse(devlistAlertBody(
+              DevlistAlertKind.sharedDevice, {'with': lister.rid}));
+        }
+        evict.add(lister.rid);
       }
     }
-    return null;
+    return _ClaimVerdict.install(proven: proven, evict: evict);
+  }
+
+  /// Whether [d], in a list for the account [accountEdPub] that has been
+  /// verified, shows that the device itself is in that account (ADR 0022):
+  /// its key IS the account key — device #1, or a `legacy` record, whose
+  /// certificate the device key signed — or it carries a proof of
+  /// possession. Read from the certificate without checking a signature
+  /// again: a list that arrived was verified ([SignedDeviceList.verify],
+  /// which checks every proof it carries) before this is asked, and one held
+  /// at start-up was verified when it arrived. Every build before ADR 0022
+  /// re-serialises a list without the member, so no list it stored carries
+  /// one at all.
+  bool _carriesProof(DeviceCertificate d, Uint8List accountEdPub) =>
+      constantTimeEquals(d.deviceEdPub, accountEdPub) || d.pop != null;
+
+  /// The [DevlistAlertKind.claimedDevice] alert for a list naming [deviceRid],
+  /// which has proved it belongs to the account [ownerAcct] — naming a
+  /// contact of that account if this device holds one: the one the device is
+  /// held for, else the one added from it, else any record of the account.
+  String _claimedAlert(String ownerAcct, String deviceRid) {
+    bool ofOwner(String? r) =>
+        r != null &&
+        contacts[r] != null &&
+        base64Encode(contacts[r]!.accountEd) == ownerAcct;
+    final listedFor = _extraRidToContact[deviceRid];
+    final String? other;
+    if (ofOwner(listedFor)) {
+      other = listedFor;
+    } else if (ofOwner(deviceRid)) {
+      other = deviceRid;
+    } else {
+      other = contacts.values
+          .where((c) => base64Encode(c.accountEd) == ownerAcct)
+          .map((c) => c.rid)
+          .firstOrNull;
+    }
+    return devlistAlertBody(DevlistAlertKind.claimedDevice,
+        {if (other != null) 'with': other});
+  }
+
+  /// ADR 0022: the devices this device has seen PROVE which account they are
+  /// in — routing id → the account's key (base64), and whether the proof was
+  /// seen in a device list that account signed ([_ClaimVerdict.proven]) or
+  /// only on the code or request a contact was added from
+  /// ([_claimAddedDevice]).
+  ///
+  /// The first proof for a device stands. From then on a list from any other
+  /// account that names the device is refused, whether or not anybody holds
+  /// the device here any more — "a device key once seen proven for one
+  /// account is never accepted for another", nor is a code naming it for
+  /// another ([addContactFromCode], [_applyMirroredContact]) — and, once a
+  /// list from the account itself has carried the proof, a list from it
+  /// naming the device without one is refused too. A proof seen only in a
+  /// code does not set that second rule: it says what the device's build
+  /// makes, not that the account's root carries proofs, and an account whose
+  /// root predates ADR 0022 lists its devices without them.
+  ///
+  /// For as long as the account is known here: when the last contact record
+  /// of an account is deleted, its devices are forgotten with it
+  /// ([deleteContact]), so a deleted contact's routing ids do not outlive
+  /// them in the vault. Sealed (`dev_pop`), and not in a backup: a restore
+  /// rebuilds it at start-up from the lists the archive carries, which
+  /// carry the proofs.
+  final Map<String, ({String acct, bool inList})> _provenDevices = {};
+
+  static const String _provenDevicesKey = 'dev_pop';
+
+  Future<void> _loadProvenDevices() async {
+    final stored = await vault.kvGet(_provenDevicesKey);
+    if (stored == null) return;
+    try {
+      final m = (jsonDecode(stored) as Map).cast<String, Object?>();
+      for (final e in m.entries) {
+        final v = e.value;
+        if (v is Map && v['a'] is String) {
+          _provenDevices[e.key] = (acct: v['a'] as String, inList: v['l'] == 1);
+        }
+      }
+    } catch (_) {
+      // Unreadable: rebuilt from the lists held, as the start-up load
+      // installs them.
+    }
+  }
+
+  /// Writes [_provenDevices] as it stands when the write runs, one write at a
+  /// time — so the last to run writes the latest map, whichever of two
+  /// callers changed it first. Its own key: nothing inside takes a lock, so
+  /// it can be reached under any other.
+  Future<void> _saveProvenDevices() => _withLock('devpop', () async {
+        if (_provenDevices.isEmpty) {
+          await vault.kvDelete(_provenDevicesKey);
+          return;
+        }
+        await vault.kvPut(
+            _provenDevicesKey,
+            jsonEncode({
+              for (final e in _provenDevices.entries)
+                e.key: {'a': e.value.acct, 'l': e.value.inList ? 1 : 0},
+            }));
+      });
+
+  /// Records that [deviceRid] proved it is in the account [acct] — in a list
+  /// that account signed ([inList]) or not. Whether anything changed. A
+  /// proof for another account than the one recorded changes nothing: the
+  /// first stands.
+  bool _noteProven(String deviceRid, String acct, {required bool inList}) {
+    final held = _provenDevices[deviceRid];
+    if (held != null && (held.acct != acct || held.inList || !inList)) {
+      return false;
+    }
+    _provenDevices[deviceRid] = (acct: acct, inList: inList);
+    return true;
+  }
+
+  /// Test seam: the account (base64 key) [deviceRid] has proved it belongs
+  /// to here, and whether a list of that account's carried the proof.
+  @visibleForTesting
+  ({String acct, bool inList})? debugProvenDevice(String deviceRid) =>
+      _provenDevices[deviceRid];
+
+  /// ADR 0022: stop using [rid]'s installed list — whole, as a refused list
+  /// is refused whole — because it names a device that has proved it is
+  /// someone else's: another account's ([_judgeListClaims],
+  /// [_claimAddedDevice]) or this account's own ([_withdrawClaimsOnMine]).
+  /// It held that device by the first-come rule, which is all a list could
+  /// do before proofs existed, and the proof arrived after it.
+  ///
+  /// Every device it listed stops being theirs here: out of [_contactExtras]
+  /// and [_extraRidToContact], and whatever was queued for those devices is
+  /// not delivered — it was sealed beside keys their list chose, one of them
+  /// for a device that is not theirs. No removal notice goes: that is the
+  /// account's statement about its own devices, and nothing the account
+  /// signed removed these. Their held list stays in the vault — it is what
+  /// they still claim, and what their echo is compared with — and is held to
+  /// the same rule at every start, where [_provenDevices] refuses it.
+  ///
+  /// Under the install lock ([_installContactDeviceList]); the contact's
+  /// session is changed under the conversation's lock too, in that order,
+  /// as an install does.
+  Future<void> _withdrawContactDeviceList(String rid,
+      {required bool persist, String? alert}) async {
+    await _withLock(rid, () async {
+      final session = _contactExtras[rid];
+      final dropped = <String>{
+        ...?session?.targetRoutingIds,
+        for (final e in _extraRidToContact.entries)
+          if (e.value == rid) e.key,
+      };
+      if (session != null) {
+        for (final r in session.targetRoutingIds.toList()) {
+          session.removeTarget(r);
+        }
+      }
+      _extraRidToContact.removeWhere((_, v) => v == rid);
+      for (final r in dropped) {
+        await vault.db.delete('outbox', where: 'rid = ?', whereArgs: [r]);
+      }
+      if (persist && session != null && contacts.containsKey(rid)) {
+        await _saveExtra(rid);
+      }
+    });
+    if (persist && alert != null && contacts.containsKey(rid)) {
+      await _setContactAlert(rid, alert);
+      notifyListeners();
+    }
+  }
+
+  /// §3.4: this account's own list is the authority on its devices. A
+  /// contact's list that named one of them before this device knew it — a
+  /// device linked since, learned from the root's list — held it by the
+  /// first-come rule, and is withdrawn now that it is known
+  /// ([DevlistAlertKind.sharedWithMe]). Run whenever this device's own
+  /// device set grows. No proof is needed for it: a device this account's
+  /// own list names is this account's.
+  Future<void> _withdrawClaimsOnMine() => _withLock('devlist', () async {
+        final mine = {
+          ..._myAccountRids,
+          for (final d in await myFullDeviceList()) await d.routingId(),
+        };
+        final claimants = {
+          for (final r in mine)
+            if (_extraRidToContact[r] case final String c) c,
+        };
+        if (claimants.isEmpty) return;
+        for (final c in claimants) {
+          await _withdrawContactDeviceList(c,
+              persist: true,
+              alert: devlistAlertBody(DevlistAlertKind.sharedWithMe));
+        }
+        // What is sealed to my own devices is sealed to the keys my own list
+        // gives them, whichever install wrote the map last.
+        for (final d in await _myDevices()) {
+          _sealKeys[await d.routingId()] = d.deviceXPub;
+        }
+      });
+
+  /// ADR 0022: a contact just added, from a device whose code or request
+  /// proves which account it is in ([_addedDeviceProven]), takes that device
+  /// from another account's list that held it by the first-come rule alone
+  /// — the claim that reached this device before the contact did. That list
+  /// is withdrawn ([_withdrawContactDeviceList]) and the device recorded as
+  /// the new contact's account's.
+  ///
+  /// Unawaited from [_onContactAdded]: it takes the install lock, and no
+  /// caller of that is to wait on it from wherever it was.
+  Future<void> _claimAddedDevice(Contact contact) async {
+    final rid = contact.rid;
+    final acct = base64Encode(contact.accountEd);
+    if (!await _addedDeviceProven(contact)) return;
+    await _withLock('devlist', () async {
+      // Recorded under the contact's lock as well, which their deletion
+      // takes: a deletion before this leaves nothing to record, and one
+      // after it forgets what this records (as an install does).
+      final held = await _withLock(rid, () async {
+        if (!identical(contacts[rid], contact)) return false; // deleted
+        if (_noteProven(rid, acct, inList: false)) await _saveProvenDevices();
+        return true;
+      });
+      if (!held) return;
+      final owner = _provenDevices[rid];
+      if (owner != null && owner.acct != acct) return; // proven there first
+      final holder = _extraRidToContact[rid];
+      if (holder == null || holder == rid) return;
+      final h = contacts[holder];
+      if (h == null || base64Encode(h.accountEd) == acct) return;
+      await _withdrawContactDeviceList(holder,
+          persist: true,
+          alert:
+              devlistAlertBody(DevlistAlertKind.claimedDevice, {'with': rid}));
+      _sealKeys[rid] = contact.bundle.xPub;
+    });
+  }
+
+  /// Whether the device [c] was added from proves that it is in [c]'s
+  /// account — which a code or request can show only by the device key
+  /// signing a statement that names the account: the certificate it came
+  /// with carries a proof of possession, or (ADR 0027) the code signed its
+  /// post-quantum commitment, the device key's signature over the account's
+  /// key. Only for a contact anchored to an account other than the device's
+  /// own key (§18.7).
+  ///
+  /// A device-anchored code proves nothing here, though its key is "the
+  /// account": a code's binding signature (§2.3) is made by every identity —
+  /// a linked device on a build before §18.7 hands out exactly such a code
+  /// for its own key — and anyone who has seen it can present it again, so
+  /// it cannot tell a phone from somebody's linked device. In a LIST the
+  /// same equality is a proof ([_carriesProof]): there the account key itself
+  /// signed that device's certificate.
+  Future<bool> _addedDeviceProven(Contact c) async {
+    if (constantTimeEquals(c.bundle.edPub, c.accountEd)) return false;
+    final cert = c.deviceCert;
+    if (cert != null &&
+        constantTimeEquals(cert.deviceEdPub, c.bundle.edPub) &&
+        await cert.provesPossession(c.accountEd)) {
+      return true;
+    }
+    return c.pqcSigned;
   }
 
   /// Test seam: which contact a device's routing id is held for as one of
@@ -12227,6 +12640,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           sensitive: false);
       await _recordOwnList(list); // which forgets the memo after its writes
       await _initSync();
+      // A contact's list that named a device of mine this device had not
+      // learned yet held it by the first-come rule; it does not now.
+      await _withdrawClaimsOnMine();
+      // ADR 0022: a list that names this device without its proof is one the
+      // root has not had the proof for.
+      await _offerOwnPop();
       // Catching up may resolve a pending owner-echo (the normal-update case),
       // or explain an alert already raised while the root was unreachable: if
       // the list that raised it is consistent with what the root just sent,
@@ -12235,6 +12654,108 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       await _reevaluateDevlistPending();
       notifyListeners();
     } catch (_) {}
+  }
+
+  /// Test seam: this device models a build from before ADR 0022 — it never
+  /// hands its proof of possession to its root, and as a root it takes none
+  /// ([_offerOwnPop], [_applyDevicePop]). Reading a proof, and holding lists
+  /// to the receiver's rules, is unchanged: that is what an older build
+  /// cannot do and this one can whatever it models.
+  @visibleForTesting
+  bool debugNoDevicePop = false;
+
+  bool _popOffering = false;
+
+  /// ADR 0022, migration: a linked device's proof of possession can only be
+  /// made by the device — the root, holding the account's key and not this
+  /// device's, cannot make one — so the device hands its own to the root,
+  /// over the self-sync channel (§9, `dir:"pop"`), and every list the root
+  /// signs from then on carries it ([myFullDeviceList]).
+  ///
+  /// Sent when the account's list this device holds names it without a
+  /// proof: on a device linked before ADR 0022, at the first start of a
+  /// build with it; on a device linked since, when the root's first list
+  /// naming it arrives; and after a restored root's list lost it. Once per
+  /// list version (`pop_sent_v`), so a root that ignores it — one from
+  /// before ADR 0022 — is not asked again until its list moves. Device #1
+  /// needs none: its certificate is its own key's signature.
+  Future<void> _offerOwnPop() async {
+    if (debugNoDevicePop || _popOffering) return;
+    _popOffering = true;
+    try {
+      final me = await accountIdentity();
+      if (me.isAccountKeyDevice) return;
+      final sync = _sync;
+      final held = await vault.kvGet('own_list_json');
+      if (sync == null || held == null) return; // no list yet to compare
+      final list = SignedDeviceList.fromJson(
+          (jsonDecode(held) as Map).cast<String, Object?>());
+      if (!constantTimeEquals(list.accountEdPub, me.accountEdPub)) return;
+      final listed = list.devices
+          .where((d) => constantTimeEquals(d.deviceEdPub, me.deviceEdPub));
+      // Not on its account's list: removed, or not listed yet.
+      if (listed.isEmpty) return;
+      if (await listed.first.provesPossession(me.accountEdPub)) return;
+      final sentFor = int.tryParse(await vault.kvGet('pop_sent_v') ?? '');
+      if (sentFor != null && sentFor >= list.version) return;
+      await sync.mirror(
+          threadRid: '',
+          dir: 'pop',
+          inner: InnerMessage(
+              kind: 'devpop',
+              mid: newMessageId(),
+              ts: _now(),
+              data: {'pop': b64(await me.devicePop())}));
+      await vault.kvPut('pop_sent_v', '${list.version}');
+    } catch (_) {
+      // Best effort: the next list this device learns asks again.
+    } finally {
+      _popOffering = false;
+    }
+  }
+
+  /// ADR 0022, migration, the root's half: a linked device's proof of
+  /// possession, handed over self-sync by the device itself — the channel
+  /// authenticates it, and the proof must verify for this account and for
+  /// the certificate the root holds for THAT device, or it is not kept. Kept
+  /// beside the certificate (`my_devices`), so every list the root signs
+  /// from then on carries it.
+  ///
+  /// Nothing is re-signed or sent for it here. A proof changes no signature
+  /// and no fingerprint, so the current version signed again with it is the
+  /// same list, and it reaches whoever is next handed the account's list: a
+  /// new contact with the hello, a contact whose echo shows it behind —
+  /// among them one that refused the list because another's claim held the
+  /// device there first, which the proof now overrules — a device of this
+  /// account the root re-asserts the list to, whose copy is what it hands a
+  /// contact added from it, and everyone at the next version.
+  Future<void> _applyDevicePop(String fromDeviceRid, InnerMessage inner) async {
+    if (debugNoDevicePop) return;
+    final me = await accountIdentity();
+    if (!me.holdsAccountRoot) return; // only a root's lists carry it
+    final raw = inner.data['pop'];
+    if (raw is! String) return;
+    final Uint8List pop;
+    try {
+      pop = unb64(raw);
+    } catch (_) {
+      return;
+    }
+    await _withOwnListLock(() async {
+      final devices = await _myDevices();
+      for (var i = 0; i < devices.length; i++) {
+        if (await devices[i].routingId() != fromDeviceRid) continue;
+        final held = devices[i].pop;
+        if (held != null && constantTimeEquals(held, pop)) return;
+        final proven = devices[i].withPop(pop);
+        if (!await proven.provesPossession(me.accountEdPub)) return;
+        devices[i] = proven;
+        await vault.kvPut(
+            'my_devices', jsonEncode([for (final d in devices) d.toJson()]),
+            sensitive: false);
+        return;
+      }
+    });
   }
 
   /// Cross-check the claim ('dl') and echo ('pdl') carried by an inbound inner
@@ -13092,4 +13613,24 @@ class _WireList {
     if (ver != o.ver) return ver > o.ver;
     return digest.compareTo(o.digest) < 0;
   }
+}
+
+/// What `ChatService._judgeListClaims` decided about a device list's devices
+/// (§3.4, ADR 0022): refused — with the alert to raise for a list that
+/// arrived, or none — or installed, with the routing ids of the devices it
+/// proves and the contacts whose lists it takes a device from.
+class _ClaimVerdict {
+  final bool refused;
+  final String? alert;
+  final Set<String> proven;
+  final Set<String> evict;
+
+  const _ClaimVerdict.refuse(this.alert)
+      : refused = true,
+        proven = const {},
+        evict = const {};
+
+  const _ClaimVerdict.install({required this.proven, required this.evict})
+      : refused = false,
+        alert = null;
 }
