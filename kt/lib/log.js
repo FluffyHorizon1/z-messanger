@@ -290,6 +290,13 @@ class PublishError extends Error {
   }
 }
 
+/** A handle-rule refusal (`handles.RuleError`) as the publish route answers it, keeping its reason. */
+function handlePublishError(e) {
+  const p = new PublishError(e.status, e.code, e.message);
+  p.reason = e.reason;
+  return p;
+}
+
 // --- Stores --------------------------------------------------------------------
 
 /** Entries in memory only — tests, and the `kt/server.js --ephemeral` flag. */
@@ -1197,25 +1204,28 @@ class KtLog {
   _applyHandle(entry, replaying) {
     const i = entry.index;
     if (i !== this.entries.length) throw new Error(`entry ${i} where ${this.entries.length} was expected`);
-    if (!Buffer.isBuffer(entry.label) || entry.label.length !== 32) throw new Error(`entry ${i}: a label is 32 bytes`);
-    if (!Number.isInteger(entry.version) || entry.version < 1) throw new Error(`entry ${i}: a version is a positive integer`);
-    if (!sha256(entry.value).equals(entry.valueHash)) throw new Error(`entry ${i}: value hash does not match value`);
+    if (!Buffer.isBuffer(entry.label)) throw new Error(`entry ${i}: no label`);
+    if (!Buffer.isBuffer(entry.value) || !sha256(entry.value).equals(entry.valueHash)) throw new Error(`entry ${i}: value hash does not match value`);
     if (!Number.isInteger(entry.ts) || entry.ts < 0 || entry.ts % handles.HOUR !== 0) {
       throw new Error(`entry ${i}: ts ${entry.ts} is not a whole hour — a handle log keeps no finer time than that`);
     }
     if (!Buffer.isBuffer(entry.sig) || entry.sig.length !== 64) {
       throw new Error(`entry ${i}: no owner's signature — every entry in a handle log carries one`);
     }
-    const prev = this.latest(entry.label);
-    if (prev && !(entry.version > prev.version)) {
-      throw new Error(`entry ${i}: version ${entry.version} does not exceed ${prev.version}`);
-    }
+    // Everything else — the version's bounds and that it is the label's
+    // next, the record, the signatures, the history — is the owner rule's,
+    // in its one order, exactly as on the wire.
     const key = entry.label.toString('hex');
     let state;
     try {
-      state = this._ownerRule(this.owners.get(key), entry);
+      state = this._ownerRule(this._ruleState(entry.label), entry);
     } catch (e) {
-      if (e instanceof handles.RuleError) throw new Error(`entry ${i}: ${e.message} (${e.code})`);
+      if (e instanceof handles.RuleError) {
+        const err = new Error(`entry ${i}: ${e.message} (${e.code})`);
+        err.code = e.code;
+        err.reason = e.reason;
+        throw err;
+      }
       throw e;
     }
     // Every handle entry is signed, from the first: the boundary the head
@@ -1247,6 +1257,18 @@ class KtLog {
   }
 
   /**
+   * [label]'s state as the owner rule reads it — {owner, rc, version} — or
+   * null for a label with no entry: the owner and commitment from the
+   * per-label table, the version from the label's latest entry.
+   */
+  _ruleState(label) {
+    const latest = this.latest(label);
+    if (!latest) return null;
+    const s = this.owners.get(label.toString('hex'));
+    return { owner: s.owner, rc: s.rc, version: latest.version };
+  }
+
+  /**
    * Everything [publish] refuses, without accepting anything.
    *
    * Separated so a caller can find out whether a request is genuine before
@@ -1273,49 +1295,42 @@ class KtLog {
 
   /**
    * `checkPublish` for the handle log: `{label, version, value, sig}`, and
-   * everything that does not depend on the label's history — the shape, the
-   * 1 KiB cap, the record's one encoding, `sig` under the owner the record
-   * names, and a recover's `rsig` under the recovery key it names. What does
-   * depend on history is `publish`'s.
+   * everything that does not depend on the label's history
+   * (`handles.checkEntry`) — the shape, the 1 KiB cap, the record's one
+   * encoding and strong keys, `sig` under the owner the record names, and a
+   * recover's `rsig` under the recovery key it names. What does depend on
+   * history is `publish`'s.
    */
   _checkHandlePublish({ label, version, value, sig }) {
-    if (!Buffer.isBuffer(label) || label.length !== 32) throw new PublishError(400, 'bad_request', 'label must be 32 bytes');
-    if (!Number.isInteger(version) || version < 1 || version > Number.MAX_SAFE_INTEGER) throw new PublishError(400, 'bad_request', 'v must be a positive integer');
-    if (!Buffer.isBuffer(value) || value.length === 0) throw new PublishError(400, 'bad_request', 'value must be a record');
-    if (!Buffer.isBuffer(sig) || sig.length !== 64) throw new PublishError(400, 'bad_request', 'sig must be a 64-byte Ed25519 signature');
     let record;
     try {
       record = handles.checkEntry({ label, version, value, sig });
     } catch (e) {
-      if (e instanceof handles.RuleError) throw new PublishError(e.status, e.code, e.message);
+      if (e instanceof handles.RuleError) throw handlePublishError(e);
       throw e;
     }
     return { label, valueHash: sha256(value), record };
   }
 
   /**
-   * `publish` for the handle log. The order of the refusals is the order a
-   * client can act on: a claim on a held label is `taken` whatever its
-   * version, a stale version is `stale_version`, and only then is an update
-   * or a recover held against the history it would extend.
+   * `publish` for the handle log: the history half of the owner rule
+   * (`handles.ownerRuleTransition`), in its one order — taken, not claimed,
+   * the owner, the commitment, and the version last — against the same
+   * state replay reads (`_ruleState`).
    */
   _publishHandle(req) {
     const { label, valueHash, record } = this.checkPublish(req);
     const { version, value, sig } = req;
-    const prev = this.latest(label);
-    const key = label.toString('hex');
     try {
-      if (record.k === 'claim' && prev) throw new handles.RuleError(409, 'taken', 'this label has been claimed');
-      if (prev && !(version > prev.version)) {
-        throw new handles.RuleError(409, 'stale_version', `the log holds version ${prev.version} for this label; ${version} does not exceed it`);
-      }
-      handles.ownerRuleTransition(this.owners.get(key), record);
+      handles.ownerRuleTransition(this._ruleState(label), record, version);
     } catch (e) {
-      if (e instanceof handles.RuleError) throw new PublishError(e.status, e.code, e.message);
+      if (e instanceof handles.RuleError) throw handlePublishError(e);
       throw e;
     }
-    // The leaf keeps the hour and no finer: that it was this hour is all the
-    // log will ever say about when a handle was claimed (PROTOCOL §21.5).
+    // The leaf keeps the hour and no finer (PROTOCOL §21.5). It is not all
+    // the log says about when: the head signed for this publish says when
+    // the log grew, to anyone polling `/kt/v1/sth`, so that a recovery or a
+    // rotation takes effect the moment it is accepted.
     const entry = { index: this.entries.length, label, version, valueHash, value, sig, ts: handles.hourOf(this.now()) };
     this._apply(entry, false);
     this._recordHead();

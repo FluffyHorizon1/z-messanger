@@ -41,7 +41,10 @@
 //  12. rc cannot change without the recovery key's rsig: a recover with no
 //      rsig, a recover whose rsig covers another rc, an update that changes
 //      rc, and a recover signed by the old owner are each refused;
-//  13. a version that does not increase is refused — equal, lower, a replay;
+//  13. a version that is not the label's next is refused — equal, lower, a
+//      replay, one that skips, a claim at 2, and the owner key's update at
+//      2^53 − 1, after which a recover had no version left — and a recover
+//      at the next version after such an update is accepted;
 //  14. an oversize value is refused before anything in it is read;
 //  15. the history function stops at the first refusal, naming its index
 //      and reason and keeping the state before it, and refuses an entry for
@@ -558,7 +561,8 @@ void main() {
     await f.expectRefused(s, byOld, HandleRefusal.badSignature);
   });
 
-  test('13. a version that does not increase is refused', () async {
+  test('13. a version that is not the next is refused, and a recover follows '
+      'any update', () async {
     final s2 = (await checkHandleHistory([f.claim, f.rotate])).state;
     final same = await signHandleEntry(
         label: f.label, version: 2, record: f.pauseRecord, ownerSeed: f.aSeed);
@@ -567,10 +571,24 @@ void main() {
         label: f.label, version: 1, record: f.pauseRecord, ownerSeed: f.aSeed);
     await f.expectRefused(s2, lower, HandleRefusal.staleVersion);
     await f.expectRefused(s2, f.rotate, HandleRefusal.staleVersion);
-    // Gaps are fine: strictly greater is the rule, not +1.
+    // No gaps: the next version is the rule, not a higher one.
     final jump = await signHandleEntry(
         label: f.label, version: 1000, record: f.pauseRecord, ownerSeed: f.aSeed);
-    expect((await applyHandleEntry(s2, jump)).version, 1000);
+    await f.expectRefused(s2, jump, HandleRefusal.staleVersion);
+    // The owner key's holder at the ceiling — the update that, under "higher",
+    // left the recover the code exists for no version to be.
+    final ceiling = await signHandleEntry(
+        label: f.label, version: handleMaxVersion, record: f.pauseRecord, ownerSeed: f.aSeed);
+    await f.expectRefused(s2, ceiling, HandleRefusal.staleVersion);
+    // A claim is version 1.
+    final claimAt2 = await signHandleEntry(
+        label: f.label, version: 2, record: f.claimRecord, ownerSeed: f.aSeed);
+    await f.expectRefused(null, claimAt2, HandleRefusal.staleVersion);
+    // And the recover follows whatever the owner key published, at the next
+    // version: after the rotate (2) and the pause (3), at 4.
+    final afterTheft = await checkHandleHistory([f.claim, f.rotate, f.pause, f.recover]);
+    expect(afterTheft.ok, isTrue);
+    expect(afterTheft.state!.owner, f.ownerB);
     // A version of 0 or past 2^53 - 1 is not a version.
     final zero = await f.raw(0, f.claimRecord.encode(), f.aSeed);
     await f.expectRefused(null, zero, HandleRefusal.malformed);
@@ -585,14 +603,22 @@ void main() {
     final padded = Uint8List.fromList(
         [...rotate, ...List.filled(handleMaxValueBytes + 1 - rotate.length, 0x20)]);
     await f.expectRefused(s1, await f.raw(2, padded, f.aSeed), HandleRefusal.tooLarge);
-    // Over the limit is refused even when it is not JSON at all, and with a
-    // signature that is not one: the size is the first thing looked at.
+    // Over the limit is refused even when it is not JSON at all: the size is
+    // looked at before the value is read — after the entry's shape, which
+    // reads nothing of it, so a signature that is not 64 bytes is malformed
+    // first, as the log has it (§21.4's one order).
     final junk = HandleEntry(
         label: f.label,
         version: 2,
         value: Uint8List(handleMaxValueBytes + 1),
-        sig: Uint8List(1));
+        sig: Uint8List(64));
     await f.expectRefused(s1, junk, HandleRefusal.tooLarge);
+    final junkShape = HandleEntry(
+        label: f.label,
+        version: 2,
+        value: Uint8List(handleMaxValueBytes + 1),
+        sig: Uint8List(1));
+    await f.expectRefused(s1, junkShape, HandleRefusal.malformed);
     expect(() => HandleRecord.decode(Uint8List(handleMaxValueBytes + 1)),
         throwsA(isA<HandleRecordFormatException>()));
     // The largest real record is far below it.

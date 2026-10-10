@@ -502,7 +502,7 @@ function bucket() {
     try {
       hl.publish(req);
     } catch (e) {
-      rule.push({ why, http: e.status, code: e.code, request_json: JSON.stringify(handles.handlePublishJson(req)) });
+      rule.push({ why, http: e.status, code: e.code, reason: e.reason, request_json: JSON.stringify(handles.handlePublishJson(req)) });
       return;
     }
     throw new Error(`the owner rule accepted: ${why}`);
@@ -531,6 +531,40 @@ function bucket() {
     xintro: null,
     rc: rc2,
   });
+  // Each entry is the label's NEXT version (2026-10-10): under "higher", the
+  // holder of an owner key published one update at 2^53 − 1 and a recover
+  // had no version left to be.
+  attempt('a version that skips one (6 where 5 is next)', { label: A, version: 6, ownerKey: keys.owner2, k: 'update', rc: rc2 });
+  attempt('an update at 2^53 − 1 by the owner (the ceiling theft)', { label: A, version: Number.MAX_SAFE_INTEGER, ownerKey: keys.owner2, k: 'update', rc: rc2 });
+  attempt('a claim at version 2 (a claim is version 1)', { label: seed('bucket:handle-label:nobody.01'), version: 2, ownerKey: keys.stranger, k: 'claim', rc });
+  // Strong keys and the one signature rule (§21.4).
+  {
+    const identity = Buffer.from('01' + '00'.repeat(31), 'hex');
+    const weak = handles.encodeRecord({ k: 'claim', owner: identity, intro: null, xintro: null, pow: 20, rc });
+    attempt('an owner key of small order (the identity), "signed" with R the identity and S = 0', null, {
+      label: seed('bucket:handle-label:nobody.02'),
+      version: 1,
+      value: weak,
+      sig: Buffer.concat([identity, Buffer.alloc(32)]),
+    });
+    const order8 = Buffer.from('e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800', 'hex');
+    attempt('an xintro of small order (order 8)', {
+      label: A,
+      version: 5,
+      ownerKey: keys.owner2,
+      k: 'update',
+      intro: handles.introKeys(introSeed('a5')).intro,
+      xintro: order8,
+      rc: rc2,
+    });
+    const good = handles.makeHandlePublish({ label: A, version: 5, ownerKey: keys.owner2, k: 'update', rc: rc2 });
+    const pi = handles.publishInput({ label: A, version: 5, valueHash: crypto.createHash('sha256').update(good.value).digest() });
+    attempt('the owner\'s signature with R the identity (S = k·a: OpenSSL alone accepts it)', null, {
+      ...good,
+      sig: identityRSig(seed('bucket:handle:owner2'), rawPublicKey(keys.owner2), pi),
+    });
+    attempt('the owner\'s signature malleated (S + L)', null, { ...good, sig: Buffer.concat([good.sig.subarray(0, 32), le32(leInt(good.sig.subarray(32)) + ORDER_L)]) });
+  }
 
   const hHead = hl.sth();
   return {
@@ -541,7 +575,7 @@ function bucket() {
       'subtree from the leaves with the map leaf hash and the empty subtrees of §19.2, folds it up through the siblings by the prefix\'s bits, and compares it with the head\'s mapRoot after verifying ' +
       'the head under the pinned key in the log\'s own context. Handle-log leaves also carry the record (value), ts (a whole hour), the owner\'s sig and the audit path of the entry at index, which ' +
       'verifies the handle leaf under logRoot. Every response_json is a response as served; every must_refuse must fail. The handle labels are stand-ins (the log never computes a label); ' +
-      'owner_rule_refusals are publishes the log refuses, with the status and code it answers.',
+      'owner_rule_refusals are publishes the log refuses, with the status and code it answers and the reason §21.4 names.',
     contexts: {
       handle_leaf: 'z-handle-leaf-v1:',
       handle_sth: 'z-handle-sth-v1:',
@@ -574,6 +608,27 @@ function bucket() {
       owner_rule_refusals: rule,
     },
   };
+}
+
+/** L, the order of the Ed25519 base point. */
+const ORDER_L = 2n ** 252n + 27742317777372353535851937790883648493n;
+const leInt = (b) => b.reduceRight((n, x) => (n << 8n) | BigInt(x), 0n);
+const le32 = (n) => Buffer.from(Array.from({ length: 32 }, (_, i) => Number((n >> BigInt(8 * i)) & 0xffn)));
+
+/**
+ * A signature only the key's holder can make, with R the identity: S = k·a
+ * mod L, k = SHA-512(R ‖ A ‖ M) mod L, a the seed's secret scalar (RFC 8032
+ * §5.1.5). [S]B − [k]A is then the identity, so a verifier comparing R's
+ * bytes takes it; §21.4 refuses an R of small order.
+ */
+function identityRSig(ownerSeed, pub, msg) {
+  const h = Buffer.from(crypto.createHash('sha512').update(ownerSeed).digest().subarray(0, 32));
+  h[0] &= 248;
+  h[31] &= 127;
+  h[31] |= 64;
+  const R = Buffer.from('01' + '00'.repeat(31), 'hex');
+  const k = leInt(crypto.createHash('sha512').update(Buffer.concat([R, pub, msg])).digest()) % ORDER_L;
+  return Buffer.concat([R, le32((k * leInt(h)) % ORDER_L)]);
 }
 
 /** sthFromJson without the log module's export list, for the re-signed must_refuse heads. */

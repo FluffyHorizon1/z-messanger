@@ -2162,6 +2162,56 @@ test('handles: keys, introduction identities, recovery codes and commitments', (
 // same bytes — members in the one order (k, owner, intro, xintro, pow, rc,
 // then rpub and rsig on a recover), b64url without padding, nothing else.
 // Returns null for anything that is not a record.
+// §21.4's strong keys and its one signature rule, from the text. A key in a
+// record is 32 bytes whose y (Ed25519) or u (X25519) is below p and is not
+// that of a point of small order; a signature's S is below L and its R is
+// strong as a key is, and then OpenSSL — which compares R's bytes — decides.
+const ED_P = 2n ** 255n - 19n;
+const ED_L = 2n ** 252n + 27742317777372353535851937790883648493n;
+const leBig = (b) => [...b].reverse().reduce((n, x) => (n << 8n) | BigInt(x), 0n);
+const hdRules = () => loadHd('handles').record_rules;
+
+/**
+ * The small-order values from their definition, not from the file: every
+ * point of edwards25519 whose order divides 8 ([L]P for points P until eight
+ * are found), their y with the sign bit cleared, and their Montgomery
+ * u = (1 + y) / (1 − y) beside the twist's point of order 2 (u = −1).
+ */
+function deriveSmallOrder() {
+  const p = ED_P;
+  const m = (a) => ((a % p) + p) % p;
+  const pw = (b, e) => { let r = 1n; b = m(b); for (; e > 0n; e >>= 1n) { if (e & 1n) r = r * b % p; b = b * b % p; } return r; };
+  const inv = (a) => pw(a, p - 2n);
+  const d = m(-121665n * inv(121666n));
+  const add = ([x1, y1], [x2, y2]) => { const t = m(d * x1 * x2 * y1 * y2); return [m((x1 * y2 + y1 * x2) * inv(1n + t)), m((y1 * y2 + x1 * x2) * inv(1n - t))]; };
+  const mul = (k, q) => { let r = [0n, 1n]; for (; k > 0n; k >>= 1n) { if (k & 1n) r = add(r, q); q = add(q, q); } return r; };
+  const le = (n) => { const b = Buffer.alloc(32); for (let i = 0; i < 32; i++) { b[i] = Number(n & 0xffn); n >>= 8n; } return b; };
+  const pts = new Map();
+  for (let i = 0n; pts.size < 8; i++) {
+    const y = m(leBig(sha256(utf8(`small order ${i}`))));
+    const u = m(y * y - 1n), v = m(d * y * y + 1n);
+    let x = m(u * pw(v, 3n) * pw(u * pw(v, 7n), (p - 5n) / 8n));
+    if (m(v * x * x - u) !== 0n) { if (m(v * x * x + u) !== 0n) continue; x = m(x * pw(2n, (p - 1n) / 4n)); }
+    const t = mul(ED_L, [x, y]);
+    for (let k = 0n; k < 8n; k++) { const q = mul(k, t); pts.set(`${q[0]},${q[1]}`, q); }
+  }
+  const ys = new Set([...pts.values()].map(([, y]) => hex(le(y))));
+  const us = new Set([...pts.values()].filter(([, y]) => y !== 1n).map(([, y]) => hex(le(m((1n + y) * inv(1n - y))))));
+  us.add(hex(le(p - 1n)));
+  return { ys, us };
+}
+function strongEd(k) {
+  if (k.length !== 32) return false;
+  const y = Buffer.from(k);
+  y[31] &= 0x7f;
+  return leBig(y) < ED_P && !hdRules().small_order_ed_y.includes(hex(y));
+}
+function strongX(k) {
+  return k.length === 32 && !(k[31] & 0x80) && leBig(k) < ED_P && !hdRules().small_order_x_u.includes(hex(k));
+}
+const edStrict = (pub, msg, sig) =>
+  strongEd(pub) && sig.length === 64 && strongEd(sig.subarray(0, 32)) && leBig(sig.subarray(32)) < ED_L && edOk(pub, msg, sig);
+
 function decodeHandleRecord(value) {
   if (value.length > 1024) return null;
   let j;
@@ -2178,6 +2228,9 @@ function decodeHandleRecord(value) {
   // The introduction mailbox's two keys come and go together (Amendment 1).
   if ((r.intro === null) !== (r.xintro === null)) return null;
   if (r.k === 'recover' && (r.rpub === undefined || r.rsig === undefined)) return null;
+  // Every key a strong one.
+  if (!strongEd(r.owner) || (r.intro !== null && !strongEd(r.intro)) || (r.xintro !== null && !strongX(r.xintro))) return null;
+  if (r.k === 'recover' && !strongEd(r.rpub)) return null;
   if (!Number.isInteger(r.pow) || r.pow < 16 || r.pow > 28) return null;
   const again = {
     k: r.k, owner: b64url(r.owner), intro: r.intro === null ? null : b64url(r.intro),
@@ -2189,36 +2242,48 @@ function decodeHandleRecord(value) {
 
 const edOk = (pub, msg, sig) => { try { return edVerify(pub, msg, sig); } catch { return false; } };
 
-/** The owner rule, §21.4, in its order. Returns the new state, or { refused }. */
+/**
+ * The owner rule, §21.4, in its one order: the entry's shape, its size, its
+ * record, its signatures; then its history — another label, taken, not
+ * claimed, the owner, the commitment — and the version last, which must be
+ * the label's next. Returns the new state, or { refused }.
+ */
 function applyHandleEntry(state, e) {
   const no = (refused) => ({ refused });
-  if (e.value.length > 1024) return no('tooLarge');
   if (e.label.length !== 32 || !Number.isInteger(e.v) || e.v < 1 || e.v > Number.MAX_SAFE_INTEGER
     || e.sig.length !== 64) return no('malformed');
+  if (e.value.length > 1024) return no('tooLarge');
   const r = decodeHandleRecord(e.value);
   if (r === null) return no('malformed');
+  const publishInput = cat(utf8('z-handle-publish-v1:'), e.label, u64be(e.v), sha256(e.value));
+  if (!edStrict(r.owner, publishInput, e.sig)) return no('badSignature');
+  if (r.k === 'recover') {
+    const recoverInput = cat(utf8('z-handle-recover-v1:'), e.label, u64be(e.v), r.owner, r.rc);
+    if (!edStrict(r.rpub, recoverInput, r.rsig)) return no('badRecoverySignature');
+  }
   if (state && !state.label.equals(e.label)) return no('otherLabel');
   if (!state && r.k !== 'claim') return no('notClaimed');
   if (state && r.k === 'claim') return no('taken');
-  if (state && e.v <= state.v) return no('staleVersion');
-  const publishInput = cat(utf8('z-handle-publish-v1:'), e.label, u64be(e.v), sha256(e.value));
-  if (r.k === 'claim' && !edOk(r.owner, publishInput, e.sig)) return no('badSignature');
   if (r.k === 'update') {
     if (!r.owner.equals(state.owner)) return no('ownerChanged');
     if (!r.rc.equals(state.rc)) return no('rcChanged');
-    if (!edOk(state.owner, publishInput, e.sig)) return no('badSignature');
   }
-  if (r.k === 'recover') {
-    if (!sha256(cat(utf8('z-handle-rc-v1:'), r.rpub)).equals(state.rc)) return no('wrongRecoveryKey');
-    const recoverInput = cat(utf8('z-handle-recover-v1:'), e.label, u64be(e.v), r.owner, r.rc);
-    if (!edOk(r.rpub, recoverInput, r.rsig)) return no('badRecoverySignature');
-    if (!edOk(r.owner, publishInput, e.sig)) return no('badSignature');
-  }
+  if (r.k === 'recover' && !sha256(cat(utf8('z-handle-rc-v1:'), r.rpub)).equals(state.rc)) return no('wrongRecoveryKey');
+  if (e.v !== (state ? state.v + 1 : 1)) return no('staleVersion');
   return { label: e.label, v: e.v, owner: r.owner, rc: r.rc, intro: r.intro, pow: r.pow };
 }
 
 test('handles: every entry\'s bytes, and the owner rule over every history, from §21.4 alone', () => {
   const v = loadHd('handles');
+  // The strong-key lists the record rules give are the small-order points'
+  // own, and OpenSSL's X25519 refuses to agree with each u.
+  const { ys, us } = deriveSmallOrder();
+  assert.deepEqual(new Set(v.record_rules.small_order_ed_y), ys);
+  assert.deepEqual(new Set(v.record_rules.small_order_x_u), us);
+  for (const u of v.record_rules.small_order_x_u) {
+    assert.throws(() => crypto.diffieHellman({ privateKey: xPriv(sha256(utf8('any'))), publicKey: xPubKey(unhex(u)) }), Error, u);
+  }
+  assert.equal(v.record_rules.max_version, Number.MAX_SAFE_INTEGER);
   const pubOf = Object.fromEntries(v.keys.map((k) => [k.name, unhex(k.pub)]));
   const entries = {};
   for (const e of v.entries) {
@@ -2228,7 +2293,14 @@ test('handles: every entry\'s bytes, and the owner rule over every history, from
     assert.equal(e.value_sha256, hex(sha256(entry.value)));
     const pi = cat(utf8('z-handle-publish-v1:'), entry.label, u64be(e.v), sha256(entry.value));
     assert.equal(hex(pi), e.publish_input, e.name);
-    assert.ok(edOk(pubOf[e.signer], pi, entry.sig), `${e.name}: signed by ${e.signer}`);
+    if (e.sig_made) {
+      // Made by the signer's key to show what §21.4's one rule refuses; R the
+      // identity is one OpenSSL alone would take.
+      assert.equal(edStrict(pubOf[e.signer], pi, entry.sig), false, `${e.name}: refused by the one rule`);
+      assert.equal(edOk(pubOf[e.signer], pi, entry.sig), e.sig_made === 'identity_r', `${e.name}: what OpenSSL alone says`);
+    } else {
+      assert.ok(edStrict(pubOf[e.signer], pi, entry.sig), `${e.name}: signed by ${e.signer}`);
+    }
     // The body a handle-mode log takes: label b64url, value and sig b64.
     assert.deepEqual(e.publish_json, { label: b64url(entry.label), v: e.v, value: b64(entry.value), sig: b64(entry.sig) });
     if (e.rsig) {
@@ -2259,7 +2331,7 @@ test('handles: every entry\'s bytes, and the owner rule over every history, from
       assert.equal(reason, h.verdict.reason, h.name);
     }
   }
-  assert.ok(v.histories.some((h) => h.verdict.ok) && v.histories.filter((h) => !h.verdict.ok).length >= 15);
+  assert.ok(v.histories.some((h) => h.verdict.ok) && v.histories.filter((h) => !h.verdict.ok).length >= 24);
   for (const n of v.not_records) {
     assert.equal(decodeHandleRecord(unhex(n.value)), null, n.why);
   }

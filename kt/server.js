@@ -744,7 +744,7 @@ function createServer({
         // and the only thing that tells the two apart is the signature.
         // `publish` checks again — it is responsible for its own input and
         // one more Ed25519 verify is microseconds.
-        log.checkPublish(req_);
+        const checked = log.checkPublish(req_);
         // This log's own cap, under the protocol's. Checked after the
         // signature like the gates, so what it refuses is a real account's
         // oversized list and not a stranger's guess at one.
@@ -773,14 +773,22 @@ function createServer({
         // accounts here: one handle's publishes a day, and first publishes —
         // claims — a minute, which is what bounds how fast a squatter can
         // take names (rate, not total: ADR 0015's arithmetic).
-        const acctKey = handleMode ? req_.label.toString('base64') : req_.acct.toString('base64');
+        // A recover has a day of its own. Whoever holds a handle's owner key
+        // can spend the handle's publishes, and did, until 2026-10-10, keep
+        // its recovery — the answer to a stolen owner key — out with them:
+        // one update each time a token came back. Only an accepted recover
+        // spends this one (every gate is given back on a refusal), and only
+        // the recovery key the commitment names makes a recover the log
+        // accepts.
+        const recover = handleMode && checked.record.k === 'recover';
+        const acctKey = handleMode ? req_.label.toString('base64') + (recover ? ':recover' : '') : req_.acct.toString('base64');
         const who = handleMode ? 'handle' : 'account';
         // First contact costs a token; an account the log already holds
         // costs nothing there. `hasLabel` reads the index accepted publishes
         // build, so a refused publish cannot make an account look known.
         const fresh = !log.hasLabel(handleMode ? req_.label : labelFor(req_.acct));
         if (!gate(limiter, key, `at most ${publishPerMinute} publishes a minute from one address`)) return undefined;
-        if (!gate(perAccount, acctKey, `at most ${publishPerAccountPerDay} publishes a day for one ${who}`)) return undefined;
+        if (!gate(perAccount, acctKey, `at most ${publishPerAccountPerDay} ${recover ? 'recoveries' : 'publishes'} a day for one ${who}`)) return undefined;
         if (fresh) {
           if (!gate(newPerAddress, key, `at most ${newAccountsPerAddressPerMinute} new ${who}s a minute from one address`)) return undefined;
           if (!gate(newAccounts, 'all', `at most ${newAccountsPerMinute} new ${who}s a minute`)) return undefined;

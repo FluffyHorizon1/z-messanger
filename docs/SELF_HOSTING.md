@@ -1166,7 +1166,8 @@ header, `/health` and its alarms — with these differences:
   nothing per entry. Size it like the transparency log, at 4 KB an entry plus
   128 MiB.
 - **The gates count handles.** `PUBLISH_PER_ACCT_PER_DAY` is one handle's
-  publishes a day; `PUBLISH_NEW_ACCOUNTS_PER_MIN` and its per‑address share
+  publishes a day, and as many recoveries again, counted apart so that whoever
+  holds a handle's owner key cannot spend its recovery; `PUBLISH_NEW_ACCOUNTS_PER_MIN` and its per‑address share
   are claims a minute — the rate at which anyone can take names. They bound
   the rate of squatting, not its total (`adr/0015`).
 - **The witness.** `node tools/mirror.js --mode handles` (or `KT_MODE=handles`

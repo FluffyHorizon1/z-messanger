@@ -311,7 +311,7 @@ function handleLog(n, { now } = {}) {
   };
   for (const label of labels) put(makeHandlePublish({ label, version: 1, ownerKey: owner, k: 'claim', introSeed: sha(`intro ${label.toString('hex')}`), rc }));
   put(makeHandlePublish({ label: labels[0], version: 2, ownerKey: owner, k: 'update', intro: null, rc }));
-  put(makeHandlePublish({ label: labels[1], version: 5, ownerKey: owner, k: 'update', pow: 24, rc }));
+  put(makeHandlePublish({ label: labels[1], version: 2, ownerKey: owner, k: 'update', pow: 24, rc }));
   const owner2 = privateKeyFromSeed(sha('owner 2'));
   put(makeHandlePublish({ label: labels[2], version: 2, ownerKey: owner2, k: 'recover', rc: rcOf(rawPublicKey(privateKeyFromSeed(sha('recovery 2')))), recoveryKey: recovery }));
   return { log, labels, latest };

@@ -1,6 +1,6 @@
 {
  "suite": "kt_bucket",
- "description": "Lookups by bucket (PROTOCOL §19.9) for the key-transparency log and the handle log, and the handle log itself (§21.5). A bucket is every label whose first `bits` bits are `prefix` (⌈bits/4⌉ hex digits, unused low bits zero); its answer carries the head, the leaves in label order and the map siblings from depth bits-1 up to 0. A reader recomputes the depth-`bits` subtree from the leaves with the map leaf hash and the empty subtrees of §19.2, folds it up through the siblings by the prefix's bits, and compares it with the head's mapRoot after verifying the head under the pinned key in the log's own context. Handle-log leaves also carry the record (value), ts (a whole hour), the owner's sig and the audit path of the entry at index, which verifies the handle leaf under logRoot. Every response_json is a response as served; every must_refuse must fail. The handle labels are stand-ins (the log never computes a label); owner_rule_refusals are publishes the log refuses, with the status and code it answers.",
+ "description": "Lookups by bucket (PROTOCOL §19.9) for the key-transparency log and the handle log, and the handle log itself (§21.5). A bucket is every label whose first `bits` bits are `prefix` (⌈bits/4⌉ hex digits, unused low bits zero); its answer carries the head, the leaves in label order and the map siblings from depth bits-1 up to 0. A reader recomputes the depth-`bits` subtree from the leaves with the map leaf hash and the empty subtrees of §19.2, folds it up through the siblings by the prefix's bits, and compares it with the head's mapRoot after verifying the head under the pinned key in the log's own context. Handle-log leaves also carry the record (value), ts (a whole hour), the owner's sig and the audit path of the entry at index, which verifies the handle leaf under logRoot. Every response_json is a response as served; every must_refuse must fail. The handle labels are stand-ins (the log never computes a label); owner_rule_refusals are publishes the log refuses, with the status and code it answers and the reason §21.4 names.",
  "contexts": {
   "handle_leaf": "z-handle-leaf-v1:",
   "handle_sth": "z-handle-sth-v1:",
@@ -690,67 +690,127 @@
     "why": "a claim on a held label",
     "http": 409,
     "code": "taken",
+    "reason": "taken",
     "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":9,\"value\":\"eyJrIjoiY2xhaW0iLCJvd25lciI6Im82aE56clQyY0p1T3ozQkJSU0dnNVAyZ0xJck1NNEduVUNvXzY0NE1oYW8iLCJpbnRybyI6bnVsbCwieGludHJvIjpudWxsLCJwb3ciOjIwLCJyYyI6IkwzekVZSkxwb1dkc3c1a0dEUFdIZFRlTEY3a1Z5dkJIVVZ3N3hzRGdvbGMifQ==\",\"sig\":\"/6QOIRGsq6h/tcdjyQghXGml4CJqGqJ1uaZsyh+Gcp0vCfpi40AFiRkbkdItwqyu5nic5SpHLj3+vj2/hMqkDw==\"}"
    },
    {
     "why": "an update naming the stranger as owner",
     "http": 403,
     "code": "owner_rule",
+    "reason": "ownerChanged",
     "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":5,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJvNmhOenJUMmNKdU96M0JCUlNHZzVQMmdMSXJNTTRHblVDb182NDRNaGFvIiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwicG93IjoyMCwicmMiOiJqYlhXTnBQZnRpTUQ0WWxwTXNXck9lSU5GaEJkaU1DMkdlR3hfd1JhR1AwIn0=\",\"sig\":\"SrCoY3xMzlmHKOLk21rdaWeiVSx7l0ZDI+n/baMAW4ArTEK0696xncixaEpX6dgB1zq+SJVCM/EOHhayf31RBw==\"}"
    },
    {
     "why": "an update naming the owner, signed by the stranger",
     "http": 403,
     "code": "bad_signature",
+    "reason": "badSignature",
     "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":5,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJBenlUdUdPb1ZOYXY4Ri1OLUs0SmZVeUhRSldXS2lxOVdVS1VLSl9uM3E0IiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwicG93IjoyMCwicmMiOiJqYlhXTnBQZnRpTUQ0WWxwTXNXck9lSU5GaEJkaU1DMkdlR3hfd1JhR1AwIn0=\",\"sig\":\"px8R9sBZkygtStR821jY2WMfU88IloTP1I1dLdLxHlUkwAeuTAYqcywdynzk39kaxk9PpHU0zk+E9vT3wiGFBw==\"}"
    },
    {
     "why": "an update changing the recovery commitment",
     "http": 403,
     "code": "owner_rule",
+    "reason": "rcChanged",
     "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":5,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJBenlUdUdPb1ZOYXY4Ri1OLUs0SmZVeUhRSldXS2lxOVdVS1VLSl9uM3E0IiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwicG93IjoyMCwicmMiOiJMM3pFWUpMcG9XZHN3NWtHRFBXSGRUZUxGN2tWeXZCSFVWdzd4c0Rnb2xjIn0=\",\"sig\":\"M3eu0hCu9UZQ+1OBAmwefQTK2tfqNKO2jx8Gf8lauULHA86MzqJakau9Fxvxg0eqKxZxWACCG6vwQhkMG48tBA==\"}"
    },
    {
     "why": "an update by the owner the recover replaced",
     "http": 403,
     "code": "owner_rule",
+    "reason": "ownerChanged",
     "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":5,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJaNjZNMm5IaUVOSThWN3NrZzNpTHJjRW9tczBYaGFjNGNGWWFzWHd4V3ZVIiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwicG93IjoyMCwicmMiOiJMM3pFWUpMcG9XZHN3NWtHRFBXSGRUZUxGN2tWeXZCSFVWdzd4c0Rnb2xjIn0=\",\"sig\":\"4NIyj9RRF45dzn2Kohss8eO52NtuA58IEyVQJR9oT7sAapkVHc090NT+UgGS3C9sZP6n6AHu6zN6/Ro4MkiUAQ==\"}"
    },
    {
     "why": "an update before any claim",
     "http": 403,
     "code": "owner_rule",
+    "reason": "notClaimed",
     "request_json": "{\"label\":\"rZrb6GSil_ti-vhJlU05gMTVKmBnGEped0NFAeENKTE\",\"v\":1,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJvNmhOenJUMmNKdU96M0JCUlNHZzVQMmdMSXJNTTRHblVDb182NDRNaGFvIiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwicG93IjoyMCwicmMiOiJMM3pFWUpMcG9XZHN3NWtHRFBXSGRUZUxGN2tWeXZCSFVWdzd4c0Rnb2xjIn0=\",\"sig\":\"eop/6KXEAlcDd6HfuV3Od6PuRPQGYlJxVETDNxsPUfJDCEzvU/6HxSxtKUWIpdEpbVM7upI82rJYcwX4bgeKAA==\"}"
    },
    {
     "why": "a recover with the spent recovery key",
     "http": 403,
     "code": "bad_recovery",
+    "reason": "wrongRecoveryKey",
     "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":5,\"value\":\"eyJrIjoicmVjb3ZlciIsIm93bmVyIjoibzZoTnpyVDJjSnVPejNCQlJTR2c1UDJnTElyTU00R25VQ29fNjQ0TWhhbyIsImludHJvIjpudWxsLCJ4aW50cm8iOm51bGwsInBvdyI6MjAsInJjIjoiTDN6RVlKTHBvV2RzdzVrR0RQV0hkVGVMRjdrVnl2QkhVVnc3eHNEZ29sYyIsInJwdWIiOiJZdWtfMVIxQWVuOVI5V2xZVzNJd3VJMEFFY0oxRU5QVWJCczJHZVlwMHVnIiwicnNpZyI6IjlOdXBzQl9JOHVVdkNGcFdieEgtSXo0NkxmUlRuV1pyWlFiS1lmSUxiV1owMUdQaF91SEdXNjVyZGF0emx4Q1JYanpGcWh3djJhWm9nUW1xV2VDWkJnIn0=\",\"sig\":\"kWedWFkvCdgYHBtT6OjQdr3jklPcWRUJba5Sv+NYgEuJNn0RogAUYtqVEl+MSZDu/npBNxo3PFeyewN1+KOGDg==\"}"
    },
    {
     "why": "a recover signed by the old owner for the new",
     "http": 403,
     "code": "bad_signature",
+    "reason": "badSignature",
     "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":5,\"value\":\"eyJrIjoicmVjb3ZlciIsIm93bmVyIjoibzZoTnpyVDJjSnVPejNCQlJTR2c1UDJnTElyTU00R25VQ29fNjQ0TWhhbyIsImludHJvIjpudWxsLCJ4aW50cm8iOm51bGwsInBvdyI6MjAsInJjIjoiTDN6RVlKTHBvV2RzdzVrR0RQV0hkVGVMRjdrVnl2QkhVVnc3eHNEZ29sYyIsInJwdWIiOiJrbF9jWTA4NGhQT1RTTEZkemkyQU9DWkxxUEFFRm93NVNnWU1UMUJwREJjIiwicnNpZyI6IlZwZkp1N0c5YkdMaVNlLTZiR3R3VC1jTWJLSEk2TzFTdDNJdHUwRGloVUxLbl83ckZ0UTNVMjVicUdvMDdtRGFiMDF2N05va3Q2NDhMakl5THJMYUN3In0=\",\"sig\":\"pdsuht0qTbGLNwG6wKVrREUw/oWSbk/QKnkd2G3IrCe+GWP8HwFY0Jtgl8WD3Y/8bTmTffy6vn4JikXhD+FsAA==\"}"
    },
    {
     "why": "a version that does not exceed the label's",
     "http": 409,
     "code": "stale_version",
+    "reason": "staleVersion",
     "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":4,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJBenlUdUdPb1ZOYXY4Ri1OLUs0SmZVeUhRSldXS2lxOVdVS1VLSl9uM3E0IiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwicG93IjoyMCwicmMiOiJqYlhXTnBQZnRpTUQ0WWxwTXNXck9lSU5GaEJkaU1DMkdlR3hfd1JhR1AwIn0=\",\"sig\":\"DiNewU0lEh1qFgDRKR0Janxvn5+apoE7uHqunfKFrZVWgbIadA1H71cvW0rSy+W/4BRaVkm7mT2eJcq2XR6PBQ==\"}"
    },
    {
     "why": "a record that is not its canonical encoding (a space)",
     "http": 400,
     "code": "bad_record",
+    "reason": "malformed",
     "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":5,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJBenlUdUdPb1ZOYXY4Ri1OLUs0SmZVeUhRSldXS2lxOVdVS1VLSl9uM3E0IiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwgInBvdyI6MjAsInJjIjoiamJYV05wUGZ0aU1ENFlscE1zV3JPZUlORmhCZGlNQzJHZUd4X3dSYUdQMCJ9\",\"sig\":\"g0gTvnmEZ7CDT9Vh0zVdZcfYf8kcvqb+J6bMH9ReMt2gckizbYYVQ0XCfxFoV2YUqj/pRaENfpGLI1Dkk044Dg==\"}"
    },
    {
     "why": "an introduction key without its X25519 key (intro set, xintro null)",
     "http": 400,
     "code": "bad_record",
+    "reason": "malformed",
     "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":5,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJBenlUdUdPb1ZOYXY4Ri1OLUs0SmZVeUhRSldXS2lxOVdVS1VLSl9uM3E0IiwiaW50cm8iOiJZQmNLcHc3bWlVZldxYnFULUUyTUk4N3BBV3ZsM1FmdGQtSnlBVmRCRUljIiwieGludHJvIjpudWxsLCJwb3ciOjIwLCJyYyI6ImpiWFdOcFBmdGlNRDRZbHBNc1dyT2VJTkZoQmRpTUMyR2VHeF93UmFHUDAifQ==\",\"sig\":\"1gnA+6dwR6wBfZAcmnbEVHvQE0cB6jiKipB9R1d+WkJy1k5UD64MavDDTNSOjLkRVBrBeJTuDc5iYA7xEjNCDQ==\"}"
+   },
+   {
+    "why": "a version that skips one (6 where 5 is next)",
+    "http": 409,
+    "code": "stale_version",
+    "reason": "staleVersion",
+    "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":6,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJBenlUdUdPb1ZOYXY4Ri1OLUs0SmZVeUhRSldXS2lxOVdVS1VLSl9uM3E0IiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwicG93IjoyMCwicmMiOiJqYlhXTnBQZnRpTUQ0WWxwTXNXck9lSU5GaEJkaU1DMkdlR3hfd1JhR1AwIn0=\",\"sig\":\"0JEci84DaYcwETNsfYfxbx3T5cIBj4tgRR4P9iHWTSk26WNJnRRNPBSAmNCkpmeLc7s58mbvlNyk3Z5gbjZtCA==\"}"
+   },
+   {
+    "why": "an update at 2^53 − 1 by the owner (the ceiling theft)",
+    "http": 409,
+    "code": "stale_version",
+    "reason": "staleVersion",
+    "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":9007199254740991,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJBenlUdUdPb1ZOYXY4Ri1OLUs0SmZVeUhRSldXS2lxOVdVS1VLSl9uM3E0IiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwicG93IjoyMCwicmMiOiJqYlhXTnBQZnRpTUQ0WWxwTXNXck9lSU5GaEJkaU1DMkdlR3hfd1JhR1AwIn0=\",\"sig\":\"GgXghh2NFVakG5azDpmsxckAI8TPmEnpCmDzIEuKH9jr17e1QW2iwxDNZTYeLlvMY83fAfNYBMnUMNvfDn8cDw==\"}"
+   },
+   {
+    "why": "a claim at version 2 (a claim is version 1)",
+    "http": 409,
+    "code": "stale_version",
+    "reason": "staleVersion",
+    "request_json": "{\"label\":\"BerQayqNMFv1Nn1SNNEbdf9kDMxvTtNwJMKjKBpN8ic\",\"v\":2,\"value\":\"eyJrIjoiY2xhaW0iLCJvd25lciI6Im82aE56clQyY0p1T3ozQkJSU0dnNVAyZ0xJck1NNEduVUNvXzY0NE1oYW8iLCJpbnRybyI6bnVsbCwieGludHJvIjpudWxsLCJwb3ciOjIwLCJyYyI6IkwzekVZSkxwb1dkc3c1a0dEUFdIZFRlTEY3a1Z5dkJIVVZ3N3hzRGdvbGMifQ==\",\"sig\":\"afsrs+WUJP8IUwXYG2LVjQAdA5bDt7uTAbuotZOQBZ2uJSuew4qTjJe2q8yMN6mrREcaCAiRZ6jH+1l/e1o3AA==\"}"
+   },
+   {
+    "why": "an owner key of small order (the identity), \"signed\" with R the identity and S = 0",
+    "http": 400,
+    "code": "bad_record",
+    "reason": "malformed",
+    "request_json": "{\"label\":\"sEB-cwSmvrbtGDjOmmtISe9eCzUekrIjJi58aafmSVw\",\"v\":1,\"value\":\"eyJrIjoiY2xhaW0iLCJvd25lciI6IkFRQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJpbnRybyI6bnVsbCwieGludHJvIjpudWxsLCJwb3ciOjIwLCJyYyI6IkwzekVZSkxwb1dkc3c1a0dEUFdIZFRlTEY3a1Z5dkJIVVZ3N3hzRGdvbGMifQ==\",\"sig\":\"AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}"
+   },
+   {
+    "why": "an xintro of small order (order 8)",
+    "http": 400,
+    "code": "bad_record",
+    "reason": "malformed",
+    "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":5,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJBenlUdUdPb1ZOYXY4Ri1OLUs0SmZVeUhRSldXS2lxOVdVS1VLSl9uM3E0IiwiaW50cm8iOiJZQmNLcHc3bWlVZldxYnFULUUyTUk4N3BBV3ZsM1FmdGQtSnlBVmRCRUljIiwieGludHJvIjoiNE90NmZEdEJ1SzRXVnVQNjhaX0VhdG9KamV1Y01ySDlobUlGRmw5SnVBQSIsInBvdyI6MjAsInJjIjoiamJYV05wUGZ0aU1ENFlscE1zV3JPZUlORmhCZGlNQzJHZUd4X3dSYUdQMCJ9\",\"sig\":\"hh1GhE9LjvvE4KxJ/Yz7pyvN1TlTPABcwbRz91IS1o1T+FFivpSoA8JQNkP90rlkQ+Tizttr2+NLa4lZeDfICQ==\"}"
+   },
+   {
+    "why": "the owner's signature with R the identity (S = k·a: OpenSSL alone accepts it)",
+    "http": 403,
+    "code": "bad_signature",
+    "reason": "badSignature",
+    "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":5,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJBenlUdUdPb1ZOYXY4Ri1OLUs0SmZVeUhRSldXS2lxOVdVS1VLSl9uM3E0IiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwicG93IjoyMCwicmMiOiJqYlhXTnBQZnRpTUQ0WWxwTXNXck9lSU5GaEJkaU1DMkdlR3hfd1JhR1AwIn0=\",\"sig\":\"AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA7kzwLLWEQktuSPhTPyLIb/5f64yFwzR4L5V2xF/bqBQ==\"}"
+   },
+   {
+    "why": "the owner's signature malleated (S + L)",
+    "http": 403,
+    "code": "bad_signature",
+    "reason": "badSignature",
+    "request_json": "{\"label\":\"6iwseh5C7DK1s6yVYsO2zbWf3ZCs99XhPYmkkUx6ST8\",\"v\":5,\"value\":\"eyJrIjoidXBkYXRlIiwib3duZXIiOiJBenlUdUdPb1ZOYXY4Ri1OLUs0SmZVeUhRSldXS2lxOVdVS1VLSl9uM3E0IiwiaW50cm8iOm51bGwsInhpbnRybyI6bnVsbCwicG93IjoyMCwicmMiOiJqYlhXTnBQZnRpTUQ0WWxwTXNXck9lSU5GaEJkaU1DMkdlR3hfd1JhR1AwIn0=\",\"sig\":\"lWNS9B3b9okAJWhGM9UKO8hgS7ZqhTE92Mt8HxkJjhBpwZ2OuZs/Eyy6mB8d/bqQDEcFX6dfB+/3bqinc1iMEQ==\"}"
    }
   ]
  }

@@ -28,7 +28,7 @@ import sys
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
     from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives import hashes
@@ -735,74 +735,182 @@ def bucket_answer(mode, log_pub, asked, resp):
 
 
 class Refused(Exception):
-    def __init__(self, code):
+    def __init__(self, code, reason):
         super().__init__(code)
         self.code = code
+        self.reason = reason
+
+
+# --- Strong keys and the one signature rule (§21.4) -------------------------------
+# A key in a handle record is the canonical encoding of a point that is not of
+# small order, and a signature is held to OpenSSL's computation with every
+# leniency refused first: S below L, R strong as a key is, then R's bytes
+# compared. The small-order values are §21.4's lists; check_small_order
+# derives them here rather than trusting them.
+
+ED_P = 2**255 - 19
+ED_L = 2**252 + 27742317777372353535851937790883648493
+ED_D = -121665 * pow(121666, ED_P - 2, ED_P) % ED_P
+SMALL_ORDER_ED_Y = [bytes.fromhex(h) for h in (
+    "0100000000000000000000000000000000000000000000000000000000000000",
+    "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a")]
+SMALL_ORDER_X_U = [bytes.fromhex(h) for h in (
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "0100000000000000000000000000000000000000000000000000000000000000",
+    "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+    "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+    "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f")]
+
+
+def ed_point(y, sign):
+    """RFC 8032 §5.1.3's x for y and the sign bit, or None."""
+    u, v = (y * y - 1) % ED_P, (ED_D * y * y + 1) % ED_P
+    x = u * pow(v, 3, ED_P) * pow(u * pow(v, 7, ED_P), (ED_P - 5) // 8, ED_P) % ED_P
+    if v * x * x % ED_P != u:
+        if v * x * x % ED_P != (-u) % ED_P:
+            return None
+        x = x * pow(2, (ED_P - 1) // 4, ED_P) % ED_P
+    if x == 0 and sign:
+        return None
+    if x & 1 != sign:
+        x = ED_P - x
+    return (x, y)
+
+
+def ed_add(a, b):
+    (x1, y1), (x2, y2) = a, b
+    t = ED_D * x1 * x2 * y1 * y2 % ED_P
+    return ((x1 * y2 + y1 * x2) * pow(1 + t, ED_P - 2, ED_P) % ED_P, (y1 * y2 + x1 * x2) * pow(1 - t, ED_P - 2, ED_P) % ED_P)
+
+
+def check_small_order():
+    """The Ed25519 list is every point of order dividing 8 — eight of them — and
+    the X25519 list is what OpenSSL's X25519 refuses to agree with."""
+    points = set()
+    for y in SMALL_ORDER_ED_Y:
+        for sign in (0, 1):
+            pt = ed_point(int.from_bytes(y, "little"), sign)
+            if pt is None:
+                continue
+            q = pt
+            for _ in range(3):
+                q = ed_add(q, q)
+            eq(q, (0, 1), f"the y {y.hex()[:8]}… is of a point whose order divides 8")
+            points.add(pt)
+    eq(len(points), 8, "the small-order Ed25519 list is all eight points")
+    me = X25519PrivateKey.generate()
+    for u in SMALL_ORDER_X_U + [bytes.fromhex("ed" + "ff" * 30 + "7f"), bytes.fromhex("ee" + "ff" * 30 + "7f")]:
+        try:
+            me.exchange(X25519PublicKey.from_public_bytes(u))
+            ok(False, f"X25519 refuses to agree with {u.hex()[:8]}…")
+        except ValueError:
+            ok(True, f"X25519 refuses to agree with {u.hex()[:8]}…")
+
+
+def below_p(b):
+    return int.from_bytes(b, "little") < ED_P
+
+
+def strong_ed(k):
+    if len(k) != 32:
+        return False
+    y = k[:31] + bytes([k[31] & 0x7F])
+    return below_p(y) and y not in SMALL_ORDER_ED_Y
+
+
+def strong_x(k):
+    return len(k) == 32 and not k[31] & 0x80 and below_p(k) and k not in SMALL_ORDER_X_U
+
+
+def ed_verify_strict(pub, msg, sig):
+    if not strong_ed(pub) or len(sig) != 64 or not strong_ed(sig[:32]):
+        return False
+    if int.from_bytes(sig[32:], "little") >= ED_L:
+        return False
+    return ed_verify(pub, msg, sig)
 
 
 def b64url_exact(s, n):
     if not isinstance(s, str) or len(s) != (n * 4 + 2) // 3 or not re.fullmatch(r"[A-Za-z0-9_-]+", s):
-        raise Refused("bad_record")
+        raise Refused("bad_record", "malformed")
     raw = base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
     if len(raw) != n or base64.urlsafe_b64encode(raw).rstrip(b"=").decode() != s:
-        raise Refused("bad_record")
+        raise Refused("bad_record", "malformed")
     return raw
 
 
+def ed_key(s):
+    k = b64url_exact(s, 32)
+    if not strong_ed(k):
+        raise Refused("bad_record", "malformed")
+    return k
+
+
 def parse_record(value):
-    """§21.5's record, or Refused: one canonical encoding, members in range."""
+    """§21.5's record, or Refused: one canonical encoding, members in range, strong keys."""
     if len(value) > 1024:
-        raise Refused("too_large")
+        raise Refused("too_large", "tooLarge")
     try:
         j = json.loads(value.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        raise Refused("bad_record")
+        raise Refused("bad_record", "malformed")
     if not isinstance(j, dict) or j.get("k") not in ("claim", "update", "recover") or "intro" not in j:
-        raise Refused("bad_record")
-    rec = {"k": j["k"], "owner": b64url_exact(j.get("owner"), 32)}
-    rec["intro"] = None if j["intro"] is None else b64url_exact(j["intro"], 32)
+        raise Refused("bad_record", "malformed")
+    rec = {"k": j["k"], "owner": ed_key(j.get("owner"))}
+    rec["intro"] = None if j["intro"] is None else ed_key(j["intro"])
     # Amendment 1: the mailbox's X25519 key, present exactly when intro is.
     if "xintro" not in j:
-        raise Refused("bad_record")
+        raise Refused("bad_record", "malformed")
     rec["xintro"] = None if j["xintro"] is None else b64url_exact(j["xintro"], 32)
+    if rec["xintro"] is not None and not strong_x(rec["xintro"]):
+        raise Refused("bad_record", "malformed")
     if (rec["intro"] is None) != (rec["xintro"] is None):
-        raise Refused("bad_record")
+        raise Refused("bad_record", "malformed")
     if type(j.get("pow")) is not int or not 16 <= j["pow"] <= 28:
-        raise Refused("bad_record")
+        raise Refused("bad_record", "malformed")
     rec["pow"] = j["pow"]
     rec["rc"] = b64url_exact(j.get("rc"), 32)
     canon = {"k": j["k"], "owner": j["owner"], "intro": j["intro"], "xintro": j["xintro"], "pow": j["pow"], "rc": j["rc"]}
     if j["k"] == "recover":
-        rec["rpub"] = b64url_exact(j.get("rpub"), 32)
+        rec["rpub"] = ed_key(j.get("rpub"))
         rec["rsig"] = b64url_exact(j.get("rsig"), 64)
         canon["rpub"] = j["rpub"]
         canon["rsig"] = j["rsig"]
     if json.dumps(canon, separators=(",", ":")).encode() != value:
-        raise Refused("bad_record")
+        raise Refused("bad_record", "malformed")
     return rec
 
 
 def owner_rule(state, label, version, value, sig):
-    """One publish against the labels' state {label: (version, owner, rc)}, in the
-    order the reference log refuses: what needs no history, then taken, then the
-    version, then the rule. Returns the label's new state or raises Refused."""
+    """One publish against the labels' state {label: (version, owner, rc)}, in
+    §21.4's one order: the entry's shape, its size and record, its signatures;
+    then taken, not claimed, the owner and the commitment; and the version
+    last, which must be the label's next. Returns the label's new state or
+    raises Refused(code, reason)."""
+    if len(label) != 32 or type(version) is not int or not 1 <= version <= 2**53 - 1 or len(sig) != 64 or not value:
+        raise Refused("bad_request", "malformed")
     rec = parse_record(value)
-    if not ed_verify(rec["owner"], handle_publish_input(label, version, sha256(value)), sig):
-        raise Refused("bad_signature")
-    if rec["k"] == "recover" and not ed_verify(rec["rpub"], handle_recover_input(label, version, rec["owner"], rec["rc"]), rec["rsig"]):
-        raise Refused("bad_recovery")
+    if not ed_verify_strict(rec["owner"], handle_publish_input(label, version, sha256(value)), sig):
+        raise Refused("bad_signature", "badSignature")
+    if rec["k"] == "recover" and not ed_verify_strict(rec["rpub"], handle_recover_input(label, version, rec["owner"], rec["rc"]), rec["rsig"]):
+        raise Refused("bad_recovery", "badRecoverySignature")
     prev = state.get(label)
     if rec["k"] == "claim" and prev:
-        raise Refused("taken")
-    if prev and not version > prev[0]:
-        raise Refused("stale_version")
+        raise Refused("taken", "taken")
     if rec["k"] != "claim":
         if not prev:
-            raise Refused("owner_rule")
-        if rec["k"] == "update" and (rec["owner"] != prev[1] or rec["rc"] != prev[2]):
-            raise Refused("owner_rule")
+            raise Refused("owner_rule", "notClaimed")
+        if rec["k"] == "update" and rec["owner"] != prev[1]:
+            raise Refused("owner_rule", "ownerChanged")
+        if rec["k"] == "update" and rec["rc"] != prev[2]:
+            raise Refused("owner_rule", "rcChanged")
         if rec["k"] == "recover" and handle_rc(rec["rpub"]) != prev[2]:
-            raise Refused("bad_recovery")
+            raise Refused("bad_recovery", "wrongRecoveryKey")
+    if version != (prev[0] + 1 if prev else 1):
+        raise Refused("stale_version", "staleVersion")
     return (version, rec["owner"], rec["rc"])
 
 
@@ -909,6 +1017,7 @@ def check_bucket():
             ok(False, f"handles: the owner rule refuses {r['why']}")
         except Refused as x:
             eq(x.code, r["code"], f"handles: {r['why']}: refused as")
+            eq(x.reason, r["reason"], f"handles: {r['why']}: for the reason")
 
 
 def main():
@@ -916,6 +1025,7 @@ def main():
     check_map_tree()
     check_kt_log()
     check_devlist_fingerprints()
+    check_small_order()
     check_bucket()
     print(f"docs/vectors/kt: {checks} values reproduced or refused by an independent implementation")
     return 0

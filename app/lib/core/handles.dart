@@ -58,8 +58,6 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
 
-import 'package:cryptography/cryptography.dart'
-    show Ed25519, KeyPairType, Signature, SimplePublicKey;
 import 'package:flutter/foundation.dart';
 import 'package:z_protocol/z_protocol.dart';
 
@@ -1907,17 +1905,11 @@ class HandleService extends ChangeNotifier {
     }
   }
 
-  static Future<bool> _verifyEd(
-      Uint8List pub, Uint8List data, Uint8List sig) async {
-    if (pub.length != 32 || sig.length != 64) return false;
-    try {
-      return await Ed25519().verify(data,
-          signature: Signature(sig,
-              publicKey: SimplePublicKey(pub, type: KeyPairType.ed25519)));
-    } catch (_) {
-      return false;
-    }
-  }
+  /// §21.4's one signature rule — the log's and the library's — rather than
+  /// `Ed25519().verify`, which compares points by x alone and so takes
+  /// signatures the log refuses (`ed25519_strict.dart`).
+  static Future<bool> _verifyEd(Uint8List pub, Uint8List data, Uint8List sig) =>
+      verifyHandleSignature(pub, data, sig);
 
   Future<HandleRecord> _record(OwnHandle o, HandleRecordKind kind) async {
     final intro = await handleIntroIdentity(o.introSeed);

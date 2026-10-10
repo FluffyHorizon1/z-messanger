@@ -420,7 +420,7 @@ class Mirror {
             const e = this._fromJson(JSON.parse(line.toString('utf8')));
             // What this mirror wrote, it verified; a line that breaks the
             // owner rule now was put there by something else.
-            if (this.owners) this._holdToRule(e, this.owners, (msg) => new Error(`${this.entriesFile}: entry ${e.index}: ${msg}`));
+            if (this.owners) this._holdToRule(e, this._ownState(), (msg) => new Error(`${this.entriesFile}: entry ${e.index}: ${msg}`));
             this._append(leafOf(e));
           }
           rest = Buffer.from(rest.subarray(from));
@@ -484,27 +484,47 @@ class Mirror {
   }
 
   /**
-   * The owner rule (`handles.ownerRuleStep`) for entry [e] against [table] —
-   * the mirror's own, or a sync's overlay of it — and the label's new state
-   * written to [table]. A refusal is thrown as [fail] makes it.
+   * The owner rule (`handles.ownerRuleStep`) for entry [e] against [state] —
+   * the mirror's own (`_ownState`), or a sync's overlay of it — and the
+   * label's new state written to [state]. A refusal is thrown as [fail]
+   * makes it from the message and the rule's refusal. The version is the
+   * rule's too, bounds and all, exactly as the log holds it on the wire: the
+   * next one, never merely a higher one.
    */
-  _holdToRule(e, table, fail) {
+  _holdToRule(e, state, fail) {
     const key = e.label.toString('hex');
     let next;
     try {
-      next = ownerRuleStep(table.get(key), e);
+      next = ownerRuleStep(state.get(key), e);
     } catch (err) {
-      if (err instanceof RuleError) throw fail(`${err.message} (${err.code})`);
+      if (err instanceof RuleError) throw fail(`${err.message} (${err.code})`, err);
       throw err;
     }
-    table.set(key, next);
+    state.set(key, next);
+  }
+
+  /**
+   * The rule's view of what this mirror holds: owner and commitment from its
+   * per-label table, the version from the label's latest entry. Writing
+   * leaves the version to `_append`, which comes next.
+   */
+  _ownState() {
+    return {
+      get: (k) => {
+        const s = this.owners.get(k);
+        return s ? { owner: s.owner, rc: s.rc, version: this.latestVersion.get(k) } : null;
+      },
+      set: (k, s) => this.owners.set(k, s),
+    };
   }
 
   _append(e) {
     if (e.index !== this.entries.length) throw new Divergence(`entry ${e.index} where ${this.entries.length} was expected`);
     const key = e.label.toString('hex');
     const prev = this.latestVersion.get(key);
-    if (prev !== undefined && !(e.version > prev)) {
+    // A handle log's versions are the owner rule's (`_holdToRule`), which
+    // holds a refusal until the roots show the log signed it.
+    if (this.mode !== 'handles' && prev !== undefined && !(e.version > prev)) {
       throw new Divergence(`entry ${e.index}: version ${e.version} does not exceed ${prev} for its label`);
     }
     if (this.mode === 'handles' && !(Number.isInteger(e.ts) && e.ts >= 0 && e.ts % 3_600_000 === 0)) {
@@ -589,7 +609,20 @@ class Mirror {
         // held, not thrown: it becomes a divergence once the roots show the
         // log signed it, and is nothing if a page then fails to arrive.
         const overlay = this.owners ? new OwnerTable() : null;
-        const rule = overlay ? { get: (k) => overlay.get(k) || this.owners.get(k), set: (k, s) => overlay.set(k, s) } : null;
+        const overlayVersion = new Map();
+        const own = overlay ? this._ownState() : null;
+        const rule = overlay
+          ? {
+              get: (k) => {
+                const s = overlay.get(k);
+                return s ? { owner: s.owner, rc: s.rc, version: overlayVersion.get(k) } : own.get(k);
+              },
+              set: (k, s) => {
+                overlay.set(k, s);
+                overlayVersion.set(k, s.version);
+              },
+            }
+          : null;
         let broken = null;
         const spool = fs.openSync(this.spoolFile, 'w');
         let next = from;

@@ -141,6 +141,37 @@ Future<Uint8List> refEdSign(Uint8List seed, List<int> msg) async =>
         (await _ed.sign(msg, keyPair: await _ed.newKeyPairFromSeed(seed)))
             .bytes);
 
+/// L, the order of the Ed25519 base point.
+final BigInt _edOrderL = (BigInt.one << 252) +
+    BigInt.parse('27742317777372353535851937790883648493');
+
+BigInt _leBig(List<int> b) =>
+    b.reversed.fold(BigInt.zero, (n, x) => (n << 8) | BigInt.from(x));
+
+Uint8List _bigLe32(BigInt n) => Uint8List.fromList(
+    [for (var i = 0; i < 32; i++) ((n >> (8 * i)) & BigInt.from(0xff)).toInt()]);
+
+/// A signature only [seed]'s holder can make, with R the identity: S = k·a
+/// mod L, k = SHA-512(R ‖ A ‖ M) mod L, a the seed's secret scalar (RFC 8032
+/// §5.1.5). [S]B − [k]A is the identity, so a verifier comparing R's bytes
+/// (OpenSSL) takes it; §21.4 refuses an R of small order.
+Future<Uint8List> refIdentityRSig(Uint8List seed, List<int> msg) async {
+  final h = Uint8List.fromList(
+      (await Sha512().hash(seed)).bytes.sublist(0, 32));
+  h[0] &= 248;
+  h[31] &= 127;
+  h[31] |= 64;
+  final r = Uint8List(32)..[0] = 1;
+  final pub = await refEdPub(seed);
+  final k = _leBig((await Sha512().hash([...r, ...pub, ...msg])).bytes) %
+      _edOrderL;
+  return Uint8List.fromList([...r, ..._bigLe32((k * _leBig(h)) % _edOrderL)]);
+}
+
+/// [sig] malleated: the same R, S + L.
+Uint8List refMalleate(Uint8List sig) => Uint8List.fromList(
+    [...sig.sublist(0, 32), ..._bigLe32(_leBig(sig.sublist(32)) + _edOrderL)]);
+
 /// KDF_RK exactly as specified: HKDF(secret=dh, salt=rk, info="Z-RK-v1", 64).
 Future<(Uint8List, Uint8List)> refKdfRk(Uint8List rk, Uint8List dh) async {
   final out = await refHkdf(dh, rk, utf8.encode('Z-RK-v1'), 64);
@@ -4617,6 +4648,42 @@ Future<Map<String, Object?>> suiteHandles() async {
       await signed(label, 1, claim, 'owner_m'));
   await add('a_update_other_label', "Alice's update, for another handle's label, inside alice.42's history", 'owner_a',
       await signed(otherLabel, 2, rotate, 'owner_a'));
+  // Each entry is the label's NEXT version (2026-10-10): under "higher", the
+  // owner key's holder could publish one update at 2^53 − 1, and the recover
+  // the code exists for, which must follow it, had no version left.
+  await add('a_update_v3', 'an update by Alice at v3 straight after the claim: v2 is next', 'owner_a',
+      await signHandleEntry(label: label, version: 3, record: rotate, ownerSeed: seeds['owner_a']!));
+  await add('a_update_ceiling', "an update by whoever holds Alice's owner key, at 2^53 - 1", 'owner_a',
+      await signHandleEntry(label: label, version: handleMaxVersion, record: rotate, ownerSeed: seeds['owner_a']!));
+  // The one order: what an entry says about itself before its history.
+  await add('m_claim_taken_bad_sig', "Mallory's claim at v2, signed by Alice's key rather than the owner it names", 'owner_a',
+      await signed(label, 2, HandleRecord.claim(owner: pubs['owner_m']!, intro: pubs['intro_m']!, xintro: xpubs['intro_m']!, pow: 16, rc: rcM), 'owner_a'));
+  // The one signature rule: two signatures over the claim only Alice's key
+  // could make, which a lenient verifier would take.
+  final claimPi = await handlePublishInput(label: label, version: 1, value: claim.encode());
+  for (final (name, note, sig) in [
+    ('claim_sig_identity_r', 'the claim, its sig made by Alice\'s key with R the identity (S = k·a): OpenSSL takes it, §21.4 refuses an R of small order',
+        await refIdentityRSig(seeds['owner_a']!, claimPi)),
+    ('claim_sig_malleated', 'the claim, its sig malleated (S + L)', refMalleate(entries['claim']!.sig)),
+  ]) {
+    final e = HandleEntry(label: label, version: 1, value: claim.encode(), sig: sig);
+    check(!await verifyHandleSignature(pubs['owner_a']!, claimPi, sig), '$name refused');
+    entries[name] = e;
+    entryOut.add({
+      'name': name,
+      'note': note,
+      'label': hex(e.label),
+      'v': e.version,
+      'value_text': utf8.decode(e.value),
+      'value': hex(e.value),
+      'value_sha256': hex(await refSha256(e.value)),
+      'publish_input': hex(claimPi),
+      'signer': 'owner_a',
+      'sig_made': name == 'claim_sig_identity_r' ? 'identity_r' : 'malleated',
+      'sig': hex(e.sig),
+      'publish_json': e.toPublishJson(),
+    });
+  }
 
   final histories = <(String, List<String>, int?, HandleRefusal?)>[
     ('claim, rotate, pause, recover, update', ['claim', 'update_rotate', 'update_pause', 'recover', 'update_after_recover'], null, null),
@@ -4636,6 +4703,16 @@ Future<Map<String, Object?>> suiteHandles() async {
     ('the old owner after a recover', ['claim', 'update_rotate', 'update_pause', 'recover', 'a_update_after_recover'], 4, HandleRefusal.badSignature),
     ('a claim not signed by the owner it names', ['m_claim_names_a'], 0, HandleRefusal.badSignature),
     ("another label's entry in the history", ['claim', 'a_update_other_label'], 1, HandleRefusal.otherLabel),
+    ('a version that skips one', ['claim', 'a_update_v3'], 1, HandleRefusal.staleVersion),
+    ('an update at 2^53 - 1, the ceiling', ['claim', 'a_update_ceiling'], 1, HandleRefusal.staleVersion),
+    ('a claim at version 2: a claim is version 1', ['m_claim_taken'], 0, HandleRefusal.staleVersion),
+    ('a recover that skips a version', ['claim', 'update_rotate', 'recover'], 2, HandleRefusal.staleVersion),
+    ('a recover replayed: its key is spent', ['claim', 'update_rotate', 'update_pause', 'recover', 'recover'], 4,
+        HandleRefusal.wrongRecoveryKey),
+    ('a claim on a held label, not signed by the owner it names', ['claim', 'm_claim_taken_bad_sig'], 1,
+        HandleRefusal.badSignature),
+    ('a claim whose sig has R the identity', ['claim_sig_identity_r'], 0, HandleRefusal.badSignature),
+    ('a claim whose sig is malleated (S + L)', ['claim_sig_malleated'], 0, HandleRefusal.badSignature),
   ];
   final historyOut = <Map<String, Object?>>[];
   for (final (name, names, at, reason) in histories) {
@@ -4700,6 +4777,27 @@ Future<Map<String, Object?>> suiteHandles() async {
         'an xintro key one byte short'),
     (utf8.decode(pause.encode()).replaceFirst('"xintro":null', '"xintro":"${cj['xintro']}"'),
         'a paused record that still names an xintro'),
+    // Keys that are not strong (§21.4): of small order, which any signature
+    // verifies under, or a second spelling at or above p.
+    (canon.replaceFirst(ownerB64, b64url(unhex('0100000000000000000000000000000000000000000000000000000000000000'))),
+        'an owner key of small order (the identity)'),
+    (canon.replaceFirst(ownerB64, b64url(unhex('c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a'))),
+        'an owner key of small order (order 8)'),
+    (canon.replaceFirst(ownerB64, b64url(unhex('eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f'))),
+        'an owner key at or above p (the identity, y = p + 1)'),
+    (canon.replaceFirst(ownerB64, b64url(unhex('f0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f'))),
+        'an owner key at or above p (y = p + 3)'),
+    (canon.replaceFirst(cj['intro'] as String, b64url(Uint8List(32))), 'an intro key of small order (order 4)'),
+    (canon.replaceFirst(cj['xintro'] as String, b64url(unhex('e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800'))),
+        'an xintro of small order (order 8)'),
+    (canon.replaceFirst(cj['xintro'] as String, b64url(Uint8List(32)..[0] = 1)), 'an xintro of small order (u = 1)'),
+    (canon.replaceFirst(cj['xintro'] as String, b64url(Uint8List.fromList(unb64url(cj['xintro'] as String))..[31] |= 0x80)),
+        'an xintro with its top bit set'),
+    (canon.replaceFirst(cj['xintro'] as String, b64url(unhex('efffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f'))),
+        'an xintro at or above p (u = p + 2)'),
+    (utf8.decode(recover.encode()).replaceFirst(b64url(rkeys['r1']!.pub),
+            b64url(unhex('0100000000000000000000000000000000000000000000000000000000000000'))),
+        'a recover whose rpub is of small order (the identity)'),
   ];
   final notRecordOut = <Map<String, Object?>>[];
   for (final (text, why) in notRecords) {
@@ -4901,8 +4999,11 @@ Future<Map<String, Object?>> suiteHandles() async {
             'introduction and recovery keys from seeds, the introduction '
             'seed giving both intro (Ed25519) and xintro (X25519, by HKDF); '
             'claim, update and recover records with their publish inputs and '
-            'signatures; owner-rule histories with their verdicts; values '
-            'that are not records; a contact request sealed to xintro and '
+            'signatures; owner-rule histories with their verdicts, among them '
+            'versions that are not the label\'s next and signatures only a '
+            'lenient verifier takes (sig_made); values that are not records, '
+            'among them keys of small order and keys at or above p; a '
+            'contact request sealed to xintro and '
             'opened with the introduction identity; proof-of-work stamps at '
             'low difficulty over that envelope, with the cases a relay '
             'refuses; and an introduction acknowledgement with the cases a '
@@ -4942,6 +5043,22 @@ Future<Map<String, Object?>> suiteHandles() async {
       'max_value_bytes': handleMaxValueBytes,
       'pow_min': handlePowMinBits,
       'pow_max': handlePowMaxBits,
+      'max_version': handleMaxVersion,
+      'version': 'each entry is the label\'s next: a claim is 1, every later entry the current + 1',
+      'small_order_ed_y': const [
+        '0100000000000000000000000000000000000000000000000000000000000000',
+        'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+        '0000000000000000000000000000000000000000000000000000000000000000',
+        '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+        'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+      ],
+      'small_order_x_u': const [
+        '0000000000000000000000000000000000000000000000000000000000000000',
+        '0100000000000000000000000000000000000000000000000000000000000000',
+        'e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800',
+        '5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157',
+        'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+      ],
     },
     'entries': entryOut,
     'histories': historyOut,

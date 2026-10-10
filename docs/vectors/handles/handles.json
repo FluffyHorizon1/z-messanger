@@ -1,7 +1,7 @@
 {
   "suite": "handles",
   "version": 1,
-  "description": "Handles (PROTOCOL 21, ADR 0015 revision 2): the grammar (what a person types -> a canonical nick.digits, or why not, including Unicode look-alikes and every reserved nick); labels (Argon2id of the canonical handle, production parameters, plus small-parameter answers for checking an independent Argon2id); owner, introduction and recovery keys from seeds, the introduction seed giving both intro (Ed25519) and xintro (X25519, by HKDF); claim, update and recover records with their publish inputs and signatures; owner-rule histories with their verdicts; values that are not records; a contact request sealed to xintro and opened with the introduction identity; proof-of-work stamps at low difficulty over that envelope, with the cases a relay refuses; and an introduction acknowledgement with the cases a requester refuses. The log (21.5) and the relay (21.6) pin their own halves elsewhere.",
+  "description": "Handles (PROTOCOL 21, ADR 0015 revision 2): the grammar (what a person types -> a canonical nick.digits, or why not, including Unicode look-alikes and every reserved nick); labels (Argon2id of the canonical handle, production parameters, plus small-parameter answers for checking an independent Argon2id); owner, introduction and recovery keys from seeds, the introduction seed giving both intro (Ed25519) and xintro (X25519, by HKDF); claim, update and recover records with their publish inputs and signatures; owner-rule histories with their verdicts, among them versions that are not the label's next and signatures only a lenient verifier takes (sig_made); values that are not records, among them keys of small order and keys at or above p; a contact request sealed to xintro and opened with the introduction identity; proof-of-work stamps at low difficulty over that envelope, with the cases a relay refuses; and an introduction acknowledgement with the cases a requester refuses. The log (21.5) and the relay (21.6) pin their own halves elsewhere.",
   "grammar": {
     "nick": "3-20 of [a-z0-9_], first a letter, no \"__\", not ending \"_\"",
     "digits": "2-6 ASCII digits, compared as a string",
@@ -789,7 +789,23 @@
     "rc_context": "z-handle-rc-v1:",
     "max_value_bytes": 1024,
     "pow_min": 16,
-    "pow_max": 28
+    "pow_max": 28,
+    "max_version": 9007199254740991,
+    "version": "each entry is the label's next: a claim is 1, every later entry the current + 1",
+    "small_order_ed_y": [
+      "0100000000000000000000000000000000000000000000000000000000000000",
+      "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "0000000000000000000000000000000000000000000000000000000000000000",
+      "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"
+    ],
+    "small_order_x_u": [
+      "0000000000000000000000000000000000000000000000000000000000000000",
+      "0100000000000000000000000000000000000000000000000000000000000000",
+      "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+      "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+      "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"
+    ]
   },
   "entries": [
     {
@@ -1136,6 +1152,98 @@
         "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJkNURBdUxybXFEeEJaUlNJalR5dEtETlg3VVJBdVQzMU5MT0U4WVlQaDNRIiwiaW50cm8iOiI4OTJoZlkybWdRUlM4NklDMlNoV0N0LXlUUDNORDhXMlByM25pa1hvSlhNIiwieGludHJvIjoiMmlXWkJjdkV5aHg3aXJ5bmh3SlZxX2M0cWR6ZjFYelJZeXBrYVIyT19HbyIsInBvdyI6MjIsInJjIjoiU2NmaVJPMUJhZ2hIdzFZUDdOMjdoVFBtMFBWd0YxTEEyTDFMckZnSDZDOCJ9",
         "sig": "R8av7wszibgNhfESry80uIZcOGkcLzfL9kaW69tqT0iW/bWzqzqnx1zkzFGFLWNx3No2koe5exYiTQNqfkGPBg=="
       }
+    },
+    {
+      "name": "a_update_v3",
+      "note": "an update by Alice at v3 straight after the claim: v2 is next",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 3,
+      "value_text": "{\"k\":\"update\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"892hfY2mgQRS86IC2ShWCt-yTP3ND8W2Pr3nikXoJXM\",\"xintro\":\"2iWZBcvEyhx7irynhwJVq_c4qdzf1XzRYypkaR2O_Go\",\"pow\":22,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a22383932686659326d67515253383649433253685743742d795450334e443857325072336e696b586f4a584d222c2278696e74726f223a223269575a42637645796878376972796e68774a56715f633471647a6631587a525979706b6152324f5f476f222c22706f77223a32322c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "c51f1a8b7bc31e8cf1ee59b0f7912636e3357f150d0c809dae9faf335e9273e4",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000003c51f1a8b7bc31e8cf1ee59b0f7912636e3357f150d0c809dae9faf335e9273e4",
+      "signer": "owner_a",
+      "sig": "c7b87ad4d5acf9c19997c4aff0449085da02de61deaccad4431cb1d17bc23bbec2ed4e5992efd4da38d4bb6b6e817a6ca6d87a9fc967c02aadc52e84a52e2802",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 3,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJkNURBdUxybXFEeEJaUlNJalR5dEtETlg3VVJBdVQzMU5MT0U4WVlQaDNRIiwiaW50cm8iOiI4OTJoZlkybWdRUlM4NklDMlNoV0N0LXlUUDNORDhXMlByM25pa1hvSlhNIiwieGludHJvIjoiMmlXWkJjdkV5aHg3aXJ5bmh3SlZxX2M0cWR6ZjFYelJZeXBrYVIyT19HbyIsInBvdyI6MjIsInJjIjoiU2NmaVJPMUJhZ2hIdzFZUDdOMjdoVFBtMFBWd0YxTEEyTDFMckZnSDZDOCJ9",
+        "sig": "x7h61NWs+cGZl8Sv8ESQhdoC3mHerMrUQxyx0XvCO77C7U5Zku/U2jjUu2tugXpspth6n8lnwCqtxS6EpS4oAg=="
+      }
+    },
+    {
+      "name": "a_update_ceiling",
+      "note": "an update by whoever holds Alice's owner key, at 2^53 - 1",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 9007199254740991,
+      "value_text": "{\"k\":\"update\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"892hfY2mgQRS86IC2ShWCt-yTP3ND8W2Pr3nikXoJXM\",\"xintro\":\"2iWZBcvEyhx7irynhwJVq_c4qdzf1XzRYypkaR2O_Go\",\"pow\":22,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a22383932686659326d67515253383649433253685743742d795450334e443857325072336e696b586f4a584d222c2278696e74726f223a223269575a42637645796878376972796e68774a56715f633471647a6631587a525979706b6152324f5f476f222c22706f77223a32322c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "c51f1a8b7bc31e8cf1ee59b0f7912636e3357f150d0c809dae9faf335e9273e4",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f001fffffffffffffc51f1a8b7bc31e8cf1ee59b0f7912636e3357f150d0c809dae9faf335e9273e4",
+      "signer": "owner_a",
+      "sig": "c257a73ec48cab8a5ea3176c3ffb0fb8bbc8bc7c9ceb19c8d2fc9bd0b67a6b2c2bd3c8c616a17d74f0dad9e91178f0570da1e7a4f694d4371d54f46cfb30f907",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 9007199254740991,
+        "value": "eyJrIjoidXBkYXRlIiwib3duZXIiOiJkNURBdUxybXFEeEJaUlNJalR5dEtETlg3VVJBdVQzMU5MT0U4WVlQaDNRIiwiaW50cm8iOiI4OTJoZlkybWdRUlM4NklDMlNoV0N0LXlUUDNORDhXMlByM25pa1hvSlhNIiwieGludHJvIjoiMmlXWkJjdkV5aHg3aXJ5bmh3SlZxX2M0cWR6ZjFYelJZeXBrYVIyT19HbyIsInBvdyI6MjIsInJjIjoiU2NmaVJPMUJhZ2hIdzFZUDdOMjdoVFBtMFBWd0YxTEEyTDFMckZnSDZDOCJ9",
+        "sig": "wlenPsSMq4peoxdsP/sPuLvIvHyc6xnI0vyb0LZ6aywr08jGFqF9dPDa2ekRePBXDaHnpPaU1DcdVPRs+zD5Bw=="
+      }
+    },
+    {
+      "name": "m_claim_taken_bad_sig",
+      "note": "Mallory's claim at v2, signed by Alice's key rather than the owner it names",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 2,
+      "value_text": "{\"k\":\"claim\",\"owner\":\"jSLzgz8rPeFET0Zx5LaHFd_r1LQGcArUY0VzcbO4_nM\",\"intro\":\"tnRmvkSnzanbr6e1qQOYbl2INYREIoZe4iamZ5I8GjY\",\"xintro\":\"Zz33Dhmyz2tcmFRMSKSP5AM64tZjb7HzXaHoPjqrpEw\",\"pow\":16,\"rc\":\"GyyGyMh54_8Zc-AZurtYAfa77GblhALjs0lsqhQNFxA\"}",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a226a534c7a677a38725065464554305a78354c614846645f72314c5147634172555930567a63624f345f6e4d222c22696e74726f223a22746e526d766b536e7a616e627236653171514f59626c32494e595245496f5a653469616d5a354938476a59222c2278696e74726f223a225a7a333344686d797a3274636d46524d534b535035414d3634745a6a6237487a5861486f506a7172704577222c22706f77223a31362c227263223a2247797947794d6835345f385a632d415a75727459416661373747626c68414c6a73306c737168514e467841227d",
+      "value_sha256": "c4ac938c17645015b0aa9bf96c5e8c3456a615917a74aea834257ce2d6252d1d",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f0000000000000002c4ac938c17645015b0aa9bf96c5e8c3456a615917a74aea834257ce2d6252d1d",
+      "signer": "owner_a",
+      "sig": "ff290e66ab2360a398fa539e32e8f4f49a32a058a4c6f7f97fc2d8094be6bba915b0eac47615b64fa4597ca38e823c7594680492963e6fcb20bfdf5ab95a4407",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 2,
+        "value": "eyJrIjoiY2xhaW0iLCJvd25lciI6ImpTTHpnejhyUGVGRVQwWng1TGFIRmRfcjFMUUdjQXJVWTBWemNiTzRfbk0iLCJpbnRybyI6InRuUm12a1NuemFuYnI2ZTFxUU9ZYmwySU5ZUkVJb1plNGlhbVo1SThHalkiLCJ4aW50cm8iOiJaejMzRGhteXoydGNtRlJNU0tTUDVBTTY0dFpqYjdIelhhSG9QanFycEV3IiwicG93IjoxNiwicmMiOiJHeXlHeU1oNTRfOFpjLUFadXJ0WUFmYTc3R2JsaEFManMwbHNxaFFORnhBIn0=",
+        "sig": "/ykOZqsjYKOY+lOeMuj09JoyoFikxvf5f8LYCUvmu6kVsOrEdhW2T6RZfKOOgjx1lGgEkpY+b8sgv99auVpEBw=="
+      }
+    },
+    {
+      "name": "claim_sig_identity_r",
+      "note": "the claim, its sig made by Alice's key with R the identity (S = k·a): OpenSSL takes it, §21.4 refuses an R of small order",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 1,
+      "value_text": "{\"k\":\"claim\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"_D13Nf6XzFhj4AYe230nehiB1OFc9YgCpPf7IPiU9Z8\",\"xintro\":\"7x7PgiPkCR6yJDex-D-XBPu-NGQOmV_T6xGLI8t7z1k\",\"pow\":20,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "9d5d41e992ff6f9ec0dbaff291f32cab76d6dc2ae32d8d25c14933ccedc68501",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f00000000000000019d5d41e992ff6f9ec0dbaff291f32cab76d6dc2ae32d8d25c14933ccedc68501",
+      "signer": "owner_a",
+      "sig_made": "identity_r",
+      "sig": "01000000000000000000000000000000000000000000000000000000000000003c23246fc088030316e9472fd330e2fd5c0d0644dfe4d7e7b5d26cfeb6bcdd00",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 1,
+        "value": "eyJrIjoiY2xhaW0iLCJvd25lciI6ImQ1REF1THJtcUR4QlpSU0lqVHl0S0ROWDdVUkF1VDMxTkxPRThZWVBoM1EiLCJpbnRybyI6Il9EMTNOZjZYekZoajRBWWUyMzBuZWhpQjFPRmM5WWdDcFBmN0lQaVU5WjgiLCJ4aW50cm8iOiI3eDdQZ2lQa0NSNnlKRGV4LUQtWEJQdS1OR1FPbVZfVDZ4R0xJOHQ3ejFrIiwicG93IjoyMCwicmMiOiJTY2ZpUk8xQmFnaEh3MVlQN04yN2hUUG0wUFZ3RjFMQTJMMUxyRmdINkM4In0=",
+        "sig": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8IyRvwIgDAxbpRy/TMOL9XA0GRN/k1+e10mz+trzdAA=="
+      }
+    },
+    {
+      "name": "claim_sig_malleated",
+      "note": "the claim, its sig malleated (S + L)",
+      "label": "10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f",
+      "v": 1,
+      "value_text": "{\"k\":\"claim\",\"owner\":\"d5DAuLrmqDxBZRSIjTytKDNX7URAuT31NLOE8YYPh3Q\",\"intro\":\"_D13Nf6XzFhj4AYe230nehiB1OFc9YgCpPf7IPiU9Z8\",\"xintro\":\"7x7PgiPkCR6yJDex-D-XBPu-NGQOmV_T6xGLI8t7z1k\",\"pow\":20,\"rc\":\"ScfiRO1BaghHw1YP7N27hTPm0PVwF1LA2L1LrFgH6C8\"}",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d",
+      "value_sha256": "9d5d41e992ff6f9ec0dbaff291f32cab76d6dc2ae32d8d25c14933ccedc68501",
+      "publish_input": "7a2d68616e646c652d7075626c6973682d76313a10d48de19d6f46fa17e9bc4d3169d4c06432d06a3af1774751f3dd78c4635a4f00000000000000019d5d41e992ff6f9ec0dbaff291f32cab76d6dc2ae32d8d25c14933ccedc68501",
+      "signer": "owner_a",
+      "sig_made": "malleated",
+      "sig": "17387440d48646a5d542ac7ff76374997487b5279ff999d8a0a9e158f54833c362e5023b1c52d0e984261ce3c99ecdd4538dfc1938a652883820838d902d491d",
+      "publish_json": {
+        "label": "ENSN4Z1vRvoX6bxNMWnUwGQy0Go68XdHUfPdeMRjWk8",
+        "v": 1,
+        "value": "eyJrIjoiY2xhaW0iLCJvd25lciI6ImQ1REF1THJtcUR4QlpSU0lqVHl0S0ROWDdVUkF1VDMxTkxPRThZWVBoM1EiLCJpbnRybyI6Il9EMTNOZjZYekZoajRBWWUyMzBuZWhpQjFPRmM5WWdDcFBmN0lQaVU5WjgiLCJ4aW50cm8iOiI3eDdQZ2lQa0NSNnlKRGV4LUQtWEJQdS1OR1FPbVZfVDZ4R0xJOHQ3ejFrIiwicG93IjoyMCwicmMiOiJTY2ZpUk8xQmFnaEh3MVlQN04yN2hUUG0wUFZ3RjFMQTJMMUxyRmdINkM4In0=",
+        "sig": "Fzh0QNSGRqXVQqx/92N0mXSHtSef+ZnYoKnhWPVIM8Ni5QI7HFLQ6YQmHOPJns3UU438GTimUog4IIONkC1JHQ=="
+      }
     }
   ],
   "histories": [
@@ -1359,6 +1467,103 @@
         "refused_at": 1,
         "reason": "otherLabel"
       }
+    },
+    {
+      "name": "a version that skips one",
+      "entries": [
+        "claim",
+        "a_update_v3"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 1,
+        "reason": "staleVersion"
+      }
+    },
+    {
+      "name": "an update at 2^53 - 1, the ceiling",
+      "entries": [
+        "claim",
+        "a_update_ceiling"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 1,
+        "reason": "staleVersion"
+      }
+    },
+    {
+      "name": "a claim at version 2: a claim is version 1",
+      "entries": [
+        "m_claim_taken"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 0,
+        "reason": "staleVersion"
+      }
+    },
+    {
+      "name": "a recover that skips a version",
+      "entries": [
+        "claim",
+        "update_rotate",
+        "recover"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 2,
+        "reason": "staleVersion"
+      }
+    },
+    {
+      "name": "a recover replayed: its key is spent",
+      "entries": [
+        "claim",
+        "update_rotate",
+        "update_pause",
+        "recover",
+        "recover"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 4,
+        "reason": "wrongRecoveryKey"
+      }
+    },
+    {
+      "name": "a claim on a held label, not signed by the owner it names",
+      "entries": [
+        "claim",
+        "m_claim_taken_bad_sig"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 1,
+        "reason": "badSignature"
+      }
+    },
+    {
+      "name": "a claim whose sig has R the identity",
+      "entries": [
+        "claim_sig_identity_r"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 0,
+        "reason": "badSignature"
+      }
+    },
+    {
+      "name": "a claim whose sig is malleated (S + L)",
+      "entries": [
+        "claim_sig_malleated"
+      ],
+      "verdict": {
+        "ok": false,
+        "refused_at": 0,
+        "reason": "badSignature"
+      }
     }
   ],
   "not_records": [
@@ -1465,6 +1670,46 @@
     {
       "why": "a paused record that still names an xintro",
       "value": "7b226b223a22757064617465222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a6e756c6c2c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32322c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an owner key of small order (the identity)",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2241514141414141414141414141414141414141414141414141414141414141414141414141414141414141222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an owner key of small order (order 8)",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a22787864716344314e32452d36504174324452426e44796f67555f6f734f637a475473663964354b7341336f222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an owner key at or above p (the identity, y = p + 1)",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2237765f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f3338222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an owner key at or above p (y = p + 3)",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2238505f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f3338222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an intro key of small order (order 4)",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a2241414141414141414141414141414141414141414141414141414141414141414141414141414141414141222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a316b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an xintro of small order (order 8)",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22344f743666447442754b345756755036385a5f4561746f4a6a6575634d724839686d4946466c394a754141222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an xintro of small order (u = 1)",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a2241514141414141414141414141414141414141414141414141414141414141414141414141414141414141222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an xintro with its top bit set",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22377837506769506b435236794a4465782d442d584250752d4e47514f6d565f543678474c493874377a396b222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "an xintro at or above p (u = p + 2)",
+      "value": "7b226b223a22636c61696d222c226f776e6572223a2264354441754c726d714478425a5253496a5479744b444e5837555241755433314e4c4f4538595950683351222c22696e74726f223a225f4431334e6636587a46686a344159653233306e65686942314f4663395967437050663749506955395a38222c2278696e74726f223a22375f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f3338222c22706f77223a32302c227263223a2253636669524f31426167684877315950374e32376854506d3050567746314c41324c314c72466748364338227d"
+    },
+    {
+      "why": "a recover whose rpub is of small order (the identity)",
+      "value": "7b226b223a227265636f766572222c226f776e6572223a226a6543624f7447384e30337a412d683836386c386f31306c682d58483856647561474e6c556d2d74775873222c22696e74726f223a226e335334345235367839484e5a52685a4b425f59486a336267676c57505934625930554e51557135495463222c2278696e74726f223a22577138744379516c697642784747796e377148494f304b536c47446572636268516831714b436434426e41222c22706f77223a32302c227263223a22446b61766a4e4d353771647658356b5a4b77754a324b4554723661714e7a794c785879636f5237542d4630222c2272707562223a2241514141414141414141414141414141414141414141414141414141414141414141414141414141414141222c2272736967223a226145763471626c4a79467a70416452476463326a55435237714858397776365268315149707a4d434c61576e5130706e46704365627074697435696e524b79533766624c61695a793062675f5054334d4579714d4167227d"
     }
   ],
   "request": {

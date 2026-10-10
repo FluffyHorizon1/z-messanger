@@ -14,21 +14,26 @@
 //   1. every case of the owner rule, on the wire: a claim is accepted and a
 //      claim on a held label is `taken`; an update by the owner is accepted,
 //      and one that names another owner, is signed by another key, changes
-//      the recovery commitment, comes before any claim, or does not raise
-//      the version is refused; a recover with the committed recovery key is
-//      accepted and moves the label to its new owner — after which the old
-//      owner, the spent recovery key, a wrong one, a bad `rsig` and a recover
-//      signed by anyone but the new owner are refused; and a record over
-//      1 KiB, or in any encoding but its one canonical form — an
-//      introduction key without its X25519 key, or the reverse, among them
-//      (SPEC amendment 1) — is refused;
+//      the recovery commitment, comes before any claim, or is not the label's
+//      next version — the same or a lower one, one that skips, one at
+//      2^53 − 1, the theft that left a recovery no version to recover at —
+//      is refused, as is a claim at any version but 1; a recover with the
+//      committed recovery key is accepted at the next version after a theft
+//      and moves the label to its new owner — after which the old owner, the
+//      spent recovery key, a wrong one, a bad `rsig` and a recover signed by
+//      anyone but the new owner are refused; and a record over 1 KiB, in any
+//      encoding but its one canonical form — an introduction key without its
+//      X25519 key, or the reverse, among them (SPEC amendment 1) — or naming
+//      a key of small order that any signature verifies under, is refused;
 //   2. the same rule on the way back from the log's own file: a line
 //      appended by anything but the log — each of those refusals written in
-//      as an entry, a time finer than an hour, an unsigned line, a
-//      key-transparency log's line — refuses the start, naming why, and the
-//      file without it opens;
+//      as an entry, a version that skips one or lies past 2^53 − 1 (bounded
+//      on replay exactly as on the wire), a time finer than an hour, an
+//      unsigned line, a key-transparency log's line — refuses the start,
+//      naming why, and the file without it opens;
 //   3. timestamps are hour-granular: an entry's ts is the hour it was
-//      accepted in, whatever the clock said within it;
+//      accepted in, whatever the clock said within it — and a head's is when
+//      it was signed, as the log grew;
 //   4. contexts: a handle head never verifies as a key-transparency head nor
 //      the reverse — under the same key — and the leaf and the witness's
 //      co-signature are the handle log's own;
@@ -45,9 +50,14 @@
 //   8. a mirror of the handle log follows it under the handle contexts and
 //      co-signs as its witness — and a log that accepted a foreign update is
 //      caught, whether the record names the stranger or the stranger signed
-//      a record naming the owner: the mirror diverges and keeps its head;
-//      while a signature mangled in transit is an ordinary error, and a
-//      mirror's own file that breaks the rule does not load.
+//      a record naming the owner, and so is one that accepted the owner's
+//      update at a version that is not the next, the ceiling theft among
+//      them: the mirror diverges and keeps its head; while a signature
+//      mangled in transit is an ordinary error, and a mirror's own file that
+//      breaks the rule does not load;
+//   9. whoever holds the owner key cannot keep the recovery out by spending
+//      the handle's day of publishes: a recover has a day's budget of its
+//      own, which only a recover — only the recovery key — spends.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -192,16 +202,36 @@ test('1. every case of the owner rule, on the wire', async () => {
       if (code) assert.equal(r.body.error, code, what);
       return r;
     };
-    // Before any claim, nothing but a claim.
+    // Before any claim, nothing but a claim — and a claim is version 1.
     await expect(update(2), 403, 'owner_rule', 'an update before the claim');
     await expect(recover(2), 403, 'owner_rule', 'a recover before the claim');
+    await expect(claim({ version: 2 }), 409, 'stale_version', 'a claim at version 2');
+    await expect(claim({ version: Number.MAX_SAFE_INTEGER }), 409, 'stale_version', 'a claim at 2^53 − 1');
     await expect(claim(), 201, null, 'the claim');
     assert.equal(log.size, 1);
     await expect(claim({ ownerKey: evil, version: 7 }), 409, 'taken', 'a claim on a held label, at any version');
     await expect(claim(), 409, 'taken', 'the same claim again');
     await expect(update(2), 201, null, 'an update by the owner');
-    await expect(update(2, { introSeed: null }), 409, 'stale_version', 'a version that does not exceed');
+    await expect(update(2, { introSeed: null }), 409, 'stale_version', 'the same version again');
     await expect(update(1), 409, 'stale_version', 'a version below');
+    await expect(update(4), 409, 'stale_version', 'a version that skips one');
+    // The owner key's holder — a thief, as far as the log can tell — at the
+    // ceiling: once accepted, no version was left for the recovery code.
+    const ceiling = await expect(update(Number.MAX_SAFE_INTEGER), 409, 'stale_version', 'an update at 2^53 − 1');
+    assert.match(ceiling.body.message, /the next entry is 3/);
+    await expect(update(Number.MAX_SAFE_INTEGER + 1), 400, 'bad_request', 'an update past 2^53 − 1');
+    // A stranger learns nothing about the version: what it signed is refused
+    // for who signed it, whatever version it names.
+    const stranger = await expect(update(9, { ownerKey: evil }), 403, 'owner_rule', 'a stranger\'s update at a version that is not next');
+    assert.doesNotMatch(stranger.body.message, /version/);
+    // Keys of small order: a record naming one is no record, whoever signs.
+    const weak = h.encodeRecord({ k: 'claim', owner: Buffer.from('01' + '00'.repeat(31), 'hex'), intro: null, xintro: null, pow: 20, rc });
+    await expect(
+      { label: other, version: 1, value: weak, sig: Buffer.concat([Buffer.from('01' + '00'.repeat(31), 'hex'), Buffer.alloc(32)]) },
+      400,
+      'bad_record',
+      'an owner key of small order, "signed" by R = the identity and S = 0'
+    );
     // The stranger, three ways.
     await expect(update(3, { ownerKey: evil }), 403, 'owner_rule', 'an update naming the stranger as owner');
     await expect(signedByStranger(3), 403, 'bad_signature', 'an update naming the owner, signed by the stranger');
@@ -296,7 +326,14 @@ test('2. a line the log did not write refuses the start, by the rule it breaks',
       ['a recover with the wrong recovery key', line(2, recover(3, { recoveryKey: wrongRecovery })), /bad_recovery/],
       ['a recover signed by the old owner', line(2, { ...recover(3), sig: crypto.sign(null, h.publishInput({ label, version: 3, valueHash: sha256(recover(3).value) }), owner) }), /bad_signature/],
       ['an update before any claim', line(2, h.makeHandlePublish({ label: other, version: 1, ownerKey: evil, k: 'update', rc })), /owner_rule/],
-      ['a version that does not exceed', line(2, update(2, { introSeed: null })), /does not exceed/],
+      ['the same version again', line(2, update(2, { introSeed: null })), /next entry is 3, not 2 \(stale_version\)/],
+      ['a version that skips one', line(2, update(4)), /next entry is 3, not 4 \(stale_version\)/],
+      ['the theft at 2^53 − 1', line(2, update(Number.MAX_SAFE_INTEGER)), /stale_version/],
+      ['a version past 2^53 − 1', line(2, update(Number.MAX_SAFE_INTEGER + 1)), /v must be an integer 1\.\.9007199254740991 \(bad_request\)/],
+      ['an owner key of small order', line(2, (() => {
+        const id = Buffer.from('01' + '00'.repeat(31), 'hex');
+        return { label, version: 3, value: h.encodeRecord({ k: 'update', owner: id, intro: null, xintro: null, pow: 20, rc }), sig: Buffer.concat([id, Buffer.alloc(32)]) };
+      })()), /not a strong Ed25519 key.*\(bad_record\)/],
       ['a record over 1 KiB', line(2, withRecord(update(3), big)), /too_large/],
       ['a record with whitespace', line(2, withRecord(update(3), Buffer.from(update(3).value.toString().replace(',"pow"', ', "pow"')))), /bad_record/],
       ['a time finer than an hour', line(2, update(3), { ts: 1_800_000_123_456 }), /not a whole hour/],
@@ -350,8 +387,11 @@ test('3. an entry keeps the hour it was accepted in, and nothing finer', async (
     const e = log.entries[1];
     assert.ok(log.tree.leaves[1].equals(leafHashFor('handles', { label: e.label, version: e.version, valueHash: e.valueHash, ts: hour })));
     // The head's own ts is when it was signed, as in the key-transparency
-    // log: it is what a reader judges freshness by.
+    // log: it is what a reader judges freshness by. And it is signed as the
+    // log grows, so a poller learns when each record arrived — PROTOCOL
+    // §21.5 says so, and why heads are not held back to the hour.
     assert.equal(log.sth().ts, t);
+    assert.equal(log.sth().size, 4);
   } finally {
     await s.stop();
   }
@@ -661,10 +701,14 @@ test('8. a mirror follows the handle log and its witness co-signs — and a log 
     assert.equal(flaky.poisoned, false);
     assert.deepEqual(await m.sync().then((x) => [x.from, x.to]), [5, 6]);
 
-    // The foreign update, two ways, each from a log that took it.
+    // The foreign update, two ways, and the owner's own update at a version
+    // that is not the next — one skipped, and the ceiling theft — each from a
+    // log that took it.
     for (const [what, forge, why] of [
       ['a record naming the stranger as owner', (v) => update(v, { ownerKey: evil, rc: rc2 }), /owner rule refuses.*owner_rule/],
       ['the owner named, the stranger signing', (v) => ({ ...update(v, { ownerKey: owner2, rc: rc2 }), sig: crypto.sign(null, h.publishInput({ label, version: v, valueHash: sha256(update(v, { ownerKey: owner2, rc: rc2 }).value) }), evil) }), /owner rule refuses.*bad_signature/],
+      ['the owner\'s update skipping a version', (v) => update(v + 1, { ownerKey: owner2, rc: rc2 }), /owner rule refuses.*next entry is \d+, not \d+ \(stale_version\)/],
+      ['the owner\'s update at 2^53 − 1', () => update(Number.MAX_SAFE_INTEGER, { ownerKey: owner2, rc: rc2 }), /owner rule refuses.*\(stale_version\)/],
     ]) {
       t = T0;
       const lax = handleLog();
@@ -734,5 +778,43 @@ test('8. a mirror follows the handle log and its witness co-signs — and a log 
   } finally {
     await s2.stop();
     for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
+// --- 9 ------------------------------------------------------------------------
+
+test('9. whoever holds the owner key cannot spend the handle\'s publishes to keep its recovery out', async () => {
+  t = T0;
+  const log = handleLog();
+  // Three publishes a day for one handle, so a thief spends it in three.
+  const { httpServer } = createServer({ log, ...OPEN, publishPerAccountPerDay: 3, now });
+  await new Promise((r) => httpServer.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${httpServer.address().port}`;
+  const publish = async (p) => {
+    const r = await fetch(base + '/kt/v1/publish', { method: 'POST', body: JSON.stringify(h.handlePublishJson(p)) });
+    return { status: r.status, body: await r.json() };
+  };
+  try {
+    assert.equal((await publish(claim())).status, 201);
+    // The thief, holding the owner seed, spends the rest of the day — and
+    // would again the moment a token came back, for as long as it liked.
+    assert.equal((await publish(update(2, { introSeed: seed('thief 2') }))).status, 201);
+    assert.equal((await publish(update(3, { introSeed: seed('thief 3') }))).status, 201);
+    const spent = await publish(update(4, { introSeed: seed('thief 4') }));
+    assert.equal(spent.status, 429, 'the handle\'s updates are spent for the day');
+    // The genuine code still recovers: its own budget.
+    const r = await publish(recover(4));
+    assert.equal(r.status, 201, `the recovery: ${JSON.stringify(r.body)}`);
+    assert.ok(log.owners.get(label.toString('hex')).owner.equals(rawPublicKey(owner2)));
+    // And the thief's key is nobody's now, budget or not.
+    const after = await publish(update(5, { introSeed: seed('thief 5') }));
+    assert.ok(after.status === 403 || after.status === 429, `the old owner: ${after.status}`);
+    // A stranger's recover — its own rpub, its own rsig — is refused by the
+    // rule and spends nothing; only an accepted recover spends the budget.
+    const strangers = h.makeHandlePublish({ label, version: 5, ownerKey: evil, k: 'recover', rc, recoveryKey: wrongRecovery });
+    for (let i = 0; i < 5; i++) assert.equal((await publish(strangers)).status, 403);
+  } finally {
+    httpServer.closeAllConnections();
+    await new Promise((r) => httpServer.close(r));
   }
 });

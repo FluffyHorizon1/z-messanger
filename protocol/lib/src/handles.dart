@@ -38,6 +38,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:cryptography/dart.dart' show DartSha256;
 
 import 'contact_request.dart';
+import 'ed25519_strict.dart';
 import 'identity.dart';
 import 'recovery_code.dart';
 import 'util.dart';
@@ -546,15 +547,25 @@ class HandleRecord {
       Uint8List rc,
       Uint8List? rpub,
       Uint8List? rsig) {
+    // Every key a strong one (§21.4, [handleStrongEdKey]): a small-order key
+    // is one any signature verifies under, and an encoding at or above p is
+    // a second spelling of a key.
     if (owner.length != 32) return 'owner is ${owner.length} bytes, not 32';
+    if (!handleStrongEdKey(owner)) return 'owner is not a strong Ed25519 key';
     if ((intro == null) != (xintro == null)) {
       return 'intro and xintro are both present or both null';
     }
     if (intro != null && intro.length != 32) {
       return 'intro is ${intro.length} bytes, not 32';
     }
+    if (intro != null && !handleStrongEdKey(intro)) {
+      return 'intro is not a strong Ed25519 key';
+    }
     if (xintro != null && xintro.length != 32) {
       return 'xintro is ${xintro.length} bytes, not 32';
+    }
+    if (xintro != null && !handleStrongXKey(xintro)) {
+      return 'xintro is not a strong X25519 key';
     }
     if (pow < handlePowMinBits || pow > handlePowMaxBits) {
       return 'pow $pow is outside $handlePowMinBits..$handlePowMaxBits';
@@ -563,6 +574,7 @@ class HandleRecord {
     if (kind == HandleRecordKind.recover) {
       if (rpub == null || rsig == null) return 'a recover carries rpub and rsig';
       if (rpub.length != 32) return 'rpub is ${rpub.length} bytes, not 32';
+      if (!handleStrongEdKey(rpub)) return 'rpub is not a strong Ed25519 key';
       if (rsig.length != 64) return 'rsig is ${rsig.length} bytes, not 64';
     } else if (rpub != null || rsig != null) {
       return 'only a recover carries rpub and rsig';
@@ -785,7 +797,8 @@ enum HandleRefusal {
   /// Rule 2: a claim on a label that already exists.
   taken,
 
-  /// Rule 5: the version does not exceed the label's current one.
+  /// Rule 5: the version is not the label's next one — 1 for a claim, the
+  /// current version + 1 after it.
   staleVersion,
 
   /// Rule 3: an update names an owner other than the current one.
@@ -800,8 +813,9 @@ enum HandleRefusal {
   /// Rule 4: a recover's `rsig` does not verify under its `rpub`.
   badRecoverySignature,
 
-  /// `sig` does not verify under the key the rule names: the claimant, the
-  /// current owner (update), or the new owner (recover).
+  /// `sig` does not verify under the owner the record names — the claimant,
+  /// the current owner (an update, which must name it), or the new owner (a
+  /// recover) — by the one rule of [verifyHandleSignature].
   badSignature,
 }
 
@@ -827,31 +841,33 @@ class HandleState {
   Uint8List get rc => record.rc;
 }
 
-Future<bool> _verify(Uint8List pub, Uint8List data, Uint8List sig) async {
-  if (pub.length != 32 || sig.length != 64) return false;
-  try {
-    return await _ed.verify(data,
-        signature: Signature(sig,
-            publicKey: SimplePublicKey(pub, type: KeyPairType.ed25519)));
-  } catch (_) {
-    return false;
-  }
-}
+/// Whether [sig] is [pub]'s signature over [data] under the one rule of
+/// §21.4 ([ed25519VerifyStrict]) — every handle signature, `sig`, `rsig`
+/// and `ia`, is checked with this and nothing else.
+Future<bool> verifyHandleSignature(
+        Uint8List pub, Uint8List data, Uint8List sig) async =>
+    ed25519VerifyStrict(pub, data, sig);
+
+Future<bool> _verify(Uint8List pub, Uint8List data, Uint8List sig) =>
+    verifyHandleSignature(pub, data, sig);
 
 /// The owner rule (§21.4) for one entry: [current] is the state after the
 /// label's earlier entries (null when there are none), and the result is
 /// the state after [entry]. Throws [HandleRefusedException] — and changes
 /// nothing — when the entry breaks any rule. Pure: the same inputs give the
 /// same answer on a client, a mirror and the log.
+///
+/// The checks run in §21.4's one order, which is the log's
+/// (`kt/lib/handles.js`): first everything the entry says about itself —
+/// its shape, its size, its record, its signatures — then what it says
+/// about the label's history, the version last of all. So the log, a mirror
+/// and a client name the same refusal, and a refusal names the label's
+/// version only to an entry its owner or its recovery key signed.
 Future<HandleState> applyHandleEntry(
     HandleState? current, HandleEntry entry) async {
   Never refuse(HandleRefusal r, String d) => throw HandleRefusedException(r, d);
 
-  // Rule 6, first: nothing else is read from an oversize value.
-  if (entry.value.length > handleMaxValueBytes) {
-    refuse(HandleRefusal.tooLarge,
-        'the value is ${entry.value.length} bytes, over $handleMaxValueBytes');
-  }
+  // The entry's shape. Nothing here reads the value.
   if (entry.label.length != handleLabelLength) {
     refuse(HandleRefusal.malformed, 'the label is not 32 bytes');
   }
@@ -861,16 +877,43 @@ Future<HandleState> applyHandleEntry(
   if (entry.sig.length != 64) {
     refuse(HandleRefusal.malformed, 'the signature is not 64 bytes');
   }
+  // Rule 6: nothing else is read from an oversize value.
+  if (entry.value.length > handleMaxValueBytes) {
+    refuse(HandleRefusal.tooLarge,
+        'the value is ${entry.value.length} bytes, over $handleMaxValueBytes');
+  }
   final HandleRecord record;
   try {
     record = HandleRecord.decode(entry.value);
   } on HandleRecordFormatException catch (e) {
     refuse(HandleRefusal.malformed, e.message);
   }
+
+  // Its signatures. `sig` is by the owner the record names — the claimant,
+  // the current owner (an update must name it: rule 3, below), or the new
+  // owner a recover installs — and a recover's `rsig` by its `rpub`.
+  final publishInput = await handlePublishInput(
+      label: entry.label, version: entry.version, value: entry.value);
+  if (!await _verify(record.owner, publishInput, entry.sig)) {
+    refuse(HandleRefusal.badSignature,
+        'sig is not the signature of the owner the record names');
+  }
+  if (record.kind == HandleRecordKind.recover) {
+    final rInput = handleRecoverInput(
+        label: entry.label,
+        version: entry.version,
+        owner: record.owner,
+        rc: record.rc);
+    if (!await _verify(record.rpub!, rInput, record.rsig!)) {
+      refuse(HandleRefusal.badRecoverySignature,
+          'rsig does not verify under rpub over the new owner and rc');
+    }
+  }
+
+  // The history.
   if (current != null && !constantTimeEquals(current.label, entry.label)) {
     refuse(HandleRefusal.otherLabel, 'an entry for another label');
   }
-
   // Rules 1 and 2: the first entry is a claim, and no other entry is.
   if (current == null) {
     if (record.kind != HandleRecordKind.claim) {
@@ -880,23 +923,12 @@ Future<HandleState> applyHandleEntry(
   } else if (record.kind == HandleRecordKind.claim) {
     refuse(HandleRefusal.taken, 'the label is already claimed');
   }
-
-  // Rule 5.
-  if (current != null && entry.version <= current.version) {
-    refuse(HandleRefusal.staleVersion,
-        'version ${entry.version} does not exceed ${current.version}');
-  }
-
-  final publishInput = await handlePublishInput(
-      label: entry.label, version: entry.version, value: entry.value);
   switch (record.kind) {
     case HandleRecordKind.claim:
-      // Rule 1: the claimant's own key signs the claim.
-      if (!await _verify(record.owner, publishInput, entry.sig)) {
-        refuse(HandleRefusal.badSignature, 'the claim is not signed by its owner');
-      }
+      break;
     case HandleRecordKind.update:
-      // Rule 3: the CURRENT owner signs, and keeps owner and rc.
+      // Rule 3: an update keeps the owner — so the current owner signed it —
+      // and the commitment.
       if (!constantTimeEquals(record.owner, current!.owner)) {
         refuse(HandleRefusal.ownerChanged,
             'an update names another owner; changing the owner is a recover');
@@ -905,31 +937,26 @@ Future<HandleState> applyHandleEntry(
         refuse(HandleRefusal.rcChanged,
             'an update changes the recovery commitment');
       }
-      if (!await _verify(current.owner, publishInput, entry.sig)) {
-        refuse(HandleRefusal.badSignature,
-            'the update is not signed by the current owner');
-      }
     case HandleRecordKind.recover:
-      // Rule 4: the recovery key the current rc commits to authorises the new
-      // owner and rc, and the new owner signs the entry.
+      // Rule 4: the recovery key is the one the current rc commits to.
       if (!constantTimeEquals(
           await handleRecoveryCommitment(record.rpub!), current!.rc)) {
         refuse(HandleRefusal.wrongRecoveryKey,
             'rpub is not the key the current commitment names');
       }
-      final rInput = handleRecoverInput(
-          label: entry.label,
-          version: entry.version,
-          owner: record.owner,
-          rc: record.rc);
-      if (!await _verify(record.rpub!, rInput, record.rsig!)) {
-        refuse(HandleRefusal.badRecoverySignature,
-            'rsig does not verify under rpub over the new owner and rc');
-      }
-      if (!await _verify(record.owner, publishInput, entry.sig)) {
-        refuse(HandleRefusal.badSignature,
-            'the recover is not signed by the new owner it names');
-      }
+  }
+  // Rule 5, last: the label's NEXT version — 1 for a claim, the current one
+  // plus one after it. Not merely a higher one: under that rule whoever held
+  // the owner key could publish one update at 2^53 − 1, and the recover the
+  // code exists for, which must follow it, had no version left.
+  final next = current == null ? 1 : current.version + 1;
+  if (entry.version != next) {
+    refuse(
+        HandleRefusal.staleVersion,
+        current == null
+            ? 'a claim is version 1, not ${entry.version}'
+            : 'the label is at version ${current.version}: the next entry is '
+                '$next, not ${entry.version}');
   }
   return HandleState(Uint8List.fromList(entry.label), entry.version, record);
 }
