@@ -19,8 +19,10 @@
 //   2. the difficulty must be an integer from 16 to 28 (`bad_intro`, nothing
 //      flagged); `intro` is idempotent, and the newest difficulty wins;
 //   3. a mailbox nobody flagged needs no stamp — today's behaviour unchanged:
-//      the same frames, a `pow` member ignored, the creation gate charged
-//      once for a first contact as before, push registered and woken;
+//      the same frames, a `pow` member that is malformed or worth fewer
+//      than 16 bits ignored (one worth 16 travels with its envelope:
+//      intro_flag_hardening.test.js), the creation gate charged once for a
+//      first contact as before, push registered and woken;
 //   4. a send to a flagged mailbox with no stamp, or a malformed one (a valid
 //      stamp written non-canonically included), is refused `pow_required`
 //      with the envelope id, the difficulty and the relay's day, before
@@ -29,7 +31,8 @@
 //      envelope, two days back, tomorrow, or with fewer bits than asked;
 //   6. a stamp that meets the difficulty — today's or yesterday's — is
 //      delivered from a connection that never authenticated, with no sender,
-//      the stamp neither stored nor forwarded, and counted;
+//      and counted; the stamp is kept with the envelope and handed to the
+//      owner as `pow`, with `powDay` the day it was good under;
 //   7. Redis: the flag survives a relay restart — a store key with the
 //      ownership TTL — and once an instance has queued for the mailbox, the
 //      push script itself refuses a stamp-less send without writing anything;
@@ -38,9 +41,11 @@
 //   9. a flagged mailbox is capped at INTRO_MAILBOX_BYTES below the owned cap
 //      an unflagged one has (`queue_full`), and a receipt the relay queues
 //      for its owner is asked for no stamp;
-//  10. RAM: flags are bounded with the owner map — OWNED_CAP forgets the
-//      least recently authenticated, flag and all — and lapse OWNED_TTL after
-//      the owner's last `intro`, though the owner has logged in since;
+//  10. RAM: flags are a store of their own — OWNED_CAP forgetting the least
+//      recently authenticated owner leaves its flag, and the mailbox keeps
+//      the owned caps; INTRO_CAP refuses a new flag and forgets none — and
+//      lapse OWNED_TTL after the owner's last `intro`, though the owner has
+//      logged in since;
 //  11. nothing new is logged: flagging, refusing and accepting stamped sends
 //      and refusing push write no log line;
 //  12. /metrics carries z_intro_pow_refused_total, z_intro_accepted_total,
@@ -532,11 +537,12 @@ async function unflaggedUnchanged(h, wakes) {
   const gate = spyGate(h.coord);
   const s = await anonSender(h);
   const payloads = { n1: SEALED('n1'), n2: SEALED('n2'), n3: SEALED('n3') };
-  // No stamp; a malformed one; a well-formed one made for nothing: all the
-  // same to a mailbox nobody flagged.
+  // No stamp; a malformed one; a well-formed one worth fewer than 16 bits on
+  // either day the relay takes: all the same to a mailbox nobody flagged.
   assert.deepStrictEqual(await s.deliver('n1', bob.rid, payloads.n1), sent('n1'));
   assert.deepStrictEqual(await s.deliver('n2', bob.rid, payloads.n2, 'not a stamp'), sent('n2'));
-  assert.deepStrictEqual(await s.deliver('n3', bob.rid, payloads.n3, crypto.randomBytes(16).toString('base64url')), sent('n3'));
+  const short = stamp((d) => mine({ rid: bob.rid, payload: payloads.n3, day: d, min: 0, max: 16, avoid: [{ rid: bob.rid, payload: payloads.n3, day: d - 1, bits: 16 }] }));
+  assert.deepStrictEqual(await s.deliver('n3', bob.rid, payloads.n3, short), sent('n3'));
   assert.strictEqual(gate.take + gate.shared, 1, 'the first contact consulted the creation gate once, as before; the rest not at all');
   // Offline, so each one woke him, as push always has.
   await waitUntil(() => wakes.length === 3, { what: 'three wakes for three envelopes to an offline recipient' });
@@ -683,25 +689,41 @@ async function goodStampDelivered(h) {
   const s = await anonSender(h); // never authenticates: no sender at all
   const p1 = SEALED('today');
   const p2 = SEALED('yesterday');
-  const todays = stamp((d) => mine({ rid: owner.rid, payload: p1, day: d, min: 16 }));
-  const yesterdays = stamp((d) => mine({ rid: owner.rid, payload: p2, day: d - 1, min: 16, avoid: [{ rid: owner.rid, payload: p2, day: d, bits: 16 }] }));
+  // Each good for its own day only, so the day the relay takes it under is known.
+  let day1;
+  let day2;
+  const todays = stamp((d) => ((day1 = d), mine({ rid: owner.rid, payload: p1, day: d, min: 16, avoid: [{ rid: owner.rid, payload: p1, day: d - 1, bits: 16 }] })));
+  const yesterdays = stamp((d) => ((day2 = d - 1), mine({ rid: owner.rid, payload: p2, day: d - 1, min: 16, avoid: [{ rid: owner.rid, payload: p2, day: d, bits: 16 }] })));
   assert.deepStrictEqual(await s.deliver('g1', owner.rid, p1, todays), sent('g1'), "today's stamp: accepted, with the ordinary answer");
   assert.deepStrictEqual(await s.deliver('g2', owner.rid, p2, yesterdays), sent('g2'), "yesterday's stamp: accepted");
-  // Stored as any sealed envelope is: no sender, and nothing of the stamp.
+  // Stored with no sender; the stamp is kept with the envelope for its owner
+  // (an independent review of handles, 2026-10-09), with the day it was
+  // good under.
   const held = await storedEntries(h, owner.rid);
   assert.strictEqual(held.length, 2);
-  for (const e of held) {
-    assert.strictEqual(e.from, null, 'no sender stored');
-    assert.ok(!('pow' in e), 'the stamp is not stored');
-    assert.ok(!JSON.stringify(e).includes(todays) && !JSON.stringify(e).includes(yesterdays), 'nor any trace of it');
-  }
-  // The owner drains its introduction mailbox like any other.
+  for (const e of held) assert.strictEqual(e.from, null, 'no sender stored');
+  assert.deepStrictEqual(
+    held.map((e) => [e.id, e.pow, e.powDay]).sort(),
+    [
+      ['g1', todays, day1],
+      ['g2', yesterdays, day2],
+    ],
+    'each with its stamp and that day'
+  );
+  // The owner drains its introduction mailbox like any other, and is handed
+  // each stamp with its day, enough to check the work itself.
   const ownerC = new Client(h.port, owner);
   assert.strictEqual((await ownerC.auth()).t, 'ready');
-  for (const [id, p] of [['g1', p1], ['g2', p2]]) {
+  for (const [id, p, pow, day] of [
+    ['g1', p1, todays, day1],
+    ['g2', p2, yesterdays, day2],
+  ]) {
     const m = await ownerC.next((f) => f.t === 'msg' && f.id === id);
-    assert.deepStrictEqual(Object.keys(m).sort(), ['id', 'payload', 't', 'ts'], 'delivered with no sender and no stamp');
+    assert.deepStrictEqual(Object.keys(m).sort(), ['id', 'payload', 'pow', 'powDay', 't', 'ts'], 'delivered with no sender, and with the stamp');
     assert.strictEqual(m.payload, p);
+    assert.strictEqual(m.pow, pow);
+    assert.strictEqual(m.powDay, day);
+    assert.ok(bitsOf(owner.rid, m.payload, m.powDay, Buffer.from(m.pow, 'base64url')) >= 16, `${id}: the stamp checks out against powDay`);
     ownerC.send({ t: 'recv', id });
   }
   await waitUntil(async () => (await storedEntries(h, owner.rid)).length === 0, { what: 'the owner acknowledged both' });
@@ -709,11 +731,11 @@ async function goodStampDelivered(h) {
   s.close();
 }
 
-test('6 RAM: a stamp that meets the difficulty, today\'s or yesterday\'s, is delivered with no sender and nothing of it kept', async (t) => {
+test('6 RAM: a stamp that meets the difficulty, today\'s or yesterday\'s, is delivered with no sender, and with the stamp and its day', async (t) => {
   await goodStampDelivered(await ram(t));
 });
 
-test('6b Redis: a stamp that meets the difficulty, today\'s or yesterday\'s, is delivered with no sender and nothing of it kept', { skip: SKIP_REDIS }, async (t) => {
+test('6b Redis: a stamp that meets the difficulty, today\'s or yesterday\'s, is delivered with no sender, and with the stamp and its day', { skip: SKIP_REDIS }, async (t) => {
   await goodStampDelivered(await redis(t));
 });
 
@@ -889,22 +911,57 @@ test('9b Redis: a flagged mailbox is capped at INTRO_MAILBOX_BYTES; a receipt fo
 
 // ---- 10. RAM: the flags are bounded ------------------------------------------
 
-test('10 RAM: flags are bounded with the owner map and lapse OWNED_TTL after the last intro', async (t) => {
-  const restore = withCfg(t, { ownedCap: 2, ownedTtlMs: 1000 });
+test('10 RAM: flags are a store of their own — logins never move them, INTRO_CAP refuses a new one — and lapse OWNED_TTL after the last intro', async (t) => {
+  const restore = withCfg(t, { ownedCap: 2, ownedTtlMs: 1000, introCap: 2 });
   t.after(restore);
   const c = new MemoryCoordinator();
-  c.setIntro('A', 16, 0);
-  c.setIntro('B', 17, 10);
+  assert.strictEqual(c.setIntro('A', 16, 0), 'set');
+  assert.strictEqual(c.setIntro('B', 17, 10), 'set');
   assert.deepStrictEqual([...c.intro.keys()], ['A', 'B']);
-  // A third owner past the cap of 2: A, the least recently authenticated, is
-  // forgotten — and its flag with it, so no flag ever outlives its ownership.
+  // A third owner past OWNED_CAP of 2: A, the least recently authenticated,
+  // leaves the owner list — and its flag stays (an independent review of
+  // handles, 2026-10-09).
   c.claimOwner('C', 20);
   assert.deepStrictEqual([...c.owned.keys()], ['B', 'C']);
-  assert.deepStrictEqual([...c.intro.keys()], ['B'], "A's flag went with its ownership");
-  assert.strictEqual(c.introBits('A', 20), 0);
-  // Flagging many more keeps the map inside the owner cap.
-  for (let i = 0; i < 10; i++) c.setIntro(`F${i}`, 16, 30 + i);
-  assert.ok(c.intro.size <= 2 && c.owned.size <= 2, `flags ${c.intro.size}, owners ${c.owned.size}: within OWNED_CAP`);
+  assert.deepStrictEqual([...c.intro.keys()], ['A', 'B'], "A's flag stays when the owner list lets A go");
+  assert.strictEqual(c.introBits('A', 20), 16);
+  // Past INTRO_CAP of 2 a NEW flag is refused and none is forgotten for it; a
+  // held one is renewed, newest last; an address over its minute of new flags
+  // is refused a new one and still renews.
+  for (let i = 0; i < 10; i++) assert.strictEqual(c.setIntro(`F${i}`, 16, 30 + i), 'full');
+  assert.deepStrictEqual([...c.intro.keys()], ['A', 'B'], 'none forgotten');
+  assert.strictEqual(c.setIntro('A', 20, 50), 'refreshed');
+  assert.strictEqual(c.setIntro('G', 16, 60, { ipOver: true }), 'limited');
+  assert.strictEqual(c.setIntro('A', 21, 60, { ipOver: true }), 'refreshed');
+  assert.deepStrictEqual([...c.intro.keys()], ['B', 'A']);
+  assert.strictEqual(c.introBits('A', 60), 21);
+  // Once the oldest lapses there is room for a new one.
+  assert.strictEqual(c.setIntro('G', 16, 1011), 'set');
+  assert.deepStrictEqual([...c.intro.keys()], ['A', 'G'], "B's lapsed and made room");
+  // While flagged a mailbox has the owned caps, out of the owner list or not:
+  // what it holds is no part of the unowned budget — leaving the list or
+  // coming back to it moves nothing — until its flag lapses with the owner
+  // list no longer holding it. U is a mailbox nobody owns, there to show it.
+  const e = new MemoryCoordinator();
+  const env = (seq, size) => ({ seq, kind: 'msg', id: `x${seq}`, from: null, payload: 'zs1.x', ts: 0, size });
+  e.setIntro('A', 16, 0);
+  assert.ok(e._enqueue('A', env(1, 1000)));
+  assert.ok(e._enqueue('U', env(2, 500)));
+  assert.strictEqual(e.unownedBytes, 500);
+  e.claimOwner('B', 1);
+  e.claimOwner('C', 2);
+  assert.deepStrictEqual([...e.owned.keys()], ['B', 'C'], 'A is out of the owner list');
+  assert.strictEqual(e.unownedBytes, 500, 'and still owned for its caps while flagged');
+  e.claimOwner('A', 3);
+  assert.strictEqual(e.unownedBytes, 500, 'back in the list: nothing moves');
+  e.claimOwner('D', 4);
+  e.claimOwner('E', 5);
+  assert.deepStrictEqual([...e.owned.keys()], ['D', 'E'], 'out again');
+  assert.strictEqual(e.unownedBytes, 500);
+  e._trimIntro(1001);
+  assert.strictEqual(e.unownedBytes, 1500, 'its flag lapsed: unowned again');
+  e._removeKey('A', e.queues.get('A').entries[0].key);
+  assert.strictEqual(e.unownedBytes, 500, 'and settled when what it held goes');
   // A flag lapses OWNED_TTL after its last `intro`, though its owner logged
   // in since (a login refreshes ownership, not the flag).
   const d = new MemoryCoordinator();

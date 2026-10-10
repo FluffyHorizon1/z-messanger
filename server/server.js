@@ -197,6 +197,24 @@ const CFG = {
   // contact requests of a few KiB each waiting for the owner's primary device
   // to drain them, not anybody's conversation.
   introMailboxBytes: intEnv('INTRO_MAILBOX_BYTES', 4 * 1024 * 1024),
+  // How many introduction-mailbox flags this relay keeps — a store of their
+  // own. A flag used to live in the RAM owner map and leave with it, so
+  // authenticating OWNED_CAP throwaway identities (free) pushed every flag out
+  // and the mailboxes took sends with no stamp (found by an independent
+  // review of handles, 2026-10-09). Kept apart now, and when full it refuses a NEW flag
+  // (`intro_full`) rather than forget an old one, so nobody unguards a handle
+  // by flagging others; a flag it already holds is renewed. ≈160 bytes a
+  // flag in RAM, its routing id included (measured at 100 000 and 200 000).
+  introCap: intEnv('INTRO_CAP', 100000),
+  // `intro` frames a minute from one routing id (an owner sends one per
+  // connection), and NEW flags a minute from one address — CLIENT_IP_HEADER's
+  // value or the socket address, like phase 29's per-IP budgets — so filling
+  // the flag store takes time as well as identities. Per instance. Behind a
+  // front with CLIENT_IP_HEADER unset every client is one address, so the
+  // second is a relay-wide pace for new flags, which a RAM relay's restart
+  // (every flag new again) is paced at too.
+  introPerRidPerMin: intEnv('INTRO_PER_RID_PER_MIN', 6),
+  introNewPerIpPerMin: intEnv('INTRO_NEW_PER_IP_PER_MIN', 10),
   // Connection caps. The global one is always on. The per-IP one engages only
   // when CLIENT_IP_HEADER is set, because keyed on a shared front address it
   // would cap the whole relay's connections at one number (the global cap is
@@ -508,13 +526,20 @@ function introStamp(to, payload, pow, now = Date.now()) {
   const env = crypto.createHash('sha256').update(String(payload), 'utf8').digest();
   const today = introDay(now);
   let best = 0;
+  let bestDay = today;
   for (const day of [today, today - 1]) {
     const d = Buffer.alloc(4);
     d.writeUInt32BE(day);
     const h = crypto.createHash('sha256').update(INTRO_POW_CONTEXT).update(rid).update(d).update(env).update(nonce).digest();
-    best = Math.max(best, leadingZeroBits(h));
+    const bits = leadingZeroBits(h);
+    if (bits > best) {
+      best = bits;
+      bestDay = day;
+    }
   }
-  return { bits: best, hash: env.toString('base64url') };
+  // `day` is the one the stamp is good under — what the owner's app is told
+  // with the envelope (`powDay`), so it checks the same hash.
+  return { bits: best, hash: env.toString('base64url'), day: bestDay };
 }
 
 // ---------------------------------------------------------------------------
@@ -635,9 +660,22 @@ function entryToFrame(entry) {
     return { t: 'delivered', id: entry.id, to: entry.from, ts: entry.ts };
   }
   // Sealed-sender envelopes carry no sender: `from` is simply absent.
-  return entry.from == null
-    ? { t: 'msg', id: entry.id, payload: entry.payload, ts: entry.ts }
-    : { t: 'msg', id: entry.id, from: entry.from, payload: entry.payload, ts: entry.ts };
+  const frame =
+    entry.from == null
+      ? { t: 'msg', id: entry.id, payload: entry.payload, ts: entry.ts }
+      : { t: 'msg', id: entry.id, from: entry.from, payload: entry.payload, ts: entry.ts };
+  // An envelope the relay took into an introduction mailbox carries the stamp
+  // it was taken on and the day that stamp was good under (PROTOCOL §21.6), so
+  // the owner's app can check the work itself; so does one into any other
+  // mailbox whose send carried a stamp worth INTRO_POW_MIN bits, so a mailbox
+  // whose flag the relay lost (a restart) costs the relay storage, and costs
+  // neither the owner's inbox nor an honest request its stamp. Any other
+  // envelope carries neither.
+  if (typeof entry.pow === 'string') {
+    frame.pow = entry.pow;
+    frame.powDay = entry.powDay;
+  }
+  return frame;
 }
 
 // ---------------------------------------------------------------------------
@@ -1120,11 +1158,14 @@ class MemoryCoordinator {
     this.owned = new Map();
     /**
      * Introduction mailboxes (phase 37): routing id -> {bits, at}, the
-     * difficulty its owner set and when, oldest first. A flag lives OWNED_TTL
-     * from the owner's last `intro` frame, and never longer than the ownership
-     * it is set with (`setIntro` claims it, `_trimOwned` drops the flag with
-     * it), so this map is inside the owner map's bound. A restart loses both,
-     * with the queue they would have governed.
+     * difficulty its owner set and when, oldest first. A store of its own,
+     * apart from the owner map: bounded by INTRO_CAP, which refuses a new flag
+     * rather than evict one, and by a flag's lifetime, OWNED_TTL from the
+     * owner's last `intro` frame — never by logins, so no flood of them can
+     * strip a flag (an independent review of handles, 2026-10-09). A flagged
+     * mailbox has the owned caps while it is flagged (`_owns`). A restart
+     * loses the flags with the queue; what then guards the owner's inbox is
+     * the stamp the owner's app checks on every envelope (`entryToFrame`).
      */
     this.intro = new Map();
     /** Bytes held across every UNOWNED mailbox: the relay-wide unowned budget
@@ -1148,11 +1189,24 @@ class MemoryCoordinator {
     const was = this.owned.delete(rid); // re-inserted below: newest last
     this.owned.set(rid, now);
     if (!was) {
-      const q = this.queues.get(rid);
+      // A flagged mailbox was owned for its caps already (`_owns`).
+      const q = this.intro.has(rid) ? null : this.queues.get(rid);
       if (q) this.unownedBytes = Math.max(0, this.unownedBytes - q.bytes);
       this._trimOwned(now);
     }
     return was;
+  }
+
+  /**
+   * Whether [rid]'s mailbox has the owned caps: its routing id authenticated
+   * here lately (the owner list), or it is flagged as an introduction mailbox
+   * — whose flag is kept apart from that list (an independent review of
+   * handles, 2026-10-09), so a flood of logins that pushes the owner out of
+   * the list leaves the mailbox both guarded and owned. Every unowned-byte
+   * transition goes through this.
+   */
+  _owns(rid) {
+    return this.owned.has(rid) || this.intro.has(rid);
   }
 
   /**
@@ -1164,8 +1218,8 @@ class MemoryCoordinator {
     for (const [rid, at] of this.owned) {
       if (this.owned.size <= CFG.ownedCap && now - at <= CFG.ownedTtlMs) break;
       this.owned.delete(rid);
-      this.intro.delete(rid); // a flag never outlives the ownership it came with
-      const q = this.queues.get(rid);
+      // Its flag, if it has one, stays — and keeps the mailbox owned (`_owns`).
+      const q = this.intro.has(rid) ? null : this.queues.get(rid);
       if (q) this.unownedBytes += q.bytes;
     }
   }
@@ -1173,16 +1227,31 @@ class MemoryCoordinator {
   /**
    * Flags [rid] as an introduction mailbox of difficulty [bits] (phase 37,
    * PROTOCOL §21.6). Called for a socket's own routing id once it has
-   * authenticated with v2, which proves ownership as of now — so ownership is
-   * claimed again here, and the flag sits inside the bounded owner map. Any
-   * push token goes: an introduction mailbox is never woken. Idempotent; the
-   * newest difficulty wins.
+   * authenticated with v2, which proves ownership as of now, so ownership is
+   * claimed again here too. Any push token goes: an introduction mailbox is
+   * never woken. The newest difficulty wins.
+   *
+   * The flags are a store of their own, bounded by INTRO_CAP and by their
+   * lifetime and nothing else: a login does not move them, so no number of
+   * logins pushes one out (they used to live in the owner map and leave
+   * with it, as an independent review of handles found on 2026-10-09). A flag already held is
+   * renewed; a NEW one is refused when the store is full ('full') rather than
+   * another forgotten, and when [ipOver] says the address has used its minute
+   * of new flags ('limited'). Resolves to 'set', 'refreshed', 'full' or
+   * 'limited'.
    */
-  setIntro(rid, bits, now = Date.now()) {
+  setIntro(rid, bits, now = Date.now(), { ipOver = false } = {}) {
+    this._trimIntro(now); // what has lapsed makes room first
+    const held = this.intro.has(rid);
+    if (!held) {
+      if (ipOver) return 'limited';
+      if (this.intro.size >= CFG.introCap) return 'full';
+    }
     this.claimOwner(rid, now);
     this.intro.delete(rid); // re-inserted below: newest last
     this.intro.set(rid, { bits, at: now });
     this.pushTokens.delete(rid);
+    return held ? 'refreshed' : 'set';
   }
 
   /** The difficulty [rid]'s owner flagged it with, or 0 if it is not flagged. */
@@ -1191,11 +1260,14 @@ class MemoryCoordinator {
     return f && now - f.at <= CFG.ownedTtlMs ? f.bits : 0;
   }
 
-  /** Forgets flags past OWNED_TTL from their last `intro` (oldest first). */
+  /** Forgets flags past OWNED_TTL from their last `intro` (oldest first); a
+   * mailbox the owner list no longer has goes back to the unowned caps. */
   _trimIntro(now = Date.now()) {
     for (const [rid, f] of this.intro) {
       if (now - f.at <= CFG.ownedTtlMs) break;
       this.intro.delete(rid);
+      const q = this.owned.has(rid) ? null : this.queues.get(rid);
+      if (q) this.unownedBytes += q.bytes;
     }
   }
 
@@ -1272,7 +1344,7 @@ class MemoryCoordinator {
     // While the mailbox is still unowned its bytes are in the unowned total
     // too; once it is claimed at auth that total was already settled, so an
     // owned mailbox's expiry must not touch it again.
-    if (!this.owned.has(rid)) this.unownedBytes = Math.max(0, this.unownedBytes - freed);
+    if (!this._owns(rid)) this.unownedBytes = Math.max(0, this.unownedBytes - freed);
     this.count = Math.max(0, this.count - Math.max(0, removed));
     if (kept.length === 0) this.queues.delete(rid);
   }
@@ -1322,7 +1394,7 @@ class MemoryCoordinator {
     // NEW_MAILBOX_PER_MIN allowance every honest first contact (an owned
     // recipient's emptied mailbox included) needs; the Redis path refunds the
     // token for the same reason.
-    const unowned = !this.owned.has(rid);
+    const unowned = !this._owns(rid);
     if (unowned) {
       const existing = this.queues.get(rid);
       const held = existing ? existing.bytes : 0;
@@ -1400,7 +1472,7 @@ class MemoryCoordinator {
     if (idx !== -1) q.entries.splice(idx, 1);
     q.bytes -= entry.size;
     this.bytes = Math.max(0, this.bytes - entry.size);
-    if (!this.owned.has(rid)) this.unownedBytes = Math.max(0, this.unownedBytes - entry.size);
+    if (!this._owns(rid)) this.unownedBytes = Math.max(0, this.unownedBytes - entry.size);
     this.count = Math.max(0, this.count - 1);
     if (q.entries.length === 0) this.queues.delete(rid);
     return entry;
@@ -1414,12 +1486,21 @@ class MemoryCoordinator {
     // most that; then a copy of an envelope the mailbox already holds is
     // answered as if stored, and neither stored nor delivered again — so a
     // retry stays idempotent and a stamp cannot be replayed into copies.
-    const need = this.introBits(to);
+    //
+    // A mailbox nobody flagged refuses nothing, but a stamp worth
+    // INTRO_POW_MIN bits on a send to it is kept and handed on all the same
+    // (PROTOCOL §21.6): a flag the relay lost (a restart) must not cost an
+    // honest request its stamp, which the owner's app checks. One clock
+    // reading for the stamp's days and the envelope's `ts`, so `powDay` is
+    // always the day of `ts` or the day before.
+    const ts = Date.now();
+    const need = this.introBits(to, ts);
     const size = envelopeSize(payload);
-    let ph = null;
+    let stamp = null; // kept with the envelope and handed on
+    let ph = null; // a flagged mailbox's index of what it holds
     if (need > 0) {
       if (size - 256 > INTRO_ENVELOPE_BYTES) return { queued: false, tooLarge: true };
-      const stamp = introStamp(to, payload, pow);
+      stamp = introStamp(to, payload, pow, ts);
       if (stamp.bits < need) {
         METRICS.introPowRefusedTotal += 1;
         return { queued: false, powRequired: need };
@@ -1430,6 +1511,11 @@ class MemoryCoordinator {
         METRICS.introDuplicateTotal += 1;
         return { queued: true, push: false };
       }
+    } else if (pow !== undefined && size - 256 <= INTRO_ENVELOPE_BYTES) {
+      // Nothing larger is hashed for a stamp, as for a flagged mailbox; a
+      // malformed stamp costs no hash at all (introStamp).
+      const s = introStamp(to, payload, pow, ts);
+      if (s.bits >= INTRO_POW_MIN) stamp = s;
     }
     const entry = {
       seq: ++this.seq,
@@ -1437,10 +1523,17 @@ class MemoryCoordinator {
       id,
       from, // null for sealed-sender envelopes
       payload,
-      ts: Date.now(),
+      ts,
       size,
     };
-    if (ph) entry.ph = ph; // the payload's hash, never sent on (entryToFrame)
+    // The payload's hash, to recognise a copy (never sent on), and the stamp
+    // with the day it was good under, which the owner's app is handed with
+    // the envelope to check itself.
+    if (ph) entry.ph = ph;
+    if (stamp) {
+      entry.pow = pow;
+      entry.powDay = stamp.day;
+    }
     // Per-IP unowned budget (P0-4): one address may inject only so many bytes
     // a minute into mailboxes nobody owns. Checked only when the destination
     // is unowned, so an owned conversation is never throttled by it; charged
@@ -1448,7 +1541,7 @@ class MemoryCoordinator {
     // on `ip` (CLIENT_IP_HEADER value or socket address) — one bucket for
     // everyone behind an unconfigured front, where the relay-wide budget is
     // the real bound.
-    const unowned = !this.owned.has(to);
+    const unowned = !this._owns(to);
     if (unowned && ip && this.unownedIp.over(ip)) {
       METRICS.unownedRefusedTotal += 1;
       return { queued: false, storeFull: true, unowned: true };
@@ -1683,7 +1776,14 @@ class MemoryCoordinator {
 // before charging a first contact to the creation gate. A held envelope's
 // payload hash is a field of qe:{rid}, 'h:<hash>' -> its key; the
 // acknowledgement and expiry scripts take it out with the envelope, and the
-// mailbox's emptying with everything.
+// mailbox's emptying with everything. [17] and [18] are the stamp's nonce and
+// the day it was good under, '' unless the stamp is worth INTRO_POW_MIN bits:
+// an envelope taken into an introduction mailbox is stored with "ph", "pow"
+// and "powDay" appended to the entry the relay built — only here is the flag
+// known — and one taken into any other mailbox with "pow" and "powDay" when
+// [17] is set, so the owner's app is handed the stamp to check itself whether
+// or not the relay still knows the flag (found by an independent review of
+// handles, 2026-10-09).
 const REDIS_PUSH_LUA = `#!lua
 local owned = redis.call('EXISTS', KEYS[4]) == 1
 local intro = tonumber(redis.call('GET', KEYS[6]) or '0') or 0
@@ -1739,8 +1839,16 @@ end
 -- An introduction mailbox has a byte cap of its own on top (phase 37).
 if intro > 0 and bytes + size > tonumber(ARGV[14]) then return {0, 0, intro} end
 redis.call('RPUSH', KEYS[1], key)
-redis.call('HSET', KEYS[2], key, ARGV[2])
-if intro > 0 and ARGV[16] ~= '' then redis.call('HSET', KEYS[2], 'h:' .. ARGV[16], key) end
+local body = ARGV[2]
+-- The entry is the relay's own JSON object; what is appended is b64url and an
+-- integer, so the result is JSON without decoding anything.
+if intro > 0 and ARGV[16] ~= '' then
+  body = string.sub(body, 1, -2) .. ',"ph":"' .. ARGV[16] .. '","pow":"' .. ARGV[17] .. '","powDay":' .. ARGV[18] .. '}'
+  redis.call('HSET', KEYS[2], 'h:' .. ARGV[16], key)
+elseif ARGV[17] ~= '' then
+  body = string.sub(body, 1, -2) .. ',"pow":"' .. ARGV[17] .. '","powDay":' .. ARGV[18] .. '}'
+end
+redis.call('HSET', KEYS[2], key, body)
 if len == 0 then
   redis.call('SET', KEYS[3], ARGV[3])
 else
@@ -2008,11 +2116,25 @@ return 1`;
 // two PX writes 20 000 commands apart in one script expired at different
 // times in 300 of 300 runs, and with nothing between them the flag written
 // second outlived its ownership whenever a millisecond ended in between.
+// KEYS[4] = z:ic, how many flags the store holds — one integer, incremented by
+// each new flag and recounted by every sweep, as z:ub is; ARGV gains
+// [3] INTRO_CAP and [4] whether the address has used its minute of new flags.
+// A flag already held is renewed whatever they say; a NEW one is refused
+// ('limited', 'full') rather than any other forgotten (an independent
+// review of handles, 2026-10-09). Answers 'set', 'refreshed', 'limited' or
+// 'full'.
 const REDIS_INTRO_LUA = `#!lua
+local held = redis.call('EXISTS', KEYS[2]) == 1
+if not held then
+  if ARGV[4] == '1' then return 'limited' end
+  if tonumber(redis.call('GET', KEYS[4]) or '0') >= tonumber(ARGV[3]) then return 'full' end
+end
 redis.call('SET', KEYS[2], ARGV[1], 'PX', ARGV[2])
 redis.call('SET', KEYS[1], '1', 'PX', ARGV[2])
 redis.call('DEL', KEYS[3])
-return 1`;
+if held then return 'refreshed' end
+redis.call('INCR', KEYS[4])
+return 'set'`;
 
 /**
  * The key an entry is held under in qe:{rid} and listed under in q:{rid} —
@@ -2201,7 +2323,7 @@ class RedisCoordinator {
     this.chan = `z:inst:${this.id}`;
     for (const c of [this.cmd, this.sub, this.pub]) c.on('error', () => {});
     this.cmd.defineCommand('zQueuePush', { numberOfKeys: 6, lua: REDIS_PUSH_LUA });
-    this.cmd.defineCommand('zIntro', { numberOfKeys: 3, lua: REDIS_INTRO_LUA });
+    this.cmd.defineCommand('zIntro', { numberOfKeys: 4, lua: REDIS_INTRO_LUA });
     this.cmd.defineCommand('zQueueRemove', { numberOfKeys: 3, lua: REDIS_REMOVE_LUA });
     this.cmd.defineCommand('zQueueRemoveLegacy', { numberOfKeys: 3, lua: REDIS_REMOVE_LEGACY_LUA });
     this.cmd.defineCommand('zQueueDropDangling', { numberOfKeys: 3, lua: REDIS_DROP_DANGLING_LUA });
@@ -2335,9 +2457,19 @@ class RedisCoordinator {
   }
 
   /** Flags [rid] as an introduction mailbox of difficulty [bits] (phase 37);
-   * see REDIS_INTRO_LUA. Survives a relay restart: it is a store key. */
-  async setIntro(rid, bits) {
-    await this.cmd.zIntro(`owned:${rid}`, `intro:${rid}`, `push:${rid}`, String(bits), String(CFG.ownedTtlMs));
+   * see REDIS_INTRO_LUA, and MemoryCoordinator#setIntro for what it answers.
+   * Survives a relay restart: it is a store key. `now` is the RAM path's. */
+  async setIntro(rid, bits, now, { ipOver = false } = {}) {
+    return this.cmd.zIntro(
+      `owned:${rid}`,
+      `intro:${rid}`,
+      `push:${rid}`,
+      'z:ic',
+      String(bits),
+      String(CFG.ownedTtlMs),
+      String(CFG.introCap),
+      ipOver ? '1' : '0'
+    );
   }
 
   /** The difficulty [rid]'s owner flagged it with, or 0 if it is not flagged. */
@@ -2413,8 +2545,10 @@ class RedisCoordinator {
    * takes the next free slot instead (entryDedupes).
    *
    * `check` is what the relay worked out about a send for an introduction
-   * mailbox (phase 37) — `{ bits, hash, oversize }`: the work its stamp
-   * proves, its payload's hash, and whether it is over INTRO_ENVELOPE_BYTES —
+   * mailbox (phase 37) — `{ bits, hash, oversize, pow, day }`: the work its
+   * stamp proves, its payload's hash, whether it is over INTRO_ENVELOPE_BYTES,
+   * and the stamp with the day it was good under, which the script keeps with
+   * the envelope (`pow` null unless the stamp is worth INTRO_POW_MIN bits) —
    * or undefined for an entry the relay generated itself (a receipt), which
    * is asked for none of it. A send such a mailbox refuses throws
    * IntroTooLarge or PowRequired before anything is stored or spent.
@@ -2501,7 +2635,9 @@ class RedisCoordinator {
         check ? String(check.bits) : '-1',
         String(CFG.introMailboxBytes),
         check && check.oversize ? '1' : '0',
-        (check && check.hash) || ''
+        (check && check.hash) || '',
+        (check && check.pow) || '',
+        check && check.day != null ? String(check.day) : ''
       );
     } catch (e) {
       if (localSpent) this.newMailbox.refund();
@@ -2572,11 +2708,16 @@ class RedisCoordinator {
     // out here because the store cannot hash; the push script compares it with
     // the destination's flag. Nothing is hashed for a send with no stamp, nor
     // for one over INTRO_ENVELOPE_BYTES, which such a mailbox refuses whatever
-    // its stamp and any other mailbox takes without one. A payload hash rides
-    // in the entry so the mailbox can recognise a copy; it is never sent on.
+    // its stamp and any other mailbox takes without one. The script stores the
+    // payload hash (to recognise a copy) beside the entry only if the mailbox
+    // is flagged, and the stamp with its day (handed to the owner's app) if it
+    // is flagged or the stamp is worth INTRO_POW_MIN bits anyway — a mailbox
+    // nobody flagged refuses nothing, but a flag the relay lost must not cost
+    // an honest request its stamp (PROTOCOL §21.6). The days are the entry's
+    // `ts`'s, so `powDay` is always the day of `ts` or the day before.
     const oversize = entry.size - 256 > INTRO_ENVELOPE_BYTES;
-    const check = { oversize, ...(oversize ? { bits: 0, hash: null } : introStamp(to, payload, pow)) };
-    if (check.hash) entry.ph = check.hash;
+    const check = { oversize, ...(oversize ? { bits: 0, hash: null, day: null } : introStamp(to, payload, pow, entry.ts)) };
+    check.pow = check.hash && check.bits >= INTRO_POW_MIN ? pow : null;
     let accepted;
     let intro;
     let duplicate;
@@ -2606,6 +2747,11 @@ class RedisCoordinator {
     METRICS.enqueuedTotal += 1;
     if (from == null) METRICS.sealedTotal += 1;
     if (intro > 0) METRICS.introAcceptedTotal += 1;
+    if (check.pow) {
+      // As the script stored it, so a live delivery says what a flush would.
+      entry.pow = check.pow;
+      entry.powDay = check.day;
+    }
     const owner = await this.cmd.get(`presence:${to}`);
     let live = false;
     const here = this.local.get(to);
@@ -2864,6 +3010,13 @@ class RedisCoordinator {
         flagged += keys.length;
       } while (cursor !== '0');
       this.lastIntroMailboxes = flagged;
+      // And the count INTRO_CAP is checked against (z:ic): each new flag adds
+      // one, and a flag's TTL takes none off, so it is set to this count here.
+      // Between sweeps it can only run high, which refuses a new flag early
+      // rather than admit more; a flag set while the walk runs can be missed
+      // until the next sweep, so the cap is as approximate as the gauge. A TTL
+      // a few intervals long, so it clears if sweeps stop.
+      await this.cmd.set('z:ic', String(flagged), 'PX', Math.max(60000, CFG.sweepIntervalMs * 5));
     } catch {
       // Unreadable this pass: the gauge keeps its last value.
     } finally {
@@ -3175,6 +3328,15 @@ function createServer(opts = {}) {
   // finding #40). RAM, per instance — a connection cap is only about this
   // instance's sockets.
   const connsByIp = new Map();
+  // `intro` frames a minute per routing id, and new flags a minute per
+  // address (an independent review of handles, 2026-10-09): per-key minute
+  // budgets of the per-IP kind, charged one a frame. RAM, per instance, like
+  // the per-IP budgets — nothing keyed by an address goes into the shared
+  // store.
+  const limits = {
+    introPerRid: new IpByteBudget(CFG.introPerRidPerMin),
+    introNewPerIp: new IpByteBudget(CFG.introNewPerIpPerMin),
+  };
 
   wss.on('connection', (ws, req) => {
     const ip = clientIp(req);
@@ -3297,7 +3459,7 @@ function createServer(opts = {}) {
       const smallAck = frame.t === 'recv' && data.length <= 512 && state.acksInFlight < CFG.ackInFlight;
       if (!smallAck) state.tokens -= 1;
       if (smallAck) state.acksInFlight += 1;
-      handleFrame(ws, state, coord, frame, pushSender)
+      handleFrame(ws, state, coord, frame, pushSender, limits)
         .then((free) => {
           if (smallAck) {
             state.acksInFlight -= 1;
@@ -3358,7 +3520,11 @@ function createServer(opts = {}) {
   }, CFG.heartbeatMs);
   heartbeat.unref();
 
-  const sweeper = setInterval(() => Promise.resolve(coord.sweep()).catch(() => {}), CFG.sweepIntervalMs);
+  const sweeper = setInterval(() => {
+    Promise.resolve(coord.sweep()).catch(() => {});
+    limits.introPerRid.prune();
+    limits.introNewPerIp.prune();
+  }, CFG.sweepIntervalMs);
   sweeper.unref();
 
   // And on the same cadence, deliver again to any socket that is connected
@@ -3380,7 +3546,7 @@ function createServer(opts = {}) {
   return { httpServer, wss, coordinator: coord };
 }
 
-async function handleFrame(ws, state, coord, frame, pushSender) {
+async function handleFrame(ws, state, coord, frame, pushSender, limits) {
   switch (frame.t) {
     case 'auth': {
       if (state.authed) return;
@@ -3612,7 +3778,27 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
         sendJson(ws, { t: 'error', code: 'bad_intro' });
         return;
       }
-      await coord.setIntro(state.rid, bits);
+      // Paced (an independent review of handles, 2026-10-09): this routing id's
+      // frames a minute, and — decided where the flag is, since only a NEW
+      // flag counts — the address's new flags a minute. Refused
+      // `rate_limited`; a flag already held stays as it was.
+      if (limits.introPerRid.over(state.rid)) {
+        sendJson(ws, { t: 'error', code: 'rate_limited' });
+        return;
+      }
+      limits.introPerRid.charge(state.rid, 1);
+      const r = await coord.setIntro(state.rid, bits, Date.now(), { ipOver: limits.introNewPerIp.over(state.ip) });
+      if (r === 'limited') {
+        sendJson(ws, { t: 'error', code: 'rate_limited' });
+        return;
+      }
+      if (r === 'full') {
+        // INTRO_CAP flags held: a new one is refused rather than another
+        // forgotten, so nobody unguards a handle by flagging others.
+        sendJson(ws, { t: 'error', code: 'intro_full' });
+        return;
+      }
+      if (r === 'set') limits.introNewPerIp.charge(state.ip, 1);
       sendJson(ws, { t: 'intro_ok' });
       break;
     }

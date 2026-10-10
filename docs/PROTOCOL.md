@@ -1986,7 +1986,7 @@ counts sealed envelopes that arrived on anonymous connections
 ```
 C→S  { "t":"send", "to":routingId, "id":envelopeId, "payload":string, "pow"?:b64url(16 bytes) }   // pow: only to an introduction mailbox (§21.6)
 S→C  { "t":"sent", "id":envelopeId, "queued":true }               // always true since 2026‑09‑17: held until acknowledged; whether a socket took it is not the sender's to know
-S→C  { "t":"msg", "id":envelopeId, "from"?:routingId, "payload":string, "ts":int }
+S→C  { "t":"msg", "id":envelopeId, "from"?:routingId, "payload":string, "ts":int, "pow"?:b64url(16 bytes), "powDay"?:int }   // pow, powDay: a stamp the relay checked (§21.6)
 C→S  { "t":"recv", "id":envelopeId, "from"?:routingId }           // "I persisted it" — drop it
 S→C  { "t":"delivered", "id":envelopeId, "to":routingId, "ts":int }   // attributed envelopes only
 C→S  { "t":"push-register", "token":string, "platform":string }   S→C { "t":"push-ok" }
@@ -2019,7 +2019,7 @@ under §14 —
 `queue_full` and `store_full` (§12.4), each carrying the `id` of the `send`
 it answers, and — since phase 37, likewise — `pow_required`, carrying the
 `id`, the `bits` the recipient asks for and the relay's `day`, `bad_intro`
-and `push_refused` (§21.6). A `payload` over the cap is answered `too_large` whatever else
+and `push_refused` (§21.6), and `intro_full` (§21.6) since 2026‑10‑10. A `payload` over the cap is answered `too_large` whatever else
 is wrong with the frame: it is the one refusal a client must not retry, so
 it is decided before the recipient is looked at. A `to` that is not a
 routing id (43 characters of `b64url`) is `bad_send` — the relay will not
@@ -4703,9 +4703,19 @@ have drawn out of the device (§12.1) — `intro` is answered
 `error{bad_intro}`; neither flags anything. A relay
 that predates this answers `error{unknown_frame}`, which tells a client that
 its introduction mailbox is not guarded there. What the relay keeps is a
-routing id and a number: in memory, bounded with the owners it remembers
-(`OWNED_CAP`) and lost with the queue on a restart; with a shared store, the
-key `intro:{routingId}`, which survives one.
+routing id and a number, in a store of flags of its own: a login does not
+move a flag, so no number of logins pushes one out (until 2026‑10‑10 a relay
+kept them in memory with the owners it remembers, and authenticating
+`OWNED_CAP` throwaway identities stripped them, as an independent review of
+handles found on 2026‑10‑09). The store holds at most `INTRO_CAP` (100 000)
+flags; when it is full a new flag is refused, `error{intro_full}`, and none
+it holds is forgotten to make room, while one it holds is still renewed. The
+frames are paced: past `INTRO_PER_RID_PER_MIN` (6) a minute from one routing
+id, or `INTRO_NEW_PER_IP_PER_MIN` (10) new flags a minute from one address —
+renewing a flag already held does not count — `intro` is answered
+`error{rate_limited}` and the flag stays as it was. In memory the store is
+lost on a restart; with a shared store it is the key `intro:{routingId}`,
+which survives a restart of the relay but not of the store (below).
 
 **Proof of work.** A `send` to a flagged routing id MUST carry `pow`, the
 `b64url` of a 16‑byte nonce — exactly 22 characters, the canonical encoding —
@@ -4737,13 +4747,51 @@ The same frame cannot succeed: the sender makes a stamp — a search of about
 envelope and two over 99 bytes — and sends again. The stamp binds the
 recipient, the envelope and the day and **nothing about the sender**: a sealed
 request on a connection that never authenticated (§12.1) carries one like any
-other, and the relay keeps nothing of it once it is checked — it is not stored
-with the envelope, logged or forwarded, and the delivered `msg` has no `pow`.
-A `pow` on a send to a mailbox nobody flagged is ignored, and a receipt the
+other, and the relay logs nothing of it; it keeps the stamp with the envelope
+and hands it to the owner (below).
+A `pow` on a send to a mailbox nobody flagged is never refused: one worth at
+least 16 bits is handed on as below, and any other is ignored. A receipt the
 relay queues itself (§12.5) is asked for none. The relay counts the refusals
 (`z_intro_pow_refused_total`) and the stamped sends it took
 (`z_intro_accepted_total`); `z_intro_mailboxes` is how many mailboxes are
 flagged.
+
+**The owner checks the stamp too.** The `msg` (§12.2) that delivers an
+envelope the relay took into a flagged mailbox carries the stamp it was
+taken on:
+
+```
+S→C  { "t":"msg", "id":envelopeId, "payload":string, "ts":int, "pow":b64url(16 bytes), "powDay":D }   // D: the day the relay checked the stamp under
+```
+
+`pow` is the 22 characters the `send` carried, and `powDay` the day the
+relay checked it under — its today or yesterday when it took the envelope,
+so always the day of the envelope's `ts` or the day before — so the owner
+computes the same `h` from its own routing id, the `payload` as delivered,
+`powDay` and the nonce, and counts the same bits. An envelope taken into a
+mailbox nobody flagged carries the two as well when its `send` carried a
+stamp worth at least 16 bits for the relay's today or yesterday, on an
+envelope of at most 64 KiB (the relay hashes nothing larger for a stamp);
+any other carries neither. The owner's client checks every envelope its
+introduction mailbox delivers this way, and drops one with no `pow`, with
+fewer bits than the difficulty it set, or with a `powDay` that is neither
+the day of its `ts` nor the one before.
+
+**What a restart does to the flags.** A relay that keeps them in memory
+loses every one when its process restarts, which every deploy does. A relay
+with a shared store loses them when the store loses its data: Redis or Valkey
+run with persistence off — as both shipped configurations run it
+(`render.ha.yaml`, `server/docker-compose.ha.yml`) — comes back from its own
+restart empty. Either way a mailbox is unflagged until its owner's next
+`intro`, which its client sends after each authentication as the
+introduction key, so not before the owner's app next drains (§21.8). Until
+then the relay takes sends to it with no stamp, as it would for any mailbox,
+holding them against that mailbox's caps, and delivers them with no `pow`;
+the owner's check above drops them. An honest request loses nothing: its
+client stamps it at the record's difficulty (§21.7), and the stamp travels
+with it to an unflagged mailbox as to a flagged one. The cost of a lost flag
+is the unstamped junk the relay holds until the owner's app drains it and
+drops it.
 
 **Size, and copies.** A flagged mailbox refuses a `payload` larger than
 64 KiB — 65 536, counted as the relay charges an envelope less its 256 of
