@@ -2671,7 +2671,7 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get hdlLiveBody =>
-      'Aceptando solicitudes. Cada solicitud le cuesta algo de trabajo a quien la envía, así que no se pueden enviar en masa.';
+      'Aceptando solicitudes. Cada solicitud le cuesta algo de trabajo a quien la envía, lo que hace lento enviarlas en masa desde un teléfono, aunque no desde ordenadores rápidos.';
 
   @override
   String get hdlNotVerification =>
@@ -2679,11 +2679,24 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get hdlRelayUnguarded =>
-      'Tu relé es demasiado antiguo para proteger el buzón del alias: las solicitudes llegan sin ningún trabajo.';
+      'Tu relé es demasiado antiguo para proteger el buzón de este alias o para transmitir el trabajo que lleva cada solicitud, así que las solicitudes a tu alias no pueden llegar a este teléfono. Los alias necesitan un relé actualizado.';
 
   @override
-  String get hdlIntroUnknown =>
-      'El buzón del alias se cambió en otro dispositivo después de la copia que restauraste. Elige Buzón nuevo para recibir solicitudes aquí.';
+  String get hdlRelayFull =>
+      'Tu relé no está protegiendo ahora el buzón de este alias: ya protege todos los buzones que puede, así que acepta solicitudes sin comprobar su trabajo.';
+
+  @override
+  String get hdlRelayPaced =>
+      'Puede que tu relé no esté protegiendo ahora el buzón de este alias: se le pidió demasiadas veces, y se le volverá a pedir en la próxima comprobación.';
+
+  @override
+  String get hdlStampsChecked =>
+      'Este teléfono sigue comprobando el trabajo de cada solicitud que llega por tu alias y descarta las que no lo traen.';
+
+  @override
+  String hdlIntroUnknown(String handle) {
+    return 'El buzón de @$handle se trasladó a una clave que este dispositivo no tiene, desde otra copia de esta cuenta restaurada de una copia de seguridad más antigua o por alguien que tiene sus claves, así que este dispositivo dejó de leerlo. Su código de recuperación trae el alias de vuelta aquí, con claves nuevas.';
+  }
 
   @override
   String get hdlCopy => 'Copiar alias';

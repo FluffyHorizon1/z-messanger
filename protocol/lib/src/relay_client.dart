@@ -238,6 +238,12 @@ class RelayClient {
         final id = str('id'), payload = str('payload');
         // No id or no payload: there is nothing deliverable here.
         if (id == null || payload == null) break;
+        // An envelope taken into an introduction mailbox carries the stamp it
+        // was taken on and the day that stamp met the difficulty under
+        // (§21.6), so the mailbox's owner can count the work itself. Either
+        // member wrong-typed, or the day not a whole number, reads as absent:
+        // the owner then has no stamp to count, which is what it drops.
+        final powDay = frame['powDay'];
         _messages.add(RelayInbound(
           id: id,
           // Sealed-sender envelopes arrive with no sender: the relay never
@@ -245,6 +251,8 @@ class RelayClient {
           from: str('from') ?? '',
           payload: payload,
           serverTs: intOr0('ts'),
+          pow: str('pow'),
+          powDay: powDay is int ? powDay : null,
         ));
         break;
       case 'sent':
@@ -479,11 +487,20 @@ class RelayInbound {
   final String from;
   final String payload;
   final int serverTs;
+
+  /// For an envelope an introduction mailbox received (§21.6): the stamp
+  /// the send carried — the 22 characters, as sent — and [powDay], the day
+  /// the relay found it good under. Null on every other envelope, and on one
+  /// from a relay that does not hand stamps on.
+  final String? pow;
+  final int? powDay;
   RelayInbound(
       {required this.id,
       required this.from,
       required this.payload,
-      required this.serverTs});
+      required this.serverTs,
+      this.pow,
+      this.powDay});
 }
 
 class DeliveredReceipt {

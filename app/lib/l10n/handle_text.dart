@@ -52,16 +52,27 @@ String handleFailureText(AppLocalizations l, HandleFailure f) => switch (f) {
     };
 
 /// A problem the service recorded on the account's handle, by its code
-/// ([HandleFailure]'s name, or `introUnknown`), or null for one this build
-/// has no words for.
+/// ([HandleFailure]'s name), or null for one this build has no words for —
+/// `introUnknown` among them, which marks why a handle is lost and is said
+/// by the lost state's own line.
 String? handleStoredProblemText(AppLocalizations l, String? code) {
   if (code == null) return null;
-  if (code == 'introUnknown') return l.hdlIntroUnknown;
   for (final f in HandleFailure.values) {
     if (f.name == code) return handleFailureText(l, f);
   }
   return null;
 }
+
+/// What the handle screen says when the relay is not guarding the handle's
+/// inbox right now (§21.6), by its answer to the last `intro` frame; null
+/// while it is, or before it has been asked.
+String? handleRelayGuardText(AppLocalizations l, HandleRelayGuard g) =>
+    switch (g) {
+      HandleRelayGuard.tooOld => l.hdlRelayUnguarded,
+      HandleRelayGuard.full => l.hdlRelayFull,
+      HandleRelayGuard.paced => l.hdlRelayPaced,
+      HandleRelayGuard.guarded || HandleRelayGuard.unknown => null,
+    };
 
 /// The Settings row's line about the account's handle.
 String handleRowText(AppLocalizations l, HandleService h) {

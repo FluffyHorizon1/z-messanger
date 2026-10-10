@@ -186,11 +186,14 @@ makes both (§21.3). What changes is everything the analysis found missing:
    bucket is complete (`adr/0023`) — never for the label itself.
 5. **Reaching someone costs work.** A send to an introduction mailbox carries
    a proof‑of‑work stamp over the mailbox, the day and the envelope, checked
-   by the relay before it stores anything (§21.6, §21.7); the owner sets the
+   by the relay before it stores anything (§21.6, §21.7), and again by the
+   owner's app before it files anything (§21.8) — so a relay that has lost
+   its flag costs storage, not the owner's inbox — and counted once, however
+   often it is sent; the owner sets the
    difficulty (16–28 bits) in the record and can raise it with an update. An
    introduction mailbox gets no push and a byte cap of its own, and a client
-   holds at most 100 pending handle requests. Phase 45 replaces the stamp
-   with anonymous tokens.
+   holds at most 100 pending handle requests, apart from those by code or
+   link. Phase 45 replaces the stamp with anonymous tokens.
 6. **The answer is signed by the introduction key** (§21.7): the acceptance
    carries `ia`, the introduction key's signature over the requester, the
    accepting account and the request — so the requester knows the account

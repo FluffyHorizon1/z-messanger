@@ -38,7 +38,8 @@ did not want it, **Decline** drops it quietly and **Block** stops any more.
 A request you declined does not come back on its own — only a new one, made
 later, is shown — and Z ignores a request more than 30 days old. At most 100
 wait at a time: when more arrive, the oldest you have not looked at goes
-first, never one you have.
+first, never one you have. Requests through your handle (below) are counted
+apart, so a wave of them never pushes one of these out.
 
 Accepting adds them, but it does not confirm *who* they are — for that, compare
 safety numbers. What matters, when you *scan* someone in person, is that the
@@ -146,7 +147,9 @@ Add contact → **Handle**. Type the handle they gave you and tap **Find**. If
 it exists and is taking requests, **Send request** sends them an ordinary
 contact request — your display name and your key, as when you paste a code
 — and takes a few seconds on purpose: each request costs its sender some
-work, so nobody can send thousands. If they accept, they appear in your chats
+work, which makes sending many slow from a phone, though not for someone
+with fast computers — the reason your handle's inbox has limits of its own
+(below). If they accept, they appear in your chats
 with "@alex.42 accepted. Compare safety numbers to verify."
 
 **A handle is not a verification.** Z checks that the account that answered
@@ -163,8 +166,11 @@ They arrive in Requests like any other, marked **Via @alex.42**, and you
 own, separate from your account's: your phone reads it a few seconds after
 you open Z and every quarter of an hour or so while Z is open, and never
 wakes for it — so a request through your handle waits at the relay until you
-next open Z, for up to three days like any message. At most 100 wait at a
-time; past that, the oldest you have not yet seen goes.
+next open Z, for up to three days like any message. Your phone checks the
+work on each request itself, and takes each one once, whoever sends it
+again. At most 100 wait at a time, counted apart from requests made with
+your code or an invite; past that, the oldest you have not yet seen goes,
+never one you have.
 
 Only your main device holds a handle and reads its inbox. A linked device can
 find people by handle, and the people you meet through yours appear there

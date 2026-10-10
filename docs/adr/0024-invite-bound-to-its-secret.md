@@ -165,17 +165,22 @@ is refused before any mark is read), deleting the contact erases it, and a
 mark older than 30 days goes, since the age rule refuses its request anyway
 (`invite_binding_test.dart` 3, 12). PROTOCOL §8.1 states the rule.
 
-At most **100** requests are pending. When one would be the 101st, the oldest
-the person has **not seen** goes — seen meaning it was on the Requests screen
-— and if every one has been seen, the newcomer goes. A flood of fresh
-identities can push out only what nobody has looked at
-(`invite_binding_test.dart` 4, 13). One cap for every request, whichever
-door it came through — a code scanned or pasted, or a handle (§21.7 caps
-handle requests at the same 100): what it bounds is one person's attention
-and one table. Two caps would let a flood through one door leave the other's
-untouched, but would also let the two together hold two hundred; the seen
-rule is what protects the requests that matter, and it does not care about
-doors. `ChatService.maxPendingRequests` is the one number.
+At most **100** requests are pending that came by a code scanned or pasted
+or by a link, and apart from them at most 100 that came through the
+account's handle (§21.7, §21.8). When one would be the 101st of its kind,
+the oldest of that kind the person has **not seen** goes — seen meaning it
+was on the Requests screen — and if every one has been seen, the newcomer
+goes. A flood of fresh identities can push out only what nobody has looked
+at, and a flood through one door only what came through that door
+(`invite_binding_test.dart` 4, 13; `handle_inbox_test.dart` 1). This
+section first held one cap for every request, on the view that the seen
+rule protects the requests that matter whatever door they came through. An
+independent review of handles (2026‑10‑09) showed why it does not: a handle
+is a public door, and the drain files what came through it 3 to 30 seconds
+after the app opens — before the person can have seen the request a friend
+made with their code, which a wave through the handle then pushed out
+(amended 2026‑10‑10). `ChatService.maxPendingRequests` and
+`ChatService.maxPendingHandleRequests` are the two numbers.
 
 ### 5. A block holds against groups and invites
 

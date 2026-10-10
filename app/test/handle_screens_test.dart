@@ -20,7 +20,16 @@
 //      giving it up asks first, and cancelling changes nothing;
 //   5. a request that came through the handle reads "Via @nick.digits" on
 //      the Requests screen, and being shown marks it seen, in the vault too;
-//   6. in Spanish, the screens read in Spanish.
+//   6. in Spanish, the screens read in Spanish;
+//   7. when the relay's last answer to `intro` says it is not guarding the
+//      handle's inbox — too old, full, or pacing — the handle screen says so,
+//      each in its own words, with the line that this phone still checks the
+//      work on every request; while the relay guards it, neither; and in
+//      Spanish too;
+//   8. a handle lost because its inbox was moved to a key this device does
+//      not hold says that, not that its recovery code was used, and offers
+//      Recover and Forget — and a log that cannot be reached when the screen
+//      reads the handle back does not put another reason in its place.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -306,6 +315,83 @@ void main() {
           wrap(svc, const FindHandleView(), locale: const Locale('es')));
       await until(tester, () => find.text(es.hdlFind).evaluate().isNotEmpty,
           'the Handle tab in Spanish');
+    });
+  });
+
+  testWidgets('7. the relay not guarding the inbox, said, and what still holds',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 2400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.runAsync(() async {
+      final svc = await service(config: silent);
+      svc.handles.own = published('finn.42');
+      for (final (guard, en, sp) in [
+        (HandleRelayGuard.tooOld, l.hdlRelayUnguarded, es.hdlRelayUnguarded),
+        (HandleRelayGuard.full, l.hdlRelayFull, es.hdlRelayFull),
+        (HandleRelayGuard.paced, l.hdlRelayPaced, es.hdlRelayPaced),
+      ]) {
+        svc.handles.relayGuard = guard;
+        expect(svc.handles.relayUnguarded, isTrue);
+        await tester.pumpWidget(wrap(svc, HandleScreen(key: UniqueKey())));
+        await until(tester, () => find.text(en).evaluate().isNotEmpty,
+            'the relay\'s ${guard.name} said');
+        expect(find.text(l.hdlStampsChecked), findsOneWidget,
+            reason: 'and that this phone still checks every request');
+        await tester.pumpWidget(wrap(svc, HandleScreen(key: UniqueKey()),
+            locale: const Locale('es')));
+        await until(tester, () => find.text(sp).evaluate().isNotEmpty,
+            '${guard.name} in Spanish');
+        expect(find.text(es.hdlStampsChecked), findsOneWidget);
+        expect(sp, isNot(en));
+      }
+      for (final guard in [HandleRelayGuard.guarded, HandleRelayGuard.unknown]) {
+        svc.handles.relayGuard = guard;
+        expect(svc.handles.relayUnguarded, isFalse);
+        await tester.pumpWidget(wrap(svc, HandleScreen(key: UniqueKey())));
+        await until(
+            tester,
+            () => find.text(l.hdlNotVerification).evaluate().isNotEmpty,
+            'the published handle');
+        expect(find.text(l.hdlStampsChecked), findsNothing);
+        for (final t in [l.hdlRelayUnguarded, l.hdlRelayFull, l.hdlRelayPaced]) {
+          expect(find.text(t), findsNothing);
+        }
+      }
+      // Every read-back the screens started is done before the vault
+      // closes: the service runs them one at a time, so one more, awaited,
+      // comes after them all.
+      await svc.handles.refresh();
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  testWidgets('8. a handle lost because its inbox moved says so', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 2000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.runAsync(() async {
+      final svc = await service(config: silent);
+      svc.handles.own = published('finn.42')
+        ..phase = HandlePhase.lost
+        ..problem = 'introUnknown';
+      expect(handleRowText(l, svc.handles), l.hdlRowLost('finn.42'));
+      await tester.pumpWidget(wrap(svc, const HandleScreen()));
+      await until(
+          tester,
+          () => find.text(l.hdlIntroUnknown('finn.42')).evaluate().isNotEmpty,
+          'the moved inbox said');
+      expect(find.text(l.hdlLostBody('finn.42')), findsNothing,
+          reason: 'nobody used the recovery code');
+      expect(find.text(l.hdlRecover), findsOneWidget);
+      expect(find.text(l.hdlForget), findsOneWidget);
+      // The screen reads the handle back, and the log cannot be reached:
+      // the reason it is lost stays. (The service runs read-backs one at a
+      // time, so this one, awaited, comes after the screen's.)
+      await svc.handles.refresh();
+      await tester.pump();
+      expect(svc.handles.own!.problem, 'introUnknown');
+      expect(svc.handles.own!.phase, HandlePhase.lost);
+      expect(find.text(l.hdlIntroUnknown('finn.42')), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
     });
   });
 }

@@ -3,7 +3,7 @@
 // refusal as the Dart relay client speaks them, against the real relay; and
 // the `ia` member a contact request carries on the acceptance of a handle
 // request. The relay's own half is `server/test/intro_mailbox.test.js`; the
-// app's, `app/test/handles_test.dart`.
+// app's, `app/test/handle_flow_test.dart` and `handle_inbox_test.dart`.
 //
 // Criteria, each a test below:
 //   1. a contact request without `ia` encodes exactly as it did before the
@@ -17,7 +17,14 @@
 //   3. a send to the flagged mailbox without a stamp fails with
 //      RelayPowRequired naming the difficulty and the relay's day; a stamp
 //      for that day is accepted, and the owner receives the envelope as
-//      sent; a stamp for another day is refused the same way.
+//      sent, with the stamp it was taken on and the day it was good under —
+//      which hash, through `introPowInput`, to the bits asked for; a stamp
+//      for another day is refused the same way;
+//   4. an envelope sent without a stamp to a mailbox nobody flagged
+//      reaches its owner with no stamp and no day; one sent to it with a
+//      stamp of 16 bits for the relay's day reaches it with that stamp and
+//      the day, as from a flagged mailbox — what a lost flag must not cost
+//      an honest request.
 @Tags(['integration'])
 library;
 
@@ -186,9 +193,57 @@ void main() {
       expect(inbox, hasLength(1), reason: 'one envelope, once');
       expect(inbox.single.payload, payload);
       expect(inbox.single.from, '', reason: 'sealed: no sender at the relay');
+      // The stamp it was taken on, and the day, for the owner to count.
+      expect(inbox.single.pow, b64url(stamp));
+      expect(inbox.single.powDay, refused.day);
+      final bits = introPowZeroBits(await sha256Bytes(introPowInput(
+          ridBytes: unb64url(introRid),
+          day: inbox.single.powDay!,
+          envelopeHash: await sha256Bytes(utf8.encode(inbox.single.payload)),
+          nonce: unb64url(inbox.single.pow!))));
+      expect(bits, greaterThanOrEqualTo(16));
       final opened = await SealedEnvelope.open(
           myXSeed: intro.xSeed, myXPub: intro.xPub, blob: inbox.single.payload);
       expect(ContactRequest.tryParse(opened!.payload), isNotNull);
+    } finally {
+      await sub.cancel();
+      await owner.close();
+      await sender.close();
+    }
+  });
+
+  test('4. a mailbox nobody flagged hands on a stamp only when one came',
+      () async {
+    final mine = await ZIdentity.generate();
+    final rid = await mine.routingId();
+    final owner = await RelayClient.connect(url(), mine);
+    final inbox = <RelayInbound>[];
+    final sub = owner.messages.listen(inbox.add);
+    final sender = await RelayClient.connectAnonymous(
+        url(), await ZIdentity.generate());
+    Future<String> sealed(String text) async => SealedEnvelope.seal(
+        toXPub: mine.xPub,
+        fromRid: await (await ZIdentity.generate()).routingId(),
+        payload: text);
+    try {
+      final payload = await sealed('plain');
+      await sender.send(to: rid, id: newMessageId(), payload: payload);
+      await waitFor(() => inbox.isNotEmpty, what: 'the envelope delivered');
+      expect(inbox.single.payload, payload);
+      expect(inbox.single.pow, isNull);
+      expect(inbox.single.powDay, isNull);
+
+      // Stamped, though nobody asked: handed on with the stamp and its day.
+      final stamped = await sealed('stamped');
+      final day = introPowDay(DateTime.now().millisecondsSinceEpoch);
+      final nonce = createIntroPowStamp(
+          introRid: rid, day: day, envelope: utf8.encode(stamped), bits: 16);
+      await sender.send(
+          to: rid, id: newMessageId(), payload: stamped, pow: b64url(nonce));
+      await waitFor(() => inbox.length == 2, what: 'the stamped one delivered');
+      expect(inbox.last.payload, stamped);
+      expect(inbox.last.pow, b64url(nonce));
+      expect(inbox.last.powDay, day);
     } finally {
       await sub.cancel();
       await owner.close();

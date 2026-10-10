@@ -2646,7 +2646,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get hdlLiveBody =>
-      'Taking requests. Each request costs the sender some work, so they cannot be sent in bulk.';
+      'Taking requests. Each request costs its sender some work, which makes sending them in bulk slow from a phone, though not from fast computers.';
 
   @override
   String get hdlNotVerification =>
@@ -2654,11 +2654,24 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get hdlRelayUnguarded =>
-      'Your relay is too old to protect the handle\'s inbox: requests reach it without any work.';
+      'Your relay is too old to guard this handle\'s inbox or to pass on the work each request carries, so requests through your handle cannot reach this phone. Handles need an up-to-date relay.';
 
   @override
-  String get hdlIntroUnknown =>
-      'The handle\'s inbox was changed on another device after the backup you restored. Choose New inbox to take requests here.';
+  String get hdlRelayFull =>
+      'Your relay is not guarding this handle\'s inbox right now: it is already guarding as many inboxes as it can, so it takes requests without checking their work.';
+
+  @override
+  String get hdlRelayPaced =>
+      'Your relay may not be guarding this handle\'s inbox right now: it was asked too often, and is asked again at the next check.';
+
+  @override
+  String get hdlStampsChecked =>
+      'This phone still checks the work on every request that comes through your handle, and drops any request without it.';
+
+  @override
+  String hdlIntroUnknown(String handle) {
+    return '@$handle\'s inbox was moved to a key this device does not hold, by another copy of this account restored from an older backup or by someone who has its keys, so this device has stopped reading it. Its recovery code brings the handle back here, on new keys.';
+  }
 
   @override
   String get hdlCopy => 'Copy handle';

@@ -1231,9 +1231,12 @@ copy the relay kept cannot put a declined request back in front of anyone,
 while a new request, made later, is shown. Accepting the requester, blocking
 them or deleting them ends that memory, and it need not outlive 30 days from
 `ts`, after which the first rule refuses the request anyway. A recipient
-holds at most 100 pending requests, whichever way they came (§21.7 sets the
-same number); one more pushes out the oldest its person has not been shown,
-which is the new one when they have been shown every other.
+holds at most 100 pending requests that came by a code or a link, and apart
+from them at most 100 that came through its handle (§21.7); one more of
+either kind pushes out the oldest of that kind its person has not been
+shown, which is the new one when they have been shown every other — so a
+flood through a public handle cannot push out a request made with the
+code.
 
 ## 9. Multi‑device messaging and self‑sync
 
@@ -4863,8 +4866,14 @@ so a client runs it in an isolate.
 introduction mailbox as the introduction identity (21.3, §21.6), opens each
 envelope with `xintroSeed`, and accepts a `creq` whose `to` is one of its
 introduction routing ids — rather than dropping it for not naming its own
-routing id — showing it as coming *via @nick.digits*. It caps pending handle
-requests at 100, dropping the oldest unseen beyond that.
+routing id — showing it as coming *via @nick.digits*. It files one only when
+the stamp counts by its own reckoning, whatever the relay did: the `pow` and
+`powDay` the relay hands on with the envelope (§21.6) give at least the
+difficulty in force in `introPowInput`'s hash, and `powDay` is the relay's
+day of the envelope's `ts` or the day before; anything else is acknowledged
+and dropped. It decides each envelope once, however often it is sent (§21.8).
+It caps pending handle requests at 100, apart from requests by code or link
+(§8.1), dropping the oldest unseen beyond that.
 
 **The acknowledgement.** Accepting sends a `creq` back to the requester
 (ADR 0011's accept path). That `creq` carries one more member:
@@ -4939,18 +4948,38 @@ code's key depends on the label. `429`, `5xx` or no answer: five minutes
 later. A restore never publishes a claim it carries (below).
 
 **The introduction mailbox.** Only the account's root device holds
-`ownerSeed` and `introSeed` and drains the mailbox (v1). A drain is a relay
-connection of its own, authenticated (§12.1, v2) as the introduction
-identity — never one of the account's, so the relay never sees the
-account's routing id and the introduction routing id on one connection —
-which sends `intro` with the record's `pow` after it authenticates
-(§21.6), never registers a push token, reads until nothing has arrived for
-1.5 s (at most 20 s), acknowledges every envelope whose fate is decided
-(§6.8), and closes. Drains run a uniformly drawn **3 to 30 seconds** after
+`ownerSeed` and `introSeed` and drains the mailbox (v1). A drain first
+reads the account's own record from the log, as a lookup does: an answer
+older than the version this device holds changes nothing; one naming another
+owner key — the code was used — or an introduction key this device does not
+hold — the inbox was moved, by another copy of the account restored from an
+older backup or by whoever has its owner seed — makes the handle lost to
+this device, which then neither flags nor reads the mailbox, until the code
+brings it back on new keys; a paused one is read once more without `intro`;
+a newer one is taken in, its difficulty with it; and a log that cannot be
+asked changes nothing. Then a relay connection of its own, authenticated
+(§12.1, v2) as the introduction identity — never one of the account's, so
+the relay never sees the account's routing id and the introduction routing
+id on one connection — sends `intro` with the record's `pow` (the newest
+record it knows; the higher of the log's and its own when the two are the
+same version) after it authenticates (§21.6), never registers a push token,
+reads until nothing has arrived for 1.5 s (at most 20 s), acknowledges every
+envelope whose fate is decided (§6.8), and closes. An `intro` answered
+`unknown_frame`, `intro_full` or `rate_limited` leaves the mailbox read all
+the same, and the handle screen says that the relay is not guarding it right
+now and that the phone still checks every stamp. Drains run a uniformly
+drawn **3 to 30 seconds** after
 the app comes to the foreground — not in the second the account's own
 connection reopens — then every **15 minutes, give or take a third**, while
 it stays in front; never in the background; and at once after a publish
-that changes the introduction keys or the difficulty. An envelope that does
+that changes the introduction keys or the difficulty. Every envelope's stamp
+is counted before the envelope is opened, as the relay counted it (§21.6):
+with no `pow` and `powDay`, with a `powDay` that is neither the relay's day of
+the envelope's `ts` nor the day before, or with fewer bits than the
+difficulty in force — the record's `pow`, or for **2 days** after a change the
+previous one when that was lower, so a stamp made just before a raise still
+counts — it is acknowledged and dropped, never filed, and counted on the
+device and nowhere else. An envelope that does
 not open with `xintroSeed`, is not a `creq`, is not addressed to the
 mailbox (`to` = `introRid`), or is not signed by the identity that sealed
 it is acknowledged and dropped; one that could not be filed for a reason
@@ -4961,11 +4990,22 @@ other pending request, marked as coming *via @nick.digits*, with its
 is that contact's answer (§8.1). It is held to §8.1's rules for its signed
 `ts` and for the last request taken in from the same requester, so a stamped
 request the relay hands over again after a drain, or one declined, is not
-filed again. At most **100** pending requests are kept, those through the
-handle counted with every other (§8.1): past that, the oldest the person has
-not seen on the Requests screen goes, so a wave of stamped requests cannot
-push out one already looked at — and when every older one has been seen, the
-newcomer is the one dropped.
+filed again. And a request is decided once, whoever sends its envelope
+again: the drain remembers each envelope that opened as a request, whatever
+became of it, by 16 bytes of a hash of its SHA‑256 — the hash its stamp
+commits to — keyed with a salt of the device's own, under its stamp's day,
+in the vault, until 48 hours after the stamp stops being good (the end of
+the day after its day), and drops a copy before opening it. A day holds
+**4 096** one by one, and past that becomes a Bloom filter of 2²⁰ bits,
+which forgets none of them and refuses by mistake an envelope it never saw
+— less than 1 % of the time while it holds 100 000 or fewer. Stamped junk
+takes no room: it opens to nothing each time it comes. At most **100**
+pending requests that came through the handle are kept, counted apart from
+those by code or link (§8.1), so a wave through a public handle cannot push
+out a request from someone who had the code: past 100, the oldest the person
+has not seen on the Requests screen goes, so a wave of stamped requests
+cannot push out one already looked at — and when every older one has been
+seen, the newcomer is the one dropped.
 
 **Finding and asking.** Any device. The client parses what was typed
 (reserved nicks refused), computes the label off the UI thread, asks for its
@@ -5037,8 +5077,10 @@ again. A device whose handle is recovered elsewhere finds, the next time it
 reads its record, an owner that is not its own, and manages it no more.
 
 **What is stored**, sealed in the vault: the handle (canonical), its label,
-`ownerSeed`, `introSeed`, `pow`, `rc`, the version and where it stands
-(pending with its moment, held, live, paused, taken by another, lost); for
+`ownerSeed`, `introSeed`, `pow` — and for two days after a change the
+previous one — `rc`, the version and where it stands
+(pending with its moment, held, live, paused, taken by another, lost); the
+digests of the requests decided, as above; for
 each pending request that came through the handle, the handle, the mailbox
 it reached, its `creqId`, when it arrived and whether it has been seen; the
 introduction seeds a pending request still needs; the requests kept for
@@ -5046,10 +5088,13 @@ matching an acceptance; the handle log's address and key; and, for a
 contact made through a handle, which handle. Never the code or
 `recoverySeed`.
 
-**Backup and restore.** The archive carries all of it in one record,
+**Backup and restore.** The archive carries all of it but those digests
+in one record,
 `{"t":"handle","keep":1,"v":1,"kv":{…}}` (`BACKUP.md` §5), which a build
 that does not know it keeps and writes back. A restore drains the mailbox —
-re‑flagging it — and publishes nothing by itself: a claim that was pending
+reading the record first, so re‑flagging it at the difficulty the record
+asks, or leaving a mailbox the record no longer names — and publishes
+nothing by itself: a claim that was pending
 when the backup was made comes back held, published only when the person
 asks, since the device it came from may have published it since or been
 overtaken.

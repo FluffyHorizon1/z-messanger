@@ -318,7 +318,13 @@ class _HandleScreenState extends State<HandleScreen> {
           _Name(handle: name, copyable: true),
           _Para(l.hdlLiveBody),
           _Para(l.hdlNotVerification),
-          if (h.relayUnguarded) _Para(l.hdlRelayUnguarded, warn: true),
+          // The relay's last answer to `intro` (§21.6): when it is not
+          // guarding the inbox, say so — and that this phone still counts
+          // the work on every request itself, and drops one without it.
+          if (handleRelayGuardText(l, h.relayGuard) case final guard?) ...[
+            _Para(guard, warn: true),
+            _Para(l.hdlStampsChecked),
+          ],
           if (problem != null) _Para(problem, warn: true),
           _Action(
               icon: Icons.pause_circle_outline,
@@ -355,7 +361,13 @@ class _HandleScreenState extends State<HandleScreen> {
         ],
       HandlePhase.lost => [
           _Name(handle: name),
-          _Para(l.hdlLostBody(name.canonical), warn: true),
+          // Another owner key (the code was used), or this device's owner key
+          // with an inbox it does not hold (moved elsewhere): said apart.
+          _Para(
+              o.problem == 'introUnknown'
+                  ? l.hdlIntroUnknown(name.canonical)
+                  : l.hdlLostBody(name.canonical),
+              warn: true),
           _Action(
               icon: Icons.key_outlined,
               label: l.hdlRecover,

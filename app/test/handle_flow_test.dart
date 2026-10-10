@@ -227,6 +227,14 @@ void main() {
           'PORT': '$relayPort',
           'LOG_LEVEL': 'silent',
           'METRICS_TOKEN': metricsToken,
+          // The relay paces new flags per address and `intro` frames per
+          // mailbox (§21.6). Every account here comes from 127.0.0.1 and the
+          // tests drain in quick succession, so paced at the defaults some
+          // mailboxes would go unflagged, and this file asserts what the
+          // relay does for a flagged one. `handle_inbox_test.dart` 7 is where
+          // the pacing itself is tested.
+          'INTRO_NEW_PER_IP_PER_MIN': '100000',
+          'INTRO_PER_RID_PER_MIN': '100000',
         });
     relay.stdout.drain<void>();
     relay.stderr.drain<void>();

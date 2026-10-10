@@ -4199,7 +4199,7 @@ abstract class AppLocalizations {
   /// Status of a published handle, and what limits spam: each request needs a proof of work.
   ///
   /// In en, this message translates to:
-  /// **'Taking requests. Each request costs the sender some work, so they cannot be sent in bulk.'**
+  /// **'Taking requests. Each request costs its sender some work, which makes sending them in bulk slow from a phone, though not from fast computers.'**
   String get hdlLiveBody;
 
   /// Load-bearing reminder on the handle screen: a handle proves nothing about identity; the safety number does.
@@ -4208,17 +4208,35 @@ abstract class AppLocalizations {
   /// **'A handle is not a verification: whoever you meet through it, compare safety numbers to be sure who they are.'**
   String get hdlNotVerification;
 
-  /// Warning: the relay does not support introduction mailboxes, so requests need no proof of work there.
+  /// Warning: the relay does not support introduction mailboxes, so it neither checks the proof of work on requests nor hands it to the phone, which therefore drops every request.
   ///
   /// In en, this message translates to:
-  /// **'Your relay is too old to protect the handle\'s inbox: requests reach it without any work.'**
+  /// **'Your relay is too old to guard this handle\'s inbox or to pass on the work each request carries, so requests through your handle cannot reach this phone. Handles need an up-to-date relay.'**
   String get hdlRelayUnguarded;
 
-  /// Warning: the handle service names an inbox key this device does not hold; a new inbox fixes it. 'New inbox' must match the hdlRotate button.
+  /// Warning: the relay refused to guard the handle's inbox because it guards its maximum number already (intro_full).
   ///
   /// In en, this message translates to:
-  /// **'The handle\'s inbox was changed on another device after the backup you restored. Choose New inbox to take requests here.'**
-  String get hdlIntroUnknown;
+  /// **'Your relay is not guarding this handle\'s inbox right now: it is already guarding as many inboxes as it can, so it takes requests without checking their work.'**
+  String get hdlRelayFull;
+
+  /// Warning: the relay refused this phone's request to guard the handle's inbox for now, because it was asked too often (rate_limited); an existing guard may still hold.
+  ///
+  /// In en, this message translates to:
+  /// **'Your relay may not be guarding this handle\'s inbox right now: it was asked too often, and is asked again at the next check.'**
+  String get hdlRelayPaced;
+
+  /// Shown under a warning that the relay is not guarding the handle's inbox: the phone itself checks each request's proof of work.
+  ///
+  /// In en, this message translates to:
+  /// **'This phone still checks the work on every request that comes through your handle, and drops any request without it.'**
+  String get hdlStampsChecked;
+
+  /// Shown when the handle service names this device's owner key with an inbox key it does not hold: the handle is lost to this device until it is recovered with its code.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle}\'s inbox was moved to a key this device does not hold, by another copy of this account restored from an older backup or by someone who has its keys, so this device has stopped reading it. Its recovery code brings the handle back here, on new keys.'**
+  String hdlIntroUnknown(String handle);
 
   /// Tooltip of the copy button next to the handle.
   ///

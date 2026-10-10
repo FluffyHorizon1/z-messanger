@@ -47,12 +47,15 @@
 /// handle, the mailbox it reached, the request's id, and whether it has been
 /// seen — plus the introduction seeds of mailboxes since rotated or retired
 /// that a pending request still needs to be acknowledged with), `handle_out`
-/// (the requests this device sent to handles and is waiting on), and
-/// `handle_config`. A contact made through a handle keeps the handle under
-/// `hvia_<rid>`.
+/// (the requests this device sent to handles and is waiting on),
+/// `handle_stamps` and `handle_stamps_new` (the introduction requests decided
+/// here, by a keyed digest, for as long as their stamps could be presented
+/// again — [HandleStampLedger]) and `handle_config`. A contact made through a
+/// handle keeps the handle under `hvia_<rid>`.
 library;
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -161,14 +164,17 @@ const Duration handleForegroundDelayMax = Duration(seconds: 30);
 const Duration handleDrainQuiet = Duration(milliseconds: 1500);
 const Duration handleDrainMax = Duration(seconds: 20);
 
-/// At most this many pending requests that came through the handle; past it
-/// the oldest one not yet seen on the Requests screen goes (§21.8). A request
-/// the person has looked at is kept over one they have not, so a wave of
-/// stamped requests cannot push out the one they were about to accept. The
-/// cap that applies as requests arrive is the chat service's one cap on
-/// every pending request, whichever way it came, at the same number
-/// (`ChatService.maxPendingRequests`, ADR 0024); this one bounds what a
-/// restore takes back of the handle's records ([HandleBackup.restore]).
+/// At most this many pending requests that came through the handle, counted
+/// apart from those that came by a code or a link (§21.8): past it the
+/// oldest one not yet seen on the Requests screen goes, and a request the
+/// person has looked at never does. A handle is a public door, so a wave
+/// through it must never push out a request from someone who had the
+/// person's code — which, when the two shared one cap, the drain did 3 to 30
+/// seconds after the app opened, before anyone could look, as an
+/// independent review of handles found (2026-10-09). The chat service
+/// applies it as requests arrive (`ChatService.maxPendingHandleRequests`);
+/// this file also bounds with it what a restore takes back of the handle's
+/// records ([HandleBackup.restore]).
 const int handleInboundCap = 100;
 
 /// At most this many outgoing handle requests are remembered, and three
@@ -186,6 +192,338 @@ const int handleDefaultPow = 20;
 
 /// The levels the app offers.
 const List<int> handlePowLevels = [16, 18, 20, 22, 24];
+
+/// After the difficulty changes, a stamp made for the previous one still
+/// counts at the owner's check for this long (§21.8): a requester who
+/// resolved the record just before a raise stamps at the old difficulty, and
+/// so does every stamp the relay took before its flag was renewed — and a
+/// stamp is good for one to two days of the relay's clock.
+const Duration handlePowGrace = Duration(days: 2);
+
+/// The fewest leading zero bits a stamp must reach for the owner's drain to
+/// count it: [pow], the difficulty published — or, until [prevPowUntil], the
+/// previous one when that was lower.
+int handleStampFloor(int pow,
+    {int? prevPow, int? prevPowUntil, required int nowMs}) {
+  if (prevPow != null && prevPowUntil != null && nowMs < prevPowUntil) {
+    return min(pow, prevPow);
+  }
+  return pow;
+}
+
+/// A stamp an introduction envelope came with, counted as the relay counts
+/// it (§21.6, §21.7): the day it was made for, the SHA-256 of the envelope
+/// (the payload string as delivered) and the leading zero bits of
+/// `SHA-256(introPowInput(…))`.
+class HandleStamp {
+  final int day;
+  final Uint8List envelopeHash;
+  final int bits;
+  const HandleStamp(
+      {required this.day, required this.envelopeHash, required this.bits});
+}
+
+/// The stamp an envelope delivered to the introduction mailbox [introRid]
+/// carries, as the owner's drain counts it — with the protocol library's own
+/// [introPowInput], so it computes exactly what the relay did: the routing
+/// id's 32 bytes, [powDay], the SHA-256 of [payload] and the nonce. Null when
+/// there is nothing to count: no [pow] or [powDay] (a relay that lost the
+/// mailbox's flag, or one that does not hand stamps on), a [pow] that is not
+/// the canonical 22 characters of `b64url` for 16 bytes, or a [powDay] that
+/// is neither the relay's day of the envelope's [serverTs] nor the day before
+/// — the only two days the relay takes a stamp for.
+Future<HandleStamp?> handleStampOf(
+    {required String introRid,
+    required String payload,
+    required String? pow,
+    required int? powDay,
+    required int serverTs}) async {
+  if (pow == null || powDay == null) return null;
+  final Uint8List nonce;
+  final Uint8List rid;
+  try {
+    nonce = unb64url(pow);
+    rid = unb64url(introRid);
+  } on FormatException {
+    return null;
+  }
+  if (nonce.length != introPowNonceLength || b64url(nonce) != pow) return null;
+  if (rid.length != 32) return null;
+  final relayDay = introPowDay(serverTs);
+  if (powDay != relayDay && powDay != relayDay - 1) return null;
+  if (powDay < 0 || powDay > 0xffffffff) return null;
+  final envelopeHash = await sha256Bytes(utf8.encode(payload));
+  final h = await sha256Bytes(introPowInput(
+      ridBytes: rid, day: powDay, envelopeHash: envelopeHash, nonce: nonce));
+  return HandleStamp(
+      day: powDay, envelopeHash: envelopeHash, bits: introPowZeroBits(h));
+}
+
+/// How many envelopes [HandleStampLedger] remembers one by one for a day of
+/// stamps; past it, that day's are remembered in a Bloom filter of
+/// [handleStampFilterBits] bits, [handleStampFilterHashes] of them set by
+/// each envelope.
+const int handleStampExactPerDay = 4096;
+const int handleStampFilterBits = 1 << 20;
+const int handleStampFilterHashes = 6;
+
+/// How many envelopes [HandleService] writes down one at a time, in a small
+/// record of their own, before it writes the whole ledger again.
+const int handleStampJournalMax = 128;
+
+/// The introduction requests this device has decided, so that none is
+/// decided twice (§21.8). A stamp binds its envelope and its day, not its
+/// sender, and stays good at the relay for one to two days; an envelope the
+/// drain has acknowledged is gone from the relay, so whoever kept a copy of
+/// it — the relay's operator, or the sender — could send the same envelope
+/// and stamp again, and before this ledger a request the cap had pushed out
+/// was filed again with no new work.
+///
+/// What it remembers: every envelope that opened as a request signed by its
+/// sender and addressed to the mailbox, whatever the rules then made of it —
+/// filed, pushed out by the cap, or refused. Anything else is not a request
+/// however often it comes, and costs nothing to decide again; so a flood of
+/// stamped junk, which is the cheapest thing to send, takes no room here.
+///
+/// How: by a digest of the envelope — the first 16 bytes of
+/// `SHA-256(salt ‖ SHA-256(envelope))`, the inner hash being the one the
+/// stamp commits to, so a copy is known before it is opened, whoever stamps
+/// it again; the [salt] is this device's own, so nobody outside can choose
+/// envelopes that land on chosen bits of a filter — under the day its stamp
+/// was made for. A day's digests are kept until 48 hours after the last
+/// moment a stamp for that day could be presented, the end of the next day
+/// by the relay's clock: `(day + 4) × 24 h`. A digest already remembered
+/// under any day is refused: another stamp on the same envelope would be new
+/// work for a request already decided. A copy sent again later comes with
+/// the relay's `ts` of then, so a stamp older than the ledger holds fails
+/// the day check ([handleStampOf]) anyway; only a relay that makes up the
+/// `ts` it hands on could bring one back — a relay, that is, which can
+/// withhold or hand on anything it holds, but cannot make new work.
+///
+/// Bounded, and never forgetting: a day holds up to [exactPerDay] digests one
+/// by one; the next turns that day into a Bloom filter of
+/// [handleStampFilterBits] bits (128 KiB) holding every digest it had and
+/// every one after. A filter has no false negatives, so a copy is still
+/// refused however large the flood; what grows with the flood is the chance
+/// that an envelope never seen is refused as if it had been — at 100 000 in
+/// a day, about 0.7 %. A day goes four days after it began, so a handful of
+/// filters is the most the ledger ever holds.
+class HandleStampLedger {
+  HandleStampLedger(
+      {Uint8List? salt, this.exactPerDay = handleStampExactPerDay})
+      : salt = salt ?? randomBytes(16);
+
+  static const int dayMs = 86400000;
+
+  /// This device's key for the digests.
+  final Uint8List salt;
+  final int exactPerDay;
+
+  final SplayTreeMap<int, _StampDay> _days = SplayTreeMap();
+
+  /// How many envelopes the kept days hold.
+  int get length => _days.values.fold(0, (n, d) => n + d.count);
+
+  /// Whether [day]'s envelopes are in a filter rather than one by one.
+  bool isFilter(int day) => _days[day]?.filter != null;
+
+  /// The digest under which an envelope whose SHA-256 is [envelopeHash] is
+  /// remembered.
+  Future<Uint8List> digestOf(Uint8List envelopeHash) async =>
+      Uint8List.sublistView(
+          await sha256Bytes([...salt, ...envelopeHash]), 0, 16);
+
+  /// Whether the envelope with this [digest] has been decided here before,
+  /// under any day still kept.
+  bool refuses(Uint8List digest) {
+    final key = b64url(digest);
+    return _days.values.any((d) => d.has(digest, key));
+  }
+
+  /// Remember an envelope decided now, whose stamp was made for [day].
+  void add(int day, Uint8List digest, int nowMs) {
+    prune(nowMs);
+    (_days[day] ??= _StampDay()).add(digest, b64url(digest), exactPerDay);
+  }
+
+  /// Forget the days whose stamps can no longer be presented, with 48 hours
+  /// to spare; true when anything went.
+  bool prune(int nowMs) {
+    final before = _days.length;
+    _days.removeWhere((day, _) => (day + 4) * dayMs <= nowMs);
+    return _days.length != before;
+  }
+
+  Map<String, Object?> toJson() => {
+        'v': 1,
+        'salt': b64url(salt),
+        'days': {
+          for (final e in _days.entries) '${e.key}': e.value.toJson()
+        },
+      };
+
+  /// The ledger [j] describes; an empty one, with a new salt, when it is not
+  /// one this build wrote.
+  static HandleStampLedger fromJson(Object? j,
+      {int exactPerDay = handleStampExactPerDay}) {
+    Uint8List? salt;
+    if (j is Map && j['v'] == 1 && j['salt'] is String) {
+      try {
+        final s = unb64url(j['salt'] as String);
+        if (s.length == 16) salt = s;
+      } on FormatException {
+        salt = null;
+      }
+    }
+    if (j is! Map || salt == null) {
+      return HandleStampLedger(exactPerDay: exactPerDay);
+    }
+    final l = HandleStampLedger(salt: salt, exactPerDay: exactPerDay);
+    final days = j['days'];
+    if (days is Map) {
+      for (final e in days.entries) {
+        final day = int.tryParse('${e.key}');
+        final d = _StampDay.fromJson(e.value);
+        if (day == null || day < 0 || d == null) continue;
+        l._days[day] = d;
+      }
+    }
+    return l;
+  }
+}
+
+/// One day of [HandleStampLedger]: its digests one by one ([keys]), or, past
+/// the ledger's count for a day, a Bloom filter ([filter]) — never both.
+class _StampDay {
+  _StampDay();
+
+  Set<String>? keys = <String>{};
+  Uint8List? filter;
+
+  /// Envelopes added this day.
+  int count = 0;
+
+  /// The filter bits [digest] sets: [handleStampFilterHashes] (six) 20-bit
+  /// numbers, two from each 5-byte group of its first 15 bytes. The digest is
+  /// a keyed hash, so they are as good as random to anyone without the
+  /// ledger's salt.
+  static List<int> _bits(Uint8List digest) {
+    final out = <int>[];
+    for (var g = 0; g < 3; g++) {
+      var v = 0;
+      for (var j = 0; j < 5; j++) {
+        v = (v << 8) | digest[g * 5 + j];
+      }
+      out
+        ..add(v >> 20)
+        ..add(v & 0xfffff);
+    }
+    return out;
+  }
+
+  bool has(Uint8List digest, String key) {
+    final f = filter;
+    if (f == null) return keys!.contains(key);
+    return _bits(digest).every((b) => f[b >> 3] & (1 << (b & 7)) != 0);
+  }
+
+  void add(Uint8List digest, String key, int exactPerDay) {
+    if (has(digest, key)) return;
+    count++;
+    final ks = keys;
+    if (ks != null && ks.length < exactPerDay) {
+      ks.add(key);
+      return;
+    }
+    var f = filter;
+    if (f == null) {
+      // One more than a day holds one by one: the day becomes a filter,
+      // holding every digest it had.
+      f = filter = Uint8List(handleStampFilterBits >> 3);
+      for (final k in ks!) {
+        _set(f, unb64url(k));
+      }
+      keys = null;
+    }
+    _set(f, digest);
+  }
+
+  static void _set(Uint8List f, Uint8List digest) {
+    for (final b in _bits(digest)) {
+      f[b >> 3] |= 1 << (b & 7);
+    }
+  }
+
+  Object toJson() => filter != null
+      ? {'n': count, 'f': b64url(filter!)}
+      : {'n': count, 'k': keys!.toList()};
+
+  static _StampDay? fromJson(Object? j) {
+    if (j is! Map) return null;
+    final d = _StampDay();
+    final n = j['n'];
+    final f = j['f'];
+    final k = j['k'];
+    if (f is String) {
+      try {
+        final bytes = unb64url(f);
+        if (bytes.length != handleStampFilterBits >> 3) return null;
+        d.filter = bytes;
+        d.keys = null;
+      } on FormatException {
+        return null;
+      }
+    } else if (k is List) {
+      for (final x in k) {
+        if (x is String && x.length == 22) d.keys!.add(x);
+      }
+    } else {
+      return null;
+    }
+    final ks = d.keys;
+    d.count = ks != null ? ks.length : (n is int && n >= 0 ? n : 0);
+    return d;
+  }
+}
+
+/// Where the relay stands on guarding this handle's introduction mailbox, as
+/// its answer to the last `intro` frame said (§21.6). Whatever it says, the
+/// owner's drain counts every stamp itself ([handleStampOf]).
+enum HandleRelayGuard {
+  /// Not asked yet by this process.
+  unknown,
+
+  /// `intro_ok`: the relay checks the work on every send to the mailbox.
+  guarded,
+
+  /// `unknown_frame`: a relay that predates introduction mailbox flags. It
+  /// checks no work, and hands no stamp on.
+  tooOld,
+
+  /// `intro_full`: the relay holds as many flags as it will, and refused a
+  /// new one; it takes sends to the mailbox without checking their work.
+  full,
+
+  /// `rate_limited`: the frame came too soon after others. A flag the relay
+  /// already held stays; one it did not hold is not set.
+  paced,
+}
+
+/// What the log's latest record says about this device's own handle
+/// ([HandleService._applyRecord]).
+enum _RecordVerdict {
+  /// Older than what this device holds: kept as it is.
+  stale,
+
+  /// This device's, live.
+  current,
+
+  /// This device's, paused.
+  paused,
+
+  /// Another owner key, or an introduction key this device does not hold.
+  lost,
+}
 
 /// Uniform in [lo, hi].
 Duration handleUniform(Random r, Duration lo, Duration hi) {
@@ -279,8 +617,16 @@ class OwnHandle {
   int? publishAt;
 
   /// The last refusal or failure worth showing, as a code ([HandleFailure]'s
-  /// name), or null.
+  /// name), or null. On a [HandlePhase.lost] handle, `introUnknown` says the
+  /// log names this device's owner key with an introduction key it does not
+  /// hold — the inbox was moved elsewhere — rather than another owner.
   String? problem;
+
+  /// The difficulty before the last change, and until when (ms) a stamp
+  /// made for it still counts at this device's check ([handlePowGrace]);
+  /// null when there is none.
+  int? prevPow;
+  int? prevPowUntil;
 
   /// Derived from [introSeed], not stored: the mailbox, and the keys the
   /// record carries.
@@ -297,6 +643,8 @@ class OwnHandle {
     required this.phase,
     this.publishAt,
     this.problem,
+    this.prevPow,
+    this.prevPowUntil,
   });
 
   Map<String, Object?> toJson() => {
@@ -310,6 +658,10 @@ class OwnHandle {
         'phase': phase.name,
         if (publishAt != null) 'at': publishAt,
         if (problem != null) 'problem': problem,
+        if (prevPow != null && prevPowUntil != null) ...{
+          'prevPow': prevPow,
+          'prevUntil': prevPowUntil,
+        },
       };
 
   /// Throws on anything that is not the shape [toJson] writes.
@@ -328,6 +680,12 @@ class OwnHandle {
     if (v is! int || v < 0) throw const FormatException('bad version');
     final at = j['at'];
     final problem = j['problem'];
+    final prev = j['prevPow'];
+    final prevUntil = j['prevUntil'];
+    final hasPrev = prev is int &&
+        prev >= handlePowMinBits &&
+        prev <= handlePowMaxBits &&
+        prevUntil is int;
     return OwnHandle(
       handle: Handle.parse(j['h'] as String),
       label: key('label'),
@@ -339,6 +697,8 @@ class OwnHandle {
       phase: HandlePhase.values.byName(j['phase'] as String),
       publishAt: at is int ? at : null,
       problem: problem is String ? problem : null,
+      prevPow: hasPrev ? prev : null,
+      prevPowUntil: hasPrev ? prevUntil : null,
     );
   }
 }
@@ -620,8 +980,9 @@ abstract class HandleHost {
 
   /// File a verified request that reached the introduction mailbox for
   /// [handle] as a pending request, under the rules every request is held to
-  /// (its signed time, the last one taken in from the same requester, and
-  /// the one cap on pending requests). False when it was dropped (blocked, a
+  /// (its signed time and the last one taken in from the same requester) and
+  /// the cap on pending handle requests, which counts them apart from those
+  /// that came by a code or a link. False when it was dropped (blocked, a
   /// contact already, this account itself, refused by those rules, or pushed
   /// straight out by the cap).
   Future<bool> addHandleRequest(ContactRequest request,
@@ -672,9 +1033,34 @@ class HandleService extends ChangeNotifier {
   final List<OutgoingHandleRequest> _outgoing = [];
   int _seq = 0;
 
-  /// The relay answered the last `intro` frame with `unknown_frame`: it
-  /// predates §21.6, and the mailbox takes mail without a stamp there.
-  bool relayUnguarded = false;
+  /// What the relay said to the last `intro` frame this process sent.
+  HandleRelayGuard relayGuard = HandleRelayGuard.unknown;
+
+  /// The relay said it is not guarding the mailbox right now — too old,
+  /// full, or pacing — so it takes sends to it without checking their work;
+  /// this device's own check ([handleStampOf]) still drops every one without.
+  bool get relayUnguarded =>
+      relayGuard == HandleRelayGuard.tooOld ||
+      relayGuard == HandleRelayGuard.full ||
+      relayGuard == HandleRelayGuard.paced;
+
+  /// The introduction requests decided here (`handle_stamps`), and those
+  /// written down since in a record of their own (`handle_stamps_new`), at
+  /// most [stampJournalMax] before the ledger is written whole again.
+  HandleStampLedger _ledger = HandleStampLedger();
+  final List<(int, Uint8List)> _ledgerNew = [];
+  bool _ledgerWritten = false;
+  @visibleForTesting
+  int stampJournalMax = handleStampJournalMax;
+
+  /// How many envelopes the drains of this process dropped for their stamp —
+  /// none, short of the difficulty, for another day — and how many because
+  /// they had been decided here before: in this process's memory and
+  /// nowhere else, never stored and never sent (§21.8).
+  @visibleForTesting
+  int droppedUnstamped = 0;
+  @visibleForTesting
+  int droppedReplays = 0;
 
   /// When the introduction mailbox was last drained, and how many drains
   /// this process has run (a test reads it).
@@ -800,6 +1186,48 @@ class HandleService extends ChangeNotifier {
           } catch (_) {}
         }
       } catch (_) {}
+    }
+    final stamps = await vault.kvGet('handle_stamps');
+    final journal = await vault.kvGet('handle_stamps_new');
+    if (stamps != null) {
+      try {
+        _ledger = HandleStampLedger.fromJson(jsonDecode(stamps));
+      } catch (_) {
+        // Unreadable: an empty ledger. What it held was requests the drain
+        // had acknowledged; a copy of one, while its stamp is still good,
+        // can be decided once more.
+      }
+    }
+    if (journal != null) {
+      try {
+        final j = jsonDecode(journal) as Map;
+        final salt = unb64url(j['salt'] as String);
+        if (j['v'] == 1 && salt.length == 16) {
+          // The ledger is written whole at the first request ever decided
+          // here, so the two share a salt; if the ledger was lost, the
+          // record's salt is the one its digests were made with.
+          if (!constantTimeEquals(salt, _ledger.salt) && stamps == null) {
+            _ledger = HandleStampLedger(salt: salt);
+          }
+          if (constantTimeEquals(salt, _ledger.salt)) {
+            for (final e in (j['e'] as List)) {
+              final day = (e as List)[0];
+              final digest = unb64url(e[1] as String);
+              if (day is int && day >= 0 && digest.length == 16) {
+                _ledger.add(day, digest, now());
+              }
+            }
+          }
+        }
+      } catch (_) {
+        // As above: what it held can be decided once more.
+      }
+    }
+    // Written whole now: what the record held is in it, and what has
+    // lapsed is gone.
+    if (stamps != null || journal != null) {
+      _ledger.prune(now());
+      await _saveLedger();
     }
   }
 
@@ -1076,8 +1504,9 @@ class HandleService extends ChangeNotifier {
 
   /// Read this account's handle back from the log and say what it finds: the
   /// version and difficulty it holds, paused or not — or, when the log names
-  /// another owner, [HandlePhase.lost]. Called when the handle screen opens
-  /// and before every update.
+  /// another owner or an introduction key this device does not hold,
+  /// [HandlePhase.lost]. Called when the handle screen opens and before
+  /// every update; every drain reads the record too ([_recordBeforeDrain]).
   Future<void> refresh() => _serial(() async {
         final o = own;
         if (o == null || !available || !canManage) return;
@@ -1089,9 +1518,10 @@ class HandleService extends ChangeNotifier {
         try {
           await _current(o);
         } on HandleException catch (e) {
-          // Lost is a phase, already recorded; anything else is a line on
-          // the screen until the next refresh clears it.
-          if (e.failure != HandleFailure.lost) {
+          // Lost is a phase, already recorded with its reason; anything else
+          // is a line on the screen until the next refresh clears it — but
+          // never in place of why a handle was lost.
+          if (e.failure != HandleFailure.lost && o.phase != HandlePhase.lost) {
             o.problem = e.failure.name;
             await _saveOwn();
           }
@@ -1099,36 +1529,70 @@ class HandleService extends ChangeNotifier {
         notifyListeners();
       });
 
-  /// The log's latest record for [o], checked; throws [HandleFailure.lost]
-  /// (and records it) when another owner holds it.
+  /// The log's latest record for [o], checked and taken in
+  /// ([_applyRecord]); throws [HandleFailure.lost] when it says this device
+  /// no longer holds the handle.
   Future<(KtBucketLeaf, HandleRecord)> _current(OwnHandle o) async {
     final leaf = await _resolve(o.label);
     if (leaf == null) throw const HandleException(HandleFailure.notClaimed);
     final rec = await _checkedRecord(o.label, leaf);
     if (rec == null) throw const HandleException(HandleFailure.badAnswer);
-    if (!constantTimeEquals(rec.owner, await handleKeyPublic(o.ownerSeed))) {
-      o.phase = HandlePhase.lost;
-      o.problem = null;
-      await _saveOwn();
-      _drainTimer?.cancel();
+    if (await _applyRecord(o, leaf, rec) == _RecordVerdict.lost) {
       throw const HandleException(HandleFailure.lost);
     }
-    o.version = leaf.version;
-    o.pow = rec.pow;
-    o.rc = rec.rc;
-    final paused = rec.intro == null;
-    if (o.phase != HandlePhase.lost) {
-      o.phase = paused ? HandlePhase.paused : HandlePhase.live;
-    }
-    // A record whose introduction key is not the one this device holds — an
-    // older backup restored after a rotation made elsewhere — cannot be
-    // drained from here; a rotation publishes one it can.
-    o.problem = (!paused &&
-            !constantTimeEquals(rec.intro!, await handleKeyPublic(o.introSeed)))
-        ? 'introUnknown'
-        : null;
-    await _saveOwn();
     return (leaf, rec);
+  }
+
+  /// Take in what the log's latest record [rec] (at [leaf]) says about this
+  /// device's handle [o] (§21.8).
+  ///
+  /// * Older than the version this device published or read already: not
+  ///   news — a log behind, or one showing an old history (R50) — and what
+  ///   this device holds stands ([_RecordVerdict.stale]).
+  /// * Naming another owner key — the code was used — or an introduction
+  ///   key this device does not hold — the inbox was moved elsewhere, by
+  ///   another copy of this account restored from an older backup, or by
+  ///   whoever has its owner seed: [HandlePhase.lost]. This device stops
+  ///   draining the mailbox it holds, which nobody resolves any more, and
+  ///   does not flag it; only the recovery code brings the handle back to
+  ///   it, and moves it to new keys, so whoever else holds the owner seed
+  ///   loses it.
+  /// * Otherwise it is this device's own handle: a newer record is taken in
+  ///   — its version and its difficulty, the previous difficulty counting
+  ///   for [handlePowGrace] from when the log took the change — and paused
+  ///   or not as it says.
+  Future<_RecordVerdict> _applyRecord(
+      OwnHandle o, KtBucketLeaf leaf, HandleRecord rec) async {
+    if (leaf.version < o.version) return _RecordVerdict.stale;
+    final ownerOk =
+        constantTimeEquals(rec.owner, await handleKeyPublic(o.ownerSeed));
+    final intro = rec.intro;
+    final introOk = intro == null ||
+        constantTimeEquals(intro, await handleKeyPublic(o.introSeed));
+    if (!ownerOk || !introOk) {
+      final already = o.phase == HandlePhase.lost;
+      o.phase = HandlePhase.lost;
+      o.problem = ownerOk ? 'introUnknown' : null;
+      o.publishAt = null;
+      await _saveOwn();
+      _drainTimer?.cancel();
+      _drainTimer = null;
+      if (!already) notifyListeners();
+      return _RecordVerdict.lost;
+    }
+    if (leaf.version > o.version && rec.pow != o.pow) {
+      o.prevPow = o.pow;
+      o.prevPowUntil = (leaf.ts ?? now()) + handlePowGrace.inMilliseconds;
+      o.pow = rec.pow;
+    }
+    o.version = leaf.version;
+    o.rc = rec.rc;
+    if (o.phase != HandlePhase.lost) {
+      o.phase = intro == null ? HandlePhase.paused : HandlePhase.live;
+    }
+    o.problem = null;
+    await _saveOwn();
+    return intro == null ? _RecordVerdict.paused : _RecordVerdict.current;
   }
 
   OwnHandle _requirePublished() {
@@ -1152,6 +1616,7 @@ class HandleService extends ChangeNotifier {
   Future<void> _update(OwnHandle o,
       {required Uint8List? introSeed, required int pow}) async {
     final (leaf, rec) = await _current(o);
+    final previous = o.pow;
     final intro = introSeed == null ? null : await handleIntroIdentity(introSeed);
     final record = HandleRecord.update(
         owner: rec.owner,
@@ -1175,6 +1640,13 @@ class HandleService extends ChangeNotifier {
     }
     o.version = leaf.version + 1;
     o.pow = pow;
+    if (pow != previous) {
+      // Stamps made for the difficulty before this one still count here for
+      // a while: a requester who resolved the record a moment ago, and what
+      // the relay took before its flag is renewed (§21.8).
+      o.prevPow = previous;
+      o.prevPowUntil = now() + handlePowGrace.inMilliseconds;
+    }
     o.problem = null;
   }
 
@@ -1680,26 +2152,47 @@ class HandleService extends ChangeNotifier {
     _scheduleDrain();
   }
 
-  /// Read the introduction mailbox once: on a connection of its own,
-  /// authenticated as the introduction identity and never as the account,
-  /// re-flagged with the record's difficulty, never registered for push.
-  /// Returns how many envelopes it decided. One drain at a time.
+  /// Read the introduction mailbox once: the account's record first
+  /// ([_recordBeforeDrain]), then a connection of its own, authenticated as
+  /// the introduction identity and never as the account, re-flagged with the
+  /// record's difficulty, never registered for push; every envelope's stamp
+  /// counted here before it is opened. Returns how many envelopes it
+  /// decided. One drain at a time.
   Future<int> drain() {
     final running = _draining;
     if (running != null) return running;
     final o = own;
     if (!_shouldDrain || o == null) return Future.value(0);
-    final run = _drainSeed(o.introSeed, renew: true).whenComplete(() {
+    final run = _drainSeed(null, renew: true).whenComplete(() {
       _draining = null;
     });
     _draining = run;
     return run;
   }
 
-  Future<int> _drainSeed(Uint8List seed, {required bool renew}) async {
+  /// [once]: the seed of a mailbox to read once more without flagging it
+  /// ([renew] false); a renewing drain reads the handle's own mailbox, as
+  /// the record check left it.
+  Future<int> _drainSeed(Uint8List? once, {required bool renew}) async {
     if (!available || !canManage) return 0;
+    // The flag's difficulty, or null to read without flagging.
+    int? flag;
+    var seed = once;
+    if (renew) {
+      final (go, flagPow, current) = await _recordBeforeDrain();
+      if (!go || current == null) return 0;
+      flag = flagPow;
+      seed = current;
+    }
+    if (seed == null) return 0;
     final o = own;
     final handle = o?.handle.canonical;
+    // What a stamp has to reach to count here: the difficulty in force, and
+    // for a while after a change the previous one (§21.8).
+    final floorBits = o == null
+        ? handlePowMinBits
+        : handleStampFloor(o.pow,
+            prevPow: o.prevPow, prevPowUntil: o.prevPowUntil, nowMs: now());
     final id = await handleIntroIdentity(seed);
     final rid = await id.routingId();
     final client = await RelayClient.connect(host.relayUrl, id);
@@ -1711,15 +2204,23 @@ class HandleService extends ChangeNotifier {
     });
     var decided = 0;
     try {
-      if (renew && o != null) {
+      if (flag != null) {
         try {
-          await client.intro(o.pow);
-          relayUnguarded = false;
+          await client.intro(flag);
+          relayGuard = HandleRelayGuard.guarded;
         } on RelayException catch (e) {
-          // A relay that predates §21.6 takes the mail without a stamp; the
-          // mailbox is still read, and the screen says the relay does not
-          // guard it.
-          if (e.message == 'unknown_frame') relayUnguarded = true;
+          // The relay is not guarding the mailbox right now — too old to
+          // know the frame, holding all the flags it will, or pacing them —
+          // so it takes sends without checking their work. The mailbox is
+          // still read, every stamp is still counted here, and the screen
+          // says so (§21.6, §21.8).
+          relayGuard = switch (e.message) {
+                'unknown_frame' => HandleRelayGuard.tooOld,
+                'intro_full' => HandleRelayGuard.full,
+                'rate_limited' => HandleRelayGuard.paced,
+                _ => null,
+              } ??
+              relayGuard;
         }
       }
       final started = DateTime.now();
@@ -1727,7 +2228,7 @@ class HandleService extends ChangeNotifier {
       while (true) {
         while (next < inbox.length) {
           final m = inbox[next++];
-          final ack = await _onIntroEnvelope(m, rid, id, handle);
+          final ack = await _onIntroEnvelope(m, rid, id, handle, floorBits);
           if (ack) {
             decided++;
             try {
@@ -1759,35 +2260,114 @@ class HandleService extends ChangeNotifier {
 
   /// One envelope from the introduction mailbox, and whether its fate is
   /// decided (acknowledge it) — patch 57's rule: anything that can never be a
-  /// handle request (not sealed, not for this key, not a request, not
-  /// addressed to this mailbox, not signed by the identity it names) is
-  /// acknowledged and dropped, so it cannot wedge the mailbox; a failure that
-  /// may pass (the vault busy) is left with the relay for the next drain.
-  Future<bool> _onIntroEnvelope(
-      RelayInbound m, String introRid, ZIdentity id, String? handle) async {
+  /// handle request is acknowledged and dropped, so it cannot wedge the
+  /// mailbox; a failure that may pass (the vault busy) is left with the relay
+  /// for the next drain.
+  ///
+  /// Never a request: an envelope whose stamp does not count here — none,
+  /// fewer than [floorBits], made for a day the relay could not have taken
+  /// it on ([handleStampOf]) — because a relay that lost the mailbox's flag
+  /// takes sends without checking them, and this check is what guards the
+  /// inbox then (§21.6, §21.8); one decided here before
+  /// ([HandleStampLedger]), so a request is decided once whoever sends it
+  /// again; and then, opened, one not sealed for this key, not a request,
+  /// not addressed to this mailbox, or not signed by the identity it names.
+  Future<bool> _onIntroEnvelope(RelayInbound m, String introRid, ZIdentity id,
+      String? handle, int floorBits) async {
     try {
       if (m.from.isNotEmpty || handle == null) return true;
-      final opened = await SealedEnvelope.open(
-          myXSeed: id.xSeed, myXPub: id.xPub, blob: m.payload);
-      if (opened == null) return true;
-      final creq = ContactRequest.tryParse(opened.payload);
-      if (creq == null) return true;
-      if (!await creq.verify(expectedTo: introRid, sealedFrom: opened.fromRid)) {
+      final stamp = await handleStampOf(
+          introRid: introRid,
+          payload: m.payload,
+          pow: m.pow,
+          powDay: m.powDay,
+          serverTs: m.serverTs);
+      if (stamp == null || stamp.bits < floorBits) {
+        droppedUnstamped++;
         return true;
       }
-      final rid = opened.fromRid;
-      final filed = await host.addHandleRequest(creq,
-          requesterRid: rid, handle: handle);
-      if (!filed) return true;
-      await recordInbound(rid,
-          handle: handle,
-          introRid: introRid,
-          creqId: await contactRequestId(creq));
+      final digest = await _ledger.digestOf(stamp.envelopeHash);
+      if (_ledger.refuses(digest)) {
+        droppedReplays++;
+        return true;
+      }
+      if (await _decideIntroEnvelope(m, introRid, id, handle)) {
+        // A request, decided: written down before the relay is told, and
+        // before the next envelope can push it out of the cap, so a copy of
+        // it is refused from now on, after a restart too.
+        await _rememberDecided(stamp.day, digest);
+      }
       return true;
     } catch (e) {
       return !host.isTransientFailure(e);
     }
   }
+
+  /// Open, check and file an introduction envelope whose stamp counted.
+  /// Returns whether it was a request — opened, a `creq` addressed to this
+  /// mailbox and signed by the identity that sealed it — whatever the rules
+  /// then made of it; false for one that can never be a request; throws for
+  /// a failure that may pass.
+  Future<bool> _decideIntroEnvelope(
+      RelayInbound m, String introRid, ZIdentity id, String handle) async {
+    final opened = await SealedEnvelope.open(
+        myXSeed: id.xSeed, myXPub: id.xPub, blob: m.payload);
+    if (opened == null) return false;
+    final creq = ContactRequest.tryParse(opened.payload);
+    if (creq == null) return false;
+    if (!await creq.verify(expectedTo: introRid, sealedFrom: opened.fromRid)) {
+      return false;
+    }
+    final rid = opened.fromRid;
+    final filed =
+        await host.addHandleRequest(creq, requesterRid: rid, handle: handle);
+    if (filed) {
+      await recordInbound(rid,
+          handle: handle,
+          introRid: introRid,
+          creqId: await contactRequestId(creq));
+    }
+    return true;
+  }
+
+  /// Before a drain flags the mailbox, the account's own record from the log
+  /// (§21.8), so that this device flags at the difficulty the record asks —
+  /// after a restore of an older backup its own may be lower — and notices,
+  /// without anyone opening the handle screen, that the handle is no longer
+  /// its own: recovered by another owner key, or its inbox moved to a key
+  /// this device does not hold ([_applyRecord]). Returns whether to drain, the
+  /// difficulty to flag with — null to read the mailbox once more without
+  /// flagging it, when the record says paused — and the mailbox's seed. A
+  /// log that cannot be asked now changes nothing: the drain goes on with
+  /// what this device holds.
+  ///
+  /// One management step among the others ([_serial]): a new inbox being
+  /// published is never read back half done — the record already naming the
+  /// new key while this device still holds the old one, which would look
+  /// like an inbox moved elsewhere.
+  Future<(bool, int?, Uint8List?)> _recordBeforeDrain() => _serial(() async {
+        final o = own;
+        if (o == null || o.phase != HandlePhase.live) {
+          return (false, null, null);
+        }
+        final KtBucketLeaf? leaf;
+        final HandleRecord? rec;
+        try {
+          leaf = await _resolve(o.label);
+          rec = leaf == null ? null : await _checkedRecord(o.label, leaf);
+        } on HandleException {
+          return (true, o.pow, o.introSeed);
+        }
+        if (leaf == null || rec == null) return (true, o.pow, o.introSeed);
+        return switch (await _applyRecord(o, leaf, rec)) {
+          _RecordVerdict.lost => (false, null, null),
+          _RecordVerdict.paused => (true, null, o.introSeed),
+          _RecordVerdict.stale => (true, o.pow, o.introSeed),
+          // Never below what the log publishes, nor below what this device
+          // holds at the same version.
+          _RecordVerdict.current => (true, max(o.pow, rec.pow), o.introSeed),
+        };
+      });
 
   // ---------------------------------------------------------------------------
   // The log
@@ -1955,6 +2535,38 @@ class HandleService extends ChangeNotifier {
 
   Future<void> _saveOutgoing() => vault.kvPut(
       'handle_out', jsonEncode([for (final o in _outgoing) o.toJson()]));
+
+  /// Remember a request decided now, whose stamp was made for [day]: in the
+  /// small record of those since the ledger was last written, and every
+  /// [stampJournalMax] in the ledger itself — so each one costs a small
+  /// write, however large a flood has made the ledger.
+  Future<void> _rememberDecided(int day, Uint8List digest) async {
+    _ledger.add(day, digest, now());
+    _ledgerNew.add((day, digest));
+    // Whole at the first one, so the ledger's salt is on disk before any
+    // digest made with it; then every [stampJournalMax].
+    if (!_ledgerWritten || _ledgerNew.length >= stampJournalMax) {
+      await _saveLedger();
+      return;
+    }
+    await vault.kvPut(
+        'handle_stamps_new',
+        jsonEncode({
+          'v': 1,
+          'salt': b64url(_ledger.salt),
+          'e': [
+            for (final (d, g) in _ledgerNew) [d, b64url(g)]
+          ],
+        }));
+  }
+
+  /// The ledger written whole, and the record of those since emptied.
+  Future<void> _saveLedger() async {
+    await vault.kvPut('handle_stamps', jsonEncode(_ledger.toJson()));
+    _ledgerWritten = true;
+    _ledgerNew.clear();
+    await vault.kvDelete('handle_stamps_new');
+  }
 
   /// Management steps one at a time: a publish timer firing during a pause,
   /// say, must not interleave with it.

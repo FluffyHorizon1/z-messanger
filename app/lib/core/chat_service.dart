@@ -1494,14 +1494,23 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// this would stay new for longer than [requestMaxAge] says.
   static const Duration requestMaxSkew = Duration(days: 1);
 
-  /// The most pending requests this device holds, whichever way they came —
-  /// a code someone scanned or pasted, and (§21.7) a handle. One number for
-  /// both, 100, the one §21.7 set for handle requests: what it bounds is one
-  /// person's attention and one table, not a door. When a request would be
-  /// the 101st, the oldest the person has not seen goes — the newcomer, if
-  /// every other has been seen — so a flood of new identities can push out
-  /// only what nobody has looked at yet.
+  /// The most pending requests this device holds that came by a code
+  /// someone scanned or pasted, or by a link. When one would be the 101st,
+  /// the oldest the person has not seen goes — the newcomer, if every other
+  /// has been seen — so a flood of new identities can push out only what
+  /// nobody has looked at yet, and never a request the person has seen.
   static const int maxPendingRequests = 100;
+
+  /// The most pending requests that came through this account's handle
+  /// (§21.7, §21.8), counted apart from [maxPendingRequests] and held to the
+  /// same rule within their own number. A handle is a public door: anyone
+  /// who knows it can send, and the drain files what came 3 to 30 seconds
+  /// after the app opens — so under one shared cap a wave through the handle
+  /// pushed out the unseen request of someone who had the person's code
+  /// before the person could look, as an independent review of handles
+  /// found (2026-10-09). Apart, a flood through one door evicts only what
+  /// came through it.
+  static const int maxPendingHandleRequests = handleInboundCap;
 
   /// The `ts` of the newest request taken in from each requester, pending
   /// or answered: one whose `ts` is not newer is a copy, or an older one
@@ -1594,20 +1603,31 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   @visibleForTesting
   bool debugRequestSeen(String rid) => _requestsSeen.contains(rid);
 
-  /// Hold no more than [maxPendingRequests]: the oldest the person has not
-  /// seen goes first, by arrival here — and with it its mark, so a flood of
-  /// one-off identities cannot grow the marks either.
+  /// Hold no more than [maxPendingRequests] that came by a code or a link,
+  /// and apart from them no more than [maxPendingHandleRequests] that came
+  /// through the handle: in each, the oldest the person has not seen goes
+  /// first, by arrival here — and with it its mark, so a flood of one-off
+  /// identities cannot grow the marks either. A request the person has seen
+  /// is never pushed out: the newest arrival is never seen, so there is
+  /// always an unseen one to go, and were there none the list would stay
+  /// one over rather than lose something the person has looked at.
   Future<void> _capRequests() async {
-    while (requestsByRid.length > maxPendingRequests) {
-      PendingRequest? out;
-      for (final r in requestsByRid.values) {
-        if (_requestsSeen.contains(r.rid)) continue;
-        if (out == null || r.createdMs < out.createdMs) out = r;
+    for (final viaHandle in [false, true]) {
+      final cap = viaHandle ? maxPendingHandleRequests : maxPendingRequests;
+      while (true) {
+        final door = [
+          for (final r in requestsByRid.values)
+            if ((r.via != null) == viaHandle) r
+        ];
+        if (door.length <= cap) break;
+        PendingRequest? out;
+        for (final r in door) {
+          if (_requestsSeen.contains(r.rid)) continue;
+          if (out == null || r.createdMs < out.createdMs) out = r;
+        }
+        if (out == null) break;
+        await _removeRequest(out.rid);
       }
-      // Every one seen, which the newest arrival never is: the oldest.
-      out ??= requestsByRid.values
-          .reduce((a, b) => a.createdMs <= b.createdMs ? a : b);
-      await _removeRequest(out.rid);
     }
   }
 
@@ -2003,11 +2023,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// through. Dropped like any other from someone blocked; from a contact it
   /// is what a contact's request always is — their answer (ADR 0011). And
   /// held to what every other request is held to (ADR 0024): its signed
-  /// `ts`, the mark of the last request taken in from them — so a stamped
-  /// request the relay hands over again after a drain, or one declined, does
-  /// not come back — and the one cap on pending requests, which pushes out
-  /// the oldest unseen of every kind together. False when it was not filed,
-  /// or the cap pushed it straight out again.
+  /// `ts` and the mark of the last request taken in from them — so a
+  /// stamped request the relay hands over again after a drain, or one
+  /// declined, does not come back — and the cap on pending handle requests
+  /// ([maxPendingHandleRequests]), which pushes out the oldest unseen that
+  /// came through the handle and never one that came by a code or a link.
+  /// False when it was not filed, or the cap pushed it straight out again.
   @override
   Future<bool> addHandleRequest(ContactRequest request,
       {required String requesterRid, required String handle}) async {
