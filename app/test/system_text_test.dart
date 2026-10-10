@@ -61,6 +61,10 @@ void main() {
       SystemKind.linkDeclined,
       SystemKind.linkCancelled,
       SystemKind.handleAccepted,
+      SystemKind.groupTtlSetYou,
+      SystemKind.groupTtlSetBy,
+      SystemKind.groupTtlIs,
+      SystemKind.groupTtlDroppedBy,
     ];
     for (final k in kinds) {
       final out = systemText(

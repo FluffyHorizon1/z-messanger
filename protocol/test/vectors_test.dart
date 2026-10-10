@@ -48,6 +48,7 @@ void main() {
       ('v1', 'pairing'),
       ('v1', 'inner_messages'),
       ('v1', 'device_pop'),
+      ('v1', 'group_state'),
       ('pair-v2', 'pairing_v2'),
       ('relay-auth-v2', 'relay_auth_v2'),
       ('connect', 'connect'),

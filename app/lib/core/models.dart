@@ -656,6 +656,40 @@ class Group {
   /// owner.
   static const nobody = '-';
 
+  /// ADR 0030: the group's disappearing-messages timer, in seconds, as the
+  /// held list states it (`tmr`, PROTOCOL §11.2) — null when the list says
+  /// nothing, which reads as off. Part of the list, like the name, so every
+  /// member holding one list holds one timer. Once a group has had a timer
+  /// its lists carry it, `0` for off; a list from an admin whose app
+  /// predates group timers carries none, and turns it off (the screen says
+  /// so, and why).
+  int? tmr;
+
+  /// What every group message I send now carries as its `ttl` (§6.1).
+  int get ttlSec => tmr ?? 0;
+
+  /// [stateDigest] of the held list as its issuer sent it (ADR 0030): what
+  /// ranks two lists at one `(rolesVer, ver)` whose [digest]s are equal —
+  /// lists that differ only in what that digest leaves out, the timer and
+  /// the members' join positions. `''` in a record written before it.
+  String stateDigest;
+
+  /// ADR 0030: the position — `(rolesVer, ver)` of the list that added them —
+  /// at which each member joined, as the held list names them (an entry's
+  /// `e`); `''` is me. A member with none joined when the group was made,
+  /// or before positions were written: `(0, 0)`. Compared with [leftAt].
+  final Map<String, (int, int)> epochs;
+
+  /// ADR 0030: the leaves this device has heard — who left, and the
+  /// position of the membership they left (their [epochs] entry then, or
+  /// the one their leave states); `''` is my own. Kept across lists — it is
+  /// what no list says — and used to read a list that still names someone
+  /// who left: one naming them at that position or an earlier one was
+  /// issued before the leave reached its issuer, and they are left out of
+  /// it here; one that adds them back names them at its own, later
+  /// position. Let go of with the person, when their contact is deleted.
+  final Map<String, (int, int)> leftAt;
+
   Group({
     required this.gid,
     required this.name,
@@ -672,12 +706,78 @@ class Group {
     List<HeldList>? held,
     Map<String, Map<String, Object?>>? orphans,
     this.trimmed = false,
+    this.tmr,
+    this.stateDigest = '',
+    Map<String, (int, int)>? epochs,
+    Map<String, (int, int)>? leftAt,
   })  : adminRids = {...?adminRids, ownerRid},
         held = held ?? [],
-        orphans = orphans ?? {};
+        orphans = orphans ?? {},
+        epochs = epochs ?? {},
+        leftAt = leftAt ?? {};
 
   bool get iAmOwner => ownerRid.isEmpty;
   bool get iAmAdmin => adminRids.contains('');
+
+  /// The position nobody's join or leave is earlier than: a member since the
+  /// group was made (ADR 0030).
+  static const origin = (0, 0);
+
+  /// Orders two positions `(rolesVer, ver)` the way lists are ordered.
+  static int comparePos((int, int) a, (int, int) b) =>
+      a.$1 != b.$1 ? a.$1.compareTo(b.$1) : a.$2.compareTo(b.$2);
+
+  /// The later of two positions.
+  static (int, int) laterPos((int, int) a, (int, int) b) =>
+      comparePos(a, b) >= 0 ? a : b;
+
+  /// A position as the wire writes it (`e`, ADR 0030): `[rolesVer, ver]`.
+  static List<int> posJson((int, int) p) => [p.$1, p.$2];
+
+  /// A position read from the wire or the vault, or null when [v] is not one:
+  /// a list of exactly two whole numbers, neither negative nor above
+  /// [maxPosPart].
+  static (int, int)? posFrom(Object? v) {
+    if (v is! List || v.length != 2) return null;
+    final a = v[0], b = v[1];
+    if (a is! int || b is! int) return null;
+    if (a < 0 || b < 0 || a > maxPosPart || b > maxPosPart) return null;
+    return (a, b);
+  }
+
+  /// The largest part of a position: the bound a list's versions have.
+  static const maxPosPart = 1 << 52;
+
+  /// The digest that ranks two lists at one `(rv, ver)` whose [listDigest]s
+  /// are equal (ADR 0030, PROTOCOL §11.2): the unpadded base64url of
+  /// SHA-256 over [stateCanonical]'s UTF-8, computed from the list as it
+  /// travels. Only ever compared between lists §11.1's digest calls equal —
+  /// so two clients that do not read the timer, or the positions, rank
+  /// every pair they can tell apart exactly as before.
+  static String stateDigestOf(Map<String, Object?> data) => b64url(
+      const DartSha256().hashSync(utf8.encode(stateCanonical(data))).bytes);
+
+  /// The bytes [stateDigestOf] hashes: the compact JSON of `[tmr, positions]`
+  /// — `tmr` as the list has it (`null` where absent), and `positions` the
+  /// sorted strings `"<ed> <rv> <ver>"`, one for each member entry that
+  /// carries an `e` (its bundle's `ed`, then the two parts in decimal, a
+  /// space between each). Everything in it is ASCII. Pinned in
+  /// `docs/vectors/v1/group_state.json` (`group_timers_test` 8).
+  static String stateCanonical(Map<String, Object?> data) {
+    final ms = data['members'];
+    final positions = <String>[];
+    if (ms is List) {
+      for (final m in ms) {
+        if (m is! Map || m['b'] is! Map) continue;
+        final ed = (m['b'] as Map)['ed'];
+        final p = posFrom(m['e']);
+        if (ed is String && p != null) positions.add('$ed ${p.$1} ${p.$2}');
+      }
+    }
+    positions.sort();
+    final t = data['tmr'];
+    return jsonEncode([t is int ? t : null, positions]);
+  }
 
   /// The digest a list is ranked by among lists at one version, computed
   /// from the list exactly as it travels (`ginvite`'s data), so every device
@@ -736,6 +836,19 @@ class Group {
         if (held.isNotEmpty) 'held': [for (final h in held) h.toJson()],
         if (orphans.isNotEmpty) 'orphans': orphans,
         if (trimmed) 'trimmed': true,
+        if (tmr != null) 'tmr': tmr,
+        if (stateDigest.isNotEmpty) 'sdigest': stateDigest,
+        if (epochs.isNotEmpty)
+          'epochs': {for (final e in epochs.entries) e.key: posJson(e.value)},
+        if (leftAt.isNotEmpty)
+          'leftAt': {for (final e in leftAt.entries) e.key: posJson(e.value)},
+      };
+
+  static Map<String, (int, int)> _positions(Object? v) => {
+        if (v is Map)
+          for (final e in v.entries)
+            if (e.key is String && posFrom(e.value) != null)
+              e.key as String: posFrom(e.value)!
       };
 
   static Group fromJson(Map<String, Object?> j) {
@@ -784,6 +897,10 @@ class Group {
               e.key as String: (e.value as Map).cast<String, Object?>()
       },
       trimmed: j['trimmed'] == true,
+      tmr: (j['tmr'] as num?)?.toInt(),
+      stateDigest: j['sdigest'] as String? ?? '',
+      epochs: _positions(j['epochs']),
+      leftAt: _positions(j['leftAt']),
     );
   }
 }

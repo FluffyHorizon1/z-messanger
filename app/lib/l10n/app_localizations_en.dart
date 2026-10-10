@@ -1628,6 +1628,26 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String sysGroupTtlSetYou(String duration) {
+    return 'You set disappearing messages to $duration. A member whose app is older than this version keeps the messages, and theirs do not disappear.';
+  }
+
+  @override
+  String sysGroupTtlSetBy(String by, String duration) {
+    return '$by set disappearing messages to $duration. A member whose app is older than this version keeps the messages, and theirs do not disappear.';
+  }
+
+  @override
+  String sysGroupTtlIs(String duration) {
+    return 'Disappearing messages are on in this group: $duration. A member whose app is older than this version keeps the messages, and theirs do not disappear.';
+  }
+
+  @override
+  String sysGroupTtlDroppedBy(String by) {
+    return 'Disappearing messages are now off: $by\'s change to the group came without the group\'s timer. An app older than this version cannot carry it.';
+  }
+
+  @override
   String get sysAttachmentDiscarded =>
       'An attachment failed integrity checks and was discarded.';
 
@@ -2429,6 +2449,13 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get grpInviteByLinkNote =>
       'Works once, for 24 hours. Whoever opens it first becomes your contact, and joins this group once they agree. The link itself says nothing about the group.';
+
+  @override
+  String get grpTtlAdminsOnly => 'Only an admin can change this.';
+
+  @override
+  String get grpTtlOldBuild =>
+      'A member whose app is older than this version keeps the messages, and theirs do not disappear.';
 
   @override
   String get stHandleSection => 'Handle';

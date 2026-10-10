@@ -1019,29 +1019,31 @@ void main() {
       return id.routingId();
     }
 
-    // Two groups with the same name and the same members, grown one member
-    // at a time: one with three admins, one whose roles never changed — and
-    // so whose lists carry none of the three, exactly as before 0019. The
-    // second is renamed away and back so both stand at the same version, and
-    // each size is the real list the app sent to Mia for each.
+    // Two groups with the same name and the same members, for each size:
+    // one with three admins, one whose roles never changed — and so whose
+    // lists carry none of the three, exactly as before 0019. The second is
+    // renamed away and back so both stand at the same version, and each
+    // size is the real list the app sent to Mia for each. Both are made with
+    // all their members: a member added later is named at the position of
+    // the list that added them (ADR 0030, `e`), a dozen bytes that would
+    // move where each list meets a 256-byte padding boundary and blur what
+    // this weighs — the three roles members alone. What a position costs is
+    // `group_timers_test` 9's to weigh.
     final first = await phantom(1);
-    final roles =
-        await owen.createGroup('Weekend hiking club', [mia.myRid, first]);
-    await owen.promoteAdmin(roles, mia.myRid);
-    await owen.promoteAdmin(roles, first);
-    final plain =
-        await owen.createGroup('Weekend hiking club', [mia.myRid, first]);
-    await owen.renameGroup(plain, 'Weekend hiking cluB');
-    await owen.renameGroup(plain, 'Weekend hiking club');
-    expect(owen.groups[roles]!.adminRids.length, 3);
-    expect(owen.groups[plain]!.adminRids.length, 1);
+    final others = [first];
     final rows = <(int, int, int, int, int)>[];
     for (var n = 3; n <= 14; n++) {
-      if (n > 3) {
-        final rid = await phantom(n);
-        await owen.addGroupMembers(roles, [rid]);
-        await owen.addGroupMembers(plain, [rid]);
-      }
+      if (n > 3) others.add(await phantom(n));
+      final roles = await owen
+          .createGroup('Weekend hiking club', [mia.myRid, ...others]);
+      await owen.promoteAdmin(roles, mia.myRid);
+      await owen.promoteAdmin(roles, first);
+      final plain = await owen
+          .createGroup('Weekend hiking club', [mia.myRid, ...others]);
+      await owen.renameGroup(plain, 'Weekend hiking cluB');
+      await owen.renameGroup(plain, 'Weekend hiking club');
+      expect(owen.groups[roles]!.adminRids.length, 3);
+      expect(owen.groups[plain]!.adminRids.length, 1);
       expect(owen.groups[roles]!.memberRids.length + 1, n);
       expect(owen.groups[plain]!.ver, owen.groups[roles]!.ver);
       expect((await owen.debugInviteData(plain)).keys,

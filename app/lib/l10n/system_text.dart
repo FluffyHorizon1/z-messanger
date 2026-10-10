@@ -77,6 +77,13 @@ String systemText(AppLocalizations l, String body) {
     SystemKind.changeOverriddenBy =>
       l.sysChangeOverriddenBy(s('by', l.sysSomeone)),
     SystemKind.changeOverriddenMine => l.sysChangeOverriddenMine,
+    // A group's timer (ADR 0030).
+    SystemKind.groupTtlSetYou => l.sysGroupTtlSetYou(ttlText(l, n('sec'))),
+    SystemKind.groupTtlSetBy =>
+      l.sysGroupTtlSetBy(s('by', l.sysSomeone), ttlText(l, n('sec'))),
+    SystemKind.groupTtlIs => l.sysGroupTtlIs(ttlText(l, n('sec'))),
+    SystemKind.groupTtlDroppedBy =>
+      l.sysGroupTtlDroppedBy(s('by', l.sysSomeone)),
     // Group invite links (ADR 0020).
     SystemKind.addedFromLinkBy =>
       l.sysAddedFromLinkBy(s('by', l.sysSomeone), s('name', '')),

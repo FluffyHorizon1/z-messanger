@@ -1,0 +1,60 @@
+{
+  "suite": "group_state",
+  "version": 1,
+  "description": "ADR 0030: a group list's timer (`tmr`) and its members' join positions (`e`), and the state digest that ranks two lists at one (rv, ver) whose §11.1 digests are equal — SHA-256 of the compact JSON [tmr, positions], positions the sorted strings \"<ed> <rv> <ver>\" of the entries that carry one; plus a ginvite, a gleave and a gmsg carrying the new members.",
+  "lists": [
+    {
+      "list": "{\"gid\":\"gAAECAwQFBgcICQoL\",\"name\":\"Weekend plans\",\"ver\":6,\"owner\":\"pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc\",\"admins\":[\"dJimNfkvJl2ZeprzsyMTx_NoLdpaiutQVPLQhcKGA54\",\"pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc\"],\"rv\":1,\"members\":[{\"b\":{\"ed\":\"S7Z13k9jdqthc3Az1wFWDkQ0vh1nNlYq4puINbdjzSQ=\",\"x\":\"Yc+JXcGb60S9nN1Pj0RgCoIIyiMbaR/Vq/TY+vIbWTs=\",\"sig\":\"k3bvmTOtmRmyamu/nL5kZ/tzRAgBytSlvE7Bu1nTwwW89Wrnv2G/askKGFCqRelwoOCp+n4arsvkPiQsnofAAg==\",\"name\":\"Alice\"},\"n\":\"Alice\"},{\"b\":{\"ed\":\"ADoRIVFV9NRFqmMCtF+XkHm/O04IfJiWhw4JirZ5zMk=\",\"x\":\"p4Z+WAVtYDsw/mxK6AuNL0TqHYZdHOaqzshbxBk2B2M=\",\"sig\":\"P0clqgirTu1Y8fCkUMIGnJY9F4Kuh8iSMUICV/ufcazyfwoM+e0mAwMmmfnMdfN7ujkG837M2sGr8ypoMzuLBw==\",\"name\":\"Bob\"},\"n\":\"Bob\"}]}",
+      "digest": "LDa2onUNZcnElCY-StQBHs1ITvSeCnG1CMRnpGG7Zw8",
+      "state_canonical": "[null,[]]",
+      "state_canonical_hex": "5b6e756c6c2c5b5d5d",
+      "state_digest": "lylPBcNgOIGmRm54frhybd4EWI0kK-oCkUsPCo4SvbI"
+    },
+    {
+      "list": "{\"gid\":\"gAAECAwQFBgcICQoL\",\"name\":\"Weekend plans\",\"ver\":7,\"owner\":\"pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc\",\"admins\":[\"dJimNfkvJl2ZeprzsyMTx_NoLdpaiutQVPLQhcKGA54\",\"pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc\"],\"rv\":1,\"tmr\":3600,\"members\":[{\"b\":{\"ed\":\"S7Z13k9jdqthc3Az1wFWDkQ0vh1nNlYq4puINbdjzSQ=\",\"x\":\"Yc+JXcGb60S9nN1Pj0RgCoIIyiMbaR/Vq/TY+vIbWTs=\",\"sig\":\"k3bvmTOtmRmyamu/nL5kZ/tzRAgBytSlvE7Bu1nTwwW89Wrnv2G/askKGFCqRelwoOCp+n4arsvkPiQsnofAAg==\",\"name\":\"Alice\"},\"n\":\"Alice\"},{\"b\":{\"ed\":\"ADoRIVFV9NRFqmMCtF+XkHm/O04IfJiWhw4JirZ5zMk=\",\"x\":\"p4Z+WAVtYDsw/mxK6AuNL0TqHYZdHOaqzshbxBk2B2M=\",\"sig\":\"P0clqgirTu1Y8fCkUMIGnJY9F4Kuh8iSMUICV/ufcazyfwoM+e0mAwMmmfnMdfN7ujkG837M2sGr8ypoMzuLBw==\",\"name\":\"Bob\"},\"n\":\"Bob\"}]}",
+      "digest": "vMpT5yLQpABohUlqR7AlXuXc8JSuB7wGGVD47NaOy9M",
+      "state_canonical": "[3600,[]]",
+      "state_canonical_hex": "5b333630302c5b5d5d",
+      "state_digest": "WnZu00UQ-P4J_61pgaoAOF32JVOqNWq2PFS2gZSWx1Q"
+    },
+    {
+      "list": "{\"gid\":\"gAAECAwQFBgcICQoL\",\"name\":\"Weekend plans\",\"ver\":7,\"owner\":\"pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc\",\"admins\":[\"dJimNfkvJl2ZeprzsyMTx_NoLdpaiutQVPLQhcKGA54\",\"pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc\"],\"rv\":1,\"tmr\":60,\"members\":[{\"b\":{\"ed\":\"S7Z13k9jdqthc3Az1wFWDkQ0vh1nNlYq4puINbdjzSQ=\",\"x\":\"Yc+JXcGb60S9nN1Pj0RgCoIIyiMbaR/Vq/TY+vIbWTs=\",\"sig\":\"k3bvmTOtmRmyamu/nL5kZ/tzRAgBytSlvE7Bu1nTwwW89Wrnv2G/askKGFCqRelwoOCp+n4arsvkPiQsnofAAg==\",\"name\":\"Alice\"},\"n\":\"Alice\"},{\"b\":{\"ed\":\"ADoRIVFV9NRFqmMCtF+XkHm/O04IfJiWhw4JirZ5zMk=\",\"x\":\"p4Z+WAVtYDsw/mxK6AuNL0TqHYZdHOaqzshbxBk2B2M=\",\"sig\":\"P0clqgirTu1Y8fCkUMIGnJY9F4Kuh8iSMUICV/ufcazyfwoM+e0mAwMmmfnMdfN7ujkG837M2sGr8ypoMzuLBw==\",\"name\":\"Bob\"},\"n\":\"Bob\"}]}",
+      "digest": "vMpT5yLQpABohUlqR7AlXuXc8JSuB7wGGVD47NaOy9M",
+      "state_canonical": "[60,[]]",
+      "state_canonical_hex": "5b36302c5b5d5d",
+      "state_digest": "e4Fy0JQYqp1CNMDAkO5bgtYHeh2YZSDPjZStk7nx4yc"
+    },
+    {
+      "list": "{\"gid\":\"gAAECAwQFBgcICQoL\",\"name\":\"Weekend plans\",\"ver\":9,\"owner\":\"pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc\",\"admins\":[\"dJimNfkvJl2ZeprzsyMTx_NoLdpaiutQVPLQhcKGA54\",\"pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc\"],\"rv\":1,\"tmr\":0,\"members\":[{\"b\":{\"ed\":\"IcZbWlkK0aZV0gW8y6XvycKDOKLEpx4IZ0N0/K9HsdQ=\",\"x\":\"bt6yzyKFsEDYsQjupcTup2o5BQ2dwyMlogVjLr4lIjA=\",\"sig\":\"Pnd/OmFKw1ILLXvxd11j4m/7nSqml5uCcS48F8w0OvBzo6fapLkyUDm3jHTa+1GHQf/NYMAyvn6XLl7v5qzGCA==\",\"name\":\"Carol\"},\"n\":\"Carol\",\"e\":[1,8]},{\"b\":{\"ed\":\"S7Z13k9jdqthc3Az1wFWDkQ0vh1nNlYq4puINbdjzSQ=\",\"x\":\"Yc+JXcGb60S9nN1Pj0RgCoIIyiMbaR/Vq/TY+vIbWTs=\",\"sig\":\"k3bvmTOtmRmyamu/nL5kZ/tzRAgBytSlvE7Bu1nTwwW89Wrnv2G/askKGFCqRelwoOCp+n4arsvkPiQsnofAAg==\",\"name\":\"Alice\"},\"n\":\"Alice\"},{\"b\":{\"ed\":\"ADoRIVFV9NRFqmMCtF+XkHm/O04IfJiWhw4JirZ5zMk=\",\"x\":\"p4Z+WAVtYDsw/mxK6AuNL0TqHYZdHOaqzshbxBk2B2M=\",\"sig\":\"P0clqgirTu1Y8fCkUMIGnJY9F4Kuh8iSMUICV/ufcazyfwoM+e0mAwMmmfnMdfN7ujkG837M2sGr8ypoMzuLBw==\",\"name\":\"Bob\"},\"n\":\"Bob\",\"e\":[0,3]}]}",
+      "digest": "0_B9r5orECMLR5BOq4hRnZgt_Xf0vO-zNKVvlpDvvqI",
+      "state_canonical": "[0,[\"ADoRIVFV9NRFqmMCtF+XkHm/O04IfJiWhw4JirZ5zMk= 0 3\",\"IcZbWlkK0aZV0gW8y6XvycKDOKLEpx4IZ0N0/K9HsdQ= 1 8\"]]",
+      "state_canonical_hex": "5b302c5b2241446f5249564656394e5246716d4d4374462b586b486d2f4f303449664a69576877344a69725a357a4d6b3d20302033222c2249635a62576c6b4b30615a56306757387936587679634b444f4b4c45707834495a304e302f4b39487364513d20312038225d5d",
+      "state_digest": "tTrD7iEEpz1C9uVUVQsTF2jjzZmZ5P86Q9DJPPTZETQ"
+    }
+  ],
+  "tie": {
+    "a": 1,
+    "b": 2,
+    "first": 1
+  },
+  "inner": [
+    {
+      "kind": "ginvite",
+      "json": "{\"k\":\"ginvite\",\"mid\":\"mid-ginvite-tmr\",\"ts\":1700000000000,\"gid\":\"gAAECAwQFBgcICQoL\",\"name\":\"Weekend plans\",\"ver\":9,\"owner\":\"pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc\",\"admins\":[\"dJimNfkvJl2ZeprzsyMTx_NoLdpaiutQVPLQhcKGA54\",\"pwnQdedBLdC-_cFDDHCSdsM8sFMZpCY89O0xbYsOuWc\"],\"rv\":1,\"tmr\":0,\"members\":[{\"b\":{\"ed\":\"IcZbWlkK0aZV0gW8y6XvycKDOKLEpx4IZ0N0/K9HsdQ=\",\"x\":\"bt6yzyKFsEDYsQjupcTup2o5BQ2dwyMlogVjLr4lIjA=\",\"sig\":\"Pnd/OmFKw1ILLXvxd11j4m/7nSqml5uCcS48F8w0OvBzo6fapLkyUDm3jHTa+1GHQf/NYMAyvn6XLl7v5qzGCA==\",\"name\":\"Carol\"},\"n\":\"Carol\",\"e\":[1,8]},{\"b\":{\"ed\":\"S7Z13k9jdqthc3Az1wFWDkQ0vh1nNlYq4puINbdjzSQ=\",\"x\":\"Yc+JXcGb60S9nN1Pj0RgCoIIyiMbaR/Vq/TY+vIbWTs=\",\"sig\":\"k3bvmTOtmRmyamu/nL5kZ/tzRAgBytSlvE7Bu1nTwwW89Wrnv2G/askKGFCqRelwoOCp+n4arsvkPiQsnofAAg==\",\"name\":\"Alice\"},\"n\":\"Alice\"},{\"b\":{\"ed\":\"ADoRIVFV9NRFqmMCtF+XkHm/O04IfJiWhw4JirZ5zMk=\",\"x\":\"p4Z+WAVtYDsw/mxK6AuNL0TqHYZdHOaqzshbxBk2B2M=\",\"sig\":\"P0clqgirTu1Y8fCkUMIGnJY9F4Kuh8iSMUICV/ufcazyfwoM+e0mAwMmmfnMdfN7ujkG837M2sGr8ypoMzuLBw==\",\"name\":\"Bob\"},\"n\":\"Bob\",\"e\":[0,3]}]}",
+      "bytes": "7b226b223a2267696e76697465222c226d6964223a226d69642d67696e766974652d746d72222c227473223a313730303030303030303030302c22676964223a226741414543417751464267634943516f4c222c226e616d65223a225765656b656e6420706c616e73222c22766572223a392c226f776e6572223a2270776e51646564424c64432d5f6346444448435364734d3873464d5a70435938394f30786259734f755763222c2261646d696e73223a5b22644a696d4e666b764a6c325a6570727a73794d54785f4e6f4c6470616975745156504c5168634b47413534222c2270776e51646564424c64432d5f6346444448435364734d3873464d5a70435938394f30786259734f755763225d2c227276223a312c22746d72223a302c226d656d62657273223a5b7b2262223a7b226564223a2249635a62576c6b4b30615a56306757387936587679634b444f4b4c45707834495a304e302f4b39487364513d222c2278223a22627436797a794b467345445973516a757063547570326f354251326477794d6c6f67566a4c72346c496a413d222c22736967223a22506e642f4f6d464b7731494c4c5876786431316a346d2f376e53716d6c35754363533438463877304f76427a6f366661704c6b7955446d336a4854612b31474851662f4e594d4179766e36584c6c377635717a4743413d3d222c226e616d65223a224361726f6c227d2c226e223a224361726f6c222c2265223a5b312c385d7d2c7b2262223a7b226564223a2253375a31336b396a647174686333417a31774657446b51307668316e4e6c5971347075494e62646a7a53513d222c2278223a2259632b4a58634762363053396e4e31506a305267436f494979694d6261522f56712f54592b7649625754733d222c22736967223a226b3362766d544f746d526d79616d752f6e4c356b5a2f747a524167427974536c7645374275316e54777757383957726e7632472f61736b4b4746437152656c776f4f43702b6e34617273766b506951736e6f664141673d3d222c226e616d65223a22416c696365227d2c226e223a22416c696365227d2c7b2262223a7b226564223a2241446f5249564656394e5246716d4d4374462b586b486d2f4f303449664a69576877344a69725a357a4d6b3d222c2278223a2270345a2b57415674594473772f6d784b3641754e4c30547148595a64484f61717a73686278426b3242324d3d222c22736967223a225030636c71676972547531593866436b554d49476e4a593946344b75683869534d554943562f756663617a7966776f4d2b65306d41774d6d6d666e4d64664e37756a6b473833374d327347723879706f4d7a754c42773d3d222c226e616d65223a22426f62227d2c226e223a22426f62222c2265223a5b302c335d7d5d7d",
+      "tmr": 0,
+      "state_digest": "tTrD7iEEpz1C9uVUVQsTF2jjzZmZ5P86Q9DJPPTZETQ"
+    },
+    {
+      "kind": "gleave",
+      "json": "{\"k\":\"gleave\",\"mid\":\"mid-gleave-e\",\"ts\":1700000000000,\"gid\":\"gAAECAwQFBgcICQoL\",\"e\":[1,8]}",
+      "bytes": "7b226b223a22676c65617665222c226d6964223a226d69642d676c656176652d65222c227473223a313730303030303030303030302c22676964223a226741414543417751464267634943516f4c222c2265223a5b312c385d7d"
+    },
+    {
+      "kind": "gmsg",
+      "json": "{\"k\":\"gmsg\",\"mid\":\"mid-gmsg-ttl\",\"ts\":1700000000000,\"ttl\":3600,\"gid\":\"gAAECAwQFBgcICQoL\",\"body\":\"gone in an hour\"}",
+      "bytes": "7b226b223a22676d7367222c226d6964223a226d69642d676d73672d74746c222c227473223a313730303030303030303030302c2274746c223a333630302c22676964223a226741414543417751464267634943516f4c222c22626f6479223a22676f6e6520696e20616e20686f7572227d",
+      "ttl": 3600
+    }
+  ]
+}

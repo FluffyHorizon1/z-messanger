@@ -811,10 +811,10 @@ Unknown kinds MUST be ignored.
 | `read` | `mids:[string]` | read receipts |
 | `dlv` | `mids:[string]` | end‑to‑end delivery receipts (§6.3) |
 | `devlist` | `list:string` (the JSON of §3.4, as a string) | account device‑set update — or, answering a `pdlreq`, the list the sender holds for the RECEIVER's account (§3.6, ADR 0026), told apart by its `acct` and installed nowhere |
-| `ginvite` | `gid, name, ver:int, members:[{ "b":ContactBundleJSON, "n":string }]`, opt. `owner:string, admins:[string], rv:int` | group create/update (§11); `owner`/`admins` = who may issue lists, `rv` = the version of those roles — left out while the group's roles have never changed (§11.1) |
+| `ginvite` | `gid, name, ver:int, members:[{ "b":ContactBundleJSON, "n":string }]`, opt. `owner:string, admins:[string], rv:int`, `tmr:int`; each member entry opt. `e:[int,int]` | group create/update (§11); `owner`/`admins` = who may issue lists, `rv` = the version of those roles — left out while the group's roles have never changed (§11.1); `tmr` = the group's disappearing-messages timer, in seconds, once it has had one, and an entry's `e` the position `[rv, ver]` of the list that added that member, for one added after the group was made (§11.2) |
 | `gmsg` | `gid, body`, opt. `rt` | group text (§11) |
 | `gfile` | `gid` + the `file` members, opt. `rt` | group attachment offer (§7, §11) |
-| `gleave` | `gid` | sender left the group (§11) |
+| `gleave` | `gid`, opt. `e:[int,int]` | sender left the group (§11); `e` = the position of the membership it ends, `[0, 0]` included — absent only from a client before ADR 0030 (§11.2) |
 | `gsync` | `gid` | "send me what you hold for this group": asked by a member that had to refuse a list, of the owner and of any admin it may have missed the leave of (§11.1); answered with the asked admin's `ginvite`, and its `gleave` if it has left |
 | `pqek` | `alg:"ML-KEM-768", ek:b64` | v2 post‑quantum key offer (§17); consumed by the session layer, never shown |
 | `pqid` | `alg:"ML-DSA-65", pk:b64`, opt. `ack:true` | v3 post‑quantum identity key (§18.2); checked against the commitment from the scanned code, or kept as a candidate when none is held. `ack` = the sender holds the receiver's key |
@@ -1560,6 +1560,8 @@ tell group messages from direct ones.
   member, sends nothing and takes nothing from. A
   list that no longer includes the receiver means they were removed.
 * `gmsg` is accepted only from a current member of a known, not‑left group.
+  With the group's timer on, it carries the timer as its `ttl` (§6.1,
+  §11.2), as `gfile` does.
 * `gfile` is a group attachment offer under the same rule: one file key and
   one set of chunks (§7), the offer sent to every member over their pairwise
   session and the chunks queued for every member's mailbox. A member removed
@@ -1569,7 +1571,10 @@ tell group messages from direct ones.
   roles (§11.1). (Before ADR 0019 the admin bumped `ver` here. With more than
   one admin that holds one list at two versions — ahead on admins' devices —
   and a co‑admin's change made before it heard of the leave is refused by
-  every admin and taken by every member.)
+  every admin and taken by every member.) Since ADR 0030 the receiver also
+  remembers it, so that a list issued before the leave reached its issuer
+  does not put the leaver back; and a leave of a membership a list adding
+  them back has since replaced on the receiver removes nobody (§11.2).
 * A `ginvite` or `gleave` goes to each member like any other group message,
   and an implementation SHOULD record it for every recipient before sending
   any (the reference client queues it in `group_fanout`, §11's fan‑out,
@@ -1593,8 +1598,10 @@ the pairwise channel of an admin the receiver holds; a removed member keeps
 the history they already received but every remaining member rejects anything
 they send afterwards; a message reaches the members the sender's current list
 names, so two members with different versions can briefly disagree — and an
-admin's list issued before it heard of a leave names the leaver, so it puts
-them back, on the leaver's own device as on everyone's (THREAT_MODEL R38).
+admin's list issued before it heard of a leave still names the leaver, which
+every device that has heard the leave reads without them, the leaver's own
+staying out (§11.2; until ADR 0030 it put them back everywhere, THREAT_MODEL
+R38).
 
 ### 11.1 Roles (ADR 0019)
 
@@ -1634,7 +1641,8 @@ which role travels in the list itself:
   does not: the **owner** of a group whose roles have never changed (it is
   the only admin and `rv` is 0) leaves all three out, so its lists are byte
   for byte what a client before ADR 0019 sends, and the relay sees the
-  envelope it always saw. Every other list carries all three — the owner's
+  envelope it always saw — but for §11.2's timer and positions, which say
+  something of their own. Every other list carries all three — the owner's
   too, once `rv` has moved, even if the admins are back to the owner alone,
   since an omission would read as `rv` 0. Receivers need no rule for this:
   anyone else who leaves them out is claiming "I own the group and am its
@@ -1765,7 +1773,125 @@ which role travels in the list itself:
   sealed envelope with three admins — one member entry — so an invite fits
   the 4 096‑byte bucket up to 6 members (7 for a group with no role changes)
   and needs the 16 384‑byte bucket from there;
-  `app/test/group_roles_test.dart` 11 prints the table.
+  `app/test/group_roles_test.dart` 11 prints the table, for groups made with
+  all their members. A member added later carries a position (§11.2), about
+  ten bytes each — from five members, one 256‑byte padding block more than
+  the same group made at once (`app/test/group_timers_test.dart` 9 prints
+  that table too).
+
+### 11.2 Group timers, and leaves remembered (ADR 0030)
+
+**The group's timer.**
+
+* `tmr`, an optional member of `ginvite`, is the group's disappearing‑messages
+  timer in seconds: a whole number from 0 to 2³¹ − 1, and a list whose `tmr`
+  is anything else is refused, as one whose version is not a whole number is
+  (§11.1). It is part of the list, as `name` is. Whoever may issue a list may
+  change it — the owner and the admins — and a change is a list at the next
+  `ver`, ordered and applied by §11.1's rules like any other. A receiver
+  holds the timer the list it accepts states, and a list without `tmr`
+  states that it is off: every member that holds one list holds one timer.
+* A sender writes `tmr` once its group has had a timer — `0` once it is
+  turned off — and not before, so a group that never had one sends what it
+  sent before ADR 0030.
+* While the group's timer is on, every group message (`gmsg`, `gfile`) a
+  client sends carries it as its `ttl` (§6.1) — on every device of every
+  member, a linked device holding the list as its account does. The sender's
+  copy, and its self‑sync mirror (§9), go `ttl` seconds after the message's
+  `ts`; every other copy `ttl` seconds after it arrives. A receiver keeps the
+  `ttl` a group message carries, whatever timer it holds itself: it is the
+  sender's timer at the moment of sending, as in a 1:1 chat.
+* A client from before ADR 0030 ignores `tmr`, and a group message's `ttl`.
+  It keeps every group message, and what it sends carries no timer, so no
+  receiver times it; and a list it issues as an admin carries no `tmr`, and
+  so turns the timer off. A client SHOULD say so: in every notice of a timer
+  (the reference client: "A member whose app is older than this version
+  keeps the messages, and theirs do not disappear"), and of a timer turned
+  off by a list without `tmr` as what happened, never as "turned off". That is the
+  honest limit — the timer is a courtesy among clients that keep it
+  (THREAT_MODEL R13).
+
+**Positions, and leaves remembered.**
+
+* A member entry MAY carry `e`, `[rv, ver]`: the **position** of the list
+  that added that member — two whole numbers within a version's bounds,
+  compared as `(rv, ver)` is; a list whose `e` is not that shape is refused.
+  An entry without it names someone who has been a member since the group
+  was made, position `[0, 0]`. A list that adds members after the group was
+  made names each of them at its own `[rv, ver]`, and every later list names
+  each member at the position its issuer holds for them.
+* A `gleave` carries `e`: the position of the membership it ends, as the
+  leaver's own device holds it. A client following ADR 0030 always writes
+  it, `[0, 0]` included; a `gleave` without it is from a client before ADR
+  0030, and ends the membership the receiver holds.
+* A receiver **remembers** every leave it hears, per group and account, at
+  the position of the membership it ends — never earlier than a leave it
+  remembered before — across lists and restarts; for someone it holds in the
+  group or has known in it, and for nobody else. A leave that states an
+  earlier position than the one the receiver holds the leaver at ends a
+  membership that a list adding them back has replaced there, the list
+  having arrived first: the receiver remembers it, and keeps them in the
+  group, as a receiver that read the two the other way round does.
+* A list that names someone this device has heard leave, at the position the
+  leave is remembered at or an earlier one, was issued before that leave
+  reached its issuer: a list that adds them back names them at its own
+  position, which is later — a list is accepted only above the one held, and
+  the one held named them where they left. Such a list passes §11.1's checks
+  as its issuer wrote it, and is then taken for everything else, **without
+  them**. Every device that heard the leave reads it so, whichever of the two
+  arrived first, and they hold the same members; a device that never heard
+  the leave holds the leaver until a list without them, as every device did
+  before ADR 0030 (THREAT_MODEL R38). Its own sender is never read so: the
+  list was taken from them because the held list has them in the group.
+* The leaver's own devices remember the leave too. A list naming the leaver
+  at that position or earlier is taken there as on every other device,
+  without them: the group stays left, nothing is said, and the list held
+  ranks the next one as everywhere else, so a list adding the leaver back
+  that ranks below it does not bring them back there either. A list naming
+  them later adds them back, and says by whom. A list from one of the
+  leaver's own other devices can only be of the first kind — a client never
+  adds its own account back — and is not taken. A device added back after
+  its leave that meets a newer list from before the leave is taken out of the
+  group by it, as every other device that heard the leave takes that list
+  without it. A copy of the leaver's own leave, from another of their
+  devices, that states an earlier position than the one a device of theirs
+  holds them at is a leave of an earlier membership, as above: that device
+  remembers it and stays in the group.
+* So the snapshot property (§11, 15.3) holds: the rule only ever leaves a
+  member out, and what a device queues afterwards, snapshotted from the list
+  it holds, reaches nobody who had left by the time it heard of it.
+* Deleting a contact lets go of their leave with the rest of them
+  (`DATA_MAP.md`); a list still naming them may then bring them back on that
+  device.
+
+**Ranking.** Two lists at one `(rv, ver)` whose §11.1 digests are equal — the
+same list, or two that differ only in what that digest leaves out, the timer
+and the positions — are ranked by a second digest, the **state digest**: the
+one that sorts first wins, and the same one again changes nothing. Without
+it, two admins setting two timers on one list at once left every member
+holding whichever reached it first, for good. The state digest is SHA‑256 of
+the UTF‑8 of the compact JSON text `[tmr, positions]`: `tmr` as the list has
+it, `null` where it is absent; `positions` the strings `"<ed> <rv> <ver>"`,
+one for each member entry that carries `e` — the entry's bundle `ed`, then the
+two parts in plain decimal, a single space before each — sorted. It is
+written as unpadded base64url, and two compare as ASCII strings. Everything
+in the text is ASCII. A client from before ADR 0030 compares §11.1's digest
+alone, and so ranks every pair it can tell apart exactly as a newer one does:
+two lists it cannot tell apart are, to it, one list.
+`docs/vectors/v1/group_state.json` records the text, its bytes and the digest
+for four lists — two of them the tie the state digest exists for — and a
+`ginvite`, a `gleave` and a `gmsg` that carry the new members.
+
+**Compatibility.** `tmr`, `e` and a group message's `ttl` are optional
+members of existing kinds (§14): no version bump. A client from before ADR
+0030 reads every list as it always did, so it still puts a leaver back from
+a list issued before the leave, and the lists it issues carry no positions:
+an admin on such a build adds a leaver back on its own device and on other
+older ones, and on no device that remembers the leave, until an admin on a
+newer build adds them back; and since it names every member at no position,
+any change it makes to the group is read, on every device that remembers a
+member's leave, as a list from before that leave — a member who left and
+was added back is taken out by it there, their own device included.
 
 ## 12. Relay protocol
 

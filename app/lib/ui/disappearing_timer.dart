@@ -11,10 +11,15 @@ import 'theme.dart';
 /// cannot disagree (which the chat picker's own comment promised, while the
 /// contact row was a read-only `ListTile` with no `onTap` and never opened it:
 /// the 2026-09-14 review sweep's dead-control finding).
+///
+/// [rid] may be a group's id (ADR 0030): the same sheet sets the group's
+/// timer, for an admin — the service refuses anyone else — and says what a
+/// member on an older version does with it.
 Future<void> pickDisappearingTimer(BuildContext context, String rid) async {
   final svc = context.read<ChatService>();
   final l = AppLocalizations.of(context);
-  final current = svc.contacts[rid]?.ttlSec ?? 0;
+  final group = svc.groups[rid];
+  final current = group?.ttlSec ?? svc.contacts[rid]?.ttlSec ?? 0;
   // Labelled through the same function that describes the setting elsewhere,
   // so the picker and the contact screen cannot disagree.
   final options = <(int, String)>[
@@ -33,6 +38,13 @@ Future<void> pickDisappearingTimer(BuildContext context, String rid) async {
             child: Text(l.disappearingMessages,
                 style: const TextStyle(fontWeight: FontWeight.w700)),
           ),
+          if (group != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(l.grpTtlOldBuild,
+                  style: TextStyle(
+                      fontSize: 12, color: context.z.textSecondary)),
+            ),
           for (final (sec, label) in options)
             ListTile(
               leading: Icon(
@@ -50,6 +62,10 @@ Future<void> pickDisappearingTimer(BuildContext context, String rid) async {
     ),
   );
   if (chosen != null && chosen != current) {
-    await svc.setDisappearingTimer(rid, chosen);
+    if (group != null) {
+      await svc.setGroupTimer(rid, chosen);
+    } else {
+      await svc.setDisappearingTimer(rid, chosen);
+    }
   }
 }

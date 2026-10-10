@@ -251,7 +251,11 @@ class _ChatTile extends StatelessWidget {
               child: Icon(Icons.gpp_maybe_outlined,
                   size: 14, color: context.z.danger),
             ),
-          if (c != null && c.ttlSec > 0)
+          // A group's timer too (ADR 0030), while this device is in it.
+          if ((c?.ttlSec ?? 0) > 0 ||
+              (summary.group != null &&
+                  !summary.group!.left &&
+                  summary.group!.ttlSec > 0))
             Padding(
               padding: EdgeInsets.only(left: 6),
               child:

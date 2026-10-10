@@ -456,6 +456,20 @@ A member still on a version of Z from before admins existed follows only the
 person who added them, until they update — and Z already tells them they are
 behind.
 
+**Disappearing messages** work in a group too. An admin sets the timer — on
+the group's screen, or from the timer at the top of its chat — and everyone
+is told who set it. From then on every message anyone sends to the group,
+from any of their devices, disappears that long after it was sent on the
+sender's devices, and that long after it arrived on everyone else's. A
+member still on a version of Z from before group timers keeps the messages,
+and theirs do not disappear: Z says so whenever a timer is set, because it
+cannot tell who that is.
+
+**Leaving is leaving.** If you leave a group, a change an admin made before
+they heard you had gone does not put you back in it, on your devices or
+anyone's who heard you leave. Only an admin adding you again does — and your
+phone tells you who.
+
 Someone you blocked stays blocked in a group too. If they are in one you are
 in, the group lists them, but your messages to it do not reach them and
 theirs do not reach you; and if they take an invite of yours — a group link
@@ -508,8 +522,8 @@ key to your group, sitting in whatever chat history it ended up in.
 
 ## Disappearing messages
 
-Set a timer per conversation and messages delete on both sides when it
-expires — on every device on both sides: a copy on your other device, a
+Set a timer per conversation — in a group, an admin sets it for everyone
+(see Groups) — and messages delete on both sides when it expires — on every device on both sides: a copy on your other device, a
 message sent from a contact's other device, and the history a newly linked
 device receives all keep the timer. A timer set on any device — yours or
 theirs — is set on every device of you both, one either of you links later

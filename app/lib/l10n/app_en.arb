@@ -2070,6 +2070,14 @@
       }
     }
   },
+  "sysGroupTtlSetYou": "You set disappearing messages to {duration}. A member whose app is older than this version keeps the messages, and theirs do not disappear.",
+  "@sysGroupTtlSetYou": {"description": "System message in a group (ADR 0030): the user, an admin, set the group's disappearing-messages timer. {duration} is already in words, e.g. '5 minutes'. The second sentence is load-bearing: a member on an older build ignores the timer, keeps every message and sends messages that never disappear; the app cannot tell who that is.", "placeholders": {"duration": {"type": "String"}}},
+  "sysGroupTtlSetBy": "{by} set disappearing messages to {duration}. A member whose app is older than this version keeps the messages, and theirs do not disappear.",
+  "@sysGroupTtlSetBy": {"description": "System message in a group (ADR 0030): the admin {by} (a contact) set the group's disappearing-messages timer. {duration} is already in words. The second sentence is load-bearing: a member on an older build ignores the timer.", "placeholders": {"by": {"type": "String"}, "duration": {"type": "String"}}},
+  "sysGroupTtlIs": "Disappearing messages are on in this group: {duration}. A member whose app is older than this version keeps the messages, and theirs do not disappear.",
+  "@sysGroupTtlIs": {"description": "System message in a group (ADR 0030) the user was just added to, or added back to, that already has a disappearing-messages timer. {duration} is already in words. The second sentence is load-bearing: a member on an older build ignores the timer.", "placeholders": {"duration": {"type": "String"}}},
+  "sysGroupTtlDroppedBy": "Disappearing messages are now off: {by}'s change to the group came without the group's timer. An app older than this version cannot carry it.",
+  "@sysGroupTtlDroppedBy": {"description": "System message in a group (ADR 0030): the admin {by} changed the group (an add, a removal, a rename) with a list that carried no timer, which turns the group's timer off — their app predates group timers, or had not heard of this timer. Said instead of 'turned off', which they did not choose to do.", "placeholders": {"by": {"type": "String"}}},
   "sysAttachmentDiscarded": "An attachment failed integrity checks and was discarded.",
   "@sysAttachmentDiscarded": {
     "description": "System message when an inbound attachment's authentication failed. 'discarded' is deliberate — nothing unverified was kept."
@@ -2836,6 +2844,10 @@
   "@grpInviteByLink": {"description": "ADR 0020, button on the group info screen for anyone who may add members: makes a one-time connect invite that also brings whoever opens it into this group."},
   "grpInviteByLinkNote": "Works once, for 24 hours. Whoever opens it first becomes your contact, and joins this group once they agree. The link itself says nothing about the group.",
   "@grpInviteByLinkNote": {"description": "ADR 0020, note under the invite-by-link button. Load-bearing: one-time and 24 hours; the bearer-token fact that whoever opens it first is who joins; and that the link carries nothing about the group."},
+  "grpTtlAdminsOnly": "Only an admin can change this.",
+  "@grpTtlAdminsOnly": {"description": "ADR 0030, under the group's disappearing-messages row on the group info screen, for a member who is not an admin: the timer is changed by whoever may change the group."},
+  "grpTtlOldBuild": "A member whose app is older than this version keeps the messages, and theirs do not disappear.",
+  "@grpTtlOldBuild": {"description": "ADR 0030, in the disappearing-messages picker for a group: the honest limit — a member on an older build ignores the group's timer, keeps every message, and what they send never disappears."},
   "stHandleSection": "Handle",
   "@stHandleSection": {"description": "Settings section header (phase 38): the account's handle, a name people can find you by."},
   "hdlYourHandle": "Your handle",

@@ -56,6 +56,18 @@ abstract final class SystemKind {
   /// of my own account, made there before the two had synced.
   static const changeOverriddenMine = 'change_overridden_mine';
 
+  // A group's disappearing-messages timer (ADR 0030, 23.4) — set by an
+  // admin, carried in the list. Each says what a member on an older version
+  // does with it; turning it off is said with the 1:1 kinds above
+  // (`ttl_off_you`, and `ttl_off_them` naming the admin).
+  static const groupTtlSetYou = 'gttl_set_you'; // sec
+  static const groupTtlSetBy = 'gttl_set_by'; // by?, sec
+  // sec — the group I was just added to, or added back to, has a timer
+  static const groupTtlIs = 'gttl_is';
+  // by? — a list that carried no timer turned it off: an admin's app from
+  // before group timers, or one that had not heard of this timer
+  static const groupTtlDroppedBy = 'gttl_dropped_by';
+
   // Group invite links (ADR 0020). The joiner's line, in the group, names
   // who added them and which group, from the link they opened; the rest are
   // the inviter's own, in the group the link was for — local text, never

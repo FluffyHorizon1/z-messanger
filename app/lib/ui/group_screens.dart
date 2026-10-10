@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/ttl_text.dart';
 import 'package:provider/provider.dart';
 
 import '../core/chat_service.dart';
@@ -11,6 +12,7 @@ import '../core/models.dart';
 import 'add_contact_screen.dart';
 import 'chat_screen.dart';
 import 'contact_info_screen.dart' show MessagePqNotice;
+import 'disappearing_timer.dart';
 import 'theme.dart';
 
 /// Pick a name and members (from existing contacts) and create the group.
@@ -584,6 +586,37 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
             ),
           ),
           const SizedBox(height: 14),
+          // ADR 0030: the group's disappearing-messages timer. It is part of
+          // the list, like the name, so whoever may change the group sets
+          // it; everyone else sees it.
+          if (!g.left) ...[
+            Card(
+              color: context.z.surface,
+              child: ListTile(
+                leading: Icon(
+                  g.ttlSec > 0 ? Icons.timer : Icons.timer_outlined,
+                  color: g.ttlSec > 0
+                      ? context.z.accent
+                      : context.z.textSecondary,
+                ),
+                title: Text(l.disappearingMessages),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(ttlText(l, g.ttlSec)),
+                    if (!chat.mayIssueGroupList(g.gid, ''))
+                      Text(l.grpTtlAdminsOnly,
+                          style: TextStyle(
+                              fontSize: 12, color: context.z.textSecondary)),
+                  ],
+                ),
+                onTap: chat.mayIssueGroupList(g.gid, '')
+                    ? () => pickDisappearingTimer(context, g.gid)
+                    : null,
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
           // 26.3: which members' channels are not post-quantum yet. A group
           // message is a pairwise copy per member, so the group is exactly
           // as post-quantum as its weakest channel, and that one is named.

@@ -2470,6 +2470,174 @@ Future<Map<String, Object?>> suiteInnerMessages(List<Actor> a) async {
   };
 }
 
+/// ADR 0030 (PROTOCOL §11.2): a group's timer and its members' join
+/// positions, as the lists carry them, and the state digest that ranks two
+/// lists §11.1's digest calls equal — computed here from the section's own
+/// words, sharing no code with the client (`app/test/group_timers_test` 8
+/// checks the client against this file). Appended as a file of its own: the
+/// files already in `v1/` are untouched.
+Future<Map<String, Object?>> suiteGroupState(List<Actor> a) async {
+  const ts = 1700000000000;
+  const gid = 'gAAECAwQFBgcICQoL';
+  final alice = (await a[0].id.bundle(displayName: 'Alice')).toJson();
+  final bob = (await a[1].id.bundle(displayName: 'Bob')).toJson();
+  final carol = (await a[2].id.bundle(displayName: 'Carol')).toJson();
+  final roles = {
+    'owner': a[0].rid,
+    'admins': [a[0].rid, a[1].rid]..sort(),
+    'rv': 1,
+  };
+  final lists = <Map<String, Object?>>[
+    // A list as every client before ADR 0030 writes it: no timer, nobody
+    // added after the group was made.
+    {
+      'gid': gid,
+      'name': 'Weekend plans',
+      'ver': 6,
+      ...roles,
+      'members': [
+        {'b': alice, 'n': 'Alice'},
+        {'b': bob, 'n': 'Bob'},
+      ],
+    },
+    // The same list, and the next version, set to an hour by one admin...
+    {
+      'gid': gid,
+      'name': 'Weekend plans',
+      'ver': 7,
+      ...roles,
+      'tmr': 3600,
+      'members': [
+        {'b': alice, 'n': 'Alice'},
+        {'b': bob, 'n': 'Bob'},
+      ],
+    },
+    // ...and to a minute by another, at that same version: one list to
+    // §11.1's digest, which leaves the timer out; the state digest decides.
+    {
+      'gid': gid,
+      'name': 'Weekend plans',
+      'ver': 7,
+      ...roles,
+      'tmr': 60,
+      'members': [
+        {'b': alice, 'n': 'Alice'},
+        {'b': bob, 'n': 'Bob'},
+      ],
+    },
+    // Carol, who left, added back by the list at (1, 8) — so she is named at
+    // that position — and Bob, added by the list at (0, 3), with the timer
+    // since turned off, which the list says as `0`; the entries arrive in
+    // the opposite order to the one their positions sort in.
+    {
+      'gid': gid,
+      'name': 'Weekend plans',
+      'ver': 9,
+      ...roles,
+      'tmr': 0,
+      'members': [
+        {
+          'b': carol,
+          'n': 'Carol',
+          'e': [1, 8],
+        },
+        {'b': alice, 'n': 'Alice'},
+        {
+          'b': bob,
+          'n': 'Bob',
+          'e': [0, 3],
+        },
+      ],
+    },
+  ];
+  String digestText(Map<String, Object?> d) {
+    final admins = d['admins'] as List?;
+    return jsonEncode([
+      d['gid'],
+      d['name'],
+      d['ver'],
+      d['rv'],
+      d['owner'],
+      admins == null ? null : ([...admins.cast<String>()]..sort()),
+      [
+        for (final m in d['members'] as List)
+          ((m as Map)['b'] as Map)['ed'] as String
+      ]..sort(),
+    ]);
+  }
+
+  // §11.2: `[tmr, positions]` — the timer or null, and for each member
+  // entry carrying `e` the string `<ed> <rv> <ver>`, sorted.
+  String stateText(Map<String, Object?> d) {
+    final positions = <String>[
+      for (final m in d['members'] as List)
+        if ((m as Map)['e'] is List)
+          '${(m['b'] as Map)['ed']} ${(m['e'] as List)[0]} '
+              '${(m['e'] as List)[1]}'
+    ]..sort();
+    return jsonEncode([d['tmr'], positions]);
+  }
+
+  final out = <Map<String, Object?>>[];
+  for (final d in lists) {
+    final state = stateText(d);
+    out.add({
+      'list': jsonEncode(d),
+      'digest': b64url(await sha256Bytes(utf8.encode(digestText(d)))),
+      'state_canonical': state,
+      'state_canonical_hex': hex(utf8.encode(state)),
+      'state_digest': b64url(await sha256Bytes(utf8.encode(state))),
+    });
+  }
+  check(out[1]['digest'] == out[2]['digest'], 'the tie is a tie');
+  final first = (out[1]['state_digest'] as String)
+              .compareTo(out[2]['state_digest'] as String) <
+          0
+      ? 1
+      : 2;
+  final inner = <Map<String, Object?>>[];
+  for (final m in [
+    InnerMessage(kind: 'ginvite', mid: 'mid-ginvite-tmr', ts: ts,
+        data: lists[3]),
+    // Carol leaving again: the position of the membership she leaves.
+    InnerMessage(kind: 'gleave', mid: 'mid-gleave-e', ts: ts, data: {
+      'gid': gid,
+      'e': [1, 8],
+    }),
+    // A group text sent while the group's timer is an hour: §6.1's `ttl`.
+    InnerMessage(kind: 'gmsg', mid: 'mid-gmsg-ttl', ts: ts, ttlSec: 3600,
+        data: {'gid': gid, 'body': 'gone in an hour'}),
+  ]) {
+    final bytes = m.toBytes();
+    final back = InnerMessage.fromBytes(bytes);
+    check(back.kind == m.kind && back.ttlSec == m.ttlSec, 'round trip');
+    inner.add({
+      'kind': m.kind,
+      'json': utf8.decode(bytes),
+      'bytes': hex(bytes),
+      if (m.kind == 'ginvite') 'tmr': m.data['tmr'],
+      if (m.kind == 'ginvite')
+        'state_digest':
+            b64url(await sha256Bytes(utf8.encode(stateText(m.data)))),
+      if (m.kind == 'gmsg') 'ttl': m.ttlSec,
+    });
+  }
+  return {
+    'suite': 'group_state',
+    'version': vectorsVersion,
+    'description':
+        'ADR 0030: a group list\'s timer (`tmr`) and its members\' join '
+            'positions (`e`), and the state digest that ranks two lists at '
+            'one (rv, ver) whose §11.1 digests are equal — SHA-256 of the '
+            'compact JSON [tmr, positions], positions the sorted strings '
+            '"<ed> <rv> <ver>" of the entries that carry one; plus a '
+            'ginvite, a gleave and a gmsg carrying the new members.',
+    'lists': out,
+    'tie': {'a': 1, 'b': 2, 'first': first},
+    'inner': inner,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // v2 — post-quantum hybrid
 // ---------------------------------------------------------------------------
@@ -4885,6 +5053,7 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
       'inner_messages': await suiteInnerMessages(a),
       // ADR 0022: a new file; every one above is unchanged by it.
       'device_pop': await suiteDevicePop(a),
+      'group_state': await suiteGroupState(a),
     },
     'v2': {
       'mlkem768': await suiteMlKem(),

@@ -1647,6 +1647,26 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String sysGroupTtlSetYou(String duration) {
+    return 'Configuraste los mensajes temporales a $duration. Un miembro cuya app es anterior a esta versión conserva los mensajes, y los suyos no desaparecen.';
+  }
+
+  @override
+  String sysGroupTtlSetBy(String by, String duration) {
+    return '$by configuró los mensajes temporales a $duration. Un miembro cuya app es anterior a esta versión conserva los mensajes, y los suyos no desaparecen.';
+  }
+
+  @override
+  String sysGroupTtlIs(String duration) {
+    return 'Los mensajes temporales están activados en este grupo: $duration. Un miembro cuya app es anterior a esta versión conserva los mensajes, y los suyos no desaparecen.';
+  }
+
+  @override
+  String sysGroupTtlDroppedBy(String by) {
+    return 'Los mensajes temporales ya no están activados: el cambio de $by en el grupo llegó sin su temporizador. Una app anterior a esta versión no puede llevarlo.';
+  }
+
+  @override
   String get sysAttachmentDiscarded =>
       'Un adjunto no superó las comprobaciones de integridad y se descartó.';
 
@@ -2454,6 +2474,13 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get grpInviteByLinkNote =>
       'Funciona una sola vez, durante 24 horas. Quien lo abra primero será tu contacto y entrará en este grupo cuando acepte. El enlace en sí no dice nada del grupo.';
+
+  @override
+  String get grpTtlAdminsOnly => 'Solo un administrador puede cambiarlo.';
+
+  @override
+  String get grpTtlOldBuild =>
+      'Un miembro cuya app es anterior a esta versión conserva los mensajes, y los suyos no desaparecen.';
 
   @override
   String get stHandleSection => 'Alias';

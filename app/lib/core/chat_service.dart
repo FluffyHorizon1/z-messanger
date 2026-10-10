@@ -2678,13 +2678,25 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       }
       if (g.left) {
         if (_forgetInLeft(g, {rid})) changed = true;
-      } else if (c != null &&
-          (g.memberRids.contains(rid) || g.adminRids.contains(rid))) {
-        // An admin who has left is still named in `admins` until the owner
-        // takes the role: the entry is what marks them as someone I
-        // deleted, so that leaving lets go of them there too.
-        g.orphans[rid] = {'b': c.bundle.toJson(), 'n': c.name};
-        changed = true;
+      } else {
+        if (c != null &&
+            (g.memberRids.contains(rid) || g.adminRids.contains(rid))) {
+          // An admin who has left is still named in `admins` until the owner
+          // takes the role: the entry is what marks them as someone I
+          // deleted, so that leaving lets go of them there too.
+          g.orphans[rid] = {'b': c.bundle.toJson(), 'n': c.name};
+          changed = true;
+        }
+        // ADR 0030: a leave of theirs this group remembers names them, and
+        // so does the position of a membership they no longer hold. Both
+        // go: deleting a contact keeps nothing of them that a group I am
+        // in does not need to name them — which costs that leave, so a list
+        // issued before it that still names them brings them back here
+        // (THREAT_MODEL R38).
+        if (g.leftAt.remove(rid) != null) changed = true;
+        if (!g.memberRids.contains(rid) && g.epochs.remove(rid) != null) {
+          changed = true;
+        }
       }
     }
     if (changed) await _saveGroups();
@@ -4836,7 +4848,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       return _OfferFate.refused;
     }
     return _persistFileOffer(txn ?? vault.db, g.gid, inner, now,
-        senderName: contact.name, senderRid: contact.rid);
+        expireAt: _groupExpiry(inner),
+        senderName: contact.name,
+        senderRid: contact.rid);
+  }
+
+  /// When a group message from someone else goes here (ADR 0030): its `ttl`
+  /// after its receipt on this device, the clock the primary inbound path
+  /// keeps for a 1:1 message (§6.1) — or never, on a build before group
+  /// timers, which kept every group message.
+  int _groupExpiry(InnerMessage inner) {
+    if (debugBuildBefore0030 || inner.ttlSec <= 0) return 0;
+    return _now() + inner.ttlSec * 1000;
   }
 
   /// Whether an offer under [fid], arriving as message [mid] in [thread],
@@ -7744,12 +7767,36 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if (inner.kind == 'gleave') {
       if (outgoing) {
         final g = groups[inner.data['gid'] as String? ?? ''];
-        if (g != null && !g.left) {
-          g.left = true;
-          g.mine = null;
-          _trimLeft(g);
-          await _saveGroups();
-          await _insertSystemMessage(g.gid, systemBody(SystemKind.leftYou));
+        if (g != null) {
+          // My leave, from another of my devices: remembered here as there
+          // (ADR 0030), at the position it states.
+          final stated = Group.posFrom(inner.data['e']);
+          final wasIn = !g.left;
+          final before = g.leftAt[''];
+          if (!debugBuildBefore0030 &&
+              wasIn &&
+              stated != null &&
+              Group.comparePos(stated, g.epochs[''] ?? Group.origin) < 0) {
+            // A leave of a membership before the one this device holds me
+            // in: the list adding me back reached me here before the copy of
+            // my leave did. Remembered, and I stay — as my device that left
+            // does once that list reaches it.
+            g.leftAt[''] =
+                before == null ? stated : Group.laterPos(before, stated);
+            if (before != g.leftAt['']) await _saveGroups();
+          } else {
+            _rememberMyLeave(g, stated);
+            if (wasIn) {
+              g.left = true;
+              g.mine = null;
+              _trimLeft(g);
+            }
+            if (wasIn || before != g.leftAt['']) await _saveGroups();
+            if (wasIn) {
+              await _insertSystemMessage(
+                  g.gid, systemBody(SystemKind.leftYou));
+            }
+          }
         }
       } else {
         await _applyGroupLeave(rid, inner.data);
@@ -7762,9 +7809,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       final g = gid == null ? null : groups[gid];
       if (g == null) return;
       if (outgoing) {
-        // My own group send, made on another of my devices.
+        // My own group send, made on another of my devices — and, with the
+        // group's timer on (ADR 0030), gone when the original goes, from the
+        // message's own time, as a mirrored 1:1 message is.
         final body = inner.data['body'] as String? ?? '';
         final quoted = await _resolveQuote(gid!, inner.replyTo);
+        final expireAt =
+            debugBuildBefore0030 ? 0 : _mirroredExpiry(inner, true);
         await vault.db.insert(
             'messages',
             {
@@ -7775,7 +7826,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
               'enc_body': await vault.seal(jsonEncode({'b': body})),
               'ts_ms': inner.ts,
               'status': MsgStatus.sent,
-              'expire_at_ms': 0,
+              'expire_at_ms': expireAt,
               'reply_to': quoted?.mid,
             },
             conflictAlgorithm: ConflictAlgorithm.ignore);
@@ -7789,6 +7840,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
               body: body,
               ts: inner.ts,
               status: MsgStatus.sent,
+              expireAtMs: expireAt,
               replyTo: quoted?.mid,
               quote: quoted,
             ));
@@ -8167,6 +8219,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// [Group.orphans]: deleting a contact is not a change to a group, and a
   /// list that dropped an admin would be refused everywhere.
   ///
+  /// ADR 0030: the group's timer travels as `tmr` once the group has had
+  /// one ([Group.tmr] — `0` for off from then on), and every member entry
+  /// carries `e`, the position at which that member joined, when they joined
+  /// after the group was made ([Group.epochs]). Both are optional members a
+  /// client before 0030 ignores, and a group that never had either sends
+  /// what it sent before.
+  ///
   /// Synchronous, so the list that goes out is exactly the list [g] holds at
   /// the moment it is issued, and its digest is known before anything else
   /// can run.
@@ -8175,15 +8234,25 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     final roles = !(g.iAmOwner && g.adminRids.length == 1 && rv == 0);
     final owner = _wireRid(g.ownerRid);
     final admins = [for (final a in g.adminRids) _wireRid(a)]..sort();
+    final v0030 = !debugBuildBefore0030;
+    Map<String, Object?> entry(String rid, Map<String, Object?> e) {
+      final at = g.epochs[rid];
+      return {
+        for (final x in e.entries)
+          if (x.key != 'e') x.key: x.value,
+        if (v0030 && at != null && at != Group.origin) 'e': Group.posJson(at),
+      };
+    }
+
     final others = [
       for (final rid in g.memberRids)
         if (contacts[rid] != null)
-          {
+          entry(rid, {
             'b': contacts[rid]!.bundle.toJson(),
             'n': contacts[rid]!.name,
-          }
+          })
         else if (g.orphans[rid] != null)
-          g.orphans[rid]!
+          entry(rid, g.orphans[rid]!)
     ];
     return {
       'gid': g.gid,
@@ -8192,9 +8261,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       if (roles) 'owner': owner,
       if (roles) 'admins': admins,
       if (roles) 'rv': rv,
+      if (v0030 && g.tmr != null) 'tmr': g.tmr,
       'members': [
         if (_rootRid == null || _rootRid == myRid)
-          {
+          entry('', {
             'b': ContactBundle(
                     edPub: identity.edPub,
                     xPub: identity.xPub,
@@ -8202,7 +8272,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
                     displayName: displayName)
                 .toJson(),
             'n': displayName,
-          },
+          }),
         ...others,
       ],
     };
@@ -8239,6 +8309,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// drain ([retryGroupFanout]) sends them.
   @visibleForTesting
   bool Function(String rid, InnerMessage inner)? debugHoldGroupFanout;
+
+  /// Test seam: this device behaves as a build from before ADR 0030 did. It
+  /// reads no group timer (`tmr`) and writes none; stamps no `ttl` on what
+  /// it sends to a group and keeps every group message it receives, whatever
+  /// `ttl` it carries; reads and writes no join positions (`e`) and
+  /// remembers no leave; and ranks two lists at one version by §11.1's
+  /// digest alone. It is how a test has a member on an older build — the
+  /// only way to show what such a member does, which is the limit ADR 0030
+  /// states. Nothing in the app sets it.
+  @visibleForTesting
+  bool debugBuildBefore0030 = false;
 
   /// Record one row per recipient, then drain in the background.
   ///
@@ -8611,15 +8692,26 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// member ranks above any membership version (PROTOCOL §11.1). [members]
   /// and [name] are what the held list said before this change, so what the
   /// change did can be remembered ([Group.mine]) and checked against
-  /// whatever list replaces this one.
+  /// whatever list replaces this one; [timer], for a change to the group's
+  /// timer, is the timer before it (ADR 0030).
   Map<String, Object?> _issue(Group g, Set<String> members, String name,
-      {bool roles = false}) {
+      {bool roles = false, int? timer}) {
     g.ver += 1;
     g.by = '';
     if (roles) g.rolesVer += 1;
     g.opensRoles = roles;
+    // ADR 0030: whoever this list brings in joins at its own position — later
+    // than the position of any membership someone has left, since a list is
+    // issued only on top of the one held — so a list that adds a member back
+    // is told apart, everywhere, from one issued before their leave reached
+    // its issuer. Nobody it takes out keeps one.
+    final added = g.memberRids.difference(members);
+    for (final r in added) {
+      g.epochs[r] = (g.rolesVer, g.ver);
+    }
+    g.epochs.removeWhere((r, _) => r.isNotEmpty && !g.memberRids.contains(r));
     g.mine = {
-      'add': g.memberRids.difference(members).toList(),
+      'add': added.toList(),
       // Not someone whose contact I deleted: removing them is how the group
       // lets go of them, and the record keeps nothing of them afterwards.
       'rm': members
@@ -8627,12 +8719,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           .where(contacts.containsKey)
           .toList(),
       if (g.name != name) 'name': g.name,
+      if (timer != null && timer != g.ttlSec) 'tmr': g.ttlSec,
     };
     g.orphans.removeWhere((rid, _) =>
         contacts.containsKey(rid) ||
         !(g.memberRids.contains(rid) || g.adminRids.contains(rid)));
     final data = _inviteData(g);
     g.digest = Group.listDigest(data);
+    g.stateDigest = Group.stateDigestOf(data);
     return data;
   }
 
@@ -8680,6 +8774,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     );
     final data = _inviteData(g);
     g.digest = Group.listDigest(data);
+    g.stateDigest = Group.stateDigestOf(data);
     groups[gid] = g;
     await _saveGroups();
     unread[gid] = 0;
@@ -8768,6 +8863,39 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     notifyListeners();
   }
 
+  /// The longest group timer a list may carry (ADR 0030): far beyond any
+  /// the app offers, and far inside what the arithmetic of an expiry holds.
+  static const maxGroupTimer = 0x7fffffff;
+
+  /// Any admin (ADR 0030, 23.4): set the group's disappearing-messages timer
+  /// to [seconds], `0` for off. Who may is who may rename — the timer is
+  /// part of the list, as the name is, so it is a version bump and a list
+  /// to every member, and every member converges on it the way they
+  /// converge on a name (PROTOCOL §11.2). Every group message sent from
+  /// then on, by any device of any member that holds the list, carries it
+  /// as its `ttl` (§6.1): the sender's copy goes that long after it was
+  /// sent, every other copy that long after it arrived.
+  ///
+  /// A member whose app predates group timers ignores it: it keeps every
+  /// message, and what it sends carries no timer — the notice says so, on
+  /// every device of every member that can show it.
+  Future<void> setGroupTimer(String gid, int seconds) async {
+    final g = groups[gid];
+    if (g == null || !mayIssueGroupList(gid, '')) return;
+    if (seconds < 0 || seconds > maxGroupTimer || seconds == g.ttlSec) return;
+    final before = g.ttlSec;
+    g.tmr = seconds;
+    final data = _issue(g, g.memberRids.toSet(), g.name, timer: before);
+    await _saveGroups();
+    await _insertSystemMessage(
+        gid,
+        seconds == 0
+            ? systemBody(SystemKind.ttlOffYou)
+            : systemBody(SystemKind.groupTtlSetYou, {'sec': seconds}));
+    await _sendInvite(g, data);
+    notifyListeners();
+  }
+
   /// Owner only (ADR 0019), on the device holding the account root: make
   /// [rid], a member, a co-admin. From then on their lists are accepted by
   /// everyone who accepts this one.
@@ -8834,19 +8962,54 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// never reaches keeps the leaver as an admin in the group, and refuses
   /// the other admins' lists that leave them out — until it asks
   /// ([_askAbout]) and this device answers.
+  ///
+  /// ADR 0030: the leave is remembered, here and on every device it reaches,
+  /// with the position of the membership it ends ([Group.leftAt]), which it
+  /// states (`e`). A list that still names me there was issued before my
+  /// leave reached its issuer: every device that heard the leave takes it
+  /// without me, this one included, which stays out; and only a list that
+  /// adds me back — naming me at its own, later position — brings me back
+  /// in.
   Future<void> leaveGroup(String gid) async {
     final g = groups[gid];
     if (g == null || g.left) return;
     g.left = true;
     g.mine = null;
     _trimLeft(g);
+    _rememberMyLeave(g, null);
     await _saveGroups();
     await _insertSystemMessage(gid, systemBody(SystemKind.leftYou));
     final inner = InnerMessage(
-        kind: 'gleave', mid: newMessageId(), ts: _now(), data: {'gid': gid});
+        kind: 'gleave', mid: newMessageId(), ts: _now(), data: _leaveData(g));
     await _queueGroupFanout(g, inner);
     unawaited(_mirrorGroupChange(gid, inner));
     notifyListeners();
+  }
+
+  /// ADR 0030: record that I have left [g] — at the position of my held
+  /// membership, or a later one [stated] by the leave of mine another of my
+  /// devices sent. Kept as the latest: a leave remembered is never
+  /// forgotten for an older one.
+  void _rememberMyLeave(Group g, (int, int)? stated) {
+    if (debugBuildBefore0030) return;
+    var at = Group.laterPos(
+        g.epochs[''] ?? Group.origin, stated ?? Group.origin);
+    final prev = g.leftAt[''];
+    if (prev != null) at = Group.laterPos(prev, at);
+    g.leftAt[''] = at;
+  }
+
+  /// A `gleave` for [g], mine: the group, and the position of the membership
+  /// it ends (ADR 0030, `e`) — always, `[0, 0]` included, so that a leave
+  /// without one is known to be from a build before 0030, and a device that
+  /// holds me at a later position can tell this leave from one of that
+  /// membership. A client before 0030 reads the group id alone.
+  Map<String, Object?> _leaveData(Group g) {
+    final at = g.leftAt[''] ?? g.epochs[''] ?? Group.origin;
+    return {
+      'gid': g.gid,
+      if (!debugBuildBefore0030) 'e': Group.posJson(at),
+    };
   }
 
   /// What a group I am out of — left, or removed — keeps of the people in it
@@ -8883,7 +9046,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// owner's own was refused already, deleting them having taken them out
   /// of its members (`contact_erasure_test` 14).
   bool _forgetInLeft(Group g, Set<String> gone) {
-    final changed = g.orphans.isNotEmpty || g.held.isNotEmpty;
+    // ADR 0030: when they joined and when they left go with them too.
+    final positions = g.epochs.keys.any(gone.contains) ||
+        g.leftAt.keys.any(gone.contains);
+    g.epochs.removeWhere((r, _) => gone.contains(r));
+    g.leftAt.removeWhere((r, _) => gone.contains(r));
+    final changed = g.orphans.isNotEmpty || g.held.isNotEmpty || positions;
     g.orphans.clear();
     g.held.clear();
     var trimmed = false;
@@ -9399,20 +9567,33 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   @visibleForTesting
   Future<void> debugSweepLinks() => _sweepLinks();
 
+  /// The `ttl` a group message I send now carries (ADR 0030): the group's
+  /// timer as the list I hold states it — what every member's device that
+  /// holds the same list stamps on theirs.
+  int _groupTtl(Group g) => debugBuildBefore0030 ? 0 : g.ttlSec;
+
   /// Send a text to every member of [gid], each over their pairwise ratchet.
+  /// With the group's timer on (ADR 0030) it carries it as its `ttl`, and my
+  /// copy goes that long after it was sent (§6.1).
   Future<void> sendGroupText(String gid, String body,
       {String? replyTo, bool forwarded = false}) async {
     final g = groups[gid];
     if (g == null || g.left) return;
     final ts = _now();
+    final ttl = _groupTtl(g);
+    final expireAt = ttl > 0 ? ts + ttl * 1000 : 0;
     final quoted = await _resolveQuote(gid, replyTo);
-    final inner =
-        InnerMessage(kind: 'gmsg', mid: newMessageId(), ts: ts, data: {
-      'gid': gid,
-      'body': body,
-      if (quoted != null) 'rt': quoted.mid,
-      if (forwarded) 'fw': true,
-    });
+    final inner = InnerMessage(
+        kind: 'gmsg',
+        mid: newMessageId(),
+        ts: ts,
+        ttlSec: ttl,
+        data: {
+          'gid': gid,
+          'body': body,
+          if (quoted != null) 'rt': quoted.mid,
+          if (forwarded) 'fw': true,
+        });
     final encBody = await vault.seal(jsonEncode({'b': body}));
     // The message row and its fan-out rows land in ONE transaction, so a
     // message either exists with its delivery plan or does not exist at all.
@@ -9425,7 +9606,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         'enc_body': encBody,
         'ts_ms': ts,
         'status': MsgStatus.pending,
-        'expire_at_ms': 0,
+        'expire_at_ms': expireAt,
         'reply_to': quoted?.mid,
         'forwarded': forwarded ? 1 : 0,
       });
@@ -9440,6 +9621,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           body: body,
           ts: ts,
           status: MsgStatus.pending,
+          expireAtMs: expireAt,
           replyTo: quoted?.mid,
           quote: quoted,
           forwarded: forwarded,
@@ -9473,6 +9655,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           'attachment too large (max 24 MB in this build)');
     }
     final ts = _now();
+    // ADR 0030: the group's timer, as on a text.
+    final ttl = _groupTtl(g);
+    final expireAt = ttl > 0 ? ts + ttl * 1000 : 0;
     final quoted = await _resolveQuote(gid, replyTo);
     final km = FileKeyMaterial.generate();
     final chunks = splitChunks(bytes);
@@ -9481,6 +9666,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       kind: 'gfile',
       mid: newMessageId(),
       ts: ts,
+      ttlSec: ttl,
       data: {
         'gid': gid,
         'fid': km.fid,
@@ -9533,7 +9719,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         'fid': km.fid,
         'ts_ms': ts,
         'status': MsgStatus.pending,
-        'expire_at_ms': 0,
+        'expire_at_ms': expireAt,
         'reply_to': quoted?.mid,
         'forwarded': forwarded ? 1 : 0,
       });
@@ -9549,6 +9735,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           fid: km.fid,
           ts: ts,
           status: MsgStatus.pending,
+          expireAtMs: expireAt,
           replyTo: quoted?.mid,
           quote: quoted,
           file: FileMeta(
@@ -9637,13 +9824,27 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// devices and the other way on the rest, for good (group_roles_test
   /// 27). A list's digest is computed from the list as it travels, the same
   /// on every device that receives it, whoever it holds the sender as.
-  bool _notNewer(Group g, int rv, int ver, String sender, String digest) {
+  ///
+  /// ADR 0030: two lists §11.1's digest calls equal — the same list, or two
+  /// that differ only in what it leaves out, the group's timer and the
+  /// members' join positions — are ranked by [stateDigest] the same way:
+  /// the one that sorts first wins, and the same list again changes
+  /// nothing. Two admins setting two timers on one list at once otherwise
+  /// left each member with whichever reached it first, for good. A client
+  /// before 0030 compares the first digest alone, so it ranks every pair it
+  /// can tell apart exactly as this one does.
+  bool _notNewer(Group g, int rv, int ver, String sender, String digest,
+      String stateDigest) {
     if (rv != g.rolesVer) return rv < g.rolesVer;
     if (ver != g.ver) return ver < g.ver;
     final senderOwns = sender == g.ownerRid;
     final heldOwns = g.by == g.ownerRid;
     if (senderOwns != heldOwns) return heldOwns;
-    return g.digest.isEmpty || digest.compareTo(g.digest) >= 0;
+    if (g.digest.isEmpty) return true;
+    final c = digest.compareTo(g.digest);
+    if (c != 0) return c > 0;
+    if (debugBuildBefore0030 || g.stateDigest.isEmpty) return true;
+    return stateDigest.compareTo(g.stateDigest) >= 0;
   }
 
   /// Whether a list keeps in the group every admin who is in it on [g]:
@@ -9666,10 +9867,16 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// quick change, built on their own first, is a version above mine and
   /// carries none of it — so the owner whose removal a co-admin's list put
   /// back is told, where only a list at no higher a version used to say so.
-  bool _undoes(Map<String, Object?> mine, Set<String> members, String name) {
+  ///
+  /// The timer I set (ADR 0030) is gone too when [timer], the replacing
+  /// list's, is not it.
+  bool _undoes(Map<String, Object?> mine, Set<String> members, String name,
+      int timer) {
     final add = mine['add'], rm = mine['rm'], renamed = mine['name'];
     if (add is List && add.any((r) => !members.contains(r))) return true;
     if (rm is List && rm.any(members.contains)) return true;
+    final t = mine['tmr'];
+    if (t is int && t != timer) return true;
     return renamed is String && renamed != name;
   }
 
@@ -9837,7 +10044,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             kind: 'gleave',
             mid: newMessageId(),
             ts: _now(),
-            data: {'gid': gid}),
+            data: _leaveData(g)),
     ];
     if (replies.isEmpty) return;
     // In order — the list, then the leave — and outside the inbound
@@ -9942,6 +10149,21 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             admins.any((a) => a is! String || !_ridShape.hasMatch(a)))) {
       return null;
     }
+    // ADR 0030: the timer a whole number of seconds, from none to
+    // [maxGroupTimer]; a member's join position, where an entry carries
+    // one, two whole numbers within a version's bounds. Refused otherwise,
+    // as a version that is not a whole number is — and never read at all by
+    // a build before 0030, which ignores both.
+    final v0030 = !debugBuildBefore0030;
+    final tmr = v0030 ? data['tmr'] : null;
+    if (tmr != null && (tmr is! int || tmr < 0 || tmr > maxGroupTimer)) {
+      return null;
+    }
+    if (v0030 &&
+        members.any((m) =>
+            m is Map && m.containsKey('e') && Group.posFrom(m['e']) == null)) {
+      return null;
+    }
     return _WireList(
       name: name,
       ver: ver,
@@ -9950,6 +10172,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       admins: admins == null ? null : [for (final a in admins as List) a as String],
       members: members,
       digest: Group.listDigest(data),
+      tmr: tmr as int?,
+      stateDigest: Group.stateDigestOf(data),
     );
   }
 
@@ -10022,7 +10246,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // mirrored by my other device). Decided again below, without an await.
     final early = groups[gid];
     if (early != null &&
-        _notNewer(early, list.rv, list.ver, sender, list.digest)) {
+        _notNewer(early, list.rv, list.ver, sender, list.digest,
+            list.stateDigest)) {
       _judged(gid, retry, sender);
       return false;
     }
@@ -10035,6 +10260,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     var includesMe = mirroredOwn;
     final memberRids = <String>{};
     final unknown = <(String, ContactBundle, String)>[];
+    // ADR 0030: the position at which the list says each member joined (an
+    // entry's `e`; none is the group's start), and mine — for every account
+    // it has an entry for, which a sender writing from a linked device has
+    // not, for itself.
+    final joined = <String, (int, int)>{};
+    (int, int)? myJoined;
+    final v0030 = !debugBuildBefore0030;
     // ADR 0024: members this device has blocked. Members all the same — the
     // list is the group's, and a list of mine that dropped one would take
     // them out for everyone — but not taken in: kept as an entry, as a
@@ -10046,6 +10278,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     for (final m in list.members) {
       ContactBundle bundle;
       String cname;
+      (int, int) at;
       try {
         final e = (m as Map).cast<String, Object?>();
         bundle =
@@ -10053,15 +10286,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         if (!await bundle.verify()) continue;
         final n = e['n'];
         cname = n is String ? n : 'Unknown';
+        at = (v0030 ? Group.posFrom(e['e']) : null) ?? Group.origin;
       } catch (_) {
         continue;
       }
       final rid = _canonRid(await bundle.routingId());
       if (rid.isEmpty) {
         includesMe = true;
+        myJoined = at;
         continue;
       }
       memberRids.add(rid);
+      joined[rid] = at;
       if (contacts.containsKey(rid)) continue;
       if (_blocked.contains(rid)) {
         blockedEntries[rid] = {'b': bundle.toJson(), 'n': cname};
@@ -10085,7 +10321,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     final existing = groups[gid];
     var opens = true;
     if (existing != null) {
-      if (_notNewer(existing, list.rv, list.ver, sender, list.digest)) {
+      if (_notNewer(existing, list.rv, list.ver, sender, list.digest,
+          list.stateDigest)) {
         return false;
       }
       final sameRoles =
@@ -10122,12 +10359,72 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       }
     }
 
+    // ADR 0030 (23.5): a list that names someone whose leave this device has
+    // heard, at the position of the membership they left or an earlier one,
+    // was issued before that leave reached its issuer — no list adding them
+    // back names them anywhere but at its own, later position. It is taken
+    // for everything else, and without them, on every device that heard the
+    // leave, whichever came first: the same members everywhere, and the
+    // leaver's own device out. It only ever takes someone out, so a send this
+    // device queues afterwards — snapshotted from the list held — reaches
+    // nobody who left (15.3). Its sender is not read so: a list was taken
+    // from them because the held list has them in the group.
+    if (existing != null && v0030) {
+      final gone = <String>{
+        for (final r in memberRids)
+          if (r != sender &&
+              existing.leftAt[r] != null &&
+              Group.comparePos(
+                      joined[r] ?? Group.origin, existing.leftAt[r]!) <=
+                  0)
+            r
+      };
+      memberRids.removeAll(gone);
+      unknown.removeWhere((u) => gone.contains(u.$1));
+      blockedEntries.removeWhere((r, _) => gone.contains(r));
+      final myLeave = existing.leftAt[''];
+      if (includesMe &&
+          myLeave != null &&
+          Group.comparePos(
+                  myJoined ?? existing.epochs[''] ?? Group.origin, myLeave) <=
+              0) {
+        // And me, when the leave is mine: the list is taken here as on every
+        // other device, without me. Out of the group, I stay out, and nothing
+        // is said — every list issued before my leave used to show the group
+        // as joined again, until a list without me — and the list I now hold
+        // ranks the next one as theirs does, so a list adding me back that
+        // lost to this one there does not bring me back here either. Back in
+        // the group, added after my leave, a newer list from before the leave
+        // takes me out as it does everyone else who left. My own devices
+        // never add me back, so one of their lists can only be such a list,
+        // and is not taken.
+        if (mirroredOwn) return false;
+        includesMe = false;
+      }
+    }
+    // The positions the held list will name members at: the list's own, and
+    // where it has no entry — for its sender writing from a linked device, or
+    // for me in a list of my own from one — what was held.
+    final joinedAt = <String, (int, int)>{
+      for (final r in memberRids)
+        if ((joined[r] ?? existing?.epochs[r]) case final at?
+            when at != Group.origin)
+          r: at,
+    };
+    final meAt = myJoined ?? existing?.epochs[''];
+    if (includesMe && meAt != null && meAt != Group.origin) {
+      joinedAt[''] = meAt;
+    }
+
     if (!mirroredOwn && existing != null && !includesMe) {
       // The new list omits me: I was removed. It is still the list I hold —
       // version, issuer, roles and members — so that a later list is judged
       // against it, and the group's screen says who is in it now; except
       // that, as on a leave, a member whose contact I deleted is let go of
-      // rather than introduced to me again ([_trimLeft]).
+      // rather than introduced to me again ([_trimLeft]). A device that had
+      // already left — a list from before my leave, taken without me (ADR
+      // 0030) — holds it as well, and is told nothing: it was not removed.
+      final wasLeft = existing.left;
       final deleted = existing.orphans.keys.toSet();
       existing
         ..name = list.name
@@ -10136,6 +10433,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         ..rolesVer = list.rv
         ..ownerRid = owner
         ..digest = list.digest
+        ..stateDigest = list.stateDigest
+        ..tmr = list.tmr
         ..opensRoles = opens
         ..mine = null
         ..left = true;
@@ -10145,15 +10444,20 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       existing.memberRids
         ..clear()
         ..addAll(memberRids);
+      existing.epochs
+        ..clear()
+        ..addAll(joinedAt);
       _asked.remove(gid);
       final adopted = _adoptGroupContacts(
           [for (final u in unknown) if (!deleted.contains(u.$1)) u]);
       _trimLeft(existing);
       await _persistGroupContacts(adopted, txn: txn);
       await _saveGroups(txn: txn);
-      await _insertSystemMessage(
-          gid, systemBody(SystemKind.removedFrom, {'name': list.name}),
-          txn: txn);
+      if (!wasLeft) {
+        await _insertSystemMessage(
+            gid, systemBody(SystemKind.removedFrom, {'name': list.name}),
+            txn: txn);
+      }
       return true;
     }
 
@@ -10162,11 +10466,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     final oldMembers = existing?.memberRids.toSet();
     final oldOwner = existing?.ownerRid;
     final oldAdmins = existing?.adminRids.toSet();
+    final oldTimer = existing?.ttlSec ?? 0;
+    final backIn = existing != null && existing.left && !mirroredOwn;
     // A list I issued, replaced by one that undoes it ([_undoes]): said
     // before the lines describing the new list, because it explains them.
     final mine =
         existing != null && existing.by.isEmpty ? existing.mine : null;
-    final undone = mine != null && _undoes(mine, memberRids, list.name);
+    final undone = mine != null &&
+        _undoes(mine, memberRids, list.name, list.tmr ?? 0);
     // The members it introduces become contacts in the same step as the list
     // is installed, so nothing that reads the group — a send's fan-out, which
     // skips a member it holds no contact for — finds a member it cannot reach.
@@ -10191,6 +10498,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             e.key: e.value,
         ...blockedEntries,
       },
+      // ADR 0030: the timer and the positions are the list's; the leaves
+      // heard are this device's, and stay.
+      tmr: list.tmr,
+      stateDigest: list.stateDigest,
+      epochs: joinedAt,
+      leftAt: existing?.leftAt,
     );
     unread.putIfAbsent(gid, () => 0);
     _asked.remove(gid);
@@ -10213,6 +10526,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     await _persistGroupContacts(adopted, txn: txn);
     await _saveGroups(txn: txn);
     if (settled) await _saveLinks(txn: txn);
+    final timer = list.tmr ?? 0;
     if (isNew) {
       await _insertSystemMessage(
           gid,
@@ -10222,7 +10536,23 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
                   fromLink ? SystemKind.addedFromLinkBy : SystemKind.addedToBy,
                   {'by': contacts[fromRid]?.name, 'name': list.name}),
           txn: txn);
+      // ADR 0030: a group that has a timer says so to whoever arrives in it,
+      // with the limit every timer notice in a group states.
+      if (timer > 0) {
+        await _insertSystemMessage(
+            gid, systemBody(SystemKind.groupTtlIs, {'sec': timer}),
+            txn: txn);
+      }
       return true;
+    }
+    if (backIn) {
+      // A list naming me in a group I am out of, and not one issued before
+      // my leave (above): I was added back, and am told by whom.
+      await _insertSystemMessage(
+          gid,
+          systemBody(SystemKind.addedToBy,
+              {'by': contacts[fromRid]?.name, 'name': list.name}),
+          txn: txn);
     }
     if (undone) {
       await _insertSystemMessage(
@@ -10249,6 +10579,35 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         oldMembers.length != memberRids.length ||
         !oldMembers.containsAll(memberRids)) {
       await _insertSystemMessage(gid, systemBody(SystemKind.membershipUpdated),
+          txn: txn);
+    }
+    // ADR 0030: the timer, as a 1:1 chat says it — with, in a group, what a
+    // member on an older version does with it. A list that turned it off by
+    // saying `0` is said as that; one that turned it off by carrying no
+    // timer at all is from an admin whose app predates group timers, or that
+    // had not heard of this one, and is said as what it did.
+    // Back in the group, I am told of a timer it has now as a newcomer is,
+    // and of nothing that changed while I was out.
+    if (backIn) {
+      if (timer > 0 && timer != oldTimer) {
+        await _insertSystemMessage(
+            gid, systemBody(SystemKind.groupTtlIs, {'sec': timer}),
+            txn: txn);
+      }
+    } else if (timer != oldTimer) {
+      final by = contacts[fromRid]?.name;
+      await _insertSystemMessage(
+          gid,
+          timer > 0
+              ? (mirroredOwn
+                  ? systemBody(SystemKind.groupTtlSetYou, {'sec': timer})
+                  : systemBody(
+                      SystemKind.groupTtlSetBy, {'by': by, 'sec': timer}))
+              : mirroredOwn
+                  ? systemBody(SystemKind.ttlOffYou)
+                  : list.tmr == 0
+                      ? systemBody(SystemKind.ttlOffThem, {'name': by})
+                      : systemBody(SystemKind.groupTtlDroppedBy, {'by': by}),
           txn: txn);
     }
     await _sayRoleChanges(gid, fromRid, mirroredOwn,
@@ -10354,6 +10713,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   /// Persist an inbound group text from [contact] (any of their devices).
+  ///
+  /// A `ttl` on it (ADR 0030: the group's timer, as its sender's list had it)
+  /// is kept as §6.1 says, from its receipt here — whichever door it came
+  /// in by, since this is the step every one of them takes.
   Future<void> _persistGroupText(Contact contact, InnerMessage inner, int now,
       {DatabaseExecutor? txn}) async {
     final gid = inner.data['gid'] as String?;
@@ -10361,6 +10724,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // Unknown group or non-member sender (e.g. removed): drop silently.
     if (g == null || g.left || !g.memberRids.contains(contact.rid)) return;
     final body = inner.data['body'] as String? ?? '';
+    final expireAt = _groupExpiry(inner);
     final quoted = await _resolveQuote(gid!, inner.replyTo, txn: txn);
     final inserted = await (txn ?? vault.db).insert(
         'messages',
@@ -10375,7 +10739,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
               jsonEncode({'b': body, 'sn': contact.name, 'sr': contact.rid})),
           'ts_ms': now,
           'status': MsgStatus.delivered,
-          'expire_at_ms': 0,
+          'expire_at_ms': expireAt,
           'reply_to': quoted?.mid,
           'forwarded': inner.data['fw'] == true ? 1 : 0,
         },
@@ -10391,6 +10755,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           body: body,
           ts: now,
           status: MsgStatus.delivered,
+          expireAtMs: expireAt,
           senderName: contact.name,
           replyTo: quoted?.mid,
           quote: quoted,
@@ -10418,11 +10783,47 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// leave and changed the group at that version would be refused by every
   /// admin and accepted by every member, and the owner's next list would
   /// then undo the change everywhere without a word (group_roles_test 9).
+  ///
+  /// ADR 0030: and the leave is remembered ([Group.leftAt]) at the position
+  /// of the membership it ends — the one it states (`e`), or, from a build
+  /// before 0030, the one held for them — so a list issued before it
+  /// reached its issuer, which still names them there, is taken without them
+  /// ([_applyGroupInvite]). A leave stating an earlier position than the one
+  /// held ends a membership that a list adding them back has since replaced
+  /// here: remembered, and they stay. Remembered for someone this device
+  /// holds out of the group too, when it has known them in it — a leave
+  /// after a re-add it never got — and not for anyone else, so nobody can
+  /// plant a leave for a group they were never in.
   Future<void> _applyGroupLeave(String fromRid, Map<String, Object?> data,
       {DatabaseExecutor? txn}) async {
     final gid = data['gid'];
     final g = gid is String ? groups[gid] : null;
     if (g == null) return;
+    final member = g.memberRids.contains(fromRid);
+    if (!debugBuildBefore0030 &&
+        (member ||
+            g.epochs.containsKey(fromRid) ||
+            g.leftAt.containsKey(fromRid))) {
+      // ADR 0030: the membership a leave ends is the one it states (`e`,
+      // which every client since 0030 writes) — or, for a leave from a build
+      // before it, which states none, the one I hold them in.
+      final held = member ? g.epochs[fromRid] ?? Group.origin : null;
+      final ends = Group.posFrom(data['e']) ?? held ?? Group.origin;
+      final prev = g.leftAt[fromRid];
+      final at = prev == null ? ends : Group.laterPos(prev, ends);
+      final noted = prev != at;
+      g.leftAt[fromRid] = at;
+      if (held != null && Group.comparePos(ends, held) < 0) {
+        // A leave of a membership before the one I hold them in: the list
+        // adding them back reached me before it did. It is remembered — a
+        // list from before it is still read as one — and they stay, as on
+        // every device that heard the two the other way round.
+        if (noted) await _saveGroups(txn: txn);
+        return;
+      }
+      g.epochs.remove(fromRid);
+      if (noted && !member) await _saveGroups(txn: txn);
+    }
     if (!g.memberRids.remove(fromRid)) return;
     // Someone my last list added has gone of their own accord: a later list
     // without them undoes nothing of mine.
@@ -14249,6 +14650,12 @@ class _WireList {
   final List<String>? admins;
   final List<Object?> members;
   final String digest;
+
+  /// ADR 0030: the group's timer as the list states it (`tmr`), or null.
+  final int? tmr;
+
+  /// ADR 0030: [Group.stateDigestOf] of the list as it travels.
+  final String stateDigest;
   const _WireList({
     required this.name,
     required this.ver,
@@ -14257,15 +14664,20 @@ class _WireList {
     required this.admins,
     required this.members,
     required this.digest,
+    required this.tmr,
+    required this.stateDigest,
   });
 
   /// Whether this list is newer than [o], both from one sender: the higher
   /// roles version, then the higher version, then the smaller digest — the
-  /// order `ChatService._notNewer` applies between one issuer's lists.
+  /// order `ChatService._notNewer` applies between one issuer's lists — and
+  /// at equal digests the smaller state digest (ADR 0030).
   bool newerThan(_WireList o) {
     if (rv != o.rv) return rv > o.rv;
     if (ver != o.ver) return ver > o.ver;
-    return digest.compareTo(o.digest) < 0;
+    final c = digest.compareTo(o.digest);
+    if (c != 0) return c < 0;
+    return stateDigest.compareTo(o.stateDigest) < 0;
   }
 }
 

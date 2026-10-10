@@ -613,6 +613,21 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               tooltip: l.disappearingMessages,
               onPressed: _pickTimer,
+            )
+          // ADR 0030: a group's timer, shown to every member and set by an
+          // admin — for anyone else the control says what it is and does
+          // nothing, as the group screen's row does.
+          else if (!group.left)
+            IconButton(
+              icon: Icon(
+                group.ttlSec > 0 ? Icons.timer : Icons.timer_outlined,
+                color: group.ttlSec > 0
+                    ? context.z.accent
+                    : context.z.textSecondary,
+              ),
+              tooltip: l.disappearingMessages,
+              onPressed:
+                  svc.mayIssueGroupList(widget.rid, '') ? _pickTimer : null,
             ),
         ],
       ),

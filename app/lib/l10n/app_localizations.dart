@@ -2672,6 +2672,30 @@ abstract class AppLocalizations {
   /// **'{name} set disappearing messages to {duration}.'**
   String sysTtlSetThem(String name, String duration);
 
+  /// System message in a group (ADR 0030): the user, an admin, set the group's disappearing-messages timer. {duration} is already in words, e.g. '5 minutes'. The second sentence is load-bearing: a member on an older build ignores the timer, keeps every message and sends messages that never disappear; the app cannot tell who that is.
+  ///
+  /// In en, this message translates to:
+  /// **'You set disappearing messages to {duration}. A member whose app is older than this version keeps the messages, and theirs do not disappear.'**
+  String sysGroupTtlSetYou(String duration);
+
+  /// System message in a group (ADR 0030): the admin {by} (a contact) set the group's disappearing-messages timer. {duration} is already in words. The second sentence is load-bearing: a member on an older build ignores the timer.
+  ///
+  /// In en, this message translates to:
+  /// **'{by} set disappearing messages to {duration}. A member whose app is older than this version keeps the messages, and theirs do not disappear.'**
+  String sysGroupTtlSetBy(String by, String duration);
+
+  /// System message in a group (ADR 0030) the user was just added to, or added back to, that already has a disappearing-messages timer. {duration} is already in words. The second sentence is load-bearing: a member on an older build ignores the timer.
+  ///
+  /// In en, this message translates to:
+  /// **'Disappearing messages are on in this group: {duration}. A member whose app is older than this version keeps the messages, and theirs do not disappear.'**
+  String sysGroupTtlIs(String duration);
+
+  /// System message in a group (ADR 0030): the admin {by} changed the group (an add, a removal, a rename) with a list that carried no timer, which turns the group's timer off — their app predates group timers, or had not heard of this timer. Said instead of 'turned off', which they did not choose to do.
+  ///
+  /// In en, this message translates to:
+  /// **'Disappearing messages are now off: {by}\'s change to the group came without the group\'s timer. An app older than this version cannot carry it.'**
+  String sysGroupTtlDroppedBy(String by);
+
   /// System message when an inbound attachment's authentication failed. 'discarded' is deliberate — nothing unverified was kept.
   ///
   /// In en, this message translates to:
@@ -3865,6 +3889,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Works once, for 24 hours. Whoever opens it first becomes your contact, and joins this group once they agree. The link itself says nothing about the group.'**
   String get grpInviteByLinkNote;
+
+  /// ADR 0030, under the group's disappearing-messages row on the group info screen, for a member who is not an admin: the timer is changed by whoever may change the group.
+  ///
+  /// In en, this message translates to:
+  /// **'Only an admin can change this.'**
+  String get grpTtlAdminsOnly;
+
+  /// ADR 0030, in the disappearing-messages picker for a group: the honest limit — a member on an older build ignores the group's timer, keeps every message, and what they send never disappears.
+  ///
+  /// In en, this message translates to:
+  /// **'A member whose app is older than this version keeps the messages, and theirs do not disappear.'**
+  String get grpTtlOldBuild;
 
   /// Settings section header (phase 38): the account's handle, a name people can find you by.
   ///
