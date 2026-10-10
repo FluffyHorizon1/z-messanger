@@ -15,6 +15,7 @@ import 'enrollment.dart' show enrollmentKvFamilies, isRootBundle, rootBundleKey;
 import 'handles.dart';
 import 'key_transparency.dart';
 import 'models.dart';
+import 'receipts.dart';
 import 'system_messages.dart';
 import 'relay_url.dart';
 import 'transport.dart';
@@ -421,6 +422,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // Test-only: move at the first chance whatever the gate says, as ADR
     // 0017's signer did before ADR 0029 gave it one ([debugMoveUngated]).
     bool debugMoveUngated = false,
+    // ADR 0028: when held receipts may leave. Production never passes it; a
+    // test that is not about the delay passes a shorter one, from the start,
+    // so that receipts a previous run left are timed by it too.
+    ReceiptTiming receiptTiming = ReceiptTiming.standard,
   }) async {
     final svc = ChatService._(
       vault: vault,
@@ -432,6 +437,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     svc._signerV2Only = signDevlistV2Only;
     svc.debugPreAdr0029 = debugPreAdr0029;
     svc._debugMoveUngated = debugMoveUngated;
+    svc._receipts.timing = receiptTiming;
     svc.kt = KeyTransparency(
       vault: vault,
       host: svc,
@@ -445,6 +451,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     svc.kt.onOwnLatest = svc._onOwnLatestFromLog;
     await svc.kt.load();
     await svc._loadContacts();
+    await svc._loadReceipts(); // ADR 0028: what a previous run still owed
     await svc._loadRequests(); // ADR 0011: pending inbound requests + blocklist
     await svc._refreshAllVerification();
     // Cold start read every per-contact key with its own query — fifteen
@@ -583,7 +590,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     _sweeper?.cancel();
     _outboxRetry?.cancel();
     _devlistTimer?.cancel();
-    _dlvTimer?.cancel();
+    for (final t in _receiptTimers.values) {
+      t.cancel();
+    }
+    _receiptTimers.clear();
     _historyTimer?.cancel();
     for (final t in _pqTimers.values) {
       t.cancel();
@@ -591,17 +601,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     _pqTimers.clear();
     _pqPending.clear();
     _pqDueMs.clear();
-    // Receipts still waiting are dropped, not sent. A service being disposed
-    // must not speak: the flush is a full send — lock, ratchet step, vault
+    // Receipts still waiting are not sent. A service being disposed must not
+    // speak: the flush is a full send — lock, ratchet step, vault
     // transaction — started after the owner has decided the service is over
     // and usually a line before it closes the vault, so it either fails
     // against a closed database or writes after the owner thinks nothing
     // will. (The first version flushed here; backup_test.dart failed on it
     // for a different reason than was first supposed — see that test's
-    // "every tick in" wait — but the rule stands on its own.) The sender
-    // keeps a grey tick, the same best-effort loss an app killed mid-send
-    // always was.
-    _pendingDlv.clear();
+    // "every tick in" wait — but the rule stands on its own.) Since phase 41
+    // they are held in the vault (`rcpt_<rid>`), so the next start sends
+    // them, at a moment of its own (ADR 0028).
+    _receipts.clear();
     super.dispose();
   }
 
@@ -2568,6 +2578,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     'reqto_', 'reqdecl_',
     'hvia_', // phase 38: the handle a contact was made through
     'cdl_dlr_', // ADR 0029: what each of their devices said it reads
+    'rcpt_', // phase 41: receipts owed to them, held (ADR 0028)
   ];
 
   /// Forget a contact: every row, every blob, every `kv` family, and every
@@ -2595,6 +2606,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   Future<void> _deleteContactLocked(String rid) async {
+    // ADR 0028: receipts owed to them go with them, first — nothing below
+    // can then put a held one back into the vault or onto the wire.
+    _receipts.drop(rid);
+    _receiptTimers.remove(rid)?.cancel();
     // A group member, deleted as a contact, is still a member of the group:
     // deleting a contact is not a change to anyone's group. The lists this
     // device issues go on naming them, from the entry kept in the group's
@@ -2697,7 +2712,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     _deviceAssurance.remove(rid);
     _devListCoversKeys.remove(rid);
     _verification.remove(rid);
-    _pendingDlv.remove(rid);
+    // ADR 0028: and the receipts owed to them. Dropped before the sweep
+    // above; a write of their queue that was already in flight lands before
+    // this one, which removes what it wrote.
+    _saveReceipts(rid);
     _helloSentMs.remove(rid);
     _pokeSentMs.remove(rid);
     _heardFrom.remove(rid);
@@ -3624,6 +3642,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         rethrow;
       }
     });
+    // ADR 0028: receipts owed to this person that may go now ride with what
+    // the user is sending them — queued behind it, one flush — instead of
+    // leaving later at a moment of their own.
+    if (_ridingKinds.contains(inner.kind) &&
+        _receipts.anyEligible(contact.rid)) {
+      await _releaseReceipts(contact.rid, riding: true);
+    }
     unawaited(flushOutbox());
     unawaited(
         _fanToContactExtras(contact.rid, inner)); // M4: to their extra devices
@@ -4015,6 +4040,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   Future<void> _onConnected() async {
+    // ADR 0028 first, before anything this connection sends: no held receipt
+    // leaves sooner than its floor after the device came back.
+    _receiptsOnConnect();
     await flushOutbox();
     // 15.3: a fan-out row that failed its vault write is left in place and
     // retried rather than dropped. Without a trigger it would sit until the
@@ -5219,69 +5247,243 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   // ------------------------------------------------------------------
-  // Delivery receipts, coalesced (15.3)
+  // Receipts, held (41; ADR 0028, PROTOCOL §6.3)
   //
-  // A receipt is a full outbound send — ratchet step, seal, transaction —
-  // and the receive-side measurement put it at 10 ms of a 25 ms receive,
-  // every inbound message, holding the same per-conversation lock the next
-  // inbound needs. Fifty messages arriving on reconnect meant fifty sends
-  // in line. The wire format has always carried a LIST of mids, so receipts
-  // for a burst are gathered for a short moment and sent as one. The sender
-  // sees its ticks a few hundred milliseconds later than before; nobody
-  // notices that, and the receiver does a fiftieth of the work.
+  // A receipt is the one envelope this app sends because somebody ELSE did
+  // something, and until phase 41 it went within 300 ms of the delivery it
+  // answered (15.3 gathered a burst into one for 300 ms). Sealed sender keeps
+  // the sender off the envelope; the receipt put them back: a relay — or
+  // whoever terminates its TLS — that delivered E to mailbox B and a moment
+  // later took a small envelope for mailbox A had A as E's sender, near
+  // certainly after a few messages (THREAT_MODEL R41; Martiny et al., NDSS
+  // 2021). So a receipt — delivered or read — is held now: never less than
+  // `floor` after the message it answers arrived (or was read), nor after the
+  // device came back online; at the latest at a moment drawn uniformly up to
+  // `ceiling`; and all of one person's that may go, go together. Sooner than
+  // its draw only beside a message the user sends that person, where the
+  // envelope it would have been is one that was leaving anyway. Held in the
+  // vault (`rcpt_<rid>`), so a backgrounded or killed app sends them later
+  // rather than never. What the delay costs is the tick's promptness; what it
+  // buys, and what it does not, is in the ADR.
   // ------------------------------------------------------------------
 
-  /// rid → mids received and not yet acknowledged to their sender.
-  final Map<String, Set<String>> _pendingDlv = {};
-  Timer? _dlvTimer;
+  late final ReceiptQueue _receipts = ReceiptQueue(now: _now);
+  final Map<String, Timer> _receiptTimers = {};
+  final Set<String> _receiptsDirty = {};
+  Future<void>? _receiptWriter;
+  bool _sendsReceipts = true;
 
-  /// How long a receipt waits for company before it goes out on its own.
-  static const Duration deliveryReceiptWindow = Duration(milliseconds: 300);
+  /// Whether this device sends delivery and read receipts at all (Settings;
+  /// on unless turned off, per device, ADR 0028).
+  bool get sendsReceipts => _sendsReceipts;
 
-  /// Past this many for one sender, the batch goes now — a receipt that
-  /// names hundreds of mids is not what anybody wants either.
-  static const int _dlvBatchMax = 64;
+  /// The timing in force (ADR 0028): [ReceiptTiming.standard] in the app.
+  ReceiptTiming get receiptTiming => _receipts.timing;
 
-  /// Test seam: hold the window shut so that only the cap can send. Lets a
-  /// test reach the cap deterministically instead of racing the timer.
+  /// Test seam: hold receipts to another timing. The app never sets it.
   @visibleForTesting
-  bool debugHoldDeliveryReceipts = false;
+  set debugReceiptTiming(ReceiptTiming t) => _receipts.timing = t;
 
-  void _queueDeliveryReceipt(String rid, String mid) {
-    if (_disposed) return;
-    final pending = _pendingDlv.putIfAbsent(rid, () => {})..add(mid);
-    if (pending.length >= _dlvBatchMax) {
-      unawaited(_flushDeliveryReceipts(only: rid));
-      return;
+  /// At most this many mids in one `dlv` or `read`; a batch past it leaves as
+  /// several, at its moment — never early, which is what 15.3's cap did.
+  static const int _receiptBatchMax = 64;
+
+  /// What the user sends to someone: the kinds a receipt owed to that person
+  /// may ride with (ADR 0028). Not the kinds this client sends on its own in
+  /// answer to something — a `hello`, a key, a list, a group's `ginvite` or
+  /// `gsync` answer — which leave at moments other people's messages choose.
+  static const Set<String> _ridingKinds = {
+    'text', 'file', 'gmsg', 'gfile', 'react', 'greact', 'edit', 'gedit',
+    'del', 'gdel', 'timer',
+  };
+
+  /// Test seam: no receipt leaves on its own timer while this is set — it
+  /// still rides with a message, and [flushDeliveryReceipts] still sends
+  /// everything. Lets a test look at what is held, and choose the moment.
+  @visibleForTesting
+  bool get debugHoldReceipts => _holdReceipts;
+  @visibleForTesting
+  set debugHoldReceipts(bool hold) {
+    _holdReceipts = hold;
+    if (!hold) {
+      for (final rid in _receipts.rids.toList()) {
+        _scheduleReceipts(rid);
+      }
     }
-    if (debugHoldDeliveryReceipts) return;
-    _dlvTimer ??= Timer(deliveryReceiptWindow, () {
-      _dlvTimer = null;
-      unawaited(_flushDeliveryReceipts());
+  }
+
+  bool _holdReceipts = false;
+
+  /// How many of [rid]'s held receipts are past their floor. Test seam.
+  @visibleForTesting
+  int eligibleReceipts(String rid) => _receipts.eligible(rid);
+
+  void _queueDeliveryReceipt(String rid, String mid) =>
+      _owe(rid, [mid], read: false);
+
+  /// [rid] is owed receipts for [mids]: held, written down, and timed.
+  void _owe(String rid, List<String> mids, {required bool read}) {
+    if (_disposed || !_sendsReceipts || mids.isEmpty) return;
+    for (final m in mids) {
+      _receipts.owe(rid, m, read: read);
+    }
+    _saveReceipts(rid);
+    _scheduleReceipts(rid);
+  }
+
+  /// One timer per person, at their earliest due receipt.
+  void _scheduleReceipts(String rid) {
+    _receiptTimers.remove(rid)?.cancel();
+    final due = _receipts.nextDueMs(rid);
+    if (due == null || _disposed) return;
+    _receiptTimers[rid] =
+        Timer(Duration(milliseconds: max(0, due - _now())), () {
+      _receiptTimers.remove(rid);
+      unawaited(_releaseReceipts(rid).then((_) {}, onError: (Object _) {}));
     });
   }
 
-  /// Send every pending receipt (or [only] one sender's) as one 'dlv' per
-  /// sender. Failures are swallowed: the receipt is best-effort, and a
-  /// sender whose receipt is lost keeps a grey tick, as before.
-  Future<void> _flushDeliveryReceipts({String? only}) async {
-    final rids = only != null ? [only] : _pendingDlv.keys.toList();
-    for (final rid in rids) {
-      final mids = _pendingDlv.remove(rid);
-      if (mids == null || mids.isEmpty) continue;
-      final contact = contacts[rid];
-      if (contact == null) continue;
+  /// Send [rid]'s receipts that may go now — every one past its floor — or,
+  /// with [all], every one held (the test seam). On its own timer a receipt
+  /// waits for both links: one queued while the device is away would leave
+  /// the moment it is back, which is a moment the relay sees, so it is kept
+  /// and given a new one after the connection ([_receiptsOnConnect]).
+  /// [riding]: beside a message the user is sending them, which goes when it
+  /// goes.
+  Future<void> _releaseReceipts(String rid,
+      {bool riding = false, bool all = false}) async {
+    if (_disposed || (!all && !riding && _holdReceipts)) return;
+    final contact = contacts[rid];
+    if (contact == null) {
+      _receipts.drop(rid);
+      _saveReceipts(rid);
+      return;
+    }
+    if (!all &&
+        !riding &&
+        !(transport.isConnected && transport.isSenderConnected)) {
+      return;
+    }
+    final taken = _receipts.take(rid, all: all);
+    _scheduleReceipts(rid); // what is still held, at its own moment
+    if (taken.delivered.isEmpty && taken.read.isEmpty) return;
+    for (final (kind, mids) in [
+      ('dlv', taken.delivered),
+      ('read', taken.read),
+    ]) {
+      for (var i = 0; i < mids.length; i += _receiptBatchMax) {
+        try {
+          await _sendInner(
+              contact,
+              InnerMessage(
+                  kind: kind,
+                  mid: newMessageId(),
+                  ts: _now(),
+                  data: {
+                    'mids': mids.sublist(
+                        i, min(i + _receiptBatchMax, mids.length))
+                  }));
+        } catch (_) {
+          // Best effort, as a receipt always was: the sender keeps a tick
+          // that says less than it could, never one that says more.
+        }
+      }
+    }
+    // Written down after the envelopes are in the outbox, so a crash between
+    // the two sends a receipt twice — which changes nothing — not never.
+    _saveReceipts(rid);
+  }
+
+  /// Both links are up again: nothing held leaves sooner than the floor from
+  /// now, and anything whose moment passed while the device was away gets a
+  /// new one.
+  void _receiptsOnConnect() {
+    if (_disposed) return;
+    _receipts.deferAfterConnect();
+    for (final rid in _receipts.rids.toList()) {
+      _saveReceipts(rid);
+      _scheduleReceipts(rid);
+    }
+  }
+
+  /// Turn receipts on or off for this device. Off sends none — not on their
+  /// timer, not riding — and forgets the ones held.
+  Future<void> setSendsReceipts(bool on) async {
+    _sendsReceipts = on;
+    await vault.kvPut('receipts_enabled', on ? '1' : '0');
+    if (!on) {
+      for (final t in _receiptTimers.values) {
+        t.cancel();
+      }
+      _receiptTimers.clear();
+      final rids = _receipts.rids.toList();
+      _receipts.clear();
+      for (final rid in rids) {
+        _saveReceipts(rid);
+      }
+    }
+    notifyListeners();
+  }
+
+  /// Write [rid]'s held receipts to the vault — one writer, the latest state,
+  /// so two writes of one person's queue cannot land out of order.
+  void _saveReceipts(String rid) {
+    _receiptsDirty.add(rid);
+    _receiptWriter ??= _writeReceipts().whenComplete(() {
+      _receiptWriter = null;
+      if (_receiptsDirty.isNotEmpty && !_disposed) {
+        _saveReceipts(_receiptsDirty.first);
+      }
+    });
+  }
+
+  Future<void> _writeReceipts() async {
+    while (_receiptsDirty.isNotEmpty && !_disposed) {
+      final rid = _receiptsDirty.first;
+      _receiptsDirty.remove(rid);
+      final v = contacts.containsKey(rid) ? _receipts.encode(rid) : null;
       try {
-        await _sendInner(
-            contact,
-            InnerMessage(
-                kind: 'dlv',
-                mid: newMessageId(),
-                ts: _now(),
-                data: {'mids': mids.toList()}));
+        if (v == null) {
+          await vault.kvDelete('rcpt_$rid');
+        } else {
+          await vault.kvPut('rcpt_$rid', v);
+        }
       } catch (_) {}
     }
   }
+
+  /// The receipts a previous run held, for the people this vault still has.
+  /// Timed once the device connects ([_receiptsOnConnect]).
+  Future<void> _loadReceipts() async {
+    _sendsReceipts = (await vault.kvGet('receipts_enabled')) != '0';
+    final held = await vault.kvScan('rcpt_');
+    for (final e in held.entries) {
+      final rid = e.key.substring('rcpt_'.length);
+      if (!_sendsReceipts || !contacts.containsKey(rid)) {
+        await vault.kvDelete(e.key);
+        continue;
+      }
+      _receipts.load(rid, e.value);
+    }
+  }
+
+  /// Test seam: send every receipt held, now — floors, timers and the links
+  /// aside — and wait until they are in the outbox.
+  @visibleForTesting
+  Future<void> flushDeliveryReceipts() async {
+    for (final rid in _receipts.rids.toList()) {
+      _receiptTimers.remove(rid)?.cancel();
+      await _releaseReceipts(rid, all: true);
+    }
+  }
+
+  /// How many delivery receipts are held, across all senders. Test seam.
+  @visibleForTesting
+  int get pendingDeliveryReceipts => _receipts.count(read: false);
+
+  /// How many receipts of either kind are held. Test seam.
+  @visibleForTesting
+  int get pendingReceipts => _receipts.count();
 
   /// Test seam: claim delivery of [mids] to [rid], whatever this device has
   /// actually received.
@@ -5315,19 +5517,6 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     await _sendInner(contact, inner);
   }
 
-  /// Test seam: send whatever receipts are waiting, now, and wait for them.
-  @visibleForTesting
-  Future<void> flushDeliveryReceipts() async {
-    _dlvTimer?.cancel();
-    _dlvTimer = null;
-    await _flushDeliveryReceipts();
-  }
-
-  /// How many receipts are waiting, across all senders. Test seam.
-  @visibleForTesting
-  int get pendingDeliveryReceipts =>
-      _pendingDlv.values.fold(0, (n, s) => n + s.length);
-
   Future<void> _sendReadReceipts(String rid) async {
     final contact = contacts[rid];
     if (contact == null) return;
@@ -5343,9 +5532,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             "rid = ? AND outgoing = 0 AND receipt_sent = 0 AND kind IN ('text','file')",
         whereArgs: [rid]);
     // 30.3: and my other devices count them read — first, so that a receipt
-    // the contact cannot be sent does not leave them unread over there.
+    // the contact cannot be sent does not leave them unread over there. At
+    // once, as before: that envelope goes to my own devices, which the relay
+    // groups by their timing anyway (R19), and releasing it WITH the receipt
+    // below would put my laptop's mailbox beside the contact's at one moment.
     await _mirrorRead(rid, mids);
-    await _sendInner(contact, InnerMessage.read(newMessageId(), _now(), mids));
+    // ADR 0028: the receipt itself is held like a delivery receipt, so it
+    // does not leave at the moment of reading either.
+    _owe(rid, mids, read: true);
   }
 
   // ------------------------------------------------------------------

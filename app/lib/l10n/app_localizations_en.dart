@@ -1295,8 +1295,38 @@ class AppLocalizationsEn extends AppLocalizations {
   String get stPush => 'Push notifications';
 
   @override
-  String get stPushHelp =>
-      'Wake this device when a message arrives while Z is closed. The alert is content-free — messages are fetched and decrypted only on your device, never inside the notification.';
+  String get stPushOnHelp =>
+      'When a message waits for you while Z is closed, the relay asks Google\'s Firebase Cloud Messaging to wake this device, using a token this device gave it. The wake carries no message and no sender: Google learns that this device was woken, and when. The relay keeps the token until 30 days after this device was last online, or until you turn push off.';
+
+  @override
+  String get stPushOffHelp =>
+      'Off. The relay holds no push token for this device and nothing wakes it: Z fetches your messages when you open it.';
+
+  @override
+  String get stPushOffPendingHelp =>
+      'Off. The relay will be told to forget this device\'s push token the next time this device is online; until then it may still wake it.';
+
+  @override
+  String get stPushNotAllowedHelp =>
+      'Notifications are not allowed for Z, so this device is not registered for push and nothing wakes it: Z fetches your messages when you open it. Allow notifications for Z in Android\'s settings to use push.';
+
+  @override
+  String get stPushNotAllowedPendingHelp =>
+      'Notifications are not allowed for Z, so push is off. The relay will be told to forget this device\'s push token the next time this device is online; until then it may still wake it.';
+
+  @override
+  String get stPrivacy => 'Privacy';
+
+  @override
+  String get stReceipts => 'Delivery and read receipts';
+
+  @override
+  String get stReceiptsOnHelp =>
+      'People who write to you see a second tick when their message reaches this device, and the ticks change colour once you have read it. Each receipt waits between 5 seconds and a minute, chosen at random — or, once 5 seconds have passed, goes with your next message to them — so it never leaves the moment a message arrives. This device only.';
+
+  @override
+  String get stReceiptsOffHelp =>
+      'Off. This device tells nobody when their message arrives or when you read it, so they see one tick, never two, even once it has arrived. Your other devices answer for themselves.';
 
   @override
   String get stSecurity => 'Security';

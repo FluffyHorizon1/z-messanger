@@ -71,6 +71,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:z_protocol/z_protocol.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/models.dart';
+import 'package:zapp/core/receipts.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 
@@ -96,6 +97,13 @@ String? kindOf(DecryptResult dec) {
 }
 
 int now() => DateTime.now().millisecondsSinceEpoch;
+
+// ADR 0028 holds a receipt from 5 s to a minute, at random, so the relay
+// cannot pair it with the message it answers (receipt_timing_test.dart). This
+// suite is about which device answers for whom, not about when a tick turns, so its devices answer
+// within 300 ms, as every device did before phase 41.
+const promptReceipts =
+    ReceiptTiming(floor: Duration.zero, ceiling: Duration(milliseconds: 300));
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -166,7 +174,8 @@ void main() {
         vault: vault,
         identity: id,
         displayName: name,
-        transport: Transport(identity: id, serverUrl: 'ws://127.0.0.1:$port'));
+        transport: Transport(identity: id, serverUrl: 'ws://127.0.0.1:$port'),
+        receiptTiming: promptReceipts);
     live.add(svc);
     return svc;
   }
@@ -290,7 +299,8 @@ void main() {
         identity: devId,
         displayName: name,
         transport:
-            Transport(identity: devId, serverUrl: 'ws://127.0.0.1:$port'));
+            Transport(identity: devId, serverUrl: 'ws://127.0.0.1:$port'),
+        receiptTiming: promptReceipts);
     live.add(svc);
     await waitUntil(() => svc.transport.isConnected, what: '$name connects');
     for (final k in knows) {

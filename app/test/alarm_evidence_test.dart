@@ -65,6 +65,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseException;
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/key_transparency.dart';
+import 'package:zapp/core/receipts.dart';
 import 'package:zapp/core/system_messages.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
@@ -90,6 +91,14 @@ Future<void> _healthy(int port) async {
   }
   fail('service on $port did not start');
 }
+
+// ADR 0028 holds a receipt from 5 s to a minute, at random, so the relay
+// cannot pair it with the message it answers (receipt_timing_test.dart). This
+// suite is about the owner's alarms, and counts what a device sends a
+// contact, so its devices answer within 300 ms, as every device did before
+// phase 41 — a receipt from the setup would otherwise land inside a count.
+const promptReceipts =
+    ReceiptTiming(floor: Duration.zero, ceiling: Duration(milliseconds: 300));
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -234,6 +243,7 @@ void main() {
           // account's key, does not depend on the shape:
           // devlist_capability_test.dart 10 raises one after the move.
           signDevlistV2Only: false,
+          receiptTiming: promptReceipts,
         );
         made = svc;
         svc.devlistGrace = devlistGrace ?? grace;

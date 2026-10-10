@@ -223,6 +223,9 @@ class _BootstrapperState extends State<Bootstrapper>
       // The handle's introduction mailbox likewise (phase 38): drained a few
       // seconds after the app comes to the front, then on a jittered timer.
       _service?.handles.onForeground();
+      // Phase 41: notifications may have been allowed or taken away in the
+      // system's settings while the app was behind; push follows the answer.
+      _push?.onResume();
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
       _invites?.pause();

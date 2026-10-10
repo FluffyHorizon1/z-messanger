@@ -1309,8 +1309,38 @@ class AppLocalizationsEs extends AppLocalizations {
   String get stPush => 'Notificaciones push';
 
   @override
-  String get stPushHelp =>
-      'Despierta este dispositivo cuando llegue un mensaje con Z cerrada. El aviso no contiene contenido: los mensajes se descargan y descifran solo en tu dispositivo, nunca dentro de la notificación.';
+  String get stPushOnHelp =>
+      'Cuando te espera un mensaje con Z cerrada, el relay pide a Firebase Cloud Messaging de Google que despierte este dispositivo, usando un token que este dispositivo le dio. El aviso no lleva ningún mensaje ni remitente: Google solo sabe que este dispositivo fue despertado, y cuándo. El relay guarda el token hasta 30 días después de la última conexión de este dispositivo, o hasta que desactives las notificaciones push.';
+
+  @override
+  String get stPushOffHelp =>
+      'Desactivadas. El relay no guarda ningún token push de este dispositivo y nada lo despierta: Z descarga tus mensajes cuando la abres.';
+
+  @override
+  String get stPushOffPendingHelp =>
+      'Desactivadas. Se le pedirá al relay que olvide el token push de este dispositivo la próxima vez que este esté en línea; hasta entonces aún puede despertarlo.';
+
+  @override
+  String get stPushNotAllowedHelp =>
+      'Las notificaciones no están permitidas para Z, así que este dispositivo no está registrado para push y nada lo despierta: Z descarga tus mensajes cuando la abres. Permite las notificaciones de Z en los ajustes de Android para usar push.';
+
+  @override
+  String get stPushNotAllowedPendingHelp =>
+      'Las notificaciones no están permitidas para Z, así que push está desactivado. Se le pedirá al relay que olvide el token push de este dispositivo la próxima vez que este esté en línea; hasta entonces aún puede despertarlo.';
+
+  @override
+  String get stPrivacy => 'Privacidad';
+
+  @override
+  String get stReceipts => 'Confirmaciones de entrega y de lectura';
+
+  @override
+  String get stReceiptsOnHelp =>
+      'Quienes te escriben ven un segundo tic cuando su mensaje llega a este dispositivo, y los tics cambian de color cuando lo has leído. Cada confirmación espera entre 5 segundos y un minuto, al azar —o, pasados esos 5 segundos, sale con tu próximo mensaje a esa persona—, así que nunca se envía en el momento en que llega el mensaje. Solo en este dispositivo.';
+
+  @override
+  String get stReceiptsOffHelp =>
+      'Desactivadas. Este dispositivo no avisa a nadie de cuándo llega su mensaje ni de cuándo lo lees, así que verán un solo tic, nunca dos, aunque el mensaje haya llegado. Tus otros dispositivos responden por sí mismos.';
 
   @override
   String get stSecurity => 'Seguridad';

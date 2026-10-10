@@ -16,9 +16,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/archive.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/models.dart';
+import 'package:zapp/core/receipts.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
+
+// ADR 0028 holds a receipt from 5 s to a minute, at random, so the relay
+// cannot pair it with the message it answers (receipt_timing_test.dart). This
+// suite is about what a restore brings back, not about when a tick turns, so its devices answer
+// within 300 ms, as every device did before phase 41.
+const promptReceipts =
+    ReceiptTiming(floor: Duration.zero, ceiling: Duration(milliseconds: 300));
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -88,7 +96,11 @@ void main() {
     final transport =
         Transport(identity: id, serverUrl: 'ws://127.0.0.1:$port');
     final svc = await ChatService.init(
-        vault: vault, identity: id, displayName: name, transport: transport);
+        vault: vault,
+        identity: id,
+        displayName: name,
+        transport: transport,
+        receiptTiming: promptReceipts);
     services.add(svc);
     return svc;
   }

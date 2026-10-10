@@ -2138,11 +2138,59 @@ abstract class AppLocalizations {
   /// **'Push notifications'**
   String get stPush;
 
-  /// What a push notification does and does not carry. 'content-free' and 'never inside the notification' are the privacy claim: the push service sees a wake-up, not a message. A translation that implies the notification shows the message contradicts the design.
+  /// Under the push toggle when push is on and notifications are allowed: what push sends, and to whom. The privacy claims are exact: the relay holds a token from this device; Google (Firebase Cloud Messaging) is asked to wake the device; the wake carries no message and no sender; Google learns only that the device was woken and when; 30 days. A translation that implies the notification shows the message, or that Google learns who wrote, contradicts the design.
   ///
   /// In en, this message translates to:
-  /// **'Wake this device when a message arrives while Z is closed. The alert is content-free — messages are fetched and decrypted only on your device, never inside the notification.'**
-  String get stPushHelp;
+  /// **'When a message waits for you while Z is closed, the relay asks Google\'s Firebase Cloud Messaging to wake this device, using a token this device gave it. The wake carries no message and no sender: Google learns that this device was woken, and when. The relay keeps the token until 30 days after this device was last online, or until you turn push off.'**
+  String get stPushOnHelp;
+
+  /// Under the push toggle when push is off and the relay has confirmed it forgot this device's token.
+  ///
+  /// In en, this message translates to:
+  /// **'Off. The relay holds no push token for this device and nothing wakes it: Z fetches your messages when you open it.'**
+  String get stPushOffHelp;
+
+  /// Under the push toggle when push was turned off but the relay has not yet confirmed it forgot the token (the device was offline). 'may still wake it' is the honest part: until the relay hears, it can.
+  ///
+  /// In en, this message translates to:
+  /// **'Off. The relay will be told to forget this device\'s push token the next time this device is online; until then it may still wake it.'**
+  String get stPushOffPendingHelp;
+
+  /// Under the push toggle when push is on in Z but the user has not allowed notifications in the operating system: nothing is registered with the relay.
+  ///
+  /// In en, this message translates to:
+  /// **'Notifications are not allowed for Z, so this device is not registered for push and nothing wakes it: Z fetches your messages when you open it. Allow notifications for Z in Android\'s settings to use push.'**
+  String get stPushNotAllowedHelp;
+
+  /// Under the push toggle when notifications were taken away after push had registered, and the relay has not yet confirmed it forgot the token.
+  ///
+  /// In en, this message translates to:
+  /// **'Notifications are not allowed for Z, so push is off. The relay will be told to forget this device\'s push token the next time this device is online; until then it may still wake it.'**
+  String get stPushNotAllowedPendingHelp;
+
+  /// Section header.
+  ///
+  /// In en, this message translates to:
+  /// **'Privacy'**
+  String get stPrivacy;
+
+  /// Toggle label: whether this device tells people who write to you that their message arrived, and that you read it.
+  ///
+  /// In en, this message translates to:
+  /// **'Delivery and read receipts'**
+  String get stReceipts;
+
+  /// Under the receipts toggle when it is on. The timing (5 seconds to a minute, at random, or with your next message once 5 seconds have passed) is exact and is what keeps a receipt from pointing at the message it answers. 'This device only': each linked device has its own setting.
+  ///
+  /// In en, this message translates to:
+  /// **'People who write to you see a second tick when their message reaches this device, and the ticks change colour once you have read it. Each receipt waits between 5 seconds and a minute, chosen at random — or, once 5 seconds have passed, goes with your next message to them — so it never leaves the moment a message arrives. This device only.'**
+  String get stReceiptsOnHelp;
+
+  /// Under the receipts toggle when it is off. The honest cost: senders see one tick even for messages that did arrive.
+  ///
+  /// In en, this message translates to:
+  /// **'Off. This device tells nobody when their message arrives or when you read it, so they see one tick, never two, even once it has arrived. Your other devices answer for themselves.'**
+  String get stReceiptsOffHelp;
 
   /// Section header.
   ///

@@ -47,6 +47,34 @@ class Transport extends ChangeNotifier {
   /// (re)connect because the relay holds tokens in RAM only.
   String? _pushToken;
 
+  /// The relay may hold a token for this device that it must forget: push
+  /// was turned off, or notifications were taken away. Said on this
+  /// connection or, offline, on the next one, and again until the relay
+  /// answers. Until phase 41 a withdrawal made while the link was down was
+  /// dropped on the floor — `unregisterPush` found no socket and returned —
+  /// and the relay went on waking the device through Google for every
+  /// message until the token aged out, thirty days later.
+  bool _pushWithdrawDue = false;
+
+  /// The token the relay acknowledged on THIS connection, if any.
+  String? _pushConfirmed;
+
+  /// A token the relay refused for good (`bad_push`, `push_refused`): not
+  /// offered again on this run.
+  String? _pushRefused;
+  Future<void>? _pushOp;
+  Timer? _pushRetry;
+
+  /// How long a push frame that failed waits before it is tried again on a
+  /// connection that stayed up.
+  static const Duration pushRetryDelay = Duration(seconds: 30);
+
+  /// Called once the relay has acknowledged a withdrawal ([unregisterPush]).
+  void Function()? onPushWithdrawn;
+
+  /// A withdrawal is waiting for the relay's answer.
+  bool get pushWithdrawalPending => _pushWithdrawDue;
+
   /// Wired by ChatService.
   void Function(RelayInbound msg)? onMessage;
   void Function(DeliveredReceipt r)? onDelivered;
@@ -70,6 +98,7 @@ class Transport extends ChangeNotifier {
     _shouldRun = false;
     _retryTimer?.cancel();
     _senderRetry?.cancel();
+    _pushRetry?.cancel();
     _announcedUp = false;
     final c = _client;
     _client = null;
@@ -164,11 +193,11 @@ class Transport extends ChangeNotifier {
       client.delivered.listen((r) => onDelivered?.call(r));
       _setStatus(LinkStatus.connected);
       _maybeAnnounceUp();
-      if (_pushToken != null) {
-        try {
-          client.registerPush(token: _pushToken!);
-        } catch (_) {}
-      }
+      // A new connection: whatever the relay acknowledged on the last one is
+      // said again — a registration because the relay keeps tokens in RAM,
+      // a withdrawal that never got its answer because that is the point.
+      _pushConfirmed = null;
+      _syncPush();
     } catch (e) {
       lastError = e.toString();
       _client = null;
@@ -180,6 +209,7 @@ class Transport extends ChangeNotifier {
   void _handleClosed() {
     _client = null;
     _announcedUp = false;
+    _pushRetry?.cancel();
     if (_shouldRun) {
       _setStatus(LinkStatus.disconnected);
       _scheduleRetry();
@@ -252,21 +282,86 @@ class Transport extends ChangeNotifier {
   }
 
   /// Store this device's push token and register it now if connected. It is
-  /// re-registered automatically on every future reconnect.
+  /// re-registered automatically on every future reconnect. Null forgets it
+  /// here and says nothing to the relay — [unregisterPush] does that.
   void setPushToken(String? token) {
     _pushToken = token;
-    if (token != null && isConnected) {
-      try {
-        _client?.registerPush(token: token);
-      } catch (_) {}
-    }
+    if (token != null) _pushWithdrawDue = false;
+    _syncPush();
   }
 
-  /// Turn push off for this identity and tell the relay to forget the token.
+  /// Turn push off for this identity and tell the relay to forget the token —
+  /// now if the link is up, otherwise as soon as it is, and again on every
+  /// connection until the relay answers ([pushWithdrawalPending],
+  /// [onPushWithdrawn]).
   void unregisterPush() {
     _pushToken = null;
+    _pushWithdrawDue = true;
+    _syncPush();
+  }
+
+  /// Bring what the relay holds for this device in line with what it should,
+  /// one push frame at a time, on the authenticated link — which is the
+  /// identity the relay keys a token by. Re-run when a frame is answered or
+  /// fails, on every connection, and when the wanted state changes.
+  void _syncPush() {
+    if (_pushOp != null) return; // re-run when the frame in flight settles
+    final c = _client;
+    if (c == null || !c.isOpen || status != LinkStatus.connected) return;
+    final token = _pushToken;
+    final Future<void> op;
+    if (token != null) {
+      if (token == _pushConfirmed || token == _pushRefused) return;
+      op = c.registerPushAcked(token: token);
+    } else if (_pushWithdrawDue) {
+      op = c.unregisterPushAcked();
+    } else {
+      return;
+    }
+    _pushRetry?.cancel();
+    var retry = false;
+    _pushOp = op.then((_) {
+      if (token != null) {
+        _pushConfirmed = token;
+      } else {
+        _withdrawn();
+      }
+    }, onError: (Object e) {
+      final code = e is RelayException ? e.message : '';
+      if (token == null && code == 'unknown_frame') {
+        // A relay with no push at all: it holds no token to forget.
+        _withdrawn();
+      } else if (token != null &&
+          (code == 'bad_push' ||
+              code == 'push_refused' ||
+              code == 'unknown_frame')) {
+        // Refused for good — or a relay with no push at all: asking again
+        // would be answered the same way.
+        _pushRefused = token;
+      } else {
+        retry = true; // a timeout, a refusal of the moment, a closed link
+      }
+    }).whenComplete(() {
+      _pushOp = null;
+      if (retry) {
+        // Not at once: a refusal of the moment (`rate_limited`, `internal`)
+        // comes straight back, and answering it straight back is a loop.
+        // A new connection, or a change in what is wanted, tries sooner.
+        if (isConnected && _shouldRun) {
+          _pushRetry = Timer(pushRetryDelay, _syncPush);
+        }
+        return;
+      }
+      _syncPush(); // the wanted state may have moved while this was out
+    });
+  }
+
+  void _withdrawn() {
+    _pushConfirmed = null;
+    if (_pushToken != null || !_pushWithdrawDue) return; // superseded
+    _pushWithdrawDue = false;
     try {
-      _client?.unregisterPush();
+      onPushWithdrawn?.call();
     } catch (_) {}
   }
 

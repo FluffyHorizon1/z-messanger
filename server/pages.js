@@ -888,13 +888,16 @@ const PRIVACY_HTML = page(
   handle carries your display name and public key to whoever holds it.</p>
 
   <h2>Push notifications (Android)</h2>
-  <p>Push is on by default on Android. The app registers an opaque Firebase
-  Cloud Messaging token with the relay — whether or not you have allowed
-  notifications — so it can send a <b>content-free wake signal</b> ("you have
-  mail") when a message arrives while the app is closed. The notification
-  contains no message content and no sender. The token is held in relay RAM
-  until 30 days after your app last connected, and is deleted when you turn
-  push off in Settings. Delivery of the
+  <p>Push is on by default on Android, and used only if you allow Z
+  notifications. Then the app registers an opaque Firebase Cloud Messaging
+  token with the relay, so it can send a <b>content-free wake signal</b>
+  ("you have mail") when a message arrives while the app is closed. Without
+  that permission nothing is registered, and if you take it away later the
+  app withdraws its registration the next time it starts or comes back to the
+  front. The notification contains no message content and no sender. The
+  token is held in relay RAM until 30 days after your app last connected, and
+  is deleted when you turn push off in Settings — if you do that while your
+  phone is offline, as soon as it is back. Delivery of the
   wake signal is performed by Google Firebase under
   <a href="https://firebase.google.com/support/privacy">Google's privacy
   terms</a>; Google never receives message content. With push off, none of
@@ -909,7 +912,10 @@ const PRIVACY_HTML = page(
   nothing, because nothing is stored. Sealed sender and size padding are
   implemented, so an envelope in transit does not identify its sender and its
   length reveals little; what remains is that a mailbox is active — and the
-  timing of delivery receipts, which can pair a sender with a recipient.</p>
+  timing of delivery receipts. The app holds each receipt back for a random
+  five seconds to a minute, so a single one no longer pairs a sender with a
+  recipient; a pattern over many messages still can, and you can turn
+  receipts off.</p>
   <p>This service — the relay and the transparency log — is reached through
   Cloudflare, which terminates the encrypted connection (TLS) in front of it.
   Cloudflare therefore sees, beside your IP address, the same connection
@@ -922,6 +928,8 @@ const PRIVACY_HTML = page(
   <h2>Your choices</h2>
   <ul>
     <li>Turn push off in Settings; the app works fully without it.</li>
+    <li>Turn delivery and read receipts off in Settings › Privacy; the people
+    who write to you then see one tick, never two.</li>
     <li>Turn the transparency log off, or point it at your own, in Settings
     once Developer mode is on.</li>
     <li>Claim a handle only if you want to be found by one; pause it or give

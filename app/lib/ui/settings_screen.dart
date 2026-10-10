@@ -264,18 +264,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const LinkedDevicesScreen())),
           ),
+          // Phase 41 (ADR 0028): receipts are the one thing this app sends
+          // because somebody else did something, so whether it does is the
+          // user's. Per device, on every platform.
+          _SectionHeader(l.stPrivacy),
+          SwitchListTile(
+            secondary: Icon(
+              svc.sendsReceipts ? Icons.done_all : Icons.remove_done,
+              color:
+                  svc.sendsReceipts ? context.z.ok : context.z.textSecondary,
+            ),
+            title: Text(l.stReceipts),
+            subtitle: Text(
+              svc.sendsReceipts ? l.stReceiptsOnHelp : l.stReceiptsOffHelp,
+              style: const TextStyle(fontSize: 12),
+            ),
+            value: svc.sendsReceipts,
+            activeThumbColor: context.z.accent,
+            onChanged: (v) => svc.setSendsReceipts(v),
+          ),
           if (push.supported) ...[
             _SectionHeader(l.stNotifications),
             SwitchListTile(
               secondary: Icon(
-                push.enabled
+                push.status == PushStatus.on
                     ? Icons.notifications_active_outlined
                     : Icons.notifications_off_outlined,
-                color: push.enabled ? context.z.ok : context.z.textSecondary,
+                color: push.status == PushStatus.on
+                    ? context.z.ok
+                    : context.z.textSecondary,
               ),
               title: Text(l.stPush),
+              // Phase 41: what push sends and to whom, and — when nothing is
+              // registered — why, including a withdrawal the relay has not
+              // heard yet, which until then it can still act on.
               subtitle: Text(
-                l.stPushHelp,
+                switch (push.status) {
+                  PushStatus.on => l.stPushOnHelp,
+                  PushStatus.notAllowed => push.withdrawalPending
+                      ? l.stPushNotAllowedPendingHelp
+                      : l.stPushNotAllowedHelp,
+                  PushStatus.off => push.withdrawalPending
+                      ? l.stPushOffPendingHelp
+                      : l.stPushOffHelp,
+                },
                 style: const TextStyle(fontSize: 12),
               ),
               value: push.enabled,

@@ -71,10 +71,12 @@ patterns in that are not nothing: the members of a group all receive their
 copy of a message within a fraction of a second of each other, every time,
 and so does each of your own devices. We measured it (`THREAT_MODEL.md`, R18
 and R19). A relay that keeps timestamps can work out which mailboxes belong
-together; it still cannot put a name to any of them. The same timing pairs
-a sender with the person they wrote to, despite sealed sender: the delivery
-receipt goes back to the sender within a fraction of a second of the message
-arriving (R41).
+together; it still cannot put a name to any of them. The same timing can
+pair a sender with the person they wrote to, despite sealed sender: a delivery
+receipt goes back to the sender. Since phase 41 it waits a random five
+seconds to a minute rather than a fraction of a second, which turns one
+message's giveaway into a pattern a relay has to watch for, and you can turn
+receipts off (R41).
 
 Two more parties see some of this. **The transparency log**, which Z uses by
 default, is asked about your contacts about four times a day, from your own

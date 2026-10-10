@@ -110,6 +110,10 @@ void main() {
       {Duration each = const Duration(milliseconds: 250), int rounds = 12}) async {
     for (var i = 0; i < rounds; i++) {
       for (final s in all) {
+        // Since phase 41 a receipt is held for a random moment (ADR 0028,
+        // receipt_timing_test.dart). These tests are about what a tick may
+        // mean, not when it turns, so what is held goes now.
+        await s.flushDeliveryReceipts();
         await s.flushOutbox();
       }
       await Future<void>.delayed(each);

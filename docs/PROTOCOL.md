@@ -845,10 +845,31 @@ device reads (§3.7).
 On persisting an inbound `text`, `file`, `gmsg` or `gfile`, the recipient
 sends `dlv{mids:[mid]}` back over the same pairwise session (best effort). This
 replaces the relay's `delivered` frame, which sealed sender (§8) makes
-impossible. `read` is sent when the user views the message. A receipt goes
-back promptly — the reference client waits at most 300 ms, to let a burst
-share one — and that promptness lets a relay that watches timing pair a sealed
-sender with the recipient (`THREAT_MODEL.md` R41).
+impossible. `read` is sent for messages the user has viewed. Neither leaves
+the moment it is owed: a receipt that goes back promptly lets a relay that
+watches timing pair a sealed sender with the recipient (`THREAT_MODEL.md`
+R41), which until phase 41 the reference client's 300 ms window did.
+
+**When a receipt leaves (`adr/0028`).** A client SHOULD hold each receipt it
+owes:
+
+* no sooner than a floor F after the moment it became owed — the message
+  stored, or viewed — nor sooner than F after the client last connected to
+  the relay;
+* at the latest at a moment drawn uniformly between F and a ceiling C after
+  it became owed — drawn again, from the reconnection, when a reconnection's
+  floor passes it;
+* when one of a person's receipts leaves, every receipt owed to that person
+  that is past its floor goes with it: one `dlv` and one `read`, each naming
+  at most 64 mids, a larger batch as several at the same moment;
+* a receipt past its floor MAY leave sooner, directly behind a message the
+  user sends that person — never behind one the client sends on its own
+  account (a `hello`, a key, a list).
+
+The reference client uses F = 5 s and C = 60 s, keeps what it holds across a
+restart, and has a switch that stops it sending either kind. None of this is
+on the wire: a receipt held is the same message as one sent at once, and a
+client that sends its receipts promptly is read exactly as before.
 
 A receipt is a claim, and a sender MUST bound what each party may claim. A
 `mid` is plaintext to everyone who received the message, so in a group every
@@ -1906,6 +1927,12 @@ relay cannot make.
 recipient is offline, the relay sends the token a **content‑free** wake signal
 ("you have mail"): no sender, no id, no payload. Retired tokens are deleted.
 An introduction mailbox (§21.6) holds no token and is never woken.
+
+The relay answers both push frames with the same `push-ok` and may handle
+frames concurrently, so a client SHOULD keep one push frame in flight at a
+time and count it done only on that answer; a withdrawal not yet answered is
+said again on the next connection (phase 41). The reference client registers
+only while the user allows notifications, and withdraws when that changes.
 
 A relay that runs as several instances MUST NOT treat having handed an
 envelope to another instance as a delivery: the publish says the message bus

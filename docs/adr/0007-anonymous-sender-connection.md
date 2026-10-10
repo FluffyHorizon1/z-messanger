@@ -62,6 +62,17 @@ On a home or office connection an address is as good as a name; behind
 carrier‑grade NAT it is shared with thousands. That is R21, and it is the
 honest replacement for a claim that used to be stronger than the code.
 
+Nor does sealing an envelope hide who **answers** it. A delivery receipt is
+addressed to the sender's mailbox, and until phase 41 it left within 300 ms of
+the delivery it answered, so the relay — or whoever terminates its TLS —
+could pair sender and recipient by timing alone: no address needed, one
+message enough, behind carrier‑grade NAT or a VPN as much as without (R41).
+Since phase 41 a receipt, delivered or read, is held no less than five seconds
+and at most about a minute, at a random moment, all of one person's together
+or behind the next message the user sends them, and a person can turn
+receipts off (`adr/0028`). What is left is what a conversation's own rhythm
+gives a watcher over many messages, which no rule about receipts removes.
+
 ## Considered and rejected
 
 **Anonymous credentials for sending** (a blind token from the relay, or a

@@ -114,9 +114,11 @@ your threat model, self-host the relay or front it with Tor. This is R1 and
 R21 in the residual-risk register and it is the most important limitation in
 this document.
 
-Three more belong beside it. A delivery receipt goes back to the sender
-within a fraction of a second of a message arriving, so a relay that watches
-timing can pair a sealed sender with the recipient anyway (R41). The
+Three more belong beside it. A delivery receipt goes back to the sender —
+since phase 41 at a random moment five seconds to a minute after the message
+arrived, no longer within a fraction of a second — so a relay that watches
+timing for long enough can still pair a sealed sender with the recipient
+(R41, `adr/0028`). The
 transparency log (§6), which the app uses by default, is asked about each of
 a user's contacts from that user's address, four times a day: its operator —
 for the public log, the relay's operator too — learns the contact list

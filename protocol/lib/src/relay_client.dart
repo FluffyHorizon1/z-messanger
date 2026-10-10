@@ -40,6 +40,14 @@ class RelayClient {
 
   /// The `intro` frame waiting for its `intro_ok` (§21.6), if one is.
   Completer<void>? _introAck;
+
+  /// The push frame waiting for its `push-ok`, if one is, and the frames
+  /// queued behind it. One at a time: the relay answers a registration and a
+  /// withdrawal with the same `push-ok`, and handles frames concurrently, so
+  /// with two in flight neither the answer nor the order the relay applied
+  /// them in would say which one stands.
+  Completer<void>? _pushAck;
+  Future<void> _pushQueue = Future<void>.value();
   final void Function()? _onClosed;
   Timer? _pinger;
 
@@ -248,6 +256,11 @@ class RelayClient {
         _introAck = null;
         if (c != null && !c.isCompleted) c.complete();
         break;
+      case 'push-ok':
+        final p = _pushAck;
+        _pushAck = null;
+        if (p != null && !p.isCompleted) p.complete();
+        break;
       case 'delivered':
         final id = str('id');
         if (id == null) break;
@@ -280,6 +293,11 @@ class RelayClient {
           final intro = _introAck;
           _introAck = null;
           if (intro != null) pending.add(intro);
+          // And a push frame (`bad_push`, `push_refused`, `not_authed`, and
+          // `unknown_frame` from a relay with no push at all).
+          final push = _pushAck;
+          _pushAck = null;
+          if (push != null) pending.add(push);
           for (final c in pending) {
             if (!c.isCompleted) {
               c.completeError(
@@ -380,6 +398,44 @@ class RelayClient {
     _send({'t': 'push-unregister'});
   }
 
+  /// [registerPush], resolving once the relay answers `push-ok` — so a caller
+  /// knows the relay HOLDS the token rather than that a frame left. Throws a
+  /// [RelayException] when the relay refuses it (`bad_push`, `push_refused`
+  /// for an introduction mailbox, `not_authed`), when the connection closes
+  /// first, or on [timeout]. Queued behind any push frame still unanswered.
+  Future<void> registerPushAcked(
+          {required String token,
+          String platform = 'android',
+          Duration timeout = const Duration(seconds: 15)}) =>
+      _pushFrame(
+          {'t': 'push-register', 'token': token, 'platform': platform},
+          timeout);
+
+  /// [unregisterPush], resolving once the relay answers `push-ok`: the relay
+  /// has forgotten this identity's token and will wake nothing for it. A
+  /// relay with no push at all answers `unknown_frame`, a [RelayException]
+  /// with that message — it holds no token either.
+  Future<void> unregisterPushAcked(
+          {Duration timeout = const Duration(seconds: 15)}) =>
+      _pushFrame({'t': 'push-unregister'}, timeout);
+
+  Future<void> _pushFrame(Map<String, Object?> frame, Duration timeout) {
+    final done = _pushQueue.then((_) {
+      final c = Completer<void>();
+      // Sent first: on a connection that has gone it throws, and nothing is
+      // left waiting for an answer that cannot come. The answer itself
+      // cannot arrive before this returns to the event loop.
+      _send(frame);
+      _pushAck = c;
+      return c.future.timeout(timeout, onTimeout: () {
+        if (identical(_pushAck, c)) _pushAck = null;
+        throw RelayException('push timeout');
+      });
+    });
+    _pushQueue = done.then((_) {}, onError: (Object _) {});
+    return done;
+  }
+
   void _send(Map<String, Object?> frame) {
     if (!isOpen) throw RelayException('not connected');
     _ws.add(jsonEncode(frame));
@@ -395,6 +451,11 @@ class RelayClient {
     _introAck = null;
     if (intro != null && !intro.isCompleted) {
       intro.completeError(RelayException('connection closed'));
+    }
+    final push = _pushAck;
+    _pushAck = null;
+    if (push != null && !push.isCompleted) {
+      push.completeError(RelayException('connection closed'));
     }
     _onClosed?.call();
   }

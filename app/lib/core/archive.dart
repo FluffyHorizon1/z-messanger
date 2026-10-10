@@ -147,7 +147,7 @@ class BackupArchive {
   /// device id, which its certificate — named in every one of those lists —
   /// is signed over; the decoys the log is asked beside the contacts
   /// (phase 35), which a restore keeps for the same reason it keeps the
-  /// head; and the push preference, which defaults to on. With
+  /// head; and the push and receipts preferences, which default to on. With
   /// ADR 0026, what each alarm stands on, the evidence of every one the user
   /// dismissed, and the own-list repair's record — the head and versions
   /// held when the repairing build first ran, and what it reconciled —
@@ -184,6 +184,9 @@ class BackupArchive {
     // account, and what two sets of decoys have in common is the contacts.
     'kt_decoys': (v, _) async => KtDecoys.parse(v) != null,
     'push_enabled': (v, _) async => v == '0' || v == '1',
+    // Phase 41 (ADR 0028): whether this device sends receipts. A restore
+    // that turned them back on would undo a choice made against R41.
+    'receipts_enabled': (v, _) async => v == '0' || v == '1',
   };
 
   /// The per-contact `kv` families a `contact` record carries (format minor

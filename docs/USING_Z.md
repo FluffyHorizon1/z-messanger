@@ -520,6 +520,35 @@ person's app cooperates. Someone who wants a copy can photograph the screen,
 and a modified app can simply not delete. Use it to keep your own history
 short. Do not use it to send something you would mind existing.
 
+## Ticks, and the receipts behind them
+
+One tick: the relay has your message. Two: the other person's device has it.
+Two in colour: they have opened the chat. Each is something their device told
+yours, encrypted like a message — and a receipt is the one thing Z sends
+because somebody *else* did something, which makes its timing worth hiding.
+An answer that went back the moment a message arrived would tell whoever runs
+the relay who had written to whom, however sealed the message itself was.
+
+So Z holds every receipt for a moment of its own: never less than five
+seconds after the message arrived (or after you read it, or after your phone
+came back online), and at the latest at a random moment within about a
+minute, everything owed to one person together — or, once those five seconds
+are up, with the next message you send them. The second tick turns up to a
+minute after the message arrived, or with the reply. That is the cost, and
+nothing else changes: a tick still says only what their device actually
+said.
+
+It is not invisibility. A relay that watches for days can still notice that
+a message to you is often followed, within a minute, by something to the
+person who wrote it — and your replies are timing of their own, whatever
+receipts do. If you need more, **Settings › Privacy › Delivery and read
+receipts** turns them off on that device (each of your devices has its own
+switch). Then nobody you talk to sees a second tick from you — not when a
+message arrives, not when you read it — so a message from them can sit at one
+tick long after it reached you, and in a group, where two ticks wait for every
+member, one member with receipts off keeps every message at one. One tick has
+only ever meant "the relay has it", never "it has not arrived".
+
 ## Locking the app
 
 * **Screen lock** — Z asks for your fingerprint, face or device PIN before it
@@ -648,10 +677,16 @@ reporter, no advertising identifier. The app talks to the relay you configure,
 to the transparency log (which learns who your contacts are, above), to a
 handle service only when you claim, change or look up a handle (above), and to
 your platform's notification service, which learns that a device should wake
-and nothing else. On Android push is on unless you turn it off in Settings,
-and the app registers for it even if you did not allow notifications; the
-relay keeps that registration until 30 days after the app was last online, or
-until you turn push off.
+and nothing else. On Android push is on unless you turn it off in Settings —
+but only if you allow Z notifications: without them the app registers nothing,
+and if you take them away later it withdraws its registration the next time
+it starts or comes back to the front. Settings › Notifications says which is
+true on your phone, what a wake carries (no message and no sender) and who
+sees it (the relay, which keeps this device's token, and Google's Firebase
+Cloud Messaging, which learns when the device was woken). The relay keeps the
+registration until 30 days after the app was last online, or until you turn
+push off; turned off while your phone is offline, the relay is told as soon
+as it is back, and until then it can still wake it.
 
 The full inventory is `DATA_MAP.md`: every piece of data Z creates, where it
 lives, who can read it, how long it lasts.

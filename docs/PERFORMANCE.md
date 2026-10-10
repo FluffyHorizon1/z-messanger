@@ -368,7 +368,11 @@ test passed with the cap removed on the first try — delivering seventy
 messages takes longer than the window, so the timer kept the batch small
 and the cap was never reached. The test now holds the window shut.) Effect:
 receive 25.2 → 16.3 ms, and the receipt's cost, ~9 ms, is paid once per
-burst.
+burst. Since phase 41 (`adr/0028`) the wait is for privacy rather than cost:
+no less than 5 s and at random up to a minute, per person, and a batch past
+64 no longer goes early but leaves as several at its moment — so a burst
+shares one send more often than before. What is held is written to the vault
+(one coalesced write per change, off the receive path; not measured here).
 
 ### What a receive costs now
 

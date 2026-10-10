@@ -63,6 +63,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseException;
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/key_transparency.dart';
 import 'package:zapp/core/models.dart';
+import 'package:zapp/core/receipts.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -87,6 +88,13 @@ Future<void> _healthy(int port) async {
   }
   fail('service on $port did not start');
 }
+
+// ADR 0028 holds a receipt from 5 s to a minute, at random, so the relay
+// cannot pair it with the message it answers (receipt_timing_test.dart). This
+// suite is about device lists, not about when a tick turns, so its devices answer
+// within 300 ms, as every device did before phase 41.
+const promptReceipts =
+    ReceiptTiming(floor: Duration.zero, ceiling: Duration(milliseconds: 300));
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -194,6 +202,7 @@ void main() {
               logUrl: 'http://127.0.0.1:$logPort', logPubB64: b64(logPub)),
           signDevlistV2Only: v2Only,
           debugMoveUngated: v2Only,
+          receiptTiming: promptReceipts,
         );
         made = svc;
         // A contact re-checks the log only when this test says so, so what
