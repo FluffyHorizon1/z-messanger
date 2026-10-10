@@ -247,6 +247,9 @@ class _BootstrapperState extends State<Bootstrapper>
       // Phase 41: notifications may have been allowed or taken away in the
       // system's settings while the app was behind; push follows the answer.
       _push?.onResume();
+      // A transparency refresh the app slept through is caught up a few
+      // seconds from now, never at this instant (phase 35).
+      _service?.kt.onForeground();
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
       _invites?.pause();

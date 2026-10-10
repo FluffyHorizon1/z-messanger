@@ -143,18 +143,42 @@ query for both logs (§19.9):
 by `key_transparency.dart`; PROTOCOL §19.9.1). The log's side above is
 unchanged.*
 
+*Revised 2026‑10‑10 (patch 75), after an independent review of 2026‑10‑09
+showed three things this section said were not so: a fetch of entries could
+hold the contact's entry alone, and a restore's first fetch set beside the
+original's named the contacts; the signed size counts entries, which
+versions inflate, so it did not keep a lying `bucketBits` safe; and on a
+phone used in short visits the schedule ran far below four refreshes a day.
+The k, Values and When paragraphs and what the operator still learns say
+what is true since.*
+
 **What a refresh asks.** Every contact's label is mapped to its bucket, and
 the buckets go in one `POST /kt/v1/buckets` (up to 64 a request) beside this
 install's decoys, sorted by prefix so the order says nothing. Never a
 contact's label: no `lookup`, no `history`.
 
-- *k.* The log's `bucketBits`, never finer — and never finer than the log's
-  signed size allows, ⌊log₂(size / 32)⌋, because `bucketBits` is unsigned and
-  the operator writes it: at 24 bits a bucket of today's log is one label,
-  which is the label. And never finer than the answers bear out: the decoy
-  buckets are random buckets, so their mean size is the log's labels over 2^k
-  whatever `bucketBits` claims; under 16 the next refresh asks one bit
-  coarser, and at 64 a ceiling set that way is lifted a bit.
+- *k.* The log's `bucketBits`, never finer — and never finer than this
+  client's own count of the log's labels allows: the finest k at which the
+  labels it counted fill a bucket to 16 on average, one bit finer than the
+  log's own rule, so an honest recommendation is followed; an operator that
+  says finer gets that bit and no more — 16 to 32 labels a bucket rather than
+  32 to 64. `bucketBits` is unsigned and the operator writes it, and at 24
+  bits a bucket of today's log is one label, which is the label. The signed
+  size does not stop that: it counts entries, and anyone holding an account
+  key — the operator first — multiplies them by publishing versions; 64,000
+  versions of eight accounts take a 2,108‑label log to 66,100 entries, where
+  ⌊log₂(size / 32)⌋ allows k = 11, a label or two a bucket. It still bounds k
+  from above. The count is the client's: before its first refresh, and after a
+  change of log or a reset, it asks random buckets one at a time
+  (`GET /kt/v1/bucket`, drawn fresh and never asked again — the kept decoys
+  would say which buckets were contacts once asked beside them), from the
+  finest k the signed size allows and coarser by what each fell short, until
+  one proves 32 labels; after every refresh, the decoy buckets, which are
+  random buckets too. Every one is proved complete, so the count is the map's.
+  The ceiling falls at once to what a count bears out, rises a bit a refresh
+  at most, stays where it is while buckets at it hold 16 to 64 labels — so the
+  noise in a count does not move every bucket asked — and travels in a backup
+  with the decoys.
 - *Padding.* The number of buckets asked is a multiple of 16, and at least
   16 (or every bucket, below k = 4). A client with no contacts, one, or
   sixteen in sixteen different buckets asks the same sixteen; the log learns
@@ -184,33 +208,51 @@ contact's label: no `lookup`, no `history`.
   check needs from it (its fingerprint; whether it opened; the list the
   device‑list rules refused, so the next check tries again from there rather
   than fetching it again, which would single it out). A contact whose entry
-  is new needs its value, by `POST /kt/v1/entries`, and what is fetched is a
-  set the log could list for itself: every entry in the asked buckets that
-  this client had not seen at its last refresh, whether or not any contact is
-  among them — so it is fetched when no contact moved too. A needed entry the
-  client had already seen (a contact added in a bucket it already asked)
-  would stand out among new ones, so then every entry in the asked buckets is
-  fetched. Past 1,024 entries, and on a client's first refresh, the needed
-  ones go with a sample of the rest (64 on a first refresh) drawn in an order
-  this install's key fixes, so a fetch asked again after a failure is the
-  same fetch.
+  is new needs its value, by `POST /kt/v1/entries`, and what is fetched does
+  not depend on which contacts moved, or on whether any did: every entry in
+  the asked buckets that this client had not seen at its last refresh, made
+  up to sixteen with others from them in an order this install's key fixes —
+  so a contact's entry is never fetched alone, and the fetch comes when no
+  contact moved too. A needed entry in neither (a contact added in a bucket
+  already asked, whose entry is older) would stand out, so then every entry
+  in the asked buckets is fetched; and so it is with no last refresh to
+  compare against — a first refresh, a change of log or a reset, and a
+  restore, which does not carry what the last refresh saw: a restored
+  device's first fetch is every entry, as its original's was, and the two
+  differ only by what changed in between. Past 1,024 entries the needed ones
+  go with a sample of the rest drawn in an order this install's key and the
+  needed set fix: asked again for the same entries, after a failure, the
+  same fetch; needing other entries, an unrelated sample, so two such
+  fetches set beside each other do not single out what either needed.
+  Sixteen sealed lists with their proofs are about 30 KB beside a refresh's
+  buckets; a first refresh fetches every entry in its buckets once, about a
+  megabyte at the live log's k.
 
 **When.** One refresh in each six‑hour window, counted from the epoch, at a
-random moment in it, kept across restarts. Not at start, and not when a
-contact's list changes: until phase 35 the client also checked at every start
-and thirty seconds after a contact's list arrived, and the second told the
-log by its timing alone whose contact this was — a contact publishes, and
-thirty seconds later their contacts ask, whatever they ask for. A client that
-has had no refresh for a whole window — the app may simply not be running at
-the window's moment — catches up at a random moment between one and ten
-minutes after it is next running. A moment the app slept through (a phone
-suspends an app it is not showing, and its timer fires the instant the app
-is back) is drawn again from then, not run then. A contact's changed list is checked at the
-next refresh; if the user opens that contact's screen first, a refresh runs
-then, of the usual shape — as one does when the user asks for a check in
-Settings. A list this account has signed and the log has not
-acknowledged is still published at start: a publish names only this account,
-which the log learns from every publish.
+random moment in it, kept across restarts. Never at the instant the app
+starts or comes to the front, and not when a contact's list changes: until
+phase 35 the client also checked at every start and thirty seconds after a
+contact's list arrived, and the second told the log by its timing alone
+whose contact this was — a contact publishes, and thirty seconds later their
+contacts ask, whatever they ask for. A phone runs an app it is not showing
+seldom or not at all, so a window's moment is mostly one the app is not
+running for. A refresh so owed — this window's moment gone by without it,
+or a whole window without one — is caught up at a random moment five to
+thirty seconds after the app is next in front, at start or on coming back
+(the timer is set again from the clock then: a suspended app's timer is
+frozen with it). Until 2026‑10‑10 an owed refresh waited one to ten minutes
+and a moment slept through was drawn again for later in the window, and a
+phone opened twelve times a day for half a minute refreshed about once a
+week (the review's model of the schedule, U4); with the catch‑up it
+refreshes about two and a half times a day, whether its visits last half a
+minute or five, and no day passes without one. Four a day is an app in front
+at every window. A contact's changed list is checked at the next refresh; if
+the user opens that contact's screen first, a refresh runs then, of the
+usual shape — as one does when the user asks for a check in Settings — and
+it is that window's: one the window had not had yet is not run again later
+in it. A list this account has signed and the log has not acknowledged is
+still published at start: a publish names only this account, which the log
+learns from every publish.
 
 **The account's own label is still asked by name** — its `lookup` and its
 `history`, for the self‑monitoring of §19.8. The history is only served that
@@ -239,10 +281,20 @@ terminates the log's TLS and sees every request as the operator does.
   new bucket, among sixteen new buckets — about 650 labels.
 - *Whether a refresh fetched every entry in its buckets*, which says a
   contact was added in a bucket already asked, or that this is a first
-  refresh — never which entry it was for.
-- *When and from where*: the address, and a moment random in its window —
-  except a refresh the user starts: the contact screen's tells the log that
-  the user looked at a contact whose list had changed, not which.
+  refresh, a restore or a change of log. Any other fetch is the entries new
+  in the buckets and others from them that are the same at every refresh,
+  give or take what changed — never a sign of whether, or which, contact
+  moved. Past 1,024 entries a needed one is one of 1,024, and two such
+  fetches whose needs overlap share those beyond chance.
+- *When and from where*: the address, and a moment random in its window, or
+  five to thirty seconds after the app came to the front when a refresh was
+  owed — which follows the user's use of the app, as the relay's view does.
+  A refresh the user starts is the exception: the contact screen's runs
+  because that contact's list changed, and set beside what changed in the
+  asked buckets since the client's last refresh it can point at the contact
+  when little else in them did — the fetch hides the entry among sixteen or
+  more, the timing does not. It is a second refresh in its window, and so
+  stands out as asked for, only when the window has had its own.
 - *The account itself*, from its own label and its publishes.
 - *Across an account's devices*, which each draw their own decoys: an
   operator that links them — from the own‑label request, or through a relay it
@@ -253,9 +305,12 @@ terminates the log's TLS and sees every request as the operator does.
 - *Labels of its own making.* An operator that fills buckets with labels it
   minted shrinks the real population each bucket hides a contact among, as it
   could shrink any anonymity set it serves; the map it signs shows it to
-  every mirror. To learn more than the bucket it has to move entries, and to
-  move a contact's entry without that contact's key is a conflict the user
-  sees.
+  every mirror. Minted into the buckets a client asks, they also raise the
+  count its ceiling rests on, a bit a refresh at most; a probe's bucket is
+  counted only under a head signed before it was drawn, so minting into it
+  on seeing it counts for nothing. To learn more than the bucket it has to
+  move entries, and to move a contact's entry without that contact's key is a
+  conflict the user sees.
 - *History*: what the log learned before phase 35, it keeps.
 
 **Alternatives, and what each would add.** *An anonymous path* — the sealed

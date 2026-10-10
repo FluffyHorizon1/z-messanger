@@ -2,7 +2,9 @@
 // ADR 0023's client policy, PROTOCOL §19.9.1, THREAT_MODEL R40) — against
 // the real log (kt/server.js), filled to 2,100 labels so that it recommends
 // 64 buckets, and the real relay, with every request each client makes to
-// the log recorded by a proxy of its own in front of it.
+// the log recorded by a proxy of its own in front of it. The rules on their
+// own — what k a count of labels allows, and coming back to the front — are
+// in `kt_lookup_rules_test.dart`.
 //
 // Criteria, each a test below:
 //   1. a refresh never asks for a contact's exact label: no request a client
@@ -11,8 +13,11 @@
 //   2. one request carries every bucket: a refresh makes one
 //      `POST /kt/v1/buckets`, holding the bucket of every contact at the k
 //      the log recommends, padded to sixteen;
-//   3. a recommendation finer than the log's own signed size allows is not
-//      followed: a `bucketBits` of 24 changes nothing the client asks;
+//   3. a recommendation finer than the labels the client counted is not
+//      followed: against a log whose size many versions of a few accounts
+//      have inflated, a `bucketBits` of 24 is asked no finer than a bit past
+//      the log's honest recommendation, from a fresh install's first refresh
+//      on;
 //   4. the decoy set is identical across refreshes and across a restart;
 //   5. the count of buckets asked does not depend on the number of
 //      contacts, up to the padding: none, one and three contacts all ask
@@ -22,11 +27,11 @@
 //   6. a split view is still caught through the bucket path: an entry at the
 //      held version with another fingerprint is a conflict that holds sends,
 //      and a bucket answer with a label left out is a log fault;
-//   7. a contact's new version is fetched with decoy indexes — every entry
-//      in the asked buckets the client had not seen, which the log could
-//      list for itself — and those are fetched when no contact moved too;
-//      a contact whose entry the client had already seen is fetched with
-//      every entry in the asked buckets;
+//   7. a contact's new version is fetched among every entry in the asked
+//      buckets the client had not seen, made up to sixteen with others from
+//      them — and those are fetched when no contact moved too; a contact
+//      whose entry the client had already seen is fetched with every entry
+//      in the asked buckets;
 //   8. no refresh at start, and none right after a contact's list changes;
 //      the scheduled refresh comes at its random moment; and a contact whose
 //      list has not changed since is not checked again from its screen;
@@ -42,11 +47,33 @@
 //  12. the decoy plan: padded to blocks of sixteen and stable; a bucket that
 //      lost its contact stays; a coarser or finer k maps every bucket to its
 //      own ancestor or descendant; a stored set that is not one is refused;
-//  13. entry decoys: every entry new to the client; every entry in the asked
-//      buckets when a needed one is not new; past the cap, and with no last
-//      refresh, a keyed sample that is the same sample when asked again;
+//      k is never finer than the recommendation, the signed size or the
+//      ceiling the client's counts set, and the decoy buckets' counts move
+//      that ceiling down at once, up a bit at a time, and not at all while
+//      buckets at it hold 16 to 64;
+//  13. entry decoys: the same fetch whether or not a contact needs one of
+//      the entries new to the client — every new one, made up to sixteen;
+//      every entry in the asked buckets when a needed one is not among them,
+//      and with no last refresh; past the cap, the needed ones and a sample
+//      keyed by them — the same when asked again, and two fetches that need
+//      different entries never single either out by their difference;
 //  14. a scheduled refresh the app slept through is not run when it wakes —
-//      which would be a refresh at start by another door — but drawn again.
+//      which would be a refresh at start by another door — but caught up
+//      between `catchUpMin` and `catchUpMax` later;
+//  15. the contact screen's refresh, run because a contact's list changed,
+//      fetches every entry new in the asked buckets among no fewer than
+//      sixteen from them — never the contact's entry alone;
+//  16. a restore's first refresh fetches every entry in its buckets, as the
+//      first refresh of the install it came from did: the two set side by
+//      side name no contact; and it asks the same buckets, at the ceiling
+//      the backup carried, without counting the log's labels again;
+//  17. a window's moment the app was not running for, after a refresh in an
+//      earlier window, is caught up between `catchUpMin` and `catchUpMax`
+//      after the app starts — not drawn again for later in the window;
+//  18. a phone used in short visits still refreshes: over thirty simulated
+//      days of twelve half-minute visits, the shipped schedule runs at least
+//      two refreshes a day, none sooner than `catchUpMin` after the app came
+//      to the front.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 3))
 library;
@@ -60,10 +87,13 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
+import 'package:zapp/core/archive.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/key_transparency.dart';
 import 'package:zapp/core/kt_private_lookups.dart';
+import 'package:zapp/core/restore.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:zapp/l10n/app_localizations.dart';
@@ -124,6 +154,21 @@ class _Recorder {
   List<_Seen> get bucketPosts => [for (final r in seen) if (r.isBuckets) r];
   List<_Seen> get entriesPosts => [for (final r in seen) if (r.isEntries) r];
 
+  /// The log's answers to `POST /kt/v1/buckets`, as the client received
+  /// them — the entries a refresh saw in its buckets, whatever happened in
+  /// the log after.
+  final List<String> bucketAnswers = [];
+
+  /// Every entry index in the buckets of the last answer to a
+  /// `POST /kt/v1/buckets` — one refresh's, while it asks 64 or fewer.
+  Set<int> leavesAnswered() {
+    final answer = bucketAnswers.last;
+    return {
+      for (final b in (jsonDecode(answer) as Map)['buckets'] as List)
+        for (final l in (b as Map)['leaves'] as List) (l as Map)['index'] as int
+    };
+  }
+
   /// Everything but publishing: what a check asks.
   List<_Seen> get reads => [for (final r in seen) if (!r.isPublish) r];
 
@@ -159,6 +204,7 @@ class _Recorder {
         final res = await out.close();
         var text = await utf8.decoder.bind(res).join();
         if (res.statusCode == 200) text = tamper?.call(r, text) ?? text;
+        if (res.statusCode == 200 && r.isBuckets) bucketAnswers.add(text);
         req.response.statusCode = res.statusCode;
         req.response.headers.contentType = ContentType.json;
         req.response.write(text);
@@ -236,6 +282,44 @@ function post(body) {
     }
   }
   await Promise.all(Array.from({ length: 8 }, worker));
+  process.exit(0);
+})().catch((e) => { console.error(e.message); process.exit(1); });
+''';
+
+/// Grows the log on [port]'s signed size without growing its labels:
+/// [accounts] accounts publish [versions] versions of their own list each,
+/// as anyone holding an account key — its operator first — may (review B of
+/// 2026-10-09, finding 2; criterion 3).
+const String _versionsScript = r'''
+const http = require('http');
+const crypto = require('crypto');
+const { makePublish, privateKeyFromSeed, rawPublicKey, sealValue } = require('./lib/log.js');
+const port = +process.argv[1];
+const accounts = +process.argv[2];
+const versions = +process.argv[3];
+function post(body) {
+  return new Promise((resolve, reject) => {
+    const data = Buffer.from(JSON.stringify(body));
+    const req = http.request({ host: '127.0.0.1', port, path: '/kt/v1/publish', method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': data.length } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => (res.statusCode === 201 ? resolve() : reject(new Error(`${res.statusCode} ${Buffer.concat(chunks)}`))));
+    });
+    req.on('error', reject);
+    req.end(data);
+  });
+}
+(async () => {
+  await Promise.all(Array.from({ length: accounts }, async (_, a) => {
+    const key = privateKeyFromSeed(crypto.createHash('sha256').update(`versions:${a}`).digest());
+    const value = sealValue(rawPublicKey(key), Buffer.from('{}'));
+    for (let v = 1; v <= versions; v++) {
+      const p = makePublish(key, { version: v, fp: crypto.randomBytes(16), value });
+      await post({ acct: p.acct.toString('base64'), v: p.version, fp: p.fp.toString('base64'),
+        value: p.value.toString('base64'), sig: p.sig.toString('base64') });
+    }
+  }));
   process.exit(0);
 })().catch((e) => { console.error(e.message); process.exit(1); });
 ''';
@@ -374,10 +458,14 @@ void main() {
   /// A client whose every request to the log goes through a recorder of its
   /// own, so what it asked is exactly what that recorder saw. [scheduled]:
   /// whether its refreshes run on their own clock (the test checks when it
-  /// says so otherwise). [identity]: the identity to start with.
+  /// says so otherwise). [identity]: the identity to start with. [log]: a
+  /// log other than the fixture's, as (port, key).
   Future<(ChatService, _Recorder)> start(String name,
-      {Directory? dir, bool scheduled = false, ZIdentity? identity}) async {
-    final rec = _Recorder(logPort);
+      {Directory? dir,
+      bool scheduled = false,
+      ZIdentity? identity,
+      (int, Uint8List)? log}) async {
+    final rec = _Recorder(log?.$1 ?? logPort);
     await rec.start();
     recorders.add(rec);
     final home = dir ?? await Directory.systemTemp.createTemp('z_ktp_$name');
@@ -396,7 +484,8 @@ void main() {
         transport:
             Transport(identity: id, serverUrl: 'ws://127.0.0.1:$relayPort'),
         ktConfig: KtConfig(
-            logUrl: 'http://127.0.0.1:${rec.port}', logPubB64: b64(logPub)));
+            logUrl: 'http://127.0.0.1:${rec.port}',
+            logPubB64: b64(log?.$2 ?? logPub)));
     if (!scheduled) svc.kt.scheduled = false;
     services.add(svc);
     return (svc, rec);
@@ -501,6 +590,59 @@ void main() {
   /// The log's recommendation right now, read by the harness.
   Future<int> recommendedBits() async => (await logGet('/kt/v1/sth'))['bucketBits'] as int;
 
+  /// A log of its own for one test — [labels] accounts, and [accounts]
+  /// more that publish [versions] versions each — as (port, key); stopped
+  /// when the test ends.
+  Future<(int, Uint8List)> anotherLog(
+      {required int labels, int accounts = 0, int versions = 0}) async {
+    final seed =
+        Uint8List.fromList(List<int>.generate(32, (i) => (i * 13 + 7) & 0xff));
+    final port = await freePort();
+    final p = await Process.start('node', ['server.js'],
+        workingDirectory: '$root${Platform.pathSeparator}kt',
+        environment: {
+          'KT_SEED': hexOf(seed),
+          'KT_EPHEMERAL': '1',
+          'KT_PORT': '$port',
+          'PUBLISH_PER_MIN': '100000000',
+          'PUBLISH_PER_MIN_TOTAL': '100000000',
+          'PUBLISH_PER_ACCT_PER_DAY': '100000000',
+          'PUBLISH_NEW_ACCOUNTS_PER_MIN': '100000000',
+          'PUBLISH_NEW_ACCOUNTS_PER_ADDR_PER_MIN': '100000000',
+        });
+    addTearDown(p.kill);
+    p.stderr.drain<void>();
+    p.stdout.drain<void>();
+    await waitHealthy(port);
+    final fill = await Process.run(
+        'node', ['-e', _fillScript, '$port', '$labels'],
+        workingDirectory: '$root${Platform.pathSeparator}kt');
+    expect(fill.exitCode, 0, reason: 'filling the log: ${fill.stderr}');
+    if (accounts > 0) {
+      final grow = await Process.run(
+          'node', ['-e', _versionsScript, '$port', '$accounts', '$versions'],
+          workingDirectory: '$root${Platform.pathSeparator}kt');
+      expect(grow.exitCode, 0, reason: 'versions: ${grow.stderr}');
+    }
+    final kp = await Ed25519().newKeyPairFromSeed(seed);
+    return (port, Uint8List.fromList((await kp.extractPublicKey()).bytes));
+  }
+
+  /// The labels in each bucket a `POST /kt/v1/buckets` asked, as the log on
+  /// [port] holds them now — the harness asking, not a client.
+  Future<List<int>> bucketCounts(int port, List<String> asked) async {
+    final out = <int>[];
+    for (final b in asked) {
+      final [prefix, bits] = b.split('/');
+      final res = await (await HttpClient().getUrl(Uri.parse(
+              'http://127.0.0.1:$port/kt/v1/bucket?prefix=$prefix&bits=$bits')))
+          .close();
+      final j = jsonDecode(await utf8.decoder.bind(res).join()) as Map;
+      out.add((j['leaves'] as List).length);
+    }
+    return out;
+  }
+
   test('1. a refresh never asks for a contact\'s exact label', () async {
     final (alice, aliceLog) = await start('alice1');
     final (ben, _) = await start('ben1');
@@ -558,25 +700,57 @@ void main() {
   });
 
   test(
-      '3. a recommendation finer than the log\'s signed size allows is not '
-      'followed', () async {
-    final (gil, gilLog) = await start('gil3');
-    final (hal, _) = await start('hal3');
+      '3. a recommendation finer than the labels the client counted is not '
+      'followed, however many versions the size counts', () async {
+    // A log of 300 accounts, eight of which have published a thousand
+    // versions each: its signed size passes 8,000 entries, which allows
+    // k = 8 by ⌊log₂(size / 32)⌋, while its labels allow k = 3 — 32 to 64
+    // labels a bucket. Its operator then says 24 (review B of 2026-10-09,
+    // finding 2, with fewer labels and fewer versions).
+    final other = await anotherLog(labels: 300, accounts: 8, versions: 1000);
+    final (otherPort, _) = other;
+    Future<Map<String, Object?>> ask(String path) async {
+      final res = await (await HttpClient()
+              .getUrl(Uri.parse('http://127.0.0.1:$otherPort$path')))
+          .close();
+      return (jsonDecode(await utf8.decoder.bind(res).join()) as Map)
+          .cast<String, Object?>();
+    }
+
+    final health = await ask('/health');
+    final honest = (await ask('/kt/v1/sth'))['bucketBits'] as int;
+    expect(health['size'] as int, greaterThan(8000),
+        reason: 'the versions are entries the size counts');
+    expect(honest, 3, reason: 'about 300 labels: 8 buckets of 32 to 64');
+    final (gil, gilLog) = await start('gil3', log: other); // a fresh install
+    final (hal, _) = await start('hal3', log: other);
     await befriend(gil, hal);
     await hal.kt.check();
-    // The operator writes `bucketBits`, and nothing signs it: at 24 bits a
-    // bucket of a 2,100-label log is one label, which is the label.
     gilLog.tamper = (req, answer) {
       if (req.path != '/kt/v1/sth') return null;
       final j = (jsonDecode(answer) as Map).cast<String, Object?>();
       j['bucketBits'] = 24;
       return jsonEncode(j);
     };
-    await gil.kt.check();
-    await gil.kt.check();
-    final asked = gilLog.bucketPosts.last.buckets;
-    expect(asked.every((b) => b.endsWith('/6')), isTrue,
-        reason: 'no finer than ⌊log₂(size / 32)⌋ of the signed head: $asked');
+    final halLabel = await labelBytes(hal);
+    for (var r = 1; r <= 3; r++) {
+      gilLog.seen.clear();
+      await gil.kt.check();
+      final asked = gilLog.bucketPosts.expand((p) => p.buckets).toList();
+      expect(asked, isNotEmpty, reason: 'refresh $r asked buckets');
+      final k = int.parse(asked.first.split('/').last);
+      final counts = await bucketCounts(otherPort, asked);
+      final halBucket = '${ktBucketPrefix(halLabel, k)}/$k';
+      final halCount = counts[asked.indexOf(halBucket)];
+      // Printed for the record: what a bucket hid Hal among.
+      // ignore: avoid_print
+      print('criterion 3, refresh $r: k = $k; ${asked.length} buckets of '
+          '$counts labels; Hal\'s holds $halCount');
+      expect(asked.every((b) => b.endsWith('/$k')), isTrue);
+      expect(k, lessThanOrEqualTo(honest + 1),
+          reason: 'refresh $r: no finer than a bit past what the labels '
+              'bear out, whatever the size and bucketBits say');
+    }
     expect(gil.kt.statusOf(hal.myRid)?.state, KtContactState.confirmed);
   });
 
@@ -738,8 +912,9 @@ void main() {
   });
 
   test(
-      '7. a contact\'s new version is fetched with decoy indexes, and unseen '
-      'entries are fetched when no contact moved too', () async {
+      '7. a contact\'s new version is fetched among every unseen entry, made '
+      'up to sixteen, and those are fetched when no contact moved too',
+      () async {
     final k = await recommendedBits();
     final (wes, wesLog) = await start('wes7');
     final (xan, _) = await start('xan7');
@@ -759,12 +934,15 @@ void main() {
     final xanIndex = (await logLatest(xanLabel))!.$1;
     wesLog.seen.clear();
     await wes.kt.check();
+    final inBuckets = wesLog.leavesAnswered();
     final fetched = wesLog.entriesPosts.single.indexes;
     expect(fetched, contains(xanIndex), reason: 'Xan\'s new entry');
     expect(fetched.toSet().containsAll(others), isTrue,
         reason: 'beside every entry new to the asked buckets');
-    expect(fetched, hasLength(1 + others.length),
-        reason: 'and nothing the log could not list for itself');
+    expect(fetched, hasLength(16),
+        reason: 'made up to sixteen, never Xan\'s and a few new ones alone');
+    expect(inBuckets.containsAll(fetched), isTrue,
+        reason: 'and every one of them from the asked buckets');
     expect(fetched, orderedEquals([...fetched]..sort()),
         reason: 'in index order, which says nothing about which is which');
     expect(wes.kt.statusOf(xan.myRid)?.state, KtContactState.confirmed);
@@ -775,7 +953,9 @@ void main() {
     final strangers = await mintInBuckets(asked, k, 2);
     wesLog.seen.clear();
     await wes.kt.check();
-    expect(wesLog.entriesPosts.single.indexes, orderedEquals(strangers..sort()));
+    final quiet = wesLog.entriesPosts.single.indexes;
+    expect(quiet.toSet().containsAll(strangers), isTrue);
+    expect(quiet, hasLength(16));
     // And with nothing new at all, nothing is fetched.
     wesLog.seen.clear();
     await wes.kt.check();
@@ -783,7 +963,9 @@ void main() {
 
     // A contact whose entry Wes has already seen, as a stranger's in one of
     // his buckets: fetched beside every entry in them, not beside a few
-    // that would stand out as not new.
+    // that would stand out as not new — unless it is one of the sixteen
+    // this install makes a fetch up with, one chance in thirty or so, which
+    // are fetched as they would be with no contact at all.
     final (yan, _) = await start('yan7',
         identity: await identityWhere(asked, k, inside: true));
     await yan.kt.check(); // in the log, in one of Wes's buckets
@@ -791,16 +973,14 @@ void main() {
     await befriend(wes, yan);
     wesLog.seen.clear();
     await wes.kt.check();
-    final everyEntry = <int>{};
-    for (final b in asked) {
-      final [prefix, bits] = b.split('/');
-      final j = await logGet('/kt/v1/bucket?prefix=$prefix&bits=$bits');
-      for (final l in j['leaves'] as List) {
-        everyEntry.add((l as Map)['index'] as int);
-      }
+    final everyEntry = wesLog.leavesAnswered().toList()..sort();
+    final yanIndex = (await logLatest(await labelBytes(yan)))!.$1;
+    final all = wesLog.entriesPosts.single.indexes;
+    if (all.length == 16) {
+      expect(all, contains(yanIndex));
+    } else {
+      expect(all, everyEntry, reason: 'every entry in the asked buckets');
     }
-    expect(wesLog.entriesPosts.single.indexes, everyEntry.toList()..sort(),
-        reason: 'every entry in the asked buckets');
     expect(wes.kt.statusOf(yan.myRid)?.state, KtContactState.confirmed);
   });
 
@@ -815,6 +995,15 @@ void main() {
     expect(yul.kt.nextRefreshMs! - t0,
         greaterThanOrEqualTo(yul.kt.catchUpMin.inMilliseconds),
         reason: 'never at start');
+    // That first refresh is owed — a fresh install — and comes seconds after
+    // start; it is put out of the way of what follows, which is about what
+    // does NOT start a refresh.
+    yul.kt.catchUpMin = const Duration(hours: 1);
+    yul.kt.catchUpMax = const Duration(hours: 2);
+    yul.kt.scheduled = true;
+    await waitUntil(
+        () => (yul.kt.nextRefreshMs ?? 0) - t0 >= 3600 * 1000,
+        what: 'the first refresh planned an hour off');
     await befriend(yul, zed);
     await roundTrip(yul, zed, 'a');
     expect(yulLog.reads, isEmpty,
@@ -1049,62 +1238,143 @@ void main() {
     expect(KtDecoys.parse(jsonEncode({'key': b64(Uint8List(32)), 'd': [], 'k': 9, 'p': ['zz']})),
         isNull, reason: 'a prefix is hex of its length');
     // And k: the recommendation, never finer than the signed size allows,
-    // never finer than the evidence.
-    expect(ktRefreshBits(recommended: 9, headSize: 22094), 9);
-    expect(ktRefreshBits(recommended: 24, headSize: 22094), 9);
+    // never finer than the ceiling the client's own counts set.
+    expect(ktRefreshBits(recommended: 9, headSize: 22094, ceiling: 24), 9);
+    expect(ktRefreshBits(recommended: 24, headSize: 22094, ceiling: 24), 9);
     expect(ktRefreshBits(recommended: 9, headSize: 22094, ceiling: 7), 7);
-    expect(ktRefreshBits(recommended: null, headSize: 22094), 0);
-    expect(ktRefreshBits(recommended: 5, headSize: 10), 0);
+    expect(ktRefreshBits(recommended: null, headSize: 22094, ceiling: 24), 0);
+    expect(ktRefreshBits(recommended: 5, headSize: 10, ceiling: 24), 0);
+    // A size of many versions allows 11; the labels counted allow 7.
+    expect(ktRefreshBits(recommended: 24, headSize: 66100, ceiling: 7), 7);
+
+    // That ceiling, from the decoy buckets' counts: the finest k at which
+    // they hold sixteen labels a bucket — down to it at once, up a bit at a
+    // time, and kept while buckets at it hold 16 to 64. Sixteen decoy
+    // buckets of [n] labels at [k]:
+    KtDecoys observed(int? ceiling, int k, int n) {
+      final prefixes = <String>{};
+      for (var i = 0; prefixes.length < 16; i++) {
+        prefixes.add(ktBucketPrefix(seededBytes(5000 + i)(32), k));
+      }
+      final d = KtDecoys(
+          key: Uint8List(32),
+          pool: [],
+          bits: k,
+          asked: prefixes.toList()..sort(),
+          ceiling: ceiling);
+      d.observe([
+        for (final p in prefixes)
+          KtVerifiedBucket(KtBucketQuery.parse(p, k), [
+            for (var i = 0; i < n; i++)
+              KtBucketLeaf(label: Uint8List(32), index: i, version: 1)
+          ])
+      ], const []);
+      return d;
+    }
+
+    // Asked at 11 (a size of versions), a label a bucket: 2,048 labels,
+    // which fill buckets to sixteen at k = 7 — there at once.
+    expect(observed(null, 11, 1).ceiling, 7);
+    expect(observed(11, 11, 1).ceiling, 7);
+    // Sixteen a bucket at 7, or thirty: where it is.
+    expect(observed(7, 7, 16).ceiling, 7);
+    expect(observed(7, 7, 30).ceiling, 7);
+    // A log that grows: 64 a bucket at 7 bears out 9, and the ceiling rises
+    // a bit — to 8, where buckets would hold 32, and there it stays.
+    final grown = observed(7, 7, 64);
+    expect(grown.ceiling, 8);
+    expect(observed(grown.ceiling, 7, 64).ceiling, 8);
+    // 128 a bucket at 6, with the ceiling at 6: one bit, not three.
+    expect(observed(6, 6, 128).ceiling, 7);
+    // And falls at once: two a bucket at 9 is 1,024 labels, k = 6.
+    expect(observed(9, 9, 2).ceiling, 6);
   });
 
   test(
-      '13. entry decoys: every entry new to the client, every one in the '
-      'asked buckets when a needed one is not new, a keyed sample past the '
-      'cap', () {
+      '13. entry decoys: the same fetch whether or not a new entry is needed, '
+      'every entry when a needed one is not among them, a sample past the cap '
+      'keyed by what is needed', () {
     final key = Uint8List.fromList(List<int>.filled(32, 9));
     final leaves = {for (var i = 0; i < 600; i++) i * 3};
     final seen = {for (var i = 0; i < 590; i++) i * 3};
     final unseen = [for (var i = 590; i < 600; i++) i * 3];
-    // Ten new, one of them needed: all ten.
+    // Ten new, none needed: the ten, made up to sixteen from the rest.
+    final quiet =
+        ktEntriesToFetch(needed: {}, leaves: leaves, seen: seen, key: key);
+    expect(quiet, hasLength(16));
+    expect(quiet, containsAll(unseen));
+    expect(leaves.containsAll(quiet), isTrue);
+    expect(quiet, orderedEquals([...quiet]..sort()));
+    // One of the ten needed, or two of them: the very same fetch — it says
+    // nothing about whether, or which.
+    for (final n in [
+      {590 * 3},
+      {591 * 3, 599 * 3},
+    ]) {
+      expect(ktEntriesToFetch(needed: n, leaves: leaves, seen: seen, key: key),
+          quiet);
+    }
+    // One new entry alone, needed: still sixteen.
+    final one = {...seen, 590 * 3};
     expect(
-        ktEntriesToFetch(needed: {590 * 3}, leaves: leaves, seen: seen, key: key),
-        unseen);
-    // Nothing needed: the new ones are fetched all the same.
-    expect(ktEntriesToFetch(needed: {}, leaves: leaves, seen: seen, key: key),
-        unseen);
+        ktEntriesToFetch(needed: {590 * 3}, leaves: one, seen: seen, key: key),
+        hasLength(16));
     // Nothing new, nothing needed: nothing.
     expect(ktEntriesToFetch(needed: {}, leaves: seen, seen: seen, key: key),
         isEmpty);
-    // A needed entry the client had seen: every entry in the asked buckets.
-    expect(ktEntriesToFetch(needed: {3}, leaves: leaves, seen: seen, key: key),
+    // A needed entry the client had seen, not among the sixteen: every entry
+    // in the asked buckets.
+    final old = seen.firstWhere((i) => !quiet.contains(i));
+    expect(ktEntriesToFetch(needed: {old}, leaves: leaves, seen: seen, key: key),
         leaves.toList()..sort());
-    // No last refresh: the needed one and a sample, the same sample when
-    // asked again, and another install's sample its own.
-    final first =
-        ktEntriesToFetch(needed: {9}, leaves: leaves, seen: null, key: key);
-    expect(first, hasLength(1 + ktFirstEntries));
-    expect(first, contains(9));
-    expect(ktEntriesToFetch(needed: {9}, leaves: leaves, seen: null, key: key),
-        first);
-    expect(
-        ktEntriesToFetch(
-            needed: {9},
-            leaves: leaves,
-            seen: null,
-            key: Uint8List.fromList(List<int>.filled(32, 10))),
-        isNot(first));
-    // Past the cap: the needed ones and a sample, the cap in all.
+    // No last refresh: every entry in the asked buckets, needed or not, the
+    // same for any install.
+    for (final n in [<int>{}, {9}, {9, 1500}]) {
+      expect(ktEntriesToFetch(needed: n, leaves: leaves, seen: null, key: key),
+          leaves.toList()..sort());
+    }
+    // Past the cap: the needed ones and a sample, the cap in all, the same
+    // when asked again for the same entries.
     final big = {for (var i = 0; i < 3000; i++) i};
     final capped = ktEntriesToFetch(
         needed: {5, 2999}, leaves: big, seen: <int>{}, key: key);
     expect(capped, hasLength(ktMaxEntries));
     expect(capped, containsAll([5, 2999]));
     expect(capped, orderedEquals([...capped]..sort()));
+    expect(
+        ktEntriesToFetch(
+            needed: {5, 2999}, leaves: big, seen: <int>{}, key: key),
+        capped);
+    // Two fetches past the cap that need one entry each — a contact added
+    // in a bucket already asked, twice — draw samples that have nothing to
+    // do with each other, so the difference of the two never comes down to
+    // the entry one of them needed (review B of 2026-10-09, probe K3).
+    final rnd = Random(13);
+    var singled = 0;
+    var shared = 0;
+    for (var t = 0; t < 100; t++) {
+      final x = rnd.nextInt(3000), y = rnd.nextInt(3000);
+      if (x == y) continue;
+      final fx = ktEntriesToFetch(
+              needed: {x}, leaves: big, seen: big, key: key)
+          .toSet();
+      final fy = ktEntriesToFetch(
+              needed: {y}, leaves: big, seen: big, key: key)
+          .toSet();
+      expect(fx, contains(x));
+      final onlyX = fx.difference(fy);
+      if (onlyX.length == 1 && onlyX.single == x) singled++;
+      shared += fx.intersection(fy).length;
+    }
+    expect(singled, 0, reason: 'no difference names the entry it was for');
+    expect(shared / 100, lessThan(ktMaxEntries * 0.5),
+        reason: 'two samples share what chance gives — a third of the cap '
+            'when it is a third of the entries — not all but one');
   });
 
   test(
       '14. a scheduled refresh the app slept through is not run when it wakes, '
-      'but drawn again', () async {
+      'but caught up a moment later', () async {
     final dir = await Directory.systemTemp.createTemp('z_ktp_sleep14');
     temps.add(dir);
     final vault = await Vault.open(rootOverride: dir);
@@ -1129,11 +1399,228 @@ void main() {
     slept = 3600 * 1000;
     await waitUntil(() => kt.nextRefreshMs != first,
         what: 'the moment drawn again');
+    final woke = kt.now();
     final second = kt.nextRefreshMs!;
-    kt.scheduled = false;
     expect(f.asked, isEmpty,
         reason: 'nothing asked at the moment the app came back');
     expect(second - first, greaterThanOrEqualTo(3600 * 1000),
         reason: 'a new moment, from when it woke');
+    expect(second - woke, lessThanOrEqualTo(kt.catchUpMax.inMilliseconds),
+        reason: 'and a catch-up, not a moment later in the window');
+    await waitUntil(() => f.asked.isNotEmpty, what: 'the catch-up run');
+    kt.scheduled = false;
+  });
+
+  test(
+      '15. the contact screen\'s refresh fetches every new entry among no '
+      'fewer than sixteen, never the contact\'s alone', () async {
+    final (amy, amyLog) = await start('amy15');
+    final peers = <ChatService>[];
+    for (var i = 0; i < 3; i++) {
+      final (peer, _) = await start('peer15_$i');
+      await befriend(amy, peer);
+      await peer.kt.check();
+      peers.add(peer);
+    }
+    await amy.kt.check();
+    await amy.kt.check(); // a baseline: everything in her buckets seen
+    final before = amyLog.leavesAnswered();
+    final bo = peers.first;
+    // Bo links a laptop: a new list, published to the log and sent in-band,
+    // and nothing else new in Amy's buckets — the case where the entry new
+    // to her is the contact's alone (review B of 2026-10-09, probe K4).
+    await linkLaptop(bo);
+    await heldVersion(amy, bo.myRid, 2);
+    final boLabel = await labelBytes(bo);
+    await waitUntil(() async => (await logLatest(boLabel))?.$2 == 2,
+        what: 'the log holding Bo\'s v2');
+    final boNew = (await logLatest(boLabel))!.$1;
+    amyLog.seen.clear();
+    // What ContactInfoScreen.initState runs when Amy opens Bo's screen.
+    expect(await amy.kt.checkIfListChanged(bo.myRid), isTrue);
+    final now = amyLog.leavesAnswered();
+    final fresh = now.difference(before);
+    expect(fresh, contains(boNew));
+    final fetched = amyLog.entriesPosts.expand((e) => e.indexes).toList();
+    expect(fetched, contains(boNew));
+    expect(fetched.toSet().containsAll(fresh), isTrue,
+        reason: 'every entry new in the asked buckets: $fresh');
+    expect(fetched.length, greaterThanOrEqualTo(16),
+        reason: 'never fewer than sixteen: $fetched');
+    expect(now.containsAll(fetched), isTrue,
+        reason: 'all of them from the buckets asked');
+    expect(amy.kt.statusOf(bo.myRid)?.logVersion, 2);
+    expect(amy.kt.statusOf(bo.myRid)?.state, KtContactState.confirmed);
+  });
+
+  test(
+      '16. a restore\'s first refresh fetches every entry in its buckets, as '
+      'the original\'s did, and names no contact beside it', () async {
+    final home = await Directory.systemTemp.createTemp('z_ktp_rae16');
+    temps.add(home);
+    final (rae, raeLog) = await start('rae16', dir: home);
+    final contacts = <ChatService>[];
+    for (var i = 0; i < 3; i++) {
+      final (peer, _) = await start('peer16_$i');
+      await befriend(rae, peer);
+      await peer.kt.check();
+      contacts.add(peer);
+    }
+    final theirs = <int>{
+      for (final c in contacts) (await logLatest(await labelBytes(c)))!.$1
+    };
+    await rae.kt.check(); // the first refresh of this install
+    final asked = raeLog.bucketPosts.last.buckets;
+    final f0 = raeLog.entriesPosts.expand((e) => e.indexes).toSet();
+    expect(f0, raeLog.leavesAnswered(),
+        reason: 'with no last refresh, every entry in the asked buckets');
+    await rae.kt.check();
+    for (final c in contacts) {
+      expect(rae.kt.statusOf(c.myRid)?.state, KtContactState.confirmed);
+    }
+
+    // A backup; the phone lost; the backup restored on a new one.
+    final code = await RecoveryCode.generate();
+    final out = await Directory.systemTemp.createTemp('z_ktp_bk16');
+    temps.add(out);
+    final file = File(p.join(out.path, 'b.zbk'));
+    final sink = file.openWrite();
+    await BackupArchive.export(vault: rae.vault, code: code, out: sink);
+    await sink.close();
+    await stop(rae);
+    home.deleteSync(recursive: true);
+    final dir2 = await Directory.systemTemp.createTemp('z_ktp_rae16b');
+    temps.add(dir2);
+    final restored = await Vault.open(rootOverride: dir2);
+    await Restore.run(
+        vault: restored,
+        file: file,
+        secret: await code.format(),
+        kind: (await Restore.identify(file)).kind,
+        serverUrl: 'ws://127.0.0.1:$relayPort');
+    await restored.db.close();
+    final (rae2, rae2Log) = await start('rae16', dir: dir2);
+    await rae2.kt.check();
+    expect(rae2Log.seen.where((r) => r.method == 'GET' && r.path == '/kt/v1/bucket'),
+        isEmpty,
+        reason: 'the ceiling came with the backup: nothing counted again');
+    expect(rae2Log.bucketPosts.single.buckets, asked,
+        reason: 'the decoys came with it too');
+    final fr = rae2Log.entriesPosts.expand((e) => e.indexes).toSet();
+    expect(fr, rae2Log.leavesAnswered(),
+        reason: 'every entry in the asked buckets, as the first refresh had');
+    expect(fr.containsAll(theirs), isTrue);
+    expect(f0.difference(fr).intersection(theirs), isEmpty,
+        reason: 'set side by side, the two fetches name no contact');
+    for (final c in contacts) {
+      expect(rae2.kt.statusOf(c.myRid)?.state, KtContactState.confirmed);
+    }
+  });
+
+  test(
+      '17. a window\'s moment the app was not running for is caught up after '
+      'it starts, not drawn again for later', () async {
+    const w = 6 * 3600 * 1000;
+    final dir = await Directory.systemTemp.createTemp('z_ktp_owed17');
+    temps.add(dir);
+    final vault = await Vault.open(rootOverride: dir);
+    addTearDown(() => vault.db.close());
+    // An hour into a window whose moment, drawn at ten minutes in, the app
+    // was not running for; its last refresh three hours before, in the
+    // window before.
+    final base = (DateTime.now().millisecondsSinceEpoch ~/ w + 10) * w;
+    final clock = base + 3600 * 1000;
+    final real0 = DateTime.now().millisecondsSinceEpoch;
+    await vault.kvPut(
+        'kt_refresh',
+        jsonEncode(KtRefreshSchedule(
+                lastMs: base - 3 * 3600 * 1000,
+                window: base ~/ w,
+                atMs: base + 10 * 60 * 1000)
+            .toJson()));
+    final f = _CountingFetcher();
+    final kt = KeyTransparency(
+      vault: vault,
+      host: _NoHost(),
+      fetcher: f,
+      config: KtConfig(logUrl: 'http://127.0.0.1:1', logPubB64: b64(Uint8List(32))),
+      now: () => clock + DateTime.now().millisecondsSinceEpoch - real0,
+    );
+    addTearDown(kt.dispose);
+    kt.catchUpMin = const Duration(seconds: 2);
+    kt.catchUpMax = const Duration(seconds: 3);
+    final started = kt.now();
+    kt.start();
+    await waitUntil(() => kt.nextRefreshMs != null, what: 'a refresh planned');
+    final at = kt.nextRefreshMs! - started;
+    kt.scheduled = false;
+    expect(f.asked, isEmpty, reason: 'nothing at the instant it started');
+    expect(at, greaterThanOrEqualTo(kt.catchUpMin.inMilliseconds));
+    expect(at, lessThanOrEqualTo(kt.catchUpMax.inMilliseconds + 1000),
+        reason: 'the owed refresh within catchUpMax of start, not later in '
+            'the window: ${at ~/ 1000} s');
+  });
+
+  test(
+      '18. a phone used in short visits still refreshes, never as it comes '
+      'to the front', () async {
+    // The shipped schedule (KtRefreshSchedule.next with the client's own
+    // window and catch-up bounds) through a phone's day: the app is in
+    // front for a visit and not otherwise, its timer frozen in between.
+    // Coming to the front plans again from the clock; a moment that comes
+    // while in front runs. Twelve visits of half a minute a day, at random
+    // between 08:00 and 23:00, for thirty days (review B of 2026-10-09,
+    // probe U4).
+    final dir = await Directory.systemTemp.createTemp('z_ktp_visits18');
+    temps.add(dir);
+    final vault = await Vault.open(rootOverride: dir);
+    addTearDown(() => vault.db.close());
+    final kt = KeyTransparency(
+      vault: vault,
+      host: _NoHost(),
+      fetcher: _CountingFetcher(),
+      config: KtConfig(logUrl: 'http://127.0.0.1:1', logPubB64: b64(Uint8List(32))),
+    );
+    addTearDown(kt.dispose);
+    const day = 24 * 3600 * 1000;
+    const days = 30;
+    final rnd = Random(18);
+    final start0 = 1791000000000;
+    var plan = const KtRefreshSchedule();
+    KtRefreshSchedule next(KtRefreshSchedule s, int at) => s.next(
+        nowMs: at,
+        every: kt.checkEvery,
+        catchUpMin: kt.catchUpMin,
+        catchUpMax: kt.catchUpMax,
+        random: rnd);
+    final refreshes = <int>[];
+    for (var d = 0; d < days; d++) {
+      final opens = [
+        for (var s = 0; s < 12; s++)
+          start0 + d * day + 8 * 3600000 + rnd.nextInt(15 * 3600000)
+      ]..sort();
+      for (final open in opens) {
+        final close = open + 30 * 1000;
+        plan = next(plan, open);
+        while (plan.atMs! <= close) {
+          final at = plan.atMs!;
+          expect(at - open, greaterThanOrEqualTo(kt.catchUpMin.inMilliseconds),
+              reason: 'never as the app comes to the front');
+          refreshes.add(at);
+          plan = next(plan.withLast(at), at);
+        }
+      }
+    }
+    var gap = 0;
+    for (var i = 1; i < refreshes.length; i++) {
+      gap = max(gap, refreshes[i] - refreshes[i - 1]);
+    }
+    // Printed for the record: what "about four times a day" comes to here.
+    // ignore: avoid_print
+    print('criterion 18: ${refreshes.length} refreshes in $days days '
+        '(${(refreshes.length / days).toStringAsFixed(2)} a day), longest gap '
+        '${(gap / 3600000).toStringAsFixed(1)} h');
+    expect(refreshes.length / days, greaterThanOrEqualTo(2),
+        reason: 'at least two a day from twelve half-minute visits');
   });
 }

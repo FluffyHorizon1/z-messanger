@@ -3724,8 +3724,10 @@ reference client:
 
 1. maps every contact's label to its bucket at
    `k = min(bucketBits, ⌊log₂(sth.size / 32)⌋, c)`, where `c` is a ceiling
-   its own answers set (below) — never finer than the log recommends, and
-   never finer than the signed size allows, since `bucketBits` is unsigned;
+   its own counts of the log's labels set (below) — never finer than the log
+   recommends, nor than the signed size allows, nor than the labels it
+   counted fill to 16 a bucket: `bucketBits` is unsigned, and the size counts
+   entries, which versions inflate;
 2. adds decoys: 32‑byte values drawn at random, mapped to buckets as labels
    are, kept (sealed in the vault and in a backup) and asked again at every
    refresh, so that the buckets asked are a multiple of 16 and at least 16 —
@@ -3739,24 +3741,32 @@ reference client:
    a request of several as two halves;
 4. fetches entry values with `POST /kt/v1/entries`: a contact's entry when its
    `(index, version)` is not the one last judged — a label's versions only
-   rise (§19.6), so the same version is the same entry — and beside it every
-   entry in the asked buckets that it had not seen at its last refresh,
-   whether or not any contact needs one; every entry in the asked buckets
-   instead when a needed one is not new to it; past 1024, and on a first
-   refresh, the needed ones and a sample of the rest (64 on a first refresh)
-   drawn in an order its own key fixes. Each fetched entry MUST be the
-   label's, at the version, that the bucket named for its index;
+   rise (§19.6), so the same version is the same entry — among every entry
+   in the asked buckets that it had not seen at its last refresh, made up to
+   16 with others from them in an order its own key fixes, whether or not
+   any contact needs one; every entry in the asked buckets instead when a
+   needed one is in neither, and when it has no last refresh (a first
+   refresh, a restore, another log); past 1024, the needed ones and a sample
+   of the rest drawn in an order its key and the needed set fix. Each
+   fetched entry MUST be the label's, at the version, that the bucket named
+   for its index;
 5. judges each contact by the table of `adr/0006` exactly as from a lookup;
-6. sets `c = k − 1` when the buckets that hold no contact averaged fewer
-   than 16 labels, and lifts it a bit when they average 64 or more;
+6. sets `c = ⌊log₂(labels / 16)⌋` of a count of labels: before its first
+   refresh, and after a change of log, from random buckets asked one at a
+   time with `GET /kt/v1/bucket` and never again — from
+   `⌊log₂(sth.size / 32)⌋`, coarser by what each fell short of 32 labels,
+   until one holds 32 — and after each refresh from the mean of the buckets
+   that hold no contact: lowering `c` to it at once when buckets at `c`
+   would hold fewer than 16, raising it one bit when they would hold 64 or
+   more, and leaving it otherwise;
 7. runs once in each six‑hour window counted from the epoch, at a random
-   moment in it kept across restarts — never at start and never because a
-   contact's list changed, and a moment the app was suspended through is drawn
-   again when it resumes rather than run then; one that has had none for a
-   whole window catches up at a random moment one to ten minutes after it is
-   next running; and the
-   screen where the user looks at a contact whose list has changed runs one
-   then, of the same shape, as a check the user asks for in Settings does.
+   moment in it kept across restarts — never at the instant the app starts
+   or comes to the front, and never because a contact's list changed; a
+   window's moment the app was not running for, and a whole window without
+   a refresh, is caught up at a random moment 5 to 30 seconds after the app
+   is next in front; and the screen where the user looks at a contact whose
+   list has changed runs one then, of the same shape, as a check the user
+   asks for in Settings does — that window's, when it has had none.
 
 The account's own label is still asked by name for §19.8 (its `history` is
 served no other way); that tells the log who asks, which a root's publishes

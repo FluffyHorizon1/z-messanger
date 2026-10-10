@@ -461,17 +461,20 @@ class KeyTransparency {
   Duration staleHead = const Duration(hours: 24);
   Duration unreachableAfter = const Duration(hours: 24);
 
-  /// A client that has had no refresh for a whole window catches up at a
-  /// random moment this long after it is next running — never at start
-  /// (phase 35). The app may not be running at a window's moment at all;
-  /// these bound how long it has to have been, and how long it waits.
+  /// A refresh that is owed — a whole window without one, or this window's
+  /// moment gone by while the app was not running it — catches up at a
+  /// random moment this long after the app is next in front, at start or on
+  /// coming back ([onForeground]): never at that instant (phase 35), and
+  /// soon enough for a visit of half a minute ([ktCatchUpMin],
+  /// [ktCatchUpMax]). A phone runs an app it is not showing seldom or not
+  /// at all, so a window's moment is mostly one the app slept through.
   ///
   /// This replaced a recheck 30 seconds after a contact's list changed and a
   /// check at every start. The first told the log, by its timing alone,
   /// whose list it was checking: a contact publishes, and 30 seconds later
   /// their contacts ask — whatever they ask for.
-  Duration catchUpMin = const Duration(minutes: 1);
-  Duration catchUpMax = const Duration(minutes: 10);
+  Duration catchUpMin = ktCatchUpMin;
+  Duration catchUpMax = ktCatchUpMax;
 
   /// Where scheduled refreshes draw their moments from; settable for tests.
   Random random = Random.secure();
@@ -743,6 +746,17 @@ class KeyTransparency {
     unawaited(_publishUnacknowledged());
   }
 
+  /// The app came back to the front. Its timer is set again from the clock:
+  /// a phone that suspended the app froze the timer with it, and one that
+  /// slept counts the time asleep in no timer at all, so the moment it was
+  /// set for may have gone by unseen. A refresh owed is then caught up a few
+  /// seconds from now ([catchUpMin], [catchUpMax]) — never at this instant —
+  /// and one not owed keeps its moment. Completes once the plan is made.
+  Future<void> onForeground() async {
+    if (_disposed || !_started || !_scheduled) return;
+    await _arm();
+  }
+
   /// At start, this account's current list goes to the log unless the log
   /// has acknowledged it: a publish still queued from before, or a list never
   /// sent — a fresh account's first above all (11.5), which used to wait for
@@ -780,8 +794,28 @@ class KeyTransparency {
     _publishRetry?.cancel();
   }
 
-  /// Plan the next scheduled refresh and set the timer for it.
-  Future<void> _arm() async {
+  /// Plan the next scheduled refresh and set the timer for it — one plan at
+  /// a time: the app coming to the front, a refresh and its timer can each
+  /// ask for one, and two drawn side by side would leave a timer for a
+  /// moment the vault does not hold.
+  Future<void> _arm() {
+    final prev = _arming;
+    final run = () async {
+      if (prev != null) await prev;
+      try {
+        await _armOnce();
+      } catch (_) {
+        // No timer: the next start, return to the front or refresh plans
+        // again.
+      }
+    }();
+    _arming = run;
+    return run;
+  }
+
+  Future<void>? _arming;
+
+  Future<void> _armOnce() async {
     _timer?.cancel();
     if (_disposed || !_started || !_scheduled || _offLimitsInTest || !config.enabled) {
       return;
@@ -806,7 +840,8 @@ class KeyTransparency {
       // A timer that fires well after its moment is one the app slept
       // through — a phone suspends an app it is not showing — and it fires
       // the moment the app is back, which is a refresh at start by another
-      // door. Its moment is drawn again instead, from now.
+      // door. It is planned again instead, from now: a catch-up a few
+      // seconds on, the same as [onForeground] makes.
       if (now() - next.atMs! > _lateTimer.inMilliseconds) {
         unawaited(_arm());
         return;
@@ -815,9 +850,12 @@ class KeyTransparency {
     });
   }
 
-  static const Duration _lateTimer = Duration(minutes: 1);
+  static const Duration _lateTimer = Duration(seconds: 10);
 
   /// A refresh asked the log: the schedule's next moment counts from here.
+  /// Planned again at once, so a refresh the user started — the contact
+  /// screen's, or Settings' — is this window's, and the next comes in the
+  /// next window rather than as a second one in this.
   Future<void> _noteRefreshed() async {
     final stored = await vault.kvGet('kt_refresh');
     var plan = const KtRefreshSchedule();
@@ -827,6 +865,7 @@ class KeyTransparency {
       } catch (_) {}
     }
     await vault.kvPut('kt_refresh', jsonEncode(plan.withLast(now()).toJson()));
+    if (_started && _scheduled) unawaited(_arm());
   }
 
   Future<void> setConfig(KtConfig c) async {
@@ -839,10 +878,23 @@ class KeyTransparency {
     config = c;
     await vault.kvPut('kt_config', jsonEncode(c.toJson()), sensitive: false);
     // Indexes are one log's; another log's are other entries. The decoys
-    // stay: two logs shown the same buckets learn nothing by comparing.
+    // stay: two logs shown the same buckets learn nothing by comparing. What
+    // this client counted of the old log's labels says nothing of the new
+    // one's, so the next refresh counts again before it asks.
     await vault.kvDelete('kt_seen');
+    await _forgetCeiling();
     host.ktChanged();
     unawaited(check().then((_) => _arm()));
+  }
+
+  /// The labels this client counted belong to the log it counted them in:
+  /// after a change of log, or of the history it holds of one, the next
+  /// refresh counts again ([_probeCeiling]) before it asks for a bucket.
+  Future<void> _forgetCeiling() async {
+    final d = await _loadDecoys();
+    if (d.ceiling == null) return;
+    d.ceiling = null;
+    await _saveDecoys(d);
   }
 
   /// Forget the accepted head and any fault — for a deliberate change of log,
@@ -869,6 +921,7 @@ class KeyTransparency {
     await vault.kvDelete('kt_last_ok_ms');
     await vault.kvDelete('kt_last_fail_ms');
     await vault.kvDelete('kt_seen');
+    await _forgetCeiling();
     for (final rid in contacts.keys.toList()) {
       await vault.kvDelete('ktc_$rid');
     }
@@ -1116,7 +1169,13 @@ class KeyTransparency {
   /// The contact screen's check (phase 35): when [rid]'s list has changed
   /// since a refresh last looked at it, a refresh now — the whole of one,
   /// every bucket and every decoy, never a question about this contact
-  /// alone. Nothing when the list has not changed. True when one ran.
+  /// alone, and its entries chosen as any refresh's are, never fewer than
+  /// [ktEntryFloor]. It counts as this window's refresh: a moment still
+  /// ahead in the window is not run as well. What it cannot hide is that it
+  /// ran because a contact's list changed: set beside what changed in the
+  /// asked buckets since the last refresh, that can point at the contact
+  /// when little else did (`adr/0023`). Nothing when the list has not
+  /// changed. True when one ran.
   Future<bool> checkIfListChanged(String rid) async {
     if (_disposed || !config.enabled || _offLimitsInTest) return false;
     KtContactInput? input;
@@ -1438,10 +1497,17 @@ class KeyTransparency {
       for (final c in inputs) c.rid: await ktLabel(c.accountEdPub),
     };
     final decoys = await _loadDecoys();
+    // Nothing counted yet — a fresh install, or another log: count before
+    // asking, or the first buckets asked are as fine as the operator says.
+    var ceiling = decoys.ceiling;
+    if (ceiling == null) {
+      ceiling = await _probeCeiling(logPub);
+      if (ceiling == null) return false;
+      decoys.ceiling = ceiling;
+      await _saveDecoys(decoys);
+    }
     final bits = ktRefreshBits(
-        recommended: _recommendedBits,
-        headSize: head!.size,
-        ceiling: decoys.ceiling);
+        recommended: _recommendedBits, headSize: head!.size, ceiling: ceiling);
     final asked = decoys.plan(labels.values, bits);
     // Kept before asking: a refresh that fails is asked again the same way.
     await _saveDecoys(decoys);
@@ -1509,6 +1575,69 @@ class KeyTransparency {
     }
     if (leaf.version > c.heldVersion) return !kept;
     return prev.confirmedDevs.isEmpty;
+  }
+
+  /// A first count of the log's labels, as the ceiling it sets
+  /// ([ktCeilingFor]): random buckets asked one at a time with
+  /// `GET /kt/v1/bucket`, from the finest k the signed size allows and
+  /// coarser by what each fell short ([ktProbeNext]), until one holds
+  /// [ktProbeLabels] — each verified complete under the head held when it
+  /// was drawn, so the count is the map's whatever `bucketBits` and the size
+  /// say. Drawn fresh and never asked again: the refresh that follows says
+  /// nothing it would not have. A bucket refused as too large is asked one
+  /// bit finer. Null — after
+  /// recording a failure, or a fault for an answer that does not verify —
+  /// when the log does not show one within [ktProbeSteps]: then no contact's
+  /// bucket is asked at all.
+  Future<int?> _probeCeiling(Uint8List logPub) async {
+    var bits = ktSizeBits(head!.size);
+    for (var step = 0; step < ktProbeSteps; step++) {
+      final held = head!;
+      final q = KtBucketQuery.forLabel(randomBytes(32), bits);
+      KtResponse r;
+      try {
+        r = await fetcher.get(_url(q.path));
+      } catch (_) {
+        await _fail();
+        return null;
+      }
+      Map<String, Object?>? j;
+      try {
+        j = r.json;
+      } catch (_) {}
+      if (r.status == 400 &&
+          j?['error'] == 'bucket_too_large' &&
+          bits < ktMaxBucketBits) {
+        bits++;
+        continue;
+      }
+      if (r.status != 200 || j == null) {
+        await _fail();
+        return null;
+      }
+      final KtVerifiedBuckets v;
+      try {
+        v = await ktVerifyBucketAnswer(j,
+            asked: [q], logPub: logPub, mode: KtLogMode.kt);
+      } on KtVerifyException catch (e) {
+        await _setFault('a bucket asked to size the log: ${e.reason}');
+        return null;
+      } catch (_) {
+        await _setFault('a bucket asked to size the log could not be read');
+        return null;
+      }
+      if (!await _adopt(v.head, logPub)) return null;
+      // Counted only under a head signed before the bucket was drawn: one
+      // signed after could hold labels minted into it on seeing it. The log
+      // grew in between, or says it did; another bucket is drawn.
+      if (!v.head.sameRootsAs(held)) continue;
+      final count = v.buckets.single.leaves.length;
+      final next = ktProbeNext(bits, count);
+      if (next == null) return ktCeilingFor(count << bits);
+      bits = next;
+    }
+    await _fail();
+    return null;
   }
 
   /// Every bucket in [queries], verified, under heads this client accepts:

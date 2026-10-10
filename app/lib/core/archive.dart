@@ -155,8 +155,11 @@ class BackupArchive {
   /// archive's head, and reconcile entries the device it came from would
   /// still have reported. Deliberately absent: the publish queue and the
   /// log's timings, which re-derive; a log fault, which the carried head
-  /// re-derives; and "this device was removed", which is about the device the
-  /// backup was taken on.
+  /// re-derives; "this device was removed", which is about the device the
+  /// backup was taken on; and the entries the last refresh saw (`kt_seen`):
+  /// without them a restore's first refresh fetches every entry in its
+  /// buckets, as the first refresh of the install it came from did, so the
+  /// two fetches set side by side differ only by what changed in between.
   static final Map<String, Future<bool> Function(String, _Ctx)> _stateKeys = {
     'device_id': (v, _) async => _isShortText(v),
     'my_devices': (v, c) => _isOwnCertList(v, c),

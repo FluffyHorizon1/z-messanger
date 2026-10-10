@@ -853,7 +853,8 @@ const PRIVACY_HTML = page(
   changes, the app publishes it there: your account's public key, the list's
   version and fingerprint, and the list itself, sealed under a key derived from
   your public key — which we receive with it, so we can read it. And the app
-  checks your contacts there about four times a day, at random moments, from
+  checks your contacts there up to four times a day, at random moments or a
+  few seconds after you open the app, from
   your IP address — asking for groups of 32 to 64 accounts at a time, padded
   with decoy groups it keeps, and never for a contact by name. So the log's
   operator, which is us, and its host see which groups your IP address asks

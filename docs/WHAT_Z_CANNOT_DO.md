@@ -79,7 +79,7 @@ message's giveaway into a pattern a relay has to watch for, and you can turn
 receipts off (R41).
 
 Two more parties see some of this. **The transparency log**, which Z uses by
-default, is asked about your contacts about four times a day, from your own
+default, is asked about your contacts up to four times a day, from your own
 address — since phase 35 by bucket and never by name: each question covers
 32 to 64 accounts, your contacts' among decoys the app keeps — so whoever
 runs it, and for the built-in log that is the people who run the relay,
