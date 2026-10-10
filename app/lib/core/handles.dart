@@ -26,9 +26,11 @@
 ///   foreground and on a jittered timer while the app is open — and only on
 ///   the account's primary device;
 /// * finding someone and asking ([HandleService.find],
-///   [HandleService.request]): the label off the UI thread, a bucket query
-///   verified against the pinned key, the record held to its one encoding
-///   and its signatures, and an ordinary contact request sealed to the
+///   [HandleService.request]): the label off the UI thread, the handle's
+///   bucket among decoys at a size the client counted itself
+///   (`handle_lookups.dart`), verified against the pinned key, the record
+///   held to its one encoding and its signatures and to what this device
+///   found the last time, and an ordinary contact request sealed to the
 ///   introduction key with a proof of work computed off the UI thread;
 /// * the acknowledgement both ways: the owner's acceptance signs `ia` with
 ///   the introduction key ([HandleService.acknowledgement]); the requester
@@ -50,7 +52,10 @@
 /// (the requests this device sent to handles and is waiting on),
 /// `handle_stamps` and `handle_stamps_new` (the introduction requests decided
 /// here, by a keyed digest, for as long as their stamps could be presented
-/// again — [HandleStampLedger]) and `handle_config`. A contact made through a
+/// again — [HandleStampLedger]), `handle_lookup` (the resolver's decoy key,
+/// the bucket size the log's answers bear out, and the owner key,
+/// commitment, version and record hash of each handle found —
+/// [HandleLookupMemory]) and `handle_config`. A contact made through a
 /// handle keeps the handle under `hvia_<rid>`.
 library;
 
@@ -64,8 +69,11 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+import 'handle_lookups.dart';
 import 'key_transparency.dart' show KtFetcher, KtResponse;
 import 'vault.dart';
+
+export 'handle_lookups.dart' show HandleChange;
 
 // =============================================================================
 // Configuration
@@ -832,6 +840,12 @@ enum HandleLookupState {
   /// The log answered with a record that is not one: not in its one
   /// encoding, or not signed by the owner it names. Nothing is sent.
   invalid,
+
+  /// Not what this device found the last time it looked the handle up, in a
+  /// way the owner rule does not explain from here ([HandleLookup.change]
+  /// says how). Nothing is sent; [HandleService.lookUpAsNew] is the person's
+  /// choice to take it as new.
+  changed,
 }
 
 class HandleLookup {
@@ -842,9 +856,18 @@ class HandleLookup {
   final HandleRecord? record;
   final String? introRid;
 
+  /// For [HandleLookupState.changed], how the handle changed.
+  final HandleChange? change;
+
   const HandleLookup._(
       this.handle, this.state, this.label, this.version, this.record,
-      this.introRid);
+      this.introRid,
+      {this.change});
+
+  /// A lookup in [state] without a log behind it, for a test of a screen.
+  @visibleForTesting
+  const HandleLookup.debug(this.handle, this.state,
+      {required this.label, this.version, this.record, this.introRid, this.change});
 }
 
 /// Why a handle operation did not happen — one value per thing the app tells
@@ -863,6 +886,11 @@ enum HandleFailure {
   /// The handle log's answer did not verify under the pinned key, or was not
   /// a complete bucket: nothing it said is used.
   badAnswer,
+
+  /// The handle log's answer was signed more than a day ago by this device's
+  /// clock ([handleStaleHead]): a log that stopped, an old answer served
+  /// again, or a clock that is wrong. Nothing it said is used.
+  stale,
 
   /// The log refused an entry this device made, for a reason waiting will
   /// not change.
@@ -1852,17 +1880,28 @@ class HandleService extends ChangeNotifier {
   // Finding and asking (the requester's side; any device)
   // ---------------------------------------------------------------------------
 
-  /// Look [input] up (§21.7): parse it (throws [HandleFormatException] with
-  /// the reason), compute its label off the UI thread, ask the log for the
-  /// label's bucket at the log's recommended size, verify the answer under
-  /// the pinned key, and hold the record to its one encoding and its owner's
-  /// signature (and the recovery key's, on a recover).
+  /// Look [input] up (§21.7, §21.8): parse it (throws [HandleFormatException]
+  /// with the reason), compute its label off the UI thread, resolve it
+  /// ([_resolve]: its bucket among decoys, verified under the pinned key),
+  /// and hold the record to its one encoding and its owner's signature (and
+  /// the recovery key's, on a recover) — and to what this device found the
+  /// last time it looked the handle up ([handleKnownChange]). A record the
+  /// owner rule does not lead to from there, or no record where there was
+  /// one, is [HandleLookupState.changed], and nothing can be sent to it.
+  /// Whatever else a lookup finds is remembered for the next.
   Future<HandleLookup> find(String input) async {
     _requireAvailable();
     final handle = Handle.parse(input);
     final label = await handleLabelOffThread(handle);
     final leaf = await _resolve(label);
+    final mem = await _lookupMemory();
+    final known = mem.knownFor(label);
     if (leaf == null) {
+      if (known != null) {
+        return HandleLookup._(
+            handle, HandleLookupState.changed, label, null, null, null,
+            change: HandleChange.history);
+      }
       return HandleLookup._(
           handle, HandleLookupState.notFound, label, null, null, null);
     }
@@ -1878,12 +1917,43 @@ class HandleService extends ChangeNotifier {
       return HandleLookup._(
           handle, HandleLookupState.own, label, leaf.version, rec, null);
     }
+    final hash = await sha256Bytes(leaf.value!);
+    if (known != null) {
+      final change = await handleKnownChange(known,
+          version: leaf.version, hash: hash, rec: rec);
+      if (change != null) {
+        return HandleLookup._(
+            handle, HandleLookupState.changed, label, leaf.version, rec, null,
+            change: change);
+      }
+    }
+    mem.remember(
+        label,
+        KnownHandle(
+            owner: rec.owner,
+            rc: rec.rc,
+            version: leaf.version,
+            hash: hash,
+            atMs: now()));
+    await _saveMemory(mem);
     if (rec.intro == null) {
       return HandleLookup._(
           handle, HandleLookupState.paused, label, leaf.version, rec, null);
     }
     return HandleLookup._(handle, HandleLookupState.found, label, leaf.version,
         rec, await introRoutingId(rec.intro!));
+  }
+
+  /// Forget what this device found the last time it looked [lookup]'s handle
+  /// up, and look it up again as if for the first time — the person's
+  /// choice, after a lookup said [HandleLookupState.changed] and they checked
+  /// the change some other way. What it finds is remembered from then on.
+  Future<HandleLookup> lookUpAsNew(HandleLookup lookup) async {
+    _requireAvailable();
+    final mem = await _lookupMemory();
+    mem.forget(lookup.label);
+    await _saveMemory(mem);
+    return find(lookup.handle.canonical);
   }
 
   /// Send [found]'s owner a contact request (§21.7): an ordinary `creq`
@@ -2380,55 +2450,197 @@ class HandleService extends ChangeNotifier {
   static Future<Uint8List> handleLabelOffThread(Handle handle) =>
       Isolate.run(() => handleLabel(handle));
 
-  /// The latest leaf for [label] from its bucket, verified (§19.9) — or null,
-  /// a verified absence. Asks at the log's recommended `bucketBits`, and
-  /// with one bit more for as long as the log refuses a bucket as too large.
+  /// The latest leaf for [label], verified (§19.9, §21.8) — or null, a
+  /// verified absence — asked without naming it (`handle_lookups.dart`):
+  ///
+  /// * k is the estimate this install's own counts of labels bear out
+  ///   ([HandleLookupMemory.bits], first made from random buckets by
+  ///   [_probeBits]), never finer than the signed size allows nor than the
+  ///   log's `bucketBits`, which is unsigned and so only ever lowers it;
+  /// * the label's bucket is asked among its decoys' ([handleLookupBuckets]),
+  ///   one request each, every answer verified under the pinned key and on a
+  ///   head no older than [handleStaleHead];
+  /// * a bucket the log refuses as too large is never narrowed to the half
+  ///   that holds the label: the estimate is made again from random buckets
+  ///   (a log that grew past it needs a finer one), once, and the lookup
+  ///   asked again at that; refused again, the log is unreachable;
+  /// * the buckets asked are counted, and k moves as [handleNextBits] says;
+  /// * a leaf no honest log could serve ([handleLeafProblem]) is a bad
+  ///   answer.
   Future<KtBucketLeaf?> _resolve(Uint8List label) async {
     final pub = config.logPub;
     if (!available || pub == null) {
       throw const HandleException(HandleFailure.unavailable);
     }
-    final sth = await _getJson('$_base/kt/v1/sth');
-    final rb = sth['bucketBits'];
-    var bits = rb is int && rb >= 0 && rb <= ktMaxBucketBits ? rb : 0;
-    while (true) {
-      final q = KtBucketQuery.forLabel(label, bits);
-      final KtResponse r;
-      try {
-        r = await fetcher.get(Uri.parse('$_base${q.path}'));
-      } catch (_) {
+    final mem = await _lookupMemory();
+    final (head, recommended) = await _head(pub);
+    final bySize = handleBitsFor(head.size);
+    final held = mem.bits;
+    for (var attempt = 0;; attempt++) {
+      final estimate = mem.bits ?? await _probeBits(pub, bySize);
+      mem.bits = estimate;
+      final k = min(min(estimate, bySize), recommended ?? ktMaxBucketBits);
+      final asked = handleLookupBuckets(mem.key, label, k);
+      final answers = await Future.wait([for (final q in asked) _bucket(pub, q)]);
+      if (answers.contains(null)) {
+        mem.bits = null;
+        if (attempt == 0) continue;
+        if (held != null) await _saveMemory(mem);
         throw const HandleException(HandleFailure.unreachable);
       }
-      if (r.status == 400 &&
-          _errorCode(r) == 'bucket_too_large' &&
-          bits < ktMaxBucketBits) {
-        bits++;
-        continue;
-      }
-      if (r.status != 200) throw const HandleException(HandleFailure.unreachable);
-      final Map<String, Object?> json;
-      try {
-        json = r.json;
-      } catch (_) {
+      mem.bits = handleNextBits(
+          estimate, k, [for (final b in answers) b!.leaves.length]);
+      if (mem.bits != held) await _saveMemory(mem);
+      final mine = answers.firstWhere((b) => b!.query.holds(label))!;
+      final leaf = mine.leafFor(label);
+      if (leaf != null && handleLeafProblem(leaf) != null) {
         throw const HandleException(HandleFailure.badAnswer);
       }
-      try {
-        final v = await ktVerifyBucketAnswer(json,
-            asked: [q], logPub: pub, mode: KtLogMode.handles);
-        return v.buckets.single.leafFor(label);
-      } on KtVerifyException {
-        throw const HandleException(HandleFailure.badAnswer);
-      } on FormatException {
-        throw const HandleException(HandleFailure.badAnswer);
-      }
+      return leaf;
     }
   }
 
+  HandleLookupMemory? _memory;
+  Future<void>? _memoryLoading;
+
+  /// Test seam: called with each bucket an estimate asks ([_probeBits]) —
+  /// a random one, which says nothing about any lookup — just before it is
+  /// asked, so a test can tell it from a lookup's.
+  @visibleForTesting
+  void Function(KtBucketQuery q)? debugOnProbe;
+
+  /// This install's lookup memory for the log configured now: read from the
+  /// vault once, and begun afresh — a new decoy key, no estimate, nothing
+  /// found — for a log with another key.
+  Future<HandleLookupMemory> _lookupMemory() async {
+    final pub = config.logPub;
+    if (pub == null) throw const HandleException(HandleFailure.unavailable);
+    final log = b64(pub);
+    // One load at a time: two lookups at a first start must not draw two
+    // keys.
+    while (true) {
+      final m = _memory;
+      if (m != null && m.log == log) return m;
+      final loading = _memoryLoading;
+      if (loading == null) break;
+      await loading;
+    }
+    final done = Completer<void>();
+    _memoryLoading = done.future;
+    try {
+      final text = await vault.kvGet(handleLookupKey);
+      final stored = text == null ? null : HandleLookupMemory.parse(text);
+      if (stored != null && stored.log == log) return _memory = stored;
+      // Kept before its first use: a lookup that fails after asking its
+      // buckets must ask the same ones when it is tried again, after a
+      // restart too, or the two sets would meet in the handle's.
+      final fresh = HandleLookupMemory(log: log, key: _randomBytes32());
+      await _saveMemory(fresh);
+      return _memory = fresh;
+    } finally {
+      _memoryLoading = null;
+      done.complete();
+    }
+  }
+
+  Future<void> _saveMemory(HandleLookupMemory m) =>
+      vault.kvPut(handleLookupKey, jsonEncode(m.toJson()));
+
+  /// 32 bytes from [random] — `Random.secure()` unless a test gave its own.
+  Uint8List _randomBytes32() =>
+      Uint8List.fromList([for (var i = 0; i < 32; i++) random.nextInt(256)]);
+
+  /// The log's head and its `bucketBits` (null when absent or out of range),
+  /// the head verified under [pub] and no older than [handleStaleHead]: the
+  /// signed size is what bounds k from above.
+  Future<(KtTreeHead, int?)> _head(Uint8List pub) async {
+    final sth = await _getJson('$_base/kt/v1/sth');
+    final KtTreeHead head;
+    try {
+      head = KtTreeHead.fromJson(sth);
+    } on KtVerifyException {
+      throw const HandleException(HandleFailure.badAnswer);
+    } on FormatException {
+      throw const HandleException(HandleFailure.badAnswer);
+    }
+    if (!await ktVerifyHead(head, pub, KtLogMode.handles)) {
+      throw const HandleException(HandleFailure.badAnswer);
+    }
+    _requireFresh(head);
+    final rb = sth['bucketBits'];
+    return (head, rb is int && rb >= 0 && rb <= ktMaxBucketBits ? rb : null);
+  }
+
+  /// A head signed more than [handleStaleHead] ago, by this device's clock,
+  /// is not believed (a head from the future is: a clock behind by a day is
+  /// a clock, and a log that signs ahead gains nothing by it).
+  void _requireFresh(KtTreeHead head) {
+    if (now() - head.ts > handleStaleHead.inMilliseconds) {
+      throw const HandleException(HandleFailure.stale);
+    }
+  }
+
+  /// One bucket, verified under [pub] on a fresh head; null when the log
+  /// refuses it as too large.
+  Future<KtVerifiedBucket?> _bucket(Uint8List pub, KtBucketQuery q) async {
+    final KtResponse r;
+    try {
+      r = await fetcher.get(Uri.parse('$_base${q.path}'));
+    } catch (_) {
+      throw const HandleException(HandleFailure.unreachable);
+    }
+    if (r.status == 400 && _errorCode(r) == 'bucket_too_large') return null;
+    if (r.status != 200) throw const HandleException(HandleFailure.unreachable);
+    final Map<String, Object?> json;
+    try {
+      json = r.json;
+    } catch (_) {
+      throw const HandleException(HandleFailure.badAnswer);
+    }
+    final KtVerifiedBuckets v;
+    try {
+      v = await ktVerifyBucketAnswer(json,
+          asked: [q], logPub: pub, mode: KtLogMode.handles);
+    } on KtVerifyException {
+      throw const HandleException(HandleFailure.badAnswer);
+    } on FormatException {
+      throw const HandleException(HandleFailure.badAnswer);
+    }
+    _requireFresh(v.head);
+    return v.buckets.single;
+  }
+
+  /// A first estimate of k from buckets drawn at random — so they say
+  /// nothing about any lookup, before or after: one at the finest k the
+  /// signed size allows ([bySize]), then coarser by as much as it fell short
+  /// of [handleProbeLabels] labels ([handleProbeNext]), until one holds that
+  /// many or k is 0. A refusal as too large ends it at the finer count
+  /// before it; one at [bySize] itself (where no honest bucket is too large)
+  /// leaves nothing to estimate from: unreachable.
+  Future<int> _probeBits(Uint8List pub, int bySize) async {
+    int? at;
+    var count = 0;
+    int? k = bySize;
+    for (var step = 0; k != null && step < handleProbeSteps; step++) {
+      final q = KtBucketQuery.forLabel(_randomBytes32(), k);
+      debugOnProbe?.call(q);
+      final b = await _bucket(pub, q);
+      if (b == null) break;
+      at = k;
+      count = b.leaves.length;
+      k = handleProbeNext(k, count);
+    }
+    if (at == null) throw const HandleException(HandleFailure.unreachable);
+    return min(bySize, handleBitsFor(count * (1 << at)));
+  }
+
   /// [leaf]'s record held to everything a reader can check without its
-  /// history: its one encoding (§21.4), the owner's signature over this
-  /// entry — the owner the record names is the one that signs, for a claim,
-  /// an update (which keeps the owner) and a recover (which names the new
-  /// one) alike — and, on a recover, the recovery key's. Null when any fails.
+  /// history: its one encoding (§21.4), its kind against its version — a
+  /// claim is version 1 and nothing else is (rules 1, 2 and 5) — the owner's
+  /// signature over this entry — the owner the record names is the one that
+  /// signs, for a claim, an update (which keeps the owner) and a recover
+  /// (which names the new one) alike — and, on a recover, the recovery
+  /// key's. Null when any fails.
   Future<HandleRecord?> _checkedRecord(Uint8List label, KtBucketLeaf leaf) async {
     final value = leaf.value, sig = leaf.sig;
     if (value == null || sig == null || leaf.version < 1) return null;
@@ -2436,6 +2648,9 @@ class HandleService extends ChangeNotifier {
     try {
       rec = HandleRecord.decode(value);
     } on FormatException {
+      return null;
+    }
+    if ((rec.kind == HandleRecordKind.claim) != (leaf.version == 1)) {
       return null;
     }
     final input = await handlePublishInput(
@@ -2593,6 +2808,12 @@ abstract final class HandleBackup {
     'handle_in',
     'handle_out',
     'handle_config',
+    // The resolver's memory: carried so that a restored device asks the
+    // buckets the old one asked for a handle (its decoy key — two sets would
+    // intersect in the handle's bucket), and holds what it found to what the
+    // old one remembered (a first lookup again for every handle is a first
+    // lookup the log can answer with anything).
+    handleLookupKey,
   ];
 
   /// The record, or null when this vault holds nothing about handles.
@@ -2692,6 +2913,11 @@ abstract final class HandleBackup {
         out['handle_config'] = jsonEncode(
             HandleConfig.fromJson(config.cast<String, Object?>()).toJson());
       } catch (_) {}
+    }
+    final lookups = kv[handleLookupKey];
+    if (lookups is Map) {
+      final m = HandleLookupMemory.parse(jsonEncode(lookups));
+      if (m != null) out[handleLookupKey] = jsonEncode(m.toJson());
     }
     return out;
   }

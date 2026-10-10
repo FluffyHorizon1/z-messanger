@@ -4929,7 +4929,7 @@ the owner must use the same one.
 **Claiming** is never offered during account setup (F5). The client parses
 the handle (21.1) — two random digits by default, each draw checked free,
 up to five draws; or 2 to 6 the person chooses — and checks it is free: a
-bucket (§19.9) at the log's `bucketBits`, verified, with no leaf for the
+lookup (below) whose bucket, verified, has no leaf for the
 label. It draws `ownerSeed`, `introSeed` and the code (21.3), shows the code
 once as `ZHR-…`, and keeps nothing until the code has been typed back;
 then it keeps the claim, and neither the code nor `recoverySeed`. The claim
@@ -5008,16 +5008,75 @@ cannot push out one already looked at — and when every older one has been
 seen, the newcomer is the one dropped.
 
 **Finding and asking.** Any device. The client parses what was typed
-(reserved nicks refused), computes the label off the UI thread, asks for its
-bucket at the log's `bucketBits` (one more bit for each
-`bucket_too_large`), verifies the answer under the pinned key (§19.9, §21.5),
-and holds the latest record to its one encoding (21.4) and to the leaf's
-`sig` under the record's own `owner` over 21.4's publish input — the owner a
-claim names, an update keeps and a recover installs alike — and, on a
-recover, `rsig` under `rpub`. A record that fails any of this is not used and
-nothing is sent. The owner rule over the label's history is the log's and
-its mirrors' to hold (§21.5); the client keeps no head between lookups, so a
-log that shows it another history is caught only by a witness (R50).
+(reserved nicks refused), computes the label off the UI thread, and asks for
+the label's bucket without naming it (`app/lib/core/handle_lookups.dart`):
+
+- *k.* Not the log's `bucketBits` — it sits beside the signed head, outside
+  it, so the operator (or whatever ends its TLS, R44) writes it — and not
+  the signed size, which counts entries: whoever holds owner keys, the
+  operator first, inflates it with versions for the price of a publish.
+  Labels are what a bucket hides a handle among, so k is an estimate of the
+  labels the client counted itself, in buckets it verified complete. First
+  from buckets drawn at random, which say nothing about any lookup: one at
+  the finest k the signed size allows, ⌊log₂(size / 32)⌋, then coarser by as
+  many bits as it fell short of 32 labels (five for an empty one), until one
+  holds 32 or k is 0; its count times 2^k is the estimate, and k is
+  ⌊log₂(estimate / 32)⌋. Then from each lookup's buckets: under 16 labels a
+  bucket on average, k falls at once to what they bear out; at 64, it rises
+  one bit, and no more in one lookup. A lookup asks at the least of that,
+  ⌊log₂(size / 32)⌋ and `bucketBits`. So a log is asked at buckets of 16 to
+  64 labels on average, 32 to 64 once it has settled, whatever `bucketBits`
+  it serves and however it inflates its size — but labels of its own make
+  the buckets smaller than they look, and no count a client can make tells
+  them from real ones.
+- *Decoys.* The label's bucket is asked among three decoys': the buckets of
+  SHA‑256(key ‖ "z-handle-decoy-v1:" ‖ label ‖ i), i = 0, 1, 2, under a key
+  of 32 random bytes the install draws once and keeps. Each bucket once
+  (some coincide at a small k), in prefix order, one `GET /kt/v1/bucket`
+  each (four buckets of a large log can be more than the 256 KiB one `POST`
+  may carry). A function of the label and the key: fresh decoys would leave
+  the handle's bucket as what two lookups of it have in common, and one
+  kept set as what lookups of two handles do not. So the same handle asks
+  the same buckets again — at a finer k, a child of each — and another
+  handle's share nothing with them but chance. Each device draws its own
+  key: one handle looked up from two devices the log can link (an address)
+  asks two sets that meet in its bucket.
+- *Refusals.* A bucket refused as `bucket_too_large` is never narrowed to
+  the half that holds the label: the estimate is made again from random
+  buckets, once — a log that grew past it needs a finer one — and the
+  lookup asked again at it; refused again, the log is unreachable.
+- *Answers.* Each verified under the pinned key (§19.9, §21.5) on a head
+  signed no more than **24 hours** before the device's clock: the log
+  re-signs at least every 10 minutes, so an older head is a log that
+  stopped or an old answer served again, and nothing under it is used — the
+  person is told the answer is stale and to check the device's date and
+  time (a day, not minutes, as for the transparency log, because a phone's
+  clock can be hours out). A leaf whose version exceeds its index + 1, or
+  is 2^53 − 1 (no version follows it, so a change to the handle would fail
+  as arithmetic), is a bad answer. The latest record is held to its one
+  encoding (21.4), to its kind — a claim at version 1 and nothing else
+  there — and to the leaf's `sig` under the record's own `owner` over 21.4's
+  publish input — the owner a claim names, an update keeps and a recover
+  installs alike — and, on a recover, `rsig` under `rpub`. A record that
+  fails any of this is not used and nothing is sent.
+- *What it remembers.* For each handle found, the account's own excepted:
+  the owner key, the recovery commitment, the version and SHA‑256 of the
+  record — at most **256**, the one found longest ago going first. A later
+  lookup must find that record at that version, or a later version signed
+  by the owner remembered — whatever came between — or the recover whose
+  `rpub` opens the commitment remembered. Anything else is refused, nothing
+  is sent, and the person is told which: another owner (an update naming
+  one, which the rule forbids, or a recover after entries the client did not
+  see: from one record the code's work cannot be told from the log's), or
+  another history (an older version, another record at a version seen, or
+  no record). The person may look it up as new, which forgets what was kept
+  and takes what the log shows now. The owner rule over the label's whole
+  history stays the log's and its mirrors' to hold (§21.5): a bucket carries
+  each label's latest entry only, and the client fetches no history —
+  earlier entries are reached by naming the label or by indexes it does not
+  have — so a first lookup, or a log that goes on showing a reader the owner
+  it remembers after the handle moved on, is caught only by a witness (R50).
+
 `intro` null: the handle is paused, and nothing is sent. Otherwise the
 client builds a `creq` to `introRid`, seals it to `xintro`, and keeps the
 handle, its owner and introduction keys and the request's `creqId` — at most
@@ -5084,7 +5143,8 @@ digests of the requests decided, as above; for
 each pending request that came through the handle, the handle, the mailbox
 it reached, its `creqId`, when it arrived and whether it has been seen; the
 introduction seeds a pending request still needs; the requests kept for
-matching an acceptance; the handle log's address and key; and, for a
+matching an acceptance; the handle log's address and key; for lookups, the
+decoy key, the estimate of k and what was found of each handle (above); and, for a
 contact made through a handle, which handle. Never the code or
 `recoverySeed`.
 

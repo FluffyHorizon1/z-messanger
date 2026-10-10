@@ -71,6 +71,9 @@ Since phase 38, also the account's **handle**, if it has one (`PROTOCOL.md`
 §21.8): its owner and introduction keys and where it stands, the records of
 requests that came through it, and the requests sent to handles that are
 still waiting for an answer — never its recovery code, which no device holds.
+And what looking handles up found, so a restored device asks the handle log
+for a handle in the buckets the old one asked, and holds what it finds to
+what the old one found (`PROTOCOL.md` §21.8).
 A restore publishes nothing by itself: a published handle comes back as it
 was and its mailbox is read again, and a claim that was still waiting to be
 published comes back held until the person publishes it.
@@ -343,7 +346,7 @@ leaves the device.
 | `groups` | the group list blob |
 | `blocked` (1.1) | a blocked routing id and when |
 | `request` (1.1) | a pending inbound request: routing id, the requester's bundle (it must verify and name that routing id), the name offered, when |
-| `handle` (phase 38, `"keep":1`, `"v":1`) | `kv`: the account's handle (`handle` — the handle, its label, the owner and introduction seeds, the work a request costs, the recovery commitment, the version and where it stands; never the recovery code), the requests that came through it (`handle_in` — for each, the mailbox it reached and the request's id — and the seeds of mailboxes since replaced that one of them still needs), the requests sent to handles still waiting (`handle_out`) and where the handle log is (`handle_config`). Written after the requests and applied after them: a request's record is restored only if its request was, a claim waiting to be published comes back held, and a part that is not the shape the service reads is left out. Marked `keep`, so a build that predates handles carries it into its next archive unread |
+| `handle` (phase 38, `"keep":1`, `"v":1`) | `kv`: the account's handle (`handle` — the handle, its label, the owner and introduction seeds, the work a request costs, the recovery commitment, the version and where it stands; never the recovery code), the requests that came through it (`handle_in` — for each, the mailbox it reached and the request's id — and the seeds of mailboxes since replaced that one of them still needs), the requests sent to handles still waiting (`handle_out`), where the handle log is (`handle_config`) and what lookups found (`handle_lookup` — the decoy key, the bucket size the log's answers bore out, and for each handle found its owner key, commitment, version and record hash). Written after the requests and applied after them: a request's record is restored only if its request was, a claim waiting to be published comes back held, and a part that is not the shape the service reads is left out. Marked `keep`, so a build that predates handles carries it into its next archive unread |
 | `message` | mid, rid, direction, kind, body, timestamp, status, expiry, and the phase‑8 fields (`rt` reply target, `edited`, `deleted`, `fw`) |
 | `reaction` | rid, mid, sender, emoji, timestamp |
 | `file` | attachment metadata; the bytes follow in `kind = 1` frames |

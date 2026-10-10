@@ -307,7 +307,12 @@ Questions this revision did not answer, and how phase 38 answered them
   a claim, an update and a recover alike — and a recover's `rsig`. The
   owner rule over the label's whole history stays the log's and its
   mirrors' to hold; a resolver keeps no head between lookups, so a log that
-  shows it another history is caught by a witness only (R50).
+  shows it another history is caught by a witness only (R50). Since
+  2026‑10‑10 the resolver remembers what it found of each handle — owner,
+  commitment, version, record — and refuses a later record the rule cannot
+  lead to from there (§21.8): a substitution shown to someone who looked
+  before is caught by them, and one shown at a first lookup by a witness
+  only.
 
 Also settled in building it, each argued in §21.8: a claim is published at
 a moment drawn from 10 to 60 minutes after it is confirmed (3 to 20 after a

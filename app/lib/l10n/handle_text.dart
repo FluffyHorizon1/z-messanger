@@ -35,6 +35,7 @@ String handleFailureText(AppLocalizations l, HandleFailure f) => switch (f) {
       HandleFailure.linkedDevice => l.hdlLinkedDevice,
       HandleFailure.unreachable => l.hdlErrUnreachable,
       HandleFailure.badAnswer => l.hdlErrBadAnswer,
+      HandleFailure.stale => l.hdlErrStale,
       HandleFailure.refused => l.hdlErrRefused,
       HandleFailure.taken => l.hdlErrTaken,
       HandleFailure.changed => l.hdlErrChanged,

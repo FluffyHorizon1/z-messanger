@@ -4478,6 +4478,12 @@ abstract class AppLocalizations {
   /// **'The handle service\'s answer did not check out, so nothing it said was used.'**
   String get hdlErrBadAnswer;
 
+  /// The handle service's signed answer is more than 24 hours old by this device's clock: a stopped service, an old answer served again, or a wrong clock.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service\'s answer was signed more than a day ago, so nothing it said was used. Check this device\'s date and time, or try again later.'**
+  String get hdlErrStale;
+
   /// The handle service refused an entry for a reason waiting will not fix.
   ///
   /// In en, this message translates to:
@@ -4645,6 +4651,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The handle service\'s answer for @{handle} did not check out. Nothing was sent.'**
   String hdlFoundInvalid(String handle);
+
+  /// The handle's owner key is not the one this device found before, and the record is not a recovery this device can check. Nothing is sent.
+  ///
+  /// In en, this message translates to:
+  /// **'@{handle} now names a different owner than when you last looked it up, and the handle service\'s answer does not show a recovery that explains it. Nothing was sent.'**
+  String hdlFoundChangedOwner(String handle);
+
+  /// The handle service went back on what it showed this device before for the handle (an older version, a different record at the same version, or the handle gone). Nothing is sent.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service now shows @{handle} differently than before: an older record, another one in its place, or none at all. Nothing was sent.'**
+  String hdlFoundChangedHistory(String handle);
+
+  /// Note under a handle whose owner or history changed: the two explanations, and what to do before trusting it.
+  ///
+  /// In en, this message translates to:
+  /// **'Its owner may have recovered it with their code, or the handle service may have changed it. Ask them some other way before you look it up as new.'**
+  String get hdlChangedNote;
+
+  /// Button: forget what this device found for the handle before and take what the handle service shows now, as for a first lookup.
+  ///
+  /// In en, this message translates to:
+  /// **'Look it up as new'**
+  String get hdlLookUpAsNew;
 
   /// The handle looked up is this account's own.
   ///

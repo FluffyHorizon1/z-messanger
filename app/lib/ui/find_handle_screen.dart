@@ -62,6 +62,28 @@ class _FindHandleViewState extends State<FindHandleView> {
     }
   }
 
+  /// The person's choice after a lookup said the handle changed: forget what
+  /// this device found before, and take what the log shows now.
+  Future<void> _lookUpAsNew(HandleLookup found) async {
+    if (_looking || _sending) return;
+    final l = AppLocalizations.of(context);
+    final h = context.read<ChatService>().handles;
+    setState(() {
+      _looking = true;
+      _error = null;
+    });
+    try {
+      final again = await h.lookUpAsNew(found);
+      if (!mounted) return;
+      setState(() => _found = again);
+    } on HandleException catch (e) {
+      if (!mounted) return;
+      setState(() => _error = handleFailureText(l, e.failure));
+    } finally {
+      if (mounted) setState(() => _looking = false);
+    }
+  }
+
   Future<void> _request(HandleLookup found) async {
     if (_sending) return;
     final l = AppLocalizations.of(context);
@@ -138,10 +160,12 @@ class _FindHandleViewState extends State<FindHandleView> {
             ),
           if (found != null) ...[
             const SizedBox(height: 16),
-            _Result(
+            HandleLookupResult(
                 found: found,
+                busy: _sending || _looking,
                 sending: _sending,
-                onRequest: () => _request(found)),
+                onRequest: () => _request(found),
+                onLookUpAsNew: () => _lookUpAsNew(found)),
           ],
           if (h.outgoing.isNotEmpty) ...[
             const SizedBox(height: 24),
@@ -165,13 +189,22 @@ class _FindHandleViewState extends State<FindHandleView> {
 }
 
 /// What the lookup found, and — when it can be asked — the request button,
-/// under the line that a handle verifies nothing.
-class _Result extends StatelessWidget {
+/// under the line that a handle verifies nothing; for a handle that changed
+/// since this device last found it, why it was refused and the choice to
+/// look it up as new.
+class HandleLookupResult extends StatelessWidget {
   final HandleLookup found;
+  final bool busy;
   final bool sending;
   final VoidCallback onRequest;
-  const _Result(
-      {required this.found, required this.sending, required this.onRequest});
+  final VoidCallback onLookUpAsNew;
+  const HandleLookupResult(
+      {super.key,
+      required this.found,
+      required this.busy,
+      required this.sending,
+      required this.onRequest,
+      required this.onLookUpAsNew});
 
   @override
   Widget build(BuildContext context) {
@@ -183,6 +216,12 @@ class _Result extends StatelessWidget {
       HandleLookupState.paused => (l.hdlFoundPaused(name), true),
       HandleLookupState.invalid => (l.hdlFoundInvalid(name), true),
       HandleLookupState.own => (l.hdlFoundOwn, false),
+      HandleLookupState.changed => (
+          found.change == HandleChange.history
+              ? l.hdlFoundChangedHistory(name)
+              : l.hdlFoundChangedOwner(name),
+          true
+        ),
     };
     return Card(
       child: Padding(
@@ -207,8 +246,21 @@ class _Result extends StatelessWidget {
                       height: 1.4)),
               const SizedBox(height: 12),
               FilledButton(
-                onPressed: sending ? null : onRequest,
+                onPressed: busy ? null : onRequest,
                 child: Text(sending ? l.hdlSending : l.hdlSendRequest),
+              ),
+            ],
+            if (found.state == HandleLookupState.changed) ...[
+              const SizedBox(height: 8),
+              Text(l.hdlChangedNote,
+                  style: TextStyle(
+                      color: context.z.textSecondary,
+                      fontSize: 13,
+                      height: 1.4)),
+              const SizedBox(height: 12),
+              OutlinedButton(
+                onPressed: busy ? null : onLookUpAsNew,
+                child: Text(l.hdlLookUpAsNew),
               ),
             ],
           ],

@@ -2813,6 +2813,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'The handle service\'s answer did not check out, so nothing it said was used.';
 
   @override
+  String get hdlErrStale =>
+      'The handle service\'s answer was signed more than a day ago, so nothing it said was used. Check this device\'s date and time, or try again later.';
+
+  @override
   String get hdlErrRefused => 'The handle service refused that.';
 
   @override
@@ -2912,6 +2916,23 @@ class AppLocalizationsEn extends AppLocalizations {
   String hdlFoundInvalid(String handle) {
     return 'The handle service\'s answer for @$handle did not check out. Nothing was sent.';
   }
+
+  @override
+  String hdlFoundChangedOwner(String handle) {
+    return '@$handle now names a different owner than when you last looked it up, and the handle service\'s answer does not show a recovery that explains it. Nothing was sent.';
+  }
+
+  @override
+  String hdlFoundChangedHistory(String handle) {
+    return 'The handle service now shows @$handle differently than before: an older record, another one in its place, or none at all. Nothing was sent.';
+  }
+
+  @override
+  String get hdlChangedNote =>
+      'Its owner may have recovered it with their code, or the handle service may have changed it. Ask them some other way before you look it up as new.';
+
+  @override
+  String get hdlLookUpAsNew => 'Look it up as new';
 
   @override
   String get hdlFoundOwn => 'That is your own handle.';

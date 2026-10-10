@@ -2840,6 +2840,10 @@ class AppLocalizationsEs extends AppLocalizations {
       'La respuesta del servicio de alias no superó la comprobación, así que no se usó nada de lo que dijo.';
 
   @override
+  String get hdlErrStale =>
+      'La respuesta del servicio de alias se firmó hace más de un día, así que no se usó nada de lo que dijo. Comprueba la fecha y la hora de este dispositivo, o inténtalo más tarde.';
+
+  @override
   String get hdlErrRefused => 'El servicio de alias lo rechazó.';
 
   @override
@@ -2940,6 +2944,23 @@ class AppLocalizationsEs extends AppLocalizations {
   String hdlFoundInvalid(String handle) {
     return 'La respuesta del servicio de alias para @$handle no superó la comprobación. No se envió nada.';
   }
+
+  @override
+  String hdlFoundChangedOwner(String handle) {
+    return '@$handle tiene ahora un dueño distinto del que tenía la última vez que lo buscaste, y la respuesta del servicio de alias no muestra ninguna recuperación que lo explique. No se envió nada.';
+  }
+
+  @override
+  String hdlFoundChangedHistory(String handle) {
+    return 'El servicio de alias muestra ahora @$handle de otra manera que antes: un registro más antiguo, otro en su lugar o ninguno. No se envió nada.';
+  }
+
+  @override
+  String get hdlChangedNote =>
+      'Puede que su dueño lo haya recuperado con su código, o que el servicio de alias lo haya cambiado. Pregúntale por otra vía antes de buscarlo como nuevo.';
+
+  @override
+  String get hdlLookUpAsNew => 'Buscarlo como nuevo';
 
   @override
   String get hdlFoundOwn => 'Ese es tu propio alias.';

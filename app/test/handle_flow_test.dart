@@ -22,9 +22,10 @@
 //      the account it names is;
 //   4. a request without a valid stamp never reaches the owner — the relay
 //      refuses it before storing it (its counter says so) — a requester whose
-//      clock is days ahead re-stamps once with the relay's day and gets
-//      through, and a sender whose stamps never pass stops after exactly two
-//      sends;
+//      clock is days behind re-stamps once with the relay's day and gets
+//      through (one days ahead cannot look the handle up: every answer of
+//      the log's is too old by its clock), and a sender whose stamps never
+//      pass stops after exactly two sends;
 //   5. the account's own routing id and the introduction routing id are
 //      never on one relay connection: the mailbox is drained on a connection
 //      of its own that sends `intro`, registers no push and sends nothing,
@@ -667,7 +668,7 @@ void main() {
   });
 
   test(
-      '4. no stamp, no delivery; a clock days ahead re-stamps once; '
+      '4. no stamp, no delivery; a clock days out re-stamps once; '
       'stamps that never pass stop after two', () async {
     final oona = await boot('Oona');
     final ahmed = await boot('Ahmed');
@@ -697,10 +698,17 @@ void main() {
     expect(await oona.handles.drain(), 0, reason: 'nothing was stored');
     expect(oona.requestsByRid.containsKey(await stranger.routingId()), isFalse);
 
-    // A requester whose clock is two days ahead: its stamp is for a day the
-    // relay does not take, and the one re-made for the relay's day is.
+    // A requester whose clock is two days out. Ahead, it cannot look the
+    // handle up at all: every head the log signs is two days old by its
+    // clock, and refused as stale (PROTOCOL §21.8). Behind, the lookup
+    // stands, and its stamp is for a day the relay does not take: the one
+    // re-made for the relay's day is.
     ahmed.handles.now =
         () => DateTime.now().millisecondsSinceEpoch + 2 * 86400000;
+    await expectLater(
+        ahmed.handles.find('oona.44'), failsWith(HandleFailure.stale));
+    ahmed.handles.now =
+        () => DateTime.now().millisecondsSinceEpoch - 2 * 86400000;
     await ahmed.handles.request(await ahmed.handles.find('oona.44'));
     expect(ahmed.handles.stampsMade, 2);
     await receives(oona, ahmed.myRid);

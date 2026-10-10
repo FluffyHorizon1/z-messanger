@@ -213,8 +213,13 @@ was still waiting to be published comes back waiting for you to tap
 * **Someone you accept** gets what any contact gets. Someone you decline or
   block gets nothing back.
 * **The handle service** sees the internet address your phone claims,
-  changes and looks up handles from, and of a lookup only the group of 32 to
-  64 handles it was among, not which.
+  changes and looks up handles from, and of a lookup only up to four groups
+  of handles, the one asked about in one of them — 32 to 64 handles a group
+  by your phone's own count, not the service's — not which. A service that
+  claims handles of its own can make the groups smaller than they look. If
+  it changes who holds a handle you looked up before, without that handle's
+  recovery code, your phone says so and sends nothing; the first time you
+  look a handle up, it cannot tell.
 * **The relay** sees how many requests your handle's inbox gets and when, and
   the address your phone reads it from — the same address your own
   connection comes from. Nothing at the relay or the handle service links the
