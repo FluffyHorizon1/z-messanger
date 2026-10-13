@@ -8300,6 +8300,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// which new rows land and nothing picks them up until the next send.
   bool _fanoutWanted = false;
 
+  /// Set when a drain is asked for while one is already running: a retry
+  /// ([retryGroupFanout]), a transparency conflict lifting ([ktChanged]), a
+  /// reconnect, a 1:1 inner queued while held. The running drain may already
+  /// have stepped over the rows that call wants tried again, so it sweeps the
+  /// queue once more from the front before it stops. Until 2026-10-10 such a
+  /// call returned leaving no trace, and a row the running drain had passed
+  /// waited for the next send or reconnect (`group_fanout_test` 6).
+  bool _fanoutAgain = false;
+
   /// Test hook: hold the queue so an interrupted fan-out can be observed.
   bool debugPauseGroupFanout = false;
 
@@ -8373,7 +8382,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// transient, not per-recipient.
   /// Try the queue again now — after a conflict has been answered, the rows
   /// that were skipped are sendable and there is no reason to wait for a
-  /// reconnect or the next send.
+  /// reconnect or the next send. With a drain already running, that drain
+  /// sweeps once more instead, and this returns at once.
   Future<void> retryGroupFanout() => _drainGroupFanout();
 
   /// Members a group fan-out could not be sent to because the transparency
@@ -8392,8 +8402,16 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       ]..sort();
 
   Future<void> _drainGroupFanout() async {
-    if (_fanoutDraining || debugPauseGroupFanout) return;
+    if (_fanoutDraining) {
+      // Asked for while a drain runs: recorded, so that drain sweeps once
+      // more ([_fanoutAgain]) rather than this call being lost.
+      _fanoutAgain = true;
+      return;
+    }
+    if (debugPauseGroupFanout) return;
     _fanoutDraining = true;
+    // This drain starts from the front: every call before it is served.
+    _fanoutAgain = false;
     try {
       // A cursor over the queue, and whether this sweep of it achieved
       // anything. A sweep that skipped rows and sent nothing must STOP —
@@ -8424,19 +8442,25 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // Empty, but something may have been queued during the query. Only
         // stop once a pass finds nothing AND nothing arrived while looking.
         if (rows.isEmpty) {
+          // A drain asked for while this one ran wants what this sweep
+          // stepped over tried again.
+          final asked = _fanoutAgain;
+          _fanoutAgain = false;
           if (after > 0) {
             // The end of the queue, reached by stepping over rows that could
             // not be sent. Sweep again from the front only if something DID
-            // go this time — a skipped row may now be behind a sent one —
-            // and otherwise stop, because nothing has changed and nothing
-            // will until a conflict is answered or a contact reconnects.
-            final again = sentThisSweep || _fanoutWanted;
+            // go this time — a skipped row may now be behind a sent one — or
+            // a drain was asked for meanwhile, and otherwise stop, because
+            // nothing has changed and nothing will until a conflict is
+            // answered or a contact reconnects: each of those asks for a
+            // drain, and finding this one running is how it was lost.
+            final again = sentThisSweep || _fanoutWanted || asked;
             after = 0;
             sentThisSweep = false;
             if (again) continue;
             return;
           }
-          if (_fanoutWanted) continue;
+          if (_fanoutWanted || asked) continue;
           return;
         }
         var progressed = false;

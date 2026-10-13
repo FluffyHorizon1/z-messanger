@@ -27,9 +27,17 @@
 //      Written apart, a kill between the two leaves a message on screen as
 //      "pending" with nothing queued behind it — never sent, and nothing for
 //      criterion 3 to resume.
+//
+// And since, each with a test of its own:
+//
+//   5. One member in transparency conflict does not wedge every group.
+//   6. A retry asked for during a drain is not lost: the running drain,
+//      which may already have stepped over the row the retry is for, sweeps
+//      the queue once more before it stops.
 @Tags(['integration'])
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -120,6 +128,18 @@ void main() {
     final rows = await svc.vault.db
         .query('outbox', columns: ['id'], where: 'rid = ?', whereArgs: [rid]);
     return rows.length;
+  }
+
+  Future<void> waitUntil(FutureOr<bool> Function() cond,
+      {Duration timeout = const Duration(seconds: 30),
+      required String what}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (!await cond()) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('condition not met: $what');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
   }
 
   test('a large group send returns without waiting for the fan-out', () async {
@@ -325,5 +345,57 @@ void main() {
     expect(await messages(), m0 + 1);
     expect(await queued(), rids.length);
     svc.debugPauseGroupFanout = false;
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('6. a retry asked for during a drain is not lost', () async {
+    // A drain asked for while one ran — `retryGroupFanout`, a transparency
+    // conflict lifting (`ktChanged`), a reconnect — returned at once and
+    // recorded nothing. If the running drain had already stepped over the
+    // row that call was for, and sent nothing else on that sweep, it
+    // stopped, and the row waited for the next send or reconnect. Seen as
+    // group_timers_test 11's copy for Max, held while Ada's own drain ran,
+    // staying in her queue.
+    final svc = await makeClient('again', offline: true);
+    final member = await addPhantom(svc, 'again');
+    Future<int> queuedFor(String rid) async => (await svc.vault.db
+            .query('group_fanout', where: 'rid = ?', whereArgs: [rid]))
+        .length;
+
+    // Nothing drains until the test starts one: the group's invite and the
+    // message are queued, and that one drain works them off.
+    svc.debugPauseGroupFanout = true;
+    final gid = await svc.createGroup('One', [member]);
+    await svc.sendGroupText(gid, 'asked for again mid-drain');
+    expect(await queuedFor(member), 2);
+    final mid = svc.messagesByChat[gid]!
+        .singleWhere((m) => m.body == 'asked for again mid-drain')
+        .mid;
+
+    // The message's row is held, and the hold is the seam at which the
+    // drain is part-way: it is asked about the row once a sweep. The first
+    // sweep sends the invite and steps over the message, so the drain sweeps
+    // again. On that second sweep, with nothing else left to send, the hold
+    // is lifted and a retry asked for — while the drain runs, the row just
+    // stepped over — as an answered conflict asks for one in the field.
+    var asked = 0;
+    svc.debugHoldGroupFanout = (rid, inner) {
+      if (rid != member || inner.mid != mid) return false;
+      if (++asked == 2) {
+        svc.debugHoldGroupFanout = null;
+        unawaited(svc.retryGroupFanout());
+      }
+      return true;
+    };
+    svc.debugPauseGroupFanout = false;
+    await svc.drainGroupFanoutForTest();
+    expect(asked, 2,
+        reason: 'the retry was asked for on the sweep that stepped over the '
+            'row and sent nothing');
+
+    await waitUntil(() async => await queuedFor(member) == 0,
+        what: 'the row the drain had stepped over leaves the queue');
+    final sent = await svc.vault.db.query('outbox',
+        where: 'rid = ? AND mid = ?', whereArgs: [member, mid]);
+    expect(sent, hasLength(1), reason: 'the message is served, once');
   }, timeout: const Timeout(Duration(minutes: 3)));
 }
