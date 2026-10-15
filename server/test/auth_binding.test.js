@@ -38,8 +38,15 @@ process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'z-test-metrics-token';
 //      and a local name presented from a public address;
 //   3. v1 is accepted while RELAY_AUTH_V1 is on and counted every time, and
 //      refused when it is off; the challenge advertises v2 either way;
-//   4. and the frozen v2 vectors verify here, against the same message the
-//      Dart client signs.
+//   4. the frozen v2 vectors verify here, against the same message the
+//      Dart client signs;
+//   5. and a refusal on a connection that dialled a name the relay was not
+//      told — a list missing a name clients dial, which from the outside is
+//      every client failing at once — is counted apart and the name is written
+//      to the log, once an hour per name, quoted so that nothing a presenter
+//      put in the header reaches the log unescaped; a refusal on a name the
+//      relay does know (a replay, a bad signature) is not, since nothing is
+//      missing from the list.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -285,4 +292,76 @@ test('4. the frozen v2 vectors verify against the message the client signs', () 
   for (const n of v.normalization) {
     assert.strictEqual(normalizeAuthority(n.host_header), n.authority, `${n.url}`);
   }
+});
+
+test('5. a refusal on a name the relay was not told is counted apart and named in the log, once', async (t) => {
+  const r = await relay(t);
+  const alice = makeIdentity();
+  const saved = { authorities: CFG.authorities, logLevel: CFG.logLevel };
+  CFG.authorities = [normalizeAuthority('honest.example')];
+  CFG.logLevel = 'info';
+  const lines = [];
+  const realLog = console.log;
+  console.log = (...a) => lines.push(a.map(String).join(' '));
+  t.after(() => {
+    console.log = realLog;
+    CFG.authorities = saved.authorities;
+    CFG.logLevel = saved.logLevel;
+  });
+  const tryAuth = async (signed, headers = {}) => {
+    const c = await open(r.url, headers);
+    const ch = await c.next((f) => f.t === 'challenge');
+    c.send({ t: 'auth', v: 2, pub: alice.rawPub.toString('base64'), sig: signV2(alice, signed, Buffer.from(ch.nonce, 'base64')).toString('base64') });
+    const res = await c.next((f) => f.t === 'ready' || f.t === 'error');
+    c.close();
+    return res.t;
+  };
+  const counts = async () => {
+    const body = await get(r.port, '/metrics');
+    return { refused: metric(body, 'z_auth_v2_refused_total'), unknown: metric(body, 'z_auth_v2_refused_unknown_name_total') };
+  };
+  const unknownNameLines = () => lines.filter((l) => l.includes('is not one of this relay\'s names'));
+
+  // The deployment mistake: the list names the bare domain, the client dials
+  // www. — signs it, and sends it as Host, as every honest client does.
+  const before = await counts();
+  assert.strictEqual(await tryAuth('www.honest.example', { Host: 'www.honest.example' }), 'error', 'a name the relay was not told verifies nothing');
+  let after = await counts();
+  assert.strictEqual(after.refused - before.refused, 1, 'counted as a v2 refusal');
+  assert.strictEqual(after.unknown - before.unknown, 1, 'and apart, as a refusal on a name the relay does not know');
+  assert.strictEqual(unknownNameLines().length, 1, 'the name is written to the log');
+  assert.ok(unknownNameLines()[0].includes('"www.honest.example"'), 'quoted, so the operator reads exactly what clients dial');
+  assert.ok(unknownNameLines()[0].includes('RELAY_AUTHORITIES: honest.example'), 'beside the list it is missing from');
+
+  // Again within the hour: counted every time, logged once per name.
+  assert.strictEqual(await tryAuth('www.honest.example', { Host: 'www.honest.example' }), 'error');
+  after = await counts();
+  assert.strictEqual(after.unknown - before.unknown, 2, 'every refusal on the name is counted');
+  assert.strictEqual(unknownNameLines().length, 1, 'but the log line is not repeated within the hour');
+
+  // A refusal on a name the relay DOES know is a bad signature — a replay,
+  // garbage — and nothing is missing from the list: counted as a refusal,
+  // not as an unknown name, and nothing is logged.
+  assert.strictEqual(await tryAuth('evil.example', { Host: 'honest.example' }), 'error', 'the splice (criterion 2) is still a refusal');
+  const afterReplay = await counts();
+  assert.strictEqual(afterReplay.refused - after.refused, 1);
+  assert.strictEqual(afterReplay.unknown - after.unknown, 0, 'the presented name is ours: nothing to add to the list');
+  assert.strictEqual(unknownNameLines().length, 1, 'and nothing new in the log');
+
+  // The presenter chose the header. The HTTP parser lets no line break or
+  // escape byte through, but it does let a tab and bytes above ASCII: those
+  // reach the log as JSON escapes, never as themselves, and a long name is
+  // cut.
+  const nasty = 'www\t.honest.example';
+  assert.strictEqual(await tryAuth(nasty, { Host: nasty }), 'error');
+  const nastyLines = lines.filter((l) => l.includes('.honest.example"') && l.includes('www\\t'));
+  assert.strictEqual(nastyLines.length, 1, 'the name is logged as a JSON string, the tab as \\t');
+  assert.ok(!nastyLines[0].includes('\t'), 'the tab itself never reaches the log');
+  const long = 'a'.repeat(400) + '.example';
+  assert.strictEqual(await tryAuth(long, { Host: long }), 'error');
+  const longLine = lines.find((l) => l.includes('"aaaa'));
+  assert.ok(longLine && !longLine.includes('a'.repeat(254)), 'cut at 253 characters, the longest host name there is');
+
+  // A known name presented with no Host at all is not an unknown name either.
+  assert.strictEqual(await tryAuth('honest.example'), 'ready', 'the configured name still authenticates');
 });

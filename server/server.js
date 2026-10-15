@@ -367,6 +367,50 @@ function log(...args) {
   }
 }
 
+/**
+ * A v2 authentication was refused on a connection whose Host header named
+ * [presented], and [names] are the names the signature was checked against.
+ * When the presented name is one of them, the signature itself was bad — a
+ * replay, or garbage — and there is nothing to add. When it is NOT, the
+ * likeliest cause by far is a list missing a name clients dial: on
+ * 2026‑10‑15 the public relay was deployed with `RELAY_AUTHORITIES` naming
+ * the bare domain while every client dials the `www.` one, and every login
+ * was `bad_auth` with nothing in the log to say why. So the name is counted
+ * (`z_auth_v2_refused_unknown_name_total`) and written to the log, once an
+ * hour per name and for at most sixteen names, so the operator reads the name
+ * to add. The presenter chose that header, which is why it is never verified
+ * against (P1-16), why it is bounded, and why it is quoted as a JSON string —
+ * the parser lets no line break through, but a tab or a byte above ASCII
+ * reaches the log escaped, never as itself — and cut at the longest host
+ * name there is.
+ */
+const UNKNOWN_NAMES = new Map(); // presented name -> when it was last logged
+const UNKNOWN_NAME_LOG_EVERY_MS = 60 * 60 * 1000;
+const UNKNOWN_NAMES_REMEMBERED = 16;
+function noteUnknownName(presented, names, configured) {
+  if (!presented || names.includes(presented)) return;
+  METRICS.authV2RefusedUnknownNameTotal += 1;
+  const now = Date.now();
+  const last = UNKNOWN_NAMES.get(presented);
+  if (last !== undefined && now - last < UNKNOWN_NAME_LOG_EVERY_MS) return;
+  UNKNOWN_NAMES.delete(presented);
+  if (UNKNOWN_NAMES.size >= UNKNOWN_NAMES_REMEMBERED) {
+    UNKNOWN_NAMES.delete(UNKNOWN_NAMES.keys().next().value); // the oldest
+  }
+  UNKNOWN_NAMES.set(presented, now);
+  const shown = JSON.stringify(presented.slice(0, 253));
+  log(
+    configured
+      ? `v2 authentication refused on a connection that dialled ${shown}, which is not one of this relay's ` +
+          `names (RELAY_AUTHORITIES: ${names.join(', ')}). If clients reach this relay by that name, add it — ` +
+          'every name they dial, the www. form and the bare one alike; a signature is never verified ' +
+          'against a name a connection presents, so until it is listed every login by that name is bad_auth'
+      : `v2 authentication refused on a connection that dialled ${shown}: RELAY_AUTHORITIES is unset and ` +
+          'that is not a loopback/LAN name dialled from a loopback/LAN address. Set RELAY_AUTHORITIES to ' +
+          'every name clients dial'
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Ed25519 verification with raw 32-byte public keys (no dependencies)
 // ---------------------------------------------------------------------------
@@ -686,6 +730,13 @@ const METRICS = {
   // (RELAY_AUTHORITIES is for that), a signature made for another relay,
   // which is the replay the binding exists to stop, or a bad signature.
   authV2RefusedTotal: 0,
+  // Of those, the ones whose connection presented a Host that is none of
+  // this relay's names — a list missing a name clients dial, almost always
+  // (2026‑10‑15: the public relay's list named the bare domain, every client
+  // dials the www. one, and every login was `bad_auth` until it was added).
+  // The Host is never verified against; here it is only counted, and named
+  // in the log so the operator sees which name to add (`noteUnknownName`).
+  authV2RefusedUnknownNameTotal: 0,
   // Sends refused because too many mailboxes were being CREATED at once.
   // Counted apart from the line above because it means something different
   // to an operator: the store is not full, and what was refused was a first
@@ -878,6 +929,8 @@ function renderMetrics(stats, meta = {}) {
   L.push(`z_auth_v1_total ${METRICS.authV1Total}`);
   L.push('# TYPE z_auth_v2_refused_total counter');
   L.push(`z_auth_v2_refused_total ${METRICS.authV2RefusedTotal}`);
+  L.push('# TYPE z_auth_v2_refused_unknown_name_total counter');
+  L.push(`z_auth_v2_refused_unknown_name_total ${METRICS.authV2RefusedUnknownNameTotal}`);
   L.push('# TYPE z_new_mailbox_refused_total counter');
   L.push(`z_new_mailbox_refused_total ${METRICS.newMailboxRefusedTotal}`);
   L.push('# TYPE z_new_mailbox_shared_fallback_total counter');
@@ -3370,8 +3423,15 @@ async function handleFrame(ws, state, coord, frame, pushSender) {
         // Not ours under any configured name: a signature made for another
         // relay (the replay the binding stops), a front that rewrote Host
         // with no RELAY_AUTHORITIES set, or plain garbage — the relay cannot
-        // tell which, and the count is the same signal.
-        if (!ok) METRICS.authV2RefusedTotal += 1;
+        // tell which, and the count is the same signal. What it CAN tell is
+        // whether the connection dialled a name that is none of ours, which
+        // it says in the log and counts apart (`noteUnknownName`): a list
+        // missing a name clients dial looks exactly like this, from every
+        // client at once.
+        if (!ok) {
+          METRICS.authV2RefusedTotal += 1;
+          noteUnknownName(state.authority, names, CFG.authorities.length > 0);
+        }
       } else if (CFG.authV1) {
         ok = verifyEd25519(pub, Buffer.concat([AUTH_CONTEXT, state.nonce]), sig);
         if (ok) METRICS.authV1Total += 1;

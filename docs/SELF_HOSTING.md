@@ -206,6 +206,24 @@ bound form (its challenge lacks `auth: 2`) and says so in Settings → Relay
 server ("relay too old"): **update the relay before the app** on a
 self‑hosted deployment, or the app cannot receive until you do.
 
+**Upgrading a relay to 4.0 or later: list every name, the `www.` one too.**
+The list is matched exactly against what each client dialled, so
+`zmessengers.com` does not cover `www.zmessengers.com`, nor the other way
+round, and a name that is missing refuses every client that dials it with
+`bad_auth`, at once, however new or old their app — no app update helps,
+only the list. The app's default relay address is `wss://www.zmessengers.com`,
+so the public relay's list must hold `www.zmessengers.com` as well as
+`zmessengers.com` (on 2026‑10‑15 it held the bare name alone, and nobody could
+log in until the other was added). The relay says what it needs in two places:
+at boot it prints `v2 authentication verified against: …` — the names it
+will accept, or `RELAY_AUTHORITIES unset` — and on a refusal whose connection
+dialled a name that is none of those it prints that name, quoted, beside the
+list it is missing from, once an hour per name, and counts it
+(`z_auth_v2_refused_unknown_name_total`). A refusal on a name it does know
+is a bad signature (the replay R33 stops) and is counted only. Before you
+deploy, set the list to every name your clients dial; after, read the boot
+line and watch that counter stay at zero.
+
 ## Health & monitoring
 
 `GET /health` returns JSON with liveness only — `{"ok":true,"coordinator":…,
@@ -315,10 +333,12 @@ and who is online copied into the metrics system), and keep it, and its
   something that is not a count — delete it and the next creation starts a
   fresh window.
 - **RelayAuthV2Refused** (`z_auth_v2_refused_total`) — v2 authentications are
-  verifying under none of the relay's names. Almost always a front rewriting
-  the `Host` header: set `RELAY_AUTHORITIES` to the name clients dial (see the
-  authentication note above). A steady low rate with no front change is the
-  replay the binding stops (R33) and needs nothing.
+  verifying under none of the relay's names. Almost always a name missing from
+  `RELAY_AUTHORITIES` — the `www.` form, a new domain — which shows as
+  `z_auth_v2_refused_unknown_name_total` rising with it and the name in the
+  log: add the name (see the authentication note above). Refusals with that
+  second counter still are the replay the binding stops (R33) and need
+  nothing.
 - **KtLogDown / KtLogFull / KtDiskLow / KtHealthUnread** — the transparency
   log. `KtDiskLow` is the one to act on early: **entries never expire**, so the
   disk is a one‑way resource — grow it with lead time (`docs/CAPACITY.md`, the

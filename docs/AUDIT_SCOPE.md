@@ -39,7 +39,7 @@ Three components, one operator‑independent trust story:
 |---|---|---|
 | `protocol/` (`z_protocol`) | pure Dart, ~11.4 k lines in 23 modules, ~11.4 k lines of tests (323, seventeen of them driving a real relay) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader, handles' grammar, labels, records, owner rule, stamps and acknowledgement |
 | `app/` | Flutter (Dart), core ~25.8 k lines (`lib/core/`), UI ~9.3 k lines, 103 test files (~42.5 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
-| `server/` | Node.js, `server.js` ~3 700 lines, ~10.9 k lines of tests (187) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics. **Two code paths, and the Redis one is what the public deployment runs** (`MemoryCoordinator` for a single instance, `RedisCoordinator` for several sharing a RAM‑only store — `render.ha.yaml`); a change to queueing, presence, acknowledgement, flush or push handling has to be read in both |
+| `server/` | Node.js, `server.js` ~3 700 lines, ~11.0 k lines of tests (188) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics. **Two code paths, and the Redis one is what the public deployment runs** (`MemoryCoordinator` for a single instance, `RedisCoordinator` for several sharing a RAM‑only store — `render.ha.yaml`); a change to queueing, presence, acknowledgement, flush or push handling has to be read in both |
 
 Every message is encrypted on a device and decrypted only on the recipient
 devices; the relay sees padded ciphertext addressed to a mailbox id and,
@@ -175,7 +175,9 @@ than bugs we expect.
    from many addresses and from behind a front, the unowned/owned transition,
    the sweep's reconciliation of `z:ub`, and the splice against a configured
    and an unconfigured relay — including a LAN name presented from the
-   internet (`relay_hardening.test.js`, `auth_binding.test.js`).
+   internet, and a refusal on a name the relay was not told being counted
+   apart and named in the log, once an hour, where a refusal on a known name
+   is counted only (`relay_hardening.test.js`, `auth_binding.test.js`).
    Phase 37 added introduction mailboxes (`PROTOCOL.md` §21.6): the `intro`
    flag, a proof of work checked before any store write or creation‑gate
    charge in both coordinators, a 64 KiB envelope limit, one copy of any
@@ -264,7 +266,7 @@ The pieces individually:
 # Protocol library: 323 tests incl. the vector freeze
 cd protocol && dart test
 
-# Relay: 187 tests incl. 28 clean-room vector replays (no shared code)
+# Relay: 188 tests incl. 28 clean-room vector replays (no shared code)
 cd server && npm test
 
 # ML-KEM and ML-DSA values re-derived by unrelated FIPS 203/204 implementations
