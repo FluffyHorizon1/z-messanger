@@ -2022,7 +2022,7 @@ under §14 —
 `queue_full` and `store_full` (§12.4), each carrying the `id` of the `send`
 it answers, and — since phase 37, likewise — `pow_required`, carrying the
 `id`, the `bits` the recipient asks for and the relay's `day`, `bad_intro`
-and `push_refused` (§21.6), and `intro_full` (§21.6) since 2026‑10‑10. A `payload` over the cap is answered `too_large` whatever else
+and `push_refused` (§21.6), and `intro_full` (§21.6) since 2026‑10‑10 — a code a relay may answer and this one no longer does (2026‑10‑15). A `payload` over the cap is answered `too_large` whatever else
 is wrong with the frame: it is the one refusal a client must not retry, so
 it is decided before the recipient is looked at. A `to` that is not a
 routing id (43 characters of `b64url`) is `bad_send` — the relay will not
@@ -4695,10 +4695,21 @@ The relay records the difficulty N for **that connection's own routing id** —
 the frame names none — and answers `intro_ok`. The flag lasts
 `OWNED_TTL_DAYS` (30) from the frame that set it, the lifetime phase 29 gives
 a mailbox's ownership, and the same frame renews that ownership, so a flagged
-mailbox always has the owned caps and its flag never outlives its ownership;
-a later login renews the ownership and not the flag. A client therefore
-sends `intro` after each authentication as the introduction key, and a handle
-nobody drains any more stops being guarded on its own. Repeating the frame
+mailbox always has the owned caps; a later login renews the ownership and
+not the flag. A client therefore sends `intro` after each authentication as
+the introduction key. When the flag lapses it leaves its **shadow** for as
+long again (since 2026‑10‑15): for another `OWNED_TTL_DAYS` the mailbox
+still asks a stamp at the last N, is still held to `INTRO_MAILBOX_BYTES`, is
+still never woken and still holds one copy of an envelope, while the owned
+caps follow the owner list alone — the owner has not been seen for a month,
+so the mailbox is held to the first‑contact caps like any other (§12.4) if
+the owner's logins have lapsed too. An `intro` on a shadow renews it into a
+flag. Without the shadow a handle's mailbox whose flag had lapsed, or whose
+owner's `intro` had been refused, was an ordinary owned mailbox — no stamp
+asked, the 64 MiB owned cap — which anyone who had resolved the handle
+filled for free until an honest stamped request was refused `queue_full`
+(the second review of the handles fixes, 2026‑10‑10). A handle nobody
+drains any more thus stops being guarded two months on. Repeating the frame
 changes nothing; a new N replaces the old. On a connection that has not
 authenticated, or that authenticated with v1 — a signature another relay can
 have drawn out of the device (§12.1) — `intro` is answered
@@ -4711,18 +4722,33 @@ move a flag, so no number of logins pushes one out (until 2026‑10‑10 a relay
 kept them in memory with the owners it remembers, and authenticating
 `OWNED_CAP` throwaway identities stripped them, as an independent review of
 handles found on 2026‑10‑09). The store holds at most `INTRO_CAP` (100 000)
-flags; when it is full a new flag is refused, `error{intro_full}`, and none
-it holds is forgotten to make room, while one it holds is still renewed. The
-frames are paced: past `INTRO_PER_RID_PER_MIN` (6) a minute from one routing
-id, or `INTRO_NEW_PER_IP_PER_MIN` (10) new flags a minute from one address —
-renewing a flag already held does not count — `intro` is answered
-`error{rate_limited}` and the flag stays as it was. In memory the store is
-lost on a restart; with a shared store it is the key `intro:{routingId}`,
-which survives a restart of the relay but not of the store (below).
+entries, flags and shadows; when it is full a new flag is taken and the
+entry least recently renewed is forgotten for it — a shadow before any flag
+— and the relay counts the forgetting (`z_intro_evicted_total`). A renewal
+is the owner's own `intro`, sent on every drain, which no login stands in
+for; so flags nobody renews cycle out first, and what a flood of fresh keys
+can do to an owner is bounded by the cap: the owner's flag goes only once
+`INTRO_CAP` others have been set since its last renewal, and comes back at
+the owner's next drain. (From 2026‑10‑10 to 2026‑10‑15 a full store refused
+a new flag, `error{intro_full}`, and the second review of the handles fixes
+showed what that cost: whoever filled the store once denied every owner the
+new flag a restart made them need, for as long as its flags lived. A relay
+MAY still answer `intro_full` when it cannot hold a flag; this one does not.)
+The frames are paced: past `INTRO_PER_RID_PER_MIN` (6) a minute from one
+routing id, or — only where `CLIENT_IP_HEADER` names the client's address —
+`INTRO_NEW_PER_IP_PER_MIN` (10) new flags a minute from one address, renewing
+a flag already held not counting, `intro` is answered `error{rate_limited}`
+and the flag stays as it was. Behind a front with no such header every
+client is one address, and a pace per address was then one bucket for
+everyone, which whoever flagged fresh keys ten times a minute held against
+every owner; with the header unset the relay paces new flags by nothing but
+the cap. In memory the store is lost on a restart; with a shared store it is
+the key `intro:{routingId}`, which survives a restart of the relay but not of
+the store (below).
 
-**Proof of work.** A `send` to a flagged routing id MUST carry `pow`, the
-`b64url` of a 16‑byte nonce — exactly 22 characters, the canonical encoding —
-such that
+**Proof of work.** A `send` to a flagged routing id — the flag in force or
+in its shadow — MUST carry `pow`, the `b64url` of a 16‑byte nonce — exactly
+22 characters, the canonical encoding — such that
 
 ```
 h = SHA256( utf8("z-intro-pow-v1:") || rid || u32be(day) || SHA256(utf8(payload)) || nonce )
@@ -4757,7 +4783,7 @@ least 16 bits is handed on as below, and any other is ignored. A receipt the
 relay queues itself (§12.5) is asked for none. The relay counts the refusals
 (`z_intro_pow_refused_total`) and the stamped sends it took
 (`z_intro_accepted_total`); `z_intro_mailboxes` is how many mailboxes are
-flagged.
+flagged, shadows included.
 
 **The owner checks the stamp too.** The `msg` (§12.2) that delivers an
 envelope the relay took into a flagged mailbox carries the stamp it was
@@ -4781,20 +4807,23 @@ fewer bits than the difficulty it set, or with a `powDay` that is neither
 the day of its `ts` nor the one before.
 
 **What a restart does to the flags.** A relay that keeps them in memory
-loses every one when its process restarts, which every deploy does. A relay
-with a shared store loses them when the store loses its data: Redis or Valkey
-run with persistence off — as both shipped configurations run it
-(`render.ha.yaml`, `server/docker-compose.ha.yml`) — comes back from its own
-restart empty. Either way a mailbox is unflagged until its owner's next
-`intro`, which its client sends after each authentication as the
-introduction key, so not before the owner's app next drains (§21.8). Until
-then the relay takes sends to it with no stamp, as it would for any mailbox,
-holding them against that mailbox's caps, and delivers them with no `pow`;
-the owner's check above drops them. An honest request loses nothing: its
-client stamps it at the record's difficulty (§21.7), and the stamp travels
-with it to an unflagged mailbox as to a flagged one. The cost of a lost flag
-is the unstamped junk the relay holds until the owner's app drains it and
-drops it.
+loses every one, shadows included, when its process restarts, which every
+deploy does. A relay with a shared store loses them when the store loses its
+data: Redis or Valkey run with persistence off — as both shipped
+configurations run it (`render.ha.yaml`, `server/docker-compose.ha.yml`) —
+comes back from its own restart empty. The shadow is no help here: it is
+kept where the flag is. Either way a mailbox is unflagged until its owner's
+next `intro`, which its client sends after each authentication as the
+introduction key, so not before the owner's app next drains (§21.8); that
+`intro` is a new flag, which nobody can deny the owner (above). Until then
+the relay takes sends to it with no stamp, as it would for any mailbox,
+holding them against that mailbox's caps — the first‑contact caps, since
+its ownership went with the flag — and delivers them with no `pow`; the
+owner's check above drops them. An honest request loses nothing: its client
+stamps it at the record's difficulty (§21.7), and the stamp travels with it
+to an unflagged mailbox as to a flagged one. The cost of a lost flag is the
+unstamped junk the relay holds until the owner's app drains it and drops
+it.
 
 **Size, and copies.** A flagged mailbox refuses a `payload` larger than
 64 KiB — 65 536, counted as the relay charges an envelope less its 256 of

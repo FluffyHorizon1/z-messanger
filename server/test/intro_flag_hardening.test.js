@@ -4,8 +4,8 @@
 // mailbox's flag lived in the RAM owner list and left with it, so
 // authenticating OWNED_CAP throwaway identities stripped it and the mailbox
 // took sends with no stamp; and a restart of a RAM relay strips every flag
-// (PROTOCOL §21.6). Now the flags are a bounded store of their own that
-// refuses a new flag rather than forget one, `intro` frames are paced, and a
+// (PROTOCOL §21.6). Now the flags are a bounded store of their own that no
+// login moves, `intro` frames are paced, and a
 // stamp travels with its envelope to the owner — into a flagged mailbox
 // always, into any other when it is worth 16 bits — so the owner's app checks
 // the work itself, and a flag the relay loses costs an honest request
@@ -21,15 +21,18 @@
 //      envelopes, and the mailbox keeps the owned caps (more than
 //      UNOWNED_MAILBOX_BYTES of stamped requests taken, none of it charged to
 //      the unowned budget);
-//   2. a full flag store (INTRO_CAP) refuses a NEW flag with `intro_full` and
-//      forgets none it holds; a flag it holds is still renewed, its
-//      difficulty changed; once a flag lapses there is room again (in the
-//      Redis path, once the sweep has counted the store);
+//   2. a full flag store (INTRO_CAP) takes a NEW flag and forgets the entry
+//      least recently renewed for it (in the Redis path, at its sweep) —
+//      never refuses one, since whoever filled the store would otherwise
+//      deny every owner a flag after a restart — and a renewal, the owner's
+//      own `intro`, moves a flag to the back of that queue;
 //   3. `intro` frames are paced: past INTRO_PER_RID_PER_MIN in a minute a
 //      routing id is refused `rate_limited` and its flag stays as it was;
-//      past INTRO_NEW_PER_IP_PER_MIN new flags in a minute an address is
+//      with CLIENT_IP_HEADER naming the client address, past
+//      INTRO_NEW_PER_IP_PER_MIN new flags in a minute that address is
 //      refused `rate_limited` while another address still flags, and
-//      renewing a flag it holds does not count;
+//      renewing a flag it holds does not count (without the header there is
+//      no per-address pace: intro_flag_shadow.test.js);
 //   4. an envelope taken into a flagged mailbox reaches the owner with the
 //      stamp it was taken on, `pow`, and the day that stamp was good under,
 //      `powDay` — live and from the flush, a today's and a yesterday's
@@ -401,9 +404,22 @@ test('1b Redis: a flood of throwaway logins leaves a flag', { skip: SKIP_REDIS }
   await floodLeavesTheFlag(h, 100);
 });
 
-// ---- 2. a full flag store refuses a new flag, forgets none -------------------
+// ---- 2. a full flag store forgets the least recently renewed -------------------
 
-async function fullStoreRefuses(h, lapse) {
+/** The store, INTRO_CAP 2, as the owners of A, B and C would see it: a NEW
+ * flag is never refused for the store being full; the entry least recently
+ * renewed goes for it (the second review of the handles fixes, 2026-10-10 —
+ * refusing let whoever filled the store deny every owner a flag after a
+ * restart), and a renewal moves an entry to the back of that queue. `settle`
+ * is what the Redis path needs between a flood and the count: its sweep. */
+async function fullStoreForgetsTheOldest(h, settle) {
+  // The Redis path tells "least recently renewed" by the life each key has
+  // left, at the store's millisecond resolution; so the clock moves on
+  // between one renewal and the next, as it does between two drains.
+  const millisecondsPass = async (n) => {
+    const t = Date.now();
+    await waitUntil(() => Date.now() >= t + n, { what: `${n} ms on the clock` });
+  };
   const a = makeIdentity();
   const b = makeIdentity();
   const c = makeIdentity();
@@ -413,42 +429,39 @@ async function fullStoreRefuses(h, lapse) {
   for (const x of [ac, bc, cc]) assert.strictEqual((await x.auth()).t, 'ready');
   assert.deepStrictEqual(await ac.intro(16), { t: 'intro_ok' });
   assert.deepStrictEqual(await bc.intro(16), { t: 'intro_ok' });
-  // INTRO_CAP is 2: a third, new flag is refused, and neither held one goes.
-  assert.deepStrictEqual(await cc.intro(16), { t: 'error', code: 'intro_full' }, 'a new flag past INTRO_CAP is refused');
-  assert.strictEqual(await flagOf(h, c.rid), 0, 'and not set');
-  assert.strictEqual(await flagOf(h, a.rid), 16);
-  assert.strictEqual(await flagOf(h, b.rid), 16, 'no held flag was forgotten to make room');
-  // A flag it holds is renewed, full or not.
-  assert.deepStrictEqual(await ac.intro(20), { t: 'intro_ok' }, 'renewing a held flag is not refused');
+  await millisecondsPass(3);
+  // A renewal: A is now the more recently renewed of the two.
+  assert.deepStrictEqual(await ac.intro(20), { t: 'intro_ok' }, 'renewing a held flag');
   assert.strictEqual(await flagOf(h, a.rid), 20);
+  await millisecondsPass(3);
+  // INTRO_CAP is 2: a third, new flag is taken, and B, least recently
+  // renewed, is forgotten for it — not A, renewed since.
+  assert.deepStrictEqual(await cc.intro(16), { t: 'intro_ok' }, 'a new flag past INTRO_CAP is taken');
+  await settle();
+  assert.strictEqual(await flagOf(h, c.rid), 16, 'and set');
+  assert.strictEqual(await flagOf(h, b.rid), 0, "B's flag, least recently renewed, went for it");
+  assert.strictEqual(await flagOf(h, a.rid), 20, "A's, renewed since, stands");
   const s = await anonSender(h);
-  assert.deepStrictEqual(await s.deliver('c1', c.rid, SEALED('c1')), sent('c1'), "C's mailbox is not guarded");
-  // When one lapses — B's, the older now that A's was renewed — there is room.
-  await lapse(b.rid);
-  assert.deepStrictEqual(await cc.intro(16), { t: 'intro_ok' }, 'room once a flag has lapsed');
+  assert.ok(isPowRequired(await s.deliver('a1', a.rid, SEALED('a1')), 'a1', 20), "A's mailbox is guarded");
+  assert.deepStrictEqual(await s.deliver('b1', b.rid, SEALED('b1')), sent('b1'), "B's is not, until B's next drain");
+  // B's next drain flags it again — a new flag, so now A, the least recently
+  // renewed, goes.
+  await millisecondsPass(3);
+  assert.deepStrictEqual(await bc.intro(16), { t: 'intro_ok' }, "B's owner flags again");
+  await settle();
+  assert.strictEqual(await flagOf(h, b.rid), 16);
+  assert.strictEqual(await flagOf(h, a.rid), 0, 'A, least recently renewed, went for it');
   assert.strictEqual(await flagOf(h, c.rid), 16);
-  assert.strictEqual(await flagOf(h, b.rid), 0, "B's lapsed");
-  assert.strictEqual(await flagOf(h, a.rid), 20, "and A's still stands");
   for (const x of [ac, bc, cc, s]) x.close();
 }
 
-test('2 RAM: a full flag store refuses a new flag (intro_full) and forgets none', async (t) => {
-  const h = await ram(t, { introCap: 2 });
-  await fullStoreRefuses(h, async (rid) => {
-    // The oldest flag, made older than OWNED_TTL, as time would make it.
-    assert.strictEqual(h.coord.intro.keys().next().value, rid, 'the store is oldest first');
-    h.coord.intro.get(rid).at = 0;
-  });
+test('2 RAM: a full flag store takes a new flag and forgets the one least recently renewed', async (t) => {
+  await fullStoreForgetsTheOldest(await ram(t, { introCap: 2 }), async () => {});
 });
 
-test('2b Redis: a full flag store refuses a new flag (intro_full) and forgets none', { skip: SKIP_REDIS }, async (t) => {
+test('2b Redis: a full flag store takes a new flag and the sweep forgets the one least recently renewed', { skip: SKIP_REDIS }, async (t) => {
   const h = await redis(t, { introCap: 2 });
-  await fullStoreRefuses(h, async (rid) => {
-    await h.raw.del(`intro:${rid}`); // what its TTL does
-    assert.strictEqual(Number(await h.raw.get('z:ic')), 2, 'the count still says two until a sweep');
-    await h.coord.sweep();
-    assert.strictEqual(Number(await h.raw.get('z:ic')), 1, 'the sweep counts the store');
-  });
+  await fullStoreForgetsTheOldest(h, () => h.coord.sweep());
 });
 
 // ---- 3. intro frames are paced -------------------------------------------------
@@ -462,8 +475,8 @@ async function paced(h) {
   assert.deepStrictEqual(await oc.intro(24), { t: 'error', code: 'rate_limited' }, 'the fourth in a minute is refused');
   assert.strictEqual(await flagOf(h, owner.rid), 16, 'and the flag stays as it was');
   oc.close();
-  // Per address: two NEW flags a minute here, keyed on CLIENT_IP_HEADER;
-  // renewing a flag already held does not count.
+  // Per client address, CLIENT_IP_HEADER being set: two NEW flags a minute
+  // here; renewing a flag already held does not count.
   const joined = async (ip) => {
     const id = makeIdentity();
     const c = new Client(h.port, id, { 'x-test-ip': ip });
@@ -486,11 +499,11 @@ async function paced(h) {
 
 const pacedCfg = { introPerRidPerMin: 3, introNewPerIpPerMin: 2, clientIpHeader: 'x-test-ip' };
 
-test('3 RAM: intro frames are paced per routing id, and new flags per address', async (t) => {
+test('3 RAM: intro frames are paced per routing id, and new flags per client address when CLIENT_IP_HEADER names one', async (t) => {
   await paced(await ram(t, pacedCfg));
 });
 
-test('3b Redis: intro frames are paced per routing id, and new flags per address', { skip: SKIP_REDIS }, async (t) => {
+test('3b Redis: intro frames are paced per routing id, and new flags per client address when CLIENT_IP_HEADER names one', { skip: SKIP_REDIS }, async (t) => {
   await paced(await redis(t, pacedCfg));
 });
 

@@ -822,8 +822,8 @@ void main() {
     expect(refused, 20, reason: 'the flag was not lowered to version 1\'s');
   });
 
-  test('7. a relay that will not guard the inbox: the owner is told, and '
-      'still counts every stamp', () async {
+  test('7. a relay that will not guard the inbox: the owner is told when it '
+      'says so, and still counts every stamp', () async {
     final (_, port) = await startRelay(
         {'INTRO_CAP': '1', 'INTRO_PER_RID_PER_MIN': '2'});
     final url = 'ws://127.0.0.1:$port';
@@ -832,21 +832,25 @@ void main() {
     await connected([ann, ben]);
     await claim(ann, 'anninbox.21'); // the one flag this relay holds
     expect(ann.handles.relayUnguarded, isFalse);
-    await claim(ben, 'beninbox.21'); // intro_full
-    expect(ben.handles.relayUnguarded, isTrue,
-        reason: 'a relay holding all the flags it will is not guarding');
+    // A full relay takes a new flag by forgetting the one least recently
+    // renewed — it no longer answers `intro_full` — and tells nobody: Ann's
+    // app still holds the `intro_ok` of her last drain.
+    await claim(ben, 'beninbox.21');
+    expect(ben.handles.relayUnguarded, isFalse,
+        reason: 'a full relay takes the new flag rather than refuse it');
+    expect(ann.handles.relayUnguarded, isFalse);
 
-    // Unguarded, the relay takes a send to Ben's mailbox without a stamp.
-    final own = ben.handles.own!;
+    // Forgotten, Ann's mailbox takes a send without a stamp.
+    final own = ann.handles.own!;
     final xPub = (await handleIntroIdentity(own.introSeed)).xPub;
     final raw = await rawSender(url);
     final (rid, payload) = await stranger(own.introRid, xPub, 'free');
     await raw.send(to: own.introRid, id: newMessageId(), payload: payload);
-    await drainAll(ben);
-    expect(ben.requestsByRid.containsKey(rid), isFalse,
+    await drainAll(ann);
+    expect(ann.requestsByRid.containsKey(rid), isFalse,
         reason: 'the drain still counts the work, and there is none');
 
-    // Ann's frames are paced: the third in a minute is refused.
+    // Ann's frames are paced: the third in a minute is refused, and said.
     await ann.handles.drain();
     await ann.handles.drain();
     expect(ann.handles.relayUnguarded, isTrue,

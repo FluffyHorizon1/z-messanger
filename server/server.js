@@ -197,22 +197,31 @@ const CFG = {
   // contact requests of a few KiB each waiting for the owner's primary device
   // to drain them, not anybody's conversation.
   introMailboxBytes: intEnv('INTRO_MAILBOX_BYTES', 4 * 1024 * 1024),
-  // How many introduction-mailbox flags this relay keeps — a store of their
-  // own. A flag used to live in the RAM owner map and leave with it, so
-  // authenticating OWNED_CAP throwaway identities (free) pushed every flag out
-  // and the mailboxes took sends with no stamp (found by an independent
-  // review of handles, 2026-10-09). Kept apart now, and when full it refuses a NEW flag
-  // (`intro_full`) rather than forget an old one, so nobody unguards a handle
-  // by flagging others; a flag it already holds is renewed. ≈160 bytes a
-  // flag in RAM, its routing id included (measured at 100 000 and 200 000).
+  // How many introduction-mailbox flags this relay keeps, shadows included
+  // (`MemoryCoordinator#intro`) — a store of their own. A flag used to live
+  // in the RAM owner map and leave with it, so authenticating OWNED_CAP
+  // throwaway identities (free) pushed every flag out and the mailboxes took
+  // sends with no stamp (found by an independent review of handles,
+  // 2026-10-09). Kept apart now. When the store is full a NEW flag is taken
+  // in and the flag least recently renewed is forgotten — not refused: the
+  // second review of the handles fixes (2026-10-10) showed that a store that
+  // refused when full let whoever filled it once deny every owner a flag
+  // after a restart for as long as its flags lived. A renewal is the owner's
+  // own `intro`, sent on every drain, so flags nobody renews cycle out first
+  // and what a flood of fresh keys costs its victims is bounded by this cap:
+  // an owner's flag goes only once INTRO_CAP others have been set since it
+  // was last renewed, and comes back at the owner's next drain. ≈160 bytes
+  // a flag in RAM, its routing id included (measured at 100 000 and 200 000).
   introCap: intEnv('INTRO_CAP', 100000),
   // `intro` frames a minute from one routing id (an owner sends one per
-  // connection), and NEW flags a minute from one address — CLIENT_IP_HEADER's
-  // value or the socket address, like phase 29's per-IP budgets — so filling
-  // the flag store takes time as well as identities. Per instance. Behind a
-  // front with CLIENT_IP_HEADER unset every client is one address, so the
-  // second is a relay-wide pace for new flags, which a RAM relay's restart
-  // (every flag new again) is paced at too.
+  // connection), and NEW flags a minute from one client address, so filling
+  // the flag store from one address takes days as well as identities. Per
+  // instance. The second is keyed on CLIENT_IP_HEADER and engages ONLY when
+  // that is set, as MAX_CONNECTIONS_PER_IP does: behind a front with it unset
+  // every client is one address, and one bucket for everyone let one sender
+  // flagging fresh keys deny every honest owner a new flag after a restart
+  // (the second review of the handles fixes, 2026-10-10) — worse than no
+  // bucket, since the cap above bounds the store either way.
   introPerRidPerMin: intEnv('INTRO_PER_RID_PER_MIN', 6),
   introNewPerIpPerMin: intEnv('INTRO_NEW_PER_IP_PER_MIN', 10),
   // Connection caps. The global one is always on. The per-IP one engages only
@@ -714,6 +723,13 @@ const METRICS = {
   // client retrying after a lost `sent`, or a stamp being replayed into
   // copies — which is why nothing is stored or delivered for them.
   introDuplicateTotal: 0,
+  // Introduction-mailbox flags (or their shadows) forgotten to make room for
+  // a new one, the store at INTRO_CAP — the least recently renewed first.
+  // Zero on a relay with fewer handles than the cap; a steady rate is
+  // somebody flagging fresh keys to push owners' flags out, each of which
+  // comes back at its owner's next drain. In Redis mode counted by the
+  // instance whose sweep did the forgetting.
+  introEvictedTotal: 0,
   // First-contact sends refused by an unowned-mailbox limit (P0-4): the
   // per-unowned-mailbox byte cap, the relay-wide unowned budget, or the
   // per-IP unowned rate. All reach the sender as `store_full` (retried), and
@@ -917,9 +933,10 @@ function renderMetrics(stats, meta = {}) {
     L.push('# TYPE z_unowned_max_bytes gauge');
     L.push(`z_unowned_max_bytes ${CFG.unownedStoreBytes}`);
   }
-  // How many mailboxes are flagged as introduction mailboxes (phase 37): times
-  // INTRO_MAILBOX_BYTES, the most handle requests can hold. RAM mode counts
-  // its flags; Redis mode reports what its last sweep counted (absent until
+  // How many mailboxes the relay guards as introduction mailboxes (phase 37),
+  // flags and their shadows — what INTRO_CAP is checked against, and times
+  // INTRO_MAILBOX_BYTES the most handle requests can hold. RAM mode counts
+  // its entries; Redis mode reports what its last sweep counted (absent until
   // then), the same on every instance.
   if (stats.introMailboxes !== undefined) {
     L.push('# TYPE z_intro_mailboxes gauge');
@@ -949,6 +966,8 @@ function renderMetrics(stats, meta = {}) {
   L.push(`z_intro_accepted_total ${METRICS.introAcceptedTotal}`);
   L.push('# TYPE z_intro_duplicate_total counter');
   L.push(`z_intro_duplicate_total ${METRICS.introDuplicateTotal}`);
+  L.push('# TYPE z_intro_evicted_total counter');
+  L.push(`z_intro_evicted_total ${METRICS.introEvictedTotal}`);
   L.push('# TYPE z_slow_reader_closed_total counter');
   L.push(`z_slow_reader_closed_total ${METRICS.slowReaderClosedTotal}`);
   L.push('# TYPE z_connections_refused_total counter');
@@ -1157,15 +1176,28 @@ class MemoryCoordinator {
      */
     this.owned = new Map();
     /**
-     * Introduction mailboxes (phase 37): routing id -> {bits, at}, the
-     * difficulty its owner set and when, oldest first. A store of its own,
-     * apart from the owner map: bounded by INTRO_CAP, which refuses a new flag
-     * rather than evict one, and by a flag's lifetime, OWNED_TTL from the
-     * owner's last `intro` frame — never by logins, so no flood of them can
-     * strip a flag (an independent review of handles, 2026-10-09). A flagged
-     * mailbox has the owned caps while it is flagged (`_owns`). A restart
-     * loses the flags with the queue; what then guards the owner's inbox is
-     * the stamp the owner's app checks on every envelope (`entryToFrame`).
+     * Introduction mailboxes (phase 37): routing id -> {bits, at, shadow},
+     * the difficulty its owner set, when the owner last sent `intro`, and
+     * whether the flag has lapsed into its shadow; least recently renewed
+     * first. A store of its own, apart from the owner map: bounded by
+     * INTRO_CAP, past which the least recently renewed entry is forgotten
+     * for a new one, and by an entry's lifetime — never by logins, so no
+     * flood of them can strip a flag (an independent review of handles,
+     * 2026-10-09).
+     *
+     * An entry is the FLAG for OWNED_TTL from the owner's last `intro`: the
+     * mailbox asks a stamp at `bits`, is held to INTRO_MAILBOX_BYTES, holds
+     * one copy of an envelope, is never woken, and has the owned caps
+     * (`_owns`). For OWNED_TTL after that it is the flag's SHADOW: the same
+     * except the owned caps, which the owner list alone decides — so a
+     * mailbox whose owner has not been seen for a month is held to the
+     * first-contact caps like any other, and still takes only stamped mail.
+     * Without the shadow a lapsed flag opened the handle's public mailbox
+     * for free (the second review of the handles fixes, 2026-10-10). An
+     * `intro` on a shadow renews it into a flag; it is not a new flag. A
+     * restart loses flags and shadows with the queue; what then guards the
+     * owner's inbox is the stamp the owner's app checks on every envelope
+     * (`entryToFrame`).
      */
     this.intro = new Map();
     /** Bytes held across every UNOWNED mailbox: the relay-wide unowned budget
@@ -1190,23 +1222,40 @@ class MemoryCoordinator {
     this.owned.set(rid, now);
     if (!was) {
       // A flagged mailbox was owned for its caps already (`_owns`).
-      const q = this.intro.has(rid) ? null : this.queues.get(rid);
+      const q = this._flagged(rid) ? null : this.queues.get(rid);
       if (q) this.unownedBytes = Math.max(0, this.unownedBytes - q.bytes);
       this._trimOwned(now);
     }
     return was;
   }
 
+  /** Whether [rid]'s flag is in force — set or renewed within OWNED_TTL, as
+   * the last sweep saw it — rather than lapsed into its shadow or absent. */
+  _flagged(rid) {
+    const f = this.intro.get(rid);
+    return !!f && !f.shadow;
+  }
+
   /**
    * Whether [rid]'s mailbox has the owned caps: its routing id authenticated
-   * here lately (the owner list), or it is flagged as an introduction mailbox
-   * — whose flag is kept apart from that list (an independent review of
-   * handles, 2026-10-09), so a flood of logins that pushes the owner out of
-   * the list leaves the mailbox both guarded and owned. Every unowned-byte
-   * transition goes through this.
+   * here lately (the owner list), or its flag is in force — the flag is kept
+   * apart from that list (an independent review of handles, 2026-10-09), so
+   * a flood of logins that pushes the owner out of the list leaves the
+   * mailbox both guarded and owned. A flag's shadow does not count: the
+   * owner has not been seen for OWNED_TTL. Every unowned-byte transition
+   * goes through this.
    */
   _owns(rid) {
-    return this.owned.has(rid) || this.intro.has(rid);
+    return this.owned.has(rid) || this._flagged(rid);
+  }
+
+  /** [rid]'s flag has just stopped counting for the owned caps (it lapsed
+   * into its shadow, or was forgotten): what the mailbox holds goes back into
+   * the unowned total unless the owner list still has it — the counterpart
+   * of `claimOwner`, as `_trimOwned` is for the list. */
+  _unflag(rid) {
+    const q = this.owned.has(rid) ? null : this.queues.get(rid);
+    if (q) this.unownedBytes += q.bytes;
   }
 
   /**
@@ -1218,8 +1267,8 @@ class MemoryCoordinator {
     for (const [rid, at] of this.owned) {
       if (this.owned.size <= CFG.ownedCap && now - at <= CFG.ownedTtlMs) break;
       this.owned.delete(rid);
-      // Its flag, if it has one, stays — and keeps the mailbox owned (`_owns`).
-      const q = this.intro.has(rid) ? null : this.queues.get(rid);
+      // Its flag, if one is in force, stays — and keeps the mailbox owned.
+      const q = this._flagged(rid) ? null : this.queues.get(rid);
       if (q) this.unownedBytes += q.bytes;
     }
   }
@@ -1234,40 +1283,65 @@ class MemoryCoordinator {
    * The flags are a store of their own, bounded by INTRO_CAP and by their
    * lifetime and nothing else: a login does not move them, so no number of
    * logins pushes one out (they used to live in the owner map and leave
-   * with it, as an independent review of handles found on 2026-10-09). A flag already held is
-   * renewed; a NEW one is refused when the store is full ('full') rather than
-   * another forgotten, and when [ipOver] says the address has used its minute
-   * of new flags ('limited'). Resolves to 'set', 'refreshed', 'full' or
-   * 'limited'.
+   * with it, as an independent review of handles found on 2026-10-09). A
+   * flag already held — in force or in its shadow — is renewed. A NEW one is
+   * taken in when the store is full by forgetting the entry least recently
+   * renewed (the head of the map: a shadow before any flag), counted in
+   * z_intro_evicted_total; refusing it instead let whoever filled the store
+   * deny every owner a flag after a restart (the second review of the
+   * handles fixes, 2026-10-10). A NEW one is refused ('limited') when
+   * [ipOver] says the client address has used its minute of new flags.
+   * Resolves to 'set', 'refreshed' or 'limited'.
    */
   setIntro(rid, bits, now = Date.now(), { ipOver = false } = {}) {
-    this._trimIntro(now); // what has lapsed makes room first
+    this._trimIntro(now); // what has lapsed is settled first
     const held = this.intro.has(rid);
     if (!held) {
       if (ipOver) return 'limited';
-      if (this.intro.size >= CFG.introCap) return 'full';
+      while (this.intro.size >= CFG.introCap) {
+        const oldest = this.intro.keys().next().value;
+        this._forgetIntro(oldest);
+        METRICS.introEvictedTotal += 1;
+      }
     }
-    this.claimOwner(rid, now);
+    this.claimOwner(rid, now); // with the entry as it was, so the bytes settle once
     this.intro.delete(rid); // re-inserted below: newest last
-    this.intro.set(rid, { bits, at: now });
+    this.intro.set(rid, { bits, at: now, shadow: false });
     this.pushTokens.delete(rid);
     return held ? 'refreshed' : 'set';
   }
 
-  /** The difficulty [rid]'s owner flagged it with, or 0 if it is not flagged. */
+  /** The difficulty [rid]'s owner flagged it with, in force or in its
+   * shadow, or 0 if the mailbox asks no stamp. */
   introBits(rid, now = Date.now()) {
     const f = this.intro.get(rid);
-    return f && now - f.at <= CFG.ownedTtlMs ? f.bits : 0;
+    return f && now - f.at <= 2 * CFG.ownedTtlMs ? f.bits : 0;
   }
 
-  /** Forgets flags past OWNED_TTL from their last `intro` (oldest first); a
-   * mailbox the owner list no longer has goes back to the unowned caps. */
+  /** Drops [rid]'s entry, flag or shadow, settling the unowned total if the
+   * flag was in force. */
+  _forgetIntro(rid) {
+    const f = this.intro.get(rid);
+    if (!f) return;
+    this.intro.delete(rid);
+    if (!f.shadow) this._unflag(rid);
+  }
+
+  /** Walks the entries least recently renewed first: a flag past OWNED_TTL
+   * from its last `intro` lapses into its shadow, and the mailbox is owned
+   * by the owner list alone from then on; a shadow past another OWNED_TTL is
+   * forgotten. Stops at the first flag still in force, since every entry
+   * after it was renewed later. */
   _trimIntro(now = Date.now()) {
     for (const [rid, f] of this.intro) {
-      if (now - f.at <= CFG.ownedTtlMs) break;
-      this.intro.delete(rid);
-      const q = this.owned.has(rid) ? null : this.queues.get(rid);
-      if (q) this.unownedBytes += q.bytes;
+      const age = now - f.at;
+      if (age <= CFG.ownedTtlMs) break;
+      if (age > 2 * CFG.ownedTtlMs) {
+        this._forgetIntro(rid);
+      } else if (!f.shadow) {
+        f.shadow = true;
+        this._unflag(rid);
+      }
     }
   }
 
@@ -2104,36 +2178,33 @@ return 1`;
 
 // Flags a routing id as an introduction mailbox (phase 37, PROTOCOL §21.6).
 // KEYS = owned:{rid}, intro:{rid}, push:{rid}; ARGV = the difficulty, the
-// ownership TTL in ms. One script, so the three happen together: the flag is
-// written beside the ownership the v2-authenticated socket proves, with the
-// same TTL, so a flagged mailbox always has the owned caps and the flag never
-// outlives its ownership (a later login extends only `owned:`); and any push
-// token goes, since an introduction mailbox is never woken. The flag is one
-// number under a key named by the routing id — the shape of `owned:`. No
-// flags: a store at its memory limit refuses it whole. The flag is written
-// FIRST: Redis 7.0 does not freeze the clock inside a script, so a key set
-// later in it can expire a millisecond later and never earlier — measured,
-// two PX writes 20 000 commands apart in one script expired at different
-// times in 300 of 300 runs, and with nothing between them the flag written
-// second outlived its ownership whenever a millisecond ended in between.
-// KEYS[4] = z:ic, how many flags the store holds — one integer, incremented by
-// each new flag and recounted by every sweep, as z:ub is; ARGV gains
-// [3] INTRO_CAP and [4] whether the address has used its minute of new flags.
-// A flag already held is renewed whatever they say; a NEW one is refused
-// ('limited', 'full') rather than any other forgotten (an independent
-// review of handles, 2026-10-09). Answers 'set', 'refreshed', 'limited' or
-// 'full'.
+// ownership TTL in ms, and whether the client address has used its minute of
+// new flags. One script, so the three happen together: the flag is written
+// beside the ownership the v2-authenticated socket proves, so a flagged
+// mailbox has the owned caps; and any push token goes, since an introduction
+// mailbox is never woken. The flag is one number under a key named by the
+// routing id — the shape of `owned:`. No flags: a store at its memory limit
+// refuses it whole.
+//
+// The flag lives TWICE the ownership TTL. For the first OWNED_TTL it is the
+// flag, beside its ownership (a later login extends only `owned:`); for the
+// second it is the flag's shadow — `intro:` without `owned:` — and the push
+// script holds the mailbox to the first-contact caps as any unowned mailbox,
+// and still to the stamp and to INTRO_MAILBOX_BYTES, so a flag's lapse never
+// opens the handle's public mailbox for free (the second review of the
+// handles fixes, 2026-10-10). A flag already held, shadow or not, is renewed
+// whatever the address has spent; a NEW one is refused ('limited') when the
+// address has used its minute. There is no cap here: the sweep forgets the
+// least recently renewed past INTRO_CAP (`sweep`), since a store that
+// refused when full let whoever filled it deny every owner a flag after a
+// restart. Answers 'set', 'refreshed' or 'limited'.
 const REDIS_INTRO_LUA = `#!lua
 local held = redis.call('EXISTS', KEYS[2]) == 1
-if not held then
-  if ARGV[4] == '1' then return 'limited' end
-  if tonumber(redis.call('GET', KEYS[4]) or '0') >= tonumber(ARGV[3]) then return 'full' end
-end
-redis.call('SET', KEYS[2], ARGV[1], 'PX', ARGV[2])
+if not held and ARGV[3] == '1' then return 'limited' end
+redis.call('SET', KEYS[2], ARGV[1], 'PX', tonumber(ARGV[2]) * 2)
 redis.call('SET', KEYS[1], '1', 'PX', ARGV[2])
 redis.call('DEL', KEYS[3])
 if held then return 'refreshed' end
-redis.call('INCR', KEYS[4])
 return 'set'`;
 
 /**
@@ -2323,7 +2394,7 @@ class RedisCoordinator {
     this.chan = `z:inst:${this.id}`;
     for (const c of [this.cmd, this.sub, this.pub]) c.on('error', () => {});
     this.cmd.defineCommand('zQueuePush', { numberOfKeys: 6, lua: REDIS_PUSH_LUA });
-    this.cmd.defineCommand('zIntro', { numberOfKeys: 4, lua: REDIS_INTRO_LUA });
+    this.cmd.defineCommand('zIntro', { numberOfKeys: 3, lua: REDIS_INTRO_LUA });
     this.cmd.defineCommand('zQueueRemove', { numberOfKeys: 3, lua: REDIS_REMOVE_LUA });
     this.cmd.defineCommand('zQueueRemoveLegacy', { numberOfKeys: 3, lua: REDIS_REMOVE_LEGACY_LUA });
     this.cmd.defineCommand('zQueueDropDangling', { numberOfKeys: 3, lua: REDIS_DROP_DANGLING_LUA });
@@ -2460,19 +2531,11 @@ class RedisCoordinator {
    * see REDIS_INTRO_LUA, and MemoryCoordinator#setIntro for what it answers.
    * Survives a relay restart: it is a store key. `now` is the RAM path's. */
   async setIntro(rid, bits, now, { ipOver = false } = {}) {
-    return this.cmd.zIntro(
-      `owned:${rid}`,
-      `intro:${rid}`,
-      `push:${rid}`,
-      'z:ic',
-      String(bits),
-      String(CFG.ownedTtlMs),
-      String(CFG.introCap),
-      ipOver ? '1' : '0'
-    );
+    return this.cmd.zIntro(`owned:${rid}`, `intro:${rid}`, `push:${rid}`, String(bits), String(CFG.ownedTtlMs), ipOver ? '1' : '0');
   }
 
-  /** The difficulty [rid]'s owner flagged it with, or 0 if it is not flagged. */
+  /** The difficulty [rid]'s owner flagged it with, in force or in its
+   * shadow, or 0 if the mailbox asks no stamp. */
   async introBits(rid) {
     return Number(await this.cmd.get(`intro:${rid}`)) || 0;
   }
@@ -2997,11 +3060,11 @@ class RedisCoordinator {
     }
     try {
       // How many mailboxes are flagged as introduction mailboxes (phase 37),
-      // for z_intro_mailboxes: counted here, as z:ub is, because a flag goes
-      // on its own TTL and no live counter could follow it. A count of keys,
-      // never a list of them, and approximate as a gauge may be: SCAN can
-      // return a key twice while the store resizes, and miss one set mid-walk
-      // until the next sweep.
+      // flags and their shadows, for z_intro_mailboxes: counted here, as z:ub
+      // is, because a flag goes on its own TTL and no live counter could
+      // follow it. A count of keys, never a list of them, and approximate as
+      // a gauge may be: SCAN can return a key twice while the store resizes,
+      // and miss one set mid-walk until the next sweep.
       let flagged = 0;
       let cursor = '0';
       do {
@@ -3010,19 +3073,52 @@ class RedisCoordinator {
         flagged += keys.length;
       } while (cursor !== '0');
       this.lastIntroMailboxes = flagged;
-      // And the count INTRO_CAP is checked against (z:ic): each new flag adds
-      // one, and a flag's TTL takes none off, so it is set to this count here.
-      // Between sweeps it can only run high, which refuses a new flag early
-      // rather than admit more; a flag set while the walk runs can be missed
-      // until the next sweep, so the cap is as approximate as the gauge. A TTL
-      // a few intervals long, so it clears if sweeps stop.
-      await this.cmd.set('z:ic', String(flagged), 'PX', Math.max(60000, CFG.sweepIntervalMs * 5));
+      // INTRO_CAP, in this coordinator: the RAM path forgets the flag least
+      // recently renewed as each new one past the cap arrives; here the sweep
+      // does it, so the store can run past the cap by what one interval
+      // brings, and nothing in the store is ever refused a flag for being
+      // full (the second review of the handles fixes, 2026-10-10). The least
+      // recently renewed is the key with the least life left — each `intro`
+      // sets the TTL afresh — so a second walk reads every key's TTL, in
+      // batches of a thousand on one pipeline, and the excess goes from the
+      // shortest-lived up: shadows before flags, and never a flag renewed
+      // since INTRO_CAP others were. Only under that excess, which an honest
+      // relay never reaches, is anything but the count read.
+      if (flagged > CFG.introCap) await this._evictIntro(flagged - CFG.introCap);
     } catch {
       // Unreadable this pass: the gauge keeps its last value.
     } finally {
       this.sweeping = false;
     }
     this.unownedIp.prune();
+  }
+
+  /** Forgets the [excess] introduction-mailbox entries with the least life
+   * left (see `sweep`); each counted in z_intro_evicted_total. */
+  async _evictIntro(excess) {
+    const life = new Map(); // key -> ms left; a key SCAN repeats is read once
+    let cursor = '0';
+    do {
+      const [next, keys] = await this.cmd.scan(cursor, 'MATCH', 'intro:*', 'COUNT', '1000');
+      cursor = next;
+      const fresh = keys.filter((k) => !life.has(k));
+      if (fresh.length === 0) continue;
+      const p = this.cmd.pipeline();
+      for (const k of fresh) p.pttl(k);
+      const ttls = await p.exec();
+      fresh.forEach((k, i) => {
+        const [err, ms] = ttls[i];
+        if (!err && typeof ms === 'number' && ms >= 0) life.set(k, ms);
+      });
+    } while (cursor !== '0');
+    const victims = [...life.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, excess)
+      .map(([k]) => k);
+    for (let i = 0; i < victims.length; i += 1000) {
+      const gone = await this.cmd.del(...victims.slice(i, i + 1000));
+      METRICS.introEvictedTotal += Number(gone) || 0;
+    }
   }
 
   /**
@@ -3329,10 +3425,11 @@ function createServer(opts = {}) {
   // instance's sockets.
   const connsByIp = new Map();
   // `intro` frames a minute per routing id, and new flags a minute per
-  // address (an independent review of handles, 2026-10-09): per-key minute
-  // budgets of the per-IP kind, charged one a frame. RAM, per instance, like
-  // the per-IP budgets — nothing keyed by an address goes into the shared
-  // store.
+  // client address — the second only when CLIENT_IP_HEADER is set (an
+  // independent review of handles, 2026-10-09; the second review of its
+  // fixes, 2026-10-10): per-key minute budgets of the per-IP kind, charged
+  // one a frame. RAM, per instance, like the per-IP budgets — nothing keyed
+  // by an address goes into the shared store.
   const limits = {
     introPerRid: new IpByteBudget(CFG.introPerRidPerMin),
     introNewPerIp: new IpByteBudget(CFG.introNewPerIpPerMin),
@@ -3780,25 +3877,24 @@ async function handleFrame(ws, state, coord, frame, pushSender, limits) {
       }
       // Paced (an independent review of handles, 2026-10-09): this routing id's
       // frames a minute, and — decided where the flag is, since only a NEW
-      // flag counts — the address's new flags a minute. Refused
-      // `rate_limited`; a flag already held stays as it was.
+      // flag counts — the client address's new flags a minute, when
+      // CLIENT_IP_HEADER names one (with it unset the bucket was everyone's,
+      // and whoever spent it denied every owner a flag after a restart: the
+      // second review of the handles fixes, 2026-10-10). Refused
+      // `rate_limited`; a flag already held stays as it was. A store at
+      // INTRO_CAP refuses nothing: it forgets the flag least recently renewed.
       if (limits.introPerRid.over(state.rid)) {
         sendJson(ws, { t: 'error', code: 'rate_limited' });
         return;
       }
       limits.introPerRid.charge(state.rid, 1);
-      const r = await coord.setIntro(state.rid, bits, Date.now(), { ipOver: limits.introNewPerIp.over(state.ip) });
+      const perAddress = !!CFG.clientIpHeader;
+      const r = await coord.setIntro(state.rid, bits, Date.now(), { ipOver: perAddress && limits.introNewPerIp.over(state.ip) });
       if (r === 'limited') {
         sendJson(ws, { t: 'error', code: 'rate_limited' });
         return;
       }
-      if (r === 'full') {
-        // INTRO_CAP flags held: a new one is refused rather than another
-        // forgotten, so nobody unguards a handle by flagging others.
-        sendJson(ws, { t: 'error', code: 'intro_full' });
-        return;
-      }
-      if (r === 'set') limits.introNewPerIp.charge(state.ip, 1);
+      if (r === 'set' && perAddress) limits.introNewPerIp.charge(state.ip, 1);
       sendJson(ws, { t: 'intro_ok' });
       break;
     }

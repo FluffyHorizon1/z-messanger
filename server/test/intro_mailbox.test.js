@@ -33,9 +33,10 @@
 //      delivered from a connection that never authenticated, with no sender,
 //      and counted; the stamp is kept with the envelope and handed to the
 //      owner as `pow`, with `powDay` the day it was good under;
-//   7. Redis: the flag survives a relay restart — a store key with the
-//      ownership TTL — and once an instance has queued for the mailbox, the
-//      push script itself refuses a stamp-less send without writing anything;
+//   7. Redis: the flag survives a relay restart — a store key with twice the
+//      ownership TTL, the flag and then its shadow — and once an instance has
+//      queued for the mailbox, the push script itself refuses a stamp-less
+//      send without writing anything;
 //   8. push: a flagged identity's `push-register` is refused, a token it held
 //      is deleted when it flags, and a send to it never wakes it;
 //   9. a flagged mailbox is capped at INTRO_MAILBOX_BYTES below the owned cap
@@ -43,9 +44,11 @@
 //      for its owner is asked for no stamp;
 //  10. RAM: flags are a store of their own — OWNED_CAP forgetting the least
 //      recently authenticated owner leaves its flag, and the mailbox keeps
-//      the owned caps; INTRO_CAP refuses a new flag and forgets none — and
+//      the owned caps; INTRO_CAP takes a new flag and forgets the least
+//      recently renewed, the unowned total settled once either way — and
 //      lapse OWNED_TTL after the owner's last `intro`, though the owner has
-//      logged in since;
+//      logged in since, into a shadow that asks the same stamp for as long
+//      again;
 //  11. nothing new is logged: flagging, refusing and accepting stamped sends
 //      and refusing push write no log line;
 //  12. /metrics carries z_intro_pow_refused_total, z_intro_accepted_total,
@@ -764,12 +767,15 @@ test('7 Redis: the flag survives a relay restart, and the push script refuses a 
 
   const a = await instance('instA');
   const owner = await flaggedOwner(a, 16);
-  // A store key with the ownership TTL, written beside the ownership itself.
+  // A store key written beside the ownership itself, with twice its TTL:
+  // the flag for OWNED_TTL, then its shadow for as long again
+  // (intro_flag_shadow.test.js).
   const pttl = await raw.pttl(`intro:${owner.rid}`);
-  assert.ok(pttl > CFG.ownedTtlMs - 60000 && pttl <= CFG.ownedTtlMs, `intro: carries OWNED_TTL (${pttl} ms)`);
+  assert.ok(pttl > 2 * CFG.ownedTtlMs - 60000 && pttl <= 2 * CFG.ownedTtlMs, `intro: carries twice OWNED_TTL (${pttl} ms)`);
   assert.strictEqual(await raw.get(`intro:${owner.rid}`), '16', 'a routing id and a number');
   const expiresAt = (k) => raw.call('PEXPIRETIME', k).then(Number);
-  assert.ok((await expiresAt(`owned:${owner.rid}`)) >= (await expiresAt(`intro:${owner.rid}`)), 'the flag never outlives its ownership');
+  const outlives = (await expiresAt(`intro:${owner.rid}`)) - (await expiresAt(`owned:${owner.rid}`));
+  assert.ok(Math.abs(outlives - CFG.ownedTtlMs) <= 1000, `the flag outlives its ownership by OWNED_TTL, as its shadow (${outlives} ms)`);
   // Instance A goes away entirely; B starts against the same store.
   shut(a.srv);
   await a.coord.close();
@@ -911,7 +917,7 @@ test('9b Redis: a flagged mailbox is capped at INTRO_MAILBOX_BYTES; a receipt fo
 
 // ---- 10. RAM: the flags are bounded ------------------------------------------
 
-test('10 RAM: flags are a store of their own — logins never move them, INTRO_CAP refuses a new one — and lapse OWNED_TTL after the last intro', async (t) => {
+test('10 RAM: flags are a store of their own — logins never move them, INTRO_CAP forgets the least recently renewed — and lapse OWNED_TTL after the last intro into a shadow', async (t) => {
   const restore = withCfg(t, { ownedCap: 2, ownedTtlMs: 1000, introCap: 2 });
   t.after(restore);
   const c = new MemoryCoordinator();
@@ -925,23 +931,26 @@ test('10 RAM: flags are a store of their own — logins never move them, INTRO_C
   assert.deepStrictEqual([...c.owned.keys()], ['B', 'C']);
   assert.deepStrictEqual([...c.intro.keys()], ['A', 'B'], "A's flag stays when the owner list lets A go");
   assert.strictEqual(c.introBits('A', 20), 16);
-  // Past INTRO_CAP of 2 a NEW flag is refused and none is forgotten for it; a
-  // held one is renewed, newest last; an address over its minute of new flags
-  // is refused a new one and still renews.
-  for (let i = 0; i < 10; i++) assert.strictEqual(c.setIntro(`F${i}`, 16, 30 + i), 'full');
-  assert.deepStrictEqual([...c.intro.keys()], ['A', 'B'], 'none forgotten');
-  assert.strictEqual(c.setIntro('A', 20, 50), 'refreshed');
-  assert.strictEqual(c.setIntro('G', 16, 60, { ipOver: true }), 'limited');
-  assert.strictEqual(c.setIntro('A', 21, 60, { ipOver: true }), 'refreshed');
+  // A held flag is renewed, newest last; an address over its minute of new
+  // flags is refused a new one and still renews.
+  assert.strictEqual(c.setIntro('A', 20, 30), 'refreshed');
+  assert.strictEqual(c.setIntro('G', 16, 40, { ipOver: true }), 'limited');
+  assert.strictEqual(c.setIntro('A', 21, 40, { ipOver: true }), 'refreshed');
   assert.deepStrictEqual([...c.intro.keys()], ['B', 'A']);
-  assert.strictEqual(c.introBits('A', 60), 21);
-  // Once the oldest lapses there is room for a new one.
-  assert.strictEqual(c.setIntro('G', 16, 1011), 'set');
-  assert.deepStrictEqual([...c.intro.keys()], ['A', 'G'], "B's lapsed and made room");
+  assert.strictEqual(c.introBits('A', 40), 21);
+  // Past INTRO_CAP of 2 a NEW flag is taken and the least recently renewed
+  // is forgotten for it — never refused (the second review of the handles
+  // fixes, 2026-10-10): B goes for F0, A for F1, F0 for F2, and so on.
+  for (let i = 0; i < 4; i++) assert.strictEqual(c.setIntro(`F${i}`, 16, 50 + i), 'set');
+  assert.deepStrictEqual([...c.intro.keys()], ['F2', 'F3'], 'the two most recently renewed remain');
+  assert.strictEqual(c.setIntro('F2', 16, 60), 'refreshed');
+  assert.strictEqual(c.setIntro('H', 16, 70), 'set');
+  assert.deepStrictEqual([...c.intro.keys()], ['F2', 'H'], 'a renewal moves an entry to the back of the queue to be forgotten');
   // While flagged a mailbox has the owned caps, out of the owner list or not:
   // what it holds is no part of the unowned budget — leaving the list or
-  // coming back to it moves nothing — until its flag lapses with the owner
-  // list no longer holding it. U is a mailbox nobody owns, there to show it.
+  // coming back to it moves nothing — until its flag lapses into its shadow
+  // with the owner list no longer holding it, or is forgotten for a new one.
+  // U is a mailbox nobody owns, there to show it.
   const e = new MemoryCoordinator();
   const env = (seq, size) => ({ seq, kind: 'msg', id: `x${seq}`, from: null, payload: 'zs1.x', ts: 0, size });
   e.setIntro('A', 16, 0);
@@ -959,18 +968,49 @@ test('10 RAM: flags are a store of their own — logins never move them, INTRO_C
   assert.deepStrictEqual([...e.owned.keys()], ['D', 'E'], 'out again');
   assert.strictEqual(e.unownedBytes, 500);
   e._trimIntro(1001);
-  assert.strictEqual(e.unownedBytes, 1500, 'its flag lapsed: unowned again');
+  assert.ok(e.intro.get('A').shadow, 'its flag lapsed into its shadow');
+  assert.strictEqual(e.unownedBytes, 1500, 'unowned again');
+  assert.strictEqual(e.introBits('A', 1001), 16, 'which still asks the stamp');
+  assert.strictEqual(e.setIntro('A', 16, 1500), 'refreshed', "the owner's intro renews a shadow");
+  assert.strictEqual(e.unownedBytes, 500, 'claiming the mailbox, so what it holds is settled');
+  assert.ok(!e.intro.get('A').shadow && e.owned.has('A'));
+  e.claimOwner('F', 1501);
+  e.claimOwner('G', 1502);
+  assert.deepStrictEqual([...e.owned.keys()], ['F', 'G'], 'A out of the list once more');
+  assert.strictEqual(e.unownedBytes, 500, 'the renewed flag owns it');
+  // Forgotten for a new flag while in force: unowned again, settled once.
+  assert.strictEqual(e.setIntro('N1', 16, 1600), 'set');
+  assert.strictEqual(e.setIntro('N2', 16, 1601), 'set');
+  assert.deepStrictEqual([...e.intro.keys()], ['N1', 'N2'], 'A forgotten for N2');
+  assert.strictEqual(e.unownedBytes, 1500, "A's bytes back in the unowned total");
   e._removeKey('A', e.queues.get('A').entries[0].key);
   assert.strictEqual(e.unownedBytes, 500, 'and settled when what it held goes');
-  // A flag lapses OWNED_TTL after its last `intro`, though its owner logged
-  // in since (a login refreshes ownership, not the flag).
+  // A shadow forgotten for a new flag settles nothing (it was unowned
+  // already): N1 lapses into its shadow with N1 off the owner list, then goes.
+  assert.ok(e._enqueue('N1', env(3, 700)));
+  assert.strictEqual(e.unownedBytes, 500, 'N1 is owned by its flag');
+  e._trimOwned(2602); // the sweep's order: the owner list first, then the flags
+  e._trimIntro(2602);
+  assert.ok(e.intro.get('N1').shadow && e.intro.get('N2').shadow);
+  assert.strictEqual(e.unownedBytes, 1200, "N1's shadow: its bytes unowned");
+  assert.strictEqual(e.setIntro('N3', 16, 2700), 'set');
+  assert.deepStrictEqual([...e.intro.keys()], ['N2', 'N3'], "N1's shadow went first");
+  assert.strictEqual(e.unownedBytes, 1200, 'settling nothing twice');
+  // A flag lapses OWNED_TTL after its last `intro` into its shadow, though
+  // its owner logged in since (a login refreshes ownership, not the flag);
+  // the shadow goes after as long again.
   const d = new MemoryCoordinator();
   d.setIntro('D', 16, 0);
   d.claimOwner('D', 900);
   assert.strictEqual(d.introBits('D', 1000), 16, 'still flagged at the TTL');
-  assert.strictEqual(d.introBits('D', 1001), 0, 'lapsed past it, even before a sweep');
+  assert.strictEqual(d.introBits('D', 1001), 16, 'past it the shadow asks the same stamp');
   d._trimIntro(1001);
-  assert.deepStrictEqual([...d.intro.keys()], [], 'and the sweep forgets it');
+  assert.ok(d.intro.get('D').shadow, 'the sweep marks the shadow');
+  assert.ok(!d._flagged('D') && d._owns('D'), 'owned by the list alone now');
+  assert.strictEqual(d.introBits('D', 2000), 16, 'still asked at twice the TTL');
+  assert.strictEqual(d.introBits('D', 2001), 0, 'and no longer past it, even before a sweep');
+  d._trimIntro(2001);
+  assert.deepStrictEqual([...d.intro.keys()], [], 'which forgets it');
   assert.deepStrictEqual([...d.owned.keys()], ['D'], 'while D is still owned');
 });
 
