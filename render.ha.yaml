@@ -73,27 +73,48 @@ services:
       # delay rather than a message.
       - key: NEW_MAILBOX_PER_MIN
         value: "120"
-      # Authorities a v2 signature may name besides the Host header the
-      # connection arrived with (server.js, `authorities`). This one is not a
-      # convenience and not a stopgap: it is load-bearing, permanently.
+      # The names this relay answers to, and the ONLY names a v2 login
+      # signature is verified against since phase 29 (server.js,
+      # `authorities`; P1-16). Not the Host header a connection presents —
+      # whoever opens the socket chooses that — so every name clients dial
+      # must be listed, matched exactly: `zmessengers.com` does not cover
+      # `www.zmessengers.com`, nor the other way round, and a missing name
+      # refuses every client that dials it with `bad_auth`, at once, whatever
+      # app version they run. This line is load-bearing, permanently.
       #
-      # `zmessengers.com` answers 301 -> www, and `WebSocket.connect` follows
-      # it — so a client that dials the apex opens a socket whose Host header
-      # says `www.zmessengers.com` while its v2 signature names
-      # `zmessengers.com`. The two differ, the signature verifies against
-      # neither of the relay's own names, and the client is refused with
-      # `bad_auth`. Measured against the live relay on 2026-09-17: apex
-      # refused, www authenticated.
+      # The app's default relay address is wss://www.zmessengers.com
+      # (app/lib/core/relay_url.dart), so `www.` is what almost every client
+      # signs. The apex stays because onboarding wrote it into the vault of
+      # every install made before 2026-09-17 and no app release can reach the
+      # ones that never update: `zmessengers.com` answers 301 -> www, the
+      # client follows it, and signs the apex it dialled. Removing either name
+      # locks those users out silently.
       #
-      # The apex is not merely the old default constant — it is the string
-      # onboarding WROTE into the vault of every install made before that
-      # date, so it is on disk in the field and no app release can reach the
-      # ones that never update. app/lib/core/relay_url.dart retires it at
-      # boot for clients that do update; this line is what keeps everyone
-      # else connected, and it stays set for as long as any such install
-      # might still be dialled. Removing it locks those users out silently.
+      # On 2026-10-15 the 4.0.1 relay was deployed with the apex alone here:
+      # every login was `bad_auth` until `www.` was added. The relay now prints
+      # the names it accepts at boot ("v2 authentication verified against:")
+      # and, on a refusal that dialled a name missing from this list, that
+      # name, quoted, with the list — read the deploy log before and after.
       - key: RELAY_AUTHORITIES
-        value: zmessengers.com
+        value: www.zmessengers.com,zmessengers.com
+      # The bearer token /metrics requires (P1-14); unset, the route answers
+      # 404 and the SLO alarms (docs/SLO.md) have nothing to read. Render
+      # generates a random value at creation and keeps it; read it from the
+      # dashboard into the scraper. Never a value in this file.
+      - key: METRICS_TOKEN
+        generateValue: true
+      # The header the front sets to the real client address. Set it to
+      # cf-connecting-ip ONLY once the origin (this service's onrender.com
+      # address) is reachable through Cloudflare alone: a header on a
+      # connection that reached the origin directly is the caller's to forge,
+      # and a limiter keyed on a value the caller picks is worse than one keyed
+      # on a value they cannot (the same rule as KT_CLIENT_IP_HEADER in
+      # render.kt.yaml). Empty: the socket address, which behind Cloudflare is
+      # Cloudflare — one shared bucket for the per-address limits (new
+      # mailboxes' unowned bytes; new handle flags are then paced by the store's
+      # cap alone) while the global caps bound the flood.
+      - key: CLIENT_IP_HEADER
+        value: ""
       # The Play App Signing certificate fingerprint (SHA-256, colon-separated
       # upper-case hex), read out of Play Console -> Setup -> App integrity.
       # It is public — it is published verbatim at

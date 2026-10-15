@@ -45,4 +45,20 @@ services:
       # rather than a message.
       - key: NEW_MAILBOX_PER_MIN
         value: "120"
+      # The names this relay answers to: since phase 29 the ONLY names a v2
+      # login signature is verified against (P1-16), never the Host header a
+      # connection presents. Render's own hostname (RENDER_EXTERNAL_HOSTNAME)
+      # is accepted automatically, so the one-click deployment needs nothing
+      # here. The moment a custom domain points at this service, set this to
+      # every name clients dial, exactly as they dial it — `www.example.com`
+      # and `example.com` are two names — or every login by a missing name is
+      # refused `bad_auth`. The relay prints the names it accepts at boot.
+      # Empty: Render's hostname alone.
+      - key: RELAY_AUTHORITIES
+        value: ""
+      # The bearer token /metrics requires (P1-14); unset, the route answers
+      # 404. Render generates a random value at creation; read it from the
+      # dashboard into whatever scrapes it.
+      - key: METRICS_TOKEN
+        generateValue: true
       # Render injects PORT automatically and the relay binds it — do not set it.
