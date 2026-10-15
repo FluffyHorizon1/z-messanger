@@ -245,14 +245,20 @@ and a moment slept through was drawn again for later in the window, and a
 phone opened twelve times a day for half a minute refreshed about once a
 week (the review's model of the schedule, U4); with the catch‑up it
 refreshes about two and a half times a day, whether its visits last half a
-minute or five, and no day passes without one. Four a day is an app in front
-at every window. A contact's changed list is checked at the next refresh; if
-the user opens that contact's screen first, a refresh runs then, of the
-usual shape — as one does when the user asks for a check in Settings — and
-it is that window's: one the window had not had yet is not run again later
-in it. A list this account has signed and the log has not acknowledged is
-still published at start: a publish names only this account, which the log
-learns from every publish.
+minute or five, and no day passes without one; ten‑second glances reach it
+less often — about one and a quarter times a day, with six days in thirty
+seeing none (the second review of the fixes, 2026‑10‑10). Four a day is an
+app in front at every window. Because the window's own moment is almost
+always slept through, nearly every refresh on a phone runs in that
+five‑to‑thirty‑second catch‑up after a foreground — every one, in the
+second review's model — so its timing is an app‑open time, which the
+operator learns (below). A contact's changed list is checked at the next
+refresh; if the user opens that contact's screen first, a refresh runs then,
+of the usual shape — as one does when the user asks for a check in
+Settings — and it is that window's: one the window had not had yet is not
+run again later in it. A list this account has signed and the log has not
+acknowledged is still published at start: a publish names only this account,
+which the log learns from every publish.
 
 **The account's own label is still asked by name** — its `lookup` and its
 `history`, for the self‑monitoring of §19.8. The history is only served that
@@ -288,7 +294,12 @@ terminates the log's TLS and sees every request as the operator does.
   fetches whose needs overlap share those beyond chance.
 - *When and from where*: the address, and a moment random in its window, or
   five to thirty seconds after the app came to the front when a refresh was
-  owed — which follows the user's use of the app, as the relay's view does.
+  owed — which on a phone is nearly every refresh, since the window's own
+  moment is almost always slept through (every modelled refresh fell within
+  thirty seconds of a foreground, the second review of the fixes,
+  2026‑10‑10), so the log learns the times of up to four app openings a day.
+  This follows the user's use of the app, as the relay's view does — a log
+  run apart from the relay learns from it what the relay already sees.
   A refresh the user starts is the exception: the contact screen's runs
   because that contact's list changed, and set beside what changed in the
   asked buckets since the client's last refresh it can point at the contact

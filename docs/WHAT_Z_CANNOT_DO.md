@@ -83,8 +83,10 @@ default, is asked about your contacts up to four times a day, from your own
 address — since phase 35 by bucket and never by name: each question covers
 32 to 64 accounts, your contacts' among decoys the app keeps — so whoever
 runs it, and for the built-in log that is the people who run the relay,
-learns which buckets you ask about and when you add a contact outside them,
-but not who your contacts are; what it learned before phase 35, when the app
+learns which buckets you ask about and when you add a contact outside them —
+and, because on a phone a check almost always runs a few seconds after you
+open the app, roughly when you open it, up to four times a day — but not who
+your contacts are; what it learned before phase 35, when the app
 asked by name, it keeps (R40). Turning it off
 takes Developer mode. And **Cloudflare**, in front of the built-in relay and
 log, ends their encryption in transit (not the messages', which is

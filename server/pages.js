@@ -853,13 +853,16 @@ const PRIVACY_HTML = page(
   changes, the app publishes it there: your account's public key, the list's
   version and fingerprint, and the list itself, sealed under a key derived from
   your public key — which we receive with it, so we can read it. And the app
-  checks your contacts there up to four times a day, at random moments or a
-  few seconds after you open the app, from
-  your IP address — asking for groups of 32 to 64 accounts at a time, padded
+  checks your contacts there up to four times a day — at a random time, or,
+  on a phone almost always, a few seconds after you open the app, because a
+  phone is rarely running at the random time the check is due — from
+  your IP address, asking for groups of 32 to 64 accounts at a time, padded
   with decoy groups it keeps, and never for a contact by name. So the log's
   operator, which is us, and its host see which groups your IP address asks
   about — your contacts' among decoys they cannot tell apart — and when you
-  add a contact outside them, but not your contact list. Versions of the app
+  add a contact outside them, and, since on a phone the check almost always
+  runs just after you open the app, roughly when you open it, up to four
+  times a day — but not your contact list. Versions of the app
   before this one asked for each contact by name, which did show it. The log
   keeps what is published for good; that is what makes it a log. The log
   service does not record requests;
