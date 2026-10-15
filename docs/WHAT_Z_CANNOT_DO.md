@@ -97,9 +97,11 @@ If you claim a handle, or look one up, a third does. **The handle service**
 sees the address each claim, change and lookup comes from — a lookup names up
 to four groups of 32 to 64 handles, counted by the app rather than taken from
 the service, instead of the one asked about, which hides what was asked and
-not who asked; a service that claims handles of its own makes the groups
-smaller than they look, and one that changes who holds a handle is caught only
-by someone who looked it up before — and the relay sees how many requests your handle's
+not who asked (though two of your devices, or a reinstall without a backup,
+looking up one handle share only its group); a service that claims handles of
+its own makes the groups smaller than they look, and one that changes who holds
+a handle is caught only by someone who looked it up before — and the relay sees
+how many requests your handle's
 inbox receives and the address your phone reads them from, the same address
 your own mailbox is held open from (R47, R49).
 

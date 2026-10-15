@@ -216,8 +216,11 @@ was still waiting to be published comes back waiting for you to tap
 * **The handle service** sees the internet address your phone claims,
   changes and looks up handles from, and of a lookup only up to four groups
   of handles, the one asked about in one of them — 32 to 64 handles a group
-  by your phone's own count, not the service's — not which. A service that
-  claims handles of its own can make the groups smaller than they look. If
+  by your phone's own count, not the service's — not which, unless two of
+  your devices, or a reinstall without a backup, look up the same handle:
+  each picks its own groups, and the one they share is that handle's. A
+  service that claims handles of its own can make the groups smaller than
+  they look. If
   it changes who holds a handle you looked up before, without that handle's
   recovery code, your phone says so and sends nothing; the first time you
   look a handle up, it cannot tell.

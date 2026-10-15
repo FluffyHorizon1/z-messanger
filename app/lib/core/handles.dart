@@ -2616,6 +2616,9 @@ class HandleService extends ChangeNotifier {
   /// The latest leaf for [label], verified (§19.9, §21.8) — or null, a
   /// verified absence — asked without naming it (`handle_lookups.dart`):
   ///
+  /// * the lookup holds the head it read first, and every answer in it is
+  ///   under that head or one that extends it ([_accept]) — kept for this
+  ///   lookup alone, since a resolver keeps no head between lookups (R50);
   /// * k is the estimate this install's own counts of labels bear out
   ///   ([HandleLookupMemory.bits], first made from random buckets by
   ///   [_probeBits]), never finer than the signed size allows nor than the
@@ -2636,26 +2639,34 @@ class HandleService extends ChangeNotifier {
       throw const HandleException(HandleFailure.unavailable);
     }
     final mem = await _lookupMemory();
-    final (head, recommended) = await _head(pub);
-    final bySize = handleBitsFor(head.size);
+    final lookup = await _head(pub);
+    final bySize = handleBitsFor(lookup.head.size);
     final held = mem.bits;
     for (var attempt = 0;; attempt++) {
-      final estimate = mem.bits ?? await _probeBits(pub, bySize);
+      final estimate = mem.bits ?? await _probeBits(lookup, bySize);
       mem.bits = estimate;
-      final k = min(min(estimate, bySize), recommended ?? ktMaxBucketBits);
+      final k = min(min(estimate, bySize), lookup.recommended ?? ktMaxBucketBits);
       final asked = handleLookupBuckets(mem.key, label, k);
-      final answers = await Future.wait([for (final q in asked) _bucket(pub, q)]);
+      final answers =
+          await Future.wait([for (final q in asked) _bucket(lookup, q)]);
       if (answers.contains(null)) {
         mem.bits = null;
         if (attempt == 0) continue;
         if (held != null) await _saveMemory(mem);
         throw const HandleException(HandleFailure.unreachable);
       }
+      // Asked side by side, so the heads come back in any order: accepted
+      // smallest first, each extending the last.
+      final heads = [for (final a in answers) a!.head]
+        ..sort((a, b) => a.size - b.size);
+      for (final h in heads) {
+        await _accept(lookup, h);
+      }
       mem.bits = handleNextBits(
-          estimate, k, [for (final b in answers) b!.leaves.length]);
+          estimate, k, [for (final a in answers) a!.bucket.leaves.length]);
       if (mem.bits != held) await _saveMemory(mem);
-      final mine = answers.firstWhere((b) => b!.query.holds(label))!;
-      final leaf = mine.leafFor(label);
+      final mine = answers.firstWhere((a) => a!.bucket.query.holds(label))!;
+      final leaf = mine.bucket.leafFor(label);
       if (leaf != null && handleLeafProblem(leaf) != null) {
         throw const HandleException(HandleFailure.badAnswer);
       }
@@ -2713,10 +2724,12 @@ class HandleService extends ChangeNotifier {
   Uint8List _randomBytes32() =>
       Uint8List.fromList([for (var i = 0; i < 32; i++) random.nextInt(256)]);
 
-  /// The log's head and its `bucketBits` (null when absent or out of range),
-  /// the head verified under [pub] and no older than [handleStaleHead]: the
-  /// signed size is what bounds k from above.
-  Future<(KtTreeHead, int?)> _head(Uint8List pub) async {
+  /// One lookup's view of the log: the head it read first, verified under
+  /// [pub] and no older than [handleStaleHead], replaced only by one that
+  /// extends it ([_accept]); and the `bucketBits` served beside it (null
+  /// when absent or out of range). The signed size is what bounds k from
+  /// above.
+  Future<_HandleLookupHead> _head(Uint8List pub) async {
     final sth = await _getJson('$_base/kt/v1/sth');
     final KtTreeHead head;
     try {
@@ -2731,7 +2744,8 @@ class HandleService extends ChangeNotifier {
     }
     _requireFresh(head);
     final rb = sth['bucketBits'];
-    return (head, rb is int && rb >= 0 && rb <= ktMaxBucketBits ? rb : null);
+    return _HandleLookupHead(
+        pub, head, rb is int && rb >= 0 && rb <= ktMaxBucketBits ? rb : null);
   }
 
   /// A head signed more than [handleStaleHead] ago, by this device's clock,
@@ -2743,9 +2757,50 @@ class HandleService extends ChangeNotifier {
     }
   }
 
-  /// One bucket, verified under [pub] on a fresh head; null when the log
-  /// refuses it as too large.
-  Future<KtVerifiedBucket?> _bucket(Uint8List pub, KtBucketQuery q) async {
+  /// [fresh], served with an answer in [lookup], becomes its held head when
+  /// it extends the one held — §19.5's steps as the transparency client
+  /// takes them, for one lookup: the same roots, or a larger size with a
+  /// consistency proof from the held size to it. A smaller size, the same
+  /// size under other roots, or no proof is a log that contradicted itself
+  /// within one lookup: a bad answer, and nothing it said is used. (Between
+  /// lookups nothing is held, so two histories shown at two lookups are a
+  /// witness's to catch, R50.)
+  Future<void> _accept(_HandleLookupHead lookup, KtTreeHead fresh) async {
+    final held = lookup.head;
+    if (held.sameRootsAs(fresh)) return;
+    // Signed under the handle log's context already ([_bucket]); what is
+    // left of §19.5's steps is that it extends the held head. (The
+    // transparency library's `ktCheckHeadExtends` checks the signature too,
+    // in the transparency log's context, so it is not used here.)
+    if (fresh.size <= held.size) {
+      // Smaller: the log shrank. The same size under other roots: a fork.
+      throw const HandleException(HandleFailure.badAnswer);
+    }
+    final c = await _getJson(
+        '$_base/kt/v1/consistency?first=${held.size}&second=${fresh.size}');
+    final List<Uint8List> proof;
+    try {
+      proof = [for (final h in (c['proof'] as List)) unb64(h as String)];
+    } catch (_) {
+      throw const HandleException(HandleFailure.badAnswer);
+    }
+    if (!await ktVerifyConsistency(
+        first: held.size,
+        second: fresh.size,
+        firstRoot: held.logRoot,
+        secondRoot: fresh.logRoot,
+        proof: proof)) {
+      throw const HandleException(HandleFailure.badAnswer);
+    }
+    lookup.head = fresh;
+  }
+
+  /// One bucket, verified under the pinned key on a fresh head, with that
+  /// head; null when the log refuses it as too large. The head is the
+  /// caller's to accept ([_accept]) — buckets asked side by side come back
+  /// in any order.
+  Future<_HandleBucketAnswer?> _bucket(
+      _HandleLookupHead lookup, KtBucketQuery q) async {
     final KtResponse r;
     try {
       r = await fetcher.get(Uri.parse('$_base${q.path}'));
@@ -2763,38 +2818,49 @@ class HandleService extends ChangeNotifier {
     final KtVerifiedBuckets v;
     try {
       v = await ktVerifyBucketAnswer(json,
-          asked: [q], logPub: pub, mode: KtLogMode.handles);
+          asked: [q], logPub: lookup.pub, mode: KtLogMode.handles);
     } on KtVerifyException {
       throw const HandleException(HandleFailure.badAnswer);
     } on FormatException {
       throw const HandleException(HandleFailure.badAnswer);
     }
     _requireFresh(v.head);
-    return v.buckets.single;
+    return _HandleBucketAnswer(v.buckets.single, v.head);
   }
 
   /// A first estimate of k from buckets drawn at random — so they say
-  /// nothing about any lookup, before or after: one at the finest k the
-  /// signed size allows ([bySize]), then coarser by as much as it fell short
-  /// of [handleProbeLabels] labels ([handleProbeNext]), until one holds that
-  /// many or k is 0. A refusal as too large ends it at the finer count
-  /// before it; one at [bySize] itself (where no honest bucket is too large)
-  /// leaves nothing to estimate from: unreachable.
-  Future<int> _probeBits(Uint8List pub, int bySize) async {
-    int? at;
-    var count = 0;
-    int? k = bySize;
-    for (var step = 0; k != null && step < handleProbeSteps; step++) {
+  /// nothing about any lookup, before or after — as the transparency client
+  /// makes its first count (`_probeCeiling`): one at the finest k the signed
+  /// size allows ([bySize]), then coarser by as much as it fell short of
+  /// [handleProbeLabels] labels ([handleProbeNext]), until one holds that
+  /// many or k is 0. A bucket counts only under the head held when it was
+  /// drawn: one signed after could hold labels minted into it on seeing it
+  /// asked, so under a head that grew (or says it did) the bucket is not
+  /// counted and another is drawn. A bucket refused as too large is asked
+  /// one bit finer, with a fresh random bucket — a refusal is never an
+  /// estimate, so refusing cannot raise k, only deny it. At most
+  /// [handleProbeSteps] buckets; a log that has not shown a count by then is
+  /// unreachable.
+  Future<int> _probeBits(_HandleLookupHead lookup, int bySize) async {
+    var k = bySize;
+    for (var step = 0; step < handleProbeSteps; step++) {
+      final held = lookup.head;
       final q = KtBucketQuery.forLabel(_randomBytes32(), k);
       debugOnProbe?.call(q);
-      final b = await _bucket(pub, q);
-      if (b == null) break;
-      at = k;
-      count = b.leaves.length;
-      k = handleProbeNext(k, count);
+      final a = await _bucket(lookup, q);
+      if (a == null) {
+        if (k >= ktMaxBucketBits) break;
+        k++;
+        continue;
+      }
+      await _accept(lookup, a.head);
+      if (!a.head.sameRootsAs(held)) continue;
+      final count = a.bucket.leaves.length;
+      final next = handleProbeNext(k, count);
+      if (next == null) return min(bySize, handleBitsFor(count * (1 << k)));
+      k = next;
     }
-    if (at == null) throw const HandleException(HandleFailure.unreachable);
-    return min(bySize, handleBitsFor(count * (1 << at)));
+    throw const HandleException(HandleFailure.unreachable);
   }
 
   /// [leaf]'s record held to everything a reader can check without its
@@ -2958,6 +3024,23 @@ class HandleService extends ChangeNotifier {
     _ops = run.then((_) {}, onError: (_) {});
     return run;
   }
+}
+
+/// What one lookup holds of the log while it runs ([HandleService._head]):
+/// the pinned key, the head accepted so far, and the `bucketBits` served
+/// beside the first.
+class _HandleLookupHead {
+  final Uint8List pub;
+  KtTreeHead head;
+  final int? recommended;
+  _HandleLookupHead(this.pub, this.head, this.recommended);
+}
+
+/// A bucket answer, verified, with the head it was served under.
+class _HandleBucketAnswer {
+  final KtVerifiedBucket bucket;
+  final KtTreeHead head;
+  _HandleBucketAnswer(this.bucket, this.head);
 }
 
 // =============================================================================

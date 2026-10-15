@@ -19,12 +19,13 @@
 //      and its lookups ask where the handles put 16 or more in a bucket on
 //      average (k ≤ 4), first lookup and every one after;
 //   3. too large is never narrowed: with every bucket below 24 bits refused,
-//      a lookup ends unreachable having asked nothing finer than k = 0 (the
-//      review's P2b); with the lookup's own k refused, it ends unreachable
-//      having asked the same buckets and nothing finer; and an estimate the
-//      log outgrew (k = 1 in a log of 1,000, refused by the log itself as too
-//      large) is made again from random buckets, and the handle found at
-//      k = 4 with no k between asked;
+//      a lookup ends unreachable having asked the handle's bucket not at all
+//      and only random ones, one bit finer each, within the probe's eight
+//      (the review's P2b); with the lookup's own k refused, it ends
+//      unreachable having asked the same buckets and nothing finer; and an
+//      estimate the log outgrew (k = 1 in a log of 1,000, refused by the log
+//      itself as too large) is made again from random buckets, and the
+//      handle found at k = 4 with no k between asked;
 //   4. decoys: looking a handle up again asks the same buckets in the same
 //      order, a restart of the app keeps them, and another handle's are its
 //      own — each set exactly what the install's key gives for the label;
@@ -59,11 +60,30 @@
 //      it up as new; a stale answer has words of its own;
 //  12. the rules on their own: k from a count, the probe's steps, the
 //      estimate's fall and one-bit rise, decoys a function of key and label
-//      that nest from one k to the next, the leaf rule (2^53 − 1 refused at
-//      an index that would allow it), what one record can follow, and the
-//      stored memory held to its shape and cap.
+//      that nest from one k to the next — and two installs' sets for one
+//      handle meeting in exactly its bucket, the residual the trust table
+//      names — the leaf rule (2^53 − 1 refused at an index that would allow
+//      it), what one record can follow, and the stored memory held to its
+//      shape and cap;
+//  13. refusing cannot raise k (the second review's P2): in a log of 301
+//      handles inflated to 16,000 entries, `bucketBits` rewritten to 24, an
+//      operator that answers the first random bucket honestly and, when its
+//      count alone would put k above the honest 3, refuses the coarser
+//      bucket asked next, gets nothing: the probe asks a fresh bucket one bit
+//      finer and goes on until one holds 32, and no lookup of the handle asks
+//      its bucket finer than 3 (the base took the count before the refusal
+//      as the estimate, and asked at 4 or finer);
+//  14. a bucket counts only under the head held when it was drawn: an
+//      operator that mints 32 labels into the first random bucket on seeing
+//      it asked, and answers under the head that holds them, is not counted
+//      — the probe draws again and the lookup asks at the honest k (the base
+//      counted the 32 and asked at the 8 the inflated size allows); and
+//      within one lookup the head only grows: an older answer served again
+//      after the log grew is a bad answer, while a lookup that read an older
+//      head and is answered under a newer one takes it with its consistency
+//      proof.
 @Tags(['integration'])
-@Timeout(Duration(minutes: 6))
+@Timeout(Duration(minutes: 8))
 library;
 
 import 'dart:async';
@@ -101,23 +121,59 @@ class _Operator implements KtFetcher {
   int? bucketBits;
   bool Function(KtBucketQuery q)? refuse;
 
+  /// Called with each bucket asked, before the log answers it: the
+  /// operator's moment to change the log on seeing what was asked.
+  Future<void> Function(KtBucketQuery q)? onBucket;
+
+  /// An operator that knows the honest k and waits for its chance: when a
+  /// bucket's count alone would put k above it, the next bucket asked
+  /// coarser than that one is refused — once.
+  int? refuseAboveHonest;
+  int? _armedBelow;
+  int refusals = 0;
+
+  /// Keep every answer (by path), and serve the kept one again.
+  bool keep = false;
+  bool replay = false;
+  final kept = <String, KtResponse>{};
+
   static KtBucketQuery _query(Uri u) => KtBucketQuery.parse(
       u.queryParameters['prefix']!, int.parse(u.queryParameters['bits']!));
+
+  static const _tooLarge =
+      '{"error":"bucket_too_large","message":"ask for more bits"}';
 
   @override
   Future<KtResponse> get(Uri url) async {
     urls.add(url);
-    final no = refuse;
-    if (no != null && url.path == '/kt/v1/bucket' && no(_query(url))) {
-      return KtResponse(
-          400, '{"error":"bucket_too_large","message":"ask for more bits"}');
+    final path = '${url.path}?${url.query}';
+    if (replay && kept.containsKey(path)) return kept[path]!;
+    final isBucket = url.path == '/kt/v1/bucket';
+    if (isBucket) {
+      final q = _query(url);
+      if (refuse?.call(q) ?? false) return KtResponse(400, _tooLarge);
+      final below = _armedBelow;
+      if (below != null && q.bits < below) {
+        _armedBelow = null;
+        refusals++;
+        return KtResponse(400, _tooLarge);
+      }
+      await onBucket?.call(q);
     }
-    final r = await _inner.get(url);
+    var r = await _inner.get(url);
     if (bucketBits != null && url.path == '/kt/v1/sth' && r.status == 200) {
       final j = (jsonDecode(r.body) as Map).cast<String, Object?>();
       j['bucketBits'] = bucketBits;
-      return KtResponse(r.status, jsonEncode(j));
+      r = KtResponse(r.status, jsonEncode(j));
     }
+    final honest = refuseAboveHonest;
+    if (isBucket && honest != null && r.status == 200 && refusals == 0) {
+      final j = r.json;
+      final count = (j['leaves'] as List).length;
+      final bits = j['bits'] as int;
+      if (handleBitsFor(count * (1 << bits)) > honest) _armedBelow = bits;
+    }
+    if (keep) kept[path] = r;
     return r;
   }
 
@@ -291,9 +347,13 @@ void main() {
   }
 
   // Logs more than one test asks: started once, when first asked for.
-  Future<_Log>? big, inflated;
+  Future<_Log>? big, inflated, tall;
   Future<_Log> bigLog() => big ??= startLog(labels: 1000);
   Future<_Log> inflatedLog() => inflated ??= startLog(labels: 300, versions: '4:1000');
+  // 301 handles and ~16,300 entries: the signed size allows k = 8 where the
+  // handles bear out 3. Criterion 14 mints labels into it, so it is the last
+  // to use it.
+  Future<_Log> tallLog() => tall ??= startLog(labels: 300, versions: '4:4000');
 
   Future<(int, String)> publishTo(_Log log, HandleEntry e) async {
     final req = await HttpClient()
@@ -572,8 +632,9 @@ void main() {
     final l = await look(ed, f, '@tess.31');
     expect(l.error, isA<HandleException>().having(
         (e) => e.failure, 'failure', HandleFailure.unreachable));
-    expect([...l.asked, ...l.probed].every((q) => q.bits == 0), isTrue,
-        reason: 'nothing finer than the one bucket a log of one handle is');
+    expect(l.asked, isEmpty, reason: 'the handle\'s bucket is never asked');
+    expect(l.probed.map((q) => q.bits), List.generate(handleProbeSteps, (i) => i),
+        reason: 'random buckets, one bit finer at each refusal, eight at most');
 
     // The lookup's own k refused, after a first lookup set it.
     final log = await bigLog();
@@ -587,9 +648,12 @@ void main() {
     final refused = await look(fay, g, '@fern.33');
     expect(refused.error, isA<HandleException>().having(
         (e) => e.failure, 'failure', HandleFailure.unreachable));
-    expect(refused.asked, first.asked, reason: 'the same buckets, once');
-    expect([...refused.asked, ...refused.probed].every((q) => q.bits <= k),
-        isTrue, reason: 'and nothing finer');
+    expect(refused.asked.toSet(), first.asked.toSet(),
+        reason: 'the same buckets (asked again after the estimate was made '
+            'again), and no others');
+    expect(refused.asked.every((q) => q.bits == k), isTrue,
+        reason: 'the handle\'s bucket nowhere finer');
+    expect(refused.probed, isNotEmpty, reason: 'the estimate was made again');
     g.refuse = null;
     expect((await look(fay, g, '@fern.33')).found!.state,
         HandleLookupState.found);
@@ -981,6 +1045,20 @@ void main() {
         expect(coarse.any((c) => c.holds(inside)), isTrue);
       }
     }
+    // Two installs — an account's two devices, or a reinstall without a
+    // backup — ask one handle through two keys, and what their sets have in
+    // common is its bucket: the residual THREAT_MODEL's trust row names.
+    var exact = 0;
+    for (var t = 0; t < 200; t++) {
+      final mine = handleLookupBuckets(key, a, 9).map((q) => q.prefix).toSet();
+      final theirs = handleLookupBuckets(randomBytes(32), a, 9)
+          .map((q) => q.prefix)
+          .toSet();
+      final meet = mine.intersection(theirs);
+      if (meet.length == 1 && meet.single == ktBucketPrefix(a, 9)) exact++;
+    }
+    expect(exact, greaterThan(190),
+        reason: 'two keys\' decoys coincide by chance alone (3 × 3 / 512)');
 
     // The leaf rule.
     KtBucketLeaf leaf(int index, int version) =>
@@ -1064,5 +1142,137 @@ void main() {
       },
     }))!;
     expect(odd.known, isEmpty, reason: 'a version 0 and a key that is no label are left out');
+  });
+
+  test('13. refusing a bucket cannot raise k: the probe steps finer and goes '
+      'on until one holds 32', () async {
+    final log = await tallLog();
+    await claimAt(log, 'rune.13');
+    final label = await labelOf('rune.13');
+    final honest = handleBitsFor(log.labels + 1);
+    expect(honest, 3);
+    expect(handleBitsFor(log.size + 1), 8, reason: 'what the size allows');
+    // The operator's chance is a random bucket whose count alone puts k
+    // above 3 — one in three at k = 8, where a bucket holds 1.2 handles on
+    // average — so it waits for one across fresh installs, each with a
+    // different seed and so a different first bucket; and the test waits for
+    // it to have taken it.
+    final lookups = <_Look>[];
+    _Operator? got;
+    var attempts = 0;
+    for (var i = 0; i < 40 && got == null; i++) {
+      final f = _Operator()
+        ..bucketBits = 24
+        ..refuseAboveHonest = honest;
+      final s = await boot('Ron$i', config: log.config, fetcher: f, seed: 1300 + i);
+      lookups.add(await look(s, f, '@rune.13'));
+      await stop(s);
+      attempts++;
+      if (f.refusals > 0) got = f;
+    }
+    expect(got, isNotNull, reason: 'the operator never saw a count above honest');
+    final last = lookups.last;
+    // ignore: avoid_print
+    print('LOOKUP 13: ${log.labels + 1} handles, size ${log.size + 1}, '
+        'bucketBits rewritten to 24; the operator refused on attempt $attempts '
+        '-> probed ${last.probed.map((q) => q.bits).toList()}, asked '
+        '${last.asked.map((q) => q.bits).toList()}, '
+        '${last.found?.state.name ?? last.error}');
+    for (final l in lookups) {
+      expect(l.asked.where((q) => q.holds(label)).every((q) => q.bits <= honest),
+          isTrue,
+          reason: 'a refusal must never put the handle\'s bucket finer than '
+              'the handles bear out (§21.8: a refused bucket is asked finer '
+              'with a fresh draw; the estimate is a bucket of 32)');
+    }
+    expect(last.found!.state, HandleLookupState.found);
+    expect(last.bits, {honest});
+  });
+
+  test('14. a bucket counts only under the head held when it was drawn, and '
+      'within a lookup the head only grows', () async {
+    final log = await tallLog();
+    await claimAt(log, 'mint.14');
+    final label = await labelOf('mint.14');
+    final honest = handleBitsFor(log.labels + 2);
+    expect(honest, 3);
+
+    // On seeing the first random bucket asked, the operator mints 32 labels
+    // into it — as it can, holding no handle's key but its own — and
+    // answers under the head that holds them.
+    Uint8List within(KtBucketQuery q) {
+      final p = ktParseBucketPrefix(q.prefix, q.bits)!;
+      final out = randomBytes(32);
+      for (var d = 0; d < q.bits; d++) {
+        final mask = 1 << (7 - (d & 7));
+        if (p[d >> 3] & mask != 0) {
+          out[d >> 3] |= mask;
+        } else {
+          out[d >> 3] &= ~mask;
+        }
+      }
+      return out;
+    }
+
+    var minted = 0;
+    KtBucketQuery? mintedInto;
+    final f = _Operator()..bucketBits = 24;
+    f.onBucket = (q) async {
+      f.onBucket = null;
+      mintedInto = q;
+      for (var i = 0; i < 32; i++) {
+        final seed = randomBytes(32);
+        await put(log, within(q), 1,
+            await recordOf(HandleRecordKind.claim, seed, randomBytes(32), randomBytes(32)),
+            seed);
+        minted++;
+      }
+    };
+    final mia = await boot('Mia', config: log.config, fetcher: f, seed: 14);
+    final l = await look(mia, f, '@mint.14');
+    // ignore: avoid_print
+    print('LOOKUP 14: 32 labels minted into $mintedInto on seeing it -> '
+        'probed ${l.probed.map((q) => q.bits).toList()}, asked '
+        '${l.asked.map((q) => q.bits).toList()}, '
+        '${l.found?.state.name ?? l.error}');
+    expect(minted, 32);
+    expect(mintedInto!.bits, 8, reason: 'the probe starts where the size allows');
+    expect(l.error, isNull);
+    expect(l.found!.state, HandleLookupState.found);
+    expect(l.asked.where((q) => q.holds(label)).every((q) => q.bits <= honest),
+        isTrue,
+        reason: 'labels minted into a bucket on seeing it must not count');
+    expect(l.probed.where((q) => q.bits == 8).length, greaterThanOrEqualTo(2),
+        reason: 'the minted bucket is not counted: another is drawn at 8');
+
+    // An older answer served again after the log grew: the lookup read the
+    // newer head first, so the answer is under a head that shrank.
+    final g = _Operator()..keep = true;
+    final nat = await boot('Nat', config: log.config, fetcher: g, seed: 15);
+    expect((await look(nat, g, '@mint.14')).found!.state, HandleLookupState.found);
+    await claimAt(log, 'grow.14');
+    g
+      ..keep = false
+      ..replay = true
+      ..kept.removeWhere((path, _) => path.startsWith('/kt/v1/sth'));
+    await expectLater(nat.handles.find('@mint.14'), failsWith(HandleFailure.badAnswer));
+
+    // The other way round — an older head read first, newer answers — is a
+    // log that grew during the lookup: taken, with its consistency proof.
+    g
+      ..kept.removeWhere((path, _) => !path.startsWith('/kt/v1/sth'))
+      ..replay = false
+      ..keep = true;
+    final before = g.urls.length;
+    expect((await look(nat, g, '@mint.14')).found!.state, HandleLookupState.found);
+    await claimAt(log, 'more.14');
+    g
+      ..keep = false
+      ..replay = true
+      ..kept.removeWhere((path, _) => !path.startsWith('/kt/v1/sth'));
+    final again = await look(nat, g, '@mint.14');
+    expect(again.found!.state, HandleLookupState.found);
+    expect(g.urls.skip(before).any((u) => u.path == '/kt/v1/consistency'), isTrue,
+        reason: 'the newer head is taken only with a proof it extends the old');
   });
 }

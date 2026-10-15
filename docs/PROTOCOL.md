@@ -5061,18 +5061,39 @@ the label's bucket without naming it (`app/lib/core/handle_lookups.dart`):
   operator first, inflates it with versions for the price of a publish.
   Labels are what a bucket hides a handle among, so k is an estimate of the
   labels the client counted itself, in buckets it verified complete. First
-  from buckets drawn at random, which say nothing about any lookup: one at
-  the finest k the signed size allows, ⌊log₂(size / 32)⌋, then coarser by as
-  many bits as it fell short of 32 labels (five for an empty one), until one
-  holds 32 or k is 0; its count times 2^k is the estimate, and k is
-  ⌊log₂(estimate / 32)⌋. Then from each lookup's buckets: under 16 labels a
-  bucket on average, k falls at once to what they bear out; at 64, it rises
-  one bit, and no more in one lookup. A lookup asks at the least of that,
+  from buckets drawn at random, which say nothing about any lookup, as the
+  transparency client makes its first count (§19.9.1): one at the finest k
+  the signed size allows, ⌊log₂(size / 32)⌋, then coarser by as many bits as
+  it fell short of 32 labels (five for an empty one), until one holds 32 or
+  k is 0; its count times 2^k is the estimate, and k is
+  ⌊log₂(estimate / 32)⌋. A bucket counts only under the head the lookup
+  held when it was drawn — one signed after could hold labels minted into
+  it on seeing it asked — so under a head that grew the bucket is not
+  counted and another is drawn; a bucket refused as too large is asked one
+  bit finer, with a fresh draw. Eight buckets at most, refusals and heads
+  that moved counted; a log that has not ended the count by then is
+  unreachable for that lookup. A bucket of fewer than 32 is an estimate
+  only at k = 0, where it puts k at 0, so a log can put k nowhere by
+  refusing or by moving its head — only deny the lookup — and minting into
+  a bucket moves k only when it was minted before the bucket was drawn,
+  which no bucket a client will draw can be told from any other. Then
+  from each lookup's buckets: under 16 labels a bucket on average, k
+  falls at once to what they bear out; at 64, it rises one
+  bit, and no more in one lookup (minted into on seeing them asked or not:
+  a lookup's four buckets count alike, the handle's among them, so what the
+  log sees of this rule — the k of the next lookup — says nothing about
+  which was the handle's). A lookup asks at the least of that,
   ⌊log₂(size / 32)⌋ and `bucketBits`. So a log is asked at buckets of 16 to
   64 labels on average, 32 to 64 once it has settled, whatever `bucketBits`
   it serves and however it inflates its size — but labels of its own make
   the buckets smaller than they look, and no count a client can make tells
   them from real ones.
+- *The head.* A lookup holds the head it read first and takes a later one
+  only as the transparency client takes a head (§19.5): the same roots, or
+  a larger size with the log's consistency proof from the held size to it. A
+  smaller size, the same size under other roots, or no proof is a bad
+  answer: the log contradicted itself within one lookup. Nothing is held
+  between lookups (R50).
 - *Decoys.* The label's bucket is asked among three decoys': the buckets of
   SHA‑256(key ‖ "z-handle-decoy-v1:" ‖ label ‖ i), i = 0, 1, 2, under a key
   of 32 random bytes the install draws once and keeps. Each bucket once
@@ -5082,13 +5103,17 @@ the label's bucket without naming it (`app/lib/core/handle_lookups.dart`):
   the handle's bucket as what two lookups of it have in common, and one
   kept set as what lookups of two handles do not. So the same handle asks
   the same buckets again — at a finer k, a child of each — and another
-  handle's share nothing with them but chance. Each device draws its own
-  key: one handle looked up from two devices the log can link (an address)
-  asks two sets that meet in its bucket.
+  handle's share nothing with them but chance. Each install draws its own
+  key, and a backup carries it: one handle looked up from two installs the
+  log can link — an account's two devices, at one address; a reinstall
+  without a backup — asks two sets that meet in exactly its bucket, and
+  the log learns which bucket was the handle's.
 - *Refusals.* A bucket refused as `bucket_too_large` is never narrowed to
   the half that holds the label: the estimate is made again from random
   buckets, once — a log that grew past it needs a finer one — and the
-  lookup asked again at it; refused again, the log is unreachable.
+  lookup asked again at it; refused again, the log is unreachable. So k can
+  move several bits in one lookup, but only to what a fresh count of 32
+  labels bears out.
 - *Answers.* Each verified under the pinned key (§19.9, §21.5) on a head
   signed no more than **24 hours** before the device's clock: the log
   re-signs at least every 10 minutes, so an older head is a log that

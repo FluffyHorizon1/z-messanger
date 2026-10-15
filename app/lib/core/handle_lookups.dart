@@ -16,8 +16,11 @@
 /// client counted itself, in buckets it verified complete:
 ///
 /// * a first estimate from random buckets, never the handle's
-///   ([handleProbeNext]): the finest k the signed size allows first, then
-///   coarser, until one bucket holds [handleProbeLabels] labels;
+///   ([handleProbeNext]), as the transparency client makes its first count:
+///   the finest k the signed size allows first, then coarser, until one
+///   bucket holds [handleProbeLabels] labels — each counted only under a
+///   head signed before it was drawn, and one refused as too large asked
+///   one bit finer with a fresh draw (`handles.dart`, `_probeBits`);
 /// * after each lookup, from the buckets it asked ([handleNextBits]): under
 ///   [handleMinBucketLabels] a bucket on average and k falls at once to what
 ///   they bear out; at four times that it rises one bit, and no more;
@@ -59,10 +62,15 @@ const int handleMinBucketLabels = 16;
 
 /// A probe stops at a bucket that proves this many labels: the estimate it
 /// gives is then within a fifth of the truth two times in three, and the k
-/// it gives seldom more than one bit out.
+/// it gives seldom more than one bit out. A bucket that proves fewer is
+/// never an estimate above k = 0 — not when the next is refused, not when
+/// the probe runs out of steps — so nothing the log does short of showing
+/// a bucket of 32 labels puts k anywhere but 0.
 const int handleProbeLabels = 32;
 
-/// At most this many random buckets in one estimate.
+/// At most this many random buckets in one estimate, refusals and heads
+/// that moved counted; a log that has shown no count by then is
+/// unreachable for that lookup.
 const int handleProbeSteps = 8;
 
 /// A head older than this is not believed: the log re-signs its head at least
@@ -111,10 +119,20 @@ int? handleProbeNext(int bits, int count) {
 /// size or `bucketBits` held it back); [counts] is the labels in each
 /// distinct bucket it asked, every one verified complete. Their mean at
 /// [asked] bits, times 2^asked, is the log's labels, whatever its head and
-/// `bucketBits` say — the handle's own bucket included, which a found handle
-/// makes one label fuller, a bias the thresholds dwarf (the transparency
-/// client counts its decoy buckets alone; a lookup has three, and at k = 0
-/// none distinct from the handle's).
+/// `bucketBits` say.
+///
+/// The handle's own bucket is counted with the decoys', where the
+/// transparency client counts its decoy buckets alone and leaves the
+/// contacts' out. Deliberately: what the log sees of this rule is the k of
+/// the next lookup of the same handle (the same buckets again), and that
+/// must not depend on which of the four was the handle's. Were the handle's
+/// bucket left out, an operator could mint labels into one of the four and
+/// watch — k rising a bit at the next lookup would say the bucket was a
+/// decoy, k unmoved that it was the handle's; counted alike, the four move
+/// k alike, and the reaction names none of them. The cost is honest bias
+/// only: a found handle makes its bucket one label fuller than a random
+/// one, a quarter of a label on the mean of four, which the thresholds of
+/// 16 and 64 dwarf (and at k = 0 no bucket is distinct from the handle's).
 ///
 /// Under [handleMinBucketLabels] a bucket at [current], k falls at once to
 /// what that number bears out — all the way, where the transparency
