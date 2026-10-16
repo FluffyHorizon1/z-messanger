@@ -13,7 +13,7 @@ anything), and `tool/check_workflow.py` exists because of it.
 This runs the same shell. It reads the step bodies OUT OF THE WORKFLOW rather
 than restating them, so there is one copy and a drift between the two is not
 possible; it stages a workspace shaped like the one a tagged run produces; and
-it checks what comes out. Five passes:
+it checks what comes out. Six passes:
 
   1. a normal release — every artefact present, the reproducibility slot
      matching;
@@ -26,7 +26,14 @@ it checks what comes out. Five passes:
      pick one and state a recipe that does not reproduce;
   5. two artefacts sharing a basename — the copy into `release/` flattens, so
      a collision would silently publish one of them and list it as though
-     nothing had been lost.
+     nothing had been lost;
+  6. the bundle — signed as a JAR is, so its signature is entries named after
+     the key — has the content digest of the slot's debug-signed bundle, and
+     a different build's has another. The release job does not publish a
+     bundle digest yet; this is the tool it would use, on what it would see.
+
+The staged release is shaped as the android job's uploads are: the
+universal APK, one APK per ABI (`--split-per-abi`) and the bundle.
 
 What it does NOT do is attest anything: Sigstore needs a real OIDC token from
 a real runner, so `actions/attest-build-provenance` remains the one step only
@@ -109,6 +116,25 @@ def make_apk(path: Path, uris=(BUILD_URI,), extra=b"") -> None:
             z.writestr("extra", extra)
 
 
+def make_bundle(path: Path, alias: str, extra=b"") -> None:
+    """A JAR-signed Android App Bundle. Its signature is entries named after
+    the key's alias — `UPLOAD` for the release's upload key, `ANDROIDD` for
+    a debug key — beside a manifest listing every other entry."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("BundleConfig.pb", b"\x0a\x05bundle")
+        z.writestr("base/manifest/AndroidManifest.xml", "<manifest/>")
+        z.writestr("base/dex/classes.dex", "dex" + "x" * 512)
+        z.writestr("base/lib/arm64-v8a/libapp.so", fake_so((BUILD_URI,)))
+        if extra:
+            z.writestr("base/extra", extra)
+        z.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\r\n")
+        z.writestr(f"META-INF/{alias}.SF", f"{alias} signature file")
+        z.writestr(f"META-INF/{alias}.RSA", f"{alias} signature block")
+
+
+ABIS = ("arm64-v8a", "armeabi-v7a", "x86_64")
+
+
 APK_SIG_MAGIC = b"APK Sig Block 42"
 
 
@@ -151,7 +177,12 @@ def stage(tmp: Path, *, with_apk=True, uris=(BUILD_URI,), slot_matches=True,
         sign(ws / "dist" / "z-android" / "unsigned.apk",
              ws / "dist" / "z-android" / "app-release.apk")
         (ws / "dist" / "z-android" / "unsigned.apk").unlink()
-    (ws / "dist" / "z-android" / "app-release.aab").write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+    make_bundle(ws / "dist" / "z-android" / "app-release.aab", "UPLOAD")
+    for abi in ABIS:
+        make_apk(ws / "dist" / "z-android" / f"unsigned-{abi}.apk", uris=uris)
+        sign(ws / "dist" / "z-android" / f"unsigned-{abi}.apk",
+             ws / "dist" / "z-android" / f"app-{abi}-release.apk")
+        (ws / "dist" / "z-android" / f"unsigned-{abi}.apk").unlink()
     for name, asset in (("z-linux-x64", "z-linux-x64.tar.gz"),
                         ("z-windows-x64", "z-windows-x64.zip"),
                         ("z-macos", "z-macos.zip")):
@@ -174,6 +205,8 @@ def stage(tmp: Path, *, with_apk=True, uris=(BUILD_URI,), slot_matches=True,
         sign(ws / "repro-a" / "plain.apk", ws / "repro-a" / "app-release.apk",
              payload=b"\x02" * 768)
         (ws / "repro-a" / "plain.apk").unlink()
+    make_bundle(ws / "repro-a" / "app-release.aab", "ANDROIDD",
+                extra=b"" if slot_matches else b"a different build")
     (ws / "repro-a" / "fingerprint-a.txt").write_text("libapp.so deadbeef\n")
     return ws
 
@@ -215,8 +248,10 @@ def main() -> int:
               f"{failed[0]} exited non-zero: {failed[1][-400:]}" if failed else "")
         if failed is None:
             sums = (ws / "release" / "SHA256SUMS.txt").read_text()
-            for asset in ("app-release.apk", "z-linux-x64.tar.gz",
-                          "z-windows-x64.zip", "z-macos.zip"):
+            for asset in ("app-release.apk", "app-release.aab",
+                          *(f"app-{abi}-release.apk" for abi in ABIS),
+                          "z-linux-x64.tar.gz", "z-windows-x64.zip",
+                          "z-macos.zip"):
                 check(results, f"SHA256SUMS lists {asset}", asset in sums)
             check(results, "a content digest is published",
                   "# Content digest of app-release.apk: " in sums)
@@ -285,6 +320,35 @@ def main() -> int:
               "share a name and would collapse" in (first.stdout + first.stderr)
               and "z-linux-x64.tar.gz" in (first.stdout + first.stderr),
               first.stdout + first.stderr)
+
+        # 6. The bundle, with the tool the release job would use on it.
+        print("\n6. the bundle's content digest")
+        def digest(ws, path):
+            return subprocess.run(
+                [sys.executable, "tool/verify_reproducible.py",
+                 "--content-digest", path],
+                cwd=ws, capture_output=True, text=True)
+        ws = stage(tmp)
+        ours = digest(ws, "dist/z-android/app-release.aab")
+        theirs = digest(ws, "repro-a/app-release.aab")
+        check(results, "the tool reads both bundles",
+              ours.returncode == 0 and theirs.returncode == 0,
+              ours.stdout + ours.stderr + theirs.stdout + theirs.stderr)
+        check(results, "the slot's debug-signed bundle has the release's digest",
+              ours.stdout.strip() == theirs.stdout.strip() != "",
+              f"{ours.stdout.strip()} vs {theirs.stdout.strip()}")
+        check(results, "the digest alone is on stdout, as the release job reads it",
+              len(ours.stdout.split()) == 1, ours.stdout)
+        check(results, "and what was left out is said, on stderr",
+              "META-INF/UPLOAD.SF" in ours.stderr
+              and "META-INF/UPLOAD.RSA" in ours.stderr
+              and "MANIFEST.MF" not in ours.stderr, ours.stderr)
+        ws = stage(tmp, slot_matches=False)
+        ours = digest(ws, "dist/z-android/app-release.aab")
+        theirs = digest(ws, "repro-a/app-release.aab")
+        check(results, "a slot that built something else has another digest",
+              ours.stdout.strip() != theirs.stdout.strip(),
+              f"{ours.stdout.strip()} vs {theirs.stdout.strip()}")
 
     bad = [r for r in results if not r[1]]
     print(f"\n{len(results) - len(bad)}/{len(results)} checks passed")

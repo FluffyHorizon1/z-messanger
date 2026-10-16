@@ -13,6 +13,10 @@ Usage:
     python3 tool/verify_reproducible.py a.apk b.apk
     python3 tool/verify_reproducible.py --ignore-signing-block a.apk b.apk
     python3 tool/verify_reproducible.py --content-digest app-release.apk
+    python3 tool/verify_reproducible.py --content-digest app-release.aab
+
+`--content-digest` on a bundle leaves out the entries its JAR signature
+added, which are named after the signing key, and says on stderr which.
 
 Exit status is 0 when the two files are byte-for-byte identical, 1 when they
 differ, 2 when something could not be read. See docs/REPRODUCIBLE_BUILDS.md
@@ -29,11 +33,29 @@ plain mode when comparing builds that were signed with the same key.
 """
 
 import hashlib
+import re
 import struct
 import sys
 import zipfile
 
 APK_SIG_MAGIC = b"APK Sig Block 42"
+
+# The zip entries a JAR signature adds. An Android App Bundle is signed the
+# way a JAR is, so its signature is not a signing block but entries, named
+# after the key's alias: META-INF/UPLOAD.SF and .RSA beside a release built
+# with the upload key, META-INF/ANDROIDD.* beside a rebuild signed with a
+# debug key. Two builds of one commit differ there and nowhere else, so a
+# bundle's digest leaves them out — and only a bundle's: an APK's signature
+# is its signing block, and an entry an APK carries under these names is
+# content like any other. META-INF/MANIFEST.MF is not left out: it lists a
+# digest of every other entry, so it changes when they do.
+JAR_SIGNATURE_ENTRY = re.compile(r"META-INF/[^/]+\.(?:SF|RSA|DSA|EC)",
+                                 re.IGNORECASE)
+
+
+def is_bundle(z: zipfile.ZipFile) -> bool:
+    """An Android App Bundle: a zip with `BundleConfig.pb` at its root."""
+    return "BundleConfig.pb" in z.namelist()
 
 # Pair IDs seen in an APK signing block. The unnamed ones are printed in hex.
 BLOCK_IDS = {
@@ -109,7 +131,7 @@ def differing_runs(a: bytes, b: bytes, block: int = 1 << 16):
     return runs
 
 
-def content_digest(path: str) -> str:
+def content_digest(path: str, skipped: list | None = None) -> str:
     """A digest of what the build produced, ignoring what signing added.
 
     The SHA256SUMS.txt published with a release is a hash of the *signed* APK.
@@ -127,10 +149,19 @@ def content_digest(path: str) -> str:
 
     What it deliberately still catches: a changed file, a reordered archive, a
     different compression method, an added or removed entry.
+
+    A bundle (`.aab`) is signed differently: its signature is zip entries
+    (JAR_SIGNATURE_ENTRY), which are left out, and each one left out is added
+    to [skipped] when given, so that what was not compared can be said.
     """
     h = hashlib.sha256()
     with zipfile.ZipFile(path) as z:
+        bundle = is_bundle(z)
         for info in z.infolist():
+            if bundle and JAR_SIGNATURE_ENTRY.fullmatch(info.filename):
+                if skipped is not None:
+                    skipped.append(info.filename)
+                continue
             # Every variable-length field is length-prefixed, so the stream
             # parses one way only and two archives cannot be arranged to hash
             # alike by sliding a boundary. The first version prefixed the name
@@ -192,11 +223,17 @@ def main(argv) -> int:
         if len(args) != 1 or flags - {"--content-digest"}:
             print(__doc__)
             return 2
+        skipped = []
         try:
-            print(content_digest(args[0]))
+            print(content_digest(args[0], skipped))
         except (OSError, zipfile.BadZipFile) as e:
             print(f"cannot read: {e}")
             return 2
+        # On stderr: the digest alone is what stdout carries, and what the
+        # release job captures.
+        for name in skipped:
+            print(f"left out (the bundle's signature): {name}",
+                  file=sys.stderr)
         return 0
 
     if len(args) != 2 or flags - {"--ignore-signing-block"}:

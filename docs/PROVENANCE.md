@@ -205,9 +205,10 @@ below happened, and it cost a tag to learn one line.
 
 `tool/dry_run_release.py` reads those step bodies **out of
 `.github/workflows/build.yml`** rather than restating them — one copy, so the
-two cannot drift — stages a workspace shaped like a tagged run's, and executes
-them. Five passes, because what a release job does when everything is fine is
-the least interesting thing about it:
+two cannot drift — stages a workspace shaped like a tagged run's (the android
+job's uploads among it: the universal APK, one APK per ABI and the JAR-signed
+bundle), and executes them. Six passes, because what a release job does when
+everything is fine is the least interesting thing about it:
 
 | | what must happen |
 |---|---|
@@ -216,6 +217,7 @@ the least interesting thing about it:
 | the APK is missing | refuse, loudly. A silent skip would publish without the one number an outside rebuild can check, and nothing would say so |
 | two embedded build paths | refuse. The recipe names one path; a second would make it wrong |
 | two artefacts share a name | refuse. The copy into `release/` flattens, so a collision would publish one of them and list it as though nothing had been lost |
+| the bundle | `verify_reproducible.py --content-digest`, the tool the release job would use, gives the release's bundle and the slot's debug-signed one the same digest, alone on stdout, names on stderr the signature entries it left out, and gives a different build another. The release job does not publish a bundle digest yet |
 
 The last two were found by writing this. Neither was reachable before: the
 "exactly one build path" assertion existed only in the release job, so a tag

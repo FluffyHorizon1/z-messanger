@@ -134,6 +134,54 @@ def main():
         check("the digest is stable across runs",
               content_digest(plain) == content_digest(plain))
 
+        # A bundle is JAR-signed: its signature is zip entries named after
+        # the key's alias. The release's upload key and a rebuild's debug key
+        # write different ones, and nothing else differs.
+        content = [
+            ("BundleConfig.pb", b"\x0a\x05bundle"),
+            ("base/manifest/AndroidManifest.xml", b"<manifest/>"),
+            ("base/dex/classes.dex", b"dex\n" + b"A" * 5000),
+            ("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\r\n"),
+        ]
+        upload = os.path.join(d, "upload.aab")
+        debug = os.path.join(d, "debug.aab")
+        make_zip(upload, content + [("META-INF/UPLOAD.SF", b"upload sf"),
+                                    ("META-INF/UPLOAD.RSA", b"upload rsa")])
+        make_zip(debug, content + [("META-INF/ANDROIDD.SF", b"debug sf"),
+                                   ("META-INF/ANDROIDD.RSA", b"debug rsa"),
+                                   ("META-INF/ANDROIDD.EC", b"debug ec")])
+        left_out = []
+        check("a bundle signed with another key has the same digest",
+              content_digest(upload, left_out) == content_digest(debug))
+        check("and the entries left out are said",
+              left_out == ["META-INF/UPLOAD.SF", "META-INF/UPLOAD.RSA"],
+              f"{left_out}")
+        make_zip(other, [(n, (v + b"!") if n == "base/dex/classes.dex" else v)
+                         for n, v in content] + [("META-INF/UPLOAD.SF", b"s")])
+        check("a bundle's changed entry DOES change it",
+              content_digest(upload) != content_digest(other))
+        make_zip(other, [(n, (v + b"!") if n == "META-INF/MANIFEST.MF" else v)
+                         for n, v in content] + [("META-INF/UPLOAD.SF", b"s")])
+        check("a bundle's MANIFEST.MF is content: changing it DOES change it",
+              content_digest(upload) != content_digest(other))
+        make_zip(other, content + [("META-INF/UPLOAD.SF", b"upload sf"),
+                                   ("META-INF/keys/UPLOAD.RSA", b"nested")])
+        check("only META-INF's own signature files are left out",
+              content_digest(upload) != content_digest(other))
+
+        # Not a bundle: an APK — or a zip whose BundleConfig.pb is not at
+        # the root — carrying an entry named like a signature file. In an
+        # APK the signature is the signing block, so such an entry is
+        # content, and it moves the digest as content does.
+        make_zip(other, entries + [("META-INF/CERT.SF", b"sf")])
+        check("in an APK, a META-INF/*.SF entry DOES change it",
+              content_digest(plain) != content_digest(other))
+        nested = [("base/BundleConfig.pb", b"x")] + entries
+        make_zip(upload, nested + [("META-INF/UPLOAD.SF", b"a")])
+        make_zip(debug, nested + [("META-INF/UPLOAD.SF", b"b")])
+        check("a BundleConfig.pb below the root does not make a bundle",
+              content_digest(upload) != content_digest(debug))
+
     print()
     if failures:
         print(f"{len(failures)} failure(s):")

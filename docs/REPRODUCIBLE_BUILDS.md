@@ -145,6 +145,20 @@ checks the digest *does* move for a changed entry, a reordered archive, a
 different compression method, a renamed entry whose name/content boundary
 has been slid by one byte, and two entries folded into one.
 
+**A bundle is signed differently, and the tool says how it treats one.** An
+`.aab` is signed the way a JAR is: its signature is zip entries —
+`META-INF/<alias>.SF` beside `.RSA`, `.DSA` or `.EC` — named after the key, so
+the release's upload key and a rebuild's debug key write different entries,
+under different names. On a bundle (a zip with `BundleConfig.pb` at its root)
+`--content-digest` leaves exactly those out, names on stderr each one it left
+out, and hashes everything else — `META-INF/MANIFEST.MF` included, which lists
+a digest of every other entry and so moves when they do. The same test signs
+one bundle with two keys and checks the digests agree, and checks that a
+changed entry, a changed manifest, a look‑alike below `META-INF/` and an APK's
+own `META-INF/*.SF` each still move it. This is the tool, not a measurement:
+no release publishes a bundle digest yet, and no bundle has been rebuilt and
+compared (see "What has NOT been established").
+
 ### Reading a difference
 
 Exit status 0 means identical. On a difference the tool prints **where**:
@@ -507,7 +521,9 @@ than none — it invites people to stop looking.
 * **Only the APK was measured.** The AAB that actually goes to Play is a
   different packaging path, and Play App Signing re-signs it with a key we do
   not hold — so for the AAB, verification necessarily compares the artefact
-  *before* signing. The desktop bundles are unmeasured.
+  *before* signing. The tool can digest a bundle with its upload signature
+  left out (above), but the release job does not publish that digest and no
+  two bundles have been compared. The desktop bundles are unmeasured.
 * **`flutter clean` was used between builds, not a fresh checkout.** Untracked
   state in the working tree could in principle influence a build.
 * **Reproducibility across checkout paths is not merely unestablished — it
