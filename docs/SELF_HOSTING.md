@@ -176,7 +176,7 @@ The relay can also serve TLS itself if you prefer, by setting `TLS_CERT` and
 | `SEND_BUFFER_CAP_BYTES` | `8388608` | the most the relay holds buffered and unread for one socket — replies, live deliveries, flush pages — before dropping it (P1‑13: a socket that kept sending and stopped reading grew the relay +880 MiB in 9 s). Mail stays queued until acknowledged, so a reader that resumes reconnects and is flushed again. Keep it above `2 × FLUSH_HIGH_WATER_BYTES` + `MAX_ENVELOPE_BYTES` so an honest slow reader is paged, not dropped |
 | `SEND_BUFFER_TOTAL_BYTES` | `67108864` | the most ALL sockets together may hold buffered and unread (P1‑13): the per‑socket cap alone would let N non‑reading sockets hold N × it. Past this the socket holding the most is dropped first — an attacker's, filling towards its cap, before an honest slow reader, which a paged flush keeps near `FLUSH_HIGH_WATER_BYTES`. Size it with `MAX_STORE_BYTES` against the instance's memory |
 | `LOG_LEVEL` | `info` | `info` logs counts/timing only, never content |
-| `Z_LATEST_VERSION` | — | the newest app version you want your users prompted to update to (24.4). Set it to a plain `x.y.z` and `/latest.json` serves `{"version","url"}`; leave it unset (or non‑semver) and the route 404s, so your users are never prompted. The app checks it at most once a day when Settings is opened, against the host it already dials — no third party, nothing per‑user. The official relay does not set it yet — no Blueprint in this repository does, and its `/latest.json` answered 404 on 2026‑10‑03 — so nobody on it is prompted; a self‑hoster who does not track releases can ignore it |
+| `Z_LATEST_VERSION` | — | the newest app version you want your users prompted to update to (24.4). Set it to a plain `x.y.z` and `/latest.json` serves `{"version","url"}`; leave it unset (or non‑semver) and the route 404s, so your users are never prompted. The app checks it at most once a day when Settings is opened, against the host it already dials — no third party, nothing per‑user. The official relay does not set it yet — no Blueprint in this repository does, and its `/latest.json` answered 404 on 2026‑10‑03 — so nobody on it is prompted; a self‑hoster who does not track releases can ignore it. On the official relay, name a version only once Play serves it to everyone: an install from Play opens the Play listing (`adr/0014`), so an earlier announcement tells every Play user of an update Play does not offer, and `check_live_relay.py --play-version x.y.z` fails while it does |
 
 **Authentication names the relay, and the relay verifies against its OWN
 name — not the `Host` header (phase 29).** A client signs its challenge answer
@@ -412,7 +412,9 @@ token‑gated now (P1‑14), so give it the relay's `METRICS_TOKEN` in the
 environment (never on the command line). It exits 0 when the serving relay is
 at least this checkout, 1 when it is behind or unhealthy, 2 when it could not
 be reached, and 3 when the token was missing or wrong — so it belongs in a
-deploy script as much as at a prompt.
+deploy script as much as at a prompt. On a release, add `--play-version` with
+the version Play serves to everyone (Play Console, production at 100%): it
+then also fails while `/latest.json` announces a newer one.
 
 Run it because **a landed `server/` change is not live until someone clicks
 Deploy**, and that click is the only step in the pipeline that leaves no

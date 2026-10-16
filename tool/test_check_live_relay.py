@@ -68,11 +68,17 @@ def wait_for(url_port: int, path: str = "/health", tries: int = 100) -> bool:
     return False
 
 
-def stub(health: dict, metrics: str, token: str = TOKEN) -> tuple[str, http.server.HTTPServer]:
+def stub(health: dict, metrics: str, token: str = TOKEN,
+         latest: str | None = None) -> tuple[str, http.server.HTTPServer]:
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
             if self.path == "/health":
                 body = json.dumps(health).encode()
+                ctype = "application/json"
+            elif self.path == "/latest.json" and latest is not None:
+                # What pages.js latestJson serves when Z_LATEST_VERSION is set;
+                # unset, the route 404s like any unknown path below.
+                body = json.dumps({"version": latest, "url": "https://example.invalid/releases/latest"}).encode()
                 ctype = "application/json"
             elif self.path == "/metrics":
                 # Mirror the relay: default-404 without a token, 401 on a
@@ -134,6 +140,8 @@ def main() -> int:
             # must not be reported as missing either.
             check("no false 'behind' from the histogram or the mode-specific gauge",
                   "BEHIND" not in r.stdout + r.stderr, r.stdout + r.stderr)
+            check("and reads its unset /latest.json as nothing announced",
+                  "not announced" in r.stdout, r.stdout)
     finally:
         proc.terminate()
         try:
@@ -218,6 +226,37 @@ def main() -> int:
         check("and says the token is needed", "METRICS_TOKEN" in r.stderr, r.stderr)
         r = run_checker(url, token="the-wrong-token")
         check("exits 3 when the token is wrong (/metrics 401)", r.returncode == 3, r.stdout + r.stderr)
+    finally:
+        srv.shutdown()
+
+    # ---- 7. /latest.json against what Play serves (phase 43) ----
+    print("an update announced before Play has it")
+    healthy = ({"ok": True, "coordinator": "memory", "storage": "ram-only", "push": "disabled"},
+               "".join(f"# TYPE {m} counter\n{m} 0\n" for m in emitted))
+    url, srv = stub(*healthy, latest="4.2.0")
+    try:
+        r = run_checker(url, "--play-version", "4.1.1")
+        check("fails when the relay announces a version newer than Play serves",
+              r.returncode == 1, r.stdout + r.stderr)
+        check("and says what to set Z_LATEST_VERSION to",
+              "Z_LATEST_VERSION to 4.1.1" in r.stderr, r.stderr)
+        r = run_checker(url, "--play-version", "4.2.0")
+        check("passes once Play serves that version", r.returncode == 0, r.stdout + r.stderr)
+        r = run_checker(url, "--play-version", "4.10.0")
+        check("compares versions as numbers, not strings (4.10.0 is past 4.2.0)",
+              r.returncode == 0, r.stdout + r.stderr)
+        r = run_checker(url)
+        check("without --play-version, prints the announcement and does not judge it",
+              r.returncode == 0 and "4.2.0 announced" in r.stdout, r.stdout + r.stderr)
+        r = run_checker(url, "--play-version", "4.2")
+        check("exits 2 on a --play-version that is not x.y.z", r.returncode == 2, r.stdout + r.stderr)
+    finally:
+        srv.shutdown()
+    url, srv = stub(*healthy)
+    try:
+        r = run_checker(url, "--play-version", "4.1.1")
+        check("passes when nothing is announced (/latest.json 404)", r.returncode == 0,
+              r.stdout + r.stderr)
     finally:
         srv.shutdown()
 

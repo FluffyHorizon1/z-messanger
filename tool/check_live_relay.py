@@ -36,7 +36,13 @@ than from a table of versions that would itself go stale:
 
   * `presenceStale` (now the `z_presence_stale` gauge) must be present in
     Redis mode and zero, and `/health` `storage` must be `ram-only`, whatever
-    Blueprint is or is not named.
+    Blueprint is or is not named;
+  * with `--play-version x.y.z` — the version Play serves to everyone, read
+    off Play Console — `/latest.json` must not announce a newer one. Since
+    ADR 0014's amendment an install from Play opens the Play listing, so a
+    version announced before Play has it tells every Play user of an update
+    Play does not offer (phase 43). Not announcing (404) passes. Without the
+    flag the announced version is printed and not compared.
 
 `/metrics` now needs a bearer token (P1-14, default-404 without one). This
 reads it from the `METRICS_TOKEN` environment variable — pass the same secret
@@ -46,8 +52,8 @@ rule): its test drives it against a relay it starts itself.
 Exit status is 0 when the live relay is at least this checkout, 1 when it is
 behind or unhealthy, 2 when it could not be reached or the arguments are
 wrong, and 3 when `/metrics` answered 401/404 because the token was missing or
-wrong. Reading `/health` and `/metrics` is a GET a builder may make; nothing
-here deploys.
+wrong. Reading `/health`, `/metrics` and `/latest.json` is a GET a builder may
+make; nothing here deploys.
 """
 from __future__ import annotations
 
@@ -119,9 +125,30 @@ def metric_value(body: str, name: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)([-+][0-9A-Za-z.-]+)?$")
+
+
+def semver_key(v: str) -> tuple[int, int, int, int] | None:
+    """Orders x.y.z, a pre-release (x.y.z-rc1) before its release; None if
+    `v` is not the plain semver `/latest.json` serves (pages.js latestJson)."""
+    m = SEMVER.match(v.strip())
+    if not m:
+        return None
+    pre = 0 if (m.group(4) or "").startswith("-") else 1
+    return int(m.group(1)), int(m.group(2)), int(m.group(3)), pre
+
+
 def main(argv: list[str]) -> int:
     args = argv[1:]
     blueprint: Path | None = None
+    play: str | None = None
+    if "--play-version" in args:
+        i = args.index("--play-version")
+        if i + 1 >= len(args) or semver_key(args[i + 1]) is None:
+            print("--play-version needs the x.y.z Play serves to everyone", file=sys.stderr)
+            return 2
+        play = args[i + 1].strip()
+        del args[i : i + 2]
     if "--blueprint" in args:
         i = args.index("--blueprint")
         if i + 1 >= len(args):
@@ -135,8 +162,8 @@ def main(argv: list[str]) -> int:
             return 2
         del args[i : i + 2]
     if len(args) != 1:
-        print("usage: check_live_relay.py <base-url> [--blueprint render.ha.yaml]",
-              file=sys.stderr)
+        print("usage: check_live_relay.py <base-url> [--blueprint render.ha.yaml] "
+              "[--play-version x.y.z]", file=sys.stderr)
         return 2
     base = args[0].rstrip("/")
     if not SERVER.exists():
@@ -208,6 +235,23 @@ def main(argv: list[str]) -> int:
     ids.discard("")
     presence_stale = metric_value(metrics_raw, "z_presence_stale")
 
+    # What the in-app update notice is told (24.4): 404 means nothing is
+    # announced, which is the honest default.
+    latest: str | None = None
+    latest_problem: str | None = None
+    try:
+        latest_body = json.loads(get(f"{base}/latest.json"))
+        latest = str(latest_body.get("version", "")) if isinstance(latest_body, dict) else ""
+        if semver_key(latest) is None:
+            latest_problem = f"/latest.json does not name a plain x.y.z version: {latest!r}"
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            latest_problem = f"/latest.json answered {e.code}"
+    except json.JSONDecodeError:
+        latest_problem = "/latest.json did not answer JSON"
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        latest_problem = f"/latest.json: not reachable ({e})"
+
     print(f"relay      {base}")
     print(f"health     ok={health.get('ok')} coordinator={health.get('coordinator')} "
           f"storage={health.get('storage')} push={health.get('push')}")
@@ -217,6 +261,12 @@ def main(argv: list[str]) -> int:
         print("blueprint  not compared — pass --blueprint render.ha.yaml for the "
               "public deployment")
     print(f"metrics    {len(live)} live, {len(want)} emitted by this checkout in every mode")
+    if latest is None and latest_problem is None:
+        print("latest     not announced (/latest.json 404: Z_LATEST_VERSION unset)")
+    elif latest_problem is None:
+        print(f"latest     {latest} announced"
+              + (f"; Play serves {play}" if play else
+                 " — pass --play-version to compare with what Play serves"))
     if extra:
         print(f"           ahead of this checkout: {', '.join(extra)}")
     for m in conditional:
@@ -247,6 +297,15 @@ def main(argv: list[str]) -> int:
             )
     if health.get("storage") != "ram-only":
         problems.append(f"storage is {health.get('storage')!r}, not 'ram-only'")
+    if latest_problem is not None:
+        problems.append(latest_problem)
+    elif play is not None and latest is not None and semver_key(latest) > semver_key(play):
+        problems.append(
+            f"/latest.json announces {latest} but Play serves {play}: every Play "
+            f"install is told of an update Play does not offer (adr/0014). Set "
+            f"Z_LATEST_VERSION to {play}, or unset it, until Play serves {latest} "
+            f"to everyone"
+        )
 
     if problems:
         print()
