@@ -563,7 +563,17 @@ split‑view attacker answering the device's request from the root's mailbox).
 account with `v` below its current version knows that contact never got the
 list (added after a device was linked, or a broadcast lost) and sends it
 again (cooldown‑limited); it also introduces its device set alongside the
-contact‑add hello. Distribution therefore converges without user action.
+contact‑add hello. A device that installs a contact's list naming a device it
+has never sent its own list to sends its list then — to every device of the
+contact, once per such list, not cooldown‑limited. The new device holds at
+most the one‑device list its own device passed on when the contact was added
+(§18.8's `cadd`), and every message it is sent claims a newer one; waiting
+for its echo, which rides a receipt held 5 s to a minute (ADR 0028), lost
+the race with the grace, and the re‑send that echo asked for could fall
+inside the cooldown of one asked for before the device was known (until
+2026‑10‑16, after 4.2.0: two people who each had a linked device added each
+other, and a laptop raised "the update never arrived"). Distribution
+therefore converges without user action.
 
 ### 3.7 Who can read a v2‑only list: the capability, and the move (ADR 0029)
 

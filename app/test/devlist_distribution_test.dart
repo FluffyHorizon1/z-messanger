@@ -8,7 +8,14 @@
 //      sync) is caught up by its root and raises NO false owner alert when a
 //      contact's honest echo is newer than what it knew;
 //   3. an owner alert raised while the root was unreachable clears itself once
-//      the root's answer shows the echo was an honest update.
+//      the root's answer shows the echo was an honest update;
+//   4. two people who each have a linked device add each other: each laptop
+//      is sent the other account's list as soon as that account's list names
+//      it, and neither raises "the update never arrived" at the app's own
+//      grace. Until 2026-10-16 (after 4.2.0) it waited for the laptop's echo,
+//      which rides a receipt held 5 s to a minute (ADR 0028), and the re-send
+//      that echo asked for fell inside the cooldown of the one the phone's
+//      echo had asked for: run against bab066f, a laptop raised the alarm.
 // The rogue cases in devlist_transparency_test.dart must keep passing: there
 // the root cannot explain the echo, so the alert stands.
 @Tags(['integration'])
@@ -320,6 +327,59 @@ void main() {
         timeout: const Duration(seconds: 25),
         what: "the laptop's owner alert clearing on the root's answer");
     expect(await a.laptop.ownDeviceListVersion(), 2);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test(
+      'two people who each have a linked device add each other: each laptop '
+      'is sent the other\'s list, and neither raises "the update never '
+      'arrived"', () async {
+    final a = await linkedAccount();
+    final b = await linkedAccount();
+    // The grace the app runs with, not this file's: what is under test is
+    // whether the list arrives in time in ordinary use.
+    const appGrace = Duration(seconds: 8);
+    for (final s in [a.phone, a.laptop, b.phone, b.laptop]) {
+      s.devlistGrace = appGrace;
+    }
+
+    // They add each other on their phones. 13.7 passes each on to the
+    // laptop as the code carried it: a one-device list, version 1.
+    await a.phone.addContactFromCode(await b.phone.myContactCode());
+    await b.phone.addContactFromCode(await a.phone.myContactCode());
+    await waitUntil(
+        () =>
+            a.laptop.contacts.containsKey(b.phone.myRid) &&
+            b.laptop.contacts.containsKey(a.phone.myRid),
+        what: 'each laptop holding the other account, from its phone');
+
+    // A few messages each way, which reach both laptops — each claiming the
+    // sender's account is at version 2.
+    for (var i = 0; i < 3; i++) {
+      await a.phone.sendText(b.phone.myRid, 'from a $i');
+      await b.phone.sendText(a.phone.myRid, 'from b $i');
+    }
+    await waitUntil(
+        () =>
+            texts(b.laptop, a.phone.myRid).contains('from a 2') &&
+            texts(a.laptop, b.phone.myRid).contains('from b 2'),
+        what: 'the last message each way, at the other laptop');
+    // More than the grace: an update that never came would be judged by now.
+    await Future<void>.delayed(appGrace + const Duration(seconds: 1));
+    for (final s in [a.phone, a.laptop, b.phone, b.laptop]) {
+      expect(s.contactDevlistAlerts, isEmpty,
+          reason: '${s.displayName} (${s.myRid.substring(0, 6)}): an honest '
+              'list, sent in time, raises nothing');
+    }
+    // Each device holds the other account's list as it is: version 2.
+    for (final (s, other) in [
+      (a.phone, b.phone),
+      (a.laptop, b.phone),
+      (b.phone, a.phone),
+      (b.laptop, a.phone),
+    ]) {
+      expect(await s.heldContactListVersion(other.myRid), 2,
+          reason: '${s.displayName} holds the other account at version 2');
+    }
   }, timeout: const Timeout(Duration(minutes: 2)));
 }
 

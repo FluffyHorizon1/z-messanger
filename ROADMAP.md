@@ -460,7 +460,7 @@ shipped in 4.2.0.
 | 30 Message integrity | Done | 30.1 binds an attachment to its message and caps what a receiver takes; 30.2 acknowledges every envelope once its fate is decided; 30.3 carries edits, timers, reactions and receipts on linked-device paths | P0-2, P1-10, P1-12 |
 | 31 A restore resumes the account | Done | Archive format 1.1 carries the own list, transparency state and contacts' floors; the first start signs above anything seen before any send (`adr/0025`, R45) | P0-3, P1-8, the backup P2s |
 | 32 Alarms only on signed evidence | Done | Owner banners need a list the account key signed; damaged vaults reconcile quietly (`adr/0026`, R46) | P1-7, P1-6's leftovers |
-| 33 Linked devices as equals | Done | A new device knows contacts as the phone does; requests, declines and blocks follow the account | P1-5, the contact P2s |
+| 33 Linked devices as equals | Done; a contact-list fix landed, not released | A new device knows contacts as the phone does; requests, declines and blocks follow the account; and — landed after 4.2.0 — a contact's linked device is sent the account's list as soon as that contact's list names it, so two people who each have a linked device add each other without a false "update never arrived" | P1-5, the contact P2s |
 | 34 Transparency log health | Done | Owned buffers, rebalanced publish gates, a repair tool that signs nothing, bounded mirror and witness | P1-17, the KT P2s |
 | 35 Private transparency lookups | Done (4.1.0; hardening 4.2.0) | Refreshes ask by label-prefix bucket with a completeness proof, among decoys the app keeps, at random times (`adr/0023`, PROTOCOL §19.9); the hardening pads every entry fetch, sizes buckets from labels the app counted itself, and catches up after short sessions | P0-5 |
 

@@ -12484,8 +12484,36 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       _pqAnswers.remove(rid);
       _pqLastSentMs.remove(rid);
       _offerPqIdentity(contact, _PqReason.volunteer);
+      // 7.7a: nor has it been sent our device list. It holds at most the
+      // one-device list from our code, which its own device passed on when
+      // they added us, and every message we send it claims a newer one.
+      unawaited(_sendOwnListToNewDevices(contact).then((_) {}, onError: (_) {}));
     }
     return true;
+  }
+
+  /// 7.7a, self-healing distribution: [contact]'s list has just named a
+  /// device of theirs we have never sent our list to, so it goes to them now
+  /// — to every device of theirs, as any send does — once per such list.
+  ///
+  /// Waiting for that device's echo is what the repair channel did until
+  /// 2026-10-16 (after 4.2.0), and it was too slow. Two people who each had a
+  /// linked device added each other, and the other's laptop raised "their
+  /// device list changed and the update never arrived" in ordinary use: our
+  /// claim reached it with our first message, its echo rode its receipt (5 s
+  /// to a minute later, ADR 0028), and the re-send that echo asked for fell
+  /// inside the cooldown of the one their phone's echo had already asked for,
+  /// sent before we knew the laptop was there. Not cooldown-limited: a
+  /// contact's list changes only when their account signs a new one.
+  Future<void> _sendOwnListToNewDevices(Contact contact) async {
+    final data = await _shareableDeviceList();
+    if (data == null || !contacts.containsKey(contact.rid)) return;
+    // A one-device account's list is the one in its code: nothing newer for
+    // the new device to learn, and nothing claimed above what it holds.
+    final v = (jsonDecode(data) as Map)['ver'];
+    if (v is! num || v <= 1) return;
+    _dlResentAtMs[contact.rid] = _now();
+    await _sendInner(contact, _devlistInner(data));
   }
 
   /// What §3.4's rules make of the devices [list] — a list for [contact]'s
