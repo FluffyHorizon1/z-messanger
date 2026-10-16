@@ -17,7 +17,17 @@ handful of properties a wrong click cannot undo:
   * the three values YAML 1.1 reads as booleans when bare — off, on, yes,
     no — are quoted wherever Render expects a string (autoDeployTrigger,
     persistenceMode), because a bare `off` arrives as `false` and the
-    service auto-deploys on every push to main.
+    service auto-deploys on every push to main;
+  * the public relay's Blueprint (render.ha.yaml, the one
+    check_live_relay.py compares the live relay with) names in
+    RELAY_AUTHORITIES the authority of every address the app dials by
+    default — `defaultRelayUrl` and `legacyDefaultRelayUrl` in
+    app/lib/core/relay_url.dart. v2 authentication matches that list
+    exactly, so a missing name refuses every client that dialled it with
+    `bad_auth`, whatever their app; on 2026-10-15 the list held the bare
+    name alone and nobody on the default address could log in until it was
+    fixed by hand (552bde6). A constant this cannot read is a failure, not a
+    skip: the check would otherwise go green on nothing.
 
 Written with render.kt.yaml and render.kt-witness.yaml, when a log with a
 signing key joined the relay in the set of things a Blueprint can create.
@@ -39,6 +49,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 try:
     import yaml
@@ -145,6 +156,91 @@ def check(path: Path) -> list[str]:
 # does not take one out of this check; deleting one is a finding.
 EXPECTED = ("render.yaml", "render.ha.yaml", "render.kt.yaml", "render.kt-witness.yaml")
 
+# The Blueprint the public relay runs, and the addresses every install dials
+# by default (the second is what installs from before 2026-09-17 hold).
+PUBLIC_RELAY = "render.ha.yaml"
+RELAY_URL_DART = ROOT / "app" / "lib" / "core" / "relay_url.dart"
+APP_RELAY_CONSTANTS = ("defaultRelayUrl", "legacyDefaultRelayUrl")
+
+
+def normalize_authority(name: str) -> str:
+    """server.js's normalizeAuthority: trimmed, lower-cased, a trailing :80 or
+    :443 dropped — what a configured name and a Host header are both read as."""
+    h = name.strip().lower()
+    return re.sub(r":(80|443)$", "", h)
+
+
+def url_authority(url: str) -> str:
+    """The authority a client signs for a relay address: the host, with the
+    port only when it is not 80 or 443 (Dart and Node omit a default port)."""
+    try:
+        parts = urlsplit(url.strip())
+        host, port = parts.hostname or "", parts.port
+    except ValueError:
+        return ""
+    if not host:
+        return ""
+    if ":" in host:  # an IPv6 literal keeps its brackets, as the header has them
+        host = f"[{host}]"
+    return normalize_authority(host if port is None else f"{host}:{port}")
+
+
+def app_authorities() -> tuple[list[str], list[str]]:
+    """The authority of each default relay address the app ships, and any
+    problem reading them."""
+    where = RELAY_URL_DART.relative_to(ROOT)
+    try:
+        src = RELAY_URL_DART.read_text()
+    except OSError as e:
+        return [], [f"{where} cannot be read ({e}), so the names the app dials are unknown."]
+    out, problems = [], []
+    for name in APP_RELAY_CONSTANTS:
+        m = re.search(rf"^const String {name}\s*=\s*'([^']*)';", src, re.M)
+        a = url_authority(m.group(1)) if m else ""
+        if a:
+            out.append(a)
+        else:
+            problems.append(
+                f"{where}: `{name}` is not a `const String` relay address this can "
+                f"read, so the public relay's names cannot be checked against it."
+            )
+    return out, problems
+
+
+def check_public_relay(path: Path) -> list[str]:
+    """RELAY_AUTHORITIES in the public relay's Blueprint covers every address
+    the app dials by default."""
+    wanted, problems = app_authorities()
+    doc = yaml.safe_load(path.read_text())
+    services = [
+        s for s in (doc.get("services") or [])
+        if any(str(e.get("key")) == "RELAY_AUTHORITIES" for e in (s.get("envVars") or []))
+    ]
+    if not services:
+        problems.append(
+            f"{path.name}: no service sets RELAY_AUTHORITIES, so the public relay "
+            f"would take only the platform's own name, and every install dials "
+            f"{' and '.join(wanted) or 'the app default'}."
+        )
+    for svc in services:
+        e = next(e for e in svc["envVars"] if str(e.get("key")) == "RELAY_AUTHORITIES")
+        where = f"{path.name}: service `{svc.get('name', '?')}`"
+        if "value" not in e:
+            problems.append(
+                f"{where}: RELAY_AUTHORITIES is not in the file. The names are not "
+                f"a secret; keep them here, where this holds them to the app's addresses."
+            )
+            continue
+        names = {normalize_authority(a) for a in str(e.get("value") or "").split(",")} - {""}
+        missing = [a for a in wanted if a not in names]
+        if missing:
+            problems.append(
+                f"{where}: RELAY_AUTHORITIES is {str(e.get('value') or '')!r} and lacks "
+                f"{', '.join(missing)}, which the app dials ({RELAY_URL_DART.name}). "
+                f"Every client that dials a missing name is refused `bad_auth`, at once."
+            )
+    return problems
+
 # Directories that are not the repository's own files.
 PRUNE = {"node_modules", ".git", "build", ".dart_tool", ".gradle", "Pods"}
 
@@ -174,6 +270,9 @@ def main() -> int:
             )
     for f in files:
         problems.extend(check(f))
+    public = stems.get(PUBLIC_RELAY) or stems.get(PUBLIC_RELAY[:-len(".yaml")] + ".yml")
+    if public is not None:
+        problems.extend(check_public_relay(public))
     print(f"blueprints checked: {len(files)}")
     if not files:
         # Unreachable while EXPECTED holds, and kept anyway: a floor that
@@ -184,7 +283,8 @@ def main() -> int:
         for p in problems:
             print(f"  - {p}")
         return 1
-    print("every Blueprint keeps its secrets out of the file, checks its health, and mounts its disk where its data lives.")
+    print("every Blueprint keeps its secrets out of the file, checks its health, and mounts its disk where its data lives;")
+    print(f"the public relay ({PUBLIC_RELAY}) names every address the app dials by default.")
     return 0
 
 

@@ -220,9 +220,29 @@ will accept, or `RELAY_AUTHORITIES unset` — and on a refusal whose connection
 dialled a name that is none of those it prints that name, quoted, beside the
 list it is missing from, once an hour per name, and counts it
 (`z_auth_v2_refused_unknown_name_total`). A refusal on a name it does know
-is a bad signature (the replay R33 stops) and is counted only. Before you
-deploy, set the list to every name your clients dial; after, read the boot
-line and watch that counter stay at zero.
+is a bad signature (the replay R33 stops) and is counted only.
+
+Every deploy of a relay, then:
+
+1. **Before:** write down every name clients dial — the app's default
+   (`wss://www.zmessengers.com` for the public relay), the address installs
+   from before 2026‑09‑17 still hold (`wss://zmessengers.com`), and any
+   custom domain. The platform's own name (`RENDER_EXTERNAL_HOSTNAME`, or
+   `<app>.fly.dev` on Fly) is added for you.
+2. **Before:** compare that list with the `RELAY_AUTHORITIES` the live
+   service runs, in the dashboard — not only the Blueprint, since a value set
+   by hand is what runs. For the public relay, `tool/check_blueprints.py`
+   holds `render.ha.yaml` to the app's two default addresses
+   (`app/lib/core/relay_url.dart`); it cannot see the dashboard.
+3. **After:** read the boot line, `v2 authentication verified against: …`,
+   and find every name from step 1 in it.
+4. **After:** confirm the relay serving is the one you deployed —
+   `METRICS_TOKEN=<token> python3 tool/check_live_relay.py https://<relay>`,
+   with `--blueprint render.ha.yaml` for the public relay (see "After a
+   deploy" below).
+5. **After:** watch `z_auth_v2_refused_unknown_name_total` stay at zero
+   through the first hour of traffic; anything else comes with a log line
+   naming the name the list is missing.
 
 ## Health & monitoring
 
