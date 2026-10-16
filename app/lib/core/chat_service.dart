@@ -3671,8 +3671,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           offer == null ? null : await _sealFor(contact.rid, offer);
       // 7.7a: stamp our device-list claim + an echo of theirs onto the wire.
       await _decorateForWire(inner, contact);
+      // ADR 0029, per device: if the recipient's own (root) device is behind
+      // — a mix where a linked device is capable but this one is not — the
+      // `dl` claim is stripped from its copy, as from an incapable sibling's
+      // in the fan ([_fanToContactExtras]). The common case keeps the inner
+      // as decorated. The shared `inner` is not mutated: the fan reads it too.
+      final rootBytes = (inner.data.containsKey('dl') &&
+              _withholdsClaimFromDevice(contact.rid, contact.rid))
+          ? _withoutClaim(inner).toBytes()
+          : inner.toBytes();
       final payload =
-          await _sealFor(contact.rid, await conv.encrypt(inner.toBytes()));
+          await _sealFor(contact.rid, await conv.encrypt(rootBytes));
       // Read once and call only if set: `await gate?.call(...)` would await a
       // null and so yield a microtask on EVERY send, which is enough to move
       // the debounce-versus-settle races the PQ exchange tests count
@@ -11429,6 +11438,20 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     return true;
   }
 
+  /// ADR 0029, per device: whether this account's `dl` claim is withheld from
+  /// [deviceRid] — one of [rid]'s devices — because this account signs
+  /// v2-only and THAT device has not said it reads a v2-only list. The
+  /// per-contact [_withholdsClaimFrom] withholds only when NONE of a contact's
+  /// devices has said so; this one leaves an incapable SIBLING of a capable
+  /// contact out of the fan too. Without it the claim named a list that sibling
+  /// cannot read, and the sibling, holding an older list, turned "a claim above
+  /// the list I hold" into [DevlistAlertKind.missingUpdate] after the grace —
+  /// the exact false alarm the withhold exists to suppress, raised on a device
+  /// the per-contact rule could not see because a capable sibling spoke for the
+  /// whole contact.
+  bool _withholdsClaimFromDevice(String rid, String deviceRid) =>
+      _ownV2Only && (_readerLevels[rid]?[deviceRid] ?? 0) < devlistReaderLevel;
+
   /// Test seam: what [deviceRid], one of [rid]'s devices, last said it reads
   /// (ADR 0029); null for a device that has said nothing.
   @visibleForTesting
@@ -12932,7 +12955,30 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         await _decorateForWire(inner, contact);
         // A device only an unconfirmed list added gets nothing (ADR 0006):
         // the hold is what makes a split view cost the attacker something.
-        final fan = await s.encrypt(inner.toBytes(), except: kt.heldRids(rid));
+        final held = kt.heldRids(rid);
+        // ADR 0029, per device: an incapable sibling of a capable contact is
+        // left out of the `dl` claim (it names a list it cannot read, and it
+        // would raise `missingUpdate`). Only when `dl` is actually present —
+        // not withheld for the whole contact, not a kind that carries none —
+        // and some device is behind is there anything to split; the common
+        // case takes the single pass it always did.
+        final strip = inner.data.containsKey('dl')
+            ? <String>{
+                for (final r in s.targetRoutingIds)
+                  if (_withholdsClaimFromDevice(rid, r)) r
+              }
+            : const <String>{};
+        final fan = strip.isEmpty
+            ? await s.encrypt(inner.toBytes(), except: held)
+            : [
+                ...await s.encrypt(inner.toBytes(),
+                    except: {...held, ...strip}),
+                ...await s.encrypt(_withoutClaim(inner).toBytes(), except: {
+                  ...held,
+                  for (final r in s.targetRoutingIds)
+                    if (!strip.contains(r)) r
+                }),
+              ];
         // Persist the advanced ratchet BEFORE the envelopes exist anywhere,
         // so a redelivery is still decryptable.
         await _saveExtra(rid);
@@ -13637,6 +13683,20 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // Leave the message undecorated; gossip resumes on the next send.
     }
   }
+
+  /// [inner] with its own-list claim (`dl`) taken off, for a recipient device
+  /// withheld from per [_withholdsClaimFromDevice]. A shallow copy: the `data`
+  /// map is new so the original — fanned to this contact's capable devices —
+  /// keeps its claim. Everything else is the original's, the disappearing
+  /// timer included: a copy without it would keep for good, on that device, a
+  /// message its sender set to go.
+  InnerMessage _withoutClaim(InnerMessage inner) => InnerMessage(
+        kind: inner.kind,
+        mid: inner.mid,
+        ts: inner.ts,
+        ttlSec: inner.ttlSec,
+        data: {...inner.data}..remove('dl'),
+      );
 
   /// Test seam: [list] as if this device's root had self-synced it — the
   /// one way a list for this account reaches a device that cannot sign one.

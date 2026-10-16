@@ -58,7 +58,19 @@
 //  10. the move silences no evidence: afterwards, a list the account key
 //      signed and its devices never issued — v2-only, the next version,
 //      adding a device — shown to one contact still raises the owner's
-//      alarm on the root and on the linked device.
+//      alarm on the root and on the linked device;
+//  11. a contact whose devices differ — one reads a v2-only list, one
+//      cannot — is sent the claim on the one that reads it and not on the
+//      other, either way round (an older laptop beside an updated phone, an
+//      older phone beside an updated laptop), so the other is not told the
+//      update never arrived and nobody is alerted; the copy without the
+//      claim is otherwise the message, its disappearing timer included.
+//
+// Criterion 11 was run against 9c8cf9f, where the claim was withheld per
+// contact: Ben's old laptop and Carol's old phone each recorded Alice's
+// claim, and the laptop, judging it, raised "the update never arrived". With
+// the claim withheld per device but a copy that dropped its timer, Carol's
+// phone kept the timed message for good.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -299,9 +311,14 @@ void main() {
 
   /// A laptop linked to [host]'s account, as an enrolment leaves one — its
   /// own keys, the account it joined, the device that linked it — running,
-  /// and named [name] so [start] can bring it back.
+  /// and named [name] so [start] can bring it back. [preAdr0029], [log] and
+  /// [grace] are [start]'s; [parsesV2Only] false makes it a build from before
+  /// 3.9.9, which drops every v2-only list that reaches it, from the start.
   Future<ChatService> startLinked(String name, ChatService host,
-      {bool preAdr0029 = false}) async {
+      {bool preAdr0029 = false,
+      bool log = true,
+      Duration grace = const Duration(milliseconds: 700),
+      bool parsesV2Only = true}) async {
     final dir =
         dirs[name] ??= await Directory.systemTemp.createTemp('z_dlcap_$name');
     final vault = await Vault.open(rootOverride: dir);
@@ -321,7 +338,12 @@ void main() {
     await vault.kvPut('my_devices', jsonEncode([account.deviceCert.toJson()]),
         sensitive: false);
     await vault.db.close();
-    final svc = await start(name, preAdr0029: preAdr0029);
+    final svc =
+        await start(name, preAdr0029: preAdr0029, log: log, grace: grace);
+    if (!parsesV2Only) {
+      svc.debugOnDecrypted =
+          (path, from, dec) => _isV2OnlyDevlist(dec.plaintext);
+    }
     await waitUntil(() => up(host) && up(svc),
         what: '$name and its host each up on both links');
     // As the app's pairing links one (`hostDeviceLink`): the version waits for
@@ -868,6 +890,140 @@ void main() {
     await waitUntil(() => laptop.ownAccountAlert != null,
         what: 'the laptop\'s alarm on a list its root never sent it');
     expect(jsonDecode(laptop.ownAccountAlert!)['k'], OwnAlertKind.unissued);
+  });
+
+  test(
+      '11. a contact whose devices differ — one reads a v2-only list, one '
+      'cannot — has the claim on the one and not the other, either way '
+      'round, so the other is not told the update never arrived; and the '
+      'copy without the claim keeps its timer', () async {
+    final alice = await start('alice11');
+    // Carol's list comes late to Alice's laptop too: Carol's old phone does
+    // not know the laptop is there (that is in Alice's list, which it cannot
+    // read), and Carol's laptop sends its list on only once a minute. That
+    // is not what this test is about either, so this grace outlasts it.
+    final laptop = await startLinked('alice11-laptop', alice,
+        grace: const Duration(minutes: 10));
+    final dave = await start('dave11');
+    await introduce(alice, dave);
+    await waitUntil(() => moved(alice), what: 'Alice has moved');
+    await quiet([alice, dave, laptop]);
+    final mine = (await own(alice))!;
+    final claim = await alice.vault.kvGet('own_list_h');
+
+    // Two contacts added after the move, each with two devices that differ.
+    // Ben's phone reads v2-only lists; the laptop he has linked is a build
+    // from before 3.9.9 — every v2-only list that reaches it is dropped, as
+    // its parser would throw on one — with no log, whose check would
+    // otherwise install it, and judging a claim the moment it reads one.
+    final ben = await start('ben11');
+    final benOld = await startLinked('ben11-old', ben,
+        preAdr0029: true,
+        log: false,
+        grace: Duration.zero,
+        parsesV2Only: false);
+    // Carol is the other way round: her phone is that build, and the laptop
+    // she has linked reads v2-only lists.
+    final carol = await start('carol11',
+        preAdr0029: true, log: false, grace: Duration.zero);
+    carol.debugOnDecrypted =
+        (path, from, dec) => _isV2OnlyDevlist(dec.plaintext);
+    // The updated laptop is sent the claim, and the list it names comes to
+    // it late here: the old phone beside it echoes first, and Alice resends a
+    // list to one contact once a minute. A late list is not what this test is
+    // about, so its grace outlasts the test, and it reads the list from the
+    // log below.
+    final carolNew = await startLinked('carol11-new', carol,
+        grace: const Duration(minutes: 10));
+    await introduce(alice, ben);
+    await introduce(alice, carol);
+
+    // Alice holds each list naming the second device, each second device
+    // holds Alice, and each speaks to her once — so she has recorded what
+    // all four read.
+    for (final (c, second, what) in [
+      (ben, benOld, 'Ben\'s old laptop'),
+      (carol, carolNew, 'Carol\'s laptop'),
+    ]) {
+      await holdsVersion(alice, c.myRid, 2);
+      await waitUntil(() => second.contacts.containsKey(alice.myRid),
+          what: '$what holds Alice, mirrored from its phone');
+      await alice.sendText(c.myRid, 'to both of ${c.displayName}\'s devices');
+      await waitUntil(
+          () => received(
+              second, alice.myRid, 'to both of ${c.displayName}\'s devices'),
+          what: '$what has Alice\'s message');
+      await second.sendText(alice.myRid, 'from $what');
+      await waitUntil(() => received(alice, c.myRid, 'from $what'),
+          what: 'Alice has the message from $what');
+    }
+    await says(alice, ben.myRid, ben.myRid, devlistReaderLevel, 'Ben\'s phone');
+    await says(alice, ben.myRid, benOld.myRid, 0, 'Ben\'s old laptop');
+    await says(alice, carol.myRid, carol.myRid, 0, 'Carol\'s phone');
+    await says(alice, carol.myRid, carolNew.myRid, devlistReaderLevel,
+        'Carol\'s laptop');
+
+    // Now what each device is sent: a message to each contact, on a timer.
+    for (final c in [ben, carol]) {
+      await alice.setDisappearingTimer(c.myRid, 3600);
+      await alice.sendText(c.myRid, 'timed, to ${c.displayName}');
+    }
+    for (final (s, c) in [
+      (ben, ben),
+      (benOld, ben),
+      (carol, carol),
+      (carolNew, carol),
+    ]) {
+      await waitUntil(
+          () => received(s, alice.myRid, 'timed, to ${c.displayName}'),
+          what: '${s.displayName} has Alice\'s timed message');
+    }
+    await quiet([alice, laptop, dave, ben, benOld, carol, carolNew]);
+    // With no grace, a claim above the list held would have been judged an
+    // update that never arrived the moment it was read; judged once more now.
+    await benOld.debugEvaluateContact(alice.myRid);
+    await carol.debugEvaluateContact(alice.myRid);
+
+    // The device that cannot read the list was sent no claim, and holds an
+    // older list; the copy it was sent is otherwise the message, its timer
+    // too. Carol's phone is the one that shows it: what it holds is the copy
+    // Alice sent it, there before any its laptop could pass on.
+    for (final s in [benOld, carol]) {
+      expect(await s.vault.kvGet('cdl_claims_${alice.myRid}'), isNull,
+          reason: '${s.displayName} was sent no claim');
+      expect(await s.heldContactListVersion(alice.myRid),
+          lessThan(mine.version));
+    }
+    for (final (s, c) in [(carol, carol), (benOld, ben)]) {
+      final timed = s.messagesByChat[alice.myRid]!.firstWhere(
+          (m) => !m.outgoing && m.body == 'timed, to ${c.displayName}');
+      expect(timed.expireAtMs, greaterThan(0),
+          reason: '${s.displayName}: a message its sender set to go does '
+              'not keep on one device');
+    }
+
+    // The device that reads v2-only lists was sent the claim, and holds —
+    // or, on Carol's laptop, reads from the log — the list it names.
+    for (final s in [ben, carolNew]) {
+      await waitUntil(() async {
+        final raw = await s.vault.kvGet('cdl_claims_${alice.myRid}');
+        final c = raw == null ? null : (jsonDecode(raw) as Map)[alice.myRid];
+        return c is Map && c['v'] == mine.version && c['h'] == claim;
+      }, what: '${s.displayName} has recorded Alice\'s claim');
+    }
+    await holdsVersion(ben, alice.myRid, mine.version);
+    await checkLog(carolNew, alice.myRid);
+    await holdsVersion(carolNew, alice.myRid, mine.version);
+    await carolNew.debugEvaluateContact(alice.myRid);
+
+    // Nobody anywhere was alerted.
+    for (final s in [alice, laptop, dave, ben, benOld, carol, carolNew]) {
+      noAlerts(s);
+    }
+    // And what Alice is told: each contact has a device behind.
+    expect(alice.readerBehind(ben.myRid), isTrue);
+    expect(alice.readerBehind(carol.myRid), isTrue);
+    expect(alice.devlistGate.contactDevicesBehind, 2);
   });
 
   testWidgets(

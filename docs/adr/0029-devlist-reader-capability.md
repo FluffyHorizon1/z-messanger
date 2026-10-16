@@ -168,16 +168,20 @@ attack — or signing a new version with `sig` again, which every capable
 contact's floor refuses (ADR 0017, level 2) and which, served by the log, is
 a conflict at each of them. So:
 
-* **Its claim is withheld from a contact none of whose devices has said it
-  reads a v2‑only list.** The claim (`dl`) names a list such a device may be
-  unable to parse, and a build that cannot parse it turns "a claim above the
-  list I hold" into "their device list changed and the update never arrived".
-  It is made again with the next message once any of their devices says it
-  reads one. It is never withheld from a contact one of whose devices has
-  said so: that device's record of the claim must not go stale, or the next
-  list it installs would look newer than anything the account admits to.
-  Before the move nothing is withheld — a dual‑signed list is readable by
-  everyone.
+* **Its claim is withheld from each device that has not said it reads a
+  v2‑only list.** The claim (`dl`) names a list such a device may be unable
+  to parse, and a build that cannot parse it turns "a claim above the list I
+  hold" into "their device list changed and the update never arrived". It is
+  made again with the next message once that device says it reads one. It is
+  never withheld from a device that has said so: that device's record of the
+  claim must not go stale, or the next list it installs would look newer than
+  anything the account admits to. Before the move nothing is withheld — a
+  dual‑signed list is readable by everyone. (Amended 2026‑10‑16, after
+  4.2.0. As built in 4.2.0 the rule was per contact — withheld only while
+  none of a contact's devices had said so — and so a device beside one that
+  had, an older laptop beside an updated phone or an older phone beside an
+  updated laptop, was sent the claim and raised the alarm this rule exists
+  to prevent.)
 * **The user is told,** on that contact's screen, once one of their devices
   has said (by what it sends) that it is an older build: their app may not
   read your device list; one older than 3.9.9 cannot reach your other devices
@@ -251,7 +255,7 @@ anywhere.
   For the account's own devices, sealed, `own_dlr`. Neither is carried in a
   backup or an enrolment: a restored or new device learns them again from
   traffic, and a moved account stays moved from its own list.
-* **Tests.** `app/test/devlist_capability_test.dart` (10 criteria, 8 tests):
+* **Tests.** `app/test/devlist_capability_test.dart` (11 criteria, 9 tests):
   the records per device and per own device, kept across a restart; one
   contact behind holds the move, not even a restart moves it; the moment it
   says it reads the list the account moves without a restart, every reader
@@ -262,7 +266,10 @@ anywhere.
   the kill switch holding an open gate and not un‑flipping a moved account;
   an older laptop holding the move until it updates, and no move without a
   linked device; a list the account never issued still raising the owner's
-  alarm after the move; Settings' developer view and the contact's screen. Its
+  alarm after the move; a contact whose devices differ sent the claim on the
+  one that reads the list and not on the other, either way round, with no
+  alert, the copy without it keeping its timer; Settings' developer view and
+  the contact's screen. Its
   criterion 1–2 in the form that runs on the base fails on `0d00a69` ("Alice
   has moved to v2‑only signing" never holds) and passes here. ADR 0017's own
   tests, which test what the move does rather than when, start their moving

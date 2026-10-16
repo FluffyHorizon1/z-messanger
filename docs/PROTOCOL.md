@@ -602,12 +602,14 @@ key from the code they scanned, so the v1 input hides nothing from them
 **After the move.** A root that has moved does not move back (§3.4). A device
 that reads its lists without having said `dlr` of 3 or more — a contact added
 later, a device linked later — may be unable to parse them. A client whose own
-account's list is v2‑only MUST NOT send the claim `dl` (§3.6) to a contact none
-of whose devices has said so: a client that cannot parse the list would read a
-claim above the list it holds as an update that never arrived. It sends the
-claim again from the first message after any of that contact's devices says
-it, and never withholds it from a contact one of whose devices has. What such
-a contact still sees, and what the account's user is told, is in `adr/0029`.
+account's list is v2‑only MUST NOT send the claim `dl` (§3.6) to a device that
+has not said so, whether or not another device of the same contact has: a
+client that cannot parse the list would read a claim above the list it holds
+as an update that never arrived. The copy such a device is sent is otherwise
+the same inner, its `ttl` included. A client sends a device the claim again
+from the first message after that device says it, and never withholds it from
+a device that has. What such a contact still sees, and what the account's user
+is told, is in `adr/0029`.
 
 ## 4. Session establishment (X3DH‑style, no server prekeys)
 
