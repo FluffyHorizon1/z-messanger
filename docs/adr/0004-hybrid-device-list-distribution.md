@@ -3,6 +3,7 @@
 **Status:** Accepted (2026‑09‑08) · **Roadmap:** 13.1/13.4 · **Decides:** the
 last open piece of phase 13, flagged but not settled by `adr/0003`.
 **Amended by:** ADR 0010 (the signature covers ratchet keys) and ADR 0017 (held at the v1 input while v1 signing lasts).
+**Update (ADR 0031):** the per‑device `HybridDeviceCertificate` this ADR kept specified (§18.4) has been removed; the list signature it chose is how v3 binds devices.
 
 ## Context
 

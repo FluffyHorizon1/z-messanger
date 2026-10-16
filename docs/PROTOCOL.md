@@ -2575,10 +2575,9 @@ certificate — mint a device that appears to belong to an account — without
 reading a word of what it recorded. v3 closes that.
 
 Status: everything below is written, implemented and shipping, with its wire
-forms vectored in `docs/vectors/v3/` — except the hybrid device certificate
-of §18.4, which is specified, implemented in the protocol library and
-vectored, and which no client issues or checks (ADR 0010 marked it unused):
-the device set gets its post‑quantum signature from §18.9 instead. Nothing in
+forms vectored in `docs/vectors/v3/`. The device set gets its post‑quantum
+signature from the account's whole‑list signature of §18.9; the per‑device
+hybrid certificate §18.4 first reached for is retired (ADR 0031). Nothing in
 v1 or v2 changes.
 
 ### 18.1 Hybrid signatures
@@ -2821,41 +2820,31 @@ is the post‑quantum one, and confirming it is what has not happened yet. The
 reference client shows it under a separate, non‑success label
 ("Post‑quantum, unconfirmed") for exactly this reason.
 
-### 18.4 Hybrid device certificates
+### 18.4 Device certificates under v3
 
 A device certificate is the account's statement that a device belongs to it,
 so forging one inserts a rogue device into every contact's fan‑out. It is the
 one thing a quantum adversary could do to this design without touching a
 single recorded ciphertext, and it is what §18.1 exists for.
 
-The signing input is **unchanged** from §3.2:
+Devices keep **classical** keys of their own, and certificates keep the
+classical form of §3.2 — the same signing input, signed by the account's
+Ed25519 key. A device's Ed25519 key authenticates it to the relay and fixes
+its routing id; the relay is untrusted and its mailboxes hold only sealed
+ciphertext, so a forged relay authentication gains nothing a quantum
+adversary would not already have. What must be post‑quantum is the
+**account's** attestation, and that attestation is one ML‑DSA‑65 signature
+over the whole device list (§18.9), not one per certificate, for two reasons.
 
-```
-input  = utf8("z-device-cert-v1:") || device_ed_pub || device_x_pub || utf8(device_id)
-cert   = { ed, x, id, sig, mlsig }
-sig    = Ed25519.Sign(account_ed_sk,  input)
-mlsig  = ML-DSA-65.Sign(account_ml_sk, input)
-```
+**A set of individually valid certificates does not authenticate the set.**
+Given a genuine list whose certificates each carried a post‑quantum half, an
+adversary who forges Ed25519 presents a subset — the classical list signature
+forged, every surviving certificate genuine and untouched — and an honest
+device is silently excluded (`adr/0004`). Only a signature over the set
+refuses that.
 
-Both signatures cover identical bytes, so no valid pair can attest to
-different devices. A verifier MUST require both. Dropping `mlsig` MUST be a
-parse error, not a certificate that verifies classically — the classical half
-of a forgery by a quantum adversary is genuine, so a classical‑only check can
-no longer gate anything.
-
-A **legacy** record (§3.3 — a v1 identity read as a device) has no hybrid
-form: there is no account key distinct from the device key, so there is
-nothing for a post‑quantum half to attest to. Attaching one MUST be rejected,
-or a v1 identity could be presented as post‑quantum verified.
-
-Devices keep **classical** keys of their own. A device's Ed25519 key
-authenticates it to the relay and fixes its routing id; the relay is untrusted
-and its mailboxes hold only sealed ciphertext, so a forged relay
-authentication gains nothing a quantum adversary would not already have. What
-must be hybrid is the account's attestation, and that is the certificate.
-
-**Distribution is constrained, and the constraint is not obvious.** A hybrid
-certificate is ~3.4 KB. Sealed sender pads envelopes into buckets (§8) so the
+**Distribution is constrained, and the constraint is not obvious.** A per‑certificate
+post‑quantum half is ~3.4 KB. Sealed sender pads envelopes into buckets (§8) so the
 relay cannot tell one kind of message from another, and today a device‑list
 update sits in the 4 096‑byte bucket alongside ordinary chat of a few hundred
 characters (measured through the whole pipeline; the 1 024 bucket this
@@ -2867,12 +2856,14 @@ roughly how many devices it has**, from envelope size alone. That is a new
 leak running opposite to the threats `adr/0001` is about, and it would be
 introduced by a phase whose purpose is to strengthen authentication.
 
-A device list therefore continues to carry classical certificates and keeps
-its bucket, and the post‑quantum half travels separately. **What travels is
-one signature over the list, not one per certificate — see §18.9**, which
-supersedes what this paragraph originally implied. The certificate format
-above is unchanged; it is what enrollment hands to the device it describes,
-where size does not matter.
+This section first specified a per‑certificate hybrid form, `{ ed, x, id, sig,
+mlsig }`, with both signatures over the §3.2 input. No client ever issued or
+checked one, and it is **retired** (`adr/0031`): a certificate carries no
+post‑quantum member, and a device list's post‑quantum assurance comes from
+the list signature (§18.9). The one certificate a contact code carries for the
+device showing it (§18.7) travels outside any list and is checked classically
+— a contact code is authenticated classically end to end (`THREAT_MODEL.md`
+R4).
 
 ### 18.5 Safety number v2
 
@@ -3212,10 +3203,9 @@ Ed25519 the replay still passes the post‑quantum check while dual‑signing
 lasts; on a v2‑only list (`sig3` alone) the `mlsig` is over the new ratchet
 key as well, and the replayed one fails. That is the commitment ADR 0017's
 stage 2 restores, and it takes effect when the v2‑only signer is switched on
-(§3.4). `HybridDeviceCertificate` — the per‑certificate object whose
-post‑quantum half once covered `deviceXPub` — is retained only as the subject
-of the frozen `device_cert_v3` vector and is not constructed; the coverage it
-offered is given to the list signature instead (`adr/0004`, `adr/0010`).
+(§3.4). The per‑certificate hybrid object whose post‑quantum half once covered
+`deviceXPub` is retired (`adr/0031`); the coverage it offered is given to the
+list signature instead (`adr/0004`, `adr/0010`).
 
 The signature travels as its own inner message, and can be asked for:
 

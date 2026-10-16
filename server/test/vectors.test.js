@@ -1706,45 +1706,17 @@ test('v3 contact_code_pqc_sig: the commitment\'s signature, re-derived and '
   assert.equal(rewritten.pqcs, c.pqcs, 'the signature was kept as it was');
 });
 
-test('v3 device_cert_v3: both halves cover the same input, and the classical '
-  + 'half alone is not enough', () => {
+test('v3 device_cert_v3: the device list carries the post-quantum signature '
+  + '(18.9), and safety number v2', () => {
   const v = loadV3('device_cert_v3');
   assert.equal(v.suite, 'device_cert_v3');
-  assert.equal(v.signing_context, 'z-device-cert-v1:');
+  assert.equal(unhex(v.account.ml_pub).length, 1952, 'account ML-DSA public key size');
 
-  // The signing input is the v2 one, unchanged: context || dev_ed || dev_x ||
-  // device_id. Both algorithms attest to exactly these bytes, which is what
-  // makes it impossible to hold a valid pair over different devices.
-  const dev = v.device;
-  const input = cat(utf8(v.signing_context), unhex(dev.ed_pub),
-    unhex(dev.x_pub), utf8(dev.device_id));
-  assert.equal(hex(input), v.signing_input, 'signing input');
-  assert.equal(b64url(sha256(unhex(dev.ed_pub))), dev.routing_id);
-
-  // Node verifies the classical half itself.
-  const acct = v.account;
-  assert.ok(edVerify(unhex(acct.ed_pub), input, unhex(v.cert.ed_sig)),
-    'genuine certificate: classical half verifies');
-  assert.equal(unhex(v.cert.ml_sig).length, 3309);
-  assert.equal(unhex(acct.ml_pub).length, 1952);
-
-  // The forged record: its Ed25519 half is GENUINE over this device — Node
-  // confirms that independently — and only the post-quantum half gives it
-  // away. This is the exit criterion for the phase, and the reason a
-  // classical-only check can no longer gate anything.
-  assert.ok(edVerify(unhex(acct.ed_pub), input, unhex(v.must_refuse.ed_sig)),
-    'the forgery really does pass a classical-only check');
-  assert.notEqual(v.must_refuse.ml_sig, v.cert.ml_sig,
-    'and differs only in the half that cannot be forged');
-
-  // A hybrid certificate is ~3.4 KB, which is why it cannot ride in a QR or
-  // in a device list that must stay inside the 1024-byte padding bucket.
-  assert.ok(v.cert.json_bytes > 3000, 'hybrid certificates are large');
-
-  // 18.9 / ADR 0004: what actually travels to a contact is one ML-DSA
-  // signature over the device LIST. Recomputed here from the list itself, so
-  // a third implementation checks the *set* is what was signed rather than
-  // taking the recorded input on trust.
+  // 18.9 / ADR 0004 / ADR 0031: a device is bound to its account post-quantum
+  // by one ML-DSA signature over the device LIST, not a per-device hybrid
+  // certificate — that per-certificate form is retired. Recomputed here from
+  // the list itself, so a third implementation checks the *set* is what was
+  // signed rather than taking the recorded input on trust.
   const dl = v.device_list;
   const list = JSON.parse(dl.list_json);
   const eds = list.devs.map(d => unb64(d.ded))

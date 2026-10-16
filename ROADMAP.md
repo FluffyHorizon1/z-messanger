@@ -29,7 +29,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 16 | **✅ complete** — 16.1 sealed sender now holds against the relay process, not only its stored data (`adr/0007`, R21) · 16.2 pattern study: jitter and cover traffic measured against a relay that clusters by timing, and rejected with the numbers (`THREAT_MODEL.md` R18/R19) · 16.3 federation decided as client-to-many-relays and deferred (`adr/0008`) | `anonymous_sender_test.dart`, `server/test/sealed.test.js`, `server/bench/patterns.js` |
 | 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log: `adr/0006`, in progress) · 7.6 search + history sync + themes ✅ · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
 | 17 Connect without meeting | ✅ done | `adr/0009`, PROTOCOL §20, `connect_test.dart`, `connect_relay_test.dart` |
-| 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4 open | `adr/0017`/`adr/0022`/`adr/0029`, PROTOCOL §3.7, `devlist_capability_test.dart`, `device_cert_pop_test.dart`; closes P1-2, P1-3, P1-4's first-come half (R42) |
+| 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4 landed, not released — the dormant hybrid certificate retired (`adr/0031`) | `adr/0017`/`adr/0022`/`adr/0029`/`adr/0031`, PROTOCOL §3.7, `devlist_capability_test.dart`, `device_cert_pop_test.dart`; closes P1-2, P1-3, P1-4's first-come half (R42) |
 | 19 Transparency witness | people-gated (G3) | mirror/witness built (34), `kt_witness_test.dart`; needs an operator outside the project |
 | 20 Calls | designed | `adr/0005`; media path undecided |
 | 21 iOS | people-gated (G7) | nothing committed; needs a Mac, an Apple account, the reserved push ADR 0002 |
@@ -62,8 +62,9 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 50 Z without one operator | planned | `adr/0008` in practice; needs 19, 27, 36 |
 
 **Next up:** 4.2.0 shipped phases 18.5–18.7, 23.4–23.5, 41 and 42 and the
-lookups hardening; the handles hardening is built and held back, to land before
-handles are switched on. Next: an independent **witness** for the
+lookups hardening; 18.4 has landed for the next release (the dormant hybrid
+certificate retired, `adr/0031`). The handles hardening is built and held back,
+to land before handles are switched on. Next: an independent **witness** for the
 transparency log (phase 19) — the log is live and pinned (`adr/0006` says what
 "live" means, `docs/SELF_HOSTING.md` how), and G3's one remaining condition is
 somebody outside the project mirroring it — then **calls** (phase 20) once
@@ -422,9 +423,9 @@ What the releases carried: 4.0.1 — phases 23.3, 24, 25, 26.2–26.3, 28–34,
 below); **4.1.0** — phase 35 (private transparency lookups) and phase 38
 (handles in the app, dormant until a handle log is deployed); **4.1.1** — the
 relay's unknown-name login diagnostic (phase 29); **4.2.0** — phases 18.5–18.7,
-23.4–23.5, 41 and 42, and the lookups hardening (phase 35). The handles
-hardening (36–38) is built and held back, to land before handles are switched
-on.
+23.4–23.5, 41 and 42, and the lookups hardening (phase 35). The next release
+carries 18.4. The handles hardening (36–38) is built and held back, to land
+before handles are switched on.
 
 **GA gates** (`docs/GA_CHECKLIST.md`, the live answer): G1 external audit ❌,
 G2 outside rebuild ⚠️, G3 witnessed transparency ❌, G4 backup ✅, G5
@@ -438,7 +439,7 @@ people or a decision from you.
 
 | Phase | Status | Done | Left | Closes |
 |---|---|---|---|---|
-| 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4 open | `sig2` over ratchet keys (3.6.1), ML-DSA over membership (3.7.8), the v2-only reader (3.9.9); 18.5–18.6 move each account to v2-only signing once every reader has said it can read one (`adr/0029`, PROTOCOL §3.7); 18.7 proof of possession in device certificates (`adr/0022`) | 18.4 decide the dormant hybrid certificate | P1-2, P1-3, P1-4's first-come half (R42) |
+| 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4 landed, not released | `sig2` over ratchet keys (3.6.1), ML-DSA over membership (3.7.8), the v2-only reader (3.9.9); 18.5–18.6 move each account to v2-only signing once every reader has said it can read one (`adr/0029`, PROTOCOL §3.7); 18.7 proof of possession in device certificates (`adr/0022`); 18.4 the dormant hybrid certificate retired, the list signature being how v3 binds devices (`adr/0031`) | — | P1-2, P1-3, P1-4's first-come half (R42) |
 | 19 Transparency witness | People-gated | Mirror and witness code; the "witness ahead" false fork fixed (phase 34) | An operator outside the project, then the client's pinned witness config | G3 |
 | 20 Calls | Designed | `adr/0005` | Your decision on the media path | — |
 | 21 iOS | People-gated | Nothing; `app/ios` has never been committed | A Mac, an Apple account, the reserved push ADR 0002 | G7 |
@@ -589,8 +590,8 @@ log's heads show when a record arrived, which `docs/DATA_MAP.md` states.
 
 ### Order of work
 
-1. Land and release what is left of 18 (18.4), and land the handles
-   hardening before handles are switched on.
+1. Release 18.4, which has landed, and land the handles hardening before
+   handles are switched on.
 2. Recruit a witness operator (phase 19, G3) and engage an auditor (G1).
 3. Decide the calls media path (`adr/0005`) and build phase 20.
 4. Phase 43 release integrity, then 39 and 44–50 as their designs land.

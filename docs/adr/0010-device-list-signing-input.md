@@ -3,7 +3,7 @@
 **Status:** **Accepted** (2026‑09‑18) — carried out as recommended: dual
 signatures (`sig` over the v1 input, `sig2` over the v2 input), the `z-devlist-v2:`
 signing input, fingerprint‑follows‑signature, the per‑account `sig2` floor, and
-`HybridDeviceCertificate` marked unused ·
+`HybridDeviceCertificate` marked unused (since removed, ADR 0031) ·
 **Roadmap:** revision 48 · **Decides:** what `SignedDeviceList` signs, what
 its fingerprint commits to, and how a population that is half upgraded gets
 from one to the other without false transparency alarms or invisible devices.

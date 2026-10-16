@@ -3911,36 +3911,16 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
   final d = Drbg(0x000B);
   final acct =
       await HybridKeyPair.fromSeeds(edSeed: d.next(32), mlSeed: d.next(32));
-  final dev = await d.run(() async => ZIdentity.generate());
+  // ADR 0031: the per-device hybrid certificate is retired. The certificate
+  // and the decoy the dormant "must_refuse" record was built from each drew a
+  // device identity from this suite's DRBG (two 32-byte values apiece) before
+  // the live records below. Those four draws are reproduced here — built into
+  // nothing now — so the device-list and safety-number vectors the suite still
+  // emits stay byte-for-byte.
+  await d.run(() async => ZIdentity.generate());
   d.takeDraws();
-
-  final cert = await HybridDeviceCertificate.sign(
-    accountKey: acct,
-    deviceEdPub: dev.edPub,
-    deviceXPub: dev.xPub,
-    deviceId: 'laptop',
-    deterministic: true, // vectors only; production signing is hedged
-  );
-  check(await cert.verify(acct.publicKey), 'hybrid cert verifies');
-  check(await cert.classical.verify(acct.publicKey.edPub),
-      'its classical half is a plain v2 certificate');
-
-  // The exit criterion for §13: a certificate whose classical half is
-  // genuine but whose post-quantum half attests to a different device.
-  final decoy = await HybridDeviceCertificate.sign(
-    accountKey: acct,
-    deviceEdPub:
-        (await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32)))
-            .edPub,
-    deviceXPub: dev.xPub,
-    deviceId: 'rogue',
-    deterministic: true,
-  );
-  final forged =
-      HybridDeviceCertificate(classical: cert.classical, mlSig: decoy.mlSig);
-  check(!await forged.verify(acct.publicKey), 'classical-only cert refused');
-  check(await forged.classical.verify(acct.publicKey.edPub),
-      '…even though its classical half still passes');
+  d.next(32);
+  d.next(32);
 
   // Safety number v2 over both halves of both accounts.
   final peer =
@@ -4079,19 +4059,16 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
   check(!await listSig.verifies(sigStripped, acct.publicKey.mlPub),
       'and the ML-DSA check refuses it for its shape');
 
-  final certJson = jsonEncode(cert.toJson());
   return {
     'suite': 'device_cert_v3',
     'version': vectorsVersionV3,
     'description':
-        'Hybrid device certificates (§18.4) and safety number v2 (§18.5). '
-            'Both signatures cover the SAME signing input, and a certificate '
-            'verifies only if both halves do — the "must_refuse" record here '
-            'has a genuine Ed25519 signature over this device and a genuine '
-            'ML-DSA signature over a different one, which is exactly what an '
-            'adversary who has broken Ed25519 can produce. Signing is '
-            'deterministic for reproducibility; production signing is hedged.',
-    'signing_context': deviceCertContext,
+        'The account device-list signature (§18.9) and safety number v2 '
+            '(§18.5). v3 binds a device to its account post-quantum through the '
+            'account\'s ML-DSA-65 signature over the whole device LIST, not a '
+            'per-device certificate: the per-certificate hybrid form (§18.4) is '
+            'retired (ADR 0031). Signing is deterministic for reproducibility; '
+            'production signing is hedged.',
     'device_list': {
       'note':
           'ADR 0004, ADR 0010 and ADR 0017. The account signs its device LIST '
@@ -4191,24 +4168,6 @@ Future<Map<String, Object?>> suiteDeviceCertV3(List<Actor> a) async {
     'account': {
       'ed_pub': hex(acct.publicKey.edPub),
       'ml_pub': hex(acct.publicKey.mlPub),
-    },
-    'device': {
-      'ed_pub': hex(dev.edPub),
-      'x_pub': hex(dev.xPub),
-      'device_id': 'laptop',
-      'routing_id': await cert.classical.routingId(),
-    },
-    'signing_input': hex(cert.signingInput),
-    'cert': {
-      'ed_sig': hex(cert.classical.sig),
-      'ml_sig': hex(cert.mlSig),
-      'json': certJson,
-      'json_bytes': certJson.length,
-    },
-    'must_refuse': {
-      'reason': 'genuine classical half, post-quantum half over another device',
-      'ed_sig': hex(forged.classical.sig),
-      'ml_sig': hex(forged.mlSig),
     },
     'safety_number_v2': {
       'context': safetyContextV3,
