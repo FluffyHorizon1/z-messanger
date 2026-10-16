@@ -243,6 +243,11 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String addRefusedProvenElsewhere(String name) {
+    return 'El dispositivo de este código ya ha demostrado que pertenece a una cuenta distinta de la que $name dice aquí. No se ha añadido nada; no confíes en este código.';
+  }
+
+  @override
   String addRefusedCommitChanged(String name) {
     return 'El compromiso poscuántico de este código no es el que tienes para $name. Si ha restablecido su identidad, elimina el contacto y vuelve a añadirlo; si no, no confíes en este código.';
   }

@@ -18,6 +18,8 @@ String contactCodeRefusalText(AppLocalizations l, ContactCodeRefused e) =>
       ContactCodeRefusal.ownCode => l.addRefusedOwnCode,
       ContactCodeRefusal.alreadyContact => l.addRefusedAlreadyContact(e.name),
       ContactCodeRefusal.otherIdentity => l.addRefusedOtherIdentity(e.name),
+      ContactCodeRefusal.provenElsewhere =>
+        l.addRefusedProvenElsewhere(e.name),
       ContactCodeRefusal.commitChanged => l.addRefusedCommitChanged(e.name),
       ContactCodeRefusal.commitMissesConfirmedKey =>
         l.addRefusedCommitMissesKey(e.name),

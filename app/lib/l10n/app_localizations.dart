@@ -488,6 +488,12 @@ abstract class AppLocalizations {
   /// **'This code is for a different identity than the one you hold for {name}. Nothing was changed.'**
   String addRefusedOtherIdentity(String name);
 
+  /// 42.3 security warning (ADR 0022): the device named by this code has already proved possession of a different account's key than the account this code declares. A proved device does not change account, so the code is refused and nothing is added. {name} is the name the code suggests — there is no held contact for it yet.
+  ///
+  /// In en, this message translates to:
+  /// **'The device in this code has already proved it belongs to a different account than {name} claims here. Nothing was added — do not trust this code.'**
+  String addRefusedProvenElsewhere(String name);
+
   /// 42.3 security warning: the code carries a SIGNED post-quantum commitment other than the one held for {name}. Either they reset their identity (the honest path is deleting and re-adding them) or the key was substituted. 'commitment' is the protocol's term — the code holds a hash of the key.
   ///
   /// In en, this message translates to:

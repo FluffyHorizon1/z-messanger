@@ -69,6 +69,7 @@
   "addRefusedOwnCode": "Ese es tu propio código de contacto.",
   "addRefusedAlreadyContact": "{name} ya está en tus contactos.",
   "addRefusedOtherIdentity": "Este código es de una identidad distinta de la que tienes para {name}. No se ha cambiado nada.",
+  "addRefusedProvenElsewhere": "El dispositivo de este código ya ha demostrado que pertenece a una cuenta distinta de la que {name} dice aquí. No se ha añadido nada; no confíes en este código.",
   "addRefusedCommitChanged": "El compromiso poscuántico de este código no es el que tienes para {name}. Si ha restablecido su identidad, elimina el contacto y vuelve a añadirlo; si no, no confíes en este código.",
   "addRefusedCommitMissesKey": "El compromiso poscuántico de este código no coincide con la clave que confirmaste para {name}. No confíes en este código.",
   "addRefusedKeyMismatch": "La clave poscuántica que tienes para {name} no coincide con el compromiso de este código. Se ha rechazado y el contacto queda marcado. No confíes en este chat hasta que hayas hablado con {name} por otro canal.",

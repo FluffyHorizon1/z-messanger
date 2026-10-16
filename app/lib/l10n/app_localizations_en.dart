@@ -239,6 +239,11 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String addRefusedProvenElsewhere(String name) {
+    return 'The device in this code has already proved it belongs to a different account than $name claims here. Nothing was added — do not trust this code.';
+  }
+
+  @override
   String addRefusedCommitChanged(String name) {
     return 'The post-quantum commitment in this code is not the one you hold for $name. If they reset their identity, delete the contact and add them again; otherwise do not trust this code.';
   }

@@ -1095,6 +1095,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       }
       return _upgradeContactFromCode(contacts[rid]!, scanned);
     }
+    final name = (alias?.trim().isNotEmpty ?? false)
+        ? alias!.trim()
+        : (bundle.displayName ?? 'Unknown');
     // ADR 0022: a device that has proved which account it is in is not added
     // as another account's, whatever a code says — a code naming an account
     // is that account's certificate for the device, which the account signs
@@ -1106,13 +1109,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if (declared != null &&
         provenFor != null &&
         provenFor != base64Encode(declared)) {
-      throw const FormatException(
+      throw ContactCodeRefused(
+          ContactCodeRefusal.provenElsewhere,
+          name,
           'this code names a device that has proved it belongs to another '
           'account');
     }
-    final name = (alias?.trim().isNotEmpty ?? false)
-        ? alias!.trim()
-        : (bundle.displayName ?? 'Unknown');
     // §18.7: the routing id is the DEVICE's, because that is the mailbox that
     // can be reached, while the identity is the ACCOUNT's. For a code that
     // predates §18.7 these are the same key, so nothing about an existing

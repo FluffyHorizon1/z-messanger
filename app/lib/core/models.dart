@@ -260,6 +260,12 @@ enum ContactCodeRefusal {
   /// The code names the device of a contact held under a different identity.
   otherIdentity,
 
+  /// The code names a device that has proved (ADR 0022) it belongs to an
+  /// account other than the one the code declares. A proved device does not
+  /// change account, so the code is refused and nothing is added. The name is
+  /// the one the code suggests, since there is no held contact for it yet.
+  provenElsewhere,
+
   /// A signed commitment other than the one held for the contact: a reset
   /// identity, or a substituted key.
   commitChanged,
