@@ -170,18 +170,33 @@ def main() -> int:
                 "this check has nothing to judge. Fix the check before "
                 "trusting it."
             )
+        # `KT_` covers the device-list log. `HANDLE_LOG_` is the same kind of
+        # value for the handle log (`handles.dart` reads HANDLE_LOG_URL and
+        # HANDLE_LOG_PUB through String.fromEnvironment), and it is the switch
+        # that turns handles on at all: empty defaults are what makes the app
+        # say "not available yet". A build command could therefore switch
+        # handles on for one platform and not another, and the reproducible
+        # rebuild would produce an artifact that is not the one shipped —
+        # without this check saying so, because it only looked for `KT_`.
+        LOG_DEFINES = {
+            "KT_": "app/lib/core/key_transparency.dart",
+            "HANDLE_LOG_": "app/lib/core/handles.dart",
+        }
         for i, line in enumerate(wf_text.splitlines(), 1):
-            if "--dart-define" in line and "KT_" in line:
-                problems.append(
-                    f".github/workflows/build.yml:{i} passes a transparency "
-                    f"value as a --dart-define. The `reproducible` job and "
-                    f"every outside rebuild (PROVENANCE.md) build without it, "
-                    f"so the artifact they produce is not the one shipped — "
-                    f"and a value in a build command can be given to one "
-                    f"platform and not another. Put it in "
-                    f"app/lib/core/key_transparency.dart, where there is one "
-                    f"copy and every job gets it."
-                )
+            if "--dart-define" not in line:
+                continue
+            for prefix, home in LOG_DEFINES.items():
+                if prefix in line:
+                    problems.append(
+                        f".github/workflows/build.yml:{i} passes a transparency "
+                        f"value as a --dart-define ({prefix}...). The "
+                        f"`reproducible` job and every outside rebuild "
+                        f"(PROVENANCE.md) build without it, so the artifact they "
+                        f"produce is not the one shipped — and a value in a "
+                        f"build command can be given to one platform and not "
+                        f"another. Put it in {home}, where there is one copy "
+                        f"and every job gets it."
+                    )
 
     # G7 — iOS
     ios = (ROOT / "app" / "ios").exists()
