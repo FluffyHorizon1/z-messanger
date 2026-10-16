@@ -703,6 +703,8 @@
   "hdlRelayFull": "Tu relé no está protegiendo ahora el buzón de este alias: ya protege todos los buzones que puede, así que acepta solicitudes sin comprobar su trabajo.",
   "hdlRelayPaced": "Puede que tu relé no esté protegiendo ahora el buzón de este alias: se le pidió demasiadas veces, y se le volverá a pedir en la próxima comprobación.",
   "hdlStampsChecked": "Este teléfono sigue comprobando el trabajo de cada solicitud que llega por tu alias y descarta las que no lo traen.",
+  "hdlInboxDrops": "En los últimos cinco días este teléfono descartó {unstamped, plural, =1{una solicitud que llegó} other{{unstamped} solicitudes que llegaron}} sin el trabajo que pide tu alias y rechazó {copies, plural, =1{una copia} other{{copies} copias}} de solicitudes que ya había decidido. Cifras altas indican que alguien está inundando tu alias; más trabajo por solicitud los frena.",
+  "hdlInboxSaturated": "Uno de esos días llegaron más solicitudes de las que este teléfono puede recordar ({cap}), así que una copia de alguna de las restantes podría volver a registrarse. Si esto continúa, pide más trabajo por solicitud.",
   "hdlIntroUnknown": "El buzón de @{handle} se trasladó a una clave que este dispositivo no tiene, desde otra copia de esta cuenta restaurada de una copia de seguridad más antigua o por alguien que tiene sus claves, así que este dispositivo dejó de leerlo. Su código de recuperación trae el alias de vuelta aquí, con claves nuevas.",
   "hdlCopy": "Copiar alias",
   "hdlCopied": "Alias copiado",

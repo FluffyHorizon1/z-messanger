@@ -50,9 +50,10 @@
 /// seen — plus the introduction seeds of mailboxes since rotated or retired
 /// that a pending request still needs to be acknowledged with), `handle_out`
 /// (the requests this device sent to handles and is waiting on),
-/// `handle_stamps` and `handle_stamps_new` (the introduction requests decided
-/// here, by a keyed digest, for as long as their stamps could be presented
-/// again — [HandleStampLedger]), `handle_lookup` (the resolver's decoy key,
+/// `handle_stamps` and `handle_stamps_<day>_<n>` (the introduction requests
+/// decided here, by a keyed digest, for as long as their stamps could be
+/// presented again, and what the drains dropped — [HandleStampLedger]),
+/// `handle_lookup` (the resolver's decoy key,
 /// the bucket size the log's answers bear out, and the owner key,
 /// commitment, version and record hash of each handle found —
 /// [HandleLookupMemory]) and `handle_config`. A contact made through a
@@ -267,17 +268,23 @@ Future<HandleStamp?> handleStampOf(
       day: powDay, envelopeHash: envelopeHash, bits: introPowZeroBits(h));
 }
 
-/// How many envelopes [HandleStampLedger] remembers one by one for a day of
-/// stamps; past it, that day's are remembered in a Bloom filter of
-/// [handleStampFilterBits] bits, [handleStampFilterHashes] of them set by
-/// each envelope.
-const int handleStampExactPerDay = 4096;
-const int handleStampFilterBits = 1 << 20;
-const int handleStampFilterHashes = 6;
+/// How many introduction requests [HandleStampLedger] remembers for one day
+/// of stamps at most: about what the relay hands the owner in a day of
+/// drains every quarter of an hour (`MAX_QUEUE_MSGS_PER_USER`, 5 000, a
+/// drain; 96 drains: 480 000), so a day's flood is remembered whole; past
+/// it a request is still filed, and the owner is told.
+const int handleStampDayCap = 1 << 19;
 
-/// How many envelopes [HandleService] writes down one at a time, in a small
-/// record of their own, before it writes the whole ledger again.
-const int handleStampJournalMax = 128;
+/// How many digests one row of the ledger holds in the vault
+/// (`handle_stamps_<day>_<n>`): a request costs one write of this row, and
+/// a day at [handleStampDayCap] is a thousand such rows.
+const int handleStampChunk = 512;
+
+/// How many days of stamps the ledger keeps: a stamp for day D is taken by
+/// the relay through D+1 (§21.6), and the relay holds an envelope for up to
+/// 72 hours (`QUEUE_TTL_HOURS`), so the last copy it could hand over comes
+/// before the end of D+4 — day D is kept until D+5 begins.
+const int handleStampDaysKept = 5;
 
 /// The introduction requests this device has decided, so that none is
 /// decided twice (§21.8). A stamp binds its envelope and its day, not its
@@ -293,204 +300,317 @@ const int handleStampJournalMax = 128;
 /// however often it comes, and costs nothing to decide again; so a flood of
 /// stamped junk, which is the cheapest thing to send, takes no room here.
 ///
-/// How: by a digest of the envelope — the first 16 bytes of
+/// How: by a digest of the envelope — the first 6 bytes of
 /// `SHA-256(salt ‖ SHA-256(envelope))`, the inner hash being the one the
 /// stamp commits to, so a copy is known before it is opened, whoever stamps
-/// it again; the [salt] is this device's own, so nobody outside can choose
-/// envelopes that land on chosen bits of a filter — under the day its stamp
-/// was made for. A day's digests are kept until 48 hours after the last
-/// moment a stamp for that day could be presented, the end of the next day
-/// by the relay's clock: `(day + 4) × 24 h`. A digest already remembered
-/// under any day is refused: another stamp on the same envelope would be new
-/// work for a request already decided. A copy sent again later comes with
-/// the relay's `ts` of then, so a stamp older than the ledger holds fails
-/// the day check ([handleStampOf]) anyway; only a relay that makes up the
-/// `ts` it hands on could bring one back — a relay, that is, which can
-/// withhold or hand on anything it holds, but cannot make new work.
+/// it again; the [salt] is this device's own, so nobody outside can tell
+/// which envelopes share a digest — under the day its stamp was made for,
+/// exactly: one by one, in sorted order, 8 bytes each in memory. A digest
+/// already held under any kept day is refused; two distinct envelopes share
+/// one by chance alone, once in 2⁴⁸, so under a flood that fills every kept
+/// day — 2.6 million digests — an honest request is refused by mistake once
+/// in a hundred million, and no flood can raise that: the second review of
+/// the handles fixes (2026-10-10) drove a Bloom filter of fixed size, which
+/// this ledger had, to refuse 70 % of honest requests with 500 000 distinct
+/// stamped requests in a day. A day's digests are kept for
+/// [handleStampDaysKept] days.
 ///
-/// Bounded, and never forgetting: a day holds up to [exactPerDay] digests one
-/// by one; the next turns that day into a Bloom filter of
-/// [handleStampFilterBits] bits (128 KiB) holding every digest it had and
-/// every one after. A filter has no false negatives, so a copy is still
-/// refused however large the flood; what grows with the flood is the chance
-/// that an envelope never seen is refused as if it had been — at 100 000 in
-/// a day, about 0.7 %. A day goes four days after it began, so a handful of
-/// filters is the most the ledger ever holds.
+/// Bounded: a day holds at most [perDay] digests ([handleStampDayCap],
+/// 4 MiB), about what the relay hands over in a day; one more that day is
+/// filed without being remembered, and counted ([tally]), so the owner is
+/// told that copies of the rest of that day could be filed again and can
+/// raise the work a request costs. In the vault a day is rows of [chunk]
+/// digests ([HandleStampChunk]), each written as it fills, so a request
+/// costs one small write however large the flood has made the day.
+///
+/// The tallies — requests dropped for their stamp, copies refused, requests
+/// filed unremembered — are kept by the relay's day beside the digests, for
+/// the same days, so the handle screen can say what the drains did.
 class HandleStampLedger {
   HandleStampLedger(
-      {Uint8List? salt, this.exactPerDay = handleStampExactPerDay})
-      : salt = salt ?? randomBytes(16);
+      {Uint8List? salt,
+      this.perDay = handleStampDayCap,
+      this.chunk = handleStampChunk,
+      Iterable<HandleStampChunk> chunks = const [],
+      Map<int, HandleInboxTally>? tallies})
+      : salt = salt ?? randomBytes(16) {
+    final byDay = <int, List<HandleStampChunk>>{};
+    for (final c in chunks) {
+      (byDay[c.day] ??= []).add(c);
+    }
+    for (final e in byDay.entries) {
+      _days[e.key] = _StampDay.fromChunks(e.value, chunk);
+    }
+    if (tallies != null) _tallies.addAll(tallies);
+  }
 
   static const int dayMs = 86400000;
 
+  /// The bytes of a digest, in the vault and in [HandleStampChunk.bytes].
+  static const int digestBytes = 6;
+
   /// This device's key for the digests.
   final Uint8List salt;
-  final int exactPerDay;
+  final int perDay;
+
+  /// Digests a vault row holds. Set before the first digest is added; rows
+  /// read back are taken as they are, whatever their length.
+  int chunk;
 
   final SplayTreeMap<int, _StampDay> _days = SplayTreeMap();
+  final SplayTreeMap<int, HandleInboxTally> _tallies = SplayTreeMap();
 
-  /// How many envelopes the kept days hold.
+  /// How many digests the kept days hold.
   int get length => _days.values.fold(0, (n, d) => n + d.count);
 
-  /// Whether [day]'s envelopes are in a filter rather than one by one.
-  bool isFilter(int day) => _days[day]?.filter != null;
+  /// What the kept days take in memory: 8 bytes a digest, as [Int64List]
+  /// holds them, and the row being filled.
+  int get bytesInMemory => _days.values.fold(0, (n, d) => n + d.bytes);
+
+  /// The days held, oldest first.
+  Iterable<int> get days => _days.keys;
+
+  /// Whether [day] holds [perDay] digests: a request for it is filed without
+  /// being remembered.
+  bool isFull(int day) => (_days[day]?.count ?? 0) >= perDay;
 
   /// The digest under which an envelope whose SHA-256 is [envelopeHash] is
-  /// remembered.
-  Future<Uint8List> digestOf(Uint8List envelopeHash) async =>
-      Uint8List.sublistView(
-          await sha256Bytes([...salt, ...envelopeHash]), 0, 16);
+  /// remembered: the first 6 bytes of `SHA-256(salt ‖ envelopeHash)`, as a
+  /// number below 2⁴⁸.
+  Future<int> digestOf(Uint8List envelopeHash) async {
+    final h = await sha256Bytes([...salt, ...envelopeHash]);
+    var v = 0;
+    for (var i = 0; i < digestBytes; i++) {
+      v = (v << 8) | h[i];
+    }
+    return v;
+  }
 
   /// Whether the envelope with this [digest] has been decided here before,
   /// under any day still kept.
-  bool refuses(Uint8List digest) {
-    final key = b64url(digest);
-    return _days.values.any((d) => d.has(digest, key));
+  bool refuses(int digest) => _days.values.any((d) => d.has(digest));
+
+  /// Remember a request decided now, whose stamp was made for [day]: the
+  /// vault row to write — the digests of the row being filled, [digest]
+  /// among them — or null when it was held already or the day is full
+  /// ([isFull]), in which case nothing changes.
+  HandleStampChunk? add(int day, int digest) {
+    final d = _days[day] ??= _StampDay();
+    if (d.has(digest) || d.count >= perDay) return null;
+    return d.add(day, digest, chunk);
   }
 
-  /// Remember an envelope decided now, whose stamp was made for [day].
-  void add(int day, Uint8List digest, int nowMs) {
-    prune(nowMs);
-    (_days[day] ??= _StampDay()).add(digest, b64url(digest), exactPerDay);
+  /// The tally for [day], to count on.
+  HandleInboxTally tally(int day) => _tallies[day] ??= HandleInboxTally();
+
+  /// What the drains did over the kept days, summed.
+  HandleInboxTally get tallied {
+    final t = HandleInboxTally();
+    for (final x in _tallies.values) {
+      t.unstamped += x.unstamped;
+      t.copies += x.copies;
+      t.unremembered += x.unremembered;
+    }
+    return t;
   }
 
-  /// Forget the days whose stamps can no longer be presented, with 48 hours
-  /// to spare; true when anything went.
-  bool prune(int nowMs) {
-    final before = _days.length;
-    _days.removeWhere((day, _) => (day + 4) * dayMs <= nowMs);
-    return _days.length != before;
+  /// Forget the days whose stamps can no longer be presented; the days that
+  /// went, each with how many vault rows it had, so the rows can go too.
+  Map<int, int> prune(int nowMs) {
+    final gone = <int, int>{};
+    _days.removeWhere((day, d) {
+      if ((day + handleStampDaysKept) * dayMs > nowMs) return false;
+      gone[day] = d.rows;
+      return true;
+    });
+    _tallies.removeWhere(
+        (day, _) => (day + handleStampDaysKept) * dayMs <= nowMs);
+    return gone;
   }
 
+  /// The ledger's own record (`handle_stamps`): the salt and the tallies.
+  /// The digests are rows of their own ([HandleStampChunk]).
   Map<String, Object?> toJson() => {
-        'v': 1,
+        'v': 2,
         'salt': b64url(salt),
-        'days': {
-          for (final e in _days.entries) '${e.key}': e.value.toJson()
+        'tally': {
+          for (final e in _tallies.entries)
+            if (!e.value.isEmpty) '${e.key}': e.value.toJson()
         },
       };
 
-  /// The ledger [j] describes; an empty one, with a new salt, when it is not
-  /// one this build wrote.
-  static HandleStampLedger fromJson(Object? j,
-      {int exactPerDay = handleStampExactPerDay}) {
-    Uint8List? salt;
-    if (j is Map && j['v'] == 1 && j['salt'] is String) {
-      try {
-        final s = unb64url(j['salt'] as String);
-        if (s.length == 16) salt = s;
-      } on FormatException {
-        salt = null;
-      }
+  /// The salt and tallies [j] records; null when it is not a record this
+  /// build wrote.
+  static ({Uint8List salt, Map<int, HandleInboxTally> tallies})? readJson(
+      Object? j) {
+    if (j is! Map || j['v'] != 2 || j['salt'] is! String) return null;
+    final Uint8List salt;
+    try {
+      salt = unb64url(j['salt'] as String);
+    } on FormatException {
+      return null;
     }
-    if (j is! Map || salt == null) {
-      return HandleStampLedger(exactPerDay: exactPerDay);
-    }
-    final l = HandleStampLedger(salt: salt, exactPerDay: exactPerDay);
-    final days = j['days'];
-    if (days is Map) {
-      for (final e in days.entries) {
+    if (salt.length != 16) return null;
+    final tallies = <int, HandleInboxTally>{};
+    final t = j['tally'];
+    if (t is Map) {
+      for (final e in t.entries) {
         final day = int.tryParse('${e.key}');
-        final d = _StampDay.fromJson(e.value);
-        if (day == null || day < 0 || d == null) continue;
-        l._days[day] = d;
+        final tally = HandleInboxTally.fromJson(e.value);
+        if (day != null && day >= 0 && tally != null) tallies[day] = tally;
       }
     }
-    return l;
+    return (salt: salt, tallies: tallies);
   }
 }
 
-/// One day of [HandleStampLedger]: its digests one by one ([keys]), or, past
-/// the ledger's count for a day, a Bloom filter ([filter]) — never both.
+/// One vault row of [HandleStampLedger]: the digests of [day]'s row [seq],
+/// [HandleStampLedger.digestBytes] each, big-endian, in the order they were
+/// added.
+class HandleStampChunk {
+  const HandleStampChunk(
+      {required this.day, required this.seq, required this.bytes});
+  final int day;
+  final int seq;
+  final Uint8List bytes;
+
+  /// The vault key of this row.
+  String get key => '$handleStampRowPrefix${day}_$seq';
+
+  List<int> get digests => [
+        for (var i = 0;
+            i + HandleStampLedger.digestBytes <= bytes.length;
+            i += HandleStampLedger.digestBytes)
+          _StampDay.digestAt(bytes, i)
+      ];
+}
+
+/// The vault keys of the ledger's rows: `handle_stamps_<day>_<n>`.
+const String handleStampRowPrefix = 'handle_stamps_';
+
+/// What the drains did with one day's envelopes, for the handle screen
+/// (§21.8): dropped for their stamp (none, too little work, another day),
+/// refused as copies of requests already decided, and filed without being
+/// remembered because the day's digests were full.
+class HandleInboxTally {
+  HandleInboxTally(
+      {this.unstamped = 0, this.copies = 0, this.unremembered = 0});
+  int unstamped;
+  int copies;
+  int unremembered;
+
+  bool get isEmpty => unstamped == 0 && copies == 0 && unremembered == 0;
+
+  List<int> toJson() => [unstamped, copies, unremembered];
+
+  static HandleInboxTally? fromJson(Object? j) {
+    if (j is! List || j.length != 3 || !j.every((x) => x is int && x >= 0)) {
+      return null;
+    }
+    return HandleInboxTally(
+        unstamped: j[0] as int, copies: j[1] as int, unremembered: j[2] as int);
+  }
+}
+
+/// One day of [HandleStampLedger]: its digests sorted ([_sorted]) but for
+/// the row being filled ([_tail]), which is searched as it is.
 class _StampDay {
   _StampDay();
 
-  Set<String>? keys = <String>{};
-  Uint8List? filter;
-
-  /// Envelopes added this day.
-  int count = 0;
-
-  /// The filter bits [digest] sets: [handleStampFilterHashes] (six) 20-bit
-  /// numbers, two from each 5-byte group of its first 15 bytes. The digest is
-  /// a keyed hash, so they are as good as random to anyone without the
-  /// ledger's salt.
-  static List<int> _bits(Uint8List digest) {
-    final out = <int>[];
-    for (var g = 0; g < 3; g++) {
-      var v = 0;
-      for (var j = 0; j < 5; j++) {
-        v = (v << 8) | digest[g * 5 + j];
-      }
-      out
-        ..add(v >> 20)
-        ..add(v & 0xfffff);
-    }
-    return out;
-  }
-
-  bool has(Uint8List digest, String key) {
-    final f = filter;
-    if (f == null) return keys!.contains(key);
-    return _bits(digest).every((b) => f[b >> 3] & (1 << (b & 7)) != 0);
-  }
-
-  void add(Uint8List digest, String key, int exactPerDay) {
-    if (has(digest, key)) return;
-    count++;
-    final ks = keys;
-    if (ks != null && ks.length < exactPerDay) {
-      ks.add(key);
-      return;
-    }
-    var f = filter;
-    if (f == null) {
-      // One more than a day holds one by one: the day becomes a filter,
-      // holding every digest it had.
-      f = filter = Uint8List(handleStampFilterBits >> 3);
-      for (final k in ks!) {
-        _set(f, unb64url(k));
-      }
-      keys = null;
-    }
-    _set(f, digest);
-  }
-
-  static void _set(Uint8List f, Uint8List digest) {
-    for (final b in _bits(digest)) {
-      f[b >> 3] |= 1 << (b & 7);
-    }
-  }
-
-  Object toJson() => filter != null
-      ? {'n': count, 'f': b64url(filter!)}
-      : {'n': count, 'k': keys!.toList()};
-
-  static _StampDay? fromJson(Object? j) {
-    if (j is! Map) return null;
+  /// The rows read back from the vault: every one but the last is done
+  /// with; the last is the row being filled when it is short of [chunk].
+  factory _StampDay.fromChunks(List<HandleStampChunk> rows, int chunk) {
+    rows.sort((a, b) => a.seq.compareTo(b.seq));
     final d = _StampDay();
-    final n = j['n'];
-    final f = j['f'];
-    final k = j['k'];
-    if (f is String) {
-      try {
-        final bytes = unb64url(f);
-        if (bytes.length != handleStampFilterBits >> 3) return null;
-        d.filter = bytes;
-        d.keys = null;
-      } on FormatException {
-        return null;
-      }
-    } else if (k is List) {
-      for (final x in k) {
-        if (x is String && x.length == 22) d.keys!.add(x);
-      }
-    } else {
-      return null;
+    final all = <int>[];
+    for (final r in rows) {
+      all.addAll(r.digests);
     }
-    final ks = d.keys;
-    d.count = ks != null ? ks.length : (n is int && n >= 0 ? n : 0);
+    final last = rows.last;
+    final tailLen = last.digests.length;
+    if (tailLen < chunk) {
+      d._tail = all.sublist(all.length - tailLen);
+      d._seq = last.seq;
+      all.length = all.length - tailLen;
+    } else {
+      d._seq = last.seq + 1;
+    }
+    all.sort();
+    d._sorted = Int64List.fromList(all);
     return d;
+  }
+
+  Int64List _sorted = Int64List(0);
+  List<int> _tail = [];
+
+  /// The row [_tail] is, or will be, written as.
+  int _seq = 0;
+
+  int get count => _sorted.length + _tail.length;
+  int get bytes => 8 * _sorted.length + 8 * _tail.length;
+
+  /// Rows this day has in the vault.
+  int get rows => _tail.isEmpty ? _seq : _seq + 1;
+
+  static int digestAt(Uint8List b, int i) {
+    var v = 0;
+    for (var j = 0; j < HandleStampLedger.digestBytes; j++) {
+      v = (v << 8) | b[i + j];
+    }
+    return v;
+  }
+
+  bool has(int digest) {
+    if (_tail.contains(digest)) return true;
+    var lo = 0;
+    var hi = _sorted.length;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      final v = _sorted[mid];
+      if (v == digest) return true;
+      if (v < digest) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return false;
+  }
+
+  /// Add [digest], not held yet, and say which row to write. A row that is
+  /// now full is merged into the sorted digests, and the next add starts the
+  /// row after it.
+  HandleStampChunk add(int day, int digest, int chunk) {
+    _tail.add(digest);
+    final bytes = Uint8List(HandleStampLedger.digestBytes * _tail.length);
+    for (var i = 0; i < _tail.length; i++) {
+      var v = _tail[i];
+      for (var j = HandleStampLedger.digestBytes - 1; j >= 0; j--) {
+        bytes[i * HandleStampLedger.digestBytes + j] = v & 0xff;
+        v >>= 8;
+      }
+    }
+    final row = HandleStampChunk(day: day, seq: _seq, bytes: bytes);
+    if (_tail.length >= chunk) {
+      _tail.sort();
+      final merged = Int64List(_sorted.length + _tail.length);
+      var i = 0;
+      var j = 0;
+      var k = 0;
+      while (i < _sorted.length && j < _tail.length) {
+        merged[k++] = _sorted[i] <= _tail[j] ? _sorted[i++] : _tail[j++];
+      }
+      while (i < _sorted.length) {
+        merged[k++] = _sorted[i++];
+      }
+      while (j < _tail.length) {
+        merged[k++] = _tail[j++];
+      }
+      _sorted = merged;
+      _tail = [];
+      _seq++;
+    }
+    return row;
   }
 }
 
@@ -1072,19 +1192,35 @@ class HandleService extends ChangeNotifier {
       relayGuard == HandleRelayGuard.full ||
       relayGuard == HandleRelayGuard.paced;
 
-  /// The introduction requests decided here (`handle_stamps`), and those
-  /// written down since in a record of their own (`handle_stamps_new`), at
-  /// most [stampJournalMax] before the ledger is written whole again.
+  /// The introduction requests decided here, and what the drains dropped
+  /// (`handle_stamps`, `handle_stamps_<day>_<n>`).
   HandleStampLedger _ledger = HandleStampLedger();
-  final List<(int, Uint8List)> _ledgerNew = [];
   bool _ledgerWritten = false;
-  @visibleForTesting
-  int stampJournalMax = handleStampJournalMax;
+  bool _tallyDirty = false;
 
-  /// How many envelopes the drains of this process dropped for their stamp —
-  /// none, short of the difficulty, for another day — and how many because
-  /// they had been decided here before: in this process's memory and
-  /// nowhere else, never stored and never sent (§21.8).
+  /// Digests a ledger row holds; a test lowers it to see rows fill.
+  @visibleForTesting
+  set stampChunk(int n) => _ledger.chunk = n;
+
+  /// The ledger itself, for a test to set what a screen shows.
+  @visibleForTesting
+  HandleStampLedger get stampLedger => _ledger;
+  @visibleForTesting
+  set stampLedger(HandleStampLedger l) => _ledger = l;
+
+  /// What the drains did over the kept days (§21.8): envelopes dropped for
+  /// their stamp — none, short of the difficulty, for another day — copies
+  /// of requests already decided refused, and requests filed without being
+  /// remembered because a day's digests were full. Kept in the vault with
+  /// the ledger, shown on the handle screen, and never sent anywhere.
+  HandleInboxTally get inboxTally => _ledger.tallied;
+
+  /// Whether a kept day holds all the digests it can ([handleStampDayCap]):
+  /// a copy of a request filed past that could be filed again.
+  bool get inboxSaturated => _ledger.days.any(_ledger.isFull);
+
+  /// How many envelopes the drains of this process dropped for their stamp,
+  /// and how many as copies (a test reads them).
   @visibleForTesting
   int droppedUnstamped = 0;
   @visibleForTesting
@@ -1215,47 +1351,65 @@ class HandleService extends ChangeNotifier {
         }
       } catch (_) {}
     }
-    final stamps = await vault.kvGet('handle_stamps');
-    final journal = await vault.kvGet('handle_stamps_new');
-    if (stamps != null) {
-      try {
-        _ledger = HandleStampLedger.fromJson(jsonDecode(stamps));
-      } catch (_) {
-        // Unreadable: an empty ledger. What it held was requests the drain
-        // had acknowledged; a copy of one, while its stamp is still good,
-        // can be decided once more.
-      }
-    }
-    if (journal != null) {
-      try {
-        final j = jsonDecode(journal) as Map;
-        final salt = unb64url(j['salt'] as String);
-        if (j['v'] == 1 && salt.length == 16) {
-          // The ledger is written whole at the first request ever decided
-          // here, so the two share a salt; if the ledger was lost, the
-          // record's salt is the one its digests were made with.
-          if (!constantTimeEquals(salt, _ledger.salt) && stamps == null) {
-            _ledger = HandleStampLedger(salt: salt);
-          }
-          if (constantTimeEquals(salt, _ledger.salt)) {
-            for (final e in (j['e'] as List)) {
-              final day = (e as List)[0];
-              final digest = unb64url(e[1] as String);
-              if (day is int && day >= 0 && digest.length == 16) {
-                _ledger.add(day, digest, now());
-              }
-            }
-          }
+    await _loadLedger();
+  }
+
+  /// The ledger: its record (`handle_stamps`, the salt and the tallies) and
+  /// its rows of digests (`handle_stamps_<day>_<n>`). Rows without a record
+  /// are digests under a salt nobody holds, and go; so does a row that is
+  /// not one, and the days that have lapsed. An unreadable record makes an
+  /// empty ledger: what it held was requests the drain had acknowledged,
+  /// and a copy of one, while its stamp is still good, can be decided once
+  /// more.
+  Future<void> _loadLedger() async {
+    final rows = await vault.kvScan(handleStampRowPrefix);
+    final record = await vault.kvGet('handle_stamps');
+    final head = record == null ? null : _readLedgerRecord(record);
+    final stale = <String>[];
+    final chunks = <HandleStampChunk>[];
+    final name = RegExp(r'^(\d+)_(\d+)$');
+    for (final e in rows.entries) {
+      final m = name.firstMatch(e.key.substring(handleStampRowPrefix.length));
+      Uint8List? bytes;
+      if (m != null && head != null) {
+        try {
+          bytes = unb64(e.value);
+        } on FormatException {
+          bytes = null;
         }
-      } catch (_) {
-        // As above: what it held can be decided once more.
+      }
+      if (bytes == null || bytes.isEmpty) {
+        stale.add(e.key);
+        continue;
+      }
+      chunks.add(HandleStampChunk(
+          day: int.parse(m!.group(1)!),
+          seq: int.parse(m.group(2)!),
+          bytes: bytes));
+    }
+    if (head != null) {
+      _ledger = HandleStampLedger(
+          salt: head.salt, chunks: chunks, tallies: head.tallies);
+      _ledgerWritten = true;
+    }
+    for (final e in _ledger.prune(now()).entries) {
+      for (var i = 0; i < e.value; i++) {
+        stale.add('$handleStampRowPrefix${e.key}_$i');
       }
     }
-    // Written whole now: what the record held is in it, and what has
-    // lapsed is gone.
-    if (stamps != null || journal != null) {
-      _ledger.prune(now());
-      await _saveLedger();
+    for (final k in stale) {
+      await vault.kvDelete(k);
+    }
+    // The record written back: what lapsed is out of its tallies too.
+    if (head != null) await _saveLedgerRecord();
+  }
+
+  static ({Uint8List salt, Map<int, HandleInboxTally> tallies})?
+      _readLedgerRecord(String record) {
+    try {
+      return HandleStampLedger.readJson(jsonDecode(record));
+    } catch (_) {
+      return null;
     }
   }
 
@@ -2320,6 +2474,11 @@ class HandleService extends ChangeNotifier {
       await sub.cancel();
       await client.close();
     }
+    try {
+      await _settleLedger();
+    } catch (_) {
+      // The vault busy: the tallies wait for the next drain, in memory.
+    }
     if (renew) {
       drains++;
       lastDrainMs = now();
@@ -2354,11 +2513,15 @@ class HandleService extends ChangeNotifier {
           serverTs: m.serverTs);
       if (stamp == null || stamp.bits < floorBits) {
         droppedUnstamped++;
+        _ledger.tally(introPowDay(m.serverTs)).unstamped++;
+        _tallyDirty = true;
         return true;
       }
       final digest = await _ledger.digestOf(stamp.envelopeHash);
       if (_ledger.refuses(digest)) {
         droppedReplays++;
+        _ledger.tally(stamp.day).copies++;
+        _tallyDirty = true;
         return true;
       }
       if (await _decideIntroEnvelope(m, introRid, id, handle)) {
@@ -2751,36 +2914,41 @@ class HandleService extends ChangeNotifier {
   Future<void> _saveOutgoing() => vault.kvPut(
       'handle_out', jsonEncode([for (final o in _outgoing) o.toJson()]));
 
-  /// Remember a request decided now, whose stamp was made for [day]: in the
-  /// small record of those since the ledger was last written, and every
-  /// [stampJournalMax] in the ledger itself — so each one costs a small
-  /// write, however large a flood has made the ledger.
-  Future<void> _rememberDecided(int day, Uint8List digest) async {
-    _ledger.add(day, digest, now());
-    _ledgerNew.add((day, digest));
-    // Whole at the first one, so the ledger's salt is on disk before any
-    // digest made with it; then every [stampJournalMax].
-    if (!_ledgerWritten || _ledgerNew.length >= stampJournalMax) {
-      await _saveLedger();
+  /// Remember a request decided now, whose stamp was made for [day]: the
+  /// ledger's record first, once, so its salt is in the vault before any
+  /// digest made with it; then the one row the digest went into. A day that
+  /// holds all it can ([handleStampDayCap]) remembers nothing more, and the
+  /// request is counted as filed unremembered instead.
+  Future<void> _rememberDecided(int day, int digest) async {
+    if (!_ledgerWritten) await _saveLedgerRecord();
+    final row = _ledger.add(day, digest);
+    if (row == null) {
+      if (_ledger.isFull(day)) {
+        _ledger.tally(day).unremembered++;
+        _tallyDirty = true;
+      }
       return;
     }
-    await vault.kvPut(
-        'handle_stamps_new',
-        jsonEncode({
-          'v': 1,
-          'salt': b64url(_ledger.salt),
-          'e': [
-            for (final (d, g) in _ledgerNew) [d, b64url(g)]
-          ],
-        }));
+    await vault.kvPut(row.key, b64(row.bytes));
   }
 
-  /// The ledger written whole, and the record of those since emptied.
-  Future<void> _saveLedger() async {
+  /// The ledger's record: the salt and the tallies.
+  Future<void> _saveLedgerRecord() async {
     await vault.kvPut('handle_stamps', jsonEncode(_ledger.toJson()));
     _ledgerWritten = true;
-    _ledgerNew.clear();
-    await vault.kvDelete('handle_stamps_new');
+    _tallyDirty = false;
+  }
+
+  /// After a drain: the days that lapsed go with their rows, and the
+  /// tallies are written if they moved — once a drain, not once an envelope.
+  Future<void> _settleLedger() async {
+    final gone = _ledger.prune(now());
+    for (final e in gone.entries) {
+      for (var i = 0; i < e.value; i++) {
+        await vault.kvDelete('$handleStampRowPrefix${e.key}_$i');
+      }
+    }
+    if (_tallyDirty || gone.isNotEmpty) await _saveLedgerRecord();
   }
 
   /// Management steps one at a time: a publish timer firing during a pause,

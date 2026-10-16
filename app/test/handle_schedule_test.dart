@@ -32,16 +32,20 @@
 //      raise the previous one counts for two days and not a moment longer,
 //      and after a lowering the new one counts at once;
 //   8. the ledger of decided requests knows an envelope by a digest keyed
-//      with this device's salt, refuses it again under any day, keeps a day
-//      until 48 hours after its stamps stop being good (the end of the next
-//      day), and past its count for a day turns that day into a filter that
-//      still refuses every one it held; a round trip through the vault's
-//      JSON keeps all of it, and one that is not the ledger reads as empty;
+//      with this device's salt, refuses it again under any kept day, keeps a
+//      day until the fifth day after it begins, writes a day as rows of a
+//      fixed number of digests — each row rewritten as it fills, then left
+//      — and reads them back whole, the row being filled included; a day at
+//      its cap remembers nothing more and says so; the tallies of what the
+//      drains dropped go through the ledger's record, and what is not the
+//      record reads as nothing;
 //   9. the handle's record keeps the previous difficulty and its deadline
 //      through a round trip, and reads none where there is none or where
 //      it is out of range;
-//  10. a day's filter holding 100 000 envelopes refuses every one of them,
-//      and an envelope it never saw less than 1 % of the time.
+//  10. a day flooded with 500 000 distinct requests refuses every one of
+//      them again and none of 20 000 it never saw, within 4 MiB; at the
+//      day's cap the next request is filed unremembered, and still nothing
+//      never seen is refused.
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -313,11 +317,10 @@ void main() {
         18);
   });
 
-  test('8. the ledger: once per request, for its stamp\'s life and 48 h; '
-      'past a day\'s count, a filter', () async {
+  test('8. the ledger: once per request, for five days, in rows; at the cap '
+      'nothing more', () async {
     const dayMs = 86400000;
     const d = 20737;
-    final noon = d * dayMs + dayMs ~/ 2;
     final rnd = Random(8);
     Uint8List h() =>
         Uint8List.fromList(List<int>.generate(32, (_) => rnd.nextInt(256)));
@@ -325,84 +328,114 @@ void main() {
     final l = HandleStampLedger();
     final e1 = h();
     final g1 = await l.digestOf(e1);
-    expect(g1, hasLength(16));
+    expect(g1, inInclusiveRange(0, (1 << 48) - 1));
     expect(await l.digestOf(e1), g1);
     expect(await HandleStampLedger().digestOf(e1), isNot(g1),
         reason: 'another salt, another digest');
     expect(l.refuses(g1), isFalse);
-    l.add(d, g1, noon);
+    final row = l.add(d, g1);
+    expect(row, isNotNull);
+    expect((row!.day, row.seq), (d, 0));
+    expect(row.key, 'handle_stamps_${d}_0');
+    expect(row.digests, [g1]);
     expect(l.refuses(g1), isTrue,
         reason: 'decided already, under whatever stamp it comes again');
+    expect(l.add(d, g1), isNull, reason: 'held already: no row');
     expect(l.refuses(await l.digestOf(h())), isFalse);
-    l.add(d - 1, g1, noon);
+    expect(l.add(d - 1, g1), isNotNull);
     expect(l.length, 2, reason: 'one entry for each day it was stamped for');
 
-    // Kept until (day + 4) days: the end of the next day, and 48 hours.
-    expect(l.prune((d + 4) * dayMs - 1), isTrue, reason: 'yesterday\'s went');
-    expect(l.refuses(g1), isTrue);
-    expect(l.prune((d + 4) * dayMs), isTrue);
+    // Kept until the fifth day after the stamp's day begins.
+    expect(l.prune((d + 4) * dayMs - 1), isEmpty);
+    expect(l.prune((d + 4) * dayMs), {d - 1: 1}, reason: 'd - 1 went');
+    expect(l.refuses(g1), isTrue, reason: 'still held under d');
+    expect(l.prune((d + 5) * dayMs - 1), isEmpty);
+    expect(l.prune((d + 5) * dayMs), {d: 1});
     expect(l.refuses(g1), isFalse);
     expect(l.length, 0);
 
-    // One by one up to a day's count; one more and the day is a filter that
-    // still refuses every one of them. Other days stay as they were.
-    final small = HandleStampLedger(exactPerDay: 8);
-    final kept = <Uint8List>[];
+    // Rows: the one being filled is rewritten with each digest; full, it is
+    // left and the next begins. Read back, every digest is held, and the
+    // row being filled goes on filling under its own number.
+    final rows = HandleStampLedger(chunk: 4, perDay: 10);
+    final kept = <int>[];
+    final written = <String, HandleStampChunk>{};
     for (var i = 0; i < 9; i++) {
-      final g = await small.digestOf(h());
+      final g = await rows.digestOf(h());
       kept.add(g);
-      small.add(d, g, noon);
-      expect(small.isFilter(d), i == 8);
+      final r = rows.add(d, g)!;
+      written[r.key] = r;
+      expect(r.seq, i ~/ 4);
+      expect(r.digests, kept.sublist(4 * (i ~/ 4)));
     }
-    final other = await small.digestOf(h());
-    small.add(d + 1, other, noon);
-    expect(small.isFilter(d + 1), isFalse);
-    expect(small.length, 10);
+    expect(written.keys, ['handle_stamps_${d}_0', 'handle_stamps_${d}_1',
+      'handle_stamps_${d}_2']);
+    expect(written['handle_stamps_${d}_2']!.digests, hasLength(1));
     for (final g in kept) {
-      expect(small.refuses(g), isTrue, reason: 'a filter forgets nothing');
+      expect(rows.refuses(g), isTrue);
     }
-    small.add(d, kept.first, noon);
-    expect(small.length, 10, reason: 'a digest it holds is not counted again');
+    expect(rows.bytesInMemory, 8 * 9);
 
-    // Through the vault's JSON: the salt, the days, the filter.
-    final back = HandleStampLedger.fromJson(
-        jsonDecode(jsonEncode(small.toJson())),
-        exactPerDay: 8);
-    expect(back.salt, small.salt);
-    expect(back.isFilter(d), isTrue);
-    expect(back.isFilter(d + 1), isFalse);
-    expect(back.length, 10);
-    for (final g in [...kept, other]) {
-      expect(back.refuses(g), isTrue);
+    final back = HandleStampLedger(
+        salt: rows.salt, chunk: 4, perDay: 10, chunks: written.values);
+    expect(back.length, 9);
+    for (final g in kept) {
+      expect(back.refuses(g), isTrue, reason: 'read back whole');
     }
     expect(back.refuses(await back.digestOf(h())), isFalse);
+    final tenth = await back.digestOf(h());
+    final r10 = back.add(d, tenth)!;
+    expect(r10.seq, 2, reason: 'the row being filled goes on');
+    expect(r10.digests, [kept.last, tenth]);
+    expect(back.isFull(d), isTrue);
+    expect(back.add(d, await back.digestOf(h())), isNull,
+        reason: 'at the cap a day remembers nothing more');
+    expect(back.isFull(d + 1), isFalse);
+    expect(back.add(d + 1, await back.digestOf(h())), isNotNull);
+    expect(back.prune((d + 5) * dayMs), {d: 3},
+        reason: 'the rows a day had, so they can go too');
 
-    // Not a ledger: empty, with a salt of its own.
+    // Rows read back with a row size other than theirs are still whole:
+    // only the last row of a day can be the one being filled.
+    final other = HandleStampLedger(
+        salt: rows.salt, chunk: 512, chunks: written.values);
+    expect(other.length, 9);
+    for (final g in kept) {
+      expect(other.refuses(g), isTrue);
+    }
+    expect(other.add(d, tenth)!.seq, 2);
+
+    // The record: the salt and the tallies, through JSON.
+    rows.tally(d).unstamped += 3;
+    rows.tally(d).copies += 2;
+    rows.tally(d + 1).unremembered += 1;
+    final rec = HandleStampLedger.readJson(jsonDecode(jsonEncode(rows.toJson())));
+    expect(rec, isNotNull);
+    expect(rec!.salt, rows.salt);
+    expect(rec.tallies[d]!.toJson(), [3, 2, 0]);
+    expect(rec.tallies[d + 1]!.toJson(), [0, 0, 1]);
+    final again = HandleStampLedger(salt: rec.salt, tallies: rec.tallies);
+    expect(again.tallied.toJson(), [3, 2, 1]);
+    expect(again.prune((d + 5) * dayMs), isEmpty);
+    expect(again.tallied.toJson(), [0, 0, 1], reason: 'a day\'s tally goes with it');
+
+    // Not the record: nothing.
     for (final junk in <Object?>[
       null,
       7,
       'x',
-      {'v': 2, 'salt': b64url(small.salt), 'days': {}},
-      {'v': 1, 'days': {}},
-      {'v': 1, 'salt': 'short', 'days': {}},
+      {'v': 1, 'salt': b64url(rows.salt), 'days': {}},
+      {'v': 2, 'tally': {}},
+      {'v': 2, 'salt': 'short'},
     ]) {
-      final e = HandleStampLedger.fromJson(junk);
-      expect(e.length, 0);
-      expect(e.salt, hasLength(16));
-      expect(e.salt, isNot(small.salt));
+      expect(HandleStampLedger.readJson(junk), isNull);
     }
-    // A day that is not one: skipped, the rest kept.
-    final mixed = HandleStampLedger.fromJson({
-      ...back.toJson(),
-      'days': {
-        ...(back.toJson()['days'] as Map),
-        'x': {'n': 1, 'k': []},
-        '${d + 2}': {'n': 1, 'f': 'AAAA'},
-        '${d + 3}': 5,
-      },
-    }, exactPerDay: 8);
-    expect(mixed.length, 10);
-    expect(mixed.refuses(other), isTrue);
+    final odd = HandleStampLedger.readJson({
+      'v': 2,
+      'salt': b64url(rows.salt),
+      'tally': {'x': [1, 1, 1], '$d': [1, 2], '${d + 1}': [1, 1, 1]},
+    })!;
+    expect(odd.tallies.keys, [d + 1], reason: 'a tally that is not one is skipped');
   });
 
   test('9. the previous difficulty survives the handle\'s record', () {
@@ -431,30 +464,47 @@ void main() {
     expect(odd.prevPowUntil, isNull);
   });
 
-  test('10. a day\'s filter at 100 000: every one refused, under 1 % of the '
-      'rest', () {
-    const dayMs = 86400000;
+  test('10. a day flooded with 500 000: every one refused again, none never '
+      'seen, within 4 MiB; at the cap, filed unremembered', () async {
     const d = 20737;
-    final noon = d * dayMs + dayMs ~/ 2;
     final rnd = Random(10);
     // Digests are a keyed hash: uniform, as these are.
-    Uint8List g() =>
-        Uint8List.fromList(List<int>.generate(16, (_) => rnd.nextInt(256)));
+    int g() => rnd.nextInt(1 << 32) << 16 | rnd.nextInt(1 << 16);
 
     final l = HandleStampLedger();
-    final held = [for (var i = 0; i < 100000; i++) g()];
-    for (final x in held) {
-      l.add(d, x, noon);
+    const flood = 500000;
+    final held = <int>[];
+    var rows = 0;
+    for (var i = 0; i < flood; i++) {
+      final x = g();
+      final r = l.add(d, x);
+      if (r == null) continue; // one in 2⁴⁸: two of the flood share a digest
+      held.add(x);
+      if (r.digests.length == l.chunk) rows++;
     }
-    expect(l.isFilter(d), isTrue);
+    expect(held.length, greaterThanOrEqualTo(flood - 2));
+    expect(l.isFull(d), isFalse, reason: 'the cap is above a day\'s flood');
+    expect(l.length, held.length);
+    expect(rows, held.length ~/ l.chunk, reason: 'a row of ${l.chunk} each');
+    expect(l.bytesInMemory, lessThanOrEqualTo(4 << 20));
     expect(held.where(l.refuses), hasLength(held.length),
-        reason: 'no envelope it was given is ever let through again');
+        reason: 'no request it decided is ever filed again');
     const trials = 20000;
     final wrong = [for (var i = 0; i < trials; i++) g()].where(l.refuses).length;
-    // (1 − e^(−6·100000/2^20))^6 ≈ 0.68 %.
-    expect(wrong, lessThan(trials ~/ 100),
-        reason: '$wrong of $trials never seen were refused');
-    expect(wrong, greaterThan(0),
-        reason: 'a filter this full does make mistakes; this test sees them');
+    // 500 000 / 2⁴⁸ a trial: none expected in twenty thousand.
+    expect(wrong, 0, reason: '$wrong of $trials never seen were refused');
+
+    // At the cap: filed unremembered, and still nothing never seen refused.
+    final capped = HandleStampLedger(perDay: 1000);
+    for (var i = 0; i < 1000; i++) {
+      expect(capped.add(d, g()), isNotNull);
+    }
+    expect(capped.isFull(d), isTrue);
+    final more = g();
+    expect(capped.add(d, more), isNull);
+    expect(capped.refuses(more), isFalse,
+        reason: 'unremembered: it could be filed again, and is not refused');
+    expect([for (var i = 0; i < trials; i++) g()].where(capped.refuses),
+        isEmpty);
   });
 }

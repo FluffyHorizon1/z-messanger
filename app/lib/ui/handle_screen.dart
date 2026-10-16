@@ -325,6 +325,12 @@ class _HandleScreenState extends State<HandleScreen> {
             _Para(guard, warn: true),
             _Para(l.hdlStampsChecked),
           ],
+          // What this phone's own checks dropped over the ledger's days
+          // (§21.8): never silent, and never anywhere but here.
+          if (h.inboxTally case final t when t.unstamped > 0 || t.copies > 0)
+            _Para(l.hdlInboxDrops(t.unstamped, t.copies)),
+          if (h.inboxSaturated)
+            _Para(l.hdlInboxSaturated(handleStampDayCap), warn: true),
           if (problem != null) _Para(problem, warn: true),
           _Action(
               icon: Icons.pause_circle_outline,

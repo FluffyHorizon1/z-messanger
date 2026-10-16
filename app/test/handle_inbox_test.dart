@@ -16,9 +16,10 @@
 //   2. an envelope and its stamp are filed at most once: the 20 requests
 //      the cap pushed out of 120, sent again with their original stamps, are
 //      not filed again — nor after the app restarts, the requests it has
-//      decided being remembered in the vault (probe P1b) — while stamped
-//      junk, which is no request, takes no room there: it is opened and
-//      dropped again each time it comes;
+//      decided being remembered in the vault, in rows (probe P1b) — while a
+//      fresh request after the wave is filed, stamped junk, which is no
+//      request, takes no room there, and the owner can see how many copies
+//      the drains refused, after a restart too;
 //   3. the owner counts each stamp itself: an envelope the relay hands on
 //      with no `pow` and `powDay`, with a stamp short of the difficulty,
 //      with a `powDay` two days before the relay's day of its `ts`, or with
@@ -559,20 +560,30 @@ void main() {
     expect(owen.handles.droppedReplays, 20,
         reason: 'each known before it was opened');
 
-    // The app restarts — the ledger written whole at the first request, the
-    // 119 after it in the small record beside it — and the same envelopes
-    // come once more.
+    expect(owen.handles.inboxTally.copies, 20,
+        reason: 'and the owner can see that copies came');
+
+    // A fresh request after the wave is filed: nothing never seen is refused.
+    final (fresh, freshPayload) = await stranger(own.introRid, xPub, 'fresh');
+    await sendStamped(raw, own.introRid, freshPayload, own.pow);
+    await drainAll(owen);
+    expect(owen.requestsByRid.containsKey(fresh), isTrue);
+
+    // The app restarts — the 121 digests in one row of the ledger, the row
+    // rewritten as each came — and the same envelopes come once more.
     final again = await restart(owen, 'Owen again');
+    expect(again.handles.inboxTally.copies, 20, reason: 'the count kept');
     await sendAll(evicted);
     await drainAll(again);
     expect(again.requests, hasLength(100));
     expect(evicted.where((m) => again.requestsByRid.containsKey(m.$1)), isEmpty,
         reason: 'what the drain decided is remembered in the vault');
     expect(again.handles.droppedReplays, 20);
+    expect(again.handles.inboxTally.copies, 40);
 
-    // Written whole every 4 from now: ten more cross it twice, and two wait
-    // in the small record when the app restarts again.
-    again.handles.stampJournalMax = 4;
+    // Rows of 4 from now: ten more fill two rows and start a third, and
+    // every one is read back when the app restarts again.
+    again.handles.stampChunk = 4;
     final more = await make(10, 'more');
     await sendAll(more);
     await drainAll(again);
@@ -581,7 +592,8 @@ void main() {
     await sendAll(more);
     await drainAll(third);
     expect(third.handles.droppedReplays, 10,
-        reason: 'from the ledger and the record beside it, before opening');
+        reason: 'from the rows read back, before opening');
+    expect(third.handles.inboxTally.copies, 50);
 
     // Stamped junk takes no room in the ledger: it is decided again, and
     // dropped again, every time it comes.
@@ -595,6 +607,8 @@ void main() {
       expect(await third.handles.drain(), 1);
     }
     expect(third.handles.droppedReplays, 10, reason: 'junk is not a replay');
+    expect(third.handles.inboxTally.copies, 50);
+    expect(third.handles.inboxSaturated, isFalse);
   });
 
   test('3. the owner counts each stamp itself', () async {

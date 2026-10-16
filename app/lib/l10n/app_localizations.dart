@@ -4232,6 +4232,18 @@ abstract class AppLocalizations {
   /// **'This phone still checks the work on every request that comes through your handle, and drops any request without it.'**
   String get hdlStampsChecked;
 
+  /// On the handle screen, when either count is nonzero: what the phone's own checks dropped over the ledger's five days — envelopes without a valid proof of work, and copies of requests already decided. Hints that a flood is answered by raising the work per request.
+  ///
+  /// In en, this message translates to:
+  /// **'In the last five days this phone dropped {unstamped, plural, =1{one request that came} other{{unstamped} requests that came}} without the work your handle asks for, and refused {copies, plural, =1{one copy} other{{copies} copies}} of requests it had already decided. Large numbers mean someone is flooding your handle; more work per request slows them down.'**
+  String hdlInboxDrops(int unstamped, int copies);
+
+  /// Warning on the handle screen when a day's ledger of decided requests reached its cap: copies of requests past the cap are not recognised. cap is the number of requests a day the ledger holds.
+  ///
+  /// In en, this message translates to:
+  /// **'On one of those days more requests came than this phone can remember ({cap}), so a copy of one of the rest could be filed again. If this goes on, ask for more work per request.'**
+  String hdlInboxSaturated(int cap);
+
   /// Shown when the handle service names this device's owner key with an inbox key it does not hold: the handle is lost to this device until it is recovered with its code.
   ///
   /// In en, this message translates to:

@@ -2694,6 +2694,32 @@ class AppLocalizationsEs extends AppLocalizations {
       'Este teléfono sigue comprobando el trabajo de cada solicitud que llega por tu alias y descarta las que no lo traen.';
 
   @override
+  String hdlInboxDrops(int unstamped, int copies) {
+    String _temp0 = intl.Intl.pluralLogic(
+      unstamped,
+      locale: localeName,
+      other: '$unstamped solicitudes que llegaron',
+      one: 'una solicitud que llegó',
+    );
+    String _temp1 = intl.Intl.pluralLogic(
+      copies,
+      locale: localeName,
+      other: '$copies copias',
+      one: 'una copia',
+    );
+    return 'En los últimos cinco días este teléfono descartó $_temp0 sin el trabajo que pide tu alias y rechazó $_temp1 de solicitudes que ya había decidido. Cifras altas indican que alguien está inundando tu alias; más trabajo por solicitud los frena.';
+  }
+
+  @override
+  String hdlInboxSaturated(int cap) {
+    final intl.NumberFormat capNumberFormat =
+        intl.NumberFormat.decimalPattern(localeName);
+    final String capString = capNumberFormat.format(cap);
+
+    return 'Uno de esos días llegaron más solicitudes de las que este teléfono puede recordar ($capString), así que una copia de alguna de las restantes podría volver a registrarse. Si esto continúa, pide más trabajo por solicitud.';
+  }
+
+  @override
   String hdlIntroUnknown(String handle) {
     return 'El buzón de @$handle se trasladó a una clave que este dispositivo no tiene, desde otra copia de esta cuenta restaurada de una copia de seguridad más antigua o por alguien que tiene sus claves, así que este dispositivo dejó de leerlo. Su código de recuperación trae el alias de vuelta aquí, con claves nuevas.';
   }

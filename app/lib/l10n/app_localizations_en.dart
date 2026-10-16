@@ -2669,6 +2669,32 @@ class AppLocalizationsEn extends AppLocalizations {
       'This phone still checks the work on every request that comes through your handle, and drops any request without it.';
 
   @override
+  String hdlInboxDrops(int unstamped, int copies) {
+    String _temp0 = intl.Intl.pluralLogic(
+      unstamped,
+      locale: localeName,
+      other: '$unstamped requests that came',
+      one: 'one request that came',
+    );
+    String _temp1 = intl.Intl.pluralLogic(
+      copies,
+      locale: localeName,
+      other: '$copies copies',
+      one: 'one copy',
+    );
+    return 'In the last five days this phone dropped $_temp0 without the work your handle asks for, and refused $_temp1 of requests it had already decided. Large numbers mean someone is flooding your handle; more work per request slows them down.';
+  }
+
+  @override
+  String hdlInboxSaturated(int cap) {
+    final intl.NumberFormat capNumberFormat =
+        intl.NumberFormat.decimalPattern(localeName);
+    final String capString = capNumberFormat.format(cap);
+
+    return 'On one of those days more requests came than this phone can remember ($capString), so a copy of one of the rest could be filed again. If this goes on, ask for more work per request.';
+  }
+
+  @override
   String hdlIntroUnknown(String handle) {
     return '@$handle\'s inbox was moved to a key this device does not hold, by another copy of this account restored from an older backup or by someone who has its keys, so this device has stopped reading it. Its recovery code brings the handle back here, on new keys.';
   }

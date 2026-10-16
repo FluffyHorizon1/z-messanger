@@ -29,7 +29,12 @@
 //   8. a handle lost because its inbox was moved to a key this device does
 //      not hold says that, not that its recovery code was used, and offers
 //      Recover and Forget — and a log that cannot be reached when the screen
-//      reads the handle back does not put another reason in its place.
+//      reads the handle back does not put another reason in its place;
+//   9. what the phone's own checks dropped is on the handle screen — how
+//      many requests came without the work and how many copies of requests
+//      already decided were refused, over the ledger's five days, singular
+//      and plural, nothing while both are zero — and a day of the ledger at
+//      its cap is said as a warning with the cap; in Spanish too.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -391,6 +396,71 @@ void main() {
       expect(svc.handles.own!.problem, 'introUnknown');
       expect(svc.handles.own!.phase, HandlePhase.lost);
       expect(find.text(l.hdlIntroUnknown('finn.42')), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  testWidgets('9. what the phone dropped is said, and a day at its cap',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 2400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.runAsync(() async {
+      final svc = await service(config: silent);
+      svc.handles.own = published('finn.42');
+      final today = introPowDay(DateTime.now().millisecondsSinceEpoch);
+      Future<void> shown(Locale? locale, String what,
+          {required bool Function() ready}) async {
+        await tester.pumpWidget(
+            wrap(svc, HandleScreen(key: UniqueKey()), locale: locale));
+        await until(tester, ready, what);
+      }
+
+      // Nothing dropped: no line, no warning.
+      await shown(null, 'the published handle',
+          ready: () => find.text(l.hdlNotVerification).evaluate().isNotEmpty);
+      expect(find.textContaining('In the last five days'), findsNothing);
+      expect(find.text(l.hdlInboxSaturated(handleStampDayCap)), findsNothing);
+
+      // Some dropped: the counts, singular and plural.
+      svc.handles.stampLedger.tally(today).unstamped = 1;
+      svc.handles.stampLedger.tally(today - 1).copies = 12;
+      expect(svc.handles.inboxTally.toJson(), [1, 12, 0]);
+      await shown(null, 'the counts',
+          ready: () => find.text(l.hdlInboxDrops(1, 12)).evaluate().isNotEmpty);
+      expect(l.hdlInboxDrops(1, 12), contains('one request'));
+      expect(l.hdlInboxDrops(1, 12), contains('12 copies'));
+      expect(l.hdlInboxDrops(3, 1), contains('3 requests'));
+      expect(l.hdlInboxDrops(3, 1), contains('one copy'));
+      expect(find.text(l.hdlInboxSaturated(handleStampDayCap)), findsNothing);
+      await shown(const Locale('es'), 'the counts in Spanish',
+          ready: () =>
+              find.text(es.hdlInboxDrops(1, 12)).evaluate().isNotEmpty);
+      expect(es.hdlInboxDrops(1, 12), isNot(l.hdlInboxDrops(1, 12)));
+      expect(es.hdlInboxDrops(1, 12), contains('una solicitud'));
+      expect(es.hdlInboxDrops(3, 1), contains('una copia'));
+
+      // A day at the ledger's cap: the warning, with the cap.
+      final full = HandleStampLedger(perDay: 2);
+      full.add(today, 1);
+      full.add(today, 2);
+      svc.handles.stampLedger = full;
+      expect(svc.handles.inboxSaturated, isTrue);
+      expect(svc.handles.inboxTally.isEmpty, isTrue);
+      await shown(null, 'the cap said',
+          ready: () => find
+              .text(l.hdlInboxSaturated(handleStampDayCap))
+              .evaluate()
+              .isNotEmpty);
+      expect(l.hdlInboxSaturated(handleStampDayCap), contains('524,288'));
+      expect(find.textContaining('In the last five days'), findsNothing,
+          reason: 'nothing was dropped');
+      await shown(const Locale('es'), 'the cap in Spanish',
+          ready: () => find
+              .text(es.hdlInboxSaturated(handleStampDayCap))
+              .evaluate()
+              .isNotEmpty);
+      expect(es.hdlInboxSaturated(handleStampDayCap), contains('524.288'));
+      await svc.handles.refresh();
       await tester.pumpWidget(const SizedBox());
     });
   });

@@ -168,9 +168,10 @@ you open Z and every quarter of an hour or so while Z is open, and never
 wakes for it — so a request through your handle waits at the relay until you
 next open Z, for up to three days like any message. Your phone checks the
 work on each request itself, and takes each one once, whoever sends it
-again. At most 100 wait at a time, counted apart from requests made with
-your code or an invite; past that, the oldest you have not yet seen goes,
-never one you have.
+again; the handle's screen counts what it dropped, and says if someone is
+sending more than it can keep track of. At most 100 wait at a time, counted
+apart from requests made with your code or an invite; past that, the oldest
+you have not yet seen goes, never one you have.
 
 Only your main device holds a handle and reads its inbox. A linked device can
 find people by handle, and the people you meet through yours appear there

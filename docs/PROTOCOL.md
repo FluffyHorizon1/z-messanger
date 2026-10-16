@@ -5021,14 +5021,29 @@ is that contact's answer (§8.1). It is held to §8.1's rules for its signed
 request the relay hands over again after a drain, or one declined, is not
 filed again. And a request is decided once, whoever sends its envelope
 again: the drain remembers each envelope that opened as a request, whatever
-became of it, by 16 bytes of a hash of its SHA‑256 — the hash its stamp
+became of it, by 6 bytes of a hash of its SHA‑256 — the hash its stamp
 commits to — keyed with a salt of the device's own, under its stamp's day,
-in the vault, until 48 hours after the stamp stops being good (the end of
-the day after its day), and drops a copy before opening it. A day holds
-**4 096** one by one, and past that becomes a Bloom filter of 2²⁰ bits,
-which forgets none of them and refuses by mistake an envelope it never saw
-— less than 1 % of the time while it holds 100 000 or fewer. Stamped junk
-takes no room: it opens to nothing each time it comes. At most **100**
+in the vault, and drops a copy before opening it. The digests are kept one
+by one, exactly, so no flood changes what the ledger refuses: two envelopes
+share a digest once in 2⁴⁸, and an envelope never seen is refused by
+mistake once in a hundred million even with every kept day full (the second
+review of the handles fixes, 2026‑10‑10, drove the Bloom filter of fixed
+size the ledger had before to refuse 70 % of honest requests with 500 000
+distinct stamped requests in a day — each refusal silent). A day holds at
+most **524 288** — 4 MiB in memory, in rows of 512 in the vault, about what
+the relay hands the owner in a day of drains (5 000 envelopes a drain, 96
+drains); one more that day is filed without being remembered and counted,
+and the handle screen warns that a copy of one of the rest of that day
+could be filed again. A day is kept until the fifth day after it begins:
+the relay takes a stamp for day D through D+1 and holds an envelope for up
+to 72 hours (`QUEUE_TTL_HOURS`), so the last copy it could hand over comes
+before the end of D+4. Stamped junk takes no room: it opens to nothing each
+time it comes. What the drains dropped — envelopes with no stamp that
+counts, copies refused, requests filed unremembered — is counted by day
+beside the digests, kept as long, shown on the handle screen in both
+languages, and sent nowhere; a refused copy is of a request this device
+decided already, so nothing is set aside and nothing honest is lost. At
+most **100**
 pending requests that came through the handle are kept, counted apart from
 those by code or link (§8.1), so a wave through a public handle cannot push
 out a request from someone who had the code: past 100, the oldest the person
@@ -5168,7 +5183,8 @@ reads its record, an owner that is not its own, and manages it no more.
 `ownerSeed`, `introSeed`, `pow` — and for two days after a change the
 previous one — `rc`, the version and where it stands
 (pending with its moment, held, live, paused, taken by another, lost); the
-digests of the requests decided, as above; for
+digests of the requests decided and the counts of what the drains dropped,
+as above; for
 each pending request that came through the handle, the handle, the mailbox
 it reached, its `creqId`, when it arrived and whether it has been seen; the
 introduction seeds a pending request still needs; the requests kept for
@@ -5178,7 +5194,7 @@ contact made through a handle, which handle. Never the code or
 `recoverySeed`.
 
 **Backup and restore.** The archive carries all of it but those digests
-in one record,
+and counts in one record,
 `{"t":"handle","keep":1,"v":1,"kv":{…}}` (`BACKUP.md` §5), which a build
 that does not know it keeps and writes back. A restore drains the mailbox —
 reading the record first, so re‑flagging it at the difficulty the record
