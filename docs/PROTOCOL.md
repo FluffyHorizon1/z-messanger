@@ -1274,8 +1274,14 @@ device's own proof of possession (§3.1), which only that device can make: a
 device sends it when the account's list it holds names it without one — once
 per list version — and a root keeps it beside the certificate it holds for the
 SENDING device if it verifies for that certificate and the account, and puts
-it in every list it signs from then on; no new version is needed for it, since
-it changes no signature and no fingerprint. Any other device ignores it, and a
+it in every list it signs from then on; no new version is needed for it
+in‑band, since it changes no signature and no fingerprint. The transparency
+log, though, takes each version once (§19.5), and the copy it takes is what a
+contact reading the list from the log learns: so a root holds back the log
+publish of a version naming a device it has just linked until that device's
+proof is in, for a bounded time, and a root whose log copy of its current
+version lacks a proof it holds moves the list to the next version, which
+carries it (ADR 0022, amended 2026‑10‑16). Any other device ignores it, and a
 device that predates it drops it as an unknown kind (§6.2); `"hist"`
 carries an inner of kind `hist` whose `items` replay recent history to a
 device that was just linked: each item is

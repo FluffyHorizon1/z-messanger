@@ -458,6 +458,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // evidence this device can act on — that it was removed, or (on a root)
     // that the latest entry is one the own-list repair reconciled.
     svc.kt.onOwnLatest = svc._onOwnLatestFromLog;
+    svc.kt.holdOwnPublish = svc._holdsOwnPublish;
     await svc.kt.load();
     await svc._loadContacts();
     await svc._loadReceipts(); // ADR 0028: what a previous run still owed
@@ -7170,7 +7171,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       confirm: confirmSas,
     );
     if (linked == null) return false;
-    await addMyDevice(linked);
+    await addMyDevice(linked, awaitProof: true);
     return true;
   }
 
@@ -7296,7 +7297,16 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   /// Persist a newly-linked device of MY account and (re)build the sync channel.
-  Future<void> addMyDevice(DeviceCertificate cert) async {
+  ///
+  /// [awaitProof]: the device was just linked by this build's pairing
+  /// ([hostDeviceLink]) and will hand over its proof of possession within
+  /// seconds of its first start, so the version that first names it is held
+  /// back from the transparency log until the proof is in or
+  /// [popPublishHold] runs out — the log takes each version once, and the
+  /// copy it takes is what a contact that reads the list from the log learns
+  /// ([_applyDevicePop]). In-band nothing waits.
+  Future<void> addMyDevice(DeviceCertificate cert,
+      {bool awaitProof = false}) async {
     // The device set and its version change together, under the lock a
     // signer reads them under ([_signCurrentDeviceList]); the broadcast below
     // takes it again for the signing, after this has let it go.
@@ -7320,6 +7330,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // A contact's list that named this device before it was mine held it by
     // the first-come rule; it does not now (§3.4).
     if (isNew) await _withdrawClaimsOnMine();
+    if (isNew && awaitProof && cert.pop == null && kt.config.enabled) {
+      _popHoldTimer?.cancel();
+      _popHold = (
+        edPub: b64(cert.deviceEdPub),
+        rid: await cert.routingId(),
+        until: DateTime.now().add(popPublishHold),
+      );
+      _popHoldTimer = Timer(popPublishHold, () {
+        _releasePopHold();
+        unawaited(_signCurrentDeviceList().then((_) {}, onError: (_) {}));
+      });
+    }
     await broadcastMyDeviceList(); // tell contacts about the new device
     // 7.6b: a device that just joined starts with the recent history instead
     // of an empty screen (queued through the durable outbox, so it lands even
@@ -13796,14 +13818,42 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// beside the certificate (`my_devices`), so every list the root signs
   /// from then on carries it.
   ///
-  /// Nothing is re-signed or sent for it here. A proof changes no signature
-  /// and no fingerprint, so the current version signed again with it is the
-  /// same list, and it reaches whoever is next handed the account's list: a
-  /// new contact with the hello, a contact whose echo shows it behind —
-  /// among them one that refused the list because another's claim held the
-  /// device there first, which the proof now overrules — a device of this
-  /// account the root re-asserts the list to, whose copy is what it hands a
-  /// contact added from it, and everyone at the next version.
+  /// What that costs the list depends on the transparency log, which is
+  /// keyed by version and takes each version once (§19.5: a re-publish of
+  /// the held version is refused, 409 `stale_version`). A proof sits outside
+  /// every signature and the fingerprint (§3.1), so the current version
+  /// signed again with it is the same list — and a contact that learns the
+  /// list from the log learns whatever copy of the version the log took. If
+  /// that copy lacks the proof, the contact holds the device unproven and a
+  /// first-come squatter on its keys keeps it there, with the genuine list
+  /// refused whole ([_judgeListClaims]): exactly what the proof exists to
+  /// stop (an independent review of handles, 2026-10-09). So:
+  ///
+  /// - the version this root is holding back from the log for this device
+  ///   ([_popHold], set when [hostDeviceLink] links it): the held version is
+  ///   signed again with the proof and published now, for the first time —
+  ///   no version moves, which is the common case of a device just linked;
+  /// - a version the log has already acknowledged: the list moves to the
+  ///   next version, which carries the proof to the log
+  ///   ([_supersedeOwnList]) — a device linked by a build that held nothing
+  ///   back, or whose proof came after the hold ran out;
+  /// - otherwise — the publish still queued, or no log — the current version
+  ///   is signed again with the proof, which replaces a queued publish.
+  ///
+  /// A queued publish that the log acknowledges while this runs is the one
+  /// case the second leaves to the log check, which compares what the log
+  /// holds for the current version with the proofs held here and moves the
+  /// version when they differ ([_onOwnLatestFromLog]); so does every account
+  /// whose root applied proofs before this was built. In-band the proof
+  /// reaches a new contact with the hello, a contact whose echo shows it
+  /// behind — among them one that refused the list because another's claim
+  /// held the device there first, which the proof now overrules — and this
+  /// account's own devices, whose copy is what one of them hands a contact
+  /// added from it.
+  ///
+  /// Idempotent: a proof already held for the device applies nothing and
+  /// moves no version, so a device that re-offers costs one extra offer, not
+  /// an unbounded climb.
   Future<void> _applyDevicePop(String fromDeviceRid, InnerMessage inner) async {
     if (debugNoDevicePop) return;
     final me = await accountIdentity();
@@ -13816,21 +13866,81 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     } catch (_) {
       return;
     }
-    await _withOwnListLock(() async {
+    final applied = await _withOwnListLock(() async {
       final devices = await _myDevices();
       for (var i = 0; i < devices.length; i++) {
         if (await devices[i].routingId() != fromDeviceRid) continue;
         final held = devices[i].pop;
-        if (held != null && constantTimeEquals(held, pop)) return;
+        if (held != null && constantTimeEquals(held, pop)) return false;
         final proven = devices[i].withPop(pop);
-        if (!await proven.provesPossession(me.accountEdPub)) return;
+        if (!await proven.provesPossession(me.accountEdPub)) return false;
         devices[i] = proven;
         await vault.kvPut(
             'my_devices', jsonEncode([for (final d in devices) d.toJson()]),
             sensitive: false);
-        return;
+        return true;
       }
+      return false;
     });
+    if (!applied || debugNoProofRepublish) return;
+    final hold = _popHold;
+    if (hold != null && hold.rid == fromDeviceRid) _releasePopHold();
+    final json = await _signCurrentDeviceList(); // publishes unless the log has it
+    if (json == null || hold?.rid == fromDeviceRid) return;
+    final list = SignedDeviceList.fromJson(
+        (jsonDecode(json) as Map).cast<String, Object?>());
+    if (await kt.ownPublishAcknowledged(
+        list.version, b64(await list.fingerprint()))) {
+      await _supersedeOwnList(list.version);
+    }
+  }
+
+  /// Test seam: this root applies a proof the way 4.2.0 did — kept beside the
+  /// certificate, nothing signed or published for it — so a test can build
+  /// the log copy that lacks it, as every account that ran 4.2.0 has.
+  @visibleForTesting
+  bool debugNoProofRepublish = false;
+
+  /// How long [hostDeviceLink] holds a just-linked device's first version back
+  /// from the transparency log for the device's proof of possession, which it
+  /// hands over within seconds of its first start. Past it the version is
+  /// published without the proof, and a proof that comes later moves the
+  /// list to the next version ([_applyDevicePop]). Tests shorten it.
+  @visibleForTesting
+  Duration popPublishHold = const Duration(minutes: 2);
+
+  /// The device [hostDeviceLink] is holding the list's log publish back for:
+  /// its Ed25519 key (b64), its routing id, and until when.
+  ({String edPub, String rid, DateTime until})? _popHold;
+  Timer? _popHoldTimer;
+
+  /// Whether the log publish of [listJson] waits for the held device's proof
+  /// ([KeyTransparency.holdOwnPublish]): only while the hold runs, and only
+  /// for a list that names that device without one.
+  bool _holdsOwnPublish(String listJson) {
+    final hold = _popHold;
+    if (hold == null) return false;
+    if (!DateTime.now().isBefore(hold.until)) {
+      _releasePopHold();
+      return false;
+    }
+    try {
+      final devs = (jsonDecode(listJson) as Map)['devs'] as List;
+      for (final d in devs) {
+        final m = d as Map;
+        if (m['ded'] == hold.edPub) return m['pop'] == null;
+      }
+    } catch (_) {
+      // Not a list this can read: nothing to hold it for.
+    }
+    return false;
+  }
+
+  /// Ends the hold. The timer's end publishes the version as it stands.
+  void _releasePopHold() {
+    _popHold = null;
+    _popHoldTimer?.cancel();
+    _popHoldTimer = null;
   }
 
   /// Cross-check the claim ('dl') and echo ('pdl') carried by an inbound inner
@@ -14204,9 +14314,40 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
               .then((_) {}, onError: (_) {}));
         }
       }
+      // ADR 0022: the log's copy of the current version lacks a proof of
+      // possession this root holds — applied after the log took the version,
+      // by a build that published nothing for it (every root that ran 4.2.0),
+      // or acknowledged while a copy carrying it was still queued
+      // ([_applyDevicePop]). A contact that reads the list from the log would
+      // hold that device unproven, so the list moves to the next version,
+      // which carries every proof held here.
+      if (!reconciled && !debugNoProofRepublish && await holdsAccountRoot()) {
+        final (v, h) = await _ownListClaim();
+        if (list.version == v &&
+            b64(await list.fingerprint()) == h &&
+            await _lacksHeldProof(list)) {
+          unawaited(_supersedeOwnList(list.version)
+              .then((_) {}, onError: (_) {}));
+        }
+      }
     } catch (_) {
       // A check of the log must not be taken down by what it hands over.
     }
+  }
+
+  /// Whether [list] — the log's copy of this account's current version —
+  /// names a device without the proof of possession this root holds for it.
+  Future<bool> _lacksHeldProof(SignedDeviceList list) async {
+    final logged = {for (final d in list.devices) b64(d.deviceEdPub): d.pop};
+    for (final d in await _myDevices()) {
+      final pop = d.pop;
+      if (pop == null) continue;
+      final k = b64(d.deviceEdPub);
+      if (!logged.containsKey(k)) continue;
+      final inLog = logged[k];
+      if (inLog == null || !constantTimeEquals(inLog, pop)) return true;
+    }
+    return false;
   }
 
   /// The own-list repair's last step, on a root (ADR 0026): move past the

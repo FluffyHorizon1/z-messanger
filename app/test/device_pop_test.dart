@@ -56,6 +56,24 @@
 //      which signs their account (ADR 0027); the add takes the device back,
 //      so its messages arrive as theirs. (On 0d00a69 the claim keeps it, and
 //      the device is never heard.)
+//
+// And through the transparency log, which takes each version of a list once
+// — so the copy it takes is what a contact reading the list from the log
+// learns. On 4.2.0 a device linked at version V made its root publish V before
+// the proof existed and nothing published it after: a contact installing V
+// from the log held the device unproven, and a squatter's first-come claim
+// kept it, the genuine list refused whole (measured: the victim held the
+// laptop for Mallory). Each of these ends with a fresh contact reading the
+// list from the log alone, and a victim Mallory reached first, holding the
+// device proven for its account:
+//  10. a device linked by this build's pairing: its root holds V back from
+//      the log until the proof is in, then publishes V carrying it — no
+//      version of its own;
+//  11. a proof that comes after the log took V — a link that held nothing
+//      back, or a hold that ran out — moves the list to V+1, which carries it;
+//  12. a root that applied a proof as 4.2.0 did (kept, nothing published)
+//      finds the log's copy of V without it at its next check of the log, and
+//      moves the list to V+1, which carries it.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 6))
 library;
@@ -65,9 +83,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseException;
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/key_transparency.dart';
 import 'package:zapp/core/receipts.dart';
 import 'package:zapp/core/system_messages.dart';
 import 'package:zapp/core/transport.dart';
@@ -93,6 +113,15 @@ void main() {
 
   late Process relay;
   late int port;
+  // The transparency log criteria 10-12 run against: a local one, under a
+  // key this file pins, as the shipped app pins the public log's.
+  late Process log;
+  late int logPort;
+  late Uint8List logPub;
+  final logSeed =
+      Uint8List.fromList(List<int>.generate(32, (i) => (i * 29 + 3) & 0xff));
+  // The clients that use it; every other client here has no log reachable.
+  final withLog = <String>{};
   final dirs = <String, Directory>{};
   final live = <ChatService>[];
 
@@ -117,17 +146,41 @@ void main() {
         workingDirectory:
             '${Directory.current.parent.path}${Platform.pathSeparator}server',
         environment: {'PORT': '$port', 'LOG_LEVEL': 'silent'});
-    for (var i = 0; i < 100; i++) {
-      try {
-        final res = await (await HttpClient()
-                .getUrl(Uri.parse('http://127.0.0.1:$port/health')))
-            .close();
-        await res.drain<void>();
-        if (res.statusCode == 200) return;
-      } catch (_) {}
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+    final logProbe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    logPort = logProbe.port;
+    await logProbe.close();
+    log = await Process.start('node', ['server.js'],
+        workingDirectory:
+            '${Directory.current.parent.path}${Platform.pathSeparator}kt',
+        environment: {
+          'KT_SEED': [
+            for (final b in logSeed) b.toRadixString(16).padLeft(2, '0')
+          ].join(),
+          'KT_EPHEMERAL': '1',
+          'KT_PORT': '$logPort',
+          'PUBLISH_PER_MIN': '1000000',
+          'PUBLISH_PER_MIN_TOTAL': '1000000',
+          'PUBLISH_PER_ACCT_PER_DAY': '1000000',
+          'PUBLISH_NEW_ACCOUNTS_PER_MIN': '1000000',
+        });
+    log.stdout.drain<void>();
+    log.stderr.drain<void>();
+    final kp = await Ed25519().newKeyPairFromSeed(logSeed);
+    logPub = Uint8List.fromList((await kp.extractPublicKey()).bytes);
+    for (final p in [port, logPort]) {
+      var ok = false;
+      for (var i = 0; i < 100 && !ok; i++) {
+        try {
+          final res = await (await HttpClient()
+                  .getUrl(Uri.parse('http://127.0.0.1:$p/health')))
+              .close();
+          await res.drain<void>();
+          ok = res.statusCode == 200;
+        } catch (_) {}
+        if (!ok) await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      if (!ok) fail('${p == port ? 'relay' : 'log'} did not start');
     }
-    fail('relay did not start');
   });
 
   tearDownAll(() async {
@@ -136,6 +189,7 @@ void main() {
       await s.transport.stop();
     }
     relay.kill();
+    log.kill();
     for (final d in dirs.values) {
       if (d.existsSync()) d.deleteSync(recursive: true);
     }
@@ -159,8 +213,14 @@ void main() {
           // thrown and the list stays dual-signed.
           signDevlistV2Only: false,
           receiptTiming: promptReceipts,
+          ktConfig: withLog.contains(name)
+              ? KtConfig(
+                  logUrl: 'http://127.0.0.1:$logPort', logPubB64: b64(logPub))
+              : KtConfig.defaults,
         );
         made = svc;
+        // The log is checked when a criterion says so, not on a timer.
+        if (withLog.contains(name)) svc.kt.scheduled = false;
         live.add(svc);
         ready.complete(svc);
       } catch (e, st) {
@@ -181,7 +241,8 @@ void main() {
 
   /// [name]'s client: a new account the first time, the same vault after
   /// [stop] — a linked device's included, which keeps its account.
-  Future<ChatService> start(String name) async {
+  Future<ChatService> start(String name, {bool logged = false}) async {
+    if (logged) withLog.add(name);
     final dir =
         dirs[name] ??= await Directory.systemTemp.createTemp('z_pop_$name');
     final vault = await Vault.open(rootOverride: dir);
@@ -202,7 +263,8 @@ void main() {
   /// (`addMyDevice`). Its certificate carries no proof: the root signs it
   /// and cannot make one.
   Future<({ChatService svc, DeviceCertificate cert})> linkedTo(
-      ChatService host, String name) async {
+      ChatService host, String name, {bool logged = false}) async {
+    if (logged) withLog.add(name);
     final account = await host.accountIdentity();
     final ml = await host.pqAccountPublic();
     final devId = await ZIdentity.generate();
@@ -853,5 +915,161 @@ void main() {
     await heard(laptop.svc, vic, laptopRid, "Bob's laptop, as Bob");
     expect(received(vic, mal.myRid, "Bob's laptop, as Bob"), isFalse);
     await heard(mal, vic, mal.myRid, 'Mal is still a contact');
+  });
+  /// What the log serves for [root]'s account, opened: the version, and
+  /// whether its copy carries [device]'s proof of possession.
+  Future<({int version, bool proven})?> inLog(
+      ChatService root, DeviceCertificate device) async {
+    final acct = (await root.accountIdentity()).accountEdPub;
+    final label = await ktLabel(acct);
+    final hex =
+        [for (final b in label) b.toRadixString(16).padLeft(2, '0')].join();
+    final res = await (await HttpClient().getUrl(
+            Uri.parse('http://127.0.0.1:$logPort/kt/v1/lookup/$hex')))
+        .close();
+    final body = await res.transform(utf8.decoder).join();
+    if (res.statusCode != 200) return null;
+    final r = await ktVerifyLookup(
+        await KtLookup.fromJson(
+            (jsonDecode(body) as Map).cast<String, Object?>()),
+        label: label,
+        logPub: logPub);
+    final e = r.latest;
+    if (e == null) return null;
+    final plain = await ktOpenValue(acct, e.value);
+    if (plain == null) return null;
+    final list = SignedDeviceList.fromJson(
+        (jsonDecode(utf8.decode(plain)) as Map).cast<String, Object?>());
+    final d = list.devices
+        .where((c) => b64(c.deviceEdPub) == b64(device.deviceEdPub));
+    return (version: e.version, proven: d.isNotEmpty && d.first.pop != null);
+  }
+
+  /// The end of criteria 10-12: a fresh contact of [root] that learns its
+  /// list from the log alone, and a victim Mallory reached first, both hold
+  /// [device] proven for [root]'s account, at [version] or above.
+  Future<void> logReadersHoldItProven(
+      ChatService root, DeviceCertificate device, int version, String tag) async {
+    final rid = await device.routingId();
+    final dave = await start('dave$tag', logged: true);
+    await waitUntil(() => linked(dave), what: 'Dave connected');
+    await dave.addContactFromCode(await root.myContactCode());
+    await waitUntil(() async {
+      await dave.kt.check();
+      return (await dave.heldContactListVersion(root.myRid)) >= version;
+    }, what: "Dave installs the list (v$version) from the log");
+    expect(dave.debugListedDeviceOwner(rid), root.myRid);
+    expect(dave.debugProvenDevice(rid)?.inList, isTrue,
+        reason: 'the log copy carries the proof, so a contact that reads the '
+            'list from the log holds the device proven');
+
+    final mal = await start('mal$tag', logged: true);
+    final vic = await start('vic$tag', logged: true);
+    await introduce(vic, mal);
+    await sendList(
+        mal,
+        vic,
+        await claim(mal, keysOfCert(device),
+            await vic.heldContactListVersion(mal.myRid) + 1));
+    await waitUntil(() => vic.debugListedDeviceOwner(rid) == mal.myRid,
+        what: 'Mallory first-come holds the device at the victim');
+    // The victim learns the genuine list from the log and nowhere else.
+    await vic.addContactFromCode(await root.myContactCode());
+    await waitUntil(() async {
+      await vic.kt.check();
+      return vic.debugListedDeviceOwner(rid) == root.myRid;
+    }, what: 'the victim installs the genuine list from the log');
+    expect(await vic.heldContactListVersion(root.myRid),
+        greaterThanOrEqualTo(version),
+        reason: 'the genuine list installed whole; Mallory is evicted');
+  }
+
+  test(
+      '10. a device just linked: the version that first names it waits for '
+      'its proof, and the log takes it carrying the proof, at no version of '
+      'its own', () async {
+    final alice = await start('alice10', logged: true);
+    final bob = await start('bob10', logged: true);
+    await introduce(alice, bob);
+    alice.popPublishHold = const Duration(seconds: 30);
+    final laptop = await linkedTo(alice, 'alice10laptop', logged: true);
+    final laptopRid = await laptop.cert.routingId();
+    await waitUntil(() => linked(laptop.svc), what: 'laptop connected');
+    await alice.addMyDevice(laptop.cert, awaitProof: true); // as pairing does
+    await waitUntil(() => rootHoldsProof(alice, laptopRid),
+        what: "Alice's root holds the laptop's proof");
+    await waitUntil(
+        () async => (await inLog(alice, laptop.cert))?.version == 2,
+        what: 'the log takes v2');
+    expect((await inLog(alice, laptop.cert))!.proven, isTrue,
+        reason: 'v2 went to the log once, carrying the proof');
+    expect(await alice.ownDeviceListVersion(), 2,
+        reason: 'no version moved for the proof');
+    await logReadersHoldItProven(alice, laptop.cert, 2, '10');
+  });
+
+  test(
+      '11. a proof that comes after the log took the version moves the list '
+      'to the next one, which carries it', () async {
+    final alice = await start('alice11', logged: true);
+    final bob = await start('bob11', logged: true);
+    await introduce(alice, bob);
+    final laptop = await linkedTo(alice, 'alice11laptop', logged: true);
+    final laptopRid = await laptop.cert.routingId();
+    laptop.svc.debugNoDevicePop = true; // its proof comes later
+    await waitUntil(() => linked(laptop.svc), what: 'laptop connected');
+    await alice.addMyDevice(laptop.cert); // a link that held nothing back
+    await waitUntil(
+        () async => (await inLog(alice, laptop.cert))?.version == 2,
+        what: 'the log takes v2, without the proof');
+    expect((await inLog(alice, laptop.cert))!.proven, isFalse);
+    await waitUntil(
+        () async => await laptop.svc.vault.kvGet('own_list_json') != null,
+        what: "the laptop learned its account's list");
+
+    // The laptop updated: the same vault, a build that makes proofs.
+    await stop(laptop.svc);
+    await start('alice11laptop');
+    await waitUntil(() => rootHoldsProof(alice, laptopRid),
+        what: "Alice's root holds the laptop's proof");
+    await waitUntil(
+        () async => (await inLog(alice, laptop.cert))?.version == 3,
+        what: 'the list moves to v3');
+    expect((await inLog(alice, laptop.cert))!.proven, isTrue,
+        reason: 'v3 carries the proof to the log');
+    expect(await alice.ownDeviceListVersion(), 3);
+    await logReadersHoldItProven(alice, laptop.cert, 3, '11');
+  });
+
+  test(
+      "12. a root that applied a proof as 4.2.0 did finds the log's copy "
+      'without it at its next check, and moves the list on', () async {
+    final alice = await start('alice12', logged: true);
+    final bob = await start('bob12', logged: true);
+    await introduce(alice, bob);
+    alice.debugNoProofRepublish = true; // kept, nothing published: 4.2.0
+    final laptop = await linkedTo(alice, 'alice12laptop', logged: true);
+    final laptopRid = await laptop.cert.routingId();
+    await waitUntil(() => linked(laptop.svc), what: 'laptop connected');
+    await alice.addMyDevice(laptop.cert);
+    await waitUntil(() => rootHoldsProof(alice, laptopRid),
+        what: "Alice's root holds the laptop's proof");
+    await waitUntil(
+        () async => (await inLog(alice, laptop.cert))?.version == 2,
+        what: 'the log takes v2');
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    expect((await inLog(alice, laptop.cert))!.proven, isFalse,
+        reason: "4.2.0's log copy: the version, without the proof");
+    expect(await alice.ownDeviceListVersion(), 2);
+
+    // The same root on this build: its next check of the log.
+    alice.debugNoProofRepublish = false;
+    await waitUntil(() async {
+      await alice.kt.check();
+      return (await inLog(alice, laptop.cert))?.version == 3;
+    }, what: 'the log check moves the list to v3');
+    expect((await inLog(alice, laptop.cert))!.proven, isTrue,
+        reason: 'v3 carries the proof the log lacked');
+    await logReadersHoldItProven(alice, laptop.cert, 3, '12');
   });
 }

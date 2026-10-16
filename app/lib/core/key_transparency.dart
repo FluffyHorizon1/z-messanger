@@ -555,6 +555,13 @@ class KeyTransparency {
   /// A publish waiting for the log's acknowledgement (durable across restarts).
   Map<String, Object?>? _pendingPublish;
 
+  /// The list [_pendingPublish] was made from, when this process made it. A
+  /// copy of the same version that differs only outside the fingerprint (a
+  /// device's proof of possession, ADR 0022) replaces it while the log has
+  /// not taken it, so the log takes the copy that carries the proof; one
+  /// restored from the vault, whose list is not known, is made again.
+  String? _pendingPublishJson;
+
   /// v → fp (b64) of every own list this device signed or learned.
   final Map<int, String> _knownOwn = {};
   int? _firstKnownV;
@@ -592,6 +599,13 @@ class KeyTransparency {
   /// repair reconciled rather than its current list ([reconciled]).
   Future<void> Function(SignedDeviceList list, {required bool reconciled})?
       onOwnLatest;
+
+  /// Asked before this account's list is queued for the log: true while the
+  /// service holds the version back for a just-linked device's proof of
+  /// possession (ADR 0022) — the log takes each version once, and the copy it
+  /// takes is what a contact reading the list from the log learns. The
+  /// service publishes again when the proof is in or its hold runs out.
+  bool Function(String listJson)? holdOwnPublish;
 
   Timer? _timer;
   Timer? _publishRetry;
@@ -1118,15 +1132,27 @@ class KeyTransparency {
     if (!config.enabled) return;
     final tag = '$version|${b64(fp)}';
     if (await vault.kvGet('kt_pub_done') == tag) return;
+    if (holdOwnPublish?.call(listJson) == true) return;
     final pending = _pendingPublish;
-    if (pending != null && pending['v'] == version && pending['fp'] == b64(fp)) return;
+    if (pending != null &&
+        pending['v'] == version &&
+        pending['fp'] == b64(fp) &&
+        _pendingPublishJson == listJson) {
+      return;
+    }
     final value = await ktSealValue(accountEdPub, utf8.encode(listJson));
     final req = await ktPublishRequest(
         accountEdSeed: accountEdSeed, version: version, fp: fp, value: value);
     _pendingPublish = req;
+    _pendingPublishJson = listJson;
     await vault.kvPut('kt_pub_pending', jsonEncode(req), sensitive: false);
     unawaited(_flushPublish());
   }
+
+  /// Whether the log has acknowledged this account's [version] under [fpB64]
+  /// — taken it (201), or answered that it holds it or a newer one (409).
+  Future<bool> ownPublishAcknowledged(int version, String fpB64) async =>
+      config.enabled && await vault.kvGet('kt_pub_done') == '$version|$fpB64';
 
   /// A contact's held list changed (installed in-band). It is checked at the
   /// next refresh, not now (phase 35): a check timed by the change would tell

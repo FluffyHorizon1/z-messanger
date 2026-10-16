@@ -407,7 +407,9 @@ void main() {
       {Duration? devlistGrace}) async {
     final d = await joining(root, name, devlistGrace: devlistGrace);
     final before = await root.ownDeviceListVersion();
-    await root.addMyDevice(d.cert);
+    // As the app's pairing links one (`hostDeviceLink`): the version waits for
+    // the device's proof of possession before it goes to the log (ADR 0022).
+    await root.addMyDevice(d.cert, awaitProof: true);
     await waitUntil(
         () async => await d.svc.ownDeviceListVersion() == before + 1,
         what: '$name learned the list that adds it');
@@ -751,7 +753,7 @@ void main() {
         reason: 'v2 is from before this device was linked: it holds no list '
             'of its own that v2 could be above');
 
-    await phone.addMyDevice(tablet.cert);
+    await phone.addMyDevice(tablet.cert, awaitProof: true); // as pairing does
     await waitUntil(() async => await tablet.svc.ownDeviceListVersion() == 3,
         what: 'the tablet learned the list that adds it');
     await tablet.svc.kt.check();

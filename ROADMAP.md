@@ -29,7 +29,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 16 | **✅ complete** — 16.1 sealed sender now holds against the relay process, not only its stored data (`adr/0007`, R21) · 16.2 pattern study: jitter and cover traffic measured against a relay that clusters by timing, and rejected with the numbers (`THREAT_MODEL.md` R18/R19) · 16.3 federation decided as client-to-many-relays and deferred (`adr/0008`) | `anonymous_sender_test.dart`, `server/test/sealed.test.js`, `server/bench/patterns.js` |
 | 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log: `adr/0006`, in progress) · 7.6 search + history sync + themes ✅ · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
 | 17 Connect without meeting | ✅ done | `adr/0009`, PROTOCOL §20, `connect_test.dart`, `connect_relay_test.dart` |
-| 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4 landed, not released — the dormant hybrid certificate retired (`adr/0031`) | `adr/0017`/`adr/0022`/`adr/0029`/`adr/0031`, PROTOCOL §3.7, `devlist_capability_test.dart`, `device_cert_pop_test.dart`; closes P1-2, P1-3, P1-4's first-come half (R42) |
+| 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4, and 18.7's proofs reaching the transparency log, landed, not released — the dormant hybrid certificate retired (`adr/0031`) | `adr/0017`/`adr/0022`/`adr/0029`/`adr/0031`, PROTOCOL §3.7, `devlist_capability_test.dart`, `device_cert_pop_test.dart`; closes P1-2, P1-3, P1-4's first-come half (R42) |
 | 19 Transparency witness | people-gated (G3) | mirror/witness built (34), `kt_witness_test.dart`; needs an operator outside the project |
 | 20 Calls | designed | `adr/0005`; media path undecided |
 | 21 iOS | people-gated (G7) | nothing committed; needs a Mac, an Apple account, the reserved push ADR 0002 |
@@ -435,7 +435,7 @@ people or a decision from you.
 
 | Phase | Status | Done | Left | Closes |
 |---|---|---|---|---|
-| 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4 landed, not released | `sig2` over ratchet keys (3.6.1), ML-DSA over membership (3.7.8), the v2-only reader (3.9.9); 18.5–18.6 move each account to v2-only signing once every reader has said it can read one (`adr/0029`, PROTOCOL §3.7); 18.7 proof of possession in device certificates (`adr/0022`); 18.4 the dormant hybrid certificate retired, the list signature being how v3 binds devices (`adr/0031`) | — | P1-2, P1-3, P1-4's first-come half (R42) |
+| 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4 and the 18.7 log fix landed, not released | `sig2` over ratchet keys (3.6.1), ML-DSA over membership (3.7.8), the v2-only reader (3.9.9); 18.5–18.6 move each account to v2-only signing once every reader has said it can read one (`adr/0029`, PROTOCOL §3.7); 18.7 proof of possession in device certificates (`adr/0022`), and — landed after 4.2.0 — in the copy of a list the transparency log takes, so a contact that reads the list from the log cannot lose a proven device to a first-come claim; 18.4 the dormant hybrid certificate retired, the list signature being how v3 binds devices (`adr/0031`) | — | P1-2, P1-3, P1-4's first-come half (R42) |
 | 19 Transparency witness | People-gated | Mirror and witness code; the "witness ahead" false fork fixed (phase 34) | An operator outside the project, then the client's pinned witness config | G3 |
 | 20 Calls | Designed | `adr/0005` | Your decision on the media path | — |
 | 21 iOS | People-gated | Nothing; `app/ios` has never been committed | A Mac, an Apple account, the reserved push ADR 0002 | G7 |
@@ -555,7 +555,7 @@ and released; two wait on you in Play Console.
 | P1-1 Linked-device channels never re-key | 26.2 | Done |
 | P1-2 A same-version ratchet-key swap is invisible | 18.6 | Done (4.2.0) |
 | P1-3 The v2-only gate cannot be measured | 18.5 | Done (4.2.0) |
-| P1-4 A contact can claim another's device | 3.9.10; first-come in 18.7 | Done; first-come in 4.2.0 |
+| P1-4 A contact can claim another's device | 3.9.10; first-come in 18.7 | Done; first-come in 4.2.0, through the transparency log landed |
 | P1-5 Linking drops contacts' account keys and commitments | 33 | Done |
 | P1-6 Own-list signing race | 3.9.10; damaged vaults in 32 | Done |
 | P1-7 Forged "reset your identity" / "device removed" | 32 | Done |

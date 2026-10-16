@@ -207,6 +207,18 @@ as above: a device with no proof is first come, as it was.
   proofs; a receiver that saw them refuses that copy and keeps the one it
   holds.
 * **Codes are unchanged**, and so are pairing, the relay and the log.
+* **The log takes a version once, so a proof must be in the copy it takes**
+  (amended 2026‑10‑16, after 4.2.0). A device linked at version V made its
+  root publish V before the proof existed, and nothing published it after: a
+  contact that read the list from the log held the device unproven, and a
+  first‑come claim on its keys kept it, the genuine list refused whole —
+  measured on 4.2.0. Now a root holds V back from the log while a device its
+  pairing has just linked has not handed over its proof — two minutes at
+  most — and then publishes V carrying it, so the common case moves no
+  version; a proof that comes after the log took V moves the list to V+1,
+  which carries it; and a root whose log copy of its current version lacks a
+  proof it holds — every root that ran 4.2.0 — moves to V+1 at its next check
+  of the log. In‑band, nothing changes. The log's own rules are unchanged.
 * **Wire:** one optional certificate member and one self‑sync `dir` (§14).
   Every existing vector file is byte‑identical; `v1/device_pop.json` is new,
   reproduced by `protocol/tool/vectors.dart` and re‑derived by the clean‑room

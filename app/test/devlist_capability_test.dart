@@ -324,7 +324,9 @@ void main() {
     final svc = await start(name, preAdr0029: preAdr0029);
     await waitUntil(() => up(host) && up(svc),
         what: '$name and its host each up on both links');
-    await host.addMyDevice(cert);
+    // As the app's pairing links one (`hostDeviceLink`): the version waits for
+    // the device's proof of possession before it goes to the log (ADR 0022).
+    await host.addMyDevice(cert, awaitProof: true);
     await waitUntil(() async => await svc.ownDeviceListVersion() >= 2,
         what: '$name holds its account\'s list');
     return svc;
