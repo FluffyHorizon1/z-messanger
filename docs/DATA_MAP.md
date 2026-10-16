@@ -162,8 +162,8 @@ dependency-metadata blob in the APK either.
 | Your device list | An inner message inside the ratchet, 4 096 bucket | Indistinguishable from a chat message of ~190–1 900 characters |
 | Your post-quantum device-list signature | Its own inner message, 16 384 bucket, on a delayed schedule (`adr/0004`) | A ~16 KB envelope at an unrelated time — see R2 in `THREAT_MODEL.md` |
 | Your post-quantum identity key | An inner message, 16 384 bucket, early in a new conversation | A ~16 KB envelope, as a text of 2 000+ characters would be (`adr/0004`, addendum) |
-| A delivery or read receipt / typing state | Inner message: the 1 024 bucket naming one to three messages, 4 096 naming four to sixty‑four (measured, `adr/0028`) | Same as a short message, or one of a hundred characters or more; and when — since phase 41 never sooner than 5 s after the message it answers, at a random moment up to a minute (`adr/0028`) |
-| A contact request to a handle (phase 38) | A sealed envelope to the handle's introduction mailbox, padded, with a proof‑of‑work stamp beside it, on an anonymous connection opened for it and closed after | Its recipient — the introduction mailbox, which anyone who looks the handle up can compute — its arrival time, its bucket and the address it came from; the stamp is checked, kept with the envelope and handed to the owner with it |
+| A delivery or read receipt | Inner message: the 1 024 bucket naming one to three messages, 4 096 naming four to sixty‑four (measured, `adr/0028`) | Same as a short message, or one of a hundred characters or more; and when — since phase 41 never sooner than 5 s after the message it answers, at a random moment up to a minute (`adr/0028`) |
+| A contact request to a handle (phase 38) | A sealed envelope to the handle's introduction mailbox, padded, with a proof‑of‑work stamp beside it, on an anonymous connection opened for it and closed after | Its recipient — the introduction mailbox, which anyone who looks the handle up can compute — its arrival time, its bucket and the address it came from; the stamp is checked and dropped |
 
 ## Erasure
 

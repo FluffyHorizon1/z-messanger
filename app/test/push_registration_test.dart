@@ -29,6 +29,10 @@
 //      Firebase Cloud Messaging, no content and no sender, thirty days — and,
 //      when nothing is registered, says why: off, notifications not allowed,
 //      or a withdrawal the relay has yet to hear.
+//   7. A token refresh that FCM fires after notifications were taken away
+//      while the app ran — with no return to the foreground to re-check — does
+//      not re-register: permission is checked afresh inside the refresh
+//      callback, so a revoked device hands the relay nothing.
 @Tags(['integration'])
 library;
 
@@ -503,6 +507,65 @@ void main() {
     expect(push.withdrawalPending, isFalse);
     expect(platform.forgotten, forgotten,
         reason: 'a withdrawal the relay already answered was made again');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test(
+      '7. a token refresh after notifications were taken away while the app '
+      'ran, with no resume, does not re-register the token', () async {
+    final dev = await person('Refresh');
+    final friend = await person('Friend7');
+    await introduce(dev, friend);
+    const token = 'fcm-token-refresh-a';
+    final platform = FakePushPlatform(allowed: true, fcmToken: token);
+    final push = PushService(
+        transport: dev.transport,
+        vault: dev.vault,
+        platform: platform,
+        supported: true);
+    final mark = events.length;
+    await push.init();
+    await waitUntil(() => registeredSince(mark, dev),
+        what: 'push on and allowed: the token is registered');
+
+    // Notifications are taken away in Android's settings while Z sits in the
+    // background — no return to the foreground, so nothing refreshes what the
+    // service last learned about permission (its `_permitted` stays true).
+    platform.allowed = false;
+
+    // FCM rotates this install's token and fires onTokenRefresh. A second
+    // listener on the same broadcast stream, subscribed after the service's
+    // own, completes once the service's refresh listener has been invoked;
+    // whichever token the refresh leaves set is then what a reconnection
+    // re-registers below. The relay logs no token on a registration, only on
+    // the wake it sends, so the held token is read from that wake.
+    const refreshed = 'fcm-token-refresh-b';
+    final ran = Completer<void>();
+    final order = platform.refresh.stream.listen((_) {
+      if (!ran.isCompleted) ran.complete();
+    });
+    platform.refresh.add(refreshed);
+    await ran.future;
+    await order.cancel();
+
+    // A reconnection re-registers the device's current push token — the relay
+    // holds tokens in RAM only — so once it has logged that registration the
+    // token the relay holds is settled: `refreshed` if the refresh registered
+    // on the stale flag, the original token if permission was re-checked and
+    // the refresh left it untouched.
+    final reMark = events.length;
+    await offline(dev);
+    await online(dev);
+    await waitUntil(() => registeredSince(reMark, dev),
+        what: 'the reconnection re-registers the current token');
+
+    // Away again: the relay wakes the device through the token it holds.
+    await offline(dev);
+    await writeWhileAway(friend, dev);
+    expect(wakesFor(refreshed), isEmpty,
+        reason: 'a token refresh re-registered the token after notifications '
+            'were revoked, with no resume to re-check permission, so the '
+            'relay woke the device through the refreshed token');
+    await online(dev);
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   group('Settings', () {

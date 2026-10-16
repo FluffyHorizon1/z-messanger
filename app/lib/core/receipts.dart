@@ -26,14 +26,26 @@ class HeldReceipt {
   final String mid;
   final bool read;
 
-  /// Not before this (ms since the epoch).
+  /// Not before this (ms since the epoch) — the wall-clock floor, kept for the
+  /// vault (the monotonic one below cannot be persisted) and re-floored on
+  /// load and after a reconnect.
   int notBeforeMs;
+
+  /// Not before this on a monotonic clock (ms): the floor that decides whether
+  /// the receipt may leave now. A forward change to the wall clock — a
+  /// sleep/wake, an NTP step, the user setting the time — moves [notBeforeMs]
+  /// relative to `now` but not this, so it cannot bring a held receipt forward
+  /// inside its real floor.
+  int notBeforeMono;
 
   /// At the latest about then (ms since the epoch).
   int dueMs;
 
   HeldReceipt(this.mid,
-      {required this.read, required this.notBeforeMs, required this.dueMs});
+      {required this.read,
+      required this.notBeforeMs,
+      required this.notBeforeMono,
+      required this.dueMs});
 }
 
 /// The receipts this device owes, per contact, and when each may go.
@@ -44,15 +56,28 @@ class HeldReceipt {
 class ReceiptQueue {
   ReceiptTiming timing;
   final int Function() _now;
+  final int Function() _mono;
   final Random _rng;
   final Map<String, List<HeldReceipt>> _held = {};
 
+  /// [now] is the wall clock (ms since the epoch): kept for the vault, the due
+  /// moment, and the re-floor after a reconnect. [mono] is a monotonic clock
+  /// (ms) on which the floor that gates eligibility is measured, so a forward
+  /// jump of the wall clock cannot defeat it; it defaults to a [Stopwatch]
+  /// started here and is injected only by a test that drives it.
   ReceiptQueue(
       {this.timing = ReceiptTiming.standard,
       required int Function() now,
+      int Function()? mono,
       Random? random})
       : _now = now,
+        _mono = mono ?? _stopwatchMs(),
         _rng = random ?? Random.secure();
+
+  static int Function() _stopwatchMs() {
+    final w = Stopwatch()..start();
+    return () => w.elapsedMilliseconds;
+  }
 
   int _draw(int from) {
     final f = timing.floor.inMilliseconds, c = timing.ceiling.inMilliseconds;
@@ -68,6 +93,7 @@ class ReceiptQueue {
     list.add(HeldReceipt(mid,
         read: read,
         notBeforeMs: now + timing.floor.inMilliseconds,
+        notBeforeMono: _mono() + timing.floor.inMilliseconds,
         dueMs: _draw(now)));
   }
 
@@ -85,10 +111,10 @@ class ReceiptQueue {
       {bool all = false}) {
     final list = _held[rid];
     if (list == null) return (delivered: const [], read: const []);
-    final now = _now();
+    final mono = _mono();
     final go = [
       for (final r in list)
-        if (all || r.notBeforeMs <= now) r
+        if (all || r.notBeforeMono <= mono) r
     ];
     list.removeWhere(go.contains);
     if (list.isEmpty) _held.remove(rid);
@@ -109,8 +135,10 @@ class ReceiptQueue {
 
   /// How many of [rid]'s receipts may leave now.
   int eligible(String rid) {
-    final now = _now();
-    return (_held[rid] ?? const []).where((r) => r.notBeforeMs <= now).length;
+    final mono = _mono();
+    return (_held[rid] ?? const [])
+        .where((r) => r.notBeforeMono <= mono)
+        .length;
   }
 
   /// The device has just (re)connected: nothing held leaves sooner than the
@@ -119,9 +147,11 @@ class ReceiptQueue {
   void deferAfterConnect() {
     final now = _now();
     final floorAt = now + timing.floor.inMilliseconds;
+    final monoFloorAt = _mono() + timing.floor.inMilliseconds;
     for (final list in _held.values) {
       for (final r in list) {
         if (r.notBeforeMs < floorAt) r.notBeforeMs = floorAt;
+        if (r.notBeforeMono < monoFloorAt) r.notBeforeMono = monoFloorAt;
         if (r.dueMs < floorAt) r.dueMs = _draw(now);
       }
     }
@@ -168,8 +198,15 @@ class ReceiptQueue {
         final list = _held.putIfAbsent(rid, () => []);
         final read = e[1] == 'r';
         if (list.any((r) => r.mid == e[0] && r.read == read)) continue;
+        // The monotonic floor cannot be persisted — this process's clock
+        // started at its own zero — so a loaded receipt is floored afresh from
+        // now, as a reconnect would, and `deferAfterConnect` re-floors it
+        // again once the device is online.
         list.add(HeldReceipt(e[0] as String,
-            read: read, notBeforeMs: e[2] as int, dueMs: e[3] as int));
+            read: read,
+            notBeforeMs: e[2] as int,
+            notBeforeMono: _mono() + timing.floor.inMilliseconds,
+            dueMs: e[3] as int));
       }
     }
   }

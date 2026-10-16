@@ -186,7 +186,7 @@ as English sentences the same way, and the reason the system's unlock prompt
 gives, which was an English literal in the app‑lock code.
 
 **The app ships in two languages: English and Spanish** (`app_es.arb`,
-572 strings, every claim carried across — `locale_es_test.dart` checks the
+761 strings, every claim carried across — `locale_es_test.dart` checks the
 plurals, the stored system messages and that no string was copied through
 untranslated). Spanish was chosen because it is the second language Z's
 release notes have been published in since 2.0.

@@ -106,7 +106,9 @@ Measured at the relay, the same twelve deliveries
 (`receipt_timing_test.dart` 1): before, every receipt 233–366 ms after the
 delivery it answered; after, over six runs (72 receipts), every one between
 6.3 s and 59.4 s after it, median 37.1 s. The floor is a guarantee: no
-receipt reaches the relay in the first 5 s after a delivery it acknowledges.
+receipt reaches the relay in the first 5 s after a delivery it acknowledges,
+and it is measured on a monotonic clock, so a forward jump of the device's
+wall clock — a sleep/wake, an NTP step — cannot bring one forward inside it.
 The spread is what a watcher who knows this rule must search through —
 every envelope any mailbox receives in a 55‑second window, rather than in
 300 ms.
@@ -174,7 +176,9 @@ one.
   statistical residual is stated, and the switch is there for anyone who
   needs more; ADR 0007 says what sealed sender does not hide by timing.
 - Tests: `app/test/receipt_timing_test.dart` (7, measured at the relay
-  through `server/test/support/observed_relay.js`), and
+  through `server/test/support/observed_relay.js`),
+  `app/test/review_d_receipt_clockjump_probe_test.dart` (the floor holds on a
+  monotonic clock across a forward wall-clock jump), and
   `delivery_receipts_test.dart` rewritten for the held batch (15.3's
   immediate cap removed).
 

@@ -269,8 +269,21 @@ class PushService extends ChangeNotifier {
         }
         transport.setPushToken(token);
       }
-      _refreshSub ??= _platform.tokenRefresh.listen((t) {
-        if (_enabled && _permitted == true) transport.setPushToken(t);
+      _refreshSub ??= _platform.tokenRefresh.listen((t) async {
+        // `_permitted` can be stale here: it is set only on init, resume and
+        // the Settings toggle, and FCM can rotate the token while the app is
+        // alive but backgrounded, with no resume in between. Registering on
+        // the stale flag would re-arm a device whose user has taken
+        // notifications away (P1-20, the 2026-10-03 analysis), so permission
+        // is re-checked before the refreshed token is handed on.
+        if (!_enabled) return;
+        bool allowed;
+        try {
+          allowed = await _platform.permitted();
+        } catch (_) {
+          allowed = false; // a platform that cannot say has not said yes
+        }
+        if (_enabled && allowed) transport.setPushToken(t);
       }, onError: (Object _) {});
       // A ping received while the app is foregrounded just nudges the live
       // link to drain immediately — messages then arrive through the normal
