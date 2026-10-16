@@ -2090,12 +2090,14 @@ void main() {
     await t.pump();
     expect(find.text(l.connectLinkWaitTooLate('Kim', crewName)),
         findsOneWidget);
-    await t.runAsync(() async {
-      gate.complete();
-      await waitUntil(
-          () => memberOf(owen, crew, kim) && memberOf(mia, crew, kim),
-          what: 'the add that had begun finishes');
-    });
+    // Waited with the test's clock pumped between real waits, as 17 waits
+    // after its tap. A wait run wholly inside runAsync left the add stuck at
+    // its first write to the vault (`_saveGroups`) until the wait gave up,
+    // and only then did the write return.
+    gate.complete();
+    await settleUntil(
+        t, () => memberOf(owen, crew, kim) && memberOf(mia, crew, kim),
+        what: 'the add that had begun finishes');
     owen.svc.debugBeforeLinkAdd = null;
     expect(bannerOf(owen, crew, SystemKind.linkJoined)?['name'], 'Kim');
     await t.pumpWidget(const SizedBox.shrink());
