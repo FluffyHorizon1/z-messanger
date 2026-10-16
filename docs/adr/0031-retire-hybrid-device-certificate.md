@@ -12,10 +12,9 @@ Ed25519 but not ML-DSA still cannot attest that a device belongs to an account.
 It has existed since 13.1 (§18.1, §18.4) and is fully specified, implemented
 and vectored. It is also **constructed nowhere in shipped code**: only the
 vector generator and unit tests build one. ADR 0010 named it for exactly this
-reason — "an unused signed object in a crypto library is a loaded gun; it is how
-the reviewer found the [device-list] hole, by looking for what covers
-`deviceXPub` and finding the one class that does, unused" — and left its removal
-as deliberate later work ("Finnian can fully drop both later").
+reason — "an unused signed object in a crypto library is a loaded gun (the
+review found it because it went looking for what covers `deviceXPub`)" — and
+said it "should be deleted or marked as such".
 
 Its original role — a hybrid cert **per device, inline in the device list** —
 was rejected twice:
