@@ -79,6 +79,7 @@ import 'package:zapp/core/key_transparency.dart';
 import 'package:zapp/core/models.dart';
 import 'package:zapp/core/prefs.dart';
 import 'package:zapp/core/push_service.dart';
+import 'package:zapp/core/receipts.dart';
 import 'package:zapp/core/system_messages.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
@@ -123,6 +124,16 @@ bool _isV2OnlyDevlist(Uint8List plaintext) {
     return false;
   }
 }
+
+// ADR 0028 holds a receipt from 5 s to a minute, at random, so the relay
+// cannot pair it with the message it answers (receipt_timing_test.dart). Every
+// inner a client sends carries the device-list gossip, receipts included, the
+// `dlr` that opens the gate among it — and "traffic has settled" waits for the
+// ticks receipts turn. This suite is about the gate, not about when a tick
+// turns, so its devices answer within 300 ms, as every device did before
+// phase 41.
+const promptReceipts =
+    ReceiptTiming(floor: Duration.zero, ceiling: Duration(milliseconds: 300));
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -243,6 +254,7 @@ void main() {
                   logUrl: 'http://127.0.0.1:$logPort', logPubB64: b64(logPub))
               : KtConfig.off,
           signDevlistV2Only: switchOn,
+          receiptTiming: promptReceipts,
           debugPreAdr0029: preAdr0029,
         );
         made = svc;

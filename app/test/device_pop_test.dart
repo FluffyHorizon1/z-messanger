@@ -68,6 +68,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseException;
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/receipts.dart';
 import 'package:zapp/core/system_messages.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
@@ -75,6 +76,16 @@ import 'package:zapp/l10n/alert_text.dart';
 import 'package:zapp/l10n/app_localizations_en.dart';
 import 'package:zapp/l10n/app_localizations_es.dart';
 import 'package:z_protocol/z_protocol.dart';
+
+// ADR 0028 holds a receipt from 5 s to a minute, at random, so the relay
+// cannot pair it with the message it answers (receipt_timing_test.dart). Every
+// inner a client sends carries the device-list gossip, receipts included, and
+// what hands a list over again here is the echo (`pdl`) on whatever the other
+// side sends next — often nothing but a receipt. This suite is about proofs
+// and claims, not about when a tick turns, so its devices answer within
+// 300 ms, as every device did before phase 41.
+const promptReceipts =
+    ReceiptTiming(floor: Duration.zero, ceiling: Duration(milliseconds: 300));
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -147,6 +158,7 @@ void main() {
           // these criteria count, so every account here keeps the switch
           // thrown and the list stays dual-signed.
           signDevlistV2Only: false,
+          receiptTiming: promptReceipts,
         );
         made = svc;
         live.add(svc);

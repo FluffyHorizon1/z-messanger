@@ -74,6 +74,7 @@ import 'package:zapp/core/alarm_evidence.dart';
 import 'package:zapp/core/archive.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/key_transparency.dart';
+import 'package:zapp/core/receipts.dart';
 import 'package:zapp/core/restore.dart';
 import 'package:zapp/core/system_messages.dart';
 import 'package:zapp/core/transport.dart';
@@ -141,6 +142,15 @@ Future<void> _waitHealthy(int port) async {
 
 String _hex(List<int> b) =>
     [for (final x in b) x.toRadixString(16).padLeft(2, '0')].join();
+
+// ADR 0028 holds a receipt from 5 s to a minute, at random, so the relay
+// cannot pair it with the message it answers (receipt_timing_test.dart). Every
+// inner a client sends carries the device-list gossip, receipts included, and
+// the claim (`dl`) a contact weighs after a restore often arrives on nothing
+// but a receipt. This suite is about restores, not about when a tick turns,
+// so its devices answer within 300 ms, as every device did before phase 41.
+const promptReceipts =
+    ReceiptTiming(floor: Duration.zero, ceiling: Duration(milliseconds: 300));
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -235,6 +245,7 @@ void main() {
             transport ?? Transport(identity: id, serverUrl: relayUrl()),
         ktConfig: ktConfig ?? cfg(),
         signDevlistV2Only: v2Only ?? devlistSignV2Only,
+        receiptTiming: promptReceipts,
         // Asked for by name, the signer moves at the first start, as it did
         // before ADR 0029 made it wait on the account's readers: test 11 is
         // about a moved account's restore, not about when it moved.
