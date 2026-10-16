@@ -855,6 +855,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               TextField(
                 controller: a,
                 obscureText: true,
+                enableIMEPersonalizedLearning: false,
                 autofocus: true,
                 decoration: InputDecoration(labelText: l.stPassphraseMinLabel),
               ),
@@ -862,6 +863,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               TextField(
                 controller: b,
                 obscureText: true,
+                enableIMEPersonalizedLearning: false,
                 decoration: InputDecoration(labelText: l.stRepeat),
               ),
               if (error != null)
@@ -985,6 +987,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         content: TextField(
           controller: ctrl,
           obscureText: true,
+          enableIMEPersonalizedLearning: false,
           autofocus: true,
           decoration: InputDecoration(hintText: l.passphrase),
           onSubmitted: (v) => Navigator.pop(ctx, v),

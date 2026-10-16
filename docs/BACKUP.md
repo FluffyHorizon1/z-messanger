@@ -483,6 +483,11 @@ The screen states the consequence rather than burying it: nobody can recover
 the code, including us, and that is the same property that means nobody can be
 compelled to produce the messages either.
 
+Every field that takes the code asks the keyboard to suggest nothing, correct
+nothing and learn nothing: a keyboard that learns words keeps them, and some
+back them up to an account of their own. It is a request — a keyboard app
+sees every key, and can ignore it.
+
 ### 8.4 Restoring
 
 The user picks a file; Z works out what it is. Both formats begin with a JSON

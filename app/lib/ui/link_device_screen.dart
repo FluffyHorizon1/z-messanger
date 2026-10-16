@@ -112,6 +112,9 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
           TextField(
             controller: _code,
             autofocus: true,
+            autocorrect: false,
+            enableSuggestions: false,
+            enableIMEPersonalizedLearning: false,
             textCapitalization: TextCapitalization.characters,
             style: const TextStyle(fontFamily: 'monospace', letterSpacing: 2),
             decoration: InputDecoration(

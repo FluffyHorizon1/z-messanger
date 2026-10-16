@@ -22,14 +22,23 @@
 // policy and that the app asks for the flag on the channel the activity
 // answers (`MainActivity.kt`, `z/screen`), exactly when the policy says.
 //
+// A sixth was found after 4.2.0, planning phase 46: two of the three fields
+// that take a backup's recovery code let the keyboard suggest and correct
+// it, and no field that takes a secret — a passphrase, a recovery code, a
+// pairing code — asked the keyboard not to learn it. A keyboard that learns
+// keeps what it learned, and some back it up to an account of their own.
+// Here too what is tested is the request (16); what a keyboard does with it
+// is the keyboard's.
+//
 // Criteria 2-7, 9, 12 and 14 use nothing the base build lacks, and were run
 // against 0d00a69 before anything was fixed: each failed there, except 14,
 // which pins a grep that was already clean, and the parts that assert an
 // absence — nothing asked of a desktop or with the setting off, no switch on
 // a desktop — which held there too. Criteria 1, 8, 10, 11, 13 and 15 test
-// what this change adds.
+// what this change adds. Criterion 16 was run against 5a04d1f, before its
+// own fix: (a) named all twelve fields, and (b) and (c) failed.
 //
-// Criteria, each a test below (4 and 9 in parts):
+// Criteria, each a test below (4, 9 and 16 in parts):
 //   1. the policy: the window is kept from capture exactly while the vault
 //      is open, on Android, with the setting on — which it is until the
 //      person turns it off — and the window is told only when that changes;
@@ -66,7 +75,12 @@
 //  14. nothing in lib/ prints outside a debug-only branch — the app's and
 //      the protocol library's;
 //  15. a release build writes nothing of an error to the system log: not
-//      its text, and not the routing id in it.
+//      its text, and not the routing id in it;
+//  16. every field that takes a secret asks the keyboard to learn nothing,
+//      and one that can show what it holds to suggest and correct nothing
+//      too: (a) each such field in lib/ui, by what marks it, (b) what the
+//      keyboard is told by the restore's recovery-code field, and (c) by the
+//      unlock screen's passphrase, hidden and shown.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1066,5 +1080,106 @@ void main() {
           reason: 'handled, so the engine does not print it either');
     });
     expect(printed, isEmpty);
+  });
+
+  // -------------------------------------------------------------------
+  // Item 6: what the keyboard keeps
+  // -------------------------------------------------------------------
+
+  test(
+      '16a. every field that takes a secret asks the keyboard to learn '
+      'nothing, and one that can show what it holds to suggest and correct '
+      'nothing too', () {
+    // A source check, as 5 is. A passphrase field is known by obscureText;
+    // a code field by the code it asks for: a backup's recovery code by its
+    // `ZBK-` hint, a handle's recovery code and a pairing code by their
+    // labels.
+    const codeMarks = ["'ZBK-", 'l.hdlCodeLabel', 'l.linkPairingCode'];
+    final secret = <String>[];
+    final offenders = <String>[];
+    for (final f in Directory('lib/ui')
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where((f) => f.path.endsWith('.dart'))) {
+      final src = f.readAsStringSync();
+      for (final m in RegExp(r'\bText(?:Form)?Field\(').allMatches(src)) {
+        var depth = 0, i = m.end - 1;
+        for (; i < src.length; i++) {
+          if (src[i] == '(') depth++;
+          if (src[i] == ')' && --depth == 0) break;
+        }
+        final args = src.substring(m.end, i);
+        if (!args.contains('obscureText:') && !codeMarks.any(args.contains)) {
+          continue;
+        }
+        final at =
+            '${f.path}:${src.substring(0, m.start).split('\n').length}';
+        secret.add(at);
+        final learns = !args.contains('enableIMEPersonalizedLearning: false');
+        final canShow = !args.contains('obscureText: true');
+        final suggests = !args.contains('enableSuggestions: false') ||
+            !args.contains('autocorrect: false');
+        if (learns || (canShow && suggests)) offenders.add(at);
+      }
+    }
+    // Twelve today: six for a passphrase, three for a backup's recovery
+    // code, two for a handle's and one for a pairing code. Fewer would mean
+    // the marks stopped finding them.
+    expect(secret, hasLength(greaterThanOrEqualTo(12)), reason: '$secret');
+    expect(offenders, isEmpty,
+        reason: 'a keyboard asked nothing may learn what is typed here, and '
+            'keep it');
+  });
+
+  testWidgets(
+      '16b. the restore\'s recovery-code field tells the keyboard to suggest, '
+      'correct and learn nothing', (t) async {
+    final picker = await restoreScreen(t);
+    picker.contents = utf8.encode(archive);
+    await tapRestore(t);
+    await settleUntil(
+        t, () => find.text(en.onbRecoveryCode).evaluate().isNotEmpty,
+        what: 'the recovery-code dialog');
+    await t.showKeyboard(find.descendant(
+        of: find.byType(AlertDialog), matching: find.byType(TextField)));
+    final told = t.testTextInput.setClientArgs!;
+    expect(told['autocorrect'], isFalse);
+    expect(told['enableSuggestions'], isFalse);
+    expect(told['enableIMEPersonalizedLearning'], isFalse);
+
+    await t.tap(find.text(en.cancel));
+    await settleUntil(
+        t, () => find.text(en.onbRecoveryCode).evaluate().isEmpty,
+        what: 'the dialog dismissed');
+    await settleUntil(t, () => !picker.copies.single.existsSync(),
+        what: 'the copy deleted, as in 4b',
+        timeout: const Duration(seconds: 5));
+  });
+
+  testWidgets(
+      '16c. the unlock screen\'s passphrase tells the keyboard to learn '
+      'nothing while hidden, and to suggest and correct nothing once shown',
+      (t) async {
+    await t.pumpWidget(MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ZTheme.light(),
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: UnlockScreen(onUnlock: (_) async {}),
+    ));
+    await t.showKeyboard(find.byType(TextField));
+    var told = t.testTextInput.setClientArgs!;
+    expect(told['obscureText'], isTrue);
+    expect(told['enableIMEPersonalizedLearning'], isFalse);
+
+    // Shown, the passphrase is plain text to the keyboard: the field's
+    // configuration is sent again, and it must still ask.
+    await t.tap(find.byTooltip(en.unlockShowPassphrase));
+    await t.pump();
+    told = t.testTextInput.setClientArgs!;
+    expect(told['obscureText'], isFalse);
+    expect(told['autocorrect'], isFalse);
+    expect(told['enableSuggestions'], isFalse);
+    expect(told['enableIMEPersonalizedLearning'], isFalse);
   });
 }

@@ -27,7 +27,8 @@ That includes:
 * spyware, whether it arrived through a vulnerability or an app you installed;
 * anyone with your app passphrase;
 * screen recording, keyboard apps, accessibility services on some platforms,
-  and backup software that copies the app's data.
+  and backup software that copies the app's data. (Z asks the keyboard not to
+  learn a passphrase or a code; a keyboard app sees every key either way.)
 
 What Z does do is make the endpoint the *only* place worth attacking. That is
 a real achievement — it means no one can read your conversations by

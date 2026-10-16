@@ -113,6 +113,11 @@ class _UnlockScreenState extends State<UnlockScreen> {
                   controller: _ctrl,
                   autofocus: true,
                   obscureText: _obscure,
+                  // Shown, the passphrase is ordinary text to the keyboard
+                  // unless the field says otherwise.
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  enableIMEPersonalizedLearning: false,
                   enabled: !widget.busy,
                   onSubmitted: (_) => _submit(),
                   decoration: InputDecoration(

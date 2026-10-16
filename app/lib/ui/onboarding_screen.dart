@@ -203,6 +203,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               controller: ctrl,
               autofocus: true,
               autocorrect: false,
+              enableSuggestions: false,
+              enableIMEPersonalizedLearning: false,
               textCapitalization: TextCapitalization.characters,
               decoration: const InputDecoration(
                   hintText: 'ZBK-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX'),
@@ -231,6 +233,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         content: TextField(
           controller: ctrl,
           obscureText: true,
+          enableIMEPersonalizedLearning: false,
           autofocus: true,
           decoration: InputDecoration(hintText: l.passphrase),
           onSubmitted: (v) => Navigator.pop(ctx, v),

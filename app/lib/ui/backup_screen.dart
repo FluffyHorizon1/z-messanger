@@ -428,6 +428,7 @@ class _ConfirmCodeDialogState extends State<_ConfirmCodeDialog> {
             autofocus: true,
             autocorrect: false,
             enableSuggestions: false,
+            enableIMEPersonalizedLearning: false,
             textCapitalization: TextCapitalization.characters,
             style: const TextStyle(fontFamily: 'monospace'),
             decoration: InputDecoration(
@@ -470,6 +471,8 @@ class _AskCodeDialog extends StatelessWidget {
             controller: _ctrl,
             autofocus: true,
             autocorrect: false,
+            enableSuggestions: false,
+            enableIMEPersonalizedLearning: false,
             textCapitalization: TextCapitalization.characters,
             style: const TextStyle(fontFamily: 'monospace'),
             decoration: const InputDecoration(

@@ -679,6 +679,7 @@ class _ConfirmCodeDialogState extends State<_ConfirmCodeDialog> {
             autofocus: true,
             autocorrect: false,
             enableSuggestions: false,
+            enableIMEPersonalizedLearning: false,
             textCapitalization: TextCapitalization.characters,
             style: const TextStyle(fontFamily: 'monospace'),
             decoration: InputDecoration(
@@ -744,6 +745,7 @@ class _RecoverDialogState extends State<_RecoverDialog> {
               controller: _code,
               autocorrect: false,
               enableSuggestions: false,
+              enableIMEPersonalizedLearning: false,
               textCapitalization: TextCapitalization.characters,
               style: const TextStyle(fontFamily: 'monospace'),
               decoration: InputDecoration(labelText: l.hdlCodeLabel),

@@ -150,6 +150,7 @@ class _LockScreenState extends State<LockScreen> {
                       controller: _ctrl,
                       autofocus: true,
                       obscureText: true,
+                      enableIMEPersonalizedLearning: false,
                       enabled: !_checking,
                       onSubmitted: (_) => _submitPassphrase(),
                       decoration: InputDecoration(
