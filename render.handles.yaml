@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: z-handles
+    runtime: docker
+    dockerfilePath: ./kt/Dockerfile
+    dockerContext: ./kt
+    plan: starter               # a disk needs a paid instance
+    region: frankfurt
+    healthCheckPath: /health
+    autoDeployTrigger: "off"    # deploy at release tags, as the transparency log
+    disk:
+      name: z-handles-data
+      mountPath: /data
+      sizeGB: 10                # ~0.6 KB an entry: millions of handles
+    envVars:
+      - key: KT_MODE
+        value: handles          # the handle log; unset would be the transparency log
+      - key: KT_SEED
+        sync: false             # a NEW seed, generated on your machine — never the transparency log's
+      - key: KT_DATA
+        value: /data
+      - key: KT_MIN_SIZE
+        value: "0"              # raise to a size the log has passed, once it has one
+      - key: KT_PORT
+        value: "10000"
+      - key: KT_HOST
+        value: 0.0.0.0
+      - key: PUBLISH_PER_MIN
+        value: "30"
+      - key: PUBLISH_PER_MIN_TOTAL
+        value: "120"
+      - key: PUBLISH_PER_ACCT_PER_DAY
+        value: "20"             # per handle
+      - key: PUBLISH_NEW_ACCOUNTS_PER_MIN
+        value: "10"             # claims a minute, in total
+      - key: KT_MIN_FREE_BYTES
+        value: "67108864"
+      - key: KT_CLIENT_IP_HEADER
+        value: ""               # cf-connecting-ip once it is reachable only through Cloudflare
