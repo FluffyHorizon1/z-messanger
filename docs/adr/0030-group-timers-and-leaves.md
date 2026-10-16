@@ -1,6 +1,6 @@
 # ADR 0030 — A group's timer is part of its list, and a leave is remembered against lists from before it
 
-**Status:** **Proposed** (2026‑10‑09) — built (23.4–23.5, unreleased). Adds
+**Status:** **Proposed** (2026‑10‑09) — built (23.4–23.5, 4.2.0). Adds
 PROTOCOL §11.2 and a vector file, `docs/vectors/v1/group_state.json`;
 extends ADR 0019. THREAT_MODEL R38 is updated in place.
 **Decides:** where a group's disappearing‑messages timer lives, who sets it,

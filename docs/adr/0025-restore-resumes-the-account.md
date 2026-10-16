@@ -1,6 +1,6 @@
 # ADR 0025 — A restored backup resumes the account: what the archive carries, what the first start signs, and what a linked device's backup is
 
-**Status:** **Accepted** (2026‑10‑04) — built (phase 31, unreleased). Amends
+**Status:** **Accepted** (2026‑10‑04) — built (phase 31, 4.0.1). Amends
 `BACKUP.md` §2, §4.1, §5 and §6; informative text in `PROTOCOL.md` §13.
 **Decides:** what a `.zbk` archive carries beyond history, the version a
 restored device signs before it sends anything, what restoring a linked

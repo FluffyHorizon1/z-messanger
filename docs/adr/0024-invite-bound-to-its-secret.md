@@ -1,6 +1,6 @@
 # ADR 0024 — An invite bound to its secret, an add that asks first, and requests that cannot be replayed
 
-**Status:** **Proposed** (2026‑10‑09) — built (phase 40, unreleased). Adds
+**Status:** **Proposed** (2026‑10‑09) — built (phase 40, 4.0.1). Adds
 PROTOCOL §20.8 and a paragraph to §8.1; extends ADR 0009, 0011, 0012 and
 0020. R23 and R25 are updated in place.
 **Decides:** how the invite secret is bound into the connect ceremony — the

@@ -1,6 +1,6 @@
 # ADR 0028 — A receipt leaves at a moment of its own, and can be turned off
 
-**Status:** **Proposed** (2026‑10‑09) — built (phase 41, unreleased), for
+**Status:** **Proposed** (2026‑10‑09) — built (phase 41, 4.2.0), for
 review. Amends `PROTOCOL.md` §6.3; `THREAT_MODEL.md` R41; ADR 0007 ("What is
 still true").
 **Decides:** when a delivery or read receipt leaves the device, whether a

@@ -1,6 +1,6 @@
 # ADR 0027 — A contact code signs its post‑quantum commitment, and a commitment nothing signs is a candidate
 
-**Status:** **Accepted** (2026‑10‑04) — built (26.3, unreleased). Adds §18.10;
+**Status:** **Accepted** (2026‑10‑04) — built (26.3, 4.0.1). Adds §18.10;
 amends §18.2, §18.5 and §18.7; extends ADR 0003 and ADR 0021.
 **Decides:** how a contact code's post‑quantum commitment (`pqc`) is
 protected against anyone who holds the public code; what a client does with a

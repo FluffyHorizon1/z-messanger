@@ -13,7 +13,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 
 ---
 
-## Where things stand (updated 2026-10-15)
+## Where things stand (updated 2026-10-16)
 
 | Phase | Status | Evidence |
 |---|---|---|
@@ -29,12 +29,12 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 16 | **✅ complete** — 16.1 sealed sender now holds against the relay process, not only its stored data (`adr/0007`, R21) · 16.2 pattern study: jitter and cover traffic measured against a relay that clusters by timing, and rejected with the numbers (`THREAT_MODEL.md` R18/R19) · 16.3 federation decided as client-to-many-relays and deferred (`adr/0008`) | `anonymous_sender_test.dart`, `server/test/sealed.test.js`, `server/bench/patterns.js` |
 | 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log: `adr/0006`, in progress) · 7.6 search + history sync + themes ✅ · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
 | 17 Connect without meeting | ✅ done | `adr/0009`, PROTOCOL §20, `connect_test.dart`, `connect_relay_test.dart` |
-| 18 Device lists sign ratchet keys | landed, not released (18.5–18.7); 18.4 open | `adr/0017`/`adr/0022`/`adr/0029`, PROTOCOL §3.7, `devlist_capability_test.dart`, `device_cert_pop_test.dart`; closes P1-2, P1-3, P1-4's first-come half (R42) |
+| 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4 open | `adr/0017`/`adr/0022`/`adr/0029`, PROTOCOL §3.7, `devlist_capability_test.dart`, `device_cert_pop_test.dart`; closes P1-2, P1-3, P1-4's first-come half (R42) |
 | 19 Transparency witness | people-gated (G3) | mirror/witness built (34), `kt_witness_test.dart`; needs an operator outside the project |
 | 20 Calls | designed | `adr/0005`; media path undecided |
 | 21 iOS | people-gated (G7) | nothing committed; needs a Mac, an Apple account, the reserved push ADR 0002 |
 | 22 GA | not ready | `docs/GA_CHECKLIST.md`: G1, G3, G7 open |
-| 23 Groups | ✅ done; 23.4–23.5 landed, not released | `adr/0019`/`adr/0020`/`adr/0030`, `group_roles_test.dart`, `group_invite_link_test.dart`, `group_timers_test.dart`; closes P1-11, the group P2s |
+| 23 Groups | ✅ done (23.4–23.5 in 4.2.0) | `adr/0019`/`adr/0020`/`adr/0030`, `group_roles_test.dart`, `group_invite_link_test.dart`, `group_timers_test.dart`; closes P1-11, the group P2s |
 | 24 Desktop | ✅ done (24.1, 24.3, 24.4); 24.2/24.5 gated | `adr/0013`/`adr/0014`/`adr/0018`, `desktop_startup_test.dart`, `update_check_test.dart`; closes P1-18 |
 | 25 Scale | ✅ done | `server/test/ha_load.test.js`, `docs/LOAD.md`, `docs/SLO.md`; a run against real infrastructure is yours |
 | 26 PQ always-on | ✅ done (26.1–26.3) | `adr/0027`, PROTOCOL §17.7/§18.10, `pq_rekey_test.dart`, `safety_number_mixed_test.dart`; closes P1-1 |
@@ -46,12 +46,12 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 32 Alarms only on signed evidence | ✅ done | `adr/0026`, `alarm_evidence_test.dart`, register R46; closes P1-7 |
 | 33 Linked devices as equals | ✅ done | `linked_equals_test.dart`, `mirrored_contact_test.dart`; closes P1-5 |
 | 34 Transparency log health | ✅ done | `kt/test/log_memory.test.js`, `kt/test/publish_limits.test.js`; closes P1-17 |
-| 35 Private transparency lookups | ✅ done (4.1.0); hardening landed, not released | `adr/0023`, PROTOCOL §19.9, `kt_private_lookup_test.dart`, `transparency_bucket_test.dart`, `kt/test/bucket.test.js`; closes P0-5 |
-| 36–38 Handles | 36.1–36.2/37 done; 38 done (4.1.0); hardening landed, not released; dormant until a handle log is deployed | `adr/0015` rev 2, PROTOCOL §21, `handles_test.dart`, `intro_mailbox.test.js`, `handle_flow_test.dart`, `kt/test/handle_mode.test.js`, register R47–R50 |
+| 35 Private transparency lookups | ✅ done (4.1.0; its hardening 4.2.0) | `adr/0023`, PROTOCOL §19.9, `kt_private_lookup_test.dart`, `transparency_bucket_test.dart`, `kt/test/bucket.test.js`; closes P0-5 |
+| 36–38 Handles | 36.1–36.2/37 done; 38 done (4.1.0); dormant until a handle log is deployed; the review's hardening is built and held back, to land before handles are switched on | `adr/0015` rev 2, PROTOCOL §21, `handles_test.dart`, `intro_mailbox.test.js`, `handle_flow_test.dart`, `kt/test/handle_mode.test.js`, register R47–R50 |
 | 39 Public introduction link | planned | `adr/0009`'s deferred public invite |
 | 40 Invites bound to their secret | ✅ done | `adr/0024`, PROTOCOL §20.8, `connect_test.dart`; closes P1-9 |
-| 41 Metadata: receipts, push, CDN | landed, not released | `adr/0028`, `receipt_timing_test.dart`, `delivery_receipts_test.dart`, register R41/R44; closes P1-15, P1-20 code half |
-| 42 Device hardening | landed, not released | `device_hardening_test.dart`, `screenshots_test.dart`; closes the device and localisation P2s |
+| 41 Metadata: receipts, push, CDN | ✅ done (4.2.0) | `adr/0028`, `receipt_timing_test.dart`, `delivery_receipts_test.dart`, register R41/R44; closes P1-15, P1-20 code half |
+| 42 Device hardening | ✅ done (4.2.0) | `device_hardening_test.dart`, `screenshots_test.dart`; closes the device and localisation P2s |
 | 43 Release integrity | planned | release P2s/P3s; the 4.0 relay deploy checklist (`docs/SELF_HOSTING.md`) is a lesson from the 2026-10-15 incident |
 | 44 PQ for the classical surfaces | planned | the §4.3 gaps; needs an ADR |
 | 45 Reach without spam | planned | blind-signed first-contact tokens; needs an ADR |
@@ -61,9 +61,9 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 49 Protocol v4: retire the compatibility paths | planned | needs 18.6, 40, 44 and the field moved on |
 | 50 Z without one operator | planned | `adr/0008` in practice; needs 19, 27, 36 |
 
-**Next up:** finish the current release — the hardening the first handles and
-lookups releases need, and phases 18.5–18.7, 41, 42, 23.4–23.5, all landed on
-main and awaiting a release. After it: an independent **witness** for the
+**Next up:** 4.2.0 shipped phases 18.5–18.7, 23.4–23.5, 41 and 42 and the
+lookups hardening; the handles hardening is built and held back, to land before
+handles are switched on. Next: an independent **witness** for the
 transparency log (phase 19) — the log is live and pinned (`adr/0006` says what
 "live" means, `docs/SELF_HOSTING.md` how), and G3's one remaining condition is
 somebody outside the project mirroring it — then **calls** (phase 20) once
@@ -411,6 +411,9 @@ been in use at once; this is the single one. Phases 0–17 are history or done,
   shipped.
 - **Designed** — an ADR exists; no code.
 - **Planned** — neither yet.
+- **Held back** — built and verified, and kept off main as a series of its own
+  until a decision of yours: the handles hardening, until handles are switched
+  on.
 - **People-gated** — needs someone outside this work: an operator, an auditor,
   a Mac, a certificate.
 
@@ -418,9 +421,10 @@ What the releases carried: 4.0.1 — phases 23.3, 24, 25, 26.2–26.3, 28–34,
 36.1–36.2, 37 and 40; **4.0.2** — a relay-config fix (phase 43's lesson,
 below); **4.1.0** — phase 35 (private transparency lookups) and phase 38
 (handles in the app, dormant until a handle log is deployed); **4.1.1** — the
-relay's unknown-name login diagnostic (phase 29). The next release carries the
-hardening the first handles and lookups releases need, and phases 18.5–18.7,
-23.4–23.5, 41 and 42.
+relay's unknown-name login diagnostic (phase 29); **4.2.0** — phases 18.5–18.7,
+23.4–23.5, 41 and 42, and the lookups hardening (phase 35). The handles
+hardening (36–38) is built and held back, to land before handles are switched
+on.
 
 **GA gates** (`docs/GA_CHECKLIST.md`, the live answer): G1 external audit ❌,
 G2 outside rebuild ⚠️, G3 witnessed transparency ❌, G4 backup ✅, G5
@@ -434,12 +438,12 @@ people or a decision from you.
 
 | Phase | Status | Done | Left | Closes |
 |---|---|---|---|---|
-| 18 Device lists sign ratchet keys | Landed, not released | `sig2` over ratchet keys (3.6.1), ML-DSA over membership (3.7.8), the v2-only reader (3.9.9); 18.5–18.6 move each account to v2-only signing once every reader has said it can read one (`adr/0029`, PROTOCOL §3.7); 18.7 proof of possession in device certificates (`adr/0022`) | 18.4 decide the dormant hybrid certificate | P1-2, P1-3, P1-4's first-come half (R42) |
+| 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4 open | `sig2` over ratchet keys (3.6.1), ML-DSA over membership (3.7.8), the v2-only reader (3.9.9); 18.5–18.6 move each account to v2-only signing once every reader has said it can read one (`adr/0029`, PROTOCOL §3.7); 18.7 proof of possession in device certificates (`adr/0022`) | 18.4 decide the dormant hybrid certificate | P1-2, P1-3, P1-4's first-come half (R42) |
 | 19 Transparency witness | People-gated | Mirror and witness code; the "witness ahead" false fork fixed (phase 34) | An operator outside the project, then the client's pinned witness config | G3 |
 | 20 Calls | Designed | `adr/0005` | Your decision on the media path | — |
 | 21 iOS | People-gated | Nothing; `app/ios` has never been committed | A Mac, an Apple account, the reserved push ADR 0002 | G7 |
 | 22 GA | Not ready | G4–G6, G8, G9 met | G1 audit, G2 outside rebuild, G3 witness, G7 iOS | — |
-| 23 Groups | Done; 23.4–23.5 landed, not released | 23.1 rename, 23.1b roles, 23.2 durable files, 23.3 invite links; 23.4 disappearing messages and 23.5 a leaver who stays gone (`adr/0030`) | — | P1-11, the group P2s |
+| 23 Groups | Done (23.4–23.5 in 4.2.0) | 23.1 rename, 23.1b roles, 23.2 durable files, 23.3 invite links; 23.4 disappearing messages and 23.5 a leaver who stays gone (`adr/0030`) | — | P1-11, the group P2s |
 | 24 Desktop | Mostly done | 24.1 Linux starts without system libmpv, 24.3 QR images, 24.4 update-notice links (`adr/0013`, `adr/0018`, `adr/0014`) | 24.2 user-presence binding (needs a Mac), 24.5 signed Windows/macOS builds | P1-18, the desktop P2s |
 | 25 Scale | Done | Load rig, SLOs, alert rules, a shared mailbox-creation gate (off by default) | A run against real infrastructure, which only you can do | — |
 | 26 PQ always-on | Done | 26.1 defaults; 26.2 every channel re-keys; 26.3 honest screens and a signed commitment in contact codes (`adr/0027`, PROTOCOL §18.10) | 26.4 folded into phase 44 | P1-1, the PQ P2s/P3s |
@@ -449,8 +453,8 @@ people or a decision from you.
 
 All eight are released (28–34 and 40 in 4.0.1; 35 in 4.1.0). They close four of
 the five P0s in code; P0-1 closes when Play serves a build at or past the
-post-quantum safety number. Phase 35's hardening from an independent review is
-landed for the next release.
+post-quantum safety number. Phase 35's hardening from an independent review
+shipped in 4.2.0.
 
 | Phase | Status | What it does | Closes |
 |---|---|---|---|
@@ -461,7 +465,7 @@ landed for the next release.
 | 32 Alarms only on signed evidence | Done | Owner banners need a list the account key signed; damaged vaults reconcile quietly (`adr/0026`, R46) | P1-7, P1-6's leftovers |
 | 33 Linked devices as equals | Done | A new device knows contacts as the phone does; requests, declines and blocks follow the account | P1-5, the contact P2s |
 | 34 Transparency log health | Done | Owned buffers, rebalanced publish gates, a repair tool that signs nothing, bounded mirror and witness | P1-17, the KT P2s |
-| 35 Private transparency lookups | Done (4.1.0); hardening landed, not released | Refreshes ask by label-prefix bucket with a completeness proof, among decoys the app keeps, at random times (`adr/0023`, PROTOCOL §19.9); the hardening pads every entry fetch, sizes buckets from labels the app counted itself, and catches up after short sessions | P0-5 |
+| 35 Private transparency lookups | Done (4.1.0; hardening 4.2.0) | Refreshes ask by label-prefix bucket with a completeness proof, among decoys the app keeps, at random times (`adr/0023`, PROTOCOL §19.9); the hardening pads every entry fetch, sizes buckets from labels the app counted itself, and catches up after short sessions | P0-5 |
 
 **Measured:**
 
@@ -485,13 +489,15 @@ Handles are shape E′ of `adr/0015` revision 2: a handle resolves to an
 introduction mailbox, never to the account key (PROTOCOL §21). The registry and
 introduction mailboxes shipped in 4.0.1, the app in 4.1.0; handles stay
 **dormant until you deploy a handle log**. An independent review of the handles
-then broke four things in them; the fixes are landed for the next release.
+then broke four things in them. The fixes are built and held back as a series
+of their own, to land before handles are switched on: the handles on main still
+carry those findings, which a dormant feature does not expose.
 
 | Phase | Status | What it builds |
 |---|---|---|
-| 36 Handles I: the registry | Done; hardening landed, not released | The protocol library and a separate log in handle mode (`KT_MODE=handles`) with the owner rule, recovery and the bucket query; Dart and Node refuse weak keys and huge versions alike |
-| 37 Handles II: introduction mailboxes | Done; hardening landed, not released | The relay checks a proof of work on anything sent to an introduction mailbox, holds copies once, caps envelopes at 64 KiB; a lapsed flag keeps the mailbox guarded, and the stamp travels with the envelope |
-| 38 Handles III: the app | Done (4.1.0); hardening landed, not released | Claim, find, request, accept, pause, rotate, retire, recover, in English and Spanish; handle requests capped apart from code requests, each stamp counted once, lookups hidden among decoys sized from counted labels |
+| 36 Handles I: the registry | Done; hardening held back | The protocol library and a separate log in handle mode (`KT_MODE=handles`) with the owner rule, recovery and the bucket query; the held-back hardening has Dart and Node refuse weak keys and huge versions alike |
+| 37 Handles II: introduction mailboxes | Done; hardening held back | The relay checks a proof of work on anything sent to an introduction mailbox, holds copies once, caps envelopes at 64 KiB; the held-back hardening keeps a mailbox whose flag lapsed guarded, and has the stamp travel with the envelope |
+| 38 Handles III: the app | Done (4.1.0); hardening held back | Claim, find, request, accept, pause, rotate, retire, recover, in English and Spanish; the held-back hardening caps handle requests apart from code requests, counts each stamp once, and hides lookups among decoys sized from counted labels |
 | 39 The public introduction link | Planned | A link or QR carrying an introduction key directly, for people reachable from a public page without a registry (`adr/0009`'s deferred public invite) |
 
 The revision fixed the proposal's flaws, each named in `adr/0015`:
@@ -511,17 +517,18 @@ The revision fixed the proposal's flaws, each named in `adr/0015`:
 
 The claims bill is paid: every "no directory" sentence now names the directory
 Z has, and register rows R47–R50 state the residuals, the last being that the
-handle log is unwitnessed (R50). Before a release ships handles live, the Play
-listing's "no username" and its Data-safety answers must change, and a handle
-log must be deployed — both yours.
+handle log is unwitnessed (R50). Before a release ships handles live, the
+held-back hardening must land, the Play listing's "no username" and its
+Data-safety answers must change, and a handle log must be deployed — the last
+two yours.
 
 ### Phases 40–44 — invites, metadata, devices, releases, the PQ edges
 
 | Phase | Status | What it builds | Closes |
 |---|---|---|---|
 | 40 Invites bound to their secret | Done | v2 links bind the secret into the commitment and channel key; links are held until you consent; requests have time bounds, a replay mark and a cap; old links keep working with a warning (`adr/0024`, PROTOCOL §20.8) | P1-9, the contact-request P2s/P3 |
-| 41 Metadata: receipts, push, the CDN | Landed, not released | A receipt leaves at a moment of its own, 5–60 s later and batched (`adr/0028`); push asks first and never registers when notifications are denied; Cloudflare kept and disclosed (R41, R44) | P1-15, P1-20 code half |
-| 42 Device hardening | Landed, not released | Screenshots and the recents card blocked while the vault is open (on by default; a setting turns it off); no picker copies left behind; refusals and unlock prompts in Spanish too; the sweep never queries a closed vault; release builds log nothing | the device and localisation P2s |
+| 41 Metadata: receipts, push, the CDN | Done (4.2.0) | A receipt leaves at a moment of its own, 5–60 s later and batched (`adr/0028`); push asks first and never registers when notifications are denied; Cloudflare kept and disclosed (R41, R44) | P1-15, P1-20 code half |
+| 42 Device hardening | Done (4.2.0) | Screenshots and the recents card blocked while the vault is open (on by default; a setting turns it off); no picker copies left behind; refusals and unlock prompts in Spanish too; the sweep never queries a closed vault; release builds log nothing | the device and localisation P2s |
 | 43 Release integrity | Planned | CI refuses to sign a release with the debug key; the APK signing fingerprint published; CI's macOS signing fixed before any signed build; reproducibility measured beyond the universal APK; SLSA Build L3; CAA and HSTS; `/latest.json` set only once Play is current. Also the relay deploy checklist — list every authority name clients dial, the `www.` one too — which the 4.0.2 config fix and the 2026-10-15 login outage made plain (`docs/SELF_HOSTING.md`, "Upgrading a relay to 4.0 or later"; the relay now names an unknown authority and counts it, phase 29) | the release P2s/P3s |
 | 44 PQ for the classical surfaces | Planned | Hybrid keys for contact requests, the CONNECT ceremony, pairing enrolment and the sealed-sender outer layer; a plan for hybrid session authentication. Needs an ADR first | the §4.3 gaps, R43's companion work |
 
@@ -542,7 +549,7 @@ before code. Calls (20), iOS (21) and federation (27) keep their numbers.
 ### Every finding, and the phase that closes it
 
 The 3 October analysis raised 5 P0s and 21 P1s. All but two are closed in code
-and released or landed; two wait on you in Play Console.
+and released; two wait on you in Play Console.
 
 | Finding | Phase | Status |
 |---|---|---|
@@ -550,11 +557,11 @@ and released or landed; two wait on you in Play Console.
 | P0-2 Attachment ids are global | 30.1 | Done |
 | P0-3 A restore raises a false "reset your identity" | 31 | Done |
 | P0-4 One socket can fill the relay's store | 29 | Done |
-| P0-5 Transparency lookups reveal the contact list | 35 | Done; hardening landed |
+| P0-5 Transparency lookups reveal the contact list | 35 | Done; hardening in 4.2.0 |
 | P1-1 Linked-device channels never re-key | 26.2 | Done |
-| P1-2 A same-version ratchet-key swap is invisible | 18.6 | Landed, not released |
-| P1-3 The v2-only gate cannot be measured | 18.5 | Landed, not released |
-| P1-4 A contact can claim another's device | 3.9.10; first-come in 18.7 | Done; first-come landed |
+| P1-2 A same-version ratchet-key swap is invisible | 18.6 | Done (4.2.0) |
+| P1-3 The v2-only gate cannot be measured | 18.5 | Done (4.2.0) |
+| P1-4 A contact can claim another's device | 3.9.10; first-come in 18.7 | Done; first-come in 4.2.0 |
 | P1-5 Linking drops contacts' account keys and commitments | 33 | Done |
 | P1-6 Own-list signing race | 3.9.10; damaged vaults in 32 | Done |
 | P1-7 Forged "reset your identity" / "device removed" | 32 | Done |
@@ -565,26 +572,25 @@ and released or landed; two wait on you in Play Console.
 | P1-12 Linked-device paths drop edits, timers, reactions, receipts | 30.3 | Done |
 | P1-13 A slow reader exhausts relay memory | 29 | Done |
 | P1-14 Public `/metrics` is a presence oracle | 29 | Done |
-| P1-15 Receipt timing links senders | 41 | Landed, not released |
+| P1-15 Receipt timing links senders | 41 | Done (4.2.0) |
 | P1-16 Relay auth can be spliced | 29 | Done |
 | P1-17 The log runs out of memory | 34 | Done |
 | P1-18 Linux desktop does not start without libmpv | 24.1 | Done |
 | P1-19 Cloudflare not disclosed | 28 | Done |
-| P1-20 Push on by default, described as opt-in | 28 docs; code in 41 | Docs done; code landed |
+| P1-20 Push on by default, described as opt-in | 28 docs; code in 41 | Done (code in 4.2.0) |
 | P1-21 Play "What's new" claims unbuilt features | Yours, in Play Console | Waiting on you |
 
 The two independent reviews of 9 October tried to break the new handles and
 lookups by running code against them; the second review (2026-10-10) tried to
 break the fixes. The invite-binding cryptography of phase 40 held against
-everything they tried. Their findings are closed in the handles and lookups
-hardening landed for the next release, except that the handle log's heads still
-show when a record arrived — hiding it would hold a recovery back for up to an
-hour, so the docs state it instead (`adr/0015` flaw F5; R49).
+everything they tried. Their lookups findings are closed in 4.2.0, their
+handles findings in the held-back handles hardening — except that the handle
+log's heads show when a record arrived, which `docs/DATA_MAP.md` states.
 
 ### Order of work
 
-1. Ship the next release: the handles and lookups hardening, 18.5–18.7,
-   23.4–23.5, 41, 42 — all landed on main.
+1. Land and release what is left of 18 (18.4), and land the handles
+   hardening before handles are switched on.
 2. Recruit a witness operator (phase 19, G3) and engage an auditor (G1).
 3. Decide the calls media path (`adr/0005`) and build phase 20.
 4. Phase 43 release integrity, then 39 and 44–50 as their designs land.
@@ -600,10 +606,10 @@ those:
 - **Play Console:** delete the three false bullets in the older "What's new"
   (P1-21), promote a build at or past the post-quantum safety number (P0-1),
   and declare the FCM token in Data safety (P1-20).
-- **Before a release ships handles live:** deploy a handle log
-  (`KT_MODE=handles`, its own key and service), set the two defaults in
-  `app/lib/core/handles.dart`, and change the Play listing's "no username" and
-  Data-safety answers.
+- **Before a release ships handles live:** land the held-back handles
+  hardening, deploy a handle log (`KT_MODE=handles`, its own key and service),
+  set the two defaults in `app/lib/core/handles.dart`, and change the Play
+  listing's "no username" and Data-safety answers.
 - **Decisions taken on a default**, any reversible before they ship: digits
   after a handle (`finnian.42`); proof of work as the handle spam control until
   phase 45; a recovery code shown once; delivery receipts on, batched 5–60 s

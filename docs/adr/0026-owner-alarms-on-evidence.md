@@ -1,6 +1,6 @@
 # ADR 0026 — An alarm about your own account is raised only on evidence its key signed
 
-**Status:** **Proposed** (2026‑10‑04) — built (phase 32, unreleased), for
+**Status:** **Proposed** (2026‑10‑04) — built (phase 32, 4.0.1), for
 review. Amends `PROTOCOL.md` §3.6 (the owner rule, the removal notice), §6.2
 (`dlrm`, a new `pdlreq`, the `devlist` answer) and §19.8; amends ADR 0001's
 rules 5 and 6 and ADR 0006's "Self‑monitoring".

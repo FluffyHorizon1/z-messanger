@@ -1,6 +1,6 @@
 # ADR 0029 — A device says it can read a v2‑only device list, and an account moves when every reader has said so
 
-**Status:** **Proposed** (2026‑10‑09) — built (phase 18.5–18.6, unreleased).
+**Status:** **Proposed** (2026‑10‑09) — built (phase 18.5–18.6, 4.2.0).
 Adds PROTOCOL §3.7 and one sentence each to §6.2 and §9; amends ADR 0017
 (the gate of stage 2b). R42 is updated in place.
 **Decides:** how a device tells the devices it talks to that it can read a

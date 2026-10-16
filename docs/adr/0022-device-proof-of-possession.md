@@ -1,6 +1,6 @@
 # ADR 0022 — A device certificate proves its device holds the key it names
 
-**Status:** **Accepted** (2026‑10‑09) — built (18.7, unreleased). Amends §3.1,
+**Status:** **Accepted** (2026‑10‑09) — built (18.7, 4.2.0). Amends §3.1,
 §3.4 and §9; closes, for a device that has proved itself, the first‑come case
 patch 41 left open.
 **Decides:** how a device shows that it — and not only an account — puts it
