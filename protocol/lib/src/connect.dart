@@ -231,17 +231,34 @@ class ConnectCode {
 
   /// The code in a link, or null if this is not one. Accepts the link with or
   /// without its scheme and with the groups' dashes present or absent, because
-  /// people paste what they were sent.
+  /// people paste what they were sent — on any host (§20.2), but only on the
+  /// invite page: the path is `/i` and nothing else.
   static ConnectCode? fromLink(String url) {
     final hash = url.indexOf('#');
     if (hash < 0 || hash == url.length - 1) return null;
-    final before = url.substring(0, hash);
-    if (!before.contains('/i')) return null;
+    if (!_namesInvitePage(url.substring(0, hash))) return null;
     try {
       return ConnectCode.parse(url.substring(hash + 1));
     } on FormatException {
       return null;
     }
+  }
+
+  /// Whether [before] — a link up to its `#` — is a host followed by the path
+  /// `/i`, with a trailing `/` or a query allowed, and an optional scheme in
+  /// front. Until 2026‑10‑16 any `/i` anywhere would do, so a fragment that
+  /// happened to read as base32 on `/index.html`, `/info` or `/x/i` was taken
+  /// for an invite; every link a client makes is `https://host/i#…`.
+  static bool _namesInvitePage(String before) {
+    var rest = before.trim();
+    final scheme = rest.indexOf('://');
+    if (scheme >= 0) rest = rest.substring(scheme + 3);
+    final slash = rest.indexOf('/');
+    if (slash <= 0) return false; // no host, or no path at all
+    var path = rest.substring(slash);
+    final query = path.indexOf('?');
+    if (query >= 0) path = path.substring(0, query);
+    return path == '/i' || path == '/i/';
   }
 
   /// The single mailbox id this code names, disjoint from a pairing code's by

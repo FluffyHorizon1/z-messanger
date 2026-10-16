@@ -22,7 +22,10 @@
 //     screen, the app came up on the home screen as if nothing had been
 //     tapped — and is HELD there: no round runs, not even when the poll
 //     does, until its person says yes (ADR 0024; until 2026-10-09 the tap
-//     itself ran the first round, and the code went out without a yes).
+//     itself ran the first round, and the code went out without a yes);
+//  6. the platform is asked for the invite page alone: the intent filter
+//     names the path /i exactly, where until 2026-10-16 a prefix of /i also
+//     claimed /index.html and every other page beginning with the letter.
 import 'dart:convert';
 import 'dart:io';
 
@@ -167,12 +170,17 @@ void main() {
     final links = DeepLinks(invites, channel: channel);
     await links.start();
 
+    // A fragment that reads as an invite, on pages that are not the invite
+    // page: until 2026-10-16 any `/i` before the `#` made it one.
+    final fragment = ConnectCode.generate().link().split('#').last;
     for (final rubbish in [
       'https://zmessengers.com/',
       'https://www.zmessengers.com/i', // no fragment: nothing was handed over
       'https://www.zmessengers.com/i#not-base32-at-all-!!',
       'zc1.notaninvite', // a contact code is not an invite
       'https://zmessengers.com/how-it-works',
+      'https://www.zmessengers.com/index.html#$fragment',
+      'https://www.zmessengers.com/info#$fragment',
       '',
     ]) {
       expect(await links.handle(rubbish), isNull, reason: rubbish);
@@ -249,5 +257,33 @@ void main() {
     expect(identical(links.takeUnshown(), later.single), isTrue);
     await sub.cancel();
     await links.dispose();
+  });
+
+  test('6. the platform hands over the invite page alone', () {
+    // What Android delivers by tap is decided by the intent filter, before
+    // any of the Dart above runs: a path PREFIX of /i also claimed
+    // /index.html, /images/… and every other page beginning with the
+    // letter, so once the hosts verify, those would have opened the app.
+    final manifest = File('android/app/src/main/AndroidManifest.xml')
+        .readAsStringSync()
+        // Comments say what the filter used to be; only elements count.
+        .replaceAll(RegExp(r'<!--.*?-->', dotAll: true), '');
+    final filter = RegExp(
+            r'<intent-filter[^>]*>(?:(?!</intent-filter>).)*android\.intent\.action\.VIEW(?:(?!</intent-filter>).)*</intent-filter>',
+            dotAll: true)
+        .firstMatch(manifest);
+    expect(filter, isNotNull, reason: 'the VIEW filter for invite links');
+    final data = RegExp(r'<data\b[^>]*/>', dotAll: true)
+        .allMatches(filter!.group(0)!)
+        .map((m) => m.group(0)!)
+        .toList();
+    expect(data, hasLength(2), reason: 'one per host');
+    for (final d in data) {
+      expect(d, contains('android:path="/i"'), reason: d);
+      expect(d, isNot(contains('pathPrefix')), reason: d);
+      expect(d, isNot(contains('pathPattern')), reason: d);
+      expect(d, isNot(contains('pathAdvancedPattern')), reason: d);
+      expect(d, isNot(contains('pathSuffix')), reason: d);
+    }
   });
 }

@@ -84,7 +84,10 @@ import 'package:z_protocol/z_protocol.dart';
 //     and a different rendezvous in each, frames of one version abort a
 //     ceremony of the other on both sides rather than completing it, and a
 //     stored ceremony keeps its version — a record from before ADR 0024
-//     reads back as version 1, and an unknown version is refused.
+//     reads back as version 1, and an unknown version is refused;
+// 17. a link is read on the invite page and nowhere else: `/i` on any host,
+//     with or without its scheme, a trailing slash or a query, and the same
+//     fragment on `/index.html`, `/info`, `/x/i` or `/ii` is not an invite.
 void main() {
   /// A v3 contact code for a fresh identity — what the app puts in a QR.
   Future<ConnectIdentity> person(String name) async {
@@ -922,6 +925,42 @@ void main() {
       expect((await reread(ConnectRun.accept(me: bob, code: two))).code.version,
           2);
     });
+  });
+
+  test('17. a link is read on the invite page and nowhere else', () {
+    // One fragment that reads as an invite, on every page: only the path
+    // decides. Until 2026-10-16 any `/i` before the `#` would do.
+    for (final code in [
+      ConnectCode.generate(version: 1),
+      ConnectCode.generate(version: 2)
+    ]) {
+      final f = code.link().substring(code.link().indexOf('#'));
+      for (final link in [
+        'https://www.zmessengers.com/i$f',
+        'https://zmessengers.com/i$f',
+        'www.zmessengers.com/i$f', // pasted without its scheme
+        'https://relay.example.org:8443/i$f', // a self-hosted one (§20.2)
+        'https://www.zmessengers.com/i/$f',
+        'https://www.zmessengers.com/i?utm_source=x$f',
+        '  https://www.zmessengers.com/i$f  ',
+      ]) {
+        expect(ConnectCode.fromLink(link)?.secret, code.secret, reason: link);
+      }
+      for (final page in [
+        'https://www.zmessengers.com/index.html$f',
+        'https://www.zmessengers.com/info$f',
+        'https://www.zmessengers.com/images/i$f',
+        'https://www.zmessengers.com/x/i$f',
+        'https://www.zmessengers.com/i.html$f',
+        'https://www.zmessengers.com/ii$f',
+        'https://www.zmessengers.com/$f',
+        'https://evil.example/link?to=/i$f',
+        '/i$f', // no host
+        'i$f',
+      ]) {
+        expect(ConnectCode.fromLink(page), isNull, reason: page);
+      }
+    }
   });
 }
 

@@ -3923,9 +3923,13 @@ An invite of version 2 starts both renderings with `9` (20.8).
 `host` defaults to `www.zmessengers.com` and is part of the deployment, not of the
 protocol: a self‑hosted relay serves its own landing page and its links carry
 its own host, and a client MUST accept an invite whatever host precedes the
-fragment. The code lives in the URL **fragment**, which no browser transmits,
-so the site serving that page never receives an invite and cannot know one
-exists.
+fragment. It MUST NOT accept one on any path but `/i` (a trailing `/` and a
+query are allowed, the scheme may be missing): a fragment that happens to read
+as base32 on another page of a site — `/index.html`, `/info` — is not an
+invite, and until 2026‑10‑16 any `/i` before the `#` made it one. Android's
+filter for these links names the path `/i` exactly for the same reason. The
+code lives in the URL **fragment**, which no browser transmits, so the site
+serving that page never receives an invite and cannot know one exists.
 
 A parser MUST accept the text with or without its group dashes, in either
 case, and with spaces; it MUST reject anything containing a character that is

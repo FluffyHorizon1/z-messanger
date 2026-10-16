@@ -57,17 +57,23 @@
                  tells the person to paste the invite into the CONNECT tab
                  instead. Both hosts are listed so a link that was opened in
                  a browser, redirected, and copied back out still reaches the
-                 app once verification is in place. -->
+                 app once verification is in place.
+
+                 The path is exact. Until 2026-10-16 it was a prefix, and a
+                 prefix of /i also claimed /index.html, /images/... and every
+                 other page on the site whose path begins with the letter:
+                 once verified, those would have opened the app instead of
+                 the page. Every invite link is /i, its code after the #. -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="https"
                       android:host="zmessengers.com"
-                      android:pathPrefix="/i"/>
+                      android:path="/i"/>
                 <data android:scheme="https"
                       android:host="www.zmessengers.com"
-                      android:pathPrefix="/i"/>
+                      android:path="/i"/>
             </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
