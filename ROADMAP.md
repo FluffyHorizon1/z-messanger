@@ -47,7 +47,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 33 Linked devices as equals | ✅ done | `linked_equals_test.dart`, `mirrored_contact_test.dart`; closes P1-5 |
 | 34 Transparency log health | ✅ done | `kt/test/log_memory.test.js`, `kt/test/publish_limits.test.js`; closes P1-17 |
 | 35 Private transparency lookups | ✅ done (4.1.0; its hardening 4.2.0) | `adr/0023`, PROTOCOL §19.9, `kt_private_lookup_test.dart`, `transparency_bucket_test.dart`, `kt/test/bucket.test.js`; closes P0-5 |
-| 36–38 Handles | 36.1–36.2/37 done; 38 done (4.1.0); dormant until a handle log is deployed; the review's hardening is built and held back, to land before handles are switched on | `adr/0015` rev 2, PROTOCOL §21, `handles_test.dart`, `intro_mailbox.test.js`, `handle_flow_test.dart`, `kt/test/handle_mode.test.js`, register R47–R50 |
+| 36–38 Handles | 36.1–36.2/37 done; 38 done (4.1.0); hardening landed, not released; dormant until a handle log is deployed | `adr/0015` rev 2, PROTOCOL §21, `handles_test.dart`, `intro_mailbox.test.js`, `handle_flow_test.dart`, `kt/test/handle_mode.test.js`, register R47–R50 |
 | 39 Public introduction link | planned | `adr/0009`'s deferred public invite |
 | 40 Invites bound to their secret | ✅ done | `adr/0024`, PROTOCOL §20.8, `connect_test.dart`; closes P1-9 |
 | 41 Metadata: receipts, push, CDN | ✅ done (4.2.0) | `adr/0028`, `receipt_timing_test.dart`, `delivery_receipts_test.dart`, register R41/R44; closes P1-15, P1-20 code half |
@@ -62,9 +62,9 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 50 Z without one operator | planned | `adr/0008` in practice; needs 19, 27, 36 |
 
 **Next up:** 4.2.0 shipped phases 18.5–18.7, 23.4–23.5, 41 and 42 and the
-lookups hardening; 18.4 has landed for the next release (the dormant hybrid
-certificate retired, `adr/0031`). The handles hardening is built and held back,
-to land before handles are switched on. Next: an independent **witness** for the
+lookups hardening. Landed for the next release: 18.4 (the dormant hybrid
+certificate retired, `adr/0031`) and the hardening the handles need before they
+are switched on. Next: an independent **witness** for the
 transparency log (phase 19) — the log is live and pinned (`adr/0006` says what
 "live" means, `docs/SELF_HOSTING.md` how), and G3's one remaining condition is
 somebody outside the project mirroring it — then **calls** (phase 20) once
@@ -412,9 +412,6 @@ been in use at once; this is the single one. Phases 0–17 are history or done,
   shipped.
 - **Designed** — an ADR exists; no code.
 - **Planned** — neither yet.
-- **Held back** — built and verified, and kept off main as a series of its own
-  until a decision of yours: the handles hardening, until handles are switched
-  on.
 - **People-gated** — needs someone outside this work: an operator, an auditor,
   a Mac, a certificate.
 
@@ -424,8 +421,7 @@ below); **4.1.0** — phase 35 (private transparency lookups) and phase 38
 (handles in the app, dormant until a handle log is deployed); **4.1.1** — the
 relay's unknown-name login diagnostic (phase 29); **4.2.0** — phases 18.5–18.7,
 23.4–23.5, 41 and 42, and the lookups hardening (phase 35). The next release
-carries 18.4. The handles hardening (36–38) is built and held back, to land
-before handles are switched on.
+carries 18.4 and the hardening the handles need (36–38).
 
 **GA gates** (`docs/GA_CHECKLIST.md`, the live answer): G1 external audit ❌,
 G2 outside rebuild ⚠️, G3 witnessed transparency ❌, G4 backup ✅, G5
@@ -490,15 +486,13 @@ Handles are shape E′ of `adr/0015` revision 2: a handle resolves to an
 introduction mailbox, never to the account key (PROTOCOL §21). The registry and
 introduction mailboxes shipped in 4.0.1, the app in 4.1.0; handles stay
 **dormant until you deploy a handle log**. An independent review of the handles
-then broke four things in them. The fixes are built and held back as a series
-of their own, to land before handles are switched on: the handles on main still
-carry those findings, which a dormant feature does not expose.
+then broke four things in them; the fixes are landed for the next release.
 
 | Phase | Status | What it builds |
 |---|---|---|
-| 36 Handles I: the registry | Done; hardening held back | The protocol library and a separate log in handle mode (`KT_MODE=handles`) with the owner rule, recovery and the bucket query; the held-back hardening has Dart and Node refuse weak keys and huge versions alike |
-| 37 Handles II: introduction mailboxes | Done; hardening held back | The relay checks a proof of work on anything sent to an introduction mailbox, holds copies once, caps envelopes at 64 KiB; the held-back hardening keeps a mailbox whose flag lapsed guarded, and has the stamp travel with the envelope |
-| 38 Handles III: the app | Done (4.1.0); hardening held back | Claim, find, request, accept, pause, rotate, retire, recover, in English and Spanish; the held-back hardening caps handle requests apart from code requests, counts each stamp once, and hides lookups among decoys sized from counted labels |
+| 36 Handles I: the registry | Done; hardening landed, not released | The protocol library and a separate log in handle mode (`KT_MODE=handles`) with the owner rule, recovery and the bucket query; Dart and Node refuse weak keys and huge versions alike |
+| 37 Handles II: introduction mailboxes | Done; hardening landed, not released | The relay checks a proof of work on anything sent to an introduction mailbox, holds copies once, caps envelopes at 64 KiB; a lapsed flag keeps the mailbox guarded, and the stamp travels with the envelope |
+| 38 Handles III: the app | Done (4.1.0); hardening landed, not released | Claim, find, request, accept, pause, rotate, retire, recover, in English and Spanish; handle requests capped apart from code requests, each stamp counted once, lookups hidden among decoys sized from counted labels |
 | 39 The public introduction link | Planned | A link or QR carrying an introduction key directly, for people reachable from a public page without a registry (`adr/0009`'s deferred public invite) |
 
 The revision fixed the proposal's flaws, each named in `adr/0015`:
@@ -518,10 +512,9 @@ The revision fixed the proposal's flaws, each named in `adr/0015`:
 
 The claims bill is paid: every "no directory" sentence now names the directory
 Z has, and register rows R47–R50 state the residuals, the last being that the
-handle log is unwitnessed (R50). Before a release ships handles live, the
-held-back hardening must land, the Play listing's "no username" and its
-Data-safety answers must change, and a handle log must be deployed — the last
-two yours.
+handle log is unwitnessed (R50). Before a release ships handles live, the Play
+listing's "no username" and its Data-safety answers must change, and a handle
+log must be deployed — both yours.
 
 ### Phases 40–44 — invites, metadata, devices, releases, the PQ edges
 
@@ -585,13 +578,15 @@ The two independent reviews of 9 October tried to break the new handles and
 lookups by running code against them; the second review (2026-10-10) tried to
 break the fixes. The invite-binding cryptography of phase 40 held against
 everything they tried. Their lookups findings are closed in 4.2.0, their
-handles findings in the held-back handles hardening — except that the handle
-log's heads show when a record arrived, which `docs/DATA_MAP.md` states.
+handles findings in the handles hardening landed for the next release — except
+that the handle log's heads still show when a record arrived: hiding it would
+hold a recovery back for up to an hour, so the docs state it instead (`adr/0015`
+flaw F5; R49).
 
 ### Order of work
 
-1. Release 18.4, which has landed, and land the handles hardening before
-   handles are switched on.
+1. Ship the next release: 18.4 and the handles hardening, both landed on
+   main.
 2. Recruit a witness operator (phase 19, G3) and engage an auditor (G1).
 3. Decide the calls media path (`adr/0005`) and build phase 20.
 4. Phase 43 release integrity, then 39 and 44–50 as their designs land.
@@ -607,10 +602,10 @@ those:
 - **Play Console:** delete the three false bullets in the older "What's new"
   (P1-21), promote a build at or past the post-quantum safety number (P0-1),
   and declare the FCM token in Data safety (P1-20).
-- **Before a release ships handles live:** land the held-back handles
-  hardening, deploy a handle log (`KT_MODE=handles`, its own key and service),
-  set the two defaults in `app/lib/core/handles.dart`, and change the Play
-  listing's "no username" and Data-safety answers.
+- **Before a release ships handles live:** deploy a handle log
+  (`KT_MODE=handles`, its own key and service), set the two defaults in
+  `app/lib/core/handles.dart`, and change the Play listing's "no username" and
+  Data-safety answers.
 - **Decisions taken on a default**, any reversible before they ship: digits
   after a handle (`finnian.42`); proof of work as the handle spam control until
   phase 45; a recovery code shown once; delivery receipts on, batched 5–60 s

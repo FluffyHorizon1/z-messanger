@@ -37,9 +37,9 @@ Three components, one operator‑independent trust story:
 
 | Component | Language / size | Role |
 |---|---|---|
-| `protocol/` (`z_protocol`) | pure Dart, ~11.5 k lines in 24 modules, ~11.8 k lines of tests (329, eighteen of them driving a real relay) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader, handles' grammar, labels, records, owner rule, stamps and acknowledgement |
-| `app/` | Flutter (Dart), core ~28.8 k lines (`lib/core/`), UI ~9.6 k lines, 113 test files (~49.1 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
-| `server/` | Node.js, `server.js` ~4 000 lines, ~12.5 k lines of tests (208) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics. **Two code paths, and the Redis one is what the public deployment runs** (`MemoryCoordinator` for a single instance, `RedisCoordinator` for several sharing a RAM‑only store — `render.ha.yaml`); a change to queueing, presence, acknowledgement, flush or push handling has to be read in both |
+| `protocol/` (`z_protocol`) | pure Dart, ~11.8 k lines in 24 modules, ~12.3 k lines of tests (336, nineteen of them driving a real relay) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader, handles' grammar, labels, records, owner rule, stamps and acknowledgement |
+| `app/` | Flutter (Dart), core ~30.3 k lines (`lib/core/`), UI ~9.6 k lines, 113 test files (~51.7 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
+| `server/` | Node.js, `server.js` ~4 000 lines, ~12.6 k lines of tests (208) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics. **Two code paths, and the Redis one is what the public deployment runs** (`MemoryCoordinator` for a single instance, `RedisCoordinator` for several sharing a RAM‑only store — `render.ha.yaml`); a change to queueing, presence, acknowledgement, flush or push handling has to be read in both |
 
 Every message is encrypted on a device and decrypted only on the recipient
 devices; the relay sees padded ciphertext addressed to a mailbox id and,
@@ -277,7 +277,7 @@ mapping is read out of the table in §3, so it cannot drift from this document.
 The pieces individually:
 
 ```
-# Protocol library: 329 tests incl. the vector freeze
+# Protocol library: 336 tests incl. the vector freeze
 cd protocol && dart test
 
 # Relay: 208 tests incl. 29 clean-room vector replays (no shared code)
