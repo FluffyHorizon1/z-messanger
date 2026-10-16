@@ -1,0 +1,81 @@
+# Render.com Blueprint — a WITNESS for the Z HANDLE log (SELF_HOSTING.md,
+# "Running the handle log", step 5; PROTOCOL.md §21.5).
+#
+# The same mirror as render.kt-witness.yaml, run against the handle log
+# instead: KT_MODE=handles makes it verify and co-sign under the handle
+# log's contexts (`verifySthFor`, `leafHashFor`, `witnessInputFor` all take
+# the mode) and judge records by the owner rule, so a publish the handle's
+# owner did not sign is refused here as it is at the log.
+#
+# It must be set, and the failure if it is not is a loud one rather than a
+# quiet one: a mirror left in key-transparency mode computes that log's
+# signing input for the head, the handle log's signature does not verify
+# under it, and the mirror refuses to follow the log at all ("the head is
+# not signed by the pinned log key"). So the risk is a witness that
+# witnesses nothing, not one that co-signs what it never checked.
+#
+# It is a SEPARATE service from the transparency log's witness, with its own
+# disk and its own witness key: heads name no log, so one key over two logs
+# makes their heads interchangeable, which is the fork a witness exists to
+# catch.
+#
+# What it is for (THREAT_MODEL R50). A handle resolves to an introduction
+# mailbox, so a handle log that shows two readers different records for one
+# handle can send a stranger who looks you up to a mailbox of the operator's
+# choosing, and nothing in a client can tell. Only a witness comparing heads
+# catches it: if the log ever signs a history that does not extend the one
+# the witness holds, the witness stops following it and keeps serving the
+# last honest head, from which the log can no longer produce a consistency
+# proof.
+#
+# The value of a witness is that someone OTHER than the log's operator runs
+# it, so this Blueprint is meant to be created under a DIFFERENT account
+# from render.handles.yaml — a friend, a second operator, anyone who will
+# keep a $7 instance up: Dashboard → New → Blueprint → this repo →
+# Blueprint Path: render.handles-witness.yaml. Run by the log's own operator
+# it gives fork detection against a later compromise of the log, and nothing
+# against the operator; R50 stays open until an independent one co-signs.
+#
+# Render asks for the two sync: false values:
+#   KT_LOG_PUB      the handle log's public key, which its operator hands
+#                   over out of band — typing it here IS the act of pinning.
+#                   Read it off the log at GET /kt/v1/pub, or from its
+#                   startup line ("z-kt: handle log, … public key …").
+#   KT_WITNESS_SEED a seed for this witness's own key, generated on the
+#                   witness operator's machine and never shared:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+#
+# The witness's public key appears in /sth.json as witness.pub; give that to
+# the log's operator, for the app's handle-witness pin.
+#
+# It keeps its own copy of every entry on the disk below, so it can be
+# reloaded and re-verified from nothing but that disk.
+services:
+  - type: web
+    name: z-handles-witness
+    runtime: docker
+    dockerfilePath: ./kt/Dockerfile
+    dockerContext: ./kt
+    dockerCommand: node tools/mirror.js   # the same image as the log, running its mirror
+    plan: starter               # a disk needs a paid instance
+    region: frankfurt
+    healthCheckPath: /health    # 200 even after a divergence — see tools/mirror.js
+    autoDeployTrigger: "off"
+    disk:
+      name: z-handles-witness-data
+      mountPath: /data          # = KT_MIRROR_DIR; entries.jsonl and sth.json
+      sizeGB: 1                 # ~0.6 KB an entry: a mirror of millions of handles
+    envVars:
+      - key: KT_MODE
+        value: handles          # the HANDLE log's rules; unset would mirror it as a key-transparency log
+      - key: KT_LOG_URL
+        value: https://handles.zmessengers.com   # the handle log to witness
+      - key: KT_LOG_PUB
+        sync: false             # the handle log's public key, base64, from its operator out of band
+      - key: KT_WITNESS_SEED
+        sync: false             # 64 hex characters, generated on the witness operator's machine
+      - key: KT_MIRROR_DIR
+        value: /data
+      - key: KT_EVERY
+        value: "300"            # seconds between checks
+      # PORT is injected by Render; the mirror serves /sth.json and /health on it.
