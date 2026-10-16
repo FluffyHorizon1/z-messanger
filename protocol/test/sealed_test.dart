@@ -1,9 +1,74 @@
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart'
+    show KeyPairType, SimplePublicKey, X25519;
 import 'package:test/test.dart';
 import 'package:z_protocol/z_protocol.dart';
 
+Uint8List _hex(String s) => Uint8List.fromList([
+      for (var i = 0; i < s.length; i += 2)
+        int.parse(s.substring(i, i + 2), radix: 16)
+    ]);
+
+/// Every spelling X25519 reads as a point of small order: the five u of
+/// PROTOCOL §21.4, the two encodings at or above p that reduce to 0 and 1,
+/// and each of the seven with the top bit set, which X25519 ignores.
+final List<Uint8List> smallOrderSpellings = () {
+  final canonical = [
+    '0000000000000000000000000000000000000000000000000000000000000000',
+    '0100000000000000000000000000000000000000000000000000000000000000',
+    'e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800',
+    '5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157',
+    'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+    'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f', // p
+    'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f', // p + 1
+  ].map(_hex).toList();
+  return [
+    ...canonical,
+    for (final k in canonical) Uint8List.fromList(k)..[31] |= 0x80,
+  ];
+}();
+
 void main() {
+  group('a recipient key of small order (RFC 7748 §6.1)', () {
+    test('each spelling agrees all zeros with any key, so an envelope sealed '
+        'to it would be open to anyone', () async {
+      // The premise, checked with the primitive rather than taken on trust:
+      // what `seal` refuses is exactly what makes its key public.
+      final x = X25519();
+      for (final k in smallOrderSpellings) {
+        for (var i = 0; i < 3; i++) {
+          final s = await x.sharedSecretKey(
+              keyPair: await x.newKeyPairFromSeed(randomBytes(32)),
+              remotePublicKey: SimplePublicKey(k, type: KeyPairType.x25519));
+          expect(await s.extractBytes(), everyElement(0), reason: b64(k));
+        }
+      }
+    });
+
+    test('is refused, and nothing is produced', () async {
+      final rid = await (await ZIdentity.generate()).routingId();
+      for (final k in smallOrderSpellings) {
+        await expectLater(
+            SealedEnvelope.seal(toXPub: k, fromRid: rid, payload: 'p'),
+            throwsA(isA<SealRefusedException>()),
+            reason: b64(k));
+      }
+    });
+
+    test('is the only refusal: an honest key always seals and opens', () async {
+      final rid = await (await ZIdentity.generate()).routingId();
+      for (var i = 0; i < 32; i++) {
+        final bob = await ZIdentity.generate();
+        final blob = await SealedEnvelope.seal(
+            toXPub: bob.xPub, fromRid: rid, payload: 'p$i');
+        final opened = await SealedEnvelope.open(
+            myXSeed: bob.xSeed, myXPub: bob.xPub, blob: blob);
+        expect(opened?.payload, 'p$i');
+      }
+    });
+  });
+
   group('sealed sender envelope', () {
     test('round-trips sender and payload; only the recipient can open it',
         () async {

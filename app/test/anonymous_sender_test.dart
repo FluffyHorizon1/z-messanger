@@ -13,14 +13,26 @@
 //     none arrives on the authenticated link;
 //  2. with the anonymous link down, a sealed send is not sent on the
 //     authenticated link instead: it waits in the outbox and goes when the
-//     link is back.
+//     link is back;
+//  3. a send to a key of small order — which agrees all zeros with every
+//     ephemeral, so the envelope would be open to anyone holding it, the
+//     relay first — is refused before anything leaves or changes: nothing
+//     queued, unsealed or otherwise, and the conversation as it was, so the
+//     next message, with an honest key back, arrives with no gap behind it;
+//  4. holding such a key for someone does not cost what they send: their
+//     messages are taken and acknowledged, and nothing goes to that key —
+//     the post-quantum offer their first message prompts included;
+//  5. a contact code carrying such a key is refused at the door, though its
+//     owner signed it, and nothing of it is kept.
 @Tags(['integration'])
 library;
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart' show Ed25519;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/models.dart';
@@ -95,9 +107,9 @@ void main() {
     return svc;
   }
 
-  Future<void> waitUntil(bool Function() cond, {Duration timeout = const Duration(seconds: 25), String what = ''}) async {
+  Future<void> waitUntil(FutureOr<bool> Function() cond, {Duration timeout = const Duration(seconds: 25), String what = ''}) async {
     final deadline = DateTime.now().add(timeout);
-    while (!cond()) {
+    while (!await cond()) {
       if (DateTime.now().isAfter(deadline)) throw TimeoutException('condition not met: $what');
       await Future<void>.delayed(const Duration(milliseconds: 30));
     }
@@ -154,5 +166,100 @@ void main() {
     expect(after['z_sealed_unattributable_total']! - before['z_sealed_unattributable_total']!, sealed,
         reason: 'nothing sealed went on the authenticated link');
     expect(alice.messagesByChat[ben.myRid]!.last.status, isNot(MsgStatus.pending));
+  });
+
+  // u = 0: the point every spelling of small order agrees with (PROTOCOL §8;
+  // protocol/test/sealed_test.dart runs all fourteen through `seal`).
+  final smallOrder = Uint8List(32);
+
+  Future<List<Map<String, Object?>>> outboxFor(ChatService s, String rid) =>
+      s.vault.db.query('outbox', where: 'rid = ?', whereArgs: [rid]);
+
+  int skippedKeys(ChatService s, String rid) => [
+        for (final x in s.debugConversation(rid)!.sessions.values)
+          x.ratchet.skipped.length
+      ].fold(0, (a, b) => a + b);
+
+  test('a send to a key of small order is refused before anything leaves or changes', () async {
+    final alice = await start('alice3');
+    final ben = await start('ben3');
+    await waitUntil(() => alice.transport.isConnected && alice.transport.isSenderConnected && ben.transport.isConnected,
+        what: 'up');
+    await alice.addContactFromCode(await ben.myContactCode());
+    await ben.addContactFromCode(await alice.myContactCode());
+    await alice.sendText(ben.myRid, 'first');
+    await waitUntil(() => ben.messagesByChat[alice.myRid]?.length == 1, what: 'first delivered');
+    await waitUntil(() async => (await outboxFor(alice, ben.myRid)).isEmpty, what: 'alice has sent everything');
+    // Let the identity exchange and receipts settle, so nothing else moves
+    // the conversation while the refusal is looked at.
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    final honest = alice.debugSealKey(ben.myRid)!;
+    final before = jsonEncode(alice.debugConversation(ben.myRid)!.toJson(includeSkipped: false));
+    final skippedBefore = skippedKeys(ben, alice.myRid);
+
+    alice.debugSetSealKey(ben.myRid, smallOrder);
+    await expectLater(alice.sendText(ben.myRid, 'refused'), throwsA(isA<SealRefusedException>()));
+    expect(await outboxFor(alice, ben.myRid), isEmpty,
+        reason: 'nothing queued: not the envelope, and not the payload unsealed in its place');
+    expect(jsonEncode(alice.debugConversation(ben.myRid)!.toJson(includeSkipped: false)), before,
+        reason: 'the ratchet did not step for a message that never left');
+    expect(alice.messagesByChat[ben.myRid]!.where((m) => m.body == 'refused'), isEmpty,
+        reason: 'no row for a message that was not sent');
+
+    alice.debugSetSealKey(ben.myRid, honest);
+    await alice.sendText(ben.myRid, 'after');
+    await waitUntil(() => ben.messagesByChat[alice.myRid]?.any((m) => m.body == 'after') ?? false,
+        what: 'the next message, with the honest key back');
+    expect(skippedKeys(ben, alice.myRid), skippedBefore,
+        reason: 'it arrived on the index the refused one would have used: no key skipped');
+  });
+
+  test('a key of small order held for someone does not cost what they send', () async {
+    final s1 = await start('p4a');
+    final s2 = await start('p4b');
+    // Roles follow routing-id order: the lower id opens the session with its
+    // hello, and the other side, on hearing it, offers its post-quantum key
+    // on the receive path — sealed to the key it holds for the sender.
+    final initiator = s1.myRid.compareTo(s2.myRid) < 0 ? s1 : s2;
+    final offerer = identical(initiator, s1) ? s2 : s1;
+    await waitUntil(() => s1.transport.isConnected && s1.transport.isSenderConnected && s2.transport.isConnected && s2.transport.isSenderConnected,
+        what: 'up');
+    await offerer.addContactFromCode(await initiator.myContactCode());
+    offerer.debugSetSealKey(initiator.myRid, smallOrder);
+    final before = await metrics();
+    await initiator.addContactFromCode(await offerer.myContactCode());
+    await initiator.sendText(offerer.myRid, 'hello there');
+    await waitUntil(() => offerer.messagesByChat[initiator.myRid]?.any((m) => m.body == 'hello there') ?? false,
+        what: 'their message taken');
+    // Everything they sent was acknowledged: nothing waits at the relay for
+    // a retry that would fail the same way.
+    await waitUntil(() async => (await metrics())['z_queued_envelopes'] == 0, what: 'nothing left at the relay');
+    expect(offerer.messagesByChat[initiator.myRid]!.where((m) => m.kind == 'system'), isEmpty,
+        reason: 'no message of theirs was dropped as one that could not be read');
+    expect(await outboxFor(offerer, initiator.myRid), isEmpty,
+        reason: 'nothing queued to the key, the offer included');
+    final after = await metrics();
+    expect(after['z_sealed_total']! - before['z_sealed_total']!,
+        after['z_sealed_unattributable_total']! - before['z_sealed_unattributable_total']!,
+        reason: 'and nothing unsealed or attributed went in its place');
+  });
+
+  test('a contact code carrying a key of small order is refused at the door', () async {
+    final alice = await start('alice5');
+    final mal = await start('mal5');
+    final code = await mal.myContactCode();
+    final j = jsonDecode(utf8.decode(unb64url(code.substring(4)))) as Map<String, Object?>;
+    final ed = await Ed25519().newKeyPairFromSeed(mal.identity.edSeed);
+    j['x'] = b64(smallOrder);
+    j['sig'] = b64(Uint8List.fromList(
+        (await Ed25519().sign([...utf8.encode(bindContext), ...smallOrder], keyPair: ed)).bytes));
+    final hostile = code.substring(0, 4) + b64url(utf8.encode(jsonEncode(j)));
+    await expectLater(alice.addContactFromCode(hostile),
+        throwsA(isA<ContactCodeRefused>().having((e) => e.kind, 'kind', ContactCodeRefusal.invalidCode)));
+    expect(alice.contacts.containsKey(mal.myRid), isFalse);
+    expect(await outboxFor(alice, mal.myRid), isEmpty);
+    // Mal's own code, unaltered, is still read: the refusal is the key's.
+    await alice.addContactFromCode(code);
+    expect(alice.contacts.containsKey(mal.myRid), isTrue);
   });
 }

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'ed25519_strict.dart';
 import 'util.dart';
 
 const String bindContext = 'z-bind-v1:';
@@ -147,8 +148,17 @@ class ContactBundle {
 
   Future<String> routingId() async => b64url(await sha256Bytes(edPub));
 
-  /// Verifies that the X25519 key really belongs to the Ed25519 identity.
+  /// Verifies that the X25519 key really belongs to the Ed25519 identity, and
+  /// that it is strong (§2.4; the test is §21.4's). A key of small order is
+  /// refused even when signed: every envelope sealed to it would be open to
+  /// anyone (§8), and a contact's own signature cannot make that safe for
+  /// the people who write to them. The doors a contact comes in by from
+  /// outside — a scanned or pasted code, a request, a restored backup, a
+  /// group's member list, a contact mirrored from one of the account's own
+  /// devices — verify here; an account code (`zc2.`) holds its devices' keys
+  /// to the same test ([AccountBundle.decode]).
   Future<bool> verify() async {
+    if (!handleStrongXKey(xPub)) return false;
     try {
       return await Ed25519().verify(
         concatBytes([utf8.encode(bindContext), xPub]),
@@ -198,6 +208,10 @@ class ContactBundle {
     );
     if (bundle.edPub.length != 32 || bundle.xPub.length != 32) {
       throw const FormatException('bad key length');
+    }
+    if (!handleStrongXKey(bundle.xPub)) {
+      throw const FormatException(
+          'contact code key refused: not a strong X25519 key');
     }
     if (!await bundle.verify()) {
       throw const FormatException(

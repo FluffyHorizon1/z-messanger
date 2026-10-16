@@ -51,9 +51,19 @@
 //      message lands. It used to advance the ratchet in memory, fail to write
 //      it down, and acknowledge — the relay forgetting a message that was
 //      never stored, on a session that had moved on.
+//
+// And two from the refusal to seal to a key of small order (PROTOCOL §8):
+// the fan is where one device's refusal could cost every other device its
+// copy.
+//
+//   9. a contact's device whose key is of small order gets nothing, and that
+//      contact's other devices still get the message;
+//  10. the same on the self-sync channel: my own device with such a key is
+//      not mirrored to, and the message and the rest of the mirror go.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/chat_service.dart';
@@ -458,5 +468,58 @@ void main() {
     await b.removeMyDevice(cert);
     expect((await outbox(b)).where((r) => r['rid'] == laptopRid), isEmpty,
         reason: 'a device I removed gets nothing I had queued for it');
+  });
+
+  /// b, with the laptop of [twoDeviceContactFull], links a tablet too, and a
+  /// learns of it. Returns the tablet's routing id.
+  Future<String> addTablet(ChatService a, ChatService b) async {
+    final tablet = await ZIdentity.generate();
+    final account = await b.accountIdentity();
+    await b.addMyDevice(await account.signDeviceCert(
+        deviceEdPub: tablet.edPub, deviceXPub: tablet.xPub, deviceId: 'tb'));
+    await carry(b, a);
+    while (a.pqSendPending) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    await a.vault.db.delete('outbox');
+    await b.vault.db.delete('outbox');
+    return tablet.routingId();
+  }
+
+  // u = 0, a point of small order (PROTOCOL §8, §21.4).
+  final smallOrder = Uint8List(32);
+
+  test("a contact's device whose key is of small order gets nothing; "
+      'their other devices still do', () async {
+    final (a, b, laptopRid, _, _) = await twoDeviceContactFull();
+    final tabletRid = await addTablet(a, b);
+    a.debugSetSealKey(laptopRid, smallOrder);
+
+    await a.sendText(b.myRid, 'for every device that can be written to');
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    final rids = (await outbox(a)).map((r) => r['rid']).toList();
+    expect(rids.toSet(), {b.myRid, tabletRid},
+        reason: 'the phone and the tablet, and nothing for the laptop: '
+            '${rids.map((r) => r == laptopRid ? 'laptop' : r == tabletRid ? 'tablet' : r == b.myRid ? 'phone' : r).toList()}');
+  });
+
+  test('my own device whose key is of small order is not mirrored to; '
+      'the message and the rest of the mirror go', () async {
+    final (a, b, laptopRid, _, _) = await twoDeviceContactFull();
+    final tabletRid = await addTablet(a, b);
+    final a2 = await makeClient('a2');
+    await b.addContactFromCode(await a2.myContactCode());
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await b.vault.db.delete('outbox');
+    b.debugSetSealKey(laptopRid, smallOrder);
+
+    await b.sendText(a2.myRid, 'mirrored where it can be');
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    final rids = (await outbox(b)).map((r) => r['rid']).toSet();
+    expect(rids, containsAll([a2.myRid, tabletRid]),
+        reason: 'the message, and its mirror to the tablet');
+    expect(rids, isNot(contains(laptopRid)),
+        reason: 'nothing for the laptop, sealed or not');
   });
 }

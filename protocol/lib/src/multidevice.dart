@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'ed25519_strict.dart';
 import 'identity.dart';
 import 'util.dart';
 
@@ -391,6 +392,15 @@ class AccountBundle {
     if (!await bundle.verifyAll()) {
       throw const FormatException(
           'account code failed verification (possible tampering)');
+    }
+    // A device key of small order is refused as a `zc1.` code's is
+    // ([ContactBundle.verify], §3.3): an envelope sealed to it would be open
+    // to anyone (§8).
+    for (final d in bundle.devices) {
+      if (!handleStrongXKey(d.deviceXPub)) {
+        throw const FormatException(
+            'account code key refused: not a strong X25519 key');
+      }
     }
     return bundle;
   }

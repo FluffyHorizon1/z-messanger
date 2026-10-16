@@ -28,6 +28,15 @@ import 'util.dart';
 ///
 /// Plaintext is padded to size buckets so the relay also can't distinguish
 /// messages by exact length.
+///
+/// A key of small order is refused ([SealRefusedException]). X25519 with
+/// such a key — the zero point, or one of the few points of order 2, 4 or 8,
+/// in any of their spellings — gives all zeros whatever the ephemeral is
+/// (RFC 7748 §6.1), so the envelope's key would be HKDF of zeros and two
+/// public keys: anyone holding the envelope, the relay first of all, could
+/// open it and read the sender. An honest key is never one (it is a clamped
+/// scalar times the base point), so the refusal costs an honest send
+/// nothing.
 
 final _x = X25519();
 final _aead = Chacha20.poly1305Aead();
@@ -74,6 +83,17 @@ Future<SecretKey> _deriveKey(
   return okm;
 }
 
+/// [SealedEnvelope.seal] was asked to seal to a key of small order, whose
+/// agreement with any ephemeral is all zeros: the envelope would be open to
+/// anyone who holds it. Nothing was produced.
+class SealRefusedException implements Exception {
+  const SealRefusedException();
+
+  @override
+  String toString() =>
+      'SealRefusedException: the recipient key is a point of small order';
+}
+
 class SealedEnvelope {
   /// True if [payload] looks like a sealed envelope (vs. legacy plaintext-
   /// routed ratchet/chunk payloads).
@@ -81,6 +101,10 @@ class SealedEnvelope {
 
   /// Seal `payload` to the device whose public X25519 key is [toXPub],
   /// embedding [fromRid] so only the recipient learns who sent it.
+  ///
+  /// Throws [SealRefusedException], and produces nothing, when [toXPub] is
+  /// a point of small order (RFC 7748 §6.1; the comment at the top of this
+  /// file says why).
   static Future<String> seal({
     required Uint8List toXPub,
     required String fromRid,
@@ -94,8 +118,15 @@ class SealedEnvelope {
       keyPair: ephKp,
       remotePublicKey: SimplePublicKey(toXPub, type: KeyPairType.x25519),
     );
-    final key = await _deriveKey(
-        Uint8List.fromList(await shared.extractBytes()), ephPub, toXPub);
+    final agreed = Uint8List.fromList(await shared.extractBytes());
+    // All zeros is the one output a key of small order can give, and every
+    // such key gives it. Checked in constant time, as the RFC asks.
+    var any = 0;
+    for (final b in agreed) {
+      any |= b;
+    }
+    if (any == 0) throw const SealRefusedException();
+    final key = await _deriveKey(agreed, ephPub, toXPub);
 
     final plain = _pad(Uint8List.fromList(
         utf8.encode(jsonEncode({'f': fromRid, 'p': payload}))));

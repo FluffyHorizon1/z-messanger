@@ -318,11 +318,24 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// it; a rid we hold no key for falls back to a legacy attributed send.
   final Map<String, Uint8List> _sealKeys = {};
 
+  /// Throws [SealRefusedException] for a key of small order (§8) rather than
+  /// returning anything: an envelope sealed to one is open to whoever holds
+  /// it, and sending the payload unsealed instead would name the sender
+  /// outright. Every caller decides what a refusal costs — nothing sent to
+  /// that device, and nothing else lost.
   Future<String> _sealFor(String rid, String payload) async {
     final key = _sealKeys[rid];
     if (key == null) return payload;
     return SealedEnvelope.seal(toXPub: key, fromRid: myRid, payload: payload);
   }
+
+  /// Test seam: the sealing key held for [rid], and replacing it — as a
+  /// contact admitted before codes were checked for a key of small order
+  /// (§2.4), or a device in a list (§3.4), can still hold one.
+  @visibleForTesting
+  Uint8List? debugSealKey(String rid) => _sealKeys[rid];
+  @visibleForTesting
+  void debugSetSealKey(String rid, Uint8List key) => _sealKeys[rid] = key;
 
   /// Per‑conversation async mutex. Ratchet state is a read‑modify‑write on
   /// shared in‑memory state that is NOT protected by the DB transaction, so
@@ -3664,31 +3677,38 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // object, which still holds the correct pre-send value precisely
       // because a send does not touch it.
       final snapshot = jsonEncode(conv.toJson(includeSkipped: false));
-      // v2: if this side owes the peer its post-quantum key offer, it goes
-      // out first (silent, ignored by v1 peers).
-      final offer = await conv.takePqOfferPayload();
-      final offerPayload =
-          offer == null ? null : await _sealFor(contact.rid, offer);
-      // 7.7a: stamp our device-list claim + an echo of theirs onto the wire.
-      await _decorateForWire(inner, contact);
-      // ADR 0029, per device: if the recipient's own (root) device is behind
-      // — a mix where a linked device is capable but this one is not — the
-      // `dl` claim is stripped from its copy, as from an incapable sibling's
-      // in the fan ([_fanToContactExtras]). The common case keeps the inner
-      // as decorated. The shared `inner` is not mutated: the fan reads it too.
-      final rootBytes = (inner.data.containsKey('dl') &&
-              _withholdsClaimFromDevice(contact.rid, contact.rid))
-          ? _withoutClaim(inner).toBytes()
-          : inner.toBytes();
-      final payload =
-          await _sealFor(contact.rid, await conv.encrypt(rootBytes));
-      // Read once and call only if set: `await gate?.call(...)` would await a
-      // null and so yield a microtask on EVERY send, which is enough to move
-      // the debounce-versus-settle races the PQ exchange tests count
-      // envelopes against.
-      final gate = debugBeforeSendCommit;
-      if (gate != null) await gate(contact.rid);
+      // Everything from here to the commit is rolled back together. The
+      // ratchet steps in `encrypt`, and taking the offer marks it given; a
+      // failure after either — sealing refused (a recipient key of small
+      // order, [SealRefusedException]) as much as a transaction that does
+      // not commit — must leave neither, or the next message goes out past
+      // an index the peer never received and the offer is never made again.
       try {
+        // v2: if this side owes the peer its post-quantum key offer, it goes
+        // out first (silent, ignored by v1 peers).
+        final offer = await conv.takePqOfferPayload();
+        final offerPayload =
+            offer == null ? null : await _sealFor(contact.rid, offer);
+        // 7.7a: stamp our device-list claim + an echo of theirs onto the wire.
+        await _decorateForWire(inner, contact);
+        // ADR 0029, per device: if the recipient's own (root) device is
+        // behind — a mix where a linked device is capable but this one is
+        // not — the `dl` claim is stripped from its copy, as from an
+        // incapable sibling's in the fan ([_fanToContactExtras]). The common
+        // case keeps the inner as decorated. The shared `inner` is not
+        // mutated: the fan reads it too.
+        final rootBytes = (inner.data.containsKey('dl') &&
+                _withholdsClaimFromDevice(contact.rid, contact.rid))
+            ? _withoutClaim(inner).toBytes()
+            : inner.toBytes();
+        final payload =
+            await _sealFor(contact.rid, await conv.encrypt(rootBytes));
+        // Read once and call only if set: `await gate?.call(...)` would await
+        // a null and so yield a microtask on EVERY send, which is enough to
+        // move the debounce-versus-settle races the PQ exchange tests count
+        // envelopes against.
+        final gate = debugBeforeSendCommit;
+        if (gate != null) await gate(contact.rid);
         await vault.db.transaction((txn) async {
           await _saveConv(contact.rid, txn: txn);
           if (offerPayload != null) {
@@ -4409,10 +4429,22 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         final now = _now();
         // v2: hearing from the peer for the first time triggers this side's
         // post-quantum key offer; it is queued with the same durability as
-        // any message, in the transaction that persists the ratchet.
-        final offerPayload = dec.pqOfferPayload == null
-            ? null
-            : await _sealFor(contact.rid, dec.pqOfferPayload!);
+        // any message, in the transaction that persists the ratchet. An
+        // offer that cannot be sealed — the key held for them is of small
+        // order (§8) — is not sent, and the message that prompted it is
+        // still taken: a refusal to write to someone is no reason to refuse
+        // what they wrote. Thrown from here, the refusal would be taken below
+        // for a passing failure — the ratchet put back and the envelope left
+        // with the relay, for a redelivery that fails the same way every
+        // time: the wedge finding 42 closed for a malformed inner.
+        String? offerPayload;
+        if (dec.pqOfferPayload != null) {
+          try {
+            offerPayload = await _sealFor(contact.rid, dec.pqOfferPayload!);
+          } on SealRefusedException {
+            offerPayload = null;
+          }
+        }
         try {
           await vault.db.transaction((txn) async {
             // Persist the advanced ratchet before acting on content — and
@@ -7755,10 +7787,19 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// retried delivery the contact path has — never dropped to a race or a brief
   /// disconnect.
   Future<void> _syncSend(String toRid, String payload) async {
+    final String sealed;
+    try {
+      sealed = await _sealFor(toRid, payload);
+    } on SealRefusedException {
+      // A device of this account whose key is of small order (§8) gets
+      // nothing; the loop that sends each device its frame goes on to the
+      // next rather than stopping at this one.
+      return;
+    }
     await vault.db.insert('outbox', {
       'id': newMessageId(),
       'rid': toRid,
-      'payload': await _sealFor(toRid, payload),
+      'payload': sealed,
       'created_ms': _now(),
     });
     unawaited(flushOutbox());
@@ -13011,15 +13052,24 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // so a redelivery is still decryptable.
         await _saveExtra(rid);
         final now = _now();
-        final rows = [
-          for (final f in fan)
-            {
-              'id': newMessageId(),
-              'rid': f.routingId,
-              'payload': await _sealFor(f.routingId, f.payload),
-              'created_ms': now,
-            }
-        ];
+        final rows = <Map<String, Object?>>[];
+        for (final f in fan) {
+          final String sealed;
+          try {
+            sealed = await _sealFor(f.routingId, f.payload);
+          } on SealRefusedException {
+            // That device's key is of small order (§8): it gets nothing, and
+            // the account's other devices do not go without with it, as they
+            // would if the refusal reached the catch below.
+            continue;
+          }
+          rows.add({
+            'id': newMessageId(),
+            'rid': f.routingId,
+            'payload': sealed,
+            'created_ms': now,
+          });
+        }
         await vault.db.transaction((txn) async {
           for (final r in rows) {
             await txn.insert('outbox', r);

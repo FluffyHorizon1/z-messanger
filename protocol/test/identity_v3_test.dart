@@ -7,8 +7,32 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart' show Ed25519;
 import 'package:test/test.dart';
 import 'package:z_protocol/z_protocol.dart';
+
+/// The X25519 u of the points of small order (PROTOCOL §21.4), the two
+/// spellings at or above p that X25519 reduces to 0 and 1, and each of them
+/// with the top bit set.
+final List<Uint8List> _smallOrderX = () {
+  Uint8List hex(String s) => Uint8List.fromList([
+        for (var i = 0; i < s.length; i += 2)
+          int.parse(s.substring(i, i + 2), radix: 16)
+      ]);
+  final canonical = [
+    '0000000000000000000000000000000000000000000000000000000000000000',
+    '0100000000000000000000000000000000000000000000000000000000000000',
+    'e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800',
+    '5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157',
+    'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+    'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+    'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+  ].map(hex).toList();
+  return [
+    ...canonical,
+    for (final k in canonical) Uint8List.fromList(k)..[31] |= 0x80,
+  ];
+}();
 
 void main() {
   group('contact code v3', () {
@@ -360,6 +384,58 @@ void main() {
     test('junk is rejected', () async {
       for (final s in ['hello', 'zc9.abc', '', 'zc3.!!!']) {
         expect(() => scanContactCode(s), throwsFormatException, reason: s);
+      }
+    });
+
+    test(
+        'a code whose X25519 key is of small order is refused though its '
+        'owner signed it, and so is the bundle (§2.4)', () async {
+      // Every envelope sealed to such a key is open to whoever holds it
+      // (§8), so the person who wrote the code cannot make it safe for the
+      // people who will write to them by signing it.
+      final edSeed = randomBytes(32);
+      final id =
+          await ZIdentity.fromSeeds(edSeed: edSeed, xSeed: randomBytes(32));
+      final pq = await HybridKeyPair.fromSeeds(
+          edSeed: edSeed, mlSeed: randomBytes(32));
+      final ed = await Ed25519().newKeyPairFromSeed(edSeed);
+      Future<Uint8List> bind(Uint8List x) async => Uint8List.fromList((await Ed25519()
+              .sign([...utf8.encode(bindContext), ...x], keyPair: ed))
+          .bytes);
+      // The code with `x` replaced and the binding signature made over the
+      // replacement by the code's own key: everything else about it holds.
+      Future<String> withX(String code, Uint8List x) async {
+        final j = jsonDecode(utf8.decode(unb64url(code.substring(4))))
+            as Map<String, Object?>;
+        j['x'] = b64(x);
+        j['sig'] = b64(await bind(x));
+        return code.substring(0, 4) + b64url(utf8.encode(jsonEncode(j)));
+      }
+
+      final v1 = (await id.bundle(displayName: 'Mal')).encode();
+      final v3 = (await ContactBundleV3.forIdentity(id, pq.publicKey,
+              displayName: 'Mal'))
+          .encode();
+      // The control: a strong key put in the same way is read, so what
+      // refuses the rest is the key and nothing else about the edit.
+      final strong = (await ZIdentity.generate()).xPub;
+      for (final code in [v1, v3]) {
+        final read = await scanContactCode(await withX(code, strong));
+        expect(read.classical.xPub, strong);
+      }
+      for (final weak in _smallOrderX) {
+        for (final code in [v1, v3]) {
+          await expectLater(
+              scanContactCode(await withX(code, weak)),
+              throwsA(isA<FormatException>().having((e) => e.message,
+                  'message', contains('not a strong X25519 key'))),
+              reason: '${code.substring(0, 4)} ${b64(weak)}');
+        }
+        // The doors that hold a bundle rather than a code — a request, a
+        // restored backup, a group's member list — verify it, and it fails.
+        final bundle = ContactBundle(
+            edPub: id.edPub, xPub: weak, bindingSig: await bind(weak));
+        expect(await bundle.verify(), isFalse, reason: b64(weak));
       }
     });
   });

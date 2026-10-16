@@ -108,6 +108,41 @@ void main() {
           () => AccountBundle.decode(bundle.encode()), throwsFormatException);
     });
 
+    test('an account code naming a device key of small order is refused, '
+        'though the account signed it (§3.3)', () async {
+      final a = await AccountIdentity.generate();
+      final laptop = await ZIdentity.generate();
+      Future<String> codeWith(Uint8List dx) async => AccountBundle(
+              accountEdPub: a.accountEdPub,
+              devices: [
+                a.deviceCert,
+                await a.signDeviceCert(
+                    deviceEdPub: laptop.edPub, deviceXPub: dx, deviceId: 'l')
+              ]).encode();
+      // The control: the same code with the laptop's own key is read.
+      final read = await AccountBundle.decode(await codeWith(laptop.xPub));
+      expect(read.devices.length, 2);
+      // u = 0 and u = 1, two of §21.4's points (identity_v3_test runs every
+      // spelling through the same test).
+      for (final weak in [Uint8List(32), Uint8List(32)..[0] = 1]) {
+        final code = await codeWith(weak);
+        // Signed: every certificate in it verifies against the account…
+        final parsed = AccountBundle(
+            accountEdPub: a.accountEdPub,
+            devices: [
+              a.deviceCert,
+              await a.signDeviceCert(
+                  deviceEdPub: laptop.edPub, deviceXPub: weak, deviceId: 'l')
+            ]);
+        expect(await parsed.verifyAll(), isTrue);
+        // …and refused all the same, for the key.
+        await expectLater(
+            AccountBundle.decode(code),
+            throwsA(isA<FormatException>().having((e) => e.message, 'message',
+                contains('not a strong X25519 key'))));
+      }
+    });
+
     test('legacy zc1. code reads as a one-device account', () async {
       final id = await ZIdentity.generate();
       final v1 = await id.bundle(displayName: 'Bob');

@@ -113,8 +113,20 @@ code = "zc1." || b64url( utf8( JSON{ "v":1, "ed":b64(edPub), "x":b64(xPub),
 
 `name` is omitted when empty. A decoder MUST reject the code unless: the prefix
 matches, the JSON parses, `v == 1`, `ed` and `x` decode to exactly 32 bytes,
-and `bindingSig` verifies under §2.3. (Multi‑device accounts use the `zc2.`
-code of §3.3; every implementation MUST still accept `zc1.`.)
+`x` is a strong X25519 key as §21.4 defines one — its top bit clear, below p,
+and not a point of small order — and `bindingSig` verifies under §2.3.
+(Multi‑device accounts use the `zc2.` code of §3.3; every implementation MUST
+still accept `zc1.`.)
+
+The key test is not the owner's to waive by signing. An envelope sealed to a
+key of small order is open to whoever holds it (§8), so a code carrying one
+would hand every person who writes to its owner to the relay; the same test
+applies wherever a bundle is taken in rather than scanned — a contact request
+(§8.1), a restored backup, a group's member list, a contact mirrored from one
+of the account's own devices. An honest key always passes: X25519 makes it
+as a clamped scalar times the base point. Builds from before 2026‑10‑16 did
+not apply the test, and what they took in is not re‑checked (§8 says what a
+send to such a key does).
 
 ### 2.5 Safety number
 
@@ -212,7 +224,8 @@ code = "zc2." || b64url( utf8( JSON{ "v":2, "acct":b64(accountEdPub),
 ```
 
 Reject unless the prefix matches, `v == 2`, `acct` is 32 bytes, `devs` is
-non‑empty and **every** certificate verifies under §3.1 against `acct`.
+non‑empty, **every** certificate verifies under §3.1 against `acct`, and every
+certificate's `dx` is a strong X25519 key (§2.4, §21.4).
 
 ### 3.4 Signed device list
 
@@ -1138,6 +1151,25 @@ nonce    = 12 random bytes
 (ct, mac)= ChaCha20Poly1305(key, nonce, aad = utf8("z-sealed-v1"), padded)
 envelope = "zs1." || b64url( ephPub || nonce || ct || mac )
 ```
+
+A sender MUST refuse to seal when `shared` is all zeros (RFC 7748 §6.1),
+checked in constant time, and MUST NOT send the payload unsealed in its
+place. `recipientXPub` of small order — the zero point, or one of the few
+points of order 2, 4 or 8, in any of their spellings (§21.4 lists the
+canonical ones; X25519 also reads p and p + 1, and each with the top bit
+set) — gives all zeros whatever `ephSeed` is, so `key` would be a function of
+`ephPub` and `recipientXPub` alone, and the envelope, `f` included, would be
+open to the relay and anyone else who holds it. No honest key is one, so
+the refusal costs an honest send nothing. Codes and bundles carrying such a
+key are refused when they are read (§2.4, §3.3); the refusal here is for a
+key that arrived some other way — a device in a signed list (§3.4), or a
+contact taken in by a build from before 2026‑10‑16 — and it is per device: a
+client sends nothing to that device and goes on with every other, it does
+not drop an inbound message because a reply to it could not be sealed, and
+a send that is refused leaves the ratchet as it was, so the next one does not
+go out past an index the peer never received. Opening needs no
+such check: this layer has no authenticity (below), so a key anyone could
+compute protects nothing a random one would.
 
 Senders MUST keep an envelope under the relay's frame cap (§12.2) after
 base64url: with the default cap only buckets up to 262144 are usable, which

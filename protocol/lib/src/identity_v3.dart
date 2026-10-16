@@ -37,6 +37,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'ed25519_strict.dart';
 import 'identity.dart';
 import 'multidevice.dart';
 import 'pqsign.dart';
@@ -386,6 +387,12 @@ class ContactBundleV3 {
     }
     if (b.pqCommitSig != null && b.pqCommitSig!.length != 64) {
       throw const FormatException('bad commitment signature length');
+    }
+    // Said apart from a bad signature, which `verify` would also report it
+    // as (§2.4: an envelope sealed to a key of small order is anyone's).
+    if (!handleStrongXKey(b.xPub)) {
+      throw const FormatException(
+          'contact code key refused: not a strong X25519 key');
     }
     if (!await b.classical.verify()) {
       throw const FormatException(
