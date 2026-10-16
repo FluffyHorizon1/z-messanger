@@ -140,6 +140,13 @@ void main() {
           identity: id,
           displayName: name,
           transport: Transport(identity: id, serverUrl: 'ws://127.0.0.1:$port'),
+          // ADR 0022 is what this file tests: proofs, claims and patch 41's
+          // first-come rule, on dual-signed lists. The v2-only move (ADR 0029)
+          // is a separate concern with its own tests; left on, its one-time
+          // version bump once the gate opens lands on top of the versions
+          // these criteria count, so every account here keeps the switch
+          // thrown and the list stays dual-signed.
+          signDevlistV2Only: false,
         );
         made = svc;
         live.add(svc);
