@@ -656,10 +656,22 @@ void main() {
     await bob.addMyDevice(tabletCert);
     await refused(vic, bob.myRid);
     expect(alertOn(vic, bob.myRid), (k: 'dl_shared', with_: mal.myRid));
-    // Handed over again — Vic's echo is behind, so Bob's root re-sends it —
-    // and refused again: there is nothing to overrule the claim with.
+    // Handed over again, and refused again: there is nothing to overrule the
+    // claim with. Bob's root re-sends its list whenever Vic's echo is behind,
+    // but at most once a minute to one contact, and Vic's post-quantum
+    // identity, re-offered when Bob's laptop appeared, has already asked for
+    // this minute's. Whether that re-send lands before the acknowledgement
+    // below or after it is a race. Waiting on the re-send a message of Vic's
+    // asks for next, as this did, waited on the one the cooldown holds back
+    // whenever the first landed before — on CI's runner (f1c9174), 30 s and
+    // a timeout. So Bob's own list, the bytes a re-send carries, is handed
+    // over again directly.
     await vic.acknowledgeContactDevlistAlert(bob.myRid);
-    await vic.sendText(bob.myRid, 'echoing an older list');
+    final again = SignedDeviceList.fromJson(
+        (jsonDecode((await bob.vault.kvGet('own_list_json'))!) as Map)
+            .cast<String, Object?>());
+    expect(again.version, 3, reason: "Bob's list with the tablet");
+    await sendList(bob, vic, again);
     await refused(vic, bob.myRid);
     expect(vic.debugListedDeviceOwner(tabletRid), mal.myRid);
     expect(await vic.heldContactListVersion(bob.myRid), 2,
