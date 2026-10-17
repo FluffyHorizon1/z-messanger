@@ -224,6 +224,13 @@ test(
 
     a.send({ t: 'send', id: 'x2', to: bob.rid, payload: Buffer.from('two').toString('base64') });
     assert.strictEqual((await a.next((f) => f.t === 'sent' && f.id === 'x2')).queued, true);
+    // A answers `sent` once Redis has taken the publish; B reads the publish
+    // from its own subscription, in its own time, so the drop is waited for
+    // rather than looked for on the spot. Looked for on the spot it was 0 on
+    // a loaded runner (CI, 2026-10-17), where B read the publish after A's
+    // answer reached the test.
+    const until = Date.now() + 5000;
+    while (dropped === 0 && Date.now() < until) await sleep(10);
     assert.strictEqual(dropped, 1, 'the live push was lost');
     await assert.rejects(
       b.next((f) => f.t === 'msg' && f.id === 'x2', 600),
