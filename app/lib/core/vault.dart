@@ -1052,21 +1052,27 @@ class Vault {
       plainKeys.contains(key) ||
       plainPrefixes.any((p) => key.startsWith(p) && key.length > p.length);
 
-  Future<void> kvPut(String key, String value, {bool sensitive = true}) async {
+  /// With [txn], the write is part of that transaction: keys written in one
+  /// are read together by [kvGetMany] — all as they were, or all as written,
+  /// never some of each. Nothing else inside it may reach for [db], which
+  /// waits for the transaction that is waiting for it.
+  Future<void> kvPut(String key, String value,
+      {bool sensitive = true, DatabaseExecutor? txn}) async {
     if (!sensitive && !mayBePlain(key)) {
       throw ArgumentError.value(
           key, 'key', 'is not declared in Vault.plainKeys; it must be sealed');
     }
     final v = sensitive ? await seal(value) : value;
+    final to = txn ?? db;
     // The other storage class's row goes, if there is one. A key rewritten
     // from plain to sealed used to leave the plain copy exactly where it
     // was: `kvGet` preferred the sealed one and every reader saw the right
     // value, so the old cleartext simply sat in the database for the life of
     // the vault. Sealing something that was written in the clear is a thing
     // worth being able to do, and it has to mean the cleartext is gone.
-    await db.delete('kv',
+    await to.delete('kv',
         where: 'k = ?', whereArgs: [(sensitive ? 'p:' : 's:') + key]);
-    await db.insert('kv', {'k': (sensitive ? 's:' : 'p:') + key, 'v': v},
+    await to.insert('kv', {'k': (sensitive ? 's:' : 'p:') + key, 'v': v},
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
@@ -1088,6 +1094,32 @@ class Vault {
         : rows.firstWhere((r) => (r['k'] as String).startsWith('s:'));
     final v = row['v'] as String;
     return (row['k'] as String).startsWith('s:') ? await unseal(v) : v;
+  }
+
+  /// [kvGet] for several keys, in one query: what the vault held for all of
+  /// them at one moment. Read one after the other, two keys written together
+  /// (`kvPut` with one `txn`) could be read one from before the write and the
+  /// other from after it. A key the vault does not hold is not in the map.
+  Future<Map<String, String>> kvGetMany(List<String> keys) async {
+    if (keys.isEmpty) return const <String, String>{};
+    final rows = await db.query('kv',
+        columns: ['k', 'v'],
+        where: 'k IN (${List.filled(keys.length * 2, '?').join(', ')})',
+        whereArgs: [
+          for (final k in keys) ...['s:$k', 'p:$k']
+        ]);
+    final out = <String, String>{};
+    for (final r in rows) {
+      final k = r['k'] as String;
+      final v = r['v'] as String;
+      final key = k.substring(2);
+      if (k.startsWith('s:')) {
+        out[key] = await unseal(v);
+      } else {
+        out.putIfAbsent(key, () => v); // a sealed twin wins, as in kvGet
+      }
+    }
+    return out;
   }
 
   /// [kvScan] for several prefixes, merged. Startup reads every per-contact

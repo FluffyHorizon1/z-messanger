@@ -16,7 +16,11 @@
 //      itself, not any character;
 //   3. unread counts from the single query equal one COUNT per chat, with
 //      and without a `last_open_` row, and a chat with none counts every
-//      inbound message.
+//      inbound message;
+//   4. kvGetMany reads several keys in one query — plain, sealed (a sealed
+//      twin preferred, as kvGet prefers it) and absent — and a read asked
+//      for while two keys are being written in one transaction finds both
+//      written, not the first without the second.
 import 'dart:convert';
 import 'dart:io';
 
@@ -82,6 +86,41 @@ void main() {
     });
     expect(await v.kvScanMany(['cdev_', 'other_']), hasLength(5));
     expect(await v.kvScan('nothing_'), isEmpty);
+    await v.db.close();
+  });
+
+  test('kvGetMany reads several keys at one moment', () async {
+    final v = await open();
+    await v.kvPut('own_list_v', '1', sensitive: false);
+    await v.kvPut('own_list_h', 'h1', sensitive: false);
+    await v.kvPut('sealed_one', 's1');
+    // A plain row beside a sealed one, as only a vault from before kvPut
+    // removed the other class can hold.
+    await v.kvPut('twin', 'sealed');
+    await v.db.insert('kv', {'k': 'p:twin', 'v': 'plain'});
+    expect(
+        await v.kvGetMany(
+            ['own_list_v', 'own_list_h', 'sealed_one', 'twin', 'absent']),
+        {
+          'own_list_v': '1',
+          'own_list_h': 'h1',
+          'sealed_one': 's1',
+          'twin': 'sealed',
+        });
+    expect(await v.kvGetMany(const []), isEmpty);
+
+    // Asked for between the two writes of one transaction, it waits for the
+    // transaction and finds both.
+    late Future<Map<String, String>> read;
+    await v.db.transaction((txn) async {
+      await v.kvPut('own_list_v', '2', sensitive: false, txn: txn);
+      read = v.kvGetMany(['own_list_v', 'own_list_h']);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await v.kvPut('own_list_h', 'h2', sensitive: false, txn: txn);
+    });
+    expect(await read, {'own_list_v': '2', 'own_list_h': 'h2'});
+    expect((await v.db.query('kv', where: "k LIKE 'p:own_list_%'")).length, 2,
+        reason: 'written in the plain class, as kvPut writes them');
     await v.db.close();
   });
 

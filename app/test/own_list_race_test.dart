@@ -37,6 +37,15 @@
 //      before the link with the devices before it, and the link's list
 //      follows at the next version. (1 shows the race is gone under real
 //      timing; this shows why, every run.)
+//   5. the claim is one list too: read with nothing remembered, again and
+//      again, while the root links device after device, its version and its
+//      fingerprint are always one recorded list's. They are two rows, which
+//      the record wrote one after the other and the claim read one after the
+//      other, so a read that began between the two writes paired the new
+//      version with the fingerprint of the list before it — a claim naming
+//      no list the account ever signed, which alarm_evidence_test 5d took for
+//      the list it then waited a minute for the log to hold. Probed on
+//      d20eabf: 15 links in 36, over three runs, were read that way.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 8))
 library;
@@ -513,5 +522,48 @@ void main() {
         reason: 'version 2 is the list with the devices before the link');
     expect(record['3'], b64(await v3.fingerprint()),
         reason: 'and version 3 the one with the tablet');
+  });
+
+  test(
+      '5. the claim names one list: read again and again while the root links '
+      'device after device, its version and fingerprint are one list\'s',
+      () async {
+    final alice = await start('alice-claim');
+    await waitUntil(() => linked(alice), what: 'connected');
+    await alice.addMyDevice(await newDevice(alice, 'laptop')); // version 2
+
+    // Each read is the first since the claim was last forgotten — as the
+    // first message stamped, echo judged or poll for the version is after
+    // the list changes — and each starts as the last one ends, so the reads
+    // fall between whichever two of the root's writes they can.
+    const links = 12;
+    final seen = <(int, String)>{};
+    var linking = true;
+    final reading = () async {
+      while (linking) {
+        alice.forgetOwnListClaim();
+        seen.add(await alice.debugOwnListClaim());
+      }
+    }();
+    for (var i = 0; i < links; i++) {
+      await alice.addMyDevice(await newDevice(alice, 'device$i'));
+    }
+    linking = false;
+    await reading;
+
+    final record = await known(alice);
+    String? versionOf(String fp) =>
+        [for (final e in record.entries) if (e.value == fp) e.key].firstOrNull;
+    expect(
+        [
+          for (final (v, fp) in seen)
+            if (record['$v'] != fp)
+              'version $v with the fingerprint of version ${versionOf(fp)}'
+        ],
+        isEmpty,
+        reason: 'a claim is the version and the fingerprint of one list the '
+            'root recorded');
+    expect({for (final (v, _) in seen) v}, hasLength(greaterThan(links ~/ 2)),
+        reason: 'the reads ran while the versions moved');
   });
 }

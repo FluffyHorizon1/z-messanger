@@ -13647,8 +13647,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   Future<(int, String)> _ownListClaim() async {
     final memo = _ownClaimMemo;
     if (memo != null) return memo;
-    final vs = await vault.kvGet('own_list_v');
-    final hs = await vault.kvGet('own_list_h');
+    // The two rows in one query, as [_recordOwnList] writes them in one
+    // transaction. Read one after the other, a read that began between the
+    // record's two writes — the first since a list change forgot the memo —
+    // took the new version and the old fingerprint: a claim naming no list
+    // the account ever signed, kept here until the record forgot it, and
+    // stamped meanwhile on whatever went out. alarm_evidence_test 5d read its
+    // root's claim at that moment once in about eleven runs, and waited a
+    // minute for the log to hold a list nobody had signed.
+    final row = await vault.kvGetMany(const ['own_list_v', 'own_list_h']);
+    final vs = row['own_list_v'];
+    final hs = row['own_list_h'];
     if (vs != null && hs != null) {
       return _ownClaimMemo = (int.parse(vs), hs);
     }
@@ -13673,8 +13682,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   Future<bool> _recordOwnList(SignedDeviceList list) async {
     final fp = b64(await list.fingerprint());
     if (_ownVersionRecordedOtherwise(list.version, fp)) return false;
-    await vault.kvPut('own_list_v', '${list.version}', sensitive: false);
-    await vault.kvPut('own_list_h', fp, sensitive: false);
+    // One write: the claim is read from these two rows in one query
+    // ([_ownListClaim]), and finds both as they were or both as written.
+    await vault.db.transaction((txn) async {
+      await vault.kvPut('own_list_v', '${list.version}',
+          sensitive: false, txn: txn);
+      await vault.kvPut('own_list_h', fp, sensitive: false, txn: txn);
+    });
     // 7.7b self-monitoring: a list this device signed or learned is one the
     // log may hold without alarm; any other entry for this account is not.
     await kt.recordOwnList(list.version, fp);
