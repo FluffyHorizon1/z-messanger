@@ -2014,6 +2014,10 @@ extension under §14: a client that authenticates first behaves as before). A
 `send` whose payload begins with `zs1.` is accepted on a connection that has
 never authenticated, rate‑limited like any other frame, and acknowledged
 with `sent` as usual; such a connection owns no mailbox and receives nothing.
+Since 44.2 the relay treats a payload beginning with `zs2.` — `adr/0033`
+§5's hybrid outer layer — exactly as one beginning with `zs1.`, here and in
+§12.2, and nothing else as either; it checks neither's length. No client
+sends `zs2.` before 44.7.
 That `sent` reports `queued:true`, whatever became of the envelope — as
 every `sent` does, on every connection, since 2026‑09‑17. `queued:false`
 would say whether a routing id is online **now**, to anyone who has ever
@@ -2078,7 +2082,7 @@ it is decided before the recipient is looked at. A `to` that is not a
 routing id (43 characters of `b64url`) is `bad_send` — the relay will not
 create a mailbox under a name the protocol cannot have produced.
 
-**Sealed handling.** A `payload` beginning with `zs1.` is stored and delivered
+**Sealed handling.** A `payload` beginning with `zs1.` (or `zs2.`, §12.1) is stored and delivered
 with **no** `from` member, is acknowledged with a `recv` that omits `from`,
 and produces no `delivered` frame. Any other payload is stamped by the relay
 with the authenticated sender's routing id (`from`), acknowledged with `recv

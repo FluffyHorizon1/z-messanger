@@ -476,6 +476,24 @@ function routingIdFromPub(rawPub32) {
 /** What a routing id looks like: base64url of a SHA-256, so 43 characters. */
 const ROUTING_ID = /^[A-Za-z0-9_-]{43}$/;
 
+/**
+ * Whether a payload is a sealed envelope (PROTOCOL §8): `zs1.`, or `zs2.`,
+ * the outer layer ADR 0033 §5 makes hybrid with an ML-KEM-768 ciphertext
+ * beside the X25519 ephemeral. The relay treats the two alike, and nothing
+ * else as either: accepted on a connection that never authenticated, stored
+ * and delivered with no `from`, acknowledged by id alone, never answered with
+ * `delivered` (ADR 0007). It reads nothing inside either and checks neither's
+ * length or bucket — only the frame cap, and an introduction mailbox's, which
+ * every payload meets alike. Taken before any client seals `zs2.`, so that a
+ * client that does never meets a relay that would refuse its envelope on the
+ * anonymous socket or stamp it with an identity on the other. Four characters
+ * exactly: `zs2` with no dot, `zs3.` and `ZS2.` are no sealed envelope.
+ */
+const SEALED_PREFIXES = ['zs1.', 'zs2.'];
+function isSealedPayload(payload) {
+  return SEALED_PREFIXES.some((p) => payload.startsWith(p));
+}
+
 // Introduction mailboxes (phase 37, PROTOCOL §21.6). The owner flags its
 // mailbox with a difficulty in [INTRO_POW_MIN, INTRO_POW_MAX]; a send to it
 // then carries `pow`, b64url of a 16-byte nonce such that
@@ -2273,7 +2291,7 @@ function ackCandidateKeys(id, from) {
  *    escaped (`\"`, `\u0001`: up to six bytes for one unit).
  *
  * So the charge is the larger of the two. The honest traffic is base64 under a
- * `zs1.` prefix — printable ASCII with no quote or backslash — which is one
+ * `zs1.` or `zs2.` prefix — printable ASCII with no quote or backslash — which is one
  * byte a unit everywhere, so a cheap test leaves its charge exactly what it
  * was (`length`); only a payload the protocol never produces pays more, and it
  * is precisely the one the caps must not under-count.
@@ -3730,8 +3748,9 @@ async function handleFrame(ws, state, coord, frame, pushSender, limits) {
       // withhold. So a connection that never authenticates may send sealed
       // envelopes (rate-limited like any other), and a client that wants
       // the relay not to know who sent what uses one. Anything else still
-      // needs the identity it will be stamped with.
-      const anon = payload.startsWith('zs1.');
+      // needs the identity it will be stamped with. `zs2.` is sealed too
+      // (ADR 0033 §5): `isSealedPayload` says why it is taken alike.
+      const anon = isSealedPayload(payload);
       if (!state.authed && !anon) {
         sendJson(ws, { t: 'error', code: 'not_authed' });
         return;
@@ -3751,7 +3770,7 @@ async function handleFrame(ws, state, coord, frame, pushSender, limits) {
         sendJson(ws, { t: 'error', code: 'bad_send', id });
         return;
       }
-      // Sealed-sender envelopes ('zs1.' prefix) are stored and delivered with
+      // Sealed-sender envelopes ('zs1.' or 'zs2.') are stored and delivered with
       // NO sender attribution: the recipient learns the sender only inside the
       // encrypted envelope, so a full copy of this server yields no social
       // graph. Authenticity is enforced end-to-end by the inner ratchet.
