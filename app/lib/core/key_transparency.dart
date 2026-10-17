@@ -52,8 +52,20 @@ const String defaultKtLogUrl =
     String.fromEnvironment('KT_LOG_URL', defaultValue: 'https://kt.zmessengers.com');
 const String defaultKtLogPub = String.fromEnvironment('KT_LOG_PUB',
     defaultValue: '7nyv9LNKMfr9u3QrfSRUBsP+g/jZapwI3uxfklIU7xA=');
-const String defaultKtWitnessUrl = String.fromEnvironment('KT_WITNESS_URL', defaultValue: '');
-const String defaultKtWitnessPub = String.fromEnvironment('KT_WITNESS_PUB', defaultValue: '');
+/// The witness's record itself, not its host: this URL is fetched as it
+/// stands (the log's is a base that paths are appended to), and the mirror
+/// answers `/` with a plain-text banner. A host alone would be fetched,
+/// parse as nothing, and be ignored — a witness believed in and not had,
+/// which is what `hasWitness` below is written to prevent.
+///
+/// It is run by this log's operator today, so it detects a later compromise
+/// of the log and nothing about the operator; R7 and R50 stay open until
+/// somebody else co-signs. A witness of one's own is still worth pinning:
+/// the check is only ever evidence against the log.
+const String defaultKtWitnessUrl = String.fromEnvironment('KT_WITNESS_URL',
+    defaultValue: 'https://z-kt-witness.onrender.com/sth.json');
+const String defaultKtWitnessPub = String.fromEnvironment('KT_WITNESS_PUB',
+    defaultValue: 'UN8IAA1wBHbrl0/gOleaZdIF+Vw7fRSNmovsS3HqFnE=');
 
 /// A configuration that cannot be saved. [reason] is an l10n key, not a
 /// sentence: this is core, and core does not decide what language the user
