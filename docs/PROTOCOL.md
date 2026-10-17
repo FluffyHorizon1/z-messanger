@@ -1282,6 +1282,83 @@ shown, which is the new one when they have been shown every other — so a
 flood through a public handle cannot push out a request made with the
 code.
 
+### 8.3 The introduction key (`adr/0033`, addendum A)
+
+*Built in 44.9 (the library and `vectors/intro-key/`); the relay's half,
+§12.7, is 44.10's. **No client publishes or fetches an introduction key
+before 44.11–44.12, emits `sk` before 44.11, or sends `zs2.` before 44.7**,
+which waits for constant‑time ML‑KEM upstream: until then this section
+defines values the library computes, and nothing a client sends.*
+
+A device's **introduction key** is its sealing key — `adr/0033` §1's
+ML‑KEM‑768 pair, one per device for its life — kept at its relay so that a
+sender who has never heard from the device can seal its first envelope to it
+post‑quantum (`zs2.`, `adr/0033` §5), and signed by the device's own Ed25519
+key:
+
+```
+sealEk, sealDk = the ML-KEM-768 pair of the device's 64-byte seal_seed      adr/0033 §1
+iks   = Ed25519.Sign( edSeed, utf8("z-intro-key-v1:") || edPub || SHA-256(sealEk) )   64 bytes
+sk    = SHA-256(sealEk)                                                               32 bytes
+entry = sealEk || iks                                                                 1 248 bytes: what a relay keeps (§12.7)
+code += { "sk": b64(sk) }                                                             zc1. and zc3., beside pqc only
+```
+
+`edPub` is the key whose SHA‑256 is the mailbox (§2.2): the account key on a
+root device, `ded` on a linked one, `intro` for an introduction mailbox. The
+two fields after the context are fixed‑width, so the concatenation is
+unambiguous, and the context is a prefix of no other. There is no new key:
+the introduction key is the sealing key, so a device has one decapsulation
+key whoever writes to it. An introduction mailbox (§21.3) has its own, the
+third key its introduction seed makes; rotating the seed rotates it, and it
+is never in the handle record (§21.4 is unchanged):
+
+```
+kintroSeed = HKDF( ikm = introSeed, salt = utf8("z-handle-intro-k-v1"), info = ∅, L = 64 )   read as d || z: an ML-KEM-768 pair
+iks        = Ed25519.Sign( introSeed, utf8("z-intro-key-v1:") || introPub || SHA-256(kintroEk) )
+```
+
+**`sk` in a contact code.** A device puts `sk` in its code only once its
+relay holds its entry, so a code that carries `sk` promises a key. It is
+unsigned, as a scan that adds someone is (`adr/0027`): whoever could alter a
+code before its first scan could replace the whole identity in it, which the
+safety number catches. A decoder refuses a code that carries `sk` and no
+`pqc` — as it refuses `pqcs` with no `pqc`, and a `zc1.` code carrying `sk` is
+read by the v3 decoder for that reason — and one whose `sk` is not the `b64`
+of 32 bytes; a `null` member is an absent one, as for `pqcs`. A reader from
+before the member reads the identity and ignores it (§14). In a code for
+someone the client already holds, `sk` is ignored. Neither `iks` nor `sk` is
+evidence about the device's account: a key they check is a sealing key, never
+"post‑quantum, verified" (`adr/0033` §2).
+
+**The acceptance rule.** A sender holds what a relay serves for mailbox `rid`
+(§12.7) as that device's sealing key only if all of these hold, and refuses it
+otherwise — recorded, said once, and never tried again:
+
+```
+len(ek) = 1184, and FIPS 203 §7.2's check: ByteEncode12(ByteDecode12(ek[0 : 1152])) = ek[0 : 1152]
+len(iks) = 64
+b64url(SHA-256(edPub)) = rid,  and  iks verifies under edPub over utf8("z-intro-key-v1:") || edPub || SHA-256(ek)   §21.4's one rule
+when adding a contact from a code that carries sk:  SHA-256(ek) = sk, compared in constant time
+```
+
+ByteDecode12 reduces each 12‑bit coefficient modulo q = 3329, so the modulus
+check refuses a key with any coefficient of t̂ at q or more; the last 32
+bytes are ρ, a seed, and are not checked. `edPub` comes from the route: a
+code's `ed`; the request being answered, its `bundle.ed`; a device in a
+verified list or a group's member list, its `ded`; a handle record or a
+`zi1.` link, its `intro`. An accepted key is held exactly as if `pqseal` had
+brought it (`adr/0033` §1). Against an adversary who can forge Ed25519 at the
+moment of the fetch, `iks` is no defence, as R4 is not; `sk` is, for a code
+that carries it. When and where a sender fetches, how it waits for a promised
+key, and what its person is told when a key is missing are `adr/0033`
+addendum A, A3–A4, specified here with the client half (44.12).
+*Implementation note:* `checkServedIntroKey`, `mlKemEncapsulationKeyValid`
+and `handleIntroKem` in `protocol/lib/src/intro_key.dart`, where the first
+check an answer fails names its refusal, in this order: the two lengths, the
+modulus check, the mailbox, `iks`, `sk`. Vectors:
+[`vectors/intro-key/`](vectors/intro-key/).
+
 ## 9. Multi‑device messaging and self‑sync
 
 From one device's point of view, messaging an account is running one §5
@@ -2323,7 +2400,8 @@ strings are lowercase hex; wire strings
 (codes, envelopes, payloads) are given verbatim; every random draw the
 reference implementation made is recorded (`random_draws`, `*_seed`, `nonce`)
 so any implementation can replay a vector exactly. `docs/vectors/kt/` pins
-the transparency log (§19.11) on the same terms. See
+the transparency log (§19.11) on the same terms, and `docs/vectors/intro-key/`
+the introduction key (§8.3, §12.7). See
 [`vectors/README.md`](vectors/README.md) for the file layout and how to run
 the verifiers. The vectors were produced by `protocol/tool/gen_vectors.dart`
 with the library's RNG replaced by a seeded splitmix64 DRBG (the standard

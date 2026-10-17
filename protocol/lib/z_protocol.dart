@@ -12,6 +12,7 @@ export 'src/contact_request.dart';
 export 'src/ed25519_strict.dart';
 export 'src/handles.dart';
 export 'src/identity.dart';
+export 'src/intro_key.dart';
 export 'src/messages.dart';
 export 'src/multidevice.dart';
 export 'src/multidevice_session.dart';

@@ -91,6 +91,18 @@ class ContactBundleV3 {
   /// verify; [decode] refuses the code instead.
   final Uint8List? pqCommitSig;
 
+  /// `sk` (ADR 0033 addendum A1, PROTOCOL §8.3): SHA-256 of the sealing key
+  /// of the DEVICE showing this code — its ML-KEM-768 key, which its relay
+  /// keeps signed by [edPub] (§12.7). A device puts it in its code only once
+  /// its relay holds that key, so a code carrying it promises one, and a
+  /// sender holds the key the relay serves to it. Unsigned, as ADR 0027 says
+  /// of a scan that adds someone: whoever could alter a code before its first
+  /// scan could replace the whole identity in it, which the safety number
+  /// catches. Only beside [pqCommit]: [decode] refuses a code with `sk` and no
+  /// `pqc`. Null on every code issued before, and — until 44.11 — on every
+  /// code a client hands out: nothing in the app emits it yet.
+  final Uint8List? sealKeyCommit;
+
   final String? displayName;
 
   /// The ACCOUNT's Ed25519 key, when the code says one (§18.7).
@@ -110,6 +122,7 @@ class ContactBundleV3 {
     required this.bindingSig,
     required this.pqCommit,
     this.pqCommitSig,
+    this.sealKeyCommit,
     this.displayName,
     this.declaredAccountEdPub,
     this.deviceCert,
@@ -166,6 +179,10 @@ class ContactBundleV3 {
   /// commitment its owner did not make. [signCommitment] false builds the
   /// code a client before ADR 0027 emits — what the frozen vectors record,
   /// and nothing a current client should hand out.
+  ///
+  /// [sealKeyCommit] is `sk` ([sealKeyHash] of this device's sealing key):
+  /// pass it only once this device's relay holds that key (ADR 0033 addendum
+  /// A1). Without it the code is byte for byte what it was before.
   static Future<ContactBundleV3> forIdentity(
     ZIdentity me,
     HybridPublicKey pqPublic, {
@@ -173,7 +190,11 @@ class ContactBundleV3 {
     Uint8List? accountEdPub,
     DeviceCertificate? cert,
     bool signCommitment = true,
+    Uint8List? sealKeyCommit,
   }) async {
+    if (sealKeyCommit != null && sealKeyCommit.length != 32) {
+      throw const FormatException('a sealing-key commitment is 32 bytes');
+    }
     if ((accountEdPub == null) != (cert == null)) {
       // One without the other is either an unprovable claim or a proof of
       // nothing. Refusing here means no caller can build the shape the
@@ -215,6 +236,8 @@ class ContactBundleV3 {
       bindingSig: await me.bindingSignature(),
       pqCommit: commit,
       pqCommitSig: commitSig,
+      sealKeyCommit:
+          sealKeyCommit == null ? null : Uint8List.fromList(sealKeyCommit),
       displayName: displayName,
       declaredAccountEdPub: accountEdPub,
       deviceCert: cert,
@@ -230,6 +253,7 @@ class ContactBundleV3 {
       'sig': b64(bindingSig),
       'pqc': b64(pqCommit),
       if (pqCommitSig != null) 'pqcs': b64(pqCommitSig!),
+      if (sealKeyCommit != null) 'sk': b64(sealKeyCommit!),
       if (declaredAccountEdPub != null) 'acct': b64(declaredAccountEdPub!),
       if (deviceCert != null) 'cert': deviceCert!.toJson(),
       if (displayName != null && displayName!.isNotEmpty) 'name': displayName,
@@ -251,7 +275,8 @@ class ContactBundleV3 {
   /// classical identity and ignores `pqc`; a v3 client sees the commitment
   /// and knows a post-quantum key is coming. Same information, no flag day.
   /// The commitment's signature (`pqcs`, ADR 0027) rides the same way: one
-  /// more optional member, ignored by every build that predates it.
+  /// more optional member, ignored by every build that predates it — and so
+  /// does `sk` (ADR 0033 addendum A1), the hash of the device's sealing key.
   String encode() {
     final j = <String, Object?>{
       'v': 1,
@@ -260,6 +285,7 @@ class ContactBundleV3 {
       'sig': b64(bindingSig),
       'pqc': b64(pqCommit),
       if (pqCommitSig != null) 'pqcs': b64(pqCommitSig!),
+      if (sealKeyCommit != null) 'sk': b64(sealKeyCommit!),
       if (declaredAccountEdPub != null) 'acct': b64(declaredAccountEdPub!),
       if (deviceCert != null) 'cert': deviceCert!.toJson(),
       if (displayName != null && displayName!.isNotEmpty) 'name': displayName,
@@ -292,6 +318,16 @@ class ContactBundleV3 {
       throw const FormatException('unsupported version');
     }
     final pqc = j['pqc'];
+    // ADR 0033 addendum A1: `sk` only beside `pqc`, as `pqcs` is. A code
+    // that carries the hash of a sealing key and no commitment is a code
+    // whose `pqc` was taken out, and is refused rather than read as a
+    // classical one — which is why `_carriesV3Members` counts `sk`.
+    final sk = j['sk'];
+    if (sk != null && pqc is! String) {
+      throw const FormatException(
+          'a sealing-key commitment (sk) needs the post-quantum commitment '
+          '(pqc) beside it');
+    }
     if (pqc is! String) {
       // For a zc3. code this is a downgrade attempt: it announced a version
       // that requires one. For a zc1. code it simply means a classical
@@ -362,6 +398,9 @@ class ContactBundleV3 {
     if (pqcs != null && pqcs is! String) {
       throw const FormatException('malformed commitment signature');
     }
+    if (sk != null && sk is! String) {
+      throw const FormatException('malformed sealing-key commitment');
+    }
     final ContactBundleV3 b;
     try {
       b = ContactBundleV3(
@@ -370,6 +409,7 @@ class ContactBundleV3 {
         bindingSig: unb64(sig),
         pqCommit: unb64(pqc),
         pqCommitSig: pqcs == null ? null : unb64(pqcs as String),
+        sealKeyCommit: sk == null ? null : unb64(sk as String),
         displayName: name as String?,
         declaredAccountEdPub: acctEd,
         deviceCert: deviceCert,
@@ -387,6 +427,9 @@ class ContactBundleV3 {
     }
     if (b.pqCommitSig != null && b.pqCommitSig!.length != 64) {
       throw const FormatException('bad commitment signature length');
+    }
+    if (b.sealKeyCommit != null && b.sealKeyCommit!.length != 32) {
+      throw const FormatException('bad sealing-key commitment length');
     }
     // Said apart from a bad signature, which `verify` would also report it
     // as (§2.4: an envelope sealed to a key of small order is anyone's).
@@ -445,6 +488,7 @@ class ContactBundleV3 {
         'sig': b64(bindingSig),
         'pqc': b64(pqCommit),
         if (pqCommitSig != null) 'pqcs': b64(pqCommitSig!),
+        if (sealKeyCommit != null) 'sk': b64(sealKeyCommit!),
         'name': displayName,
         // The account anchor, if this code has one — the same `acct`/`cert`
         // pair `encode`/`decode` carry. Dropping it here (the 2026-09-14
@@ -459,13 +503,14 @@ class ContactBundleV3 {
   /// here, as nothing else in a persisted bundle is: [commitSignatureValid]
   /// is the check for a caller that did not write it.
   static ContactBundleV3 fromJson(Map<String, Object?> j) {
-    final acct = j['acct'], cert = j['cert'], pqcs = j['pqcs'];
+    final acct = j['acct'], cert = j['cert'], pqcs = j['pqcs'], sk = j['sk'];
     return ContactBundleV3(
       edPub: unb64(j['ed'] as String),
       xPub: unb64(j['x'] as String),
       bindingSig: unb64(j['sig'] as String),
       pqCommit: unb64(j['pqc'] as String),
       pqCommitSig: pqcs == null ? null : unb64(pqcs as String),
+      sealKeyCommit: sk == null ? null : unb64(sk as String),
       displayName: j['name'] as String?,
       declaredAccountEdPub: acct == null ? null : unb64(acct as String),
       deviceCert: cert == null
@@ -503,6 +548,11 @@ class ScannedIdentity {
   /// Whether the code's commitment is one its owner signed (ADR 0027). False
   /// for a classical code and for a code from a build before ADR 0027.
   bool get commitSigned => v3?.commitSigned ?? false;
+
+  /// The code's `sk` (ADR 0033 addendum A1): the hash of the scanned
+  /// device's sealing key, which a key its relay serves must match
+  /// (`checkServedIntroKey`). Null for a code that carries none.
+  Uint8List? get sealKeyCommit => v3?.sealKeyCommit;
 }
 
 /// Parses a `zc1.`, `zc2.` or `zc3.` code, so a caller never has to ask the
@@ -735,13 +785,17 @@ bool _lexLessBytes(Uint8List a, Uint8List b) {
 ///
 /// `pqcs` counts for the same reason (ADR 0027): a signature over a
 /// commitment the code no longer carries is a code with its `pqc` removed,
-/// and the v3 decoder refuses it where the v1 decoder would read on.
+/// and the v3 decoder refuses it where the v1 decoder would read on. So does
+/// `sk` (ADR 0033 addendum A1), which a code carries only beside `pqc`.
 bool _carriesV3Members(String code) {
   try {
     final j = jsonDecode(
             utf8.decode(unb64url(code.substring(contactCodePrefix.length))))
         as Map<String, Object?>;
-    return j['pqc'] is String || j['acct'] is String || j['pqcs'] != null;
+    return j['pqc'] is String ||
+        j['acct'] is String ||
+        j['pqcs'] != null ||
+        j['sk'] != null;
   } catch (_) {
     return false;
   }

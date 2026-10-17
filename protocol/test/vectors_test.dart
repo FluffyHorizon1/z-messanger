@@ -65,6 +65,7 @@ void main() {
       ('backup', 'archive'),
       ('backup', 'archive_1_1'),
       ('handles', 'handles'),
+      ('intro-key', 'intro_key'),
     ]) {
       test('$ver/$suite', () {
         final onDisk = readVectors(suite, ver);
@@ -728,6 +729,78 @@ void main() {
             reason: e.key);
       }
       expect(n, 6, reason: 'every recorded alteration was tried');
+    });
+
+    test('intro key: every entry rebuilt from its seeds, every recorded '
+        'verdict reached, every code read', () async {
+      final v = readVectors('intro_key', 'intro-key');
+      expect(v['context'], introKeyContext);
+      final devices = (v['devices'] as List).cast<Map>();
+      expect(devices.map((dv) => dv['name']), ['root', 'linked', 'intro']);
+      for (final dv in devices) {
+        final edSeed = unhex(dv['ed_seed'] as String);
+        final ek = unhex(dv['ek'] as String);
+        // The key from its seed, and the entry from the key.
+        final (gotEk, gotDk) =
+            pqKeyPairFromSeed(unhex(dv['seal_seed'] as String));
+        expect(hex(gotEk), dv['ek'], reason: '${dv['name']}: ek from its seed');
+        expect(hex(gotDk), dv['dk']);
+        final entry = await introKeyEntry(edSeed: edSeed, ek: ek);
+        expect(hex(entry.iks), dv['iks'], reason: '${dv['name']}: iks');
+        expect(hex(entry.bytes), dv['entry']);
+        expect(entry.hint, dv['ready_ik']);
+        expect(hex(introKeySigningInput(unhex(dv['ed_pub'] as String), ek)),
+            dv['signing_input']);
+        expect(hex(sealKeyHash(ek)), dv['sk']);
+        expect(
+            checkServedIntroKey(
+                rid: dv['routing_id'] as String,
+                edPub: unhex(dv['ed_pub'] as String),
+                ek: ek,
+                iks: entry.iks,
+                sk: unhex(dv['sk'] as String)),
+            isNull);
+      }
+      // The introduction mailbox's key comes from its introduction seed.
+      final intro = devices.last;
+      final kintro = await handleIntroKem(unhex(intro['ed_seed'] as String));
+      expect(hex(kintro.seed), intro['seal_seed']);
+      expect(hex(kintro.ek), intro['ek']);
+      for (final m in (v['modulus_check'] as List).cast<Map>()) {
+        expect(mlKemEncapsulationKeyValid(unhex(m['ek'] as String)),
+            m['valid'], reason: m['name'] as String);
+      }
+      final acceptance = (v['acceptance'] as List).cast<Map>();
+      expect(acceptance, hasLength(9));
+      for (final a in acceptance) {
+        final sk = a['sk'];
+        final got = checkServedIntroKey(
+            rid: a['rid'] as String,
+            edPub: unhex(a['ed_pub'] as String),
+            ek: unhex(a['ek'] as String),
+            iks: unhex(a['iks'] as String),
+            sk: sk == null ? null : unhex(sk as String));
+        expect(got?.name ?? 'accepted', a['verdict'], reason: a['name'] as String);
+      }
+      final codes = (v['codes'] as Map).cast<String, Object?>();
+      for (final name in ['root', 'linked']) {
+        final c = (codes[name] as Map).cast<String, Object?>();
+        final scanned = await scanContactCode(c['code'] as String);
+        expect(hex(scanned.sealKeyCommit!), c['sk'], reason: name);
+        expect((await scanContactCode(c['without_sk'] as String)).sealKeyCommit,
+            isNull);
+        // A reader that knows nothing of sk reads the same identity.
+        expect(hex((await ContactBundle.decode(c['code'] as String)).edPub),
+            hex(scanned.classical.edPub));
+      }
+      final refuse = (codes['must_refuse'] as Map).cast<String, Object?>();
+      expect(refuse, hasLength(3));
+      for (final e in refuse.entries) {
+        await expectLater(
+            scanContactCode((e.value as Map)['code'] as String),
+            throwsA(isA<FormatException>()),
+            reason: e.key);
+      }
     });
 
     test('backup archive: the recorded code opens every frame of the file',

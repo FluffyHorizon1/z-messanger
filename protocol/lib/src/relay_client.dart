@@ -1,9 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'identity.dart';
+import 'intro_key.dart';
 import 'util.dart';
+
+/// The relay's refusal of an `ikey` frame it cannot take — a key or a
+/// signature of the wrong length or encoding, or a signature that is not the
+/// connection's own key's over that key — or of an `ikey_get` that names no
+/// routing id (§12.7). Carries no `id`.
+const String relayErrorBadIkey = 'bad_ikey';
+
+/// The relay's answer to `ikey_get` on a connection that authenticated: a
+/// fetch is taken only on one that never did (§12.7). Carries no `id`.
+const String relayErrorAnonOnly = 'anon_only';
 
 /// A single connection to a Z relay — authenticated, to receive from this
 /// device's mailbox; or anonymous ([connectAnonymous]), to send sealed
@@ -30,6 +42,23 @@ class RelayClient {
 
   String routingId = '';
   final _ready = Completer<String>();
+
+  /// Whether this relay's challenge said `ik:1`: it keeps introduction keys
+  /// (§12.7). Read from the challenge on every connection, anonymous ones
+  /// included. A client publishes and fetches only where it is true.
+  bool relayKeepsIntroKeys = false;
+
+  /// What this connection's `ready` named the introduction key the relay
+  /// holds for its routing id by — `IntroKeyEntry.hint` of that entry — or
+  /// null when it named none: the relay holds none for it, or keeps none.
+  String? readyIntroKeyHint;
+
+  /// The `ikey` frame waiting for its `ikey_ok` (§12.7), if one is.
+  Completer<void>? _ikeyAck;
+
+  /// The `ikey_get` frames waiting for their `ikey_for`, by the routing id
+  /// each asked about.
+  final _ikeyGets = <String, List<Completer<IntroKeyAnswer>>>{};
 
   // Single-subscription controllers: they BUFFER events until the consumer
   // subscribes, so envelopes flushed by the relay immediately after auth are
@@ -152,6 +181,9 @@ class RelayClient {
   Future<void> _handleAuth(Map<String, Object?> frame) async {
     switch (frame['t']) {
       case 'challenge':
+        // `ik:1`: this relay keeps introduction keys (§12.7). Any other value,
+        // or none, is a relay that does not.
+        relayKeepsIntroKeys = frame['ik'] == 1;
         if (anonymous) {
           // Seen, not answered: the relay has nothing to attach to this
           // connection.
@@ -198,6 +230,10 @@ class RelayClient {
         break;
       case 'ready':
         routingId = frame['id'] as String;
+        // The entry the relay holds for this routing id, by its hint (§12.7);
+        // anything but a string names none.
+        final ik = frame['ik'];
+        readyIntroKeyHint = ik is String ? ik : null;
         if (!_ready.isCompleted) _ready.complete(routingId);
         break;
       case 'error':
@@ -264,6 +300,21 @@ class RelayClient {
         _introAck = null;
         if (c != null && !c.isCompleted) c.complete();
         break;
+      case 'ikey_ok':
+        final c = _ikeyAck;
+        _ikeyAck = null;
+        if (c != null && !c.isCompleted) c.complete();
+        break;
+      case 'ikey_for':
+        final to = str('to');
+        if (to == null) break;
+        final waiting = _ikeyGets.remove(to);
+        if (waiting == null) break;
+        final answer = IntroKeyAnswer._fromFrame(str('ek'), str('iks'));
+        for (final c in waiting) {
+          if (!c.isCompleted) c.complete(answer);
+        }
+        break;
       case 'push-ok':
         final p = _pushAck;
         _pushAck = null;
@@ -312,6 +363,10 @@ class RelayClient {
                   RelayException(str('code') ?? 'refused'));
             }
           }
+          // And an introduction-key frame (§12.7): `bad_ikey`, `not_authed`
+          // and `rate_limited` for `ikey`, `anon_only` for `ikey_get`, and
+          // `unknown_frame` from a relay that keeps none.
+          _failIntroKeyFrames(RelayException(str('code') ?? 'refused'));
           break;
         }
         {
@@ -384,6 +439,83 @@ class RelayClient {
       if (identical(_introAck, c)) _introAck = null;
       throw RelayException('intro timeout');
     });
+  }
+
+  /// Publishes [entry] — this device's sealing key and its signature by the
+  /// key this connection authenticated as — as the introduction key of this
+  /// connection's own routing id (§12.7), and resolves on the relay's
+  /// `ikey_ok`. Only on an authenticated connection to a relay whose
+  /// challenge said `ik:1` ([relayKeepsIntroKeys]); anything else is a
+  /// [StateError] and nothing is sent. The relay refuses a connection that
+  /// authenticated with v1 `not_authed`, an entry it cannot take `bad_ikey`
+  /// ([relayErrorBadIkey]) and too many frames in a minute `rate_limited`,
+  /// each a [RelayException] here. A device publishes after a login whose
+  /// `ready` did not name its entry ([readyIntroKeyHint]). Nothing calls this
+  /// before 44.11.
+  Future<void> publishIntroKey(IntroKeyEntry entry,
+      {Duration timeout = const Duration(seconds: 15)}) {
+    if (anonymous || routingId.isEmpty) {
+      throw StateError(
+          'an introduction key is published on the authenticated connection');
+    }
+    if (!relayKeepsIntroKeys) {
+      throw StateError('this relay keeps no introduction keys (no ik:1)');
+    }
+    final previous = _ikeyAck;
+    if (previous != null && !previous.isCompleted) {
+      previous.completeError(RelayException('ikey superseded'));
+    }
+    final c = Completer<void>();
+    _ikeyAck = c;
+    _send({'t': 'ikey', 'ek': b64(entry.ek), 'iks': b64(entry.iks)});
+    return c.future.timeout(timeout, onTimeout: () {
+      if (identical(_ikeyAck, c)) _ikeyAck = null;
+      throw RelayException('ikey timeout');
+    });
+  }
+
+  /// Asks the relay for the introduction key it keeps for [rid] (§12.7), and
+  /// resolves on its `ikey_for`: the key and its signature, or
+  /// [IntroKeyAnswer.held] false when it keeps neither — an answer that is
+  /// the same for a mailbox that does not exist. Only on an ANONYMOUS
+  /// connection — the one the envelope it is for will be sent on, just before
+  /// it (§8.3) — to a relay whose challenge said `ik:1`; anything else is a
+  /// [StateError] and nothing is sent. On the authenticated link the fetch
+  /// would name the asking device beside the mailbox it asks about (ADR
+  /// 0007), and a relay refuses it there `anon_only` ([relayErrorAnonOnly]).
+  /// What it resolves to is not checked here: `checkServedIntroKey` is the
+  /// rule a key must pass before anything is sealed to it. Nothing calls this
+  /// before 44.12.
+  Future<IntroKeyAnswer> ikeyGet(String rid,
+      {Duration timeout = const Duration(seconds: 10)}) {
+    if (!anonymous) {
+      throw StateError(
+          'an introduction key is fetched on an anonymous connection only');
+    }
+    if (!relayKeepsIntroKeys) {
+      throw StateError('this relay keeps no introduction keys (no ik:1)');
+    }
+    final c = Completer<IntroKeyAnswer>();
+    _send({'t': 'ikey_get', 'to': rid});
+    (_ikeyGets[rid] ??= []).add(c);
+    return c.future.timeout(timeout, onTimeout: () {
+      final waiting = _ikeyGets[rid];
+      waiting?.remove(c);
+      if (waiting != null && waiting.isEmpty) _ikeyGets.remove(rid);
+      throw RelayException('ikey_get timeout');
+    });
+  }
+
+  /// Fails every introduction-key frame still waiting with [e].
+  void _failIntroKeyFrames(RelayException e) {
+    final ack = _ikeyAck;
+    _ikeyAck = null;
+    if (ack != null && !ack.isCompleted) ack.completeError(e);
+    final gets = _ikeyGets.values.expand((l) => l).toList();
+    _ikeyGets.clear();
+    for (final c in gets) {
+      if (!c.isCompleted) c.completeError(e);
+    }
   }
 
   /// Confirm an envelope is safely persisted on this device; the relay then
@@ -465,6 +597,7 @@ class RelayClient {
     if (push != null && !push.isCompleted) {
       push.completeError(RelayException('connection closed'));
     }
+    _failIntroKeyFrames(RelayException('connection closed'));
     _onClosed?.call();
   }
 
@@ -507,6 +640,34 @@ class DeliveredReceipt {
   final String id;
   final String to;
   DeliveredReceipt({required this.id, required this.to});
+}
+
+/// A relay's `ikey_for` (§12.7): both halves of the entry it keeps for the
+/// mailbox asked about, or neither. An answer that carries one half, or a
+/// half that is not base64, is [malformed]: the relay served something no
+/// relay may, which a sender treats as a key that was refused. Nothing here
+/// is checked beyond that — `checkServedIntroKey` is the acceptance rule.
+class IntroKeyAnswer {
+  final Uint8List? ek;
+  final Uint8List? iks;
+  final bool malformed;
+
+  const IntroKeyAnswer._(this.ek, this.iks, {this.malformed = false});
+
+  /// Whether the relay served a key at all.
+  bool get held => ek != null && iks != null;
+
+  static IntroKeyAnswer _fromFrame(String? ek, String? iks) {
+    if (ek == null && iks == null) return const IntroKeyAnswer._(null, null);
+    if (ek == null || iks == null) {
+      return const IntroKeyAnswer._(null, null, malformed: true);
+    }
+    try {
+      return IntroKeyAnswer._(unb64(ek), unb64(iks));
+    } on FormatException {
+      return const IntroKeyAnswer._(null, null, malformed: true);
+    }
+  }
 }
 
 class RelayException implements Exception {

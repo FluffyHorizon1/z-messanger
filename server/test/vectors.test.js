@@ -2443,3 +2443,126 @@ test('handles: the request sealed to xintro, and the acknowledgement and who it 
   assert.ok(edOk(unb64(acc.bundle.ed), creqInput(acc), unb64(acc.sig)), 'still a genuine creq');
   assert.equal(hex(unb64(acc.bundle.ed)), a.owner_account.ed_pub, 'from the account the ack names');
 });
+
+// ADR 0033 addendum A (PROTOCOL §8.3, §12.7): the introduction key, from the
+// section alone. iks is Ed25519 by the key the mailbox is the hash of, over
+// the context, that key and SHA-256 of the sealing key, held to §21.4's one
+// rule (edStrict above); the entry is ek || iks and `ready` names it by the
+// first 16 bytes of its SHA-256; the key passes FIPS 203 §7.2's modulus
+// check, written here from the standard; and a code's sk is SHA-256(ek). The
+// ML-KEM values themselves are re-derived by kyber-py (verify_mlkem.py).
+const IK_DIR = path.join(__dirname, '..', '..', 'docs', 'vectors', 'intro-key');
+const loadIk = (name) => JSON.parse(fs.readFileSync(path.join(IK_DIR, `${name}.json`), 'utf8'));
+
+/** FIPS 203 §7.2: 1 184 bytes, and ByteEncode12(ByteDecode12(t)) == t over
+ * the first 1 152 — ByteDecode12 reduces each 12-bit value mod q = 3329. */
+function mlKemKeyValid(ek) {
+  if (ek.length !== 1184) return false;
+  for (let i = 0; i < 1152; i += 3) {
+    const c0 = (ek[i] | ((ek[i + 1] & 0x0f) << 8)) % 3329;
+    const c1 = ((ek[i + 1] >> 4) | (ek[i + 2] << 4)) % 3329;
+    if ((c0 & 0xff) !== ek[i] || (((c0 >> 8) & 0x0f) | ((c1 & 0x0f) << 4)) !== ek[i + 1] || ((c1 >> 4) & 0xff) !== ek[i + 2]) return false;
+  }
+  return true;
+}
+const ikInput = (edPubRaw, ek) => cat(utf8('z-intro-key-v1:'), edPubRaw, sha256(ek));
+
+/** §8.3's acceptance rule, in its order, with the refusal it names. */
+function ikVerdict({ rid, edPubRaw, ek, iks, sk }) {
+  if (ek.length !== 1184) return 'keyLength';
+  if (iks.length !== 64) return 'signatureLength';
+  if (!mlKemKeyValid(ek)) return 'keyEncoding';
+  if (edPubRaw.length !== 32 || b64url(sha256(edPubRaw)) !== rid) return 'wrongMailbox';
+  if (!edStrict(edPubRaw, ikInput(edPubRaw, ek), iks)) return 'badSignature';
+  if (sk && !crypto.timingSafeEqual(sha256(ek), sk)) return 'notTheCodesKey';
+  return 'accepted';
+}
+
+test('intro-key: iks, the entry and its hint, the modulus check and the acceptance rule, from §8.3 alone', () => {
+  const v = loadIk('intro_key');
+  assert.equal(v.suite, 'intro_key');
+  assert.equal(v.context, 'z-intro-key-v1:');
+  assert.deepEqual(v.sizes, { ek: 1184, iks: 64, entry: 1248, sk: 32, ready_ik: 16 });
+  assert.deepEqual(v.devices.map((d) => d.name), ['root', 'linked', 'intro']);
+  for (const d of v.devices) {
+    const seed = unhex(d.ed_seed);
+    const pub = edPub(seed);
+    assert.equal(hex(pub), d.ed_pub, d.name);
+    assert.equal(d.routing_id, b64url(sha256(pub)), `${d.name}: the mailbox is the key's hash`);
+    const ek = unhex(d.ek);
+    assert.equal(ek.length, 1184);
+    assert.equal(unhex(d.dk).length, 2400);
+    assert.equal(hex(sha256(ek)), d.sk, `${d.name}: sk = SHA-256(ek)`);
+    const input = ikInput(pub, ek);
+    assert.equal(input.length, 79, 'fixed width: 15 + 32 + 32');
+    assert.equal(hex(input), d.signing_input);
+    // Ed25519 is deterministic (RFC 8032): signing here reproduces iks.
+    assert.equal(hex(edSign(seed, input)), d.iks, `${d.name}: iks`);
+    assert.ok(edStrict(pub, input, unhex(d.iks)), `${d.name}: under the one rule`);
+    const entry = cat(ek, unhex(d.iks));
+    assert.equal(hex(entry), d.entry);
+    assert.equal(d.ready_ik, b64url(sha256(entry).subarray(0, 16)), `${d.name}: the hint ready names it by`);
+    assert.equal(d.ready_ik.length, 22);
+    assert.ok(mlKemKeyValid(ek), `${d.name}: a keygen key passes FIPS 203 7.2`);
+    assert.deepEqual(JSON.parse(d.ikey_frame), { t: 'ikey', ek: b64(ek), iks: b64(unhex(d.iks)) });
+    assert.deepEqual(JSON.parse(d.ikey_for_frame), { t: 'ikey_for', to: d.routing_id, ek: b64(ek), iks: b64(unhex(d.iks)) });
+    assert.equal(ikVerdict({ rid: d.routing_id, edPubRaw: pub, ek, iks: unhex(d.iks), sk: sha256(ek) }), 'accepted');
+  }
+  // A linked device signs its own key with its own `ded`, and the account
+  // certifies it: nothing ties the two devices' entries together.
+  const [root, linked, intro] = v.devices;
+  assert.equal(linked.account_ed, root.ed_pub);
+  assert.notEqual(linked.sk, root.sk);
+  // The introduction mailbox's key: the third its seed makes (§21.3).
+  assert.equal(intro.kem_salt, 'z-handle-intro-k-v1');
+  assert.equal(hex(hkdf(unhex(intro.ed_seed), utf8('z-handle-intro-k-v1'), Buffer.alloc(0), 64)), intro.seal_seed);
+  assert.equal(hex(hkdf(unhex(intro.ed_seed), utf8('z-handle-intro-x-v1'), Buffer.alloc(0), 32)), intro.x_seed);
+  assert.equal(hex(xPub(unhex(intro.x_seed))), intro.x_pub);
+  // An answer with no key names the mailbox and nothing else.
+  assert.deepEqual(JSON.parse(v.ikey_for_none), { t: 'ikey_for', to: root.routing_id });
+  for (const m of v.modulus_check) {
+    assert.equal(mlKemKeyValid(unhex(m.ek)), m.valid, m.name);
+  }
+  assert.deepEqual(v.modulus_check.map((m) => m.valid), [true, true, false, false, true, false]);
+  assert.equal(v.acceptance.length, 9);
+  for (const a of v.acceptance) {
+    const got = ikVerdict({ rid: a.rid, edPubRaw: unhex(a.ed_pub), ek: unhex(a.ek), iks: unhex(a.iks), sk: a.sk === null ? null : unhex(a.sk) });
+    assert.equal(got, a.verdict, a.name);
+  }
+  // Every refusal the rule can give is among them.
+  assert.deepEqual(new Set(v.acceptance.map((a) => a.verdict)),
+    new Set(['badSignature', 'keyLength', 'keyEncoding', 'signatureLength', 'wrongMailbox', 'notTheCodesKey', 'accepted']));
+});
+
+test('intro-key: contact codes carrying sk — the hash of the device\'s own key, a member every older reader ignores', () => {
+  const v = loadIk('intro_key');
+  const byName = Object.fromEntries(v.devices.map((d) => [d.name, d]));
+  for (const [name, device] of [['root', byName.root], ['linked', byName.linked]]) {
+    const c = v.codes[name];
+    assert.equal(c.code.length, c.code_len);
+    assert.equal(c.without_sk.length, c.without_sk_len);
+    const j = JSON.parse(unb64url(c.code.slice(4)).toString('utf8'));
+    assert.equal(JSON.stringify(j), c.code_json);
+    assert.equal(j.v, 1, 'still a v1 code');
+    assert.equal(hex(unb64(j.sk)), device.sk, `${name}: sk is SHA-256 of the key the code's device publishes`);
+    assert.equal(hex(unb64(j.ed)), device.ed_pub, `${name}: the device in the code is the one whose key it names`);
+    assert.ok(typeof j.pqc === 'string', 'beside pqc');
+    assert.ok(pqcsVerdict(c.code) === 'signed', `${name}: the commitment is still the one its owner signed`);
+    // The same code without the member is the code before it, member for
+    // member and in order.
+    const without = JSON.parse(unb64url(c.without_sk.slice(4)).toString('utf8'));
+    const minus = { ...j };
+    delete minus.sk;
+    assert.equal(JSON.stringify(without), JSON.stringify(minus));
+    assert.equal(c.code_len - c.without_sk_len >= 69 && c.code_len - c.without_sk_len <= 70, true, `${name}: sk costs 69–70 characters`);
+  }
+  assert.equal(v.codes.root.without_sk_len, 500, 'a root code is 500 characters without sk');
+  assert.equal(v.codes.linked.without_sk_len, 872, 'and a linked one 872');
+  // Refused: sk with no pqc, the wrong length, the wrong type.
+  const refuse = v.codes.must_refuse;
+  assert.deepEqual(Object.keys(refuse).sort(), ['sk_31_bytes', 'sk_not_a_string', 'sk_without_pqc']);
+  const noPqc = JSON.parse(unb64url(refuse.sk_without_pqc.code.slice(4)).toString('utf8'));
+  assert.ok('sk' in noPqc && !('pqc' in noPqc));
+  assert.equal(unb64(JSON.parse(unb64url(refuse.sk_31_bytes.code.slice(4)).toString('utf8')).sk).length, 31);
+  assert.equal(typeof JSON.parse(unb64url(refuse.sk_not_a_string.code.slice(4)).toString('utf8')).sk, 'number');
+});

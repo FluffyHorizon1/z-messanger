@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Independent check of the ML-KEM-768 values in docs/vectors/v2.
+"""Independent check of the ML-KEM-768 values in docs/vectors/v2 and
+docs/vectors/intro-key.
 
 The Dart reference implementation uses package:pqcrypto for ML-KEM. This
 script re-derives every KEM value in the v2 vector files with kyber-py — an
@@ -132,10 +133,72 @@ def check_rekey():
     return len(doc["steps"])
 
 
+def check_intro_key():
+    """ADR 0033 addendum A (docs/vectors/intro-key): every sealing key from
+    its seed, an introduction mailbox's seed from its introduction seed by
+    HKDF (RFC 5869, written here with hmac), and FIPS 203 §7.2's input check:
+    kyber-py's encapsulation refuses exactly the keys the file says fail."""
+    import hashlib
+    import hmac
+
+    def hkdf(ikm, salt, info, n):
+        prk = hmac.new(salt, ikm, hashlib.sha256).digest()
+        out, t, i = b"", b"", 1
+        while len(out) < n:
+            t = hmac.new(prk, t + info + bytes([i]), hashlib.sha256).digest()
+            out += t
+            i += 1
+        return out[:n]
+
+    doc = json.load(open(os.path.join(ROOT, "docs", "vectors", "intro-key",
+                                      "intro_key.json")))
+    assert doc["suite"] == "intro_key"
+    n = 0
+    for d in doc["devices"]:
+        seed = unhex(d["seal_seed"])
+        ek, dk = ML_KEM_768._keygen_internal(seed[:32], seed[32:])
+        if ek.hex() != d["ek"]:
+            fail(f"intro-key {d['name']}: ek")
+        if dk.hex() != d["dk"]:
+            fail(f"intro-key {d['name']}: dk")
+        if hashlib.sha256(ek).hexdigest() != d["sk"]:
+            fail(f"intro-key {d['name']}: sk")
+        # It is a key that encapsulates, and decapsulates what it takes.
+        K, c = ML_KEM_768._encaps_internal(ek, bytes(32))
+        if ML_KEM_768.decaps(dk, c) != K:
+            fail(f"intro-key {d['name']}: round trip")
+        n += 1
+    intro = doc["devices"][-1]
+    kseed = hkdf(unhex(intro["ed_seed"]), b"z-handle-intro-k-v1", b"", 64)
+    if kseed.hex() != intro["seal_seed"]:
+        fail("intro-key: kintroSeed = HKDF(introSeed, 'z-handle-intro-k-v1', '', 64)")
+
+    def encapsulates(ek):
+        try:
+            ML_KEM_768._encaps_internal(ek, bytes(32))
+            return True
+        except ValueError:
+            return False
+
+    for m in doc["modulus_check"]:
+        if encapsulates(unhex(m["ek"])) != m["valid"]:
+            fail(f"intro-key modulus check: {m['name']}")
+        n += 1
+    for a in doc["acceptance"]:
+        ek = unhex(a["ek"])
+        if a["verdict"] == "keyEncoding" and encapsulates(ek):
+            fail(f"intro-key acceptance {a['name']}: kyber-py takes the key")
+        if a["verdict"] in ("accepted", "notTheCodesKey", "badSignature",
+                            "wrongMailbox") and not encapsulates(ek):
+            fail(f"intro-key acceptance {a['name']}: kyber-py refuses the key")
+    return n
+
+
 if __name__ == "__main__":
     n = check_kats()
     m = check_transcript()
     r = check_rekey()
+    k = check_intro_key()
     print(f"ok: {n} ML-KEM-768 known-answer vectors, the {m}-step v2 "
-          f"transcript and the {r}-step re-key transcript reproduced by "
-          f"kyber-py")
+          f"transcript, the {r}-step re-key transcript and {k} introduction-"
+          f"key values reproduced by kyber-py")

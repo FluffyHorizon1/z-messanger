@@ -8,10 +8,13 @@ residual". Adds PROTOCOL §8.2, §10.2, §18.11, §20.9; amends §8.1, §12.1,
 §18.2, §21.3; extends ADR 0003, 0007 and 0024. Updates R2, R4, R5, R17, R43,
 and adds a register row for each classical surface that remains as its part
 lands.
-**Built:** 44.2 — the relay treats `zs2.` as sealed (PROTOCOL §12.1). Nothing
-a client sends has changed: no client seals `zs2.` before 44.7, which waits
-for constant‑time ML‑KEM upstream. The rest of the build plan below is not
-built.
+**Built:** 44.2 — the relay treats `zs2.` as sealed (PROTOCOL §12.1); 44.9 —
+the introduction key in the protocol library, `sk` in contact codes and the
+relay client's frames, with their vectors (§8.3, `vectors/intro-key/`).
+Nothing a client sends has changed: no client seals `zs2.` before 44.7, which
+waits for constant‑time ML‑KEM upstream, and none publishes, fetches or emits
+an introduction key or `sk` before 44.11–44.12. The rest of the build plan
+below is not built.
 **Decides:** for each surface the 3 October analysis (§4.3) found classical —
 pairing enrolment, CONNECT, the sealed outer layer, contact requests, the
 device a scanned code names, session authentication — what becomes hybrid, on
@@ -353,7 +356,7 @@ failing test on the base where it can be expressed, and a mutation check.
 | 44.6 | CONNECT v3: readers first; minting is one constant (`connectInviteVersion`), a release later (decision 2) | 44.1, 44.3 | planned |
 | 44.7 | `zs2.` switched on | 44.2 deployed, 44.3, constant-time ML-KEM upstream (decision 4) | planned; goes last |
 | 44.8 | `kintro`: as addendum A changes it, §21.3's relay-held key signed by `intro`; the record does not change | 44.9–44.12 | planned; lands with the held-back handles hardening |
-| 44.9 | Protocol core and vectors of addendum A: `iks`, the entry, `sk` in codes, the FIPS 203 key check, `kintro`, the relay-client frames | 44.1, to be used (built on the library's ML-KEM) | planned; nothing emits |
+| 44.9 | Protocol core and vectors of addendum A: `iks`, the entry, `sk` in codes, the FIPS 203 key check, `kintro`, the relay-client frames | 44.1, to be used (built on the library's ML-KEM) | **built**; nothing emits |
 | 44.10 | The relay keeps introduction keys | 44.2 | planned; inert until 44.11, deploy before it |
 | 44.11 | Devices publish | 44.3, 44.10 deployed | planned; ships with 44.7 |
 | 44.12 | Senders fetch, verify and wait | 44.7, 44.9, 44.11 | planned; after 44.7, in the same release or the next |
@@ -365,8 +368,8 @@ Hybrid session authentication (§7) is not in phase 44. It belongs to phase
 
 ## Addendum A — a relay-held introduction key (open question 5)
 
-**Status:** **Accepted** (2026‑10‑17), with the relay half to be built now
-(44.9 and 44.10, above); the client half (44.11, 44.12) ships with 44.7.
+**Status:** **Accepted** (2026‑10‑17), with the relay half built now: 44.9,
+and 44.10 to follow (above); the client half (44.11, 44.12) ships with 44.7.
 Nothing in it does anything before 44.7 switches `zs2.` on, and 44.7 waits
 for constant-time ML-KEM upstream (decision 4).
 - **Replaces:** 0033 §6 ("classical on the code path") and 0033's fourth
@@ -673,6 +676,11 @@ How mixed versions behave:
 Rollout order: the relay patches 44.2 and 44.10 first, then 44.11 and 44.12
 with 44.7.
 
+*Measured with the relay half: Release 4.3.2's decoder reads a code carrying
+`sk` as it reads the same code without it — the member is ignored — and reads
+a code with `sk` and no `pqc` as a classical code, which a current decoder
+refuses.*
+
 #### A7. What the relay learns
 
 - **At a publish:** that a routing id holds a sealing key — which says its
@@ -842,12 +850,12 @@ delay.
 
 | Item | Size |
 |---|---|
-| A code | +70 characters (computed) |
+| A code | +70 characters (computed; in the vectors a root code goes from 500 to 570 and a linked one from 872 to 942) |
 | A publish | ≈1.7 KB, sent only when `ready` does not show the entry |
 | A fetch's answer | ≈1.75 KB, once per device reached |
 | The store | ≈1.5–1.7 KB a device (estimated); 10 000 devices ≈16–17 MB; `IKEY_CAP` 20 000 ≈31–34 MB |
 | The put-back copy (Redis mode) | ≈1.3 KB per socket an instance holds (estimated) |
-| CPU | sealing costs as 0033 §5 says (+0.8 ms), plus one strict Ed25519 verification per fetched key (a few ms in Dart, estimated) |
+| CPU | sealing costs as 0033 §5 says (+0.8 ms), plus one strict Ed25519 verification per fetched key (a few ms in Dart, estimated — measured with 44.9 at ≈4 ms, JIT) |
 
 - **Storage on the client.**
   - Per relay: whether it has ever served a key (the pin).
@@ -865,7 +873,10 @@ delay.
   - a `zs2.` request sealed to a fetched key.
 
   The Node verifier replays the Ed25519 values, and kyber-py re-derives the
-  ML-KEM ones.
+  ML-KEM ones. *(Built with 44.9: all but the knock and the `zs2.` request,
+  which need 44.1's `zs2.` and are added with the client half; the file also
+  pins the modulus check at its edges and the acceptance rule's verdict on
+  each refusal.)*
 - **Tests.**
   - Protocol: `intro_key_test.dart`.
   - Relay: `intro_key.test.js`. It checks that:

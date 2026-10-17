@@ -5110,6 +5110,313 @@ Future<Map<String, Object?>> suiteHandles() async {
   };
 }
 
+/// [ek] with the 12-bit coefficient at [index] (0 to 767) of t̂ set to
+/// [value] — FIPS 203's ByteEncode12 layout, two coefficients to three bytes.
+Uint8List _withCoefficient(Uint8List ek, int index, int value) {
+  final out = Uint8List.fromList(ek);
+  final at = (index ~/ 2) * 3;
+  if (index.isEven) {
+    out[at] = value & 0xff;
+    out[at + 1] = (out[at + 1] & 0xf0) | ((value >> 8) & 0x0f);
+  } else {
+    out[at + 1] = (out[at + 1] & 0x0f) | ((value & 0x0f) << 4);
+    out[at + 2] = (value >> 4) & 0xff;
+  }
+  return out;
+}
+
+/// ADR 0033 addendum A (PROTOCOL §8.3, §12.7): the introduction key — a
+/// device's sealing key, which its relay keeps, signed by the key the
+/// mailbox is the hash of — and `sk`, its hash in a contact code. A new
+/// directory and file; every file before it is unchanged.
+Future<Map<String, Object?>> suiteIntroKey() async {
+  final d = Drbg(0x0033);
+
+  // A root device: the account itself, with its post-quantum identity, and
+  // its sealing key from a 64-byte seed (ADR 0033 §1).
+  final root = await d.run(() async => ZIdentity.generate());
+  check(d.takeDraws().length == 2, 'root draws ed and x seeds');
+  final mlSeed = d.next(32);
+  final pq = await HybridKeyPair.fromSeeds(edSeed: root.edSeed, mlSeed: mlSeed);
+  final rootSealSeed = d.next(64);
+  final (rootEk, rootDk) = pqKeyPairFromSeed(rootSealSeed);
+
+  // A linked device of that account: its own keys, its own sealing key, and
+  // the account's certificate for it (§18.7).
+  d.takeDraws();
+  final laptop = await d.run(() async => ZIdentity.generate());
+  check(d.takeDraws().length == 2, 'laptop draws ed and x seeds');
+  final laptopSealSeed = d.next(64);
+  final (laptopEk, laptopDk) = pqKeyPairFromSeed(laptopSealSeed);
+  final account = await AccountIdentity.fromV1(root, deviceId: 'phone');
+  final laptopCert = await account.signDeviceCert(
+      deviceEdPub: laptop.edPub, deviceXPub: laptop.xPub, deviceId: 'laptop');
+
+  // An introduction mailbox (§21.3): the third key its seed makes.
+  final introSeed = d.next(32);
+  final intro = await handleIntroIdentity(introSeed);
+  final kintro = await handleIntroKem(introSeed);
+  final kintroSeed = await refHkdf(
+      introSeed, utf8b('z-handle-intro-k-v1'), const <int>[], 64);
+  check(eq(kintro.seed, kintroSeed),
+      'kintroSeed is HKDF(introSeed, "z-handle-intro-k-v1", empty, 64)');
+  final (kEk, kDk) = pqKeyPairFromSeed(kintroSeed);
+  check(eq(kintro.ek, kEk) && eq(kintro.dk, kDk), 'and the pair is its keygen');
+  check(!eq(kintroSeed.sublist(0, 32), await handleIntroXSeed(introSeed)),
+      'apart from the X25519 seed the same introduction seed makes');
+
+  Future<Map<String, Object?>> device(String name, Uint8List edSeed,
+      Uint8List edPub, Uint8List sealSeed, Uint8List ek, Uint8List dk) async {
+    final sk = await refSha256(ek);
+    final input = concatBytes([utf8b('z-intro-key-v1:'), edPub, sk]);
+    check(input.length == 15 + 32 + 32, '$name: a fixed-width input');
+    check(eq(input, introKeySigningInput(edPub, ek)), '$name: signing input');
+    final entry = await introKeyEntry(edSeed: edSeed, ek: ek);
+    check(eq(entry.iks, await refEdSign(edSeed, input)),
+        '$name: iks is Ed25519 by the mailbox key over the input (RFC 8032)');
+    check(introKeySignatureValid(edPub: edPub, ek: ek, iks: entry.iks),
+        '$name: and verifies under the strict rule');
+    final rid = b64url(await refSha256(edPub));
+    check(
+        checkServedIntroKey(
+                rid: rid, edPub: edPub, ek: ek, iks: entry.iks, sk: sk) ==
+            null,
+        '$name: the genuine entry is accepted, with the code\'s sk');
+    check(mlKemEncapsulationKeyValid(ek), '$name: a key keygen made passes');
+    check(entry.bytes.length == 1248, '$name: the entry is 1 248 bytes');
+    final hint = b64url((await refSha256(entry.bytes)).sublist(0, 16));
+    check(entry.hint == hint && hint.length == 22, '$name: the ready hint');
+    return {
+      'name': name,
+      'ed_seed': hex(edSeed),
+      'ed_pub': hex(edPub),
+      'routing_id': rid,
+      'seal_seed': hex(sealSeed),
+      'ek': hex(ek),
+      'dk': hex(dk),
+      'sk': hex(sk),
+      'signing_input': hex(input),
+      'iks': hex(entry.iks),
+      'entry': hex(entry.bytes),
+      'ready_ik': hint,
+      'ikey_frame': jsonEncode({'t': 'ikey', 'ek': b64(ek), 'iks': b64(entry.iks)}),
+      'ikey_for_frame':
+          jsonEncode({'t': 'ikey_for', 'to': rid, 'ek': b64(ek), 'iks': b64(entry.iks)}),
+    };
+  }
+
+  final rootJ = await device(
+      'root', root.edSeed, root.edPub, rootSealSeed, rootEk, rootDk);
+  final laptopJ = await device(
+      'linked', laptop.edSeed, laptop.edPub, laptopSealSeed, laptopEk, laptopDk);
+  final introJ = await device(
+      'intro', introSeed, intro.edPub, kintroSeed, kintro.ek, kintro.dk);
+  laptopJ['account_ed'] = hex(root.edPub);
+  laptopJ['cert'] = laptopCert.toJson();
+  introJ['kem_salt'] = handleIntroKemSalt;
+  introJ['x_seed'] = hex(await handleIntroXSeed(introSeed));
+  introJ['x_pub'] = hex(intro.xPub);
+  // The empty-response frame is the same for a mailbox that does not exist
+  // and one that keeps no key: it names the routing id asked about and
+  // nothing else.
+  final noneFrame = jsonEncode({'t': 'ikey_for', 'to': rootJ['routing_id']});
+
+  // --- FIPS 203 §7.2's modulus check, at its edges ---------------------------
+  final modulus = <Map<String, Object?>>[];
+  void mod(String name, Uint8List ek, bool valid, String why) {
+    check(mlKemEncapsulationKeyValid(ek) == valid, 'modulus: $name');
+    // The library's own encapsulation agrees: it throws for the same keys.
+    var encapsulates = true;
+    try {
+      pqEncapsulate(ek, m: Uint8List(32));
+    } catch (_) {
+      encapsulates = false;
+    }
+    check(encapsulates == valid, 'modulus, by the library\'s encapsulation: $name');
+    modulus.add({'name': name, 'ek': hex(ek), 'valid': valid, 'why': why});
+  }
+
+  mod('genuine', rootEk, true, 'a key keygen made');
+  mod('first_coefficient_q_minus_1', _withCoefficient(rootEk, 0, 3328), true,
+      'the first coefficient of t-hat at q - 1, the largest it may be');
+  mod('first_coefficient_q', _withCoefficient(rootEk, 0, 3329), false,
+      'the first coefficient at q: ByteDecode12 reduces it to 0, so the round trip differs');
+  mod('last_coefficient_4095', _withCoefficient(rootEk, 767, 4095), false,
+      'the last coefficient of the third polynomial at 2^12 - 1');
+  final rho = Uint8List.fromList(rootEk)..[1183] ^= 0x01;
+  mod('rho_changed', rho, true,
+      'the last 32 bytes are rho, a seed, and are not checked: another key, well formed');
+  mod('one_byte_short', Uint8List.fromList(rootEk.sublist(0, 1183)), false,
+      'the type check: 1 183 bytes');
+
+  // --- what a sender refuses (§8.3), each breaking one check ------------------
+  final rootSk = unhex(rootJ['sk'] as String);
+  final rootIks = unhex(rootJ['iks'] as String);
+  final otherSealSeed = d.next(64);
+  final (otherEk, _) = pqKeyPairFromSeed(otherSealSeed);
+  final otherIksByRoot = await signIntroKey(edSeed: root.edSeed, ek: otherEk);
+  final badModulus = _withCoefficient(rootEk, 0, 3329);
+  final badModulusIks = await signIntroKey(edSeed: root.edSeed, ek: badModulus);
+  final refusals = <Map<String, Object?>>[];
+  void refuse(String name, String rid, Uint8List edPub, Uint8List ek,
+      Uint8List iks, Uint8List? sk, IntroKeyRefusal? want, String why) {
+    final got = checkServedIntroKey(
+        rid: rid, edPub: edPub, ek: ek, iks: iks, sk: sk);
+    check(got == want, 'acceptance: $name gave $got, not $want');
+    refusals.add({
+      'name': name,
+      'rid': rid,
+      'ed_pub': hex(edPub),
+      'ek': hex(ek),
+      'iks': hex(iks),
+      'sk': sk == null ? null : hex(sk),
+      'verdict': want == null ? 'accepted' : want.name,
+      'why': why,
+    });
+  }
+
+  final rootRid = rootJ['routing_id'] as String;
+  final laptopRid = laptopJ['routing_id'] as String;
+  refuse('iks_other_ed', rootRid, root.edPub, laptopEk,
+      unhex(laptopJ['iks'] as String), null, IntroKeyRefusal.badSignature,
+      "the linked device's genuine entry served for the root's mailbox: its iks is under another ed");
+  refuse('iks_other_key', rootRid, root.edPub, otherEk, rootIks, null,
+      IntroKeyRefusal.badSignature,
+      "the root's genuine iks served beside another key: it signs another key's hash");
+  refuse('ek_truncated', rootRid, root.edPub,
+      Uint8List.fromList(rootEk.sublist(0, 1183)), rootIks, null,
+      IntroKeyRefusal.keyLength, 'the key one byte short');
+  refuse('ek_modulus', rootRid, root.edPub, badModulus, badModulusIks, null,
+      IntroKeyRefusal.keyEncoding,
+      "a key whose first coefficient is q, signed by the root's own key: only the modulus check refuses it");
+  refuse('iks_truncated', rootRid, root.edPub, rootEk,
+      Uint8List.fromList(rootIks.sublist(0, 63)), null,
+      IntroKeyRefusal.signatureLength, 'the signature one byte short');
+  refuse('iks_s_plus_l', rootRid, root.edPub, rootEk, refMalleate(rootIks),
+      null, IntroKeyRefusal.badSignature,
+      'the genuine signature with S + L: what a lenient verifier takes, and the one rule (21.4) does not');
+  refuse('wrong_mailbox', laptopRid, root.edPub, rootEk, rootIks, null,
+      IntroKeyRefusal.wrongMailbox,
+      "the root's genuine entry, checked as the answer for the linked device's mailbox");
+  refuse('sk_mismatch', rootRid, root.edPub, otherEk, otherIksByRoot, rootSk,
+      IntroKeyRefusal.notTheCodesKey,
+      "another key with an iks the root's key made — what an adversary who forges Ed25519 at the fetch serves: the code's sk refuses it");
+  refuse('sk_mismatch_without_sk', rootRid, root.edPub, otherEk,
+      otherIksByRoot, null, null,
+      'the same entry for a route with no sk — a list device, a request, a code from an older app: accepted, which is the residual sk exists for');
+
+  // --- codes with sk ------------------------------------------------------------
+  final rootCode = (await ContactBundleV3.forIdentity(root, pq.publicKey,
+          displayName: 'Finn', sealKeyCommit: rootSk))
+      .encode();
+  final rootPlain = (await ContactBundleV3.forIdentity(root, pq.publicKey,
+          displayName: 'Finn'))
+      .encode();
+  final laptopSk = unhex(laptopJ['sk'] as String);
+  final laptopCode = (await ContactBundleV3.forIdentity(laptop, pq.publicKey,
+          displayName: 'Finn',
+          accountEdPub: root.edPub,
+          cert: laptopCert,
+          sealKeyCommit: laptopSk))
+      .encode();
+  final laptopPlain = (await ContactBundleV3.forIdentity(laptop, pq.publicKey,
+          displayName: 'Finn', accountEdPub: root.edPub, cert: laptopCert))
+      .encode();
+  final rootStrict = (await ContactBundleV3.forIdentity(root, pq.publicKey,
+          displayName: 'Finn', sealKeyCommit: rootSk))
+      .encodeStrict();
+  Future<Map<String, Object?>> codeJ(String code, String plain, Uint8List sk,
+      String device) async {
+    check(_editCode(code, (j) => j.remove('sk')) == plain,
+        '$device: the code without sk is the code before it, byte for byte');
+    final scanned = await scanContactCode(code);
+    check(eq(scanned.sealKeyCommit!, sk), '$device: decoded with its sk');
+    check(scanned.commitSigned, '$device: and its commitment still signed');
+    check((await scanContactCode(plain)).sealKeyCommit == null,
+        '$device: the code without it decodes with none');
+    final asV1 = await ContactBundle.decode(code);
+    check(eq(asV1.edPub, scanned.classical.edPub),
+        '$device: the v1 decoder reads the classical identity, ignoring sk');
+    return {
+      'code': code,
+      'code_json': utf8.decode(unb64url(code.substring(4))),
+      'code_len': code.length,
+      'sk': hex(sk),
+      'without_sk': plain,
+      'without_sk_len': plain.length,
+    };
+  }
+
+  final codes = {
+    'root': await codeJ(rootCode, rootPlain, rootSk, 'root'),
+    'linked': await codeJ(laptopCode, laptopPlain, laptopSk, 'linked'),
+    'strict': {'code': rootStrict, 'code_len': rootStrict.length},
+  };
+  check((await scanContactCode(rootStrict)).sealKeyCommit != null,
+      'the strict zc3. form carries it too');
+  final noPqc = _editCode(rootCode, (j) {
+    j.remove('pqc');
+    j.remove('pqcs');
+  });
+  final codeRefusals = {
+    'sk_without_pqc': (
+      noPqc,
+      'sk with pqc and pqcs taken out: refused, not read as a classical code'
+    ),
+    'sk_31_bytes': (
+      _editCode(rootCode, (j) => j['sk'] = b64(rootSk.sublist(0, 31))),
+      'a commitment one byte short'
+    ),
+    'sk_not_a_string': (
+      _editCode(rootCode, (j) => j['sk'] = 7),
+      'a member of the wrong type'
+    ),
+  };
+  for (final e in codeRefusals.entries) {
+    check(await _refused(e.value.$1), 'code refused: ${e.key}');
+  }
+
+  return {
+    'suite': 'intro_key',
+    'version': vectorsVersion,
+    'description':
+        'ADR 0033 addendum A (PROTOCOL 8.3, 12.7): a device\'s introduction '
+            'key — its ML-KEM-768 sealing key, which its relay keeps — signed '
+            'by the Ed25519 key its mailbox is the hash of: iks = '
+            'Ed25519(edSeed, utf8("z-intro-key-v1:") || edPub || SHA-256(ek)), '
+            'verified by 21.4\'s one rule; the entry ek || iks a relay keeps '
+            'and the hint its ready names it by, b64url(SHA-256(entry)[0..16]); '
+            'FIPS 203 7.2\'s modulus check at its edges; the acceptance rule '
+            'a sender applies, each refusal breaking one of its checks; an '
+            'introduction mailbox\'s key, kintroSeed = HKDF(introSeed, '
+            '"z-handle-intro-k-v1", empty, 64); and contact codes carrying '
+            'sk = SHA-256(ek), an optional member beside pqc that every older '
+            'reader ignores. No client publishes, fetches or emits any of it '
+            'before 44.11-44.12.',
+    'context': introKeyContext,
+    'sizes': {
+      'ek': introKeyEkBytes,
+      'iks': introKeySigBytes,
+      'entry': introKeyEntryBytes,
+      'sk': sealKeyHashBytes,
+      'ready_ik': introKeyHintBytes,
+    },
+    'pq': {'ml_seed': hex(mlSeed), 'ml_pub': hex(pq.publicKey.mlPub)},
+    'devices': [rootJ, laptopJ, introJ],
+    'ikey_for_none': noneFrame,
+    'modulus_check': modulus,
+    'other_key': {'seal_seed': hex(otherSealSeed), 'ek': hex(otherEk)},
+    'acceptance': refusals,
+    'codes': {
+      ...codes,
+      'must_refuse': {
+        for (final e in codeRefusals.entries)
+          e.key: {'code': e.value.$1, 'why': e.value.$2},
+      },
+    },
+  };
+}
+
 const String _b64urlAlphabet =
     'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
@@ -5160,6 +5467,11 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     },
     'handles': {
       'handles': await suiteHandles(),
+    },
+    // ADR 0033 addendum A: a directory of its own; every file above is
+    // unchanged by it.
+    'intro-key': {
+      'intro_key': await suiteIntroKey(),
     },
   };
 }

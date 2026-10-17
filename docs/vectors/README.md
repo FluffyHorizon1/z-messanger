@@ -77,6 +77,14 @@ introduction mailboxes (§21.6) pin their own halves:
 |---|---|---|
 | `handles.json` | the grammar — inputs that are handles with their canonical forms, and inputs that are not with the reason, among them Unicode look‑alikes (Cyrillic letters, the Kelvin sign, long s, dotted I, fullwidth forms, Arabic‑Indic digits, a combining accent, invisible spaces) and every reserved nick; labels at the production Argon2id parameters and at four small ones; owner, introduction and recovery keys from seeds — each introduction seed with its X25519 half, `xintro` — with the printed recovery codes and the commitments; claim, update and recover entries with every signing input and signature; twenty‑five owner‑rule histories with their verdicts, twenty‑four of them refusals — versions that are not the label's next, the owner key's update at 2⁵³ − 1 and signatures only a lenient verifier takes (R the identity, S + L) among them; thirty‑six values that are not records, among them every way `intro` and `xintro` can disagree about being null and keys of small order or at or above p; the small‑order values §21.4 refuses; a contact request sealed to `xintro`, with its draws, that the introduction identity opens; proof‑of‑work stamps at 16 and 18 bits over that envelope, with the four a relay refuses and its today‑or‑yesterday window; and an introduction acknowledgement with the four a requester refuses | §21.1–§21.4, §21.7 |
 
+`intro-key/` pins the introduction key (PROTOCOL.md §8.3 and §12.7, ADR 0033
+addendum A), frozen on the same terms; a directory of its own, so every file
+above is unchanged:
+
+| File | Covers | Spec |
+|---|---|---|
+| `intro_key.json` | a device's sealing key (ML‑KEM‑768 from a 64‑byte seed, `ek` and `dk`) and `iks`, Ed25519 by the key its mailbox is the hash of over `"z-intro-key-v1:" ‖ edPub ‖ SHA‑256(ek)`, for a root device, a linked device (its own `ded`, with the account's certificate) and an introduction mailbox (`kintroSeed` = HKDF of its introduction seed under `"z-handle-intro-k-v1"`, 64 bytes, and the pair it makes) — each with its signing input, the entry `ek ‖ iks` a relay keeps, the hint `ready` names it by, `sk` = SHA‑256(ek), and the `ikey` and `ikey_for` frames; FIPS 203 §7.2's modulus check at its edges (a coefficient at q − 1 and at q, the last coefficient at 2¹² − 1, ρ changed, a byte short); the acceptance rule's verdict on nine served entries, each breaking one check — `iks` under another `ed`, over another key, the key and the signature a byte short, a key failing the modulus check under a genuine signature, S + L, the wrong mailbox, a key that misses a code's `sk` and the same entry for a route with no `sk`, which is taken; and contact codes carrying `sk`, root and linked, with their lengths and the codes without it, which are the codes before byte for byte, and three a reader refuses (`sk` with no `pqc`, 31 bytes, not a string). Re‑derived by the Node file with its own Ed25519 and a modulus check written there from FIPS 203; the ML‑KEM values by kyber‑py (`verify_mlkem.py`) | §8.3, §12.7 |
+
 ## Conventions
 
 * Byte strings are lowercase hex. Strings that are literally on the wire —
@@ -104,8 +112,8 @@ cd server   && node --test test/vectors.test.js   # clean-room Node.js implement
                                                   # handles' labels too, with an Argon2id and a BLAKE2b written
                                                   # there and checked against RFC 9106 and RFC 7693 first
 pip install kyber-py==1.2.0 && python3 protocol/tool/verify_mlkem.py
-                                                  # v2: ML-KEM-768 values re-derived by an independent
-                                                  # FIPS 203 implementation (kyber-py)
+                                                  # v2 and intro-key: ML-KEM-768 values re-derived by an
+                                                  # independent FIPS 203 implementation (kyber-py)
 pip install dilithium-py==1.4.0 && python3 protocol/tool/verify_mldsa.py
                                                   # v3: ML-DSA-65 values, the hybrid construction and the
                                                   # device-list signatures, dual-signed and v2-only, by an
