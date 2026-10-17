@@ -441,6 +441,13 @@ read anything sent afterwards**, because there was never a group key for them
 to keep. It also means nobody — including whoever created the group — can hand
 out access without every member's device agreeing.
 
+A group holds at most **128 people**, you included: every message, and every
+change to who is in it, goes to each of them separately. When a group is
+full, adding someone — by hand or from a group link — adds nobody, and says
+so. A group an older version of Z made larger still works, and its screen
+shows it as over the limit: its admins can remove people and rename it, but
+cannot add anyone.
+
 Whoever creates a group **owns** it. The owner can make other members
 **admins**: an admin can add people, remove members who are not admins, and
 rename the group. Only the owner decides who the admins are — making someone
@@ -523,6 +530,8 @@ any invite.
   group by hand if you still want to. If they stop at the digits, or do not
   go ahead within the link's 24 hours, the group tells you that too.
 * **If you stop being an admin** before they join, the link adds nobody.
+* **If the group is full** when they go ahead — 128 people — the link adds
+  nobody, and the group tells you; they stay your contact.
 * **The device you make it on adds them.** A link made on your laptop is
   answered on your laptop, which has to be online once they have gone ahead
   and before the link's 24 hours are up; your other devices then see the new

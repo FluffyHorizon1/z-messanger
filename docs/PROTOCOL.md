@@ -1722,6 +1722,26 @@ tell group messages from direct ones.
   account whose code the ceremony revealed, mapped like any member. Nothing in
   a list records how a member came, and a receiver applies it under the same
   rules as any other.
+* **Size** (`adr/0036`). An issuer refuses, and says why, a list that adds a
+  member when the list would then name more than **128** accounts, itself
+  included: a new group, an add, and the add a group invite link makes,
+  asked again when its go‑ahead lands. Removals, renames, roles and timers
+  are not held to the cap, so it freezes no group, and one already larger —
+  made by an older or modified build — can only shrink. At any size an
+  issuer also measures a list as it will travel — sealed, padded and in
+  base64 (§8), for its longest copy: a member's, under the fullest ratchet
+  header and claims, or, while the issuer's account has other devices,
+  theirs, whose self‑sync envelope (§9) carries the list in one base64 layer
+  more — and refuses one past the **262 144‑byte bucket**, the largest whose
+  envelope fits the reference relay's frame cap (§12.4). Such a list reached
+  no member, dropped as `too_large`, and its issuer alone held it. A refused
+  list changes nothing, on any device. A group whose list is past that
+  bucket already — which only an older or modified build, behind a relay
+  with a larger frame cap, can have made — takes no list from a current
+  client at all; its members still write to it, and leave. Receivers keep
+  §11.1's 1 024 entries **for good**: the cap binds what a current client
+  issues, so a group an older or modified build made larger always loads
+  (THREAT_MODEL R38).
 
 Consequences an implementer must preserve: membership authenticity rests on
 the pairwise channel of an admin the receiver holds; a removed member keeps
@@ -1907,7 +1927,11 @@ which role travels in the list itself:
   all their members. A member added later carries a position (§11.2), about
   ten bytes each — from five members, one 256‑byte padding block more than
   the same group made at once (`app/test/group_timers_test.dart` 9 prints
-  that table too).
+  that table too). A list of 128 — the most a list that adds a member may
+  name (§11) — travels in the 65 536‑byte bucket
+  (`app/test/group_management_test.dart` 4 weighs one), and the 262 144‑byte
+  bucket, past which no issuer sends a list, holds about 550 entries with
+  twenty‑character names by the issuer's own measure (5).
 
 ### 11.2 Group timers, and leaves remembered (ADR 0030)
 

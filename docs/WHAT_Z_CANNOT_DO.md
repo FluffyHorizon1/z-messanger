@@ -142,6 +142,18 @@ Availability is the one thing you are trusting the relay operator for, which
 is why self-hosting exists and why the address is a setting rather than a
 constant.
 
+## It cannot hold a group of more than 128, or broadcast
+
+A group has no shared key. Everything sent to it is encrypted and sent
+separately to every member's every device, and every change to who is in it
+goes to every member. That is what keeps someone you remove out of
+everything sent afterwards, and it is why a group made in Z holds at most 128
+people, you included. A group an older version of Z made larger still works,
+but can only shrink.
+
+Nor is there a broadcast channel — one writer, many readers. That would be a
+different feature, and Z does not have it.
+
 ## It cannot make key verification happen for you
 
 Z shows you a safety number and tells you when it changes. It cannot make you

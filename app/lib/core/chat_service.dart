@@ -71,6 +71,30 @@ enum LinkWaitStop {
   gone,
 }
 
+/// Why this device would not issue a group's list (ADR 0036). Nothing was
+/// changed and nothing was sent: the group is as it was on every device.
+enum GroupListRefusal {
+  /// The list would add a member and then name more than
+  /// [ChatService.maxGroupMembers] accounts.
+  full,
+
+  /// The list, as it would travel, needs a sealed bucket past
+  /// [ChatService.maxListBucket]: no relay frame of the reference relay
+  /// carries it, and the members would never receive it.
+  tooLarge,
+}
+
+/// [ChatService.createGroup] would not make the group (ADR 0036): nothing was
+/// written and nothing sent. The other group operations return their
+/// [GroupListRefusal] instead.
+class GroupListRefused implements Exception {
+  final GroupListRefusal reason;
+  const GroupListRefused(this.reason);
+
+  @override
+  String toString() => 'GroupListRefused: ${reason.name}';
+}
+
 /// The orchestrator: owns contacts, protocol conversations, the message
 /// store, the outbox, attachments, receipts and disappearing messages.
 ///
@@ -8425,6 +8449,141 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   @visibleForTesting
   bool debugBuildBefore0030 = false;
 
+  /// ADR 0036: the most accounts a group's list may name, mine included,
+  /// when this device issues one that adds a member. The cap counts people;
+  /// each of their devices is still an envelope of its own. A list from
+  /// anyone else is taken up to §11.1's 1 024 entries, for good, so a group
+  /// an older or modified build made larger still loads — and from here it
+  /// can only shrink: removals, renames, roles and timers go out at any size.
+  static const maxGroupMembers = 128;
+
+  /// ADR 0036: the largest sealed bucket (§8) a list this device issues may
+  /// travel in, at any size of group. Its envelope is 349 610 characters,
+  /// under the reference relay's frame cap (`MAX_ENVELOPE_BYTES`, 1 000 000,
+  /// §12.4); the next bucket's is 1 529 258, which that relay drops as
+  /// `too_large` — and the admin who issued such a list was the only device
+  /// that ever held it.
+  static const maxListBucket = 262144;
+
+  /// Test seam: this device issues lists as a build from before ADR 0036
+  /// did — any number of members, and nothing measured before it goes. It
+  /// is how a test has a group an older build made larger than
+  /// [maxGroupMembers]. What this device takes from others is the same
+  /// either way: receivers did not change. Nothing in the app sets it.
+  @visibleForTesting
+  bool debugBuildBefore0036 = false;
+
+  /// ADR 0036: how many more accounts [gid]'s list may name if I add them —
+  /// `0` for a full group, and below it for one an older build made larger,
+  /// which can only shrink. What the group's screen counts down.
+  int groupRoom(String gid) {
+    final g = groups[gid];
+    if (g == null) return 0;
+    return maxGroupMembers - (g.memberRids.length + 1);
+  }
+
+  /// ADR 0036: whether a list adding [more] accounts to [g] stays within
+  /// [maxGroupMembers], mine included.
+  bool _hasRoomFor(Group g, int more) =>
+      debugBuildBefore0036 ||
+      g.memberRids.length + 1 + more <= maxGroupMembers;
+
+  /// ADR 0036: whether [data], a list for [gid] about to be issued, is one no
+  /// frame carries: past [maxListBucket] as it travels ([_listSealedBytes]).
+  bool _listTooLarge(String gid, Map<String, Object?> data) =>
+      !debugBuildBefore0036 && _listSealedBytes(gid, data) > maxListBucket;
+
+  /// What the largest envelope carrying [data] — a list for [gid] this device
+  /// is about to issue — needs of [SealedEnvelope.seal]'s padding (§8): its
+  /// sealed plaintext and the four bytes of its length, the figure the
+  /// bucket is chosen by. Measured as the list will travel, for the copy
+  /// that is longest:
+  ///
+  ///  * a member's — the `ginvite` with every claim [_decorateForWire] can
+  ///    stamp on it, at its longest; encrypted on their ratchet (§5), padded
+  ///    to its 256-byte block, under the fullest header a message carries —
+  ///    a session's first, with its ephemeral key and the ML-KEM ciphertext
+  ///    (§17); that payload's JSON in base64; and sealed, with my routing id
+  ///    beside it;
+  ///  * and, while this account has other devices, theirs: the same
+  ///    `ginvite` inside the self-sync envelope (§9), which is one base64
+  ///    layer more, then the same ratchet and seal.
+  ///
+  /// A member's other devices get a member's copy. Synchronous, so the list
+  /// measured is the list issued.
+  int _listSealedBytes(String gid, Map<String, Object?> data) {
+    final member = InnerMessage(
+        kind: 'ginvite',
+        mid: newMessageId(),
+        ts: _now(),
+        data: {
+          ...data,
+          'dlr': devlistReaderLevel,
+          'dl': {'v': _maxListVersion, 'h': b64(Uint8List(16))},
+          'pdl': {'v': _maxListVersion, 'h': b64(Uint8List(16))},
+          'pql': _maxListVersion,
+          'pqh': 1,
+        }).toBytes().length;
+    var longest = _ratchetPayloadLength(member);
+    if (_sync?.active ?? false) {
+      final inner = InnerMessage(
+              kind: 'ginvite', mid: newMessageId(), ts: _now(), data: data)
+          .toBytes()
+          .length;
+      final envelope = utf8
+              .encode(jsonEncode({
+                'thread': gid,
+                'dir': 'out',
+                'inner': '',
+                'dlr': devlistReaderLevel,
+              }))
+              .length +
+          _b64Length(inner);
+      longest = max(longest, _ratchetPayloadLength(envelope));
+    }
+    return utf8.encode(jsonEncode({'f': myRid, 'p': ''})).length + longest + 4;
+  }
+
+  /// The longest transport payload a conversation's `encrypt` makes of
+  /// [plain] bytes (`session.dart`): the plaintext padded to its 256-byte
+  /// block, at least one byte more (`util.dart`'s `pad`); its ciphertext in
+  /// base64 inside the payload's JSON, beside a 22-character session id,
+  /// the session's ephemeral key and the fullest header — every counter at
+  /// sixteen digits, and the 1 088-byte ML-KEM-768 ciphertext (FIPS 203)
+  /// a header carries until the peer has decapsulated it; and that JSON in
+  /// base64 again.
+  static int _ratchetPayloadLength(int plain) {
+    final padded = ((plain + 1 + 255) ~/ 256) * 256;
+    final rest = jsonEncode({
+      'v': 1,
+      't': 'r',
+      'sid': 'x' * 22,
+      'ek': b64(Uint8List(32)),
+      'h': RatchetHeader(
+              dhPub: Uint8List(32),
+              pn: _maxListVersion,
+              n: _maxListVersion,
+              pq: true,
+              pqGen: _maxListVersion,
+              pqCt: Uint8List(1088))
+          .toJson(),
+      'n': b64(Uint8List(24)),
+      'ct': '',
+      'mac': b64(Uint8List(16)),
+    }).length;
+    return _b64Length(rest + _b64Length(padded));
+  }
+
+  /// The length of [n] bytes in padded base64.
+  static int _b64Length(int n) => 4 * ((n + 2) ~/ 3);
+
+  /// Test seam: what [_listSealedBytes] measures for [gid]'s list as this
+  /// device would issue it now, or for [data] in its place — the figure the
+  /// frame rule holds to [maxListBucket].
+  @visibleForTesting
+  int debugListSealedBytes(String gid, [Map<String, Object?>? data]) =>
+      _listSealedBytes(gid, data ?? _inviteData(groups[gid]!));
+
   /// Record one row per recipient, then drain in the background.
   ///
   /// [also] runs inside the same transaction as the rows — the caller's own
@@ -8813,8 +8972,16 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// change did can be remembered ([Group.mine]) and checked against
   /// whatever list replaces this one; [timer], for a change to the group's
   /// timer, is the timer before it (ADR 0030).
-  Map<String, Object?> _issue(Group g, Set<String> members, String name,
-      {bool roles = false, int? timer}) {
+  ///
+  /// ADR 0036: no list a frame cannot carry, at any size. [undo] is [g]'s
+  /// [Group.snapshot] from before the caller's change; a list past
+  /// [maxListBucket] as it would travel is not issued — [g] is put back as
+  /// [undo] holds it, in this same synchronous step, so neither this device
+  /// nor any member ever holds the change — and null is returned. Until
+  /// 48.1 such a list went to the relay, which dropped every copy as
+  /// `too_large`, and the admin alone kept it.
+  Map<String, Object?>? _issue(Group g, Set<String> members, String name,
+      {required String undo, bool roles = false, int? timer}) {
     g.ver += 1;
     g.by = '';
     if (roles) g.rolesVer += 1;
@@ -8844,9 +9011,21 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         contacts.containsKey(rid) ||
         !(g.memberRids.contains(rid) || g.adminRids.contains(rid)));
     final data = _inviteData(g);
+    if (_listTooLarge(g.gid, data)) {
+      g.restore(undo);
+      return null;
+    }
     g.digest = Group.listDigest(data);
     g.stateDigest = Group.stateDigestOf(data);
     return data;
+  }
+
+  /// ADR 0036: a change to [gid] that [_issue] would not send, said in the
+  /// group on this device — the only one that knows it was tried.
+  Future<GroupListRefusal> _refusedTooLarge(String gid) async {
+    await _insertSystemMessage(gid, systemBody(SystemKind.listTooLarge));
+    notifyListeners();
+    return GroupListRefusal.tooLarge;
   }
 
   /// Hand [data], a list of [g] just issued, to every member it names — and
@@ -8882,16 +9061,27 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   /// Create a group with [memberRids] (existing contacts) and invite them.
+  ///
+  /// ADR 0036: throws [GroupListRefused], having written and sent nothing,
+  /// when the group would name more than [maxGroupMembers] accounts, mine
+  /// included, or its list is one no frame carries ([_listTooLarge]).
   Future<String> createGroup(String name, List<String> memberRids) async {
+    final members = memberRids.toSet()..removeAll(_myAccountRids);
+    if (!debugBuildBefore0036 && members.length + 1 > maxGroupMembers) {
+      throw const GroupListRefused(GroupListRefusal.full);
+    }
     final gid = newGroupId();
     final g = Group(
       gid: gid,
       name: name,
       ownerRid: '', // I am the owner, and so far the only admin
-      memberRids: memberRids.toSet()..removeAll(_myAccountRids),
+      memberRids: members,
       opensRoles: true,
     );
     final data = _inviteData(g);
+    if (_listTooLarge(gid, data)) {
+      throw const GroupListRefused(GroupListRefusal.tooLarge);
+    }
     g.digest = Group.listDigest(data);
     g.stateDigest = Group.stateDigestOf(data);
     groups[gid] = g;
@@ -8911,17 +9101,36 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// [fromLink]: the add a group invite link (ADR 0020) makes once its
   /// joiner has gone ahead — the same add in every respect, said in the
   /// group as a join from my link rather than as something I just did.
-  Future<void> addGroupMembers(String gid, List<String> rids,
+  ///
+  /// ADR 0036: refused — nothing issued, the group as it was, and the group
+  /// told why on this device — when the list would then name more than
+  /// [maxGroupMembers] accounts, mine included ([GroupListRefusal.full]), or
+  /// would be one no frame carries ([GroupListRefusal.tooLarge]). A link's
+  /// add is asked when its joiner's go-ahead lands, not when the link was
+  /// made: the group may have filled in the meantime.
+  Future<GroupListRefusal?> addGroupMembers(String gid, List<String> rids,
       {bool fromLink = false}) async {
     final g = groups[gid];
-    if (g == null || !mayIssueGroupList(gid, '')) return;
+    if (g == null || !mayIssueGroupList(gid, '')) return null;
     final added = rids
         .where((r) => !g.memberRids.contains(r) && !_myAccountRids.contains(r))
         .toList();
-    if (added.isEmpty) return;
+    if (added.isEmpty) return null;
+    if (!_hasRoomFor(g, added.toSet().length)) {
+      await _insertSystemMessage(
+          gid,
+          fromLink
+              ? systemBody(SystemKind.linkFull,
+                  {'name': contacts[added.first]?.name, 'max': maxGroupMembers})
+              : systemBody(SystemKind.groupFull, {'max': maxGroupMembers}));
+      notifyListeners();
+      return GroupListRefusal.full;
+    }
+    final undo = g.snapshot();
     final before = g.memberRids.toSet();
     g.memberRids.addAll(added);
-    final data = _issue(g, before, g.name);
+    final data = _issue(g, before, g.name, undo: undo);
+    if (data == null) return _refusedTooLarge(gid);
     await _saveGroups();
     // Names as a list; the screen joins them the way its locale does. A
     // missing name is a null, not the word for it.
@@ -8933,6 +9142,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             : systemBody(SystemKind.addedYou, {'names': names}));
     await _sendInvite(g, data);
     notifyListeners();
+    return null;
   }
 
   /// Any admin: remove a member. Remaining members get the new list; the
@@ -8943,16 +9153,22 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// in the same list. A co-admin who could remove admins could remove the
   /// owner — and then nobody could demote them: an owner who is not in the
   /// group cannot issue a list. Members refuse such a list from a co-admin.
-  Future<void> removeGroupMember(String gid, String rid) async {
+  ///
+  /// ADR 0036: at any size — a group over [maxGroupMembers] shrinks this
+  /// way — unless the list would be one no frame carries
+  /// ([GroupListRefusal.tooLarge]).
+  Future<GroupListRefusal?> removeGroupMember(String gid, String rid) async {
     final g = groups[gid];
-    if (g == null || !mayIssueGroupList(gid, '')) return;
+    if (g == null || !mayIssueGroupList(gid, '')) return null;
     final wasAdmin = g.adminRids.contains(rid);
-    if (wasAdmin && !mayChangeGroupRoles(gid, '')) return;
-    if (!g.memberRids.contains(rid)) return;
+    if (wasAdmin && !mayChangeGroupRoles(gid, '')) return null;
+    if (!g.memberRids.contains(rid)) return null;
+    final undo = g.snapshot();
     final before = g.memberRids.toSet();
     g.memberRids.remove(rid);
     g.adminRids.remove(rid);
-    final data = _issue(g, before, g.name, roles: wasAdmin);
+    final data = _issue(g, before, g.name, roles: wasAdmin, undo: undo);
+    if (data == null) return _refusedTooLarge(gid);
     await _saveGroups();
     await _insertSystemMessage(
         gid, systemBody(SystemKind.removedYou, {'name': contacts[rid]?.name}));
@@ -8961,25 +9177,32 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // The tick is no longer waiting for them.
     await _reevaluateGroupDelivery(gid);
     notifyListeners();
+    return null;
   }
 
   /// Any admin: rename the group (23.1). The name already travels in every
   /// invite, so a rename is a membership version bump and a re-invite; members
   /// adopt the new name from the newer invite and say so (`renamedBy`). Nothing
   /// new crosses the wire and no member set changes.
-  Future<void> renameGroup(String gid, String name) async {
+  ///
+  /// ADR 0036: at any size, unless the list would be one no frame carries
+  /// ([GroupListRefusal.tooLarge]).
+  Future<GroupListRefusal?> renameGroup(String gid, String name) async {
     final g = groups[gid];
     final trimmed = name.trim();
-    if (g == null || !mayIssueGroupList(gid, '')) return;
-    if (trimmed.isEmpty || trimmed == g.name) return;
+    if (g == null || !mayIssueGroupList(gid, '')) return null;
+    if (trimmed.isEmpty || trimmed == g.name) return null;
+    final undo = g.snapshot();
     final before = g.name;
     g.name = trimmed;
-    final data = _issue(g, g.memberRids.toSet(), before);
+    final data = _issue(g, g.memberRids.toSet(), before, undo: undo);
+    if (data == null) return _refusedTooLarge(gid);
     await _saveGroups();
     await _insertSystemMessage(
         gid, systemBody(SystemKind.renamedYou, {'name': trimmed}));
     await _sendInvite(g, data);
     notifyListeners();
+    return null;
   }
 
   /// The longest group timer a list may carry (ADR 0030): far beyond any
@@ -8998,13 +9221,21 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// A member whose app predates group timers ignores it: it keeps every
   /// message, and what it sends carries no timer — the notice says so, on
   /// every device of every member that can show it.
-  Future<void> setGroupTimer(String gid, int seconds) async {
+  ///
+  /// ADR 0036: at any size, unless the list would be one no frame carries
+  /// ([GroupListRefusal.tooLarge]).
+  Future<GroupListRefusal?> setGroupTimer(String gid, int seconds) async {
     final g = groups[gid];
-    if (g == null || !mayIssueGroupList(gid, '')) return;
-    if (seconds < 0 || seconds > maxGroupTimer || seconds == g.ttlSec) return;
+    if (g == null || !mayIssueGroupList(gid, '')) return null;
+    if (seconds < 0 || seconds > maxGroupTimer || seconds == g.ttlSec) {
+      return null;
+    }
+    final undo = g.snapshot();
     final before = g.ttlSec;
     g.tmr = seconds;
-    final data = _issue(g, g.memberRids.toSet(), g.name, timer: before);
+    final data =
+        _issue(g, g.memberRids.toSet(), g.name, timer: before, undo: undo);
+    if (data == null) return _refusedTooLarge(gid);
     await _saveGroups();
     await _insertSystemMessage(
         gid,
@@ -9013,22 +9244,30 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             : systemBody(SystemKind.groupTtlSetYou, {'sec': seconds}));
     await _sendInvite(g, data);
     notifyListeners();
+    return null;
   }
 
   /// Owner only (ADR 0019), on the device holding the account root: make
   /// [rid], a member, a co-admin. From then on their lists are accepted by
   /// everyone who accepts this one.
-  Future<void> promoteAdmin(String gid, String rid) async {
+  ///
+  /// ADR 0036: at any size, as every change to the roles, unless the list
+  /// would be one no frame carries ([GroupListRefusal.tooLarge]).
+  Future<GroupListRefusal?> promoteAdmin(String gid, String rid) async {
     final g = groups[gid];
-    if (g == null || !mayChangeGroupRoles(gid, '')) return;
-    if (!g.memberRids.contains(rid) || g.adminRids.contains(rid)) return;
+    if (g == null || !mayChangeGroupRoles(gid, '')) return null;
+    if (!g.memberRids.contains(rid) || g.adminRids.contains(rid)) return null;
+    final undo = g.snapshot();
     g.adminRids.add(rid);
-    final data = _issue(g, g.memberRids.toSet(), g.name, roles: true);
+    final data =
+        _issue(g, g.memberRids.toSet(), g.name, roles: true, undo: undo);
+    if (data == null) return _refusedTooLarge(gid);
     await _saveGroups();
     await _insertSystemMessage(gid,
         systemBody(SystemKind.promotedYou, {'name': contacts[rid]?.name}));
     await _sendInvite(g, data);
     notifyListeners();
+    return null;
   }
 
   /// Owner only (ADR 0019), on the device holding the account root: take
@@ -9037,37 +9276,45 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// the old one is refused everywhere — including a list that would put
   /// them back. An admin who has LEFT can be demoted too: their role stays
   /// in the list after they go, and only this takes it away.
-  Future<void> demoteAdmin(String gid, String rid) async {
+  Future<GroupListRefusal?> demoteAdmin(String gid, String rid) async {
     final g = groups[gid];
-    if (g == null || !mayChangeGroupRoles(gid, '')) return;
-    if (rid == g.ownerRid || !g.adminRids.contains(rid)) return;
+    if (g == null || !mayChangeGroupRoles(gid, '')) return null;
+    if (rid == g.ownerRid || !g.adminRids.contains(rid)) return null;
+    final undo = g.snapshot();
     g.adminRids.remove(rid);
-    final data = _issue(g, g.memberRids.toSet(), g.name, roles: true);
+    final data =
+        _issue(g, g.memberRids.toSet(), g.name, roles: true, undo: undo);
+    if (data == null) return _refusedTooLarge(gid);
     await _saveGroups();
     await _insertSystemMessage(
         gid, systemBody(SystemKind.demotedYou, {'name': contacts[rid]?.name}));
     await _sendInvite(g, data);
     notifyListeners();
+    return null;
   }
 
   /// Owner only (ADR 0019), on the device holding the account root: make
   /// [rid], a member, the owner. I stay a co-admin unless [keepAsAdmin] is
   /// false, in which case this same list demotes me. There is no undo from
   /// my side: only the new owner can give ownership back.
-  Future<void> transferOwnership(String gid, String rid,
+  Future<GroupListRefusal?> transferOwnership(String gid, String rid,
       {bool keepAsAdmin = true}) async {
     final g = groups[gid];
-    if (g == null || !mayChangeGroupRoles(gid, '')) return;
-    if (!g.memberRids.contains(rid)) return;
+    if (g == null || !mayChangeGroupRoles(gid, '')) return null;
+    if (!g.memberRids.contains(rid)) return null;
+    final undo = g.snapshot();
     g.ownerRid = rid;
     g.adminRids.add(rid);
     if (!keepAsAdmin) g.adminRids.remove('');
-    final data = _issue(g, g.memberRids.toSet(), g.name, roles: true);
+    final data =
+        _issue(g, g.memberRids.toSet(), g.name, roles: true, undo: undo);
+    if (data == null) return _refusedTooLarge(gid);
     await _saveGroups();
     await _insertSystemMessage(gid,
         systemBody(SystemKind.transferredYou, {'name': contacts[rid]?.name}));
     await _sendInvite(g, data);
     notifyListeners();
+    return null;
   }
 
   /// Leave a group: everyone is told directly (authenticated by the pairwise

@@ -60,6 +60,9 @@ void main() {
       SystemKind.linkRefused,
       SystemKind.linkDeclined,
       SystemKind.linkCancelled,
+      SystemKind.groupFull,
+      SystemKind.linkFull,
+      SystemKind.listTooLarge,
       SystemKind.handleAccepted,
       SystemKind.groupTtlSetYou,
       SystemKind.groupTtlSetBy,
@@ -73,7 +76,8 @@ void main() {
             'name': 'Alice',
             'by': 'Bob',
             'sec': 300,
-            'names': ['Carol', 'Dave']
+            'names': ['Carol', 'Dave'],
+            'max': 128,
           }));
       expect(out, isNot(startsWith('{')),
           reason: '$k rendered as raw JSON: no arm in systemText for it');

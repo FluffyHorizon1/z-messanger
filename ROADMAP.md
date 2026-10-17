@@ -57,7 +57,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 45 Reach without spam | planned | blind-signed first-contact tokens; needs an ADR |
 | 46 A backup you cannot lose | planned | scheduled encrypted backups, on phase 31's archive 1.1 |
 | 47 Accessibility and languages | planned | a screen-reader pass on real devices, more languages (G8, G9 caveats) |
-| 48 Large groups | planned | needs 23 complete and an ADR weighing a group-key schedule |
+| 48 Large groups | started: the cap of 128 and no list a frame cannot carry (48.1) built, not released; 48.2–48.5 planned | `adr/0036` (accepted 2026-10-17: no group key at any size), PROTOCOL §11 "Size", `group_management_test.dart` 4–7, `group_invite_link_test.dart` 26 |
 | 49 Protocol v4: retire the compatibility paths | planned | needs 18.6, 40, 44 and the field moved on |
 | 50 Z without one operator | planned | `adr/0008` in practice; needs 19, 27, 36 |
 
@@ -536,7 +536,7 @@ before code. Calls (20), iOS (21) and federation (27) keep their numbers.
 | 45 Reach without spam | Proof of work slows a flood but a GPU pays it cheaply. Anonymous, rate-limited tokens (blind-signed, Privacy Pass style): the relay issues a few per account per day and accepts one with each first-contact send, without learning who spent it. Replaces proof of work for introduction mailboxes and caps first contact everywhere | needs an ADR |
 | 46 A backup you cannot lose | `BACKUP.md` still says that if the only device is lost, the history is gone — the larger adoption cliff. Scheduled encrypted backups to a destination the user picks, restore on a new device, a recovery-code flow people can complete; builds on phase 31's format 1.1 | 31 |
 | 47 Accessibility and languages | G8 and G9 pass on automated checks only. A screen-reader pass on real Android and desktop devices, large-text layouts, and more languages with native review | — |
-| 48 Large groups | Pairwise fan-out costs one encryption per member per message. An ADR weighs keeping "no shared group key" at larger sizes against a group-key schedule such as MLS, with what each costs the threat model | 23 complete |
+| 48 Large groups | Pairwise fan-out costs one encryption per member per message. An ADR weighs keeping "no shared group key" at larger sizes against a group-key schedule such as MLS, with what each costs the threat model — `adr/0036`, accepted 2026-10-17: no group key at any size, at most 128 members, the fan-out made cheaper per envelope, a group file held to a budget. 48.1, the cap and no list a frame cannot carry, is built, not released | 23 complete |
 | 49 Protocol v4: retire the compatibility paths | Once the field has moved past the builds that need them, drop the dual paths in one versioned step: v1 device lists, unsigned PQ commitments, relay auth v1, classical fallbacks, unbound invites. New frozen vectors, a migration, a smaller codebase to audit | 18.6, 40, 44; old clients measurably gone |
 | 50 Z without one operator | The relay, the transparency log, the handle registry and the witness each run by independent operators, and the client spreads trust across them (`adr/0008` in practice) | 19, 27, 36 |
 

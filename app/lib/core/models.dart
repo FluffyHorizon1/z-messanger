@@ -857,6 +857,49 @@ class Group {
               e.key as String: posFrom(e.value)!
       };
 
+  /// This record as it stands, to [restore] it from: its [toJson], encoded,
+  /// so nothing in it is shared with the live record a change then edits in
+  /// place ([orphans], [epochs]).
+  String snapshot() => jsonEncode(toJson());
+
+  /// Put this record back as [snapshot] held it, every field, in place —
+  /// whatever holds this object sees it as it was. For a change that was
+  /// made to a group and then not issued (ADR 0036).
+  void restore(String snapshot) {
+    final o = Group.fromJson(
+        (jsonDecode(snapshot) as Map).cast<String, Object?>());
+    name = o.name;
+    ownerRid = o.ownerRid;
+    adminRids
+      ..clear()
+      ..addAll(o.adminRids);
+    by = o.by;
+    rolesVer = o.rolesVer;
+    memberRids
+      ..clear()
+      ..addAll(o.memberRids);
+    ver = o.ver;
+    left = o.left;
+    digest = o.digest;
+    opensRoles = o.opensRoles;
+    mine = o.mine;
+    held
+      ..clear()
+      ..addAll(o.held);
+    orphans
+      ..clear()
+      ..addAll(o.orphans);
+    trimmed = o.trimmed;
+    tmr = o.tmr;
+    stateDigest = o.stateDigest;
+    epochs
+      ..clear()
+      ..addAll(o.epochs);
+    leftAt
+      ..clear()
+      ..addAll(o.leftAt);
+  }
+
   static Group fromJson(Map<String, Object?> j) {
     final legacyAdmin = j['admin'] as String? ?? '';
     // A record from before ADR 0019 has `admin` and nothing else: its one

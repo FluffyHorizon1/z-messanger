@@ -109,7 +109,13 @@
 //      answers: neither replaces the other, both add, and a go-ahead
 //      already read stays read when the inviter goes ahead on another;
 //  25. "Stop waiting" stops a go-ahead already read and not yet acted on;
-//      once the add has begun it is too late, and the screen says so.
+//      once the add has begun it is too late, and the screen says so;
+//  26. a go-ahead into a full group adds nobody (ADR 0036's cap of 128,
+//      asked again when the go-ahead lands, as the admin's role is in 5):
+//      a link answered while the group had room for one, and acted on
+//      after it filled, issues no list — the joiner reaches no member's
+//      group — and the inviter's group says why; the joiner stays a
+//      contact.
 @Tags(['integration'])
 library;
 
@@ -2102,4 +2108,104 @@ void main() {
     expect(bannerOf(owen, crew, SystemKind.linkJoined)?['name'], 'Kim');
     await t.pumpWidget(const SizedBox.shrink());
   }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('26. a go-ahead into a full group adds nobody, and the admin is told',
+      () async {
+    // Owen's routing id sorts after nearly every other, so the members he
+    // adds and never starts — real identities, as fanout_bench_test.dart's —
+    // are sent nothing: a session is opened by the lower id (§5). Their
+    // copies of his lists stay in his queue and are let go once Mia's has
+    // left it, so the relay is not handed envelopes nobody will read.
+    final owen = await person('Owen',
+        identity: await identityWhere((rid) => rid.compareTo('y') > 0));
+    final mia = await person('Mia');
+    final jay = await person('Jay');
+    final crew = await groupOf(owen, [mia]);
+    final phantoms = <String>[];
+    for (var i = 0; i < 126; i++) {
+      final id = await ZIdentity.generate();
+      final code = (await id.bundle(displayName: 'p$i')).encode();
+      phantoms.add(
+          (await owen.svc.addContactFromCode(code, requested: false)).rid);
+    }
+    owen.svc.debugHoldGroupFanout = (rid, _) => phantoms.contains(rid);
+    Future<List<String>> queued() async => [
+          for (final r in await owen.vault.db.query('group_fanout'))
+            r['rid'] as String
+        ];
+    Future<void> letGo() async {
+      final deadline = DateTime.now().add(const Duration(seconds: 60));
+      while (!(await queued()).every(phantoms.contains)) {
+        if (DateTime.now().isAfter(deadline)) {
+          throw TimeoutException("Mia's copy never left Owen's queue");
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+      await owen.vault.db.delete('group_fanout',
+          where: 'rid IN (${List.filled(phantoms.length, '?').join(',')})',
+          whereArgs: phantoms);
+    }
+
+    // Owen, Mia and 125 more: 127 accounts, room for one.
+    expect(await owen.svc.addGroupMembers(crew, phantoms.sublist(0, 125)),
+        isNull);
+    await waitUntil(() => mia.svc.groups[crew]!.memberRids.length == 126,
+        what: 'Mia holds the list of 127', timeout: const Duration(seconds: 90));
+    await letGo();
+    expect(owen.svc.groupRoom(crew), 1);
+
+    // Jay answers a link while there is room, and Owen goes ahead: his device
+    // waits. Jay's go-ahead is read, and not yet acted on.
+    final (link, jaySide) = await ceremony(owen, jay, gid: crew);
+    await owen.invites.confirm(link);
+    expect(owen.svc.debugAwaitingLinkJoin(jay.svc.myRid), isTrue);
+    owen.svc.debugHoldLinkAdds = true;
+    await jay.invites.confirm(jaySide);
+    await waitUntil(
+        () =>
+            (owen.svc.debugLinkJoinsRead[jay.svc.myRid] ?? 0) > 0 &&
+            owen.svc.pendingLinkJoins.isEmpty,
+        what: "Owen's device records Jay's go-ahead");
+
+    // Meanwhile Owen fills the group by hand.
+    expect(await owen.svc.addGroupMembers(crew, [phantoms.last]), isNull);
+    await waitUntil(() => mia.svc.groups[crew]!.memberRids.length == 127,
+        what: 'Mia holds the list of 128', timeout: const Duration(seconds: 90));
+    await letGo();
+    expect(owen.svc.groupRoom(crew), 0);
+    final full = owen.svc.groups[crew]!.ver;
+
+    // The go-ahead is acted on now, and asked again: the group is full.
+    owen.svc.debugHoldLinkAdds = false;
+    await owen.svc.debugFinishLinkAdds();
+    expect(await queued(), isEmpty, reason: 'no list was issued');
+    expect(owen.svc.groups[crew]!.ver, full);
+    expect(memberOf(owen, crew, jay), isFalse);
+    expect(bannerOf(owen, crew, SystemKind.linkFull)?['name'], 'Jay',
+        reason: "Owen's group says why Jay was not added");
+    expect(bannerOf(owen, crew, SystemKind.linkFull)?['max'],
+        ChatService.maxGroupMembers);
+    expect(bannerOf(owen, crew, SystemKind.linkJoined), isNull);
+    expect(owen.svc.debugAwaitingLinkJoin(jay.svc.myRid), isFalse,
+        reason: 'the wait is over');
+    expect(owen.svc.contacts.containsKey(jay.svc.myRid), isTrue,
+        reason: 'Jay stays a contact');
+
+    // Nothing reached Mia: Owen's next change is her next version. Nor Jay:
+    // a text Owen sends him once that change has left the queue comes with
+    // no group before it.
+    expect(await owen.svc.renameGroup(crew, 'Crew, full'), isNull);
+    await waitUntil(() => mia.svc.groups[crew]!.name == 'Crew, full',
+        what: 'the rename reaches Mia', timeout: const Duration(seconds: 90));
+    expect(mia.svc.groups[crew]!.ver, full + 1);
+    expect(memberOf(mia, crew, jay), isFalse);
+    expect(await contactRows(mia), isNot(contains(jay.svc.myRid)));
+    await letGo();
+    await owen.svc.sendText(jay.svc.myRid, 'the crew is full');
+    await waitUntil(
+        () => (jay.svc.messagesByChat[owen.svc.myRid] ?? const <ChatMessage>[])
+            .any((m) => m.body == 'the crew is full'),
+        what: "Jay reads Owen's text");
+    expect(jay.svc.groups.containsKey(crew), isFalse);
+  }, timeout: const Timeout(Duration(minutes: 6)));
 }

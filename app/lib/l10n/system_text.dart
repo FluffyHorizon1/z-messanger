@@ -93,6 +93,10 @@ String systemText(AppLocalizations l, String body) {
     SystemKind.linkRefused => l.sysLinkRefused(s('name', l.sysSomeone)),
     SystemKind.linkDeclined => l.sysLinkDeclined(s('name', l.sysSomeone)),
     SystemKind.linkCancelled => l.sysLinkCancelled(s('name', l.sysSomeone)),
+    // A group's size (ADR 0036).
+    SystemKind.groupFull => l.sysGroupFull(n('max')),
+    SystemKind.linkFull => l.sysLinkFull(s('name', l.sysSomeone), n('max')),
+    SystemKind.listTooLarge => l.sysListTooLarge,
     // Handles (phase 38).
     SystemKind.handleAccepted => l.sysHandleAccepted(s('h', '?')),
     // A kind this build does not know — written by a newer one. The stored

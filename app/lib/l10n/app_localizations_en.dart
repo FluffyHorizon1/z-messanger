@@ -2402,6 +2402,20 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String sysGroupFull(int max) {
+    return 'Nobody was added: a group can have at most $max members.';
+  }
+
+  @override
+  String sysLinkFull(String name, int max) {
+    return '$name is your contact, but was not added to this group: a group can have at most $max members.';
+  }
+
+  @override
+  String get sysListTooLarge =>
+      'This change was not made: the group\'s member list would be too large to deliver, so nothing was sent.';
+
+  @override
   String get grpYouOwner => 'You (owner)';
 
   @override
@@ -2477,6 +2491,36 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get grpTtlOldBuild =>
       'A member whose app is older than this version keeps the messages, and theirs do not disappear.';
+
+  @override
+  String grpMaxMembers(int max) {
+    return 'A group can have at most $max members, you included.';
+  }
+
+  @override
+  String grpRoomFor(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Room for $count more members.',
+      one: 'Room for 1 more member.',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String grpFullNote(int max) {
+    return 'This group has $max members, the most a group can have. Nobody can be added unless someone leaves or is removed.';
+  }
+
+  @override
+  String grpOverLimit(int count, int max) {
+    return 'Over the limit: this group has $count members, more than the $max a group can have now. Members can still be removed and the group renamed, but nobody can be added.';
+  }
+
+  @override
+  String get grpCreateTooLarge =>
+      'Could not create the group: its member list would be too large to deliver.';
 
   @override
   String get stHandleSection => 'Handle';

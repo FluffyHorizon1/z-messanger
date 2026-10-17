@@ -44,6 +44,14 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
       if (!mounted) return;
       nav.pushReplacement(
           MaterialPageRoute(builder: (_) => ChatScreen(rid: gid)));
+    } on GroupListRefused catch (e) {
+      // ADR 0036: nothing was made. Said in words of its own, not as the
+      // exception's English.
+      setState(() => _busy = false);
+      messenger.showSnackBar(SnackBar(
+          content: Text(e.reason == GroupListRefusal.full
+              ? l.grpMaxMembers(ChatService.maxGroupMembers)
+              : l.grpCreateTooLarge)));
     } catch (e) {
       setState(() => _busy = false);
       messenger.showSnackBar(SnackBar(content: Text(l.grpCreateFailed('$e'))));
@@ -56,6 +64,8 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
     final chat = context.watch<ChatService>();
     final contacts = chat.contacts.values.toList()
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    // ADR 0036: the picker counts me in and stops at the cap.
+    final full = _selected.length + 1 >= ChatService.maxGroupMembers;
 
     return Scaffold(
       appBar: AppBar(title: Text(l.grpNew)),
@@ -74,6 +84,13 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
               ),
             ),
           ),
+          if (full)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+              child: Text(l.grpMaxMembers(ChatService.maxGroupMembers),
+                  style:
+                      TextStyle(fontSize: 12, color: context.z.textSecondary)),
+            ),
           Expanded(
             child: contacts.isEmpty
                 ? Center(
@@ -97,13 +114,16 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                                   fontWeight: FontWeight.w700),
                             ),
                           ),
-                          onChanged: (v) => setState(() {
-                            if (v == true) {
-                              _selected.add(c.rid);
-                            } else {
-                              _selected.remove(c.rid);
-                            }
-                          }),
+                          // At the cap, only a pick can be taken back.
+                          onChanged: full && !_selected.contains(c.rid)
+                              ? null
+                              : (v) => setState(() {
+                                    if (v == true) {
+                                      _selected.add(c.rid);
+                                    } else {
+                                      _selected.remove(c.rid);
+                                    }
+                                  }),
                         ),
                     ],
                   ),
@@ -152,8 +172,12 @@ class GroupInfoScreen extends StatefulWidget {
 class _GroupInfoScreenState extends State<GroupInfoScreen> {
   Future<void> _addMembers(ChatService chat) async {
     final l = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
     final g = chat.groups[widget.gid];
     if (g == null) return;
+    // ADR 0036: how many more the group can take; the picker stops there.
+    final room = chat.groupRoom(widget.gid);
+    if (room <= 0) return;
     final candidates = chat.contacts.values
         .where((c) => !g.memberRids.contains(c.rid))
         .toList()
@@ -163,43 +187,64 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSt) => AlertDialog(
-          title: Text(l.grpAddMembers),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: ListView(
-              shrinkWrap: true,
-              children: [
-                for (final c in candidates)
-                  CheckboxListTile(
-                    value: picked.contains(c.rid),
-                    activeColor: context.z.accent,
-                    checkColor: context.z.onAccent,
-                    title: Text(c.name),
-                    onChanged: (v) => setSt(() {
-                      if (v == true) {
-                        picked.add(c.rid);
-                      } else {
-                        picked.remove(c.rid);
-                      }
-                    }),
+        builder: (ctx, setSt) {
+          final left = room - picked.length;
+          return AlertDialog(
+            title: Text(l.grpAddMembers),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                        left > 0
+                            ? l.grpRoomFor(left)
+                            : l.grpMaxMembers(ChatService.maxGroupMembers),
+                        style: TextStyle(
+                            fontSize: 12, color: context.z.textSecondary)),
                   ),
-              ],
+                  for (final c in candidates)
+                    CheckboxListTile(
+                      value: picked.contains(c.rid),
+                      activeColor: context.z.accent,
+                      checkColor: context.z.onAccent,
+                      title: Text(c.name),
+                      onChanged: left <= 0 && !picked.contains(c.rid)
+                          ? null
+                          : (v) => setSt(() {
+                                if (v == true) {
+                                  picked.add(c.rid);
+                                } else {
+                                  picked.remove(c.rid);
+                                }
+                              }),
+                    ),
+                ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: Text(l.cancel)),
-            FilledButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: Text(l.add)),
-          ],
-        ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text(l.cancel)),
+              FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: Text(l.add)),
+            ],
+          );
+        },
       ),
     );
     if (ok == true && picked.isNotEmpty) {
-      await chat.addGroupMembers(widget.gid, picked.toList());
+      final refused = await chat.addGroupMembers(widget.gid, picked.toList());
+      // The group says so too; this is for the screen the add was made on.
+      if (refused != null) {
+        messenger.showSnackBar(SnackBar(
+            content: Text(refused == GroupListRefusal.full
+                ? l.sysGroupFull(ChatService.maxGroupMembers)
+                : l.sysListTooLarge)));
+      }
     }
   }
 
@@ -393,6 +438,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       for (final a in g.adminRids)
         if (a.isNotEmpty && !g.memberRids.contains(a)) a
     ];
+    // ADR 0036: full at the cap, and over it for a group an older build made
+    // larger — which still shrinks, and takes nobody new.
+    final room = chat.groupRoom(widget.gid);
 
     return Scaffold(
       appBar: AppBar(
@@ -426,6 +474,24 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
               style: TextStyle(fontSize: 12, color: context.z.textSecondary),
             ),
           ),
+          if (!g.left && room <= 0) ...[
+            const SizedBox(height: 6),
+            Center(
+              child: Text(
+                room == 0
+                    ? l.grpFullNote(ChatService.maxGroupMembers)
+                    : l.grpOverLimit(
+                        members.length + 1, ChatService.maxGroupMembers),
+                key: const ValueKey('group-size-note'),
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: room == 0
+                        ? context.z.textSecondary
+                        : context.z.danger),
+              ),
+            ),
+          ],
           const SizedBox(height: 18),
           Card(
             color: context.z.surface,
@@ -626,18 +692,21 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           ],
           if (g.iAmAdmin && !g.left)
             OutlinedButton.icon(
+              key: const ValueKey('group-add-members'),
               icon: const Icon(Icons.group_add_outlined),
               label: Text(l.grpAddMembers),
-              onPressed: () => _addMembers(chat),
+              onPressed: room > 0 ? () => _addMembers(chat) : null,
             ),
           // ADR 0020: anyone who may add a member may mint a link that adds
-          // one — the same question, asked the same way.
+          // one — the same question, asked the same way: a full group takes
+          // nobody by link either (ADR 0036).
           if (chat.mayIssueGroupList(g.gid, '')) ...[
             const SizedBox(height: 8),
             OutlinedButton.icon(
+              key: const ValueKey('group-invite-by-link'),
               icon: const Icon(Icons.link),
               label: Text(l.grpInviteByLink),
-              onPressed: _inviteByLink,
+              onPressed: room > 0 ? _inviteByLink : null,
             ),
             const SizedBox(height: 4),
             Text(l.grpInviteByLinkNote,

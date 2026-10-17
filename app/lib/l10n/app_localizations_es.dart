@@ -2427,6 +2427,20 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String sysGroupFull(int max) {
+    return 'No se añadió a nadie: un grupo puede tener como máximo $max miembros.';
+  }
+
+  @override
+  String sysLinkFull(String name, int max) {
+    return '$name es tu contacto, pero no se añadió a este grupo: un grupo puede tener como máximo $max miembros.';
+  }
+
+  @override
+  String get sysListTooLarge =>
+      'No se hizo este cambio: la lista de miembros del grupo sería demasiado grande para entregarla, así que no se envió nada.';
+
+  @override
   String get grpYouOwner => 'Tú (propietario)';
 
   @override
@@ -2502,6 +2516,36 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get grpTtlOldBuild =>
       'Un miembro cuya app es anterior a esta versión conserva los mensajes, y los suyos no desaparecen.';
+
+  @override
+  String grpMaxMembers(int max) {
+    return 'Un grupo puede tener como máximo $max miembros, contándote a ti.';
+  }
+
+  @override
+  String grpRoomFor(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Caben $count miembros más.',
+      one: 'Cabe 1 miembro más.',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String grpFullNote(int max) {
+    return 'Este grupo tiene $max miembros, el máximo que puede tener un grupo. No se puede añadir a nadie a menos que alguien salga o lo quiten.';
+  }
+
+  @override
+  String grpOverLimit(int count, int max) {
+    return 'Por encima del límite: este grupo tiene $count miembros, más de los $max que puede tener ahora un grupo. Aún se pueden quitar miembros y cambiar el nombre del grupo, pero no se puede añadir a nadie.';
+  }
+
+  @override
+  String get grpCreateTooLarge =>
+      'No se pudo crear el grupo: su lista de miembros sería demasiado grande para entregarla.';
 
   @override
   String get stHandleSection => 'Alias';

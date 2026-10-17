@@ -3800,6 +3800,24 @@ abstract class AppLocalizations {
   /// **'You stopped waiting for {name} to join from your invite link. They are still your contact.'**
   String sysLinkCancelled(String name);
 
+  /// System message (ADR 0036) in a group, on the device of the admin who tried to add people: the group would then have had more than {max} members, the admin included, so nobody was added and nothing was sent.
+  ///
+  /// In en, this message translates to:
+  /// **'Nobody was added: a group can have at most {max} members.'**
+  String sysGroupFull(int max);
+
+  /// System message (ADR 0020, ADR 0036) in a group, on the device of the person who made a group invite link: whoever opened it went ahead, but by then the group was full, so the link added nobody and they are only a contact. Worded "is your contact", as the other group-link messages are.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} is your contact, but was not added to this group: a group can have at most {max} members.'**
+  String sysLinkFull(String name, int max);
+
+  /// System message (ADR 0036) in a group, on the device of the admin who tried to change it (an add, a removal, a rename, a role or the timer): the member list that change sends would be larger than a relay can carry, so the change was not made, here or anywhere.
+  ///
+  /// In en, this message translates to:
+  /// **'This change was not made: the group\'s member list would be too large to deliver, so nothing was sent.'**
+  String get sysListTooLarge;
+
   /// Label of the user's own row on the group info screen when they own the group: the one person who can change who the admins are.
   ///
   /// In en, this message translates to:
@@ -3931,6 +3949,36 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'A member whose app is older than this version keeps the messages, and theirs do not disappear.'**
   String get grpTtlOldBuild;
+
+  /// ADR 0036. On the new-group screen and in the add-members dialog once as many people are picked as the group can take; and the error when a new group would have too many members.
+  ///
+  /// In en, this message translates to:
+  /// **'A group can have at most {max} members, you included.'**
+  String grpMaxMembers(int max);
+
+  /// ADR 0036. At the top of the add-members dialog: how many more people this group can take before it has the most members a group can have.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{Room for 1 more member.} other{Room for {count} more members.}}'**
+  String grpRoomFor(int count);
+
+  /// ADR 0036. On the group screen of a group with the most members a group can have; the add-members and invite-by-link buttons are off.
+  ///
+  /// In en, this message translates to:
+  /// **'This group has {max} members, the most a group can have. Nobody can be added unless someone leaves or is removed.'**
+  String grpFullNote(int max);
+
+  /// ADR 0036. On the group screen of a group with more members than a group can have — one an older or modified version of Z made that large. It can only shrink: removals, renames, roles and the timer still work, and adding does not.
+  ///
+  /// In en, this message translates to:
+  /// **'Over the limit: this group has {count} members, more than the {max} a group can have now. Members can still be removed and the group renamed, but nobody can be added.'**
+  String grpOverLimit(int count, int max);
+
+  /// ADR 0036. Error on the new-group screen: the member list the new group would send, with its name, is larger than a relay can carry, so nothing was created.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not create the group: its member list would be too large to deliver.'**
+  String get grpCreateTooLarge;
 
   /// Settings section header (phase 38): the account's handle, a name people can find you by.
   ///

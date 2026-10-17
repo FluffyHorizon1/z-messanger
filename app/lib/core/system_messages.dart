@@ -85,6 +85,15 @@ abstract final class SystemKind {
   // name? — I stopped waiting for them to join from my link
   static const linkCancelled = 'link_cancelled';
 
+  // A change to a group this device would not issue (ADR 0036): said in the
+  // group, on this device only — nothing was sent, and nobody else holds it.
+  // max — nobody added: the list would have named more than `max` accounts
+  static const groupFull = 'grp_full';
+  // name?, max — they went ahead on my group link, and the group was full
+  static const linkFull = 'link_full';
+  // the change was not made: its list would be too large for any frame
+  static const listTooLarge = 'list_too_large';
+
   /// Phase 38 (PROTOCOL §21.7): the owner of a handle this account sent a
   /// request to accepted it, and the acceptance carried the introduction
   /// key's acknowledgement — so this contact is the account the handle
