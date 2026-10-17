@@ -203,7 +203,7 @@ Nobody vouches for the handle service yet, either. It could show you a
 different record for a handle than it shows everyone else, and send your
 request to an inbox of its choosing; the app checks everything in an answer
 it can check, but only a witness comparing what the service tells different
-people would catch that, and none runs yet (R50). There too, the safety
+people would catch that, and the app checks against none yet: one runs, but no build pins it (R50). There too, the safety
 number is what catches the account that answered.
 
 ## It has not been audited

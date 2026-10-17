@@ -412,12 +412,25 @@ itself misbehaves — shows two different histories — Z says so at the top of
 the chat list and confirms nothing new until you reset it in Settings; your
 conversations continue on the checks that existed before the log.
 
-Checking costs something, and it is worth knowing: Z asks the log about each
-of your contacts, from your own internet address, when it starts, every six
-hours and soon after a contact's devices change. Whoever runs the log — for
-the built-in one, the people who run the relay — therefore learns who your
-contacts are. The log is on by default; turning on Developer mode in Settings
-lets you point it at another log or at none.
+The built-in log also has a **witness**: a copy of the log that somebody
+other than its operator runs, there to catch a log showing different people
+different histories. Z checks the log against it, and Settings › Transparency
+log says when they last agreed. If the witness has not answered with a
+current record for a day, that row says so: until it answers, the log is not
+being checked against it. Nowhere else says so, so look there now and then.
+
+Checking costs something, and it is worth knowing. Since phase 35 Z asks the
+log about your contacts by bucket, never by name: each question covers 32 to
+64 accounts, your contacts' among decoys the app keeps. It asks from your
+own internet address, up to four times a day, at a random moment in each
+six-hour window, or a few seconds after you open the app when that moment
+passed while it was closed. Whoever runs the log — for the built-in one, the
+people who run the relay — learns which buckets you ask about, when you add
+a contact outside them and roughly when you open the app, but not who your
+contacts are; what it learned before phase 35, when the app asked by name,
+it keeps (`THREAT_MODEL.md` R40). The witness learns your address and when
+you check, nothing more. The log is on by default; turning on Developer mode
+in Settings lets you point it at another log, or at none.
 
 Once every device that reads your device list — each of your contacts'
 devices, and each of your own linked devices — has told yours that its app can

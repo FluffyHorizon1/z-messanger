@@ -131,8 +131,9 @@ nothing outside this project confirms that it does. The same statement lives
 in `WHITEPAPER.md` §6 and §9, `WHAT_Z_CANNOT_DO.md`, `DATA_MAP.md`'s log and
 witness rows, `AUDIT_SCOPE.md` C31 and its residual list, and
 `THREAT_MODEL.md` R7; all were corrected on 2026-09-13 when the log went
-live and again on 2026‑10‑17 when the witness was pinned, and R7 closes when
-this row does.
+live and again on 2026‑10‑17 when the witness was pinned. R7's deferral ends
+when this row does; its two gaps, the path through the project's own domain
+and a reader who never opens Settings, outlast it.
 
 ### G4 — Encrypted backup and restore ✅
 

@@ -47,7 +47,7 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 33 Linked devices as equals | ✅ done | `linked_equals_test.dart`, `mirrored_contact_test.dart`; closes P1-5 |
 | 34 Transparency log health | ✅ done | `kt/test/log_memory.test.js`, `kt/test/publish_limits.test.js`; closes P1-17 |
 | 35 Private transparency lookups | ✅ done (4.1.0; its hardening 4.2.0) | `adr/0023`, PROTOCOL §19.9, `kt_private_lookup_test.dart`, `transparency_bucket_test.dart`, `kt/test/bucket.test.js`; closes P0-5 |
-| 36–38 Handles | 36.1–36.2/37 done; 38 done (4.1.0); hardening landed, not released; dormant until a handle log is deployed | `adr/0015` rev 2, PROTOCOL §21, `handles_test.dart`, `intro_mailbox.test.js`, `handle_flow_test.dart`, `kt/test/handle_mode.test.js`, register R47–R50 |
+| 36–38 Handles | 36.1–36.2/37 done; 38 done (4.1.0); hardening landed, not released; dormant until a build pins the handle log, deployed at `handles.zmessengers.com`, and its witness | `adr/0015` rev 2, PROTOCOL §21, `handles_test.dart`, `intro_mailbox.test.js`, `handle_flow_test.dart`, `kt/test/handle_mode.test.js`, register R47–R50 |
 | 39 Public introduction link | started: 39.1 built (the link in the protocol library); nothing makes, opens or drains a link yet, and it goes live only once the deployed relay is confirmed to run the handles hardening | `adr/0032`, PROTOCOL §21.9, `handles_test.dart`, `vectors/handles/intro_link.json`; `adr/0009`'s deferred public invite |
 | 40 Invites bound to their secret | ✅ done | `adr/0024`, PROTOCOL §20.8, `connect_test.dart`; closes P1-9 |
 | 41 Metadata: receipts, push, CDN | ✅ done (4.2.0) | `adr/0028`, `receipt_timing_test.dart`, `delivery_receipts_test.dart`, register R41/R44; closes P1-15, P1-20 code half |
