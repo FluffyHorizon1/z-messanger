@@ -210,6 +210,14 @@ enum KtContactState { unlogged, confirmed, unconfirmed, conflict }
 /// The log as a whole.
 enum KtHealth { off, unknown, ok, unreachable, fault }
 
+/// The log's witness, as Settings says it (§19.5): [none] with the log off
+/// or no witness configured; [agreed] when it last agreed with a current
+/// record within a day; [quiet] when the last agreement — or, with none
+/// yet, the first time this device asked — is more than a day ago;
+/// [pending] otherwise. A witness gone quiet is one the log is not being
+/// checked against, which a reader is not shown by anything else.
+enum KtWitnessState { none, pending, agreed, quiet }
+
 /// What the client currently holds about one contact's standing in the log.
 class KtContactStatus {
   KtContactState state;
@@ -471,6 +479,17 @@ class KeyTransparency {
   Duration staleHead = const Duration(hours: 24);
   Duration unreachableAfter = const Duration(hours: 24);
 
+  /// A witness's record over a head older than this is held to step 3 of
+  /// §19.5 like any other, but is not the witness agreeing: a healthy
+  /// witness writes a fresh record at every sync, over a head the log
+  /// re-signs every ten minutes, so a record this old is a witness that has
+  /// stopped, or a replay by whatever stands in front of it.
+  Duration witnessStale = const Duration(hours: 24);
+
+  /// How long after its last agreement — or, before the first, after this
+  /// device first asked it — a witness is [KtWitnessState.quiet].
+  Duration witnessQuietAfter = const Duration(hours: 24);
+
   /// A refresh that is owed — a whole window without one, or this window's
   /// moment gone by while the app was not running it — catches up at a
   /// random moment this long after the app is next in front, at start or on
@@ -559,7 +578,20 @@ class KeyTransparency {
   KtOwnAlert? ownAlert;
   int lastOkMs = 0;
   int lastFailMs = 0;
+
+  /// When the witness last agreed with the log over a current record: its
+  /// record verified under the pinned key, its head no older than
+  /// [witnessStale], and the log's head shown consistent with it (§19.5
+  /// step 3). Not a record that disagrees, and not one the log could not be
+  /// asked to prove against — those are a fault and no verdict.
   int? witnessOkMs;
+
+  /// When this device first asked the witness configured now (sealed, under
+  /// `kt_witness_since_ms`, with the configuration it was asked under). A
+  /// different witness's answer is not this one's: a change of witness, of
+  /// the log it witnesses, or of the build's pinned values forgets both.
+  int? witnessSinceMs;
+
   final Map<String, KtContactStatus> contacts = {};
 
   /// A publish waiting for the log's acknowledgement (durable across restarts).
@@ -651,6 +683,21 @@ class KeyTransparency {
     return KtHealth.ok;
   }
 
+  /// What Settings says of the witness ([KtWitnessState]).
+  KtWitnessState get witnessState {
+    if (!config.enabled || !config.hasWitness) return KtWitnessState.none;
+    final quietAfter = witnessQuietAfter.inMilliseconds;
+    final ok = witnessOkMs;
+    if (ok != null && now() - ok <= quietAfter) return KtWitnessState.agreed;
+    final last = witnessQuietSinceMs;
+    if (last != null && now() - last > quietAfter) return KtWitnessState.quiet;
+    return KtWitnessState.pending;
+  }
+
+  /// What a quiet witness has been quiet since: its last agreement, or with
+  /// none, when this device first asked it.
+  int? get witnessQuietSinceMs => witnessOkMs ?? witnessSinceMs;
+
   KtContactStatus? statusOf(String rid) => contacts[rid];
 
   /// Routing ids of [rid]'s devices that must not receive messages now.
@@ -693,6 +740,7 @@ class KeyTransparency {
     lastFailMs = int.tryParse(await vault.kvGet('kt_last_fail_ms') ?? '') ?? 0;
     final w = await vault.kvGet('kt_witness_ok_ms');
     witnessOkMs = w == null ? null : int.tryParse(w);
+    await _loadWitnessSince();
     final p = await vault.kvGet('kt_pub_pending');
     if (p != null) {
       try {
@@ -899,8 +947,13 @@ class KeyTransparency {
     // copy of that rule.
     final problem = c.witnessProblem;
     if (problem != null) throw KtConfigInvalid(problem);
+    final witnessBefore = _witnessOf(config);
     config = c;
     await vault.kvPut('kt_config', jsonEncode(c.toJson()), sensitive: false);
+    // One witness's answer is not another's: a new address or key, a
+    // witness removed, or a new log under the same witness starts again
+    // from "not checked yet", rather than showing the last one's agreement.
+    if (_witnessOf(c) != witnessBefore) await _forgetWitness();
     // Indexes are one log's; another log's are other entries. The decoys
     // stay: two logs shown the same buckets learn nothing by comparing. What
     // this client counted of the old log's labels says nothing of the new
@@ -909,6 +962,45 @@ class KeyTransparency {
     await _forgetCeiling();
     host.ktChanged();
     unawaited(check().then((_) => _arm()));
+  }
+
+  /// What a witness's answer is an answer under: its address and its key,
+  /// and the key of the log whose heads its record is verified against.
+  /// Empty with no witness to ask.
+  static String _witnessOf(KtConfig c) => c.hasWitness
+      ? jsonEncode([c.logPubB64.trim(), c.witnessUrl.trim(), c.witnessPubB64.trim()])
+      : '';
+
+  /// [witnessSinceMs] from the vault — and [witnessOkMs] beside it — only
+  /// when they were recorded under the witness configured now. A build can
+  /// pin another witness under a vault that never saved a configuration of
+  /// its own, which [setConfig] never sees; and an agreement recorded
+  /// before this build tied it to a witness cannot be told from another
+  /// witness's, or from the answers that build counted as agreeing. Either
+  /// way both are forgotten, and the next check asks again.
+  Future<void> _loadWitnessSince() async {
+    final s = await vault.kvGet('kt_witness_since_ms');
+    int? at;
+    if (s != null) {
+      try {
+        final m = (jsonDecode(s) as Map).cast<String, Object?>();
+        if (m['w'] == _witnessOf(config)) at = (m['at'] as num).toInt();
+      } catch (_) {}
+    }
+    if (at != null) {
+      witnessSinceMs = at;
+    } else if (s != null || witnessOkMs != null) {
+      await _forgetWitness();
+    }
+  }
+
+  /// Forget when the witness last agreed and when this device began asking
+  /// it ([witnessSinceMs]).
+  Future<void> _forgetWitness() async {
+    witnessOkMs = null;
+    witnessSinceMs = null;
+    await vault.kvDelete('kt_witness_ok_ms');
+    await vault.kvDelete('kt_witness_since_ms');
   }
 
   /// The labels this client counted belong to the log it counted them in:
@@ -1398,9 +1490,24 @@ class KeyTransparency {
   }
 
   /// §19.5 step 3. A witness that cannot be fetched or does not verify is
-  /// ignored for this check (recorded); one that verifies and disagrees with
-  /// the log is a fault.
+  /// no verdict for this check; one that verifies and disagrees with the log
+  /// is a fault.
+  ///
+  /// Only a CURRENT record that the log is shown consistent with is the
+  /// witness agreeing ([witnessOkMs]). It used to be recorded the moment a
+  /// record verified, before anything was compared — so a witness that had
+  /// seen a different head, a log that would not serve the proof between
+  /// its head and the witness's, and a record replayed from a witness that
+  /// stopped a week ago all counted as the last time the log was checked
+  /// against it. A record whose head is more than [witnessStale] old is
+  /// still held to every comparison below, and still raises a fault; it
+  /// does not say the log agrees with anything since.
   Future<bool> _checkWitness(KtTreeHead fresh, Uint8List logPub) async {
+    final asked = _witnessOf(config);
+    if (witnessSinceMs == null) {
+      witnessSinceMs = now();
+      await vault.kvPut('kt_witness_since_ms', jsonEncode({'at': witnessSinceMs, 'w': asked}));
+    }
     Map<String, Object?>? j;
     try {
       final r = await fetcher.get(Uri.parse(config.witnessUrl.trim()));
@@ -1418,16 +1525,20 @@ class KeyTransparency {
     if (!await rec.verify(logPub, expectedWitnessPub: config.witnessPub!)) {
       return true;
     }
-    witnessOkMs = now();
-    await vault.kvPut('kt_witness_ok_ms', '$witnessOkMs', sensitive: false);
+    // `ts` is inside what the log signed and the witness co-signed;
+    // `verifiedAt` is not, so it cannot say how old the record is.
+    final current = now() - rec.head.ts <= witnessStale.inMilliseconds;
     if (rec.head.size == fresh.size) {
       if (!rec.head.sameRootsAs(fresh)) {
         await _setFault('the witness saw a different head of size ${fresh.size}', served: fresh);
         return false;
       }
+      if (current) await _witnessAgreed(asked);
       return true;
     }
-    if (rec.head.size > fresh.size) return _witnessAhead(fresh, rec.head, logPub);
+    if (rec.head.size > fresh.size) {
+      return _witnessAhead(fresh, rec.head, logPub, recordCurrent: current, asked: asked);
+    }
     final c = await _getJson(_url('/kt/v1/consistency?first=${rec.head.size}&second=${fresh.size}'));
     if (c == null) return true; // could not ask; not a verdict
     List<Uint8List> proof;
@@ -1446,7 +1557,17 @@ class KeyTransparency {
       await _setFault('the log\'s head does not extend the one its witness verified', served: fresh);
       return false;
     }
+    if (current) await _witnessAgreed(asked);
     return true;
+  }
+
+  /// The witness configured as [asked] has just agreed with the log over a
+  /// current record. Not recorded when the configuration changed while it
+  /// was being asked: that answer is the last witness's.
+  Future<void> _witnessAgreed(String asked) async {
+    if (_witnessOf(config) != asked) return;
+    witnessOkMs = now();
+    await vault.kvPut('kt_witness_ok_ms', '$witnessOkMs', sensitive: false);
   }
 
   /// The witness has verified a head LARGER than the one being adopted.
@@ -1468,8 +1589,11 @@ class KeyTransparency {
   /// witness verified, which is what a restored snapshot looks like from
   /// here, and which refuses a `second` past its own head. The log's current
   /// head says which: smaller than the witness's is the fault; anything else
-  /// is not a verdict, and the next check asks again.
-  Future<bool> _witnessAhead(KtTreeHead fresh, KtTreeHead witnessed, Uint8List logPub) async {
+  /// is not a verdict, and the next check asks again. Only the proof that
+  /// verifies, over a record that is [recordCurrent], is the witness
+  /// agreeing.
+  Future<bool> _witnessAhead(KtTreeHead fresh, KtTreeHead witnessed, Uint8List logPub,
+      {required bool recordCurrent, required String asked}) async {
     final c = await _getJson(_url('/kt/v1/consistency?first=${fresh.size}&second=${witnessed.size}'));
     if (c != null) {
       List<Uint8List> proof;
@@ -1490,6 +1614,7 @@ class KeyTransparency {
             served: fresh);
         return false;
       }
+      if (recordCurrent) await _witnessAgreed(asked);
       return true;
     }
     final j = await _getJson(_url('/kt/v1/sth'));

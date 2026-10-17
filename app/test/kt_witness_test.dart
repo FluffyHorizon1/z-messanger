@@ -52,18 +52,53 @@
 //     witness's record over https, on a host that is not the log's; the key
 //     32 bytes and not the log's own — a witness pinned to the log's key is
 //     the log agreeing with itself.
+//
+// And a witness gone quiet (2026-10-17). The client reaches the public
+// witness through the project's own domain, and whatever controls that path
+// can withhold the witness's record, or serve an old one, to a reader it
+// shows a fork to. The client used to say nothing of either, and recorded
+// the witness as agreeing the moment its record verified — before comparing
+// it with anything. Now only a current record the log is shown consistent
+// with is the witness agreeing, and Settings says when that last happened:
+// 11. a record co-signed by the pinned key over a head more than a day old
+//     is still checked — the witness's different head at the same size is
+//     still a fault — but it is not agreement: `witnessOkMs` is unchanged,
+//     and a day after the last current answer the witness is quiet;
+// 12. the state over time, on the injected clock: none with no witness and
+//     with the log off; pending before the witness first agrees — while it
+//     does not answer, and while the log does not prove its head extends the
+//     witness's; agreed after; quiet a day after that, and a day after the
+//     first question when no answer ever comes; and when `setConfig` changes
+//     the witness or removes it, or a build that pins another opens the
+//     vault, the old agreement no longer counts — pending again, or none,
+//     with both keys gone from the vault;
+// 13. Settings shows it, outside developer mode: with the agreement five
+//     minutes old the agreed text, two days old the quiet text in the
+//     warning tone, and with no witness configured no row at all.
 @Timeout(Duration(minutes: 2))
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
+import 'package:zapp/core/app_lock.dart';
+import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/key_transparency.dart';
+import 'package:zapp/core/prefs.dart';
+import 'package:zapp/core/push_service.dart';
+import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
+import 'package:zapp/l10n/app_localizations.dart';
+import 'package:zapp/l10n/when_text.dart';
+import 'package:zapp/ui/settings_screen.dart';
+import 'package:zapp/ui/theme.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 class _NoHost implements KtHost {
@@ -202,6 +237,21 @@ void main() {
     return KeyTransparency(vault: v, host: _NoHost(), fetcher: f, config: c, now: () => now);
   }
 
+  /// The loopback log above with both halves of a witness pinned: the
+  /// address the stub answers, and [key].
+  KtConfig pinnedTo(Uint8List key) =>
+      KtConfig(logUrl: logUrl, logPubB64: b64(logPub), witnessUrl: witnessUrl, witnessPubB64: b64(key));
+
+  /// A service on a clock the test moves, over [vault] or a fresh one.
+  Future<KeyTransparency> clocked(KtConfig c, KtFetcher f, int Function() now, {Vault? vault}) async =>
+      KeyTransparency(
+          vault: vault ?? await freshVault('clocked'), host: _NoHost(), fetcher: f, config: c, now: now);
+
+  const minute = 60 * 1000;
+  const day = 24 * 60 * minute;
+  // Noon, 2026-10-17, local time: a date Settings can print.
+  final t0 = DateTime(2026, 10, 17, 12).millisecondsSinceEpoch;
+
   test('1. an address with no key cannot be saved, and the reason is the consequence', () async {
     final f = _StubFetcher(witnessUrl: witnessUrl);
     final kt = await service(
@@ -305,7 +355,9 @@ void main() {
         f,
         now: 1000);
     await kt.check();
-    expect(kt.witnessOkMs, isNotNull);
+    expect(kt.witnessOkMs, isNull,
+        reason: 'a witness that saw another head did not agree with this one (until 2026-10-17 it was '
+            'recorded as agreeing, because the record verified, before it was compared)');
     expect(kt.fault, isNotNull);
     expect(kt.fault!.reason, contains('different head'));
   });
@@ -486,4 +538,290 @@ void main() {
     expect(b64(c.witnessPub!), isNot(b64(c.logPub!)),
         reason: "a witness pinned to the log's own key is the log agreeing with itself");
   });
+
+  test('11. a record a day old is still checked, and is not the witness agreeing', () async {
+    var now = t0;
+    final f = _StubFetcher(witnessUrl: witnessUrl);
+    final kt = await clocked(pinnedTo(pinnedPub), f, () => now);
+    // A current answer: the witness co-signed, a minute ago, the head the
+    // log serves.
+    final h0 = await head(size: 4, root: 7, ts: t0 - minute);
+    f.sth = jsonEncode(h0.toJson());
+    f.witness = await record(h0, pinned, pinnedPub);
+    await kt.check();
+    expect(kt.witnessOkMs, t0);
+    expect(kt.witnessState, KtWitnessState.agreed);
+
+    // A day and two minutes on, the log has re-signed its head and the
+    // witness's record has not moved: the same record, over a head now a day
+    // and three minutes old. A witness that has stopped looks like this; so
+    // does whatever stands in front of the witness, serving the record it
+    // saw before the fork it is about to show this reader.
+    now = t0 + day + 2 * minute;
+    f.sth = jsonEncode((await head(size: 4, root: 7, ts: now - minute)).toJson());
+    await kt.check();
+    expect(kt.fault, isNull, reason: 'the old record is consistent with the head, so there is no fork to report');
+    expect(kt.head!.ts, now - minute, reason: 'and the head was adopted, as before');
+    expect(kt.witnessOkMs, t0,
+        reason: 'but the witness said nothing about the log since its head: it did not agree with anything');
+    expect(kt.witnessState, KtWitnessState.quiet, reason: 'a day after the last current answer');
+    expect(kt.witnessQuietSinceMs, t0);
+
+    // Still checked: the same old record, against a log that serves a
+    // different head at its size, is the fault it always was.
+    final forked = _StubFetcher(witnessUrl: witnessUrl)
+      ..sth = jsonEncode((await head(size: 4, root: 9, ts: now - minute)).toJson())
+      ..witness = f.witness;
+    final kt2 = await clocked(pinnedTo(pinnedPub), forked, () => now);
+    await kt2.check();
+    expect(kt2.fault, isNotNull);
+    expect(kt2.fault!.reason, contains('the witness saw a different head of size 4'));
+    expect(kt2.witnessOkMs, isNull);
+  });
+
+  test('12. none, pending, agreed and quiet over time — and another witness starts again', () async {
+    // None: no witness, or no log.
+    var now = t0;
+    final f = _StubFetcher(witnessUrl: witnessUrl);
+    expect((await clocked(KtConfig(logUrl: logUrl, logPubB64: b64(logPub)), f, () => now)).witnessState,
+        KtWitnessState.none);
+    expect((await clocked(KtConfig.off, f, () => now)).witnessState, KtWitnessState.none);
+    expect(
+        (await clocked(KtConfig(logUrl: '', logPubB64: '', witnessUrl: witnessUrl, witnessPubB64: b64(pinnedPub)),
+                f, () => now))
+            .witnessState,
+        KtWitnessState.none,
+        reason: 'a witness of no log is not asked');
+
+    final v = await freshVault('states');
+    final kt = await clocked(pinnedTo(pinnedPub), f, () => now, vault: v);
+    expect(kt.witnessState, KtWitnessState.pending, reason: 'never asked');
+
+    // Pending while the witness does not answer: asked, so the day starts.
+    f.sth = jsonEncode((await head(size: 4, root: 7, ts: now - minute)).toJson());
+    await kt.check();
+    expect(f.gets.map((u) => u.toString()), contains(witnessUrl));
+    expect(kt.witnessSinceMs, t0);
+    expect(kt.witnessOkMs, isNull);
+    expect(kt.witnessState, KtWitnessState.pending);
+
+    // Pending while the log does not prove its head extends the witness's: a
+    // current record, over a head behind the one held, and the proof between
+    // the two never served (this stub serves none). No verdict — and so not
+    // the witness agreeing; it used to be.
+    now = t0 + 60 * minute;
+    f.sth = jsonEncode((await head(size: 4, root: 7, ts: now - minute)).toJson());
+    f.witness = await record(await head(size: 2, root: 3, ts: now - 2 * minute), pinned, pinnedPub);
+    await kt.check();
+    expect(f.gets.map((u) => u.path), contains('/kt/v1/consistency'), reason: 'the log was asked for the proof');
+    expect(kt.fault, isNull);
+    expect(kt.witnessOkMs, isNull);
+    expect(kt.witnessState, KtWitnessState.pending);
+
+    // Agreed: a current record over the head the log serves.
+    now = t0 + 120 * minute;
+    final agreedAt = now;
+    final h = await head(size: 4, root: 7, ts: now - minute);
+    f.sth = jsonEncode(h.toJson());
+    f.witness = await record(h, pinned, pinnedPub);
+    await kt.check();
+    expect(kt.witnessOkMs, agreedAt);
+    expect(kt.witnessSinceMs, t0, reason: 'when this device first asked, which an answer does not move');
+    expect(kt.witnessState, KtWitnessState.agreed);
+
+    // A day with nothing asked: agreed to the millisecond, then quiet since
+    // the agreement.
+    now = agreedAt + day;
+    expect(kt.witnessState, KtWitnessState.agreed);
+    now = agreedAt + day + 1;
+    expect(kt.witnessState, KtWitnessState.quiet);
+    expect(kt.witnessQuietSinceMs, agreedAt);
+
+    // A witness that never answers is quiet a day after it was first asked.
+    var later = t0;
+    final silent = _StubFetcher(witnessUrl: witnessUrl)
+      ..sth = jsonEncode((await head(size: 4, root: 7, ts: t0 - minute)).toJson());
+    final mute = await clocked(pinnedTo(pinnedPub), silent, () => later);
+    await mute.check();
+    later = t0 + day;
+    expect(mute.witnessState, KtWitnessState.pending);
+    later = t0 + day + 1;
+    expect(mute.witnessState, KtWitnessState.quiet);
+    expect(mute.witnessQuietSinceMs, t0);
+
+    // Saving the same witness again keeps its answer. The log does not
+    // answer the check each save starts, so the witness is not asked again
+    // meanwhile, and what is left afterwards is what the save left.
+    now = agreedAt + 60 * minute;
+    f.sth = null;
+    await kt.setConfig(pinnedTo(pinnedPub));
+    await kt.check(); // queued behind the one the save started
+    expect(kt.witnessState, KtWitnessState.agreed);
+    expect(await v.kvGet('kt_witness_ok_ms'), '$agreedAt');
+
+    // Another witness: the old one's agreement no longer counts.
+    await kt.setConfig(pinnedTo(impostorPub));
+    await kt.check();
+    expect(kt.witnessOkMs, isNull);
+    expect(kt.witnessSinceMs, isNull);
+    expect(kt.witnessState, KtWitnessState.pending);
+    expect(await v.kvGet('kt_witness_ok_ms'), isNull);
+    expect(await v.kvGet('kt_witness_since_ms'), isNull);
+
+    // That witness agrees, and is then removed: its answer goes with it. (A
+    // head the log has re-signed since: the one held is not checked again.)
+    final h2 = await head(size: 4, root: 7, ts: now - minute);
+    f.sth = jsonEncode(h2.toJson());
+    f.witness = await record(h2, impostor, impostorPub);
+    await kt.check();
+    expect(kt.witnessState, KtWitnessState.agreed);
+    f.sth = null;
+    await kt.setConfig(KtConfig(logUrl: logUrl, logPubB64: b64(logPub)));
+    await kt.check();
+    expect(kt.witnessState, KtWitnessState.none);
+    expect(kt.witnessOkMs, isNull);
+    expect(await v.kvGet('kt_witness_ok_ms'), isNull);
+    expect(await v.kvGet('kt_witness_since_ms'), isNull);
+
+    // A build that pins another witness, opening a vault that never saved a
+    // configuration of its own: no `setConfig` runs, and the last build's
+    // witness's answer is not the new one's either.
+    final v2 = await freshVault('rebuild');
+    final g = _StubFetcher(witnessUrl: witnessUrl)
+      ..sth = jsonEncode(h2.toJson())
+      ..witness = await record(h2, pinned, pinnedPub);
+    final first = await clocked(pinnedTo(pinnedPub), g, () => now, vault: v2);
+    await first.check();
+    expect(first.witnessState, KtWitnessState.agreed);
+    final rows = await v2.db.query('kv', columns: ['k'], where: 'k LIKE ?', whereArgs: ['%:kt_witness_since_ms']);
+    expect(rows.map((r) => r['k']), ['s:kt_witness_since_ms'], reason: 'sealed, as nothing in Vault.plainKeys is');
+    // The same build, started again over it, keeps both.
+    final again = await clocked(pinnedTo(pinnedPub), g, () => now, vault: v2);
+    await again.load();
+    expect(again.witnessOkMs, first.witnessOkMs);
+    expect(again.witnessSinceMs, first.witnessSinceMs);
+    expect(again.witnessState, KtWitnessState.agreed);
+    // Another build's witness does not.
+    final rebuilt = await clocked(pinnedTo(impostorPub), g, () => now, vault: v2);
+    await rebuilt.load();
+    expect(rebuilt.witnessOkMs, isNull);
+    expect(rebuilt.witnessSinceMs, isNull);
+    expect(rebuilt.witnessState, KtWitnessState.pending);
+    expect(await v2.kvGet('kt_witness_ok_ms'), isNull);
+    expect(await v2.kvGet('kt_witness_since_ms'), isNull);
+  });
+
+  group('Settings', () {
+    late Directory dir;
+    late ChatService svc;
+
+    /// A service that talks to nobody, after `device_hardening_test`'s: a
+    /// closed local port for a relay, and the log and its witness on
+    /// loopback behind a stub that answers neither — so nothing but the test
+    /// moves what the screen shows.
+    Future<ChatService> offline(String name) async {
+      final vault = await Vault.open(rootOverride: dir);
+      final id = await ZIdentity.generate();
+      await vault.kvPut('identity', jsonEncode(id.toJson()));
+      final s = await ChatService.init(
+          vault: vault,
+          identity: id,
+          displayName: name,
+          transport: Transport(identity: id, serverUrl: 'ws://127.0.0.1:1'),
+          ktConfig: pinnedTo(pinnedPub),
+          ktFetcher: _StubFetcher(witnessUrl: witnessUrl),
+          ktNow: () => t0);
+      s.kt.scheduled = false;
+      // `ktChanged` is how the screen is told; the group queue it also
+      // kicks is not this test's, and is empty.
+      s.debugPauseGroupFanout = true;
+      return s;
+    }
+
+    setUp(() async {
+      dir = Directory.systemTemp.createTempSync('z_ktw_settings');
+      temps.add(dir);
+      svc = await offline('Wren');
+    });
+
+    tearDown(() async {
+      await svc.transport.stop();
+      svc.dispose();
+      await svc.vault.db.close();
+    });
+
+    testWidgets('13. Settings says when the log last agreed with its witness, and when it has gone quiet',
+        (t) async {
+      final en = lookupAppLocalizations(const Locale('en'));
+      final prefs = AppPrefs(root: dir);
+      await t.runAsync(prefs.load);
+      await t.pumpWidget(MultiProvider(
+        providers: [
+          ChangeNotifierProvider<ChatService>.value(value: svc),
+          ChangeNotifierProvider<Transport>.value(value: svc.transport),
+          ChangeNotifierProvider<PushService>.value(
+              value: PushService(transport: svc.transport, vault: svc.vault)),
+          ChangeNotifierProvider<AppLock>.value(
+              value: AppLock(root: dir, store: MemorySecretStore())),
+          ChangeNotifierProvider<AppPrefs>.value(value: prefs),
+        ],
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: ZTheme.light(),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: const SettingsScreen(),
+        ),
+      ));
+      await settleUntil(t, () => find.text(en.stSettings).evaluate().isNotEmpty,
+          what: 'the Settings screen');
+      expect(svc.devMode, isFalse, reason: 'the row is everyone’s, not a developer’s');
+
+      // The agreement five minutes old.
+      svc.kt.witnessOkMs = t0 - 5 * minute;
+      svc.ktChanged();
+      await t.pump();
+      // "Check now" is the row after it, so with that on screen the witness
+      // row has been built if there is one.
+      await t.scrollUntilVisible(find.text(en.stKtCheckNow), 200,
+          scrollable: find.byType(Scrollable).first);
+      final ctx = t.element(find.byType(SettingsScreen));
+      expect(find.text(en.stKtWitnessCheck), findsOneWidget);
+      expect(find.text(en.stKtWitnessAgreed(whenText(ctx, t0 - 5 * minute))), findsOneWidget);
+
+      // Two days old: quiet since then, in the warning tone.
+      svc.kt.witnessOkMs = t0 - 2 * day;
+      svc.ktChanged();
+      await t.pump();
+      expect(find.text(en.stKtWitnessQuiet(whenText(ctx, t0 - 2 * day))), findsOneWidget);
+      final icon = t.widget<Icon>(find.descendant(
+          of: find.widgetWithText(ListTile, en.stKtWitnessCheck), matching: find.byType(Icon)));
+      expect(icon.color, ctx.z.warn);
+
+      // No witness configured: no row.
+      svc.kt.config = KtConfig(logUrl: logUrl, logPubB64: b64(logPub));
+      svc.ktChanged();
+      await t.pump();
+      expect(find.text(en.stKtStatus), findsOneWidget, reason: 'the rows either side are on screen');
+      expect(find.text(en.stKtCheckNow), findsOneWidget, reason: 'the rows either side are on screen');
+      expect(find.text(en.stKtWitnessCheck), findsNothing);
+      expect(find.textContaining(en.stKtWitnessPending), findsNothing);
+    });
+  });
+}
+
+/// Pump until [cond] holds, letting real work run in between: a widget
+/// test's clock is fake, and the vault is real files and a real database.
+/// (As `device_hardening_test.dart` has it.)
+Future<void> settleUntil(WidgetTester t, bool Function() cond,
+    {required String what, Duration timeout = const Duration(seconds: 30)}) async {
+  final deadline = DateTime.now().add(timeout);
+  await t.pump();
+  while (!cond()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('condition not met: $what', timeout);
+    }
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 40)));
+    await t.pump(const Duration(milliseconds: 16));
+  }
 }

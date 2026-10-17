@@ -1816,6 +1816,22 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get stKtWitnessCheck => 'Witness check';
+
+  @override
+  String stKtWitnessAgreed(String when) {
+    return 'The log agreed with its witness $when';
+  }
+
+  @override
+  String get stKtWitnessPending => 'Not checked against its witness yet';
+
+  @override
+  String stKtWitnessQuiet(String when) {
+    return 'No current answer from the witness since $when. Until it answers, the log is not being checked against it.';
+  }
+
+  @override
   String get stKtCheckNow => 'Check now';
 
   @override

@@ -3534,6 +3534,19 @@ reference client; other clients MUST at least refuse to treat an entry as
 confirmed when its proofs fail and MUST NOT accept a head that does not
 extend the one they hold.
 
+A witness's record is held to the same clock. A record whose head's `ts` is
+more than 24 hours old is still checked by step 3 — a different head at its
+size, or a consistency proof that fails in either direction, is a log fault —
+but it is not the witness agreeing: the log re‑signs its head at least every
+ten minutes (§19.4) and a witness following it co‑signs what it verifies, so
+a record that old is from a witness that has stopped, or is a replay. A witness
+that cannot be fetched, or whose record does not verify, is no verdict. The
+witness agrees when a record whose head is current meets step 3. A client
+SHOULD say when its witness last agreed with a current record, and SHOULD say
+when that was more than 24 hours ago, or, with no agreement yet, a day after
+it began asking: a witness gone quiet is one the log is not being checked
+against.
+
 ### 19.6 Publishing
 
 ```

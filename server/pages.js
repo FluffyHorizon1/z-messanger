@@ -531,13 +531,15 @@ const SECURITY_HTML = page(
     <li class="no"><b>Trust starts out of band.</b> If a contact code is
     swapped before it reaches you, you verified the wrong person. That is what
     <a href="/verify">safety numbers</a> exist to catch.</li>
-    <li class="no"><b>The transparency log's witness is new, and the app does
-    not yet watch it.</b> Device-list changes are published to a public,
+    <li class="no"><b>The transparency log's witness is new, and the app
+    watches it only in Settings.</b> Device-list changes are published to a public,
     append-only key-transparency log; the app pins the log's key and, from the
     release that carries it, the key of a witness somebody outside the project
     runs, which checks the log and co-signs what it has verified. The app
-    reaches that witness through our own domain and does not yet tell you when
-    it cannot, so on that path a reader is still trusting us not to show the
+    reaches that witness through our own domain. When the witness goes quiet
+    (no answer, or only a record a day old) the app says so in Settings, not
+    on the home screen, so on that path a reader who never opens Settings is
+    still trusting us not to show the
     log selectively. <a href="/verify">Safety numbers</a> and contact gossip
     catch a swapped key regardless.</li>
     <li class="no"><b>Group membership is asserted by the group's admin</b>

@@ -320,8 +320,10 @@ account co‑signs each head it has verified, and the client pins its key, so
 a log that served one reader a different head from another's is caught by a
 reader whose client reaches the witness's current record. Two limits remain.
 The witness is reached at a name in the project's own domain, so whoever
-controls that domain can withhold its record or serve an old one; and the
-client passes over a witness it cannot reach without saying so
+controls that domain can withhold its record or serve an old one; and since
+2026‑10‑17 the client says the witness has gone quiet, after a day without a
+current record the log agrees with, only in Settings, which a reader who never
+opens it does not see
 (`THREAT_MODEL.md` R7). G3 stays ❌ until a release carries the witness and
 its last condition is confirmed (`GA_CHECKLIST.md`).
 
@@ -431,13 +433,14 @@ assume it does is where harm happens:
   the log means asking the log about that contact, so its operator learns
   whom each user is in contact with (R40). The app does this by default;
   turning it off takes Developer mode.
-* **A witnessed transparency log, not yet watched.** The log runs and the
+* **A witnessed transparency log, watched only in Settings.** The log runs and the
   client pins it (§6), so a device list handed to one contact and not another
   is recorded where both can look; since 2026‑10‑17 the client also pins a
-  witness that somebody outside this project runs. What is missing is the
-  client noticing a witness it cannot reach or whose record is old, and a
-  path to the witness that is not the project's own domain: on that path the
-  log is trusted rather than checked. This bullet is removed when
+  witness that somebody outside this project runs, and says in Settings when
+  that witness has gone quiet — out of reach, or its record a day old. What is
+  missing is a path to the witness that is not the project's own domain, and
+  a warning anywhere but Settings: on that path the log can go unchecked, and
+  only Settings says so. This bullet is removed when
   `GA_CHECKLIST.md` G3 is ticked.
 
 The full list, with severities and status, is the residual-risk register in

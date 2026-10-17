@@ -2924,6 +2924,30 @@ abstract class AppLocalizations {
   /// **'Fault: {reason}'**
   String stKtHealthFault(String reason);
 
+  /// Row label, below Status, for whether the log is being checked against its witness: a copy of the log that somebody else runs, there to catch the log showing different people different histories.
+  ///
+  /// In en, this message translates to:
+  /// **'Witness check'**
+  String get stKtWitnessCheck;
+
+  /// Witness check value: the last time the witness's record was current and the log's head was shown consistent with it. {when} is a date and time.
+  ///
+  /// In en, this message translates to:
+  /// **'The log agreed with its witness {when}'**
+  String stKtWitnessAgreed(String when);
+
+  /// Witness check value before the witness has first agreed with the log, during its first day of being asked.
+  ///
+  /// In en, this message translates to:
+  /// **'Not checked against its witness yet'**
+  String get stKtWitnessPending;
+
+  /// Witness check value, shown as a warning: for more than a day the witness has not agreed with the log over a current record — it could not be reached, or answered only with a record a day old or more, which is what a witness that stopped, or one being withheld, looks like. {when} is a date and time: its last agreement, or when this device first asked it. Load-bearing clause: the second sentence, which says the protection is not working until then.
+  ///
+  /// In en, this message translates to:
+  /// **'No current answer from the witness since {when}. Until it answers, the log is not being checked against it.'**
+  String stKtWitnessQuiet(String when);
+
   /// Row action: run a check immediately.
   ///
   /// In en, this message translates to:

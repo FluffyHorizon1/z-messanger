@@ -1836,6 +1836,22 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String get stKtWitnessCheck => 'Comprobación con el testigo';
+
+  @override
+  String stKtWitnessAgreed(String when) {
+    return 'El registro coincidió con su testigo $when';
+  }
+
+  @override
+  String get stKtWitnessPending => 'Aún no comprobado con su testigo';
+
+  @override
+  String stKtWitnessQuiet(String when) {
+    return 'Sin una respuesta al día del testigo desde $when. Hasta que responda, el registro no se está comprobando con él.';
+  }
+
+  @override
   String get stKtCheckNow => 'Comprobar ahora';
 
   @override

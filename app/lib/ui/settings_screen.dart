@@ -451,6 +451,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: Text(_ktHealthText(context, l, svc.kt),
                 style: const TextStyle(fontSize: 12)),
           ),
+          // §19.5: when the log last agreed with its witness — and, a day
+          // without that, that the witness has gone quiet: withheld, stopped
+          // or replayed, it is one the log is no longer checked against, and
+          // nothing else on any screen says so. Everyone's row, like Status.
+          if (svc.kt.witnessState != KtWitnessState.none)
+            ListTile(
+              leading: Icon(_ktWitnessIcon(svc.kt.witnessState),
+                  color: _ktWitnessTone(context, svc.kt.witnessState)),
+              title: Text(l.stKtWitnessCheck),
+              subtitle: Text(_ktWitnessText(context, l, svc.kt),
+                  style: const TextStyle(fontSize: 12)),
+            ),
           if (svc.kt.health != KtHealth.off)
             ListTile(
               leading: const Icon(Icons.refresh),
@@ -641,6 +653,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
         KtHealth.unreachable => context.z.warn,
         KtHealth.fault => context.z.danger,
         _ => context.z.textSecondary,
+      };
+
+  static IconData _ktWitnessIcon(KtWitnessState s) => switch (s) {
+        KtWitnessState.none => Icons.verified_outlined,
+        KtWitnessState.pending => Icons.verified_outlined,
+        KtWitnessState.agreed => Icons.verified,
+        KtWitnessState.quiet => Icons.cloud_off_outlined,
+      };
+
+  static Color _ktWitnessTone(BuildContext context, KtWitnessState s) => switch (s) {
+        KtWitnessState.agreed => context.z.ok,
+        KtWitnessState.quiet => context.z.warn,
+        _ => context.z.textSecondary,
+      };
+
+  static String _ktWitnessText(BuildContext context, AppLocalizations l, KeyTransparency kt) =>
+      switch (kt.witnessState) {
+        KtWitnessState.agreed => l.stKtWitnessAgreed(whenText(context, kt.witnessOkMs ?? 0)),
+        KtWitnessState.quiet => l.stKtWitnessQuiet(whenText(context, kt.witnessQuietSinceMs ?? 0)),
+        _ => l.stKtWitnessPending,
       };
 
   /// ADR 0029: the device-list signing row — the form the list is signed in,

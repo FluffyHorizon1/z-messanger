@@ -104,9 +104,13 @@ left is condition 4, and a release that carries them.
 
 One gap is not among the four, and is R7's in `THREAT_MODEL.md`. The client
 reaches the witness at `witness.zmessengers.com`, a name in the project's own
-domain, and it passes over a witness it cannot reach, or whose record is old,
-without saying so. Whoever controls that domain cannot sign as the witness,
-but could withhold its record from a reader it shows a fork to.
+domain. Whoever controls that domain cannot sign as the witness, but could
+withhold its record, or serve an old one, from a reader it shows a fork to.
+Since 2026‑10‑17 the client says so: a record whose head is a day old does
+not count as the witness agreeing, and Settings › Transparency log says when
+the witness last agreed with a current record, and that it has gone quiet
+after a day without one. It says so in Settings, not on the home screen, so
+a reader who never opens Settings is not told.
 
 **The two witness values go into `app/lib/core/key_transparency.dart`, beside
 the log's, and not onto a build command.** This was open; the evidence

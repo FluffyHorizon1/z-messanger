@@ -2346,6 +2346,32 @@
       }
     }
   },
+  "stKtWitnessCheck": "Witness check",
+  "@stKtWitnessCheck": {
+    "description": "Row label, below Status, for whether the log is being checked against its witness: a copy of the log that somebody else runs, there to catch the log showing different people different histories."
+  },
+  "stKtWitnessAgreed": "The log agreed with its witness {when}",
+  "@stKtWitnessAgreed": {
+    "description": "Witness check value: the last time the witness's record was current and the log's head was shown consistent with it. {when} is a date and time.",
+    "placeholders": {
+      "when": {
+        "type": "String"
+      }
+    }
+  },
+  "stKtWitnessPending": "Not checked against its witness yet",
+  "@stKtWitnessPending": {
+    "description": "Witness check value before the witness has first agreed with the log, during its first day of being asked."
+  },
+  "stKtWitnessQuiet": "No current answer from the witness since {when}. Until it answers, the log is not being checked against it.",
+  "@stKtWitnessQuiet": {
+    "description": "Witness check value, shown as a warning: for more than a day the witness has not agreed with the log over a current record — it could not be reached, or answered only with a record a day old or more, which is what a witness that stopped, or one being withheld, looks like. {when} is a date and time: its last agreement, or when this device first asked it. Load-bearing clause: the second sentence, which says the protection is not working until then.",
+    "placeholders": {
+      "when": {
+        "type": "String"
+      }
+    }
+  },
   "stKtCheckNow": "Check now",
   "@stKtCheckNow": {
     "description": "Row action: run a check immediately."

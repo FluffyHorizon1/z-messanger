@@ -48,7 +48,8 @@ builds have not.
   hidden by being shown to only some of them — unless the log itself shows
   different readers different histories, which only a witness outside the
   project catches: one runs under another person's account and the app pins
-  it from 2026‑10‑17, though the app does not yet say when it cannot reach it
+  it from 2026‑10‑17, and Settings says when it last agreed with the log, or
+  that it has gone quiet
   ([`docs/GA_CHECKLIST.md`](docs/GA_CHECKLIST.md), G3).
 - **Everything on the device is encrypted.** An on‑device vault with every
   sensitive cell sealed under a key in the OS keystore, an optional
