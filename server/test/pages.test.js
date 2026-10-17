@@ -375,16 +375,12 @@ test('assetlinks: the app link it authorises is the one the manifest claims',
     );
     assert.ok(manifest.includes('android:host="zmessengers.com"'),
       'the manifest does not claim zmessengers.com');
-    // 17.3b: `/i` is claimed EXACTLY, and the prefix form must not come
-    // back. `pathPrefix="/i"` also claims /index.html, /images/... and every
-    // other page whose path begins with that letter, so once the hosts
-    // verify, a tap on any of them would open the app instead of the
-    // browser. The parser was widened the same way and narrowed with it.
+    // The path itself, not a prefix (2026-10-16): a prefix of /i also claims
+    // /index.html and every other page whose path begins with the letter.
     assert.ok(manifest.includes('android:path="/i"'),
-      'the manifest does not claim /i exactly');
-    assert.ok(!manifest.includes('android:pathPrefix="/i"'),
-      'the manifest claims /i as a path PREFIX, which claims /index.html ' +
-      'and /images/... with it; name the path exactly');
+      'the manifest does not claim /i');
+    assert.ok(!/android:pathPrefix="\/i"/.test(manifest),
+      'the manifest claims /i as a prefix, and with it every page beginning with the letter');
     assert.ok(manifest.includes('android:autoVerify="true"'),
       'without autoVerify the assetlinks file is never fetched');
     const pkg = JSON.parse(androidAssetLinks(FAKE_PRINT))[0].target.package_name;
