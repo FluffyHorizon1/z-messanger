@@ -1284,11 +1284,11 @@ code.
 
 ### 8.3 The introduction key (`adr/0033`, addendum A)
 
-*Built in 44.9 (the library and `vectors/intro-key/`); the relay's half,
-§12.7, is 44.10's. **No client publishes or fetches an introduction key
-before 44.11–44.12, emits `sk` before 44.11, or sends `zs2.` before 44.7**,
-which waits for constant‑time ML‑KEM upstream: until then this section
-defines values the library computes, and nothing a client sends.*
+*Built in 44.9 (the library and `vectors/intro-key/`) and 44.10 (the relay,
+§12.7). **No client publishes or fetches an introduction key before
+44.11–44.12, emits `sk` before 44.11, or sends `zs2.` before 44.7**, which
+waits for constant‑time ML‑KEM upstream: until then this section defines
+values the library computes and the relay keeps, and nothing a client sends.*
 
 A device's **introduction key** is its sealing key — `adr/0033` §1's
 ML‑KEM‑768 pair, one per device for its life — kept at its relay so that a
@@ -2032,9 +2032,9 @@ names or (with §8) senders.
 ### 12.1 Connection and authentication
 
 ```
-S→C  { "t":"challenge", "nonce":b64(32 random bytes), "auth":2 }  // first frame
+S→C  { "t":"challenge", "nonce":b64(32 random bytes), "auth":2, "ik":1 }  // first frame; ik: §12.7
 C→S  { "t":"auth", "v":2, "pub":b64(edPub), "sig":b64( Ed25519.sign(edSeed, utf8("z-relay-auth-v2:") || utf8(authority) || nonce) ) }
-S→C  { "t":"ready", "id":routingId }                              // then queued frames are flushed
+S→C  { "t":"ready", "id":routingId, "ik"?:b64url(16 bytes) }      // then queued frames are flushed; ik: §12.7
 ```
 
 `authority` is the relay as the client dialled it: the URL's host in lower
@@ -2081,10 +2081,10 @@ default; a `ping` counts, so an anonymous sender that pings is never closed)
 with code 4003, refuses a connection past its connection caps with 1013, and
 drops without a close frame one whose unread output passes its send‑buffer
 caps; in every case what is queued stays queued for the next connection.
-Before `ready`, `push-register`, `intro` (§21.6) and a `send` whose
-payload is not sealed are answered with `error{not_authed}`, `recv` and
-`push-unregister` are ignored, and `ping` is answered; a repeated `auth` is
-ignored.
+Before `ready`, `push-register`, `intro` (§21.6), `ikey` (§12.7) and a
+`send` whose payload is not sealed are answered with `error{not_authed}`,
+`recv` and `push-unregister` are ignored, and `ping` and `ikey_get` (§12.7)
+are answered; a repeated `auth` is ignored.
 
 **Anonymous connections** (2026‑09‑11, 16.1 — a relaxation, so a compatible
 extension under §14: a client that authenticates first behaves as before). A
@@ -2126,6 +2126,8 @@ S→C  { "t":"delivered", "id":envelopeId, "to":routingId, "ts":int }   // attri
 C→S  { "t":"push-register", "token":string, "platform":string }   S→C { "t":"push-ok" }
 C→S  { "t":"push-unregister" }                                     S→C { "t":"push-ok" }
 C→S  { "t":"intro", "pow":int }                                    S→C { "t":"intro_ok" }      // §21.6
+C→S  { "t":"ikey", "ek":b64(1184 bytes), "iks":b64(64 bytes) }     S→C { "t":"ikey_ok" }       // §12.7
+C→S  { "t":"ikey_get", "to":routingId }                            S→C { "t":"ikey_for", "to":routingId, "ek"?:b64, "iks"?:b64 }   // §12.7: never authenticated only
 C→S  { "t":"ping" }                                                S→C { "t":"pong", "ts":int }
 S→C  { "t":"error", "code":string, "id"?:envelopeId, "bits"?:int, "day"?:int }  // bits, day: pow_required only
 ```
@@ -2153,7 +2155,7 @@ under §14 —
 `queue_full` and `store_full` (§12.4), each carrying the `id` of the `send`
 it answers, and — since phase 37, likewise — `pow_required`, carrying the
 `id`, the `bits` the recipient asks for and the relay's `day`, `bad_intro`
-and `push_refused` (§21.6), and `intro_full` (§21.6) since 2026‑10‑10 — a code a relay may answer and this one no longer does (2026‑10‑15). A `payload` over the cap is answered `too_large` whatever else
+and `push_refused` (§21.6), and `intro_full` (§21.6) since 2026‑10‑10 — a code a relay may answer and this one no longer does (2026‑10‑15) — and, since 44.10, likewise, `bad_ikey` and `anon_only` (§12.7). A `payload` over the cap is answered `too_large` whatever else
 is wrong with the frame: it is the one refusal a client must not retry, so
 it is decided before the recipient is looked at. A `to` that is not a
 routing id (43 characters of `b64url`) is `bad_send` — the relay will not
@@ -2326,6 +2328,117 @@ counter or instance id), `GET /metrics` (Prometheus, aggregate only — no
 per‑user data; requires `Authorization: Bearer <METRICS_TOKEN>`, and answers
 404 when no token is configured, since even aggregate counters are a presence
 oracle — P1‑14), `GET /` and `GET /privacy` (static pages).
+
+### 12.7 Introduction keys at the relay (44.10; `adr/0033`, addendum A)
+
+*Built in 44.10, and inert: **no client publishes or fetches an introduction
+key before 44.11–44.12, and no client sends `zs2.` before 44.7**. A relay
+that runs this keeps nothing until a client publishes, and an older one is
+never sent these frames.*
+
+A relay may keep, for each mailbox, the **introduction key** its device
+publishes (§8.3): the device's sealing key `ek` and `iks`, its signature by
+the key the mailbox is the hash of. It says so in every challenge, and names
+the entry it holds for a connection's routing id in that connection's
+`ready`:
+
+```
+S→C  { "t":"challenge", "nonce":…, "auth":2, "ik":1 }                       this relay keeps introduction keys
+S→C  { "t":"ready", "id":rid, "ik"?:b64url( SHA-256(ek || iks)[0..16] ) }     the entry it holds for rid, if any
+C→S  { "t":"ikey", "ek":b64(1184 bytes), "iks":b64(64 bytes) }              a connection authenticated with v2; its own routing id
+S→C  { "t":"ikey_ok" }
+C→S  { "t":"ikey_get", "to":rid }                                            a connection that never authenticated
+S→C  { "t":"ikey_for", "to":rid, "ek"?:b64(1184 bytes), "iks"?:b64(64 bytes) }   both, or neither
+S→C  { "t":"error", "code":"bad_ikey" | "anon_only" }                        neither carries an id
+```
+
+**Publishing.** A device sends `ikey` on its authenticated connection after a
+login whose `ready` does not name its entry — the first time, and after the
+relay has lost it — and only to a relay whose challenge said `ik:1`. The
+frame names no routing id: the entry is for the routing id the connection
+authenticated as, and only the bound form counts, so `ikey` on a connection
+that has not authenticated, or that authenticated with v1 — a signature
+another relay can have drawn out of the device (R33) — is answered
+`error{not_authed}`. The relay checks that `ek` and `iks` are the canonical
+`b64` of 1 184 and 64 bytes and that `iks` verifies under the key the
+connection authenticated as, over `utf8("z-intro-key-v1:") || that key ||
+SHA-256(ek)`; anything else is refused `error{bad_ikey}` and nothing is kept.
+It checks nothing more of the key: the modulus check is the sender's (§8.3),
+whatever the relay did. A taken entry is answered `ikey_ok`. One that
+replaces the entry held for that routing id takes its place and renews
+nothing. `ikey` frames are paced at `IKEY_PER_RID_PER_MIN` (6) a minute per
+routing id, every frame counting, and — only where `CLIENT_IP_HEADER` names
+the client's address — new entries at `IKEY_NEW_PER_IP_PER_MIN` (10) a minute
+per address, a replacement not counting; past either the frame is answered
+`error{rate_limited}` and the entry held stays as it was. A store with no
+room for a new entry answers `internal`, and the device publishes again at its
+next login.
+
+**Fetching.** `ikey_get` is taken only on a connection that never
+authenticated — the one the envelope it is for will be sent on, immediately
+before it (§8.3) — and is answered `ikey_for`, carrying both halves of the
+entry held for `to` or neither. The answer for a mailbox the relay has never
+seen is the answer for an owned one that keeps no key. On an authenticated
+connection `ikey_get` is answered `error{anon_only}` whatever it names, and
+counted: asked there, the fetch would name the asking device beside the
+mailbox (`adr/0007`). A `to` that is not a routing id (§12.2) is answered
+`error{bad_ikey}`. The relay keeps no record of fetches — no address, no
+routing id, no time — beyond the counts below; they are paced as any frame is
+(§12.4).
+
+**The store.** Public keys only, RAM only, and nothing about who asks:
+
+```
+RAM     ikeys: rid → (ek || iks, at)   a store of its own: IKEY_CAP (20 000) entries, the least recently authenticated forgotten first
+Redis   ik:{rid} = ek || iks           1 248 bytes, raw; its TTL renewed with owned:{rid} at each login, and kept by a re-publish
+        ik:epoch                       a random value an instance holding copies sets when it finds none; a store that comes back empty has none
+```
+
+A new entry lives `OWNED_TTL_DAYS` (30) from its publish, which follows the
+login it rides on; each later login of its routing id renews it, as it renews
+`owned:{rid}`; a re-publish renews nothing. So a device offline for days keeps
+its key at the relay, and only a month without a login, the cap or a lost
+store removes it. Past `IKEY_CAP` a new entry is taken and the one whose
+routing id authenticated least recently is forgotten for it — in a shared
+store, at the sweep, the entry with the least life left — never refused, so
+whoever fills the store cannot keep a device's key out of it. In a shared
+store each instance also keeps a copy of the entry of every socket it holds,
+and its heartbeat puts those back — with the life each had left, and only
+where the store holds none — when it finds `ik:epoch` gone or changed.
+
+**What a restart does.**
+
+| Event | Entries | First contacts meanwhile |
+|---|---|---|
+| A RAM relay restarts (every deploy, and a free plan's sleep) | all lost, with the queues | Every connected device logs in again, finds its entry unnamed in `ready` and publishes. A device that was offline publishes at its next login. Until then a promised route waits (§8.3, `adr/0033` A4) and the rest go classical, marked |
+| An instance of several restarts (a rolling deploy) | kept, in the shared store | nothing changes |
+| The shared store restarts (persistence off) | all lost | each instance's heartbeat puts back the entries of the sockets it holds; offline devices as above |
+| Eviction past `IKEY_CAP` | the least recently authenticated | as an offline device after a restart |
+
+Nothing is written to disk, and a seized machine holds no key and no list of
+mailboxes. `/metrics` counts publishes taken (`z_ikey_published_total`),
+answers with an entry and with none (`z_ikey_served_total`,
+`z_ikey_missing_total`), entries forgotten past the cap
+(`z_ikey_evicted_total`) and fetches refused on an authenticated connection
+(`z_ikey_anon_only_total`), and reports how many entries are held (`z_ikeys`).
+
+**What the relay learns.** At a publish, that a routing id holds a sealing
+key — which says its build is current, as its login and its `zs2.` traffic
+already do (R2); the key is public, and each device's entry is its own,
+signed by its own key, so entries cannot be grouped into accounts. At a
+fetch, that an anonymous socket — an address (R21) — is about to reach that
+mailbox for the first time; the send writes the same thing a moment later, on
+the same socket, and a fetch that finds nothing still shows that an address
+meant to reach it. The frame names the mailbox and nothing else, and
+Cloudflare sees the same (R44). The relay can withhold, refuse or delay a key,
+which a promised route turns into a visible wait and any other into a
+classical first contact the screens record (`adr/0033` A4); it can serve a
+key that fails `iks` or `sk`, which the sender refuses, or a stale one, which
+amounts to a dropped envelope (R14); it cannot serve a key of its own without
+an Ed25519 forgery now. An entry says its device logged in within 30 days and
+since the store last lost its data, so after a loss whoever polls learns when
+the device came back. A fetch must name a routing id: there is no
+enumeration.
 
 ## 13. Local storage and identity backup (informative)
 

@@ -57,8 +57,9 @@ recipient device so the relay does not learn who sent it.
 
 ## What Z protects against
 
-- **A malicious or compromised relay.** The relay never has keys or
-  plaintext. It cannot read, alter, or forge messages, and — with sealed
+- **A malicious or compromised relay.** The relay never has private keys
+  or plaintext (the introduction keys it keeps since 44.10 are public,
+  `PROTOCOL.md` §12.7). It cannot read, alter, or forge messages, and — with sealed
   sender — it is not told who sent an envelope: not by the envelope, and
   not by the connection it arrived on, which never authenticated (§12.1).
   Until 16.1 the second half was not true: sealed envelopes were sent on

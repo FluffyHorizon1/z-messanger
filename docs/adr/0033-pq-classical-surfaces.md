@@ -10,11 +10,11 @@ and adds a register row for each classical surface that remains as its part
 lands.
 **Built:** 44.2 — the relay treats `zs2.` as sealed (PROTOCOL §12.1); 44.9 —
 the introduction key in the protocol library, `sk` in contact codes and the
-relay client's frames, with their vectors (§8.3, `vectors/intro-key/`).
-Nothing a client sends has changed: no client seals `zs2.` before 44.7, which
-waits for constant‑time ML‑KEM upstream, and none publishes, fetches or emits
-an introduction key or `sk` before 44.11–44.12. The rest of the build plan
-below is not built.
+relay client's frames, with their vectors (§8.3, `vectors/intro-key/`);
+44.10 — the relay keeps introduction keys (§12.7). Nothing a client sends has
+changed: no client seals `zs2.` before 44.7, which waits for constant‑time
+ML‑KEM upstream, and none publishes, fetches or emits an introduction key or
+`sk` before 44.11–44.12. The rest of the build plan below is not built.
 **Decides:** for each surface the 3 October analysis (§4.3) found classical —
 pairing enrolment, CONNECT, the sealed outer layer, contact requests, the
 device a scanned code names, session authentication — what becomes hybrid, on
@@ -314,8 +314,9 @@ records when this phase's client half lands.
 
 * **Docs.** PROTOCOL §1, §6.2, §8.1–8.2, §9, §10.2, §12.1, §13, §15,
   §18.2–18.3, §18.11, §20.9, §21.3; THREAT_MODEL's edges paragraph;
-  AUDIT_SCOPE, a claim for each part as it lands; `CAPACITY.md`;
-  WHAT_Z_CANNOT_DO; WHITEPAPER; DATA_MAP's wire shapes; the ADR index.
+  AUDIT_SCOPE, a claim for each part as it lands (C39, the relay's
+  introduction keys, with 44.10); `CAPACITY.md`; WHAT_Z_CANNOT_DO;
+  WHITEPAPER; DATA_MAP's wire shapes; the ADR index.
 
 ## Decisions (Finnian's, 2026‑10‑17)
 
@@ -357,7 +358,7 @@ failing test on the base where it can be expressed, and a mutation check.
 | 44.7 | `zs2.` switched on | 44.2 deployed, 44.3, constant-time ML-KEM upstream (decision 4) | planned; goes last |
 | 44.8 | `kintro`: as addendum A changes it, §21.3's relay-held key signed by `intro`; the record does not change | 44.9–44.12 | planned; lands with the held-back handles hardening |
 | 44.9 | Protocol core and vectors of addendum A: `iks`, the entry, `sk` in codes, the FIPS 203 key check, `kintro`, the relay-client frames | 44.1, to be used (built on the library's ML-KEM) | **built**; nothing emits |
-| 44.10 | The relay keeps introduction keys | 44.2 | planned; inert until 44.11, deploy before it |
+| 44.10 | The relay keeps introduction keys | 44.2 | **built**; inert until 44.11, deploy before it |
 | 44.11 | Devices publish | 44.3, 44.10 deployed | planned; ships with 44.7 |
 | 44.12 | Senders fetch, verify and wait | 44.7, 44.9, 44.11 | planned; after 44.7, in the same release or the next |
 
@@ -368,10 +369,10 @@ Hybrid session authentication (§7) is not in phase 44. It belongs to phase
 
 ## Addendum A — a relay-held introduction key (open question 5)
 
-**Status:** **Accepted** (2026‑10‑17), with the relay half built now: 44.9,
-and 44.10 to follow (above); the client half (44.11, 44.12) ships with 44.7.
-Nothing in it does anything before 44.7 switches `zs2.` on, and 44.7 waits
-for constant-time ML-KEM upstream (decision 4).
+**Status:** **Accepted** (2026‑10‑17), with the relay half built now (44.9 and
+44.10, above); the client half (44.11, 44.12) ships with 44.7. Nothing in it
+does anything before 44.7 switches `zs2.` on, and 44.7 waits for
+constant-time ML-KEM upstream (decision 4).
 - **Replaces:** 0033 §6 ("classical on the code path") and 0033's fourth
   "Rejected" entry.
 - **Changes:** 0033 §5's sender rule ("`zs1.` otherwise"), and 44.8.
@@ -384,7 +385,7 @@ for constant-time ML-KEM upstream (decision 4).
   Register); adds three rows when the client half lands — a withheld key, a
   key's return after a store loss, an entry a flood pushes out — and a claim
   that a first contact is sealed post-quantum or its screen says it was not.
-  The relay half adds a claim of its own with 44.10.
+  The relay half's own claim is AUDIT_SCOPE C39.
 
 References: plain "§N" is PROTOCOL, including the sections phase 44 adds
 (§8.2, §20.9); "0033 §N" is a section of this ADR, above; "A1"–"A8" are this
@@ -512,7 +513,8 @@ Pacing and the cap:
   `intro` is.
 - `IKEY_CAP` (default 20 000) bounds what a flood of fresh keys can push out,
   as `INTRO_CAP` does for flags. It is enforced in each mode as `INTRO_CAP`
-  is.
+  is. *(Built, 44.10: an entry measured at ≈1.6 KB in RAM, so the default
+  is ≈32 MB; `CAPACITY.md`.)*
 
 #### A3. Fetching: on the send's own connection, just before it
 
@@ -650,7 +652,7 @@ waiting for `pqseal`.
 |---|---|---|
 | A RAM relay restarts (every deploy, and the free plan's sleep) | all lost, with the queues | Every connected device reconnects and republishes within seconds (estimated). A device that was offline republishes at its next login. Until then promised routes wait (a knock wakes a push device), and the rest go classical, marked. |
 | An HA instance restarts (rolling deploy) | kept | nothing changes |
-| The HA store restarts (persistence off) | all lost | Each instance keeps a copy of the entry of every socket it holds (≈1.3 KB a connected device, estimated). Its heartbeat finds `ik:epoch` changed or gone and puts them back within 25 s. Offline devices as above. |
+| The HA store restarts (persistence off) | all lost | Each instance keeps a copy of the entry of every socket it holds (≈1.5 KB a connected device, measured). Its heartbeat finds `ik:epoch` changed or gone and puts them back within 25 s. Offline devices as above. |
 | Eviction past `IKEY_CAP` | the least recently authenticated | as an offline device after a restart |
 
 The store stays RAM-only. Nothing is written to disk, and a seized machine
@@ -749,8 +751,9 @@ store is neither:
   keeps.
 - Without it, first contact works as it does today, and is marked.
 
-What is new is size — about 1.6 KB a device, against about 120–160 bytes
-for an owner record or a flag — and that senders read it.
+What is new is size — about 1.6 KB a device (estimated, and ≈1.6 KB as
+measured with 44.10), against about 120–160 bytes for an owner record or a
+flag — and that senders read it.
 
 **A fetch the relay can withhold.** True, and it cannot be prevented: any
 relay can also drop the envelope itself (R14, R27). What the design
@@ -841,7 +844,9 @@ delay.
   - three settings: `IKEY_CAP`, `IKEY_NEW_PER_IP_PER_MIN` and
     `IKEY_PER_RID_PER_MIN`;
   - five counters: `z_ikey_published_total`, `z_ikey_served_total`,
-    `z_ikey_missing_total`, `z_ikey_evicted_total` and `z_ikeys`;
+    `z_ikey_missing_total`, `z_ikey_evicted_total` and `z_ikeys` — and, built,
+    `z_ikey_anon_only_total`, the count of the fetches A3 says are refused on
+    an authenticated connection;
   - one Ed25519 verification per publish;
   - in Redis mode, a copy of each socket's entry.
 
@@ -853,8 +858,8 @@ delay.
 | A code | +70 characters (computed; in the vectors a root code goes from 500 to 570 and a linked one from 872 to 942) |
 | A publish | ≈1.7 KB, sent only when `ready` does not show the entry |
 | A fetch's answer | ≈1.75 KB, once per device reached |
-| The store | ≈1.5–1.7 KB a device (estimated); 10 000 devices ≈16–17 MB; `IKEY_CAP` 20 000 ≈31–34 MB |
-| The put-back copy (Redis mode) | ≈1.3 KB per socket an instance holds (estimated) |
+| The store | ≈1.5–1.7 KB a device (estimated) — measured with 44.10 at ≈1.6 KB in RAM and ≈1.5 KB in Redis, so `IKEY_CAP`'s 20 000 are ≈32 MB and ≈29 MB (`CAPACITY.md`) |
+| The put-back copy (Redis mode) | ≈1.3 KB per socket an instance holds (estimated) — measured at ≈1.5 KB |
 | CPU | sealing costs as 0033 §5 says (+0.8 ms), plus one strict Ed25519 verification per fetched key (a few ms in Dart, estimated — measured with 44.9 at ≈4 ms, JIT) |
 
 - **Storage on the client.**
@@ -931,7 +936,7 @@ marks the same first contact the `pqid` already marks.
   - CAPACITY.
   - SELF_HOSTING: the new settings, and "what a restart forgets".
   - AUDIT_SCOPE: a claim that a first contact is sealed post-quantum, or its
-    screen says it was not; and, with the relay half, a claim of its own.
+    screen says it was not; and, with the relay half, C39.
   - WHAT_Z_CANNOT_DO; WHITEPAPER.
   - `render.ha.yaml`: "never keys" becomes "never private keys". That edit is
     Finnian's, alongside ADR 0035's day-key line.

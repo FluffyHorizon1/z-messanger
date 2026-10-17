@@ -224,6 +224,26 @@ const CFG = {
   // bucket, since the cap above bounds the store either way.
   introPerRidPerMin: intEnv('INTRO_PER_RID_PER_MIN', 6),
   introNewPerIpPerMin: intEnv('INTRO_NEW_PER_IP_PER_MIN', 10),
+  // --- introduction keys (44.10, ADR 0033 addendum A, PROTOCOL §12.7) ---
+  //
+  // A device's sealing key — its ML-KEM-768 encapsulation key, public — with
+  // its signature by the key its mailbox is the hash of: `ek || iks`, 1 248
+  // bytes, kept so that a sender who has never heard from the device can seal
+  // its first envelope to it post-quantum. Public keys only, and RAM only —
+  // in a shared store `ik:{rid}`, which keeps nothing on disk either — and
+  // inert until a client publishes one, which none does before 44.11. How
+  // many this relay keeps: a store of its own, as the flags are, past which a
+  // NEW entry is taken and the one whose routing id authenticated least
+  // recently is forgotten for it (z_ikey_evicted_total), so what a flood of
+  // fresh keys can push out is bounded the way INTRO_CAP bounds it for flags.
+  // Measured at ≈1.6 KB an entry in RAM, so ≈32 MB at the default
+  // (docs/CAPACITY.md).
+  ikeyCap: intEnv('IKEY_CAP', 20000),
+  // `ikey` frames a minute from one routing id, and NEW entries a minute from
+  // one client address — the second only where CLIENT_IP_HEADER names it, for
+  // the reason INTRO_NEW_PER_IP_PER_MIN gives. Per instance.
+  ikeyPerRidPerMin: intEnv('IKEY_PER_RID_PER_MIN', 6),
+  ikeyNewPerIpPerMin: intEnv('IKEY_NEW_PER_IP_PER_MIN', 10),
   // Connection caps. The global one is always on. The per-IP one engages only
   // when CLIENT_IP_HEADER is set, because keyed on a shared front address it
   // would cap the whole relay's connections at one number (the global cap is
@@ -494,6 +514,58 @@ function isSealedPayload(payload) {
   return SEALED_PREFIXES.some((p) => payload.startsWith(p));
 }
 
+// Introduction keys (44.10, PROTOCOL §12.7, §8.3). An entry is a device's
+// ML-KEM-768 encapsulation key and `iks`, Ed25519 by the key the mailbox is
+// the hash of over the context, that key and SHA-256 of the encapsulation
+// key — the two fields after the context fixed-width, so the concatenation is
+// unambiguous. The relay checks the lengths and that signature and nothing
+// else: the modulus check (FIPS 203 §7.2) is the sender's, who refuses a key
+// that fails it whatever the relay did.
+const IKEY_CONTEXT = Buffer.from('z-intro-key-v1:', 'utf8');
+const IKEY_EK_BYTES = 1184;
+const IKEY_SIG_BYTES = 64;
+const IKEY_ENTRY_BYTES = IKEY_EK_BYTES + IKEY_SIG_BYTES;
+
+/** The bytes of [s] if it is the canonical base64 of exactly [n] bytes, else
+ * null: one spelling per entry, so what is checked is what is kept. */
+function exactB64(s, n) {
+  if (typeof s !== 'string' || s.length !== 4 * Math.ceil(n / 3)) return null;
+  const b = Buffer.from(s, 'base64');
+  return b.length === n && b.toString('base64') === s ? b : null;
+}
+
+/**
+ * A copy of [b] in a buffer of its own. A Buffer under 4 KiB comes out of
+ * Node's shared 8 KiB pool, and a kept slice keeps its whole slab alive —
+ * with whatever was decoded beside it — so an entry built from a frame by
+ * `Buffer.concat` held ≈3.0 KB, and one kept in a buffer of its own ≈1.6 KB
+ * (measured, `bench/capacity.js`; the transparency log's entries paid the
+ * same way until 2026-10-04, docs/CAPACITY.md).
+ */
+function ownBuffer(b) {
+  const out = Buffer.allocUnsafeSlow(b.length);
+  b.copy(out);
+  return out;
+}
+
+/** An `ikey` frame's key and signature — each the canonical base64 of its
+ * length — and the entry `ek || iks` in a buffer of its own, or null. The
+ * signature is not checked here: it is the authenticated key's to check. */
+function ikeyFrameEntry(frame) {
+  const ek = exactB64(frame && frame.ek, IKEY_EK_BYTES);
+  const iks = exactB64(frame && frame.iks, IKEY_SIG_BYTES);
+  if (!ek || !iks) return null;
+  const entry = ownBuffer(Buffer.concat([ek, iks]));
+  return { ek: entry.subarray(0, IKEY_EK_BYTES), iks: entry.subarray(IKEY_EK_BYTES), entry };
+}
+
+/** What `ready` names an entry by: b64url of the first 16 bytes of its
+ * SHA-256 — enough for a device to tell its own entry from any other, and
+ * nothing a sender can use: a sender is answered `ikey_for`, never `ready`. */
+function ikeyHint(entry) {
+  return crypto.createHash('sha256').update(entry).digest().subarray(0, 16).toString('base64url');
+}
+
 // Introduction mailboxes (phase 37, PROTOCOL §21.6). The owner flags its
 // mailbox with a difficulty in [INTRO_POW_MIN, INTRO_POW_MAX]; a send to it
 // then carries `pow`, b64url of a 16-byte nonce such that
@@ -748,6 +820,20 @@ const METRICS = {
   // comes back at its owner's next drain. In Redis mode counted by the
   // instance whose sweep did the forgetting.
   introEvictedTotal: 0,
+  // Introduction keys (44.10, PROTOCOL §12.7). Publishes taken (new entries
+  // and replacements); fetches answered with an entry and with none — a count
+  // of answers, never of who asked or about whom; entries forgotten to make
+  // room for a new one past IKEY_CAP, the least recently authenticated first
+  // (a steady rate is a flood of fresh keys, each victim's entry back at its
+  // next login; in Redis mode counted by the instance whose sweep forgot);
+  // and fetches refused because they came on an authenticated connection,
+  // which a client that does what §8.3 says never sends. Zero, all five,
+  // until clients publish (44.11).
+  ikeyPublishedTotal: 0,
+  ikeyServedTotal: 0,
+  ikeyMissingTotal: 0,
+  ikeyEvictedTotal: 0,
+  ikeyAnonOnlyTotal: 0,
   // First-contact sends refused by an unowned-mailbox limit (P0-4): the
   // per-unowned-mailbox byte cap, the relay-wide unowned budget, or the
   // per-IP unowned rate. All reach the sender as `store_full` (retried), and
@@ -960,6 +1046,13 @@ function renderMetrics(stats, meta = {}) {
     L.push('# TYPE z_intro_mailboxes gauge');
     L.push(`z_intro_mailboxes ${stats.introMailboxes}`);
   }
+  // How many introduction keys the relay keeps (44.10) — what IKEY_CAP is
+  // checked against. RAM mode counts its entries; Redis mode reports what its
+  // last sweep counted (absent until then), the same on every instance.
+  if (stats.ikeys !== undefined) {
+    L.push('# TYPE z_ikeys gauge');
+    L.push(`z_ikeys ${stats.ikeys}`);
+  }
   // Sockets whose presence write the full store refused (Redis mode): their
   // mail is queued, not pushed, until the heartbeat repairs it. Conditional.
   if (stats.presenceStale !== undefined) {
@@ -986,6 +1079,16 @@ function renderMetrics(stats, meta = {}) {
   L.push(`z_intro_duplicate_total ${METRICS.introDuplicateTotal}`);
   L.push('# TYPE z_intro_evicted_total counter');
   L.push(`z_intro_evicted_total ${METRICS.introEvictedTotal}`);
+  L.push('# TYPE z_ikey_published_total counter');
+  L.push(`z_ikey_published_total ${METRICS.ikeyPublishedTotal}`);
+  L.push('# TYPE z_ikey_served_total counter');
+  L.push(`z_ikey_served_total ${METRICS.ikeyServedTotal}`);
+  L.push('# TYPE z_ikey_missing_total counter');
+  L.push(`z_ikey_missing_total ${METRICS.ikeyMissingTotal}`);
+  L.push('# TYPE z_ikey_evicted_total counter');
+  L.push(`z_ikey_evicted_total ${METRICS.ikeyEvictedTotal}`);
+  L.push('# TYPE z_ikey_anon_only_total counter');
+  L.push(`z_ikey_anon_only_total ${METRICS.ikeyAnonOnlyTotal}`);
   L.push('# TYPE z_slow_reader_closed_total counter');
   L.push(`z_slow_reader_closed_total ${METRICS.slowReaderClosedTotal}`);
   L.push('# TYPE z_connections_refused_total counter');
@@ -1218,6 +1321,17 @@ class MemoryCoordinator {
      * (`entryToFrame`).
      */
     this.intro = new Map();
+    /**
+     * Introduction keys (44.10, PROTOCOL §12.7): routing id -> {entry, at},
+     * the 1 248 bytes `ek || iks` its device published and when the routing
+     * id last authenticated — its publish, for a new entry — least recently
+     * authenticated first. A store of its own, as the flags are: bounded by
+     * IKEY_CAP, past which the head is forgotten for a new entry, and by
+     * OWNED_TTL from `at`, which a login renews and a re-publish does not.
+     * Public keys only, and nothing about who asks for them. Lost on restart
+     * with the queue.
+     */
+    this.ikeys = new Map();
     /** Bytes held across every UNOWNED mailbox: the relay-wide unowned budget
      * is checked against this, kept in step with `bytes` at the same sites. */
     this.unownedBytes = 0;
@@ -1360,6 +1474,68 @@ class MemoryCoordinator {
         f.shadow = true;
         this._unflag(rid);
       }
+    }
+  }
+
+  /**
+   * A login of [rid] (44.10): its introduction key, if this relay keeps one,
+   * lives OWNED_TTL from now and moves to the back of the order IKEY_CAP
+   * forgets in. Resolves to the entry, which `ready` names by its hint, or
+   * null. Nothing else renews an entry. [ws] is the Redis path's.
+   */
+  async ikeyLogin(rid, ws, now = Date.now()) {
+    this._trimIkeys(now);
+    const e = this.ikeys.get(rid);
+    if (!e) return null;
+    this.ikeys.delete(rid); // re-inserted below: newest last
+    e.at = now;
+    this.ikeys.set(rid, e);
+    return e.entry;
+  }
+
+  /**
+   * Keeps [entry] as [rid]'s introduction key (44.10) — called for a
+   * socket's own routing id once its v2 authentication and the entry's
+   * signature under that key have been checked. An entry already held is
+   * replaced where it stands: its life and its place in the order are its
+   * last login's, and a re-publish renews neither. A NEW one is refused
+   * ('limited') when [ipOver] says the client address has used its minute of
+   * new entries; otherwise, the store at IKEY_CAP, the entry least recently
+   * authenticated is forgotten for it — never refused, so whoever fills the
+   * store cannot keep a device's key out of it — counted
+   * z_ikey_evicted_total. Resolves to 'set', 'replaced' or 'limited'.
+   */
+  async setIkey(rid, entry, ws, now = Date.now(), { ipOver = false } = {}) {
+    this._trimIkeys(now);
+    const held = this.ikeys.get(rid);
+    if (held) {
+      held.entry = entry;
+      return 'replaced';
+    }
+    if (ipOver) return 'limited';
+    while (this.ikeys.size >= CFG.ikeyCap && this.ikeys.size > 0) {
+      this.ikeys.delete(this.ikeys.keys().next().value);
+      METRICS.ikeyEvictedTotal += 1;
+    }
+    this.ikeys.set(rid, { entry, at: now });
+    return 'set';
+  }
+
+  /** [rid]'s introduction key, or null — the same for a routing id this
+   * relay has never seen as for one that keeps no key. Reads only: nothing
+   * about the asker is noted. */
+  async getIkey(rid, now = Date.now()) {
+    const e = this.ikeys.get(rid);
+    return e && now - e.at <= CFG.ownedTtlMs ? e.entry : null;
+  }
+
+  /** Forgets entries past OWNED_TTL from their routing id's last login, from
+   * the head; stops at the first still in force, every entry after it having
+   * authenticated later. */
+  _trimIkeys(now = Date.now()) {
+    for (const [rid, e] of this.ikeys) {
+      if (now - e.at <= CFG.ownedTtlMs) break;
+      this.ikeys.delete(rid);
     }
   }
 
@@ -1770,6 +1946,7 @@ class MemoryCoordinator {
     this.unownedIp.prune();
     this._trimOwned();
     this._trimIntro();
+    this._trimIkeys();
   }
 
   async heartbeat() {}
@@ -1786,6 +1963,7 @@ class MemoryCoordinator {
       // What the relay-wide unowned budget is checked against (P0-4).
       unownedBytes: this.unownedBytes,
       introMailboxes: this.intro.size,
+      ikeys: this.ikeys.size,
     };
   }
 
@@ -2225,6 +2403,36 @@ redis.call('DEL', KEYS[3])
 if held then return 'refreshed' end
 return 'set'`;
 
+// Keeps an introduction key (44.10, PROTOCOL §12.7). KEYS[1] = ik:{rid};
+// ARGV = the entry (`ek || iks`, the raw 1 248 bytes), its life in ms, and
+// whether the client address has used its minute of new entries. An entry
+// already held is replaced and keeps its TTL — its life is its routing id's
+// last login's, and a re-publish renews nothing (KEEPTTL, Redis 6 or later);
+// a NEW one is refused ('limited') when the address has used its minute,
+// and otherwise set to live OWNED_TTL. The key is named by the routing id
+// the store already holds, the shape of `owned:`, and holds public bytes.
+// No cap here: the sweep forgets the least recently renewed past IKEY_CAP,
+// as it does for flags. No flags: a store at its memory limit refuses it
+// whole. Answers 'set', 'replaced' or 'limited'.
+const REDIS_IKEY_SET_LUA = `#!lua
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  redis.call('SET', KEYS[1], ARGV[1], 'KEEPTTL')
+  return 'replaced'
+end
+if ARGV[3] == '1' then return 'limited' end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+return 'set'`;
+
+// A login renews its routing id's introduction key, as `register` renews
+// `owned:{rid}`: KEYS[1] = ik:{rid}, ARGV[1] = OWNED_TTL in ms. Returns the
+// entry, which `ready` names by its hint, or nil. allow-oom: it renews a key
+// that exists and creates none, so a full store does not cost a login its
+// hint — and a login is never blocked on it either way.
+const REDIS_IKEY_LOGIN_LUA = `#!lua flags=allow-oom
+local e = redis.call('GET', KEYS[1])
+if e then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+return e`;
+
 /**
  * The key an entry is held under in qe:{rid} and listed under in q:{rid} —
  * one function, used by both coordinators, because a mailbox that keys its
@@ -2409,10 +2617,22 @@ class RedisCoordinator {
     this.lastUnownedBytes = null;
     // How many intro:{rid} flags the last sweep counted (a gauge, phase 37).
     this.lastIntroMailboxes = null;
+    // Introduction keys (44.10): how many ik:{rid} entries the last sweep
+    // counted (a gauge); the store's `ik:epoch` as this instance last read
+    // it; and a copy of the entry of every socket it holds — rid ->
+    // {entry, at}, `at` when the store's TTL for it was last set — which its
+    // heartbeat puts back when `ik:epoch` has changed or gone, the mark of a
+    // store that came back empty (PROTOCOL §12.7). Public bytes, dropped with
+    // the socket.
+    this.lastIkeys = null;
+    this.ikEpoch = null;
+    this.ikCopies = new Map();
     this.chan = `z:inst:${this.id}`;
     for (const c of [this.cmd, this.sub, this.pub]) c.on('error', () => {});
     this.cmd.defineCommand('zQueuePush', { numberOfKeys: 6, lua: REDIS_PUSH_LUA });
     this.cmd.defineCommand('zIntro', { numberOfKeys: 3, lua: REDIS_INTRO_LUA });
+    this.cmd.defineCommand('zIkeySet', { numberOfKeys: 1, lua: REDIS_IKEY_SET_LUA });
+    this.cmd.defineCommand('zIkeyLogin', { numberOfKeys: 1, lua: REDIS_IKEY_LOGIN_LUA });
     this.cmd.defineCommand('zQueueRemove', { numberOfKeys: 3, lua: REDIS_REMOVE_LUA });
     this.cmd.defineCommand('zQueueRemoveLegacy', { numberOfKeys: 3, lua: REDIS_REMOVE_LEGACY_LUA });
     this.cmd.defineCommand('zQueueDropDangling', { numberOfKeys: 3, lua: REDIS_DROP_DANGLING_LUA });
@@ -2458,6 +2678,7 @@ class RedisCoordinator {
       this.local.delete(m.rid);
       this.presenceStale.delete(m.rid);
       this.lastMailboxLen.delete(m.rid);
+      this.ikCopies.delete(m.rid);
     }
   }
 
@@ -2529,6 +2750,7 @@ class RedisCoordinator {
     if (this.local.get(rid) === ws) {
       this.local.delete(rid);
       this.presenceStale.delete(rid);
+      this.ikCopies.delete(rid);
       const owner = await this.cmd.get(`presence:${rid}`);
       if (owner === this.id) await this.cmd.del(`presence:${rid}`);
     }
@@ -2556,6 +2778,74 @@ class RedisCoordinator {
    * shadow, or 0 if the mailbox asks no stamp. */
   async introBits(rid) {
     return Number(await this.cmd.get(`intro:${rid}`)) || 0;
+  }
+
+  /** A login of [rid] on this instance (44.10): its entry is renewed with
+   * its ownership (REDIS_IKEY_LOGIN_LUA), and a copy kept while [ws] is
+   * here, for the heartbeat to put back after a store loss. Resolves to the
+   * entry, or null. */
+  async ikeyLogin(rid, ws, now = Date.now()) {
+    const e = await this.cmd.zIkeyLoginBuffer(`ik:${rid}`, String(CFG.ownedTtlMs));
+    if (!e || e.length !== IKEY_ENTRY_BYTES) return null;
+    if (this.local.get(rid) === ws) this.ikCopies.set(rid, { entry: ownBuffer(e), at: now });
+    return e;
+  }
+
+  /** Keeps [entry] as [rid]'s introduction key (44.10; REDIS_IKEY_SET_LUA,
+   * and MemoryCoordinator#setIkey for what it answers), and a copy while
+   * [ws] is here. */
+  async setIkey(rid, entry, ws, now = Date.now(), { ipOver = false } = {}) {
+    const r = await this.cmd.zIkeySet(`ik:${rid}`, entry, String(CFG.ownedTtlMs), ipOver ? '1' : '0');
+    if (r !== 'limited' && this.local.get(rid) === ws) {
+      const copy = this.ikCopies.get(rid);
+      // A replacement keeps the life the store already gave the entry.
+      this.ikCopies.set(rid, { entry, at: r === 'replaced' && copy ? copy.at : now });
+    }
+    return r;
+  }
+
+  /** [rid]'s introduction key, or null — one GET, the same for a routing id
+   * the store has never seen as for one that keeps no key. Nothing about
+   * the asker is written. */
+  async getIkey(rid) {
+    const e = await this.cmd.getBuffer(`ik:${rid}`);
+    return e && e.length === IKEY_ENTRY_BYTES ? e : null;
+  }
+
+  /**
+   * After a store loss (44.10, PROTOCOL §12.7): a store run with persistence
+   * off comes back empty, and `ik:epoch` — a random value one instance sets
+   * when it finds none — with it. An instance that finds the value gone or
+   * changed since it last looked puts back the entry of every socket it
+   * holds, with the life it had left and only where the store holds none
+   * (NX), so a heartbeat that did not need to costs nothing. A device that is
+   * offline gets its entry back at its next login, when it publishes again.
+   * An instance that holds no copy has nothing to put back and does not look:
+   * until a device publishes through it, it neither reads the store for this
+   * nor writes `ik:epoch` into it.
+   */
+  async _ikeyEpochCheck(now = Date.now()) {
+    if (this.ikCopies.size === 0) return;
+    let epoch = await this.cmd.get('ik:epoch');
+    if (epoch === null) {
+      await this.cmd.set('ik:epoch', crypto.randomBytes(16).toString('base64url'), 'NX');
+      epoch = await this.cmd.get('ik:epoch');
+    }
+    if (epoch === this.ikEpoch) return;
+    this.ikEpoch = epoch;
+    for (const [rid, c] of this.ikCopies) {
+      const life = CFG.ownedTtlMs - (now - c.at);
+      if (!this.local.has(rid) || life <= 0) {
+        this.ikCopies.delete(rid);
+        continue;
+      }
+      try {
+        await this.cmd.set(`ik:${rid}`, c.entry, 'PX', String(life), 'NX');
+      } catch {
+        // A store too full, or unreachable: the next change of epoch, or the
+        // device's next login, puts it back.
+      }
+    }
   }
 
   async unregisterPush(rid) {
@@ -3105,10 +3395,57 @@ class RedisCoordinator {
       if (flagged > CFG.introCap) await this._evictIntro(flagged - CFG.introCap);
     } catch {
       // Unreadable this pass: the gauge keeps its last value.
+    }
+    try {
+      // Introduction keys (44.10), counted and capped as the flags are: a
+      // count of keys for z_ikeys, and past IKEY_CAP the entries with the
+      // least life left go — each login renews its entry's TTL, so that is
+      // the one least recently authenticated. `ik:epoch` is no entry.
+      const ikeys = await this._scanIkeys();
+      this.lastIkeys = ikeys.size;
+      if (ikeys.size > CFG.ikeyCap) await this._evictIkeys(ikeys, ikeys.size - CFG.ikeyCap);
+    } catch {
+      // Unreadable this pass: the gauge keeps its last value.
     } finally {
       this.sweeping = false;
     }
     this.unownedIp.prune();
+  }
+
+  /** Every ik:{rid} key the store holds — a set, since SCAN can return a key
+   * twice — and never `ik:epoch`. */
+  async _scanIkeys() {
+    const keys = new Set();
+    let cursor = '0';
+    do {
+      const [next, batch] = await this.cmd.scan(cursor, 'MATCH', 'ik:*', 'COUNT', '1000');
+      cursor = next;
+      for (const k of batch) if (ROUTING_ID.test(k.slice(3))) keys.add(k);
+    } while (cursor !== '0');
+    return keys;
+  }
+
+  /** Forgets the [excess] introduction keys with the least life left, in
+   * batches of a thousand TTLs on one pipeline; each counted in
+   * z_ikey_evicted_total. */
+  async _evictIkeys(keys, excess) {
+    const all = [...keys];
+    const life = [];
+    for (let i = 0; i < all.length; i += 1000) {
+      const batch = all.slice(i, i + 1000);
+      const p = this.cmd.pipeline();
+      for (const k of batch) p.pttl(k);
+      const ttls = await p.exec();
+      batch.forEach((k, j) => {
+        const [err, ms] = ttls[j];
+        if (!err && typeof ms === 'number' && ms >= 0) life.push([k, ms]);
+      });
+    }
+    const victims = life.sort((a, b) => a[1] - b[1]).slice(0, excess).map(([k]) => k);
+    for (let i = 0; i < victims.length; i += 1000) {
+      const gone = await this.cmd.del(...victims.slice(i, i + 1000));
+      METRICS.ikeyEvictedTotal += Number(gone) || 0;
+    }
   }
 
   /** Forgets the [excess] introduction-mailbox entries with the least life
@@ -3177,6 +3514,13 @@ class RedisCoordinator {
           }
           this.presenceStale.add(rid);
         }
+      }
+      // A store that came back empty has lost the introduction keys of the
+      // sockets held here: put them back (44.10).
+      try {
+        await this._ikeyEpochCheck();
+      } catch {
+        // Unreachable this beat: the next one asks again.
       }
     } finally {
       this.beating = false;
@@ -3248,6 +3592,7 @@ class RedisCoordinator {
     const out = { connections: this.local.size, queuedEnvelopes: -1, presenceStale: this.presenceStale.size };
     if (this.lastUnownedBytes != null) out.unownedBytes = this.lastUnownedBytes;
     if (this.lastIntroMailboxes != null) out.introMailboxes = this.lastIntroMailboxes;
+    if (this.lastIkeys != null) out.ikeys = this.lastIkeys;
     return out;
   }
 
@@ -3451,6 +3796,9 @@ function createServer(opts = {}) {
   const limits = {
     introPerRid: new IpByteBudget(CFG.introPerRidPerMin),
     introNewPerIp: new IpByteBudget(CFG.introNewPerIpPerMin),
+    // The same two paces for `ikey` (44.10), on their own budgets.
+    ikeyPerRid: new IpByteBudget(CFG.ikeyPerRidPerMin),
+    ikeyNewPerIp: new IpByteBudget(CFG.ikeyNewPerIpPerMin),
   };
 
   wss.on('connection', (ws, req) => {
@@ -3485,6 +3833,9 @@ function createServer(opts = {}) {
       // one an `intro` frame is taken on (phase 37).
       v2: false,
       rid: null,
+      // The raw Ed25519 key the connection authenticated as (44.10's `ikey`
+      // is checked under it).
+      pub: null,
       ip,
       nonce: crypto.randomBytes(32),
       // What this connection dialled, as the Host header says. A v2 signature
@@ -3518,8 +3869,10 @@ function createServer(opts = {}) {
     // `auth: 2` says this relay verifies the bound form, so a client can
     // fail with a reason against one that does not, rather than with
     // `bad_auth`; the security does not rest on it — a client signs v2
-    // whatever the challenge says.
-    sendJson(ws, { t: 'challenge', nonce: state.nonce.toString('base64'), auth: 2 });
+    // whatever the challenge says. `ik: 1` says it keeps introduction keys
+    // (44.10, PROTOCOL §12.7), on every connection, anonymous ones included —
+    // which is where a sender asks for one.
+    sendJson(ws, { t: 'challenge', nonce: state.nonce.toString('base64'), auth: 2, ik: 1 });
 
     ws.on('message', (data) => {
       // Rate limit, in two halves. This half is BEFORE the parse and costs
@@ -3639,6 +3992,8 @@ function createServer(opts = {}) {
     Promise.resolve(coord.sweep()).catch(() => {});
     limits.introPerRid.prune();
     limits.introNewPerIp.prune();
+    limits.ikeyPerRid.prune();
+    limits.ikeyNewPerIp.prune();
   }, CFG.sweepIntervalMs);
   sweeper.unref();
 
@@ -3724,6 +4079,9 @@ async function handleFrame(ws, state, coord, frame, pushSender, limits) {
       }
       state.authed = true;
       state.v2 = frame.v === 2;
+      // The key the signature was checked under: an `ikey` frame's `iks` must
+      // be this key's (44.10).
+      state.pub = pub;
       ws.zAuthed = true; // the heartbeat's idle check reads this off the socket
       state.rid = routingIdFromPub(pub);
       const prev = await coord.register(state.rid, ws);
@@ -3732,7 +4090,15 @@ async function handleFrame(ws, state, coord, frame, pushSender, limits) {
           prev.close(4002, 'replaced by new connection');
         } catch {}
       }
-      sendJson(ws, { t: 'ready', id: state.rid });
+      // The login renews this routing id's introduction key, if the relay
+      // keeps one, and `ready` names it by its hint, so the device publishes
+      // only when the relay does not hold its entry (44.10, §12.7). A store
+      // that cannot answer costs the login nothing but the hint.
+      let ik = null;
+      try {
+        ik = await coord.ikeyLogin(state.rid, ws);
+      } catch {}
+      sendJson(ws, ik ? { t: 'ready', id: state.rid, ik: ikeyHint(ik) } : { t: 'ready', id: state.rid });
       await coord.flush(state.rid, ws);
       log('client authenticated; local connections =', coord.stats().connections);
       break;
@@ -3918,6 +4284,86 @@ async function handleFrame(ws, state, coord, frame, pushSender, limits) {
       break;
     }
 
+    case 'ikey': {
+      // Keeps this connection's own routing id's introduction key (44.10,
+      // PROTOCOL §12.7): its device's sealing key and `iks`. The frame names
+      // no routing id, so the one it is for is the one the signature proved —
+      // and only the bound (v2) signature counts, as for `intro`, since a v1
+      // one can have been drawn out of the device by another relay (R33).
+      if (!state.authed || !state.v2) {
+        sendJson(ws, { t: 'error', code: 'not_authed' });
+        return;
+      }
+      // Paced per routing id, every frame — charged before the signature is
+      // checked, so a stream of bad ones costs the relay as few verifications
+      // as good ones would.
+      if (limits.ikeyPerRid.over(state.rid)) {
+        sendJson(ws, { t: 'error', code: 'rate_limited' });
+        return;
+      }
+      limits.ikeyPerRid.charge(state.rid, 1);
+      // The lengths, one spelling of each, and `iks` under the key this
+      // connection authenticated as, over that key and the sealing key's
+      // hash. Anything else is refused and nothing is kept.
+      const got = ikeyFrameEntry(frame);
+      const signed =
+        got &&
+        verifyEd25519(state.pub, Buffer.concat([IKEY_CONTEXT, state.pub, crypto.createHash('sha256').update(got.ek).digest()]), got.iks);
+      if (!signed) {
+        sendJson(ws, { t: 'error', code: 'bad_ikey' });
+        return;
+      }
+      // NEW entries are paced per client address where CLIENT_IP_HEADER names
+      // one, as new flags are; replacing an entry is not a new one.
+      const perAddress = !!CFG.clientIpHeader;
+      const r = await coord.setIkey(state.rid, got.entry, ws, Date.now(), {
+        ipOver: perAddress && limits.ikeyNewPerIp.over(state.ip),
+      });
+      if (r === 'limited') {
+        sendJson(ws, { t: 'error', code: 'rate_limited' });
+        return;
+      }
+      if (r === 'set' && perAddress) limits.ikeyNewPerIp.charge(state.ip, 1);
+      METRICS.ikeyPublishedTotal += 1;
+      sendJson(ws, { t: 'ikey_ok' });
+      break;
+    }
+
+    case 'ikey_get': {
+      // Serves a mailbox's introduction key (44.10, PROTOCOL §12.7) — only on
+      // a connection that never authenticated: the one the envelope it is for
+      // goes out on, just before it (§8.3). On an authenticated one the fetch
+      // would name the asking device beside the mailbox (ADR 0007), so it is
+      // refused there, and counted: a client that does what §8.3 says never
+      // sends it. Nothing about the asker is kept — no address, no routing id,
+      // no time — and the answer for a mailbox nobody has seen is the answer
+      // for one that keeps no key.
+      if (state.authed) {
+        METRICS.ikeyAnonOnlyTotal += 1;
+        sendJson(ws, { t: 'error', code: 'anon_only' });
+        return;
+      }
+      const to = typeof frame.to === 'string' ? frame.to : '';
+      if (!ROUTING_ID.test(to)) {
+        sendJson(ws, { t: 'error', code: 'bad_ikey' });
+        return;
+      }
+      const entry = await coord.getIkey(to);
+      if (entry) {
+        METRICS.ikeyServedTotal += 1;
+        sendJson(ws, {
+          t: 'ikey_for',
+          to,
+          ek: entry.subarray(0, IKEY_EK_BYTES).toString('base64'),
+          iks: entry.subarray(IKEY_EK_BYTES).toString('base64'),
+        });
+      } else {
+        METRICS.ikeyMissingTotal += 1;
+        sendJson(ws, { t: 'ikey_for', to });
+      }
+      break;
+    }
+
     case 'push-unregister': {
       if (!state.authed) return;
       await coord.unregisterPush(state.rid);
@@ -4011,6 +4457,7 @@ module.exports = {
   isLocalAuthority,
   routingIdFromPub,
   introStamp,
+  ikeyFrameEntry,
   MemoryCoordinator,
   RedisCoordinator,
   PushSender,

@@ -14,6 +14,7 @@
 //
 //     node bench/capacity.js            # envelope RAM + connection RAM; Redis if present
 //     node bench/capacity.js --n 20000  # more envelopes per point (steadier)
+//     node bench/capacity.js --ikeys    # introduction keys only (44.10)
 //
 // RAM-mode and connection figures are in-process with gc() forced
 // (heapUsed + external, so a Buffer's off-heap bytes count); the Redis figure
@@ -30,7 +31,7 @@ v8.setFlagsFromString('--expose_gc');
 const gc = vm.runInNewContext('gc');
 v8.setFlagsFromString('--no-expose_gc');
 
-const { MemoryCoordinator, RedisCoordinator, routingIdFromPub, CFG } = require('../server.js');
+const { MemoryCoordinator, RedisCoordinator, routingIdFromPub, ikeyFrameEntry, CFG } = require('../server.js');
 
 const N = +(process.env.N || (argFlag('--n')) || 20000);
 
@@ -236,6 +237,64 @@ async function relayChild() {
   process.send({ port: srv.httpServer.address().port });
 }
 
+// --- (c) introduction keys (44.10): what an entry costs ------------------------
+//
+// An entry is `ek || iks`, 1 248 bytes, held per routing id (PROTOCOL §12.7).
+// Built here by the relay's own `ikeyFrameEntry`, from the frame's two base64
+// strings, because how a Buffer is allocated decides what it costs: a small
+// one comes out of Node's shared 8 KiB pool, and a kept slice keeps its whole
+// slab alive. Built by `Buffer.concat` an entry held ≈3.0 KB here; the relay
+// keeps each in a buffer of its own (the transparency log's entries cost
+// 11.6 KB each the pooled way until 2026-10-04, CAPACITY.md).
+function ikeyFrame() {
+  return {
+    ek: crypto.randomBytes(1184).toString('base64'),
+    iks: crypto.randomBytes(64).toString('base64'),
+  };
+}
+const ikeyEntryOf = (f) => ikeyFrameEntry(f).entry;
+
+async function ramPerIkey(n) {
+  const saved = CFG.ikeyCap;
+  CFG.ikeyCap = n + 1;
+  try {
+    const c = new MemoryCoordinator();
+    const at = retained();
+    for (let i = 0; i < n; i++) {
+      // The routing id and the entry are what the store keeps; the frame's
+      // text and strings are garbage once the entry is built, as in the relay.
+      await c.setIkey(randomRid(), ikeyEntryOf(JSON.parse(JSON.stringify(ikeyFrame()))), null);
+    }
+    const cost = retained() - at;
+    return { held: c.ikeys.size, bytesPerEntry: cost / c.ikeys.size };
+  } finally {
+    CFG.ikeyCap = saved;
+  }
+}
+
+async function redisPerIkey(url, n) {
+  const IORedis = require('ioredis');
+  const raw = new IORedis(url);
+  await raw.flushall();
+  const coord = new RedisCoordinator(url, 'cap-ik');
+  const used = async () => Number(/used_memory:(\d+)/.exec(await raw.info('memory'))[1]);
+  const before = await used();
+  for (let i = 0; i < n; i++) await coord.setIkey(randomRid(), ikeyEntryOf(ikeyFrame()), null);
+  const after = await used();
+  // The put-back copy an instance keeps for each socket it holds: the same
+  // setIkey, for routing ids with a socket here — the sockets registered
+  // first, so what is measured is the copies alone.
+  const socketsHere = Array.from({ length: n }, () => [randomRid(), {}]);
+  for (const [rid, ws] of socketsHere) coord.local.set(rid, ws);
+  const at = retained();
+  for (const [rid, ws] of socketsHere) await coord.setIkey(rid, ikeyEntryOf(ikeyFrame()), ws);
+  const copies = coord.ikCopies.size;
+  const copyCost = retained() - at;
+  await coord.close();
+  await raw.quit();
+  return { held: n, bytesPerEntry: (after - before) / n, copies, bytesPerCopy: copyCost / copies };
+}
+
 function line(a, b) {
   // Through (sizeA, costA) and (sizeB, costB): marginal per byte, fixed per entry.
   const slope = (b.cost - a.cost) / (b.size - a.size);
@@ -243,7 +302,37 @@ function line(a, b) {
   return { slope, fixed };
 }
 
+/** (c), printed: an entry in RAM, in the store, and the store's put-back
+ * copy on the instance holding the socket. */
+async function ikeySection() {
+  const n = Math.min(N, 20000);
+  const r = await ramPerIkey(n);
+  console.log(`Introduction keys (44.10), ${n} entries of ek || iks (1 248 B), built as from an ikey frame:`);
+  console.log(`  RAM mode (MemoryCoordinator, heapUsed+external, gc forced): ${r.bytesPerEntry.toFixed(0)} B/entry`);
+  if (hasRedis()) {
+    const redisPort = await freePort();
+    const redis = spawn('redis-server', ['--port', String(redisPort), '--save', '', '--appendonly', 'no', '--bind', '127.0.0.1'], { stdio: 'ignore' });
+    REAP.add(redis);
+    await sleep(700);
+    try {
+      const x = await redisPerIkey(`redis://127.0.0.1:${redisPort}`, n);
+      console.log(`  Redis mode (store used_memory): ${x.bytesPerEntry.toFixed(0)} B/entry`);
+      console.log(`  Redis mode, the put-back copy per socket held (instance heap): ${x.bytesPerCopy.toFixed(0)} B/socket`);
+    } finally {
+      redis.kill('SIGKILL');
+      REAP.delete(redis);
+    }
+  } else {
+    console.log('  Redis mode: skipped (redis-server/ioredis unavailable)');
+  }
+  console.log('');
+}
+
 async function main() {
+  if (process.argv.includes('--ikeys')) {
+    await ikeySection();
+    return;
+  }
   const smallP = 64;
   const bigP = 4096;
   console.log(`capacity: ${N} envelopes per point, loopback, one machine`);
@@ -287,6 +376,9 @@ async function main() {
   const conn = await ramPerConnection(2000);
   console.log('Per connection (server-side RSS, forked relay, 2000 authenticated sockets):');
   console.log(`  ${(conn.bytesPerConnection / 1024).toFixed(1)} KB per connected device (one socket)\n`);
+
+  // (c) introduction keys
+  await ikeySection();
 }
 
 if (process.argv.includes('--relay-child')) {
@@ -301,4 +393,4 @@ if (process.argv.includes('--relay-child')) {
   });
 }
 
-module.exports = { ramPerEnvelope, redisPerEnvelope };
+module.exports = { ramPerEnvelope, redisPerEnvelope, ramPerIkey, redisPerIkey };

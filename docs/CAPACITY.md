@@ -21,6 +21,8 @@ show are listed at the end.
 | A queued envelope, **RAM mode** | **≈ 299 B + the payload**, in process memory | `node bench/capacity.js` — `MemoryCoordinator`, `heapUsed + external` with gc forced, at two payload sizes |
 | A queued envelope, **Redis mode** | **≈ 177 B + 1.23 × the payload**, in the store | `node bench/capacity.js` — the store's own `used_memory`, two payload sizes |
 | A connected device | **≈ 11 KB per socket** of relay RSS; a device is **two sockets** (§12.1, 16.1), so **≈ 22 KB** | `node bench/capacity.js` — a forked relay's own RSS across 2 000 authenticated sockets |
+| An introduction key (44.10), **RAM mode** | **≈ 1 608 B** an entry of process memory, so `IKEY_CAP` (20 000) is **≈ 32 MB** | `node bench/capacity.js --ikeys` — 20 000 entries built by the relay's own `ikeyFrameEntry` from frames, `heapUsed + external` with gc forced |
+| An introduction key, **Redis mode** | **≈ 1 457 B** an entry in the store (`IKEY_CAP`: **≈ 29 MB**), and **≈ 1.5 KB** on the instance for each socket it holds whose device published — the copy its heartbeat puts back after the store loses its data | `node bench/capacity.js --ikeys` — the store's own `used_memory`; the copies in the instance's heap |
 | A published device list | **≈ 336 B + 1.33 × the value**, on disk (base64 is ~1.33×); a real three-device list (1.1 KB sealed) is **≈ 1.8 KB** | `cd kt && node bench/disk.js` — a real `FileStore`, two value sizes |
 | A published device list, in the log's memory | **≈ 2.4 KB retained, ≈ 6.5 KB of resident growth**, for the life of the process, whatever the value's size; a mirror ≈ 2.0 / 6.1 KB | `cd kt && node bench/memory.js` — a fresh process replays 22,094 real-size entries (forced GC; heap and external) |
 
@@ -49,6 +51,17 @@ characters on the wire (PROTOCOL §8). So:
   on two different VMs), a little under the formula: the store's allocator
   slack at a large fill. Size a Redis store at **≈ 1.9 KB per queued
   1 024-bucket envelope**.
+
+**Introduction keys cost memory beside the queue — and none until clients
+publish, which none does before 44.11** (`PROTOCOL.md` §12.7). An entry is
+1 248 public bytes, and the relay keeps at most `IKEY_CAP` of them (20 000 by
+default): ≈ 32 MB in RAM mode, apart from `MAX_STORE_BYTES`, which bounds the
+queue alone, and ≈ 29 MB of a shared store's `maxmemory`, beside the queue it
+shares that memory with — plus ≈ 1.5 KB on each instance for each socket it
+holds whose device published. Built from a frame by `Buffer.concat`, an entry
+held ≈ 3.0 KB here, because its slice of Node's shared buffer pool kept the
+whole slab alive, with what was decoded beside it — the transparency log's
+lesson again — so the relay keeps each in a buffer of its own.
 
 **Connections cost memory too, and at scale they dominate.** At ≈ 11 KB of
 relay RSS per socket and two sockets per device, **10 000 connected devices is
@@ -176,7 +189,8 @@ objectives and the exact alarm expressions are in `docs/SLO.md` and
 ## Reproduce
 
 ```bash
-cd server && node bench/capacity.js      # envelope RAM + Redis, per-connection
+cd server && node bench/capacity.js      # envelope RAM + Redis, per-connection, introduction keys
+cd server && node bench/capacity.js --ikeys   # introduction keys alone (44.10)
 cd kt && node bench/disk.js              # bytes on disk per published list
 cd kt && node bench/memory.js            # memory per entry, log and mirror
 cd server && NEW_MAILBOX_PER_MIN=100000 node bench/ha_load.js --instances 2 --clients 200 --seconds 60 --rate 20 --offline 0.5   # queue growth → store memory
