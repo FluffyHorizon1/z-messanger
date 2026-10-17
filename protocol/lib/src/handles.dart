@@ -24,7 +24,11 @@
 ///   holds;
 /// * §21.7 the proof-of-work stamp a request to an introduction mailbox
 ///   carries ([createIntroPowStamp]) and the acknowledgement an owner's
-///   acceptance carries, signed by the introduction key ([signIntroAck]).
+///   acceptance carries, signed by the introduction key ([signIntroAck]);
+/// * §21.9 the public introduction link (ADR 0032): the same introduction
+///   mailbox handed out directly, as a `zi1.` code, with no registry
+///   between ([IntroLink]) — and its reader, which names the reason for
+///   every input it refuses ([IntroLinkProblem]).
 ///
 /// The log itself (§21.5, `kt/` in handle mode) and the relay's rules for
 /// introduction mailboxes (§21.6) are implemented elsewhere; they check what
@@ -37,6 +41,7 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:cryptography/dart.dart' show DartSha256;
 
+import 'connect.dart' show connectLinkHost;
 import 'contact_request.dart';
 import 'ed25519_strict.dart';
 import 'identity.dart';
@@ -1328,4 +1333,286 @@ Future<bool> verifyIntroAck(
           ownerAccountEdPub: ownerAccountEdPub,
           creqId: creqId),
       sig);
+}
+
+// =============================================================================
+// §21.9 Public introduction links (ADR 0032)
+// =============================================================================
+
+/// What a public introduction link's code starts with: `zi`, its version,
+/// and `.` — which no contact code or invite starts with. A handle can
+/// (`zi1.42` is one) and is still never a link: a link is 96 characters, a
+/// handle at most 27.
+const String introLinkPrefix = 'zi1.';
+
+/// The context of a link's check (§21.0).
+const String introLinkContext = 'z-intro-link-v1:';
+
+/// The page a link is printed on, `https://host/c#zi1.…`. No build claims
+/// `/c` for anything else, and none before 39.2 claims it at all. A reader
+/// takes the code that follows a `#` whatever page it is on.
+const String introLinkPath = '/c';
+
+/// `u8(pow) || intro || xintro`.
+const int introLinkBodyBytes = 65;
+
+/// How many bytes of `SHA-256(utf8("z-intro-link-v1:") || body)` the code
+/// carries after the body.
+const int introLinkCheckBytes = 4;
+
+/// What follows `zi1.`: the body and the check, 69 bytes, as base64url —
+/// 92 characters, with no padding and no spare bits, so every string of 92
+/// characters from the alphabet is exactly one 69-byte string.
+const int introLinkEncodedLength = 92;
+
+/// The whole code: `zi1.` and the 92.
+const int introLinkCodeLength = 96;
+
+/// The work a printed link asks when its owner chooses none: 20 bits, as a
+/// handle's (ADR 0032, decision 5). A link may carry any difficulty from
+/// [handlePowMinBits] to [handlePowMaxBits].
+const int introLinkDefaultPow = 20;
+
+/// Why an input is not a public introduction link (§21.9) — one value per
+/// thing the app can tell the person. When several apply, the first in the
+/// order the reader checks them is named.
+enum IntroLinkProblem {
+  /// Nothing that starts as a link does: a contact code, an invite, a
+  /// handle, any other text, or nothing at all — after the `#`, if there is
+  /// one. The prefix is compared exactly, so `ZI1.` is not a link either.
+  notALink,
+
+  /// `zi`, a version other than 1, and `.`: a link from a newer Z, which
+  /// this build cannot read and must not guess at — the person is told to
+  /// update rather than that the link is broken.
+  newerVersion,
+
+  /// A character after `zi1.` that no code holds: anything but `A`–`Z`,
+  /// `a`–`z`, `0`–`9`, `-` and `_` — padding, `+` and `/` among them.
+  notBase64url,
+
+  /// The right characters, but not [introLinkEncodedLength] of them.
+  wrongLength,
+
+  /// The check does not match: the copy was damaged on its way, a
+  /// character or the case of one changed. A substituted link has a check
+  /// of its own; this catches only a damaged one.
+  badCheck,
+
+  /// A difficulty outside [handlePowMinBits]–[handlePowMaxBits].
+  powOutOfRange,
+
+  /// `intro` is not a strong Ed25519 key (§21.4): an acknowledgement under
+  /// it could be forged by anyone.
+  weakIntro,
+
+  /// `xintro` is not a strong X25519 key (§21.4): a request sealed to it
+  /// would be open to anyone who holds it, the relay first.
+  weakXintro,
+}
+
+/// An input refused by [IntroLink.parse], with the reason the app shows.
+class IntroLinkFormatException extends FormatException {
+  final IntroLinkProblem problem;
+
+  IntroLinkFormatException(this.problem)
+      : super('not a public introduction link: ${problem.name}');
+}
+
+/// `SHA-256(utf8("z-intro-link-v1:") || body)[0..4]`: what a code carries
+/// after its body, so a copy damaged on its way is refused rather than
+/// read as other keys.
+Uint8List introLinkCheck(List<int> body) {
+  if (body.length != introLinkBodyBytes) {
+    throw ArgumentError.value(
+        body.length, 'body', 'a link body is $introLinkBodyBytes bytes');
+  }
+  final digest = const DartSha256()
+      .hashSync([...utf8.encode(introLinkContext), ...body]).bytes;
+  return Uint8List.fromList(digest.sublist(0, introLinkCheckBytes));
+}
+
+bool _isB64urlChar(int c) =>
+    (c >= 0x41 && c <= 0x5a) || // A-Z
+    (c >= 0x61 && c <= 0x7a) || // a-z
+    (c >= 0x30 && c <= 0x39) || // 0-9
+    c == 0x2d || // -
+    c == 0x5f; // _
+
+/// `zi`, a version other than 1 — decimal, without a leading zero — and
+/// `.`: how a newer Z would start a link of its own (§21.9).
+bool _startsAsNewerLink(String s) {
+  if (!s.startsWith('zi')) return false;
+  final dot = s.indexOf('.', 2);
+  if (dot < 3) return false; // no version, or no dot
+  final version = s.substring(2, dot);
+  if (version.codeUnitAt(0) == 0x30) return false; // a leading zero
+  return version != '1' && version.codeUnits.every(_isDigit);
+}
+
+String _trimAsciiSpace(String input) {
+  final u = input.codeUnits;
+  var start = 0, end = u.length;
+  while (start < end && _isAsciiSpace(u[start])) {
+    start++;
+  }
+  while (end > start && _isAsciiSpace(u[end - 1])) {
+    end--;
+  }
+  return input.substring(start, end);
+}
+
+/// A public introduction link (ADR 0032, PROTOCOL §21.9): a handle's
+/// introduction mailbox handed out directly — on a web page, in a signature,
+/// as a printed QR — instead of through a handle log. What a request through
+/// a handle takes from the handle's record is all it carries: the difficulty,
+/// the introduction key and the key a request is sealed to.
+///
+///     body  = u8(pow) || intro || xintro                        65 bytes
+///     check = SHA-256( utf8("z-intro-link-v1:") || body )[0..4]
+///     code  = "zi1." || b64url( body || check )                 96 characters
+///     link  = "https://" || host || "/c#" || code               126 at the default host
+///
+/// Nothing else is in it: no name, no relay, no expiry (ADR 0032, decision
+/// 4), and nothing about the account, whose key arrives with the acceptance
+/// (§21.7). The code rides in the fragment, which no browser sends, so the
+/// page a link opens never receives it.
+///
+/// This is the format and its reader; what the owner's device and the
+/// person who opens a link do with one are ADR 0032 §3–§4, not built here.
+class IntroLink {
+  /// Leading zero bits a stamp on a request through this link needs
+  /// (§21.7), [handlePowMinBits]–[handlePowMaxBits].
+  final int pow;
+
+  /// The introduction key: a strong Ed25519 key (§21.4), whose routing id is
+  /// the mailbox ([introRid]) and under which an acceptance's `ia` verifies.
+  final Uint8List intro;
+
+  /// The introduction mailbox's X25519 key, which a request is sealed to: a
+  /// strong X25519 key (§21.4).
+  final Uint8List xintro;
+
+  IntroLink._(this.pow, this.intro, this.xintro);
+
+  /// The link naming [intro] and [xintro] at [pow]. Throws [ArgumentError]
+  /// for anything [parse] would refuse to read back, so no code is made that
+  /// a reader refuses.
+  factory IntroLink(
+      {required int pow,
+      required Uint8List intro,
+      required Uint8List xintro}) {
+    if (intro.length != 32 || xintro.length != 32) {
+      throw ArgumentError('intro and xintro are 32 bytes each');
+    }
+    final why = _contentProblem(pow, intro, xintro);
+    if (why != null) {
+      throw ArgumentError('not a link a reader takes: ${why.name}');
+    }
+    return IntroLink._(
+        pow, Uint8List.fromList(intro), Uint8List.fromList(xintro));
+  }
+
+  /// The link [introSeed] makes: `intro`, `xintro` and the mailbox exactly
+  /// as §21.3 derives a handle's ([handleIntroIdentity]), so the owner
+  /// drains it, opens its requests and signs `ia` as for a handle.
+  static Future<IntroLink> fromSeed(Uint8List introSeed,
+      {int pow = introLinkDefaultPow}) async {
+    final id = await handleIntroIdentity(introSeed);
+    return IntroLink(pow: pow, intro: id.edPub, xintro: id.xPub);
+  }
+
+  /// `u8(pow) || intro || xintro`: 65 bytes.
+  Uint8List get body => Uint8List.fromList([pow, ...intro, ...xintro]);
+
+  /// [introLinkCheck] of [body].
+  Uint8List get check => introLinkCheck(body);
+
+  /// `"zi1." || b64url(body || check)`: 96 characters.
+  String get code => '$introLinkPrefix${b64url([...body, ...check])}';
+
+  /// `https://<host>/c#<code>` — [host] the deployment's, as for an invite
+  /// (§20.2): 126 characters at the default host.
+  String link({String host = connectLinkHost}) =>
+      'https://$host$introLinkPath#$code';
+
+  /// The introduction mailbox: `b64url(SHA-256(intro))`, as a handle's
+  /// (§21.3) — where a request through this link is sent.
+  Future<String> introRid() => introRoutingId(intro);
+
+  /// Reads a link or a bare code, as it was pasted, scanned or tapped
+  /// (§21.9): surrounding ASCII whitespace trimmed, then — given a `#` —
+  /// only what follows the first one, whatever page it is on. That must be
+  /// `zi1.` and exactly 92 base64url characters, with no padding and no
+  /// case folding, whose check matches and whose `pow`, `intro` and
+  /// `xintro` a link may carry. Throws [IntroLinkFormatException] naming the
+  /// first rule broken, in that order.
+  static IntroLink parse(String input) {
+    Never refuse(IntroLinkProblem p) => throw IntroLinkFormatException(p);
+    var s = _trimAsciiSpace(input);
+    final hash = s.indexOf('#');
+    if (hash >= 0) s = s.substring(hash + 1);
+    if (!s.startsWith(introLinkPrefix)) {
+      refuse(_startsAsNewerLink(s)
+          ? IntroLinkProblem.newerVersion
+          : IntroLinkProblem.notALink);
+    }
+    final encoded = s.substring(introLinkPrefix.length);
+    if (!encoded.codeUnits.every(_isB64urlChar)) {
+      refuse(IntroLinkProblem.notBase64url);
+    }
+    if (encoded.length != introLinkEncodedLength) {
+      refuse(IntroLinkProblem.wrongLength);
+    }
+    final raw = unb64url(encoded);
+    final body = Uint8List.sublistView(raw, 0, introLinkBodyBytes);
+    if (!constantTimeEquals(
+        introLinkCheck(body), Uint8List.sublistView(raw, introLinkBodyBytes))) {
+      refuse(IntroLinkProblem.badCheck);
+    }
+    final intro = Uint8List.fromList(body.sublist(1, 33));
+    final xintro = Uint8List.fromList(body.sublist(33, 65));
+    final why = _contentProblem(body[0], intro, xintro);
+    if (why != null) refuse(why);
+    return IntroLink._(body[0], intro, xintro);
+  }
+
+  /// [parse], or null when the input is not a link.
+  static IntroLink? tryParse(String input) {
+    try {
+      return parse(input);
+    } on IntroLinkFormatException {
+      return null;
+    }
+  }
+
+  /// Why [input] is not a link, or null when it is one.
+  static IntroLinkProblem? problemWith(String input) {
+    try {
+      parse(input);
+      return null;
+    } on IntroLinkFormatException catch (e) {
+      return e.problem;
+    }
+  }
+
+  /// What a link's content must be, in the reader's order: the difficulty,
+  /// then the two keys strong by §21.4's one rule — the rule a handle
+  /// record's keys are held to.
+  static IntroLinkProblem? _contentProblem(
+      int pow, Uint8List intro, Uint8List xintro) {
+    if (pow < handlePowMinBits || pow > handlePowMaxBits) {
+      return IntroLinkProblem.powOutOfRange;
+    }
+    if (!handleStrongEdKey(intro)) return IntroLinkProblem.weakIntro;
+    if (!handleStrongXKey(xintro)) return IntroLinkProblem.weakXintro;
+    return null;
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is IntroLink && constantTimeEquals(other.body, body);
+
+  @override
+  int get hashCode => Object.hashAll(body);
 }

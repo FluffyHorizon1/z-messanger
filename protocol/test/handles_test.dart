@@ -60,6 +60,36 @@
 //      and for another request; the request id is the hash of what the
 //      requester signed, and an acceptance carrying `ia` is still a `creq`
 //      an older reader accepts.
+//
+// The public introduction link (ADR 0032, PROTOCOL §21.9) — the same
+// introduction mailbox handed out directly, as a `zi1.` code:
+//  18. a link from an introduction seed names exactly the keys and the
+//      mailbox §21.3 derives from it; its body is `pow || intro || xintro`,
+//      65 bytes, its check the first four bytes of SHA-256 over the context
+//      and the body, its code `zi1.` and 92 base64url characters — 96, no
+//      padding — and its link `https://host/c#code`, 126 characters at the
+//      default host; it asks 20 bits unless told otherwise, and every
+//      difficulty from 16 to 28 reads back as itself;
+//  19. the reader trims ASCII whitespace and nothing else, and given a `#`
+//      reads only what follows it, whatever host or page it is on; it names
+//      a reason for every refusal, the first broken in one order — not a
+//      link (a contact code, an invite, a handle, nothing, the prefix in
+//      capitals, a version written with a leading zero), a newer version, a
+//      character outside base64url (padding, `+`, `/`, a space), the wrong
+//      length, a check that does not match (one bit of any byte, the
+//      letters' case), a difficulty outside 16–28 — and every reason is one
+//      some input gets;
+//  20. every weak key is refused, as `intro` and as `xintro`: each spelling
+//      of a point of small order and each value at or above p, with the
+//      sign bit or the top bit set or clear, and an honest `xintro` with
+//      its top bit set — and a link the reader would refuse cannot be made;
+//  21. a handle is never a link, nor a link a handle: the grammar refuses
+//      every code and link, and the link reader every handle;
+//  22. a request through a link is a request through a handle: sealed to
+//      the `xintro` read from the link, opened by the seed's introduction
+//      identity and no other, addressed to its mailbox and stamped for it,
+//      and its acknowledgement verifies under the `intro` read from the
+//      link and under no other link's.
 
 import 'dart:convert';
 import 'dart:isolate';
@@ -820,6 +850,378 @@ void main() {
             ownerAccountEdPub: parsed.bundle.edPub,
             creqId: id),
         isTrue);
+  });
+
+  test('18. a link from a seed: the keys and the mailbox of §21.3, the body, '
+      'the check, the code and the link', () async {
+    final introSeed = seed(21);
+    final link = await IntroLink.fromSeed(introSeed);
+    expect(link.pow, introLinkDefaultPow);
+    expect(introLinkDefaultPow, 20);
+    final id = await handleIntroIdentity(introSeed);
+    expect(link.intro, id.edPub);
+    expect(link.intro, await handleKeyPublic(introSeed));
+    expect(link.xintro, id.xPub);
+    expect(await link.introRid(), await introRoutingId(id.edPub));
+    expect(await link.introRid(), await id.routingId(),
+        reason: 'the mailbox the seed drains as its identity');
+    expect(link.body, [20, ...id.edPub, ...id.xPub]);
+    expect(link.body, hasLength(65));
+    final digest =
+        await sha256Bytes([...utf8.encode('z-intro-link-v1:'), ...link.body]);
+    expect(link.check, digest.sublist(0, 4));
+    expect(link.code, 'zi1.${b64url([...link.body, ...link.check])}');
+    expect(link.code, hasLength(96));
+    expect(link.code, isNot(contains('=')));
+    expect(link.link(), 'https://www.zmessengers.com/c#${link.code}');
+    expect(link.link(), hasLength(126));
+    expect(link.link(host: 'relay.example.org'),
+        'https://relay.example.org/c#${link.code}');
+    // Every difficulty a link may carry reads back as itself.
+    for (var pow = handlePowMinBits; pow <= handlePowMaxBits; pow++) {
+      final l = await IntroLink.fromSeed(introSeed, pow: pow);
+      final back = IntroLink.parse(l.link());
+      expect(back, l);
+      expect(back.pow, pow);
+      expect(back.intro, l.intro);
+      expect(back.xintro, l.xintro);
+      expect(back.code, l.code);
+      expect(l.body[0], pow);
+    }
+    expect((await IntroLink.fromSeed(introSeed, pow: 21)).code,
+        isNot(link.code));
+    expect(await IntroLink.fromSeed(seed(22)), isNot(link));
+    // Any seed: 92 characters of the alphabet after the prefix, read back.
+    for (var i = 0; i < 50; i++) {
+      final l = await IntroLink.fromSeed(randomBytes(32));
+      expect(l.code, matches(RegExp(r'^zi1\.[A-Za-z0-9_-]{92}$')));
+      expect(IntroLink.parse(l.code), l);
+      expect(IntroLink.parse(l.link()), l);
+    }
+  });
+
+  test('19. the reader: ASCII whitespace, the fragment wherever it is, and '
+      'a reason for every refusal, in one order', () async {
+    final l = await IntroLink.fromSeed(seed(23));
+    final c = l.code, enc = c.substring(4);
+    String codeOf(List<int> body) =>
+        'zi1.${b64url([...body, ...introLinkCheck(body)])}';
+    for (final input in [
+      c,
+      l.link(),
+      'https://i.example.org/c#$c',
+      'https://www.zmessengers.com/c?utm_source=card#$c',
+      ' \t\n${l.link()}\r\n\x0b\x0c',
+      'www.zmessengers.com/c#$c',
+      'https://relay.example.org:8443/c#$c',
+      'https://www.zmessengers.com/index.html#$c',
+      '#$c',
+    ]) {
+      expect(IntroLink.parse(input), l, reason: input);
+      expect(IntroLink.problemWith(input), isNull, reason: input);
+      expect(IntroLink.tryParse(input), l, reason: input);
+    }
+    final invite = ConnectCode.generate();
+    final refused = <String, IntroLinkProblem>{
+      '': IntroLinkProblem.notALink,
+      ' \t ': IntroLinkProblem.notALink,
+      'https://www.zmessengers.com/c': IntroLinkProblem.notALink,
+      'https://www.zmessengers.com/c#': IntroLinkProblem.notALink,
+      '$c#': IntroLinkProblem.notALink,
+      invite.text: IntroLinkProblem.notALink,
+      invite.link(): IntroLinkProblem.notALink,
+      '@alice.42': IntroLinkProblem.notALink,
+      'ZI1.$enc': IntroLinkProblem.notALink,
+      'Zi1.$enc': IntroLinkProblem.notALink,
+      'zI1.$enc': IntroLinkProblem.notALink,
+      ' $c': IntroLinkProblem.notALink,
+      ' $c': IntroLinkProblem.notALink,
+      'zi1$enc': IntroLinkProblem.notALink,
+      'zi.$enc': IntroLinkProblem.notALink,
+      'zi0.$enc': IntroLinkProblem.notALink,
+      'zi01.$enc': IntroLinkProblem.notALink,
+      'zix.$enc': IntroLinkProblem.notALink,
+      'zi2.$enc': IntroLinkProblem.newerVersion,
+      'zi9.': IntroLinkProblem.newerVersion,
+      'zi10.$enc': IntroLinkProblem.newerVersion,
+      'zi99999999999999999999.$enc': IntroLinkProblem.newerVersion,
+      'https://www.zmessengers.com/c#zi3.$enc': IntroLinkProblem.newerVersion,
+      '$c=': IntroLinkProblem.notBase64url,
+      '$c==': IntroLinkProblem.notBase64url,
+      'zi1.${enc.substring(0, 91)}=': IntroLinkProblem.notBase64url,
+      'zi1.+${enc.substring(1)}': IntroLinkProblem.notBase64url,
+      'zi1./${enc.substring(1)}': IntroLinkProblem.notBase64url,
+      'zi1.${enc.substring(0, 40)} ${enc.substring(40)}':
+          IntroLinkProblem.notBase64url,
+      '$c ': IntroLinkProblem.notBase64url,
+      '$c​': IntroLinkProblem.notBase64url,
+      'https://x.example/c#$c#more': IntroLinkProblem.notBase64url,
+      c.substring(0, 95): IntroLinkProblem.wrongLength,
+      '${c}A': IntroLinkProblem.wrongLength,
+      'zi1.': IntroLinkProblem.wrongLength,
+      'zi1.$enc$enc': IntroLinkProblem.wrongLength,
+      codeOf(Uint8List(65)..[0] = 0): IntroLinkProblem.powOutOfRange,
+      codeOf([15, ...l.intro, ...l.xintro]): IntroLinkProblem.powOutOfRange,
+      codeOf([29, ...l.intro, ...l.xintro]): IntroLinkProblem.powOutOfRange,
+      codeOf([255, ...l.intro, ...l.xintro]): IntroLinkProblem.powOutOfRange,
+    };
+    refused.forEach((input, problem) {
+      expect(IntroLink.problemWith(input), problem, reason: '"$input"');
+      expect(IntroLink.tryParse(input), isNull);
+      expect(
+          () => IntroLink.parse(input),
+          throwsA(isA<IntroLinkFormatException>()
+              .having((e) => e.problem, 'problem', problem)));
+    });
+    // A damaged copy: one bit of any of the 69 bytes, or the case of any
+    // one letter, and the check no longer matches.
+    final raw = [...l.body, ...l.check];
+    for (var i = 0; i < raw.length; i++) {
+      final damaged = List<int>.from(raw)..[i] ^= 0x01;
+      expect(IntroLink.problemWith('zi1.${b64url(damaged)}'),
+          IntroLinkProblem.badCheck,
+          reason: 'byte $i');
+    }
+    var letters = 0;
+    for (var i = 0; i < enc.length; i++) {
+      final ch = enc.codeUnitAt(i);
+      final isUpper = ch >= 0x41 && ch <= 0x5a, isLower = ch >= 0x61 && ch <= 0x7a;
+      if (!isUpper && !isLower) continue;
+      letters++;
+      final swapped = String.fromCharCode(isUpper ? ch + 0x20 : ch - 0x20);
+      expect(
+          IntroLink.problemWith(
+              'zi1.${enc.substring(0, i)}$swapped${enc.substring(i + 1)}'),
+          IntroLinkProblem.badCheck,
+          reason: 'the case of character $i');
+    }
+    expect(letters, greaterThan(40));
+    // One order: the first rule broken is the one named.
+    final weakX = Uint8List(32); // u = 0, of small order
+    final weakEd = Uint8List(32)..[0] = 1; // the identity
+    expect(IntroLink.problemWith('zi2.$enc='), IntroLinkProblem.newerVersion);
+    expect(IntroLink.problemWith('$c$c='), IntroLinkProblem.notBase64url,
+        reason: 'the alphabet before the length');
+    final pow29 = [29, ...weakEd, ...weakX];
+    final badCheck = [...pow29, ...introLinkCheck(pow29)]..[68] ^= 0x80;
+    expect(IntroLink.problemWith('zi1.${b64url(badCheck)}'),
+        IntroLinkProblem.badCheck,
+        reason: 'the check before the content');
+    expect(IntroLink.problemWith(codeOf(pow29)), IntroLinkProblem.powOutOfRange,
+        reason: 'the difficulty before the keys');
+    expect(IntroLink.problemWith(codeOf([20, ...weakEd, ...weakX])),
+        IntroLinkProblem.weakIntro,
+        reason: 'intro before xintro');
+    // Every reason is one some input gets.
+    expect({
+      ...refused.values,
+      IntroLinkProblem.badCheck,
+      IntroLink.problemWith(codeOf([20, ...weakEd, ...l.xintro])),
+      IntroLink.problemWith(codeOf([20, ...l.intro, ...weakX])),
+    }, IntroLinkProblem.values.toSet());
+    final e = IntroLinkFormatException(IntroLinkProblem.badCheck);
+    expect(e, isA<FormatException>());
+    expect(e.message, 'not a public introduction link: badCheck');
+  });
+
+  test('20. every weak key is refused, as intro and as xintro, and no link '
+      'the reader refuses can be made', () async {
+    final l = await IntroLink.fromSeed(seed(25));
+    String codeOf(List<int> body) =>
+        'zi1.${b64url([...body, ...introLinkCheck(body)])}';
+    Uint8List fromHex(String h) => Uint8List.fromList([
+          for (var i = 0; i < h.length; i += 2)
+            int.parse(h.substring(i, i + 2), radix: 16)
+        ]);
+    final p = (BigInt.one << 255) - BigInt.from(19);
+    Uint8List le(BigInt n) => Uint8List.fromList([
+          for (var i = 0; i < 32; i++)
+            ((n >> (8 * i)) & BigInt.from(0xff)).toInt()
+        ]);
+    Uint8List top(Uint8List k) => Uint8List.fromList(k)..[31] |= 0x80;
+    // §21.4's values as PROTOCOL.md writes them, and the 19 at or above p.
+    final smallEdY = [
+      '0100000000000000000000000000000000000000000000000000000000000000',
+      'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+      '0000000000000000000000000000000000000000000000000000000000000000',
+      '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+      'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+    ].map(fromHex);
+    final smallXU = [
+      '0000000000000000000000000000000000000000000000000000000000000000',
+      '0100000000000000000000000000000000000000000000000000000000000000',
+      'e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800',
+      '5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157',
+      'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+    ].map(fromHex);
+    final aboveP = [for (var k = 0; k < 19; k++) le(p + BigInt.from(k))];
+    final weakEd = [
+      for (final y in [...smallEdY, ...aboveP]) ...[y, top(y)],
+    ];
+    final weakX = [
+      for (final u in [...smallXU, ...aboveP]) ...[u, top(u)],
+      top(l.xintro),
+    ];
+    expect(weakEd, hasLength(48));
+    expect(weakX, hasLength(49));
+    for (final k in weakEd) {
+      expect(IntroLink.problemWith(codeOf([20, ...k, ...l.xintro])),
+          IntroLinkProblem.weakIntro,
+          reason: b64url(k));
+      expect(() => IntroLink(pow: 20, intro: k, xintro: l.xintro),
+          throwsArgumentError);
+    }
+    for (final k in weakX) {
+      expect(IntroLink.problemWith(codeOf([20, ...l.intro, ...k])),
+          IntroLinkProblem.weakXintro,
+          reason: b64url(k));
+      expect(() => IntroLink(pow: 20, intro: l.intro, xintro: k),
+          throwsArgumentError);
+    }
+    // The edges: p − 2 is an honest y (and u); p − 1 is the point of order
+    // 2; p is the first value at or above p.
+    final pMinus2 = le(p - BigInt.two);
+    expect(handleStrongEdKey(pMinus2), isTrue);
+    expect(handleStrongXKey(pMinus2), isTrue);
+    expect(IntroLink.problemWith(codeOf([20, ...pMinus2, ...l.xintro])), isNull);
+    expect(IntroLink.problemWith(codeOf([20, ...l.intro, ...pMinus2])), isNull);
+    // Honest keys are strong: the reader refuses weak keys, not keys.
+    for (var i = 0; i < 100; i++) {
+      final h = await IntroLink.fromSeed(randomBytes(32));
+      expect(IntroLink.problemWith(h.code), isNull);
+    }
+    // Making refuses whatever reading would.
+    for (final pow in [0, 15, 29, 255]) {
+      expect(() => IntroLink(pow: pow, intro: l.intro, xintro: l.xintro),
+          throwsArgumentError,
+          reason: 'pow $pow');
+      await expectLater(IntroLink.fromSeed(seed(25), pow: pow),
+          throwsArgumentError);
+    }
+    expect(
+        () => IntroLink(pow: 20, intro: l.intro.sublist(0, 31), xintro: l.xintro),
+        throwsArgumentError);
+    expect(() => IntroLink(pow: 20, intro: l.intro, xintro: Uint8List(33)),
+        throwsArgumentError);
+    await expectLater(IntroLink.fromSeed(Uint8List(31)), throwsArgumentError);
+    expect(() => introLinkCheck(Uint8List(64)), throwsArgumentError);
+  });
+
+  test('21. a handle is never a link, nor a link a handle', () async {
+    for (var i = 0; i < 30; i++) {
+      final l = await IntroLink.fromSeed(randomBytes(32));
+      for (final s in [l.code, l.link(), '@${l.code}', ' ${l.code} ']) {
+        expect(Handle.problemWith(s), isNotNull, reason: s);
+      }
+      // `zi1` reads as a nick, and the base64 after the dot is not digits —
+      // or holds a character no handle does.
+      expect(Handle.problemWith(l.code),
+          anyOf(HandleProblem.badCharacter, HandleProblem.digitsNotDigits));
+    }
+    for (final h in ['alice.42', '@Alice.42', 'bob_smith.07', ' @alice.42 ']) {
+      expect(IntroLink.problemWith(h), IntroLinkProblem.notALink, reason: h);
+    }
+    // A handle can begin as a link does — `zi1` and `zi2` are nicks like any
+    // other — and is still never read as one: a link is 96 characters and a
+    // handle at most 27. The reasons the reader names for such a handle are
+    // a link's, so a field that takes either asks the grammar too.
+    expect(Handle.parse('zi1.42').canonical, 'zi1.42');
+    expect(Handle.parse('zi2.42').canonical, 'zi2.42');
+    expect(IntroLink.problemWith('zi1.42'), IntroLinkProblem.wrongLength);
+    expect(IntroLink.problemWith('zi2.42'), IntroLinkProblem.newerVersion);
+    expect(IntroLink.problemWith('@zi1.42'), IntroLinkProblem.notALink);
+    expect(
+        handleNickMaxLength + 1 + handleDigitsMaxLength, lessThan(introLinkCodeLength));
+  });
+
+  test('22. a request through a link is a request through a handle', () async {
+    const nowMs = 1792238400000; // 2026-10-17T12:00:00Z
+    final introSeed = seed(26);
+    final made = await IntroLink.fromSeed(introSeed, pow: 16);
+    final held = IntroLink.parse(made.link()); // what the requester has
+    final rid = await held.introRid();
+    final introId = await handleIntroIdentity(introSeed);
+    expect(rid, await introId.routingId());
+    final bob = await ZIdentity.fromSeeds(edSeed: seed(46), xSeed: seed(47));
+    final owner = await ZIdentity.fromSeeds(edSeed: seed(48), xSeed: seed(49));
+    final bobRid = await bob.routingId();
+    final creq = await ContactRequest.create(
+        me: bob, toRid: rid, displayName: 'Bob', ts: nowMs);
+    final sealed = await SealedEnvelope.seal(
+        toXPub: held.xintro, fromRid: bobRid, payload: creq.encode());
+    final opened = await SealedEnvelope.open(
+        myXSeed: introId.xSeed, myXPub: introId.xPub, blob: sealed);
+    expect(opened, isNotNull);
+    expect(opened!.fromRid, bobRid);
+    expect(
+        await ContactRequest.tryParse(opened.payload)!
+            .verify(expectedTo: rid, sealedFrom: opened.fromRid),
+        isTrue);
+    final otherId = await handleIntroIdentity(seed(27));
+    expect(
+        await SealedEnvelope.open(
+            myXSeed: otherId.xSeed, myXPub: otherId.xPub, blob: sealed),
+        isNull,
+        reason: "another link's seed opens nothing sealed to this one");
+    // Stamped for its mailbox, at the link's pow and at a raised bits.
+    final day = introPowDay(nowMs);
+    final env = utf8.encode(sealed);
+    final otherRid = await otherId.routingId();
+    for (final bits in [held.pow, 18]) {
+      final nonce = createIntroPowStamp(
+          introRid: rid,
+          day: day,
+          envelope: env,
+          bits: bits,
+          startNonce: Uint8List(16));
+      expect(
+          await verifyIntroPowStamp(
+              introRid: rid, day: day, envelope: env, nonce: nonce, bits: bits),
+          isTrue);
+      expect(
+          await verifyIntroPowStamp(
+              introRid: otherRid,
+              day: day,
+              envelope: env,
+              nonce: nonce,
+              bits: bits),
+          isFalse);
+    }
+    // The acknowledgement, under the intro read from the link.
+    final id = await contactRequestId(creq);
+    final ia = await signIntroAck(
+        introSeed: introSeed,
+        requesterRid: bobRid,
+        ownerAccountEdPub: owner.edPub,
+        creqId: id);
+    Future<bool> ackUnder(Uint8List introPub) => verifyIntroAck(
+        ia: ia,
+        introPub: introPub,
+        requesterRid: bobRid,
+        ownerAccountEdPub: owner.edPub,
+        creqId: id);
+    expect(await ackUnder(held.intro), isTrue);
+    for (final s in [27, 28, 29]) {
+      expect(await ackUnder((await IntroLink.fromSeed(seed(s))).intro), isFalse,
+          reason: "another link's intro");
+    }
+    // Since 2026-10-16 the sealer itself refuses an xintro of small order;
+    // a second spelling of a key it seals to, and the request is one the
+    // owner cannot open. The reader refuses both kinds before either is
+    // offered.
+    await expectLater(
+        SealedEnvelope.seal(
+            toXPub: Uint8List(32), fromRid: bobRid, payload: creq.encode()),
+        throwsA(isA<SealRefusedException>()));
+    final respelled = Uint8List.fromList(held.xintro)..[31] |= 0x80;
+    final lost = await SealedEnvelope.seal(
+        toXPub: respelled, fromRid: bobRid, payload: creq.encode());
+    expect(
+        await SealedEnvelope.open(
+            myXSeed: introId.xSeed, myXPub: introId.xPub, blob: lost),
+        isNull);
+    expect(() => IntroLink(pow: 16, intro: held.intro, xintro: respelled),
+        throwsArgumentError);
   });
 }
 

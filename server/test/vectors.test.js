@@ -2444,6 +2444,206 @@ test('handles: the request sealed to xintro, and the acknowledgement and who it 
   assert.equal(hex(unb64(acc.bundle.ed)), a.owner_account.ed_pub, 'from the account the ack names');
 });
 
+// ADR 0032 (PROTOCOL §21.9): the public introduction link, from the section
+// alone. A link's body is u8(pow) || intro || xintro, its check the first four
+// bytes of SHA-256 over the context and the body, its code "zi1." and the
+// base64url of both; the keys are §21.3's from the introduction seed. The
+// reader below is §21.9's rules in their order, and its strong-key test is
+// §21.4's, over the small-order values derived here from the curve rather
+// than read from any file.
+const loadIl = () => loadHd('intro_link');
+const ilCheck = (body) => sha256(cat(utf8('z-intro-link-v1:'), body)).subarray(0, 4);
+const leBytes32 = (n) => { const b = Buffer.alloc(32); for (let i = 0; i < 32; i++) { b[i] = Number(n & 0xffn); n >>= 8n; } return b; };
+const AT_OR_ABOVE_P = Array.from({ length: 19 }, (_, k) => hex(leBytes32(ED_P + BigInt(k))));
+
+/** §21.9's reader: the link's keys and pow, or the name of the first rule broken. */
+function readIntroLink(input, small) {
+  // Surrounding ASCII whitespace (U+0009–U+000D, U+0020) and nothing else.
+  let s = input.replace(/^[\t\n\v\f\r ]+/, '').replace(/[\t\n\v\f\r ]+$/, '');
+  const hash = s.indexOf('#');
+  if (hash >= 0) s = s.slice(hash + 1);
+  if (!s.startsWith('zi1.')) return /^zi[1-9][0-9]*\./.test(s) ? 'newerVersion' : 'notALink';
+  const enc = s.slice(4);
+  if (!/^[A-Za-z0-9_-]*$/.test(enc)) return 'notBase64url';
+  if (enc.length !== 92) return 'wrongLength';
+  const raw = Buffer.from(enc, 'base64url');
+  assert.equal(raw.length, 69);
+  assert.equal(raw.toString('base64url'), enc, '92 characters are one string of 69 bytes');
+  const body = raw.subarray(0, 65);
+  if (!ilCheck(body).equals(raw.subarray(65))) return 'badCheck';
+  const pow = body[0];
+  if (pow < 16 || pow > 28) return 'powOutOfRange';
+  const intro = body.subarray(1, 33), xintro = body.subarray(33, 65);
+  const y = Buffer.from(intro);
+  y[31] &= 0x7f;
+  if (leBig(y) >= ED_P || small.ys.has(hex(y))) return 'weakIntro';
+  if ((xintro[31] & 0x80) || leBig(xintro) >= ED_P || small.us.has(hex(xintro))) return 'weakXintro';
+  return { pow, intro, xintro };
+}
+
+test('intro link: every link from its introduction seed, from §21.9 and §21.3 alone', () => {
+  const v = loadIl();
+  assert.equal(v.suite, 'intro_link');
+  assert.equal(v.format.prefix, 'zi1.');
+  assert.equal(v.format.check_context, 'z-intro-link-v1:');
+  assert.equal(v.format.default_host, 'www.zmessengers.com');
+  assert.equal(v.format.default_pow, 20);
+  assert.deepEqual(v.links.map((l) => l.pow), [16, 20, 28]);
+  for (const l of v.links) {
+    const seed = unhex(l.intro_seed);
+    const intro = edPub(seed);
+    const xSeed = hkdf(seed, utf8('z-handle-intro-x-v1'), Buffer.alloc(0), 32);
+    const xintro = xPub(xSeed);
+    assert.equal(hex(intro), l.intro, l.name);
+    assert.equal(hex(xSeed), l.x_seed, l.name);
+    assert.equal(hex(xintro), l.xintro, l.name);
+    assert.equal(l.intro_rid, b64url(sha256(intro)), `${l.name}: the mailbox is the hash of intro`);
+    assert.equal(l.rid_bytes, hex(sha256(intro)));
+    const body = cat([l.pow], intro, xintro);
+    assert.equal(body.length, 65);
+    assert.equal(hex(body), l.body, l.name);
+    assert.equal(hex(cat(utf8('z-intro-link-v1:'), body)), l.check_input);
+    assert.equal(hex(sha256(cat(utf8('z-intro-link-v1:'), body))), l.check_digest);
+    assert.equal(hex(ilCheck(body)), l.check, l.name);
+    const encoded = cat(body, ilCheck(body));
+    assert.equal(encoded.length, 69);
+    assert.equal(hex(encoded), l.encoded);
+    const code = 'zi1.' + b64url(encoded);
+    assert.equal(code, l.code, l.name);
+    assert.equal(code.length, 96);
+    assert.equal(l.code_length, 96);
+    assert.ok(!code.includes('='), 'no padding');
+    const link = `https://${v.format.default_host}/c#${code}`;
+    assert.equal(link, l.link, l.name);
+    assert.equal(link.length, 126);
+    assert.equal(l.link_length, 126);
+  }
+});
+
+test('intro link: the reader, from §21.9 alone — every input taken, every refusal by its reason, every weak key', () => {
+  const v = loadIl();
+  const small = deriveSmallOrder();
+  const byName = Object.fromEntries(v.links.map((l) => [l.name, l]));
+  const same = (got, l, why) => {
+    assert.equal(typeof got, 'object', `${why}: read as ${got}`);
+    assert.equal(got.pow, l.pow, why);
+    assert.equal(hex(got.intro), l.intro, why);
+    assert.equal(hex(got.xintro), l.xintro, why);
+  };
+  for (const l of v.links) {
+    same(readIntroLink(l.code, small), l, l.name);
+    same(readIntroLink(l.link, small), l, l.name);
+  }
+  assert.ok(v.accepted.length >= 5);
+  for (const a of v.accepted) same(readIntroLink(a.input, small), byName[a.link], a.why);
+  for (const r of v.refused) assert.equal(readIntroLink(r.input, small), r.problem, r.why);
+  // Every reason the format names is one some input gets.
+  assert.deepEqual(new Set(v.refused.map((r) => r.problem)), new Set(v.format.problems));
+  assert.equal(v.format.problems.length, 8);
+  // The weak intros are every weak Ed25519 spelling there is: the 24 values
+  // of y that are of small order or at or above p, each with the sign bit
+  // clear and set.
+  const topSet = (h) => { const b = unhex(h); b[31] |= 0x80; return hex(b); };
+  const weakY = new Set([...small.ys, ...AT_OR_ABOVE_P]);
+  assert.equal(weakY.size, 24);
+  const weakEd = new Set([...weakY].flatMap((y) => [y, topSet(y)]));
+  assert.equal(weakEd.size, 48);
+  const keyOf = (r, from, to) => hex(Buffer.from(r.input.slice(4), 'base64url').subarray(from, to));
+  const refusedIntros = v.refused.filter((r) => r.problem === 'weakIntro').map((r) => keyOf(r, 1, 33));
+  assert.equal(refusedIntros.length, 48);
+  assert.deepEqual(new Set(refusedIntros), weakEd);
+  // The weak xintros: every weak u with its top bit clear (24), each with it
+  // set, and the second spelling of an honest key — the pow-20 link's.
+  const weakU = new Set([...small.us, ...AT_OR_ABOVE_P]);
+  assert.equal(weakU.size, 24);
+  const refusedX = v.refused.filter((r) => r.problem === 'weakXintro').map((r) => keyOf(r, 33, 65));
+  assert.deepEqual(new Set(refusedX),
+    new Set([...weakU, ...[...weakU].map(topSet), topSet(byName.pow_20.xintro)]));
+  assert.equal(refusedX.length, 49);
+  // Each of those codes is otherwise a good one: a matching check, pow 20,
+  // and the pow-20 link's other key.
+  for (const r of v.refused.filter((x) => x.problem === 'weakIntro' || x.problem === 'weakXintro')) {
+    const raw = Buffer.from(r.input.slice(4), 'base64url');
+    assert.ok(ilCheck(raw.subarray(0, 65)).equals(raw.subarray(65)), r.why);
+    assert.equal(raw[0], 20, r.why);
+    const other = r.problem === 'weakIntro' ? keyOf(r, 33, 65) : keyOf(r, 1, 33);
+    assert.equal(other, r.problem === 'weakIntro' ? byName.pow_20.xintro : byName.pow_20.intro, r.why);
+  }
+});
+
+test('intro link: a request through one — sealed to its xintro, stamped for its mailbox at its pow and at a raised bits, acknowledged under its intro', () => {
+  const v = loadIl();
+  const q = v.request;
+  const l = v.links.find((x) => x.name === q.link);
+  assert.equal(q.to_routing_id, l.intro_rid, 'sent to the mailbox the link names');
+  assert.equal(q.to_x_pub, l.xintro, 'sealed to the xintro the link names');
+  assert.equal(b64url(sha256(edPub(unhex(q.requester.ed_seed)))), q.requester.routing_id);
+  assert.equal(hex(edPub(unhex(q.owner_account.ed_seed))), q.owner_account.ed_pub);
+  // §8: re-sealed from the recorded draws, and opened with the X25519 half
+  // of the link's own seed.
+  const toPub = unhex(q.to_x_pub), ephSeed = unhex(q.eph_seed), ephPub = xPub(ephSeed);
+  const sealKey = hkdf(x25519(ephSeed, toPub), Buffer.alloc(0), cat(utf8('z-sealed-v1'), ephPub, toPub), 32);
+  const { ct, mac } = chachaSeal(sealKey, unhex(q.nonce),
+    padSealed(utf8(JSON.stringify({ f: q.requester.routing_id, p: q.payload }))), utf8('z-sealed-v1'));
+  assert.equal('zs1.' + b64url(cat(ephPub, unhex(q.nonce), ct, mac)), q.envelope);
+  const xs = hkdf(unhex(l.intro_seed), utf8('z-handle-intro-x-v1'), Buffer.alloc(0), 32);
+  const raw = unb64url(q.envelope.slice(4));
+  const k = hkdf(x25519(xs, raw.subarray(0, 32)), Buffer.alloc(0), cat(utf8('z-sealed-v1'), raw.subarray(0, 32), xPub(xs)), 32);
+  const inner = JSON.parse(unpadSealed(chachaOpen(k, raw.subarray(32, 44), raw.subarray(44, raw.length - 16),
+    raw.subarray(raw.length - 16), utf8('z-sealed-v1'))).toString('utf8'));
+  assert.deepEqual(inner, { f: q.requester.routing_id, p: q.payload });
+  // §8.1: the request, addressed to the link's mailbox and signed.
+  const u16be = (n) => Buffer.from([(n >> 8) & 0xff, n & 0xff]);
+  const creqInput = (j) => {
+    const to = utf8(j.to), name = utf8(j.bundle.name ?? '');
+    return cat(utf8('z-contact-request-v1:'), unb64(j.bundle.ed), unb64(j.bundle.x),
+      u16be(to.length), to, u64be(j.ts), u16be(name.length), name);
+  };
+  const creq = JSON.parse(unb64(q.payload).toString('utf8'));
+  assert.equal(creq.to, l.intro_rid);
+  assert.equal(hex(creqInput(creq)), q.creq_signing_input);
+  assert.ok(edOk(unb64(creq.bundle.ed), creqInput(creq), unb64(creq.sig)));
+  assert.equal(q.creq_id, hex(sha256(creqInput(creq))));
+  // §21.7: the stamps, at the link's pow and at the raised bits a relay's
+  // refusal named.
+  const u32be = (n) => { const b = Buffer.alloc(4); b.writeUInt32BE(n); return b; };
+  const zeroBits = (d) => {
+    let n = 0;
+    for (const byte of d) { if (byte === 0) { n += 8; continue; } n += Math.clz32(byte) - 24; break; }
+    return n;
+  };
+  assert.deepEqual(q.stamps.map((s) => s.bits), [l.pow, 18]);
+  for (const s of q.stamps) {
+    assert.equal(s.day, Math.floor(q.now_ms / 86400000));
+    assert.equal(s.routing_id, l.intro_rid);
+    assert.equal(hex(sha256(utf8(q.envelope))), s.envelope_sha256);
+    const input = cat(utf8('z-intro-pow-v1:'), unb64url(s.routing_id), u32be(s.day), sha256(utf8(q.envelope)), unhex(s.nonce));
+    assert.equal(input.length, 99);
+    assert.equal(hex(input), s.input);
+    const d = sha256(input);
+    assert.equal(hex(d), s.digest);
+    assert.equal(zeroBits(d), s.zero_bits);
+    assert.ok(zeroBits(d) >= s.bits, `${s.bits} bits`);
+    assert.equal(s.frame_member, b64url(unhex(s.nonce)));
+  }
+  assert.ok(q.stamps[0].zero_bits < 18, 'the first stamp is one a relay asking 18 bits refuses');
+  // The acknowledgement: by the link's own seed, under the intro the link
+  // names, and under no other link's.
+  const ackInput = cat(utf8('z-intro-ack-v1:'), unb64url(q.requester.routing_id), unhex(q.owner_account.ed_pub), unhex(q.creq_id));
+  assert.equal(ackInput.length, 111);
+  assert.equal(hex(ackInput), q.ack_input);
+  assert.equal(b64url(edSign(unhex(l.intro_seed), ackInput)), q.ia, 'Ed25519 is deterministic');
+  assert.ok(edStrict(unhex(l.intro), ackInput, unb64url(q.ia)));
+  assert.notEqual(q.ia_refused_under, l.intro);
+  assert.ok(!edOk(unhex(q.ia_refused_under), ackInput, unb64url(q.ia)));
+  const acc = JSON.parse(unb64(q.acceptance_payload).toString('utf8'));
+  assert.equal(JSON.stringify(acc), q.acceptance_json);
+  assert.equal(acc.ia, q.ia);
+  assert.equal(acc.to, q.requester.routing_id);
+  assert.ok(edOk(unb64(acc.bundle.ed), creqInput(acc), unb64(acc.sig)), 'still a genuine creq');
+  assert.equal(hex(unb64(acc.bundle.ed)), q.owner_account.ed_pub);
+});
+
 // ADR 0033 addendum A (PROTOCOL §8.3, §12.7): the introduction key, from the
 // section alone. iks is Ed25519 by the key the mailbox is the hash of, over
 // the context, that key and SHA-256 of the sealing key, held to §21.4's one

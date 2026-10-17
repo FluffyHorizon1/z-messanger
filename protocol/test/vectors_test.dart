@@ -65,6 +65,7 @@ void main() {
       ('backup', 'archive'),
       ('backup', 'archive_1_1'),
       ('handles', 'handles'),
+      ('handles', 'intro_link'),
       ('intro-key', 'intro_key'),
     ]) {
       test('$ver/$suite', () {
@@ -1217,6 +1218,170 @@ void main() {
           isTrue);
       expect(hex(accepted.bundle.edPub), owner['ed_pub']);
       expect((jsonDecode(ack['acceptance_json'] as String) as Map)['ia'], ack['ia']);
+    });
+
+    test('intro link: every link rebuilt from its seed, every input read or '
+        'refused by its reason, and a request through one', () async {
+      final v = readVectors('intro_link', 'handles');
+      final fmt = v['format'] as Map;
+      expect(fmt['prefix'], introLinkPrefix);
+      expect(fmt['check_context'], introLinkContext);
+      expect(fmt['body_bytes'], introLinkBodyBytes);
+      expect(fmt['check_bytes'], introLinkCheckBytes);
+      expect(fmt['encoded_chars'], introLinkEncodedLength);
+      expect(fmt['code_chars'], introLinkCodeLength);
+      expect(fmt['path'], introLinkPath);
+      expect(fmt['default_host'], connectLinkHost);
+      expect(fmt['default_pow'], introLinkDefaultPow);
+      expect([fmt['pow_min'], fmt['pow_max']], [handlePowMinBits, handlePowMaxBits]);
+      expect(fmt['x_hkdf_salt'], handleIntroXSalt);
+      expect(fmt['problems'], [for (final p in IntroLinkProblem.values) p.name]);
+
+      // §21.9: each link from its seed alone, through the public API.
+      final links = <String, IntroLink>{};
+      final seeds = <String, Uint8List>{};
+      for (final l in (v['links'] as List).cast<Map>()) {
+        final name = l['name'] as String;
+        final seed = unhex(l['intro_seed'] as String);
+        final link = await IntroLink.fromSeed(seed, pow: l['pow'] as int);
+        expect(hex(link.intro), l['intro'], reason: name);
+        expect(hex(await handleIntroXSeed(seed)), l['x_seed'], reason: name);
+        expect(hex(link.xintro), l['xintro'], reason: name);
+        expect(await link.introRid(), l['intro_rid'], reason: name);
+        expect(hex(unb64url(l['intro_rid'] as String)), l['rid_bytes']);
+        expect(hex(link.body), l['body'], reason: name);
+        expect(hex([...utf8.encode(introLinkContext), ...link.body]),
+            l['check_input']);
+        expect(hex(await sha256Bytes(unhex(l['check_input'] as String))),
+            l['check_digest']);
+        expect(hex(link.check), l['check'], reason: name);
+        expect(hex([...link.body, ...link.check]), l['encoded']);
+        expect(link.code, l['code'], reason: name);
+        expect(link.link(), l['link'], reason: name);
+        expect([link.code.length, link.link().length],
+            [l['code_length'], l['link_length']]);
+        expect(IntroLink.parse(l['code'] as String), link);
+        expect(IntroLink.parse(l['link'] as String), link);
+        links[name] = link;
+        seeds[name] = seed;
+      }
+      for (final a in (v['accepted'] as List).cast<Map>()) {
+        expect(IntroLink.parse(a['input'] as String), links[a['link']],
+            reason: a['why'] as String);
+      }
+      for (final r in (v['refused'] as List).cast<Map>()) {
+        expect(IntroLink.problemWith(r['input'] as String)?.name, r['problem'],
+            reason: r['why'] as String);
+      }
+
+      // The request: re-sealed to the link's xintro from its recorded draws,
+      // opened with the link's seed, stamps re-found from their starts, and
+      // the acknowledgement re-signed and verified under the link's intro.
+      final q = v['request'] as Map;
+      final link = links[q['link']]!;
+      final seed = seeds[q['link']]!;
+      final requester = q['requester'] as Map;
+      final owner = q['owner_account'] as Map;
+      final requesterId = await ZIdentity.fromSeeds(
+          edSeed: unhex(requester['ed_seed'] as String),
+          xSeed: unhex(requester['x_seed'] as String));
+      expect(await requesterId.routingId(), requester['routing_id']);
+      final ownerId = await ZIdentity.fromSeeds(
+          edSeed: unhex(owner['ed_seed'] as String),
+          xSeed: unhex(owner['x_seed'] as String));
+      expect(hex(ownerId.edPub), owner['ed_pub']);
+      expect(await ownerId.routingId(), owner['routing_id']);
+      expect(await link.introRid(), q['to_routing_id']);
+      expect(hex(link.xintro), q['to_x_pub']);
+      expect(
+          await runScripted(
+              [unhex(q['eph_seed'] as String), unhex(q['nonce'] as String)],
+              () => SealedEnvelope.seal(
+                  toXPub: link.xintro,
+                  fromRid: requester['routing_id'] as String,
+                  payload: q['payload'] as String)),
+          q['envelope']);
+      final introId = await handleIntroIdentity(seed);
+      final opened = (await SealedEnvelope.open(
+          myXSeed: introId.xSeed,
+          myXPub: introId.xPub,
+          blob: q['envelope'] as String))!;
+      expect(opened.fromRid, requester['routing_id']);
+      expect(opened.payload, q['payload']);
+      final creq = ContactRequest.tryParse(opened.payload)!;
+      expect(
+          await creq.verify(
+              expectedTo: q['to_routing_id'] as String,
+              sealedFrom: opened.fromRid),
+          isTrue);
+      expect(hex(ContactRequest.signingInput(creq.bundle, creq.toRid, creq.ts)),
+          q['creq_signing_input']);
+      expect(hex(await contactRequestId(creq)), q['creq_id']);
+      final env = utf8.encode(q['envelope'] as String);
+      final stamps = (q['stamps'] as List).cast<Map>();
+      expect([for (final s in stamps) s['bits']], [link.pow, 18]);
+      for (final s in stamps) {
+        expect(s['day'], introPowDay(q['now_ms'] as int));
+        expect(s['routing_id'], q['to_routing_id']);
+        final nonce = createIntroPowStamp(
+            introRid: s['routing_id'] as String,
+            day: s['day'] as int,
+            envelope: env,
+            bits: s['bits'] as int,
+            startNonce: unhex(s['start_nonce'] as String));
+        expect(hex(nonce), s['nonce']);
+        expect(b64url(nonce), s['frame_member']);
+        expect(hex(await sha256Bytes(env)), s['envelope_sha256']);
+        expect(
+            hex(introPowInput(
+                ridBytes: unhex(s['rid_bytes'] as String),
+                day: s['day'] as int,
+                envelopeHash: await sha256Bytes(env),
+                nonce: nonce)),
+            s['input']);
+        final digest = await sha256Bytes(unhex(s['input'] as String));
+        expect(hex(digest), s['digest']);
+        expect(introPowZeroBits(digest), s['zero_bits']);
+        expect(
+            await verifyIntroPowStamp(
+                introRid: s['routing_id'] as String,
+                day: s['day'] as int,
+                envelope: env,
+                nonce: nonce,
+                bits: s['bits'] as int),
+            isTrue);
+      }
+      expect(stamps.first['zero_bits'] as int, lessThan(18),
+          reason: 'the first stamp is one a relay asking 18 bits refuses');
+      final creqId = unhex(q['creq_id'] as String);
+      expect(
+          hex(introAckInput(
+              requesterRidBytes: unb64url(requester['routing_id'] as String),
+              ownerAccountEdPub: ownerId.edPub,
+              creqId: creqId)),
+          q['ack_input']);
+      expect(
+          await signIntroAck(
+              introSeed: seed,
+              requesterRid: requester['routing_id'] as String,
+              ownerAccountEdPub: ownerId.edPub,
+              creqId: creqId),
+          q['ia']);
+      Future<bool> ackUnder(Uint8List introPub) => verifyIntroAck(
+          ia: q['ia'] as String,
+          introPub: introPub,
+          requesterRid: requester['routing_id'] as String,
+          ownerAccountEdPub: ownerId.edPub,
+          creqId: creqId);
+      expect(await ackUnder(link.intro), isTrue);
+      expect(await ackUnder(unhex(q['ia_refused_under'] as String)), isFalse);
+      final accepted =
+          ContactRequest.tryParse(q['acceptance_payload'] as String)!;
+      expect(
+          await accepted.verify(expectedTo: requester['routing_id'] as String),
+          isTrue);
+      expect(hex(accepted.bundle.edPub), owner['ed_pub']);
+      expect((jsonDecode(q['acceptance_json'] as String) as Map)['ia'], q['ia']);
     });
   });
 }

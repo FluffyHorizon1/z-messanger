@@ -5110,6 +5110,416 @@ Future<Map<String, Object?>> suiteHandles() async {
   };
 }
 
+/// ADR 0032 (PROTOCOL §21.9): the public introduction link — a handle's
+/// introduction mailbox handed out directly, as a `zi1.` code, with no
+/// registry between. A new file beside `handles.json`, which is unchanged
+/// by it: links from seeds with every intermediate, the inputs a reader
+/// takes and the ones it refuses with their reasons, and a request through a
+/// link as far as the library goes without the app.
+Future<Map<String, Object?>> suiteIntroLink() async {
+  final d = Drbg(0x0032);
+  const host = connectLinkHost;
+  check(host == 'www.zmessengers.com', 'the default host');
+  check(introLinkDefaultPow == 20, 'a printed link asks 20 bits by default');
+
+  // --- links from seeds, every intermediate ---------------------------------------
+  final links = <String, IntroLink>{};
+  final seeds = <String, Uint8List>{};
+  final linkOut = <Map<String, Object?>>[];
+  for (final pow in [16, 20, 28]) {
+    final name = 'pow_$pow';
+    final seed = d.next(32);
+    // §21.3, from the formulas: intro is the seed's Ed25519 key, xintro the
+    // X25519 key of HKDF(seed), the mailbox the hash of intro.
+    final intro = await refEdPub(seed);
+    final xSeed = await refHkdf(seed, utf8b(handleIntroXSalt), Uint8List(0), 32);
+    final xintro = await refXPub(xSeed);
+    final ridBytes = await refSha256(intro);
+    final body = Uint8List.fromList([pow, ...intro, ...xintro]);
+    final checkInput = concatBytes([utf8b(introLinkContext), body]);
+    final digest = await refSha256(checkInput);
+    final chk = digest.sublist(0, introLinkCheckBytes);
+    final encoded = concatBytes([body, chk]);
+    final code = 'zi1.${b64url(encoded)}';
+    final link = 'https://$host/c#$code';
+    // The library, from the seed alone, agrees on every value.
+    final lib = await IntroLink.fromSeed(seed, pow: pow);
+    check(eq(lib.intro, intro) && eq(lib.xintro, xintro), "$name: the keys are 21.3's");
+    check(await lib.introRid() == b64url(ridBytes), '$name: the mailbox');
+    check(eq(lib.body, body) && eq(lib.check, chk), '$name: the body and the check');
+    check(lib.code == code && lib.link() == link, '$name: the code and the link');
+    check(body.length == 65 && encoded.length == 69, '$name: 65 and 69 bytes');
+    check(code.length == 96 && link.length == 126, '$name: 96 and 126 characters');
+    check(!code.contains('='), '$name: no padding');
+    check(IntroLink.parse(code) == lib && IntroLink.parse(link) == lib, '$name: reads back');
+    seeds[name] = seed;
+    links[name] = lib;
+    linkOut.add({
+      'name': name,
+      'intro_seed': hex(seed),
+      'pow': pow,
+      'intro': hex(intro),
+      'x_seed': hex(xSeed),
+      'xintro': hex(xintro),
+      'intro_rid': b64url(ridBytes),
+      'rid_bytes': hex(ridBytes),
+      'body': hex(body),
+      'check_input': hex(checkInput),
+      'check_digest': hex(digest),
+      'check': hex(chk),
+      'encoded': hex(encoded),
+      'code': code,
+      'code_length': code.length,
+      'link': link,
+      'link_length': link.length,
+    });
+  }
+
+  // --- inputs a reader takes -------------------------------------------------------
+  final base = links['pow_20']!;
+  final baseCode = base.code;
+  final acceptedOut = <Map<String, Object?>>[];
+  for (final (input, why) in [
+    (baseCode, 'a bare code'),
+    (base.link(), 'the link at the default host'),
+    ('https://i.example.org/c#$baseCode',
+        'a host beginning i: a build before 2026-10-16 takes the part before '
+            'the # for an invite page, and refuses the code on its 1 and .'),
+    ('https://$host/c?utm_source=card#$baseCode', 'a query before the fragment'),
+    (' \t${base.link()}\r\n', 'surrounding ASCII whitespace'),
+    ('$host/c#$baseCode', 'pasted without its scheme'),
+  ]) {
+    check(IntroLink.parse(input) == base, 'accepted: $why');
+    check(ConnectCode.fromLink(input) == null, 'and no invite: $why');
+    acceptedOut.add({'why': why, 'input': input, 'link': 'pow_20'});
+  }
+
+  // --- inputs a reader refuses, each by its reason ----------------------------------
+  final enc = baseCode.substring(introLinkPrefix.length);
+  String codeOf(List<int> body) =>
+      '$introLinkPrefix${b64url([...body, ...introLinkCheck(body)])}';
+  String swapCase(String s) => String.fromCharCodes([
+        for (final c in s.codeUnits)
+          c >= 0x41 && c <= 0x5a
+              ? c + 0x20
+              : c >= 0x61 && c <= 0x7a
+                  ? c - 0x20
+                  : c
+      ]);
+  final someone = await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+  final contactCode = (await someone.bundle(displayName: 'Someone')).encode();
+  check(contactCode.startsWith('zc1.'), 'a contact code');
+  final secret = d.next(10);
+  final inviteV1 = ConnectCode(secret), inviteV2 = ConnectCode(secret, version: 2);
+  check(inviteV2.text.startsWith('9'), 'a version-2 invite');
+  final checkFlipped = Uint8List.fromList([...base.body, ...base.check]);
+  checkFlipped[68] ^= 0x01;
+  final withDash = links.values
+      .map((l) => l.code)
+      .firstWhere((c) => c.substring(4).contains('-'),
+          orElse: () => throw StateError('no code with a -'));
+  final withUnderscore = links.values
+      .map((l) => l.code)
+      .firstWhere((c) => c.substring(4).contains('_'),
+          orElse: () => throw StateError('no code with a _'));
+  Uint8List withPow(int pow) => Uint8List.fromList([pow, ...base.intro, ...base.xintro]);
+  final refused = <(String, IntroLinkProblem, String)>[
+    (contactCode, IntroLinkProblem.notALink, 'a zc1. contact code'),
+    (inviteV1.link(), IntroLinkProblem.notALink, 'an invite of version 1, its link'),
+    (inviteV1.text, IntroLinkProblem.notALink, 'an invite of version 1, its text'),
+    (inviteV2.link(), IntroLinkProblem.notALink, 'an invite of version 2, its link'),
+    (inviteV2.text, IntroLinkProblem.notALink, 'an invite of version 2, its text'),
+    ('@alice.42', IntroLinkProblem.notALink, 'a handle'),
+    ('', IntroLinkProblem.notALink, 'nothing'),
+    ('https://$host/c', IntroLinkProblem.notALink, 'the page with no fragment'),
+    ('https://$host/c#', IntroLinkProblem.notALink, 'an empty fragment'),
+    ('ZI1.$enc', IntroLinkProblem.notALink, 'zi1. in capitals: the prefix is not case-folded'),
+    (' $baseCode', IntroLinkProblem.notALink,
+        'a no-break space (U+00A0) before the code: only ASCII whitespace is trimmed'),
+    ('zi2.$enc', IntroLinkProblem.newerVersion, 'zi2.: a link from a newer Z'),
+    ('https://$host/c#zi2.$enc', IntroLinkProblem.newerVersion, 'zi2. at the default host'),
+    ('zi10.$enc', IntroLinkProblem.newerVersion, 'zi10.: a version of two digits'),
+    ('zi0.$enc', IntroLinkProblem.notALink, 'zi0.: no version is 0'),
+    ('zi01.$enc', IntroLinkProblem.notALink, 'zi01.: a version is not written with a leading zero'),
+    ('$baseCode=', IntroLinkProblem.notBase64url, 'padded'),
+    (withDash.replaceFirst('-', '+', 4), IntroLinkProblem.notBase64url,
+        'a + where the code has a -: the standard alphabet'),
+    (withUnderscore.replaceFirst('_', '/', 4), IntroLinkProblem.notBase64url,
+        'a / where the code has a _: the standard alphabet'),
+    ('${baseCode.substring(0, 50)} ${baseCode.substring(50)}', IntroLinkProblem.notBase64url,
+        'a space inside the code'),
+    ('$baseCode ', IntroLinkProblem.notBase64url,
+        'a no-break space (U+00A0) after the code: only ASCII whitespace is trimmed'),
+    (baseCode.substring(0, baseCode.length - 1), IntroLinkProblem.wrongLength, '91 characters'),
+    ('${baseCode}A', IntroLinkProblem.wrongLength, '93 characters'),
+    (introLinkPrefix, IntroLinkProblem.wrongLength, 'zi1. alone'),
+    ('zi1.${swapCase(enc)}', IntroLinkProblem.badCheck,
+        "the code's letters in the other case: no case folding"),
+    ('zi1.${b64url(checkFlipped)}', IntroLinkProblem.badCheck, 'one bit of the check flipped'),
+    (codeOf(withPow(15)), IntroLinkProblem.powOutOfRange, 'pow 15'),
+    (codeOf(withPow(29)), IntroLinkProblem.powOutOfRange, 'pow 29'),
+  ];
+  check(swapCase(enc) != enc, 'the code has letters to swap');
+
+  // Every weak key (§21.4): every spelling of a point of small order, every
+  // value at or above p, and — for X25519, whose top bit X25519 itself
+  // ignores — each of those, and the honest key, with the top bit set. For
+  // Ed25519 that is all 48 weak spellings there are.
+  final p = (BigInt.one << 255) - BigInt.from(19);
+  const smallEdY = [
+    ('0100000000000000000000000000000000000000000000000000000000000000', 'the identity'),
+    ('ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f', 'the point of order 2'),
+    ('0000000000000000000000000000000000000000000000000000000000000000', 'the points of order 4'),
+    ('26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05', 'two points of order 8'),
+    ('c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a', 'the other two of order 8'),
+  ];
+  const smallXU = [
+    ('0000000000000000000000000000000000000000000000000000000000000000', 'u = 0'),
+    ('0100000000000000000000000000000000000000000000000000000000000000', 'u = 1'),
+    ('e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800', 'a u of order 8'),
+    ('5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157', 'the other u of order 8'),
+    ('ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f', 'u = p - 1'),
+  ];
+  final weakValues = <(Uint8List, String)>[
+    for (final (h, why) in smallEdY) (unhex(h), 'of small order: $why'),
+    for (var k = 0; k < 19; k++) (_bigLe32(p + BigInt.from(k)), 'at or above p: p + $k'),
+  ];
+  final weakXValues = <(Uint8List, String)>[
+    for (final (h, why) in smallXU) (unhex(h), 'of small order: $why'),
+    for (var k = 0; k < 19; k++) (_bigLe32(p + BigInt.from(k)), 'at or above p: p + $k'),
+  ];
+  Uint8List topBit(Uint8List k) => Uint8List.fromList(k)..[31] |= 0x80;
+  final weakIntros = <(Uint8List, String)>[
+    for (final (k, why) in weakValues) (k, why),
+    for (final (k, why) in weakValues) (topBit(k), '$why, the sign bit set'),
+  ];
+  final weakXintros = <(Uint8List, String)>[
+    for (final (k, why) in weakXValues) (k, why),
+    for (final (k, why) in weakXValues) (topBit(k), '$why, the top bit set'),
+    (topBit(base.xintro), 'the honest key with its top bit set: a second spelling of it'),
+  ];
+  check(weakIntros.length == 48 && weakXintros.length == 49, 'every weak key');
+  for (final (k, why) in weakIntros) {
+    check(!handleStrongEdKey(k), 'weak intro: $why');
+    refused.add((codeOf([20, ...k, ...base.xintro]), IntroLinkProblem.weakIntro, 'intro $why'));
+  }
+  for (final (k, why) in weakXintros) {
+    check(!handleStrongXKey(k), 'weak xintro: $why');
+    refused.add((codeOf([20, ...base.intro, ...k]), IntroLinkProblem.weakXintro, 'xintro $why'));
+  }
+  final refusedOut = <Map<String, Object?>>[];
+  for (final (input, problem, why) in refused) {
+    check(IntroLink.problemWith(input) == problem, 'refused as ${problem.name}: $why');
+    refusedOut.add({'why': why, 'input': input, 'problem': problem.name});
+  }
+  // Every reason the reader can give is among them.
+  check(
+      {for (final (_, problem, _) in refused) problem}.length ==
+          IntroLinkProblem.values.length,
+      'every reason');
+
+  // --- a request through the link, as far as the library goes without the app ---------
+  // The pow-16 link, so the stamps are cheap to re-find.
+  final reqLink = links['pow_16']!;
+  final reqSeed = seeds['pow_16']!;
+  const nowMs = 1792238400000; // 2026-10-17T12:00:00Z
+  final day = introPowDay(nowMs);
+  check(day == 20743, 'day');
+  final held = IntroLink.parse(reqLink.link()); // what the requester holds
+  final rid = await held.introRid();
+  final ridBytes = await refSha256(held.intro);
+  final requester = await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+  final owner = await ZIdentity.fromSeeds(edSeed: d.next(32), xSeed: d.next(32));
+  final requesterRid = await requester.routingId();
+  final creq = await ContactRequest.create(
+      me: requester, toRid: rid, displayName: 'Bob', ts: nowMs);
+  d.takeDraws();
+  final envelope = await d.run(() => SealedEnvelope.seal(
+      toXPub: held.xintro, fromRid: requesterRid, payload: creq.encode()));
+  final sealDraws = d.takeDraws();
+  check(sealDraws.length == 2 && sealDraws[0].length == 32 && sealDraws[1].length == 12,
+      'a seal draws an ephemeral seed and a nonce, nothing else');
+  final introId = await handleIntroIdentity(reqSeed);
+  final opened = await SealedEnvelope.open(
+      myXSeed: introId.xSeed, myXPub: introId.xPub, blob: envelope);
+  check(opened != null && opened.fromRid == requesterRid && opened.payload == creq.encode(),
+      "the link's seed opens the request");
+  final otherId = await handleIntroIdentity(seeds['pow_20']!);
+  check(
+      await SealedEnvelope.open(myXSeed: otherId.xSeed, myXPub: otherId.xPub, blob: envelope) ==
+          null,
+      "another link's seed does not");
+  check(
+      await ContactRequest.tryParse(opened!.payload)!
+          .verify(expectedTo: rid, sealedFrom: opened.fromRid),
+      "the request is addressed to the link's mailbox");
+  final envBytes = utf8.encode(envelope);
+  final envHash = await refSha256(envBytes);
+  const raisedBits = 18;
+  final stampOut = <Map<String, Object?>>[];
+  for (final (bits, why) in [
+    (held.pow, "at the link's pow, which is all its holder knows"),
+    (raisedBits,
+        'at a raised bits: the relay refused the first (pow_required, bits 18), '
+            "and 18 is the greater of it and the link's pow, and at most 28"),
+  ]) {
+    final start = d.next(16);
+    final nonce = createIntroPowStamp(
+        introRid: rid, day: day, envelope: envBytes, bits: bits, startNonce: start);
+    final input = concatBytes([
+      utf8b(introPowContext),
+      ridBytes,
+      (ByteData(4)..setUint32(0, day)).buffer.asUint8List(),
+      envHash,
+      nonce,
+    ]);
+    check(eq(input, introPowInput(ridBytes: ridBytes, day: day, envelopeHash: envHash, nonce: nonce)),
+        'pow input');
+    final digest = await refSha256(input);
+    final zeros = introPowZeroBits(digest);
+    check(zeros >= bits, 'the stamp has $bits bits');
+    if (bits == held.pow) {
+      check(zeros < raisedBits, 'the first stamp is one a relay asking 18 refuses');
+    }
+    stampOut.add({
+      'why': why,
+      'bits': bits,
+      'routing_id': rid,
+      'rid_bytes': hex(ridBytes),
+      'day': day,
+      'envelope_sha256': hex(envHash),
+      'start_nonce': hex(start),
+      'nonce': hex(nonce),
+      'frame_member': b64url(nonce),
+      'input': hex(input),
+      'digest': hex(digest),
+      'zero_bits': zeros,
+    });
+  }
+  final creqInput = ContactRequest.signingInput(creq.bundle, creq.toRid, creq.ts);
+  final creqId = await contactRequestId(creq);
+  check(eq(creqId, await refSha256(creqInput)), 'creq id');
+  final ia = await signIntroAck(
+      introSeed: reqSeed,
+      requesterRid: requesterRid,
+      ownerAccountEdPub: owner.edPub,
+      creqId: creqId);
+  final ackInput = concatBytes(
+      [utf8b(introAckContext), unb64url(requesterRid), owner.edPub, creqId]);
+  check(eq(unb64url(ia), await refEdSign(reqSeed, ackInput)), 'ia');
+  check(
+      await verifyIntroAck(
+          ia: ia,
+          introPub: held.intro,
+          requesterRid: requesterRid,
+          ownerAccountEdPub: owner.edPub,
+          creqId: creqId),
+      "ia verifies under the intro the requester read from the link");
+  final otherIntro = links['pow_20']!.intro;
+  check(
+      !await verifyIntroAck(
+          ia: ia,
+          introPub: otherIntro,
+          requesterRid: requesterRid,
+          ownerAccountEdPub: owner.edPub,
+          creqId: creqId),
+      "and not under another link's");
+  final accept = await ContactRequest.create(
+      me: owner, toRid: requesterRid, displayName: 'Alice', ts: nowMs + 60000);
+  final acceptJson = {
+    'v': 1,
+    't': 'creq',
+    'to': accept.toRid,
+    'ts': accept.ts,
+    'bundle': accept.bundle.toJson(),
+    'sig': b64(accept.sig),
+    'ia': ia,
+  };
+  final acceptPayload = base64Encode(utf8.encode(jsonEncode(acceptJson)));
+  final reparsed = ContactRequest.tryParse(acceptPayload);
+  check(reparsed != null && await reparsed.verify(expectedTo: requesterRid),
+      'the acceptance with ia is still a valid creq to a reader that ignores ia');
+
+  return {
+    'suite': 'intro_link',
+    'version': vectorsVersion,
+    'description':
+        'Public introduction links (PROTOCOL 21.9, ADR 0032): a handle\'s '
+            'introduction mailbox handed out directly as a zi1. code, with no '
+            'registry between. Links from introduction seeds at pow 16, 20 and '
+            '28 with every intermediate (the keys exactly as 21.3 derives a '
+            'handle\'s, the body, the check, the code and the link at the '
+            'default host); inputs a reader takes (a bare code, the link, a '
+            'host beginning i, a query, whitespace, no scheme); inputs it '
+            'refuses with the reason it names (a contact code, both invite '
+            'versions, a handle, a newer version, padding, the standard '
+            'alphabet, wrong lengths, case, a damaged check, pow 15 and 29, '
+            'and every weak intro and xintro); and a request through the '
+            'pow-16 link: sealed to its xintro, stamped at its pow and at a '
+            'raised bits, and the acknowledgement verified under its intro.',
+    'format': {
+      'prefix': introLinkPrefix,
+      'check_context': introLinkContext,
+      'body': 'u8(pow) || intro(32) || xintro(32)',
+      'body_bytes': introLinkBodyBytes,
+      'check': 'SHA-256(utf8(check_context) || body)[0..4]',
+      'check_bytes': introLinkCheckBytes,
+      'code': 'prefix || b64url(body || check)',
+      'encoded_chars': introLinkEncodedLength,
+      'code_chars': introLinkCodeLength,
+      'link': '"https://" || host || "/c#" || code',
+      'path': introLinkPath,
+      'default_host': host,
+      'default_pow': introLinkDefaultPow,
+      'pow_min': handlePowMinBits,
+      'pow_max': handlePowMaxBits,
+      'x_hkdf_salt': handleIntroXSalt,
+      'reading':
+          'trim ASCII whitespace (U+0009-U+000D, U+0020); given a #, read only '
+              'what follows the first one; then, in order: the prefix zi1. '
+              '(zi, another version without a leading zero, and . is '
+              'newerVersion; anything else notALink), only base64url '
+              'characters (notBase64url), exactly 92 of them (wrongLength), the '
+              'check (badCheck), pow 16-28 (powOutOfRange), intro a strong '
+              'Ed25519 key (weakIntro), xintro a strong X25519 key (weakXintro)',
+      'problems': [for (final p in IntroLinkProblem.values) p.name],
+    },
+    'links': linkOut,
+    'accepted': acceptedOut,
+    'refused': refusedOut,
+    'request': {
+      'link': 'pow_16',
+      'now_ms': nowMs,
+      'requester': {
+        'ed_seed': hex(requester.edSeed),
+        'x_seed': hex(requester.xSeed),
+        'ed_pub': hex(requester.edPub),
+        'routing_id': requesterRid,
+      },
+      'owner_account': {
+        'ed_seed': hex(owner.edSeed),
+        'x_seed': hex(owner.xSeed),
+        'ed_pub': hex(owner.edPub),
+        'routing_id': await owner.routingId(),
+      },
+      'payload': creq.encode(),
+      'to_routing_id': rid,
+      'to_x_pub': hex(held.xintro),
+      'eph_seed': hex(sealDraws[0]),
+      'nonce': hex(sealDraws[1]),
+      'envelope': envelope,
+      'stamps': stampOut,
+      'creq_signing_input': hex(creqInput),
+      'creq_id': hex(creqId),
+      'ack_input': hex(ackInput),
+      'ia': ia,
+      'ia_refused_under': hex(otherIntro),
+      'acceptance_json': jsonEncode(acceptJson),
+      'acceptance_payload': acceptPayload,
+    },
+  };
+}
+
 /// [ek] with the 12-bit coefficient at [index] (0 to 767) of t̂ set to
 /// [value] — FIPS 203's ByteEncode12 layout, two coefficients to three bytes.
 Uint8List _withCoefficient(Uint8List ek, int index, int value) {
@@ -5467,6 +5877,8 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     },
     'handles': {
       'handles': await suiteHandles(),
+      // ADR 0032: a new file; handles.json is unchanged by it.
+      'intro_link': await suiteIntroLink(),
     },
     // ADR 0033 addendum A: a directory of its own; every file above is
     // unchanged by it.

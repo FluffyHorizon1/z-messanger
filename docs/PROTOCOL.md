@@ -2514,7 +2514,9 @@ strings are lowercase hex; wire strings
 reference implementation made is recorded (`random_draws`, `*_seed`, `nonce`)
 so any implementation can replay a vector exactly. `docs/vectors/kt/` pins
 the transparency log (§19.11) on the same terms, and `docs/vectors/intro-key/`
-the introduction key (§8.3, §12.7). See
+the introduction key (§8.3, §12.7). `docs/vectors/handles/` pins handles
+(§21), and public introduction links (§21.9) in a file of their own,
+`intro_link.json`. See
 [`vectors/README.md`](vectors/README.md) for the file layout and how to run
 the verifiers. The vectors were produced by `protocol/tool/gen_vectors.dart`
 with the library's RNG replaced by a seeded splitmix64 DRBG (the standard
@@ -4139,6 +4141,12 @@ filter for these links names the path `/i` exactly for the same reason. The
 code lives in the URL **fragment**, which no browser transmits, so the site
 serving that page never receives an invite and cannot know one exists.
 
+A public introduction link (§21.9), `https://host/c#zi1.…`, is not an
+invite: it is printed on `/c`, and its code holds a `1` and a `.`, which no
+base32 does, so a parser of this section refuses it on any page — on `/i`
+too, and at a host beginning `i`, which a build from before 2026‑10‑16 took
+for the invite page.
+
 A parser MUST accept the text with or without its group dashes, in either
 case, and with spaces; it MUST reject anything containing a character that is
 neither base32 nor a separator. (`base32Decode` skips what it does not
@@ -4508,14 +4516,16 @@ with their inputs, all four frames with both reveals' plaintexts and
 nonces, the channel key, the digits — and, from the same inputs, what
 version 1 computes instead.
 
-## 21. Handles (36–38)
+## 21. Handles and public links (36–39)
 
 *Normative for clients that claim, resolve or reach a handle. Opt‑in: an
 account that never claims one is untouched, and nothing in §1–§20 changes.
 The handle log is §21.5, the relay's introduction mailboxes are §21.6, and
 what the reference client does with all of it is §21.8.
 Design, the flaws of the first design and what may still be vetoed:
-`adr/0015` (revision 2).*
+`adr/0015` (revision 2). A public introduction link (§21.9, `adr/0032`)
+hands the same introduction mailbox out directly, as a `zi1.` code, with no
+handle log between.*
 
 A handle is a name someone can be found by, `nick.digits`. It resolves to an
 **introduction mailbox** and never to the account key: the handle log holds
@@ -4539,6 +4549,7 @@ account, with an acknowledgement signed by the introduction key.
 | 21.6 | introduction mailboxes at the relay | relay |
 | 21.7 | the request, its proof‑of‑work stamp, and the acknowledgement | client, relay |
 | 21.8 | the client: configuration, schedules, caps, connections, what it stores | client |
+| 21.9 | a public introduction link: its code, and how a client reads one | client |
 
 Every context string is disjoint from every other in this document:
 
@@ -4554,6 +4565,7 @@ z-handle-sth-v1:           a handle log's tree head                (21.5)
 z-handle-witness-v1:       a witness's co-signature of that head   (21.5)
 z-intro-pow-v1:            a proof-of-work stamp                   (21.7)
 z-intro-ack-v1:            an introduction acknowledgement         (21.7)
+z-intro-link-v1:           a public introduction link's check      (21.9)
 ```
 
 Byte strings inside a record are `b64url` without padding; `u32be`/`u64be`
@@ -5494,3 +5506,85 @@ overtaken.
 **Linked devices** hold no handle keys, drain nothing and manage nothing
 (v1); they may look a handle up and send a request, and they see the
 contacts the root device makes through the handle by self‑sync (§9).
+
+### 21.9 Public introduction links (phase 39)
+
+*Normative for clients that make or read a public introduction link
+(`adr/0032`). Built in 39.1: the code, and how a client reads one. The
+owner's half — making, draining and managing a link (39.3) — and that of
+whoever opens one (39.4) are not built; until they are, no client makes,
+opens or drains a link, and `adr/0032` §3–§4 is their design.*
+
+A public link is a handle's introduction mailbox handed out directly — on a
+web page, in an email signature, on a printed card — with no handle log
+between. A request through a handle takes three values from its record
+(§21.4), `pow`, `intro` and `xintro`, and the log exists to map a guessable
+name to them; a link has no name to map, so it carries them. Nothing else
+is in it: no name, no relay, no expiry, and nothing about the account,
+which arrives with the acceptance (§21.7).
+
+```
+introSeed = 32 CSPRNG bytes → intro, xintro, introRid exactly as §21.3
+body      = u8(pow) || intro || xintro                          65 bytes; pow 16…28
+check     = SHA-256( utf8("z-intro-link-v1:") || body )[0..4]
+code      = "zi1." || b64url( body || check )                   96 characters: 69 bytes, no padding, no spare bits
+link      = "https://" || host || "/c#" || code                  126 characters at the default host
+```
+
+`host` is the deployment's, as an invite's is (§20.2): `www.zmessengers.com`
+by default. The code rides in the fragment, which no browser sends, so the
+page a link opens never receives it. The check catches a copy damaged on
+its way, not a substituted one, which carries a check of its own: a link is
+as good as the page it is on, and the safety number, compared after the
+add, is what catches a substituted account.
+
+**Reading.** A reader removes leading and trailing ASCII whitespace
+(U+0009–U+000D and U+0020, and nothing else) and, given a `#`, keeps only
+what follows the first one, whatever host, page or query is before it. Then,
+in this order, the first check that fails naming the refusal:
+
+| # | what is left… | otherwise |
+|---|---|---|
+| 1 | starts with `zi1.`, compared exactly (`ZI1.` is not a link) | `newerVersion` for `zi`, a version above 1 written without a leading zero, and `.` — a link from a newer Z, which this one cannot read and says so; `notALink` for anything else |
+| 2 | holds nothing after it but base64url — `A`–`Z`, `a`–`z`, `0`–`9`, `-`, `_` — so no padding, `+`, `/` or space, and no case is folded | `notBase64url` |
+| 3 | holds exactly 92 of them | `wrongLength` |
+| 4 | decodes to a body and the check of that body | `badCheck` |
+| 5 | has a `pow` from 16 to 28 | `powOutOfRange` |
+| 6 | has an `intro` that is a strong Ed25519 key (§21.4) | `weakIntro` |
+| 7 | has an `xintro` that is a strong X25519 key (§21.4) | `weakXintro` |
+
+Both key tests matter. An acknowledgement under a weak `intro` could be
+forged by anyone. A request sealed to a weak `xintro` would be open to
+whoever holds it, the relay first: since 2026‑10‑16 a sender refuses to seal
+to a key of small order (§8), but a second spelling of a key it does seal
+to — at or above p, or with the top bit set — makes a request its owner
+cannot open. The reader refuses both before anything is offered. A link
+from a newer Z is never read as one of this version: what a later link adds
+— a relay (`adr/0008`), say — is what an older client must not ignore.
+
+**Not an invite, a code or a handle.** No other parser here takes a link,
+and a link's reader takes nothing else. A contact code (§2.4, §3.3, §18.2)
+is refused by its prefix; an invite (§20.2) by its path and by the `1` and
+`.` of the code, so a build from before 2026‑10‑16, which took any `/i`
+before the `#` for the invite page — a host beginning `i` among them —
+refuses a link too; a handle (§21.1) by its grammar. A handle can begin as a
+link does — `zi1.42` and `zi2.42` are handles, which the reader refuses as
+`wrongLength` and `newerVersion` — but is never one, being at most 27
+characters: a client that takes either in one field asks §21.1 before it
+names a link's reason.
+
+*Implementation note:* `IntroLink` in `protocol/lib/src/handles.dart`:
+`fromSeed` (20 bits unless told otherwise), `code`, `link`, `introRid`, and
+`parse`, whose `IntroLinkProblem` names the refusal.
+`vectors/handles/intro_link.json` pins this section: links from seeds at
+`pow` 16, 20 and 28 with every intermediate; inputs taken — a bare code, the
+link, a host beginning `i`, a query before the fragment, surrounding
+whitespace, no scheme — and inputs refused with their reasons — a contact
+code, both invite versions, a handle, `zi2.`, 91 and 93 characters,
+padding, `+` and `/`, the letters' case, a flipped check, `pow` 15 and 29,
+and every weak `intro` and `xintro`; and a request through a link, sealed
+to its `xintro`, stamped for its mailbox at its `pow` and at a raised
+`bits`, and acknowledged under its `intro`. Replayed by
+`protocol/test/vectors_test.dart` and re‑derived from this section alone by
+`server/test/vectors.test.js`; `handles.json` is unchanged. The §14 rule
+applies.

@@ -88,6 +88,17 @@ import 'package:z_protocol/z_protocol.dart';
 // 17. a link is read on the invite page and nowhere else: `/i` on any host,
 //     with or without its scheme, a trailing slash or a query, and the same
 //     fragment on `/index.html`, `/info`, `/x/i` or `/ii` is not an invite.
+//
+// A public introduction link (ADR 0032, PROTOCOL §21.9) is a code of its
+// own, `zi1.`, and neither side reads the other's:
+// 18. the invite parsers refuse every link and every bare `zi1.` code — this
+//     build's, and verbatim copies of the ones every build before ADR 0032
+//     ships (Release 4.3.2's, whose `/i` test is a substring one, and those
+//     from before ADR 0024) — on the invite page, at a host beginning `i`,
+//     which the substring test takes for one, and anywhere else; the
+//     contact-code decoders refuse them by their prefix; and the link
+//     reader refuses both invite versions, as text and as links, and every
+//     contact code, as not a link.
 void main() {
   /// A v3 contact code for a fresh identity — what the app puts in a QR.
   Future<ConnectIdentity> person(String name) async {
@@ -962,6 +973,94 @@ void main() {
       }
     }
   });
+
+  test('18. a public introduction link is not an invite, and an invite is '
+      'not a link — to this build and to every build before ADR 0032',
+      () async {
+    final links = [
+      for (final (s, pow) in [(31, 16), (32, 20), (33, 28)])
+        await IntroLink.fromSeed(Uint8List(32)..fillRange(0, 32, s), pow: pow),
+      for (var i = 0; i < 20; i++) await IntroLink.fromSeed(randomBytes(32)),
+    ];
+    for (final l in links) {
+      final c = l.code;
+      for (final input in [
+        c,
+        l.link(),
+        ' ${l.link()} ',
+        'www.zmessengers.com/c#$c',
+        // On the invite page itself: the path test passes, and the code is
+        // refused for its 1 and its . — characters no invite holds.
+        'https://www.zmessengers.com/i#$c',
+        'https://www.zmessengers.com/i/#$c',
+        'https://www.zmessengers.com/i?utm_source=x#$c',
+        // At a host beginning i: Release 4.3.2's substring test takes the
+        // part before the # for an invite page, and the code is refused all
+        // the same.
+        'https://i.example.org/c#$c',
+        'https://invite.example/c#$c',
+        'https://www.zmessengers.com/c#${c.toUpperCase()}',
+      ]) {
+        expect(ConnectCode.fromLink(input), isNull, reason: input);
+        expect(_fromLinkBefore0032(input), isNull,
+            reason: 'Release 4.3.2 ignores $input');
+        expect(_fromLinkBefore0024(input), isNull,
+            reason: 'a build before ADR 0024 ignores $input');
+        // The contact-code decoders, by their prefix.
+        await expectLater(ContactBundle.decode(input), throwsFormatException,
+            reason: input);
+        await expectLater(ContactBundleV3.decode(input), throwsFormatException,
+            reason: input);
+        await expectLater(scanContactCode(input), throwsFormatException,
+            reason: input);
+        await expectLater(AccountBundle.decode(input), throwsFormatException,
+            reason: input);
+      }
+      for (final text in [c, c.toUpperCase(), c.replaceAll('-', '')]) {
+        expect(() => ConnectCode.parse(text), throwsFormatException,
+            reason: text);
+        expect(() => _parseBefore0032(text), throwsFormatException,
+            reason: 'Release 4.3.2 refuses $text');
+        expect(() => _parseBefore0024(text), throwsFormatException,
+            reason: 'a build before ADR 0024 refuses $text');
+      }
+    }
+    // The host beginning i is one Release 4.3.2 reads as an invite page:
+    // an invite's code there is taken, so it is the link's own characters
+    // that keep it out, not the path.
+    final invite = ConnectCode.generate();
+    final atI = 'https://i.example.org/c#${invite.text.replaceAll('-', '')}';
+    expect(_fromLinkBefore0032(atI)?.secret, invite.secret);
+    expect(ConnectCode.fromLink(atI), isNull,
+        reason: 'this build reads /i and nothing else');
+
+    // And the other way round: the link reader refuses both invite
+    // versions, as text and as links, on /i and on /c, and every contact
+    // code, as not a link.
+    for (final v in [1, 2]) {
+      final code = ConnectCode.generate(version: v);
+      for (final s in [
+        code.text,
+        code.text.replaceAll('-', ''),
+        code.text.toLowerCase(),
+        code.link(),
+        code.link().replaceFirst('/i#', '/c#'),
+      ]) {
+        expect(IntroLink.problemWith(s), IntroLinkProblem.notALink,
+            reason: s);
+      }
+    }
+    final alice = await person('Alice');
+    for (final s in [
+      alice.contactCode,
+      (await classicalOf(alice)).contactCode,
+      'zc2.${alice.contactCode.substring(4)}',
+      'zc3.${alice.contactCode.substring(4)}',
+      'https://www.zmessengers.com/c#${alice.contactCode}',
+    ]) {
+      expect(IntroLink.problemWith(s), IntroLinkProblem.notALink, reason: s);
+    }
+  });
 }
 
 /// The channel key both sides derive (§20.3), recomputed here so a test can
@@ -1114,6 +1213,50 @@ ConnectCode? _fromLinkBefore0024(String url) {
   if (!before.contains('/i')) return null;
   try {
     return _parseBefore0024(url.substring(hash + 1));
+  } on FormatException {
+    return null;
+  }
+}
+
+/// The base32 alphabet `ConnectCode.parse` reads, which the library keeps
+/// private.
+final Set<int> _b32CharsBefore0032 =
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.codeUnits.toSet();
+
+/// `ConnectCode.parse` as Release 4.3.2 ships it — every build from ADR 0024
+/// to ADR 0032 — verbatim but for its name and the alphabet above.
+ConnectCode _parseBefore0032(String code) {
+  const separators = [0x2D, 0x20, 0x09, 0x0A, 0x0D]; // - space tab nl cr
+  final chars = <int>[
+    for (final ch in code.toUpperCase().codeUnits)
+      if (!separators.contains(ch)) ch
+  ];
+  if (chars.isNotEmpty && chars.first == connectV2Marker.codeUnitAt(0)) {
+    final rest = chars.sublist(1);
+    if (rest.length != 16 || !rest.every(_b32CharsBefore0032.contains)) {
+      throw const FormatException('not a connect code');
+    }
+    return ConnectCode(base32Decode(String.fromCharCodes(rest)), version: 2);
+  }
+  for (final ch in chars) {
+    if (!_b32CharsBefore0032.contains(ch)) {
+      throw const FormatException('not a connect code');
+    }
+  }
+  final b = base32Decode(code);
+  if (b.length < 10) throw const FormatException('connect code too short');
+  return ConnectCode(Uint8List.fromList(b.sublist(0, 10)));
+}
+
+/// `ConnectCode.fromLink` as Release 4.3.2 ships it, verbatim but for its
+/// name: any `/i` before the `#` makes the part after it an invite's.
+ConnectCode? _fromLinkBefore0032(String url) {
+  final hash = url.indexOf('#');
+  if (hash < 0 || hash == url.length - 1) return null;
+  final before = url.substring(0, hash);
+  if (!before.contains('/i')) return null;
+  try {
+    return _parseBefore0032(url.substring(hash + 1));
   } on FormatException {
     return null;
   }

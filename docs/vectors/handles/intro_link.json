@@ -1,0 +1,811 @@
+{
+  "suite": "intro_link",
+  "version": 1,
+  "description": "Public introduction links (PROTOCOL 21.9, ADR 0032): a handle's introduction mailbox handed out directly as a zi1. code, with no registry between. Links from introduction seeds at pow 16, 20 and 28 with every intermediate (the keys exactly as 21.3 derives a handle's, the body, the check, the code and the link at the default host); inputs a reader takes (a bare code, the link, a host beginning i, a query, whitespace, no scheme); inputs it refuses with the reason it names (a contact code, both invite versions, a handle, a newer version, padding, the standard alphabet, wrong lengths, case, a damaged check, pow 15 and 29, and every weak intro and xintro); and a request through the pow-16 link: sealed to its xintro, stamped at its pow and at a raised bits, and the acknowledgement verified under its intro.",
+  "format": {
+    "prefix": "zi1.",
+    "check_context": "z-intro-link-v1:",
+    "body": "u8(pow) || intro(32) || xintro(32)",
+    "body_bytes": 65,
+    "check": "SHA-256(utf8(check_context) || body)[0..4]",
+    "check_bytes": 4,
+    "code": "prefix || b64url(body || check)",
+    "encoded_chars": 92,
+    "code_chars": 96,
+    "link": "\"https://\" || host || \"/c#\" || code",
+    "path": "/c",
+    "default_host": "www.zmessengers.com",
+    "default_pow": 20,
+    "pow_min": 16,
+    "pow_max": 28,
+    "x_hkdf_salt": "z-handle-intro-x-v1",
+    "reading": "trim ASCII whitespace (U+0009-U+000D, U+0020); given a #, read only what follows the first one; then, in order: the prefix zi1. (zi, another version without a leading zero, and . is newerVersion; anything else notALink), only base64url characters (notBase64url), exactly 92 of them (wrongLength), the check (badCheck), pow 16-28 (powOutOfRange), intro a strong Ed25519 key (weakIntro), xintro a strong X25519 key (weakXintro)",
+    "problems": [
+      "notALink",
+      "newerVersion",
+      "notBase64url",
+      "wrongLength",
+      "badCheck",
+      "powOutOfRange",
+      "weakIntro",
+      "weakXintro"
+    ]
+  },
+  "links": [
+    {
+      "name": "pow_16",
+      "intro_seed": "cb54d312c40208bb7762e679075feb932f4d1be4520d87bd34d93ef5b47b06c7",
+      "pow": 16,
+      "intro": "288971912c92f86d243e5afc57d9b71ca0d797d103973786d3c59862ba7ca329",
+      "x_seed": "4933f9d86fec1b2f9d0362b43dc76f4e11d3567953c669862b3fd0817d8f5760",
+      "xintro": "f251276416c266c759462f1ca5f148c86e3ed35163277e7056c89c9706106c15",
+      "intro_rid": "FLBBPPRUYXyqji01zf3r7jP0R_QCdAWnVAo9i950Of0",
+      "rid_bytes": "14b0413cf454617caa8e2d35cdfdebee33f447f4027405a7540a3d8bde7439fd",
+      "body": "10288971912c92f86d243e5afc57d9b71ca0d797d103973786d3c59862ba7ca329f251276416c266c759462f1ca5f148c86e3ed35163277e7056c89c9706106c15",
+      "check_input": "7a2d696e74726f2d6c696e6b2d76313a10288971912c92f86d243e5afc57d9b71ca0d797d103973786d3c59862ba7ca329f251276416c266c759462f1ca5f148c86e3ed35163277e7056c89c9706106c15",
+      "check_digest": "3ec7b5af8cf8ccc1743fd9243b9d67e84677fcc2ef6abb0d9d3e83b4af42f60b",
+      "check": "3ec7b5af",
+      "encoded": "10288971912c92f86d243e5afc57d9b71ca0d797d103973786d3c59862ba7ca329f251276416c266c759462f1ca5f148c86e3ed35163277e7056c89c9706106c153ec7b5af",
+      "code": "zi1.ECiJcZEskvhtJD5a_FfZtxyg15fRA5c3htPFmGK6fKMp8lEnZBbCZsdZRi8cpfFIyG4-01FjJ35wVsiclwYQbBU-x7Wv",
+      "code_length": 96,
+      "link": "https://www.zmessengers.com/c#zi1.ECiJcZEskvhtJD5a_FfZtxyg15fRA5c3htPFmGK6fKMp8lEnZBbCZsdZRi8cpfFIyG4-01FjJ35wVsiclwYQbBU-x7Wv",
+      "link_length": 126
+    },
+    {
+      "name": "pow_20",
+      "intro_seed": "b8b56030ecc0d593b5134613fa1cc1d4940f28e2775ab3dbf763787ac3a50010",
+      "pow": 20,
+      "intro": "34325798ba5204d1fd47595255027bd0c505ee39c0204d655562043c3a3c3b7d",
+      "x_seed": "417c04b707394b07b86cad0de261a45f78cd306f89b825735562424215d69d33",
+      "xintro": "347d40f78102d59cab65285f06f222d73a8734676a97d63c1d01ba93a358037e",
+      "intro_rid": "FmD2krshZNuY2hla-wyn9nWZoqL1tL1gBvnxcUrAonw",
+      "rid_bytes": "1660f692bb2164db98da195afb0ca7f67599a2a2f5b4bd6006f9f1714ac0a27c",
+      "body": "1434325798ba5204d1fd47595255027bd0c505ee39c0204d655562043c3a3c3b7d347d40f78102d59cab65285f06f222d73a8734676a97d63c1d01ba93a358037e",
+      "check_input": "7a2d696e74726f2d6c696e6b2d76313a1434325798ba5204d1fd47595255027bd0c505ee39c0204d655562043c3a3c3b7d347d40f78102d59cab65285f06f222d73a8734676a97d63c1d01ba93a358037e",
+      "check_digest": "7e15b37c832d90221aca52da75a95055e06083870b34d8ed37f410775c96968a",
+      "check": "7e15b37c",
+      "encoded": "1434325798ba5204d1fd47595255027bd0c505ee39c0204d655562043c3a3c3b7d347d40f78102d59cab65285f06f222d73a8734676a97d63c1d01ba93a358037e7e15b37c",
+      "code": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "code_length": 96,
+      "link": "https://www.zmessengers.com/c#zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "link_length": 126
+    },
+    {
+      "name": "pow_28",
+      "intro_seed": "a81971e394abf81e061ed262894b5d460b9c7493f6791472562c1eb2584a58fe",
+      "pow": 28,
+      "intro": "475e8c8e179987ac19b42d99aa9a221190e5055eac04787d02dd87f259a9a1d7",
+      "x_seed": "236a73ffb7291fd583fe319d84ffc81fdc91621fd667815c708ca66e87d352f9",
+      "xintro": "816fef943a542d48a67540d78de1799b4e541c12a9528a9172cb50d95761a675",
+      "intro_rid": "QWH4i75OrIzI5Dg02SYO2BpjDTKZoDc167QltwmIFQA",
+      "rid_bytes": "4161f88bbe4eac8cc8e43834d9260ed81a630d3299a03735ebb425b709881500",
+      "body": "1c475e8c8e179987ac19b42d99aa9a221190e5055eac04787d02dd87f259a9a1d7816fef943a542d48a67540d78de1799b4e541c12a9528a9172cb50d95761a675",
+      "check_input": "7a2d696e74726f2d6c696e6b2d76313a1c475e8c8e179987ac19b42d99aa9a221190e5055eac04787d02dd87f259a9a1d7816fef943a542d48a67540d78de1799b4e541c12a9528a9172cb50d95761a675",
+      "check_digest": "e6aa97a1c2f3366f73cde31943da4b0dbabd097bb5a9654aec3db144efd96613",
+      "check": "e6aa97a1",
+      "encoded": "1c475e8c8e179987ac19b42d99aa9a221190e5055eac04787d02dd87f259a9a1d7816fef943a542d48a67540d78de1799b4e541c12a9528a9172cb50d95761a675e6aa97a1",
+      "code": "zi1.HEdejI4XmYesGbQtmaqaIhGQ5QVerAR4fQLdh_JZqaHXgW_vlDpULUimdUDXjeF5m05UHBKpUoqRcstQ2VdhpnXmqpeh",
+      "code_length": 96,
+      "link": "https://www.zmessengers.com/c#zi1.HEdejI4XmYesGbQtmaqaIhGQ5QVerAR4fQLdh_JZqaHXgW_vlDpULUimdUDXjeF5m05UHBKpUoqRcstQ2VdhpnXmqpeh",
+      "link_length": 126
+    }
+  ],
+  "accepted": [
+    {
+      "why": "a bare code",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "link": "pow_20"
+    },
+    {
+      "why": "the link at the default host",
+      "input": "https://www.zmessengers.com/c#zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "link": "pow_20"
+    },
+    {
+      "why": "a host beginning i: a build before 2026-10-16 takes the part before the # for an invite page, and refuses the code on its 1 and .",
+      "input": "https://i.example.org/c#zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "link": "pow_20"
+    },
+    {
+      "why": "a query before the fragment",
+      "input": "https://www.zmessengers.com/c?utm_source=card#zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "link": "pow_20"
+    },
+    {
+      "why": "surrounding ASCII whitespace",
+      "input": " \thttps://www.zmessengers.com/c#zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8\r\n",
+      "link": "pow_20"
+    },
+    {
+      "why": "pasted without its scheme",
+      "input": "www.zmessengers.com/c#zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "link": "pow_20"
+    }
+  ],
+  "refused": [
+    {
+      "why": "a zc1. contact code",
+      "input": "zc1.eyJ2IjoxLCJlZCI6ImhEQWVpUmloYXFKZEZsbndPNFZOb1FnZzJFbVRadlhjdTNQZElRR2hVc0U9IiwieCI6IjRDSVo3aHphRDNyT1N5N3A5eG81NjYybWtKemxTOE1EUDJJRkIrbEUvRU09Iiwic2lnIjoiRCtZTG5WVFFnVHRHclphaDZvclF4V2MybGJiTUtYS0hxWUFVVEZqN2NpZ1pYYlR0VFBTVFQ1VjBmbXU3KytyeTE0Q01KQzRtTi9MQXZIWHRzNWNNQ0E9PSIsIm5hbWUiOiJTb21lb25lIn0",
+      "problem": "notALink"
+    },
+    {
+      "why": "an invite of version 1, its link",
+      "input": "https://www.zmessengers.com/i#CQETAU4FUKVQBVP7",
+      "problem": "notALink"
+    },
+    {
+      "why": "an invite of version 1, its text",
+      "input": "CQETA-U4FUK-VQBVP-7",
+      "problem": "notALink"
+    },
+    {
+      "why": "an invite of version 2, its link",
+      "input": "https://www.zmessengers.com/i#9CQETAU4FUKVQBVP7",
+      "problem": "notALink"
+    },
+    {
+      "why": "an invite of version 2, its text",
+      "input": "9CQET-AU4FU-KVQBV-P7",
+      "problem": "notALink"
+    },
+    {
+      "why": "a handle",
+      "input": "@alice.42",
+      "problem": "notALink"
+    },
+    {
+      "why": "nothing",
+      "input": "",
+      "problem": "notALink"
+    },
+    {
+      "why": "the page with no fragment",
+      "input": "https://www.zmessengers.com/c",
+      "problem": "notALink"
+    },
+    {
+      "why": "an empty fragment",
+      "input": "https://www.zmessengers.com/c#",
+      "problem": "notALink"
+    },
+    {
+      "why": "zi1. in capitals: the prefix is not case-folded",
+      "input": "ZI1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "problem": "notALink"
+    },
+    {
+      "why": "a no-break space (U+00A0) before the code: only ASCII whitespace is trimmed",
+      "input": " zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "problem": "notALink"
+    },
+    {
+      "why": "zi2.: a link from a newer Z",
+      "input": "zi2.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "problem": "newerVersion"
+    },
+    {
+      "why": "zi2. at the default host",
+      "input": "https://www.zmessengers.com/c#zi2.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "problem": "newerVersion"
+    },
+    {
+      "why": "zi10.: a version of two digits",
+      "input": "zi10.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "problem": "newerVersion"
+    },
+    {
+      "why": "zi0.: no version is 0",
+      "input": "zi0.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "problem": "notALink"
+    },
+    {
+      "why": "zi01.: a version is not written with a leading zero",
+      "input": "zi01.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "problem": "notALink"
+    },
+    {
+      "why": "padded",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8=",
+      "problem": "notBase64url"
+    },
+    {
+      "why": "a + where the code has a -: the standard alphabet",
+      "input": "zi1.ECiJcZEskvhtJD5a_FfZtxyg15fRA5c3htPFmGK6fKMp8lEnZBbCZsdZRi8cpfFIyG4+01FjJ35wVsiclwYQbBU-x7Wv",
+      "problem": "notBase64url"
+    },
+    {
+      "why": "a / where the code has a _: the standard alphabet",
+      "input": "zi1.ECiJcZEskvhtJD5a/FfZtxyg15fRA5c3htPFmGK6fKMp8lEnZBbCZsdZRi8cpfFIyG4-01FjJ35wVsiclwYQbBU-x7Wv",
+      "problem": "notBase64url"
+    },
+    {
+      "why": "a space inside the code",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH 1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8",
+      "problem": "notBase64url"
+    },
+    {
+      "why": "a no-break space (U+00A0) after the code: only ASCII whitespace is trimmed",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8 ",
+      "problem": "notBase64url"
+    },
+    {
+      "why": "91 characters",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN",
+      "problem": "wrongLength"
+    },
+    {
+      "why": "93 characters",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN8A",
+      "problem": "wrongLength"
+    },
+    {
+      "why": "zi1. alone",
+      "input": "zi1.",
+      "problem": "wrongLength"
+    },
+    {
+      "why": "the code's letters in the other case: no case folding",
+      "input": "zi1.fdqYv5I6uGtr_uDzuLucE9dfbE45WcbnzvvIbdW6pdT9nh1a94ec1zYRzsHFbViI1ZQhngDQL9y8hqg6K6nya35-fBn8",
+      "problem": "badCheck"
+    },
+    {
+      "why": "one bit of the check flipped",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35-FbN9",
+      "problem": "badCheck"
+    },
+    {
+      "why": "pow 15",
+      "input": "zi1.DzQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34vRvpa",
+      "problem": "powOutOfRange"
+    },
+    {
+      "why": "pow 29",
+      "input": "zi1.HTQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34U3Z8Y",
+      "problem": "powOutOfRange"
+    },
+    {
+      "why": "intro of small order: the identity",
+      "input": "zi1.FAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35cRSCL",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro of small order: the point of order 2",
+      "input": "zi1.FOz_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA36nHshO",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro of small order: the points of order 4",
+      "input": "zi1.FAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA37K7UP8",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro of small order: two points of order 8",
+      "input": "zi1.FCbolY_CsiewRcP0ifLvmPDV36wF08YzObE4AohtU_wFNH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35ZB_a7",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro of small order: the other two of order 8",
+      "input": "zi1.FMcXanA9TdhPujwLdg0QZw8qIFP6LDnMxk7H_XeSrAN6NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35W4Xbg",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 0",
+      "input": "zi1.FO3_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35Oe4uu",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 1",
+      "input": "zi1.FO7_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA354qaj5",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 2",
+      "input": "zi1.FO________________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35ir69m",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 3",
+      "input": "zi1.FPD_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA37yZOJ4",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 4",
+      "input": "zi1.FPH_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA36dTI3y",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 5",
+      "input": "zi1.FPL_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34O1D_a",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 6",
+      "input": "zi1.FPP_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35jFCet",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 7",
+      "input": "zi1.FPT_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA37mSEt3",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 8",
+      "input": "zi1.FPX_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35ymMrK",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 9",
+      "input": "zi1.FPb_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34T9K8B",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 10",
+      "input": "zi1.FPf_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34G21Qe",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 11",
+      "input": "zi1.FPj_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34i1YEz",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 12",
+      "input": "zi1.FPn_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA37CwQGs",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 13",
+      "input": "zi1.FPr_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34xu5Sb",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 14",
+      "input": "zi1.FPv_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34rXb_j",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 15",
+      "input": "zi1.FPz_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35kLTp_",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 16",
+      "input": "zi1.FP3_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34-9B2n",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 17",
+      "input": "zi1.FP7_______________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA3505qJa",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 18",
+      "input": "zi1.FP________________________________________9_NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA37xdoTZ",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro of small order: the identity, the sign bit set",
+      "input": "zi1.FAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACANH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA37zmQHW",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro of small order: the point of order 2, the sign bit set",
+      "input": "zi1.FOz_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA37t19Sc",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro of small order: the points of order 4, the sign bit set",
+      "input": "zi1.FAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACANH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA36jpts-",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro of small order: two points of order 8, the sign bit set",
+      "input": "zi1.FCbolY_CsiewRcP0ifLvmPDV36wF08YzObE4AohtU_yFNH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34Z3Unm",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro of small order: the other two of order 8, the sign bit set",
+      "input": "zi1.FMcXanA9TdhPujwLdg0QZw8qIFP6LDnMxk7H_XeSrAP6NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA37SYoTg",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 0, the sign bit set",
+      "input": "zi1.FO3_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA3573kzL",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 1, the sign bit set",
+      "input": "zi1.FO7_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA36c1jQ4",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 2, the sign bit set",
+      "input": "zi1.FO__________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34Qwizt",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 3, the sign bit set",
+      "input": "zi1.FPD_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA372Wkv5",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 4, the sign bit set",
+      "input": "zi1.FPH_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA36xziV4",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 5, the sign bit set",
+      "input": "zi1.FPL_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA36Rd8Iq",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 6, the sign bit set",
+      "input": "zi1.FPP_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35iSMOG",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 7, the sign bit set",
+      "input": "zi1.FPT_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA349-t5Q",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 8, the sign bit set",
+      "input": "zi1.FPX_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35k5QLI",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 9, the sign bit set",
+      "input": "zi1.FPb_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34hrjmt",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 10, the sign bit set",
+      "input": "zi1.FPf_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA34keK1d",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 11, the sign bit set",
+      "input": "zi1.FPj_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35P-O8U",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 12, the sign bit set",
+      "input": "zi1.FPn_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35ZBQMu",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 13, the sign bit set",
+      "input": "zi1.FPr_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA36ZFwzl",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 14, the sign bit set",
+      "input": "zi1.FPv_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA36N4MMY",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 15, the sign bit set",
+      "input": "zi1.FPz_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA36NeB98",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 16, the sign bit set",
+      "input": "zi1.FP3_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35T0ZpE",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 17, the sign bit set",
+      "input": "zi1.FP7_________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA35kpl5R",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "intro at or above p: p + 18, the sign bit set",
+      "input": "zi1.FP__________________________________________NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA357mDvQ",
+      "problem": "weakIntro"
+    },
+    {
+      "why": "xintro of small order: u = 0",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC6ZzCE",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro of small order: u = 1",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAR9ICK",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro of small order: a u of order 8",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt94Ot6fDtBuK4WVuP68Z_EatoJjeucMrH9hmIFFl9JuAAZBEYJ",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro of small order: the other u of order 8",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9X5yVvKNQjCSx0LFVnIPvWwREXMRYHI6G2CJO3dCfEVdgT07w",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro of small order: u = p - 1",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt97P_______________________________________388oCX1",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 0",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt97f_______________________________________38rdiPd",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 1",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt97v_______________________________________39N6h_X",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 2",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt97________________________________________3_OPP9B",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 3",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt98P_______________________________________3_XsaXf",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 4",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt98f_______________________________________39qolB1",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 5",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt98v_______________________________________38sOqa1",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 6",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt98________________________________________3-uobCL",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 7",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt99P_______________________________________3-Y0wy5",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 8",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt99f_______________________________________3-hps7A",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 9",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt99v_______________________________________38_AVkR",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 10",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt99________________________________________38ZjcaI",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 11",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9-P_______________________________________39czvmA",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 12",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9-f_______________________________________3-BjS5x",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 13",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9-v_______________________________________3-3vXvw",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 14",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9-________________________________________38EoOg4",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 15",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9_P_______________________________________38QXQSb",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 16",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9_f_______________________________________3_iKdoH",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 17",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9_v_______________________________________39KoIhE",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 18",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9_________________________________________3_Zpke7",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro of small order: u = 0, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAWXAUF",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro of small order: u = 1, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAICjCAf5",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro of small order: a u of order 8, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt94Ot6fDtBuK4WVuP68Z_EatoJjeucMrH9hmIFFl9JuIC73JDz",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro of small order: the other u of order 8, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9X5yVvKNQjCSx0LFVnIPvWwREXMRYHI6G2CJO3dCfEdcHZ3Lm",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro of small order: u = p - 1, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt97P_________________________________________1Gy0K",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 0, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt97f________________________________________-_rxhk",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 1, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt97v________________________________________-OTy0X",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 2, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt97_________________________________________8TLOyf",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 3, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt98P________________________________________9ysh65",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 4, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt98f_________________________________________7tRyv",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 5, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt98v________________________________________8xe3aw",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 6, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt98_________________________________________9wnBY2",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 7, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt99P________________________________________-KVyrs",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 8, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt99f________________________________________9ORsu2",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 9, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt99v_________________________________________oNEJL",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 10, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt99_________________________________________9fZ5RT",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 11, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9-P________________________________________841Xk6",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 12, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9-f_________________________________________mXrIm",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 13, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9-v_________________________________________vRFbU",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 14, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9-_________________________________________-8EUXT",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 15, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9_P________________________________________-DYzPa",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 16, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9_f________________________________________-188QU",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 17, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9_v________________________________________8f85_Q",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro at or above p: p + 18, the top bit set",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9__________________________________________8ngSZk",
+      "problem": "weakXintro"
+    },
+    {
+      "why": "xintro the honest key with its top bit set: a second spelling of it",
+      "input": "zi1.FDQyV5i6UgTR_UdZUlUCe9DFBe45wCBNZVViBDw6PDt9NH1A94EC1ZyrZShfBvIi1zqHNGdql9Y8HQG6k6NYA_5M3SZW",
+      "problem": "weakXintro"
+    }
+  ],
+  "request": {
+    "link": "pow_16",
+    "now_ms": 1792238400000,
+    "requester": {
+      "ed_seed": "e8697f43f2b4e4c9d9443861f75891382ad1344b284fd979a7ae54352be266e8",
+      "x_seed": "3770a0c651274c1d6a71de813c8693c9d273625da69a4bae1e15f4bb7ada8dd4",
+      "ed_pub": "67cc23f28d4d49bcc0a52db0e3af4eb2fe3ace49932dd8be1bbd37430aa8766f",
+      "routing_id": "0WFZwIWkMgFO8aOKYM2eDDG6GCGO0d4X0niIaohitiw"
+    },
+    "owner_account": {
+      "ed_seed": "a0acff1feeb4b07c87aa60e8a1a3c20f335a0f06a5db543c7db9136326c0e171",
+      "x_seed": "39483a184a1feae712255a3d759302ea04646c36048316675818aba291267633",
+      "ed_pub": "c955cec645f893c00ef58b4156b80a8f45b0f58a3d65779dc1994f4dfcb103e6",
+      "routing_id": "vCk6cdIrPhCv0v5XHM90Zoi8XGgJI-mhm74CA_4OC-k"
+    },
+    "payload": "eyJ2IjoxLCJ0IjoiY3JlcSIsInRvIjoiRkxCQlBQUlVZWHlxamkwMXpmM3I3alAwUl9RQ2RBV25WQW85aTk1ME9mMCIsInRzIjoxNzkyMjM4NDAwMDAwLCJidW5kbGUiOnsiZWQiOiJaOHdqOG8xTlNiekFwUzJ3NDY5T3N2NDZ6a21UTGRpK0c3MDNRd3FvZG04PSIsIngiOiJMdDgvZ1l6ZFJ5RUZCSWc1TFZqNERUWFAxRitIRTdOVFlOV0IxRjVDOFdBPSIsInNpZyI6IkN3NzZValkxWmhqa0kweU1pRFVEaUlZTUhmZW5nZS9HdVlMUTNGSTdXZ0wxVk9Rb0haaE9xN25VckxFUEtXd2l1cjVDU3RSODVKWkxQYnNpdVhUaEN3PT0iLCJuYW1lIjoiQm9iIn0sInNpZyI6IlpsNVNaZlFpb3d0VExnUDNWQlhXMzhZb3Z2WmlONjJFMEJ0RTdreXY5VG5VNWU0T2JDSGZrZzVKV1lsNk16eW9xQVh3Yi83b1g0YkpkOS9mei8vU0RRPT0ifQ==",
+    "to_routing_id": "FLBBPPRUYXyqji01zf3r7jP0R_QCdAWnVAo9i950Of0",
+    "to_x_pub": "f251276416c266c759462f1ca5f148c86e3ed35163277e7056c89c9706106c15",
+    "eph_seed": "fcdabd4f0c07b4ef10abbd6c387dd9dcfba143ecae1b01d62c71edafcddf6a03",
+    "nonce": "8590602777c6fb076dfc1b79",
+    "envelope": "zs1.J7SdFG_a0VBpMEsFMy53gbQSmG_IypKO1gUhs1owSW-FkGAnd8b7B238G3kyqXImBDGhAu4tX3ExlGIfOC0zKgOwuSOMjBOpjVWJ5cTMKmHwj3nYwicR803PaNkjC3BDD-NBo8UoeYAGQ-64DVePkE3MkszWku8YPGrSxwEGAOrk1rOd3setH45rgO0NCx6SyBRgde0oy7vrI_CxhUcUYiPnmfGnn0H4tG0DcleY027IEslLQk8TIqp5XeJnDPKg4VtF024KL58ZlTx-B2iWt7F_HFifFoNYt5_GULtajM1k4rNybMoOvKlfefkt0pNPgQV9ycREvlBzQfjiNh4s73zOWHWN1bbQ3fGuMLfsWx0YsqXYhymM4Ah4_5FbG9fG3C7jfqnKZgV29cmE72FmxzogcdkMvTrdwK4Yuo9JBznIyVPyA0QwFoQ39Rt4xMeyzIT0NP5H3fNQ0_4-JiV9W7TI2GmNkGCJfLt1NnJQli8b9dfPdmdk98edjJZ6l1U-hBTiY5uFRN66Ibll3bBDX4WcsMmR8TjDQ5HwzBqx5AzrtZvj9z-bLT03jZuj1Btvk-g3UX1fOD1i7XzHlazRo6jKO1v5Y1SB5xY1WO1yObJNqlW51wpiXbVJa3QrqiXioWdxKTCkbJPGnxJ4PGbIlyh7AgiJZBkZUBFWuxHd9SHaEHNZIU7o60-2_sNtDnIh50YMvryAsRlY5jNXDyeVmhgWToFI_mh79J6MGb7QBbp5u40IZlsp4nb3loiwsXup5EVUw0kXSq4Gy3YKl-FPKwzewXZNSg0EV1J68hkC-BdMlaDJbM44fS7qoZYSyXbGNp0UJ7vNso9Xp0ZQS1P9CDOznkt209Yqu7V_WPGdBASHYM6yy5FsmQeipPRZEWUMW-VRkGABwG25ZWJWH80AfEg6p6hnZBiCJudnZSytP5VnY76PP8x_-PjVx_C6Qib9K7QOj9nALvczZI3S3cUTyarE8JNcn33N-Bxx1ra3Qs7hzEaKwVruhY95FktfsM_CtNdZQbJx3BA2cZ0uZq_tSlulQltRJkmCY9vgxstaf64-6HcnYzcBnXtvSdqJioStO7VHwug6EQ3mgv5KTJUZ2BmIiWiRMQFBJC13wT9gRvfv1N7INr-GueQ7tNzbwIMwxcrmvzG_kEGaNdKlsu5esic6eaj6C72nKd67qJQf9iIzzzovfXE1Iv5LRbXCIYfReIMDjOKgfnv45tA_Djh3SqIn1ijMaJfJEda-LxnyN_mcEnnma0qxq_LSvgfIr0ffN5lBmqQ2Sl_107gfKcxSTrQGPkaAFDeSmDBSFxG04ZXw_e1VzcEpKkLZrS19BtMT-n-5YwFgpWXBPe7Q7DnRl-ZbsA1AcG8-SiG7DbgXmkK_pZ99IOpVDrNSYWZUudf7VxUGxfEbZ2EYEXx5m61DkAcNPYunX8SUWz8R3A",
+    "stamps": [
+      {
+        "why": "at the link's pow, which is all its holder knows",
+        "bits": 16,
+        "routing_id": "FLBBPPRUYXyqji01zf3r7jP0R_QCdAWnVAo9i950Of0",
+        "rid_bytes": "14b0413cf454617caa8e2d35cdfdebee33f447f4027405a7540a3d8bde7439fd",
+        "day": 20743,
+        "envelope_sha256": "40f2b83e1a5593596a17407270148b28443637bb075d9197bbb995395fbf4833",
+        "start_nonce": "7c70da754b2fc97384be59d07b42c112",
+        "nonce": "7c70da754b2fc97384be59d07b435dc7",
+        "frame_member": "fHDadUsvyXOEvlnQe0Ndxw",
+        "input": "7a2d696e74726f2d706f772d76313a14b0413cf454617caa8e2d35cdfdebee33f447f4027405a7540a3d8bde7439fd0000510740f2b83e1a5593596a17407270148b28443637bb075d9197bbb995395fbf48337c70da754b2fc97384be59d07b435dc7",
+        "digest": "0000e047b148380e3526c72666e11709e72996e0598ea92160b0255d513f34ba",
+        "zero_bits": 16
+      },
+      {
+        "why": "at a raised bits: the relay refused the first (pow_required, bits 18), and 18 is the greater of it and the link's pow, and at most 28",
+        "bits": 18,
+        "routing_id": "FLBBPPRUYXyqji01zf3r7jP0R_QCdAWnVAo9i950Of0",
+        "rid_bytes": "14b0413cf454617caa8e2d35cdfdebee33f447f4027405a7540a3d8bde7439fd",
+        "day": 20743,
+        "envelope_sha256": "40f2b83e1a5593596a17407270148b28443637bb075d9197bbb995395fbf4833",
+        "start_nonce": "65ba443d2bf4ea342c337e8c69dd26ca",
+        "nonce": "65ba443d2bf4ea342c337e8c69dfc4c5",
+        "frame_member": "ZbpEPSv06jQsM36Mad_ExQ",
+        "input": "7a2d696e74726f2d706f772d76313a14b0413cf454617caa8e2d35cdfdebee33f447f4027405a7540a3d8bde7439fd0000510740f2b83e1a5593596a17407270148b28443637bb075d9197bbb995395fbf483365ba443d2bf4ea342c337e8c69dfc4c5",
+        "digest": "00001c2797846df68833cb45364dc6f7f712f64387b58a2952b632e2b9abd151",
+        "zero_bits": 19
+      }
+    ],
+    "creq_signing_input": "7a2d636f6e746163742d726571756573742d76313a67cc23f28d4d49bcc0a52db0e3af4eb2fe3ace49932dd8be1bbd37430aa8766f2edf3f818cdd4721050488392d58f80d35cfd45f8713b35360d581d45e42f160002b464c424250505255595879716a6930317a663372376a5030525f51436441576e56416f39693935304f6630000001a149bbb2000003426f62",
+    "creq_id": "3f12ff8916d76fe432e6bb45ffbfd3f213d29e04101ea0ff33f8a55bf2fd0111",
+    "ack_input": "7a2d696e74726f2d61636b2d76313ad16159c085a432014ef1a38a60cd9e0c31ba18218ed1de17d278886a8862b62cc955cec645f893c00ef58b4156b80a8f45b0f58a3d65779dc1994f4dfcb103e63f12ff8916d76fe432e6bb45ffbfd3f213d29e04101ea0ff33f8a55bf2fd0111",
+    "ia": "Uwc2xokpwdzwO58OtuAj9NJuofKQrQU8DMIuYUDv279QJvnumlTvS5Js-bxE12yLHlami_z1HNwLwjncDxVYBA",
+    "ia_refused_under": "34325798ba5204d1fd47595255027bd0c505ee39c0204d655562043c3a3c3b7d",
+    "acceptance_json": "{\"v\":1,\"t\":\"creq\",\"to\":\"0WFZwIWkMgFO8aOKYM2eDDG6GCGO0d4X0niIaohitiw\",\"ts\":1792238460000,\"bundle\":{\"ed\":\"yVXOxkX4k8AO9YtBVrgKj0Ww9Yo9ZXedwZlPTfyxA+Y=\",\"x\":\"NN91QfrofrRD+QYofSCRmaH2x0vsJFO+r90jE2KVNmk=\",\"sig\":\"/dgtIXgd7j/G2Hf2uN26jxMvDAp5grizTMjWBV0wnzvand5tj4RfqzKAqVtXb3R0W8ltf3Z25uJeDsBHzERnBQ==\",\"name\":\"Alice\"},\"sig\":\"K40Tg8ov3MITVbVqeRvyeZuDSz7inj/QJy/Icd9dT3wvTRFKb24sbu39+ZgrrOdNFV+rlm9tn7kR7Pqz2BZpCg==\",\"ia\":\"Uwc2xokpwdzwO58OtuAj9NJuofKQrQU8DMIuYUDv279QJvnumlTvS5Js-bxE12yLHlami_z1HNwLwjncDxVYBA\"}",
+    "acceptance_payload": "eyJ2IjoxLCJ0IjoiY3JlcSIsInRvIjoiMFdGWndJV2tNZ0ZPOGFPS1lNMmVEREc2R0NHTzBkNFgwbmlJYW9oaXRpdyIsInRzIjoxNzkyMjM4NDYwMDAwLCJidW5kbGUiOnsiZWQiOiJ5VlhPeGtYNGs4QU85WXRCVnJnS2owV3c5WW85WlhlZHdabFBUZnl4QStZPSIsIngiOiJOTjkxUWZyb2ZyUkQrUVlvZlNDUm1hSDJ4MHZzSkZPK3I5MGpFMktWTm1rPSIsInNpZyI6Ii9kZ3RJWGdkN2ovRzJIZjJ1TjI2anhNdkRBcDVncml6VE1qV0JWMHduenZhbmQ1dGo0UmZxektBcVZ0WGIzUjBXOGx0ZjNaMjV1SmVEc0JIekVSbkJRPT0iLCJuYW1lIjoiQWxpY2UifSwic2lnIjoiSzQwVGc4b3YzTUlUVmJWcWVSdnllWnVEU3o3aW5qL1FKeS9JY2Q5ZFQzd3ZUUkZLYjI0c2J1MzkrWmdyck9kTkZWK3JsbTl0bjdrUjdQcXoyQlpwQ2c9PSIsImlhIjoiVXdjMnhva3B3ZHp3TzU4T3R1QWo5Tkp1b2ZLUXJRVThETUl1WVVEdjI3OVFKdm51bWxUdlM1SnMtYnhFMTJ5TEhsYW1pX3oxSE53THdqbmNEeFZZQkEifQ=="
+  }
+}
