@@ -58,12 +58,16 @@ const String defaultKtLogPub = String.fromEnvironment('KT_LOG_PUB',
 /// parse as nothing, and be ignored — a witness believed in and not had,
 /// which is what `hasWitness` below is written to prevent.
 ///
+/// A name whose DNS this project controls, not the host its platform gave
+/// it: a pinned URL that somebody else can reassign is a pin on somebody
+/// else's hostname, and moving the service should not need a release.
+///
 /// It is run by this log's operator today, so it detects a later compromise
 /// of the log and nothing about the operator; R7 and R50 stay open until
 /// somebody else co-signs. A witness of one's own is still worth pinning:
 /// the check is only ever evidence against the log.
 const String defaultKtWitnessUrl = String.fromEnvironment('KT_WITNESS_URL',
-    defaultValue: 'https://z-kt-witness.onrender.com/sth.json');
+    defaultValue: 'https://witness.zmessengers.com/sth.json');
 const String defaultKtWitnessPub = String.fromEnvironment('KT_WITNESS_PUB',
     defaultValue: 'UN8IAA1wBHbrl0/gOleaZdIF+Vw7fRSNmovsS3HqFnE=');
 
