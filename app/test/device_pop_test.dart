@@ -680,7 +680,18 @@ void main() {
 
   /// Bob's laptop, its client running, proven for Bob at [vic]: linked,
   /// its proof handed to Bob's root, and a tablet linked after so that
-  /// Bob's next list carries the proof to Vic.
+  /// Bob's next list carries the proof to Vic — and Vic holding that list,
+  /// Bob's current one.
+  ///
+  /// Holding the laptop proven is not enough to say so. A message of Vic's
+  /// that echoed Bob's first list, crossing the list that named the laptop,
+  /// has Bob's root hand that list over again once the proof is in, at the
+  /// same version, carrying it (§3.6, ADR 0022) — and Vic holds the laptop
+  /// proven while the tablet's list is still on its way. Criterion 7 signs
+  /// its lists one version above what Vic holds, and that was the tablet's
+  /// version: Bob's honest list was judged among them, installed (measured:
+  /// 2 in 30 runs of criterion 7 on an idle machine, both times Vic's
+  /// post-quantum answer crossing the list).
   Future<({({ChatService svc, DeviceCertificate cert}) laptop, String rid})>
       provenLaptop(ChatService vic, ChatService bob, String name) async {
     final laptop = await linkedTo(bob, name);
@@ -693,6 +704,11 @@ void main() {
         deviceEdPub: tablet.edPub, deviceXPub: tablet.xPub, deviceId: 'tablet'));
     await waitUntil(() => vic.debugProvenDevice(rid)?.inList == true,
         what: "Vic holds the laptop proven for Bob");
+    await waitUntil(
+        () async =>
+            await vic.heldContactListVersion(bob.myRid) ==
+            await bob.ownDeviceListVersion(),
+        what: "Vic holds Bob's current list, the tablet's");
     return (laptop: laptop, rid: rid);
   }
 
