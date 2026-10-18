@@ -297,6 +297,16 @@ void main() {
         isTrue,
         reason: 'Carol never received the v2 device list after the warm-up');
     // Carol must already reach the laptop directly before the phone goes away.
+    // Holding the list is not yet routing by it: an install stores the list
+    // first and adds its devices to the fan-out after, under the
+    // conversation's lock — and the 'reach check' below can reach the laptop
+    // by the phone's mirror of it instead (measured, under load: Carol held
+    // the list for at least 389 ms without routing by it, and none of her
+    // three messages fanned out). So wait until Carol holds the laptop as the
+    // account's device.
+    await waitUntil(
+        () => carol.debugListedDeviceOwner(a.laptop.myRid) == a.phone.myRid,
+        what: "Carol routing to the laptop as the account's device");
     await carol.sendText(a.phone.myRid, 'reach check');
     await waitUntil(() => texts(a.laptop, carol.myRid).contains('reach check'),
         what: "carol's 'reach check' fanned out to the laptop");
