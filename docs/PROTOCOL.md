@@ -1452,7 +1452,12 @@ its `thread` the 1:1 chat or the group — makes the receiving device count
 them read and send no receipt of its own for them. A group sends its members
 no read receipts (§6.3), so this mirror is all that its read state travels
 in. A contact's own edit, delete, reaction, timer or receipt is not mirrored:
-it reaches each of the user's devices from the contact. A mirror that names
+it reaches each of the user's devices from the contact. Nothing orders a
+receipt against the mirror of the message it names, which comes by the other
+door: one that arrives before the copy of a message sent from another of the
+user's devices is kept, and counted under §6.3's rule when the copy lands (the
+reference client keeps it in memory, for an hour; until 2026‑10‑18 it dropped
+it, and that copy kept one tick for good). A mirror that names
 nothing the receiving device holds, or nothing that is the user's to change,
 is dropped and acknowledged (§6.8). On both doors a receiver applies what one
 device sent one envelope at a time, in the order it decrypted them, as the

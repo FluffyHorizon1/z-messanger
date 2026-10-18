@@ -58,7 +58,14 @@
 //   9. what a device did while another was away arrives in one burst when
 //      that one comes back, and every edit, reaction, timer and read in it
 //      applies after the message it names — through self-sync to my laptop,
-//      and through the extra-device door to the contact's phone and laptop.
+//      and through the extra-device door to the contact's phone and laptop;
+//  10. a receipt that reaches one of my devices before that device's copy of
+//      my message — the copy comes by self-sync, the receipt by the
+//      contact's door, and nothing orders the two — counts when the copy
+//      lands: a message sent from my laptop shows delivered and read on my
+//      phone, and a group message delivered, though every receipt for them
+//      reached the phone first. (Before 2026-10-18 the phone dropped them,
+//      and its copy kept one tick for good.)
 @Tags(['integration'])
 library;
 
@@ -1004,5 +1011,91 @@ void main() {
       await waitUntil(() => s.contacts[aRid]!.ttlSec == 600,
           what: "${s.displayName} takes the timer Alice's laptop set");
     }
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('10. a receipt that reaches my phone before its copy of my message '
+      'counts when the copy lands', () async {
+    final w = await world('10', carol: true);
+    final c = w.cPhone!;
+    final aRid = w.aPhone.myRid, bRid = w.bPhone.myRid;
+    final gid = await crew(w);
+
+    // Everything Alice's laptop sends her phone waits at the phone's door —
+    // the copies of what the laptop writes among it — while everything else
+    // reaches the phone as it comes. So every receipt for what the laptop
+    // writes reaches the phone before the phone's copy does: the order a
+    // loaded phone meets now and then, every time.
+    final deliver = w.aPhone.transport.onMessage!;
+    final held = <(int, RelayInbound)>[];
+    var seen = 0;
+    w.aPhone.transport.onMessage = (m) async {
+      final n = seen++;
+      final opened = m.from.isEmpty
+          ? await SealedEnvelope.open(
+              myXSeed: w.aPhone.identity.xSeed,
+              myXPub: w.aPhone.identity.xPub,
+              blob: m.payload)
+          : null;
+      if ((opened?.fromRid ?? m.from) == w.aLap.myRid) {
+        held.add((n, m));
+      } else {
+        deliver(m);
+      }
+    };
+
+    // From the laptop: a message to Bob, which he reads on his phone, and
+    // one in the group, which Bob and Carol receive.
+    await w.aLap.sendText(bRid, 'held back from my phone');
+    await w.aLap.sendGroupText(gid, 'in the group, held back too');
+    final mid = await everywhere(
+        [(w.bPhone, aRid), (w.bLap, aRid)], 'held back from my phone');
+    final gmid = await everywhere(
+        [for (final s in [w.bPhone, w.bLap, c]) (s, gid)],
+        'in the group, held back too');
+    await w.bPhone.markChatOpened(aRid);
+    w.bPhone.markChatClosed(aRid);
+    await waitUntil(
+        () async => await status(w.aLap, bRid, mid) == MsgStatus.read,
+        what: "the laptop's copy is read");
+    await waitUntil(
+        () async => await status(w.aLap, gid, gmid) == MsgStatus.delivered,
+        what: "the laptop's copy of the group message is delivered");
+    // Every receipt for them has reached the phone too and been taken: no
+    // device holds one back or has anything left to send, and the relay holds
+    // nothing but what the laptop sent the phone, waiting here.
+    var calm = 0;
+    await waitUntil(() async {
+      for (final s in everyone(w)) {
+        await s.flushOutbox();
+        if (s.pendingReceipts > 0 ||
+            (await s.vault.db.query('outbox', limit: 1)).isNotEmpty) {
+          calm = 0;
+          return false;
+        }
+      }
+      if (await metric('z_queued_envelopes') != held.length) {
+        calm = 0;
+        return false;
+      }
+      return ++calm >= 3;
+    }, what: "only what the laptop sent the phone waits at the relay");
+    expect(find(w.aPhone, bRid, 'held back from my phone'), isNull,
+        reason: 'the phone has no copy yet');
+
+    // The copies land, in the order they came: each takes the receipts that
+    // came for it first.
+    w.aPhone.transport.onMessage = deliver;
+    for (final (_, m) in [...held]..sort((x, y) => x.$1.compareTo(y.$1))) {
+      await w.aPhone.debugInbound(m);
+    }
+    expect(await status(w.aPhone, bRid, mid), MsgStatus.read,
+        reason: 'delivered to Bob and read by him, before the copy came');
+    expect(await status(w.aPhone, gid, gmid), MsgStatus.delivered,
+        reason: 'delivered to Bob and Carol, before the copy came');
+    expect(find(w.aPhone, bRid, 'held back from my phone')!.status,
+        MsgStatus.read,
+        reason: 'and so the screen shows it');
+    expect(find(w.aPhone, gid, 'in the group, held back too')!.status,
+        MsgStatus.delivered);
   }, timeout: const Timeout(Duration(minutes: 5)));
 }

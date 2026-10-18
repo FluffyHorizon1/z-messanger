@@ -4766,10 +4766,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       case 'read':
         final mids = (inner.data['mids'] as List?)?.cast<String>() ?? [];
         for (final mid in mids) {
-          await txn.update('messages', {'status': MsgStatus.read},
-              where: 'mid = ? AND rid = ? AND outgoing = 1 AND status < ?',
-              whereArgs: [mid, contact.rid, MsgStatus.read]);
-          _updateLoadedStatus(contact.rid, mid, MsgStatus.read);
+          await _recordRead(txn, contact, mid);
         }
         break;
 
@@ -6772,10 +6769,23 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         if (!g.left && g.memberRids.contains(contact.rid)) g.gid,
     ];
     final marks = List.filled(threads.length, '?').join(',');
-    final rows = await txn.query('messages',
-        columns: ['rid'],
-        where: 'mid = ? AND rid IN ($marks) AND outgoing = 1 AND status < ?',
-        whereArgs: [mid, ...threads, MsgStatus.delivered]);
+    // Every row with this id in their threads, whatever its state — the same
+    // one lookup as before, which now also tells "not on this device yet"
+    // from "not theirs to confirm, or already delivered".
+    final held = await txn.query('messages',
+        columns: ['rid', 'outgoing', 'status'],
+        where: 'mid = ? AND rid IN ($marks)',
+        whereArgs: [mid, ...threads]);
+    if (held.isEmpty) {
+      // A copy of a message sent from another of my devices may not have
+      // reached this one yet ([_earlyReceipts]).
+      _noteEarlyReceipt(contact.rid, mid, read: false);
+      return;
+    }
+    final rows = [
+      for (final r in held)
+        if (r['outgoing'] == 1 && (r['status'] as int) < MsgStatus.delivered) r
+    ];
     if (rows.isEmpty) return; // not theirs to confirm, or already delivered
     final thread = rows.first['rid'] as String;
 
@@ -6808,6 +6818,86 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         where: 'mid = ? AND rid = ? AND outgoing = 1 AND status < ?',
         whereArgs: [mid, thread, MsgStatus.delivered]);
     _updateLoadedStatus(thread, mid, MsgStatus.delivered, onlyUpgrade: true);
+  }
+
+  /// Record that [contact] has read [mid]: in their own chat only, as a read
+  /// receipt always counted (§6.3) — or, if this device does not hold the
+  /// message yet, kept for its copy ([_earlyReceipts]).
+  Future<void> _recordRead(
+      DatabaseExecutor txn, Contact contact, String mid) async {
+    final changed = await txn.update('messages', {'status': MsgStatus.read},
+        where: 'mid = ? AND rid = ? AND outgoing = 1 AND status < ?',
+        whereArgs: [mid, contact.rid, MsgStatus.read]);
+    _updateLoadedStatus(contact.rid, mid, MsgStatus.read);
+    if (changed > 0) return;
+    final held = await txn.query('messages',
+        columns: ['mid'],
+        where: 'rid = ? AND mid = ?',
+        whereArgs: [contact.rid, mid],
+        limit: 1);
+    if (held.isEmpty) _noteEarlyReceipt(contact.rid, mid, read: true);
+  }
+
+  /// Receipts that named a message this device did not hold yet, by message
+  /// id: whose, whether it says read, and when it came.
+  ///
+  /// A message sent from another of my devices reaches this one as a mirror,
+  /// by self-sync, and the contact's receipt for it reaches it by the
+  /// contact's own door; nothing orders the two, and under load the receipt
+  /// can come first — the mirror waits behind the sending device's other
+  /// envelopes and the save of its self-sync ratchet, the receipt does not.
+  /// It used to be dropped then, and this device's copy kept one tick for good
+  /// (devlist_capability_test 11, measured: the receipt 109 ms ahead).
+  /// Now the copy takes it when it lands ([_applyEarlyReceipts]), under the
+  /// rules it would have met had it come second. Kept in memory, for
+  /// [_earlyReceiptLife] and for at most [_earlyReceiptsMax] messages: a
+  /// receipt is best-effort, and a copy that lands after a restart keeps the
+  /// tick it came with, as every copy did before this.
+  final Map<String, List<({String from, bool read, int atMs})>>
+      _earlyReceipts = {};
+
+  static const int _earlyReceiptsMax = 512;
+
+  /// How long a receipt waits for the copy of the message it names.
+  static const Duration _earlyReceiptLife = Duration(hours: 1);
+
+  void _noteEarlyReceipt(String from, String mid, {required bool read}) {
+    final now = _now();
+    final cutoff = now - _earlyReceiptLife.inMilliseconds;
+    _earlyReceipts.removeWhere((_, held) => held.last.atMs < cutoff);
+    final held = _earlyReceipts.remove(mid) ?? [];
+    if (!held.any((e) => e.from == from && e.read == read)) {
+      held.add((from: from, read: read, atMs: now));
+    }
+    _earlyReceipts[mid] = held; // newest last, so the cap drops the oldest
+    while (_earlyReceipts.length > _earlyReceiptsMax) {
+      _earlyReceipts.remove(_earlyReceipts.keys.first);
+    }
+  }
+
+  /// The copy of my message [mid] has just been stored here, mirrored from
+  /// another of my devices: the receipts that came for it first count now,
+  /// each under the rule it would have met on arrival — a delivery for a
+  /// thread its sender is a party to ([_recordDelivery]), a read for their
+  /// own chat ([_recordRead]). Kept until that is written, so a store that
+  /// fails, and the mirror redelivered for it, finds them still here.
+  Future<void> _applyEarlyReceipts(String mid) async {
+    final held = _earlyReceipts[mid];
+    if (held == null) return;
+    final cutoff = _now() - _earlyReceiptLife.inMilliseconds;
+    await vault.db.transaction((txn) async {
+      for (final e in held) {
+        final contact = contacts[e.from];
+        if (contact == null || e.atMs < cutoff) continue;
+        if (e.read) {
+          await _recordRead(txn, contact, mid);
+        } else {
+          await _recordDelivery(txn, contact, mid);
+        }
+      }
+    });
+    if (identical(_earlyReceipts[mid], held)) _earlyReceipts.remove(mid);
+    notifyListeners();
   }
 
   void _updateLoadedStatus(String rid, String mid, int status,
@@ -7963,6 +8053,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
               replyTo: quoted?.mid,
               quote: quoted,
             ));
+        await _applyEarlyReceipts(inner.mid);
       } else {
         final c = contacts[rid];
         if (c != null) await _persistGroupText(c, inner, inner.ts);
@@ -8092,6 +8183,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           replyTo: quoted?.mid,
           quote: quoted,
         ));
+    // A receipt for it may have come first, by the contact's door.
+    if (outgoing) await _applyEarlyReceipts(inner.mid);
     notifyListeners();
   }
 
@@ -8243,6 +8336,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           quote: quoted,
           file: offer.fileMeta,
         ));
+    if (outgoing) await _applyEarlyReceipts(inner.mid);
     notifyListeners();
     await _offerLanded(fid); // sidecar chunks may already be here
     return _OfferFate.fresh;
