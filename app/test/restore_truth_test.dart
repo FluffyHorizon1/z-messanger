@@ -50,7 +50,11 @@
 //      quietly as criterion 1, from what the log holds;
 //  11. an account that has moved to v2-only signing (ADR 0017 stage 2b)
 //      restores as one: the list it signs next is v2-only too, one version
-//      above, and nobody is alarmed;
+//      above, and nobody is alarmed; and the contact's next message, which
+//      says what it reads — a restore keeps no reader levels — is taken in
+//      before the receipt it earns is owed, so that receipt carries the
+//      account's claim (before 2026-10-18 it could go without, and with
+//      nothing more said, the contact never heard the claim);
 //  12. what the owner's alarms stand on (ADR 0026) survives the restore: a
 //      standing banner's evidence, every dismissal, and the own-list
 //      repair's record of the head and versions held when it first ran —
@@ -1207,6 +1211,15 @@ void main() {
     final revived = await boot(
         await restoreInto(aliceDir, file, code), 'alice11',
         v2Only: true);
+    // What the restored device knows of what Bob's phone reads at the moment
+    // it owes Bob a receipt — read there and then, before anything else runs.
+    final knownAtOwe = <String, int?>{};
+    revived.debugOnReceiptOwed = (rid, mids) {
+      if (rid != bob.myRid) return;
+      for (final m in mids) {
+        knownAtOwe[m] = revived.debugReaderLevel(bob.myRid, bob.myRid);
+      }
+    };
     await waitUntil(() => up(revived), what: 'the restored device up');
     final next = await ownList(revived);
     expect(next.version, moved.version + 1,
@@ -1216,6 +1229,18 @@ void main() {
     await quietOwner(revived, 'after the restore');
 
     await exchange(revived, bob, 'restored');
+    // Bob's reply says what his phone reads, and the restored device, which
+    // withholds its claim from a contact none of whose devices has said so,
+    // has taken that in by the time it owes the reply a receipt — so the
+    // receipt carries the claim, and with nothing more said Bob still hears
+    // it. It used to be taken in last, after the receipt was owed.
+    final reply = revived.messagesByChat[bob.myRid]!
+        .firstWhere((m) => !m.outgoing && m.body == 'restored b');
+    await waitUntil(() => knownAtOwe.containsKey(reply.mid),
+        what: "the restored device owes Bob's reply a receipt");
+    expect(knownAtOwe[reply.mid], devlistReaderLevel,
+        reason: 'what the reply said Bob reads was known when its receipt '
+            'was owed');
     await claimJudged(bob, revived.myRid, next.version);
     expect(bob.contactDevlistAlerts[revived.myRid], isNull);
     await holds(bob, revived.myRid, next.version);

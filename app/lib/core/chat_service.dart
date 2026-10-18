@@ -4571,6 +4571,19 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     await _clearRequested(contact.rid);
 
     if (inner != null) {
+      // ADR 0029: what this device of theirs says it reads — first, before
+      // anything below answers this message. A claim withheld from a contact
+      // whose devices had not said they read a v2-only list is made again as
+      // soon as one of them says so, and the receipt this message earns is
+      // usually the next thing this device tells them. Noted last, as it was
+      // until 2026-10-18, the receipt could be decorated first and go without
+      // the claim — after a restore, which keeps no reader levels, with
+      // nothing more to say the claim never went (restore_truth_test 11).
+      // The move to v2-only it may open is weighed at the end, as before,
+      // once any list this message installs is held.
+      final opensMove = await _noteReaderLevel(
+          contact.rid, contact.rid, inner,
+          moveNow: false);
       // An offer §7 refused is not this device's to confirm, to pass on to
       // its own other devices, or to assemble chunks for: it was not stored.
       final refused = offerFate == _OfferFate.refused;
@@ -4689,8 +4702,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // 7.7a: cross-check the device-list claim/echo on EVERY inbound. Runs
       // after any devlist install above so the "held" list is current.
       await _observeDevlistGossip(contact.rid, contact.rid, inner);
-      // ADR 0029: and what this device of theirs says it reads.
-      await _noteReaderLevel(contact.rid, contact.rid, inner);
+      if (opensMove) unawaited(_maybeMoveToV2Only());
       notifyListeners();
     }
   }
@@ -5473,9 +5485,16 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   void _queueDeliveryReceipt(String rid, String mid) =>
       _owe(rid, [mid], read: false);
 
+  /// Test seam: called the moment this device owes [rid] receipts for
+  /// [mids], before anything else runs — so a test can see what this device
+  /// knew about them at that moment (restore_truth_test 11).
+  @visibleForTesting
+  void Function(String rid, List<String> mids)? debugOnReceiptOwed;
+
   /// [rid] is owed receipts for [mids]: held, written down, and timed.
   void _owe(String rid, List<String> mids, {required bool read}) {
     if (_disposed || !_sendsReceipts || mids.isEmpty) return;
+    debugOnReceiptOwed?.call(rid, mids);
     for (final m in mids) {
       _receipts.owe(rid, m, read: read);
     }
@@ -11703,12 +11722,20 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// reads, and re-checks the gate when that device has just said it reads a
   /// v2-only list. Best-effort and silent: it runs on every inbound path and
   /// must never be the reason one fails.
-  Future<void> _noteReaderLevel(
-      String rid, String deviceRid, InnerMessage inner) async {
+  ///
+  /// With [moveNow] false the gate is not re-checked here: the caller does
+  /// it, when the result is true, after the rest of the message is handled.
+  /// The inbound doors note the level first, so that what answers the
+  /// message knows it, but weigh the move last, once any device list the
+  /// message installs is held — a device that list adds has said nothing
+  /// yet, and the gate must count it before the account moves.
+  Future<bool> _noteReaderLevel(
+      String rid, String deviceRid, InnerMessage inner,
+      {bool moveNow = true}) async {
     final level = _readerLevelOf(inner);
-    if (level == null || !contacts.containsKey(rid)) return;
+    if (level == null || !contacts.containsKey(rid)) return false;
     final levels = _readerLevels.putIfAbsent(rid, () => {});
-    if (levels[deviceRid] == level) return;
+    if (levels[deviceRid] == level) return false;
     levels[deviceRid] = level;
     try {
       await vault.kvPut('cdl_dlr_$rid', jsonEncode(levels));
@@ -11717,7 +11744,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // by every message that device sends.
     }
     notifyListeners();
-    if (level >= devlistReaderLevel) unawaited(_maybeMoveToV2Only());
+    final opens = level >= devlistReaderLevel;
+    if (opens && moveNow) unawaited(_maybeMoveToV2Only());
+    return opens;
   }
 
   /// The same for [deviceRid], one of this account's own devices, from an
@@ -13611,6 +13640,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   Future<void> _dispatchExtraInner(Contact contact, String rid,
       String fromDeviceRid, InnerMessage message) async {
     final inner = message;
+    // ADR 0029: what this device of theirs says it reads, before anything
+    // below answers it — as on the primary door ([_onInbound]); and, as
+    // there, the move it may open is weighed after any list it installs.
+    final opensMove =
+        await _noteReaderLevel(rid, fromDeviceRid, inner, moveNow: false);
     // 7.7a: a removal notice about my own account can ride here too.
     if (inner.kind == 'dlrm') {
       await _handleRemovalNotice(contact, inner);
@@ -13755,8 +13789,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // 7.7a: observe the claim/echo after any devlist install above, so the
     // "held" list this cross-check compares against is current.
     await _observeDevlistGossip(rid, fromDeviceRid, inner);
-    // ADR 0029: and what this device of theirs says it reads.
-    await _noteReaderLevel(rid, fromDeviceRid, inner);
+    if (opensMove) unawaited(_maybeMoveToV2Only());
   }
 
   /// [primary]: the list came over the session with the device [contact] was
