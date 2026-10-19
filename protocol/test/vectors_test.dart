@@ -67,6 +67,9 @@ void main() {
       ('handles', 'handles'),
       ('handles', 'intro_link'),
       ('intro-key', 'intro_key'),
+      // 44.1: pairing v3 and CONNECT v3 (ADR 0033 §3, §4).
+      ('pair-v3', 'pairing_v3'),
+      ('connect', 'invite_v3'),
     ]) {
       test('$ver/$suite', () {
         final onDisk = readVectors(suite, ver);
@@ -1581,6 +1584,229 @@ void main() {
             isNull,
             reason: i['name'] as String);
       }
+    });
+  });
+
+  // 44.1 (ADR 0033 §3, §4): pairing v3 and CONNECT v3, replayed through the
+  // public API from what their files record — every random draw, the
+  // encapsulation's randomness among them.
+  group('pairing v3 and CONNECT v3 replay from recorded inputs alone', () {
+    test('pairing v3: every frame, the session and the enrolment replay '
+        'exactly', () async {
+      final v = readVectors('pairing_v3', 'pair-v3');
+      final pc = (v['pairing_code'] as Map).cast<String, Object?>();
+      final code = PairingCode(unhex(pc['secret'] as String));
+      expect(code.text, pc['text']);
+      expect(await code.rendezvousRoutingIdV3(), pc['rendezvous_routing_id']);
+      expect(hex(await code.pairKey()), (v['pair_key'] as Map)['key']);
+      final relay = (v['relay_identities'] as Map).cast<String, Object?>();
+      for (final role in ['i', 'r']) {
+        final r = (relay[role] as Map).cast<String, Object?>();
+        final id = await RelayPairing.relayIdentityV3(code, role);
+        expect(hex(id.edSeed), r['ed_seed']);
+        expect(hex(id.xSeed), r['x_seed']);
+        expect(await id.routingId(), r['routing_id']);
+      }
+      final nd = (v['new_device'] as Map).cast<String, Object?>();
+      final ed = (v['existing_device'] as Map).cast<String, Object?>();
+      final kem = (v['kem'] as Map).cast<String, Object?>();
+      final sealEk = unhex(nd['seal_ek'] as String);
+      expect(hex(pqKeyPairFromSeed(unhex(nd['seal_seed'] as String)).$1),
+          nd['seal_ek']);
+      expect(hex(sealKeyHash(sealEk)), nd['sk']);
+
+      // NEW device, from its four recorded draws: the frame it publishes is
+      // the recorded one, KEM key and all.
+      final n = await runScripted([
+        unhex(nd['device_ed_seed'] as String),
+        unhex(nd['device_x_seed'] as String),
+        unhex(nd['eph_seed'] as String),
+        unhex(kem['seed'] as String),
+      ], () => PairingInitiatorV3.create(
+          code: code, sealKey: sealEk, deviceId: nd['device_id'] as String));
+      expect(hex(n.kemEk), kem['ek']);
+      final commit = await n.commit();
+      expect({'k': 'commit-v3', ...commit}, nd['commit_frame']);
+
+      // EXISTING device, from its ephemeral and its encapsulation's
+      // randomness: the reply, then the session the opening completes.
+      final (reply, pending) = await runScripted(
+          [unhex(ed['eph_seed'] as String), unhex(kem['m'] as String)],
+          () => PairingResponderV3.reply(commit, code: code));
+      expect({'k': 'reply-v3', ...reply}, ed['reply_frame']);
+      expect(hex(unb64(reply['ct'] as String)), kem['ct']);
+      final (open, sessionI) = await n.open(reply);
+      expect({'k': 'open-v3', ...open}, nd['open_frame']);
+      final sessionR = await pending.accept(open);
+      for (final s in [sessionI, sessionR]) {
+        expect(hex(s.channelKey), v['channel_key']);
+        expect(s.sas, v['sas']);
+      }
+      expect(hex(sessionR.peerSealKeyHash!), nd['sk']);
+
+      // An opening that does not match the recorded commitment is refused,
+      // and so is a reply's key swapped beside it.
+      await expectLater(pending.accept({...open, 'sk': open['ded']}),
+          throwsA(isA<PairingAbort>()));
+      final (_, swapped) = await runScripted(
+          [unhex(ed['eph_seed'] as String), unhex(kem['m'] as String)],
+          () => PairingResponderV3.reply(
+              {...commit, 'ek': b64(sealEk)}, code: code));
+      await expectLater(swapped.accept(open), throwsA(isA<PairingAbort>()));
+
+      // The recorded enrolment opens — pqdc as recorded, no root — and is
+      // byte for byte what the recorded host seals from the recorded nonce.
+      final en = (v['enrollment'] as Map).cast<String, Object?>();
+      final sealed = unhex(en['sealed'] as String);
+      final data = await sessionI.openEnrollment(sealed);
+      expect(hex(data.pqdc!), en['pqdc']);
+      expect(data.accountEdSeed, isNull);
+      expect(hex(data.deviceCert.deviceXPub), nd['device_x_pub']);
+      expect(await data.deviceCert.verify(data.accountEdPub), isTrue);
+      expect((await n.installFromData(data)).holdsAccountRoot, isFalse);
+      final acct = (v['account'] as Map).cast<String, Object?>();
+      final host = (await runScripted([
+        unhex(acct['account_ed_seed'] as String),
+        unhex(acct['device_x_seed'] as String),
+        unb64url(acct['device_id'] as String),
+      ], AccountIdentity.generate))
+          .withAccountMlPub(unhex(acct['ml_pub'] as String));
+      final plain = jsonDecode(en['plaintext'] as String) as Map;
+      final resealed = await runScripted(
+          [unhex(en['nonce'] as String)],
+          () => sessionR.sealEnrollment(host,
+              contacts: [
+                for (final c in plain['contacts'] as List)
+                  AccountBundle.fromJson((c as Map).cast<String, Object?>())
+              ],
+              displayName: plain['name'] as String?,
+              pqdc: unhex(en['pqdc'] as String)));
+      expect(hex(resealed), en['sealed']);
+
+      // What v2 computes from the same inputs is none of it, and a v2 host
+      // cannot complete the recorded frames: the opening misses whatever
+      // commitment it answered.
+      final old =
+          (v['version_2_of_the_same_inputs'] as Map).cast<String, Object?>();
+      expect(old['channel_key'], isNot(v['channel_key']));
+      expect(old['sas'], isNot(v['sas']));
+      final (_, v2host) = await PairingResponderV2.reply(commit);
+      await expectLater(v2host.accept(open), throwsA(isA<PairingAbort>()));
+    });
+
+    test('connect v3: the recorded ceremony replays, hybrid, and version 2 '
+        'reads none of it', () async {
+      final v = readVectors('invite_v3', 'connect');
+      final cc = (v['connect_code'] as Map).cast<String, Object?>();
+      final code = ConnectCode(unhex(cc['secret'] as String), version: 3);
+      expect(code.text, cc['text']);
+      expect(code.link(), cc['link']);
+      expect((cc['text'] as String).startsWith(cc['marker'] as String), isTrue);
+      for (final r in [cc['text'] as String, cc['link'] as String]) {
+        final back = r.startsWith('https://')
+            ? ConnectCode.fromLinkV3(r)!
+            : ConnectCode.parseV3(r);
+        expect(back.version, 3, reason: r);
+        expect(hex(back.secret), cc['secret']);
+      }
+      // The version-2 reader refuses both renderings, unmodified.
+      expect(() => ConnectCode.parse(cc['text'] as String),
+          throwsFormatException);
+      expect(ConnectCode.fromLink(cc['link'] as String), isNull);
+      expect(ConnectCode(code.secret, version: 2).text, cc['text_as_version_2']);
+      expect(ConnectCode(code.secret).text, cc['text_as_version_1']);
+      expect(await code.rendezvousRoutingId(), cc['rendezvous_routing_id']);
+      final key = (v['invite_key'] as Map).cast<String, Object?>();
+      expect(hex(utf8.encode(connectInviteKeyCtxV3)), key['info']);
+      expect(hex((await code.inviteKey())!), key['key']);
+      for (final m in (v['mailboxes'] as List).cast<Map<String, Object?>>()) {
+        final id = await mailboxIdentity(code, m['role'] as String);
+        expect(hex(id.edSeed), m['ed_seed']);
+        expect(hex(id.xSeed), m['x_seed']);
+        expect(await id.routingId(), m['routing_id']);
+      }
+
+      // All four messages from the recorded draws.
+      final parties = (v['parties'] as List).cast<Map<String, Object?>>();
+      final who = [
+        for (final p in parties)
+          await ConnectIdentity.fromCode(p['contact_code'] as String,
+              displayName: p['display_name'] as String?)
+      ];
+      Uint8List ml(int i) => unhex(parties[i]['ml_pub'] as String);
+      Uint8List seal(int i) => unhex(parties[i]['seal_ek'] as String);
+      for (var i = 0; i < 2; i++) {
+        expect(
+            hex(pqKeyPairFromSeed(unhex(parties[i]['seal_seed'] as String)).$1),
+            parties[i]['seal_ek']);
+      }
+      final frames = (v['frames'] as Map).cast<String, Object?>();
+      final reveals = (v['reveals'] as Map).cast<String, Object?>();
+      final kem = (v['kem'] as Map).cast<String, Object?>();
+      // A copy: the recorded frames stay as recorded for the length check.
+      Map<String, Object?> frame(String k) =>
+          Map<String, Object?>.from(frames[k] as Map)..remove('k');
+      final iEph = unhex((v['inviter_ephemeral'] as Map)['seed'] as String);
+      final rEph = unhex((v['acceptor_ephemeral'] as Map)['seed'] as String);
+      final inviter = await runScripted(
+          [iEph, unhex(kem['seed'] as String)],
+          () => ConnectInviterV3.create(
+              me: who[0],
+              sealKey: seal(0),
+              pqKey: ml(0),
+              code: code,
+              group: false));
+      expect({'k': 'x1', ...await inviter.commit()}, frames['commit']);
+      final (reply, acceptor) = await runScripted(
+          [rEph, unhex(kem['m'] as String)],
+          () => ConnectAcceptorV3.reply(frame('commit'),
+              me: who[1],
+              code: code,
+              sealKey: seal(1),
+              pqKey: ml(1),
+              groupAware: true));
+      expect({'k': 'x2', ...reply}, frames['reply']);
+      final open = await runScripted(
+          [unhex(reveals['open_nonce'] as String)], () => inviter.open(reply));
+      expect({'k': 'x3', ...open}, frames['open']);
+      final (reveal, sessionR) = await runScripted(
+          [unhex(reveals['reveal_nonce'] as String)],
+          () => acceptor.accept(open));
+      expect({'k': 'x4', ...reveal}, frames['reveal']);
+      final sessionI = await inviter.complete(reveal);
+      for (final s in [sessionI, sessionR]) {
+        expect(s.sas, v['sas']);
+        expect(hex(s.channelKey), v['channel_key']);
+        expect(hex(await s.goAheadTag()), v['go_ahead_tag']);
+      }
+      expect(hex(sessionI.peerPqKey!), parties[1]['ml_pub']);
+      expect(hex(sessionI.peerSealKey), parties[1]['seal_ek']);
+      expect(hex(sessionR.peerPqKey!), parties[0]['ml_pub']);
+      expect(hex(sessionR.peerSealKey), parties[0]['seal_ek']);
+      final lengths = (v['frame_lengths'] as Map).cast<String, Object?>();
+      for (final k in ['commit', 'reply', 'open', 'reveal']) {
+        expect(jsonEncode(frames[k]).length, lengths[k], reason: k);
+      }
+
+      // Version 2's values from the same inputs are none of these, and a
+      // reader of version 2 cannot run the recorded frames: its acceptor
+      // aborts at message 3.
+      final old =
+          (v['version_2_of_the_same_inputs'] as Map).cast<String, Object?>();
+      final two = ConnectCode(code.secret, version: 2);
+      expect(old['text'], two.text);
+      expect(old['mailbox_i'],
+          await (await mailboxIdentity(two, 'i')).routingId());
+      expect(old['channel_key'], isNot(v['channel_key']));
+      expect(old['inviter_commitment'],
+          isNot((v['commitments'] as Map)['inviter']));
+      expect(old['sas'], isNot(v['sas']));
+      final (_, v2acceptor) = await runScripted(
+          [rEph],
+          () => ConnectAcceptor.reply(frame('commit'),
+              me: who[1], code: two, groupAware: true));
+      await expectLater(
+          v2acceptor.accept(frame('open')), throwsA(isA<ConnectAbort>()));
     });
   });
 }

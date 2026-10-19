@@ -1750,6 +1750,119 @@ Rules:
 
 Vectors: [`vectors/pair-v2/`](vectors/pair-v2/). §10's remain untouched.
 
+### 10.2 Pairing v3 (`adr/0033` §3)
+
+*The protocol library builds this ceremony (44.1: `pairing.dart`,
+`pairing_relay.dart`); nothing runs it before 44.4, and until then a current
+client pairs by §10.1.*
+
+§10.1's four frames, hybrid with ML‑KEM‑768 (§17) and bound to the code. A
+recording of a v2 rendezvous yields the whole enrollment — every contact's
+keys, lists and names — to whoever later breaks X25519, and whoever breaks it
+while the ceremony runs can pass both ephemerals through and read the
+enrollment while both screens agree. In v3 the new device offers a fresh
+ML‑KEM‑768 key beside its commitment, the existing device encapsulates to it,
+and the KEM secret `K` joins the X25519 output in the channel key and in the
+digits. Every context string is new again, so v3 shares no mailbox, key or
+string with v2 or v1 for one code:
+
+```
+z-pair-key-v3            the code's key, which keys the commitment and salts the channel key
+z-pair-rendezvous-v3:    the code's own mailbox id (informative)
+z-pair-relay-v3:         the two per-role mailboxes
+z-pair-commit-v3:        what the new device commits to
+z-pair-channel-v3        the channel key
+z-pair-sas-v3            the eight digits
+```
+
+```
+pairKey       = HKDF( ikm = secret, salt = ∅, info = utf8("z-pair-key-v3"), L = 32 )
+rendezvous    = b64url( SHA256( utf8("z-pair-rendezvous-v3:") || secret ) )     // informative
+relayIdentityV3(role) : okm = HKDF( ikm = secret, salt = ∅, info = utf8("z-pair-relay-v3:" || role), L = 64 )
+                        edSeed = okm[0..32], xSeed = okm[32..64];   role ∈ { "i" (new), "r" (existing) }
+(ekN, dkN)    = ML-KEM-768.KeyGen(), drawn by the new device for this ceremony alone
+sk            = SHA256(sealEkN), the new device's sealing key (adr/0033 §1) as §8.3's `sk`
+
+commit (new → existing) : { "k":"commit-v3", "c":b64(c), "ek":b64(ekN) }
+c          = HMAC( pairKey, utf8("z-pair-commit-v3:") || ephPub_N || deviceEdPub || deviceXPub
+                            || SHA256(ekN) || sk || utf8(deviceId) )
+reply  (existing → new) : { "k":"reply-v3", "ephx":b64(ephPub_E), "ct":b64(ct) }    (ct, K) = ML-KEM-768.Encaps(ekN)
+open   (new → existing) : { "k":"open-v3", "ephx":b64(ephPub_N), "ded":b64(deviceEdPub), "dx":b64(deviceXPub),
+                            "sk":b64(sk), "id":deviceId }                            K = ML-KEM-768.Decaps(dkN, ct)
+dh         = X25519(eph_N, ephPub_E) = X25519(eph_E, ephPub_N)
+channelKey = HKDF( ikm = dh || K, salt = pairKey, info = utf8("z-pair-channel-v3"), L = 32 )
+sasBytes   = HKDF( ikm = dh || K, salt = ephPub_N || ephPub_E,
+                   info = utf8("z-pair-sas-v3") || deviceEdPub || deviceXPub || sk || utf8(deviceId)
+                          || SHA256(ekN || ct), L = 8 )
+n          = u56be(sasBytes[0..7]);   SAS = decimal(n mod 10^8) zero-padded to 8, shown as "dddd dddd"
+enroll (existing → new) : { "k":"enroll-v3", "blob":b64(sealed) }     // sealed as §10, under channelKey
+enrollment = §10's, never with "root", and with "pqdc"?: b64(the root's attestation of the new device)
+```
+
+§10.1's rules stand, its rules 6 and 4 widened by rules 4 and 6 below. In
+addition:
+
+1. **The side that commits offers the KEM key; the other encapsulates.** The
+   new device's whole contribution — its ephemeral, its keys, `sk`, its id and
+   its KEM key — is fixed by its first frame, whose commitment covers
+   `SHA256(ekN)`, so the opening is held to the key the reply was
+   encapsulated to. The existing device's — its ephemeral and its
+   encapsulation — is chosen holding only that frame. Were the existing
+   device to offer the key, whoever speaks for the new one would choose its
+   encapsulation after seeing everything and grind about 10⁸ of them until the
+   digits came out at a value already read aloud.
+2. **The digits cover `K`, and the KEM exchange.** Without `K`, someone who
+   breaks X25519 while the ceremony runs passes both ephemerals through, swaps
+   only the KEM, reads the enrollment under keys it holds, and both screens
+   agree. A swapped key is refused at the opening (rule 1); a swapped
+   ciphertext, which the commitment does not cover, changes `SHA256(ekN || ct)`
+   in the digits' input, so the two screens disagree and the host's
+   enrollment is sealed to a key its swapper does not hold.
+3. **The code is bound into the keys**, as §20.8 binds an invite's secret: a
+   relay without it makes no commitment the opening check accepts and derives
+   neither channel key. Defence in depth only — eighty bits, with the
+   mailboxes' routing ids an oracle for a guess, are no long‑term secret.
+4. Every fixed‑width field MUST be its width — `c`, `ephx`, `ded`, `dx` and
+   `sk` 32 bytes, `ek` 1 184 bytes that pass FIPS 203 §7.2's input check
+   (§8.3), `ct` 1 088 bytes — and `id` as §10.1 rule 6 bounds it, or the
+   receiver aborts before it hashes, encapsulates or decapsulates anything.
+   `id` is the one variable‑length field, and every field around it in the
+   commitment and in the digits' input has a fixed width, so both
+   concatenations are unambiguous. Each side MUST abort if the `dh` it
+   computes is all zeros, as §20.3 requires.
+5. **One decapsulation per key.** The new device answers the first reply and
+   no other, and drops its KEM key with the ceremony. `pqcrypto`'s
+   decapsulation is not constant‑time, which gates `zs2.` (`adr/0033`
+   decision 4), whose long‑term sealing key meets whatever ciphertexts anyone
+   addresses to it: a key drawn for one interactive ceremony and decapsulated
+   once gives whoever chose its ciphertext a single measurement of a key that
+   never decapsulates again.
+6. **Versions.** v3 transacts only on its own mailboxes. A v3 existing device
+   holds the v2 and v1 mailboxes open and recognises an older new device by
+   its first frame there — `commit-v2` or `hello` — and says which version it
+   heard so the app can say which device to update; it answers neither. A v3
+   new device facing an older existing device hears nothing, since that
+   device listens where v2 or v1 speaks, and says the other device may be
+   older. There is no fallback in either direction (§10.1 rule 4).
+7. **The enrollment.** It never carries `root`: a v3 host has no way to send
+   it, and a v3 new device refuses an enrollment that carries one — if the
+   account root ever travels, the ML‑DSA seed must travel with it. `pqdc` is
+   the root's attestation of the new device (`adr/0033` §1), over the account
+   key and the `ded`, `dx` and `sk` that the opening revealed and the digits
+   covered; pairing carries it as bytes, and whoever installs the enrollment
+   checks it. It is absent from a host that sent none.
+
+Frames stay unpadded attributed sends, as v2's are. As the library builds them
+(the payload the relay carries): `commit-v3` 1 656 bytes, `reply-v3` 1 530,
+`open-v3` 246 for a twelve‑character id, and `enroll-v3` v2's with `pqdc`'s
+3 309 bytes more before encoding. So the relay can tell a v3 pairing from a
+v2 one, whose `commit-v2` and `reply-v2` are 68 and 70 bytes, as it can tell
+a version‑3 connect ceremony (§20.9, R24); the register row that says so
+comes with 44.4, which runs the ceremony.
+
+Vectors: [`vectors/pair-v3/`](vectors/pair-v3/). §10's and §10.1's remain
+untouched.
+
 ## 11. Groups
 
 A group is **pairwise fan‑out over the existing 1:1 sessions**: there is no
@@ -2648,6 +2761,11 @@ known‑answer‑test technique); production builds have no such hook exposed.
 `docs/vectors/v3/device_attestation.json` a device's sealing key, `pqdc` and
 the members that carry them (§18.11), a file of its own: every file beside
 them is unchanged.
+
+`docs/vectors/pair-v3/pairing_v3.json` pins pairing v3 (§10.2) and
+`docs/vectors/connect/invite_v3.json` CONNECT v3 (§20.9), each new beside the
+files of its ceremony's earlier versions; their ML‑KEM‑768 values are
+re‑derived by kyber‑py (`protocol/tool/verify_mlkem.py`).
 
 ## 16. Security considerations (summary — see THREAT_MODEL.md)
 
@@ -4341,6 +4459,7 @@ z-connect-sas-v1           the eight digits (20.4)
 
 Version 2 (20.8) has one more, `z-connect-invite-v2`, and a `-v2` twin of
 each of these.
+Version 3 (20.9) has `z-connect-invite-v3`, and a `-v3` twin of each.
 
 ### 20.2 The invite
 
@@ -4352,6 +4471,7 @@ link  = "https://" || host || "/i#" || base32(secret)     (no group dashes)
 ```
 
 An invite of version 2 starts both renderings with `9` (20.8).
+An invite of version 3 starts them with `8` (20.9).
 
 `host` defaults to `www.zmessengers.com` and is part of the deployment, not of the
 protocol: a self‑hosted relay serves its own landing page and its links carry
@@ -4738,6 +4858,109 @@ the invite key, both mailboxes and the rendezvous, both keyed commitments
 with their inputs, all four frames with both reveals' plaintexts and
 nonces, the channel key, the digits — and, from the same inputs, what
 version 1 computes instead.
+
+### 20.9 Version 3: hybrid with ML‑KEM‑768 (`adr/0033` §4)
+
+*The protocol library builds version 3 (44.1: `connect.dart`,
+`connect_relay.dart`) — its reader beside 20.8's, its ceremony and its run —
+and nothing runs it before 44.6. It is minted a release after the release
+that reads it (Finnian's decision of 2026‑10‑17): `connectInviteVersion` stays
+2, and the library mints version 3 only when asked to.*
+
+Version 2's channel key and digits come from two X25519 ephemerals, so a
+recording of its frames gives both codes and both names to whoever later
+breaks X25519 and holds the invite, whose carrier the ceremony assumes hostile
+(R23). Version 3 adds an ML‑KEM‑768 exchange inside 20.3's ordering, and each
+reveal carries the two post‑quantum keys a contact needs:
+
+```
+inviteKey3  = HKDF(secret = invite secret, salt = "" (empty),
+                   info = "z-connect-invite-v3", 32)
+(ek, dk)    = ML-KEM-768.KeyGen(), drawn by the inviter for this invite alone
+commit(me, eph, kem) = HMAC-SHA256(key = inviteKey3, "z-connect-commit-v3:"
+                     || eph.pub || SHA-256(kem) || u16be(len(code)) || code || name)
+
+1. inviter  -> acceptor : c = commit(inviter, ephI, ek), ek
+2. acceptor -> inviter  : ephA.pub, c = commit(acceptor, ephA, ct), ct    (ct, K) = ML-KEM-768.Encaps(ek)
+3. inviter  -> acceptor : ephI.pub, seal(channelKey, inviter's reveal)    K = ML-KEM-768.Decaps(dk, ct)
+4. acceptor -> inviter  : seal(channelKey, acceptor's reveal)
+
+dh          = X25519(ephI, ephA)
+channelKey  = HKDF(secret = dh || K, salt = inviteKey3,
+                   info = "z-connect-channel-v3", 32)
+okm (20.4)  = HKDF(secret = dh || K, salt = ephLo.pub || ephHi.pub,
+                   info = "z-connect-sas-v3" || lo.accountEdPub || lo.pqCommit
+                          || hi.accountEdPub || hi.pqCommit || SHA-256(ek || ct), 8)
+mailboxes   = as 20.5, with info "z-connect-relay-v3:" || role
+rendezvousRoutingId = b64url(SHA-256("z-connect-rendezvous-v3:" || secret))
+reveal      = 20.3's m, then "pqk": b64(the account's ML-DSA-65 key) when its
+              code commits to one, then "pqseal": b64(the device's sealing key)
+
+x1  {"k":"x1","c":<32 bytes>,"ek":<1 184 bytes>}
+x2  {"k":"x2","ephx":<32 bytes>,"c":<32 bytes>,"ct":<1 088 bytes>}
+x3  {"k":"x3","ephx":<32 bytes>,"blob":<sealed>}
+x4  {"k":"x4","blob":<sealed>}
+```
+
+* **The ordering, with the KEM inside it.** Each side's KEM value is fixed
+  by its own commitment before it could know what it would need to aim the
+  digits: the inviter offers `ek` in message 1 under a commitment covering
+  `SHA-256(ek)`, and the acceptor encapsulates in message 2, before `ephI` is
+  revealed, under one covering `SHA-256(ct)`. Whoever holds the invite and
+  swaps `ek` is refused at message 3, before the acceptor reveals itself;
+  whoever swaps `ct` leaves the acceptor unable to open message 3, and the
+  inviter refuses any message 4 not committed to the ciphertext it
+  decapsulated. To pass, it must commit again with ephemerals of its own, and
+  then the two screens show different digits.
+* **The digits cover `K`**, and the KEM exchange, for §10.2 rule 2's
+  reason: whoever breaks X25519 while the ceremony runs cannot pass the
+  ephemerals through, swap only the KEM and leave both screens agreeing.
+* **The reveal.** `pqk` MUST be present exactly when the revealed code
+  commits to an ML‑DSA key (§18.2), and be the key it commits to; `pqseal`
+  MUST be present, a key that passes FIPS 203 §7.2's check and — when the
+  code carries `sk` (§8.3) — the key it names. Anything else is a malformed
+  reveal, an abort as for a malformed `name`, and each side holds its own keys
+  to the same rules before it starts. On a confirmed comparison both keys are
+  as authentic as the digits, so the contact needs no `pqid` (R17), and its
+  device's sealing key no `pqseal` and no fetch (`adr/0033` §4).
+* **One decapsulation per invite.** The inviter decapsulates the first
+  reply's ciphertext and refuses any later reply, and a stored ceremony keeps
+  `K` rather than decapsulating again — so, as §10.2 rule 5 says, `pqcrypto`'s
+  timing gates `zs2.` and not this.
+* **Sizes.** Frames stay unpadded (20.5) and grow. As the library builds
+  them, for two v3 identities named `Alice` and `Bob`, the inviter's code
+  carrying `sk`: x1 1 649 bytes, x2 1 575, x3 6 526 and x4 6 372, against
+  version 2's 654‑byte message 3 (20.3). The relay can tell a version‑3
+  ceremony (R24); message 3 is still one length with the group bit set or
+  clear.
+* **The renderings.** Both start with the marker `8`: `text = "8" ||
+  base32(secret)`, grouped in fives by "-", and `link = "https://" || host ||
+  "/i#8" || base32(secret)`. `8` is neither in RFC 4648's base32 alphabet nor
+  20.8's marker, so a parser of 20.2 or of 20.8 refuses either rendering as
+  not a connect code. A parser of this section removes the separators and
+  folds the case as 20.2 does, and reads a code as version 3 only when its
+  first character is then `8` and the rest exactly sixteen base32 characters,
+  and a link only on the invite page (20.2).
+* **Versions meeting.** The version rides in the invite, out of the relay's
+  reach (`adr/0024`). A version‑3 invite never runs as version 2 or 1: a
+  ceremony of 20.8 refuses one handed to it before it draws or posts
+  anything, the three versions name disjoint mailboxes, and a stored ceremony
+  keeps its version, `cv` 3, which a reader of 20.8 refuses. A client of 20.8
+  alone refuses a version‑3 invite and sends nothing. A client of this
+  section MUST NOT mint version 3 before the release after the one that ships
+  its reader, so an older acceptor is never handed an invite it cannot open.
+
+Everything else is 20.3–20.8 as written: the seal, the group bit, the
+all‑zero check, both commitment checks, every abort, the lifetime, the
+joiner's yes, a blocked identity, and the go‑ahead tag — HKDF of the channel
+key under `z-connect-gjoin-v1`, now a hybrid key.
+
+`vectors/connect/invite_v3.json` records every value this section changes —
+`inviteKey3`, both mailboxes and the rendezvous, the inviter's KEM key from
+its seed and the acceptor's encapsulation from its randomness, both keyed
+commitments with their inputs, all four frames with their lengths and both
+reveals' plaintexts and nonces, the channel key, the digits and the go‑ahead
+tag — and, from the same inputs, what version 2 computes instead.
 
 ## 21. Handles and public links (36–39)
 

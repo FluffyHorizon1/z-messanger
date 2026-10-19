@@ -5872,6 +5872,8 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
       'mailboxes': await suiteConnectMailboxes(),
       'group': await suiteConnectGroup(),
       'invite_v2': await suiteConnectV2(),
+      // 44.1 (ADR 0033 §4): a new file; the four above are unchanged by it.
+      'invite_v3': await suiteConnectV3(),
     },
     'backup': {
       'archive': await suiteBackup(),
@@ -5891,6 +5893,11 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     // unchanged by it.
     'sealed-v2': {
       'sealed_v2': await suiteSealedV2(a),
+    },
+    // 44.1 (ADR 0033 §3): a directory of its own; every file above is
+    // unchanged by it.
+    'pair-v3': {
+      'pairing_v3': await suitePairingV3(a),
     },
   };
 }
@@ -6512,6 +6519,697 @@ Future<Map<String, Object?>> suiteDeviceAttestation(List<Actor> a) async {
       },
       'pqs': {'inner_json': utf8.decode(held.toBytes())},
       'pqseal_ignored': ignored,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 44.1 (ADR 0033 §3 and §4): pairing v3 (PROTOCOL §10.2) and CONNECT v3
+// (§20.9), each hybrid with ML-KEM-768. A new directory, `pair-v3/`, and a
+// new file beside the four in `connect/`; every file above is unchanged by
+// them. The ML-KEM values here come from the library's own ML-KEM and are
+// re-derived by kyber-py (`tool/verify_mlkem.py`); everything else is
+// recomputed below from the primitives and checked against the library.
+// ---------------------------------------------------------------------------
+
+/// Eight digits from the first seven bytes of [okm], as §10.1 and §20.4 take
+/// them: big-endian, mod 10^8, zero-padded, shown as `dddd dddd`.
+String _eightDigits(List<int> okm) {
+  var n = 0;
+  for (var i = 0; i < 7; i++) {
+    n = (n << 8) | okm[i];
+  }
+  final s = (n % 100000000).toString().padLeft(8, '0');
+  return '${s.substring(0, 4)} ${s.substring(4)}';
+}
+
+/// Device pairing v3 (PROTOCOL §10.2, ADR 0033 §3): v2's four frames, hybrid
+/// with ML-KEM-768 and bound to the code. The new device commits to its
+/// ephemeral, its device keys, SHA-256 of the fresh ML-KEM key it offers
+/// beside the commitment, `sk` and its id; the existing device encapsulates
+/// to that key before the opening; the KEM secret K joins the X25519 output
+/// in the channel key and in the digits, which also cover SHA-256(ekN || ct).
+Future<Map<String, Object?>> suitePairingV3(List<Actor> a) async {
+  final d = Drbg(0x0102);
+  final code = PairingCode(d.next(10));
+
+  // pairKey: the code, bound into the commitment and the channel key.
+  final pairKeyInfo = utf8b('z-pair-key-v3');
+  final pairKey = await refHkdf(code.secret, Uint8List(0), pairKeyInfo, 32);
+  check(eq(await code.pairKey(), pairKey), 'v3 pairKey');
+
+  // The rendezvous and both mailboxes under v3's contexts, none of them one
+  // that v1 or v2 derives from the same code.
+  final older = <String>{
+    await code.rendezvousRoutingId(),
+    await code.rendezvousRoutingIdV2(),
+    for (final role in ['i', 'r']) ...[
+      await (await RelayPairing.relayIdentity(code, role)).routingId(),
+      await (await RelayPairing.relayIdentityV2(code, role)).routingId(),
+    ],
+  };
+  check(older.length == 6, 'six older mailboxes and rendezvous');
+  final rvInput =
+      concatBytes([utf8.encode('z-pair-rendezvous-v3:'), code.secret]);
+  final rendezvous =
+      base64Url.encode(await refSha256(rvInput)).replaceAll('=', '');
+  check(await code.rendezvousRoutingIdV3() == rendezvous, 'v3 rendezvous');
+  check(!older.contains(rendezvous), 'v3 rendezvous is no older one');
+  final relay = <String, Object?>{};
+  for (final role in ['i', 'r']) {
+    final info = 'z-pair-relay-v3:$role';
+    final okm = await refHkdf(code.secret, Uint8List(0), utf8b(info), 64);
+    final id = await RelayPairing.relayIdentityV3(code, role);
+    check(eq(okm.sublist(0, 32), id.edSeed) && eq(okm.sublist(32), id.xSeed),
+        'v3 relay identity $role');
+    final edPub = await refEdPub(Uint8List.fromList(okm.sublist(0, 32)));
+    final rid = base64Url.encode(await refSha256(edPub)).replaceAll('=', '');
+    check(await id.routingId() == rid, 'v3 mailbox $role');
+    check(!older.contains(rid) && rid != rendezvous, 'v3 mailbox $role is new');
+    relay[role] = {
+      'hkdf_info': info,
+      'hkdf_okm': hex(okm),
+      'ed_seed': hex(id.edSeed),
+      'x_seed': hex(id.xSeed),
+      'ed_pub': hex(edPub),
+      'routing_id': rid,
+    };
+  }
+
+  // The host: the account's root, with its ML-DSA key, which signs pqdc.
+  final root = await d.run(() => AccountIdentity.generate());
+  final mlSeed = d.next(32);
+  final hostPq =
+      await HybridKeyPair.fromSeeds(edSeed: root.accountEdSeed!, mlSeed: mlSeed);
+  final me = root.withAccountMlPub(hostPq.publicKey.mlPub);
+
+  // The new device's sealing key (ADR 0033 §1): sk is its hash.
+  final sealSeed = d.next(64);
+  final (sealEk, _) = pqKeyPairFromSeed(sealSeed);
+  final sk = await refSha256(sealEk);
+  check(eq(sk, sealKeyHash(sealEk)), 'sk = SHA-256(sealEk)');
+
+  d.takeDraws();
+  final n = await d.run(() => PairingInitiatorV3.create(
+      code: code, sealKey: sealEk, deviceId: 'new-laptop'));
+  final nDraws = d.takeDraws();
+  check(
+      nDraws.length == 4 &&
+          eq(nDraws[0], n.deviceEdSeed) &&
+          eq(nDraws[1], n.deviceXSeed) &&
+          eq(nDraws[2], n.ephXSeed) &&
+          eq(nDraws[3], n.kemSeed),
+      'v3 initiator draws: device ed, device x, ephemeral, KEM seed');
+  final (kemEk, kemDk) = pqKeyPairFromSeed(n.kemSeed);
+  check(eq(kemEk, n.kemEk), 'the offered key is the one its seed makes');
+
+  // Message 1: the keyed commitment, and beside it the key it covers.
+  final commitInput = concatBytes([
+    utf8.encode('z-pair-commit-v3:'),
+    n.ephXPub,
+    n.deviceEdPub,
+    n.deviceXPub,
+    await refSha256(kemEk),
+    sk,
+    utf8.encode(n.deviceId),
+  ]);
+  final commitment = await refHmac(pairKey, commitInput);
+  final commitFrame = await n.commit();
+  check(commitFrame['c'] == base64Encode(commitment), 'v3 commitment');
+  check(commitFrame['ek'] == base64Encode(kemEk), 'v3 commit frame ek');
+
+  // Message 2: an ephemeral, and an encapsulation to the offered key, chosen
+  // holding only the commitment.
+  final (reply, pending) =
+      await d.run(() => PairingResponderV3.reply(commitFrame, code: code));
+  final rDraws = d.takeDraws();
+  check(rDraws.length == 2, 'v3 responder draws: ephemeral, Encaps randomness');
+  final rEphSeed = rDraws[0], m = rDraws[1];
+  final rEphPub = await refXPub(rEphSeed);
+  check(reply['ephx'] == base64Encode(rEphPub), 'v3 reply ephx');
+  final (ct, k) = pqEncapsulate(kemEk, m: m);
+  check(reply['ct'] == base64Encode(ct), 'the ciphertext is Encaps(ekN; m)');
+  check(eq(pqDecapsulate(n.kemSeed, ct), k), 'which decapsulates to K');
+
+  // Message 3, and the session both sides derive.
+  final (open, sessionI) = await n.open(reply);
+  final sessionR = await pending.accept(open);
+  check(
+      eq(sessionI.channelKey, sessionR.channelKey) &&
+          sessionI.sas == sessionR.sas,
+      'v3 pairing agreement');
+  check(open['sk'] == base64Encode(sk), 'the opening carries sk');
+
+  final dh = await refDh(n.ephXSeed, rEphPub);
+  check(eq(dh, await refDh(rEphSeed, n.ephXPub)), 'one dh from both sides');
+  final ikm = concatBytes([dh, k]);
+  final channelKey =
+      await refHkdf(ikm, pairKey, utf8b('z-pair-channel-v3'), 32);
+  check(eq(channelKey, sessionI.channelKey), 'v3 channel key');
+  final sasSalt = concatBytes([n.ephXPub, rEphPub]);
+  Future<Uint8List> sasInfoFor(Uint8List ctUsed) async => concatBytes([
+        utf8.encode('z-pair-sas-v3'),
+        n.deviceEdPub,
+        n.deviceXPub,
+        sk,
+        utf8.encode(n.deviceId),
+        await refSha256(concatBytes([kemEk, ctUsed])),
+      ]);
+  final sasInfo = await sasInfoFor(ct);
+  final sasOkm = await refHkdf(ikm, sasSalt, sasInfo, 8);
+  final sas = _eightDigits(sasOkm);
+  check(sas == sessionI.sas, 'v3 SAS');
+  // Neither K nor the KEM exchange is decoration. A literal randomness for
+  // the second encapsulation, not a DRBG draw: this is the generator's own
+  // arithmetic rather than a protocol random.
+  check(
+      !eq(await refHkdf(concatBytes([dh, Uint8List(32)]), sasSalt, sasInfo, 8),
+          sasOkm),
+      'the v3 SAS covers K');
+  final otherCt = pqEncapsulate(kemEk, m: Uint8List(32)).$1;
+  check(!eq(await refHkdf(ikm, sasSalt, await sasInfoFor(otherCt), 8), sasOkm),
+      'the v3 SAS covers the ciphertext');
+
+  // What v2 computes from the same ephemerals and device fields.
+  final v2Commit = await refSha256(concatBytes([
+    utf8.encode('z-pair-commit-v2:'),
+    n.ephXPub,
+    n.deviceEdPub,
+    n.deviceXPub,
+    utf8.encode(n.deviceId),
+  ]));
+  final v2Channel =
+      await refHkdf(dh, Uint8List(32), utf8b('z-pair-channel-v2'), 32);
+  final v2Sas = _eightDigits(await refHkdf(
+      dh,
+      sasSalt,
+      concatBytes([
+        utf8.encode('z-pair-sas-v2'),
+        n.deviceEdPub,
+        n.deviceXPub,
+        utf8.encode(n.deviceId),
+      ]),
+      8));
+  check(!eq(v2Commit, commitment) && !eq(v2Channel, channelKey) && v2Sas != sas,
+      'v3 is not v2');
+
+  // The enrolment: §10's members, then pqdc, and never root. pqdc is opaque
+  // to pairing: recorded random bytes of an ML-DSA-65 signature's length
+  // stand in for the root's attestation (ADR 0033 §1).
+  final bobBundle = await AccountBundle.decode(
+      (await a[1].id.bundle(displayName: 'Bob')).encode());
+  final pqdc = d.next(3309);
+  d.takeDraws();
+  final sealed = await d.run(() => sessionR.sealEnrollment(me,
+      contacts: [bobBundle], displayName: 'Alice', pqdc: pqdc));
+  final sDraws = d.takeDraws();
+  check(sDraws.length == 1 && eq(sDraws[0], sealed.sublist(0, 12)),
+      'v3 enrolment nonce');
+  final cert = await sessionR.signedPeerCert(me);
+  check(eq(cert.deviceXPub, n.deviceXPub),
+      'the certificate binds the ratchet key the digits covered');
+  final plaintext = jsonEncode({
+    'acct': base64Encode(me.accountEdPub),
+    'pqpub': base64Encode(me.accountMlPub!),
+    'name': 'Alice',
+    'cert': cert.toJson(),
+    'hostcert': me.deviceCert.toJson(),
+    'contacts': [bobBundle.toJson()],
+    'pqdc': base64Encode(pqdc),
+  });
+  final box = await Chacha20.poly1305Aead().decrypt(
+      SecretBox.fromConcatenation(sealed, nonceLength: 12, macLength: 16),
+      secretKey: SecretKey(channelKey));
+  check(utf8.decode(box) == plaintext, 'v3 enrolment plaintext');
+  final data = await sessionI.openEnrollment(sealed);
+  check(eq(data.pqdc!, pqdc) && data.accountEdSeed == null,
+      'v3 enrolment: pqdc as given, and no root');
+  final installed = await n.installFromData(data);
+  check(eq(installed.deviceEdPub, n.deviceEdPub) && !installed.holdsAccountRoot,
+      'v3 install');
+
+  return {
+    'suite': 'pairing_v3',
+    'version': vectorsVersion,
+    'description':
+        'Device pairing v3 (PROTOCOL 10.2, ADR 0033 3): v2\'s commitment, '
+            'reply and opening, hybrid with ML-KEM-768. pair_key = '
+            'HKDF-SHA256(secret, salt="", info="z-pair-key-v3", 32). The new '
+            'device offers a fresh ML-KEM-768 key ek beside its commitment, '
+            'c = HMAC-SHA256(pair_key, "z-pair-commit-v3:" || eph_n || ded || '
+            'dx || SHA-256(ek) || sk || id), where sk = SHA-256 of the new '
+            'device\'s own sealing key; the existing device answers with its '
+            'ephemeral and (ct, K) = ML-KEM-768.Encaps(ek; m); the opening '
+            'adds sk to v2\'s fields. channel_key = HKDF-SHA256(dh || K, '
+            'salt=pair_key, info="z-pair-channel-v3", 32); the SAS is eight '
+            'digits of HKDF-SHA256(dh || K, salt=eph_n || eph_e, '
+            'info="z-pair-sas-v3" || ded || dx || sk || id || SHA-256(ek || '
+            'ct), 8), from seven bytes as in v2. The mailboxes and the '
+            'rendezvous are derived as v2\'s under "z-pair-relay-v3:" and '
+            '"z-pair-rendezvous-v3:". The enrolment is v2\'s without "root", '
+            'which v3 never carries, and with "pqdc", the root\'s attestation '
+            'of the new device (ADR 0033 1), here 3 309 recorded random bytes '
+            'that pairing carries unread. version_2_of_the_same_inputs is '
+            'what v2 computes from the same ephemerals and device fields; a '
+            'v3 client computes none of it. K, ct and the KEM keys are '
+            're-derived from kem.seed and kem.m by kyber-py.',
+    'pairing_code': {
+      'secret': hex(code.secret),
+      'text': code.text,
+      'rendezvous_input': hex(rvInput),
+      'rendezvous_routing_id': rendezvous,
+    },
+    'pair_key': {'info': hex(pairKeyInfo), 'salt': '', 'key': hex(pairKey)},
+    'relay_identities': relay,
+    'account': {
+      'account_ed_seed': hex(me.accountEdSeed!),
+      'account_ed_pub': hex(me.accountEdPub),
+      'ml_seed': hex(mlSeed),
+      'ml_pub': hex(me.accountMlPub!),
+      'device_x_seed': hex(me.deviceXSeed),
+      'device_id': me.deviceId,
+      'device_cert_json': me.deviceCert.toJson(),
+    },
+    'new_device': {
+      'device_ed_seed': hex(n.deviceEdSeed),
+      'device_x_seed': hex(n.deviceXSeed),
+      'device_ed_pub': hex(n.deviceEdPub),
+      'device_x_pub': hex(n.deviceXPub),
+      'device_id': n.deviceId,
+      'seal_seed': hex(sealSeed),
+      'seal_ek': hex(sealEk),
+      'sk': hex(sk),
+      'eph_seed': hex(n.ephXSeed),
+      'eph_pub': hex(n.ephXPub),
+      'commit_input': hex(commitInput),
+      'commit_frame': {'k': 'commit-v3', ...commitFrame},
+      'open_frame': {'k': 'open-v3', ...open},
+    },
+    'existing_device': {
+      'eph_seed': hex(rEphSeed),
+      'eph_pub': hex(rEphPub),
+      'reply_frame': {'k': 'reply-v3', ...reply},
+    },
+    'kem': {
+      'seed': hex(n.kemSeed),
+      'ek': hex(kemEk),
+      'dk': hex(kemDk),
+      'm': hex(m),
+      'ct': hex(ct),
+      'K': hex(k),
+    },
+    'dh': hex(dh),
+    'channel_key': hex(channelKey),
+    'sas_salt': hex(sasSalt),
+    'sas_info': hex(sasInfo),
+    'sas_okm': hex(sasOkm),
+    'sas': sas,
+    'enrollment': {
+      'new_device_cert_signing_input': hex(DeviceCertificate.signingInput(
+          n.deviceEdPub, n.deviceXPub, n.deviceId)),
+      'new_device_cert_sig': hex(cert.sig),
+      'pqdc': hex(pqdc),
+      'plaintext': plaintext,
+      'nonce': hex(sealed.sublist(0, 12)),
+      'sealed': hex(sealed),
+      'enroll_frame': {'k': 'enroll-v3', 'blob': base64Encode(sealed)},
+    },
+    'version_2_of_the_same_inputs': {
+      'commitment': hex(v2Commit),
+      'channel_key': hex(v2Channel),
+      'sas': v2Sas,
+    },
+  };
+}
+
+/// An invite of version 3 (PROTOCOL §20.9, ADR 0033 §4): the connect
+/// ceremony hybrid with ML-KEM-768. The inviter offers a fresh ML-KEM-768 key
+/// in message 1 beside a keyed commitment covering its hash; the acceptor
+/// encapsulates to it in message 2 under a commitment covering the
+/// ciphertext's hash; K joins the X25519 output in the channel key and in the
+/// digits, which also cover SHA-256(ek || ct); and each reveal adds the
+/// account's ML-DSA key and the device's sealing key. What version 2 computes
+/// from the same inputs is recorded beside each value.
+Future<Map<String, Object?>> suiteConnectV3() async {
+  final d = Drbg(0x0209);
+  final code = ConnectCode(d.next(10), version: 3);
+  final v2 = ConnectCode(code.secret, version: 2);
+  final v1 = ConnectCode(code.secret);
+  check(code.text.startsWith(connectV3Marker), 'the marker leads the text');
+  final fromText = ConnectCode.parseV3(code.text);
+  final fromLink = ConnectCode.fromLinkV3(code.link())!;
+  check(
+      fromText.version == 3 &&
+          eq(fromText.secret, code.secret) &&
+          fromLink.version == 3 &&
+          eq(fromLink.secret, code.secret),
+      'both renderings read back as version 3');
+  var v2ParserRefuses = false;
+  try {
+    ConnectCode.parse(code.text);
+  } on FormatException {
+    v2ParserRefuses = true;
+  }
+  check(v2ParserRefuses && ConnectCode.fromLink(code.link()) == null,
+      'the version-2 reader refuses both renderings');
+
+  // inviteKey3.
+  final keyInfo = utf8b(connectInviteKeyCtxV3);
+  final inviteKey = await refHkdf(code.secret, Uint8List(0), keyInfo, 32);
+  check(eq((await code.inviteKey())!, inviteKey), 'v3 invite key');
+
+  // Both mailboxes and the rendezvous, under version 3's contexts.
+  final mailboxes = <Map<String, Object?>>[];
+  for (final (role, who) in [('i', 'inviter'), ('r', 'acceptor')]) {
+    final info =
+        concatBytes([utf8.encode(connectRelayCtxV3), utf8.encode(role)]);
+    final okm = await refHkdf(code.secret, Uint8List(0), info, 64);
+    final edSeed = Uint8List.fromList(okm.sublist(0, 32));
+    final xSeed = Uint8List.fromList(okm.sublist(32, 64));
+    final edPub = await refEdPub(edSeed);
+    final routingId =
+        base64Url.encode(await refSha256(edPub)).replaceAll('=', '');
+    final id = await mailboxIdentity(code, role);
+    check(eq(id.edPub, edPub), '$who v3 mailbox');
+    check(await id.routingId() == routingId, '$who v3 mailbox routing id');
+    mailboxes.add({
+      'role': role,
+      'who': who,
+      'info': hex(info),
+      'okm': hex(okm),
+      'ed_seed': hex(edSeed),
+      'x_seed': hex(xSeed),
+      'ed_pub': hex(edPub),
+      'x_pub': hex(await refXPub(xSeed)),
+      'routing_id': routingId,
+    });
+  }
+  final rvInput =
+      concatBytes([utf8.encode('z-connect-rendezvous-v3:'), code.secret]);
+  final rendezvous =
+      base64Url.encode(await refSha256(rvInput)).replaceAll('=', '');
+  check(await code.rendezvousRoutingId() == rendezvous, 'v3 rendezvous');
+
+  // Two v3 identities, each with its account's ML-DSA key and its device's
+  // sealing key; the inviter's code carries sk, the acceptor's does not.
+  final ids = <ConnectIdentity>[];
+  final mlPubs = <Uint8List>[];
+  final sealEks = <Uint8List>[];
+  final raw = <Map<String, Object?>>[];
+  for (final (name, tag, withSk) in [
+    ('Ivy', 'inviter', true),
+    ('Rob', 'acceptor', false)
+  ]) {
+    final edSeed = d.next(32);
+    final xSeed = d.next(32);
+    final mlSeed = d.next(32);
+    final sealSeed = d.next(64);
+    final zid = await ZIdentity.fromSeeds(edSeed: edSeed, xSeed: xSeed);
+    final pq = await HybridKeyPair.fromSeeds(edSeed: edSeed, mlSeed: mlSeed);
+    final (sealEk, _) = pqKeyPairFromSeed(sealSeed);
+    final sk = withSk ? await refSha256(sealEk) : null;
+    final bundle = await ContactBundleV3.forIdentity(zid, pq.publicKey,
+        displayName: name, sealKeyCommit: sk);
+    final ci =
+        await ConnectIdentity.fromCode(bundle.encode(), displayName: name);
+    check(withSk == (ci.sealKeyCommit != null), '$tag: sk as made');
+    ids.add(ci);
+    mlPubs.add(pq.publicKey.mlPub);
+    sealEks.add(sealEk);
+    raw.add({
+      'role': tag,
+      'display_name': name,
+      'ed_seed': hex(edSeed),
+      'x_seed': hex(xSeed),
+      'ml_seed': hex(mlSeed),
+      'ml_pub': hex(pq.publicKey.mlPub),
+      'seal_seed': hex(sealSeed),
+      'seal_ek': hex(sealEk),
+      'sk': sk == null ? null : hex(sk),
+      'account_ed_pub': hex(ci.accountEdPub),
+      'pq_commit': hex(ci.pqCommit),
+      'contact_code': ci.contactCode,
+    });
+  }
+  final ivy = ids[0], rob = ids[1];
+
+  // The four messages, as a client of this version sends them: the group
+  // bit written, 0, in both reveals (ADR 0020).
+  d.takeDraws();
+  final inviter = await d.run(() => ConnectInviterV3.create(
+      me: ivy, sealKey: sealEks[0], pqKey: mlPubs[0], code: code, group: false));
+  final iDraws = d.takeDraws();
+  check(iDraws.length == 2 && eq(iDraws[1], inviter.kemSeed),
+      'v3 inviter draws: ephemeral, KEM seed');
+  final iEphSeed = iDraws[0];
+  final iEphPub = await refXPub(iEphSeed);
+  check(eq(iEphPub, inviter.ephPub), 'v3 inviter ephemeral');
+  final (kemEk, kemDk) = pqKeyPairFromSeed(inviter.kemSeed);
+  check(eq(kemEk, inviter.kemEk), 'the offered key is the one its seed makes');
+  final commitFrame = await inviter.commit();
+  final (reply, acceptor) = await d.run(() => ConnectAcceptorV3.reply(
+      commitFrame,
+      me: rob,
+      code: code,
+      sealKey: sealEks[1],
+      pqKey: mlPubs[1],
+      groupAware: true));
+  final rDraws = d.takeDraws();
+  check(rDraws.length == 2, 'v3 acceptor draws: ephemeral, Encaps randomness');
+  final rEphSeed = rDraws[0], m = rDraws[1];
+  final rEphPub = await refXPub(rEphSeed);
+  final (ct, k) = pqEncapsulate(kemEk, m: m);
+  check(reply['ct'] == base64Encode(ct), 'the ciphertext is Encaps(ek; m)');
+  check(eq(pqDecapsulate(inviter.kemSeed, ct), k), 'which decapsulates to K');
+  final open = await d.run(() => inviter.open(reply));
+  final openNonce = d.takeDraws().single;
+  final (reveal, sessionR) = await d.run(() => acceptor.accept(open));
+  final revealNonce = d.takeDraws().single;
+  final sessionI = await inviter.complete(reveal);
+  check(sessionI.sas == sessionR.sas, 'v3 agreement');
+
+  // The commitments: HMAC-SHA256 under inviteKey3, over the ephemeral,
+  // SHA-256 of the side's KEM value, then version 2's tail.
+  Future<Uint8List> committed(
+      Uint8List eph, Uint8List kemValue, ConnectIdentity id) async {
+    final c = utf8.encode(id.contactCode);
+    return concatBytes([
+      eph,
+      await refSha256(kemValue),
+      [(c.length >> 8) & 0xff, c.length & 0xff],
+      c,
+      utf8.encode(id.displayName ?? ''),
+    ]);
+  }
+
+  final commitInputI = concatBytes([
+    utf8.encode('z-connect-commit-v3:'),
+    await committed(iEphPub, kemEk, ivy)
+  ]);
+  final commitInputR = concatBytes([
+    utf8.encode('z-connect-commit-v3:'),
+    await committed(rEphPub, ct, rob)
+  ]);
+  final commitI = await refHmac(inviteKey, commitInputI);
+  final commitR = await refHmac(inviteKey, commitInputR);
+  check(base64Encode(commitI) == commitFrame['c'], 'v3 inviter commitment');
+  check(base64Encode(commitR) == reply['c'], 'v3 acceptor commitment');
+
+  // The channel key: the X25519 output and K, salted with inviteKey3.
+  final dh = await refDh(iEphSeed, rEphPub);
+  final ikm = concatBytes([dh, k]);
+  final channelKey =
+      await refHkdf(ikm, inviteKey, utf8b('z-connect-channel-v3'), 32);
+  check(eq(sessionI.channelKey, channelKey), 'v3 channel key');
+  final aead = Chacha20.poly1305Aead();
+  Future<String> sealed(String plain, Uint8List nonce) async => base64Encode(
+      (await aead.encrypt(utf8.encode(plain),
+              secretKey: SecretKey(channelKey), nonce: nonce))
+          .concatenation());
+  final openPlain = jsonEncode({
+    'code': ivy.contactCode,
+    'name': 'Ivy',
+    connectGroupMember: 0,
+    connectPqKeyMember: base64Encode(mlPubs[0]),
+    connectSealKeyMember: base64Encode(sealEks[0]),
+  });
+  final revealPlain = jsonEncode({
+    'code': rob.contactCode,
+    'name': 'Rob',
+    connectGroupMember: 0,
+    connectPqKeyMember: base64Encode(mlPubs[1]),
+    connectSealKeyMember: base64Encode(sealEks[1]),
+  });
+  check(await sealed(openPlain, openNonce) == open['blob'], 'v3 message 3');
+  check(await sealed(revealPlain, revealNonce) == reveal['blob'],
+      'v3 message 4');
+  check(eq(sessionI.peerSealKey, sealEks[1]) && eq(sessionR.peerSealKey, sealEks[0]),
+      'each side holds the other\'s sealing key');
+
+  // The digits, under their own context, with the KEM exchange in the info.
+  final aFirst = hex(ivy.accountEdPub).compareTo(hex(rob.accountEdPub)) < 0;
+  final lo = aFirst ? ivy : rob, hi = aFirst ? rob : ivy;
+  final sasSalt =
+      concatBytes([aFirst ? iEphPub : rEphPub, aFirst ? rEphPub : iEphPub]);
+  Uint8List identities(String ctx) => concatBytes([
+        utf8.encode(ctx),
+        lo.accountEdPub,
+        lo.pqCommit,
+        hi.accountEdPub,
+        hi.pqCommit,
+      ]);
+  final kemTranscript = await refSha256(concatBytes([kemEk, ct]));
+  final sasInfo =
+      concatBytes([identities('z-connect-sas-v3'), kemTranscript]);
+  final sasOkm = await refHkdf(ikm, sasSalt, sasInfo, 8);
+  check(_eightDigits(sasOkm) == sessionI.sas, 'v3 SAS');
+  check(
+      !eq(await refHkdf(concatBytes([dh, Uint8List(32)]), sasSalt, sasInfo, 8),
+          sasOkm),
+      'the v3 digits cover K');
+  final tag = await sessionI.goAheadTag();
+  check(
+      eq(tag,
+          await refHkdf(channelKey, Uint8List(32), utf8b(connectGoAheadLabel), 16)),
+      'the go-ahead tag, from the hybrid channel key');
+  check(eq(tag, await sessionR.goAheadTag()), 'one tag at both ends');
+
+  // What version 2 computes from the very same inputs — none of it is used.
+  final v2Key = await refHkdf(
+      code.secret, Uint8List(0), utf8b(connectInviteKeyCtx), 32);
+  final c0 = utf8.encode(ivy.contactCode);
+  final v2Commit = await refHmac(
+      v2Key,
+      concatBytes([
+        utf8.encode('z-connect-commit-v2:'),
+        iEphPub,
+        [(c0.length >> 8) & 0xff, c0.length & 0xff],
+        c0,
+        utf8.encode('Ivy'),
+      ]));
+  final v2Channel =
+      await refHkdf(dh, v2Key, utf8b('z-connect-channel-v2'), 32);
+  final v2Sas = _eightDigits(
+      await refHkdf(dh, sasSalt, identities('z-connect-sas-v2'), 8));
+  final v2Mailboxes = [
+    for (final role in ['i', 'r'])
+      await (await mailboxIdentity(v2, role)).routingId()
+  ];
+  final v1Mailboxes = [
+    for (final role in ['i', 'r'])
+      await (await mailboxIdentity(v1, role)).routingId()
+  ];
+  final older = {
+    ...v2Mailboxes,
+    ...v1Mailboxes,
+    await v2.rendezvousRoutingId(),
+    await v1.rendezvousRoutingId(),
+  };
+  check(older.length == 6, 'six older mailboxes and rendezvous');
+  for (final mb in mailboxes) {
+    check(!older.contains(mb['routing_id']), 'v3 mailbox ${mb['role']} is new');
+  }
+  check(!older.contains(rendezvous), 'v3 rendezvous is new');
+  check(
+      !eq(v2Key, inviteKey) &&
+          !eq(v2Commit, commitI) &&
+          !eq(v2Channel, channelKey) &&
+          v2Sas != sessionI.sas,
+      'v3 is not v2');
+
+  final frames = {
+    'commit': {'k': 'x1', ...commitFrame},
+    'reply': {'k': 'x2', ...reply},
+    'open': {'k': 'x3', ...open},
+    'reveal': {'k': 'x4', ...reveal},
+  };
+  return {
+    'suite': 'connect_invite_v3',
+    'version': vectorsVersion,
+    'description':
+        'An invite of version 3 (PROTOCOL 20.9, ADR 0033 4): the connect '
+            'ceremony hybrid with ML-KEM-768. Both renderings start with the '
+            'marker "8", which neither base32 nor version 2 reads, so every '
+            'older parser refuses the invite. invite_key = HKDF-SHA256(secret, '
+            'salt="", info="z-connect-invite-v3", 32). Message 1 adds ek, the '
+            'inviter\'s fresh ML-KEM-768 key; message 2 adds ct, where (ct, K) '
+            '= ML-KEM-768.Encaps(ek; m), by the acceptor. Each commitment is '
+            'HMAC-SHA256(invite_key, "z-connect-commit-v3:" || eph || '
+            'SHA-256(kem) || u16be(len(code)) || code || name), kem being ek '
+            'for the inviter and ct for the acceptor. The channel key is '
+            'HKDF-SHA256(dh || K, salt=invite_key, info="z-connect-channel-v3", '
+            '32); the digits are computed as in connect.json from dh || K, '
+            'with info "z-connect-sas-v3" || lo... || hi... || SHA-256(ek || '
+            'ct); the mailboxes and the rendezvous id as in mailboxes.json and '
+            'connect.json under "z-connect-relay-v3:" and '
+            '"z-connect-rendezvous-v3:". Each reveal adds "pqk", the account\'s '
+            'ML-DSA-65 key, which its code commits to, and "pqseal", the '
+            'device\'s ML-KEM-768 sealing key, whose hash a code carrying "sk" '
+            'names. The frames are unpadded, and frame_lengths gives each '
+            'payload as the relay carries it. version_2_of_the_same_inputs '
+            'records what version 2 computes from the same secret, ephemerals '
+            'and identities; a client of version 3 computes none of it. The '
+            'go-ahead tag is derived from the channel key exactly as '
+            'group.json shows. K, ct and the KEM keys are re-derived from '
+            'kem.seed and kem.m by kyber-py.',
+    'connect_code': {
+      'secret': hex(code.secret),
+      'version': 3,
+      'text': code.text,
+      'link': code.link(),
+      'marker': connectV3Marker,
+      'text_as_version_2': v2.text,
+      'text_as_version_1': v1.text,
+      'rendezvous_input': hex(rvInput),
+      'rendezvous_routing_id': rendezvous,
+    },
+    'invite_key': {'info': hex(keyInfo), 'salt': '', 'key': hex(inviteKey)},
+    'mailboxes': mailboxes,
+    'parties': raw,
+    'inviter_ephemeral': {'seed': hex(iEphSeed), 'pub': hex(iEphPub)},
+    'acceptor_ephemeral': {'seed': hex(rEphSeed), 'pub': hex(rEphPub)},
+    'kem': {
+      'seed': hex(inviter.kemSeed),
+      'ek': hex(kemEk),
+      'dk': hex(kemDk),
+      'm': hex(m),
+      'ct': hex(ct),
+      'K': hex(k),
+    },
+    'commitments': {
+      'inviter_input': hex(commitInputI),
+      'inviter': hex(commitI),
+      'acceptor_input': hex(commitInputR),
+      'acceptor': hex(commitR),
+    },
+    'reveals': {
+      'open_plaintext': openPlain,
+      'open_nonce': hex(openNonce),
+      'reveal_plaintext': revealPlain,
+      'reveal_nonce': hex(revealNonce),
+    },
+    'frames': frames,
+    'frame_lengths': {
+      for (final e in frames.entries) e.key: jsonEncode(e.value).length
+    },
+    'dh': hex(dh),
+    'channel_key': hex(channelKey),
+    'sas_salt': hex(sasSalt),
+    'sas_info': hex(sasInfo),
+    'sas_okm': hex(sasOkm),
+    'sas': sessionI.sas,
+    'canonical_order':
+        aFirst ? ['inviter', 'acceptor'] : ['acceptor', 'inviter'],
+    'go_ahead_tag': hex(tag),
+    'version_2_of_the_same_inputs': {
+      'text': v2.text,
+      'invite_key': hex(v2Key),
+      'mailbox_i': v2Mailboxes[0],
+      'mailbox_r': v2Mailboxes[1],
+      'rendezvous_routing_id': await v2.rendezvousRoutingId(),
+      'inviter_commitment': hex(v2Commit),
+      'channel_key': hex(v2Channel),
+      'sas': v2Sas,
     },
   };
 }

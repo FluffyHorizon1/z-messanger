@@ -279,3 +279,77 @@ if __name__ == "__main__":
           f"recipient derives for a swapped ciphertext, for a zs1. body read "
           f"as zs2. and under another device's sealing key, reproduced by "
           f"kyber-py")
+
+
+def check_pair_connect_v3():
+    """44.1, ADR 0033 §3 and §4 (docs/vectors/pair-v3/pairing_v3.json and
+    docs/vectors/connect/invite_v3.json): each ceremony's fresh ML-KEM-768
+    key from its recorded seed, the encapsulation (K, ct) = Encaps_internal(ek,
+    m) from its recorded randomness and Decaps back to K, the same ek and ct
+    in the first two frames, and every device's sealing key from its seed with
+    sk = SHA-256(ek) where a code or an opening carries it. The rest of each
+    file is replayed by server/test/vectors.test.js."""
+    import base64
+    import hashlib
+
+    vec = os.path.join(ROOT, "docs", "vectors")
+    pair = json.load(open(os.path.join(vec, "pair-v3", "pairing_v3.json")))
+    assert pair["suite"] == "pairing_v3"
+    conn = json.load(open(os.path.join(vec, "connect", "invite_v3.json")))
+    assert conn["suite"] == "connect_invite_v3"
+    n = 0
+    for name, doc, first, second in (
+            ("pairing v3", pair, pair["new_device"]["commit_frame"],
+             pair["existing_device"]["reply_frame"]),
+            ("connect v3", conn, conn["frames"]["commit"],
+             conn["frames"]["reply"])):
+        kem = doc["kem"]
+        seed = unhex(kem["seed"])
+        ek, dk = ML_KEM_768._keygen_internal(seed[:32], seed[32:])
+        if ek.hex() != kem["ek"]:
+            fail(f"{name}: ek from its seed")
+        if dk.hex() != kem["dk"]:
+            fail(f"{name}: dk from its seed")
+        K, c = ML_KEM_768._encaps_internal(ek, unhex(kem["m"]))
+        if c.hex() != kem["ct"]:
+            fail(f"{name}: ct = Encaps(ek; m)")
+        if K.hex() != kem["K"]:
+            fail(f"{name}: K = Encaps(ek; m)")
+        if ML_KEM_768.decaps(dk, c) != K:
+            fail(f"{name}: Decaps(dk, ct) = K")
+        if base64.b64decode(first["ek"]) != ek:
+            fail(f"{name}: the first frame offers ek")
+        if base64.b64decode(second["ct"]) != c:
+            fail(f"{name}: the second frame carries ct")
+        n += 1
+
+    nd = pair["new_device"]
+    seals = [("pairing v3 new device", nd["seal_seed"], nd["seal_ek"],
+              nd["sk"])]
+    seals += [(f"connect v3 {p['role']}", p["seal_seed"], p["seal_ek"],
+               p["sk"]) for p in conn["parties"]]
+    for who, seed_hex, ek_hex, sk_hex in seals:
+        seed = unhex(seed_hex)
+        ek, _ = ML_KEM_768._keygen_internal(seed[:32], seed[32:])
+        if ek.hex() != ek_hex:
+            fail(f"{who}: the sealing key from its seed")
+        if sk_hex is not None and hashlib.sha256(ek).hexdigest() != sk_hex:
+            fail(f"{who}: sk = SHA-256(ek)")
+        n += 1
+    # The pairing opening carries sk; each connect reveal carries its
+    # device's sealing key as pqseal.
+    if base64.b64decode(nd["open_frame"]["sk"]).hex() != nd["sk"]:
+        fail("pairing v3: the opening's sk")
+    for plain, p in ((conn["reveals"]["open_plaintext"], conn["parties"][0]),
+                     (conn["reveals"]["reveal_plaintext"],
+                      conn["parties"][1])):
+        if base64.b64decode(json.loads(plain)["pqseal"]).hex() != p["seal_ek"]:
+            fail(f"connect v3 {p['role']}: the reveal's pqseal")
+    return n
+
+
+if __name__ == "__main__":
+    p = check_pair_connect_v3()
+    print(f"ok: {p} pairing v3 and CONNECT v3 KEM values (each ceremony's "
+          f"key, encapsulation and decapsulation, and every sealing key with "
+          f"its sk) reproduced by kyber-py")

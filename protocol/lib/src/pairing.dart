@@ -4,7 +4,10 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 
 import 'identity.dart';
+import 'intro_key.dart' show mlKemEncapsulationKeyValid, sealKeyHash;
 import 'multidevice.dart';
+import 'pq.dart'
+    show pqCtLength, pqDecapsulate, pqEkLength, pqEncapsulate, pqGenerate;
 import 'util.dart';
 
 /// Relay-mediated device pairing — cryptographic core (M3).
@@ -34,6 +37,16 @@ const String _rendezvousCtxV2 = 'z-pair-rendezvous-v2:';
 const String _channelCtxV2 = 'z-pair-channel-v2';
 const String _sasCtxV2 = 'z-pair-sas-v2';
 const String _commitCtxV2 = 'z-pair-commit-v2:';
+
+// v3 (§10.2, ADR 0033 §3): the channel and the digits are hybrid with
+// ML-KEM-768, and the code is bound into the keys. Every context is new
+// again, so v3 shares no mailbox, no key and no string with v2 or v1 for one
+// code.
+const String _rendezvousCtxV3 = 'z-pair-rendezvous-v3:';
+const String _pairKeyCtxV3 = 'z-pair-key-v3';
+const String _commitCtxV3 = 'z-pair-commit-v3:';
+const String _channelCtxV3 = 'z-pair-channel-v3';
+const String _sasCtxV3 = 'z-pair-sas-v3';
 
 final _x = X25519();
 final _aead = Chacha20.poly1305Aead();
@@ -88,6 +101,29 @@ class PairingCode {
   /// code, so a v2 device and a v1 device never meet at all.
   Future<String> rendezvousRoutingIdV2() async => b64url(await sha256Bytes(
       concatBytes([utf8.encode(_rendezvousCtxV2), secret])));
+
+  /// The same for a v3 ceremony (§10.2): a third mailbox from the same code,
+  /// so a v3 device meets neither a v2 one nor a v1 one there.
+  Future<String> rendezvousRoutingIdV3() async => b64url(await sha256Bytes(
+      concatBytes([utf8.encode(_rendezvousCtxV3), secret])));
+
+  Future<Uint8List>? _pairKey;
+
+  /// `pairKey` (§10.2): HKDF-SHA256 of the code, an empty salt and
+  /// `z-pair-key-v3`, 32 bytes. Pairing v3 keys its commitment with it and
+  /// salts its channel key with it, as §20.8 binds an invite's secret into
+  /// that ceremony, so a relay that does not hold the code can make no frame
+  /// either side will take. Defence in depth only: eighty bits, with the
+  /// mailboxes' routing ids an oracle for a guess, are no long-term secret.
+  /// v1 and v2 derive nothing from it.
+  Future<Uint8List> pairKey() => _pairKey ??= () async {
+        final k = await Hkdf(hmac: Hmac.sha256(), outputLength: 32).deriveKey(
+          secretKey: SecretKey(secret),
+          nonce: Uint8List(0),
+          info: utf8.encode(_pairKeyCtxV3),
+        );
+        return Uint8List.fromList(await k.extractBytes());
+      }();
 }
 
 /// What the new device ends up installing.
@@ -127,6 +163,13 @@ class EnrollmentData {
   /// (§8.1). Null from a host that predates it.
   final ContactBundle? hostBundle;
 
+  /// §10.2, `enroll-v3`: the new device's attestation, ADR 0033 §1's `pqdc`
+  /// — the account's ML-DSA-65 signature over the account key, this
+  /// device's two keys and the hash of its sealing key — as the root sealed
+  /// it. Carried here as bytes, unread: whoever installs the enrolment checks
+  /// it. Null from a v1 or v2 enrolment, and from a host that sent none.
+  final Uint8List? pqdc;
+
   EnrollmentData({
     required this.accountEdPub,
     required this.accountEdSeed,
@@ -137,6 +180,7 @@ class EnrollmentData {
     required this.hostDeviceCert,
     this.contactState,
     this.hostBundle,
+    this.pqdc,
   });
 }
 
@@ -293,6 +337,17 @@ class PairingAbort implements Exception {
   const PairingAbort(this.message);
   @override
   String toString() => 'PairingAbort: $message';
+}
+
+/// A v3 existing device heard the new device speak an older ceremony
+/// (§10.2): [version] is the one it spoke, 1 or 2. Recognised so that the app
+/// can say which device to update; never answered, because detecting an old
+/// peer must not turn into completing the old ceremony.
+class PairingPeerOutdated extends PairingAbort {
+  final int version;
+  const PairingPeerOutdated(this.version)
+      : super('the other device is running an older version of Z: update '
+            'it, then pair again');
 }
 
 /// A rendezvous frame's fixed-width field: a string that decodes to exactly
@@ -653,4 +708,428 @@ bool _eq(Uint8List a, Uint8List b) {
     if (a[i] != b[i]) return false;
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Pairing v3 (§10.2, ADR 0033 §3): v2's four frames, hybrid with ML-KEM-768.
+//
+// v2's channel key and digits come from two X25519 ephemerals, so a recording
+// of the rendezvous yields the account's contacts to whoever later breaks
+// X25519 — and one who breaks it live passes the ephemerals through, swaps
+// whatever else it likes, and reads the enrolment. In v3 the new device offers
+// a fresh ML-KEM-768 key beside its commitment, the existing device
+// encapsulates to it in its reply, and the KEM secret K joins the X25519
+// output in both the channel key and the digits.
+//
+// Who does what is the point. The side that commits offers the KEM key, and
+// the other encapsulates: each side's contribution is fixed before it sees
+// what it would need in order to aim the digits — the new device's by its
+// commitment, which covers SHA-256 of the key it offers, and the existing
+// device's because it encapsulates before the opening. Were the existing
+// device to offer the key, whoever speaks for the new one would choose its
+// encapsulation after seeing everything, and grind encapsulations until the
+// eight digits came out at a value already read aloud.
+//
+// Nothing in the app runs this before 44.4: v2 above is what it pairs with.
+// ---------------------------------------------------------------------------
+
+/// X25519 for v3, refusing an all-zero output (RFC 7748 §6.1), as §20.3
+/// requires of the connect ceremony. A peer ephemeral of small order makes the
+/// output zeros whatever this side's key is; an honest ephemeral never is
+/// one, so the refusal costs an honest ceremony nothing, and each side checks
+/// the value it computes. v1 and v2 are left as they are.
+Future<Uint8List> _dhV3(Uint8List seed, Uint8List remotePub) async {
+  final out = await _dh(seed, remotePub);
+  var any = 0;
+  for (final b in out) {
+    any |= b;
+  }
+  if (any == 0) {
+    throw const PairingAbort(
+        "the other device's ephemeral key is a point of small order");
+  }
+  return out;
+}
+
+/// `sk = SHA-256(sealEk)` (ADR 0033 §3, addendum A1), under a name the
+/// initiator's own `sealKeyHash` field does not hide.
+Uint8List _skOf(List<int> sealEk) => sealKeyHash(sealEk);
+
+/// The KEM key a v3 commit frame offers: [pqEkLength] bytes that pass FIPS
+/// 203 §7.2's input check (`mlKemEncapsulationKeyValid`), or the ceremony
+/// aborts before anything is encapsulated to it.
+Uint8List _kemKeyField(Map<String, Object?> frame) {
+  final ek = _fixed(frame, 'ek', pqEkLength);
+  if (!mlKemEncapsulationKeyValid(ek)) {
+    throw const PairingAbort('malformed frame: ek');
+  }
+  return ek;
+}
+
+/// The v3 commitment: HMAC-SHA256 under `pairKey` over the context and then
+/// everything the existing device will act on — the ephemeral the digits
+/// come from, the two keys it certifies, SHA-256 of the KEM key offered beside
+/// the commitment, `sk` — and the device id, variable-length and therefore
+/// last. Every field before it is exactly 32 bytes, which every frame is
+/// checked for before anything is hashed (§10.1 rule 6 stands).
+Future<Uint8List> _commitmentV3(
+    Uint8List pairKey,
+    Uint8List ephXPub,
+    Uint8List deviceEdPub,
+    Uint8List deviceXPub,
+    Uint8List kemEk,
+    Uint8List sk,
+    String deviceId) async {
+  final mac = await Hmac.sha256().calculateMac(
+      concatBytes([
+        utf8.encode(_commitCtxV3),
+        ephXPub,
+        deviceEdPub,
+        deviceXPub,
+        await sha256Bytes(kemEk),
+        sk,
+        utf8.encode(deviceId),
+      ]),
+      secretKey: SecretKey(pairKey));
+  return Uint8List.fromList(mac.bytes);
+}
+
+/// `channelKey = HKDF(dh || K, pairKey, "z-pair-channel-v3", 32)`: neither
+/// the X25519 output alone, nor K alone, nor either without the code.
+Future<Uint8List> _deriveChannelKeyV3(Uint8List ikm, Uint8List pairKey) async {
+  final k = await Hkdf(hmac: Hmac.sha256(), outputLength: 32).deriveKey(
+    secretKey: SecretKey(ikm),
+    nonce: pairKey,
+    info: utf8.encode(_channelCtxV3),
+  );
+  return Uint8List.fromList(await k.extractBytes());
+}
+
+/// The v3 digits: eight, from seven bytes, as v2's, over `dh || K`, salted
+/// with the two ephemerals in role order, with everything the commitment
+/// fixed and SHA-256 of the KEM key and ciphertext in the info. `id` is the
+/// one variable-length field and is not last, which is still unambiguous:
+/// every other field has a fixed width.
+///
+/// The digits cover K. Without it, someone who breaks X25519 while the
+/// ceremony runs could pass both ephemerals through, swap only the KEM, read
+/// the enrolment under both channel keys, and leave both screens agreeing.
+Future<String> _deriveSasV3(
+    Uint8List ikm,
+    Uint8List ephN,
+    Uint8List ephE,
+    Uint8List deviceEdPub,
+    Uint8List deviceXPub,
+    Uint8List sk,
+    String deviceId,
+    Uint8List kemEk,
+    Uint8List ct) async {
+  final k = await Hkdf(hmac: Hmac.sha256(), outputLength: 8).deriveKey(
+    secretKey: SecretKey(ikm),
+    nonce: concatBytes([ephN, ephE]),
+    info: concatBytes([
+      utf8.encode(_sasCtxV3),
+      deviceEdPub,
+      deviceXPub,
+      sk,
+      utf8.encode(deviceId),
+      await sha256Bytes(concatBytes([kemEk, ct])),
+    ]),
+  );
+  final b = await k.extractBytes();
+  var n = 0;
+  for (var i = 0; i < 7; i++) {
+    n = (n << 8) | b[i];
+  }
+  final digits = (n % 100000000).toString().padLeft(8, '0');
+  return '${digits.substring(0, 4)} ${digits.substring(4)}';
+}
+
+/// A completed v3 handshake: the channel key and the digits both sides
+/// derive, and on the existing side what the new device opened — its keys,
+/// its id and `sk` — for the certificate and the attestation the root signs.
+///
+/// Its enrolment is §10's with one member more, `pqdc`, and one never:
+/// `root`. There is no way to put the account root in it, and [openEnrollment]
+/// refuses an enrolment that carries one — if the root ever travels, the
+/// ML-DSA seed must travel with it, and nothing here carries that.
+class PairingSessionV3 {
+  final Uint8List channelKey;
+  final String sas;
+  final Uint8List? peerDeviceEdPub; // set on the existing (responder) side
+  final Uint8List? peerDeviceXPub;
+  final String? peerDeviceId;
+
+  /// `sk`, SHA-256 of the new device's sealing key (ADR 0033 §1), as the
+  /// opening carried it: covered by the commitment and by the digits, and
+  /// what the root's `pqdc` for the new device signs over.
+  final Uint8List? peerSealKeyHash;
+
+  // The AEAD and the certificate are v2's, unchanged; only how the channel
+  // was agreed, and two members of what it carries, differ.
+  final PairingSession _s;
+
+  PairingSessionV3({
+    required this.channelKey,
+    required this.sas,
+    this.peerDeviceEdPub,
+    this.peerDeviceXPub,
+    this.peerDeviceId,
+    this.peerSealKeyHash,
+  }) : _s = PairingSession(
+            channelKey: channelKey,
+            sas: sas,
+            peerDeviceEdPub: peerDeviceEdPub,
+            peerDeviceXPub: peerDeviceXPub,
+            peerDeviceId: peerDeviceId);
+
+  /// The certificate this (existing) device signs for the new one.
+  Future<DeviceCertificate> signedPeerCert(AccountIdentity me) =>
+      _s.signedPeerCert(me);
+
+  /// EXISTING device: sign the new device's certificate and seal `enroll-v3`.
+  ///
+  /// The members are §10's in §10's order — without `root`, which v3 never
+  /// carries — and then [pqdc], the root's attestation of the new device
+  /// (ADR 0033 §1), as opaque bytes, when given.
+  Future<Uint8List> sealEnrollment(
+    AccountIdentity me, {
+    required List<AccountBundle> contacts,
+    String? displayName,
+    List<Map<String, Object?>>? contactState,
+    ContactBundle? hostBundle,
+    Uint8List? pqdc,
+  }) async {
+    final cert = await signedPeerCert(me);
+    final payload = <String, Object?>{
+      'acct': b64(me.accountEdPub),
+      if (me.accountMlPub != null) 'pqpub': b64(me.accountMlPub!),
+      'name': displayName,
+      'cert': cert.toJson(),
+      'hostcert': me.deviceCert.toJson(),
+      'contacts': [for (final c in contacts) c.toJson()],
+      if (contactState != null) 'cstate': contactState,
+      if (hostBundle != null) 'hostbundle': hostBundle.toJson(),
+      if (pqdc != null) 'pqdc': b64(pqdc),
+    };
+    return _s._seal(Uint8List.fromList(utf8.encode(jsonEncode(payload))));
+  }
+
+  /// NEW device: open `enroll-v3`. As [PairingSession.openEnrollment], with
+  /// `pqdc` read as bytes — leniently, like the other optional members: one
+  /// that is not a base64 string is left out — and an enrolment carrying
+  /// the account root refused outright.
+  Future<EnrollmentData> openEnrollment(Uint8List sealed) async {
+    final j = jsonDecode(utf8.decode(await _s._open(sealed)))
+        as Map<String, Object?>;
+    if (j['root'] != null) {
+      throw const FormatException(
+          'a v3 enrolment never carries the account root');
+    }
+    final pqdc = j['pqdc'];
+    Uint8List? attestation;
+    if (pqdc is String) {
+      try {
+        attestation = unb64(pqdc);
+      } on FormatException {
+        attestation = null;
+      }
+    }
+    return EnrollmentData(
+      accountEdPub: unb64(j['acct'] as String),
+      accountEdSeed: null,
+      accountMlPub: j['pqpub'] == null ? null : unb64(j['pqpub'] as String),
+      displayName: j['name'] as String?,
+      deviceCert:
+          DeviceCertificate.fromJson((j['cert'] as Map).cast<String, Object?>()),
+      hostDeviceCert: DeviceCertificate.fromJson(
+          (j['hostcert'] as Map).cast<String, Object?>()),
+      contacts: [
+        for (final c in (j['contacts'] as List))
+          AccountBundle.fromJson((c as Map).cast<String, Object?>())
+      ],
+      contactState: PairingSession._contactState(j['cstate']),
+      hostBundle: PairingSession._hostBundle(j['hostbundle']),
+      pqdc: attestation,
+    );
+  }
+}
+
+/// NEW device, v3 (§10.2): commit and offer a KEM key, then open.
+///
+/// [sealKeyHash] is `sk`, SHA-256 of this device's sealing key (ADR 0033 §1):
+/// [create] takes the key itself and keeps only its hash, which the
+/// commitment, the opening and the digits all carry, and which the root's
+/// `pqdc` for this device signs over.
+class PairingInitiatorV3 {
+  final PairingCode code;
+  final Uint8List deviceEdSeed, deviceXSeed, deviceEdPub, deviceXPub;
+  final String deviceId;
+  final Uint8List ephXSeed, ephXPub;
+
+  /// The ceremony's own ML-KEM-768 pair: the 64-byte seed `d || z` it is
+  /// generated from, and the encapsulation key the commit frame offers.
+  /// Fresh for every ceremony, and used for one decapsulation.
+  final Uint8List kemSeed, kemEk;
+
+  /// `sk` (§10.2).
+  final Uint8List sealKeyHash;
+
+  bool _opened = false;
+
+  PairingInitiatorV3._(
+      this.code,
+      this.deviceEdSeed,
+      this.deviceXSeed,
+      this.deviceEdPub,
+      this.deviceXPub,
+      this.deviceId,
+      this.ephXSeed,
+      this.ephXPub,
+      this.kemSeed,
+      this.kemEk,
+      this.sealKeyHash);
+
+  /// [sealKey] is this device's ML-KEM-768 sealing key (ADR 0033 §1), the
+  /// encapsulation key's bytes; refused unless it passes FIPS 203 §7.2's
+  /// check, since the account would attest its hash.
+  static Future<PairingInitiatorV3> create(
+      {required List<int> sealKey, PairingCode? code, String? deviceId}) async {
+    if (!mlKemEncapsulationKeyValid(sealKey)) {
+      throw ArgumentError.value(sealKey.length, 'sealKey',
+          'not an ML-KEM-768 encapsulation key');
+    }
+    final edSeed = randomBytes(32);
+    final xSeed = randomBytes(32);
+    final ephSeed = randomBytes(32);
+    final (kemSeed, kemEk) = pqGenerate();
+    final edPub =
+        Uint8List.fromList((await (await Ed25519().newKeyPairFromSeed(edSeed))
+                .extractPublicKey())
+            .bytes);
+    final xPub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(xSeed)).extractPublicKey()).bytes);
+    final ephPub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(ephSeed)).extractPublicKey()).bytes);
+    return PairingInitiatorV3._(
+      code ?? PairingCode.generate(),
+      edSeed, xSeed, edPub, xPub,
+      deviceId ?? b64url(randomBytes(9)),
+      ephSeed, ephPub, kemSeed, kemEk,
+      _skOf(sealKey),
+    );
+  }
+
+  /// Message 1: the commitment, and beside it the KEM key it covers. Nothing
+  /// in it can be searched against a target string without the opening.
+  Future<Map<String, Object?>> commit() async => {
+        'c': b64(await _commitmentV3(await code.pairKey(), ephXPub,
+            deviceEdPub, deviceXPub, kemEk, sealKeyHash, deviceId)),
+        'ek': b64(kemEk),
+      };
+
+  /// Message 3, with the session it derives: the opening, sent only once the
+  /// reply — the existing device's ephemeral and its encapsulation — is in
+  /// hand. Once per ceremony: a second call is refused.
+  Future<(Map<String, Object?>, PairingSessionV3)> open(
+      Map<String, Object?> responderReply) async {
+    if (_opened) {
+      throw StateError('a v3 opening is made once: its KEM key is spent');
+    }
+    final theirEph = _fixed(responderReply, 'ephx', 32);
+    final ct = _fixed(responderReply, 'ct', pqCtLength);
+    final dh = await _dhV3(ephXSeed, theirEph);
+    // pqcrypto 0.4.1 does not decapsulate in constant time, and that gates
+    // `zs2.` (44.7, ADR 0033 decision 4) but not this. What separates the two
+    // is how many ciphertexts one key ever meets. `zs2.`'s sealing key lives
+    // as long as the device and decapsulates whatever anyone addresses to its
+    // mailbox, with the relay timing every acknowledgement: the stream of
+    // chosen ciphertexts a KyberSlash-class leak is exploited with. This key
+    // was drawn for this ceremony and decapsulates exactly once — the first
+    // reply's ciphertext; [open] refuses a second — and is dropped with the
+    // ceremony. Whoever chose that ciphertext gets one measurement of a key
+    // that never decapsulates again.
+    _opened = true;
+    final k = pqDecapsulate(kemSeed, ct);
+    final ikm = concatBytes([dh, k]);
+    final session = PairingSessionV3(
+      channelKey: await _deriveChannelKeyV3(ikm, await code.pairKey()),
+      sas: await _deriveSasV3(ikm, ephXPub, theirEph, deviceEdPub, deviceXPub,
+          sealKeyHash, deviceId, kemEk, ct),
+    );
+    return (
+      {
+        'ephx': b64(ephXPub),
+        'ded': b64(deviceEdPub),
+        'dx': b64(deviceXPub),
+        'sk': b64(sealKeyHash),
+        'id': deviceId,
+      },
+      session,
+    );
+  }
+
+  /// As v1 and v2: adopt the account this enrolment describes.
+  Future<AccountIdentity> installFromData(EnrollmentData d) =>
+      _installFromData(d, deviceEdSeed, deviceXSeed, deviceEdPub, deviceXPub,
+          deviceId);
+}
+
+/// EXISTING device, v3. Holds its ephemeral, the commitment and KEM key it
+/// answered, and its encapsulation, so the opening can be checked against what
+/// was promised.
+class PairingResponderV3 {
+  final Uint8List _pairKey, _ephSeed, _ephPub, _commitment, _kemEk, _ct, _k;
+  PairingResponderV3._(this._pairKey, this._ephSeed, this._ephPub,
+      this._commitment, this._kemEk, this._ct, this._k);
+
+  Uint8List get ephXPub => _ephPub;
+
+  /// Message 2: answer a commitment with a fresh ephemeral and an
+  /// encapsulation to the KEM key beside it — chosen holding only the
+  /// commitment, so this side cannot aim the digits either. [code] is the
+  /// pairing code typed in here: its `pairKey` keys the commitment and salts
+  /// the channel.
+  static Future<(Map<String, Object?>, PairingResponderV3)> reply(
+      Map<String, Object?> commit,
+      {required PairingCode code}) async {
+    final commitment = _fixed(commit, 'c', 32);
+    final kemEk = _kemKeyField(commit);
+    final ephSeed = randomBytes(32);
+    final ephPub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(ephSeed)).extractPublicKey()).bytes);
+    final (ct, k) = pqEncapsulate(kemEk);
+    return (
+      {'ephx': b64(ephPub), 'ct': b64(ct)},
+      PairingResponderV3._(
+          await code.pairKey(), ephSeed, ephPub, commitment, kemEk, ct, k),
+    );
+  }
+
+  /// Message 3: check the opening against the commitment — which covers the
+  /// KEM key this side encapsulated to — then derive the session. A mismatch
+  /// ABORTS: nothing but a substitution produces one.
+  Future<PairingSessionV3> accept(Map<String, Object?> open) async {
+    final theirEph = _fixed(open, 'ephx', 32);
+    final deviceEdPub = _fixed(open, 'ded', 32);
+    final deviceXPub = _fixed(open, 'dx', 32);
+    final sk = _fixed(open, 'sk', 32);
+    final deviceId = _deviceIdField(open);
+    final expected = await _commitmentV3(
+        _pairKey, theirEph, deviceEdPub, deviceXPub, _kemEk, sk, deviceId);
+    if (!constantTimeEquals(expected, _commitment)) {
+      throw const PairingAbort('the opening does not match the commitment');
+    }
+    final dh = await _dhV3(_ephSeed, theirEph);
+    final ikm = concatBytes([dh, _k]);
+    return PairingSessionV3(
+      channelKey: await _deriveChannelKeyV3(ikm, _pairKey),
+      sas: await _deriveSasV3(ikm, theirEph, _ephPub, deviceEdPub, deviceXPub,
+          sk, deviceId, _kemEk, _ct),
+      peerDeviceEdPub: deviceEdPub,
+      peerDeviceXPub: deviceXPub,
+      peerDeviceId: deviceId,
+      peerSealKeyHash: sk,
+    );
+  }
 }

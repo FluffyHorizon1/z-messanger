@@ -2987,3 +2987,290 @@ test('v3 device_attestation: pqdc\'s input from §18.11 alone, every refusal ove
   assert.equal(v.wire.pqseal_ignored.length, 4);
   for (const x of v.wire.pqseal_ignored) assert.ok(!takes(JSON.parse(x.inner_json)), x.name);
 });
+
+// ===========================================================================
+// 44.1 (ADR 0033 §3 and §4): pairing v3 (PROTOCOL §10.2) and CONNECT v3
+// (§20.9), each from its section alone. The ML-KEM-768 values — each
+// ceremony's key, its ciphertext and K — are re-derived by kyber-py
+// (verify_mlkem.py); everything else is recomputed here with Node's own
+// crypto: the keys bound to the code or the invite, the mailboxes, both
+// ceremonies' keyed commitments over SHA-256 of a KEM value, the channel keys
+// from dh || K, the digits with SHA-256(ek || ct) in their info, the sealed
+// enrolment and reveals, and what version 2 computes from the same inputs.
+const P3_DIR = path.join(__dirname, '..', '..', 'docs', 'vectors', 'pair-v3');
+const loadP3 = (name) => JSON.parse(fs.readFileSync(path.join(P3_DIR, `${name}.json`), 'utf8'));
+const CN_DIR = path.join(__dirname, '..', '..', 'docs', 'vectors', 'connect');
+const loadCn = (name) => JSON.parse(fs.readFileSync(path.join(CN_DIR, `${name}.json`), 'utf8'));
+
+/** Eight digits from the first seven bytes, big-endian, mod 10^8 (§10.1, §20.4). */
+function eightDigits(okm) {
+  let n = 0n;
+  for (let i = 0; i < 7; i++) n = (n << 8n) | BigInt(okm[i]);
+  const s = String(n % 100000000n).padStart(8, '0');
+  return `${s.slice(0, 4)} ${s.slice(4)}`;
+}
+const relayRid = (secret, info) => routingId(edPub(hkdf(secret, Buffer.alloc(0), utf8(info), 64).subarray(0, 32)));
+
+test('pairing v3: pairKey, the mailboxes, the keyed commitment over SHA-256(ekN), the hybrid channel key and digits, and the enrolment, from §10.2 alone', () => {
+  const v = loadP3('pairing_v3');
+  assert.equal(v.suite, 'pairing_v3');
+  const secret = unhex(v.pairing_code.secret);
+  assert.equal(v.pairing_code.text, base32(secret).match(/.{1,5}/g).join('-'));
+  const rin = cat(utf8('z-pair-rendezvous-v3:'), secret);
+  assert.equal(hex(rin), v.pairing_code.rendezvous_input);
+  assert.equal(b64url(sha256(rin)), v.pairing_code.rendezvous_routing_id);
+  assert.equal(v.pair_key.info, hex(utf8('z-pair-key-v3')));
+  const pairKey = hkdf(secret, Buffer.alloc(0), utf8('z-pair-key-v3'), 32);
+  assert.equal(hex(pairKey), v.pair_key.key);
+  // v3's mailboxes and rendezvous are none of v1's or v2's for the same code.
+  const older = new Set([
+    b64url(sha256(cat(utf8('z-pair-rendezvous-v1:'), secret))),
+    b64url(sha256(cat(utf8('z-pair-rendezvous-v2:'), secret))),
+  ]);
+  for (const role of ['i', 'r']) {
+    older.add(relayRid(secret, `z-pair-relay:${role}`));
+    older.add(relayRid(secret, `z-pair-relay-v2:${role}`));
+  }
+  assert.equal(older.size, 6);
+  for (const role of ['i', 'r']) {
+    const ri = v.relay_identities[role];
+    assert.equal(ri.hkdf_info, `z-pair-relay-v3:${role}`);
+    const okm = hkdf(secret, Buffer.alloc(0), utf8(ri.hkdf_info), 64);
+    assert.equal(hex(okm), ri.hkdf_okm);
+    assert.equal(hex(okm.subarray(0, 32)), ri.ed_seed);
+    assert.equal(hex(okm.subarray(32)), ri.x_seed);
+    assert.equal(hex(edPub(okm.subarray(0, 32))), ri.ed_pub);
+    assert.equal(ri.routing_id, routingId(unhex(ri.ed_pub)));
+    assert.ok(!older.has(ri.routing_id), `the v3 mailbox ${role} is no older one`);
+  }
+  assert.ok(!older.has(v.pairing_code.rendezvous_routing_id));
+
+  const nd = v.new_device, ed = v.existing_device, kem = v.kem;
+  assert.equal(hex(edPub(unhex(nd.device_ed_seed))), nd.device_ed_pub);
+  assert.equal(hex(xPub(unhex(nd.device_x_seed))), nd.device_x_pub);
+  assert.equal(hex(xPub(unhex(nd.eph_seed))), nd.eph_pub);
+  assert.equal(hex(xPub(unhex(ed.eph_seed))), ed.eph_pub);
+  const ek = unhex(kem.ek), ct = unhex(kem.ct), K = unhex(kem.K);
+  assert.equal(ct.length, 1088);
+  assert.equal(K.length, 32);
+  assert.ok(mlKemKeyValid(ek), 'the offered key passes FIPS 203 7.2');
+  const sealEk = unhex(nd.seal_ek);
+  assert.ok(mlKemKeyValid(sealEk), 'and so does the sealing key');
+  const sk = sha256(sealEk);
+  assert.equal(hex(sk), nd.sk, 'sk = SHA-256(sealEk)');
+
+  // The three frames: the keyed commitment covers SHA-256 of the key beside
+  // it, and every field before the id is 32 bytes.
+  const ded = unhex(nd.device_ed_pub), dx = unhex(nd.device_x_pub);
+  const ephN = unhex(nd.eph_pub), ephE = unhex(ed.eph_pub);
+  const commitInput = cat(utf8('z-pair-commit-v3:'), ephN, ded, dx, sha256(ek), sk, utf8(nd.device_id));
+  assert.equal(hex(commitInput), nd.commit_input);
+  assert.equal(commitInput.length, 17 + 5 * 32 + Buffer.byteLength(nd.device_id));
+  assert.deepEqual(nd.commit_frame, { k: 'commit-v3', c: b64(hmac(pairKey, commitInput)), ek: b64(ek) });
+  assert.deepEqual(ed.reply_frame, { k: 'reply-v3', ephx: b64(ephE), ct: b64(ct) });
+  assert.deepEqual(nd.open_frame, { k: 'open-v3', ephx: b64(ephN), ded: b64(ded), dx: b64(dx), sk: b64(sk), id: nd.device_id });
+
+  // The channel key and the digits, over dh || K.
+  const dh = x25519(unhex(nd.eph_seed), ephE);
+  assert.equal(hex(dh), v.dh);
+  assert.equal(hex(x25519(unhex(ed.eph_seed), ephN)), v.dh);
+  const ikm = cat(dh, K);
+  const channelKey = hkdf(ikm, pairKey, utf8('z-pair-channel-v3'), 32);
+  assert.equal(hex(channelKey), v.channel_key);
+  const salt = cat(ephN, ephE);
+  assert.equal(hex(salt), v.sas_salt);
+  const info = cat(utf8('z-pair-sas-v3'), ded, dx, sk, utf8(nd.device_id), sha256(cat(ek, ct)));
+  assert.equal(hex(info), v.sas_info);
+  const okm = hkdf(ikm, salt, info, 8);
+  assert.equal(hex(okm), v.sas_okm);
+  assert.equal(eightDigits(okm), v.sas);
+  assert.notEqual(hex(hkdf(dh, salt, info, 8)), v.sas_okm, 'the digits are over dh || K, not dh');
+
+  // The enrolment: v2's members without root, then pqdc.
+  const en = v.enrollment;
+  const sealed = unhex(en.sealed);
+  assert.equal(hex(sealed.subarray(0, 12)), en.nonce);
+  const plain = chachaOpen(channelKey, sealed.subarray(0, 12), sealed.subarray(12, sealed.length - 16), sealed.subarray(sealed.length - 16), null);
+  assert.equal(plain.toString('utf8'), en.plaintext);
+  const j = JSON.parse(en.plaintext);
+  assert.deepEqual(Object.keys(j), ['acct', 'pqpub', 'name', 'cert', 'hostcert', 'contacts', 'pqdc']);
+  assert.equal(j.root, undefined, 'v3 never carries the account root');
+  assert.equal(hex(unb64(j.acct)), v.account.account_ed_pub);
+  assert.equal(hex(edPub(unhex(v.account.account_ed_seed))), v.account.account_ed_pub);
+  assert.equal(hex(unb64(j.pqpub)), v.account.ml_pub);
+  assert.equal(hex(unb64(j.pqdc)), en.pqdc);
+  assert.equal(unb64(j.pqdc).length, 3309, 'the length of an ML-DSA-65 signature');
+  const cin = certInput(ded, dx, nd.device_id);
+  assert.equal(hex(cin), en.new_device_cert_signing_input);
+  assert.equal(hex(unb64(j.cert.sig)), en.new_device_cert_sig);
+  assert.ok(edVerify(unhex(v.account.account_ed_pub), cin, unb64(j.cert.sig)));
+  assert.equal(hex(edSign(unhex(v.account.account_ed_seed), cin)), en.new_device_cert_sig);
+  assert.deepEqual(j.hostcert, v.account.device_cert_json);
+  assert.deepEqual(en.enroll_frame, { k: 'enroll-v3', blob: b64(sealed) });
+
+  // What v2 computes from the same ephemerals and device fields.
+  const o = v.version_2_of_the_same_inputs;
+  assert.equal(hex(sha256(cat(utf8('z-pair-commit-v2:'), ephN, ded, dx, utf8(nd.device_id)))), o.commitment);
+  assert.equal(hex(hkdf(dh, Buffer.alloc(32), utf8('z-pair-channel-v2'), 32)), o.channel_key);
+  assert.equal(eightDigits(hkdf(dh, salt, cat(utf8('z-pair-sas-v2'), ded, dx, utf8(nd.device_id)), 8)), o.sas);
+  assert.notEqual(o.channel_key, v.channel_key);
+  assert.notEqual(o.sas, v.sas);
+  assert.notEqual(o.commitment, hex(hmac(pairKey, commitInput)));
+});
+
+test('connect v3: the marker, inviteKey3, the mailboxes, both keyed commitments over a KEM value, the hybrid channel, both reveals, the digits and the go-ahead tag, from §20.9 alone', () => {
+  const v = loadCn('invite_v3');
+  assert.equal(v.suite, 'connect_invite_v3');
+  const cc = v.connect_code;
+  const secret = unhex(cc.secret);
+  assert.equal(cc.version, 3);
+  assert.equal(cc.marker, '8');
+  const groups = (s) => s.match(/.{1,5}/g).join('-');
+  const raw = `8${base32(secret)}`;
+  assert.equal(raw.length, 17);
+  assert.equal(cc.text, groups(raw));
+  assert.equal(cc.link, `https://www.zmessengers.com/i#${raw}`);
+  assert.equal(cc.text_as_version_2, groups(`9${base32(secret)}`));
+  assert.equal(cc.text_as_version_1, groups(base32(secret)));
+  // `8` is neither base32 nor version 2's marker: an older parser refuses it.
+  assert.ok(!B32.includes('8') && !B32.includes('9'));
+  const rin = cat(utf8('z-connect-rendezvous-v3:'), secret);
+  assert.equal(hex(rin), cc.rendezvous_input);
+  assert.equal(b64url(sha256(rin)), cc.rendezvous_routing_id);
+  assert.equal(v.invite_key.info, hex(utf8('z-connect-invite-v3')));
+  const ik = hkdf(secret, Buffer.alloc(0), utf8('z-connect-invite-v3'), 32);
+  assert.equal(hex(ik), v.invite_key.key);
+  const older = new Set([
+    b64url(sha256(cat(utf8('z-connect-rendezvous-v1:'), secret))),
+    b64url(sha256(cat(utf8('z-connect-rendezvous-v2:'), secret))),
+  ]);
+  for (const role of ['i', 'r']) {
+    older.add(relayRid(secret, `z-connect-relay-v1:${role}`));
+    older.add(relayRid(secret, `z-connect-relay-v2:${role}`));
+  }
+  assert.equal(older.size, 6);
+  assert.deepEqual(v.mailboxes.map((m) => m.role), ['i', 'r']);
+  for (const m of v.mailboxes) {
+    const info = cat(utf8('z-connect-relay-v3:'), utf8(m.role));
+    assert.equal(hex(info), m.info);
+    const okm = hkdf(secret, Buffer.alloc(0), info, 64);
+    assert.equal(hex(okm), m.okm);
+    assert.equal(hex(okm.subarray(0, 32)), m.ed_seed);
+    assert.equal(hex(okm.subarray(32)), m.x_seed);
+    assert.equal(hex(edPub(okm.subarray(0, 32))), m.ed_pub);
+    assert.equal(hex(xPub(okm.subarray(32))), m.x_pub);
+    assert.equal(m.routing_id, routingId(unhex(m.ed_pub)));
+    assert.ok(!older.has(m.routing_id), `the v3 mailbox ${m.role} is no older one`);
+  }
+  assert.ok(!older.has(cc.rendezvous_routing_id));
+
+  // The parties: each code commits to the ML-DSA key its reveal carries,
+  // and a code carrying sk names the sealing key its reveal carries.
+  const [ivy, rob] = v.parties;
+  assert.deepEqual([ivy.role, rob.role], ['inviter', 'acceptor']);
+  for (const p of v.parties) {
+    const c = JSON.parse(unb64url(p.contact_code.slice(4)).toString('utf8'));
+    assert.equal(hex(edPub(unhex(p.ed_seed))), p.account_ed_pub);
+    assert.equal(hex(unb64(c.ed)), p.account_ed_pub, `${p.role}: a root device's code`);
+    assert.equal(hex(unb64(c.pqc)), p.pq_commit);
+    assert.equal(hex(sha256(cat(utf8('z-pqid-v3:'), unhex(p.ml_pub)))), p.pq_commit, `${p.role}: the code commits to its ML-DSA key`);
+    assert.equal(pqcsVerdict(p.contact_code), 'signed');
+    assert.ok(mlKemKeyValid(unhex(p.seal_ek)), `${p.role}: a sealing key FIPS 203 accepts`);
+    if (p.sk === null) {
+      assert.equal(c.sk, undefined);
+    } else {
+      assert.equal(hex(unb64(c.sk)), p.sk);
+      assert.equal(hex(sha256(unhex(p.seal_ek))), p.sk, `${p.role}: sk names the sealing key`);
+    }
+  }
+  assert.ok(ivy.sk !== null && rob.sk === null, 'one code with sk and one without');
+
+  // Messages 1 and 2: each commitment covers SHA-256 of its side's KEM
+  // value — the inviter's key, the acceptor's ciphertext.
+  const kem = v.kem;
+  const ek = unhex(kem.ek), ct = unhex(kem.ct), K = unhex(kem.K);
+  assert.ok(mlKemKeyValid(ek));
+  assert.equal(ct.length, 1088);
+  const ephI = unhex(v.inviter_ephemeral.pub), ephA = unhex(v.acceptor_ephemeral.pub);
+  assert.equal(hex(xPub(unhex(v.inviter_ephemeral.seed))), v.inviter_ephemeral.pub);
+  assert.equal(hex(xPub(unhex(v.acceptor_ephemeral.seed))), v.acceptor_ephemeral.pub);
+  const tail = (p) => {
+    const code = utf8(p.contact_code);
+    const len = Buffer.alloc(2);
+    len.writeUInt16BE(code.length);
+    return cat(len, code, utf8(p.display_name ?? ''));
+  };
+  const inI = cat(utf8('z-connect-commit-v3:'), ephI, sha256(ek), tail(ivy));
+  const inR = cat(utf8('z-connect-commit-v3:'), ephA, sha256(ct), tail(rob));
+  assert.equal(hex(inI), v.commitments.inviter_input);
+  assert.equal(hex(inR), v.commitments.acceptor_input);
+  assert.equal(hex(hmac(ik, inI)), v.commitments.inviter);
+  assert.equal(hex(hmac(ik, inR)), v.commitments.acceptor);
+  const f = v.frames;
+  assert.deepEqual(f.commit, { k: 'x1', c: b64(hmac(ik, inI)), ek: b64(ek) });
+  assert.deepEqual(f.reply, { k: 'x2', ephx: b64(ephA), c: b64(hmac(ik, inR)), ct: b64(ct) });
+  assert.deepEqual(Object.keys(f.open), ['k', 'ephx', 'blob']);
+  assert.equal(f.open.ephx, b64(ephI));
+  assert.deepEqual(Object.keys(f.reveal), ['k', 'blob']);
+  for (const [k, n] of Object.entries(v.frame_lengths)) {
+    assert.equal(JSON.stringify(f[k]).length, n, `${k}: the payload's length as the relay carries it`);
+  }
+
+  // The channel key from dh || K, salted with inviteKey3, and both reveals
+  // sealed under it from their recorded nonces.
+  const dh = x25519(unhex(v.inviter_ephemeral.seed), ephA);
+  assert.equal(hex(dh), v.dh);
+  assert.equal(hex(x25519(unhex(v.acceptor_ephemeral.seed), ephI)), v.dh);
+  const ikm = cat(dh, K);
+  const channelKey = hkdf(ikm, ik, utf8('z-connect-channel-v3'), 32);
+  assert.equal(hex(channelKey), v.channel_key);
+  const sealUnder = (key, plain, nonce) => {
+    const { ct: box, mac } = chachaSeal(key, nonce, utf8(plain), null);
+    return b64(cat(nonce, box, mac));
+  };
+  assert.equal(sealUnder(channelKey, v.reveals.open_plaintext, unhex(v.reveals.open_nonce)), f.open.blob);
+  assert.equal(sealUnder(channelKey, v.reveals.reveal_plaintext, unhex(v.reveals.reveal_nonce)), f.reveal.blob);
+  for (const [plain, p] of [[v.reveals.open_plaintext, ivy], [v.reveals.reveal_plaintext, rob]]) {
+    const j = JSON.parse(plain);
+    assert.deepEqual(Object.keys(j), ['code', 'name', 'grp', 'pqk', 'pqseal']);
+    assert.equal(j.code, p.contact_code);
+    assert.equal(j.name, p.display_name);
+    assert.equal(j.grp, 0);
+    assert.equal(hex(unb64(j.pqk)), p.ml_pub, `${p.role}: pqk is the committed ML-DSA key`);
+    assert.equal(hex(unb64(j.pqseal)), p.seal_ek, `${p.role}: pqseal is the device's sealing key`);
+  }
+
+  // The digits: the parties in canonical order, over dh || K, with
+  // SHA-256(ek || ct) after both identities; the tag from the channel key.
+  const ivyFirst = Buffer.compare(unhex(ivy.account_ed_pub), unhex(rob.account_ed_pub)) < 0;
+  const [lo, hi] = ivyFirst ? [ivy, rob] : [rob, ivy];
+  assert.deepEqual(v.canonical_order, ivyFirst ? ['inviter', 'acceptor'] : ['acceptor', 'inviter']);
+  const salt = ivyFirst ? cat(ephI, ephA) : cat(ephA, ephI);
+  assert.equal(hex(salt), v.sas_salt);
+  const ids = (ctx) => cat(utf8(ctx), unhex(lo.account_ed_pub), unhex(lo.pq_commit), unhex(hi.account_ed_pub), unhex(hi.pq_commit));
+  const info = cat(ids('z-connect-sas-v3'), sha256(cat(ek, ct)));
+  assert.equal(hex(info), v.sas_info);
+  const okm = hkdf(ikm, salt, info, 8);
+  assert.equal(hex(okm), v.sas_okm);
+  assert.equal(eightDigits(okm), v.sas);
+  assert.equal(hex(hkdf(channelKey, Buffer.alloc(32), utf8('z-connect-gjoin-v1'), 16)), v.go_ahead_tag);
+
+  // What version 2 computes from the same inputs, and none of it is v3's: a
+  // reveal does not open under version 2's channel key.
+  const o = v.version_2_of_the_same_inputs;
+  const ik2 = hkdf(secret, Buffer.alloc(0), utf8('z-connect-invite-v2'), 32);
+  assert.equal(hex(ik2), o.invite_key);
+  assert.equal(o.text, cc.text_as_version_2);
+  assert.equal(o.mailbox_i, relayRid(secret, 'z-connect-relay-v2:i'));
+  assert.equal(o.mailbox_r, relayRid(secret, 'z-connect-relay-v2:r'));
+  assert.equal(o.rendezvous_routing_id, b64url(sha256(cat(utf8('z-connect-rendezvous-v2:'), secret))));
+  assert.equal(hex(hmac(ik2, cat(utf8('z-connect-commit-v2:'), ephI, tail(ivy)))), o.inviter_commitment);
+  const v2Channel = hkdf(dh, ik2, utf8('z-connect-channel-v2'), 32);
+  assert.equal(hex(v2Channel), o.channel_key);
+  assert.equal(eightDigits(hkdf(dh, salt, ids('z-connect-sas-v2'), 8)), o.sas);
+  assert.notEqual(o.channel_key, v.channel_key);
+  assert.notEqual(o.inviter_commitment, v.commitments.inviter);
+  assert.notEqual(o.sas, v.sas);
+  const blob = unb64(f.open.blob);
+  assert.throws(() => chachaOpen(v2Channel, blob.subarray(0, 12), blob.subarray(12, blob.length - 16), blob.subarray(blob.length - 16), null));
+});

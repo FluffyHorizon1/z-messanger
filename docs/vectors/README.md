@@ -46,6 +46,7 @@ same terms:
 | `mailboxes.json` | the two per‑role relay mailboxes an invite derives, and their distinctness from every other id the same secret names | §20.5 |
 | `group.json` | `adr/0020`: the same four messages with the group bit — `"grp":1` sealed in message 3 and repeated in message 4 — with both reveals' plaintexts and seal nonces, so the member's bytes can be checked, and the ceremony's go‑ahead tag (HKDF‑SHA256 of the channel key, 16 bytes) that its answer carries | §20.3, §20.6 |
 | `invite_v2.json` | `adr/0024`: an invite of version 2, bound to its secret — both renderings with their `9` marker, the invite key, both mailboxes and the rendezvous id under the version‑2 contexts, both keyed commitments with their inputs, all four frames with both reveals' plaintexts and nonces, the channel key salted with the invite key, the digits under their own context and the go‑ahead tag — and, beside them, what version 1 computes from the same inputs. The three files above are version 1 and unchanged | §20.8 |
+| `invite_v3.json` | `adr/0033` §4: an invite of version 3, hybrid with ML‑KEM‑768 — both renderings with their `8` marker, which neither base32 nor version 2 reads; `inviteKey3`, both mailboxes and the rendezvous id under the version‑3 contexts; two v3 identities, each with its account's ML‑DSA key and its device's sealing key, the inviter's code carrying `sk`; the inviter's fresh ML‑KEM‑768 key (`ek`, message 1) from its seed, and the acceptor's encapsulation to it (`ct`, message 2) with its randomness `m` and `K`; both keyed commitments, each over SHA‑256 of its side's KEM value, with their inputs; all four frames, with their lengths as the relay carries them, and both reveals' plaintexts (`pqk`, `pqseal`) and nonces; the channel key from `dh ‖ K` salted with `inviteKey3`; the digits with SHA‑256(ek ‖ ct) in their info, and the go‑ahead tag — and, beside them, what version 2 computes from the same inputs. Re‑derived by the Node file; the ML‑KEM values by kyber‑py (`verify_mlkem.py`). The four files above are unchanged | §20.9 |
 
 `kt/` pins the transparency log (PROTOCOL.md §19, `adr/0006`) — a service
 beside the protocol rather than a version of it, frozen on the same terms.
@@ -101,6 +102,13 @@ reproduced and verified by dilithium‑py (`verify_mldsa.py`), and the rest —
 each X25519, HKDF, AEAD and padding step, every envelope and its length, the
 signing inputs and the wire forms — replayed by the Node file from
 PROTOCOL.md alone.
+
+`pair-v3/` pins device pairing v3 (PROTOCOL.md §10.2, ADR 0033 §3), frozen
+on the same terms; a directory of its own, so every file above is unchanged:
+
+| File | Covers | Spec |
+|---|---|---|
+| `pairing_v3.json` | the code, its `pairKey`, the rendezvous and both mailboxes under the v3 contexts; the host (an account with its ML‑DSA key) and the new device, with its four draws, its sealing key and `sk`; the fresh ML‑KEM‑768 key the new device offers beside its commitment, from its seed; the keyed commitment over SHA‑256 of that key, with its input; the reply's ephemeral and its encapsulation (`m`, `ct`, `K`); the opening, with `sk`; the channel key from `dh ‖ K` salted with `pairKey`; the eight digits with SHA‑256(ekN ‖ ct) in their info; the sealed enrolment — v2's members without `root`, then `pqdc`, here 3 309 recorded random bytes standing in for the root's attestation, which pairing carries unread — with its nonce; and what v2 computes from the same inputs. Re‑derived by the Node file; the ML‑KEM values by kyber‑py (`verify_mlkem.py`) | §10.2 |
 
 ## Conventions
 

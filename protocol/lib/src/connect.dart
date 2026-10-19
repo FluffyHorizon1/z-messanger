@@ -49,8 +49,20 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:cryptography/dart.dart' show DartSha256;
 
 import 'identity_v3.dart';
+import 'intro_key.dart' show mlKemEncapsulationKeyValid, sealKeyHash;
+import 'pq.dart'
+    show
+        pqCtLength,
+        pqDecapsulate,
+        pqEkLength,
+        pqEncapsulate,
+        pqGenerate,
+        pqKeyPairFromSeed;
+import 'pqsign.dart'
+    show HybridPublicKey, mlDsaPublicKeyBytes, pqCommitContext;
 import 'util.dart';
 
 const String _rendezvousCtx = 'z-connect-rendezvous-v1:';
@@ -81,6 +93,38 @@ const String connectRelayCtx = 'z-connect-relay-v1:';
 /// to wait on, the other (§20.8).
 const String connectRelayCtxV2 = 'z-connect-relay-v2:';
 
+// Version 3 (ADR 0033 §4, §20.9): the ceremony hybrid with ML-KEM-768. Every
+// value computed differently has a context of its own again.
+const String _rendezvousCtxV3 = 'z-connect-rendezvous-v3:';
+const String _channelCtxV3 = 'z-connect-channel-v3';
+const String _sasCtxV3 = 'z-connect-sas-v3';
+const String _commitCtxV3 = 'z-connect-commit-v3:';
+
+/// The context of a version-3 invite's key (§20.9), `inviteKey3`.
+const String connectInviteKeyCtxV3 = 'z-connect-invite-v3';
+
+/// A version-3 invite's two mailboxes (§20.9), disjoint from both older
+/// versions' for the same ten bytes.
+const String connectRelayCtxV3 = 'z-connect-relay-v3:';
+
+/// The first character of both renderings of a version-3 invite, `8`: not
+/// base32, and not version 2's `9`, so every parser before §20.9 refuses it
+/// as not a connect code — [ConnectCode.parse] included, which stays the
+/// reader of versions 1 and 2. [ConnectCode.parseV3] reads version 3, and
+/// the release that reads it (44.6) asks both. Minted by
+/// `ConnectCode.generate(version: 3)`, which nothing in the app calls.
+/// Minting version 3 is not a matter of [connectInviteVersion]: an invite of
+/// version 3 runs as `ConnectRunV3`, which carries the device's sealing key,
+/// and the release after the readers ship (ADR 0033 decision 2) makes its
+/// invites that way.
+const String connectV3Marker = '8';
+
+/// The members a version-3 reveal adds (§20.9): `pqk`, the account's
+/// ML-DSA-65 key, required when the revealed code commits to one; and
+/// `pqseal`, the revealing device's sealing key (ADR 0033 §1), always.
+const String connectPqKeyMember = 'pqk';
+const String connectSealKeyMember = 'pqseal';
+
 /// The invite version this library mints ([ConnectCode.generate]).
 ///
 /// A client that mints version 2 never runs version 1 for it: there is no
@@ -88,6 +132,12 @@ const String connectRelayCtxV2 = 'z-connect-relay-v2:';
 /// the middle (ADR 0009's "Rejected", ADR 0024). Version 1 is still
 /// RECEIVED — an invite an older client made works as it always did — and
 /// that is the whole compatibility surface.
+///
+/// It stays 2, and it is not the switch that mints version 3 (§20.9).
+/// [ConnectInviter], and so `ConnectRun`, refuse a version-3 invite whatever
+/// this constant says, so set to 3 it would make every invite they mint
+/// fail, closed. An invite of version 3 is made by [ConnectInviterV3] or
+/// `ConnectRunV3`, with the device's sealing key.
 const int connectInviteVersion = 2;
 
 /// The first character of both renderings of a version-2 invite, `9`.
@@ -159,13 +209,18 @@ class ConnectCode {
   /// (ADR 0024). The constructor's default is 1: ten bytes on their own, as
   /// every record and vector from before ADR 0024 holds them, are a
   /// version-1 invite. [generate] mints [connectInviteVersion].
+  ///
+  /// Or 3, hybrid with ML-KEM-768 (ADR 0033 §4, §20.9), which runs only as
+  /// `ConnectInviterV3`, `ConnectAcceptorV3` and `ConnectRunV3`: the
+  /// version-1 and version-2 ceremony refuses one, and [parse] never makes
+  /// one.
   final int version;
 
   ConnectCode(this.secret, {this.version = 1}) {
     if (secret.length != 10) {
       throw const FormatException('a connect code is 10 bytes');
     }
-    if (version != 1 && version != 2) {
+    if (version != 1 && version != 2 && version != 3) {
       throw const FormatException('not an invite version this build knows');
     }
   }
@@ -173,12 +228,14 @@ class ConnectCode {
   static ConnectCode generate({int version = connectInviteVersion}) =>
       ConnectCode(randomBytes(10), version: version);
 
-  /// Whether this invite binds its secret into the ceremony (version 2).
+  /// Whether this invite binds its secret into the ceremony (version 2, and
+  /// version 3).
   bool get bound => version >= 2;
 
   String get text {
     if (!bound) return base32Groups(secret);
-    final raw = '$connectV2Marker${base32Encode(secret)}';
+    final marker = version == 3 ? connectV3Marker : connectV2Marker;
+    final raw = '$marker${base32Encode(secret)}';
     return [
       for (var i = 0; i < raw.length; i += 5)
         raw.substring(i, i + 5 > raw.length ? raw.length : i + 5)
@@ -223,6 +280,43 @@ class ConnectCode {
     final b = base32Decode(code);
     if (b.length < 10) throw const FormatException('connect code too short');
     return ConnectCode(Uint8List.fromList(b.sublist(0, 10)));
+  }
+
+  /// A printed version-3 code (§20.9) back into its ten bytes — and nothing
+  /// else: [connectV3Marker], then exactly the sixteen base32 characters of
+  /// the secret, with [parse]'s separators and in either case. A code of
+  /// version 1 or 2 is refused here, as a version-3 code is by [parse].
+  ///
+  /// This is the reader the release that reads version 3 (44.6) puts beside
+  /// [parse]. Until then nothing in the app calls it, so the app can never
+  /// hold a version-3 invite, let alone run one as another version.
+  static ConnectCode parseV3(String code) {
+    const separators = [0x2D, 0x20, 0x09, 0x0A, 0x0D]; // - space tab nl cr
+    final chars = <int>[
+      for (final ch in code.toUpperCase().codeUnits)
+        if (!separators.contains(ch)) ch
+    ];
+    if (chars.isEmpty || chars.first != connectV3Marker.codeUnitAt(0)) {
+      throw const FormatException('not a version-3 connect code');
+    }
+    final rest = chars.sublist(1);
+    if (rest.length != 16 || !rest.every(_b32Chars.contains)) {
+      throw const FormatException('not a version-3 connect code');
+    }
+    return ConnectCode(base32Decode(String.fromCharCodes(rest)), version: 3);
+  }
+
+  /// [fromLink] for a version-3 code: the invite page alone, as [fromLink]
+  /// reads it, and [parseV3] for the fragment. Null for anything else.
+  static ConnectCode? fromLinkV3(String url) {
+    final hash = url.indexOf('#');
+    if (hash < 0 || hash == url.length - 1) return null;
+    if (!_namesInvitePage(url.substring(0, hash))) return null;
+    try {
+      return ConnectCode.parseV3(url.substring(hash + 1));
+    } on FormatException {
+      return null;
+    }
   }
 
   /// `https://<host>/i#<code>`. The code is in the fragment on purpose.
@@ -271,9 +365,13 @@ class ConnectCode {
   /// for the bytes. Two rather than one so that neither side is handed back
   /// its own frames on the relay's flush, and so the pair the relay sees is
   /// the shape §20 describes. A version-2 code names its own, under a
-  /// context of its own.
+  /// context of its own, and so does a version-3 one.
   Future<String> rendezvousRoutingId() async {
-    final ctx = bound ? _rendezvousCtxV2 : _rendezvousCtx;
+    final ctx = version == 3
+        ? _rendezvousCtxV3
+        : bound
+            ? _rendezvousCtxV2
+            : _rendezvousCtx;
     return b64url(
         await sha256Bytes(concatBytes([utf8.encode(ctx), secret])));
   }
@@ -287,19 +385,32 @@ class ConnectCode {
   /// relay included, which sees every frame and never the invite.
   ///
   /// Null for version 1, which binds nothing: that is what ADR 0024 changes,
-  /// and what an invite made by an older client still is.
+  /// and what an invite made by an older client still is. For version 3 it
+  /// is `inviteKey3` (§20.9), the same derivation under
+  /// [connectInviteKeyCtxV3].
   Future<Uint8List?> inviteKey() {
     if (!bound) return Future.value(null);
-    return _inviteKey ??= _deriveInviteKey(secret);
+    return _inviteKey ??= _deriveInviteKey(
+        secret, version == 3 ? connectInviteKeyCtxV3 : connectInviteKeyCtx);
   }
 
-  static Future<Uint8List> _deriveInviteKey(Uint8List secret) async {
+  static Future<Uint8List> _deriveInviteKey(
+      Uint8List secret, String context) async {
     final k = await Hkdf(hmac: Hmac.sha256(), outputLength: 32).deriveKey(
       secretKey: SecretKey(secret),
       nonce: Uint8List(0),
-      info: utf8.encode(connectInviteKeyCtx),
+      info: utf8.encode(context),
     );
     return Uint8List.fromList(await k.extractBytes());
+  }
+}
+
+/// Refuses a version-3 invite where the version-1 and version-2 ceremony
+/// would run it (§20.9: a version-3 invite never runs as version 2).
+void _refuseV3(ConnectCode code) {
+  if (code.version == 3) {
+    throw ArgumentError.value(code.version, 'code',
+        'a version-3 invite runs as version 3 and nothing else');
   }
 }
 
@@ -325,8 +436,14 @@ class ConnectIdentity {
   /// right: they are different identities to confirm.
   final Uint8List pqCommit;
 
+  /// The code's `sk` (ADR 0033 addendum A1), SHA-256 of the sealing key of
+  /// the device showing it, or null for a code that carries none. Read only
+  /// by version 3 (§20.9), whose reveal carries that key.
+  final Uint8List? sealKeyCommit;
+
   ConnectIdentity._(
-      this.contactCode, this.displayName, this.accountEdPub, this.pqCommit);
+      this.contactCode, this.displayName, this.accountEdPub, this.pqCommit,
+      {this.sealKeyCommit});
 
   static final Uint8List _noPq = Uint8List(32);
 
@@ -353,7 +470,8 @@ class ConnectIdentity {
     final v3 = scanned.v3;
     if (v3 != null) {
       return ConnectIdentity._(
-          contactCode, displayName ?? v3.displayName, v3.accountEdPub, v3.pqCommit);
+          contactCode, displayName ?? v3.displayName, v3.accountEdPub, v3.pqCommit,
+          sealKeyCommit: v3.sealKeyCommit);
     }
     // A genuinely classical code — one that carries no v3 member at all. No
     // post-quantum commitment to bind, and by §3.5 the device in it *is* the
@@ -404,6 +522,42 @@ class ConnectIdentity {
         if (displayName != null) 'name': displayName,
         if (group != null) connectGroupMember: group ? 1 : 0,
       };
+
+  /// The version-3 commitment (§20.9): HMAC-SHA256 under `inviteKey3` over
+  /// version 2's fields with SHA-256 of this side's KEM value — the
+  /// inviter's encapsulation key, the acceptor's ciphertext — after the
+  /// ephemeral. Both are fixed-width, so the code's length prefix and the name
+  /// last keep the concatenation unambiguous, as in version 1.
+  Future<Uint8List> _commitmentV3(
+      Uint8List ephPub, List<int> kemValue, Uint8List inviteKey) async {
+    final code = utf8.encode(contactCode);
+    final mac = await Hmac.sha256().calculateMac(
+        concatBytes([
+          utf8.encode(_commitCtxV3),
+          ephPub,
+          await sha256Bytes(kemValue),
+          u16be(code.length),
+          code,
+          utf8.encode(displayName ?? ''),
+        ]),
+        secretKey: SecretKey(inviteKey));
+    return Uint8List.fromList(mac.bytes);
+  }
+
+  /// What this side seals into a version-3 message 3 or 4: version 2's
+  /// reveal, then the account's ML-DSA-65 key [pqKey] when the code commits
+  /// to one, then this device's sealing key [sealKey].
+  Map<String, Object?> _revealV3(
+          {bool? group, Uint8List? pqKey, required Uint8List sealKey}) =>
+      {
+        ..._reveal(group: group),
+        if (pqKey != null) connectPqKeyMember: b64(pqKey),
+        connectSealKeyMember: b64(sealKey),
+      };
+
+  /// Whether this identity's code commits to a post-quantum key (§18.2): a
+  /// classical code's [pqCommit] is 32 zero bytes.
+  bool get _commitsToPq => pqCommit.any((b) => b != 0);
 }
 
 /// The label of a ceremony's go-ahead tag ([connectGoAheadTag]).
@@ -497,11 +651,16 @@ class ConnectInviter {
   /// ADR 0009 built it, which is what the recorded vectors are.
   static Future<ConnectInviter> create(
       {required ConnectIdentity me, ConnectCode? code, bool? group}) async {
+    // A version-3 invite handed in is refused before anything is drawn; one
+    // [ConnectCode.generate] minted is refused as well, so this ceremony
+    // never runs version 3 whatever [connectInviteVersion] says.
+    if (code != null) _refuseV3(code);
     final seed = randomBytes(32);
     final pub = Uint8List.fromList(
         (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
-    return ConnectInviter._(
-        code ?? ConnectCode.generate(), me, seed, pub, group);
+    final invite = code ?? ConnectCode.generate();
+    _refuseV3(invite);
+    return ConnectInviter._(invite, me, seed, pub, group);
   }
 
   /// Everything needed to pick this ceremony up after the app was closed.
@@ -654,6 +813,7 @@ class ConnectAcceptor {
 
   static Future<ConnectAcceptor> fromJson(Map<String, Object?> j,
       {required ConnectCode code}) async {
+    _refuseV3(code);
     final me = await ConnectIdentity.fromCode(j['me'] as String,
         displayName: j['name'] as String?);
     final seed = unb64(j['eph'] as String);
@@ -675,6 +835,7 @@ class ConnectAcceptor {
       {required ConnectIdentity me,
       required ConnectCode code,
       bool groupAware = false}) async {
+    _refuseV3(code);
     final c = _need(commit, 'c');
     if (c.length != 32) throw const ConnectAbort('malformed commitment');
     final seed = randomBytes(32);
@@ -895,5 +1056,558 @@ Future<(ConnectIdentity, bool?)> _openReveal(
     // the invite is spent and the pair start again, which costs a minute and
     // is the only answer that cannot be steered.
     throw ConnectAbort('reveal carries an unusable contact code: ${e.message}');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Version 3 (ADR 0033 §4, PROTOCOL §20.9): the ceremony hybrid with ML-KEM-768.
+//
+// Version 2's channel and digits come from two X25519 ephemerals. A recording
+// of the frames gives both codes and both names to whoever later breaks
+// X25519 and holds the invite — whose carrier this ceremony assumes hostile.
+// In version 3 the inviter offers a fresh ML-KEM-768 key in message 1, beside
+// a commitment that covers its hash; the acceptor encapsulates to it in
+// message 2, committing to the ciphertext's hash, before the inviter's
+// ephemeral is revealed; and the KEM secret K joins the X25519 output in the
+// channel key and in the digits. The ordering is §20.3's: each side fixes its
+// contribution before it could know what it would need to aim the digits.
+//
+// Each reveal also carries the account's ML-DSA key and the device's sealing
+// key, so on a confirmed comparison the contact is post-quantum at once.
+//
+// Nothing in the app runs this before 44.6, and nothing mints it but a test:
+// [ConnectCode.generate] still mints [connectInviteVersion], 2.
+// ---------------------------------------------------------------------------
+
+Uint8List _sha256Sync(List<int> data) =>
+    Uint8List.fromList(const DartSha256().hashSync(data).bytes);
+
+/// This side's own keys, checked before a version-3 ceremony starts, by the
+/// rules the other side will hold its reveal to: [sealKey] an ML-KEM-768
+/// encapsulation key that passes FIPS 203 §7.2's check — and, when [me]'s
+/// code carries `sk`, the key it names; [pqKey] present exactly when [me]'s
+/// code commits to an ML-DSA key, and that key. An [ArgumentError] when not:
+/// the caller handed over the wrong keys, which no frame could change.
+void checkConnectOwnKeysV3(ConnectIdentity me,
+    {required List<int> sealKey, List<int>? pqKey}) {
+  if (!mlKemEncapsulationKeyValid(sealKey)) {
+    throw ArgumentError.value(
+        sealKey.length, 'sealKey', 'not an ML-KEM-768 encapsulation key');
+  }
+  final sk = me.sealKeyCommit;
+  if (sk != null && !constantTimeEquals(sealKeyHash(sealKey), sk)) {
+    throw ArgumentError.value(
+        'sealKey', 'sealKey', 'not the sealing key this code names');
+  }
+  if (me._commitsToPq) {
+    if (pqKey == null ||
+        pqKey.length != mlDsaPublicKeyBytes ||
+        !constantTimeEquals(
+            _sha256Sync([...utf8.encode(pqCommitContext), ...pqKey]),
+            me.pqCommit)) {
+      throw ArgumentError.value(
+          'pqKey', 'pqKey', 'not the ML-DSA key this code commits to');
+    }
+  } else if (pqKey != null) {
+    throw ArgumentError.value(
+        'pqKey', 'pqKey', 'a classical code commits to no ML-DSA key');
+  }
+}
+
+/// A version-3 frame's KEM member: [length] bytes, or an abort.
+Uint8List _kemMember(Map<String, Object?> j, String k, int length) {
+  final v = _need(j, k);
+  if (v.length != length) throw ConnectAbort('malformed "$k"');
+  return v;
+}
+
+/// `channelKey = HKDF(dh || K, inviteKey3, "z-connect-channel-v3", 32)`.
+Future<Uint8List> _deriveChannelKeyV3(Uint8List ikm, Uint8List inviteKey) async {
+  final k = await Hkdf(hmac: Hmac.sha256(), outputLength: 32).deriveKey(
+    secretKey: SecretKey(ikm),
+    nonce: inviteKey,
+    info: utf8.encode(_channelCtxV3),
+  );
+  return Uint8List.fromList(await k.extractBytes());
+}
+
+/// §20.4's eight digits for version 3: over `dh || K`, the ephemerals in the
+/// parties' canonical order as salt, and in the info, after both identities,
+/// SHA-256 of the inviter's KEM key and the acceptor's ciphertext, so the
+/// digits cover the KEM exchange as well as its secret.
+Future<String> _deriveSasV3(Uint8List ikm, ConnectIdentity a, Uint8List ephA,
+    ConnectIdentity b, Uint8List ephB, Uint8List kemEk, Uint8List ct) async {
+  final aFirst = _lexLess(a.accountEdPub, b.accountEdPub);
+  final lo = aFirst ? a : b, hi = aFirst ? b : a;
+  final loEph = aFirst ? ephA : ephB, hiEph = aFirst ? ephB : ephA;
+  final k = await Hkdf(hmac: Hmac.sha256(), outputLength: 8).deriveKey(
+    secretKey: SecretKey(ikm),
+    nonce: concatBytes([loEph, hiEph]),
+    info: concatBytes([
+      utf8.encode(_sasCtxV3),
+      lo.accountEdPub,
+      lo.pqCommit,
+      hi.accountEdPub,
+      hi.pqCommit,
+      await sha256Bytes(concatBytes([kemEk, ct])),
+    ]),
+  );
+  final o = await k.extractBytes();
+  var n = 0;
+  for (var i = 0; i < 7; i++) {
+    n = (n << 8) | o[i];
+  }
+  final d = (n % 100000000).toString().padLeft(8, '0');
+  return '${d.substring(0, 4)} ${d.substring(4)}';
+}
+
+/// Opens a version-3 reveal. The code, the name and the group bit by
+/// [_openReveal]'s rules; then the two members version 3 adds, each one that
+/// is not what it must be an abort, as a malformed name is (§20.3):
+/// `pqk` exactly when the code commits to a post-quantum key, and then the
+/// key it commits to (§18.2); `pqseal` always, an ML-KEM-768 encapsulation
+/// key that passes FIPS 203 §7.2's check — and, when the code carries `sk`,
+/// the key it names.
+Future<(ConnectIdentity, bool?, Uint8List?, Uint8List)> _openRevealV3(
+    Uint8List key, Map<String, Object?> frame,
+    {required bool readGroup}) async {
+  final sealed = _need(frame, 'blob');
+  final Uint8List clear;
+  try {
+    clear = Uint8List.fromList(await _aead.decrypt(
+        SecretBox.fromConcatenation(sealed, nonceLength: 12, macLength: 16),
+        secretKey: SecretKey(key)));
+  } catch (_) {
+    throw const ConnectAbort('the sealed reveal did not open');
+  }
+  final Map<String, Object?> j;
+  try {
+    j = (jsonDecode(utf8.decode(clear)) as Map).cast<String, Object?>();
+  } catch (_) {
+    throw const ConnectAbort('malformed reveal');
+  }
+  final code = j['code'];
+  if (code is! String) throw const ConnectAbort('reveal carries no code');
+  final name = j['name'];
+  if (name != null && name is! String) {
+    throw const ConnectAbort('reveal carries a malformed name');
+  }
+  bool? group;
+  final grp = j[connectGroupMember];
+  if (readGroup && grp != null) {
+    if (grp is! int || (grp != 0 && grp != 1)) {
+      throw const ConnectAbort('reveal carries a malformed group bit');
+    }
+    group = grp == 1;
+  }
+  final ConnectIdentity peer;
+  try {
+    peer = await ConnectIdentity.fromCode(code, displayName: name as String?);
+  } on FormatException catch (e) {
+    throw ConnectAbort('reveal carries an unusable contact code: ${e.message}');
+  }
+  Uint8List? pqKey;
+  if (peer._commitsToPq) {
+    if (j[connectPqKeyMember] == null) {
+      throw const ConnectAbort(
+          'the reveal carries no ML-DSA key, and its code commits to one');
+    }
+    pqKey = _kemMember(j, connectPqKeyMember, mlDsaPublicKeyBytes);
+    final commit = await HybridPublicKey(edPub: peer.accountEdPub, mlPub: pqKey)
+        .pqCommitment();
+    if (!constantTimeEquals(commit, peer.pqCommit)) {
+      throw const ConnectAbort(
+          'the reveal carries an ML-DSA key its code does not commit to');
+    }
+  } else if (j[connectPqKeyMember] != null) {
+    throw const ConnectAbort(
+        'the reveal carries an ML-DSA key, and its code commits to none');
+  }
+  final sealKey = _kemMember(j, connectSealKeyMember, pqEkLength);
+  if (!mlKemEncapsulationKeyValid(sealKey)) {
+    throw const ConnectAbort('malformed "pqseal"');
+  }
+  final sk = peer.sealKeyCommit;
+  if (sk != null && !constantTimeEquals(sealKeyHash(sealKey), sk)) {
+    throw const ConnectAbort(
+        'the reveal carries a sealing key its code does not name');
+  }
+  return (peer, group, pqKey, sealKey);
+}
+
+/// A completed version-3 ceremony: [ConnectSession], and the two keys the
+/// peer's reveal added — as authentic as the digits, once they are compared.
+class ConnectSessionV3 extends ConnectSession {
+  /// The peer account's ML-DSA-65 key, checked against the commitment its
+  /// code carries; null for a classical code, which commits to none.
+  final Uint8List? peerPqKey;
+
+  /// The peer device's sealing key (ADR 0033 §1).
+  final Uint8List peerSealKey;
+
+  ConnectSessionV3({
+    required super.channelKey,
+    required super.sas,
+    required super.peer,
+    super.group,
+    this.peerPqKey,
+    required this.peerSealKey,
+  });
+}
+
+/// The side that made a version-3 invite. Sends messages 1 and 3.
+///
+/// [pqKey] is this account's ML-DSA-65 key, required when [me]'s code commits
+/// to one; [sealKey] this device's sealing key. Both are public, and both go
+/// only into the reveal, under the channel key.
+class ConnectInviterV3 {
+  final ConnectCode code;
+  final ConnectIdentity me;
+  final Uint8List? pqKey;
+  final Uint8List sealKey;
+  final Uint8List ephSeed, ephPub;
+
+  /// This invite's own ML-KEM-768 pair: the 64-byte seed and the key message
+  /// 1 offers. Fresh for every invite, and used for one decapsulation.
+  final Uint8List kemSeed, kemEk;
+
+  /// The group bit, as [ConnectInviter.group].
+  final bool? group;
+
+  Uint8List? _peerEph, _peerCommitment, _peerCt, _k, _dh, _channelKey;
+
+  ConnectInviterV3._(this.code, this.me, this.pqKey, this.sealKey,
+      this.ephSeed, this.ephPub, this.kemSeed, this.kemEk, this.group);
+
+  /// A new version-3 invite, made with [code] — which must be of version 3 —
+  /// or, without one, with a fresh one: `ConnectCode.generate(version: 3)`,
+  /// the minting function [ConnectCode.generate] does not call.
+  static Future<ConnectInviterV3> create(
+      {required ConnectIdentity me,
+      required List<int> sealKey,
+      List<int>? pqKey,
+      ConnectCode? code,
+      bool? group}) async {
+    if (code != null && code.version != 3) {
+      throw ArgumentError.value(
+          code.version, 'code', 'a version-3 ceremony needs a version-3 invite');
+    }
+    checkConnectOwnKeysV3(me, sealKey: sealKey, pqKey: pqKey);
+    final seed = randomBytes(32);
+    final pub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
+    final (kemSeed, kemEk) = pqGenerate();
+    return ConnectInviterV3._(
+        code ?? ConnectCode.generate(version: 3),
+        me,
+        pqKey == null ? null : Uint8List.fromList(pqKey),
+        Uint8List.fromList(sealKey),
+        seed,
+        pub,
+        kemSeed,
+        kemEk,
+        group);
+  }
+
+  /// As [ConnectInviter.toJson]. Once message 3 has gone, K is kept as well,
+  /// so a resumed run never decapsulates again.
+  Map<String, Object?> toJson() => {
+        'code': b64(code.secret),
+        'cv': 3,
+        'me': me.contactCode,
+        if (me.displayName != null) 'name': me.displayName,
+        if (pqKey != null) 'pqk': b64(pqKey!),
+        'seal': b64(sealKey),
+        'eph': b64(ephSeed),
+        'kem': b64(kemSeed),
+        if (group != null) 'grp': group,
+        if (_peerEph != null) 'peerEph': b64(_peerEph!),
+        if (_peerCommitment != null) 'peerC': b64(_peerCommitment!),
+        if (_peerCt != null) 'peerCt': b64(_peerCt!),
+        if (_k != null) 'k': b64(_k!),
+      };
+
+  /// Reads back what [toJson] wrote: a record of version 3, and only that.
+  static Future<ConnectInviterV3> fromJson(Map<String, Object?> j) async {
+    if (j['cv'] != 3) {
+      throw const FormatException('not a version-3 invite record');
+    }
+    final me = await ConnectIdentity.fromCode(j['me'] as String,
+        displayName: j['name'] as String?);
+    final seed = unb64(j['eph'] as String);
+    final pub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
+    final kemSeed = unb64(j['kem'] as String);
+    final (kemEk, _) = pqKeyPairFromSeed(kemSeed);
+    final grp = j['grp'];
+    final pqk = j['pqk'];
+    final out = ConnectInviterV3._(
+        ConnectCode(unb64(j['code'] as String), version: 3),
+        me,
+        pqk is String ? unb64(pqk) : null,
+        unb64(j['seal'] as String),
+        seed,
+        pub,
+        kemSeed,
+        kemEk,
+        grp is bool ? grp : null);
+    final pe = j['peerEph'], pc = j['peerC'], pct = j['peerCt'], k = j['k'];
+    if (pe is String && pc is String && pct is String && k is String) {
+      final dh = await _dhOf(seed, unb64(pe));
+      out._peerEph = unb64(pe);
+      out._peerCommitment = unb64(pc);
+      out._peerCt = unb64(pct);
+      out._k = unb64(k);
+      out._dh = dh;
+      out._channelKey = await _deriveChannelKeyV3(
+          concatBytes([dh, out._k!]), (await out.code.inviteKey())!);
+    }
+    return out;
+  }
+
+  /// True once [open] has been called, so a resumed run knows where it is.
+  bool get opened => _channelKey != null;
+
+  /// Message 1: the commitment, and beside it the KEM key it covers.
+  Future<Map<String, Object?>> commit() async => {
+        'c': b64(await me._commitmentV3(
+            ephPub, kemEk, (await code.inviteKey())!)),
+        'ek': b64(kemEk),
+      };
+
+  /// Message 3, from the acceptor's reply (message 2): decapsulate its
+  /// ciphertext, derive the hybrid channel, and send this side's opening
+  /// with its reveal sealed under it. Once: a second reply is refused.
+  Future<Map<String, Object?>> open(Map<String, Object?> reply) async {
+    if (opened) {
+      throw const ConnectAbort(
+          'a second reply: this invite has decapsulated its one ciphertext');
+    }
+    final eph = _need(reply, 'ephx');
+    final commitment = _need(reply, 'c');
+    if (eph.length != 32 || commitment.length != 32) {
+      throw const ConnectAbort('malformed reply');
+    }
+    final ct = _kemMember(reply, 'ct', pqCtLength);
+    final dh = await _dhOf(ephSeed, eph);
+    // pqcrypto 0.4.1 does not decapsulate in constant time, and that gates
+    // `zs2.` (44.7, ADR 0033 decision 4) but not this. What separates the two
+    // is how many ciphertexts one key ever meets. `zs2.`'s sealing key lives
+    // as long as the device and decapsulates whatever anyone addresses to its
+    // mailbox, with the relay timing every acknowledgement: the stream of
+    // chosen ciphertexts a KyberSlash-class leak is exploited with. This key
+    // was drawn for this invite and decapsulates exactly once — the first
+    // reply's ciphertext, kept with K so a resumed run does not decapsulate
+    // again; [open] refuses a second — and goes with the invite. Whoever
+    // chose that ciphertext gets one measurement of a key that never
+    // decapsulates again.
+    final k = pqDecapsulate(kemSeed, ct);
+    _peerEph = eph;
+    _peerCommitment = commitment;
+    _peerCt = ct;
+    _k = k;
+    _dh = dh;
+    _channelKey = await _deriveChannelKeyV3(
+        concatBytes([dh, k]), (await code.inviteKey())!);
+    return {
+      'ephx': b64(ephPub),
+      'blob': b64(await _seal(_channelKey!,
+          me._revealV3(group: group, pqKey: pqKey, sealKey: sealKey))),
+    };
+  }
+
+  /// Message 4: the acceptor's sealed reveal, checked against the commitment
+  /// it made in message 2 — which covers the ciphertext this side
+  /// decapsulated — and by version 3's rules for what it carries.
+  Future<ConnectSessionV3> complete(Map<String, Object?> reveal) async {
+    final key = _channelKey;
+    if (key == null) {
+      throw const ConnectAbort('complete() before open(): out of order');
+    }
+    final (peer, echo, peerPq, peerSeal) =
+        await _openRevealV3(key, reveal, readGroup: group != null);
+    if (!constantTimeEquals(
+        await peer._commitmentV3(
+            _peerEph!, _peerCt!, (await code.inviteKey())!),
+        _peerCommitment!)) {
+      throw const ConnectAbort(
+          'the other side revealed something it had not committed to');
+    }
+    if (echo != null && echo != group) {
+      throw const ConnectAbort(
+          'the other side read a different group bit from the one sent');
+    }
+    return ConnectSessionV3(
+      channelKey: key,
+      sas: await _deriveSasV3(concatBytes([_dh!, _k!]), me, ephPub, peer,
+          _peerEph!, kemEk, _peerCt!),
+      peer: peer,
+      group: echo,
+      peerPqKey: peerPq,
+      peerSealKey: peerSeal,
+    );
+  }
+}
+
+/// The side that opened a version-3 invite. Sends messages 2 and 4.
+class ConnectAcceptorV3 {
+  final ConnectIdentity me;
+  final ConnectCode code;
+  final Uint8List? pqKey;
+  final Uint8List sealKey;
+
+  /// As [ConnectAcceptor.groupAware].
+  final bool groupAware;
+
+  final Uint8List _ephSeed, _ephPub, _peerCommitment, _peerEk, _m, _ct, _k;
+
+  ConnectAcceptorV3._(
+      this.me,
+      this.code,
+      this.pqKey,
+      this.sealKey,
+      this._ephSeed,
+      this._ephPub,
+      this._peerCommitment,
+      this._peerEk,
+      this._m,
+      this._ct,
+      this._k,
+      this.groupAware);
+
+  Uint8List get ephPub => _ephPub;
+
+  /// The ciphertext message 2 carries.
+  Uint8List get ct => _ct;
+
+  /// As [ConnectAcceptor.toJson]: the invite is not in it. The encapsulation
+  /// is kept as its randomness, from which it is recomputed exactly.
+  Map<String, Object?> toJson() => {
+        'me': me.contactCode,
+        if (me.displayName != null) 'name': me.displayName,
+        if (pqKey != null) 'pqk': b64(pqKey!),
+        'seal': b64(sealKey),
+        'eph': b64(_ephSeed),
+        'peerC': b64(_peerCommitment),
+        'peerEk': b64(_peerEk),
+        'm': b64(_m),
+        if (groupAware) 'ga': true,
+      };
+
+  static Future<ConnectAcceptorV3> fromJson(Map<String, Object?> j,
+      {required ConnectCode code}) async {
+    if (code.version != 3) {
+      throw ArgumentError.value(
+          code.version, 'code', 'a version-3 ceremony needs a version-3 invite');
+    }
+    final me = await ConnectIdentity.fromCode(j['me'] as String,
+        displayName: j['name'] as String?);
+    final seed = unb64(j['eph'] as String);
+    final pub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
+    final peerEk = unb64(j['peerEk'] as String);
+    final m = unb64(j['m'] as String);
+    final (ct, k) = pqEncapsulate(peerEk, m: m);
+    final pqk = j['pqk'];
+    return ConnectAcceptorV3._(
+        me,
+        code,
+        pqk is String ? unb64(pqk) : null,
+        unb64(j['seal'] as String),
+        seed,
+        pub,
+        unb64(j['peerC'] as String),
+        peerEk,
+        m,
+        ct,
+        k,
+        j['ga'] == true);
+  }
+
+  /// Message 2: a fresh ephemeral, an encapsulation to the inviter's KEM key
+  /// and this side's commitment, which covers the ciphertext's hash — all
+  /// chosen holding only a hash of the inviter's opening.
+  static Future<(Map<String, Object?>, ConnectAcceptorV3)> reply(
+      Map<String, Object?> commit,
+      {required ConnectIdentity me,
+      required ConnectCode code,
+      required List<int> sealKey,
+      List<int>? pqKey,
+      bool groupAware = false}) async {
+    if (code.version != 3) {
+      throw ArgumentError.value(
+          code.version, 'code', 'a version-3 ceremony needs a version-3 invite');
+    }
+    checkConnectOwnKeysV3(me, sealKey: sealKey, pqKey: pqKey);
+    final c = _need(commit, 'c');
+    if (c.length != 32) throw const ConnectAbort('malformed commitment');
+    final ek = _kemMember(commit, 'ek', pqEkLength);
+    if (!mlKemEncapsulationKeyValid(ek)) {
+      throw const ConnectAbort('malformed "ek"');
+    }
+    final seed = randomBytes(32);
+    final pub = Uint8List.fromList(
+        (await (await _x.newKeyPairFromSeed(seed)).extractPublicKey()).bytes);
+    final m = randomBytes(32);
+    final (ct, k) = pqEncapsulate(ek, m: m);
+    final acceptor = ConnectAcceptorV3._(
+        me,
+        code,
+        pqKey == null ? null : Uint8List.fromList(pqKey),
+        Uint8List.fromList(sealKey),
+        seed,
+        pub,
+        c,
+        ek,
+        m,
+        ct,
+        k,
+        groupAware);
+    return (
+      {
+        'ephx': b64(pub),
+        'c': b64(await me._commitmentV3(pub, ct, (await code.inviteKey())!)),
+        'ct': b64(ct),
+      },
+      acceptor,
+    );
+  }
+
+  /// Message 3 in, message 4 out: open the inviter's reveal under the hybrid
+  /// channel, check it against the commitment of message 1 — which covers the
+  /// KEM key this side encapsulated to — and reveal this side.
+  Future<(Map<String, Object?>, ConnectSessionV3)> accept(
+      Map<String, Object?> open) async {
+    final eph = _need(open, 'ephx');
+    if (eph.length != 32) throw const ConnectAbort('malformed opening');
+    final inviteKey = (await code.inviteKey())!;
+    final dh = await _dhOf(_ephSeed, eph);
+    final ikm = concatBytes([dh, _k]);
+    final key = await _deriveChannelKeyV3(ikm, inviteKey);
+    final (peer, group, peerPq, peerSeal) =
+        await _openRevealV3(key, open, readGroup: groupAware);
+    if (!constantTimeEquals(
+        await peer._commitmentV3(eph, _peerEk, inviteKey), _peerCommitment)) {
+      throw const ConnectAbort(
+          'the other side revealed something it had not committed to');
+    }
+    return (
+      {
+        'blob': b64(await _seal(
+            key,
+            me._revealV3(
+                group: groupAware ? (group ?? false) : null,
+                pqKey: pqKey,
+                sealKey: sealKey)))
+      },
+      ConnectSessionV3(
+        channelKey: key,
+        sas: await _deriveSasV3(ikm, peer, eph, me, _ephPub, _peerEk, _ct),
+        peer: peer,
+        group: group,
+        peerPqKey: peerPq,
+        peerSealKey: peerSeal,
+      ),
+    );
   }
 }

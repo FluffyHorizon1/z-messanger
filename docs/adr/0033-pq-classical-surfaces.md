@@ -14,11 +14,13 @@ relay client's frames, with their vectors (§8.3, `vectors/intro-key/`);
 44.10 — the relay keeps introduction keys (§12.7). Nothing a client sends has
 changed: no client seals `zs2.` before 44.7, which waits for constant‑time
 ML‑KEM upstream, and none publishes, fetches or emits an introduction key or
-`sk` before 44.11–44.12. 44.1's sealing key, `pqdc` and `zs2.` are built in
-the protocol library too, with their vectors (PROTOCOL §8.2, §18.11,
-`vectors/sealed-v2/`, `v3/device_attestation.json`), and none of it is sent:
-no `pqseal`, `pqs` or `pqdc` before 44.3, and no `zs2.` before 44.7. The rest
-of the build plan below is not built.
+`sk` before 44.11–44.12. 44.1 is built in the protocol library, with its
+vectors, and none of it is sent or run: the sealing key, `pqdc` and `zs2.`
+(PROTOCOL §8.2, §18.11; `vectors/sealed-v2/`, `v3/device_attestation.json`) —
+no `pqseal`, `pqs` or `pqdc` before 44.3, and no `zs2.` before 44.7 — and
+pairing v3 and CONNECT v3 (§10.2, §20.9; `vectors/pair-v3/`,
+`connect/invite_v3.json`) — neither runs before 44.4 and 44.6, and
+`connectInviteVersion` stays 2. The rest of the build plan below is not built.
 **Decides:** for each surface the 3 October analysis (§4.3) found classical —
 pairing enrolment, CONNECT, the sealed outer layer, contact requests, the
 device a scanned code names, session authentication — what becomes hybrid, on
@@ -161,8 +163,10 @@ by scanning the invite's QR and comparing the digits there.
 
 It is minted a release after the release that reads it (Finnian's decision of
 2026‑10‑17): the readers ship first (44.6), so an older acceptor is never
-handed an invite it cannot open, and `connectInviteVersion` moves to 3 in the
-release after.
+handed an invite it cannot open, and the release after makes its invites with
+version 3's own run, which carries the device's sealing key. Moving
+`connectInviteVersion` to 3 does not do it: the version‑2 run refuses a
+version‑3 invite, so every invite it made would fail, closed.
 
 ### 5. The sealed outer layer: `zs2.` (§8.2)
 
@@ -353,12 +357,12 @@ failing test on the base where it can be expressed, and a mutation check.
 
 | # | Patch | Needs | Status |
 |---|---|---|---|
-| 44.1 | Protocol cores and vectors: sealing key, `zs2.` seal/open, `pqdc` sign/verify, pairing v3, CONNECT v3 | — | planned; nothing emits; **built** (sealing key, `pqdc`, `zs2.`) |
+| 44.1 | Protocol cores and vectors: sealing key, `zs2.` seal/open, `pqdc` sign/verify, pairing v3, CONNECT v3 | — | **built**; nothing emits |
 | 44.2 | The relay treats `zs2.` as sealed | — | **built**; deploy before 44.7 |
 | 44.3 | Every device gets a sealing key and attestation: `pqseal`/`pqs`, `pqid.pqdc`, `dir:"pqdc"`, archive | 44.1 | planned; sends keys, uses none |
 | 44.4 | Pairing v3 | 44.1, 44.3 | planned; highest value, so land it first |
 | 44.5 | The scanned device's link | 44.3 | planned; bites once peers run 44.3 |
-| 44.6 | CONNECT v3: readers first; minting is one constant (`connectInviteVersion`), a release later (decision 2) | 44.1, 44.3 | planned |
+| 44.6 | CONNECT v3: readers first; minting a release later (decision 2), by making invites with version 3's run and the device's sealing key — not by moving `connectInviteVersion`, which the version‑2 run refuses | 44.1, 44.3 | planned |
 | 44.7 | `zs2.` switched on | 44.2 deployed, 44.3, constant-time ML-KEM upstream (decision 4) | planned; goes last |
 | 44.8 | `kintro`: as addendum A changes it, §21.3's relay-held key signed by `intro`; the record does not change | 44.9–44.12 | planned; the handles hardening it was to land with shipped in 4.3.0 without it |
 | 44.9 | Protocol core and vectors of addendum A: `iks`, the entry, `sk` in codes, the FIPS 203 key check, `kintro`, the relay-client frames | 44.1, to be used (built on the library's ML-KEM) | **built**; nothing emits |
