@@ -575,8 +575,10 @@ split‑view attacker answering the device's request from the root's mailbox).
 **Self‑healing distribution.** A root that receives an echo `pdl` for its own
 account with `v` below its current version knows that contact never got the
 list (added after a device was linked, or a broadcast lost) and sends it
-again (cooldown‑limited); it also introduces its device set alongside the
-contact‑add hello. A device that installs a contact's list naming a device it
+again (cooldown‑limited: the same list at most once a minute to one contact;
+a list that has changed since it last went to them — a linked device's proof
+of possession taken at the same version, §3.1, ADR 0022 — goes at once); it
+also introduces its device set alongside the contact‑add hello. A device that installs a contact's list naming a device it
 has never sent its own list to sends its list then — to every device of the
 contact, once per such list, not cooldown‑limited. The new device holds at
 most the one‑device list its own device passed on when the contact was added

@@ -2835,7 +2835,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     _helloSentMs.remove(rid);
     _pokeSentMs.remove(rid);
     _heardFrom.remove(rid);
-    _dlResentAtMs.remove(rid);
+    _dlResent.remove(rid);
     // ADR 0026: what this device asked them about my account, what they
     // handed over, and what it counted against them.
     _pendingOwnerEcho.remove(rid);
@@ -12488,18 +12488,65 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// device was linked, or the broadcast was lost) — hand it over now. Root
   /// only (it can sign, and every contact already knows its routing id). A
   /// per-contact cooldown bounds the retries if their install keeps failing.
-  final Map<String, int> _dlResentAtMs = {};
+  ///
+  /// Retries of one list: what the minute holds back is the list last handed
+  /// to that contact ([_shareableListKey]), never a different one. A list can
+  /// change without its version moving — a linked device's proof of
+  /// possession sits outside every signature and the fingerprint (ADR 0022,
+  /// [_applyDevicePop]) — and the contact whose echo shows it behind is the
+  /// one the proof is for: a receiver that refused the list because
+  /// another's claim held the device there first. Held to the minute
+  /// whatever the list, a message of theirs that crossed the list naming the
+  /// device had the root hand that list over again before the proof was in,
+  /// and their next message, after the proof, was answered with nothing: the
+  /// squatter's claim stood until a message of theirs came a minute after
+  /// the first re-send (device_pop_test 1, on CI on 2026-10-19; its
+  /// criterion 13 makes that order happen every time).
+  final Map<String, ({int atMs, String key})> _dlResent = {};
   static const int _dlResendCooldownMs = 60 * 1000;
+
+  /// Test seam: while a test has set it, every echo that showed a contact
+  /// behind, as [_maybeResendDeviceList] answered it, in order: whose, and
+  /// the list handed over again — null when the cooldown held it back.
+  @visibleForTesting
+  List<({String rid, String? sent})>? debugListResends;
 
   Future<void> _maybeResendDeviceList(String rid) async {
     final contact = contacts[rid];
     if (contact == null) return;
-    final last = _dlResentAtMs[rid] ?? 0;
-    if (_now() - last < _dlResendCooldownMs) return;
+    // Read before the list is signed: a proof taken while it signs leaves a
+    // key the record does not match, so the next echo hands that list over
+    // too — one re-send more, never one fewer.
+    final key = await _shareableListKey();
+    final last = _dlResent[rid];
+    if (last != null &&
+        last.key == key &&
+        _now() - last.atMs < _dlResendCooldownMs) {
+      debugListResends?.add((rid: rid, sent: null));
+      return;
+    }
     final data = await _shareableDeviceList();
     if (data == null) return;
-    _dlResentAtMs[rid] = _now();
+    _dlResent[rid] = (atMs: _now(), key: key);
+    debugListResends?.add((rid: rid, sent: data));
     await _sendInner(contact, _devlistInner(data));
+  }
+
+  /// What [_shareableDeviceList] would hand a contact now, read rather than
+  /// signed (signing has work of its own: the post-quantum signature, the
+  /// log's queue): for a root, the version, the shape and every certificate
+  /// with whatever proof it holds — all a list it signs is made of; for a
+  /// linked device, the list its root last gave it. It changes exactly when
+  /// the list would.
+  Future<String> _shareableListKey() async {
+    if ((await accountIdentity()).holdsAccountRoot) {
+      return jsonEncode([
+        await _myDevlistVersion(),
+        _signsV2Only,
+        [for (final d in await myFullDeviceList()) d.toJson()],
+      ]);
+    }
+    return await vault.kvGet('own_list_json') ?? '';
   }
 
   /// The account-signed device list THIS device can hand to a contact.
@@ -12917,13 +12964,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// sent before we knew the laptop was there. Not cooldown-limited: a
   /// contact's list changes only when their account signs a new one.
   Future<void> _sendOwnListToNewDevices(Contact contact) async {
+    final key = await _shareableListKey();
     final data = await _shareableDeviceList();
     if (data == null || !contacts.containsKey(contact.rid)) return;
     // A one-device account's list is the one in its code: nothing newer for
     // the new device to learn, and nothing claimed above what it holds.
     final v = (jsonDecode(data) as Map)['ver'];
     if (v is! num || v <= 1) return;
-    _dlResentAtMs[contact.rid] = _now();
+    _dlResent[contact.rid] = (atMs: _now(), key: key);
     await _sendInner(contact, _devlistInner(data));
   }
 

@@ -74,6 +74,16 @@
 //  12. a root that applied a proof as 4.2.0 did (kept, nothing published)
 //      finds the log's copy of V without it at its next check of the log, and
 //      moves the list to V+1, which carries it.
+//
+// And the re-send's minute, which bounds retries of one list:
+//  13. a message of the receiver's that crosses the list naming the device,
+//      read by the root before the device's proof is in, is answered with
+//      that list again, without the proof — and once the proof is in, the
+//      receiver's next message, inside the minute, is answered with the list
+//      carrying it, which withdraws the claim; the same list still goes once
+//      a minute. (Until 2026-10-19 the minute held back any list: the claim
+//      stood until a message came a minute after the first re-send, and
+//      criterion 1 failed on CI when one of Vic's crossed Bob's list.)
 @Tags(['integration'])
 @Timeout(Duration(minutes: 6))
 library;
@@ -1099,5 +1109,83 @@ void main() {
     expect((await inLog(alice, laptop.cert))!.proven, isTrue,
         reason: 'v3 carries the proof the log lacked');
     await logReadersHoldItProven(alice, laptop.cert, 3, '12');
+  });
+
+  test(
+      "13. a receiver's message that crosses the list before the proof is "
+      'in is answered with that list, and its next one with the list '
+      'carrying the proof, inside the minute', () async {
+    final vic = await start('vic13');
+    final bob = await start('bob13');
+    final mal = await start('mal13');
+    await introduce(vic, bob);
+    await introduce(vic, mal);
+    final laptop = await linkedTo(bob, 'bob13laptop');
+    final laptopRid = await laptop.cert.routingId();
+    laptop.svc.debugNoDevicePop = true; // its proof comes later
+    await sendList(mal, vic,
+        await claim(mal, keysOfCert(laptop.cert),
+            await vic.heldContactListVersion(mal.myRid) + 1));
+    await waitUntil(() => vic.debugListedDeviceOwner(laptopRid) == mal.myRid,
+        what: "Mal's claim installed: nothing held contradicted it");
+
+    // Bob lists his laptop, which has not handed over its proof, and Vic
+    // refuses the list: first come. A message of hers then echoes the list
+    // she holds for him, the one before the laptop, and Bob's root hands its
+    // list over again — without the proof, which is not in yet — and she
+    // refuses that too. This is the order device_pop_test 1 met on CI: a
+    // message of Vic's crossing the list, read before the proof landed.
+    bob.debugListResends = [];
+    await bob.addMyDevice(laptop.cert);
+    await refused(vic, bob.myRid);
+    Iterable<String> resentToVic() => [
+          for (final r in bob.debugListResends!)
+            if (r.rid == vic.myRid && r.sent != null) r.sent!
+        ];
+    await vic.sendText(bob.myRid, 'are you there?');
+    await waitUntil(() => resentToVic().isNotEmpty,
+        what: "Bob's root hands its list over again");
+    expect(resentToVic().single, isNot(contains('"pop"')),
+        reason: 'the laptop has handed over no proof');
+    expect(vic.debugListedDeviceOwner(laptopRid), mal.myRid);
+
+    // The minute still bounds retries of one list: Vic's next message,
+    // echoing the same old list, is not answered with the same list again.
+    final answered = bob.debugListResends!.length;
+    await vic.sendText(bob.myRid, 'anyone?');
+    await waitUntil(
+        () => bob.debugListResends!
+            .skip(answered)
+            .any((r) => r.rid == vic.myRid),
+        what: "Bob's root answers Vic's next echo");
+    expect(resentToVic(), hasLength(1),
+        reason: 'the same list is not handed over twice in a minute');
+
+    // The laptop updated: the same vault, a build that makes proofs. Its
+    // proof reaches Bob's root inside the minute of that re-send.
+    await waitUntil(
+        () async => await laptop.svc.vault.kvGet('own_list_json') != null,
+        what: "the laptop learned its account's list");
+    await stop(laptop.svc);
+    await start('bob13laptop');
+    await waitUntil(() => rootHoldsProof(bob, laptopRid),
+        what: "Bob's root holds the laptop's proof");
+
+    // Vic's next message: the list it is answered with is a different one
+    // now, carrying the proof, and it goes at once.
+    await vic.sendText(bob.myRid, 'still there?');
+    await upTo(() => vic.debugListedDeviceOwner(laptopRid) == bob.myRid,
+        what: "Vic holds the laptop for Bob");
+    expect(vic.debugListedDeviceOwner(laptopRid), bob.myRid,
+        reason: 'the minute holds back the list it re-sent, not a list that '
+            'has gained a proof since');
+    expect(resentToVic(), hasLength(2));
+    expect(resentToVic().last, contains('"pop"'));
+    expect(await vic.heldContactListVersion(bob.myRid), 2,
+        reason: "Bob's list installed, at the version it always had");
+    expect(alertOn(vic, mal.myRid), (k: 'dl_claimed', with_: bob.myRid),
+        reason: "Mal's chat says whose device it proved to be");
+    expect(vic.contactDevlistAlerts[bob.myRid], isNull,
+        reason: "the refusal of Bob's list is superseded");
   });
 }

@@ -179,6 +179,11 @@ as above: a device with no proof is first come, as it was.
   outbox, delivered when both are online), and a receiver with the next list the
   root hands it (rule 4) — for a receiver that refused the owner's list, on its
   next message to the account, at most once a minute (the re‑send's cooldown).
+  *(2026‑10‑19: the minute holds back the same list only. A message of the
+  receiver's that crossed the owner's list was answered with that list before
+  the proof was in, and the minute then held back the list carrying it too,
+  so the claim stood until a message came a minute later. A list that has
+  changed since it last went to that receiver now goes at once.)*
 * **For an account whose devices are old**: for each device that makes no
   proof, the window never closes — patch 41's rule, unchanged — until that
   device runs a build with this, AND the account's root does (a root from
