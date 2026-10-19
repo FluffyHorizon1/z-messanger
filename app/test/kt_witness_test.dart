@@ -45,6 +45,13 @@
 //     verified — a restored snapshot, seen from a client — is still caught:
 //     it cannot prove the way to the witness's head, and its own current
 //     head is smaller than it.
+//
+// And what ships (2026-10-17):
+// 10. the build's defaults pin the public witness: an address and a key
+//     together, so Settings would save them as they are; the address the
+//     witness's record over https, on a host that is not the log's; the key
+//     32 bytes and not the log's own — a witness pinned to the log's key is
+//     the log agreeing with itself.
 @Timeout(Duration(minutes: 2))
 library;
 
@@ -463,5 +470,20 @@ void main() {
       expect(kt.fault, isNotNull);
       expect(kt.fault!.reason, contains('smaller than the ${signed.size} its witness verified'));
     });
+  });
+
+  test("10. the build's defaults pin the public witness: both values, its record over https, a key that is not the log's", () {
+    const c = KtConfig.defaults;
+    expect(c.enabled, isTrue, reason: 'the public log is configured');
+    expect(c.witnessProblem, isNull,
+        reason: 'an address and a key together, so Settings would save them as they are');
+    expect(c.hasWitness, isTrue);
+    final w = Uri.parse(c.witnessUrl);
+    expect(w.scheme, 'https');
+    expect(w.path, '/sth.json', reason: 'the record is fetched at the address as it stands (§19.5 step 3)');
+    expect(w.host, isNot(Uri.parse(c.logUrl).host), reason: 'the witness is not the log');
+    expect(c.witnessPub, hasLength(32));
+    expect(b64(c.witnessPub!), isNot(b64(c.logPub!)),
+        reason: "a witness pinned to the log's own key is the log agreeing with itself");
   });
 }

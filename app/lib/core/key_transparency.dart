@@ -44,28 +44,22 @@ import 'alarm_evidence.dart';
 import 'kt_private_lookups.dart';
 import 'vault.dart';
 
-/// Build-time defaults. The production log's key is set with
-/// `--dart-define=KT_LOG_PUB=<base64>` (and the witness likewise) once the
-/// log is live; an empty key means no log is configured and the client is
-/// inert — `tool/check_ga.py` refuses G3 a tick while it is empty.
+/// Build-time defaults: the public log, and its witness. They are set here,
+/// in the source, and not with a `--dart-define`: a value on one build
+/// command is a value no rebuild reproduces, and `tool/check_ga.py` refuses
+/// G3 a tick while any of the four is empty. An empty log key means no log
+/// is configured and the client is inert.
+///
+/// The witness (2026-10-17) is a mirror of the log, run by somebody other
+/// than the log's operator, that co-signs each head it has verified (§19.10).
+/// Its address is that mirror's record, the `/sth.json` it serves, fetched
+/// as it stands; its key is the `witness.pub` inside the record, handed over
+/// out of band, which is what makes the record worth fetching. Both or
+/// neither (`KtConfig.witnessProblem`).
 const String defaultKtLogUrl =
     String.fromEnvironment('KT_LOG_URL', defaultValue: 'https://kt.zmessengers.com');
 const String defaultKtLogPub = String.fromEnvironment('KT_LOG_PUB',
     defaultValue: '7nyv9LNKMfr9u3QrfSRUBsP+g/jZapwI3uxfklIU7xA=');
-/// The witness's record itself, not its host: this URL is fetched as it
-/// stands (the log's is a base that paths are appended to), and the mirror
-/// answers `/` with a plain-text banner. A host alone would be fetched,
-/// parse as nothing, and be ignored — a witness believed in and not had,
-/// which is what `hasWitness` below is written to prevent.
-///
-/// A name whose DNS this project controls, not the host its platform gave
-/// it: a pinned URL that somebody else can reassign is a pin on somebody
-/// else's hostname, and moving the service should not need a release.
-///
-/// It is run by this log's operator today, so it detects a later compromise
-/// of the log and nothing about the operator; R7 and R50 stay open until
-/// somebody else co-signs. A witness of one's own is still worth pinning:
-/// the check is only ever evidence against the log.
 const String defaultKtWitnessUrl = String.fromEnvironment('KT_WITNESS_URL',
     defaultValue: 'https://witness.zmessengers.com/sth.json');
 const String defaultKtWitnessPub = String.fromEnvironment('KT_WITNESS_PUB',
@@ -546,10 +540,10 @@ class KeyTransparency {
   /// drives it, and is unaffected by this.
   ///
   /// The WITNESS address is judged by the same rule. It was not, and the
-  /// omission was invisible only because `defaultKtWitnessUrl` is still empty:
-  /// the moment a build defines one, every test that stands up a ChatService
-  /// would have asked a stranger's server for a record on a timer, which is
-  /// the whole of what this guard exists to stop.
+  /// omission was invisible only while `defaultKtWitnessUrl` was empty. It
+  /// names the public witness now (2026-10-17), and a configuration pairing
+  /// it with a loopback log would otherwise ask a stranger's server for a
+  /// record on a timer, which is the whole of what this guard exists to stop.
   bool get _offLimitsInTest {
     if (!_inFlutterTest) return false;
     return !(_loopbackOrEmpty(config.logUrl) && _loopbackOrEmpty(config.witnessUrl));

@@ -10,8 +10,8 @@ happened; it can check that this file has not drifted from the repository
 around it.
 
 **Status: NOT READY.** Three criteria are unmet — G1 waits on an engagement,
-G3 on a witness outside the project, G7 on iOS — and G2 holds but has been checked by
-nobody outside the project.
+G3 on a release that carries its witness and on its last condition, G7 on
+iOS — and G2 holds but has been checked by nobody outside the project.
 
 ---
 
@@ -21,7 +21,7 @@ nobody outside the project.
 |---|---|---|
 | G1 | External cryptographic audit, zero open Critical/High | ❌ **not commissioned** |
 | G2 | Reproducible builds, verified by someone outside the project | ⚠️ **property holds, nobody outside has checked** |
-| G3 | Key transparency live | ❌ **deployed and pinned; nobody outside witnesses it** |
+| G3 | Key transparency live | ❌ **deployed, pinned, and witnessed by a second person; condition 4 unconfirmed, and no release carries the witness yet** |
 | G4 | Encrypted backup and restore | ✅ |
 | G5 | Multi-device | ✅ |
 | G6 | Published threat model | ✅ |
@@ -64,7 +64,7 @@ reads the build path out of the APK and prints that. See
 project structurally cannot self-certify, and marking it ✅ on our own
 authority would be the exact overclaim these documents exist to prevent.
 
-### G3 — Key transparency ❌ — live and pinned, not yet witnessed
+### G3 — Key transparency ❌ — live, pinned and witnessed; not yet confirmed or shipped
 
 Written into the GA criteria at the start of phase 8 and deferred by
 `adr/0001` until "a public launch with an operator committed to durable
@@ -92,15 +92,21 @@ under it.
 | # | Condition | State |
 |---|---|---|
 | 1 | The service answers over TLS at `kt.zmessengers.com` | ✅ |
-| 2 | The shipped client pins its public key, with a witness configured | pinned ✅; `defaultKtWitnessUrl` and `defaultKtWitnessPub` are still empty, so the witness half is not. `check_ga.py` now reads all four, not `KT_LOG_PUB` alone |
-| 3 | A mirror run by someone other than the operator has verified a head | ❌ — needs a second person |
+| 2 | The shipped client pins its public key, with a witness configured | pinned ✅; the witness ✅ in the source since 2026‑10‑17 — `defaultKtWitnessUrl` is `https://witness.zmessengers.com/sth.json` and `defaultKtWitnessPub` its key — and shipped with the first release built from it. `check_ga.py` reads all four, not `KT_LOG_PUB` alone |
+| 3 | A mirror run by someone other than the operator has verified a head | ✅ since 2026‑10‑17, by the maintainer's account of it: the witness runs under another person's account, and its record carries a co‑signature under the key condition 2 pins. The repository cannot show who that person is |
 | 4 | The operator's own account appears in it | the maintainer's to confirm from Settings › Transparency log |
 
 `SELF_HOSTING.md` "Running the transparency log" is the runbook, one step
 per condition, and since `render.kt.yaml` and `render.kt-witness.yaml` the
-log and the witness are a Blueprint each. What is left is the second person:
-a witness Blueprint under somebody else's account, `KT_WITNESS_SEED`
-generated on their machine, and the two witness values in the build.
+log and the witness are a Blueprint each. The second person runs the witness
+now (condition 3), and its two values are in the build (condition 2). What is
+left is condition 4, and a release that carries them.
+
+One gap is not among the four, and is R7's in `THREAT_MODEL.md`. The client
+reaches the witness at `witness.zmessengers.com`, a name in the project's own
+domain, and it passes over a witness it cannot reach, or whose record is old,
+without saying so. Whoever controls that domain cannot sign as the witness,
+but could withhold its record from a reader it shows a fork to.
 
 **The two witness values go into `app/lib/core/key_transparency.dart`, beside
 the log's, and not onto a build command.** This was open; the evidence
@@ -115,12 +121,14 @@ on Android and not on Windows, which is exactly what "no build passes any
 transparency value on any build command, and refuses this row a ✅ while any
 of the four defaults is empty.
 
-Until then the log is trusted on one point rather than checked — it is asked
-to show every reader the same history, and nothing outside this project
-confirms that it does. The same statement lives in `WHITEPAPER.md` §6 and
-§9, `WHAT_Z_CANNOT_DO.md`, `DATA_MAP.md`'s log row, `AUDIT_SCOPE.md` C31 and
-its residual list, and `THREAT_MODEL.md` R7; all were corrected on
-2026-09-13 when the log went live, and R7 closes when this row does.
+Until a release carries the witness, the log is trusted on one point rather
+than checked — it is asked to show every reader the same history, and
+nothing outside this project confirms that it does. The same statement lives
+in `WHITEPAPER.md` §6 and §9, `WHAT_Z_CANNOT_DO.md`, `DATA_MAP.md`'s log and
+witness rows, `AUDIT_SCOPE.md` C31 and its residual list, and
+`THREAT_MODEL.md` R7; all were corrected on 2026-09-13 when the log went
+live and again on 2026‑10‑17 when the witness was pinned, and R7 closes when
+this row does.
 
 ### G4 — Encrypted backup and restore ✅
 
@@ -212,8 +220,8 @@ log's fault warning, English on purpose, for reports.
 ## What would change this page
 
 Two things are the maintainer's, not engineering's: commission the audit
-(G1) and find somebody to run the witness (G3 — the log is deployed and the
-client pins it). One is separate work: iOS
+(G1) and confirm G3's last condition (the log is deployed, a second person
+runs its witness, and the client pins both). One is separate work: iOS
 (G7). One is nobody's to give us — an outside rebuild (G2). Two want a
 person rather than code and are not blockers: a native reader for the
 Spanish (G9) and a screen reader run by hand (G8).

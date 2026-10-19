@@ -79,7 +79,7 @@ seconds to a minute rather than a fraction of a second, which turns one
 message's giveaway into a pattern a relay has to watch for, and you can turn
 receipts off (R41).
 
-Two more parties see some of this. **The transparency log**, which Z uses by
+Three more parties see some of this. **The transparency log**, which Z uses by
 default, is asked about your contacts up to four times a day, from your own
 address — since phase 35 by bucket and never by name: each question covers
 32 to 64 accounts, your contacts' among decoys the app keeps — so whoever
@@ -89,7 +89,11 @@ and, because on a phone a check almost always runs a few seconds after you
 open the app, roughly when you open it, up to four times a day — but not who
 your contacts are; what it learned before phase 35, when the app
 asked by name, it keeps (R40). Turning it off
-takes Developer mode. And **Cloudflare**, in front of the built-in relay and
+takes Developer mode. **The log's witness** — a copy of the log that
+somebody other than its operator runs, there to catch a log showing
+different people different histories — is asked for its one record at each
+check, from your address: whoever runs it learns your address and when your
+app checks, and nothing more. And **Cloudflare**, in front of the built-in relay and
 log, ends their encryption in transit (not the messages', which is
 end-to-end): it sees your address beside your mailbox, which mailbox each
 envelope you send is for, and which buckets you ask the log about (R44).

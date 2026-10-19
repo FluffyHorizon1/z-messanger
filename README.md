@@ -47,7 +47,8 @@ builds have not.
   account shows up on the screens of the people it talks to, and cannot stay
   hidden by being shown to only some of them — unless the log itself shows
   different readers different histories, which only a witness outside the
-  project would catch, and none runs yet
+  project catches: one runs under another person's account and the app pins
+  it from 2026‑10‑17, though the app does not yet say when it cannot reach it
   ([`docs/GA_CHECKLIST.md`](docs/GA_CHECKLIST.md), G3).
 - **Everything on the device is encrypted.** An on‑device vault with every
   sensitive cell sealed under a key in the OS keystore, an optional

@@ -25,12 +25,12 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 | 5 Independent audit | **5.1 ✅ done** · 5.2 scope ✅ (engagement ⛔ external) · 5.3 ⏳ | `docs/PROTOCOL.md` (frozen v1 + v2), `docs/vectors/`, three verifiers in CI, `docs/AUDIT_SCOPE.md` |
 | 6 iOS | ⛔ needs a Mac + Apple developer account | — |
 | 8 Message interactions | **✅ complete** — 8.1a replies · 8.1b reactions · 8.1c edit / delete-for-everyone / forward | `replies_test.dart` (13 cases incl. the group authorship abuse test), `docs/vectors/v1/inner_messages.json`, PROTOCOL §6.4–6.6 |
-| 9–15 | see `docs/ROADMAP_8_15.md` — **9, 10, 11, 13, 14, 15 done** except the externally gated items; 11's log is **deployed at `kt.zmessengers.com` and pinned by the shipped app** (`adr/0006` says what "live" means) — the open half is an independent witness (G3), not deployment; 12 (calls) waits on ADR 0005 | `docs/GA_CHECKLIST.md` is the live GA answer |
+| 9–15 | see `docs/ROADMAP_8_15.md` — **9, 10, 11, 13, 14, 15 done** except the externally gated items; 11's log is **deployed at `kt.zmessengers.com` and pinned by the shipped app** (`adr/0006` says what "live" means) — its witness runs under another person's account and is pinned since 2026‑10‑17 (G3); 12 (calls) waits on ADR 0005 | `docs/GA_CHECKLIST.md` is the live GA answer |
 | 16 | **✅ complete** — 16.1 sealed sender now holds against the relay process, not only its stored data (`adr/0007`, R21) · 16.2 pattern study: jitter and cover traffic measured against a relay that clusters by timing, and rejected with the numbers (`THREAT_MODEL.md` R18/R19) · 16.3 federation decided as client-to-many-relays and deferred (`adr/0008`) | `anonymous_sender_test.dart`, `server/test/sealed.test.js`, `server/bench/patterns.js` |
 | 7 Feature depth | 7.1 sealed sender ✅ · 7.2 linked devices ✅ · 7.3 groups ✅ incl. attachments · **7.4 voice messages ✅** · 7.5 post-quantum hybrid ✅ + **7.5b PQ re-key ✅** · **7.7a device-list transparency ✅** (ADR 0001; 7.7b log: `adr/0006`, in progress) · 7.6 search + history sync + themes ✅ · **7.8 app lock (biometrics) ✅** + **7.8b hardware-bound pass key (Android) ✅** (7.8c macOS/Windows binding ⛔ needs those toolchains) | `sealed_test.dart`, `multidevice_*_test.dart`, `group_test.dart`, `pq_test.dart`, `pq_rekey_test.dart`, `devlist_transparency_test.dart`, `devlist_distribution_test.dart`, `voice_test.dart`, `search_test.dart`, `history_sync_test.dart`, `app_lock_test.dart`, `lock_screen_test.dart` |
 | 17 Connect without meeting | ✅ done | `adr/0009`, PROTOCOL §20, `connect_test.dart`, `connect_relay_test.dart` |
 | 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4, 18.7's proofs reaching the transparency log and 18.6's claim withheld per device landed, not released — the dormant hybrid certificate retired (`adr/0031`) | `adr/0017`/`adr/0022`/`adr/0029`/`adr/0031`, PROTOCOL §3.7, `devlist_capability_test.dart`, `device_cert_pop_test.dart`; closes P1-2, P1-3, P1-4's first-come half (R42) |
-| 19 Transparency witness | people-gated (G3) | mirror/witness built (34), `kt_witness_test.dart`; needs an operator outside the project |
+| 19 Transparency witness | pinned (G3) | mirror/witness built (34); run under another person's account and pinned by the app since 2026‑10‑17 (`kt_witness_test.dart` 10); the app does not yet say when it cannot reach it |
 | 20 Calls | designed | `adr/0005`; media path undecided |
 | 21 iOS | people-gated (G7) | nothing committed; needs a Mac, an Apple account, the reserved push ADR 0002 |
 | 22 GA | not ready | `docs/GA_CHECKLIST.md`: G1, G3, G7 open |
@@ -64,10 +64,10 @@ Each milestone below has a **DoD** (definition of done) that names the proof.
 **Next up:** 4.2.0 shipped phases 18.5–18.7, 23.4–23.5, 41 and 42 and the
 lookups hardening. Landed for the next release: 18.4 (the dormant hybrid
 certificate retired, `adr/0031`) and the hardening the handles need before they
-are switched on. Next: an independent **witness** for the
-transparency log (phase 19) — the log is live and pinned (`adr/0006` says what
-"live" means, `docs/SELF_HOSTING.md` how), and G3's one remaining condition is
-somebody outside the project mirroring it — then **calls** (phase 20) once
+are switched on. The transparency log's **witness** (phase 19) runs under
+another person's account and is pinned in the app since 2026‑10‑17
+(`adr/0006` says what "live" means, `docs/SELF_HOSTING.md` how), so G3 waits
+on a release that carries it and on its last condition. Next: **calls** (phase 20) once
 ADR 0005's media path is decided. The full plan for phases 18–50 is below;
 phases 0–8 are history, 9–16 are in the rows above and in `docs/ROADMAP_8_15.md`
 (historical), and `docs/GA_CHECKLIST.md` is the live answer on what GA still
@@ -436,10 +436,10 @@ people or a decision from you.
 | Phase | Status | Done | Left | Closes |
 |---|---|---|---|---|
 | 18 Device lists sign ratchet keys | 18.5–18.7 done (4.2.0); 18.4, the 18.7 log fix and the 18.6 per-device claim landed, not released | `sig2` over ratchet keys (3.6.1), ML-DSA over membership (3.7.8), the v2-only reader (3.9.9); 18.5–18.6 move each account to v2-only signing once every reader has said it can read one (`adr/0029`, PROTOCOL §3.7), and — landed after 4.2.0 — withhold its claim from each device that has not, not only from a contact none of whose devices has; 18.7 proof of possession in device certificates (`adr/0022`), and — landed after 4.2.0 — in the copy of a list the transparency log takes, so a contact that reads the list from the log cannot lose a proven device to a first-come claim; 18.4 the dormant hybrid certificate retired, the list signature being how v3 binds devices (`adr/0031`) | — | P1-2, P1-3, P1-4's first-come half (R42) |
-| 19 Transparency witness | People-gated | Mirror and witness code; the "witness ahead" false fork fixed (phase 34) | An operator outside the project, then the client's pinned witness config | G3 |
+| 19 Transparency witness | Pinned (2026‑10‑17) | Mirror and witness code; the "witness ahead" false fork fixed (phase 34); a witness run under another person's account, pinned in the app | A release that carries it; the app saying when it cannot reach the witness | G3 |
 | 20 Calls | Designed | `adr/0005` | Your decision on the media path | — |
 | 21 iOS | People-gated | Nothing; `app/ios` has never been committed | A Mac, an Apple account, the reserved push ADR 0002 | G7 |
-| 22 GA | Not ready | G4–G6, G8, G9 met | G1 audit, G2 outside rebuild, G3 witness, G7 iOS | — |
+| 22 GA | Not ready | G4–G6, G8, G9 met | G1 audit, G2 outside rebuild, G3's release and last condition, G7 iOS | — |
 | 23 Groups | Done (23.4–23.5 in 4.2.0) | 23.1 rename, 23.1b roles, 23.2 durable files, 23.3 invite links; 23.4 disappearing messages and 23.5 a leaver who stays gone (`adr/0030`) | — | P1-11, the group P2s |
 | 24 Desktop | Mostly done | 24.1 Linux starts without system libmpv, 24.3 QR images, 24.4 update-notice links (`adr/0013`, `adr/0018`, `adr/0014`) | 24.2 user-presence binding (needs a Mac), 24.5 signed Windows/macOS builds | P1-18, the desktop P2s |
 | 25 Scale | Done | Load rig, SLOs, alert rules, a shared mailbox-creation gate (off by default) | A run against real infrastructure, which only you can do | — |
@@ -587,14 +587,14 @@ flaw F5; R49).
 
 1. Ship the next release: 18.4 and the handles hardening, both landed on
    main.
-2. Recruit a witness operator (phase 19, G3) and engage an auditor (G1).
+2. Ship the witness pin (phase 19, G3) and engage an auditor (G1).
 3. Decide the calls media path (`adr/0005`) and build phase 20.
 4. Phase 43 release integrity, then 39 and 44–50 as their designs land.
 
 ### What waits on you
 
 `docs/GA_CHECKLIST.md` is the live list of who must supply each open gate: a
-witness operator (G3), an auditor (G1), an outside rebuilder (G2), and a Mac
+check of G3's last condition, an auditor (G1), an outside rebuilder (G2), and a Mac
 and signing certificates for iOS and desktop (G7, 24.2, 24.5). Operator steps
 for the relay and the logs live in `docs/SELF_HOSTING.md`'s runbooks. Beyond
 those:

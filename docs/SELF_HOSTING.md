@@ -1067,7 +1067,13 @@ entry, from which it can be reloaded and re‑verified. A paid instance,
 like the log. When it is up, `https://z-kt-witness-<hash>.onrender.com/sth.json`
 is the witness URL and the `witness.pub` inside that file is the witness's
 public key; the witness's operator hands both to the log's operator for
-the client build. `/health` stays 200 after a divergence, deliberately,
+the client build. Give clients a name the witness's operator controls — that
+`onrender.com` address, or a domain of their own. A name in the log
+operator's domain works, but it hands the log's operator the path to its
+witness: it cannot sign as the witness, but it can withhold the record, or
+serve an old one, from a reader it shows a fork to. The public build's
+witness is at such a name, `witness.zmessengers.com` (`THREAT_MODEL.md`
+R7). `/health` stays 200 after a divergence, deliberately,
 with `"diverged": true` — a host that restarted an "unhealthy" witness
 would only make it reload the same head and diverge again.
 
