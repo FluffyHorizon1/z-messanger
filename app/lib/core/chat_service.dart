@@ -2866,6 +2866,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     for (final answered in _answered.values) {
       answered.remove(rid);
     }
+    // 30.3: and the reactions held for messages not here yet that are
+    // theirs, or in our chat ([_earlyReactions]).
+    _earlyReactions.removeWhere((key, held) {
+      if (key.$1 == rid) return true;
+      held.remove(rid);
+      return held.isEmpty;
+    });
     // Another contact's alert can name this one: "<A>'s list names a device
     // <this contact>'s list also names" (§3.4), or one that proved it is
     // theirs (ADR 0022). It is kept, without them — their routing id would
@@ -4589,6 +4596,16 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       final refused = offerFate == _OfferFate.refused;
       if (offerFate == _OfferFate.fresh) {
         await _offerLanded(inner.data['fid'] as String);
+      }
+      // 30.3: a reaction to what it stored may have come first, on another
+      // session — counted now that the copy is written ([_earlyReactions]).
+      // A failure keeps them for a later copy and goes no further: this door
+      // runs unawaited, and the envelope is already acknowledged.
+      final landed = refused ? null : _storedThread(contact.rid, inner);
+      if (landed != null) {
+        try {
+          await _applyEarlyReactions(landed, inner.mid);
+        } catch (_) {}
       }
       _readOnArrival(contact.rid, inner);
       if (!refused &&
@@ -6513,26 +6530,38 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   /// A reaction that arrived from [contact] (1:1 or group). Dropped unless it
-  /// names a message in that same conversation.
+  /// names a message in that same conversation — or, while this device does
+  /// not hold that message yet, held for it ([_earlyReactions]).
   Future<void> _applyReaction(Contact contact, InnerMessage inner,
       {DatabaseExecutor? txn}) async {
     final r = inner.reactionData;
     if (r == null) return;
-    final gid = inner.data['gid'] as String?;
-    final String rid;
-    if (inner.kind == 'greact') {
-      final g = gid == null ? null : groups[gid];
-      if (g == null || g.left || !g.memberRids.contains(contact.rid)) return;
-      rid = gid!;
-    } else {
-      rid = contact.rid;
-    }
+    // A group's id for a `greact` alone, which is checked against the groups
+    // this device holds (and typed by the parser, §6.8). A 1:1 `react` has
+    // none to read: a `gid` on one is only the sender's text, which a held
+    // reaction would have kept, at whatever size they chose.
+    final gid = inner.kind == 'greact' ? inner.data['gid'] as String? : null;
+    final rid = _reactionThread(contact, inner.kind, gid);
+    if (rid == null) return;
     final target = await (txn ?? vault.db).query('messages',
         columns: ['mid'],
         where: 'rid = ? AND mid = ?',
         whereArgs: [rid, r.target],
         limit: 1);
-    if (target.isEmpty) return; // unknown here: nothing to react to
+    if (target.isEmpty) {
+      // Unknown here — yet. The message may be on its way by another door.
+      _noteEarlyReaction(rid, r.target, contact.rid, (
+        kind: inner.kind,
+        gid: gid,
+        emoji: r.emoji,
+        rid: contact.rid,
+        mirrored: false,
+        mine: false,
+        atMs: _now(),
+      ));
+      return;
+    }
+    _dropEarlyReaction(rid, r.target, contact.rid); // this one is later
     await _storeReaction(
         rid: rid,
         mid: r.target,
@@ -6541,6 +6570,203 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         txn: txn);
     await _refreshLoadedReactions(rid, r.target, txn: txn);
   }
+
+  /// The conversation a reaction from [contact] lands in by their own door
+  /// (§6.5): their chat, or for a `greact` a group I have not left and they
+  /// are a member of. Null when it lands nowhere.
+  String? _reactionThread(Contact contact, String kind, String? gid) {
+    if (kind != 'greact') return contact.rid;
+    final g = gid == null ? null : groups[gid];
+    if (g == null || g.left || !g.memberRids.contains(contact.rid)) return null;
+    return gid;
+  }
+
+  /// The conversation a reaction mirrored from one of my devices lands in —
+  /// mine ([mine], `dir:"out"`) or, replayed, [rid]'s — or null. Credited to
+  /// a contact only if they are one, and in a group only if they are in it:
+  /// the rules of the door it would have come in by.
+  String? _mirroredReactionThread(String rid, String kind, Object? gid,
+      {required bool mine}) {
+    if (!mine && !contacts.containsKey(rid)) return null;
+    if (kind == 'greact') {
+      final g = gid is String ? groups[gid] : null;
+      if (g == null || (!mine && !g.memberRids.contains(rid))) return null;
+      return g.gid;
+    }
+    return contacts.containsKey(rid) ? rid : null;
+  }
+
+  /// Reactions that named a message this device did not hold yet, by that
+  /// message in its conversation ([_earlyKey]), and within it by whose they
+  /// are: the latest one from each person, a withdrawal included.
+  ///
+  /// The same hole [_earlyReceipts] closes for receipts. A reaction and the
+  /// message it names often reach a device on different channels, and
+  /// nothing orders the two: my laptop's message reaches my phone by
+  /// self-sync and a contact's reaction to it by the contact's door; in a
+  /// group, one member's message and another's reaction to it come on two
+  /// pairwise sessions; a contact's laptop reacts to what their phone sent,
+  /// two devices and two sessions; a reaction I make on my laptop is
+  /// mirrored to my phone, which may not have the contact's message yet, or
+  /// whose copy of mine may come behind it (left with the relay after a
+  /// store that failed, it is redelivered behind what came next); and a
+  /// device just linked hears its contacts' reactions before the history my
+  /// phone replays to it. A reaction that came first used to be dropped, for
+  /// good on that device, and the devices disagreed. Now it waits here, and
+  /// the message takes it when it lands ([_applyEarlyReactions]), under the
+  /// rules it would have met had it come second.
+  ///
+  /// Held is what applying it needs and no more ([_EarlyReaction]) — never
+  /// the message it came in, whose other members are the sender's to fill —
+  /// with the door it came by, whose rules it is held to again when it is
+  /// applied. In memory, for [_earlyReactionLife] and at most
+  /// [_earlyReactionsMax] messages, as receipts are: a reaction is a badge,
+  /// and one still waiting when the app stops is gone, as every early one
+  /// was before this.
+  final Map<(String, String), Map<String, _EarlyReaction>> _earlyReactions =
+      {};
+
+  /// Bounded as [_earlyReceipts] is, by the same two constants rather than a
+  /// copy of them: the hour is the same bet — how long a copy can trail
+  /// something that names it across two doors — and 512 the same bound on
+  /// what a device keeps for messages it may never get. The budgets are
+  /// separate, so a contact naming messages that do not exist, which anyone
+  /// who can write to this device can, pushes out no receipt, and the
+  /// reverse.
+  static const int _earlyReactionsMax = _earlyReceiptsMax;
+  static const Duration _earlyReactionLife = _earlyReceiptLife;
+
+  /// What a held reaction is held under: the message, in the conversation it
+  /// names it in. A message of the same id in another conversation is
+  /// another message, and takes nothing held for this one (§6.4, §6.5).
+  (String, String) _earlyKey(String thread, String mid) => (thread, mid);
+
+  /// Hold [r], from [sender], for message [mid] in [thread]: in place of
+  /// anything held from them for it before, which it is later than. Not for
+  /// an id longer than [_earlyIdMax], which [InnerMessage.reactionData]
+  /// already refuses as `rt` (§6.4): the bound is kept here too, where the
+  /// memory is.
+  void _noteEarlyReaction(
+      String thread, String mid, String sender, _EarlyReaction r) {
+    if (mid.length > _earlyIdMax) return;
+    final cutoff = r.atMs - _earlyReactionLife.inMilliseconds;
+    _earlyReactions.removeWhere((_, held) => held.values.last.atMs < cutoff);
+    final key = _earlyKey(thread, mid);
+    final held = _earlyReactions.remove(key) ?? {};
+    held.remove(sender);
+    held[sender] = r; // newest last, here and below
+    _earlyReactions[key] = held; // so the cap drops the oldest
+    while (_earlyReactions.length > _earlyReactionsMax) {
+      _earlyReactions.remove(_earlyReactions.keys.first);
+    }
+  }
+
+  /// A reaction from [sender] to [mid] in [thread] has just counted: one held
+  /// from them for it is older, and goes.
+  void _dropEarlyReaction(String thread, String mid, String sender) {
+    final key = _earlyKey(thread, mid);
+    final held = _earlyReactions[key];
+    if (held == null || held.remove(sender) == null) return;
+    if (held.isEmpty) _earlyReactions.remove(key);
+  }
+
+  /// Whether held reaction [r] still counts by the rules of the door it came
+  /// by: its sender a contact, or me, and for a group one that is there, I
+  /// have not left (by the contact's door) and they are still a member of.
+  bool _earlyReactionStands(_EarlyReaction r) {
+    if (r.mirrored) {
+      return _mirroredReactionThread(r.rid, r.kind, r.gid, mine: r.mine) !=
+          null;
+    }
+    final c = contacts[r.rid];
+    return c != null && _reactionThread(c, r.kind, r.gid) != null;
+  }
+
+  /// A copy of message [mid] may just have been stored in [thread], by
+  /// whichever door: if it is there, the reactions that came for it first
+  /// count now, each under the rules it would have met had it come second
+  /// ([_earlyReactionStands]), and the screen shows them
+  /// ([_refreshLoadedReactions], then [notifyListeners]).
+  ///
+  /// Called once the write that stored the copy has committed — never from
+  /// inside its transaction — and in a transaction of its own, which looks
+  /// for the copy first: a door that refused the message, or a transaction
+  /// that rolled back, leaves nothing here, and the reactions wait on. They
+  /// are let go only once every one of them is written, so a write that
+  /// fails, and the copy redelivered for it, finds them still here — as
+  /// [_applyEarlyReceipts] keeps its receipts.
+  Future<void> _applyEarlyReactions(String thread, String mid) async {
+    final key = _earlyKey(thread, mid);
+    if (!_earlyReactions.containsKey(key)) return;
+    final taken = <String, _EarlyReaction>{};
+    await vault.db.transaction((txn) async {
+      final there = await txn.query('messages',
+          columns: ['mid'],
+          where: 'rid = ? AND mid = ?',
+          whereArgs: [thread, mid],
+          limit: 1);
+      if (there.isEmpty) return; // not stored after all: they wait on
+      // Read here, inside the transaction, so no reaction can be held or
+      // counted for this message between the read and the writes.
+      final held = _earlyReactions[key];
+      if (held == null) return;
+      final cutoff = _now() - _earlyReactionLife.inMilliseconds;
+      for (final MapEntry(key: sender, value: r) in [...held.entries]) {
+        taken[sender] = r;
+        if (r.atMs < cutoff || !_earlyReactionStands(r)) continue;
+        await _storeReaction(
+            rid: thread, mid: mid, senderRid: sender, emoji: r.emoji, txn: txn);
+      }
+      await _refreshLoadedReactions(thread, mid, txn: txn);
+    });
+    if (taken.isEmpty) return;
+    final held = _earlyReactions[key];
+    if (held != null) {
+      taken.forEach((sender, r) {
+        if (held[sender] == r) held.remove(sender);
+      });
+      if (held.isEmpty) _earlyReactions.remove(key);
+    }
+    notifyListeners();
+  }
+
+  /// The conversation a message that came in by [rid]'s own door is stored
+  /// in, for [_applyEarlyReactions]: their chat for a text or an attachment,
+  /// its group for a group one. Null for anything that is not a message.
+  String? _storedThread(String rid, InnerMessage inner) {
+    switch (inner.kind) {
+      case 'text':
+      case 'file':
+        return rid;
+      case 'gmsg':
+      case 'gfile':
+        final gid = inner.data['gid'];
+        return gid is String ? gid : null;
+    }
+    return null;
+  }
+
+  /// Test seam: what this device holds for messages it does not have yet —
+  /// each held reaction's conversation, message id, sender and group
+  /// ([_earlyReactions]), and the id of each message receipts are held for
+  /// ([_earlyReceipts]). Read only.
+  @visibleForTesting
+  ({
+    List<({String thread, String mid, String sender, String? gid})> reactions,
+    List<String> receipts,
+  }) get debugEarlyHeld => (
+        reactions: [
+          for (final e in _earlyReactions.entries)
+            for (final h in e.value.entries)
+              (
+                thread: e.key.$1,
+                mid: e.key.$2,
+                sender: h.key,
+                gid: h.value.gid,
+              ),
+        ],
+        receipts: [..._earlyReceipts.keys],
+      );
 
   /// Re-reads the reactions of one loaded message so the UI updates without
   /// reloading the thread. [txn] MUST be passed when called from inside the
@@ -6880,7 +7106,16 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// How long a receipt waits for the copy of the message it names.
   static const Duration _earlyReceiptLife = Duration(hours: 1);
 
+  /// The longest message id a receipt or a reaction is held for: 64
+  /// characters, the bound §6.4 sets on `rt`. Our own ids are 22, and every
+  /// copy a receipt waits for is one of ours. A longer id names nothing that
+  /// will land here, and holding one would let a single envelope make this
+  /// device keep as much of its sender's text as a frame carries, for an
+  /// hour: 512 of them, hundreds of megabytes.
+  static const int _earlyIdMax = 64;
+
   void _noteEarlyReceipt(String from, String mid, {required bool read}) {
+    if (mid.length > _earlyIdMax) return; // names no copy of ours
     final now = _now();
     final cutoff = now - _earlyReceiptLife.inMilliseconds;
     _earlyReceipts.removeWhere((_, held) => held.last.atMs < cutoff);
@@ -7806,6 +8041,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         }
       });
     }
+    // A contact's reaction to one of them may have reached this device, just
+    // linked and already on their device lists, before its history did.
+    for (final r in rows) {
+      await _applyEarlyReactions(r['rid'] as String, r['mid'] as String);
+    }
     for (final t in touched) {
       if (messagesByChat.containsKey(t)) await loadMessages(t);
     }
@@ -8073,6 +8313,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
               quote: quoted,
             ));
         await _applyEarlyReceipts(inner.mid);
+        await _applyEarlyReactions(gid, inner.mid);
       } else {
         final c = contacts[rid];
         if (c != null) await _persistGroupText(c, inner, inner.ts);
@@ -8093,6 +8334,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         if (c != null) {
           final fate = await vault.db.transaction(
               (txn) => _persistGroupFile(c, inner, inner.ts, txn: txn));
+          // A reaction to it may have come first, by another member's door.
+          if (fate != _OfferFate.refused) {
+            await _applyEarlyReactions(gid!, inner.mid);
+          }
           notifyListeners();
           if (fate == _OfferFate.fresh) {
             await _offerLanded(inner.data['fid'] as String);
@@ -8135,32 +8380,47 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if (inner.kind == 'react' || inner.kind == 'greact') {
       final r = inner.reactionData;
       if (r == null) return;
-      // Credited to a contact only if they are one, and in a group only if
-      // they are in it — the rules of the door it would have come in by.
-      if (!outgoing && !contacts.containsKey(rid)) return;
-      final String thread;
-      if (inner.kind == 'greact') {
-        final gid = inner.data['gid'];
-        final g = gid is String ? groups[gid] : null;
-        if (g == null || (!outgoing && !g.memberRids.contains(rid))) return;
-        thread = g.gid;
-      } else {
-        if (!contacts.containsKey(rid)) return;
-        thread = rid;
-      }
-      final target = await vault.db.query('messages',
-          columns: ['mid'],
-          where: 'rid = ? AND mid = ?',
-          whereArgs: [thread, r.target],
-          limit: 1);
-      if (target.isEmpty) return;
-      await _storeReaction(
-          rid: thread,
-          mid: r.target,
-          senderRid: outgoing ? myRid : rid,
-          emoji: r.emoji);
-      await _refreshLoadedReactions(thread, r.target);
-      notifyListeners();
+      final gid = inner.data['gid'];
+      final thread =
+          _mirroredReactionThread(rid, inner.kind, gid, mine: outgoing);
+      if (thread == null) return;
+      final sender = outgoing ? myRid : rid;
+      // The look and the hold in one transaction, so that no copy of the
+      // message can land between them and go without it.
+      final counted = await vault.db.transaction((txn) async {
+        final target = await txn.query('messages',
+            columns: ['mid'],
+            where: 'rid = ? AND mid = ?',
+            whereArgs: [thread, r.target],
+            limit: 1);
+        if (target.isEmpty) {
+          // Not on this device yet: the message may still be on its way, by
+          // the contact's door or by self-sync ([_earlyReactions]). Held with
+          // what has been checked rather than what the mirror says: the
+          // group a `greact` lands in, and the conversation one of mine
+          // does; one passed on keeps the contact it came from.
+          _noteEarlyReaction(thread, r.target, sender, (
+            kind: inner.kind,
+            gid: inner.kind == 'greact' ? thread : null,
+            emoji: r.emoji,
+            rid: outgoing ? thread : rid,
+            mirrored: true,
+            mine: outgoing,
+            atMs: _now(),
+          ));
+          return false;
+        }
+        _dropEarlyReaction(thread, r.target, sender); // this one is later
+        await _storeReaction(
+            rid: thread,
+            mid: r.target,
+            senderRid: sender,
+            emoji: r.emoji,
+            txn: txn);
+        await _refreshLoadedReactions(thread, r.target, txn: txn);
+        return true;
+      });
+      if (counted) notifyListeners();
       return;
     }
     if (!contacts.containsKey(rid)) return;
@@ -8204,6 +8464,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         ));
     // A receipt for it may have come first, by the contact's door.
     if (outgoing) await _applyEarlyReceipts(inner.mid);
+    // And a reaction, mine or theirs, whichever way the copy came — this is
+    // also the store of a text from one of the contact's other devices.
+    await _applyEarlyReactions(rid, inner.mid);
     notifyListeners();
   }
 
@@ -8338,7 +8601,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       });
       return _OfferFate.fresh;
     });
-    if (fate != _OfferFate.fresh) return fate;
+    if (fate != _OfferFate.fresh) {
+      // Held here already (`again`): nothing new to show. A reaction can
+      // still be waiting for it, if a failure came between the write that
+      // stored it and the hook below and this is the copy redelivered for
+      // it; the hook looks for the copy first, and nothing waits otherwise.
+      if (fate == _OfferFate.again) await _applyEarlyReactions(rid, inner.mid);
+      return fate;
+    }
     _appendLoaded(
         rid,
         ChatMessage(
@@ -8356,6 +8626,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           file: offer.fileMeta,
         ));
     if (outgoing) await _applyEarlyReceipts(inner.mid);
+    await _applyEarlyReactions(rid, inner.mid);
     notifyListeners();
     await _offerLanded(fid); // sidecar chunks may already be here
     return _OfferFate.fresh;
@@ -11245,6 +11516,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if (inserted != 0 && openChatRid != gid) {
       unread[gid] = (unread[gid] ?? 0) + 1;
     }
+    // Another member's reaction to it may have come first, on their session.
+    // Counted once the copy is written: here when this wrote it, and by the
+    // door that holds the transaction when one was given ([_onInbound]).
+    if (txn == null) await _applyEarlyReactions(gid, inner.mid);
   }
 
   /// A member told us (over their authenticated channel) that they left.
@@ -13759,6 +14034,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     } else if (inner.kind == 'gfile' && inner.data['fid'] is String) {
       final fate = await vault.db.transaction(
           (txn) => _persistGroupFile(contact, inner, _now(), txn: txn));
+      // Another member's reaction to it may have come first, on their
+      // session; counted now that the copy is written.
+      if (fate != _OfferFate.refused) {
+        await _applyEarlyReactions(inner.data['gid'] as String, inner.mid);
+      }
       notifyListeners();
       if (fate == _OfferFate.fresh) {
         await _offerLanded(inner.data['fid'] as String);
@@ -15402,6 +15682,24 @@ class _FileOffer {
 /// when a connect ceremony had already covered the key the number moves to
 /// (26.3) — the number it now stands on, which is written with the key.
 typedef _Tick = ({VerificationState state, String? moveTo});
+
+/// A reaction held for a message this device does not hold yet
+/// ([ChatService._earlyReactions]): its kind, its group (a `greact`'s, one
+/// this device holds; none for a 1:1 reaction) and emoji (`''` a
+/// withdrawal); the door it came by — the contact's own (`mirrored` false,
+/// `rid` the contact) or self-sync from one of my devices (`mine` whether it
+/// was mine; `rid` the conversation it lands in if so, else the contact it
+/// came from) — and when it came. Each is something this device checked or
+/// bounds, never a member of the sender's at the size they sent it.
+typedef _EarlyReaction = ({
+  String kind,
+  String? gid,
+  String emoji,
+  String rid,
+  bool mirrored,
+  bool mine,
+  int atMs,
+});
 
 /// A `ginvite`'s fields as [ChatService._parseList] read them.
 class _WireList {

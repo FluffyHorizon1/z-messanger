@@ -66,12 +66,39 @@
 //      phone, and a group message delivered, though every receipt for them
 //      reached the phone first. (Before 2026-10-18 the phone dropped them,
 //      and its copy kept one tick for good.)
+//  11. a contact's reaction that reaches one of my devices before that
+//      device's copy of the message it names counts when the copy lands, as
+//      a receipt does: to a message, an attachment, a group message and a
+//      group attachment sent from my laptop, reacted to from the contact's
+//      phone, from their laptop and by another member, each shows on my
+//      phone once its copy comes by self-sync — on the screen as it lands,
+//      and in the vault. (Before 2026-10-19 the phone dropped them, and
+//      never showed them.)
+//  12. so does my own reaction, made on my laptop and mirrored to my phone
+//      before the phone holds the message: to a message the contact sent
+//      from their laptop, and to one of mine whose copy reached the phone
+//      after the reaction; and the latest one held from a person is the one
+//      that counts, so a reaction taken back on the laptop before the message
+//      reached the phone stays taken back;
+//  13. and a contact's reaction from their laptop to what they sent from
+//      their phone — a message, an attachment, a group message and a group
+//      attachment, the reaction on one session and what it names on
+//      another — counts on my phone, though it reached the phone first:
+//      whether the copy that lands first is their phone's, by their own
+//      door, or the one my laptop passed on, by self-sync;
+//  14. and so does a reaction to what the contact sends from their laptop,
+//      by the extra-device door — the same four, reacted to from their
+//      phone and by another member;
+//  15. and one that reaches a device just linked before the history my
+//      phone replays to it: the contact's reaction to a message written
+//      before that device existed counts there once the replay lands.
 @Tags(['integration'])
 library;
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter_test/flutter_test.dart';
@@ -92,12 +119,31 @@ typedef World = ({
   ChatService? cPhone,
 });
 
+/// A device's door shut to some of the devices that write to it (`shut`
+/// below): `held` is what waits there, in the order it came, each envelope
+/// with the device that sent it, and `open` lets it in.
+typedef Door = ({
+  List<(String, RelayInbound)> Function() held,
+  Future<void> Function({bool Function(int at, String from)? first}) open,
+});
+
 /// The kind of the inner message an envelope carried, on the contact and
 /// extra-device paths (a self-sync envelope wraps its inner, and is not one
 /// this file counts).
 String? kindOf(DecryptResult dec) {
   try {
     return InnerMessage.fromBytes(dec.plaintext).kind;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// The kind of the inner message a self-sync envelope carried, inside the
+/// thread and direction it wraps it in.
+String? mirroredKindOf(DecryptResult dec) {
+  try {
+    final j = jsonDecode(utf8.decode(dec.plaintext)) as Map;
+    return InnerMessage.fromBytes(base64Decode(j['inner'] as String)).kind;
   } catch (_) {
     return null;
   }
@@ -281,9 +327,11 @@ void main() {
   /// own keys, the account's certificate for them and the account's
   /// post-quantum public key — holding [knows] as contacts from the start, as
   /// the contacts an enrolment hands over are, and then listed by [main],
-  /// which tells its contacts.
+  /// which tells its contacts. [beforeListed] is handed the new device just
+  /// before [main] lists it, before anything of [main]'s can reach it.
   Future<ChatService> laptopOf(
-      ChatService main, String name, List<ChatService> knows) async {
+      ChatService main, String name, List<ChatService> knows,
+      {void Function(ChatService device)? beforeListed}) async {
     final devId = await ZIdentity.generate();
     final account = await main.accountIdentity();
     final cert = await account.signDeviceCert(
@@ -314,6 +362,7 @@ void main() {
       // No contact request: an enrolment hands contacts over and asks nobody.
       await svc.addContactFromCode(await k.myContactCode(), requested: false);
     }
+    beforeListed?.call(svc);
     await main.addMyDevice(cert);
     return svc;
   }
@@ -465,6 +514,83 @@ void main() {
     }
     return out;
   }
+
+  /// Shuts [svc]'s door to the devices in [from], as 10 does: what they send
+  /// it waits there, while everything else reaches it as it comes. `held` is
+  /// what waits, in the order it came, each envelope with the device that
+  /// sent it; `open` lets it in — what [first] picks ahead of the rest, each
+  /// part in the order it came — and opens the door again.
+  Door shut(ChatService svc, Set<String> from) {
+    final deliver = svc.transport.onMessage!;
+    final waiting = <(int, String, RelayInbound)>[];
+    var seen = 0;
+    svc.transport.onMessage = (m) async {
+      final n = seen++;
+      final opened = m.from.isEmpty
+          ? await SealedEnvelope.open(
+              myXSeed: svc.identity.xSeed,
+              myXPub: svc.identity.xPub,
+              blob: m.payload)
+          : null;
+      final sender = opened?.fromRid ?? m.from;
+      if (from.contains(sender)) {
+        waiting.add((n, sender, m));
+      } else {
+        deliver(m);
+      }
+    };
+    List<(String, RelayInbound)> held() => [
+          for (final (_, s, m) in [...waiting]
+            ..sort((x, y) => x.$1.compareTo(y.$1)))
+            (s, m)
+        ];
+    Future<void> open({bool Function(int at, String from)? first}) async {
+      svc.transport.onMessage = deliver;
+      final all = held();
+      bool ahead(int i) => first?.call(i, all[i].$1) ?? true;
+      for (final i in [
+        for (var i = 0; i < all.length; i++)
+          if (ahead(i)) i,
+        for (var i = 0; i < all.length; i++)
+          if (!ahead(i)) i,
+      ]) {
+        await svc.debugInbound(all[i].$2);
+      }
+    }
+
+    return (held: held, open: open);
+  }
+
+  /// Every device — [w]'s and [also] — has sent all it had to and owes no
+  /// receipt, and the relay holds nothing but the [waiting] envelopes a shut
+  /// door keeps (10's wait): whatever else reached a device has been taken
+  /// there.
+  Future<void> onlyHeld(World w, int Function() waiting,
+      {required String what, List<ChatService> also = const []}) async {
+    var calm = 0;
+    await waitUntil(() async {
+      for (final s in [...everyone(w), ...also]) {
+        await s.flushOutbox();
+        if (s.pendingReceipts > 0 ||
+            (await s.vault.db.query('outbox', limit: 1)).isNotEmpty ||
+            (await s.vault.db.query('group_fanout', limit: 1)).isNotEmpty) {
+          calm = 0;
+          return false;
+        }
+      }
+      if (await metric('z_queued_envelopes') != waiting()) {
+        calm = 0;
+        return false;
+      }
+      return ++calm >= 3;
+    }, timeout: const Duration(seconds: 90), what: what);
+  }
+
+  /// Each person's reaction to the message with [body] in [thread] as [svc]
+  /// holds it in memory: what an open chat shows, without reading the vault
+  /// again as [reactions] does.
+  Map<String, String> onScreen(ChatService svc, String thread, String body) =>
+      {for (final r in find(svc, thread, body)!.reactions) r.senderRid: r.emoji};
 
   test('1. an edit made on any device reaches every device in a chat, and '
       'only its author makes one', () async {
@@ -1097,5 +1223,341 @@ void main() {
         reason: 'and so the screen shows it');
     expect(find(w.aPhone, gid, 'in the group, held back too')!.status,
         MsgStatus.delivered);
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('11. a reaction that reaches my phone before its copy of my message '
+      'counts when the copy lands', () async {
+    final w = await world('11', carol: true);
+    final c = w.cPhone!;
+    final aRid = w.aPhone.myRid, bRid = w.bPhone.myRid, cRid = c.myRid;
+    final gid = await crew(w);
+
+    // Everything Alice's laptop sends her phone waits at the phone's door —
+    // the copies of what the laptop writes among it — while every reaction
+    // to what it writes reaches the phone as it comes.
+    final door = shut(w.aPhone, {w.aLap.myRid});
+
+    // From the laptop: a message and an attachment to Bob, and a message and
+    // an attachment in the group.
+    const text = 'reacted to before my phone has it';
+    const file = 'plan.txt';
+    const group = 'in the group, reacted to first';
+    const gfile = 'crew-plan.txt';
+    await w.aLap.sendText(bRid, text);
+    await w.aLap.sendFile(
+        bRid, file, Uint8List.fromList(utf8.encode('the plan')), 'text/plain');
+    await w.aLap.sendGroupText(gid, group);
+    await w.aLap.sendGroupFile(gid, gfile,
+        Uint8List.fromList(utf8.encode('the crew plan')), 'text/plain');
+    final mid = await everywhere([(w.bPhone, aRid), (w.bLap, aRid)], text);
+    final fmid = await everywhere([(w.bPhone, aRid), (w.bLap, aRid)], file);
+    final gmid = await everywhere(
+        [for (final s in [w.bPhone, w.bLap, c]) (s, gid)], group);
+    final gfmid = await everywhere(
+        [for (final s in [w.bPhone, w.bLap, c]) (s, gid)], gfile);
+
+    // Bob reacts to the message on his phone and to the attachment on his
+    // laptop — by his phone's door and by the extra-device door — Carol to
+    // the group message, and Bob's laptop to the group attachment.
+    await w.bPhone.toggleReaction(aRid, mid, '👍');
+    await w.bLap.toggleReaction(aRid, fmid, '📎');
+    await c.toggleReaction(gid, gmid, '🎉');
+    await w.bLap.toggleReaction(gid, gfmid, '🗂');
+    await waitUntil(
+        () async =>
+            mapEquals(await reactions(w.aLap, bRid, mid), {bRid: '👍'}) &&
+            mapEquals(await reactions(w.aLap, bRid, fmid), {bRid: '📎'}) &&
+            mapEquals(await reactions(w.aLap, gid, gmid), {cRid: '🎉'}) &&
+            mapEquals(await reactions(w.aLap, gid, gfmid), {bRid: '🗂'}),
+        what: 'the laptop shows each reaction to what it sent');
+    await onlyHeld(w, () => door.held().length,
+        what: 'only what the laptop sent the phone waits at the relay');
+    for (final (thread, body) in [
+      (bRid, text),
+      (bRid, file),
+      (gid, group),
+      (gid, gfile),
+    ]) {
+      expect(find(w.aPhone, thread, body), isNull,
+          reason: 'the phone has no copy of "$body" yet');
+    }
+
+    // The copies land, in the order they came: each takes the reaction that
+    // came for it first, on the screen as it lands and in the vault.
+    await door.open();
+    expect(onScreen(w.aPhone, bRid, text), {bRid: '👍'},
+        reason: "Bob's reaction from his phone, which came before the copy");
+    expect(onScreen(w.aPhone, bRid, file), {bRid: '📎'},
+        reason: 'and from his laptop, to the attachment');
+    expect(onScreen(w.aPhone, gid, group), {cRid: '🎉'},
+        reason: "and Carol's, in the group");
+    expect(onScreen(w.aPhone, gid, gfile), {bRid: '🗂'},
+        reason: "and Bob's laptop's, to the group attachment");
+    expect(await reactions(w.aPhone, bRid, mid), {bRid: '👍'});
+    expect(await reactions(w.aPhone, bRid, fmid), {bRid: '📎'});
+    expect(await reactions(w.aPhone, gid, gmid), {cRid: '🎉'});
+    expect(await reactions(w.aPhone, gid, gfmid), {bRid: '🗂'});
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('12. my own reaction, mirrored to my phone before the phone holds the '
+      'message it names, counts there when the message lands', () async {
+    final w = await world('12');
+    final aRid = w.aPhone.myRid, bRid = w.bPhone.myRid;
+
+    // Bob writes twice from his laptop. What his laptop sends Alice's phone
+    // waits at the phone's door; her laptop has both at once, and passes
+    // neither on — a contact's other device is heard directly (§9).
+    final fromBob = shut(w.aPhone, {w.bLap.myRid});
+    const liked = 'from his laptop, liked';
+    const unliked = 'from his laptop, liked and then not';
+    await w.bLap.sendText(aRid, liked);
+    await w.bLap.sendText(aRid, unliked);
+    final lMid = await everywhere([(w.aLap, bRid), (w.bPhone, aRid)], liked);
+    final uMid = await everywhere([(w.aLap, bRid), (w.bPhone, aRid)], unliked);
+
+    // On her laptop Alice reacts to both and takes the second back: three
+    // mirrors, which reach her phone before either message does.
+    var mirrored = 0;
+    w.aPhone.debugOnDecrypted = (path, from, dec) {
+      if (path == 'sync' && mirroredKindOf(dec) == 'react') mirrored++;
+      return false;
+    };
+    expect(await w.aLap.toggleReaction(bRid, lMid, '👍'), '👍');
+    expect(await w.aLap.toggleReaction(bRid, uMid, '😮'), '😮');
+    expect(await w.aLap.toggleReaction(bRid, uMid, '😮'), '',
+        reason: 'reacting again with the same emoji takes it back');
+    await waitUntil(() => mirrored >= 3,
+        what: 'her three reactions reach her phone by self-sync');
+    await onlyHeld(w, () => fromBob.held().length,
+        what: "only what Bob's laptop sent Alice's phone waits at the relay");
+    w.aPhone.debugOnDecrypted = null;
+    expect(find(w.aPhone, bRid, liked), isNull,
+        reason: 'the phone has neither message yet');
+
+    await fromBob.open();
+    expect(onScreen(w.aPhone, bRid, liked), {aRid: '👍'},
+        reason: 'her reaction from the laptop, shown as hers');
+    expect(onScreen(w.aPhone, bRid, unliked), isEmpty,
+        reason: 'what she took back stays taken back: the latest reaction '
+            'held from her was the withdrawal');
+    expect(await mine(w.aPhone, bRid, lMid), '👍');
+    expect(await reactions(w.aPhone, bRid, uMid), isEmpty);
+
+    // A message of her own from the laptop, and her reaction to it there:
+    // both come by self-sync, in that order, and the copy reaches the phone
+    // after the reaction whenever the phone could not store it at first —
+    // left with the relay, it is redelivered behind what came next.
+    final fromLaptop = shut(w.aPhone, {w.aLap.myRid});
+    const own = 'mine, from the laptop';
+    await w.aLap.sendText(bRid, own);
+    final oMid = await everywhere([(w.bPhone, aRid), (w.bLap, aRid)], own);
+    await waitUntil(() => fromLaptop.held().isNotEmpty,
+        what: "the copy reaches the phone's door");
+    await onlyHeld(w, () => fromLaptop.held().length,
+        what: "the copy waits at the phone's door");
+    final copies = fromLaptop.held().length;
+    expect(await w.aLap.toggleReaction(bRid, oMid, '✅'), '✅');
+    await waitUntil(() => fromLaptop.held().length > copies,
+        what: "the reaction's mirror reaches the phone's door");
+    await onlyHeld(w, () => fromLaptop.held().length,
+        what: 'and waits there too');
+    expect(find(w.aPhone, bRid, own), isNull);
+
+    await fromLaptop.open(first: (at, _) => at >= copies);
+    expect(onScreen(w.aPhone, bRid, own), {aRid: '✅'},
+        reason: 'her reaction, though it came before the copy');
+    expect(await mine(w.aPhone, bRid, oMid), '✅');
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test("13. a contact's reaction from their laptop to what they sent from "
+      'their phone counts on my phone, though it came first', () async {
+    final w = await world('13', carol: true);
+    final aRid = w.aPhone.myRid, bRid = w.bPhone.myRid;
+    final gid = await crew(w);
+
+    // Bob sends four things from his phone and reacts to each on his laptop
+    // before Alice's phone holds any of them. What his phone sends her phone
+    // waits at its door, and so does what her laptop sends it, which passes
+    // on each message from his phone (§9); what his laptop sends reaches it
+    // as it comes. Then the copies land: his phone's first, by his own door,
+    // and what her laptop passed on after them — or, [laptopFirst], the
+    // other way round, so that each lands first by self-sync.
+    Future<void> round(int n, String tag, {required bool laptopFirst}) async {
+      final door = shut(w.aPhone, {w.bPhone.myRid, w.aLap.myRid});
+      final text = 'from his phone, round $n';
+      final file = 'map$n.txt';
+      final group = 'from his phone, in the group, round $n';
+      final gfile = 'crew-map$n.txt';
+      await w.bPhone.sendText(aRid, text);
+      await w.bPhone.sendFile(aRid, file,
+          Uint8List.fromList(utf8.encode('the map')), 'text/plain');
+      await w.bPhone.sendGroupText(gid, group);
+      await w.bPhone.sendGroupFile(gid, gfile,
+          Uint8List.fromList(utf8.encode('the crew map')), 'text/plain');
+      final mid = await everywhere([(w.aLap, bRid), (w.bLap, aRid)], text);
+      final fmid = await everywhere([(w.aLap, bRid), (w.bLap, aRid)], file);
+      final gmid = await everywhere(
+          [for (final s in [w.aLap, w.bLap, w.cPhone!]) (s, gid)], group);
+      final gfmid = await everywhere(
+          [for (final s in [w.aLap, w.bLap, w.cPhone!]) (s, gid)], gfile);
+
+      // Bob reacts to all four on his laptop.
+      await w.bLap.toggleReaction(aRid, mid, '👍');
+      await w.bLap.toggleReaction(aRid, fmid, '📍');
+      await w.bLap.toggleReaction(gid, gmid, '🎉');
+      await w.bLap.toggleReaction(gid, gfmid, '🧭');
+      await waitUntil(
+          () async =>
+              mapEquals(await reactions(w.aLap, bRid, mid), {bRid: '👍'}) &&
+              mapEquals(await reactions(w.aLap, bRid, fmid), {bRid: '📍'}) &&
+              mapEquals(await reactions(w.aLap, gid, gmid), {bRid: '🎉'}) &&
+              mapEquals(await reactions(w.aLap, gid, gfmid), {bRid: '🧭'}),
+          what: "Alice's laptop shows each reaction from Bob's laptop ($tag)");
+      await onlyHeld(w, () => door.held().length,
+          what: "only what Bob's phone and Alice's laptop sent her phone "
+              'waits at the relay ($tag)');
+      for (final (thread, body) in [
+        (bRid, text),
+        (bRid, file),
+        (gid, group),
+        (gid, gfile),
+      ]) {
+        expect(find(w.aPhone, thread, body), isNull,
+            reason: 'the phone has no copy of "$body" yet');
+      }
+
+      final firstFrom = laptopFirst ? w.aLap.myRid : bRid;
+      await door.open(first: (_, from) => from == firstFrom);
+      expect(onScreen(w.aPhone, bRid, text), {bRid: '👍'},
+          reason: "Bob's reaction from his laptop, which came first ($tag)");
+      expect(onScreen(w.aPhone, bRid, file), {bRid: '📍'}, reason: tag);
+      expect(onScreen(w.aPhone, gid, group), {bRid: '🎉'}, reason: tag);
+      expect(onScreen(w.aPhone, gid, gfile), {bRid: '🧭'}, reason: tag);
+      expect(await reactions(w.aPhone, bRid, mid), {bRid: '👍'}, reason: tag);
+      expect(await reactions(w.aPhone, bRid, fmid), {bRid: '📍'}, reason: tag);
+      expect(await reactions(w.aPhone, gid, gmid), {bRid: '🎉'}, reason: tag);
+      expect(await reactions(w.aPhone, gid, gfmid), {bRid: '🧭'}, reason: tag);
+    }
+
+    await round(1, 'his phone first', laptopFirst: false);
+    await round(2, 'my laptop first', laptopFirst: true);
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('14. a reaction that reaches my phone before what the contact sent '
+      'from their laptop counts when that lands', () async {
+    final w = await world('14', carol: true);
+    final c = w.cPhone!;
+    final aRid = w.aPhone.myRid, bRid = w.bPhone.myRid, cRid = c.myRid;
+    final gid = await crew(w);
+
+    // What Bob's laptop sends Alice's phone waits at its door, while what
+    // his phone and Carol send it reaches it as it comes. Her laptop passes
+    // on nothing from his laptop: a contact's other device is heard
+    // directly (§9).
+    final door = shut(w.aPhone, {w.bLap.myRid});
+    const text = 'from his laptop';
+    const file = 'notes.txt';
+    const group = 'from his laptop, in the group';
+    const gfile = 'crew-notes.txt';
+    await w.bLap.sendText(aRid, text);
+    await w.bLap.sendFile(
+        aRid, file, Uint8List.fromList(utf8.encode('the notes')), 'text/plain');
+    await w.bLap.sendGroupText(gid, group);
+    await w.bLap.sendGroupFile(gid, gfile,
+        Uint8List.fromList(utf8.encode('the crew notes')), 'text/plain');
+    final mid = await everywhere([(w.aLap, bRid), (w.bPhone, aRid)], text);
+    final fmid = await everywhere([(w.aLap, bRid), (w.bPhone, aRid)], file);
+    final gmid = await everywhere(
+        [for (final s in [w.aLap, w.bPhone, c]) (s, gid)], group);
+    final gfmid = await everywhere(
+        [for (final s in [w.aLap, w.bPhone, c]) (s, gid)], gfile);
+
+    // Bob reacts on his phone to the two he sent Alice from his laptop, and
+    // Carol to the group's two.
+    await w.bPhone.toggleReaction(aRid, mid, '👍');
+    await w.bPhone.toggleReaction(aRid, fmid, '📌');
+    await c.toggleReaction(gid, gmid, '🎉');
+    await c.toggleReaction(gid, gfmid, '👀');
+    await waitUntil(
+        () async =>
+            mapEquals(await reactions(w.aLap, bRid, mid), {bRid: '👍'}) &&
+            mapEquals(await reactions(w.aLap, bRid, fmid), {bRid: '📌'}) &&
+            mapEquals(await reactions(w.aLap, gid, gmid), {cRid: '🎉'}) &&
+            mapEquals(await reactions(w.aLap, gid, gfmid), {cRid: '👀'}),
+        what: "Alice's laptop shows each reaction");
+    await onlyHeld(w, () => door.held().length,
+        what: "only what Bob's laptop sent Alice's phone waits at the relay");
+    for (final (thread, body) in [
+      (bRid, text),
+      (bRid, file),
+      (gid, group),
+      (gid, gfile),
+    ]) {
+      expect(find(w.aPhone, thread, body), isNull,
+          reason: 'the phone has no copy of "$body" yet');
+    }
+
+    // His laptop's copies land, by the extra-device door, and each takes the
+    // reaction that came for it first.
+    await door.open();
+    expect(onScreen(w.aPhone, bRid, text), {bRid: '👍'},
+        reason: "Bob's reaction from his phone, which came first");
+    expect(onScreen(w.aPhone, bRid, file), {bRid: '📌'});
+    expect(onScreen(w.aPhone, gid, group), {cRid: '🎉'},
+        reason: "and Carol's, in the group");
+    expect(onScreen(w.aPhone, gid, gfile), {cRid: '👀'});
+    expect(await reactions(w.aPhone, bRid, mid), {bRid: '👍'});
+    expect(await reactions(w.aPhone, bRid, fmid), {bRid: '📌'});
+    expect(await reactions(w.aPhone, gid, gmid), {cRid: '🎉'});
+    expect(await reactions(w.aPhone, gid, gfmid), {cRid: '👀'});
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('15. a reaction that reaches a device just linked before its history '
+      'counts when the history lands', () async {
+    final w = await world('15');
+    final aRid = w.aPhone.myRid, bRid = w.bPhone.myRid;
+
+    // Bob writes to Alice before her tablet exists.
+    const text = 'before the tablet was linked';
+    await w.bPhone.sendText(aRid, text);
+    final mid = await everywhere([(w.aPhone, bRid), (w.aLap, bRid)], text);
+    await quiet(everyone(w), what: 'the message has settled');
+
+    // Alice links a tablet. Everything her phone sends it waits at its door,
+    // the history her phone replays to it among it, while Bob's phone
+    // reaches it as it comes, once it holds her list naming the tablet.
+    late final Door door;
+    final tablet = await laptopOf(w.aPhone, 'AliceTablet15', [w.bPhone],
+        beforeListed: (t) => door = shut(t, {aRid}));
+    await waitUntil(() => holds(w.bPhone, tablet, w.aPhone),
+        what: "Bob's phone holds Alice's list naming her tablet");
+
+    // Bob reacts to his message on his phone; the tablet has no copy of it.
+    var reached = 0;
+    tablet.debugOnDecrypted = (path, from, dec) {
+      if (from == bRid && kindOf(dec) == 'react') reached++;
+      return false;
+    };
+    expect(await w.bPhone.toggleReaction(aRid, mid, '👍'), '👍');
+    await waitUntil(() => reached >= 1,
+        what: "Bob's reaction reaches the tablet");
+    await onlyHeld(w, () => door.held().length,
+        also: [tablet],
+        what: "only what Alice's phone sent the tablet waits at the relay");
+    tablet.debugOnDecrypted = null;
+    expect(await row(tablet, bRid, mid), isNull,
+        reason: 'the tablet has no copy of the message yet');
+
+    // The door opens: the history comes, once the channel it needs is
+    // post-quantum, and the message in it takes the reaction that came
+    // first. Its envelope is acknowledged only once it is stored, so a quiet
+    // relay means it has been taken.
+    await door.open();
+    await waitUntil(() async => await row(tablet, bRid, mid) != null,
+        timeout: const Duration(seconds: 90),
+        what: 'the history reaches the tablet');
+    await quiet([...everyone(w), tablet], what: 'the history has been taken');
+    expect(await reactions(tablet, bRid, mid), {bRid: '👍'},
+        reason: "Bob's reaction, which came before the history");
   }, timeout: const Timeout(Duration(minutes: 5)));
 }

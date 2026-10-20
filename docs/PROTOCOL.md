@@ -955,9 +955,11 @@ stands when the reply is sent, not the quoted message's.
   characters. A reaction is a badge, not a second text channel; receivers drop
   anything longer or containing control characters rather than storing it.
 - The same conversation‑scoped lookup as §6.4 applies: a reaction whose target
-  is unknown **in the conversation it arrived in** is dropped. Reactions are
-  not messages — they never create a conversation, never count as unread, and
-  never change a message's ordering.
+  is unknown **in the conversation it arrived in** is held until a message of
+  that id lands in that conversation, and applied then under the rules it
+  would have met on arrival (§9), or dropped — never applied to a message of
+  another conversation. Reactions are not messages — they never create a
+  conversation, never count as unread, and never change a message's ordering.
 - A reaction to a message that later disappears (§8) or is deleted (§6.6) goes
   with it.
 - Reactions are stored under the reacting device's routing id, so a group
@@ -1459,7 +1461,14 @@ receipt against the mirror of the message it names, which comes by the other
 door: one that arrives before the copy of a message sent from another of the
 user's devices is kept, and counted under §6.3's rule when the copy lands (the
 reference client keeps it in memory, for an hour; until 2026‑10‑18 it dropped
-it, and that copy kept one tick for good). A mirror that names
+it, and that copy kept one tick for good). A reaction is held the same way
+whenever it names a message the receiving device does not hold yet — a
+contact's, from any of their devices, or the user's own, mirrored; in a group
+the message and a reaction to it come on two members' sessions — and applied
+when a message of that id lands in that conversation, under the rules it would
+have met had it come second, the latest from each sender in place of any before
+it (the reference client holds it as it does a receipt; until 2026‑10‑19 it
+dropped it, and that device never showed it). Otherwise a mirror that names
 nothing the receiving device holds, or nothing that is the user's to change,
 is dropped and acknowledged (§6.8). On both doors a receiver applies what one
 device sent one envelope at a time, in the order it decrypted them, as the

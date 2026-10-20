@@ -37,7 +37,14 @@
 //   6. the outbox retries after an `internal` refusal, on its own timer,
 //      while the link stays up — the message is delivered without a reconnect;
 //   7. a 1:1 edit made while a transparency conflict holds sends is queued
-//      durably and delivered when the hold is answered.
+//      durably and delivered when the hold is answered;
+//   8. a reaction or a receipt naming a message the device does not hold
+//      yet is kept for it only within bounds (30.3): nothing naming an id
+//      longer than 64 characters, which no message of ours has, and a 1:1
+//      reaction without the `gid` member it carried, which nothing reads —
+//      so a contact cannot make the device hold a frame's worth of their
+//      text for an hour — and what is kept still counts when its message
+//      lands.
 @Tags(['integration'])
 library;
 
@@ -513,6 +520,79 @@ void main() {
                 .body ==
             'edited while held',
         what: 'the held edit is delivered once the conflict is answered');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('8. what a contact names ahead of its message is kept only within '
+      'bounds', () async {
+    final (a, b) = await pair('8');
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final ahead = newMessageId(); // an id like ours, of no message B holds
+    final long = 'L' * 65; // one character over the bound on an id (§6.4)
+    final text = 'G' * 4096; // a 1:1 reaction's gid, which nothing reads
+
+    // From A, on the real session: a 1:1 reaction to a message B does not
+    // hold yet, carrying a gid; a reaction naming the over-long id; and a
+    // delivery and a read receipt naming it, the delivery a plausible id
+    // too. Each is well formed; only their sizes are the sender's choice.
+    for (final m in <Map<String, Object?>>[
+      {
+        'k': 'react',
+        'mid': newMessageId(),
+        'ts': now,
+        'rt': ahead,
+        'emo': '👍',
+        'gid': text,
+      },
+      {
+        'k': 'react',
+        'mid': newMessageId(),
+        'ts': now,
+        'rt': long,
+        'emo': '👍',
+      },
+      {
+        'k': 'dlv',
+        'mid': newMessageId(),
+        'ts': now,
+        'mids': [long, ahead],
+      },
+      {
+        'k': 'read',
+        'mid': newMessageId(),
+        'ts': now,
+        'mids': [long],
+      },
+    ]) {
+      await deliverBadInner(a, b, raw(jsonEncode(m)));
+    }
+    await quiet([a, b], what: 'B has taken all four');
+
+    // Kept: the reaction naming the plausible id, without its gid, and the
+    // receipt naming that id. Not the reaction or the receipts naming the
+    // over-long one.
+    final held = b.debugEarlyHeld;
+    expect({
+      'reactions': [
+        for (final r in held.reactions)
+          (r.thread, r.mid, r.sender, r.gid?.length),
+      ],
+      'receipts': [
+        for (final m in held.receipts) m.length > 64 ? '${m.length} chars' : m,
+      ],
+    }, {
+      'reactions': [(a.myRid, ahead, a.myRid, null)],
+      'receipts': [ahead],
+    }, reason: 'held within bounds: no over-long id, and no gid kept');
+
+    // What is kept still counts when its message lands.
+    await a.debugSendRawInner(
+        b.myRid, InnerMessage.text(ahead, now, 'the one it named'));
+    await waitUntil(() => b.debugEarlyHeld.reactions.isEmpty,
+        what: 'the message lands and takes the reaction kept for it');
+    final named =
+        (await b.loadMessages(a.myRid)).firstWhere((m) => m.mid == ahead);
+    expect({for (final r in named.reactions) r.senderRid: r.emoji},
+        {a.myRid: '👍'});
   }, timeout: const Timeout(Duration(minutes: 3)));
 }
 

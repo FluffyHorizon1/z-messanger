@@ -425,7 +425,12 @@ void _reactionTests() {
     await portProbe.close();
     relay = await Process.start('node', ['server.js'],
         workingDirectory: serverDir,
-        environment: {'PORT': '$port', 'LOG_LEVEL': 'silent'});
+        environment: {
+          'PORT': '$port',
+          'LOG_LEVEL': 'silent',
+          // /metrics is token-gated (P1-14); the early-reaction tests read it.
+          'METRICS_TOKEN': 'z-apptest-metrics',
+        });
     for (var i = 0; i < 60; i++) {
       try {
         final res = await (await HttpClient()
@@ -450,6 +455,23 @@ void _reactionTests() {
     }
   });
 
+  Future<int> metric(String name) async {
+    final req =
+        await HttpClient().getUrl(Uri.parse('http://127.0.0.1:$port/metrics'));
+    req.headers.set('authorization', 'Bearer z-apptest-metrics');
+    final res = await req.close();
+    final text = await res.transform(utf8.decoder).join();
+    if (res.statusCode != 200) {
+      throw StateError('/metrics answered HTTP ${res.statusCode}');
+    }
+    for (final line in const LineSplitter().convert(text)) {
+      if (line.startsWith('$name ')) {
+        return int.parse(line.substring(name.length + 1).trim());
+      }
+    }
+    return -1;
+  }
+
   Future<ChatService> makeClient(String name) async {
     final dir = await Directory.systemTemp.createTemp('z_react_$name');
     temps.add(dir);
@@ -467,12 +489,13 @@ void _reactionTests() {
     return svc;
   }
 
-  Future<void> waitUntil(bool Function() cond,
-      {Duration timeout = const Duration(seconds: 25)}) async {
+  Future<void> waitUntil(FutureOr<bool> Function() cond,
+      {Duration timeout = const Duration(seconds: 25), String? what}) async {
     final deadline = DateTime.now().add(timeout);
-    while (!cond()) {
+    while (!await cond()) {
       if (DateTime.now().isAfter(deadline)) {
-        throw TimeoutException('condition not met');
+        throw TimeoutException(
+            what == null ? 'condition not met' : 'condition not met: $what');
       }
       await Future<void>.delayed(const Duration(milliseconds: 30));
     }
@@ -535,6 +558,117 @@ void _reactionTests() {
 
   List<MessageReaction> reactionsOn(ChatService s, String rid, String mid) =>
       s.messagesByChat[rid]!.firstWhere((m) => m.mid == mid).reactions;
+
+  /// The message with [body] that [s] holds in [thread], from memory.
+  ChatMessage? findIn(ChatService s, String thread, String body) {
+    for (final m in s.messagesByChat[thread] ?? const <ChatMessage>[]) {
+      if (m.body == body) return m;
+    }
+    return null;
+  }
+
+  /// Each person's reaction to the message with [body] in [thread] as [s]
+  /// holds it in memory: what an open chat shows.
+  Map<String, String> onScreen(ChatService s, String thread, String body) =>
+      {for (final r in findIn(s, thread, body)!.reactions) r.senderRid: r.emoji};
+
+  /// The same for message [mid], read back from the vault as a chat screen
+  /// opening reads it.
+  Future<Map<String, String>> stored(
+      ChatService s, String thread, String mid) async {
+    final page = await s.loadMessages(thread);
+    return {
+      for (final r in page.firstWhere((m) => m.mid == mid).reactions)
+        r.senderRid: r.emoji
+    };
+  }
+
+  /// The kind of the inner message an envelope from a contact carried.
+  String? kindOf(DecryptResult dec) {
+    try {
+      return InnerMessage.fromBytes(dec.plaintext).kind;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Shuts [s]'s door to [from], as linked_kinds_test 10 does: what [from]
+  /// sends it waits there, while everything else reaches it as it comes.
+  /// `waiting` is how much waits; `open` lets it in, in the order it came,
+  /// and opens the door again.
+  ({int Function() waiting, Future<void> Function() open}) shut(
+      ChatService s, ChatService from) {
+    final deliver = s.transport.onMessage!;
+    final held = <(int, RelayInbound)>[];
+    var seen = 0;
+    s.transport.onMessage = (m) async {
+      final n = seen++;
+      final opened = m.from.isEmpty
+          ? await SealedEnvelope.open(
+              myXSeed: s.identity.xSeed,
+              myXPub: s.identity.xPub,
+              blob: m.payload)
+          : null;
+      if ((opened?.fromRid ?? m.from) == from.myRid) {
+        held.add((n, m));
+      } else {
+        deliver(m);
+      }
+    };
+    return (
+      waiting: () => held.length,
+      open: () async {
+        s.transport.onMessage = deliver;
+        for (final (_, m) in [...held]..sort((x, y) => x.$1.compareTo(y.$1))) {
+          await s.debugInbound(m);
+        }
+      },
+    );
+  }
+
+  /// Everyone in [all] has sent all they had to, and the relay holds nothing
+  /// but the [waiting] envelopes a shut door keeps: whatever else reached one
+  /// of them has been taken there.
+  Future<void> onlyHeld(List<ChatService> all, int Function() waiting,
+      {required String what}) async {
+    var calm = 0;
+    await waitUntil(() async {
+      for (final s in all) {
+        await s.flushOutbox();
+        if ((await s.vault.db.query('outbox', limit: 1)).isNotEmpty ||
+            (await s.vault.db.query('group_fanout', limit: 1)).isNotEmpty) {
+          calm = 0;
+          return false;
+        }
+      }
+      if (await metric('z_queued_envelopes') != waiting()) {
+        calm = 0;
+        return false;
+      }
+      return ++calm >= 3;
+    }, timeout: const Duration(seconds: 90), what: what);
+  }
+
+  /// A group [owner] makes of [members], each a contact of [owner] — the
+  /// invite introduces them to one another — once every member holds it and
+  /// nothing is in flight.
+  Future<String> groupOf(ChatService owner, List<ChatService> members) async {
+    final all = [owner, ...members];
+    await waitUntil(() => all.every((s) => s.transport.isConnected),
+        what: 'everyone connects');
+    for (final m in members) {
+      await owner.addContactFromCode(await m.myContactCode());
+      await m.addContactFromCode(await owner.myContactCode());
+    }
+    await settled(all);
+    final gid =
+        await owner.createGroup('Early', [for (final m in members) m.myRid]);
+    await waitUntil(() => members.every((m) => m.groups.containsKey(gid)),
+        timeout: const Duration(seconds: 60),
+        what: 'the group reaches every member');
+    await onlyHeld(all, () => 0, what: 'the group has settled');
+    return gid;
+  }
 
   test('a reaction rides to the peer, replaces, and withdraws', () async {
     final ann = await makeClient('ann');
@@ -685,6 +819,128 @@ void _reactionTests() {
             .emoji,
         '');
   });
+
+  // 30.3: a group message and a reaction to it reach a member on two
+  // pairwise sessions, the author's and the reactor's, and nothing orders
+  // the two. Until 2026-10-19 a reaction that came first was dropped, and
+  // that member never saw it.
+  test('a reaction that reaches me before the group message it names counts '
+      'when the message lands', () async {
+    final ann = await makeClient('eann');
+    final ben = await makeClient('eben');
+    final cat = await makeClient('ecat');
+    final all = [ann, ben, cat];
+    final gid = await groupOf(ann, [ben, cat]);
+
+    // Everything Ben sends Ann waits at her door, his group messages among
+    // it, while what Cat says of them reaches her as it comes.
+    final door = shut(ann, ben);
+    await ben.sendGroupText(gid, 'cake at four');
+    await ben.sendGroupText(gid, 'or five');
+    await waitUntil(
+        () =>
+            findIn(cat, gid, 'cake at four') != null &&
+            findIn(cat, gid, 'or five') != null,
+        timeout: const Duration(seconds: 60),
+        what: 'Cat holds both');
+    final four = findIn(cat, gid, 'cake at four')!.mid;
+    final five = findIn(cat, gid, 'or five')!.mid;
+
+    // Cat reacts to both, and takes the second back.
+    var reached = 0;
+    ann.debugOnDecrypted = (path, from, dec) {
+      if (from == cat.myRid && kindOf(dec) == 'greact') reached++;
+      return false;
+    };
+    expect(await cat.toggleReaction(gid, four, '🎂'), '🎂');
+    expect(await cat.toggleReaction(gid, five, '👍'), '👍');
+    expect(await cat.toggleReaction(gid, five, '👍'), '',
+        reason: 'reacting again with the same emoji takes it back');
+    await waitUntil(() => reached >= 3,
+        timeout: const Duration(seconds: 60),
+        what: "Cat's three reactions reach Ann");
+    await onlyHeld(all, door.waiting,
+        what: 'only what Ben sent Ann waits at the relay');
+    ann.debugOnDecrypted = null;
+    expect(findIn(ann, gid, 'cake at four'), isNull,
+        reason: 'Ann holds neither message yet');
+
+    // Ben's messages land, and each takes what Cat said of it first.
+    await door.open();
+    expect(onScreen(ann, gid, 'cake at four'), {cat.myRid: '🎂'},
+        reason: "Cat's reaction, which came before the message");
+    expect(onScreen(ann, gid, 'or five'), isEmpty,
+        reason: 'the latest reaction held from Cat was her taking it back');
+    expect(await stored(ann, gid, four), {cat.myRid: '🎂'});
+    expect(await stored(ann, gid, five), isEmpty);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a reaction held for a message counts only as it would have on '
+      'arrival: not from someone no longer in the group, nor in another chat',
+      () async {
+    final ann = await makeClient('hann');
+    final ben = await makeClient('hben');
+    final cat = await makeClient('hcat');
+    final dan = await makeClient('hdan');
+    final all = [ann, ben, cat, dan];
+    final gid = await groupOf(ann, [ben, cat, dan]);
+
+    final door = shut(ann, ben);
+    await ben.sendGroupText(gid, 'Friday?');
+    await waitUntil(
+        () =>
+            findIn(cat, gid, 'Friday?') != null &&
+            findIn(dan, gid, 'Friday?') != null,
+        timeout: const Duration(seconds: 60),
+        what: 'Cat and Dan hold it');
+    final x = findIn(cat, gid, 'Friday?')!.mid;
+
+    // Cat and Dan answer it before Ann holds it.
+    var reached = 0;
+    ann.debugOnDecrypted = (path, from, dec) {
+      if ((from == cat.myRid || from == dan.myRid) &&
+          kindOf(dec) == 'greact') {
+        reached++;
+      }
+      return false;
+    };
+    await cat.toggleReaction(gid, x, '✋');
+    await dan.toggleReaction(gid, x, '✋');
+    await waitUntil(() => reached >= 2,
+        timeout: const Duration(seconds: 60),
+        what: 'both reactions reach Ann');
+    await onlyHeld(all, door.waiting,
+        what: 'only what Ben sent Ann waits at the relay');
+    ann.debugOnDecrypted = null;
+
+    // A message of Cat's to Ann in their own chat, under the same id — a
+    // client that chose its id badly, or on purpose. It lands, and takes
+    // nothing that waits for the group's message (§6.4: an id names nothing
+    // outside its conversation).
+    await cat.sendRawInner(ann.myRid,
+        InnerMessage.text(x, DateTime.now().millisecondsSinceEpoch, 'not it'));
+    await waitUntil(() => findIn(ann, cat.myRid, 'not it') != null,
+        timeout: const Duration(seconds: 60),
+        what: "Cat's message reaches Ann");
+    await onlyHeld(all, door.waiting,
+        what: "Ann has taken Cat's message, and still waits for Ben's");
+    expect(findIn(ann, cat.myRid, 'not it')!.mid, x);
+    expect(onScreen(ann, cat.myRid, 'not it'), isEmpty,
+        reason: "a reaction held for the group's message lands in no other "
+            'chat');
+
+    // Ann takes Dan out of the group while his reaction still waits.
+    await ann.removeGroupMember(gid, dan.myRid);
+    expect(ann.groups[gid]!.memberRids, isNot(contains(dan.myRid)));
+
+    await door.open();
+    expect(onScreen(ann, gid, 'Friday?'), {cat.myRid: '✋'},
+        reason: "Cat's counts; Dan's does not, for he is no longer in the "
+            'group');
+    expect(onScreen(ann, cat.myRid, 'not it'), isEmpty);
+    expect(await stored(ann, gid, x), {cat.myRid: '✋'});
+    expect(await stored(ann, cat.myRid, x), isEmpty);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }
 
 // ---------------------------------------------------------------------------
