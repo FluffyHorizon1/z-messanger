@@ -424,12 +424,22 @@ class PendingRequest {
   /// from.
   String? via;
 
+  /// Phase 39 (ADR 0032 §4): this request came through the account's public
+  /// link — "via your public link" — and [via] is null.
+  bool viaLink;
+
+  /// Whether it came through either public door, the handle or the link:
+  /// what the one cap on such requests counts, apart from requests by code
+  /// or invite, and what accepting answers with an acknowledgement.
+  bool get viaIntro => via != null || viaLink;
+
   PendingRequest({
     required this.rid,
     required this.name,
     required this.bundle,
     required this.createdMs,
     this.via,
+    this.viaLink = false,
   });
 }
 

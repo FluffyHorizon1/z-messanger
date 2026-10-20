@@ -52,6 +52,7 @@ import 'package:z_protocol/z_protocol.dart';
 
 import 'alarm_evidence.dart' show OwnAlarmDismissals;
 import 'handles.dart' show HandleBackup;
+import 'intro_links.dart' show IntroLinkBackup;
 import 'key_transparency.dart' show KtConfig;
 import 'kt_private_lookups.dart' show KtDecoys;
 import 'relay_url.dart';
@@ -494,6 +495,9 @@ class BackupArchive {
     // Phase 38: the handle, as one record older builds keep and write back.
     final handle = await HandleBackup.export(vault);
     if (handle != null) await record(handle);
+    // Phase 39: the public link, the same way (ADR 0032 §4).
+    final introLink = await IntroLinkBackup.export(vault);
+    if (introLink != null) await record(introLink);
 
     // Records an earlier restore could not read and kept because their
     // writer said to: back into the archive as they came, byte for byte.
@@ -893,6 +897,8 @@ class BackupArchive {
       final requests = <Map<String, Object?>>[];
       // Phase 38: applied last, once the requests it describes are restored.
       Map<String, Object?>? handle;
+      // Phase 39: the public link, restored held (ADR 0032 §4).
+      Map<String, Object?>? introLink;
       final kept = <String>[];
       var skipped = 0;
 
@@ -1106,6 +1112,8 @@ class BackupArchive {
               for (final e in SealingKeyBackup.restore(r).entries) {
                 await kv(e.key, e.value);
               }
+            case IntroLinkBackup.recordType when r['v'] == 1:
+              introLink = r;
             default:
               // A record type this build does not know: written by a newer
               // build of this major version. Kept for the next archive when
@@ -1228,6 +1236,15 @@ class BackupArchive {
         final h = handle;
         if (h != null) {
           for (final e in HandleBackup.restore(h, restoredRequests).entries) {
+            await kv(e.key, e.value);
+          }
+        }
+        // Phase 39: the public link comes back held, until its person says
+        // to use it again — the device the backup came from may have
+        // replaced or withdrawn it since, and there is no log to ask.
+        final il = introLink;
+        if (il != null) {
+          for (final e in (await IntroLinkBackup.restore(il)).entries) {
             await kv(e.key, e.value);
           }
         }

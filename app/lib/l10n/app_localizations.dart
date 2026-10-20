@@ -4951,6 +4951,204 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'@{handle} accepted. Compare safety numbers to verify.'**
   String sysHandleAccepted(String handle);
+
+  /// Settings section header for the account's public introduction link (ADR 0032). Shown only in a build with public links on.
+  ///
+  /// In en, this message translates to:
+  /// **'Public link'**
+  String get stLinkSection;
+
+  /// Settings row title, and the title of the screen where the account's public link is made and managed.
+  ///
+  /// In en, this message translates to:
+  /// **'Your public link'**
+  String get plinkYourLink;
+
+  /// Settings row subtitle when the account has no public link.
+  ///
+  /// In en, this message translates to:
+  /// **'None. Make one to be reachable from a web page or a card'**
+  String get plinkRowNone;
+
+  /// Settings row subtitle when the account's public link is in use.
+  ///
+  /// In en, this message translates to:
+  /// **'Taking requests'**
+  String get plinkRowLive;
+
+  /// Settings row subtitle when a restore brought the public link back and it waits for the person to use it again.
+  ///
+  /// In en, this message translates to:
+  /// **'Back from a restore, not in use until you say'**
+  String get plinkRowHeld;
+
+  /// On a linked device, the public-link screen says only the main device holds the link.
+  ///
+  /// In en, this message translates to:
+  /// **'Only your main device can hold your public link. Make or manage it there; the people you meet through it appear here too.'**
+  String get plinkLinkedDevice;
+
+  /// First paragraph of the public-link screen before a link exists: what a link is for.
+  ///
+  /// In en, this message translates to:
+  /// **'A public link lets anyone who has it ask to connect with you: put it on a web page, in an email signature or on a printed card. It names nothing, not you and not your account, and you decide whom to accept.'**
+  String get plinkIntro;
+
+  /// Second paragraph before a link exists: where requests go, what each side shows the other, and that a link proves nothing about who anyone is.
+  ///
+  /// In en, this message translates to:
+  /// **'Requests through the link go to an inbox of its own, not to your account. Whoever sends one shows you their name and contact code, and accepting shows them yours. A link verifies nothing: compare safety numbers with anyone you accept.'**
+  String get plinkWhatItShows;
+
+  /// Button: make the account's public link. Nothing is sent when it is made.
+  ///
+  /// In en, this message translates to:
+  /// **'Make my link'**
+  String get plinkMake;
+
+  /// On the public-link screen while the link is in use.
+  ///
+  /// In en, this message translates to:
+  /// **'Taking requests. They arrive under Requests, marked as coming through your public link. Each one costs its sender some work.'**
+  String get plinkLiveBody;
+
+  /// Load-bearing note on the public-link screen: a link is only as good as the page it is on.
+  ///
+  /// In en, this message translates to:
+  /// **'A link verifies nothing. Whoever controls the page your link is on can put another link in its place, so compare safety numbers with anyone you accept.'**
+  String get plinkNotVerification;
+
+  /// Button: copy the public link to the clipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy link'**
+  String get plinkCopy;
+
+  /// Snackbar after the public link was copied.
+  ///
+  /// In en, this message translates to:
+  /// **'Link copied'**
+  String get plinkCopied;
+
+  /// Button: copy the public link as an HTML anchor carrying rel=noreferrer, to paste into a web page.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy for a web page'**
+  String get plinkCopyWeb;
+
+  /// Snackbar after the web-page copy of the link was copied.
+  ///
+  /// In en, this message translates to:
+  /// **'Copied, ready to paste into a web page'**
+  String get plinkCopiedWeb;
+
+  /// Explains what the web-page copy adds and why (the Referer header would name the page to the relay's host). rel="noreferrer" is HTML and stays as it is.
+  ///
+  /// In en, this message translates to:
+  /// **'The copy for a web page opens the link with rel=\"noreferrer\", so a browser that follows it does not tell Z\'s server which page it came from.'**
+  String get plinkWebHelp;
+
+  /// Screen-reader label for the QR code of the public link.
+  ///
+  /// In en, this message translates to:
+  /// **'QR code of your public link'**
+  String get plinkSemQr;
+
+  /// Action on the public-link screen: make the relay ask more work of every request, at once. Its subtitle says the level asked now.
+  ///
+  /// In en, this message translates to:
+  /// **'Ask more work'**
+  String get plinkAskMore;
+
+  /// Help in the dialog that raises the work asked of senders through the public link.
+  ///
+  /// In en, this message translates to:
+  /// **'How much work the relay asks of each request, from what is printed on the link up to the most. The link itself does not change: a sender learns of it when the relay refuses their request, and sends once more with more work.'**
+  String get plinkAskMoreHelp;
+
+  /// On the public-link screen once more work is asked than the link prints. {level} is the printed level, in words.
+  ///
+  /// In en, this message translates to:
+  /// **'Every copy of your link still asks the work printed on it ({level}); senders learn of the raise when the relay refuses them.'**
+  String plinkAskedMore(String level);
+
+  /// Action and confirm button: a new public link in place of the current one.
+  ///
+  /// In en, this message translates to:
+  /// **'Replace link'**
+  String get plinkReplace;
+
+  /// What replacing the public link does; also the confirmation text.
+  ///
+  /// In en, this message translates to:
+  /// **'A new link in place of this one, to end a wave of unwanted requests. Every copy of the old link stops working, without telling anyone who has one; requests already waiting stay.'**
+  String get plinkReplaceHelp;
+
+  /// Action and confirm button: remove the public link, with no new one.
+  ///
+  /// In en, this message translates to:
+  /// **'Withdraw link'**
+  String get plinkWithdraw;
+
+  /// Title of the confirmation before the public link is withdrawn.
+  ///
+  /// In en, this message translates to:
+  /// **'Withdraw your public link?'**
+  String get plinkWithdrawConfirmTitle;
+
+  /// Body of the confirmation before the public link is withdrawn.
+  ///
+  /// In en, this message translates to:
+  /// **'Every copy of it stops working, without telling anyone who has one. Requests already waiting stay, and you can make a new link later.'**
+  String get plinkWithdrawConfirmBody;
+
+  /// On the public-link screen after a restore: the link is held until the person says to use it again, and why.
+  ///
+  /// In en, this message translates to:
+  /// **'This link came back with a backup you restored, and is not in use: the device the backup came from may have replaced or withdrawn it since, and there is nothing to ask. Use it again only if it is still the link you hand out.'**
+  String get plinkHeldBody;
+
+  /// Action: put a public link that came back with a restore back in use.
+  ///
+  /// In en, this message translates to:
+  /// **'Use it again'**
+  String get plinkUseAgain;
+
+  /// The relay answered the link's intro frame as a relay that predates introduction mailboxes.
+  ///
+  /// In en, this message translates to:
+  /// **'Your relay is too old to guard this link\'s inbox or to pass on the work each request carries, so requests through your link cannot reach this phone. Public links need an up-to-date relay.'**
+  String get plinkRelayUnguarded;
+
+  /// The relay refused the link's flag because it holds as many as it can.
+  ///
+  /// In en, this message translates to:
+  /// **'Your relay is not guarding this link\'s inbox right now: it is already guarding as many inboxes as it can, so it takes requests without checking their work.'**
+  String get plinkRelayFull;
+
+  /// The relay paced the link's flag frame.
+  ///
+  /// In en, this message translates to:
+  /// **'Your relay may not be guarding this link\'s inbox right now: it was asked too often, and is asked again at the next check.'**
+  String get plinkRelayPaced;
+
+  /// Shown under any of the relay warnings: the phone's own check of each request's work holds whatever the relay does.
+  ///
+  /// In en, this message translates to:
+  /// **'This phone still checks the work on every request that comes through your link, and drops any request without it.'**
+  String get plinkStampsChecked;
+
+  /// On the public-link screen, when either count is nonzero: what the phone's own checks dropped over five days, for the link and the handle together (one ledger serves both, so no door is named).
+  ///
+  /// In en, this message translates to:
+  /// **'In the last five days this phone dropped {unstamped, plural, =1{one request that came} other{{unstamped} requests that came}} without the work it had to carry, and refused {copies, plural, =1{one copy} other{{copies} copies}} of requests it had already decided. Large numbers mean someone is flooding you; more work per request slows them down.'**
+  String plinkInboxDrops(int unstamped, int copies);
+
+  /// On a pending request that came through the account's public link.
+  ///
+  /// In en, this message translates to:
+  /// **'Via your public link'**
+  String get requestsViaLink;
 }
 
 class _AppLocalizationsDelegate

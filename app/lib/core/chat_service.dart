@@ -13,6 +13,7 @@ import 'backup_store.dart';
 import 'device_sync.dart';
 import 'enrollment.dart' show enrollmentKvFamilies, isRootBundle, rootBundleKey;
 import 'handles.dart';
+import 'intro_links.dart' show introLinksEnabled;
 import 'key_transparency.dart';
 import 'models.dart';
 import 'picked_file.dart' show pickerCacheDir, sweepPickerCopies;
@@ -591,6 +592,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     HandleConfig handleConfig = HandleConfig.defaults,
     KtFetcher? handleFetcher,
     int Function()? handleNow,
+    // Phase 39 (ADR 0032): public introduction links. Production never
+    // passes it, so it is the build's constant — off until the release that
+    // turns links on; a test passes true to drive them.
+    bool introLinks = introLinksEnabled,
     // The ADR 0017 stage-2b signer for this service — since ADR 0029 the kill
     // switch for the move alone. Production never passes it, so it is the
     // protocol's constant — on; a test passes false to start one account as
@@ -722,13 +727,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       host: svc,
       fetcher: handleFetcher ?? HttpKtFetcher(),
       config: handleConfig,
+      linksEnabled: introLinks,
       now: handleNow,
     );
     await handles.load();
     await handles.keepInboundFor(svc.requestsByRid.keys.toSet());
     await handles.keepWarningsFor(svc.contacts.keys.toSet());
     for (final e in svc.requestsByRid.entries) {
-      e.value.via = handles.inboundFor(e.key)?.handle;
+      final m = handles.inboundFor(e.key);
+      // Phase 39: one that came through the public link is said so — and,
+      // with links off, is an ordinary request: nothing says "link" then.
+      e.value.via = m == null || m.link ? null : m.handle;
+      e.value.viaLink = m != null && m.link && handles.linksEnabled;
     }
     svc._handles = handles;
 
@@ -1685,7 +1695,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   static const Duration requestMaxSkew = Duration(days: 1);
 
   /// The most pending requests this device holds that came by a code
-  /// someone scanned or pasted, or by a link. When one would be the 101st,
+  /// someone scanned or pasted, or by an invite. When one would be the 101st,
   /// the oldest the person has not seen goes — the newcomer, if every other
   /// has been seen — so a flood of new identities can push out only what
   /// nobody has looked at yet, and never a request the person has seen.
@@ -1699,7 +1709,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// pushed out the unseen request of someone who had the person's code
   /// before the person could look, as an independent review of handles
   /// found (2026-10-09). Apart, a flood through one door evicts only what
-  /// came through it.
+  /// came through it. Since phase 39 the account's public link is the same
+  /// kind of door, and shares this one cap with the handle (ADR 0032 §4):
+  /// both are open to anyone who has them, and neither may push out a
+  /// request made with the code.
   static const int maxPendingHandleRequests = handleInboundCap;
 
   /// The `ts` of the newest request taken in from each requester, pending
@@ -1793,21 +1806,22 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   @visibleForTesting
   bool debugRequestSeen(String rid) => _requestsSeen.contains(rid);
 
-  /// Hold no more than [maxPendingRequests] that came by a code or a link,
-  /// and apart from them no more than [maxPendingHandleRequests] that came
-  /// through the handle: in each, the oldest the person has not seen goes
-  /// first, by arrival here — and with it its mark, so a flood of one-off
-  /// identities cannot grow the marks either. A request the person has seen
-  /// is never pushed out: the newest arrival is never seen, so there is
-  /// always an unseen one to go, and were there none the list would stay
-  /// one over rather than lose something the person has looked at.
+  /// Hold no more than [maxPendingRequests] that came by a code or an
+  /// invite, and apart from them no more than [maxPendingHandleRequests]
+  /// that came through the handle or the public link, together: in each,
+  /// the oldest the person has not seen goes first, by arrival here — and
+  /// with it its mark, so a flood of one-off identities cannot grow the marks
+  /// either. A request the person has seen is never pushed out: the newest
+  /// arrival is never seen, so there is always an unseen one to go, and were
+  /// there none the list would stay one over rather than lose something the
+  /// person has looked at.
   Future<void> _capRequests() async {
-    for (final viaHandle in [false, true]) {
-      final cap = viaHandle ? maxPendingHandleRequests : maxPendingRequests;
+    for (final viaIntro in [false, true]) {
+      final cap = viaIntro ? maxPendingHandleRequests : maxPendingRequests;
       while (true) {
         final door = [
           for (final r in requestsByRid.values)
-            if ((r.via != null) == viaHandle) r
+            if (r.viaIntro == viaIntro) r
         ];
         if (door.length <= cap) break;
         PendingRequest? out;
@@ -2143,8 +2157,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // Signed before anything below forgets which mailbox the request reached.
     // The account key it names is this device's own key, which is what the
     // acceptance is signed with and carries as its bundle — the account key
-    // itself, since only the primary device holds a handle (§21.8).
-    final ia = pending.via == null
+    // itself, since only the primary device holds a handle (§21.8), or a
+    // public link (ADR 0032 §4).
+    final ia = !pending.viaIntro
         ? null
         : await _handles?.acknowledgement(rid,
             ownerAccountEdPub: identity.edPub);
@@ -2220,11 +2235,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// stamped request the relay hands over again after a drain, or one
   /// declined, does not come back — and the cap on pending handle requests
   /// ([maxPendingHandleRequests]), which pushes out the oldest unseen that
-  /// came through the handle and never one that came by a code or a link.
-  /// False when it was not filed, or the cap pushed it straight out again.
+  /// came through the handle or the public link and never one that came by
+  /// a code or an invite. [viaLink]: it reached the public link's mailbox
+  /// (ADR 0032 §4), and is filed "via your public link". False when it was
+  /// not filed, or the cap pushed it straight out again.
   @override
   Future<bool> addHandleRequest(ContactRequest request,
-      {required String requesterRid, required String handle}) async {
+      {required String requesterRid,
+      required String handle,
+      bool viaLink = false}) async {
     final rid = requesterRid;
     if (_blocked.contains(rid) || _myAccountRids.contains(rid)) return false;
     final known = contacts[rid];
@@ -2260,7 +2279,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         name: name,
         bundle: request.bundle,
         createdMs: now,
-        via: handle);
+        via: viaLink ? null : handle,
+        viaLink: viaLink);
     _requestMarks[rid] = request.ts;
     _requestsSeen.remove(rid);
     await _capRequests();

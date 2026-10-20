@@ -93,11 +93,15 @@ class _RequestCard extends StatelessWidget {
                               fontWeight: FontWeight.w600, fontSize: 16)),
                       const SizedBox(height: 2),
                       // Phase 38: a request that came through the handle
-                      // says which, so the person knows how they were found.
+                      // says which, so the person knows how they were found
+                      // — and since phase 39 one through the public link
+                      // says that.
                       Text(
-                          request.via == null
-                              ? l.requestsWantsToConnect
-                              : l.requestsVia(request.via!),
+                          request.viaLink
+                              ? l.requestsViaLink
+                              : request.via == null
+                                  ? l.requestsWantsToConnect
+                                  : l.requestsVia(request.via!),
                           style: TextStyle(
                               color: context.z.textSecondary, fontSize: 13)),
                     ],

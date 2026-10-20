@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../core/update_check.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/handle_text.dart';
+import '../l10n/link_text.dart';
 import '../l10n/ttl_text.dart';
 import '../l10n/when_text.dart';
 import '../core/app_lock.dart';
@@ -24,6 +25,7 @@ import '../core/vault.dart';
 import 'backup_screen.dart';
 import 'crypto_bench_screen.dart';
 import 'handle_screen.dart';
+import 'intro_link_screen.dart';
 import 'link_device_screen.dart';
 import 'theme.dart';
 
@@ -248,6 +250,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ].join('\n'),
                   style: const TextStyle(fontSize: 12)),
               onTap: () => _editHandleWitness(context, svc),
+            ),
+          ],
+          // Phase 39 (ADR 0032): the public link, made here, later, if at all
+          // — never during onboarding — and in a build with links on alone.
+          if (svc.handles.linksEnabled) ...[
+            _SectionHeader(l.stLinkSection),
+            ListTile(
+              leading: const Icon(Icons.link),
+              title: Text(l.plinkYourLink),
+              subtitle: Text(introLinkRowText(l, svc.handles),
+                  style: const TextStyle(fontSize: 12)),
+              onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const IntroLinkScreen())),
             ),
           ],
           _SectionHeader(l.stAppearance),

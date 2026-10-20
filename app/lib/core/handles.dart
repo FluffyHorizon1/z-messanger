@@ -50,7 +50,13 @@
 ///   [HandleService.rotate], [HandleService.setDifficulty],
 ///   [HandleService.retire]) and recovering with the code
 ///   ([HandleService.prepareRecover], [HandleService.commitRecover]);
-/// * what a backup carries ([HandleBackup]).
+/// * what a backup carries ([HandleBackup]);
+/// * since phase 39 (ADR 0032), the account's public introduction link — a
+///   mailbox like the handle's, handed out directly with no handle log
+///   between — made, drained on a timer of its own, replaced and withdrawn
+///   here beside the handle ([HandleService.makeLink],
+///   [HandleService.drainLink]), all behind [introLinksEnabled], which with
+///   the link's record and backup is in `intro_links.dart`.
 ///
 /// What it stores, all sealed in the vault: `handle` (this account's handle —
 /// its canonical name, label, owner and introduction seeds, difficulty,
@@ -89,6 +95,7 @@ import 'package:flutter/foundation.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 import 'handle_lookups.dart';
+import 'intro_links.dart';
 import 'key_transparency.dart' show KtFetcher, KtResponse;
 import 'vault.dart';
 
@@ -1037,11 +1044,18 @@ class OwnHandle {
 }
 
 /// What this device keeps about one pending request that came through the
-/// handle: everything accepting it needs to sign the acknowledgement, and
-/// whether the person has seen it.
+/// handle, or through the account's public link: everything accepting it
+/// needs to sign the acknowledgement, and whether the person has seen it.
 class HandleRequestMeta {
-  /// The handle it came through, canonical.
+  /// The handle it came through, canonical; empty for one that came through
+  /// the public link ([link]).
   final String handle;
+
+  /// Phase 39 (ADR 0032 §4): it came through the account's public link, not
+  /// its handle. Stored as `"link":1` and no `h`, so a build from before
+  /// links, which requires `h`, skips the record rather than file the request
+  /// under a handle it never came through.
+  final bool link;
 
   /// The introduction mailbox it reached — which introduction key signs the
   /// acknowledgement, after a rotation too.
@@ -1063,10 +1077,11 @@ class HandleRequestMeta {
     required this.at,
     required this.seq,
     this.seen = false,
+    this.link = false,
   });
 
   Map<String, Object?> toJson() => {
-        'h': handle,
+        if (link) 'link': 1 else 'h': handle,
         'intro': introRid,
         'id': b64(creqId),
         'at': at,
@@ -1077,9 +1092,11 @@ class HandleRequestMeta {
   static HandleRequestMeta fromJson(Map<String, Object?> j) {
     final id = unb64(j['id'] as String);
     if (id.length != 32) throw const FormatException('creqId');
-    Handle.parse(j['h'] as String);
+    final link = j['link'] == 1;
+    if (!link) Handle.parse(j['h'] as String);
     return HandleRequestMeta(
-      handle: j['h'] as String,
+      handle: link ? '' : j['h'] as String,
+      link: link,
       introRid: j['intro'] as String,
       creqId: id,
       at: (j['at'] as num).toInt(),
@@ -1685,14 +1702,18 @@ abstract class HandleHost {
       required String pow});
 
   /// File a verified request that reached the introduction mailbox for
-  /// [handle] as a pending request, under the rules every request is held to
-  /// (its signed time and the last one taken in from the same requester) and
-  /// the cap on pending handle requests, which counts them apart from those
-  /// that came by a code or a link. False when it was dropped (blocked, a
+  /// [handle] — or, [viaLink], the mailbox of the account's public link
+  /// (ADR 0032 §4; [handle] is then empty) — as a pending request, under the
+  /// rules every request is held to (its signed time and the last one taken
+  /// in from the same requester) and the one cap on pending requests through
+  /// the handle and the link together, which counts them apart from those
+  /// that came by a code or an invite. False when it was dropped (blocked, a
   /// contact already, this account itself, refused by those rules, or pushed
   /// straight out by the cap).
   Future<bool> addHandleRequest(ContactRequest request,
-      {required String requesterRid, required String handle});
+      {required String requesterRid,
+      required String handle,
+      bool viaLink = false});
 
   /// patch 57's classifier: whether a failure while filing an inbound
   /// envelope may succeed on redelivery (so it is left with the relay).
@@ -1798,6 +1819,25 @@ class HandleService extends ChangeNotifier {
   OwnHandle? own;
   final Map<String, HandleRequestMeta> _inbound = {};
 
+  /// Phase 39 (ADR 0032): whether this build makes, opens and drains public
+  /// links — [introLinksEnabled], unless a test passed otherwise to
+  /// `ChatService.init`. Off, nothing below that is a link's runs: no link is
+  /// loaded, made, drained or shown, none is opened or sent to, and no
+  /// acceptance is matched to a request through one.
+  final bool linksEnabled;
+
+  /// The account's public link (ADR 0032 §4), on the main device; null with
+  /// none — never made, withdrawn, or links off.
+  OwnIntroLink? link;
+
+  /// The seeds of the account's public links since replaced or withdrawn,
+  /// kept while a pending request that reached one still has to be
+  /// acknowledged with it: introRid → seed and printed work. They live in
+  /// the link's own row beside the link ([IntroLinkRow], ADR 0032 §4) —
+  /// never among the handle's [_oldSeeds], so never in `handle_in` or the
+  /// `handle` backup record — and are read only where links are on.
+  final Map<String, IntroLinkOldSeed> _oldLinkSeeds = {};
+
   /// Introduction seeds of mailboxes since rotated away from, or of a
   /// retired handle, kept while a pending request that reached them still
   /// has to be acknowledged with them: introRid → seed.
@@ -1855,6 +1895,13 @@ class HandleService extends ChangeNotifier {
   int? lastDrainMs;
   int drains = 0;
 
+  /// The same for the public link's mailbox, which is drained on a timer of
+  /// its own ([drainLink]); and what the relay said to the link's last
+  /// `intro` frame.
+  int? lastLinkDrainMs;
+  int linkDrains = 0;
+  HandleRelayGuard linkRelayGuard = HandleRelayGuard.unknown;
+
   /// How many proof-of-work stamps this process made (a test reads it).
   @visibleForTesting
   int stampsMade = 0;
@@ -1872,17 +1919,20 @@ class HandleService extends ChangeNotifier {
 
   Timer? _publishTimer;
   Timer? _drainTimer;
+  Timer? _linkDrainTimer;
   bool _started = false;
   bool _foreground = true;
   bool _disposed = false;
   Future<void> _ops = Future<void>.value();
   Future<int>? _draining;
+  Future<int>? _linkDraining;
 
   HandleService({
     required this.vault,
     required this.host,
     required this.fetcher,
     required this.config,
+    this.linksEnabled = introLinksEnabled,
     int Function()? now,
     Random? random,
   })  : now = now ?? (() => DateTime.now().millisecondsSinceEpoch),
@@ -2027,6 +2077,9 @@ class HandleService extends ChangeNotifier {
     await _loadLedger();
     // After the requests they are tied to.
     await _loadKept();
+    // Phase 39: the public link, only where links are on. Off, a link the
+    // vault holds from a restore is left as it is, unread.
+    if (linksEnabled) await _loadLink();
   }
 
   /// The ledger: its record (`handle_stamps`, the salt and the tallies) and
@@ -2089,18 +2142,22 @@ class HandleService extends ChangeNotifier {
   }
 
   /// Forget the handle requests whose pending request is gone — a request
-  /// deleted while the app was not running to drop its record too.
+  /// deleted while the app was not running to drop its record too — and the
+  /// old public-link seeds no pending request needs any more, one kept over a
+  /// last read the app did not live to finish among them.
   Future<void> keepInboundFor(Set<String> pendingRids) async {
     final gone = [
       for (final r in _inbound.keys)
         if (!pendingRids.contains(r)) r
     ];
-    if (gone.isEmpty) return;
-    for (final r in gone) {
-      _inbound.remove(r);
+    if (gone.isNotEmpty) {
+      for (final r in gone) {
+        _inbound.remove(r);
+      }
+      _pruneSeeds();
+      await _saveInbound();
     }
-    _pruneSeeds();
-    await _saveInbound();
+    await _pruneLinkSeeds();
   }
 
   /// Called once the service and the transport are running.
@@ -2118,13 +2175,16 @@ class HandleService extends ChangeNotifier {
     }
     _scheduleDrain(first: true);
     _checkBackSoon(); // §21.8: a kept head due a check of its own
+    _scheduleLinkDrain(first: true);
   }
 
-  /// The app came to the foreground: drain soon, then on the timer.
+  /// The app came to the foreground: drain soon, then on the timer — the
+  /// handle's mailbox and the link's, each at a moment of its own.
   void onForeground() {
     _foreground = true;
     _scheduleDrain(first: true);
     _checkBackSoon();
+    _scheduleLinkDrain(first: true);
   }
 
   /// The app left the foreground: no drains until it is back.
@@ -2133,6 +2193,8 @@ class HandleService extends ChangeNotifier {
     _drainTimer?.cancel();
     _drainTimer = null;
     _cancelCheckBack();
+    _linkDrainTimer?.cancel();
+    _linkDrainTimer = null;
   }
 
   @override
@@ -2142,6 +2204,7 @@ class HandleService extends ChangeNotifier {
     _publishTimer?.cancel();
     _drainTimer?.cancel();
     _cancelCheckBack();
+    _linkDrainTimer?.cancel();
     super.dispose();
   }
 
@@ -3964,15 +4027,18 @@ class HandleService extends ChangeNotifier {
   Future<void> recordInbound(String rid,
       {required String handle,
       required String introRid,
-      required Uint8List creqId}) async {
+      required Uint8List creqId,
+      bool link = false}) async {
     _inbound[rid] = HandleRequestMeta(
         handle: handle,
+        link: link,
         introRid: introRid,
         creqId: creqId,
         at: now(),
         seq: ++_seq);
     _pruneSeeds();
     await _saveInbound();
+    await _pruneLinkSeeds();
   }
 
   /// The pending request from [rid] is gone (accepted, declined, blocked,
@@ -3982,6 +4048,7 @@ class HandleService extends ChangeNotifier {
     if (_inbound.remove(rid) == null) return;
     _pruneSeeds();
     await _saveInbound();
+    await _pruneLinkSeeds();
   }
 
   /// The person has seen every pending handle request: none of them is the
@@ -3998,8 +4065,9 @@ class HandleService extends ChangeNotifier {
   }
 
   /// `ia` for accepting the request from [requesterRid] (§21.7), signed by
-  /// the introduction key of the mailbox it reached; null when it did not
-  /// come through the handle, or that key is no longer held.
+  /// the introduction key of the mailbox it reached — the handle's, or the
+  /// public link's (ADR 0032 §4); null when it came through neither, or that
+  /// key is no longer held.
   Future<String?> acknowledgement(String requesterRid,
       {required Uint8List ownerAccountEdPub}) async {
     if (debugOmitAcknowledgement) return null;
@@ -4017,7 +4085,9 @@ class HandleService extends ChangeNotifier {
   Uint8List? _seedFor(String introRid) {
     final o = own;
     if (o != null && o.introRid == introRid) return o.introSeed;
-    return _oldSeeds[introRid];
+    final l = link;
+    if (l != null && l.introRid == introRid) return l.seed;
+    return _oldSeeds[introRid] ?? _oldLinkSeeds[introRid]?.seed;
   }
 
   /// Old introduction seeds go once nothing pending still needs them — and
@@ -4031,8 +4101,25 @@ class HandleService extends ChangeNotifier {
     _oldSeeds.removeWhere((rid, _) => !needed.contains(rid));
   }
 
+  /// [_pruneSeeds]'s rule for the seeds of public links since replaced or
+  /// withdrawn, which live in the link's own row ([IntroLinkRow]): written
+  /// back when one goes — after `handle_in`, so that a request is never
+  /// held there without its seed — and the row deleted once it holds
+  /// neither a link nor an old seed. Nothing with links off, where the row
+  /// is never read.
+  Future<void> _pruneLinkSeeds() async {
+    if (_oldLinkSeeds.isEmpty) return;
+    final needed = {
+      for (final m in _inbound.values) m.introRid,
+      ..._finalDrains,
+    };
+    final before = _oldLinkSeeds.length;
+    _oldLinkSeeds.removeWhere((rid, _) => !needed.contains(rid));
+    if (_oldLinkSeeds.length != before) await _saveLink();
+  }
+
   /// The mailboxes of seeds being read once more after a rotation or a
-  /// retirement.
+  /// retirement, or after the public link was replaced or withdrawn.
   final Set<String> _finalDrains = {};
 
   /// Read the mailbox of [seed] once more without renewing its flag, the
@@ -4124,6 +4211,34 @@ class HandleService extends ChangeNotifier {
         ? handlePowMinBits
         : handleStampFloor(o.pow,
             prevPow: o.prevPow, prevPowUntil: o.prevPowUntil, nowMs: now());
+    final decided = await _readMailbox(seed,
+        flag: flag,
+        door: handle == null ? null : _IntroDoor.handle(handle),
+        floorBits: floorBits,
+        onGuard: (g) => relayGuard = g);
+    if (renew) {
+      drains++;
+      lastDrainMs = now();
+      notifyListeners();
+    }
+    return decided;
+  }
+
+  /// Read the introduction mailbox of [seed] once — a handle's or a public
+  /// link's — on a relay connection of its own, authenticated as the
+  /// mailbox's identity and never as the account (§21.8): flagged with
+  /// [flag] after it authenticates (none, to read without renewing the flag),
+  /// never registered for push, read until nothing has arrived for
+  /// [drainQuiet] (at most [drainMax]), every envelope's stamp counted at
+  /// [floorBits] before it is opened, and every envelope whose fate is
+  /// decided acknowledged. What opens as a request is filed through [door];
+  /// with no door, nothing is. [onGuard] hears the relay's answer to the
+  /// flag. Returns how many envelopes it decided.
+  Future<int> _readMailbox(Uint8List seed,
+      {required int? flag,
+      required _IntroDoor? door,
+      required int floorBits,
+      void Function(HandleRelayGuard)? onGuard}) async {
     final id = await handleIntroIdentity(seed);
     final rid = await id.routingId();
     final client = await RelayClient.connect(host.relayUrl, id);
@@ -4138,20 +4253,20 @@ class HandleService extends ChangeNotifier {
       if (flag != null) {
         try {
           await client.intro(flag);
-          relayGuard = HandleRelayGuard.guarded;
+          onGuard?.call(HandleRelayGuard.guarded);
         } on RelayException catch (e) {
           // The relay is not guarding the mailbox right now — too old to
           // know the frame, holding all the flags it will, or pacing them —
           // so it takes sends without checking their work. The mailbox is
           // still read, every stamp is still counted here, and the screen
           // says so (§21.6, §21.8).
-          relayGuard = switch (e.message) {
-                'unknown_frame' => HandleRelayGuard.tooOld,
-                'intro_full' => HandleRelayGuard.full,
-                'rate_limited' => HandleRelayGuard.paced,
-                _ => null,
-              } ??
-              relayGuard;
+          final guard = switch (e.message) {
+            'unknown_frame' => HandleRelayGuard.tooOld,
+            'intro_full' => HandleRelayGuard.full,
+            'rate_limited' => HandleRelayGuard.paced,
+            _ => null,
+          };
+          if (guard != null) onGuard?.call(guard);
         }
       }
       final started = DateTime.now();
@@ -4159,7 +4274,7 @@ class HandleService extends ChangeNotifier {
       while (true) {
         while (next < inbox.length) {
           final m = inbox[next++];
-          final ack = await _onIntroEnvelope(m, rid, id, handle, floorBits);
+          final ack = await _onIntroEnvelope(m, rid, id, door, floorBits);
           if (ack) {
             decided++;
             try {
@@ -4186,11 +4301,6 @@ class HandleService extends ChangeNotifier {
     } catch (_) {
       // The vault busy: the tallies wait for the next drain, in memory.
     }
-    if (renew) {
-      drains++;
-      lastDrainMs = now();
-      notifyListeners();
-    }
     return decided;
   }
 
@@ -4206,12 +4316,13 @@ class HandleService extends ChangeNotifier {
   /// takes sends without checking them, and this check is what guards the
   /// inbox then (§21.6, §21.8); one decided here before
   /// ([HandleStampLedger]), so a request is decided once whoever sends it
-  /// again; and then, opened, one not sealed for this key, not a request,
-  /// not addressed to this mailbox, or not signed by the identity it names.
+  /// again — through the handle or the public link, one ledger for both; and
+  /// then, opened, one not sealed for this key, not a request, not addressed
+  /// to this mailbox, or not signed by the identity it names.
   Future<bool> _onIntroEnvelope(RelayInbound m, String introRid, ZIdentity id,
-      String? handle, int floorBits) async {
+      _IntroDoor? door, int floorBits) async {
     try {
-      if (m.from.isNotEmpty || handle == null) return true;
+      if (m.from.isNotEmpty || door == null) return true;
       final stamp = await handleStampOf(
           introRid: introRid,
           payload: m.payload,
@@ -4231,7 +4342,7 @@ class HandleService extends ChangeNotifier {
         _tallyDirty = true;
         return true;
       }
-      if (await _decideIntroEnvelope(m, introRid, id, handle)) {
+      if (await _decideIntroEnvelope(m, introRid, id, door)) {
         // A request, decided: written down before the relay is told, and
         // before the next envelope can push it out of the cap, so a copy of
         // it is refused from now on, after a restart too.
@@ -4249,7 +4360,7 @@ class HandleService extends ChangeNotifier {
   /// then made of it; false for one that can never be a request; throws for
   /// a failure that may pass.
   Future<bool> _decideIntroEnvelope(
-      RelayInbound m, String introRid, ZIdentity id, String handle) async {
+      RelayInbound m, String introRid, ZIdentity id, _IntroDoor door) async {
     final opened = await SealedEnvelope.open(
         myXSeed: id.xSeed, myXPub: id.xPub, blob: m.payload);
     if (opened == null) return false;
@@ -4259,11 +4370,12 @@ class HandleService extends ChangeNotifier {
       return false;
     }
     final rid = opened.fromRid;
-    final filed =
-        await host.addHandleRequest(creq, requesterRid: rid, handle: handle);
+    final filed = await host.addHandleRequest(creq,
+        requesterRid: rid, handle: door.handle ?? '', viaLink: door.link);
     if (filed) {
       await recordInbound(rid,
-          handle: handle,
+          handle: door.handle ?? '',
+          link: door.link,
           introRid: introRid,
           creqId: await contactRequestId(creq));
     }
@@ -4308,6 +4420,240 @@ class HandleService extends ChangeNotifier {
           _RecordVerdict.current => (true, max(o.pow, rec.pow), o.introSeed),
         };
       });
+
+  // ---------------------------------------------------------------------------
+  // The public link (phase 39; ADR 0032 §4, PROTOCOL §21.9) — the owner's side
+  // ---------------------------------------------------------------------------
+  //
+  // A link is an introduction mailbox handed out directly, with no handle log
+  // between, so nothing here reads or needs one: a link is made, drained and
+  // answered on a device that has no handle log configured, which is every
+  // device until a build pins one. What it shares with the handle is the
+  // drain ([_readMailbox]), the ledger, the cap (the chat service's, one for
+  // both doors) and the acknowledgement; the seeds of links it replaced are
+  // kept in its own row ([IntroLinkRow]), not among the handle's.
+
+  /// Whether this device can hold the account's public link: links on, and
+  /// the main device (v1, as for a handle).
+  bool get canManageLink => linksEnabled && canManage;
+
+  void _requireLinkOwner() {
+    if (!linksEnabled) throw StateError('public links are off in this build');
+    if (!canManage) throw const HandleException(HandleFailure.linkedDevice);
+  }
+
+  OwnIntroLink _requireLink() {
+    _requireLinkOwner();
+    final l = link;
+    if (l == null) throw const HandleException(HandleFailure.noHandle);
+    return l;
+  }
+
+  /// Make the account's one public link (decision 3), printed at [pow] —
+  /// 16 to 24 bits, 20 unless the person chose ([introLinkDefaultPow]) — and
+  /// keep it, sealed. Nothing is sent: the relay meets the mailbox at its
+  /// first drain, which runs on the link's own timer, drawn as a handle's
+  /// first drain after the app comes to the foreground is (3 to 30 seconds),
+  /// so the first connection as the link is not in the second it was made.
+  Future<void> makeLink({int pow = introLinkDefaultPow}) => _serial(() async {
+        _requireLinkOwner();
+        if (pow < introLinkMinPow || pow > introLinkMaxOwnerPow) {
+          throw ArgumentError.value(pow, 'pow');
+        }
+        if (link != null) {
+          throw const HandleException(HandleFailure.alreadyHasOne);
+        }
+        link = await OwnIntroLink.make(randomBytes(32), pow: pow, nowMs: now());
+        await _saveLink();
+        notifyListeners();
+        _scheduleLinkDrain(first: true);
+      });
+
+  /// Ask senders for more work than the link prints — [bits], from the
+  /// printed work to [introLinkMaxOwnerPow] — and re-flag the mailbox at
+  /// once. Every copy of the link still asks its printed work: a sender
+  /// learns of the raise only from the relay's refusal, and the stamps this
+  /// device counts are counted at the printed work ([drainLink]).
+  Future<void> askMoreWork(int bits) => _serial(() async {
+        final l = _requireLink();
+        if (bits < l.printedPow || bits > introLinkMaxOwnerPow) {
+          throw ArgumentError.value(bits, 'bits');
+        }
+        l.askedPow = bits;
+        await _saveLink();
+        notifyListeners();
+        if (l.phase == IntroLinkPhase.live) _drainLinkSoon();
+      });
+
+  /// A new link in place of this one: a new seed, printed at the work the
+  /// old one asks. The old mailbox is read once more without `intro`, so its
+  /// flag lapses with its ownership (§21.6), and its seed is kept while a
+  /// pending request needs it ([_retireLink]); every copy of the old link
+  /// fails from then on, in silence.
+  Future<void> replaceLink() => _serial(() async {
+        final l = _requireLink();
+        final fresh = await OwnIntroLink.make(randomBytes(32),
+            pow: l.askedPow, nowMs: now());
+        await _retireLink(l, next: fresh);
+        _scheduleLinkDrain(first: true);
+      });
+
+  /// Replace the link with nothing: every copy of it fails from now on. The
+  /// mailbox is read once more without `intro`, and its seed is kept while a
+  /// pending request needs it ([_retireLink]) — in the link's row, which
+  /// stays, with no link, for as long as one does.
+  Future<void> withdrawLink() => _serial(() async {
+        final l = _requireLink();
+        await _retireLink(l, next: null);
+      });
+
+  /// What Replace and Withdraw share (ADR 0032 §4). [l]'s drain, if one is
+  /// running, finished first, and its timer stopped, so that its mailbox is
+  /// never flagged again; then [next] — the new link, or none — and [l]'s
+  /// seed set together and written in ONE write of the link's row, before
+  /// anything is read: an app killed at any moment from here on starts again
+  /// with the seed stored, so a request that reached [l]'s mailbox is still
+  /// accepted with `ia`. Then that mailbox is read once more, unflagged, its
+  /// stamps counted at the work it printed, and its seed kept from the
+  /// pruning meanwhile, since what the read files may need it; after it, the
+  /// seed goes unless a pending request needs it ([_pruneLinkSeeds]).
+  Future<void> _retireLink(OwnIntroLink l,
+      {required OwnIntroLink? next}) async {
+    _linkDrainTimer?.cancel();
+    _linkDrainTimer = null;
+    await _linkQuiet();
+    // Nothing yields from here to the write, so no drain of [l] can start.
+    link = next;
+    _oldLinkSeeds[l.introRid] = IntroLinkOldSeed(l.seed, l.printedPow);
+    _finalDrains.add(l.introRid);
+    try {
+      await _saveLink();
+      notifyListeners();
+      try {
+        await _readMailbox(l.seed,
+            flag: null, door: const _IntroDoor.link(), floorBits: l.printedPow);
+      } catch (_) {
+        // Unreachable now: what it held expires at the relay.
+      }
+    } finally {
+      _finalDrains.remove(l.introRid);
+      await _pruneLinkSeeds();
+    }
+  }
+
+  /// A link a restore brought back [IntroLinkPhase.held], in use again
+  /// because its person said so: drained at once, then on its timer.
+  Future<void> useLinkAgain() => _serial(() async {
+        final l = _requireLink();
+        if (l.phase != IntroLinkPhase.held) return;
+        l.phase = IntroLinkPhase.live;
+        await _saveLink();
+        notifyListeners();
+        _drainLinkSoon();
+      });
+
+  bool get _shouldDrainLink =>
+      _started &&
+      !_disposed &&
+      canManageLink &&
+      link?.phase == IntroLinkPhase.live;
+
+  /// The link's own timer, drawn independently of the handle's
+  /// ([_scheduleDrain]) with the same windows: 3 to 30 seconds after the app
+  /// comes to the foreground, then every 15 minutes give or take a third,
+  /// never in the background. Independent draws do not keep the two
+  /// mailboxes' connections apart — about one foreground in fourteen opens
+  /// the two first drains within a second of each other, where the relay's
+  /// operator could pair them — and R49 already concedes that one owner's
+  /// handle and link are linkable by address.
+  void _scheduleLinkDrain({bool first = false}) {
+    _linkDrainTimer?.cancel();
+    _linkDrainTimer = null;
+    if (!_foreground || !_shouldDrainLink) return;
+    final wait = first
+        ? handleUniform(random, foregroundDelayMin, foregroundDelayMax)
+        : handleJittered(random, drainEvery);
+    _linkDrainTimer = Timer(wait, () async {
+      await drainLink().then((_) {}, onError: (_) {});
+      _scheduleLinkDrain();
+    });
+  }
+
+  /// A drain of the link now, and its timer from it.
+  void _drainLinkSoon() {
+    if (!_shouldDrainLink) return;
+    unawaited(drainLink().then((_) {}, onError: (_) {}));
+    _scheduleLinkDrain();
+  }
+
+  /// A running drain of the link, finished — before the link changes under
+  /// it, so the old mailbox is never flagged again after its last read.
+  Future<void> _linkQuiet() async {
+    final running = _linkDraining;
+    if (running == null) return;
+    try {
+      await running;
+    } catch (_) {}
+  }
+
+  /// Read the public link's mailbox once (§21.8's drain, ADR 0032 §4): its
+  /// own connection, authenticated as the link's identity — never the
+  /// account's, nor the handle's — flagged with the work asked, never
+  /// registered for push. Each stamp is counted at the work PRINTED on the
+  /// link, not the work asked since: that is all a holder of the link knows,
+  /// and all that holds once the relay has lost its flags (a restart), when
+  /// it takes a stamp at any work and hands it on. What opens as a request
+  /// is filed *via your public link*, beside the handle's under one cap.
+  /// One drain at a time; none while the link is held.
+  Future<int> drainLink() {
+    final running = _linkDraining;
+    if (running != null) return running;
+    final l = link;
+    if (!_shouldDrainLink || l == null) return Future.value(0);
+    final run = _drainLinkNow(l).whenComplete(() {
+      _linkDraining = null;
+    });
+    _linkDraining = run;
+    return run;
+  }
+
+  Future<int> _drainLinkNow(OwnIntroLink l) async {
+    final decided = await _readMailbox(l.seed,
+        flag: l.askedPow,
+        door: const _IntroDoor.link(),
+        floorBits: l.printedPow,
+        onGuard: (g) => linkRelayGuard = g);
+    linkDrains++;
+    lastLinkDrainMs = now();
+    notifyListeners();
+    return decided;
+  }
+
+  /// The link's row ([IntroLinkRow]): the link, and the seeds of the links
+  /// it replaced that a pending request still needs.
+  Future<void> _loadLink() async {
+    final text = await vault.kvGet(introLinkKey);
+    if (text == null) return;
+    try {
+      final row = await IntroLinkRow.read(
+          (jsonDecode(text) as Map).cast<String, Object?>());
+      link = row.link;
+      _oldLinkSeeds.addAll(row.old);
+    } catch (_) {
+      link = null; // a record this build cannot read is not one it can act on
+    }
+  }
+
+  /// The link and its old seeds, in one write of its row; the row deleted
+  /// once it holds neither.
+  Future<void> _saveLink() async {
+    final row = IntroLinkRow.write(link, _oldLinkSeeds);
+    if (row == null) {
+      await vault.kvDelete(introLinkKey);
+    } else {
+      await vault.kvPut(introLinkKey, jsonEncode(row));
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // The log
@@ -5000,6 +5346,16 @@ class _HandleBucketAnswer {
   final KtVerifiedBucket bucket;
   final KtTreeHead head;
   _HandleBucketAnswer(this.bucket, this.head);
+}
+
+/// Which door an introduction mailbox is, for filing what it holds
+/// ([HandleService._readMailbox]): the account's handle, by its canonical
+/// name, or its public link (ADR 0032 §4).
+class _IntroDoor {
+  final String? handle;
+  const _IntroDoor.handle(String this.handle);
+  const _IntroDoor.link() : handle = null;
+  bool get link => handle == null;
 }
 
 // =============================================================================

@@ -3178,4 +3178,134 @@ class AppLocalizationsEn extends AppLocalizations {
   String sysHandleAccepted(String handle) {
     return '@$handle accepted. Compare safety numbers to verify.';
   }
+
+  @override
+  String get stLinkSection => 'Public link';
+
+  @override
+  String get plinkYourLink => 'Your public link';
+
+  @override
+  String get plinkRowNone =>
+      'None. Make one to be reachable from a web page or a card';
+
+  @override
+  String get plinkRowLive => 'Taking requests';
+
+  @override
+  String get plinkRowHeld => 'Back from a restore, not in use until you say';
+
+  @override
+  String get plinkLinkedDevice =>
+      'Only your main device can hold your public link. Make or manage it there; the people you meet through it appear here too.';
+
+  @override
+  String get plinkIntro =>
+      'A public link lets anyone who has it ask to connect with you: put it on a web page, in an email signature or on a printed card. It names nothing, not you and not your account, and you decide whom to accept.';
+
+  @override
+  String get plinkWhatItShows =>
+      'Requests through the link go to an inbox of its own, not to your account. Whoever sends one shows you their name and contact code, and accepting shows them yours. A link verifies nothing: compare safety numbers with anyone you accept.';
+
+  @override
+  String get plinkMake => 'Make my link';
+
+  @override
+  String get plinkLiveBody =>
+      'Taking requests. They arrive under Requests, marked as coming through your public link. Each one costs its sender some work.';
+
+  @override
+  String get plinkNotVerification =>
+      'A link verifies nothing. Whoever controls the page your link is on can put another link in its place, so compare safety numbers with anyone you accept.';
+
+  @override
+  String get plinkCopy => 'Copy link';
+
+  @override
+  String get plinkCopied => 'Link copied';
+
+  @override
+  String get plinkCopyWeb => 'Copy for a web page';
+
+  @override
+  String get plinkCopiedWeb => 'Copied, ready to paste into a web page';
+
+  @override
+  String get plinkWebHelp =>
+      'The copy for a web page opens the link with rel=\"noreferrer\", so a browser that follows it does not tell Z\'s server which page it came from.';
+
+  @override
+  String get plinkSemQr => 'QR code of your public link';
+
+  @override
+  String get plinkAskMore => 'Ask more work';
+
+  @override
+  String get plinkAskMoreHelp =>
+      'How much work the relay asks of each request, from what is printed on the link up to the most. The link itself does not change: a sender learns of it when the relay refuses their request, and sends once more with more work.';
+
+  @override
+  String plinkAskedMore(String level) {
+    return 'Every copy of your link still asks the work printed on it ($level); senders learn of the raise when the relay refuses them.';
+  }
+
+  @override
+  String get plinkReplace => 'Replace link';
+
+  @override
+  String get plinkReplaceHelp =>
+      'A new link in place of this one, to end a wave of unwanted requests. Every copy of the old link stops working, without telling anyone who has one; requests already waiting stay.';
+
+  @override
+  String get plinkWithdraw => 'Withdraw link';
+
+  @override
+  String get plinkWithdrawConfirmTitle => 'Withdraw your public link?';
+
+  @override
+  String get plinkWithdrawConfirmBody =>
+      'Every copy of it stops working, without telling anyone who has one. Requests already waiting stay, and you can make a new link later.';
+
+  @override
+  String get plinkHeldBody =>
+      'This link came back with a backup you restored, and is not in use: the device the backup came from may have replaced or withdrawn it since, and there is nothing to ask. Use it again only if it is still the link you hand out.';
+
+  @override
+  String get plinkUseAgain => 'Use it again';
+
+  @override
+  String get plinkRelayUnguarded =>
+      'Your relay is too old to guard this link\'s inbox or to pass on the work each request carries, so requests through your link cannot reach this phone. Public links need an up-to-date relay.';
+
+  @override
+  String get plinkRelayFull =>
+      'Your relay is not guarding this link\'s inbox right now: it is already guarding as many inboxes as it can, so it takes requests without checking their work.';
+
+  @override
+  String get plinkRelayPaced =>
+      'Your relay may not be guarding this link\'s inbox right now: it was asked too often, and is asked again at the next check.';
+
+  @override
+  String get plinkStampsChecked =>
+      'This phone still checks the work on every request that comes through your link, and drops any request without it.';
+
+  @override
+  String plinkInboxDrops(int unstamped, int copies) {
+    String _temp0 = intl.Intl.pluralLogic(
+      unstamped,
+      locale: localeName,
+      other: '$unstamped requests that came',
+      one: 'one request that came',
+    );
+    String _temp1 = intl.Intl.pluralLogic(
+      copies,
+      locale: localeName,
+      other: '$copies copies',
+      one: 'one copy',
+    );
+    return 'In the last five days this phone dropped $_temp0 without the work it had to carry, and refused $_temp1 of requests it had already decided. Large numbers mean someone is flooding you; more work per request slows them down.';
+  }
+
+  @override
+  String get requestsViaLink => 'Via your public link';
 }

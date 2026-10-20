@@ -3207,4 +3207,135 @@ class AppLocalizationsEs extends AppLocalizations {
   String sysHandleAccepted(String handle) {
     return '@$handle aceptó. Comparad los números de seguridad para verificar.';
   }
+
+  @override
+  String get stLinkSection => 'Enlace público';
+
+  @override
+  String get plinkYourLink => 'Tu enlace público';
+
+  @override
+  String get plinkRowNone =>
+      'Ninguno. Crea uno para que te puedan contactar desde una página web o una tarjeta';
+
+  @override
+  String get plinkRowLive => 'Recibiendo solicitudes';
+
+  @override
+  String get plinkRowHeld =>
+      'Recuperado de una copia, sin usar hasta que tú lo digas';
+
+  @override
+  String get plinkLinkedDevice =>
+      'Solo tu dispositivo principal puede tener tu enlace público. Créalo o gestiónalo allí; las personas que conozcas a través de él también aparecen aquí.';
+
+  @override
+  String get plinkIntro =>
+      'Un enlace público permite que cualquiera que lo tenga te pida conectar: ponlo en una página web, en la firma de tus correos o en una tarjeta impresa. No nombra nada, ni a ti ni a tu cuenta, y tú decides a quién aceptar.';
+
+  @override
+  String get plinkWhatItShows =>
+      'Las solicitudes que llegan por el enlace van a un buzón propio, no a tu cuenta. Quien envía una te muestra su nombre y su código de contacto, y al aceptar tú le muestras los tuyos. Un enlace no verifica nada: comparad los números de seguridad con quien aceptes.';
+
+  @override
+  String get plinkMake => 'Crear mi enlace';
+
+  @override
+  String get plinkLiveBody =>
+      'Recibiendo solicitudes. Llegan a Solicitudes, marcadas como recibidas a través de tu enlace público. Cada una le cuesta algo de trabajo a quien la envía.';
+
+  @override
+  String get plinkNotVerification =>
+      'Un enlace no verifica nada. Quien controle la página donde está tu enlace puede poner otro en su lugar, así que comparad los números de seguridad con quien aceptes.';
+
+  @override
+  String get plinkCopy => 'Copiar enlace';
+
+  @override
+  String get plinkCopied => 'Enlace copiado';
+
+  @override
+  String get plinkCopyWeb => 'Copiar para una página web';
+
+  @override
+  String get plinkCopiedWeb => 'Copiado, listo para pegar en una página web';
+
+  @override
+  String get plinkWebHelp =>
+      'La copia para una página web abre el enlace con rel=\"noreferrer\", para que el navegador que lo siga no le diga al servidor de Z de qué página viene.';
+
+  @override
+  String get plinkSemQr => 'Código QR de tu enlace público';
+
+  @override
+  String get plinkAskMore => 'Pedir más trabajo';
+
+  @override
+  String get plinkAskMoreHelp =>
+      'Cuánto trabajo pide el relé a cada solicitud, desde el que lleva impreso el enlace hasta el máximo. El enlace en sí no cambia: quien envía se entera cuando el relé rechaza su solicitud, y la vuelve a enviar una vez con más trabajo.';
+
+  @override
+  String plinkAskedMore(String level) {
+    return 'Cada copia de tu enlace sigue pidiendo el trabajo que lleva impreso ($level); quienes envían se enteran del aumento cuando el relé los rechaza.';
+  }
+
+  @override
+  String get plinkReplace => 'Sustituir el enlace';
+
+  @override
+  String get plinkReplaceHelp =>
+      'Un enlace nuevo en lugar de este, para cortar una oleada de solicitudes no deseadas. Todas las copias del enlace antiguo dejan de funcionar, sin avisar a quien tenga una; las solicitudes que ya esperan se quedan.';
+
+  @override
+  String get plinkWithdraw => 'Retirar el enlace';
+
+  @override
+  String get plinkWithdrawConfirmTitle => '¿Retirar tu enlace público?';
+
+  @override
+  String get plinkWithdrawConfirmBody =>
+      'Todas sus copias dejan de funcionar, sin avisar a quien tenga una. Las solicitudes que ya esperan se quedan, y puedes crear un enlace nuevo más adelante.';
+
+  @override
+  String get plinkHeldBody =>
+      'Este enlace volvió con una copia de seguridad que restauraste y no está en uso: puede que el dispositivo del que salió la copia lo haya sustituido o retirado desde entonces, y no hay a quién preguntar. Vuelve a usarlo solo si sigue siendo el enlace que repartes.';
+
+  @override
+  String get plinkUseAgain => 'Volver a usarlo';
+
+  @override
+  String get plinkRelayUnguarded =>
+      'Tu relé es demasiado antiguo para proteger el buzón de este enlace o para transmitir el trabajo que lleva cada solicitud, así que las solicitudes por tu enlace no pueden llegar a este teléfono. Los enlaces públicos necesitan un relé actualizado.';
+
+  @override
+  String get plinkRelayFull =>
+      'Tu relé no está protegiendo ahora el buzón de este enlace: ya protege todos los buzones que puede, así que acepta solicitudes sin comprobar su trabajo.';
+
+  @override
+  String get plinkRelayPaced =>
+      'Puede que tu relé no esté protegiendo ahora el buzón de este enlace: se le pidió demasiadas veces, y se le volverá a pedir en la próxima comprobación.';
+
+  @override
+  String get plinkStampsChecked =>
+      'Este teléfono sigue comprobando el trabajo de cada solicitud que llega por tu enlace y descarta las que no lo traen.';
+
+  @override
+  String plinkInboxDrops(int unstamped, int copies) {
+    String _temp0 = intl.Intl.pluralLogic(
+      unstamped,
+      locale: localeName,
+      other: '$unstamped solicitudes que llegaron',
+      one: 'una solicitud que llegó',
+    );
+    String _temp1 = intl.Intl.pluralLogic(
+      copies,
+      locale: localeName,
+      other: '$copies copias',
+      one: 'una copia',
+    );
+    return 'En los últimos cinco días este teléfono descartó $_temp0 sin el trabajo que debía traer y rechazó $_temp1 de solicitudes que ya había decidido. Cifras altas indican que alguien te está inundando; más trabajo por solicitud los frena.';
+  }
+
+  @override
+  String get requestsViaLink => 'A través de tu enlace público';
 }

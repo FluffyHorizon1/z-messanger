@@ -74,6 +74,9 @@ MIGRATED = {
     # tab. Localised from the start.
     "handle_screen.dart",
     "find_handle_screen.dart",
+    # Public links (phase 39): Settings › Your public link. Localised from
+    # the start.
+    "intro_link_screen.dart",
 }
 
 # Literals that look user-visible and are not.

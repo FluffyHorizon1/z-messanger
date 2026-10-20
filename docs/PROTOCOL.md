@@ -1303,8 +1303,9 @@ copy the relay kept cannot put a declined request back in front of anyone,
 while a new request, made later, is shown. Accepting the requester, blocking
 them or deleting them ends that memory, and it need not outlive 30 days from
 `ts`, after which the first rule refuses the request anyway. A recipient
-holds at most 100 pending requests that came by a code or a link, and apart
-from them at most 100 that came through its handle (§21.7); one more of
+holds at most 100 pending requests that came by a code or an invite link
+(§20), and apart from them at most 100 that came through its handle (§21.7)
+or its public link, the two together (§21.9); one more of
 either kind pushes out the oldest of that kind its person has not been
 shown, which is the new one when they have been shown every other — so a
 flood through a public handle cannot push out a request made with the
@@ -5104,7 +5105,7 @@ account, with an acknowledgement signed by the introduction key.
 | 21.6 | introduction mailboxes at the relay | relay |
 | 21.7 | the request, its proof‑of‑work stamp, and the acknowledgement | client, relay |
 | 21.8 | the client: configuration, schedules, caps, connections, what it stores | client |
-| 21.9 | a public introduction link: its code, and how a client reads one | client |
+| 21.9 | a public introduction link: its code, how a client reads one, and what its owner does | client |
 
 Every context string is disjoint from every other in this document:
 
@@ -5730,8 +5731,9 @@ the stamp counts by its own reckoning, whatever the relay did: the `pow` and
 difficulty in force in `introPowInput`'s hash, and `powDay` is the relay's
 day of the envelope's `ts` or the day before; anything else is acknowledged
 and dropped. It decides each envelope once, however often it is sent (§21.8).
-It caps pending handle requests at 100, apart from requests by code or link
-(§8.1), dropping the oldest unseen beyond that.
+It caps pending handle requests at 100 — a public link's counted among them
+(§21.9) — apart from requests by code or invite link (§8.1), dropping the
+oldest unseen beyond that.
 
 **The acknowledgement.** Accepting sends a `creq` back to the requester
 (ADR 0011's accept path). That `creq` carries one more member:
@@ -6099,8 +6101,9 @@ beside the digests, kept as long, shown on the handle screen in both
 languages, and sent nowhere; a refused copy is of a request this device
 decided already, so nothing is set aside and nothing honest is lost. At
 most **100**
-pending requests that came through the handle are kept, counted apart from
-those by code or link (§8.1), so a wave through a public handle cannot push
+pending requests that came through the handle — or the public link, which
+shares them (§21.9) — are kept, counted apart from those by code or invite
+link (§8.1), so a wave through a public handle cannot push
 out a request from someone who had the code: past 100, the oldest the person
 has not seen on the Requests screen goes, so a wave of stamped requests
 cannot push out one already looked at — and when every older one has been
@@ -6304,10 +6307,13 @@ contacts the root device makes through the handle by self‑sync (§9).
 ### 21.9 Public introduction links (phase 39)
 
 *Normative for clients that make or read a public introduction link
-(`adr/0032`). Built in 39.1: the code, and how a client reads one. The
-owner's half — making, draining and managing a link (39.3) — and that of
-whoever opens one (39.4) are not built; until they are, no client makes,
-opens or drains a link, and `adr/0032` §3–§4 is their design.*
+(`adr/0032`). Built in 39.1: the code, and how a client reads one; in
+39.3 the owner's half — making, draining and managing a link — below.
+Built and **switched off**: the reference client holds it behind one build
+constant until the deployed relay is confirmed to run the hardened §21.6
+(below, "Switched off"), so no release makes or drains a link yet. The
+half of whoever opens one (39.4) is not built, and `adr/0032` §3 is its
+design.*
 
 A public link is a handle's introduction mailbox handed out directly — on a
 web page, in an email signature, on a printed card — with no handle log
@@ -6367,9 +6373,88 @@ link does — `zi1.42` and `zi2.42` are handles, which the reader refuses as
 characters: a client that takes either in one field asks §21.1 before it
 names a link's reason.
 
+**The owner** (`adr/0032` §4). A link is made on the account's main device
+(v1, as a handle), never during account setup, one per account: a fresh
+`introSeed`, printed at a `pow` its person chooses from 16 to 24 bits — 20
+unless they choose — and shown as the link, its QR, and a copy for web
+pages, `<a href="…" rel="noreferrer">`, so that a browser following it from
+a page does not tell the relay's host which page that was (R49). Making one
+sends nothing: the relay meets the mailbox at its first drain. The mailbox
+is drained as §21.8 drains a handle's — a relay connection of its own,
+authenticated (§12.1, v2) as the link's introduction identity and never as
+the account or its handle, `intro` after each authentication with the work
+**asked** (below), no push token, read until quiet, every envelope whose
+fate is decided acknowledged — on a timer of its own, drawn independently of
+the handle's with the same windows (3 to 30 seconds after the app comes to the
+foreground, then every 15 minutes give or take a third, never in the
+background), and with no handle log needed or asked. Every envelope's stamp
+is counted before it is opened, as §21.8 counts a handle's, at the work
+**printed** on the link — not the work asked since: that is all a holder of
+the link knows, and all that holds once the relay has lost its flags, when
+it takes a stamp at any work and hands it on. What opens as a request
+passes §21.8's ledger — one for both doors, so an envelope is decided once
+whichever it came through — and §8.1's rules, and is filed as coming *via
+your public link*; pending requests through the handle and the link are
+held to one cap of 100 together, apart from requests by code or invite, the
+oldest unseen going first, whichever door it came through. Accepting one is
+§21.7's acceptance, its `ia` signed with the introduction seed of the
+mailbox the request reached.
+
+*Ask more work* raises the work the relay is asked to require — the `intro`
+frame's `N` — from the printed work up to 24 bits, at once (a drain), and
+changes no copy of the link: a sender stamps at the printed work, is
+refused `pow_required` with the relay's `bits`, and stamps once more
+(below). *Replace* draws a new seed, printed at the work the old link
+asked; the old mailbox is read once more without `intro`, so its flag
+lapses with its ownership (§21.6), and is never read again. *Withdraw* does
+the same and makes no new link. Either way every copy of the old link fails
+from then on, silently, and its seed is kept, in the link's own row (below),
+while a pending request that reached it still needs it for `ia` — written
+there with what replaces the link, in one write, before the old mailbox's
+last read, so that an app killed during that read still holds it when it
+starts again.
+
+**What is stored**, sealed, as `intro_link`: the seed, the printed and the
+asked work, when it was made, and whether it is live or held; and in the
+same row, `"old":{introRid:{"seed":…,"pow":…}}`, the seeds of links since
+replaced or withdrawn that a pending request still needs — never in
+`handle_in` beside a handle's, so never in a `handle` record. After a
+*Withdraw* the row stays, with no link, while one is needed. A pending
+request that came through the link is recorded in `handle_in` with
+`"link":1` and no `h`, so
+that a build from before links, which requires `h`, skips the record
+rather than file the request under a handle. In a
+backup the row is the record
+`{"t":"introlink","keep":1,"v":1,"kv":{"intro_link":{…}}}`, old seeds and
+all (`BACKUP.md`
+§5's keep rule: a build that does not know it carries it into its next
+archive unread), and a restore brings the link back **held**: nothing
+connects as its mailbox, and nothing sent to it is read, until its person
+says to use it again, or replaces or withdraws it, which reads it once more
+as above. The device the backup came from may have replaced or withdrawn
+it since, and there is no log to ask.
+
+**Switched off.** All of the above is behind one build constant in the
+reference client, `introLinksEnabled` (`app/lib/core/intro_links.dart`),
+`false` until the deployed relay is confirmed to run the hardened §21.6,
+which hands each stamp on with its envelope so that the owner can count it
+(`adr/0032` §5, decision 1). With it off no client makes or drains a link:
+nothing connects as a link's mailbox, and a link a vault holds from a
+restore is kept unread. The release that sets it
+also claims `/c` in the Android app's filter, as it claims `/i`; the page a
+link lands on, `/c` (`server/pages.js`), is the relay's, unlisted like
+`/i`, served either way, and says to open the link in Z or update Z and
+paste it there.
+
 *Implementation note:* `IntroLink` in `protocol/lib/src/handles.dart`:
 `fromSeed` (20 bits unless told otherwise), `code`, `link`, `introRid`, and
-`parse`, whose `IntroLinkProblem` names the refusal.
+`parse`, whose `IntroLinkProblem` names the refusal. The reference
+client's owner half is `HandleService.makeLink`, `drainLink`,
+`askMoreWork`, `replaceLink`, `withdrawLink` and `useLinkAgain`
+(`app/lib/core/handles.dart`), beside the handle's, and
+`OwnIntroLink`, `IntroLinkRow`, `IntroLinkBackup` and `introLinksEnabled`
+(`app/lib/core/intro_links.dart`); `app/test/intro_link_test.dart` drives
+it over a real relay.
 `vectors/handles/intro_link.json` pins this section: links from seeds at
 `pow` 16, 20 and 28 with every intermediate; inputs taken — a bare code, the
 link, a host beginning `i`, a query before the fragment, surrounding
