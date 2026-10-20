@@ -356,7 +356,7 @@ failing test on the base where it can be expressed, and a mutation check.
 | 44.5 | The scanned device's link | 44.3 | planned; bites once peers run 44.3 |
 | 44.6 | CONNECT v3: readers first; minting is one constant (`connectInviteVersion`), a release later (decision 2) | 44.1, 44.3 | planned |
 | 44.7 | `zs2.` switched on | 44.2 deployed, 44.3, constant-time ML-KEM upstream (decision 4) | planned; goes last |
-| 44.8 | `kintro`: as addendum A changes it, §21.3's relay-held key signed by `intro`; the record does not change | 44.9–44.12 | planned; lands with the held-back handles hardening |
+| 44.8 | `kintro`: as addendum A changes it, §21.3's relay-held key signed by `intro`; the record does not change | 44.9–44.12 | planned; the handles hardening it was to land with shipped in 4.3.0 without it |
 | 44.9 | Protocol core and vectors of addendum A: `iks`, the entry, `sk` in codes, the FIPS 203 key check, `kintro`, the relay-client frames | 44.1, to be used (built on the library's ML-KEM) | **built**; nothing emits |
 | 44.10 | The relay keeps introduction keys | 44.2 | **built**; inert until 44.11, deploy before it |
 | 44.11 | Devices publish | 44.3, 44.10 deployed | planned; ships with 44.7 |
