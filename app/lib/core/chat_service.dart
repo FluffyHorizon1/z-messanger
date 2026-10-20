@@ -194,25 +194,107 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// test's ([debugSweep]) — so a tick never starts a second beside it and
   /// [wipeEverything] can wait for it before the vault goes.
   Future<void>? _sweeping;
-  bool _flushing = false;
 
-  /// A mailbox the relay reported full (`queue_full`), or a relay whose
-  /// store is full (`store_full`), PROTOCOL §12.4, is tried again after this
-  /// long; the rows wait in the outbox meanwhile. Overridable so a test need
+  /// The outbox pass that is running, if one is ([flushOutbox]). A call
+  /// while it runs wakes it to look at the outbox again, so a row queued
+  /// meanwhile goes at once if its mailbox has nothing out — it used to wait
+  /// for an answer to something else, and the call itself was dropped.
+  _OutboxPass? _outboxPass;
+
+  /// Test seam: an outbox pass is running — so a test can tell a pass that
+  /// has ended, and set its retry, from one still waiting on answers.
+  @visibleForTesting
+  bool get debugOutboxPassRunning => _outboxPass != null;
+
+  /// A mailbox the relay reported full (`queue_full`), or one it refused
+  /// for want of room in its store (`store_full`), PROTOCOL §12.4, is tried
+  /// again after this long; the rows wait in the outbox meanwhile. So is a
+  /// pass that eight `store_full`s in a row ended. Overridable so a test need
   /// not wait a minute.
   Duration outboxRetryDelay = const Duration(seconds: 60);
   Timer? _outboxRetry;
 
-  /// A refusal the relay could not attribute to one envelope — `internal`
-  /// (the store unreachable), a send timeout, or any other code that is not
-  /// one of the four the outbox treats specially — stops the pass with rows
-  /// still queued. It used to return and wait for the next reconnect, so an
-  /// `internal` from an otherwise-healthy link left the outbox stopped until
-  /// the user sent again or the socket dropped. Now the pass comes back on
-  /// its own timer while the link stays up, backing off from [_otherRetryMin]
-  /// to [outboxRetryDelay] and resetting the moment anything sends.
+  /// When [_outboxRetry] fires, on [_outboxPace]'s clock: a pass that wants
+  /// to come back sooner than the timer already set replaces it.
+  Duration _outboxRetryAt = Duration.zero;
+
+  /// A refusal the relay could not attribute to one envelope —
+  /// `rate_limited`, `internal` (the store unreachable), a send timeout, or
+  /// any other code that is not one of the five the outbox treats specially
+  /// — stops the pass with rows still queued. It used to return and wait for
+  /// the next reconnect, so an `internal` from an otherwise-healthy link left
+  /// the outbox stopped until the user sent again or the socket dropped. Now
+  /// the pass comes back on its own timer while the link stays up, backing
+  /// off from [_otherRetryMin] to [outboxRetryDelay] and resetting the moment
+  /// anything sends. Since 48.2 `rate_limited` backs off the same way; it
+  /// used to wait the full [outboxRetryDelay] at once.
   static const Duration _otherRetryMin = Duration(seconds: 1);
   Duration _otherRetryBackoff = _otherRetryMin;
+
+  /// 48.2 (ADR 0036 §3): the outbox keeps up to this many envelopes in
+  /// flight at once on the anonymous link, rather than awaiting each `sent`
+  /// before the next — a group text to 128 members is about 166 envelopes,
+  /// and one at a time it was 166 round trips. Never two to one mailbox
+  /// (PROTOCOL §12.5): each mailbox's rows go in `seq` order, the next only
+  /// once the one before it is acknowledged.
+  static const int outboxMaxInFlight = 32;
+
+  /// ... and no more than this much payload, in characters (what the relay
+  /// measures, §12.2), so a pass of file chunks — 349 610 characters each,
+  /// ADR 0036 — has a handful out at once, not 32. One envelope may always
+  /// go when nothing else is in flight.
+  static const int outboxMaxInFlightChars = 2 * 1024 * 1024;
+
+  /// ... and, below that, no more than the link has been seen to carry in
+  /// this many seconds: half the relay client's twenty-second send timeout,
+  /// which starts when a frame is queued on the socket, not when it leaves.
+  /// On a slow uplink a full 2 MiB would put the tail of the window past that
+  /// timeout — under about 105 KB/s, against about 17 KB/s for one 349 610
+  /// character chunk at a time — and every send that timed out would go
+  /// again, after the relay had very likely taken it. Held to ten seconds of
+  /// the measured rate, a window clears in about ten seconds, and an envelope
+  /// larger than that goes alone, as every envelope did before 48.2: nothing
+  /// times out that one at a time would not have, while the rate holds.
+  static const int outboxInFlightSeconds = 10;
+
+  /// What the link has been seen to carry, in payload characters a second:
+  /// the rate the relay's answers last came back at — the payload answered
+  /// while one envelope was out, over the time it was out. Null until an
+  /// answer has been timed on this connection; until then one envelope goes
+  /// at a time. Forgotten on every new connection, which may be another
+  /// network, and on a send the relay never answered.
+  double? _uplinkRate;
+
+  /// Every payload character the relay has answered — taken or refused by
+  /// name — on any connection: the running total [_uplinkRate] is read from.
+  int _answeredChars = 0;
+
+  /// The client's own pace on the anonymous link: a token bucket of this many
+  /// frames a second with a burst of [outboxPaceBurst], under the relay's 80
+  /// and 240 (§12.4). A relay refuses a frame past its bucket with
+  /// `rate_limited`, which names nothing and so fails everything in flight
+  /// (§12.2); keeping under its limits keeps the window from being refused
+  /// whole. A text to 128 members fits one burst.
+  static const int outboxPacePerSecond = 64;
+  static const int outboxPaceBurst = 192;
+
+  /// `store_full` holds the mailbox it names for the rest of the pass, as
+  /// `queue_full` does: the relay's first-contact gate refuses only mailboxes
+  /// it has not seen (§12.4), with the same code. Only this many in a row, from
+  /// different mailboxes and with nothing taken between them, read as the
+  /// store itself being full — which refuses everyone — and end the pass.
+  static const int outboxStoreFullRun = 8;
+
+  /// How many envelopes a pass may have in flight now: [outboxMaxInFlight],
+  /// except after a refusal that named nothing, or a send the relay never
+  /// answered. Then it starts again from one and grows by one for each
+  /// envelope the relay takes — doubling every round trip — back to the
+  /// full width. A relay stricter than the reference one (a burst under 32)
+  /// would otherwise refuse every window whole, every pass, and take the
+  /// first few of each as duplicates while the outbox never drained.
+  int _outboxWindow = outboxMaxInFlight;
+  final _Pace _outboxPace =
+      _Pace(perSecond: outboxPacePerSecond, burst: outboxPaceBurst);
 
   /// Self-sync across my own linked devices. Null until built; inert when I
   /// have no linked devices, so single-device behaviour is unchanged.
@@ -4054,134 +4136,318 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   // Outbox
   // ------------------------------------------------------------------
 
+  /// Send what the outbox holds (48.2, ADR 0036 §3; PROTOCOL §12.4, §12.5).
+  ///
+  /// A pass keeps several envelopes in flight at once: up to
+  /// [outboxMaxInFlight], with no more payload than the link has been seen to
+  /// carry in [outboxInFlightSeconds], within [outboxMaxInFlightChars] — and
+  /// one at a time until an answer has been timed on this connection —
+  /// paced by [outboxPacePerSecond] and [outboxPaceBurst]. It used to send
+  /// one and await the relay's `sent` before the next.
+  ///
+  /// Never two in flight to one mailbox. Each mailbox's rows go in `seq`
+  /// order, and its next row waits until the one before it is acknowledged —
+  /// or refused and held, when nothing more goes to it this pass. §17.7's
+  /// 72-hour drop of an old post-quantum generation counts on that order. So
+  /// does the snapshot rule (§11: a `gmsg` is taken only in a group the
+  /// member knows): a group's list is queued to each member ahead of the
+  /// group's next message to them ([_sendInvite]), so the relay holds the
+  /// list in that member's mailbox before the message is sent.
+  /// Rows to different mailboxes interleave, and nothing relies on their
+  /// order.
+  ///
+  /// What each answer does to its row:
+  /// - `sent`: the row is deleted, and its message is sent once its last
+  ///   envelope has gone ([_markSentIfLast]);
+  /// - `too_large`, `bad_send`: the row is dropped and its message failed;
+  /// - `queue_full`, `pow_required`: its mailbox is held for the pass;
+  /// - `store_full`: likewise, and [outboxStoreFullRun] in a row end the pass;
+  /// - a refusal that names no envelope (`rate_limited` above all), a send
+  ///   the relay never answered, or the link going: the pass sends nothing
+  ///   more. Every row it had out stays queued and goes again on the backoff
+  ///   timer or the reconnect. The relay client fails everything in flight
+  ///   on such a refusal (§12.2), and the receiver drops the copies the relay
+  ///   had already taken (§6.7).
+  ///
+  /// Called while a pass runs, it wakes that pass to look at the outbox
+  /// again. A pass ends only once everything it sent has been answered, so
+  /// no later pass can send a row again while it is still out.
   Future<void> flushOutbox() async {
-    if (_flushing || !transport.isConnected) return;
-    _flushing = true;
-    // Mailboxes the relay refused this pass as full: their rows stay where
-    // they are, in order, and the pass goes on with everyone else's.
-    final full = <String>{};
-    // The relay's shared store itself full (`store_full`): nobody's envelope
-    // fits right now, so the pass stops and everything waits for the retry.
-    var storeFull = false;
-    // The relay asked this connection to slow down: not one mailbox's
-    // problem and not a reason to wait for a reconnect.
-    var rateLimited = false;
-    // An unattributable refusal (`internal`, a send timeout, …) while the
-    // link is up: stop the pass and come back on a backoff timer, rather than
-    // wait for a reconnect.
-    var otherRefused = false;
-    // Whether this flush delivered anything, so the backoff can reset.
-    var sentAny = false;
+    final running = _outboxPass;
+    if (running != null) {
+      running.poke();
+      return;
+    }
+    if (!transport.isConnected || _disposed) return;
+    final p = _outboxPass = _OutboxPass();
     try {
-      while (true) {
-        final rows = full.isEmpty
-            ? await vault.db.query('outbox', orderBy: 'seq', limit: 20)
-            : await vault.db.query('outbox',
-                where:
-                    'rid NOT IN (${List.filled(full.length, '?').join(',')})',
-                whereArgs: full.toList(),
-                orderBy: 'seq',
-                limit: 20);
-        if (rows.isEmpty) break;
-        for (final row in rows) {
-          final id = row['id'] as String;
-          final rid = row['rid'] as String;
-          if (full.contains(rid)) continue; // keep that mailbox's rows in order
-          try {
-            await transport.send(
-                to: rid, id: id, payload: row['payload'] as String);
-            await vault.db
-                .delete('outbox', where: 'seq = ?', whereArgs: [row['seq']]);
-            sentAny = true;
-            await _markSentIfLast(row);
-          } on RelayException catch (e) {
-            if (e.message.contains('too_large') ||
-                e.message.contains('bad_send')) {
-              // Permanent rejection: drop and surface failure. The message
-              // is named by the row's own `mid` and `thread_rid`, not by the
-              // envelope id and the mailbox — those were the same string
-              // until the envelope id was separated from it, and this line
-              // was the one place that still read them as one.
-              await vault.db
-                  .delete('outbox', where: 'seq = ?', whereArgs: [row['seq']]);
-              final failedMid = row['mid'] as String?;
-              if (failedMid != null) {
-                final thread = row['thread_rid'] as String? ?? rid;
-                await vault.db.update('messages', {'status': -1},
-                    where: 'mid = ? AND rid = ?', whereArgs: [failedMid, thread]);
-                _updateLoadedStatus(thread, failedMid, -1);
-              }
-            } else if (e.message.contains('queue_full')) {
-              // That recipient's mailbox at the relay is at its cap
-              // (PROTOCOL §12.4): theirs alone, and temporary — it empties
-              // when they next connect. The row waits, still pending, and
-              // is tried again shortly; nothing else is held up by it.
-              full.add(rid);
-            } else if (e.message.contains('store_full')) {
-              // The relay's store has no room for anyone right now
-              // (§12.4). Temporary: it heals as mailboxes drain. Stop this
-              // pass — every row would get the same answer — and let the
-              // retry timer bring it back, rather than the next reconnect.
-              storeFull = true;
-              return;
-            } else if (e.message.contains('rate_limited')) {
-              // This connection is being told to slow down, which is about
-              // the sender and not about any one mailbox. Stop the pass and
-              // come back on the retry timer: waiting for the next
-              // *reconnect*, as this used to, can be a very long time on a
-              // link that is working perfectly well.
-              rateLimited = true;
-              return;
-            } else if (transport.isConnected) {
-              // The link is up but the relay refused this envelope for a
-              // reason it did not attribute (`internal`, a send timeout, a
-              // malformed-frame code). The row stays queued and the relay
-              // dedupes a retry on (id, sender), so stop the pass and come
-              // back on the backoff timer rather than stall until a reconnect
-              // that a healthy link will not produce.
-              otherRefused = true;
-              return;
-            } else {
-              return; // the link dropped: the reconnect flushes
-            }
-          }
+      await _runOutboxPass(p);
+    } finally {
+      // The pass ends itself, in the same step as it finds nothing left to
+      // do, so no call can fall between the two; this is for an error out
+      // of it.
+      if (identical(_outboxPass, p)) _endOutboxPass(p);
+    }
+  }
+
+  Future<void> _runOutboxPass(_OutboxPass p) async {
+    while (true) {
+      p.changed = false;
+      Duration? paced;
+      if (p.stop == null && !_disposed) {
+        try {
+          paced = await _fillOutboxWindow(p);
+        } on DatabaseException {
+          // The vault closed mid-flush (app shutting down). Nothing is lost:
+          // unsent rows stay in the durable outbox and the next launch's
+          // first connect flushes them. What is in flight is still waited
+          // for below. Flush is fire-and-forget, so don't propagate.
+          p.stop = _OutboxStop.vaultClosed;
         }
       }
-      notifyListeners();
+      if (p.changed) continue; // answered, or asked, while it looked
+      if (p.inFlight.isEmpty &&
+          (p.stop != null || _disposed || paced == null)) {
+        _endOutboxPass(p);
+        return;
+      }
+      // Wait for an answer, for a row queued meanwhile, or for the pace to
+      // allow the next frame.
+      final wake = p.wake = Completer<void>();
+      final timer = paced == null ? null : Timer(paced, p.poke);
+      await wake.future;
+      timer?.cancel();
+    }
+  }
+
+  /// Put on the wire whatever may go now: each mailbox's first row, oldest
+  /// first, past mailboxes with a row in flight or held, while the window,
+  /// the payload budget and the pace allow. Returns how long until the pace
+  /// allows the next frame when the pace is what stopped it, and null
+  /// otherwise.
+  Future<Duration?> _fillOutboxWindow(_OutboxPass p) async {
+    if (p.inFlight.length >= _outboxWindow) return null;
+    // Two columns only: a file chunk's payload is a third of a megabyte,
+    // and only a row that goes is read whole.
+    final heads = await vault.db.rawQuery(
+        'SELECT MIN(seq) AS seq, rid FROM outbox GROUP BY rid ORDER BY 1');
+    for (final h in heads) {
+      if (p.stop != null || _disposed) return null;
+      if (p.inFlight.length >= _outboxWindow) return null;
+      final rid = h['rid'] as String;
+      if (p.mailboxes.contains(rid) || p.held.contains(rid)) continue;
+      final wait = _outboxPace.wait;
+      if (wait > Duration.zero) return wait;
+      final rows = await vault.db
+          .query('outbox', where: 'seq = ?', whereArgs: [h['seq']]);
+      // Gone meanwhile (its contact deleted), or the pass stopped while
+      // this read.
+      if (rows.isEmpty) continue;
+      if (p.stop != null || _disposed) return null;
+      final row = rows.first;
+      final chars = (row['payload'] as String).length;
+      if (p.inFlight.isNotEmpty && p.chars + chars > _outboxCharBudget) {
+        return null; // it waits for room, and nothing behind it goes first
+      }
+      _outboxPace.take();
+      _sendOutboxRow(p, row);
+    }
+    return null;
+  }
+
+  /// How much payload a pass may have in flight now:
+  /// [outboxInFlightSeconds] of [_uplinkRate], within
+  /// [outboxMaxInFlightChars]. While the rate is unknown, nothing beyond the
+  /// one envelope that may always go alone.
+  int get _outboxCharBudget {
+    final rate = _uplinkRate;
+    if (rate == null) return 0;
+    return min(outboxMaxInFlightChars, (rate * outboxInFlightSeconds).floor());
+  }
+
+  void _sendOutboxRow(_OutboxPass p, Map<String, Object?> row) {
+    final seq = row['seq'] as int;
+    final rid = row['rid'] as String;
+    final payload = row['payload'] as String;
+    final out = _OutboxSend(payload.length, _outboxPace.now, _answeredChars);
+    p.inFlight[seq] = out;
+    p.mailboxes.add(rid);
+    p.chars += out.chars;
+    // `sync`: a link that is down throws before there is a future to fail.
+    final sending = Future<void>.sync(() =>
+        transport.send(to: rid, id: row['id'] as String, payload: payload));
+    unawaited(_settleOutboxRow(p, row, out, sending));
+  }
+
+  Future<void> _settleOutboxRow(_OutboxPass p, Map<String, Object?> row,
+      _OutboxSend out, Future<void> sending) async {
+    try {
+      Object? refusal;
+      try {
+        await sending;
+      } catch (e) {
+        refusal = e;
+      }
+      if (refusal == null) {
+        _timeAnswer(out);
+        await _outboxTaken(p, row);
+      } else {
+        await _outboxRefused(p, row, out, refusal);
+      }
     } on DatabaseException {
-      // The vault closed mid-flush (app shutting down). Nothing is lost:
-      // unsent rows stay in the durable outbox and the next launch's first
-      // connect flushes them. Flush is fire-and-forget, so don't propagate.
-      return;
+      p.stop ??= _OutboxStop.vaultClosed;
     } finally {
-      _flushing = false;
-      // Anything sent clears the backoff, whatever else happened this pass.
-      if (sentAny) _otherRetryBackoff = _otherRetryMin;
-      if (_disposed) {
-        // No timer on the way out.
-      } else if (full.isNotEmpty || storeFull || rateLimited) {
-        _outboxRetry ??= Timer(outboxRetryDelay, () {
-          _outboxRetry = null;
-          unawaited(flushOutbox());
-        });
-      } else if (otherRefused) {
+      // Only now, with the row deleted or kept as its answer says, may the
+      // mailbox's next row go.
+      p.chars -= p.inFlight.remove(row['seq'])?.chars ?? 0;
+      p.mailboxes.remove(row['rid']);
+      p.poke();
+    }
+  }
+
+  /// An answer naming [out]'s envelope has come: the relay has read all of
+  /// it, so while it was out the link carried at least everything answered
+  /// meanwhile, itself included — the rate [_outboxCharBudget] is held to.
+  void _timeAnswer(_OutboxSend out) {
+    _answeredChars += out.chars;
+    final us = max(1000, (_outboxPace.now - out.at).inMicroseconds);
+    _uplinkRate = (_answeredChars - out.answeredBefore) * 1e6 / us;
+  }
+
+  Future<void> _outboxTaken(_OutboxPass p, Map<String, Object?> row) async {
+    // The relay has it. A run of `store_full`s is broken — the store had
+    // room — and a window narrowed by a refusal widens again.
+    p.sentAny = true;
+    p.storeFullRun.clear();
+    if (_outboxWindow < outboxMaxInFlight) _outboxWindow++;
+    await vault.db.delete('outbox', where: 'seq = ?', whereArgs: [row['seq']]);
+    await _markSentIfLast(row);
+  }
+
+  Future<void> _outboxRefused(_OutboxPass p, Map<String, Object?> row,
+      _OutboxSend out, Object e) async {
+    final rid = row['rid'] as String;
+    final code = e is RelayException ? e.message : '';
+    if (code.contains('too_large') || code.contains('bad_send')) {
+      // Permanent rejection: drop and surface failure. The message is named
+      // by the row's own `mid` and `thread_rid`, not by the envelope id and
+      // the mailbox — those were the same string until the envelope id was
+      // separated from it, and this line was the one place that still read
+      // them as one.
+      _timeAnswer(out);
+      await vault.db.delete('outbox', where: 'seq = ?', whereArgs: [row['seq']]);
+      final failedMid = row['mid'] as String?;
+      if (failedMid != null) {
+        final thread = row['thread_rid'] as String? ?? rid;
+        await vault.db.update('messages', {'status': -1},
+            where: 'mid = ? AND rid = ?', whereArgs: [failedMid, thread]);
+        _updateLoadedStatus(thread, failedMid, -1);
+        p.failedAny = true;
+      }
+    } else if (code.contains('queue_full') || code.contains('pow_required')) {
+      // That recipient's mailbox at the relay is at its cap (PROTOCOL
+      // §12.4): theirs alone, and temporary — it empties when they next
+      // connect. The row waits, still pending, and is tried again shortly;
+      // nothing else is held up by it. Likewise a mailbox that wants a stamp
+      // (§21.6): its owner flagged it as an introduction mailbox, and an
+      // outbox row carries none. It used to stop every row behind it.
+      _timeAnswer(out);
+      p.held.add(rid);
+    } else if (code.contains('store_full')) {
+      // No room at the relay for this envelope (§12.4). That is the store
+      // full, which refuses everyone, or the first-contact gate, which
+      // refuses only mailboxes the relay has not seen; one refusal does not
+      // say which. So it holds its own mailbox, as `queue_full` does, and
+      // the rest of the outbox goes on. Eight in a row from different
+      // mailboxes, with nothing taken between them, is the store: the pass
+      // ends, since every row would get the same answer. Either way it
+      // heals on its own, and the retry timer brings it back rather than the
+      // next reconnect.
+      _timeAnswer(out);
+      p.held.add(rid);
+      p.storeFullRun.add(rid);
+      if (p.storeFullRun.length >= outboxStoreFullRun) {
+        p.stop ??= _OutboxStop.storeFull;
+      }
+    } else if (code.contains('rate_limited')) {
+      // This connection is being told to slow down, which is about the
+      // sender and not about any one mailbox. Stop the pass and come back
+      // on the backoff timer: waiting for the next *reconnect*, as this
+      // used to, can be a very long time on a link that is working
+      // perfectly well. And start again from one in flight.
+      p.stop ??= _OutboxStop.rateLimited;
+      _outboxWindow = 1;
+    } else if (code == 'connection closed' || code == 'not connected') {
+      // The anonymous link went, or was not up. With the authenticated link
+      // up, nothing will reconnect it for this pass's sake, so the backoff
+      // timer comes back; with both down, the reconnect flushes.
+      p.stop ??=
+          transport.isConnected ? _OutboxStop.refused : _OutboxStop.linkDown;
+    } else if (transport.isConnected) {
+      // The link is up but the relay refused this envelope for a reason it
+      // did not attribute (`internal`, a send timeout, a malformed-frame
+      // code). The row stays queued, so stop the pass and come back on the
+      // backoff timer rather than stall until a reconnect that a healthy
+      // link will not produce. The relay keeps a sealed retry as a second
+      // copy, which the receiver drops (§12.2, §6.7). A send that timed out
+      // also says the link is slower than it was measured: it is measured
+      // again, from one envelope.
+      p.stop ??= _OutboxStop.refused;
+      _outboxWindow = 1;
+      if (code == 'send timeout') _uplinkRate = null;
+    } else {
+      p.stop ??= _OutboxStop.linkDown; // the link dropped: the reconnect flushes
+    }
+  }
+
+  void _endOutboxPass(_OutboxPass p) {
+    if (identical(_outboxPass, p)) _outboxPass = null;
+    // Anything sent clears the backoff, whatever else happened this pass.
+    if (p.sentAny) _otherRetryBackoff = _otherRetryMin;
+    // A pass that ran to its end said so, as it always has; and now so does
+    // one a refusal stopped, if it moved a message's status first.
+    if (p.stop == null || p.sentAny || p.failedAny) notifyListeners();
+    if (_disposed) return; // no timer on the way out
+    switch (p.stop) {
+      case _OutboxStop.rateLimited || _OutboxStop.refused:
         final delay = _otherRetryBackoff;
         // Double for next time, capped at the full/store retry delay.
-        final nextMs = min(delay.inMilliseconds * 2,
-            outboxRetryDelay.inMilliseconds);
+        final nextMs =
+            min(delay.inMilliseconds * 2, outboxRetryDelay.inMilliseconds);
         _otherRetryBackoff = Duration(milliseconds: nextMs);
-        _outboxRetry ??= Timer(delay, () {
-          _outboxRetry = null;
-          unawaited(flushOutbox());
-        });
-      }
+        _scheduleOutboxRetry(delay);
+      case _OutboxStop.storeFull:
+        _scheduleOutboxRetry(outboxRetryDelay);
+      case _OutboxStop.linkDown || _OutboxStop.vaultClosed:
+        break; // the reconnect flushes, or nothing should
+      case null:
+        if (p.held.isNotEmpty) _scheduleOutboxRetry(outboxRetryDelay);
     }
+  }
+
+  /// The outbox's one retry timer, set to whichever pass wants it soonest.
+  /// It used to be kept if already set, so a pass that wanted its second's
+  /// backoff could wait out the minute a held mailbox had set before it.
+  void _scheduleOutboxRetry(Duration delay) {
+    final at = _outboxPace.now + delay;
+    final pending = _outboxRetry;
+    if (pending != null && pending.isActive && _outboxRetryAt <= at) return;
+    pending?.cancel();
+    _outboxRetryAt = at;
+    _outboxRetry = Timer(delay, () {
+      _outboxRetry = null;
+      unawaited(flushOutbox());
+    });
   }
 
   Future<void> _onConnected() async {
     // ADR 0028 first, before anything this connection sends: no held receipt
     // leaves sooner than its floor after the device came back.
     _receiptsOnConnect();
+    // A new connection, perhaps over another network: what the last one
+    // carried says nothing about this one, so the outbox times it afresh,
+    // one envelope at a time until the first answer (48.2).
+    _uplinkRate = null;
     await flushOutbox();
     // 15.3: a fan-out row that failed its vault write is left in place and
     // retried rather than dropped. Without a trigger it would sit until the
@@ -15759,4 +16025,104 @@ class _ClaimVerdict {
   const _ClaimVerdict.install({required this.proven, required this.evict})
       : refused = false,
         alert = null;
+}
+
+/// Why an outbox pass sends nothing more ([ChatService.flushOutbox]). It
+/// ends once what it has in flight is answered.
+enum _OutboxStop {
+  /// [ChatService.outboxStoreFullRun] `store_full`s in a row: the relay's
+  /// store is full. Back after [ChatService.outboxRetryDelay].
+  storeFull,
+
+  /// `rate_limited`. Back on the backoff, from one in flight.
+  rateLimited,
+
+  /// Another refusal that named no envelope, or a send the relay never
+  /// answered, with the link up. Back on the backoff.
+  refused,
+
+  /// The link went: the reconnect flushes.
+  linkDown,
+
+  /// The vault closed under the pass.
+  vaultClosed,
+}
+
+/// What one outbox pass knows (48.2, [ChatService.flushOutbox]).
+class _OutboxPass {
+  /// The rows on the wire, by `seq`; the mailboxes they go to; and the
+  /// payload in flight, in characters.
+  final inFlight = <int, _OutboxSend>{};
+  final mailboxes = <String>{};
+  int chars = 0;
+
+  /// Mailboxes held for the rest of the pass: refused as full, or as
+  /// wanting a stamp. Their rows wait, in order.
+  final held = <String>{};
+
+  /// The mailboxes `store_full` has refused since the relay last took an
+  /// envelope.
+  final storeFullRun = <String>{};
+
+  bool sentAny = false;
+  bool failedAny = false;
+  _OutboxStop? stop;
+
+  /// Set by every answer and by every call to [ChatService.flushOutbox]
+  /// while the pass runs, so a pass that was reading the outbox when one
+  /// came looks again; and what the pass waits on when it has nothing to do
+  /// until an answer comes, a row is queued, or the pace allows a frame.
+  bool changed = false;
+  Completer<void>? wake;
+
+  void poke() {
+    changed = true;
+    final w = wake;
+    wake = null;
+    if (w != null && !w.isCompleted) w.complete();
+  }
+}
+
+/// One envelope a pass has out: its payload's length, when it went (on the
+/// pace's clock), and how much the relay had answered by then
+/// ([ChatService._timeAnswer]).
+class _OutboxSend {
+  _OutboxSend(this.chars, this.at, this.answeredBefore);
+  final int chars;
+  final Duration at;
+  final int answeredBefore;
+}
+
+/// A token bucket on a monotonic clock (48.2): [burst] frames at once, and
+/// [perSecond] more each second.
+class _Pace {
+  _Pace({required this.perSecond, required this.burst})
+      : _tokens = burst.toDouble();
+
+  final int perSecond;
+  final int burst;
+  final Stopwatch _clock = Stopwatch()..start();
+  double _tokens;
+  Duration _at = Duration.zero;
+
+  Duration get now => _clock.elapsed;
+
+  /// How long until a frame may go: zero when one may go now.
+  Duration get wait {
+    _refill();
+    if (_tokens >= 1) return Duration.zero;
+    return Duration(microseconds: ((1 - _tokens) * 1e6 / perSecond).ceil());
+  }
+
+  void take() {
+    _refill();
+    _tokens -= 1;
+  }
+
+  void _refill() {
+    final now = _clock.elapsed;
+    _tokens = min(burst.toDouble(),
+        _tokens + (now - _at).inMicroseconds * perSecond / 1e6);
+    _at = now;
+  }
 }

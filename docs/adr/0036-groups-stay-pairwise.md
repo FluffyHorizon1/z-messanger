@@ -6,7 +6,9 @@ text where it asked them, and listed under "Decisions". Roadmap phase 48
 (`ROADMAP.md` lines 60, 539).
 **Built:** 48.1 — the cap, and no list a frame cannot carry (PROTOCOL §11
 "Size" and §11.1's size bullet; `group_management_test.dart` 4–7,
-`group_invite_link_test.dart` 26). 48.2–48.5 are not built.
+`group_invite_link_test.dart` 26). 48.2 — several envelopes in flight, at
+most one per mailbox (PROTOCOL §12.5 item 6; `outbox_stall_test.dart`
+4–18). 48.3–48.5 are not built.
 - **Amends:** PROTOCOL §11, §11.1, §12.5 and §7 (informative); `PERFORMANCE.md`; `THREAT_MODEL.md` (R12, R18, R29, R38, and a new register row when 48.5 lands); AUDIT_SCOPE C9; `USING_Z.md`; `WHAT_Z_CANNOT_DO.md`.
 - **No wire change**, and no new vector.
 - **Keeps** the standing non-goal of ADRs 0019 and 0030, no shared group key, and states its cost.
@@ -23,8 +25,8 @@ text where it asked them, and listed under "Decisions". Roadmap phase 48
 Phase 48 asks whether "one encryption per member per message" should give way to a group-key schedule. The encryption is the cheap part. A member costs the sender about 22 ms (`PERFORMANCE.md:243`: fifty members on a debug VM, before the memo that halved a 1:1 send, `:393-394`). Of that, the ratchet step is **0.23 ms**, the seal ~2.0 ms (86 % of it the envelope's own X25519) and the transaction 3.94 ms (`:75-76`, `:87-91`). The rest is per envelope, and no key schedule changes how many envelopes there are:
 
 - **The metadata rules fix the count.** N devices are N sealed envelopes to N mailboxes, each with a fresh id and ephemeral (§8, §12.2, C9's last clause). Anything the relay could see shared across them — one upload it copies, one ephemeral, one sealed ciphertext — would hand it the recipients, as the 2026‑09‑13 shared-id leak did.
-- **Sends are serial.** The outbox awaits each `sent` on one link, so at an assumed 50–100 ms round trip, 128 copies take 6–13 s.
-- **The first-contact gate.** Each relay instance has 120 tokens a minute for all senders (`server.js:117`). It spends one on each send to a mailbox that holds nothing and that it has not written to within the hour (`:121-124`). A refusal is `store_full`, which stops the client's whole outbox for a minute.
+- **Sends are serial.** The outbox awaits each `sent` on one link, so at an assumed 50–100 ms round trip, 128 copies take 6–13 s. *(Built, 48.2: they are not — up to 32 envelopes are in flight, never two to one mailbox, with no more payload than ten seconds of what the link has been seen to carry, up to 2 MiB, and one at a time until it has been timed (PROTOCOL §12.5 item 6). Forty-eight envelopes to forty-eight mailboxes, every answer held 200 ms, took 10 044 ms one at a time and under a second pipelined (`outbox_stall_test.dart` 4).)*
+- **The first-contact gate.** Each relay instance has 120 tokens a minute for all senders (`server.js:117`). It spends one on each send to a mailbox that holds nothing and that it has not written to within the hour (`:121-124`). A refusal is `store_full`, which stops the client's whole outbox for a minute. *(Built, 48.2: it holds only its own mailbox for the pass; eight from different mailboxes in a row, with nothing taken between them, read as the store being full and end the pass (`outbox_stall_test.dart` 6, 18).)*
 - **Membership changes carry everyone.** A list holds every member's bundle, about 455 bytes an entry in the sealed envelope (§11.1's figure). By my arithmetic it fits:
   - the 65 536 bucket up to about 140 members (87.5 KB to each);
   - the 262 144 bucket up to about 570 (350 KB; §11.1's "fewer than 900" assumes empty names);
@@ -185,7 +187,7 @@ Five patches. None touches the relay's code. Each code patch starts from a test 
 | # | Patch | Status |
 |---|---|---|
 | 48.1 | The cap, and no list a frame cannot carry | **built** |
-| 48.2 | Several envelopes in flight, at most one per mailbox | planned |
+| 48.2 | Several envelopes in flight, at most one per mailbox | **built** |
 | 48.3 | A group file within a budget, staged under a bound | planned |
 | 48.4 | Measurements | planned |
 | 48.5 | The register and the claims, before any release ships 48.1–48.3 | planned; what 48.1 makes true — R38's sentence, C9's clause, WHAT_Z_CANNOT_DO and this record — written with it |

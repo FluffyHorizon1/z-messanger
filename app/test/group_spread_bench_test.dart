@@ -2,7 +2,8 @@
 //
 // Z has no group key and no group id on the wire: a group message is one
 // pairwise-encrypted envelope per member, sent one after another over the
-// sender's single socket. The relay therefore sees N mailboxes each receive a
+// sender's single socket (since 48.2, up to 32 at once, which narrows the
+// spread measured below). The relay therefore sees N mailboxes each receive a
 // same-bucket envelope within a few tens of milliseconds — and it sees the
 // same N mailboxes do so every time anyone in the group speaks. The trust
 // table used to say the relay "cannot learn who is in a group"; that is true

@@ -2555,6 +2555,30 @@ own knowledge regardless. The relay counts refusals of this kind
 5. Undelivered envelopes vanish on expiry or on relay restart — never to
    make room for another envelope (§12.4). Availability is explicitly not a
    security property of the relay.
+6. **At most one envelope in flight to a mailbox** (48.2, `adr/0036` §3).
+   A client may keep several envelopes in flight at once, matching each
+   answer to its send by `id` (§12.2). One that does MUST NOT have two in
+   flight to the same mailbox: it sends a mailbox's envelopes in the order it
+   queued them, and the next only once the relay has answered the one before
+   it with `sent`. A refused envelope is dropped for good (`too_large`,
+   `bad_send`) or stays first in its mailbox, and nothing behind it goes
+   until it has gone again and been taken. With two in flight, a refusal of
+   the first that the second escapes puts the second at the relay ahead of
+   the first, which lands behind it when it goes again. §17.7 relies on that
+   order: the previous post‑quantum generation is dropped 72 hours after the
+   peer is seen on the new one, which is safe only because whatever a peer
+   sealed under the old secret reached the relay before anything it sealed
+   under the new one. So does §11: a `gmsg` is taken only in a group the
+   member knows, so a list must reach a new member's mailbox before the next
+   message to them. Envelopes to different mailboxes are not ordered against
+   one another, and nothing relies on their order. The reference client keeps
+   up to 32 envelopes in flight on the anonymous link, with no more payload
+   than ten seconds of what the link has been seen to carry, up to 2 MiB —
+   one at a time until an answer has been timed on the connection, since its
+   twenty-second send timeout runs from when a frame is queued, not from when
+   it leaves — paced at 64 frames a second with a burst of 192, under
+   §12.4's 80 and 240. After a refusal that names no envelope it starts again
+   from one in flight, widening by one for each envelope the relay takes.
 
 ### 12.6 HTTP endpoints (informative)
 
