@@ -75,7 +75,10 @@ pqdc    = ML-DSA-65.Sign(account_ml_sk,
   message to each rather than in a burst, repeated on §17.4's clock (bounded
   as `pqid` re-sends are) until the receiver stamps `pqs:1` ("I hold your
   sealing key") on what it sends, like `pqh`. A 4 096-bucket envelope, as
-  every `pqek` offer is.
+  every `pqek` offer is. *(Measured with 44.1, 2026‑10‑20: on a message whose
+  header carries `pqct` — the encapsulating side's, until the answer, and the
+  first after each re-key — it is a 16 384 one, as anything riding such a
+  message is; whether 44.3 keeps `pqseal` off those is open.)*
 * The root alone holds the ML-DSA seed and signs every `pqdc`: its own at
   first start; a new device's in pairing v3 (§3); an earlier-linked device's
   over self-sync (`dir:"pqdc"`: the device sends its `pqseal`, the root
