@@ -202,3 +202,80 @@ if __name__ == "__main__":
     print(f"ok: {n} ML-KEM-768 known-answer vectors, the {m}-step v2 "
           f"transcript, the {r}-step re-key transcript and {k} introduction-"
           f"key values reproduced by kyber-py")
+
+
+def check_sealed_v2():
+    """44.1, ADR 0033 §5 (docs/vectors/sealed-v2): the KEM half of every zs2.
+    envelope — the recipient's sealing key from its seed, each envelope's
+    (K, ct) = Encaps_internal(ek, m) and Decaps back to K, and the K a
+    recipient derives for what it must refuse: another encapsulation in place
+    of the envelope's, a zs1. body read as a zs2. one (implicit rejection),
+    and the envelope decapsulated with another device's sealing key. The rest
+    of each envelope is replayed by server/test/vectors.test.js."""
+    import base64
+    import hashlib
+
+    def b64url(s):
+        return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+    doc = json.load(open(os.path.join(ROOT, "docs", "vectors", "sealed-v2",
+                                      "sealed_v2.json")))
+    assert doc["suite"] == "sealed_v2"
+    to = doc["recipient"]
+    seed = unhex(to["seal_seed"])
+    ek, dk = ML_KEM_768._keygen_internal(seed[:32], seed[32:])
+    if ek.hex() != to["seal_ek"] or dk.hex() != to["seal_dk"]:
+        fail("sealed-v2: the recipient's sealing key from its seed")
+    if hashlib.sha256(ek).hexdigest() != to["sk"]:
+        fail("sealed-v2: sk")
+    wseed = unhex(doc["wrong_recipient"]["seal_seed"])
+    wek, wdk = ML_KEM_768._keygen_internal(wseed[:32], wseed[32:])
+    if wek.hex() != doc["wrong_recipient"]["seal_ek"]:
+        fail("sealed-v2: the other device's sealing key from its seed")
+    n = 0
+    by_name = {}
+    for v in doc["vectors"]:
+        K, c = ML_KEM_768._encaps_internal(ek, unhex(v["m"]))
+        if c.hex() != v["kem_ct"] or K.hex() != v["K"]:
+            fail(f"sealed-v2 {v['name']}: Encaps_internal(ek, m)")
+        if ML_KEM_768.decaps(dk, c) != K:
+            fail(f"sealed-v2 {v['name']}: Decaps")
+        if hashlib.sha256(c).hexdigest() != v["kem_ct_sha256"]:
+            fail(f"sealed-v2 {v['name']}: SHA-256(ct)")
+        if "envelope" in v and b64url(v["envelope"][4:])[32:1120] != c:
+            fail(f"sealed-v2 {v['name']}: ct is bytes 32..1120 of the body")
+        by_name[v["name"]] = v
+        n += 1
+    refusals = {r["name"]: r for r in doc["must_refuse"]}
+    s = refusals["kem_ct_swapped"]
+    K, c = ML_KEM_768._encaps_internal(ek, unhex(s["m"]))
+    if c.hex() != s["kem_ct"] or K.hex() != s["K"]:
+        fail("sealed-v2 kem_ct_swapped: the other encapsulation")
+    if K.hex() == by_name["bucket_1024"]["K"]:
+        fail("sealed-v2 kem_ct_swapped: the same K")
+    if b64url(s["envelope"][4:])[32:1120] != c:
+        fail("sealed-v2 kem_ct_swapped: the ciphertext in the envelope")
+    z = refusals["zs1_body_under_zs2"]
+    misread = b64url(z["envelope"][4:])[32:1120]
+    if misread.hex() != z["kem_ct"]:
+        fail("sealed-v2 zs1_body_under_zs2: what a zs2. reader takes for ct")
+    if ML_KEM_768.decaps(dk, misread).hex() != z["K"]:
+        fail("sealed-v2 zs1_body_under_zs2: implicit rejection")
+    adv = doc["classical_adversary"]
+    oseed = unhex(adv["seal_seed"])
+    if oseed != wseed:
+        fail("sealed-v2: the adversary's sealing key is the other device's")
+    of = by_name[adv["envelope_of"]]
+    if ML_KEM_768.decaps(wdk, unhex(of["kem_ct"])).hex() != adv["K"]:
+        fail("sealed-v2 classical adversary: implicit rejection under another key")
+    if adv["K"] == of["K"]:
+        fail("sealed-v2 classical adversary: another key decapsulated to K")
+    return n
+
+
+if __name__ == "__main__":
+    s = check_sealed_v2()
+    print(f"ok: the KEM half of {s} zs2. envelopes (sealed-v2), and the K a "
+          f"recipient derives for a swapped ciphertext, for a zs1. body read "
+          f"as zs2. and under another device's sealing key, reproduced by "
+          f"kyber-py")

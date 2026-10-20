@@ -5858,6 +5858,8 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
       'contact_code_v3': await suiteContactCodeV3(),
       'contact_code_pqc_sig': await suiteContactCodePqcSig(),
       'device_cert_v3': await suiteDeviceCertV3(a),
+      // ADR 0033 §1 (44.1): a new file; every one above is unchanged by it.
+      'device_attestation': await suiteDeviceAttestation(a),
     },
     'pair-v2': {
       'pairing_v2': await suitePairingV2(a),
@@ -5885,8 +5887,631 @@ Future<Map<String, Map<String, Map<String, Object?>>>> generateAll() async {
     'intro-key': {
       'intro_key': await suiteIntroKey(),
     },
+    // ADR 0033 §5 (44.1): zs2., a directory of its own; every file above is
+    // unchanged by it.
+    'sealed-v2': {
+      'sealed_v2': await suiteSealedV2(a),
+    },
   };
 }
 
 String encodeVectorFile(Map<String, Object?> doc) =>
     '${const JsonEncoder.withIndent('  ').convert(doc)}\n';
+
+// ---------------------------------------------------------------------------
+// 44.1 (ADR 0033 §1, §5; PROTOCOL §8.2, §18.11): the hybrid sealed outer
+// layer, zs2., and the account's attestation of a device's sealing key,
+// pqdc. Two new files; every file above is unchanged by them.
+// ---------------------------------------------------------------------------
+
+/// The length of `zs1.` + b64url of [n] bytes, without padding.
+int _zsLen(int n) => 4 + (n ~/ 3) * 4 + const [0, 2, 3][n % 3];
+
+/// ADR 0033 §5 (PROTOCOL §8.2): `zs2.` — X25519 to the device's key and
+/// ML-KEM-768 to its sealing key, both into the envelope's key, the KEM
+/// ciphertext outside §8's padding. One envelope per bucket, every
+/// intermediate recorded; the four smallest verbatim and the three largest
+/// by length and SHA-256, their payloads named by a fill, so the file stays
+/// small. And what a recipient must refuse: a swapped and a stripped KEM
+/// ciphertext, each prefix's body under the other, and the envelope opened
+/// with the right X25519 key and another sealing key — the adversary of
+/// ADR 0033, who holds every classical private key and no ML-KEM secret.
+Future<Map<String, Object?>> suiteSealedV2(List<Actor> a) async {
+  final alice = a[0], bob = a[1], carol = a[2];
+  final d = Drbg(0x0441);
+  // Bob's device's sealing key, and Carol's: KeyGen_internal(d, z) of a
+  // 64-byte seed (ADR 0033 §1).
+  final bobSealSeed = d.next(64);
+  final bobSeal = SealingKey.fromSeed(bobSealSeed);
+  final (bobEk, bobDk) = pqKeyPairFromSeed(bobSealSeed);
+  check(eq(bobSeal.ek, bobEk), 'the sealing key is its seed\'s key pair');
+  final carolSealSeed = d.next(64);
+  final carolSeal = SealingKey.fromSeed(carolSealSeed);
+  d.takeDraws();
+  // Only for the lengths of the zs1. envelopes beside each one; none of them
+  // is recorded.
+  final zs1Drbg = Drbg(0x1441);
+
+  final exactFit = 1024 - 4 - '{"f":"","p":""}'.length - alice.rid.length;
+  final cases = <(String, String, String?)>[
+    ('bucket_1024', 'ratchet-ciphertext-placeholder', null),
+    ('bucket_1024_exact_fit', 'A' * exactFit, null),
+    ('bucket_4096_by_one_byte', 'B' * (exactFit + 1), null),
+    ('bucket_16384', 'C' * 6000, null),
+    ('bucket_65536', 'D' * 30000, 'D'),
+    ('bucket_262144', 'E' * 200000, 'E'),
+    ('bucket_1146880', 'F' * 900000, 'F'),
+  ];
+  final vectors = <Map<String, Object?>>[];
+  final kept = <String, (String, List<Uint8List>, Uint8List)>{};
+  for (final (name, payload, fill) in cases) {
+    final blob = await d.run(() => SealedEnvelopeV2.seal(
+        toXPub: bob.id.xPub,
+        toSealEk: bobSeal.ek,
+        fromRid: alice.rid,
+        payload: payload));
+    final draws = d.takeDraws();
+    check(
+        draws.length == 3 &&
+            draws[0].length == 32 &&
+            draws[1].length == 32 &&
+            draws[2].length == 12,
+        '$name: zs2. draws the ephemeral seed, m and the nonce, in that order');
+    final ephSeed = draws[0], m = draws[1], nonce = draws[2];
+    final raw = unb64url(blob.substring(4));
+    final ephPub = raw.sublist(0, 32);
+    check(eq(ephPub, await refXPub(ephSeed)), '$name: eph seed labelling');
+    final kemCt = raw.sublist(32, 1120);
+    final (refCt, k) = pqEncapsulate(bobSeal.ek, m: m);
+    check(eq(kemCt, refCt), '$name: ct is Encaps_internal(sealEk, m)');
+    check(eq(pqDecapsulate(bobSealSeed, kemCt), k), '$name: and gives back K');
+    check(eq(raw.sublist(1120, 1132), nonce), '$name: nonce labelling');
+    final box = raw.sublist(1132, raw.length - 16);
+    final mac = raw.sublist(raw.length - 16);
+    final shared = await refDh(ephSeed, bob.id.xPub);
+    check(eq(shared, await refDh(bob.id.xSeed, ephPub)), '$name: shared mirror');
+    final ikm = concatBytes([shared, k]);
+    final ctHash = await refSha256(kemCt);
+    final info =
+        concatBytes([utf8b('z-sealed-v2'), ephPub, bob.id.xPub, ctHash]);
+    final key = await refHkdf(ikm, Uint8List(0), info, 32);
+    final innerJson = jsonEncode({'f': alice.rid, 'p': payload});
+    final innerLen = utf8.encode(innerJson).length;
+    final bucket = sealedBuckets.firstWhere((b) => b >= innerLen + 4);
+    check(box.length == bucket,
+        '$name: the box is one bucket; the KEM ciphertext is outside it');
+    final plain = Uint8List.fromList(await Chacha20.poly1305Aead().decrypt(
+        SecretBox(box, nonce: nonce, mac: Mac(mac)),
+        secretKey: SecretKey(key),
+        aad: utf8b('z-sealed-v2')));
+    check(ByteData.view(plain.buffer).getUint32(0) == innerLen,
+        '$name: u32be length');
+    check(utf8.decode(plain.sublist(4, 4 + innerLen)) == innerJson,
+        '$name: the padded {f, p}');
+    check(plain.sublist(4 + innerLen).every((b) => b == 0),
+        '$name: zero padding');
+    final opened = await SealedEnvelopeV2.open(
+        myXSeed: bob.id.xSeed,
+        myXPub: bob.id.xPub,
+        mySealKey: bobSeal,
+        blob: blob);
+    check(
+        opened != null &&
+            opened.fromRid == alice.rid &&
+            opened.payload == payload,
+        '$name: open');
+    check(
+        await SealedEnvelopeV2.open(
+                myXSeed: carol.id.xSeed,
+                myXPub: carol.id.xPub,
+                mySealKey: carolSeal,
+                blob: blob) ==
+            null,
+        '$name: wrong recipient');
+    final zs1 = await zs1Drbg.run(() => SealedEnvelope.seal(
+        toXPub: bob.id.xPub, fromRid: alice.rid, payload: payload));
+    zs1Drbg.takeDraws();
+    check(zs1.length == _zsLen(bucket + 60), '$name: zs1. length');
+    check(blob.length == _zsLen(bucket + 1148), '$name: zs2. length');
+    check(blob.length == zs1.length + SealedEnvelopeV2.extraChars,
+        '$name: 1 450 characters more than zs1.');
+    if (fill == null) kept[name] = (blob, draws, kemCt);
+    vectors.add({
+      'name': name,
+      if (fill == null) 'payload': payload,
+      if (fill != null) 'payload_fill': fill,
+      'payload_len': payload.length,
+      if (fill == null) 'inner_json': innerJson,
+      'inner_len': innerLen,
+      'bucket': bucket,
+      'eph_seed': hex(ephSeed),
+      'eph_pub': hex(ephPub),
+      'm': hex(m),
+      'kem_ct': hex(kemCt),
+      'kem_ct_sha256': hex(ctHash),
+      'K': hex(k),
+      'shared': hex(shared),
+      'hkdf_ikm': hex(ikm),
+      'hkdf_info': hex(info),
+      'key': hex(key),
+      'nonce': hex(nonce),
+      'box_sha256': hex(await refSha256(box)),
+      'mac': hex(mac),
+      if (fill == null) 'envelope': blob,
+      if (fill != null) 'envelope_sha256': hex(await refSha256(utf8b(blob))),
+      'envelope_len': blob.length,
+      'zs1_len': zs1.length,
+    });
+  }
+
+  // --- what a recipient refuses ----------------------------------------------
+  final (blob0, draws0, ct0) = kept['bucket_1024']!;
+  final raw0 = unb64url(blob0.substring(4));
+  final eph0 = raw0.sublist(0, 32), nonce0 = raw0.sublist(1120, 1132);
+  final boxMac0 = raw0.sublist(1132);
+  final shared0 = await refDh(draws0[0], bob.id.xPub);
+  Future<Uint8List> zs2Key(Uint8List ct, Uint8List k, Uint8List eph,
+          Uint8List shared) async =>
+      refHkdf(
+          concatBytes([shared, k]),
+          Uint8List(0),
+          concatBytes(
+              [utf8b('z-sealed-v2'), eph, bob.id.xPub, await refSha256(ct)]),
+          32);
+  final refusals = <Map<String, Object?>>[];
+  Future<void> refuse(String name, String envelope, String why,
+      [Map<String, Object?> extra = const {}]) async {
+    check(
+        await SealedEnvelopeV2.open(
+                myXSeed: bob.id.xSeed,
+                myXPub: bob.id.xPub,
+                mySealKey: bobSeal,
+                blob: envelope) ==
+            null,
+        'refused as zs2.: $name');
+    check(
+        await SealedEnvelope.open(
+                myXSeed: bob.id.xSeed, myXPub: bob.id.xPub, blob: envelope) ==
+            null,
+        'refused as zs1.: $name');
+    refusals.add({'name': name, 'envelope': envelope, 'why': why, ...extra});
+  }
+
+  // Another encapsulation to the same sealing key, in place of the one the
+  // envelope was sealed with: its K is another, so the key is, and the AEAD
+  // fails.
+  final mSwap = d.next(32);
+  final (ctSwap, kSwap) = pqEncapsulate(bobSeal.ek, m: mSwap);
+  await refuse(
+      'kem_ct_swapped',
+      'zs2.${b64url(concatBytes([eph0, ctSwap, nonce0, boxMac0]))}',
+      'bucket_1024 with its KEM ciphertext replaced by another encapsulation '
+          'to the same sealing key (m below): K, and so the key, is another, '
+          'and the AEAD fails',
+      {
+        'm': hex(mSwap),
+        'kem_ct': hex(ctSwap),
+        'K': hex(kSwap),
+        'key': hex(await zs2Key(ctSwap, kSwap, eph0, shared0)),
+        'refused_by': 'aead',
+      });
+  // The KEM ciphertext taken out, and the prefix made zs1.: what a relay
+  // stripping the post-quantum half would deliver. zs1.'s key has no K and
+  // another context, so the AEAD fails.
+  final stripped = concatBytes([eph0, nonce0, boxMac0]);
+  await refuse(
+      'kem_ct_stripped_as_zs1',
+      'zs1.${b64url(stripped)}',
+      'bucket_1024 with its KEM ciphertext removed and the prefix made zs1.: '
+          'the zs1. key (below) has no K and another context, and the AEAD '
+          'fails',
+      {
+        'zs1_key': hex(await refHkdf(shared0, Uint8List(0),
+            concatBytes([utf8b('z-sealed-v1'), eph0, bob.id.xPub]), 32)),
+        'refused_by': 'aead',
+      });
+  check(stripped.length < 32 + 1088 + 12 + 16, 'shorter than any zs2. body');
+  await refuse(
+      'kem_ct_stripped_as_zs2',
+      'zs2.${b64url(stripped)}',
+      'the same, under zs2.: 1 084 bytes, shorter than the 1 148 of a zs2. '
+          'body with an empty box',
+      {'refused_by': 'length'});
+  // A zs1. envelope's body under zs2.: from the 4 096 bucket, so it is long
+  // enough to parse — its nonce and the head of its box are read as a KEM
+  // ciphertext, which decapsulates by implicit rejection to K below, and the
+  // AEAD fails.
+  d.takeDraws();
+  final zs1Blob = await d.run(() => SealedEnvelope.seal(
+      toXPub: bob.id.xPub, fromRid: alice.rid, payload: 'B' * (exactFit + 1)));
+  final zs1Draws = d.takeDraws();
+  check(zs1Draws.length == 2, 'zs1. draws the ephemeral seed and the nonce');
+  check(
+      (await SealedEnvelope.open(
+              myXSeed: bob.id.xSeed, myXPub: bob.id.xPub, blob: zs1Blob))!
+          .payload ==
+          'B' * (exactFit + 1),
+      'the zs1. envelope is genuine');
+  final zs1Raw = unb64url(zs1Blob.substring(4));
+  final misreadCt = zs1Raw.sublist(32, 1120);
+  final misreadK = pqDecapsulate(bobSealSeed, misreadCt);
+  await refuse(
+      'zs1_body_under_zs2',
+      'zs2.${zs1Blob.substring(4)}',
+      'a genuine zs1. envelope to Bob from the 4 096 bucket (zs1_envelope, '
+          'sealed with zs1_eph_seed and zs1_nonce), relabelled zs2.: its '
+          'nonce and the start of its box are read as a KEM ciphertext, '
+          'which decapsulates by implicit rejection to K, and the AEAD fails',
+      {
+        'zs1_envelope': zs1Blob,
+        'zs1_eph_seed': hex(zs1Draws[0]),
+        'zs1_nonce': hex(zs1Draws[1]),
+        'kem_ct': hex(misreadCt),
+        'K': hex(misreadK),
+        'refused_by': 'aead',
+      });
+  await refuse(
+      'zs2_body_under_zs1',
+      'zs1.${blob0.substring(4)}',
+      'bucket_1024 relabelled zs1.: the KEM ciphertext is read as the nonce '
+          'and the box, and the AEAD fails',
+      {'refused_by': 'aead'});
+  // The adversary of ADR 0033: Bob's X25519 key, and not his sealing seed.
+  // It decapsulates with a sealing key of its own — Carol's here — and gets
+  // the implicit-rejection K of that key, or guesses; either way the key is
+  // another and the AEAD fails.
+  final otherK = carolSeal.decapsulate(ct0);
+  final otherOpened = await SealedEnvelopeV2.open(
+      myXSeed: bob.id.xSeed,
+      myXPub: bob.id.xPub,
+      mySealKey: carolSeal,
+      blob: blob0);
+  check(otherOpened == null, 'the X25519 key without the sealing seed');
+  final classical = {
+    'name': 'x25519_key_without_sealing_seed',
+    'envelope_of': 'bucket_1024',
+    'x_seed': hex(bob.id.xSeed),
+    'seal_seed': hex(carolSealSeed),
+    'K': hex(otherK),
+    'key': hex(await zs2Key(ct0, otherK, eph0, shared0)),
+    'zero_K_key': hex(await zs2Key(ct0, Uint8List(32), eph0, shared0)),
+    'refused_by': 'aead',
+    'why': 'bucket_1024 opened with Bob\'s X25519 seed — every classical '
+        'private key — and another device\'s sealing seed (Carol\'s): its '
+        'decapsulation is the implicit-rejection K below; with it, or with '
+        'K = 0^32 (zero_K_key), the key is not the envelope\'s and the AEAD '
+        'fails',
+  };
+
+  return {
+    'suite': 'sealed_v2',
+    'version': vectorsVersion,
+    'description':
+        'ADR 0033 §5 (PROTOCOL 8.2): the hybrid sealed outer layer, zs2. '
+            '(ct, K) = ML-KEM-768.Encaps(recipient sealEk, m); key = '
+            'HKDF-SHA256(X25519(eph, recipientXPub) || K, empty, '
+            '"z-sealed-v2" || ephPub || recipientXPub || SHA-256(ct), 32); '
+            'envelope = "zs2." || b64url(ephPub || ct || nonce || box || mac), '
+            'box = ChaCha20-Poly1305(key, nonce, aad "z-sealed-v2", §8\'s '
+            'padded {f,p}). The KEM ciphertext sits outside the padding, so '
+            'every bucket is the bucket a message lands in as zs1. and every '
+            'zs2. envelope is 1 450 characters longer than its zs1. one. Draws '
+            'are eph_seed, m and nonce, in that order. The three largest '
+            'buckets are given by length and SHA-256 of the envelope, their '
+            'payload payload_len copies of payload_fill. No client seals zs2. '
+            'before 44.7, which waits for constant-time ML-KEM upstream.',
+    'prefix': SealedEnvelopeV2.prefix,
+    'context': SealedEnvelopeV2.context,
+    'aad': SealedEnvelopeV2.context,
+    'buckets': sealedBuckets,
+    'layout': 'ephPub(32) || ct(1088) || nonce(12) || box(bucket) || mac(16)',
+    'extra_chars': SealedEnvelopeV2.extraChars,
+    'recipient': {
+      'name': bob.name,
+      'x_seed': hex(bob.id.xSeed),
+      'x_pub': hex(bob.id.xPub),
+      'seal_seed': hex(bobSealSeed),
+      'seal_ek': hex(bobEk),
+      'seal_dk': hex(bobDk),
+      'sk': hex(await refSha256(bobEk)),
+    },
+    'wrong_recipient': {
+      'name': carol.name,
+      'x_seed': hex(carol.id.xSeed),
+      'x_pub': hex(carol.id.xPub),
+      'seal_seed': hex(carolSealSeed),
+      'seal_ek': hex(carolSeal.ek),
+    },
+    'from_rid': alice.rid,
+    'vectors': vectors,
+    'must_refuse': refusals,
+    'classical_adversary': classical,
+  };
+}
+
+/// ADR 0033 §1 (PROTOCOL §18.11): `pqdc`, the account's ML-DSA-65 signature
+/// that a sealing key belongs to a device —
+/// `utf8("z-device-pq-v1:") || acct || ded || dx || SHA-256(sealEk)`, fixed
+/// width — for a root device and a linked one, deterministic (`rnd = 0^32`)
+/// so a third implementation can reproduce the bytes; what a verifier
+/// refuses, each changing one field or one length, and a forgery by the
+/// adversary of ADR 0033, who holds every classical private key and no
+/// ML-DSA secret; and the wire forms: `pqid` carrying `pqdc`, `pqseal`, and
+/// `pqs:1` on a message.
+Future<Map<String, Object?>> suiteDeviceAttestation(List<Actor> a) async {
+  final d = Drbg(0x0443);
+  // The account: its root device's identity, the account's ML-DSA seed, and
+  // the root device's sealing key.
+  final root = await d.run(() async => ZIdentity.generate());
+  check(d.takeDraws().length == 2, 'root draws ed and x seeds');
+  final mlSeed = d.next(32);
+  final account =
+      await HybridKeyPair.fromSeeds(edSeed: root.edSeed, mlSeed: mlSeed);
+  final (mlPk, mlSk) = pqDsaKeyPairSeeded(mlSeed);
+  check(eq(mlPk, account.publicKey.mlPub), 'the ML-DSA key from its seed');
+  final rootSealSeed = d.next(64);
+  final rootSeal = SealingKey.fromSeed(rootSealSeed);
+  // A linked device of the account, certified by it (§3.1).
+  d.takeDraws();
+  final laptop = await d.run(() async => ZIdentity.generate());
+  check(d.takeDraws().length == 2, 'laptop draws ed and x seeds');
+  final laptopSealSeed = d.next(64);
+  final laptopSeal = SealingKey.fromSeed(laptopSealSeed);
+  final acctId = await AccountIdentity.fromV1(root, deviceId: 'phone');
+  final laptopCert = await acctId.signDeviceCert(
+      deviceEdPub: laptop.edPub, deviceXPub: laptop.xPub, deviceId: 'laptop');
+  final acct = account.publicKey.edPub;
+  check(eq(acct, root.edPub), "the account key is the root device's");
+
+  Future<Map<String, Object?>> device(String name, ZIdentity id,
+      Uint8List sealSeed, SealingKey seal) async {
+    final sk = await refSha256(seal.ek);
+    final input =
+        concatBytes([utf8b('z-device-pq-v1:'), acct, id.edPub, id.xPub, sk]);
+    check(input.length == 143, '$name: fixed width, 15 + 4 x 32');
+    check(
+        eq(
+            input,
+            deviceAttestationInput(
+                accountEdPub: acct,
+                deviceEdPub: id.edPub,
+                deviceXPub: id.xPub,
+                sealEk: seal.ek)),
+        '$name: the input');
+    final pqdc = await signDeviceAttestation(
+        accountKey: account,
+        deviceEdPub: id.edPub,
+        deviceXPub: id.xPub,
+        sealEk: seal.ek,
+        deterministic: true);
+    check(eq(pqdc, pqDsaSignDeterministic(mlSk, input)),
+        '$name: ML-DSA-65 by the account key over the input, rnd = 0');
+    check(pqdc.length == 3309, '$name: 3 309 bytes');
+    check(
+        deviceAttestationValid(
+            accountMlPub: mlPk,
+            accountEdPub: acct,
+            deviceEdPub: id.edPub,
+            deviceXPub: id.xPub,
+            sealEk: seal.ek,
+            pqdc: pqdc),
+        '$name: verifies');
+    final hedged = await signDeviceAttestation(
+        accountKey: account,
+        deviceEdPub: id.edPub,
+        deviceXPub: id.xPub,
+        sealEk: seal.ek);
+    check(!eq(hedged, pqdc) && pqDsaVerify(mlPk, input, hedged),
+        '$name: a hedged signature is another, and verifies too');
+    return {
+      'name': name,
+      'ded': hex(id.edPub),
+      'dx': hex(id.xPub),
+      'seal_seed': hex(sealSeed),
+      'seal_ek': hex(seal.ek),
+      'sk': hex(sk),
+      'signing_input': hex(input),
+      'pqdc': hex(pqdc),
+    };
+  }
+
+  final rootJ = await device('root', root, rootSealSeed, rootSeal);
+  final laptopJ = await device('linked', laptop, laptopSealSeed, laptopSeal);
+  laptopJ['ed_seed'] = hex(laptop.edSeed);
+  laptopJ['cert'] = laptopCert.toJson();
+  rootJ['note'] = "the account's own device: ded is the account key";
+
+  // --- what a verifier refuses ------------------------------------------------
+  final rootPqdc = unhex(rootJ['pqdc'] as String);
+  final laptopPqdc = unhex(laptopJ['pqdc'] as String);
+  d.takeDraws();
+  final other = await d.run(() async => ZIdentity.generate());
+  check(d.takeDraws().length == 2, 'another identity draws ed and x seeds');
+  final otherSealSeed = d.next(64);
+  final otherSeal = SealingKey.fromSeed(otherSealSeed);
+  final refusals = <Map<String, Object?>>[];
+  void refuse(String name, Uint8List mlPub, Uint8List acctPub, Uint8List ded,
+      Uint8List dx, Uint8List ek, Uint8List pqdc, String why) {
+    check(
+        !deviceAttestationValid(
+            accountMlPub: mlPub,
+            accountEdPub: acctPub,
+            deviceEdPub: ded,
+            deviceXPub: dx,
+            sealEk: ek,
+            pqdc: pqdc),
+        'refused: $name');
+    final widths = acctPub.length == 32 &&
+        ded.length == 32 &&
+        dx.length == 32 &&
+        ek.length == 1184;
+    refusals.add({
+      'name': name,
+      'acct': hex(acctPub),
+      'ded': hex(ded),
+      'dx': hex(dx),
+      'seal_ek': hex(ek),
+      'pqdc': hex(pqdc),
+      if (widths) 'signing_input': hex(deviceAttestationInput(
+          accountEdPub: acctPub, deviceEdPub: ded, deviceXPub: dx, sealEk: ek)),
+      'why': why,
+    });
+  }
+
+  refuse('dx_swapped', mlPk, acct, root.edPub, laptop.xPub, rootSeal.ek,
+      rootPqdc,
+      "the root device's pqdc, with the linked device's X25519 key as dx");
+  refuse('ded_swapped', mlPk, acct, laptop.edPub, root.xPub, rootSeal.ek,
+      rootPqdc,
+      "the root device's pqdc, with the linked device's Ed25519 key as ded");
+  refuse('acct_swapped', mlPk, other.edPub, root.edPub, root.xPub, rootSeal.ek,
+      rootPqdc,
+      "the root device's pqdc, naming another account's key as acct");
+  refuse('seal_key_swapped', mlPk, acct, root.edPub, root.xPub, otherSeal.ek,
+      rootPqdc,
+      "the root device's pqdc, beside another sealing key (other_seal_ek)");
+  refuse('other_devices_pqdc', mlPk, acct, root.edPub, root.xPub, rootSeal.ek,
+      laptopPqdc,
+      "the linked device's genuine pqdc, offered for the root device");
+  refuse('pqdc_one_byte_short', mlPk, acct, root.edPub, root.xPub,
+      rootSeal.ek, Uint8List.fromList(rootPqdc.sublist(0, 3308)),
+      'the genuine pqdc a byte short');
+  refuse('seal_ek_one_byte_short', mlPk, acct, root.edPub, root.xPub,
+      Uint8List.fromList(rootSeal.ek.sublist(0, 1183)), rootPqdc,
+      'the genuine pqdc beside its sealing key a byte short');
+  // The adversary: every classical private key — the account's Ed25519 seed
+  // among them, so it can forge sig, cert and pqcs — and no ML-DSA secret.
+  // It makes an account key pair whose Ed25519 half is the genuine one and
+  // whose ML-DSA half is its own, and attests a device of its own.
+  final forgerMlSeed = d.next(32);
+  final forger =
+      await HybridKeyPair.fromSeeds(edSeed: root.edSeed, mlSeed: forgerMlSeed);
+  check(eq(forger.publicKey.edPub, acct), 'the genuine account Ed25519 key');
+  final forged = await signDeviceAttestation(
+      accountKey: forger,
+      deviceEdPub: other.edPub,
+      deviceXPub: other.xPub,
+      sealEk: otherSeal.ek,
+      deterministic: true);
+  check(
+      deviceAttestationValid(
+          accountMlPub: forger.publicKey.mlPub,
+          accountEdPub: acct,
+          deviceEdPub: other.edPub,
+          deviceXPub: other.xPub,
+          sealEk: otherSeal.ek,
+          pqdc: forged),
+      'the forgery verifies only under its own ML-DSA key');
+  refuse('classical_forgery', mlPk, acct, other.edPub, other.xPub,
+      otherSeal.ek, forged,
+      'a device of the adversary\'s own (other_*), attested by an account '
+          'key whose Ed25519 half is the genuine one and whose ML-DSA half '
+          'is the adversary\'s (forger_ml_seed): it verifies under that key '
+          'and not under the account\'s');
+
+  // --- the wire forms ---------------------------------------------------------
+  const ts = 1760000000000;
+  final pqidMid = b64url(d.next(16));
+  final pqid =
+      InnerMessage.pqIdentity(pqidMid, ts, mlPk, pqdc: laptopPqdc);
+  final pqidBare = InnerMessage.pqIdentity(pqidMid, ts, mlPk);
+  final pqidJson = utf8.decode(pqid.toBytes());
+  final pqidBareJson = utf8.decode(pqidBare.toBytes());
+  final pqidRead = InnerMessage.fromBytes(pqid.toBytes());
+  check(eq(pqidRead.pqidAttestation!, laptopPqdc), 'pqid: pqdc read back');
+  check(
+      pqidRead.data['alg'] == 'ML-DSA-65' &&
+          pqidRead.data['pk'] == b64(mlPk) &&
+          pqidRead.data['ack'] == null,
+      'pqid: what a reader before it reads is unchanged');
+  check(pqidBareJson == pqidJson.replaceFirst(',"pqdc":"${b64(laptopPqdc)}"', ''),
+      'pqid: without pqdc, the bytes before it');
+  check(InnerMessage.fromBytes(pqidBare.toBytes()).pqidAttestation == null,
+      'pqid: none without it');
+  final sealMid = b64url(d.next(16));
+  final pqseal = InnerMessage.pqSeal(sealMid, ts, laptopSeal.ek);
+  final pqsealRead = InnerMessage.fromBytes(pqseal.toBytes());
+  check(eq(pqsealRead.pqSealKey!, laptopSeal.ek), 'pqseal: ek read back');
+  final textMid = b64url(d.next(16));
+  final held = InnerMessage.text(textMid, ts, 'ok')..stampHoldsSealKey();
+  check(InnerMessage.fromBytes(held.toBytes()).saysHoldsSealKey, 'pqs read');
+  // pqseal members a reader ignores rather than takes: each leaves
+  // pqSealKey null, and none makes the message unparseable.
+  final badModulus = _withCoefficient(laptopSeal.ek, 0, 3329);
+  check(!mlKemEncapsulationKeyValid(badModulus), 'a coefficient at q');
+  final ignored = <Map<String, Object?>>[];
+  void ignore(String name, Map<String, Object?> members, String why) {
+    final m = InnerMessage(kind: 'pqseal', mid: sealMid, ts: ts, data: members);
+    final read = InnerMessage.fromBytes(m.toBytes());
+    check(read.pqSealKey == null, 'pqseal ignored: $name');
+    ignored.add({'name': name, 'inner_json': utf8.decode(m.toBytes()), 'why': why});
+  }
+
+  ignore('alg_not_ml_kem', {'alg': 'ML-KEM-512', 'ek': b64(laptopSeal.ek)},
+      'another algorithm named');
+  ignore('ek_one_byte_short',
+      {'alg': 'ML-KEM-768', 'ek': b64(laptopSeal.ek.sublist(0, 1183))},
+      'FIPS 203 7.2, the type check');
+  ignore('ek_coefficient_q', {'alg': 'ML-KEM-768', 'ek': b64(badModulus)},
+      'FIPS 203 7.2, the modulus check: the first coefficient of t-hat at q');
+  ignore('ek_not_a_string', {'alg': 'ML-KEM-768', 'ek': 7},
+      'a member of the wrong type');
+
+  return {
+    'suite': 'device_attestation',
+    'version': vectorsVersionV3,
+    'description':
+        'ADR 0033 §1 (PROTOCOL 18.11): pqdc = ML-DSA-65.Sign(account_ml_sk, '
+            'utf8("z-device-pq-v1:") || acct || ded || dx || SHA-256(sealEk)), '
+            'the account\'s attestation that a sealing key belongs to a '
+            'device — fixed width, 143 bytes — for the root device and a '
+            'linked one, signed deterministically (rnd = 0^32) so the bytes '
+            'reproduce; production signing is hedged. Refused: each field '
+            'changed (dx, ded, acct, the sealing key), another device\'s pqdc, '
+            'either a byte short, and a forgery by an adversary holding every '
+            'classical private key and no ML-DSA secret. The wire forms: a '
+            'pqid carrying pqdc and the same pqid without it, a pqseal, pqs:1, '
+            'and four pqseal members a reader ignores. Nothing sends any of '
+            'it before 44.3.',
+    'context': devicePqContext,
+    'sizes': {
+      'signing_input': deviceAttestationInputBytes,
+      'pqdc': deviceAttestationBytes,
+      'ml_pub': mlDsaPublicKeyBytes,
+      'seal_ek': 1184,
+      'seal_seed': 64,
+    },
+    'account': {
+      'ed_seed': hex(root.edSeed),
+      'acct': hex(acct),
+      'ml_seed': hex(mlSeed),
+      'ml_pub': hex(mlPk),
+    },
+    'devices': [rootJ, laptopJ],
+    'other': {
+      'ded': hex(other.edPub),
+      'dx': hex(other.xPub),
+      'seal_seed': hex(otherSealSeed),
+      'seal_ek': hex(otherSeal.ek),
+      'forger_ml_seed': hex(forgerMlSeed),
+      'forger_ml_pub': hex(forger.publicKey.mlPub),
+    },
+    'must_refuse': refusals,
+    'wire': {
+      'pqid': {
+        'of': 'linked',
+        'inner_json': pqidJson,
+        'inner_len': pqid.toBytes().length,
+        'without_pqdc': pqidBareJson,
+        'without_pqdc_len': pqidBare.toBytes().length,
+      },
+      'pqseal': {
+        'of': 'linked',
+        'inner_json': utf8.decode(pqseal.toBytes()),
+        'inner_len': pqseal.toBytes().length,
+      },
+      'pqs': {'inner_json': utf8.decode(held.toBytes())},
+      'pqseal_ignored': ignored,
+    },
+  };
+}

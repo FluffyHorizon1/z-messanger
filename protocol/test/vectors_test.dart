@@ -1384,6 +1384,205 @@ void main() {
       expect((jsonDecode(q['acceptance_json'] as String) as Map)['ia'], q['ia']);
     });
   });
+
+  // 44.1 (ADR 0033 §1 and §5): the two files it adds — frozen like every
+  // other, by their own two suites rather than a second generateAll, and
+  // consumed from their recorded inputs through the public API.
+  group('44.1: zs2. and pqdc', () {
+    for (final (ver, suite, make) in [
+      ('sealed-v2', 'sealed_v2', suiteSealedV2),
+      ('v3', 'device_attestation', suiteDeviceAttestation),
+    ]) {
+      test('$ver/$suite is reproduced exactly', () async {
+        expect(encodeVectorFile(await make(await actors())),
+            encodeVectorFile(readVectors(suite, ver)),
+            reason: '$ver/$suite.json differs from what the library now '
+                'produces');
+      });
+    }
+
+    test('sealed v2: every envelope re-sealed from its draws and opened, and '
+        'every refusal refused', () async {
+      final v = readVectors('sealed_v2', 'sealed-v2');
+      expect(v['prefix'], SealedEnvelopeV2.prefix);
+      expect(v['context'], SealedEnvelopeV2.context);
+      expect(v['buckets'], sealedBuckets);
+      final to = (v['recipient'] as Map).cast<String, Object?>();
+      final xSeed = unhex(to['x_seed'] as String);
+      final xPub = unhex(to['x_pub'] as String);
+      final seal = SealingKey.fromSeed(unhex(to['seal_seed'] as String));
+      expect(hex(seal.ek), to['seal_ek']);
+      expect(hex(seal.hash), to['sk']);
+      final wrong = (v['wrong_recipient'] as Map).cast<String, Object?>();
+      final fromRid = v['from_rid'] as String;
+      Future<({String fromRid, String payload})?> open(String blob,
+              [Map<String, Object?>? who]) =>
+          SealedEnvelopeV2.open(
+              myXSeed: unhex((who ?? to)['x_seed'] as String),
+              myXPub: unhex((who ?? to)['x_pub'] as String),
+              mySealKey:
+                  SealingKey.fromSeed(unhex((who ?? to)['seal_seed'] as String)),
+              blob: blob);
+      final vectors = (v['vectors'] as List).cast<Map>();
+      expect(vectors.map((e) => e['bucket']).toSet(), sealedBuckets.toSet(),
+          reason: 'every bucket');
+      for (final e in vectors) {
+        final name = e['name'] as String;
+        final payload = e['payload'] as String? ??
+            (e['payload_fill'] as String) * (e['payload_len'] as int);
+        final blob = await runScripted([
+          unhex(e['eph_seed'] as String),
+          unhex(e['m'] as String),
+          unhex(e['nonce'] as String),
+        ], () => SealedEnvelopeV2.seal(
+            toXPub: xPub, toSealEk: seal.ek, fromRid: fromRid, payload: payload));
+        if (e['envelope'] != null) {
+          expect(blob, e['envelope'], reason: name);
+        } else {
+          expect(hex(await sha256Bytes(utf8.encode(blob))), e['envelope_sha256'],
+              reason: name);
+        }
+        expect(blob.length, e['envelope_len'], reason: name);
+        expect(blob.length, (e['zs1_len'] as int) + 1450, reason: name);
+        expect(
+            (await SealedEnvelope.seal(
+                    toXPub: xPub, fromRid: fromRid, payload: payload))
+                .length,
+            e['zs1_len'],
+            reason: '$name: the zs1. envelope of the same payload');
+        final opened = await open(blob);
+        expect(opened?.fromRid, fromRid, reason: name);
+        expect(opened?.payload, payload, reason: name);
+        expect(await open(blob, wrong), isNull, reason: '$name: wrong recipient');
+        expect(hex(seal.decapsulate(unhex(e['kem_ct'] as String))), e['K'],
+            reason: '$name: K from the seed');
+      }
+      final refusals = (v['must_refuse'] as List).cast<Map>();
+      expect(refusals.map((r) => r['name']), [
+        'kem_ct_swapped',
+        'kem_ct_stripped_as_zs1',
+        'kem_ct_stripped_as_zs2',
+        'zs1_body_under_zs2',
+        'zs2_body_under_zs1',
+      ]);
+      for (final r in refusals) {
+        final blob = r['envelope'] as String;
+        expect(await open(blob), isNull, reason: r['name'] as String);
+        expect(
+            await SealedEnvelope.open(myXSeed: xSeed, myXPub: xPub, blob: blob),
+            isNull,
+            reason: '${r['name']}, as zs1.');
+      }
+      // The zs1. envelope the fourth refusal was made from is genuine.
+      final z1 = refusals[3];
+      expect(
+          (await SealedEnvelope.open(
+                  myXSeed: xSeed, myXPub: xPub, blob: z1['zs1_envelope'] as String))
+              ?.fromRid,
+          fromRid);
+      // ADR 0033's adversary: the X25519 seed, another device's sealing seed.
+      final c = (v['classical_adversary'] as Map).cast<String, Object?>();
+      final of = vectors.firstWhere((e) => e['name'] == c['envelope_of']);
+      final other = SealingKey.fromSeed(unhex(c['seal_seed'] as String));
+      expect(hex(other.decapsulate(unhex(of['kem_ct'] as String))), c['K']);
+      expect(
+          await SealedEnvelopeV2.open(
+              myXSeed: unhex(c['x_seed'] as String),
+              myXPub: xPub,
+              mySealKey: other,
+              blob: of['envelope'] as String),
+          isNull);
+    });
+
+    test('device attestation: every pqdc re-signed and checked, every '
+        'refusal refused, every wire form read', () async {
+      final v = readVectors('device_attestation', 'v3');
+      expect(v['context'], devicePqContext);
+      final acct = (v['account'] as Map).cast<String, Object?>();
+      final key = await HybridKeyPair.fromSeeds(
+          edSeed: unhex(acct['ed_seed'] as String),
+          mlSeed: unhex(acct['ml_seed'] as String));
+      expect(hex(key.publicKey.edPub), acct['acct']);
+      expect(hex(key.publicKey.mlPub), acct['ml_pub']);
+      final mlPub = key.publicKey.mlPub;
+      final devices = (v['devices'] as List).cast<Map>();
+      expect(devices.map((d) => d['name']), ['root', 'linked']);
+      for (final d in devices) {
+        final seal = SealingKey.fromSeed(unhex(d['seal_seed'] as String));
+        expect(hex(seal.ek), d['seal_ek']);
+        expect(hex(seal.hash), d['sk']);
+        final ded = unhex(d['ded'] as String), dx = unhex(d['dx'] as String);
+        expect(
+            hex(deviceAttestationInput(
+                accountEdPub: key.publicKey.edPub,
+                deviceEdPub: ded,
+                deviceXPub: dx,
+                sealEk: seal.ek)),
+            d['signing_input']);
+        expect(
+            hex(await signDeviceAttestation(
+                accountKey: key,
+                deviceEdPub: ded,
+                deviceXPub: dx,
+                sealEk: seal.ek,
+                deterministic: true)),
+            d['pqdc'],
+            reason: d['name'] as String);
+        expect(
+            deviceAttestationValid(
+                accountMlPub: mlPub,
+                accountEdPub: key.publicKey.edPub,
+                deviceEdPub: ded,
+                deviceXPub: dx,
+                sealEk: seal.ek,
+                pqdc: unhex(d['pqdc'] as String)),
+            isTrue);
+      }
+      final refusals = (v['must_refuse'] as List).cast<Map>();
+      expect(refusals, hasLength(8));
+      for (final r in refusals) {
+        expect(
+            deviceAttestationValid(
+                accountMlPub: mlPub,
+                accountEdPub: unhex(r['acct'] as String),
+                deviceEdPub: unhex(r['ded'] as String),
+                deviceXPub: unhex(r['dx'] as String),
+                sealEk: unhex(r['seal_ek'] as String),
+                pqdc: unhex(r['pqdc'] as String)),
+            isFalse,
+            reason: r['name'] as String);
+      }
+      final wire = (v['wire'] as Map).cast<String, Object?>();
+      final pqid = (wire['pqid'] as Map).cast<String, Object?>();
+      final linked = devices.last;
+      final read = InnerMessage.fromBytes(utf8b(pqid['inner_json'] as String));
+      expect(hex(read.pqidAttestation!), linked['pqdc']);
+      expect(read.data['pk'], b64(mlPub));
+      expect(utf8.encode(pqid['inner_json'] as String).length, pqid['inner_len']);
+      expect(
+          InnerMessage.fromBytes(utf8b(pqid['without_pqdc'] as String))
+              .pqidAttestation,
+          isNull);
+      final pqseal = (wire['pqseal'] as Map).cast<String, Object?>();
+      expect(
+          hex(InnerMessage.fromBytes(utf8b(pqseal['inner_json'] as String))
+              .pqSealKey!),
+          linked['seal_ek']);
+      expect(
+          InnerMessage.fromBytes(
+                  utf8b((wire['pqs'] as Map)['inner_json'] as String))
+              .saysHoldsSealKey,
+          isTrue);
+      final ignored = (wire['pqseal_ignored'] as List).cast<Map>();
+      expect(ignored, hasLength(4));
+      for (final i in ignored) {
+        expect(
+            InnerMessage.fromBytes(utf8b(i['inner_json'] as String)).pqSealKey,
+            isNull,
+            reason: i['name'] as String);
+      }
+    });
+  });
 }
 
 /// Runs [body] with the protocol's random draws served from [draws] in order.

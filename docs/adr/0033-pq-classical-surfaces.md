@@ -14,7 +14,11 @@ relay client's frames, with their vectors (§8.3, `vectors/intro-key/`);
 44.10 — the relay keeps introduction keys (§12.7). Nothing a client sends has
 changed: no client seals `zs2.` before 44.7, which waits for constant‑time
 ML‑KEM upstream, and none publishes, fetches or emits an introduction key or
-`sk` before 44.11–44.12. The rest of the build plan below is not built.
+`sk` before 44.11–44.12. 44.1's sealing key, `pqdc` and `zs2.` are built in
+the protocol library too, with their vectors (PROTOCOL §8.2, §18.11,
+`vectors/sealed-v2/`, `v3/device_attestation.json`), and none of it is sent:
+no `pqseal`, `pqs` or `pqdc` before 44.3, and no `zs2.` before 44.7. The rest
+of the build plan below is not built.
 **Decides:** for each surface the 3 October analysis (§4.3) found classical —
 pairing enrolment, CONNECT, the sealed outer layer, contact requests, the
 device a scanned code names, session authentication — what becomes hybrid, on
@@ -349,7 +353,7 @@ failing test on the base where it can be expressed, and a mutation check.
 
 | # | Patch | Needs | Status |
 |---|---|---|---|
-| 44.1 | Protocol cores and vectors: sealing key, `zs2.` seal/open, `pqdc` sign/verify, pairing v3, CONNECT v3 | — | planned; nothing emits |
+| 44.1 | Protocol cores and vectors: sealing key, `zs2.` seal/open, `pqdc` sign/verify, pairing v3, CONNECT v3 | — | planned; nothing emits; **built** (sealing key, `pqdc`, `zs2.`) |
 | 44.2 | The relay treats `zs2.` as sealed | — | **built**; deploy before 44.7 |
 | 44.3 | Every device gets a sealing key and attestation: `pqseal`/`pqs`, `pqid.pqdc`, `dir:"pqdc"`, archive | 44.1 | planned; sends keys, uses none |
 | 44.4 | Pairing v3 | 44.1, 44.3 | planned; highest value, so land it first |

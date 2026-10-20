@@ -31,6 +31,7 @@ export 'src/pqsign.dart';
 export 'src/recovery_code.dart';
 export 'src/relay_client.dart';
 export 'src/sealed.dart';
+export 'src/sealing_key.dart';
 export 'src/ratchet.dart'
     show
         RatchetState,

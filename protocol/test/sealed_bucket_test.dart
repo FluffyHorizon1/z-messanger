@@ -21,7 +21,24 @@
 //      ordinary chat of that length, which is the property the ADRs need;
 //   3. the account's ML-DSA public key (`pqid`) and the list-level
 //      post-quantum signature (`dlpq`) each seal into the 16 384 bucket,
-//      where nothing routine shorter than ~2 000 characters of text goes.
+//      where nothing routine shorter than ~2 000 characters of text goes;
+//   4. (44.1, §8.2) a `zs2.` envelope is 1 450 characters longer than the
+//      `zs1.` one of the same payload, in every bucket — 2 900, 6 996,
+//      23 380, 88 916, 351 060 and 1 530 708 characters — because the bucket
+//      a payload lands in does not change: the KEM ciphertext is outside it;
+//   5. (44.1, §18.11) a device's `pqseal`, bare and with every member the
+//      app decorates a message with and `pqs`, seals into the 4 096 bucket,
+//      as a `pqek` offer does, on a message whose ratchet header carries no
+//      `pqct` — classical, or mixed once the ciphertext is acknowledged —
+//      and into the 16 384 bucket on one that does, as the encapsulating
+//      side's messages do until then (at a session's first mixing, and after
+//      a re-key): measured in each state, with what the 4 096 bucket holds
+//      in it. Whether 44.3 keeps `pqseal` off a message carrying `pqct` is
+//      44.3's to decide;
+//   6. (44.1, §18.11) a `pqid` carrying `pqdc` still seals into the 16 384
+//      bucket a `pqid` already is, decorated as in 5, in all three states —
+//      no new envelope and no new size — measured, with what that bucket
+//      holds in each.
 //
 // Broken once on purpose: asserting the old 1 024 claim for a device list
 // fails with "Expected: <1024> Actual: <4096> — 1 device(s): 496 inner bytes".
@@ -70,6 +87,64 @@ class Pipe {
     expect(sealedBuckets, contains(padded),
         reason: 'a sealed body is always exactly one bucket long');
     return padded;
+  }
+}
+
+/// A session whose post-quantum offer was taken (§17.3). [enc], the
+/// designated initiator, encapsulated to [off]'s offer, and until [off]'s
+/// first mixed message reaches it everything it sends carries the KEM
+/// ciphertext in its ratchet header (`pqct`, 1 088 bytes) — as the
+/// encapsulating side's messages do at a session's first mixing and after
+/// every re-key (§17.7). After [ack] it sends mixed with no ciphertext: the
+/// steady state. What [enc] sends is measured; [off] keeps step, and says
+/// nothing back until [ack].
+class MixedPipe {
+  final ZIdentity offId;
+  final Conversation enc, off;
+  final String encRid;
+  MixedPipe._(this.offId, this.enc, this.off, this.encRid);
+
+  static Future<MixedPipe> settle() async {
+    var x = await ZIdentity.generate();
+    var y = await ZIdentity.generate();
+    // The designated initiator, the side that encapsulates, is the lower
+    // routing id.
+    if ((await x.routingId()).compareTo(await y.routingId()) > 0) {
+      (x, y) = (y, x);
+    }
+    final enc = await Conversation.create(x, await y.bundle(displayName: 'Off'),
+        intervals: PqIntervals.disabled);
+    final off = await Conversation.create(y, await x.bundle(displayName: 'Enc'),
+        intervals: PqIntervals.disabled);
+    final opened = await off.decrypt(await enc.encrypt(utf8b('hello')));
+    await enc.decrypt(opened.pqOfferPayload!);
+    expect(enc.isPostQuantum, isTrue, reason: 'the offer taken');
+    expect(enc.pq.acked, isFalse);
+    return MixedPipe._(y, enc, off, await x.routingId());
+  }
+
+  /// Sends [m] from [enc] as `ChatService._sendInner` does and returns the
+  /// bucket its sealed envelope was padded to; [withCt] is whether its header
+  /// carries `pqct`, which is checked rather than assumed.
+  Future<int> bucketOf(InnerMessage m, {required bool withCt}) async {
+    final wire = await enc.encrypt(m.toBytes());
+    final h = (jsonDecode(utf8.decode(base64Decode(wire))) as Map)['h'] as Map;
+    expect(h['pq'], 1, reason: 'a mixed message');
+    expect(h.containsKey('pqct'), withCt,
+        reason: withCt ? 'the ciphertext rides it' : 'acknowledged: none');
+    final sealed = await SealedEnvelope.seal(
+        toXPub: offId.xPub, fromRid: encRid, payload: wire);
+    await off.decrypt(wire); // keep step; no answer, so no acknowledgement
+    final raw = base64Url.decode(base64Url.normalize(sealed.substring(4)));
+    final padded = raw.length - 32 - 12 - 16;
+    expect(sealedBuckets, contains(padded));
+    return padded;
+  }
+
+  /// [off]'s first mixed message, which tells [enc] it holds K.
+  Future<void> ack() async {
+    await enc.decrypt(await off.encrypt(utf8b('reply')));
+    expect(enc.pq.acked, isTrue);
   }
 }
 
@@ -140,5 +215,184 @@ void main() {
         data: {'sig': jsonEncode(sig.toJson())});
     expect(await pipe.bucketOf(dlpq), 16384,
         reason: 'dlpq: ${dlpq.toBytes().length} inner bytes');
+  });
+
+  // 44.1: what zs2. costs, bucket by bucket, and the two new members' place.
+  const zs1Chars = {
+    1024: 1450,
+    4096: 5546,
+    16384: 21930,
+    65536: 87466,
+    262144: 349610,
+    1146880: 1529258,
+  };
+  const zs2Chars = {
+    1024: 2900,
+    4096: 6996,
+    16384: 23380,
+    65536: 88916,
+    262144: 351060,
+    1146880: 1530708,
+  };
+
+  /// [m] with every member the app stamps on what it sends
+  /// (`_decorateForWire`) — the reader level, both list claims at a version
+  /// far beyond any real one, the list-signature claim, `pqh` — and `pqs`,
+  /// which 44.3 adds: the most a sent copy carries.
+  InnerMessage decorated(InnerMessage m) {
+    final h = b64(List.filled(16, 0xff));
+    m.data.addAll({
+      'dlr': 3,
+      'dl': {'v': 999999, 'h': h},
+      'pdl': {'v': 999999, 'h': h},
+      'pql': 999999,
+      'pqh': 1,
+    });
+    m.stampHoldsSealKey();
+    return m;
+  }
+
+  /// The most inner bytes a message can be and still seal into [bucket] when
+  /// [bucketOf] sends it, found through the whole pipeline by bisection over
+  /// a text's length: [lo] characters land in [bucket], [hi] above it.
+  Future<int> holds(Future<int> Function(InnerMessage) bucketOf, int bucket,
+      int lo, int hi) async {
+    expect(await bucketOf(text('x' * lo)), bucket);
+    expect(await bucketOf(text('x' * hi)), greaterThan(bucket));
+    while (hi - lo > 1) {
+      final n = (lo + hi) ~/ 2;
+      if (await bucketOf(text('x' * n)) <= bucket) {
+        lo = n;
+      } else {
+        hi = n;
+      }
+    }
+    return text('x' * lo).toBytes().length;
+  }
+
+  test('zs2. is 1 450 characters more than zs1. in every bucket, and '
+      'moves no payload to another', () async {
+    final bobSeal = SealingKey.generate();
+    Future<void> both(String payload, int bucket, String what) async {
+      final z1 = await SealedEnvelope.seal(
+          toXPub: pipe.bob.xPub, fromRid: pipe.aliceRid, payload: payload);
+      final z2 = await SealedEnvelopeV2.seal(
+          toXPub: pipe.bob.xPub,
+          toSealEk: bobSeal.ek,
+          fromRid: pipe.aliceRid,
+          payload: payload);
+      // zs2. || b64url(ephPub 32 || ct 1088 || nonce 12 || box || mac 16)
+      final box = unb64url(z2.substring(4)).length - 32 - 1088 - 12 - 16;
+      expect(box, bucket, reason: '$what: the box is the bucket');
+      expect(unb64url(z1.substring(4)).length - 60, bucket,
+          reason: '$what: the bucket it lands in as zs1.');
+      expect(z1.length, zs1Chars[bucket], reason: what);
+      expect(z2.length, zs2Chars[bucket], reason: what);
+      expect(z2.length - z1.length, SealedEnvelopeV2.extraChars, reason: what);
+    }
+
+    // Through the pipeline: three texts, either side of the boundaries the
+    // first criterion pins.
+    for (final (body, bucket) in [
+      ('ok', 1024),
+      ('x' * 180, 1024),
+      ('x' * 190, 4096),
+      ('x' * 1900, 4096),
+      ('x' * 2000, 16384),
+    ]) {
+      final wire = await pipe.a.encrypt(text(body).toBytes());
+      await pipe.b.decrypt(wire); // keep both ratchets in step
+      await both(wire, bucket, 'a text of ${body.length}');
+    }
+    // A max-size attachment chunk, which every chunk envelope is.
+    final km = FileKeyMaterial.generate();
+    await both(await encryptChunk(km, 0, Uint8List(defaultChunkSize)), 262144,
+        'a max-size chunk');
+    // And the two buckets nothing routine reaches, by payload alone.
+    await both('D' * 30000, 65536, '30 000 characters');
+    await both('F' * 900000, 1146880, '900 000 characters');
+  });
+
+  test('a pqseal is a 4 096-bucket envelope, as a pqek offer is, on a message '
+      'carrying no pqct, and a 16 384-bucket one on a message that does',
+      () async {
+    final ek = SealingKey.generate().ek;
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final bare = InnerMessage.pqSeal(newMessageId(), ts, ek);
+    final full = decorated(InnerMessage.pqSeal(newMessageId(), ts, ek));
+    final offer = InnerMessage.pqOffer(newMessageId(), ts, ek);
+    // Classical: a session whose offer was never taken.
+    final classical = await holds(pipe.bucketOf, 4096, 1900, 2000);
+    final onClassical = [
+      for (final m in [bare, full, offer]) await pipe.bucketOf(m)
+    ];
+    // Mixed, its ciphertext not yet acknowledged: what the encapsulating
+    // side sends at a session's first mixing, and after a re-key.
+    final mixed = await MixedPipe.settle();
+    Future<int> carryingCt(InnerMessage m) => mixed.bucketOf(m, withCt: true);
+    final withCt = await holds(carryingCt, 4096, 1, 2000);
+    final shortWithCt = await carryingCt(text('ok'));
+    final onCt = [for (final m in [bare, full]) await carryingCt(m)];
+    // Acknowledged: mixed, and no ciphertext — the steady state.
+    await mixed.ack();
+    Future<int> steady(InnerMessage m) => mixed.bucketOf(m, withCt: false);
+    final steadyHolds = await holds(steady, 4096, 1000, 3000);
+    final onSteady = [for (final m in [bare, full]) await steady(m)];
+    final measured = 'pqseal: ${bare.toBytes().length} inner bytes, '
+        '${full.toBytes().length} decorated; a pqek offer '
+        '${offer.toBytes().length}; the 4 096 bucket holds $classical '
+        'classical, $steadyHolds mixed, $withCt beside pqct (where "ok" is '
+        'already a $shortWithCt-bucket envelope); pqseal bare and decorated: '
+        'classical $onClassical, mixed $onSteady, beside pqct $onCt';
+    print(measured);
+    expect(onClassical, [4096, 4096, 4096], reason: measured);
+    expect(onSteady, [4096, 4096], reason: measured);
+    expect(onCt, [16384, 16384], reason: measured);
+    expect(full.toBytes().length, lessThan(classical), reason: measured);
+    expect(full.toBytes().length, lessThan(steadyHolds), reason: measured);
+    expect(bare.toBytes().length, greaterThan(withCt), reason: measured);
+  });
+
+  test('a pqid carrying pqdc stays in the 16 384 bucket, classical or mixed, '
+      'on a message carrying pqct or not', () async {
+    final account = await HybridKeyPair.generate();
+    final device = await ZIdentity.generate();
+    final pqdc = await signDeviceAttestation(
+        accountKey: account,
+        deviceEdPub: device.edPub,
+        deviceXPub: device.xPub,
+        sealEk: SealingKey.generate().ek);
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final mlPub = account.publicKey.mlPub;
+    final bare = InnerMessage.pqIdentity(newMessageId(), ts, mlPub);
+    final withIt =
+        InnerMessage.pqIdentity(newMessageId(), ts, mlPub, pqdc: pqdc);
+    final full = decorated(InnerMessage.pqIdentity(newMessageId(), ts, mlPub,
+        ack: true, pqdc: pqdc));
+    final classical = await holds(pipe.bucketOf, 16384, 8000, 10000);
+    final onClassical = [
+      for (final m in [bare, withIt, full]) await pipe.bucketOf(m)
+    ];
+    final mixed = await MixedPipe.settle();
+    Future<int> carryingCt(InnerMessage m) => mixed.bucketOf(m, withCt: true);
+    final withCt = await holds(carryingCt, 16384, 6000, 12000);
+    final onCt = [for (final m in [bare, withIt, full]) await carryingCt(m)];
+    await mixed.ack();
+    Future<int> steady(InnerMessage m) => mixed.bucketOf(m, withCt: false);
+    final steadyHolds = await holds(steady, 16384, 6000, 12000);
+    final onSteady = [for (final m in [bare, withIt, full]) await steady(m)];
+    final measured = 'pqid: ${bare.toBytes().length} inner bytes; with pqdc '
+        '${withIt.toBytes().length}, decorated and with ack '
+        '${full.toBytes().length}; the 16 384 bucket holds $classical '
+        'classical, $steadyHolds mixed, $withCt beside pqct; bare, with pqdc '
+        'and decorated: classical $onClassical, mixed $onSteady, beside pqct '
+        '$onCt';
+    print(measured);
+    for (final buckets in [onClassical, onSteady, onCt]) {
+      expect(buckets, [16384, 16384, 16384], reason: measured);
+    }
+    for (final room in [classical, steadyHolds, withCt]) {
+      expect(full.toBytes().length, lessThan(room), reason: measured);
+    }
   });
 }

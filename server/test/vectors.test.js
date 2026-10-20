@@ -2766,3 +2766,224 @@ test('intro-key: contact codes carrying sk — the hash of the device\'s own key
   assert.equal(unb64(JSON.parse(unb64url(refuse.sk_31_bytes.code.slice(4)).toString('utf8')).sk).length, 31);
   assert.equal(typeof JSON.parse(unb64url(refuse.sk_not_a_string.code.slice(4)).toString('utf8')).sk, 'number');
 });
+
+// 44.1, ADR 0033 §5 (PROTOCOL §8.2): zs2., from the section alone. Node has
+// no ML-KEM: the sealing key and each (K, ct) are re-derived by kyber-py
+// (verify_mlkem.py). Given K and ct as recorded, everything else is replayed
+// here — the X25519 agreement, the key HKDF(shared || K, ∅, "z-sealed-v2" ||
+// ephPub || xPub || SHA-256(ct)), §8's padding and the AEAD, the envelope
+// and its length beside zs1.'s, opening it, and every envelope a recipient
+// refuses.
+const SV2_DIR = path.join(__dirname, '..', '..', 'docs', 'vectors', 'sealed-v2');
+const loadSv2 = (name) => JSON.parse(fs.readFileSync(path.join(SV2_DIR, `${name}.json`), 'utf8'));
+const b64urlLen = (n) => Math.floor(n / 3) * 4 + [0, 2, 3][n % 3];
+
+test('sealed-v2: zs2. envelopes seal and open exactly, in every bucket, from §8.2 alone', () => {
+  const v = loadSv2('sealed_v2');
+  assert.equal(v.suite, 'sealed_v2');
+  assert.equal(v.prefix, 'zs2.');
+  assert.equal(v.context, 'z-sealed-v2');
+  assert.equal(v.aad, 'z-sealed-v2');
+  assert.deepEqual(v.buckets, SEALED_BUCKETS);
+  assert.equal(v.extra_chars, 1450);
+  const to = v.recipient;
+  const toPub = unhex(to.x_pub);
+  assert.equal(hex(xPub(unhex(to.x_seed))), to.x_pub);
+  assert.equal(unhex(to.seal_ek).length, 1184);
+  assert.equal(hex(sha256(unhex(to.seal_ek))), to.sk);
+  assert.deepEqual(new Set(v.vectors.map((e) => e.bucket)), new Set(SEALED_BUCKETS), 'every bucket');
+  for (const e of v.vectors) {
+    const ephSeed = unhex(e.eph_seed), ephPub = xPub(ephSeed);
+    assert.equal(hex(ephPub), e.eph_pub);
+    const shared = x25519(ephSeed, toPub);
+    assert.equal(hex(shared), e.shared);
+    assert.equal(hex(x25519(unhex(to.x_seed), ephPub)), e.shared, 'recipient side');
+    const ct = unhex(e.kem_ct), K = unhex(e.K);
+    assert.equal(ct.length, 1088);
+    assert.equal(K.length, 32);
+    assert.equal(hex(sha256(ct)), e.kem_ct_sha256);
+    const ikm = cat(shared, K);
+    assert.equal(hex(ikm), e.hkdf_ikm);
+    const info = cat(utf8('z-sealed-v2'), ephPub, toPub, sha256(ct));
+    assert.equal(hex(info), e.hkdf_info);
+    const key = hkdf(ikm, Buffer.alloc(0), info, 32);
+    assert.equal(hex(key), e.key);
+    const payload = e.payload ?? e.payload_fill.repeat(e.payload_len);
+    assert.equal(payload.length, e.payload_len);
+    const inner = JSON.stringify({ f: v.from_rid, p: payload });
+    if (e.inner_json !== undefined) assert.equal(inner, e.inner_json);
+    assert.equal(Buffer.byteLength(inner), e.inner_len);
+    // §8's padding, unchanged: the bucket zs1. pads the same {f, p} to.
+    const padded = padSealed(utf8(inner));
+    assert.equal(padded.length, e.bucket, `${e.name}: the bucket`);
+    const nonce = unhex(e.nonce);
+    const { ct: box, mac } = chachaSeal(key, nonce, padded, utf8(v.aad));
+    assert.equal(hex(sha256(box)), e.box_sha256);
+    assert.equal(hex(mac), e.mac);
+    // The KEM ciphertext sits between ephPub and the nonce, outside the box.
+    const envelope = 'zs2.' + b64url(cat(ephPub, ct, nonce, box, mac));
+    if (e.envelope !== undefined) assert.equal(envelope, e.envelope, `${e.name}: envelope`);
+    else assert.equal(hex(sha256(utf8(envelope))), e.envelope_sha256, `${e.name}: envelope`);
+    assert.equal(envelope.length, e.envelope_len);
+    assert.equal(e.zs1_len, 4 + b64urlLen(32 + 12 + e.bucket + 16), `${e.name}: zs1. of the same payload`);
+    assert.equal(e.envelope_len - e.zs1_len, 1450, `${e.name}: 1 450 characters more than zs1.`);
+    // Opened as the recipient, from the envelope and K.
+    const raw = unb64url(envelope.slice(4));
+    const k2 = hkdf(cat(x25519(unhex(to.x_seed), raw.subarray(0, 32)), K), Buffer.alloc(0),
+      cat(utf8('z-sealed-v2'), raw.subarray(0, 32), toPub, sha256(raw.subarray(32, 1120))), 32);
+    const plain = unpadSealed(chachaOpen(k2, raw.subarray(1120, 1132), raw.subarray(1132, raw.length - 16),
+      raw.subarray(raw.length - 16), utf8('z-sealed-v2')));
+    assert.deepEqual(JSON.parse(plain.toString('utf8')), { f: v.from_rid, p: payload });
+  }
+});
+
+test('sealed-v2: a swapped or stripped KEM ciphertext, each prefix under the other, and the X25519 key without the sealing seed open nothing', () => {
+  const v = loadSv2('sealed_v2');
+  const to = v.recipient, toPub = unhex(to.x_pub), xs = unhex(to.x_seed);
+  const zs1Key = (eph) => hkdf(x25519(xs, eph), Buffer.alloc(0), cat(utf8('z-sealed-v1'), eph, toPub), 32);
+  const zs2Key = (eph, ct, K) =>
+    hkdf(cat(x25519(xs, eph), K), Buffer.alloc(0), cat(utf8('z-sealed-v2'), eph, toPub, sha256(ct)), 32);
+  const opens = (f) => { try { f(); return true; } catch { return false; } };
+  const opensZs1 = (raw) => raw.length >= 60 && opens(() => chachaOpen(zs1Key(raw.subarray(0, 32)),
+    raw.subarray(32, 44), raw.subarray(44, raw.length - 16), raw.subarray(raw.length - 16), utf8('z-sealed-v1')));
+  const opensZs2 = (raw, K) => raw.length >= 1148 && opens(() => chachaOpen(
+    zs2Key(raw.subarray(0, 32), raw.subarray(32, 1120), K), raw.subarray(1120, 1132),
+    raw.subarray(1132, raw.length - 16), raw.subarray(raw.length - 16), utf8('z-sealed-v2')));
+  const base = v.vectors.find((e) => e.name === 'bucket_1024');
+  const baseRaw = unb64url(base.envelope.slice(4));
+  assert.ok(opensZs2(baseRaw, unhex(base.K)), 'the genuine envelope opens with its own K');
+  const outsideCt = (raw) => cat(raw.subarray(0, 32), raw.subarray(1120));
+  const r = Object.fromEntries(v.must_refuse.map((x) => [x.name, x]));
+  assert.deepEqual(Object.keys(r), ['kem_ct_swapped', 'kem_ct_stripped_as_zs1', 'kem_ct_stripped_as_zs2',
+    'zs1_body_under_zs2', 'zs2_body_under_zs1']);
+  // Another encapsulation in place of the envelope's: everything else is the
+  // genuine envelope, and neither the new K nor the old one opens it — the
+  // ciphertext is hashed into the key.
+  const sRaw = unb64url(r.kem_ct_swapped.envelope.slice(4));
+  assert.equal(hex(sRaw.subarray(32, 1120)), r.kem_ct_swapped.kem_ct);
+  assert.deepEqual(outsideCt(sRaw), outsideCt(baseRaw));
+  assert.equal(hex(zs2Key(sRaw.subarray(0, 32), sRaw.subarray(32, 1120), unhex(r.kem_ct_swapped.K))), r.kem_ct_swapped.key);
+  assert.ok(!opensZs2(sRaw, unhex(r.kem_ct_swapped.K)), 'the K its ciphertext carries');
+  assert.ok(!opensZs2(sRaw, unhex(base.K)), "nor the envelope's own K");
+  // The ciphertext stripped: as zs1. the key has no K and another context;
+  // as zs2. the body is too short to be one.
+  const st1 = r.kem_ct_stripped_as_zs1;
+  assert.ok(st1.envelope.startsWith('zs1.'));
+  const st1Raw = unb64url(st1.envelope.slice(4));
+  assert.deepEqual(st1Raw, outsideCt(baseRaw));
+  assert.equal(hex(zs1Key(st1Raw.subarray(0, 32))), st1.zs1_key);
+  assert.ok(!opensZs1(st1Raw));
+  const st2 = r.kem_ct_stripped_as_zs2;
+  assert.ok(st2.envelope.startsWith('zs2.'));
+  assert.equal(unb64url(st2.envelope.slice(4)).length, 1084);
+  assert.ok(!opensZs2(unb64url(st2.envelope.slice(4)), unhex(base.K)));
+  // A genuine zs1. envelope's body under zs2.: the zs2. reader takes its
+  // nonce and the start of its box for a ciphertext, and fails.
+  const z = r.zs1_body_under_zs2;
+  assert.equal(z.envelope.slice(4), z.zs1_envelope.slice(4));
+  const zRaw = unb64url(z.zs1_envelope.slice(4));
+  assert.equal(hex(zRaw.subarray(0, 32)), hex(xPub(unhex(z.zs1_eph_seed))));
+  assert.equal(hex(zRaw.subarray(32, 44)), z.zs1_nonce);
+  assert.equal(zRaw.length - 60, 4096, 'from the 4 096 bucket, long enough to parse as zs2.');
+  assert.ok(opensZs1(zRaw), 'the zs1. envelope is genuine');
+  assert.equal(hex(zRaw.subarray(32, 1120)), z.kem_ct);
+  assert.ok(!opensZs2(zRaw, unhex(z.K)));
+  // A zs2. body under zs1.: the ciphertext is read as the nonce and the box.
+  assert.equal(r.zs2_body_under_zs1.envelope, 'zs1.' + base.envelope.slice(4));
+  assert.ok(!opensZs1(baseRaw));
+  // ADR 0033's adversary: the recipient's X25519 seed, another sealing seed.
+  const c = v.classical_adversary;
+  assert.equal(c.envelope_of, 'bucket_1024');
+  assert.equal(c.x_seed, to.x_seed);
+  assert.equal(c.seal_seed, v.wrong_recipient.seal_seed);
+  assert.notEqual(c.K, base.K);
+  assert.equal(hex(zs2Key(baseRaw.subarray(0, 32), baseRaw.subarray(32, 1120), unhex(c.K))), c.key);
+  assert.equal(hex(zs2Key(baseRaw.subarray(0, 32), baseRaw.subarray(32, 1120), Buffer.alloc(32))), c.zero_K_key);
+  assert.ok(!opensZs2(baseRaw, unhex(c.K)), 'with its own decapsulation');
+  assert.ok(!opensZs2(baseRaw, Buffer.alloc(32)), 'with K guessed as zeros');
+});
+
+// 44.1, ADR 0033 §1 (PROTOCOL §18.11): pqdc's input, from the section alone.
+// Node has no ML-DSA either: dilithium-py (verify_mldsa.py) reproduces and
+// verifies each signature. Here the input is rebuilt from each record's
+// fields, so a vector that signed other bytes than §18.11's would be caught;
+// each refusal is shown to carry a signature over other bytes than its own;
+// and the wire forms are read as §6.2 and §18.2 define them.
+test('v3 device_attestation: pqdc\'s input from §18.11 alone, every refusal over other bytes, and the wire forms', () => {
+  const v = loadV3('device_attestation');
+  assert.equal(v.suite, 'device_attestation');
+  assert.equal(v.context, 'z-device-pq-v1:');
+  assert.deepEqual(v.sizes, { signing_input: 143, pqdc: 3309, ml_pub: 1952, seal_ek: 1184, seal_seed: 64 });
+  const acct = unhex(v.account.acct);
+  assert.equal(hex(edPub(unhex(v.account.ed_seed))), v.account.acct);
+  assert.equal(unhex(v.account.ml_pub).length, 1952);
+  const input = (a, ded, dx, ek) => cat(utf8('z-device-pq-v1:'), a, ded, dx, sha256(ek));
+  for (const d of v.devices) {
+    const ek = unhex(d.seal_ek);
+    assert.equal(ek.length, 1184);
+    assert.ok(mlKemKeyValid(ek), `${d.name}: a key FIPS 203 7.2 accepts`);
+    assert.equal(hex(sha256(ek)), d.sk);
+    const i = input(acct, unhex(d.ded), unhex(d.dx), ek);
+    assert.equal(i.length, 143, 'fixed width: 15 + 4 × 32');
+    assert.equal(hex(i), d.signing_input, d.name);
+    assert.equal(unhex(d.pqdc).length, 3309);
+  }
+  const [root, linked] = v.devices;
+  assert.equal(root.ded, v.account.acct, "the root device's ded is the account key");
+  // The linked device is the account's: its certificate is over its two keys.
+  assert.equal(hex(edPub(unhex(linked.ed_seed))), linked.ded);
+  assert.equal(hex(unb64(linked.cert.ded)), linked.ded);
+  assert.equal(hex(unb64(linked.cert.dx)), linked.dx);
+  assert.ok(edVerify(acct, certInput(unhex(linked.ded), unhex(linked.dx), linked.cert.id), unb64(linked.cert.sig)));
+  const r = Object.fromEntries(v.must_refuse.map((x) => [x.name, x]));
+  assert.deepEqual(Object.keys(r), ['dx_swapped', 'ded_swapped', 'acct_swapped', 'seal_key_swapped',
+    'other_devices_pqdc', 'pqdc_one_byte_short', 'seal_ek_one_byte_short', 'classical_forgery']);
+  for (const x of Object.values(r)) {
+    if (x.signing_input === undefined) continue;
+    assert.equal(hex(input(unhex(x.acct), unhex(x.ded), unhex(x.dx), unhex(x.seal_ek))), x.signing_input, x.name);
+  }
+  // Each swap carries the root device's genuine pqdc over bytes it was not
+  // made over, and changes exactly the one field it names.
+  const fieldsOf = (x) => ({ acct: x.acct ?? v.account.acct, ded: x.ded, dx: x.dx, seal_ek: x.seal_ek });
+  for (const [name, field] of [['dx_swapped', 'dx'], ['ded_swapped', 'ded'], ['acct_swapped', 'acct'], ['seal_key_swapped', 'seal_ek']]) {
+    const x = r[name];
+    assert.equal(x.pqdc, root.pqdc, `${name}: the genuine signature`);
+    assert.notEqual(x.signing_input, root.signing_input, `${name}: over other bytes`);
+    const changed = Object.keys(fieldsOf(x)).filter((k) => fieldsOf(x)[k] !== fieldsOf(root)[k]);
+    assert.deepEqual(changed, [field], name);
+  }
+  assert.equal(r.other_devices_pqdc.pqdc, linked.pqdc);
+  assert.equal(r.other_devices_pqdc.signing_input, root.signing_input);
+  assert.equal(unhex(r.pqdc_one_byte_short.pqdc).length, 3308);
+  assert.equal(unhex(r.seal_ek_one_byte_short.seal_ek).length, 1183);
+  assert.equal(r.seal_ek_one_byte_short.signing_input, undefined, 'no input at that width');
+  // The forgery is over the adversary's own device, under no genuine pqdc.
+  const f = r.classical_forgery;
+  assert.deepEqual([f.ded, f.dx, f.seal_ek], [v.other.ded, v.other.dx, v.other.seal_ek]);
+  assert.equal(f.acct, v.account.acct, "it names the genuine account key, whose seed it holds");
+  assert.ok(![root.pqdc, linked.pqdc].includes(f.pqdc));
+  assert.notEqual(v.other.forger_ml_pub, v.account.ml_pub);
+  // The wire forms, as a reader that knows only today's members reads them.
+  const pqid = JSON.parse(v.wire.pqid.inner_json);
+  assert.equal(Buffer.byteLength(v.wire.pqid.inner_json), v.wire.pqid.inner_len);
+  assert.equal(pqid.k, 'pqid');
+  assert.equal(pqid.alg, 'ML-DSA-65');
+  assert.equal(hex(unb64(pqid.pk)), v.account.ml_pub);
+  assert.equal(hex(unb64(pqid.pqdc)), linked.pqdc, "the linked device's pqdc, inside its own pqid");
+  const bare = JSON.parse(v.wire.pqid.without_pqdc);
+  assert.equal(JSON.stringify(bare), JSON.stringify(Object.fromEntries(Object.entries(pqid).filter(([k]) => k !== 'pqdc'))));
+  assert.equal(Buffer.byteLength(v.wire.pqid.without_pqdc), v.wire.pqid.without_pqdc_len);
+  const seal = JSON.parse(v.wire.pqseal.inner_json);
+  assert.deepEqual(Object.keys(seal), ['k', 'mid', 'ts', 'alg', 'ek']);
+  assert.equal(seal.k, 'pqseal');
+  assert.equal(seal.alg, 'ML-KEM-768');
+  assert.equal(hex(unb64(seal.ek)), linked.seal_ek);
+  assert.equal(Buffer.byteLength(v.wire.pqseal.inner_json), v.wire.pqseal.inner_len);
+  assert.equal(JSON.parse(v.wire.pqs.inner_json).pqs, 1);
+  // A pqseal a reader takes no key from: another alg, or an ek that is not a
+  // 1 184-byte key passing FIPS 203 7.2.
+  const takes = (j) => j.alg === 'ML-KEM-768' && typeof j.ek === 'string' && mlKemKeyValid(unb64(j.ek));
+  assert.ok(takes(seal));
+  assert.equal(v.wire.pqseal_ignored.length, 4);
+  for (const x of v.wire.pqseal_ignored) assert.ok(!takes(JSON.parse(x.inner_json)), x.name);
+});

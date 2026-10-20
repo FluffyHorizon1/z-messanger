@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'intro_key.dart' show mlKemEncapsulationKeyValid;
+import 'pqsign.dart' show mlDsaSignatureBytes;
 import 'util.dart';
 
 /// Inner (plaintext) message model — what actually rides inside the ratchet.
@@ -20,6 +22,11 @@ import 'util.dart';
 ///            `ack` without a key; ignored by clients that predate it
 ///   'pqek'   (v2) post-quantum key offer { alg, ek } — consumed by the
 ///            session layer, never shown; ignored by v1 clients
+///   'pqseal' (44.1, ADR 0033 §1) the sending DEVICE's sealing key { alg, ek },
+///            the ML-KEM-768 key a `zs2.` envelope to that device is sealed
+///            to (§18.11); answered by `pqs` (below), not by a kind. Built
+///            and read here; no client sends it before 44.3, and clients
+///            that predate it ignore the kind
 ///   'dlrm'   (7.7a) device-list removal notice { acct, v, h[, list] } — a
 ///            contact tells a device it just dropped from an account's list
 ///            that it was removed; ignored by v1 clients. `list` (ADR 0026)
@@ -72,6 +79,13 @@ import 'util.dart';
 ///                  v2-only `{sig3}` list. A root moves its account to
 ///                  v2-only signing only once every device that reads its
 ///                  lists has said at least 3 (§3.7).
+///
+/// And (44.1, ADR 0033 §1, §18.11) one more, built and read here and stamped
+/// by no client before 44.3:
+///   'pqs'  1       the sending device holds the RECEIVING device's sealing
+///                  key, from its `pqseal`: what `pqh` says of the account's
+///                  post-quantum key, said of the device's sealing key, and
+///                  what ends that device's re-sending of its `pqseal`.
 class InnerMessage {
   final String kind;
   final String mid; // sender-chosen message id (unique per sender)
@@ -281,13 +295,80 @@ class InnerMessage {
   /// 16 KB envelope twice in each direction at a mutual add. Omitted when
   /// false, so a message without it is byte-for-byte what earlier builds
   /// send and the recorded vector.
+  ///
+  /// [pqdc] (44.1, §18.11) is the account's attestation of the SENDING
+  /// device's sealing key (`signDeviceAttestation`), 3 309 bytes, which a
+  /// device sends inside the `pqid` it already sends: the envelope stays in
+  /// the 16 384 bucket, so there is no new envelope and no new size. Omitted
+  /// when null — which is what every caller passes until 44.3 — so the bytes
+  /// are unchanged; a reader before it reads `alg`, `pk` and `ack` and
+  /// ignores the member.
   static InnerMessage pqIdentity(String mid, int ts, Uint8List mlPub,
-          {bool ack = false}) =>
+          {bool ack = false, Uint8List? pqdc}) =>
       InnerMessage(kind: 'pqid', mid: mid, ts: ts, data: {
         'alg': 'ML-DSA-65',
         'pk': b64(mlPub),
         if (ack) 'ack': true,
+        if (pqdc != null) 'pqdc': b64(pqdc),
       });
+
+  /// 44.1 (§18.11, ADR 0033 §1): the sending device's sealing key [ek], the
+  /// ML-KEM-768 encapsulation key (`SealingKey.ek`) a `zs2.` envelope to this
+  /// device is sealed to. It rides a mixed (`pq:1`) message to each device
+  /// the sender has a session with, and is said again on §17.4's clock until
+  /// the receiver stamps `pqs` on what it sends back ([saysHoldsSealKey]).
+  /// 1 580 characters of key: a 4 096-bucket envelope, as a `pqek` offer is.
+  /// A client that predates it ignores the kind (§6.1). Nothing sends it
+  /// before 44.3.
+  static InnerMessage pqSeal(String mid, int ts, Uint8List ek) =>
+      InnerMessage(kind: 'pqseal', mid: mid, ts: ts, data: {
+        'alg': 'ML-KEM-768',
+        'ek': b64(ek),
+      });
+
+  /// The sealing key a `pqseal` carries (§18.11), or null when this is not a
+  /// `pqseal`, its `alg` is not `ML-KEM-768`, or its `ek` is not the `b64` of
+  /// a key FIPS 203 §7.2 accepts (`mlKemEncapsulationKeyValid`): 1 184 bytes
+  /// whose coefficients are all below q. Never throws — a malformed one is
+  /// ignored, as an unknown kind is (§6.1), and nothing in [fromBytes]
+  /// checks the kind, so a client that cannot use one never refuses the
+  /// message that carries it.
+  Uint8List? get pqSealKey {
+    if (kind != 'pqseal' || data['alg'] != 'ML-KEM-768') return null;
+    final ek = data['ek'];
+    if (ek is! String) return null;
+    final Uint8List raw;
+    try {
+      raw = unb64(ek);
+    } on FormatException {
+      return null;
+    }
+    return mlKemEncapsulationKeyValid(raw) ? raw : null;
+  }
+
+  /// The `pqdc` a `pqid` carries (§18.11): 3 309 bytes, or null when this is
+  /// not a `pqid`, it carries none, or the member is not the `b64` of that
+  /// many bytes. Whether it verifies is `deviceAttestationValid`'s question,
+  /// asked once the device's `pqseal` has arrived too.
+  Uint8List? get pqidAttestation {
+    if (kind != 'pqid') return null;
+    final v = data['pqdc'];
+    if (v is! String) return null;
+    final Uint8List raw;
+    try {
+      raw = unb64(v);
+    } on FormatException {
+      return null;
+    }
+    return raw.length == mlDsaSignatureBytes ? raw : null;
+  }
+
+  /// `pqs:1` (§18.11): the sender holds the receiving device's sealing key.
+  bool get saysHoldsSealKey => data['pqs'] == 1;
+
+  /// Stamps `pqs:1` on this message: the sending device holds the receiving
+  /// device's sealing key. Nothing stamps it before 44.3.
+  void stampHoldsSealKey() => data['pqs'] = 1;
 
   /// ADR 0021: the sender holds the receiver's post-quantum key — the same
   /// statement as `ack` on a `pqid`, without the key. Sent when that fact

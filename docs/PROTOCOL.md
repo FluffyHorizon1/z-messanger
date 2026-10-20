@@ -69,7 +69,7 @@ generated) it is marked *implementation note*.
 | Sealed‑sender and pairing‑channel AEAD | ChaCha20‑Poly1305 (12‑byte nonce) |
 | Hashing, routing ids | SHA‑256 |
 | Backup passphrase KDF (§13, informative) | Argon2id |
-| Post‑quantum key encapsulation (v2, §17) | ML‑KEM‑768 (FIPS 203) |
+| Post‑quantum key encapsulation (v2, §17; the sealed outer layer `zs2.`, §8.2) | ML‑KEM‑768 (FIPS 203) |
 
 ## 2. Identity
 
@@ -844,8 +844,9 @@ Unknown kinds MUST be ignored.
 | `gleave` | `gid`, opt. `e:[int,int]` | sender left the group (§11); `e` = the position of the membership it ends, `[0, 0]` included — absent only from a client before ADR 0030 (§11.2) |
 | `gsync` | `gid` | "send me what you hold for this group": asked by a member that had to refuse a list, of the owner and of any admin it may have missed the leave of (§11.1); answered with the asked admin's `ginvite`, and its `gleave` if it has left |
 | `pqek` | `alg:"ML-KEM-768", ek:b64` | v2 post‑quantum key offer (§17); consumed by the session layer, never shown |
-| `pqid` | `alg:"ML-DSA-65", pk:b64`, opt. `ack:true` | v3 post‑quantum identity key (§18.2); checked against the commitment from the scanned code, or kept as a candidate when none is held. `ack` = the sender holds the receiver's key |
+| `pqid` | `alg:"ML-DSA-65", pk:b64`, opt. `ack:true`, opt. `pqdc:b64` | v3 post‑quantum identity key (§18.2); checked against the commitment from the scanned code, or kept as a candidate when none is held. `ack` = the sender holds the receiver's key. `pqdc` = the account's attestation of the sending device's sealing key (§18.11), not yet sent |
 | `pqack` | — | the sender holds the receiver's post‑quantum key (§18.2); the `ack` above without a key, for when no `pqid` is going out to carry it |
+| `pqseal` | `alg:"ML-KEM-768", ek:b64` | the sending device's sealing key (§18.11), which a `zs2.` envelope to it is sealed to (§8.2); answered by `pqs:1`, not by a kind. **Not yet sent:** built in the library (44.1), sent from 44.3 |
 | `dlrm` | `acct:b64, v:int, h:b64`, opt. `list:string` | device‑list removal notice (§3.6); tells a device it was dropped from account `acct`'s list. `list` (ADR 0026) is that list, the JSON of §3.4 as a string — the evidence a receiver acts on; a notice without it is a claim |
 | `pdlreq` | `v:int, h:b64` | "send me the list you hold for my account" (ADR 0026): asked of a contact whose echo `pdl` (§3.6) named (`v`, `h`); answered with a `devlist` carrying that list. Keyless; ignored by clients that predate it |
 | `react` | `rt:string, emo:string` | reaction to one message (§6.5); `emo:""` withdraws |
@@ -865,7 +866,8 @@ clients that do not implement 7.7a ignore them. It MAY also carry `pqh:1`: the
 sender holds the receiver's post‑quantum key — a `pqack`'s statement, restated
 on every message so that one lost envelope cannot lose it (§18.2); clients that
 predate it ignore the member. And `dlr`, the device‑list shape the sending
-device reads (§3.7).
+device reads (§3.7). And, not yet sent, `pqs:1`: the sending device holds the
+receiving device's sealing key (§18.11).
 
 ### 6.3 Receipts
 
@@ -1285,6 +1287,86 @@ either kind pushes out the oldest of that kind its person has not been
 shown, which is the new one when they have been shown every other — so a
 flood through a public handle cannot push out a request made with the
 code.
+
+### 8.2 The hybrid outer layer (`zs2.`, `adr/0033` §5)
+
+*Built in 44.1 (the library and `vectors/sealed-v2/`). **No client seals or
+opens `zs2.` before 44.7**, which switches it on behind a build constant and
+waits for constant‑time ML‑KEM decapsulation upstream (`adr/0033` decision
+4, R43); the relay has taken it as sealed since 44.2 (§12.1). Until then
+this section defines an envelope the library builds and opens, and nothing a
+client sends.*
+
+`zs1.` rests on X25519 alone, so a recording of it tells whoever later holds
+a quantum computer who sent each envelope. `zs2.` mixes an ML‑KEM‑768
+encapsulation to the recipient **device**'s sealing key (§18.11) into the
+envelope's key:
+
+```
+inner, padded = as §8, unchanged
+(ct, K)   = ML-KEM-768.Encaps(recipientSealEk)                    // FIPS 203: ct 1 088 bytes, K 32
+eph       = fresh X25519 pair (ephSeed, ephPub)                    // one per envelope
+shared    = X25519(ephSeed, recipientXPub)
+key       = HKDF( ikm = shared || K, salt = ∅,
+                  info = utf8("z-sealed-v2") || ephPub || recipientXPub || SHA-256(ct), L = 32 )
+nonce     = 12 random bytes
+(box, mac)= ChaCha20Poly1305(key, nonce, aad = utf8("z-sealed-v2"), padded)
+envelope  = "zs2." || b64url( ephPub || ct || nonce || box || mac )
+```
+
+`recipientXPub` is the device's X25519 key, as for `zs1.`; `recipientSealEk`
+is its sealing key, from its `pqseal` (§18.11) or from its relay (§8.3). A
+sender MUST refuse to seal to a `recipientSealEk` that fails FIPS 203 §7.2's
+check (§8.3), and MUST refuse, as §8 does, when `shared` is all zeros: `K`
+would still hide the sender, but no honest device has such a key. Either way
+nothing is produced. *Implementation note:* the reference refuses the
+encapsulation key before it draws anything, then draws `ephSeed`, Encaps's
+32‑byte `m` and the nonce, in that order; the vectors record all three.
+
+**The bucket does not move.** The KEM ciphertext sits outside §8's padding,
+so a payload lands in the bucket it lands in as `zs1.`, and every `zs2.`
+envelope of a bucket has one length: 1 450 characters more than the `zs1.`
+one, since `ct` is 1 088 bytes and each bucket plus `zs1.`'s 60 bytes is one
+more than a multiple of three. (An envelope past the largest bucket, exact
+fit and over every frame cap, is 1 450 or 1 451 longer.)
+
+| Bucket | `zs1.` (wire characters) | `zs2.` |
+|---|---|---|
+| 1 024 | 1 450 | 2 900 |
+| 4 096 | 5 546 | 6 996 |
+| 16 384 | 21 930 | 23 380 |
+| 65 536 | 87 466 | 88 916 |
+| 262 144 | 349 610 | 351 060 |
+| 1 146 880 | 1 529 258 | 1 530 708 |
+
+**Opening.** Check the prefix, decode, split `ephPub(32) || ct(1088) ||
+nonce(12) || box || mac(16)` (reject if shorter than 1 148 bytes), compute
+`X25519(myXSeed, ephPub)` and `K = ML-KEM-768.Decaps(sealDk, ct)`,
+recompute `key`, decrypt, and unpad and parse as §8. Decapsulation does not
+fail: FIPS 203's implicit rejection gives a ciphertext that is not ours a
+pseudorandom `K`, and the AEAD then fails. Any failure is a silent drop, as
+for `zs1.`. Opening decapsulates under a key the device keeps for its life,
+whatever anyone addresses to its mailbox, and the relay sees when each
+envelope is acknowledged — which is why it waits for constant‑time
+decapsulation (R43).
+
+**Stripping.** A `zs2.` envelope cannot be made a `zs1.` one: without `ct`
+the key has no `K` and another context, the AEAD fails, and the envelope is
+dropped — a denial the relay already has (R14). A swapped `ct`, another
+encapsulation to this key or any other, changes `K` and `SHA-256(ct)`, and
+the AEAD fails; so does a `zs1.` body under the `zs2.` prefix (too short, or
+its nonce and box read as a ciphertext) and a `zs2.` body under `zs1.`.
+Withholding a device's `pqseal` delays the upgrade (R27's shape). The
+adversary `adr/0033` models — every classical private key, the recipient's
+X25519 seed among them, and no ML‑KEM secret — opens no `zs2.` envelope:
+`key` needs `K`, and `K` needs the sealing key.
+
+When a sender uses `zs2.` — every envelope to a device whose sealing key it
+holds, attachment chunks included, on a connection that never authenticated
+(§12.1) — is `adr/0033` §5 as addendum A changes it, specified here with
+44.7. *Implementation note:* `SealedEnvelopeV2` in
+`protocol/lib/src/sealed.dart`, sharing `zs1.`'s padding and its refusal of a
+key of small order. Vectors: [`vectors/sealed-v2/`](vectors/sealed-v2/).
 
 ### 8.3 The introduction key (`adr/0033`, addendum A)
 
@@ -2562,6 +2644,11 @@ the verifiers. The vectors were produced by `protocol/tool/gen_vectors.dart`
 with the library's RNG replaced by a seeded splitmix64 DRBG (the standard
 known‑answer‑test technique); production builds have no such hook exposed.
 
+`docs/vectors/sealed-v2/` pins `zs2.` (§8.2), a directory of its own, and
+`docs/vectors/v3/device_attestation.json` a device's sealing key, `pqdc` and
+the members that carry them (§18.11), a file of its own: every file beside
+them is unchanged.
+
 ## 16. Security considerations (summary — see THREAT_MODEL.md)
 
 * **Trust is established out‑of‑band.** A contact code or account code
@@ -2864,8 +2951,9 @@ numbers are all Ed25519, so the same adversary could forge a device
 certificate — mint a device that appears to belong to an account — without
 reading a word of what it recorded. v3 closes that.
 
-Status: everything below is written, implemented and shipping, with its wire
-forms vectored in `docs/vectors/v3/`. The device set gets its post‑quantum
+Status: everything below but §18.11, which no client sends before 44.3, is
+written, implemented and shipping, with its wire forms vectored in
+`docs/vectors/v3/`. The device set gets its post‑quantum
 signature from the account's whole‑list signature of §18.9; the per‑device
 hybrid certificate §18.4 first reached for is retired (ADR 0031). Nothing in
 v1 or v2 changes.
@@ -3625,6 +3713,101 @@ what it stops is everyone without the code owner's key. It costs 64 bytes,
 ~500 and a linked device's from ~740 to ~870 — at error correction L, QR
 version 13 to 15 and 19 to 21 (ADR 0027).
 Vectors: `v3/contact_code_pqc_sig.json`.
+
+### 18.11 A device's sealing key, and its account's attestation (`pqdc`)
+
+*Built in 44.1 (the library and `vectors/v3/device_attestation.json`). **No
+client sends `pqseal`, `pqs` or `pqdc` before 44.3**, and none seals to a
+sealing key before 44.7 (§8.2): until then this section defines values the
+library computes and members it builds and reads.*
+
+Every device has a sealing key for its life (`adr/0033` §1), as it has an
+X25519 key: the ML‑KEM‑768 pair a `zs2.` envelope to it encapsulates to
+(§8.2), and the key its relay keeps as its introduction key (§8.3).
+
+```
+seal_seed      = 64 random bytes, d || z                               kept in the vault, carried in the archive (44.3)
+sealEk, sealDk = ML-KEM-768.KeyGen_internal(d, z)                      FIPS 203; sealEk 1 184 bytes
+sk             = SHA-256(sealEk)                                       §8.3's value
+input          = utf8("z-device-pq-v1:") || acct || ded || dx || sk    143 bytes: fixed width, 15 + 4 × 32
+pqdc           = ML-DSA-65.Sign(account_ml_sk, input)                  3 309 bytes; FIPS 204, empty context; hedged (§18.1)
+```
+
+`pqdc` is the account's word, post‑quantum, that this sealing key belongs to
+the device with these two keys: `acct` is the account key, `ded` and `dx` the
+device's Ed25519 and X25519 keys as its certificate names them (§3.1) — on
+the root device `ded` is `acct`. It is ML‑DSA alone: against the adversary it
+exists for, who can forge Ed25519, a classical half would add nothing. Only
+the root holds the account's ML‑DSA seed, so only the root signs one — its
+own device's at first start, a new device's in its enrolment (pairing v3,
+§10.2), an earlier‑linked device's over self‑sync (44.3). In pairing v3 the
+root holds the new device's `sk`, from its opening, and not yet its key, so
+it signs over the input built from that hash — the same 143 bytes — and the
+key itself is checked by whoever receives it, when the device's `pqseal`
+brings it: FIPS 203 §7.2's check (§8.3), and SHA‑256 equal to the `sk` the
+`pqdc` covers. It is per device, never in a list or a code: it says that one
+device belongs, not what the set is, and a list that omits the device
+prevails. The context is a prefix of no other and has none as a prefix.
+
+A verifier refuses a field of the wrong length rather than build an input
+from it, and a sealing key FIPS 203 §7.2 refuses — a `pqdc` signed over a
+hash says nothing of the key — and otherwise checks `pqdc` under the
+account's ML‑DSA key over the input rebuilt from the `acct`, `ded` and `dx`
+it holds and the sealing key it was sent; a `pqdc` made over any other
+account key, device key, ratchet key or sealing key fails. Under a key held only as a candidate (§18.2, ADR 0021)
+a `pqdc` that verifies proves nothing; under an **established** one — a
+commitment met, or the number confirmed — it is the device link `adr/0033`
+§2 shows (44.5).
+
+The members that carry them, a new kind and two optional members (§14):
+
+```
+{"k":"pqseal","mid":…,"ts":…,"alg":"ML-KEM-768","ek":b64(sealEk)}
+"pqs":1                                                                     on any inner message
+{"k":"pqid","mid":…,"ts":…,"alg":"ML-DSA-65","pk":b64(ml_pub)[,"ack":true][,"pqdc":b64(pqdc)]}
+```
+
+* **`pqseal`** announces the sending device's sealing key to each device it
+  has a session with, riding a mixed (`pq:1`, §17.2) message, and is said
+  again on §17.4's clock — bounded as `pqid` re‑sends are — until the
+  receiver stamps `pqs`. On a message whose ratchet header carries no
+  `pqct` it is a 4 096‑bucket envelope, as a `pqek` offer is: measured,
+  1 671 bytes of inner message, and 1 807 with every member a client
+  decorates a message with, of the 2 047 that bucket holds, classical or
+  mixed. On one that carries `pqct` — the encapsulating side's, until its
+  peer's first mixed message arrives, at a session's first mixing and after
+  every re‑key (§17.3, §17.7) — the header's 1 088 more bytes leave that
+  bucket 767, and a `pqseal` is a 16 384‑bucket envelope. Whether 44.3
+  keeps `pqseal` off a message carrying `pqct` is open: it is 44.3's to
+  decide. A receiver takes the key only when `alg` is `ML-KEM-768` and `ek`
+  is the `b64` of 1 184 bytes passing FIPS 203 §7.2's check (§8.3);
+  otherwise it takes nothing and refuses nothing, reading the message as one
+  of a kind it does not know (§6.1).
+* **`pqs:1`** says the sender holds the receiving device's sealing key — what
+  `pqh` says of the account's post‑quantum key (§6.2) — and ends that
+  device's re‑sending of its `pqseal`.
+* **`pqid.pqdc`** is the sending device's own `pqdc`, in the `pqid` it
+  already sends (§18.2): measured, 7 114 bytes of inner message, and 7 261
+  with `ack` and every decoration, of the 8 959 the 16 384 bucket holds
+  classical or mixed, and the 7 679 it holds beside `pqct` — no new
+  envelope and no new size, in every state. A contact that already holds
+  the account's key gets the `pqid` once more, spread over hours as `dlpq`
+  is (§18.9). A receiver reads the member only as the `b64` of 3 309 bytes,
+  and checks it once the device's `pqseal` has arrived too.
+
+A client from before 44.3 reads none of it, and a message carrying any of it
+is read as it is without it: a `pqseal` is acknowledged and dropped with
+nothing stored (§6.8), a `pqid` carrying `pqdc` gives up its key as one
+without it does, and a message stamped `pqs` is the message
+(`app/test/malformed_inner_test.dart`). Self‑sync's `dir:"pqdc"`, by which an
+earlier‑linked device asks the root for its `pqdc`, is the client's and is
+specified with 44.3. *Implementation note:* `SealingKey`,
+`deviceAttestationInput`, `signDeviceAttestation`, their forms from the
+hash, `deviceAttestationInputFromHash` and `signDeviceAttestationFromHash`,
+and `deviceAttestationValid` in `protocol/lib/src/sealing_key.dart`;
+`InnerMessage.pqSeal`, `pqSealKey`, `pqIdentity(pqdc:)`, `pqidAttestation`,
+`stampHoldsSealKey` and `saysHoldsSealKey` in `messages.dart`. Vectors:
+`v3/device_attestation.json`.
 
 ## 19. The transparency log (7.7b)
 

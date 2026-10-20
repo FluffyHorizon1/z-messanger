@@ -87,6 +87,21 @@ above is unchanged:
 |---|---|---|
 | `intro_key.json` | a device's sealing key (ML‑KEM‑768 from a 64‑byte seed, `ek` and `dk`) and `iks`, Ed25519 by the key its mailbox is the hash of over `"z-intro-key-v1:" ‖ edPub ‖ SHA‑256(ek)`, for a root device, a linked device (its own `ded`, with the account's certificate) and an introduction mailbox (`kintroSeed` = HKDF of its introduction seed under `"z-handle-intro-k-v1"`, 64 bytes, and the pair it makes) — each with its signing input, the entry `ek ‖ iks` a relay keeps, the hint `ready` names it by, `sk` = SHA‑256(ek), and the `ikey` and `ikey_for` frames; FIPS 203 §7.2's modulus check at its edges (a coefficient at q − 1 and at q, the last coefficient at 2¹² − 1, ρ changed, a byte short); the acceptance rule's verdict on nine served entries, each breaking one check — `iks` under another `ed`, over another key, the key and the signature a byte short, a key failing the modulus check under a genuine signature, S + L, the wrong mailbox, a key that misses a code's `sk` and the same entry for a route with no `sk`, which is taken; and contact codes carrying `sk`, root and linked, with their lengths and the codes without it, which are the codes before byte for byte, and three a reader refuses (`sk` with no `pqc`, 31 bytes, not a string). Re‑derived by the Node file with its own Ed25519 and a modulus check written there from FIPS 203; the ML‑KEM values by kyber‑py (`verify_mlkem.py`) | §8.3, §12.7 |
 
+44.1 adds two files (PROTOCOL.md §8.2 and §18.11, ADR 0033 §1 and §5),
+frozen on the same terms — `sealed-v2/` a directory of its own, and one file
+beside the others in `v3/` — so every file above is unchanged:
+
+| File | Covers | Spec |
+|---|---|---|
+| `sealed-v2/sealed_v2.json` | `zs2.`: the recipient device's X25519 key and its sealing key from seeds (`seal_seed`, `ek`, `dk`, `sk`), and an envelope in every bucket — 1 024 at a short payload and at its exact fit, 4 096 one byte past that, then 16 384, 65 536, 262 144 and 1 146 880 — each with its draws (`eph_seed`, `m`, `nonce`), the KEM ciphertext and `K`, the X25519 agreement, the HKDF input and key, the box's SHA‑256, the MAC, and its length beside that of the `zs1.` envelope of the same payload, 1 450 characters shorter; the four smallest verbatim, the three largest by length and SHA‑256 with their payloads as a fill. And what a recipient refuses: the KEM ciphertext swapped for another encapsulation to the same key, stripped and relabelled `zs1.`, stripped under `zs2.`, a genuine `zs1.` envelope's body under `zs2.` and a `zs2.` body under `zs1.`; and the envelope opened with the recipient's X25519 seed and another device's sealing key — ADR 0033's classical adversary — with the implicit‑rejection `K` that gives, and the key `K = 0` would | §8.2 |
+| `v3/device_attestation.json` | `pqdc`: an account (Ed25519 and ML‑DSA seeds) and two devices of it, the root and a linked one with its certificate, each with its sealing key from its seed, `sk`, the 143‑byte signing input and the deterministic (`rnd = 0^32`) signature; the eight a verifier refuses — `dx`, `ded`, `acct` and the sealing key each swapped under the root's genuine `pqdc`, the linked device's `pqdc` offered for the root, the `pqdc` and the sealing key each a byte short, and a forgery under an account key whose Ed25519 half is the genuine one and whose ML‑DSA half is the adversary's; and the wire forms — a `pqid` carrying `pqdc` and the same `pqid` without it, a `pqseal`, `pqs:1` on a text, and four `pqseal`s a reader takes no key from | §18.11 |
+
+The KEM values are re‑derived by kyber‑py (`verify_mlkem.py`), each `pqdc`
+reproduced and verified by dilithium‑py (`verify_mldsa.py`), and the rest —
+each X25519, HKDF, AEAD and padding step, every envelope and its length, the
+signing inputs and the wire forms — replayed by the Node file from
+PROTOCOL.md alone.
+
 ## Conventions
 
 * Byte strings are lowercase hex. Strings that are literally on the wire —

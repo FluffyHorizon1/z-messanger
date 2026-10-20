@@ -318,3 +318,97 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def check_device_attestation():
+    """44.1, ADR 0033 §1 (docs/vectors/v3/device_attestation.json): pqdc, the
+    account's ML-DSA-65 signature over utf8("z-device-pq-v1:") || acct || ded
+    || dx || SHA-256(sealEk). Each input is rebuilt here from its fields, each
+    deterministic signature (rnd = 0^32, empty context) reproduced byte for
+    byte and verified, each refusal refused — the forgery among them, which
+    verifies under the forger's own key and not the account's — and the pqid
+    carrying pqdc read as JSON."""
+    import hashlib
+
+    with open(os.path.join(ROOT, "docs", "vectors", "v3",
+                           "device_attestation.json"), encoding="utf-8") as f:
+        v = json.load(f)
+    start = checks
+    made = refused = 0
+    ctx = v["context"].encode()
+    if ctx != b"z-device-pq-v1:" or len(ctx) != 15:
+        print("MISMATCH device attestation: the context", file=sys.stderr)
+        sys.exit(1)
+    acct = v["account"]
+    pk, sk = ML_DSA_65._keygen_internal(bytes.fromhex(acct["ml_seed"]))
+    eq(pk.hex(), acct["ml_pub"], "device attestation: the account's ML-DSA key")
+
+    def rebuilt(acct_pub, ded, dx, ek):
+        return ctx + acct_pub + ded + dx + hashlib.sha256(ek).digest()
+
+    def verifies(key, msg, sig):
+        try:
+            return ML_DSA_65.verify(key, msg, sig)
+        except Exception:  # a signature of the wrong length does not unpack
+            return False
+
+    a = bytes.fromhex(acct["acct"])
+    for d in v["devices"]:
+        ek = bytes.fromhex(d["seal_ek"])
+        eq(hashlib.sha256(ek).hexdigest(), d["sk"], f"{d['name']}: sk")
+        msg = rebuilt(a, bytes.fromhex(d["ded"]), bytes.fromhex(d["dx"]), ek)
+        eq(len(msg), 143, f"{d['name']}: a fixed-width input")
+        eq(msg.hex(), d["signing_input"], f"{d['name']}: the input")
+        eq(ML_DSA_65.sign(sk, msg, deterministic=True).hex(), d["pqdc"],
+           f"{d['name']}: pqdc, deterministic")
+        if not verifies(pk, msg, bytes.fromhex(d["pqdc"])):
+            print(f"MISMATCH {d['name']}: pqdc does not verify", file=sys.stderr)
+            sys.exit(1)
+        made += 1
+    eq(v["devices"][0]["ded"], acct["acct"], "the root device's ded is acct")
+    other = v["other"]
+    fpk, _ = ML_DSA_65._keygen_internal(bytes.fromhex(other["forger_ml_seed"]))
+    eq(fpk.hex(), other["forger_ml_pub"], "the forger's ML-DSA key")
+    for r in v["must_refuse"]:
+        ek = bytes.fromhex(r["seal_ek"])
+        fields = [bytes.fromhex(r[k]) for k in ("acct", "ded", "dx")]
+        sig = bytes.fromhex(r["pqdc"])
+        if "signing_input" in r:
+            msg = rebuilt(*fields, ek)
+            eq(msg.hex(), r["signing_input"], f"{r['name']}: the input")
+        else:
+            # A field of the wrong width has no input; a reader refuses it
+            # before it would build one.
+            eq(len(ek) != 1184 or any(len(x) != 32 for x in fields), True,
+               f"{r['name']}: a field of the wrong width")
+            msg = rebuilt(*fields, ek)
+        if len(sig) == 3309 and len(ek) == 1184 and verifies(pk, msg, sig):
+            print(f"MISMATCH device attestation: {r['name']} verified",
+                  file=sys.stderr)
+            sys.exit(1)
+        if r["name"] == "classical_forgery":
+            if not verifies(fpk, msg, sig):
+                print("MISMATCH classical_forgery: not even under its own key",
+                      file=sys.stderr)
+                sys.exit(1)
+        refused += 1
+    pqid = json.loads(v["wire"]["pqid"]["inner_json"])
+    eq(pqid["k"], "pqid", "pqid: the kind")
+    eq(base64.b64decode(pqid["pk"]).hex(), acct["ml_pub"], "pqid: pk")
+    eq(base64.b64decode(pqid["pqdc"]).hex(), v["devices"][1]["pqdc"],
+       "pqid: pqdc is the linked device's")
+    bare = json.loads(v["wire"]["pqid"]["without_pqdc"])
+    eq({k: x for k, x in pqid.items() if k != "pqdc"}, bare,
+       "pqid: without pqdc, the pqid before it")
+    seal = json.loads(v["wire"]["pqseal"]["inner_json"])
+    eq((seal["k"], seal["alg"]), ("pqseal", "ML-KEM-768"), "pqseal: kind, alg")
+    eq(base64.b64decode(seal["ek"]).hex(), v["devices"][1]["seal_ek"],
+       "pqseal: the linked device's sealing key")
+    return made, refused, checks - start
+
+
+if __name__ == "__main__":
+    made, refused, n = check_device_attestation()
+    print(f"ok: {made} device attestations (pqdc, v3/device_attestation.json) "
+          f"reproduced byte for byte and {refused} refused by dilithium-py "
+          f"({n} checks)")
