@@ -17,7 +17,14 @@
 ///   log and its witness every handle surface says handles are unavailable;
 /// * the witness check ([HandleService.witnessState]): every lookup's head,
 ///   held to a witness's record under the key pinned for it (§19.5 step 3,
-///   §21.8), and a lookup the record contradicts refused;
+///   §21.8), and a lookup the record contradicts refused; and, after the
+///   fact, the head of a lookup a request was sent on that the record did not
+///   yet cover, kept, every head a later lookup ends with held to it, and the
+///   first record that covers it held to it too — checked on its own, twice
+///   at most, when nothing looks it up ([handleWitnessCheckBack]) — a fork
+///   found so, a head the witness never covered, and one the log shows this
+///   device two histories about while it is kept, said on what relied on it
+///   ([HandleForkWarning]);
 /// * claiming one ([HandleService.prepareClaim], [HandleService.commitClaim]):
 ///   the owner and introduction seeds, a recovery code shown once and never
 ///   stored, and a publish after a random delay (§21.8) so the moment of the
@@ -62,8 +69,13 @@
 /// [HandleLookupMemory]), `handle_config`, and `handle_witness_ok_ms` and
 /// `handle_witness_since_ms` (when the witness last agreed, and since when it
 /// has been asked without an answer that counts, each with the configuration
-/// it was recorded under). A contact made through a handle keeps the handle
-/// under `hvia_<rid>`.
+/// it was recorded under), `handle_witness_heads` (the heads of lookups a
+/// request was sent on that the witness had not yet covered, with what relied
+/// on each, under the configuration they were taken under) and
+/// `handle_witness_warnings` (the forks those heads were found to be after
+/// the fact, and the heads that went before the witness covered them). A
+/// contact made through a handle keeps the handle under
+/// `hvia_<rid>`.
 library;
 
 import 'dart:async';
@@ -306,8 +318,9 @@ const Duration handlePowGrace = Duration(days: 2);
 /// is a sync or two behind. What it saves is the witness's host learning the
 /// address and the moment of every step — a claim's checks of up to five
 /// free names, a person's run of lookups, a change with the read before it
-/// and the drain after it. The record is not fetched on a timer of its own: a
-/// device nobody uses handles on asks the witness nothing.
+/// and the drain after it. Nor is it fetched on a timer of its own, but for a
+/// kept head's checks ([handleWitnessCheckBack]), which fetch it afresh: a
+/// device that sent no handle request asks the witness nothing on a timer.
 const Duration handleWitnessReuse = Duration(minutes: 10);
 
 /// A witness's record over a head older than this is checked like any other
@@ -316,12 +329,90 @@ const Duration handleWitnessReuse = Duration(minutes: 10);
 /// witness that stopped, or a replay.
 const Duration handleWitnessStale = Duration(hours: 24);
 
-/// Asking a witness for longer than this — from the first lookup whose check
-/// ended without its agreement to the latest — with no agreement in between
-/// is a witness gone quiet. Measured over lookups and not by the clock alone,
-/// since the client asks only when handles are used: a day of the calendar
-/// without a lookup is not a day of the witness saying nothing.
+/// Asking a witness for longer than this — from the first check whose end
+/// was not its agreement to the latest, a lookup's or a kept head's check of
+/// its own ([handleWitnessCheckBack]), which count alike — with no agreement
+/// in between is a witness gone quiet. Measured over those checks and not by
+/// the clock alone, since the client asks only when handles are used or a
+/// kept head is due a check: a day of the calendar with neither is not a day
+/// of the witness saying nothing.
 const Duration handleWitnessQuietAfter = Duration(hours: 24);
+
+/// After the fact (§21.8; Finnian's decision of 2026‑10‑20): the head a lookup
+/// ended with, when the witness's record it was checked against did not cover
+/// it — a record smaller than the head, or none that verified — is kept once a
+/// request is sent on that lookup; every head a lookup on this device ends
+/// with after it is held to it, and so is the first record that covers it —
+/// but not the log's own head a lookup's check asks for beside a witness
+/// ahead of it, nor the heads of a lookup that fails within itself
+/// ([HandleService._accept]). A head no
+/// contact holds is bounded by the outgoing list, and goes with its request,
+/// in silence, as the request goes: so a burst of requests in honest
+/// operation never raises a warning. Of the heads contacts hold, at most this
+/// many are kept: past it, the one looked up longest ago goes first — and,
+/// never covered, it is said on what relied on it, as at the lapse
+/// ([handleWitnessKeepFor]). It is also the most consistency proofs one
+/// lookup, or one check of a head's own, asks the log for to hold the kept
+/// heads.
+const int handleWitnessKeptCap = handleOutgoingCap;
+
+/// ... and each for at most this long, or until covered. The reference
+/// witness syncs every five minutes, so a head it has not reached in a month
+/// is one it never will — a witness that stopped, or one this device cannot
+/// reach, which Settings has called quiet since the second day of lookups
+/// without it. A head that reaches this age is checked once more first, on
+/// its own ([handleWitnessCheckBack]), and one that check leaves undecided —
+/// a check made, with its answers, or one no moment in front could get its
+/// answers for across [handleWitnessCheckFor] of trying — is not dropped in
+/// silence: what relied on it is told the answer was never confirmed
+/// ([HandleWarningKind]) — the contact, or the request while it still waits,
+/// since an acceptance is matched to a request however old it is
+/// ([HandleService.matchAcknowledgement] asks only that it is still waited
+/// on).
+const Duration handleWitnessKeepFor = Duration(days: 30);
+
+/// A kept head that no lookup or drain has decided is checked on its own,
+/// with no lookup, twice at most (§21.8): its check-back, at a moment drawn
+/// for it as it is kept, uniformly from this long to
+/// [handleWitnessCheckBackMax] after the request; and its last check, once it
+/// is [handleWitnessKeepFor] old. Each is made at the first moment the app is
+/// in front at or after its time — a start, a return to the front, or, while
+/// it stays there, a one-shot timer — and never at that moment itself: a
+/// moment drawn as the drain's first wait is, 3 to 30 seconds after it
+/// ([handleForegroundDelayMin]), so that the check is not lined up with the
+/// account's own connection coming back (R49). Each check fetches the
+/// witness's record afresh — one used again cannot cover a head kept after
+/// it was fetched — and the log's head, once for every head due, and holds
+/// every kept head to them as a lookup's record and head hold them. The
+/// reference witness syncs every five minutes and the log re-signs its head
+/// at least every ten, so a record fetched this long after an honest head was
+/// shown covers it, and the head goes with nothing said; a fork that departed
+/// before that record's size is found then, as a fork — and one the log
+/// keeps the device on while the record passes the kept head is said then as
+/// an answer never confirmed ([HandleService._holdKept]). A check counts as
+/// made only once it got its answers ([handleWitnessCheckAgain]). Nothing is
+/// asked on a timer of its own while no head is kept: a device on which
+/// nobody sent a handle request asks the witness nothing on a timer.
+const Duration handleWitnessCheckBack = Duration(minutes: 20);
+const Duration handleWitnessCheckBackMax = Duration(minutes: 30);
+
+/// A check of a kept head's own is made only once it got its answers: a
+/// record fetched afresh that verified, and the log's head and the proofs
+/// the head needed — or the log refusing or withholding them, which is an
+/// answer. One that did not — a fetch that failed, an app killed while it was
+/// out, a proof not asked because a check of the head waited on the log
+/// within [HandleService.witnessReuse], a write to the vault that failed —
+/// spends nothing, and is tried again at later moments in front, at most
+/// once in this long ...
+const Duration handleWitnessCheckAgain = Duration(minutes: 10);
+
+/// ... for up to this long of such moments, measured from the first that got
+/// no answers to the latest, as a quiet witness is ([handleWitnessQuietAfter]):
+/// a day of the calendar the app was not in front is not a day of trying.
+/// Then it is given up on — the check-back, leaving the head kept for its
+/// last check; the last check, leaving the head to lapse
+/// ([handleWitnessKeepFor]).
+const Duration handleWitnessCheckFor = Duration(hours: 24);
 
 /// The fewest leading zero bits a stamp must reach for the owner's drain to
 /// count it: [pow], the difficulty published — or, until [prevPowUntil], the
@@ -1093,26 +1184,316 @@ class HandleLookup {
   /// For [HandleLookupState.changed], how the handle changed.
   final HandleChange? change;
 
+  /// The head this lookup ended with, when the witness's record did not cover
+  /// it (§21.8): kept by [HandleService.request] if a request is sent on this
+  /// lookup, held to every head a later lookup ends with, and checked when a
+  /// later record covers it. Null with no witness, or a record at or past the
+  /// head.
+  final _Unwitnessed? _unwitnessed;
+
   const HandleLookup._(
       this.handle, this.state, this.label, this.version, this.record,
       this.introRid,
-      {this.change});
+      {this.change, _Unwitnessed? unwitnessed})
+      : _unwitnessed = unwitnessed;
 
   /// A lookup in [state] without a log behind it, for a test of a screen.
   @visibleForTesting
   const HandleLookup.debug(this.handle, this.state,
-      {required this.label, this.version, this.record, this.introRid, this.change});
+      {required this.label, this.version, this.record, this.introRid, this.change})
+      : _unwitnessed = null;
 }
 
-/// The handle log's witness, as Settings says it (§19.5, §21.8): [none] with
-/// no handle log or no witness configured; [forked] once a lookup has been
-/// refused because the witness's record contradicted the log, until the
-/// witness next agrees with it; [quiet] when lookups have asked it for more
-/// than [handleWitnessQuietAfter] — from the first whose check ended without
-/// its agreement to the latest — and none agreed; otherwise [agreed] once it
-/// has agreed with the log over a current record, and [pending] before. A
+/// A head a lookup ended with that the witness's record did not cover: the
+/// head, the configuration it was checked under, and when the lookup was
+/// made.
+class _Unwitnessed {
+  final KtTreeHead head;
+  final String w;
+  final int at;
+  const _Unwitnessed(this.head, this.w, this.at);
+}
+
+/// A head kept after the fact ([handleWitnessKeptCap]): an [_Unwitnessed]
+/// head, what relied on its lookup — the handle, the requests sent on it and,
+/// once its acceptance adds one, the contact — and where its check stands.
+class _KeptHead {
+  final KtTreeHead head;
+  final int at;
+  final String handle;
+  final List<Uint8List> creqIds;
+  String? rid;
+
+  /// When it was kept: the request first sent on its lookup.
+  final int keptAt;
+
+  /// When its check-back is due: drawn as it is kept, from
+  /// [handleWitnessCheckBack] to [handleWitnessCheckBackMax] after [keptAt].
+  final int backAt;
+
+  /// When its two checks of its own were made ([HandleService._checkBack]),
+  /// with their answers, or given up on ([handleWitnessCheckFor]): the
+  /// check-back, at [backAt], and the last, once it is [handleWitnessKeepFor]
+  /// old. Each is made once; null until it is.
+  int? back;
+  int? last;
+
+  /// When a check of its own last asked for it, made or not, so that one not
+  /// made is asked again at most once in [handleWitnessCheckAgain] — written
+  /// before anything is asked; and when each of its two checks first went
+  /// without its answers, for [handleWitnessCheckFor]. Null while none has.
+  int? tried;
+  int? backFail;
+  int? lastFail;
+
+  /// Whether what relied on it has been told, while it is kept, that its
+  /// answer was never confirmed ([HandleForkWarning.atFork]): told once, so
+  /// that a warning the person dismissed is not said again by the next check
+  /// that finds the same, nor by the lapse.
+  bool told;
+
+  /// The latest head the log signed that a lookup has shown extends [head]:
+  /// a later head is held to it in [head]'s place, so that one proof serves
+  /// every kept head it stands in for ([HandleService._holdKept]). Null until
+  /// a later head is shown.
+  KtTreeHead? ext;
+
+  /// When a check of it was last left pending — the log withholding a proof,
+  /// serving something in its place that is not one, or one that does not
+  /// decide it — so that the log is asked again at most once in
+  /// [HandleService.witnessReuse]. Null while nothing of it is pending.
+  int? held;
+
+  _KeptHead(
+      {required this.head,
+      required this.at,
+      required this.handle,
+      required this.creqIds,
+      required this.keptAt,
+      int? backAt,
+      this.rid,
+      this.ext,
+      this.held,
+      this.back,
+      this.last,
+      this.tried,
+      this.backFail,
+      this.lastFail,
+      this.told = false})
+      : backAt = backAt ?? keptAt + handleWitnessCheckBack.inMilliseconds;
+
+  Map<String, Object?> toJson() => {
+        'sth': head.toJson(),
+        'at': at,
+        'h': handle,
+        'ids': [for (final i in creqIds) b64(i)],
+        'kept': keptAt,
+        'backAt': backAt,
+        if (rid != null) 'rid': rid,
+        if (ext != null) 'ext': ext!.toJson(),
+        if (held != null) 'held': held,
+        if (back != null) 'back': back,
+        if (last != null) 'last': last,
+        if (tried != null) 'tried': tried,
+        if (backFail != null) 'backFail': backFail,
+        if (lastFail != null) 'lastFail': lastFail,
+        if (told) 'told': true,
+      };
+
+  /// Throws on anything that is not the shape [toJson] writes.
+  static _KeptHead fromJson(Map<String, Object?> j) {
+    final head = KtTreeHead.fromJson((j['sth'] as Map).cast<String, Object?>());
+    final e = j['ext'];
+    final ext =
+        e == null ? null : KtTreeHead.fromJson((e as Map).cast<String, Object?>());
+    if (ext != null && ext.size < head.size) throw const FormatException('ext');
+    int? when(String key) {
+      final v = j[key];
+      if (v != null && v is! int) throw FormatException(key);
+      return v as int?;
+    }
+
+    final at = j['at'] as int;
+    final told = j['told'];
+    if (told != null && told != true) throw const FormatException('told');
+    return _KeptHead(
+      head: head,
+      at: at,
+      handle: Handle.parse(j['h'] as String).canonical,
+      creqIds: _creqIds(j['ids']),
+      keptAt: when('kept') ?? at,
+      backAt: when('backAt'),
+      rid: _rid(j['rid']),
+      ext: ext,
+      held: when('held'),
+      back: when('back'),
+      last: when('last'),
+      tried: when('tried'),
+      backFail: when('backFail'),
+      lastFail: when('lastFail'),
+      told: told == true,
+    );
+  }
+}
+
+/// The request ids of a kept head or a warning: one to three of 32 bytes.
+List<Uint8List> _creqIds(Object? ids) {
+  final out = [for (final i in ids as List) unb64(i as String)];
+  if (out.isEmpty ||
+      out.length > handleOutgoingIdsPerHandle ||
+      out.any((i) => i.length != 32)) {
+    throw const FormatException('ids');
+  }
+  return out;
+}
+
+String? _rid(Object? rid) {
+  if (rid == null) return null;
+  if (rid is! String || rid.isEmpty) throw const FormatException('rid');
+  return rid;
+}
+
+/// The handle log's witness, as Settings says it (§19.5, §21.8): [forked]
+/// while a fork found after the fact stands ([HandleForkWarning]), whatever is
+/// configured now, and once a lookup has been refused because the witness's
+/// record contradicted the log, until the witness next agrees with it;
+/// [unconfirmed] while a warning stands that the answer a request was sent on
+/// was never confirmed ([HandleWarningKind.unconfirmed]), whatever is
+/// configured now; otherwise [none] with no handle log or no witness
+/// configured; [quiet] when lookups have asked it for more than
+/// [handleWitnessQuietAfter] — from the first whose check ended without its
+/// agreement to the latest — and none agreed; otherwise [agreed] once it has
+/// agreed with the log over a current record, and [pending] before. A
 /// witness gone quiet is one the handle log is not being checked against.
-enum HandleWitnessState { none, pending, agreed, quiet, forked }
+enum HandleWitnessState { none, pending, agreed, quiet, unconfirmed, forked }
+
+/// What a warning found after the fact says (§21.8).
+enum HandleWarningKind {
+  /// A fork: the head the lookup was shown, contradicted by a head signed
+  /// after it — the witness's co-signed head, or one the log showed this
+  /// device since.
+  forked,
+
+  /// Never confirmed: the head the lookup was shown went before the
+  /// witness's record covered it — it lapsed ([handleWitnessKeepFor]), the
+  /// bound pushed it out ([handleWitnessKeptCap]), or another log or witness
+  /// was set, whose records cannot cover it — or, still kept, the log showed
+  /// this device two histories with a head that extends it
+  /// ([HandleForkWarning.atFork]). Nothing showed it was a fork, and nothing
+  /// showed it was not.
+  unconfirmed,
+}
+
+/// Said after the fact (§21.8; Finnian's decision of 2026‑10‑20) about the
+/// head a lookup ended with, kept because the witness's record did not yet
+/// cover it: a fork ([HandleWarningKind.forked]) — a head signed after it
+/// that does not extend it: one the log showed this device since, smaller,
+/// the same size under other roots, or larger with the proof from the kept
+/// size failing; or the witness's record, at the kept size under other
+/// roots, behind it contradicting a head that extends it, or past it with
+/// the proof from the kept size failing while the record and the head the
+/// log shows agree — or an answer never confirmed
+/// ([HandleWarningKind.unconfirmed]). It marks what relied on that lookup
+/// and nothing else: the request sent on it, while it waits for an answer
+/// ([HandleService.forkWarningForRequest]), and the contact its acceptance
+/// added ([HandleService.forkWarningForContact]). Sealed, under
+/// `handle_witness_warnings`, and not tied to the configuration: it stands,
+/// whatever the witness says next, until the person dismisses it
+/// ([HandleService.dismissForkWarning]) or the request or the contact is
+/// deleted.
+class HandleForkWarning {
+  /// A fork, or an answer never confirmed.
+  final HandleWarningKind kind;
+
+  /// The handle that was looked up, canonical.
+  final String handle;
+
+  /// When it was looked up, and when the fork was found.
+  final int lookedUpMs;
+  final int foundMs;
+
+  /// The requests sent on that lookup ...
+  final List<Uint8List> creqIds;
+
+  /// ... and the contact the acceptance of one of them added, once one is.
+  String? rid;
+
+  /// What it was found against: the head the lookup was shown, signed by the
+  /// log, and — for a fork — the head it was held to then, the witness's
+  /// co-signed head or a later one the log signed itself. At the same size
+  /// under other roots, or a smaller one, the two signed heads show the fork
+  /// themselves; across sizes it is the log's proof between them failing that
+  /// does, and a proof is not signed (§21.8). Null for an answer never
+  /// confirmed.
+  final KtTreeHead shown;
+  final KtTreeHead? against;
+
+  /// An answer never confirmed said while its head is still kept, because the
+  /// log showed this device two histories with a head that extends it — so
+  /// what relied on it may have relied on the history the witness did not
+  /// see (§21.8). A later check still decides the head: a fork replaces this
+  /// warning, and a record that covers the head takes it away.
+  final bool atFork;
+
+  HandleForkWarning(
+      {this.kind = HandleWarningKind.forked,
+      required this.handle,
+      required this.lookedUpMs,
+      required this.foundMs,
+      required this.creqIds,
+      this.rid,
+      required this.shown,
+      this.against,
+      this.atFork = false})
+      : assert((kind == HandleWarningKind.forked) == (against != null)),
+        assert(!atFork || kind == HandleWarningKind.unconfirmed);
+
+  /// A fork, rather than an answer never confirmed.
+  bool get isFork => kind == HandleWarningKind.forked;
+
+  Map<String, Object?> toJson() => {
+        'k': kind.name,
+        'h': handle,
+        'at': lookedUpMs,
+        'found': foundMs,
+        'ids': [for (final i in creqIds) b64(i)],
+        if (rid != null) 'rid': rid,
+        'sth': shown.toJson(),
+        if (against != null) 'against': against!.toJson(),
+        if (atFork) 'atFork': true,
+      };
+
+  /// Throws on anything that is not the shape [toJson] writes.
+  static HandleForkWarning fromJson(Map<String, Object?> j) {
+    final kind = switch (j['k']) {
+      'forked' => HandleWarningKind.forked,
+      'unconfirmed' => HandleWarningKind.unconfirmed,
+      _ => throw const FormatException('k'),
+    };
+    final a = j['against'];
+    final against =
+        a == null ? null : KtTreeHead.fromJson((a as Map).cast<String, Object?>());
+    if ((kind == HandleWarningKind.forked) != (against != null)) {
+      throw const FormatException('against');
+    }
+    final atFork = j['atFork'];
+    if (atFork != null &&
+        (atFork != true || kind != HandleWarningKind.unconfirmed)) {
+      throw const FormatException('atFork');
+    }
+    return HandleForkWarning(
+      kind: kind,
+      handle: Handle.parse(j['h'] as String).canonical,
+      lookedUpMs: j['at'] as int,
+      foundMs: j['found'] as int,
+      creqIds: _creqIds(j['ids']),
+      rid: _rid(j['rid']),
+      shown: KtTreeHead.fromJson((j['sth'] as Map).cast<String, Object?>()),
+      against: against,
+      atFork: atFork == true,
+    );
+  }
+}
 
 /// What a witness's record says of the head a lookup ends with (§19.5
 /// step 3), and so what becomes of the lookup.
@@ -1128,16 +1509,37 @@ enum _WitnessVerdict {
   forked,
 
   /// The sizes differ and the log served no proof of the way between them:
-  /// step 3 requires one, and a resolver holds no head on which a later
-  /// lookup would ask again, so the lookup fails as
+  /// step 3 requires one, and a lookup that fails keeps nothing on which a
+  /// later lookup would ask again, so the lookup fails as
   /// [HandleFailure.unreachable] — as a missing proof inside one lookup does
-  /// ([HandleService._accept]).
+  /// ([HandleService._accept]). A head kept after the fact whose proof is
+  /// withheld stays kept, its check pending ([HandleService._holdKept]).
   unproven,
 
   /// The log served something in place of the proof that is not one: the
   /// lookup fails as [HandleFailure.badAnswer], as [HandleService._accept]
   /// takes it.
   unreadable,
+}
+
+/// A later head held to a kept one ([HandleService._holdKept]): shown to
+/// extend it, shown not to, or neither — the proof withheld, not one, not
+/// asked yet.
+enum _Hold { extended, contradicted, unproven }
+
+/// Where a kept head's check ends for one lookup: covered by the witness's
+/// record, a fork, still kept with nothing pending, or pending.
+enum _Kept { covered, forked, stays, pending }
+
+/// The consistency proofs one lookup, or one check of a head's own, asked
+/// the log for to hold the kept heads, by sizes — null where it served none,
+/// or nothing that is one — those it got no answer to at all, and how many
+/// more it may ask.
+class _KeptProofs {
+  _KeptProofs(this.left);
+  int left;
+  final answers = <String, List<Uint8List>?>{};
+  final unanswered = <String>{};
 }
 
 /// Why a handle operation did not happen — one value per thing the app tells
@@ -1362,6 +1764,37 @@ class HandleService extends ChangeNotifier {
   /// configuration it was fetched under, and when.
   ({String w, int at, KtWitnessRecord record})? _witnessHeld;
 
+  /// The bound on heads kept after the fact ([handleWitnessKeptCap],
+  /// [handleWitnessKeepFor]).
+  int witnessKeptCap = handleWitnessKeptCap;
+  Duration witnessKeepFor = handleWitnessKeepFor;
+
+  /// When a kept head is checked on its own ([handleWitnessCheckBack],
+  /// [handleWitnessCheckBackMax]) and how a check not made is tried again
+  /// ([handleWitnessCheckAgain], [handleWitnessCheckFor]); the one-shot timer
+  /// for the next such moment while the app is in front, and the moment it
+  /// is for; the heads a check is deciding now; and how many checks this
+  /// process asked for, made or not (a test reads it).
+  Duration witnessCheckBack = handleWitnessCheckBack;
+  Duration witnessCheckBackMax = handleWitnessCheckBackMax;
+  Duration witnessCheckAgain = handleWitnessCheckAgain;
+  Duration witnessCheckFor = handleWitnessCheckFor;
+  Timer? _checkBackTimer;
+  int? _checkBackTarget;
+  bool _checkingBack = false;
+  final Set<_KeptHead> _checking = {};
+  @visibleForTesting
+  int checksBack = 0;
+
+  /// The heads kept after the fact, oldest first, all under the configuration
+  /// configured now (a change forgets them): sealed, under
+  /// `handle_witness_heads`.
+  final List<_KeptHead> _kept = [];
+
+  /// The forks found after the fact that stand, oldest first: sealed, under
+  /// `handle_witness_warnings`.
+  final List<HandleForkWarning> _warnings = [];
+
   OwnHandle? own;
   final Map<String, HandleRequestMeta> _inbound = {};
 
@@ -1490,8 +1923,18 @@ class HandleService extends ChangeNotifier {
 
   /// What Settings says of the witness ([HandleWitnessState]).
   HandleWitnessState get witnessState {
-    if (!available || !config.hasWitness) return HandleWitnessState.none;
-    if (witnessForkMs != null) return HandleWitnessState.forked;
+    // A warning found after the fact is about a request already sent, so it
+    // stands whatever is configured now: a fork before the rest, and an
+    // answer never confirmed before all but a lookup refused as a fork —
+    // whose sentence, that nothing from that answer was used or sent, is
+    // still true beside it, unless the answer was said never confirmed
+    // because the log showed this device that fork ([witnessForkRelied]).
+    final warned = forkWarnings;
+    if (warned.any((w) => w.isFork)) return HandleWitnessState.forked;
+    final checked = available && config.hasWitness;
+    if (checked && witnessForkMs != null) return HandleWitnessState.forked;
+    if (warned.isNotEmpty) return HandleWitnessState.unconfirmed;
+    if (!checked) return HandleWitnessState.none;
     final since = witnessSinceMs, last = witnessLastAskMs;
     if (since != null &&
         last != null &&
@@ -1504,8 +1947,16 @@ class HandleService extends ChangeNotifier {
   }
 
   /// What a quiet witness has been quiet since: its last agreement, or, with
-  /// none, the first lookup that asked it without one.
+  /// none, the first check that asked it without one.
   int? get witnessQuietSinceMs => witnessOkMs ?? witnessSinceMs;
+
+  /// Whether an answer a request was sent on stands said never confirmed
+  /// because the log showed this device two histories with a head that
+  /// extends the one that answer came with ([HandleForkWarning.atFork]):
+  /// what Settings says of a lookup refused as a fork is then not that
+  /// nothing from it was used — a request sent on an earlier answer may have
+  /// relied on that history (§21.8).
+  bool get witnessForkRelied => forkWarnings.any((w) => w.atFork);
 
   /// Whether this device may hold and manage the account's handle: only the
   /// primary device, which holds the account root (v1).
@@ -1574,6 +2025,8 @@ class HandleService extends ChangeNotifier {
       } catch (_) {}
     }
     await _loadLedger();
+    // After the requests they are tied to.
+    await _loadKept();
   }
 
   /// The ledger: its record (`handle_stamps`, the salt and the tallies) and
@@ -1664,12 +2117,14 @@ class HandleService extends ChangeNotifier {
       _schedulePublish();
     }
     _scheduleDrain(first: true);
+    _checkBackSoon(); // §21.8: a kept head due a check of its own
   }
 
   /// The app came to the foreground: drain soon, then on the timer.
   void onForeground() {
     _foreground = true;
     _scheduleDrain(first: true);
+    _checkBackSoon();
   }
 
   /// The app left the foreground: no drains until it is back.
@@ -1677,6 +2132,7 @@ class HandleService extends ChangeNotifier {
     _foreground = false;
     _drainTimer?.cancel();
     _drainTimer = null;
+    _cancelCheckBack();
   }
 
   @override
@@ -1685,6 +2141,7 @@ class HandleService extends ChangeNotifier {
     _disposed = true;
     _publishTimer?.cancel();
     _drainTimer?.cancel();
+    _cancelCheckBack();
     super.dispose();
   }
 
@@ -1750,7 +2207,7 @@ class HandleService extends ChangeNotifier {
     if ((okText != null && ok == null) ||
         (sinceText != null && (since == null || since['last'] is! int)) ||
         (forkText != null && fork == null)) {
-      await _forgetWitness();
+      await _forgetWitnessTimes();
       return;
     }
     witnessOkMs = ok?['at'] as int?;
@@ -1760,9 +2217,28 @@ class HandleService extends ChangeNotifier {
   }
 
   /// Forget when the witness last agreed, since when it has been asked
-  /// without an answer, the last fork it showed, and the record held for
-  /// reuse.
+  /// without an answer, the last fork it showed, the record held for reuse,
+  /// and the heads kept for it to cover: another witness's record, or one
+  /// over another log, covers none of them here — so, never covered, each is
+  /// said on what relied on it as an answer never confirmed, not dropped in
+  /// silence, unless it has been said so already ([_KeptHead.told]). The
+  /// warnings stay: they are about requests already sent.
   Future<void> _forgetWitness() async {
+    await _forgetWitnessTimes();
+    var warned = false;
+    for (final k in _kept) {
+      if (_relied(k.creqIds, k.rid) && !k.told) {
+        warned = _warn(k, HandleWarningKind.unconfirmed) || warned;
+      }
+    }
+    _kept.clear();
+    if (warned) await _saveWarnings();
+    await vault.kvDelete(_keptKey);
+  }
+
+  /// [_forgetWitness]'s times and record alone: at load, before the heads
+  /// are read — [_loadKept] says what was kept under another witness.
+  Future<void> _forgetWitnessTimes() async {
     witnessOkMs = null;
     witnessSinceMs = null;
     witnessLastAskMs = null;
@@ -1816,6 +2292,878 @@ class HandleService extends ChangeNotifier {
     await vault.kvPut(_witnessSinceKey,
         jsonEncode({'at': witnessSinceMs, 'last': t, 'w': asked}));
     notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // After the fact (§21.8; Finnian's decision of 2026‑10‑20)
+  // ---------------------------------------------------------------------------
+  //
+  // A lookup's check passes a head that extends the witness's record: a
+  // history that departs after the witness's latest co-signed head is shown
+  // as agreement. So the head a request is sent on, when the record did not
+  // cover it, is kept; every head a lookup ends with after it — the owner's
+  // drain reads among them — is held to it, as the transparency client holds
+  // the head it keeps; and so is the first record that covers it. Only a
+  // head a request relied on is kept: a lookup that sends nothing leaves
+  // nothing a warning could point to (what it found is remembered, and a
+  // record that differs from it is refused, never sent to), and a head no
+  // contact holds goes with its request, so the outgoing list bounds them.
+  // The claim checks, a recovery's read and the owner's reads of its own
+  // record keep nothing for the same reason; they all check. A kept head
+  // nothing decides is checked on its own, twice at most — 20 to 30 minutes
+  // after it was kept and once more at 30 days, each check made only once it
+  // has its answers ([_checkBack]) — and one that goes before the witness
+  // covered it is said on what relied on it, never dropped in silence.
+
+  static const String _keptKey = 'handle_witness_heads';
+  static const String _warningsKey = 'handle_witness_warnings';
+
+  /// The warnings found after the fact that stand, forks and answers never
+  /// confirmed, the one found last first: each on a request this device
+  /// still waits on, or on a contact.
+  List<HandleForkWarning> get forkWarnings => [
+        for (final w in _warnings.reversed)
+          if (_relied(w.creqIds, w.rid)) w
+      ]..sort((a, b) => b.foundMs.compareTo(a.foundMs));
+
+  /// The warning on [o], a request this device waits on, when the lookup it
+  /// was sent on was found after the fact to be a history the witness never
+  /// saw, or its answer was never confirmed — or null.
+  HandleForkWarning? forkWarningForRequest(OutgoingHandleRequest o) {
+    final ids = {for (final i in o.creqIds) b64(i)};
+    return _shownOf([
+      for (final w in _warnings)
+        if (w.creqIds.any((i) => ids.contains(b64(i)))) w
+    ]);
+  }
+
+  /// The warning on the contact [rid]: one the acceptance of such a request
+  /// added — or null.
+  HandleForkWarning? forkWarningForContact(String rid) =>
+      _shownOf([for (final w in _warnings) if (w.rid == rid) w]);
+
+  /// Of the warnings on one request or contact, the one shown: a fork before
+  /// an answer never confirmed, and of those the one found last.
+  static HandleForkWarning? _shownOf(List<HandleForkWarning> on) {
+    HandleForkWarning? shown;
+    for (final w in on) {
+      if (shown == null ||
+          (w.isFork && !shown.isFork) ||
+          (w.isFork == shown.isFork && w.foundMs >= shown.foundMs)) {
+        shown = w;
+      }
+    }
+    return shown;
+  }
+
+  /// The person has read [w] — compared safety numbers, say — and clears it,
+  /// with any other warning on the same contact or request. Nothing else
+  /// does but deleting the request or the contact it is on.
+  Future<void> dismissForkWarning(HandleForkWarning w) async {
+    final ids = {for (final i in w.creqIds) b64(i)};
+    final before = _warnings.length;
+    _warnings.removeWhere((x) =>
+        identical(x, w) ||
+        (w.rid != null && x.rid == w.rid) ||
+        (w.rid == null &&
+            x.rid == null &&
+            x.creqIds.any((i) => ids.contains(b64(i)))));
+    if (_warnings.length == before) return;
+    await _saveWarnings();
+    notifyListeners();
+  }
+
+  /// The heads kept after the fact, for a test to read.
+  @visibleForTesting
+  List<({String handle, int size, int atMs, String? rid})> get keptHeads => [
+        for (final k in _kept)
+          (handle: k.handle, size: k.head.size, atMs: k.at, rid: k.rid)
+      ];
+
+  /// A warning as a fork found after the fact leaves one, for a test of a
+  /// screen, where no log is driven to reach it.
+  @visibleForTesting
+  void debugWarn(HandleForkWarning w) {
+    _warnings.add(w);
+    notifyListeners();
+  }
+
+  /// Whether what a kept head or a warning is for still exists: a request
+  /// this device waits on, or a contact — whose deletion takes them with it
+  /// ([contactGone], [keepWarningsFor]).
+  bool _relied(List<Uint8List> creqIds, String? rid) {
+    if (rid != null) return true;
+    final waiting = {
+      for (final o in _outgoing)
+        for (final i in o.creqIds) b64(i)
+    };
+    return creqIds.any((i) => waiting.contains(b64(i)));
+  }
+
+  /// The warnings and the heads kept, from the vault, each held to its shape,
+  /// and all to the bound and to what relies on them. The heads only under
+  /// the configuration configured now: a build can pin another witness under
+  /// a vault that never saved a configuration of its own, which [setConfig]
+  /// never sees, and a head kept for another witness is one no record here
+  /// covers — said, as [_forgetWitness] says it.
+  Future<void> _loadKept() async {
+    final warnings = await vault.kvGet(_warningsKey);
+    if (warnings != null) {
+      try {
+        for (final j in jsonDecode(warnings) as List) {
+          try {
+            _warnings.add(HandleForkWarning.fromJson(
+                (j as Map).cast<String, Object?>()));
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+    final w = _witnessOf(config);
+    final kept = await vault.kvGet(_keptKey);
+    if (kept != null) {
+      var mine = false;
+      final heads = <_KeptHead>[];
+      try {
+        final m = (jsonDecode(kept) as Map).cast<String, Object?>();
+        mine = w.isNotEmpty && m['w'] == w;
+        for (final j in m['heads'] as List) {
+          try {
+            heads.add(_KeptHead.fromJson((j as Map).cast<String, Object?>()));
+          } catch (_) {}
+        }
+      } catch (_) {}
+      if (mine) {
+        _kept.addAll(heads);
+      } else {
+        var warned = false;
+        for (final k in heads) {
+          if (_relied(k.creqIds, k.rid) && !k.told) {
+            warned = _warn(k, HandleWarningKind.unconfirmed) || warned;
+          }
+        }
+        if (warned) await _saveWarnings();
+        await vault.kvDelete(_keptKey);
+      }
+    }
+    await _settleWitness();
+  }
+
+  Future<void> _saveKept() async {
+    if (_kept.isEmpty) {
+      await vault.kvDelete(_keptKey);
+      return;
+    }
+    await vault.kvPut(
+        _keptKey,
+        jsonEncode({
+          'w': _witnessOf(config),
+          'heads': [for (final k in _kept) k.toJson()],
+        }));
+  }
+
+  Future<void> _saveWarnings() async {
+    if (_warnings.isEmpty) {
+      await vault.kvDelete(_warningsKey);
+      return;
+    }
+    await vault.kvPut(
+        _warningsKey, jsonEncode([for (final w in _warnings) w.toJson()]));
+  }
+
+  /// The bound ([witnessKeptCap], [witnessKeepFor]) and what relies on each
+  /// head. One whose requests went with no contact to hold it goes, in
+  /// silence, as its request went: an acceptance is matched only to a
+  /// request still waited on ([matchAcknowledgement]), so one of them would
+  /// arrive as an ordinary request that needs the person's consent — and so
+  /// the outgoing list bounds the heads no contact holds, and a burst of
+  /// requests raises no warning. The rest never go in silence: one looked up
+  /// more than [witnessKeepFor] ago lapses once its last check of its own has
+  /// been made and has not decided it, or been given up on ([_checkBack]);
+  /// and past [witnessKeptCap] heads that contacts hold, the one looked up
+  /// longest ago goes — each said, as an answer never confirmed, on the
+  /// contact or the request that relied on it, unless it was said so while it
+  /// was kept ([_KeptHead.told]). Whether the heads changed, and whether a
+  /// warning was added.
+  ({bool kept, bool warned}) _pruneKept() {
+    final before = _kept.length;
+    final t = now();
+    var warned = false;
+    _kept.removeWhere((k) => !_relied(k.creqIds, k.rid));
+    for (final k in [..._kept]) {
+      if (t - k.at > witnessKeepFor.inMilliseconds &&
+          k.last != null &&
+          !_checking.contains(k)) {
+        _kept.remove(k);
+        if (!k.told) {
+          warned = _warn(k, HandleWarningKind.unconfirmed) || warned;
+        }
+      }
+    }
+    final held = [for (final k in _kept) if (k.rid != null) k];
+    while (held.length > witnessKeptCap) {
+      var out = held.first;
+      for (final k in held) {
+        if (k.at < out.at) out = k;
+      }
+      held.remove(out);
+      _kept.remove(out);
+      if (!out.told) {
+        warned = _warn(out, HandleWarningKind.unconfirmed) || warned;
+      }
+    }
+    return (kept: _kept.length != before, warned: warned);
+  }
+
+  /// A warning of [kind] on what relied on [k] — for a fork, [against] the
+  /// head it was held to — unless the same one stands already; [atFork] for
+  /// an answer said never confirmed while [k] is kept
+  /// ([HandleForkWarning.atFork]). Whether one was added.
+  bool _warn(_KeptHead k, HandleWarningKind kind,
+      {KtTreeHead? against, bool atFork = false}) {
+    final ids = {for (final i in k.creqIds) b64(i)};
+    for (final w in _warnings) {
+      if (w.kind == kind &&
+          w.handle == k.handle &&
+          w.lookedUpMs == k.at &&
+          w.shown.sameRootsAs(k.head) &&
+          w.creqIds.any((i) => ids.contains(b64(i)))) {
+        return false;
+      }
+    }
+    _warnings.add(HandleForkWarning(
+        kind: kind,
+        handle: k.handle,
+        lookedUpMs: k.at,
+        foundMs: now(),
+        creqIds: [...k.creqIds],
+        rid: k.rid,
+        shown: k.head,
+        against: against,
+        atFork: atFork));
+    return true;
+  }
+
+  /// [k] decided — covered, or a fork — so an answer said never confirmed
+  /// while it was kept ([HandleForkWarning.atFork]) goes: covered, it would
+  /// stay false once shown; a fork's warning takes its place. Whether one
+  /// went.
+  bool _unwarn(_KeptHead k) {
+    final ids = {for (final i in k.creqIds) b64(i)};
+    final before = _warnings.length;
+    _warnings.removeWhere((w) =>
+        w.atFork &&
+        w.handle == k.handle &&
+        w.lookedUpMs == k.at &&
+        w.shown.sameRootsAs(k.head) &&
+        w.creqIds.any((i) => ids.contains(b64(i))));
+    return _warnings.length != before;
+  }
+
+  /// What the checks and the bound changed, written — the warnings before
+  /// the heads, so that a head is never gone from the vault before what was
+  /// found of it is there.
+  Future<void> _saveAfterTheFact({bool kept = false, bool warned = false}) async {
+    if (warned) await _saveWarnings();
+    if (kept) await _saveKept();
+  }
+
+  /// What the kept heads and the warnings rely on, settled — whenever the
+  /// outgoing list is written ([_saveOutgoing]): a request forgotten,
+  /// answered, refused by the relay or pushed out by a newer one takes its
+  /// head and its warning with it, unless a contact holds them — and at load.
+  Future<void> _settleWitness() async {
+    final pruned = _pruneKept();
+    final before = _warnings.length;
+    _warnings.removeWhere((w) => !_relied(w.creqIds, w.rid));
+    try {
+      await _saveAfterTheFact(
+          kept: pruned.kept,
+          warned: pruned.warned || _warnings.length != before);
+    } catch (_) {
+      // The vault busy: what went is gone here, and the next write or load
+      // takes it out of the vault as well.
+    }
+    if (pruned.warned) notifyListeners();
+  }
+
+  /// [found]'s head, when the witness had not covered it, kept now that the
+  /// request [creqId] is sent on it — before the send, as the request is
+  /// remembered before it ([request]); a send that fails takes it back out
+  /// with the request ([_settleWitness]). When the configuration changed
+  /// since the lookup, no record here covers that head: the request is told
+  /// at once that the answer was never confirmed, as one sent before the
+  /// change is told at the change ([_forgetWitness]).
+  Future<void> _keepUnwitnessed(HandleLookup found, Uint8List creqId) async {
+    final u = found._unwitnessed;
+    if (u == null || u.w.isEmpty) return;
+    final handle = found.handle.canonical;
+    if (u.w != _witnessOf(config)) {
+      final never = _KeptHead(
+          head: u.head,
+          at: u.at,
+          handle: handle,
+          creqIds: [creqId],
+          keptAt: now());
+      if (_warn(never, HandleWarningKind.unconfirmed)) {
+        await _saveWarnings();
+        notifyListeners();
+      }
+      return;
+    }
+    _KeptHead? same;
+    for (final k in _kept) {
+      if (k.at == u.at && k.handle == handle && k.head.sameRootsAs(u.head)) {
+        same = k;
+      }
+    }
+    if (same != null) {
+      // The same lookup sent on again: one head, and its latest requests.
+      same.creqIds.add(creqId);
+      if (same.creqIds.length > handleOutgoingIdsPerHandle) {
+        same.creqIds.removeAt(0);
+      }
+    } else {
+      final keptAt = now();
+      _kept.add(_KeptHead(
+          head: u.head,
+          at: u.at,
+          handle: handle,
+          creqIds: [creqId],
+          keptAt: keptAt,
+          backAt: keptAt +
+              handleUniform(random, witnessCheckBack, witnessCheckBackMax)
+                  .inMilliseconds));
+    }
+    final pruned = _pruneKept();
+    await _saveAfterTheFact(kept: true, warned: pruned.warned);
+    if (pruned.warned) notifyListeners();
+    _checkBackSoon();
+  }
+
+  /// The contact [rid] was added by the acceptance of [answered] (§21.7):
+  /// the heads kept for its requests, and a warning on them, are the
+  /// contact's now. Called before the request is forgotten
+  /// ([completeOutgoing]), which would take them with it.
+  Future<void> contactAddedThrough(
+      String rid, OutgoingHandleRequest answered) async {
+    final ids = {for (final i in answered.creqIds) b64(i)};
+    bool theirs(List<Uint8List> c) => c.any((i) => ids.contains(b64(i)));
+    var kept = false, warned = false;
+    for (final k in _kept) {
+      if (theirs(k.creqIds)) {
+        k.rid = rid;
+        kept = true;
+      }
+    }
+    for (final w in _warnings) {
+      if (theirs(w.creqIds)) {
+        w.rid = rid;
+        warned = true;
+      }
+    }
+    await _saveAfterTheFact(kept: kept, warned: warned);
+    if (warned) notifyListeners();
+  }
+
+  /// The contact [rid] was deleted: what was kept for it and its warning go
+  /// with it.
+  Future<void> contactGone(String rid) async {
+    final k = _kept.length, w = _warnings.length;
+    _kept.removeWhere((x) => x.rid == rid);
+    _warnings.removeWhere((x) => x.rid == rid);
+    if (_kept.length != k) await _saveKept();
+    if (_warnings.length != w) {
+      await _saveWarnings();
+      notifyListeners();
+    }
+  }
+
+  /// Forget what was kept for a contact that is not one any more — deleted
+  /// while this build was not running, or not brought back by a restore.
+  Future<void> keepWarningsFor(Set<String> contactRids) async {
+    final k = _kept.length, w = _warnings.length;
+    _kept.removeWhere((x) => x.rid != null && !contactRids.contains(x.rid));
+    _warnings.removeWhere((x) => x.rid != null && !contactRids.contains(x.rid));
+    if (_kept.length != k) await _saveKept();
+    if (_warnings.length != w) await _saveWarnings();
+  }
+
+  /// Every head kept under [asked] held to [head], the head a lookup ended
+  /// with, as the transparency client holds the head it keeps
+  /// (`ktCheckHeadExtends`; `key_transparency.dart`'s `_adopt`): smaller, the
+  /// log shrank under it; the same size under other roots, two histories;
+  /// past it, the log's consistency proof from the kept size is required —
+  /// failing, two histories again, which differ within the kept head's own
+  /// entries, so what relied on it is told of a fork; withheld, or something
+  /// in its place that is not one, the check is pending, and never passes.
+  /// A later head shown to extend a kept one stands in for it at later
+  /// lookups ([_KeptHead.ext]), so that one proof serves every kept head it
+  /// stands in for; a proof from it that fails decides nothing — a fork that
+  /// departs after the kept head and before the stand-in fails it, and the
+  /// kept head is not that fork's — and the proof from the kept size itself
+  /// is asked.
+  ///
+  /// Then, through [head], to [witnessed] — the head of the witness's record
+  /// this lookup holds, fetched now or used again, when one verified — and to
+  /// [verdict], what it says of [head]. At the kept size, the roots decide.
+  /// Below it, a record that contradicts [head] contradicts the kept head
+  /// [head] extends: the record differs from [head] within its own entries,
+  /// and so from the kept head. Past it, a kept head [head] extends is
+  /// covered when [head] and the record are consistent; otherwise the log's
+  /// proof from the kept size to the record's size decides: verifying,
+  /// covered; failing while [head] and the record are consistent, a fork;
+  /// anything else, pending — a log that shows this device a history that
+  /// forked after the kept head cannot prove the kept head to the record
+  /// either, so a failure is not the kept head's. A covered head goes, and
+  /// so does an answer said never confirmed while it was kept; a fork is
+  /// said on what relied on the head ([HandleForkWarning]), in that answer's
+  /// place.
+  ///
+  /// And when the record shows [head] two histories — the log showing this
+  /// device one the witness did not see — a kept head [head] is shown to
+  /// extend that stays pending is said at once, on what relied on it, as an
+  /// answer never confirmed ([HandleForkWarning.atFork]): true, since no
+  /// record has covered it, and no fork the device cannot show, since an
+  /// honest head before the fork looks the same from here. It stays kept,
+  /// and later checks go on deciding it.
+  ///
+  /// At most [witnessKeptCap] proofs are asked for one lookup, each once, and
+  /// a check the lookup does not reach is pending; a check left pending is
+  /// asked again at most once in [witnessReuse], whatever record the lookup
+  /// holds. A check of a kept head's own ([_checkBack]) whose log could not
+  /// be asked for a current head has no [head]: the record alone decides
+  /// then, at the kept size by its roots and past it by the proof. Whether
+  /// any check is pending now, so that this lookup is not the witness
+  /// agreeing; and the heads left kept whose hold here went without an
+  /// answer it needed — a proof the log did not answer at all, one not asked
+  /// for want of room or because a check of the head waited on the log
+  /// within [witnessReuse] — which a check of their own has not made.
+  Future<({bool pending, Set<_KeptHead> unanswered})> _holdKept(
+      String asked, KtTreeHead? head,
+      {KtTreeHead? witnessed, _WitnessVerdict? verdict}) async {
+    final pruned = _pruneKept();
+    var kept = pruned.kept, warned = pruned.warned;
+    final count = _kept.length;
+    final t = now();
+    final proofs = _KeptProofs(witnessKeptCap);
+    final unanswered = <_KeptHead>{};
+    for (final k in [..._kept]) {
+      // The configuration changed meanwhile, or another lookup took it.
+      if (_witnessOf(config) != asked) break;
+      if (!_kept.contains(k)) continue;
+      final keptHead = k.head;
+      final heldAt = k.held;
+      final waits = heldAt != null &&
+          t >= heldAt &&
+          t - heldAt < witnessReuse.inMilliseconds;
+      final ext = k.ext;
+      var answered = true;
+      _Hold? hold;
+      if (head == null) {
+        hold = null;
+      } else if (head.size < keptHead.size ||
+          (head.size == keptHead.size && !head.sameRootsAs(keptHead))) {
+        hold = _Hold.contradicted;
+      } else if (head.size == keptHead.size) {
+        hold = _Hold.extended;
+      } else if (waits) {
+        hold = _Hold.unproven;
+        answered = false;
+      } else {
+        final held = await _holdOne(k, head, proofs);
+        hold = held.hold;
+        answered = held.answered;
+      }
+      if (_witnessOf(config) != asked) break;
+      if (!_kept.contains(k)) continue;
+      if (!identical(k.ext, ext)) kept = true;
+      if (hold == _Hold.contradicted) {
+        _kept.remove(k);
+        _unwarn(k);
+        _warn(k, HandleWarningKind.forked, against: head);
+        kept = warned = true;
+        continue;
+      }
+      final r = witnessed;
+      _Kept out;
+      if (r == null) {
+        out = hold == _Hold.unproven ? _Kept.pending : _Kept.stays;
+      } else if (r.size == keptHead.size) {
+        out = r.sameRootsAs(keptHead) ? _Kept.covered : _Kept.forked;
+      } else if (r.size < keptHead.size) {
+        out = hold == null
+            ? _Kept.stays
+            : hold != _Hold.extended
+                ? _Kept.pending
+                : verdict == _WitnessVerdict.forked
+                    ? _Kept.forked
+                    : _Kept.stays;
+      } else if (hold == _Hold.extended &&
+          verdict == _WitnessVerdict.consistent) {
+        out = _Kept.covered;
+      } else if (waits) {
+        out = _Kept.pending;
+        answered = false;
+      } else {
+        final proof = await _keptProof(keptHead, r, proofs);
+        answered = answered && proof.answered;
+        if (_witnessOf(config) != asked) break;
+        if (!_kept.contains(k)) continue;
+        out = proof.ok == true
+            ? _Kept.covered
+            : proof.ok == false && verdict == _WitnessVerdict.consistent
+                ? _Kept.forked
+                : _Kept.pending;
+      }
+      switch (out) {
+        case _Kept.covered:
+          _kept.remove(k);
+          kept = true;
+          if (_unwarn(k)) warned = true;
+        case _Kept.forked:
+          _kept.remove(k);
+          _unwarn(k);
+          _warn(k, HandleWarningKind.forked, against: r);
+          kept = warned = true;
+        case _Kept.stays:
+          if (k.held != null) {
+            k.held = null;
+            kept = true;
+          }
+          if (!answered) unanswered.add(k);
+        case _Kept.pending:
+          if (!waits) {
+            k.held = t;
+            kept = true;
+          }
+          if (!answered) unanswered.add(k);
+          // The log is showing this device two histories, and the head it
+          // shows extends this one: what relied on it may have relied on the
+          // history the witness did not see. Said once.
+          if (hold == _Hold.extended &&
+              verdict == _WitnessVerdict.forked &&
+              !k.told) {
+            k.told = true;
+            _warn(k, HandleWarningKind.unconfirmed, atFork: true);
+            kept = warned = true;
+          }
+      }
+    }
+    await _saveAfterTheFact(kept: kept, warned: warned);
+    if (warned || pruned.kept || _kept.length != count) notifyListeners();
+    return (
+      pending: _kept.any((k) => k.held != null),
+      unanswered: {for (final k in unanswered) if (_kept.contains(k)) k},
+    );
+  }
+
+  /// [head], past the kept head [k], held to it: the proof from the head that
+  /// stands in for it when there is one and [head] reaches it, and — with
+  /// none, or one that does not verify — the proof from the kept size itself.
+  /// Shown to extend it, [head] stands in for it from now on. And whether the
+  /// log answered what decided it.
+  Future<({_Hold hold, bool answered})> _holdOne(
+      _KeptHead k, KtTreeHead head, _KeptProofs proofs) async {
+    final ext = k.ext;
+    if (ext != null && ext.size > k.head.size && ext.size <= head.size) {
+      final via = await _keptProof(ext, head, proofs);
+      if (via.ok == true) {
+        k.ext = head;
+        return (hold: _Hold.extended, answered: true);
+      }
+    }
+    final proof = await _keptProof(k.head, head, proofs);
+    if (proof.ok == true) {
+      k.ext = head;
+      return (hold: _Hold.extended, answered: true);
+    }
+    return (
+      hold: proof.ok == false ? _Hold.contradicted : _Hold.unproven,
+      answered: proof.answered,
+    );
+  }
+
+  /// [from] against [to], which is at or past it: equal roots at equal size;
+  /// otherwise the log's consistency proof between the two sizes, asked at
+  /// most once for one lookup ([proofs]) — [_KeptProofs]'s `ok` true when it
+  /// verifies, false when it fails, and null when the log serves none,
+  /// serves something that is not one, does not answer, or the lookup has
+  /// asked all it may; `answered` false for the last two. The log, not the
+  /// witness, is asked, as a lookup's own check asks it.
+  Future<({bool? ok, bool answered})> _keptProof(
+      KtTreeHead from, KtTreeHead to, _KeptProofs proofs) async {
+    if (from.size == to.size) {
+      return (ok: from.sameRootsAs(to), answered: true);
+    }
+    final key = '${from.size}:${to.size}';
+    if (!proofs.answers.containsKey(key) && !proofs.unanswered.contains(key)) {
+      if (proofs.left <= 0) return (ok: null, answered: false);
+      proofs.left--;
+      final c = await _askLog(
+          '$_base/kt/v1/consistency?first=${from.size}&second=${to.size}');
+      if (!c.answered) {
+        proofs.unanswered.add(key);
+      } else {
+        List<Uint8List>? proof;
+        final j = c.json;
+        if (j != null) {
+          try {
+            proof = [for (final h in (j['proof'] as List)) unb64(h as String)];
+          } catch (_) {}
+        }
+        proofs.answers[key] = proof;
+      }
+    }
+    if (proofs.unanswered.contains(key)) return (ok: null, answered: false);
+    final proof = proofs.answers[key];
+    if (proof == null) return (ok: null, answered: true);
+    return (
+      ok: await ktVerifyConsistency(
+          first: from.size,
+          second: to.size,
+          firstRoot: from.logRoot,
+          secondRoot: to.logRoot,
+          proof: proof),
+      answered: true,
+    );
+  }
+
+  /// Whether [k]'s check-back, or its last check, is due at [t] and not made.
+  bool _backDue(_KeptHead k, int t) => k.back == null && t >= k.backAt;
+  bool _lastDue(_KeptHead k, int t) =>
+      k.last == null && t - k.at > witnessKeepFor.inMilliseconds;
+
+  /// The heads a check of their own may ask for at [t]: one of their checks
+  /// due and not made, and not asked for within [witnessCheckAgain].
+  List<_KeptHead> _dueAt(int t) => [
+        for (final k in _kept)
+          if ((_backDue(k, t) || _lastDue(k, t)) &&
+              (k.tried == null ||
+                  t < k.tried! ||
+                  t - k.tried! >= witnessCheckAgain.inMilliseconds))
+            k
+      ];
+
+  /// The first moment a check of a head's own may be asked for: the earliest
+  /// check not made, at its time or [witnessCheckAgain] after it was last
+  /// asked for, whichever is later — or null with none.
+  int? _nextCheck() {
+    int? next;
+    for (final k in _kept) {
+      for (final due in [
+        if (k.back == null) k.backAt,
+        if (k.last == null) k.at + witnessKeepFor.inMilliseconds + 1,
+      ]) {
+        final tried = k.tried;
+        final at = tried == null
+            ? due
+            : max(due, tried + witnessCheckAgain.inMilliseconds);
+        next = next == null ? at : min(next, at);
+      }
+    }
+    return next;
+  }
+
+  void _cancelCheckBack() {
+    _checkBackTimer?.cancel();
+    _checkBackTimer = null;
+    _checkBackTarget = null;
+  }
+
+  /// A kept head nothing has decided is checked on its own, twice at most
+  /// ([handleWitnessCheckBack]): at its check-back's moment
+  /// ([_KeptHead.backAt]) and once it is [witnessKeepFor] old — each at the
+  /// first moment the app is in front at or after that: [start], a return to
+  /// the front ([onForeground]), or, while it stays in front, a one-shot
+  /// timer, armed only while a kept head waits for a check and cancelled when
+  /// the app leaves the front. Never at that moment itself: at one drawn
+  /// after it, as the drain's first wait is ([foregroundDelayMin] to
+  /// [foregroundDelayMax]), so that the check is not lined up with the
+  /// account's own connection coming back at the same instant (R49). An
+  /// earlier moment drawn already stands. A check that finds nothing due asks
+  /// nothing, so a head decided before then costs nothing; and nothing is
+  /// asked while no head is kept.
+  void _checkBackSoon() {
+    if (_disposed || !_started || !_foreground || !available || _kept.isEmpty) {
+      _cancelCheckBack();
+      return;
+    }
+    final next = _nextCheck();
+    if (next == null) {
+      _cancelCheckBack();
+      return;
+    }
+    final t = now();
+    final target = max(next, t) +
+        handleUniform(random, foregroundDelayMin, foregroundDelayMax)
+            .inMilliseconds;
+    final armed = _checkBackTarget;
+    if (_checkBackTimer != null &&
+        armed != null &&
+        armed > t &&
+        armed <= target) {
+      return;
+    }
+    _cancelCheckBack();
+    // A day at most at a time: the clock is read again then.
+    final day = const Duration(days: 1).inMilliseconds;
+    final far = target - t > day;
+    _checkBackTarget = target;
+    _checkBackTimer = Timer(Duration(milliseconds: far ? day : target - t), () {
+      _checkBackTimer = null;
+      _checkBackTarget = null;
+      if (far) {
+        _checkBackSoon();
+      } else {
+        unawaited(_checkBack());
+      }
+    });
+  }
+
+  /// The kept heads due a check of their own ([_dueAt]), checked with one
+  /// record for them all: each asked for first, and that written, so that a
+  /// check not made is asked again at most once in [witnessCheckAgain] — a
+  /// write that fails asks nothing; then the log's head and the witness's
+  /// record fetched afresh, every kept head held to them as a lookup holds
+  /// them ([_holdKept]) — the log asked for the proofs that needs — and the
+  /// witness's state recorded as a lookup's check records it. A head's check
+  /// is made once it got its answers ([handleWitnessCheckAgain]): the record,
+  /// verified; the log's head, or its refusal; the proof between the two
+  /// when their sizes differ; and the proofs that head needed. One not made
+  /// spends nothing, unless it has gone without its answers for
+  /// [witnessCheckFor] of trying, when it is given up on. What a last check
+  /// made or given up on leaves undecided is then said as an answer never
+  /// confirmed ([_pruneKept]).
+  Future<void> _checkBack() async {
+    if (_checkingBack) return;
+    _checkingBack = true;
+    final due = <_KeptHead>[];
+    var asking = false;
+    try {
+      final asked = _witnessOf(config);
+      final pub = config.logPub;
+      if (_disposed || !available || asked.isEmpty || pub == null) return;
+      // What nothing relies on any more is not checked.
+      await _settleWitness();
+      final t = now();
+      due.addAll(_dueAt(t));
+      if (due.isEmpty) return;
+      final tried = {for (final k in due) k: k.tried};
+      for (final k in due) {
+        k.tried = t;
+      }
+      _checking.addAll(due);
+      try {
+        await _saveKept();
+      } catch (_) {
+        for (final k in due) {
+          k.tried = tried[k];
+        }
+        return;
+      }
+      asking = true;
+      final log = await _checkHead(pub);
+      final head = log.head;
+      final got = await _witnessRecord(asked, pub, fresh: true);
+      if (_disposed || _witnessOf(config) != asked) return;
+      _WitnessVerdict? verdict;
+      var between = true;
+      if (got != null && head != null) {
+        final v = await _witnessVerdict(head, got.record.head, pub);
+        verdict = v.verdict;
+        between = v.answered;
+        if (_disposed || _witnessOf(config) != asked) return;
+      }
+      final held = await _holdKept(asked, head,
+          witnessed: got?.record.head, verdict: verdict);
+      if (_disposed || _witnessOf(config) != asked) return;
+      final answers = got != null && log.answered && between;
+      final was = {
+        for (final k in due) k: (k.back, k.last, k.backFail, k.lastFail)
+      };
+      final giveUp = witnessCheckFor.inMilliseconds;
+      for (final k in due) {
+        if (!_kept.contains(k)) continue; // decided
+        final back = _backDue(k, t), last = _lastDue(k, t);
+        if (answers && !held.unanswered.contains(k)) {
+          if (back) {
+            k.back = t;
+            k.backFail = null;
+          }
+          if (last) {
+            k.last = t;
+            k.lastFail = null;
+          }
+        } else {
+          if (back) {
+            final from = k.backFail ??= t;
+            if (t - from >= giveUp) k.back = t;
+          }
+          if (last) {
+            final from = k.lastFail ??= t;
+            if (t - from >= giveUp) k.last = t;
+          }
+        }
+      }
+      try {
+        await _saveKept();
+      } catch (_) {
+        // Not written: nothing made, nothing given up on.
+        for (final e in was.entries) {
+          final (back, last, backFail, lastFail) = e.value;
+          e.key
+            ..back = back
+            ..last = last
+            ..backFail = backFail
+            ..lastFail = lastFail;
+        }
+      }
+      if (got == null) {
+        await _witnessUnanswered(asked);
+        return;
+      }
+      switch (verdict) {
+        case _WitnessVerdict.forked:
+          await _witnessForked(asked);
+        case _WitnessVerdict.consistent
+            when !held.pending &&
+                now() - got.record.head.ts <= witnessStale.inMilliseconds:
+          await _witnessAgreed(asked);
+        default:
+          await _witnessUnanswered(asked);
+      }
+    } catch (_) {
+      // The vault busy, or an answer that is not one: what was made stays
+      // made, and the rest is asked again.
+    } finally {
+      _checking.removeAll(due);
+      _checkingBack = false;
+      if (!_disposed) {
+        await _settleWitness();
+        _checkBackSoon();
+      }
+      if (asking) checksBack++;
+    }
+  }
+
+  /// The log's head for a check of a kept head's own ([_checkBack]): whether
+  /// the log answered at all — a head, a refusal, something that is not one
+  /// — and the head when it is one this device believes, verified under
+  /// [pub] and no older than [handleStaleHead].
+  Future<({bool answered, KtTreeHead? head})> _checkHead(Uint8List pub) async {
+    final r = await _askLog('$_base/kt/v1/sth');
+    final j = r.json;
+    if (j == null) return (answered: r.answered, head: null);
+    try {
+      final head = KtTreeHead.fromJson(j);
+      if (!await ktVerifyHead(head, pub, KtLogMode.handles) ||
+          now() - head.ts > handleStaleHead.inMilliseconds) {
+        return (answered: true, head: null);
+      }
+      return (answered: true, head: head);
+    } catch (_) {
+      return (answered: true, head: null);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -2402,7 +3750,7 @@ class HandleService extends ChangeNotifier {
     _requireAvailable();
     final handle = Handle.parse(input);
     final label = await handleLabelOffThread(handle);
-    final leaf = await _resolve(label);
+    final (leaf, unwitnessed) = await _resolveHead(label);
     final mem = await _lookupMemory();
     final known = mem.knownFor(label);
     if (leaf == null) {
@@ -2449,8 +3797,11 @@ class HandleService extends ChangeNotifier {
       return HandleLookup._(
           handle, HandleLookupState.paused, label, leaf.version, rec, null);
     }
+    // The one result a request can be sent on carries the head the witness
+    // had not covered, for the request to keep (§21.8).
     return HandleLookup._(handle, HandleLookupState.found, label, leaf.version,
-        rec, await introRoutingId(rec.intro!));
+        rec, await introRoutingId(rec.intro!),
+        unwitnessed: unwitnessed);
   }
 
   /// Forget what this device found the last time it looked [lookup]'s handle
@@ -2490,6 +3841,7 @@ class HandleService extends ChangeNotifier {
         toXPub: rec.xintro!, fromRid: host.myRid, payload: creq.encode());
     final creqId = await contactRequestId(creq);
     await _remember(found.handle.canonical, rec, creqId);
+    await _keepUnwitnessed(found, creqId); // §21.8, after the fact
     final id = newMessageId();
     final envelope = Uint8List.fromList(utf8.encode(payload));
     final first = await _stamp(introRid, introPowDay(now()), envelope, rec.pow);
@@ -2972,8 +4324,10 @@ class HandleService extends ChangeNotifier {
   /// verified absence — asked without naming it (`handle_lookups.dart`):
   ///
   /// * the lookup holds the head it read first, and every answer in it is
-  ///   under that head or one that extends it ([_accept]) — kept for this
-  ///   lookup alone, since a resolver keeps no head between lookups (R50);
+  ///   under that head or one that extends it ([_accept]) — held for this
+  ///   lookup, and kept past it only for the witness to cover, when a
+  ///   request is sent on what it found ([_keepUnwitnessed], R50), every
+  ///   head a later lookup ends with then held to it ([_holdKept]);
   /// * k is the estimate this install's own counts of labels bear out
   ///   ([HandleLookupMemory.bits], first made from random buckets by
   ///   [_probeBits]), never finer than the signed size allows nor than the
@@ -2993,10 +4347,16 @@ class HandleService extends ChangeNotifier {
   ///   head is taken here, a lookup, a claim's check that a name is free, the
   ///   owner's reads of its own record before a change, at a refresh, before
   ///   each drain and after a claim the log refused, and a recovery's read,
-  ///   is checked, once;
+  ///   is checked, once — and the head each of them ends with, and the
+  ///   record it holds, hold the heads kept after the fact ([_holdKept]);
   /// * a leaf no honest log could serve ([handleLeafProblem]) is a bad
   ///   answer.
-  Future<KtBucketLeaf?> _resolve(Uint8List label) async {
+  Future<KtBucketLeaf?> _resolve(Uint8List label) async =>
+      (await _resolveHead(label)).$1;
+
+  /// [_resolve], and the head the lookup ended with when the witness's record
+  /// did not cover it ([_witnessCheck]): what [find] hands a request to keep.
+  Future<(KtBucketLeaf?, _Unwitnessed?)> _resolveHead(Uint8List label) async {
     final pub = config.logPub;
     if (!available || pub == null) {
       throw const HandleException(HandleFailure.unavailable);
@@ -3029,9 +4389,10 @@ class HandleService extends ChangeNotifier {
       // it used is under that head or one it extends. Two histories, or a
       // log that will not prove there are not, and nothing the lookup
       // counted or found is kept — the estimate included.
+      _Unwitnessed? unwitnessed;
       if (config.hasWitness) {
         try {
-          await _witnessCheck(lookup);
+          unwitnessed = await _witnessCheck(lookup);
         } on HandleException {
           mem.bits = held;
           rethrow;
@@ -3045,7 +4406,7 @@ class HandleService extends ChangeNotifier {
       if (leaf != null && handleLeafProblem(leaf) != null) {
         throw const HandleException(HandleFailure.badAnswer);
       }
-      return leaf;
+      return (leaf, unwitnessed);
     }
   }
 
@@ -3138,8 +4499,11 @@ class HandleService extends ChangeNotifier {
   /// consistency proof from the held size to it. A smaller size, the same
   /// size under other roots, or no proof is a log that contradicted itself
   /// within one lookup: a bad answer, and nothing it said is used. (Between
-  /// lookups nothing is held, so two histories shown at two lookups are a
-  /// witness's to catch — [_witnessCheck], R50.)
+  /// lookups a head is held to this once a request was sent on its lookup
+  /// before the witness covered it ([_holdKept]); two histories shown at two
+  /// lookups are otherwise a witness's to catch — [_witnessCheck], R50. The
+  /// heads of a lookup that fails here are not held to the kept heads: it
+  /// fails before its check, which is what holds them.)
   Future<void> _accept(_HandleLookupHead lookup, KtTreeHead fresh) async {
     final held = lookup.head;
     if (held.sameRootsAs(fresh)) return;
@@ -3176,8 +4540,9 @@ class HandleService extends ChangeNotifier {
   /// [HandleFailure.unreachable] (or [HandleFailure.badAnswer]) when their
   /// sizes differ and the log serves no proof of the way between them
   /// ([_witnessVerdict]): step 3 requires consistency or a proof that
-  /// verifies, and a resolver holds no head on which a later lookup would ask
-  /// again, so a proof withheld is refused rather than passed over.
+  /// verifies, and a lookup that fails sends nothing, so nothing of it is
+  /// kept for a later lookup to ask again: a proof withheld is refused rather
+  /// than passed over.
   ///
   /// A witness that cannot be fetched, and a record that does not verify
   /// under the pinned key — one co-signed by any other key among them,
@@ -3188,19 +4553,50 @@ class HandleService extends ChangeNotifier {
   /// and a fork it shows is a fork; it is not the witness agreeing. Only a
   /// current record the head is shown consistent with is.
   ///
-  /// What this does not catch (§21.8, R50): a history that departs after the
-  /// witness's latest co-signed head. The lookup's head then extends the
-  /// record, the log proves the way within the history it shows, and nothing
-  /// is held for a later lookup to look again — and the record used again
-  /// for [witnessReuse] widens that window. handle_lookup_test 26 pins it.
-  Future<void> _witnessCheck(_HandleLookupHead lookup) async {
+  /// After the fact (Finnian's decision of 2026‑10‑20): every head kept for
+  /// this witness is held to the head this lookup ends with and, through it,
+  /// to the record ([_holdKept]), with no record as well as with one — and
+  /// while a check of one waits on the log, this check is not the witness
+  /// agreeing, whether the record was fetched now or is one used again; one
+  /// used again is not the witness asked either, so the quiet timer stays.
+  /// Then the head this lookup ends with, when the record does not cover it
+  /// — smaller than the head, or none that verified — is returned, for a
+  /// request sent on the lookup to keep: a history that departs after the
+  /// witness's latest co-signed head passes this check, and is caught once
+  /// the log shows this device a head that does not extend it, or a record
+  /// that reaches it is held.
+  ///
+  /// A kept head nothing looks up is checked on its own as well, twice at
+  /// most ([_checkBack]), so a device that looks nothing up again still
+  /// decides it. And a lookup the record shows two histories says at once,
+  /// as an answer never confirmed, what relied on a kept head its head
+  /// extends and the check leaves pending ([_holdKept]). What still is not
+  /// caught as a fork (§21.8, R50): a fork shown to a lookup that sent
+  /// nothing; and a kept head nothing decides before it lapses
+  /// ([witnessKeepFor]) — a witness that stops, or that will not follow a log
+  /// whose next entry the owner rule refuses, a log that withholds the proof,
+  /// or one that keeps the device on a history that forked between the kept
+  /// head and the witness's record, where the kept head cannot be told from
+  /// one before the fork — which is said as an answer never confirmed, not
+  /// dropped in silence. Not held to the kept heads: the log's own head this
+  /// check asks for beside a witness ahead of it ([_witnessVerdict]), which
+  /// decides only this lookup's verdict. handle_lookup_test 26, 30, 31, 36,
+  /// 37 and 38 to 48 pin these.
+  Future<_Unwitnessed?> _witnessCheck(_HandleLookupHead lookup) async {
     final asked = _witnessOf(config);
-    final rec = await _witnessRecord(asked, lookup.pub);
-    if (rec == null) {
+    final at = now();
+    final got = await _witnessRecord(asked, lookup.pub);
+    if (got == null) {
+      await _holdKept(asked, lookup.head);
       await _witnessUnanswered(asked);
-      return;
+      return _Unwitnessed(lookup.head, asked, at);
     }
-    final verdict = await _witnessVerdict(lookup.head, rec.head, lookup.pub);
+    final rec = got.record;
+    final verdict =
+        (await _witnessVerdict(lookup.head, rec.head, lookup.pub)).verdict;
+    final pending = (await _holdKept(asked, lookup.head,
+            witnessed: rec.head, verdict: verdict))
+        .pending;
     switch (verdict) {
       case _WitnessVerdict.forked:
         await _witnessForked(asked);
@@ -3214,28 +4610,39 @@ class HandleService extends ChangeNotifier {
       case _WitnessVerdict.consistent:
         // `ts` is inside what the log signed and the witness co-signed;
         // `verifiedAt` is not, so it cannot say how old the record is.
-        if (now() - rec.head.ts <= witnessStale.inMilliseconds) {
+        if (pending) {
+          if (got.fresh) await _witnessUnanswered(asked);
+        } else if (now() - rec.head.ts <= witnessStale.inMilliseconds) {
           await _witnessAgreed(asked);
         } else {
           await _witnessUnanswered(asked);
         }
     }
+    return lookup.head.size > rec.head.size
+        ? _Unwitnessed(lookup.head, asked, at)
+        : null;
   }
 
   /// The witness's record, its two signatures verified in the handle log's
   /// contexts against the log's key and the witness key this device pinned —
   /// never the key the record carries — fetched from the address exactly as
-  /// configured, at most once for this lookup. A record that verified within
-  /// [witnessReuse], under the same configuration, is used again instead.
-  /// Null when it cannot be fetched or does not verify, which is not kept.
-  Future<KtWitnessRecord?> _witnessRecord(String asked, Uint8List logPub) async {
+  /// configured, at most once for this lookup, and `fresh` when it was. A
+  /// record that verified within [witnessReuse], under the same
+  /// configuration, is used again instead — unless [fresh] is asked for, as a
+  /// kept head's check of its own asks ([_checkBack]): a record fetched
+  /// before the head was kept cannot cover it. Null when it cannot be fetched
+  /// or does not verify, which is not kept.
+  Future<({KtWitnessRecord record, bool fresh})?> _witnessRecord(
+      String asked, Uint8List logPub,
+      {bool fresh = false}) async {
     final t = now();
     final held = _witnessHeld;
-    if (held != null &&
+    if (!fresh &&
+        held != null &&
         held.w == asked &&
         t >= held.at &&
         t - held.at < witnessReuse.inMilliseconds) {
-      return held.record;
+      return (record: held.record, fresh: false);
     }
     final pinned = config.witnessPub;
     if (pinned == null) return null;
@@ -3254,7 +4661,7 @@ class HandleService extends ChangeNotifier {
     if (_witnessOf(config) == asked) {
       _witnessHeld = (w: asked, at: t, record: rec);
     }
-    return rec;
+    return (record: rec, fresh: true);
   }
 
   /// [witnessed] — the head of a record that verified — against [held], the
@@ -3265,48 +4672,61 @@ class HandleService extends ChangeNotifier {
   /// smaller than the witness's is a log gone back below a head it signed
   /// and the witness verified, a fork. (The transparency client takes no
   /// proof as no verdict, and asks again at its next check, on the head it
-  /// keeps; a resolver keeps none.)
-  Future<_WitnessVerdict> _witnessVerdict(
+  /// keeps; a resolver keeps a head only once a request is sent on its
+  /// lookup, which this one has not reached.) And whether the log answered
+  /// what it was asked — a refusal is an answer, no answer at all is not
+  /// ([_checkBack]).
+  Future<({_WitnessVerdict verdict, bool answered})> _witnessVerdict(
       KtTreeHead held, KtTreeHead witnessed, Uint8List logPub) async {
     if (witnessed.size == held.size) {
-      return witnessed.sameRootsAs(held)
-          ? _WitnessVerdict.consistent
-          : _WitnessVerdict.forked;
+      return (
+        verdict: witnessed.sameRootsAs(held)
+            ? _WitnessVerdict.consistent
+            : _WitnessVerdict.forked,
+        answered: true,
+      );
     }
     final behind = witnessed.size < held.size;
     final first = behind ? witnessed : held;
     final second = behind ? held : witnessed;
-    final c = await _getJsonOrNull('$_base/kt/v1/consistency'
+    final c = await _askLog('$_base/kt/v1/consistency'
         '?first=${first.size}&second=${second.size}');
-    if (c != null) {
+    final cj = c.json;
+    if (cj != null) {
       final List<Uint8List> proof;
       try {
-        proof = [for (final h in (c['proof'] as List)) unb64(h as String)];
+        proof = [for (final h in (cj['proof'] as List)) unb64(h as String)];
       } catch (_) {
-        return _WitnessVerdict.unreadable;
+        return (verdict: _WitnessVerdict.unreadable, answered: true);
       }
-      return await ktVerifyConsistency(
-              first: first.size,
-              second: second.size,
-              firstRoot: first.logRoot,
-              secondRoot: second.logRoot,
-              proof: proof)
-          ? _WitnessVerdict.consistent
-          : _WitnessVerdict.forked;
+      return (
+        verdict: await ktVerifyConsistency(
+                first: first.size,
+                second: second.size,
+                firstRoot: first.logRoot,
+                secondRoot: second.logRoot,
+                proof: proof)
+            ? _WitnessVerdict.consistent
+            : _WitnessVerdict.forked,
+        answered: true,
+      );
     }
+    var answered = c.answered;
     if (!behind) {
-      final j = await _getJsonOrNull('$_base/kt/v1/sth');
+      final s = await _askLog('$_base/kt/v1/sth');
+      answered = answered && s.answered;
+      final j = s.json;
       if (j != null) {
         try {
           final current = KtTreeHead.fromJson(j);
           if (await ktVerifyHead(current, logPub, KtLogMode.handles) &&
               current.size < witnessed.size) {
-            return _WitnessVerdict.forked;
+            return (verdict: _WitnessVerdict.forked, answered: true);
           }
         } catch (_) {}
       }
     }
-    return _WitnessVerdict.unproven;
+    return (verdict: _WitnessVerdict.unproven, answered: answered);
   }
 
   /// One bucket, verified under the pinned key on a fresh head, with that
@@ -3434,14 +4854,25 @@ class HandleService extends ChangeNotifier {
     }
   }
 
-  /// [_getJson], or null where it would throw: the witness check's questions
-  /// to the log, whose silence [_witnessVerdict] judges itself — a proof not
-  /// served is no proof, and a head not served leaves it at that.
-  Future<Map<String, Object?>?> _getJsonOrNull(String url) async {
+  /// One of the witness check's questions to the log, whose silence the
+  /// check judges itself — a proof not served is no proof, and a head not
+  /// served leaves it at that — with whether it was answered at all: any
+  /// status is an answer, a refusal or a withholding among them, and a
+  /// request that reached nobody is not ([_checkBack]). The body when it was
+  /// a `200` that parsed.
+  Future<({bool answered, Map<String, Object?>? json})> _askLog(
+      String url) async {
+    final KtResponse r;
     try {
-      return await _getJson(url);
-    } on HandleException {
-      return null;
+      r = await fetcher.get(Uri.parse(url));
+    } catch (_) {
+      return (answered: false, json: null);
+    }
+    if (r.status != 200) return (answered: true, json: null);
+    try {
+      return (answered: true, json: r.json);
+    } catch (_) {
+      return (answered: true, json: null);
     }
   }
 
@@ -3502,8 +4933,11 @@ class HandleService extends ChangeNotifier {
         'seeds': {for (final e in _oldSeeds.entries) e.key: b64(e.value)},
       }));
 
-  Future<void> _saveOutgoing() => vault.kvPut(
-      'handle_out', jsonEncode([for (final o in _outgoing) o.toJson()]));
+  Future<void> _saveOutgoing() async {
+    await vault.kvPut(
+        'handle_out', jsonEncode([for (final o in _outgoing) o.toJson()]));
+    await _settleWitness(); // what relied on a request goes with it (§21.8)
+  }
 
   /// Remember a request decided now, whose stamp was made for [day]: the
   /// ledger's record first, once, so its salt is in the vault before any
@@ -3590,6 +5024,12 @@ abstract final class HandleBackup {
     // old one remembered (a first lookup again for every handle is a first
     // lookup the log can answer with anything).
     handleLookupKey,
+    // After the fact (§21.8): the heads kept for the witness to cover, so a
+    // restored device goes on checking the requests the archive brings back,
+    // and the forks found after the fact, so a contact that came through one
+    // comes back with its warning.
+    HandleService._keptKey,
+    HandleService._warningsKey,
   ];
 
   /// The record, or null when this vault holds nothing about handles.
@@ -3669,6 +5109,7 @@ abstract final class HandleBackup {
       out['handle_in'] = jsonEncode({'reqs': reqs, 'seeds': seeds});
     }
     final outgoing = kv['handle_out'];
+    final waiting = <String>{};
     if (outgoing is List) {
       final kept = <Object?>[];
       for (final j in outgoing) {
@@ -3682,6 +5123,66 @@ abstract final class HandleBackup {
         kept.removeRange(0, kept.length - handleOutgoingCap);
       }
       out['handle_out'] = jsonEncode(kept);
+      for (final o in kept) {
+        waiting.addAll(((o as Map)['ids'] as List).cast<String>());
+      }
+    }
+    // After the fact: a kept head or a warning is restored when the request
+    // it is on was, or it is on a contact — and the first start forgets one
+    // whose contact did not come back ([HandleService.keepWarningsFor]).
+    bool relied(List<Uint8List> ids, String? rid) =>
+        rid != null || ids.any((i) => waiting.contains(b64(i)));
+    final heads = kv[HandleService._keptKey];
+    if (heads is Map && heads['w'] is String && heads['heads'] is List) {
+      final kept = <_KeptHead>[];
+      for (final j in heads['heads'] as List) {
+        try {
+          final k = _KeptHead.fromJson((j as Map).cast<String, Object?>());
+          if (relied(k.creqIds, k.rid)) kept.add(k);
+        } catch (_) {}
+      }
+      // Those of the requests restored, which bound them; and of those on
+      // contacts, no more than the service keeps.
+      kept.sort((a, b) => a.at.compareTo(b.at));
+      final held = [for (final k in kept) if (k.rid != null) k];
+      if (held.length > handleWitnessKeptCap) {
+        final out = held.take(held.length - handleWitnessKeptCap).toSet();
+        kept.removeWhere(out.contains);
+      }
+      if (kept.isNotEmpty) {
+        out[HandleService._keptKey] = jsonEncode({
+          'w': heads['w'],
+          'heads': [for (final k in kept) k.toJson()],
+        });
+      }
+    }
+    final warnings = kv[HandleService._warningsKey];
+    if (warnings is List) {
+      // One a contact — a fork before an answer never confirmed, the latest
+      // found — and those on requests: no more than the service shows.
+      final byContact = <String, HandleForkWarning>{};
+      final onRequests = <HandleForkWarning>[];
+      for (final j in warnings) {
+        try {
+          final w = HandleForkWarning.fromJson((j as Map).cast<String, Object?>());
+          if (!relied(w.creqIds, w.rid)) continue;
+          final rid = w.rid;
+          final had = rid == null ? null : byContact[rid];
+          if (rid == null) {
+            onRequests.add(w);
+          } else if (had == null ||
+              (w.isFork && !had.isFork) ||
+              (w.isFork == had.isFork && had.foundMs < w.foundMs)) {
+            byContact[rid] = w;
+          }
+        } catch (_) {}
+      }
+      final restored = [...onRequests, ...byContact.values]
+        ..sort((a, b) => a.foundMs.compareTo(b.foundMs));
+      if (restored.isNotEmpty) {
+        out[HandleService._warningsKey] =
+            jsonEncode([for (final w in restored) w.toJson()]);
+      }
     }
     final config = kv['handle_config'];
     if (config is Map) {

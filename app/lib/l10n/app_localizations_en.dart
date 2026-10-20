@@ -2599,6 +2599,21 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String stHdlWitnessForkedRelied(String when) {
+    return 'The handle service showed this device a history its witness did not see, at $when. A request you sent on an earlier answer may have relied on that history: see the warning on it.';
+  }
+
+  @override
+  String stHdlWitnessForkedAfter(String handle, String when) {
+    return 'The handle service showed this device a history its witness never saw when you looked up @$handle on $when. The request sent then may have reached someone else: compare safety numbers with whoever answers it.';
+  }
+
+  @override
+  String stHdlWitnessUnconfirmed(String handle, String when) {
+    return 'The handle service\'s answer when you looked up @$handle on $when was never confirmed by its witness: compare safety numbers with whoever answers the request you sent then.';
+  }
+
+  @override
   String get stHdlWitnessPin => 'Handle witness address and key';
 
   @override
@@ -3069,6 +3084,34 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get hdlForgetRequest => 'Forget';
+
+  @override
+  String hdlForkAfterRequest(String handle, String when) {
+    return 'The handle service showed a history its witness never saw when you looked up @$handle on $when. This request may have reached someone else: if it is accepted, compare safety numbers before you trust whoever accepted it.';
+  }
+
+  @override
+  String hdlForkAfterContact(String handle, String when) {
+    return 'The handle service showed a history its witness never saw when you looked up @$handle on $when. Your request may have reached someone else: compare safety numbers with this contact before you trust them.';
+  }
+
+  @override
+  String get hdlForkAfterTitle =>
+      'The handle service may have sent your request to someone else';
+
+  @override
+  String hdlUnconfirmedRequest(String handle, String when) {
+    return 'The handle service\'s answer when you looked up @$handle on $when was never confirmed by its witness. If this request is accepted, compare safety numbers before you trust whoever accepted it.';
+  }
+
+  @override
+  String hdlUnconfirmedContact(String handle, String when) {
+    return 'The handle service\'s answer when you looked up @$handle on $when was never confirmed by its witness. Compare safety numbers with this contact before you trust them.';
+  }
+
+  @override
+  String get hdlUnconfirmedTitle =>
+      'The handle service\'s answer was never confirmed';
 
   @override
   String requestsVia(String handle) {

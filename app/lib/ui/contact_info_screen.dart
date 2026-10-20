@@ -5,6 +5,7 @@ import 'package:z_protocol/z_protocol.dart';
 import '../l10n/alert_text.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/ttl_text.dart';
+import '../l10n/when_text.dart';
 import '../core/chat_service.dart';
 import '../core/key_transparency.dart';
 import '../core/models.dart';
@@ -151,6 +152,20 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
           // log. One line in the good and neutral cases; a banner when it
           // changes what is sent.
           ..._ktSection(context, l, svc, contact),
+          // §21.8: added through a handle lookup found, after the fact, to be
+          // a history the handle service's witness never saw, or whose answer
+          // the witness never confirmed — said beside the number that settles
+          // it, until dismissed in the chat.
+          if (svc.handles.forkWarningForContact(widget.rid) case final w?) ...[
+            _Banner(
+              tone: w.isFork ? context.z.danger : context.z.warn,
+              icon: w.isFork ? Icons.gpp_bad_outlined : Icons.gpp_maybe_outlined,
+              title: w.isFork ? l.hdlForkAfterTitle : l.hdlUnconfirmedTitle,
+              body: (w.isFork ? l.hdlForkAfterContact : l.hdlUnconfirmedContact)(
+                  w.handle, whenText(context, w.lookedUpMs)),
+            ),
+            const SizedBox(height: 12),
+          ],
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),

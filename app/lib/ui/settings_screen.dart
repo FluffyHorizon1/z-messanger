@@ -177,7 +177,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // its witness — when it last agreed, when, after a day of lookups
           // asking it, it has gone quiet, and when it last showed a history
           // the witness did not see, until the witness agrees again, in the
-          // danger tone. Everyone's row once a
+          // danger tone — or, found after the fact, until the warning on the
+          // request or contact is cleared. Everyone's row once a
           // witness is configured, as the transparency log's witness row is;
           // in developer mode, where the pair is set, "off" too.
           if (svc.devMode ||
@@ -721,6 +722,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         HandleWitnessState.pending => Icons.verified_outlined,
         HandleWitnessState.agreed => Icons.verified,
         HandleWitnessState.quiet => Icons.cloud_off_outlined,
+        HandleWitnessState.unconfirmed => Icons.gpp_maybe,
         HandleWitnessState.forked => Icons.gpp_bad,
       };
 
@@ -728,6 +730,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       switch (s) {
         HandleWitnessState.agreed => context.z.ok,
         HandleWitnessState.quiet => context.z.warn,
+        HandleWitnessState.unconfirmed => context.z.warn,
         HandleWitnessState.forked => context.z.danger,
         _ => context.z.textSecondary,
       };
@@ -741,8 +744,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
           l.stHdlWitnessAgreed(whenText(context, h.witnessOkMs ?? 0)),
         HandleWitnessState.quiet =>
           l.stHdlWitnessQuiet(whenText(context, h.witnessQuietSinceMs ?? 0)),
+        // A fork found after the fact is said first: a request was sent on
+        // it (§21.8), where a lookup refused as one sent nothing — unless an
+        // earlier answer a request was sent on may have relied on the
+        // history that lookup was shown.
         HandleWitnessState.forked =>
-          l.stHdlWitnessForked(whenText(context, h.witnessForkMs ?? 0)),
+          switch (h.forkWarnings.where((w) => w.isFork).firstOrNull) {
+            final w? => l.stHdlWitnessForkedAfter(
+                w.handle, whenText(context, w.lookedUpMs)),
+            null => h.witnessForkRelied
+                ? l.stHdlWitnessForkedRelied(
+                    whenText(context, h.witnessForkMs ?? 0))
+                : l.stHdlWitnessForked(whenText(context, h.witnessForkMs ?? 0)),
+          },
+        // An answer a request was sent on that the witness never confirmed.
+        HandleWitnessState.unconfirmed => switch (h.forkWarnings.firstOrNull) {
+            final w? => l.stHdlWitnessUnconfirmed(
+                w.handle, whenText(context, w.lookedUpMs)),
+            null => l.stHdlWitnessPending,
+          },
       };
 
   /// ADR 0029: the device-list signing row — the form the list is signed in,

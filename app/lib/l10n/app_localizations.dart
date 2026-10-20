@@ -4100,6 +4100,24 @@ abstract class AppLocalizations {
   /// **'The handle service showed this device a history its witness did not see, at {when}. Nothing from that answer was used or sent.'**
   String stHdlWitnessForked(String when);
 
+  /// Handle witness value, shown as an alarm in the danger tone, in place of stHdlWitnessForked: a lookup was refused because the handle service showed this device a history its witness did not see — two histories under one key — and an earlier answer, one a request was sent on, came with a head that history extends and that no witness record has confirmed, so the request may have gone to a mailbox of the service's own. That request, or the contact its acceptance added, carries a warning that the answer was never confirmed. {when} is the date and time of the refused lookup. Load-bearing: it must not say that nothing was used or sent, and it points to the warning on the request or contact.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service showed this device a history its witness did not see, at {when}. A request you sent on an earlier answer may have relied on that history: see the warning on it.'**
+  String stHdlWitnessForkedRelied(String when);
+
+  /// Handle witness value, shown as an alarm in the danger tone, found after the fact: when the person looked a handle up, the witness had not yet seen the head the handle service answered under, and its record, fetched later, contradicts that head, or a head the service itself signed later does — so the service showed this device a history the witness never saw, and the request the person sent on that lookup may have gone to a mailbox of the service's own rather than to the handle's owner. {handle} is the handle without the @; {when} is the date and time of the lookup. It stays until the person dismisses the warning on the contact, or the request or contact is deleted — the witness agreeing later does not clear it. Load-bearing: the request may have reached someone else, and comparing safety numbers is what tells.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service showed this device a history its witness never saw when you looked up @{handle} on {when}. The request sent then may have reached someone else: compare safety numbers with whoever answers it.'**
+  String stHdlWitnessForkedAfter(String handle, String when);
+
+  /// Handle witness value, shown in the warning tone: the handle service's answer to a lookup the person sent a request on was never confirmed by its witness — this device kept it for the witness to check and gave up after 30 days, ran out of room for it, or the witness was changed. Nothing shows the answer was wrong. {handle} is the handle without the @; {when} is the date and time of the lookup. It stays until the person dismisses the warning on the contact, or the request or contact is deleted. Weaker than stHdlWitnessForkedAfter, and said only when no fork stands. Load-bearing: comparing safety numbers is what tells.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service\'s answer when you looked up @{handle} on {when} was never confirmed by its witness: compare safety numbers with whoever answers the request you sent then.'**
+  String stHdlWitnessUnconfirmed(String handle, String when);
+
   /// Developer-mode row in the Handle section, and the title of its dialog: the address of the handle service witness's record and the public key pinned for it, edited and saved together.
   ///
   /// In en, this message translates to:
@@ -4837,6 +4855,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Forget'**
   String get hdlForgetRequest;
+
+  /// Shown in the danger tone under a request the person sent to a handle and is still waiting on, when the handle service's answer to the lookup it was sent on was found, later, to be a history the service's witness never saw — so the request may have gone to a mailbox of the service's own rather than the handle's owner. {handle} is the handle without the @; {when} is the date and time of the lookup. Forgetting the request clears it. Load-bearing: the request may have reached someone else, and comparing safety numbers is what tells.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service showed a history its witness never saw when you looked up @{handle} on {when}. This request may have reached someone else: if it is accepted, compare safety numbers before you trust whoever accepted it.'**
+  String hdlForkAfterRequest(String handle, String when);
+
+  /// Shown in the danger tone on a contact added because they accepted a request the person sent through a handle, when the handle service's answer to that lookup was found, later, to be a history the service's witness never saw — so the account that accepted may be one the service chose, not the handle's owner. Shown at the top of their chat, where the person can dismiss it, and on their contact screen above the safety number. {handle} is the handle without the @; {when} is the date and time of the lookup. Load-bearing: compare safety numbers with this contact.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service showed a history its witness never saw when you looked up @{handle} on {when}. Your request may have reached someone else: compare safety numbers with this contact before you trust them.'**
+  String hdlForkAfterContact(String handle, String when);
+
+  /// Title, in the danger tone, of the warning on a contact's screen when the handle lookup that led to them was found, later, to be a history the handle service's witness never saw. The sentence under it says what happened and what to do.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service may have sent your request to someone else'**
+  String get hdlForkAfterTitle;
+
+  /// Shown in the warning tone under a request the person sent to a handle and is still waiting on, when the handle service's answer to the lookup it was sent on was never confirmed by the service's witness: this device kept that answer for the witness to check, and gave up after 30 days, or ran out of room for it, or the witness was changed. Nothing shows the answer was wrong; nothing showed it was right. {handle} is the handle without the @; {when} is the date and time of the lookup. Forgetting the request clears it. Must read as weaker than the fork warning (hdlForkAfterRequest), and must not say the service did anything wrong. Load-bearing: comparing safety numbers is what tells.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service\'s answer when you looked up @{handle} on {when} was never confirmed by its witness. If this request is accepted, compare safety numbers before you trust whoever accepted it.'**
+  String hdlUnconfirmedRequest(String handle, String when);
+
+  /// Shown in the warning tone on a contact added because they accepted a request the person sent through a handle, when the handle service's answer to that lookup was never confirmed by the service's witness (see hdlUnconfirmedRequest). Shown at the top of their chat, where the person can dismiss it, and on their contact screen above the safety number. {handle} is the handle without the @; {when} is the date and time of the lookup. Load-bearing: compare safety numbers with this contact.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service\'s answer when you looked up @{handle} on {when} was never confirmed by its witness. Compare safety numbers with this contact before you trust them.'**
+  String hdlUnconfirmedContact(String handle, String when);
+
+  /// Title, in the warning tone, of the warning on a contact's screen when the handle lookup that led to them was never confirmed by the handle service's witness. The sentence under it says what happened and what to do. Weaker than hdlForkAfterTitle: nothing was found wrong.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service\'s answer was never confirmed'**
+  String get hdlUnconfirmedTitle;
 
   /// On a pending request that came through the account's handle: which handle the person found the account by.
   ///

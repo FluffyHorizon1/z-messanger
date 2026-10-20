@@ -2625,6 +2625,21 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String stHdlWitnessForkedRelied(String when) {
+    return 'El servicio de alias mostró a este dispositivo un historial que su testigo no vio, el $when. Puede que una solicitud que enviaste con una respuesta anterior se basara en ese historial: mira el aviso que lleva.';
+  }
+
+  @override
+  String stHdlWitnessForkedAfter(String handle, String when) {
+    return 'El servicio de alias mostró a este dispositivo un historial que su testigo nunca vio cuando buscaste @$handle el $when. Puede que la solicitud que enviaste entonces haya llegado a otra persona: comparad los números de seguridad con quien la responda.';
+  }
+
+  @override
+  String stHdlWitnessUnconfirmed(String handle, String when) {
+    return 'La respuesta del servicio de alias cuando buscaste @$handle el $when nunca la confirmó su testigo: comparad los números de seguridad con quien responda a la solicitud que enviaste entonces.';
+  }
+
+  @override
   String get stHdlWitnessPin => 'Dirección y clave del testigo de alias';
 
   @override
@@ -3098,6 +3113,34 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get hdlForgetRequest => 'Olvidar';
+
+  @override
+  String hdlForkAfterRequest(String handle, String when) {
+    return 'El servicio de alias mostró un historial que su testigo nunca vio cuando buscaste @$handle el $when. Puede que esta solicitud haya llegado a otra persona: si alguien la acepta, comparad los números de seguridad antes de confiar en quien la aceptó.';
+  }
+
+  @override
+  String hdlForkAfterContact(String handle, String when) {
+    return 'El servicio de alias mostró un historial que su testigo nunca vio cuando buscaste @$handle el $when. Puede que tu solicitud haya llegado a otra persona: antes de confiar en este contacto, comparad los números de seguridad.';
+  }
+
+  @override
+  String get hdlForkAfterTitle =>
+      'Puede que el servicio de alias enviara tu solicitud a otra persona';
+
+  @override
+  String hdlUnconfirmedRequest(String handle, String when) {
+    return 'La respuesta del servicio de alias cuando buscaste @$handle el $when nunca la confirmó su testigo. Si alguien acepta esta solicitud, comparad los números de seguridad antes de confiar en quien la aceptó.';
+  }
+
+  @override
+  String hdlUnconfirmedContact(String handle, String when) {
+    return 'La respuesta del servicio de alias cuando buscaste @$handle el $when nunca la confirmó su testigo. Antes de confiar en este contacto, comparad los números de seguridad.';
+  }
+
+  @override
+  String get hdlUnconfirmedTitle =>
+      'La respuesta del servicio de alias nunca se confirmó';
 
   @override
   String requestsVia(String handle) {

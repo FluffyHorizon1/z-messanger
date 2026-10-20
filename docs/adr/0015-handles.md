@@ -9,8 +9,9 @@ reasoning that chose E, the Context and the shapes, stands as it was.
 **Built:** the protocol library (36.1 — `PROTOCOL.md` §21.0–§21.4, §21.7),
 the handle log (36.2, §21.5), introduction mailboxes at the relay (37,
 §21.6) and the app (38, §21.8), with the claims bill below paid in the
-repository. **Not deployed:** no handle log runs yet, and the app's defaults
-name none, so until one is deployed and pinned the app says handles are
+repository. **Not pinned:** a handle log runs, at `handles.zmessengers.com`,
+and so does its witness, at `handle-witness.zmessengers.com`, but the app's
+defaults name neither, so until a build pins them the app says handles are
 unavailable; the Play listing and the Data safety form change before the
 release that ships them. What Finnian may still veto is listed at the end of
 the Decision.
@@ -276,7 +277,28 @@ renumbered when they were written.
   not catch a history that departs after the witness's latest co‑signed
   head, shown at a first lookup: the lookup's head extends the record, and
   nothing is held to look again. No build pins the witness yet, nor the log;
-  the release that pins them pins all four values together.)
+  the release that pins them pins all four values together.) (2026‑10‑20:
+  Finnian's decision is to catch that after the fact, as the transparency
+  client does, rather than wait for the witness before sending, which would
+  make handles depend on the witness being there. The head a request is
+  sent on, when the witness's record did not cover it, is kept — those
+  contacts hold at most 20, those of requests still waiting as many as the
+  outgoing list holds, each for at most 30 days — and, as the transparency
+  client holds the head it keeps, every head a lookup on the device ends with
+  after it is held to it, and so is the first record that covers it, which a
+  head nothing looks up fetches on its own, twice at most, 20 to 30 minutes
+  and 30 days after the request, each check made only once it has its
+  answers; a fork found so is a warning on the request and on the contact
+  its acceptance added, to compare safety numbers, until the person
+  dismisses it, and a head that goes before the
+  witness covered it is a warning of its own, that the answer was never
+  confirmed (`PROTOCOL.md` §21.8). Still not caught as a fork: a head nothing
+  decides before it lapses — a witness that stops, or that will not follow an
+  entry the owner rule refuses, a log that withholds the proof, or a device
+  kept on a history that forked between that head and the witness's record —
+  which is said as never confirmed, that last at once, the first time a check
+  finds the log showing it two histories; and not at all, a fork shown to a
+  lookup that sent nothing.)
 
 Two things are not residuals because they are the design. A handle is a
 **standing open inbox** — bounded by the stamp, the caps and the 72‑hour
@@ -314,8 +336,9 @@ Questions this revision did not answer, and how phase 38 answered them
   (36.2), and the resolver checks it — under the owner the record names, for
   a claim, an update and a recover alike — and a recover's `rsig`. The
   owner rule over the label's whole history stays the log's and its
-  mirrors' to hold; a resolver keeps no head between lookups, so a log that
-  shows it another history is caught by a witness only (R50). Since
+  mirrors' to hold; a resolver keeps no head between lookups but one a
+  request was sent on before the witness covered it (2026‑10‑20, R50), so a
+  log that shows it another history is otherwise caught by a witness. Since
   2026‑10‑10 the resolver remembers what it found of each handle — owner,
   commitment, version, record — and refuses a later record the rule cannot
   lead to from there (§21.8): a substitution shown to someone who looked

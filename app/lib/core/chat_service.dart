@@ -658,6 +658,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     );
     await handles.load();
     await handles.keepInboundFor(svc.requestsByRid.keys.toSet());
+    await handles.keepWarningsFor(svc.contacts.keys.toSet());
     for (final e in svc.requestsByRid.entries) {
       e.value.via = handles.inboundFor(e.key)?.handle;
     }
@@ -2038,6 +2039,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   Future<void> _noteHandleAccepted(
       String rid, OutgoingHandleRequest answered) async {
     await vault.kvPut('hvia_$rid', answered.handle);
+    // §21.8: what the witness check keeps for the request is the contact's
+    // now — before the request is forgotten, which would take it along.
+    await handles.contactAddedThrough(rid, answered);
     await _insertSystemMessage(
         rid, systemBody(SystemKind.handleAccepted, {'h': answered.handle}));
     await handles.completeOutgoing(answered);
@@ -2883,8 +2887,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if ((_requestMarks.remove(rid) != null) | _requestsSeen.remove(rid)) {
       await _saveRequestMeta();
     }
-    // Phase 38: and what the handle service kept about that request.
+    // Phase 38: and what the handle service kept about that request — and,
+    // if they were added through a handle, what its witness check kept for
+    // them and a fork it found (§21.8).
     await _handles?.forgetInbound(rid);
+    await _handles?.contactGone(rid);
     // ADR 0020: group links waiting on their answer, and answers owed to
     // them, name them too.
     final links = _linkAdds.length + _linkJoins.length;

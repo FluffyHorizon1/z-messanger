@@ -51,13 +51,34 @@
 //  12. a claim the handle service refused as taken, whose read-back its
 //      witness then contradicted, says that — not that someone else holds
 //      the handle, nor the words for a claim a restore brought back — and
-//      offers to publish it again or cancel it, in Spanish too.
+//      offers to publish it again or cancel it, in Spanish too;
+//  13. a fork found after the fact (Finnian's decision of 2026-10-20) is
+//      said where what relied on it is shown, in the danger tone, in English
+//      and in Spanish: under the request still waiting, on the Handle tab;
+//      above the safety number on the contact's screen; at the top of their
+//      chat, which dismisses it; and in Settings' witness row, said before a
+//      lookup refused as a fork would be, the warning found last first, until
+//      none stands;
+//  14. an answer a request was sent on that the witness never confirmed —
+//      its kept head lapsed, pushed out, or out of reach of another witness —
+//      is said in the same four places, in the warning tone and in words of
+//      its own, not a fork's, in English and in Spanish, the one found last
+//      first in Settings; and a fork on the same request is said before it;
+//  15. while an answer a request was sent on stands said never confirmed
+//      because the log showed this device two histories with a head that
+//      extends it, Settings' witness row, for a lookup refused as a fork, does
+//      not say that nothing from that answer was used or sent: it says a
+//      request sent on an earlier answer may have relied on that history, and
+//      to see the warning on it, in the danger tone, in English and in
+//      Spanish; an answer never confirmed for another reason leaves the
+//      refused lookup's sentence as it was.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -73,6 +94,8 @@ import 'package:zapp/l10n/app_localizations_en.dart';
 import 'package:zapp/l10n/app_localizations_es.dart';
 import 'package:zapp/l10n/handle_text.dart';
 import 'package:zapp/l10n/when_text.dart';
+import 'package:zapp/ui/chat_screen.dart';
+import 'package:zapp/ui/contact_info_screen.dart';
 import 'package:zapp/ui/find_handle_screen.dart';
 import 'package:zapp/ui/handle_screen.dart';
 import 'package:zapp/ui/requests_screen.dart';
@@ -92,12 +115,18 @@ void main() {
   final dirs = <Directory>[];
   final services = <ChatService>[];
 
-  Future<ChatService> service({HandleConfig? config, bool linked = false}) async {
+  Future<ChatService> service(
+      {HandleConfig? config,
+      bool linked = false,
+      Future<void> Function(Vault v)? before}) async {
     final dir = await Directory.systemTemp.createTemp('z_hscreens');
     dirs.add(dir);
     final vault = await Vault.open(rootOverride: dir);
     final me = await ZIdentity.generate();
     await vault.kvPut('identity', jsonEncode(me.toJson()));
+    // What a vault holds before the service starts: a state no log is driven
+    // to here.
+    await before?.call(vault);
     if (linked) {
       // Enrolled to an account whose root it does not hold.
       final root = await ZIdentity.generate();
@@ -727,6 +756,541 @@ void main() {
         expect(find.text(words.hdlCancelClaim), findsOneWidget);
       }
       expect(es.hdlClaimForked('x'), isNot(l.hdlClaimForked('x')));
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  testWidgets('13. a fork found after the fact is said on the request, on the '
+      'contact\'s screen and chat, and in Settings, in both languages',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    // The chat screen makes an AudioRecorder, whose plugin the test shell
+    // does not have: its channel answers nothing.
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('com.llfbandit.record/messages'),
+        (call) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+            const MethodChannel('com.llfbandit.record/messages'), null));
+    await tester.runAsync(() async {
+      final witnessed = HandleConfig(
+          logUrl: silent.logUrl,
+          logPubB64: silent.logPubB64,
+          witnessUrl: 'http://127.0.0.1:1/sth.json',
+          witnessPubB64: b64(Uint8List(32)..fillRange(0, 32, 7)));
+      // A request still waiting for @ivo.13, as the vault holds one; and a
+      // contact, added by code, standing for the account an acceptance of a
+      // request to @hal.13 added. The warnings are set as a check of kept
+      // heads leaves them (handle_lookup_test 26 and 30 drive them).
+      final ivoId = Uint8List(32)..fillRange(0, 32, 4);
+      final svc = await service(
+          config: witnessed,
+          before: (v) => v.kvPut(
+              'handle_out',
+              jsonEncode([
+                {
+                  'h': 'ivo.13',
+                  'owner': b64(Uint8List(32)),
+                  'intro': b64(Uint8List(32)),
+                  'xintro': b64(Uint8List(32)),
+                  'ids': [b64(ivoId)],
+                  'at': 5,
+                },
+              ])));
+      final dir = dirs.first;
+      final peer = await service();
+      await svc.addContactFromCode(await peer.myContactCode());
+      final rid = peer.myRid;
+      expect(svc.contacts.containsKey(rid), isTrue);
+      final head = KtTreeHead(
+          size: 2,
+          logRoot: Uint8List(32),
+          mapRoot: Uint8List(32),
+          ts: 1,
+          sig: Uint8List(64));
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final onRequest = HandleForkWarning(
+          handle: 'ivo.13',
+          lookedUpMs: now - const Duration(days: 3).inMilliseconds,
+          foundMs: now - const Duration(hours: 1).inMilliseconds,
+          creqIds: [ivoId],
+          shown: head,
+          against: head);
+      final onContact = HandleForkWarning(
+          handle: 'hal.13',
+          lookedUpMs: now - const Duration(days: 2).inMilliseconds,
+          foundMs: now - const Duration(minutes: 1).inMilliseconds,
+          creqIds: [Uint8List(32)..fillRange(0, 32, 8)],
+          rid: rid,
+          shown: head,
+          against: head);
+      svc.handles.debugWarn(onRequest);
+      svc.handles.debugWarn(onContact);
+      expect(svc.handles.forkWarningForRequest(svc.handles.outgoing.single),
+          same(onRequest));
+      expect(svc.handles.forkWarningForContact(rid), same(onContact));
+      // A lookup refused as a fork too: the warning is said before it.
+      svc.handles.witnessForkMs = now;
+      expect(svc.handles.witnessState, HandleWitnessState.forked);
+
+      Color? colorOf(Finder text) => tester.widget<Text>(text).style?.color;
+      Icon iconOf(String title) => tester.widget<Icon>(find.descendant(
+          of: find.widgetWithText(ListTile, title), matching: find.byType(Icon)));
+
+      for (final (words, locale) in <(AppLocalizations, Locale?)>[
+        (l, null),
+        (es, const Locale('es')),
+      ]) {
+        final lang = words.localeName;
+        // Under the request on the Handle tab, in the danger tone, beside
+        // the button that forgets it.
+        await tester.pumpWidget(
+            wrap(svc, FindHandleView(key: UniqueKey()), locale: locale));
+        await until(tester, () => find.byType(FindHandleView).evaluate().isNotEmpty,
+            'the Handle tab ($lang)');
+        final tab = tester.element(find.byType(FindHandleView));
+        final requestText = find.text(words.hdlForkAfterRequest(
+            'ivo.13', whenText(tab, onRequest.lookedUpMs)));
+        await until(tester, () => requestText.evaluate().isNotEmpty,
+            'the request\'s warning ($lang)');
+        expect(colorOf(requestText), tab.z.danger);
+        expect(find.text(words.hdlForgetRequest), findsOneWidget);
+
+        // Above the safety number on the contact's screen.
+        await tester.pumpWidget(wrap(svc, ContactInfoScreen(key: UniqueKey(), rid: rid),
+            locale: locale));
+        await until(tester,
+            () => find.text(words.hdlForkAfterTitle).evaluate().isNotEmpty,
+            'the contact screen\'s warning ($lang)');
+        final info = tester.element(find.byType(ContactInfoScreen));
+        expect(
+            find.text(words.hdlForkAfterContact(
+                'hal.13', whenText(info, onContact.lookedUpMs))),
+            findsOneWidget);
+        expect(colorOf(find.text(words.hdlForkAfterTitle)), info.z.danger);
+        expect(
+            tester.getTopLeft(find.text(words.hdlForkAfterTitle)).dy,
+            lessThan(tester.getTopLeft(find.text(words.ciSafetyNumber)).dy),
+            reason: 'above the safety number');
+
+        // Settings: the warning found last, before the refused lookup.
+        await settingsOf(tester, svc, dir, 'the witness row ($lang)',
+            locale: locale,
+            ready: () => find
+                .text(words.stHdlWitnessForkedAfter('hal.13',
+                    whenText(tester.element(find.byType(SettingsScreen)),
+                        onContact.lookedUpMs)))
+                .evaluate()
+                .isNotEmpty);
+        final settings = tester.element(find.byType(SettingsScreen));
+        expect(iconOf(words.stHdlWitness).color, settings.z.danger);
+        expect(
+            find.text(words.stHdlWitnessForked(
+                whenText(settings, svc.handles.witnessForkMs!))),
+            findsNothing);
+      }
+
+      // At the top of the chat, in Spanish and then in English, where it is
+      // dismissed.
+      for (final (words, locale) in <(AppLocalizations, Locale?)>[
+        (es, const Locale('es')),
+        (l, null),
+      ]) {
+        final opened = DateTime.now().millisecondsSinceEpoch;
+        await tester.pumpWidget(
+            wrap(svc, ChatScreen(key: UniqueKey(), rid: rid), locale: locale));
+        await until(tester, () => find.byType(ChatScreen).evaluate().isNotEmpty,
+            'the chat (${words.localeName})');
+        // The chat marks itself opened in the vault; done before going on.
+        await untilAsync(
+            tester,
+            () async =>
+                (int.tryParse(await svc.vault.kvGet('last_open_$rid') ?? '') ??
+                    0) >=
+                opened,
+            'the chat marked opened (${words.localeName})');
+        final chat = tester.element(find.byType(ChatScreen));
+        final banner = find.text(words.hdlForkAfterContact(
+            'hal.13', whenText(chat, onContact.lookedUpMs)));
+        await until(tester, () => banner.evaluate().isNotEmpty,
+            'the chat\'s warning (${words.localeName})');
+        expect(find.text(words.dismiss), findsOneWidget);
+        // In the danger tone: the strip's icon, and the strip itself.
+        final strip = find.ancestor(of: banner, matching: find.byType(Row)).first;
+        final icon = tester.widget<Icon>(
+            find.descendant(of: strip, matching: find.byType(Icon)));
+        expect(icon.icon, Icons.gpp_bad);
+        expect(icon.color, chat.z.danger);
+        expect(
+            tester
+                .widget<Material>(
+                    find.ancestor(of: banner, matching: find.byType(Material)).first)
+                .color,
+            chat.z.danger.withValues(alpha: 0.12));
+      }
+      await tester.tap(find.text(l.dismiss));
+      await until(tester, () => svc.handles.forkWarningForContact(rid) == null,
+          'the warning dismissed');
+      await untilAsync(
+          tester,
+          () async => !((await svc.vault.kvGet('handle_witness_warnings')) ?? '')
+              .contains(rid),
+          'the dismissal stored');
+      await until(tester, () => find.textContaining('@hal.13').evaluate().isEmpty,
+          'the chat\'s warning gone');
+      expect(find.text(l.dismiss), findsNothing);
+      // Settings then says the one that stands, on the request.
+      await settingsOf(tester, svc, dir, 'the request\'s warning in Settings',
+          ready: () => find
+              .text(l.stHdlWitnessForkedAfter('ivo.13',
+                  whenText(tester.element(find.byType(SettingsScreen)),
+                      onRequest.lookedUpMs)))
+              .evaluate()
+              .isNotEmpty);
+
+      // Each of them Spanish, not English copied.
+      for (final (en, sp) in [
+        (l.hdlForkAfterRequest('x', 'y'), es.hdlForkAfterRequest('x', 'y')),
+        (l.hdlForkAfterContact('x', 'y'), es.hdlForkAfterContact('x', 'y')),
+        (l.hdlForkAfterTitle, es.hdlForkAfterTitle),
+        (l.stHdlWitnessForkedAfter('x', 'y'), es.stHdlWitnessForkedAfter('x', 'y')),
+      ]) {
+        expect(sp, isNot(en));
+      }
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  testWidgets('14. an answer never confirmed is said where a fork would be, '
+      'in the warning tone and in words of its own, in both languages; a fork '
+      'beside it is said first', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('com.llfbandit.record/messages'),
+        (call) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+            const MethodChannel('com.llfbandit.record/messages'), null));
+    await tester.runAsync(() async {
+      final witnessed = HandleConfig(
+          logUrl: silent.logUrl,
+          logPubB64: silent.logPubB64,
+          witnessUrl: 'http://127.0.0.1:1/sth.json',
+          witnessPubB64: b64(Uint8List(32)..fillRange(0, 32, 7)));
+      // A request still waiting for @jon.14, and a contact standing for the
+      // account an acceptance of a request to @kim.14 added: each kept head
+      // went, as one that lapses or is pushed out goes, before the witness
+      // covered it (handle_lookup_test 26, 32, 34 and 37 drive them).
+      final jonId = Uint8List(32)..fillRange(0, 32, 5);
+      final svc = await service(
+          config: witnessed,
+          before: (v) => v.kvPut(
+              'handle_out',
+              jsonEncode([
+                {
+                  'h': 'jon.14',
+                  'owner': b64(Uint8List(32)),
+                  'intro': b64(Uint8List(32)),
+                  'xintro': b64(Uint8List(32)),
+                  'ids': [b64(jonId)],
+                  'at': 5,
+                },
+              ])));
+      final dir = dirs.first;
+      final peer = await service();
+      await svc.addContactFromCode(await peer.myContactCode());
+      final rid = peer.myRid;
+      final head = KtTreeHead(
+          size: 2,
+          logRoot: Uint8List(32),
+          mapRoot: Uint8List(32),
+          ts: 1,
+          sig: Uint8List(64));
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final onRequest = HandleForkWarning(
+          kind: HandleWarningKind.unconfirmed,
+          handle: 'jon.14',
+          lookedUpMs: now - const Duration(days: 31).inMilliseconds,
+          foundMs: now - const Duration(hours: 1).inMilliseconds,
+          creqIds: [jonId],
+          shown: head);
+      final onContact = HandleForkWarning(
+          kind: HandleWarningKind.unconfirmed,
+          handle: 'kim.14',
+          lookedUpMs: now - const Duration(days: 30, hours: 2).inMilliseconds,
+          foundMs: now - const Duration(minutes: 1).inMilliseconds,
+          creqIds: [Uint8List(32)..fillRange(0, 32, 8)],
+          rid: rid,
+          shown: head);
+      svc.handles.debugWarn(onRequest);
+      svc.handles.debugWarn(onContact);
+      expect(svc.handles.witnessState, HandleWitnessState.unconfirmed);
+
+      Color? colorOf(Finder text) => tester.widget<Text>(text).style?.color;
+      Icon iconOf(String title) => tester.widget<Icon>(find.descendant(
+          of: find.widgetWithText(ListTile, title), matching: find.byType(Icon)));
+
+      for (final (words, locale) in <(AppLocalizations, Locale?)>[
+        (l, null),
+        (es, const Locale('es')),
+      ]) {
+        final lang = words.localeName;
+        // Under the request on the Handle tab, in the warning tone.
+        await tester.pumpWidget(
+            wrap(svc, FindHandleView(key: UniqueKey()), locale: locale));
+        await until(tester, () => find.byType(FindHandleView).evaluate().isNotEmpty,
+            'the Handle tab ($lang)');
+        final tab = tester.element(find.byType(FindHandleView));
+        final requestText = find.text(words.hdlUnconfirmedRequest(
+            'jon.14', whenText(tab, onRequest.lookedUpMs)));
+        await until(tester, () => requestText.evaluate().isNotEmpty,
+            'the request\'s warning ($lang)');
+        expect(colorOf(requestText), tab.z.warn);
+        expect(iconOf('@jon.14').icon, Icons.gpp_maybe);
+        expect(iconOf('@jon.14').color, tab.z.warn);
+        expect(
+            find.text(words.hdlForkAfterRequest(
+                'jon.14', whenText(tab, onRequest.lookedUpMs))),
+            findsNothing);
+
+        // Above the safety number on the contact's screen.
+        await tester.pumpWidget(wrap(svc, ContactInfoScreen(key: UniqueKey(), rid: rid),
+            locale: locale));
+        await until(tester,
+            () => find.text(words.hdlUnconfirmedTitle).evaluate().isNotEmpty,
+            'the contact screen\'s warning ($lang)');
+        final info = tester.element(find.byType(ContactInfoScreen));
+        expect(
+            find.text(words.hdlUnconfirmedContact(
+                'kim.14', whenText(info, onContact.lookedUpMs))),
+            findsOneWidget);
+        expect(colorOf(find.text(words.hdlUnconfirmedTitle)), info.z.warn);
+        expect(find.text(words.hdlForkAfterTitle), findsNothing);
+        expect(
+            tester.getTopLeft(find.text(words.hdlUnconfirmedTitle)).dy,
+            lessThan(tester.getTopLeft(find.text(words.ciSafetyNumber)).dy),
+            reason: 'above the safety number');
+
+        // Settings: the one found last, in the warning tone.
+        await settingsOf(tester, svc, dir, 'the witness row ($lang)',
+            locale: locale,
+            ready: () => find
+                .text(words.stHdlWitnessUnconfirmed('kim.14',
+                    whenText(tester.element(find.byType(SettingsScreen)),
+                        onContact.lookedUpMs)))
+                .evaluate()
+                .isNotEmpty);
+        final settings = tester.element(find.byType(SettingsScreen));
+        expect(iconOf(words.stHdlWitness).color, settings.z.warn);
+        expect(iconOf(words.stHdlWitness).icon, Icons.gpp_maybe);
+      }
+
+      // At the top of the chat, in the warning tone, where it is dismissed.
+      for (final (words, locale) in <(AppLocalizations, Locale?)>[
+        (es, const Locale('es')),
+        (l, null),
+      ]) {
+        final opened = DateTime.now().millisecondsSinceEpoch;
+        await tester.pumpWidget(
+            wrap(svc, ChatScreen(key: UniqueKey(), rid: rid), locale: locale));
+        await until(tester, () => find.byType(ChatScreen).evaluate().isNotEmpty,
+            'the chat (${words.localeName})');
+        // The chat marks itself opened in the vault; done before going on.
+        await untilAsync(
+            tester,
+            () async =>
+                (int.tryParse(await svc.vault.kvGet('last_open_$rid') ?? '') ??
+                    0) >=
+                opened,
+            'the chat marked opened (${words.localeName})');
+        final chat = tester.element(find.byType(ChatScreen));
+        final banner = find.text(words.hdlUnconfirmedContact(
+            'kim.14', whenText(chat, onContact.lookedUpMs)));
+        await until(tester, () => banner.evaluate().isNotEmpty,
+            'the chat\'s warning (${words.localeName})');
+        expect(find.text(words.dismiss), findsOneWidget);
+        final strip = find.ancestor(of: banner, matching: find.byType(Row)).first;
+        final icon = tester.widget<Icon>(
+            find.descendant(of: strip, matching: find.byType(Icon)));
+        expect(icon.icon, Icons.gpp_maybe);
+        expect(icon.color, chat.z.warn);
+        expect(
+            tester
+                .widget<Material>(
+                    find.ancestor(of: banner, matching: find.byType(Material)).first)
+                .color,
+            chat.z.warn.withValues(alpha: 0.12));
+      }
+      await tester.tap(find.text(l.dismiss));
+      await until(tester, () => svc.handles.forkWarningForContact(rid) == null,
+          'the warning dismissed');
+      await untilAsync(
+          tester,
+          () async => !((await svc.vault.kvGet('handle_witness_warnings')) ?? '')
+              .contains(rid),
+          'the dismissal stored');
+      await until(tester, () => find.textContaining('@kim.14').evaluate().isEmpty,
+          'the chat\'s warning gone');
+      // Settings then says the one that stands, on the request.
+      await settingsOf(tester, svc, dir, 'the request\'s warning in Settings',
+          ready: () => find
+              .text(l.stHdlWitnessUnconfirmed('jon.14',
+                  whenText(tester.element(find.byType(SettingsScreen)),
+                      onRequest.lookedUpMs)))
+              .evaluate()
+              .isNotEmpty);
+
+      // A fork found on the same request is said before it, there and in
+      // Settings, in the danger tone.
+      final fork = HandleForkWarning(
+          handle: 'jon.14',
+          lookedUpMs: onRequest.lookedUpMs,
+          foundMs: now - const Duration(hours: 2).inMilliseconds,
+          creqIds: [jonId],
+          shown: head,
+          against: head);
+      svc.handles.debugWarn(fork);
+      expect(svc.handles.forkWarningForRequest(svc.handles.outgoing.single),
+          same(fork));
+      expect(svc.handles.witnessState, HandleWitnessState.forked);
+      await settingsOf(tester, svc, dir, 'the fork first in Settings',
+          ready: () => find
+              .text(l.stHdlWitnessForkedAfter('jon.14',
+                  whenText(tester.element(find.byType(SettingsScreen)),
+                      onRequest.lookedUpMs)))
+              .evaluate()
+              .isNotEmpty);
+      expect(iconOf(l.stHdlWitness).color,
+          tester.element(find.byType(SettingsScreen)).z.danger);
+
+      // Each of them Spanish, not English copied, and none a fork's words.
+      for (final (en, sp, forkEn) in [
+        (
+          l.hdlUnconfirmedRequest('x', 'y'),
+          es.hdlUnconfirmedRequest('x', 'y'),
+          l.hdlForkAfterRequest('x', 'y')
+        ),
+        (
+          l.hdlUnconfirmedContact('x', 'y'),
+          es.hdlUnconfirmedContact('x', 'y'),
+          l.hdlForkAfterContact('x', 'y')
+        ),
+        (l.hdlUnconfirmedTitle, es.hdlUnconfirmedTitle, l.hdlForkAfterTitle),
+        (
+          l.stHdlWitnessUnconfirmed('x', 'y'),
+          es.stHdlWitnessUnconfirmed('x', 'y'),
+          l.stHdlWitnessForkedAfter('x', 'y')
+        ),
+      ]) {
+        expect(sp, isNot(en));
+        expect(en, isNot(forkEn));
+      }
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  testWidgets('15. while an answer is said never confirmed because the log '
+      'showed this device a fork, Settings does not say nothing from a '
+      'refused answer was used: it points to that warning, in both languages',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.runAsync(() async {
+      final witnessed = HandleConfig(
+          logUrl: silent.logUrl,
+          logPubB64: silent.logPubB64,
+          witnessUrl: 'http://127.0.0.1:1/sth.json',
+          witnessPubB64: b64(Uint8List(32)..fillRange(0, 32, 7)));
+      // A contact standing for the account an acceptance of a request to
+      // @lou.15 added; the warnings are set as a check leaves them
+      // (handle_lookup_test 30 and 42 drive them).
+      final svc = await service(config: witnessed);
+      final dir = dirs.last;
+      final peer = await service();
+      await svc.addContactFromCode(await peer.myContactCode());
+      final rid = peer.myRid;
+      final head = KtTreeHead(
+          size: 2,
+          logRoot: Uint8List(32),
+          mapRoot: Uint8List(32),
+          ts: 1,
+          sig: Uint8List(64));
+      final now = DateTime.now().millisecondsSinceEpoch;
+      Icon iconOf(String title) => tester.widget<Icon>(find.descendant(
+          of: find.widgetWithText(ListTile, title), matching: find.byType(Icon)));
+      // Never confirmed for another reason — the head lapsed — and a lookup
+      // refused as a fork since: the refused lookup's own sentence.
+      final lapsed = HandleForkWarning(
+          kind: HandleWarningKind.unconfirmed,
+          handle: 'lou.15',
+          lookedUpMs: now - const Duration(days: 31).inMilliseconds,
+          foundMs: now - const Duration(hours: 1).inMilliseconds,
+          creqIds: [Uint8List(32)..fillRange(0, 32, 6)],
+          rid: rid,
+          shown: head);
+      svc.handles.debugWarn(lapsed);
+      svc.handles.witnessForkMs = now - const Duration(minutes: 1).inMilliseconds;
+      expect(svc.handles.witnessState, HandleWitnessState.forked);
+      expect(svc.handles.witnessForkRelied, isFalse);
+      await settingsOf(tester, svc, dir, 'a lapse beside a refused lookup',
+          ready: () => find
+              .text(l.stHdlWitnessForked(whenText(
+                  tester.element(find.byType(SettingsScreen)),
+                  svc.handles.witnessForkMs!)))
+              .evaluate()
+              .isNotEmpty);
+      await svc.handles.dismissForkWarning(lapsed);
+
+      // Said at once, while its head is kept, because the log showed this
+      // device two histories with a head that extends it.
+      final atFork = HandleForkWarning(
+          kind: HandleWarningKind.unconfirmed,
+          handle: 'lou.15',
+          lookedUpMs: now - const Duration(days: 1).inMilliseconds,
+          foundMs: now - const Duration(minutes: 1).inMilliseconds,
+          creqIds: [Uint8List(32)..fillRange(0, 32, 6)],
+          rid: rid,
+          shown: head,
+          atFork: true);
+      svc.handles.debugWarn(atFork);
+      expect(svc.handles.witnessState, HandleWitnessState.forked);
+      expect(svc.handles.witnessForkRelied, isTrue);
+      for (final (words, locale) in <(AppLocalizations, Locale?)>[
+        (l, null),
+        (es, const Locale('es')),
+      ]) {
+        final lang = words.localeName;
+        await settingsOf(tester, svc, dir, 'the witness row ($lang)',
+            locale: locale,
+            ready: () => find
+                .text(words.stHdlWitnessForkedRelied(whenText(
+                    tester.element(find.byType(SettingsScreen)),
+                    svc.handles.witnessForkMs!)))
+                .evaluate()
+                .isNotEmpty);
+        final settings = tester.element(find.byType(SettingsScreen));
+        expect(
+            find.text(words.stHdlWitnessForked(
+                whenText(settings, svc.handles.witnessForkMs!))),
+            findsNothing,
+            reason: 'not that nothing was used ($lang)');
+        expect(iconOf(words.stHdlWitness).color, settings.z.danger);
+      }
+      // Dismissed, the refused lookup's sentence is true again.
+      await svc.handles.dismissForkWarning(atFork);
+      expect(svc.handles.witnessForkRelied, isFalse);
+      await settingsOf(tester, svc, dir, 'the warning dismissed',
+          ready: () => find
+              .text(l.stHdlWitnessForked(whenText(
+                  tester.element(find.byType(SettingsScreen)),
+                  svc.handles.witnessForkMs!)))
+              .evaluate()
+              .isNotEmpty);
+      expect(es.stHdlWitnessForkedRelied('x'), isNot(l.stHdlWitnessForkedRelied('x')));
+      expect(l.stHdlWitnessForkedRelied('x'), isNot(l.stHdlWitnessForked('x')));
+      expect(l.stHdlWitnessForkedRelied('x'), isNot(contains('Nothing from')));
       await tester.pumpWidget(const SizedBox());
     });
   });

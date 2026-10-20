@@ -15,6 +15,7 @@ import '../core/chat_service.dart';
 import '../core/handles.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/handle_text.dart';
+import '../l10n/when_text.dart';
 import 'theme.dart';
 
 class FindHandleView extends StatefulWidget {
@@ -174,8 +175,28 @@ class _FindHandleViewState extends State<FindHandleView> {
             for (final o in h.outgoing)
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.hourglass_empty),
+                // §21.8: a request sent on a lookup found, after the fact, to
+                // be a history the handle service's witness never saw says
+                // so, in the danger tone, until it is forgotten or answered;
+                // one whose answer the witness never confirmed says that, in
+                // the warning tone.
+                leading: switch (h.forkWarningForRequest(o)) {
+                  null => const Icon(Icons.hourglass_empty),
+                  final w when w.isFork =>
+                    Icon(Icons.gpp_bad, color: context.z.danger),
+                  _ => Icon(Icons.gpp_maybe, color: context.z.warn),
+                },
                 title: Text('@${o.handle}'),
+                subtitle: switch (h.forkWarningForRequest(o)) {
+                  final w? => Text(
+                      (w.isFork ? l.hdlForkAfterRequest : l.hdlUnconfirmedRequest)(
+                          w.handle, whenText(context, w.lookedUpMs)),
+                      style: TextStyle(
+                          color: w.isFork ? context.z.danger : context.z.warn,
+                          fontSize: 12.5,
+                          height: 1.35)),
+                  null => null,
+                },
                 trailing: TextButton(
                   onPressed: () => h.forgetOutgoing(o.handle),
                   child: Text(l.hdlForgetRequest),

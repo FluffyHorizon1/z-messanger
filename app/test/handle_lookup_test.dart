@@ -84,12 +84,13 @@
 //      proof.
 //
 // And the handle log's witness (phase 19, 2026-10-19). A resolver keeps no
-// head between lookups, so a log that shows one reader a history it showed
-// nobody else is caught only by a witness: a mirror, run by somebody else,
-// that co-signs each head it verified. Each lookup's head is now held to the
-// witness's record under the key pinned for it (§19.5 step 3, §21.8) — the
-// reference witness's record (kt/tools/mirror.js --mode handles) over the
-// real handle log, or one made here in the handle contexts:
+// head between lookups but those a request was sent on (after the fact,
+// below), so a log that shows one reader a history it showed nobody else is
+// caught by a witness: a mirror, run by somebody else, that co-signs each
+// head it verified. Each lookup's head is now held to the witness's record
+// under the key pinned for it (§19.5 step 3, §21.8) — the reference
+// witness's record (kt/tools/mirror.js --mode handles) over the real handle
+// log, or one made here in the handle contexts:
 //  15. a forked log — one key, two histories, the witness verifying the
 //      other — fails the lookup as forked whether the witness's head is the
 //      same size under other roots, behind with a proof that fails, or ahead
@@ -130,15 +131,20 @@
 //      under: kept across a restart, forgotten by a build that pins another
 //      witness, and when Settings saves another witness, none, or another log
 //      under the same one — not when it saves the same;
-//  26. THE KNOWN RESIDUAL (THREAT_MODEL R50, PROTOCOL §21.8), pinned as it
-//      stands so that a remedy flips it on purpose: a history that departs
+//  26. THE RESIDUAL, TURNED OVER ON PURPOSE (Finnian's decision of
+//      2026-10-20; THREAT_MODEL R50, PROTOCOL §21.8): a history that departs
 //      after the witness's latest co-signed head, shown at a first lookup,
-//      passes the check and counts as agreement — an update the owner rule
-//      refuses, appended after the witness's head (the reference witness
-//      then refuses to follow the log, and tells nobody this lookup asks),
-//      and a second history under the same key begun after it; the record
-//      used again for ten minutes passes the same lookup after the witness
-//      has moved on, until it is fetched again, and then it is the fork;
+//      still passes that lookup as agreement — but the head a request is
+//      sent on is kept, and the next lookup after the witness moves on ends
+//      in a fork found after the fact, on the contact the operator's
+//      acceptance of that request added (a second history under the same
+//      key begun after the witness's head, the operator's app accepting).
+//      The record used again for ten minutes covers nothing kept; fetched
+//      again, it does. And an update the owner rule refuses, appended after
+//      the witness's head — the reference witness refuses to follow the
+//      log, so no record ever covers the head kept for the request sent on
+//      it — is said when the head lapses: 30 days on, the request still
+//      waiting is told the answer it was sent on was never confirmed;
 //  27. a log that will not prove the way between its head and its witness's
 //      fails the lookup — the witness behind, or ahead with the log's own
 //      head not below it — as unreachable, and one that serves something
@@ -150,6 +156,115 @@
 //      (the drain goes on), across a restart; a claim the log refuses as
 //      taken, whose read-back is refused as forked, is held with the fork as
 //      its problem rather than taken; and another witness forgets it.
+//
+// And after the fact (2026-10-20): a head the witness had not covered, kept
+// with the request sent on it; every head the log shows later held to it, as
+// the transparency client holds the head it keeps; and the first record that
+// covers it held to it too.
+//  29. a kept head goes once a covering record agrees — at its size with its
+//      roots, and ahead of it with the log's proof from the kept size — and
+//      the witness agrees; only a request keeps one: a lookup that sends
+//      nothing, a claim's check, a recovery's read and the owner's reads of
+//      its own record keep none, a head the record already covers is not
+//      kept, and with no witness nothing is; and every way a record is
+//      fetched checks what is kept, the owner's drain read among them;
+//  30. a fork found after the fact marks exactly what relied on its head and
+//      nothing else: the contact the operator's acceptance of the request
+//      added, and a request on a forked head still waiting — not a request
+//      the record covered when it was sent, nor one whose kept head the
+//      witness had covered before the histories parted, nor one on a head
+//      the fork departs after (shown the history that forked, a device
+//      cannot tell that head from one past the fork, so its check waits and
+//      what relied on it is told at once its answer was never confirmed;
+//      shown the witness's, it is covered and that warning goes, while a
+//      forked head's is replaced by the fork's), nor a contact added by code;
+//      and the warnings are sealed;
+//  31. a proof the log withholds keeps the check pending: the head stays
+//      kept, nothing is warned of, and the check is not the witness agreeing
+//      (asked without an answer, quiet once that lasts) — a proof withheld,
+//      and something served in its place that is not one; served, the proof
+//      ends the check as consistent, and on a forked head as the fork; and a
+//      record used again for ten minutes keeps a pending check pending,
+//      asked again at most once in that time, neither the agreement nor the
+//      quiet timer moving;
+//  32. the bound: at most 20 heads that contacts hold, the one looked up
+//      longest ago going first, and a head no contact holds bounded by the
+//      outgoing list, not by them; each for at most 30 days; and a head the
+//      bound or the lapse puts out of reach before the witness covered it is
+//      said — never confirmed — on the contact or the waiting request that
+//      relied on it;
+//  33. a restart keeps the kept heads and the warnings, sealed, and a backup
+//      carries them with the requests they are on; a restore leaves out one
+//      whose request the archive does not hold, and one that is not their
+//      shape, and the first start drops a warning whose contact the archive
+//      did not bring back;
+//  34. a change of log or witness puts the kept heads out of reach of a
+//      check — another witness, none, another log under the same witness,
+//      and a build that pins another witness under a vault that never saved
+//      one — so what relied on each is told it was never confirmed, as is a
+//      request sent after the change on a lookup made before it; and the
+//      warnings stay;
+//  35. a warning goes when the person dismisses it, when the request it is on
+//      is forgotten, and when the contact it is on is deleted, taking what
+//      was kept for that contact with it; and nothing else ends it — not the
+//      witness agreeing again, nor the request being answered, which moves
+//      it to the contact;
+//  36. a fork padded past what the honest history reaches (the review's
+//      PROBE A): kept on the fork, the witness's record below the kept head
+//      contradicts the head the log shows next, and so the kept one; taken
+//      back to the honest history, the log shows a head smaller than the one
+//      kept — each ends in the warning on the contact and on the request
+//      still waiting, and Settings says the request was sent;
+//  37. a kept head the witness never covers is never dropped in silence: a
+//      proof the log withholds for 30 days (the review's PROBE B), and a
+//      witness that cannot be reached for 30 days and a day of tries after,
+//      each end in the warning on the contact.
+//
+// And a kept head checked on its own (2026-10-24): twice at most, each time
+// one record fetched afresh for every head due and every kept head held to
+// it as a lookup's record is — 20 to 30 minutes after it was kept, and once
+// more when it is 30 days old — a few seconds after the app is next in front.
+//  38. no false alarm: a requester with no handle of her own, a log a head
+//      past the witness when she looked up, a witness that follows it; half
+//      an hour on, in front, one record covers the head, which goes with
+//      nothing said, and 30 days on, offline for a day, there is nothing to
+//      say;
+//  39. a fork padded past what the honest history reaches, with no lookup
+//      after it, is found at the check-back as a fork — kept on the fork and
+//      taken back to the honest history alike — not said at the lapse as
+//      never confirmed;
+//  40. the fetches: one record for every head due, none with no head kept,
+//      none again once a head is decided or its check-back spent, and the
+//      last check once, at 30 days, after which what it leaves undecided is
+//      said as never confirmed; and while the app stays in front, a one-shot
+//      timer brings the moment of the check-back;
+//  41. a head the check-back could not decide, the witness unreachable then,
+//      is decided by the last check: covered by day 30, it goes with nothing
+//      said.
+//
+// And what a second review of those checks found (2026-10-24):
+//  42. a device kept on a fork the honest history has grown past is told at
+//      once, on the contact its request added, that the answer it sent on was
+//      never confirmed — no fork it cannot show, the head still kept, and the
+//      check-back saying nothing more (PROBE D);
+//  43. 30 days on, that warning stands and the head goes (PROBE D30);
+//  44. a check that gets no answers spends nothing: offline at the one moment
+//      after 30 days that is both its checks, it is tried again at a later
+//      moment in front, and a head the witness covered goes with nothing said
+//      (PROBE E);
+//  45. so does one the app is killed during: the next start lapses nothing,
+//      and a later check covers the head (PROBE E2);
+//  46. and one a throttle stops: a check-back within ten minutes of a check
+//      left pending asks nothing then, and is made at a later moment, the
+//      proof asked then (PROBE H);
+//  47. a burst of requests in honest operation raises no warning: twenty
+//      inside one record's reuse, while an acceptance holds another head, are
+//      bounded by the outgoing list, and the witness, following, covers them
+//      all;
+//  48. a check is never made at the moment the app comes to the front, but a
+//      few seconds after it, drawn as the drain's first wait is; and the
+//      check-back's moment is drawn from 20 to 30 minutes after the request
+//      (PROBE F).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 8))
 library;
@@ -288,9 +403,12 @@ class _Withholding implements KtFetcher {
   final denied = <String>[];
   bool garbage = false;
 
+  /// Off, every proof is served as the log serves it.
+  bool withholding = true;
+
   @override
   Future<KtResponse> get(Uri url) async {
-    if (url.path == '/kt/v1/consistency') {
+    if (url.path == '/kt/v1/consistency' && withholding) {
       inner.urls.add(url);
       denied.add(url.query);
       return garbage ? KtResponse(200, '{"proof":7}') : KtResponse(503, '{}');
@@ -300,6 +418,112 @@ class _Withholding implements KtFetcher {
 
   @override
   Future<KtResponse> post(Uri url, String jsonBody) => inner.post(url, jsonBody);
+}
+
+/// The operator answering the configured log's address from another history
+/// under the same key once [on] — the log on port [from] served by the one
+/// on [to] — and every other address, the witness's among them, as before.
+class _Switch implements KtFetcher {
+  _Switch(this.inner, this.from, this.to);
+  final KtFetcher inner;
+  final int from, to;
+  bool on = false;
+  Uri _route(Uri u) => on && u.port == from ? u.replace(port: to) : u;
+  @override
+  Future<KtResponse> get(Uri url) => inner.get(_route(url));
+  @override
+  Future<KtResponse> post(Uri url, String jsonBody) =>
+      inner.post(_route(url), jsonBody);
+}
+
+/// A log that withholds only the proofs whose `first=` is [first] — a size it
+/// knows it showed one reader — and serves every other.
+class _WithholdFirst implements KtFetcher {
+  _WithholdFirst(this.inner);
+  final KtFetcher inner;
+  int? first;
+  final denied = <String>[];
+
+  @override
+  Future<KtResponse> get(Uri url) async {
+    if (url.path == '/kt/v1/consistency' &&
+        first != null &&
+        url.queryParameters['first'] == '$first') {
+      denied.add(url.query);
+      return KtResponse(503, '{}');
+    }
+    return inner.get(url);
+  }
+
+  @override
+  Future<KtResponse> post(Uri url, String jsonBody) => inner.post(url, jsonBody);
+}
+
+/// The network gone for a moment: while [offline], every request fails as a
+/// socket that cannot connect, and nothing answers at all.
+class _Flaky implements KtFetcher {
+  _Flaky(this.inner);
+  final KtFetcher inner;
+  bool offline = false;
+  int refused = 0;
+
+  @override
+  Future<KtResponse> get(Uri url) async {
+    if (offline) {
+      refused++;
+      throw const SocketException('offline for a moment');
+    }
+    return inner.get(url);
+  }
+
+  @override
+  Future<KtResponse> post(Uri url, String jsonBody) async {
+    if (offline) {
+      refused++;
+      throw const SocketException('offline for a moment');
+    }
+    return inner.post(url, jsonBody);
+  }
+}
+
+/// Requests that never complete while [hang]: the app is killed before an
+/// answer arrives.
+class _Hang implements KtFetcher {
+  _Hang(this.inner);
+  final KtFetcher inner;
+  bool hang = false;
+  int hung = 0;
+
+  @override
+  Future<KtResponse> get(Uri url) {
+    if (hang) {
+      hung++;
+      return Completer<KtResponse>().future;
+    }
+    return inner.get(url);
+  }
+
+  @override
+  Future<KtResponse> post(Uri url, String jsonBody) => inner.post(url, jsonBody);
+}
+
+/// Every request written down with the moment it was made.
+class _Clocked implements KtFetcher {
+  _Clocked(this.inner);
+  final KtFetcher inner;
+  final at = <(DateTime, Uri)>[];
+
+  @override
+  Future<KtResponse> get(Uri url) {
+    at.add((DateTime.now(), url));
+    return inner.get(url);
+  }
+
+  @override
+  Future<KtResponse> post(Uri url, String jsonBody) {
+    at.add((DateTime.now(), url));
+    return inner.post(url, jsonBody);
+  }
 }
 
 /// A handle log run by kt/test/handle_operator_log.js.
@@ -604,7 +828,8 @@ void main() {
       KtFetcher? fetcher,
       Vault? vault,
       ZIdentity? id,
-      int? seed}) async {
+      int? seed,
+      int Function()? now}) async {
     final Vault v;
     final ZIdentity identity;
     if (vault == null) {
@@ -625,7 +850,8 @@ void main() {
             Transport(identity: identity, serverUrl: 'ws://127.0.0.1:$relayPort'),
         ktConfig: KtConfig.off,
         handleConfig: config,
-        handleFetcher: fetcher);
+        handleFetcher: fetcher,
+        handleNow: now);
     final h = svc.handles;
     if (seed != null) h.random = Random(seed);
     h.claimDelayMin = const Duration(milliseconds: 150);
@@ -847,6 +1073,82 @@ void main() {
 
   Matcher forked() => isA<HandleException>()
       .having((e) => e.failure, 'failure', HandleFailure.forked);
+
+  /// [s] claims [handle] in the log it is configured with: published, and
+  /// its mailbox drained once (which flags it at the relay).
+  Future<void> claimIn(ChatService s, String handle) async {
+    final draft = await s.handles.prepareClaim(Handle.parse(handle), pow: 16);
+    await s.handles.commitClaim(draft);
+    await waitUntil(() => s.handles.own?.phase == HandlePhase.live,
+        what: '$handle published');
+    await waitUntil(() => s.handles.drains >= 1,
+        what: '$handle\'s mailbox drained and flagged');
+  }
+
+  /// [owner] drains its mailbox until the request from [rid] is filed.
+  Future<void> receives(ChatService owner, String rid) => waitUntil(() async {
+        await owner.handles.drain();
+        return owner.requestsByRid.containsKey(rid);
+      }, what: '${owner.displayName} filing the request from $rid');
+
+  /// [asker] holds [owner] as the contact its request to [handle] made, by
+  /// the acknowledgement: the contact is there, and the request answered.
+  Future<void> linked(ChatService asker, ChatService owner, String handle) =>
+      waitUntil(
+          () =>
+              asker.contacts.containsKey(owner.myRid) &&
+              asker.handles.outgoing.every((o) => o.handle != handle),
+          what: '${asker.displayName} linked to ${owner.displayName} '
+              'through $handle');
+
+  /// The same claim of [handle] in each of [logs], in the same hour: their
+  /// histories stay one.
+  Future<void> claimInEach(List<_Log> logs, String handle) async {
+    final label = await labelOf(handle);
+    final rk = await handleRecoveryKey(await RecoveryCode.generate(), label);
+    final owner = randomBytes(32), intro = randomBytes(32);
+    final rec = await recordOf(HandleRecordKind.claim, owner, intro, rk.rc);
+    for (final log in logs) {
+      await put(log, label, 1, rec, owner);
+    }
+  }
+
+  /// Two histories under one key — [y] the one a witness verifies, [x] the
+  /// one a reader is shown — the same up to a claim of [shared] both
+  /// accepted in the same hour; and a witness of [y], synced there.
+  Future<(_Log, _Log, _Witness)> twoHistories(String shared) async {
+    final y = await startLog();
+    final x = await startLog(key: y.seed);
+    await claimInEach([y, x], shared);
+    expect((await headOf(x)).sameRootsAs(await headOf(y)), isTrue,
+        reason: 'one prefix in both histories (accepted in the same hour)');
+    return (x, y, await witnessOf(y));
+  }
+
+  /// A warning's request ids, for comparing with a request's.
+  Set<String> idsOf(List<Uint8List> ids) => {for (final i in ids) b64(i)};
+
+  /// The time [d] from now, for a restart that is that much later.
+  int laterBy(Duration d) =>
+      DateTime.now().millisecondsSinceEpoch + d.inMilliseconds;
+
+  /// Whether [cond] comes true within [within], polled as [waitUntil] polls:
+  /// for a step whose effect a criterion asserts afterwards, among the rest.
+  Future<bool> settled(FutureOr<bool> Function() cond,
+      {Duration within = const Duration(seconds: 10)}) async {
+    final deadline = DateTime.now().add(within);
+    while (!await cond()) {
+      if (DateTime.now().isAfter(deadline)) return false;
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+    return true;
+  }
+
+  /// [s]'s clock moved [d] on from where it stands.
+  void shiftClock(ChatService s, Duration d) {
+    final was = s.handles.now;
+    s.handles.now = () => was() + d.inMilliseconds;
+  }
 
   // ---------------------------------------------------------------------------
 
@@ -2151,18 +2453,82 @@ void main() {
     expect(await sue.vault.kvGet('handle_witness_ok_ms'), isNull);
   });
 
-  test('26. the known residual: a history that departs after the witness\'s '
-      'latest co-signed head passes a first lookup, and counts as agreement',
-      () async {
-    // THE KNOWN RESIDUAL (THREAT_MODEL R50, PROTOCOL §21.8), pinned as it
-    // stands. Nothing here is a property anyone wants: a remedy — send only
-    // once a record at or past the lookup's head agrees, or keep the head no
-    // witness has seen and check it at the next lookup — turns these
-    // expectations over on purpose.
+  test('26. a history that departs after the witness\'s latest co-signed head '
+      'passes a first lookup, and the request sent on it is warned of at the '
+      'next lookup after the witness moves on; one that never moves on is '
+      'said 30 days on, as an answer never confirmed', () async {
+    // Until Finnian's decision of 2026-10-20 this criterion pinned the
+    // residual as it stood: such a lookup passed as agreement, and nothing
+    // was kept for a later lookup to look again. It is turned over on
+    // purpose: the head a request is sent on, when the witness's record did
+    // not cover it, is kept, and the first record fetched later that covers
+    // it is held to it.
     //
-    // (a) One log, its owner rule taken out by its operator. The witness
-    // verifies it with Fern's claim in it; the operator then appends an
-    // update naming an owner and a mailbox of its own.
+    // (b) Two histories under one key, the same up to the witness's head: a
+    // claim of @gwen.26 in both, the witness verifying y at that size; then
+    // the operator's own app claims @hal.26 in x, and Hal claims it in y.
+    final (x1, y1, w1) = await twoHistories('gwen.26');
+    final thief = await boot('Thief', config: x1.config);
+    await claimIn(thief, 'hal.26');
+    final hal = await claimAt(y1, 'hal.26');
+    final g = _Operator();
+    serve(g, w1);
+    final dee = await boot('Dee', config: witnessed(x1, w1), fetcher: g);
+    final b = await look(dee, g, '@hal.26');
+    expect(b.error, isNull, reason: 'x extends the head the witness co-signed');
+    expect(b.found!.introRid, thief.handles.own!.introRid,
+        reason: 'the operator\'s mailbox, not Hal\'s');
+    expect(b.found!.introRid, isNot(await hal.introRid()));
+    expect(dee.handles.witnessState, HandleWitnessState.agreed,
+        reason: 'the lookup itself still passes as agreement');
+    expect(dee.handles.keptHeads, isEmpty, reason: 'nothing kept until a request');
+    // Dee asks, and the operator's app accepts: she holds the operator's
+    // account as @hal.26, by an acknowledgement that verifies.
+    await dee.handles.request(b.found!);
+    final kept = dee.handles.keptHeads.single;
+    expect(kept.handle, 'hal.26');
+    expect(kept.size, (await headOf(x1)).size,
+        reason: 'the head the lookup ended with');
+    await receives(thief, dee.myRid);
+    await thief.acceptRequest(dee.myRid);
+    await linked(dee, thief, 'hal.26');
+    expect(await dee.handleViaOf(thief.myRid), 'hal.26');
+    expect(dee.handles.keptHeads.single.rid, thief.myRid,
+        reason: 'the contact the acceptance added holds the head now');
+    expect(dee.handles.forkWarningForContact(thief.myRid), isNull);
+    // The witness follows y past that head. Dee's next lookup inside ten
+    // minutes uses the record she holds, which covers nothing kept: it
+    // passes, and nothing is said.
+    await sync(w1, y1);
+    expect((await look(dee, g, '@gwen.26')).error, isNull,
+        reason: 'the record held for ten minutes is the one from before');
+    expect(dee.handles.forkWarnings, isEmpty);
+    expect(dee.handles.keptHeads, hasLength(1));
+    // Ten minutes on, the record is fetched again. It covers the head kept
+    // for her request — the same size under other roots: a history the
+    // witness never saw, found after the fact, on the contact that request
+    // added. The lookup itself is the fork 15 refuses.
+    final real = dee.handles.now;
+    dee.handles.now = () => real() + const Duration(minutes: 10).inMilliseconds;
+    final later = await look(dee, g, '@gwen.26');
+    expect(later.error, forked());
+    final warning = dee.handles.forkWarningForContact(thief.myRid);
+    expect(warning, isNotNull,
+        reason: 'the contact the forked lookup brought, warned of after the fact');
+    expect(warning!.handle, 'hal.26');
+    expect(warning.lookedUpMs, kept.atMs, reason: 'when she looked it up');
+    expect(warning.shown.size, kept.size);
+    expect(warning.kind, HandleWarningKind.forked);
+    expect(warning.against!.sameRootsAs(await headOf(y1)), isTrue,
+        reason: 'the witness\'s co-signed head that contradicts it');
+    expect(dee.handles.keptHeads, isEmpty, reason: 'checked, so no longer kept');
+    expect(dee.handles.witnessState, HandleWitnessState.forked);
+
+    // (a) What it does not catch as a fork. One log, its owner rule taken out
+    // by its operator: the witness verifies it with Fern's claim in it, and
+    // the operator then appends an update naming an owner and a mailbox of
+    // its own. Carol's lookup passes as agreement, and her request keeps its
+    // head.
     final x = await startLog(ruleless: true);
     final fern = await claimAt(x, 'fern.26');
     final w = await witnessOf(x);
@@ -2185,8 +2551,12 @@ void main() {
     expect(a.found!.state, HandleLookupState.found);
     expect(a.found!.introRid, mailbox, reason: 'the operator\'s mailbox');
     expect(carol.handles.witnessState, HandleWitnessState.agreed);
+    await carol.handles.request(a.found!);
+    expect(carol.handles.keptHeads.single.size, witnessedSize + 1);
     // The reference witness, asked to follow the log now, refuses it (exit
-    // 2, a divergence): the entry breaks the owner rule. Carol is not told.
+    // 2, a divergence): the entry breaks the owner rule. It keeps the head
+    // it had, so the record it serves never covers the one Carol's request
+    // relied on: fetched again, it covers nothing, and nothing is said yet.
     final r = await Process.run(
         'node',
         [
@@ -2205,53 +2575,53 @@ void main() {
         workingDirectory: '$root/kt',
         environment: {'Z_HANDLE_WITNESS_SEED': hex(w.seed)});
     expect(r.exitCode, 2, reason: '${r.stdout}${r.stderr}');
-
-    // (b) Two histories under one key, the same up to the witness's head:
-    // one claim of @gwen.26 in both, the witness verifying y at that size;
-    // then x gets the operator's claim of @hal.26, and y Hal's own.
-    final y1 = await startLog();
-    final x1 = await startLog(key: y1.seed);
-    final label = await labelOf('gwen.26');
-    final rk = await handleRecoveryKey(await RecoveryCode.generate(), label);
-    final gwenOwner = randomBytes(32), gwenIntro = randomBytes(32);
-    final rec =
-        await recordOf(HandleRecordKind.claim, gwenOwner, gwenIntro, rk.rc);
-    await put(y1, label, 1, rec, gwenOwner);
-    await put(x1, label, 1, rec, gwenOwner);
-    expect((await headOf(x1)).sameRootsAs(await headOf(y1)), isTrue,
-        reason: 'one prefix in both histories (the two entries were accepted '
-            'in the same hour)');
-    final w1 = await witnessOf(y1);
-    final thief = await claimAt(x1, 'hal.26');
-    final hal = await claimAt(y1, 'hal.26');
-    final g = _Operator();
-    serve(g, w1);
-    final dee = await boot('Dee', config: witnessed(x1, w1), fetcher: g);
-    final b = await look(dee, g, '@hal.26');
-    expect(b.error, isNull, reason: 'x extends the head the witness co-signed');
-    expect(b.found!.introRid, await thief.introRid(),
-        reason: 'the operator\'s mailbox, not Hal\'s');
-    expect(b.found!.introRid, isNot(await hal.introRid()));
-    expect(dee.handles.witnessState, HandleWitnessState.agreed);
-    final deeFirst = dee.handles.witnessState.name;
-    // The witness follows y past that head. Dee's next lookup inside ten
-    // minutes uses the record she holds, and passes again; fetched afresh —
-    // ten minutes on, or by anyone else — the record is the fork.
-    await sync(w1, y1);
-    expect((await look(dee, g, '@hal.26')).error, isNull,
-        reason: 'the record held for ten minutes is the one from before');
-    final real = dee.handles.now;
-    dee.handles.now = () => real() + const Duration(minutes: 10).inMilliseconds;
-    final later = await look(dee, g, '@hal.26');
-    expect(later.error, forked());
-    final eve = await boot('Eve', config: witnessed(x1, w1), fetcher: g);
-    expect((await look(eve, g, '@hal.26')).error, forked());
+    final realCarol = carol.handles.now;
+    carol.handles.now =
+        () => realCarol() + const Duration(minutes: 10).inMilliseconds;
+    expect((await look(carol, f, '@fern.26')).error, isNull);
+    expect(fetchesOf(f, w.url), 2, reason: 'the record fetched afresh');
+    final carolKept = carol.handles.keptHeads.single;
+    expect(carolKept.size, witnessedSize + 1,
+        reason: 'still waiting for a record that covers it');
+    expect(carol.handles.forkWarnings, isEmpty,
+        reason: 'nothing to say yet: the head still waits');
+    // Thirty days and a minute on, the head lapses never covered. Carol's
+    // request still waits — an acceptance would still be matched to it — so
+    // the request is told that the answer it was sent on was never confirmed.
+    final carolVault = carol.vault;
+    final carolId = carol.identity;
+    await stop(carol);
+    final lapsed = await boot('Carol',
+        config: witnessed(x, w),
+        fetcher: f,
+        vault: carolVault,
+        id: carolId,
+        now: () => laterBy(const Duration(days: 30, minutes: 1)));
+    // The head's last check of its own, as the app starts: the record still
+    // stops short of it, so it is undecided, and said.
+    await waitUntil(() => lapsed.handles.checksBack == 1,
+        what: 'Carol\'s head decided by its last check');
+    expect(lapsed.handles.keptHeads, isEmpty);
+    final waiting = lapsed.handles.outgoing.single;
+    final unconfirmed = lapsed.handles.forkWarningForRequest(waiting);
     // ignore: avoid_print
-    print('LOOKUP 26: an owner-rule break after the witness\'s head -> '
-        '${a.found!.state.name}, ${carol.handles.witnessState.name}; a second '
-        'history after it -> ${b.found!.state.name}, '
-        '$deeFirst (the residual); fetched again after '
-        'the witness moved on -> ${later.error}');
+    print('LOOKUP 26: a second history after the witness\'s head -> '
+        '${b.found!.state.name}, agreed, request kept at ${kept.size}; after '
+        'the witness moved on -> ${later.error}, warning on the contact '
+        '@${warning.handle}; an owner-rule break -> ${a.found!.state.name}, '
+        'kept at ${witnessedSize + 1}, the witness stopped at $witnessedSize; '
+        '30 days on -> kept ${lapsed.handles.keptHeads.length}, request '
+        '@${waiting.handle} warned ${unconfirmed != null}');
+    expect(waiting.handle, 'fern.26', reason: 'still waiting');
+    expect(lapsed.handles.keptHeads, isEmpty, reason: 'lapsed');
+    expect(unconfirmed, isNotNull,
+        reason: 'never confirmed, and said so on the request still waiting');
+    expect(unconfirmed!.handle, 'fern.26');
+    expect(unconfirmed.lookedUpMs, carolKept.atMs);
+    expect(unconfirmed.kind, HandleWarningKind.unconfirmed,
+        reason: 'not a fork: nothing showed one');
+    expect(unconfirmed.against, isNull);
+    expect(lapsed.handles.witnessState, HandleWitnessState.unconfirmed);
   });
 
   test('27. a log that will not prove the way between its head and its '
@@ -2413,5 +2783,1733 @@ void main() {
     expect(again.handles.witnessForkMs, isNull);
     expect(await again.vault.kvGet('handle_witness_fork_ms'), isNull);
     expect(again.handles.witnessState, isNot(HandleWitnessState.forked));
+  });
+
+  // ---- After the fact (Finnian's decision of 2026-10-20) --------------------
+
+  test('29. a kept head goes once a covering record agrees, at its size or '
+      'ahead of it with the log\'s proof; only a request keeps one, and every '
+      'way a record is fetched checks them, the owner\'s drain read among them',
+      () async {
+    final log = await startLog();
+    await claimAt(log, 'lena.29');
+    final w = await witnessOf(log);
+    final f = _Operator();
+    serve(f, w);
+    // Dee holds a handle of her own, so her drains read her record, and she
+    // fetches the witness's record afresh at every question. Her claim puts
+    // the log a head past the witness.
+    final dee = await boot('Dee', config: witnessed(log, w), fetcher: f);
+    dee.handles.witnessReuse = Duration.zero;
+    await claimIn(dee, 'dee.29');
+    expect(dee.handles.keptHeads, isEmpty,
+        reason: 'the owner\'s reads of its own record keep nothing');
+    // Eve, who holds no handle: a lookup that sends nothing, a claim's check
+    // and a recovery's read keep nothing either.
+    final eve = await boot('Eve', config: witnessed(log, w), fetcher: f);
+    expect((await eve.handles.find('@lena.29')).state, HandleLookupState.found);
+    expect(await eve.handles.isAvailable(Handle.parse('free.29')), isTrue);
+    final wrong = await formatHandleRecoveryCode(await RecoveryCode.generate());
+    await expectLater(eve.handles.prepareRecover('lena.29', wrong),
+        failsWith(HandleFailure.wrongCode));
+    expect(eve.handles.keptHeads, isEmpty);
+    // Dee's lookup, past the record: nothing kept until she sends on it.
+    final found = await dee.handles.find('@lena.29');
+    expect(dee.handles.keptHeads, isEmpty, reason: 'nothing until a request');
+    await dee.handles.request(found);
+    final k1 = dee.handles.keptHeads.single;
+    expect(k1.handle, 'lena.29');
+    expect(k1.size, (await headOf(log)).size);
+    expect(k1.rid, isNull);
+
+    // At its size: the witness follows the log to exactly that head, and the
+    // next record fetched — by Dee's drain, reading her own record — covers
+    // it with the same roots. It goes, and the witness agrees.
+    await sync(w, log);
+    expect(
+        KtWitnessRecord.fromJson(
+                (jsonDecode(w.record) as Map).cast<String, Object?>())
+            .head
+            .size,
+        k1.size);
+    await waitUntil(() async {
+      await dee.handles.drain();
+      return dee.handles.keptHeads.isEmpty;
+    }, what: 'the drain\'s record covering the kept head');
+    expect(dee.handles.forkWarnings, isEmpty);
+    expect(dee.handles.witnessState, HandleWitnessState.agreed);
+
+    // Ahead of it: a second request kept at the log's size, the log grows,
+    // the witness follows past it, and a claim's check — a record fetched
+    // for another reason — covers it with the log's proof from the kept size.
+    await claimAt(log, 'liv.29');
+    await dee.handles.request(await dee.handles.find('@lena.29'));
+    final k2 = dee.handles.keptHeads.single;
+    expect(k2.size, k1.size + 1);
+    await claimAt(log, 'lou.29');
+    await sync(w, log);
+    final from = f.urls.length;
+    expect(await dee.handles.isAvailable(Handle.parse('free.29')), isTrue);
+    expect(dee.handles.keptHeads, isEmpty);
+    expect(
+        f.urls.skip(from).any((u) =>
+            u.path == '/kt/v1/consistency' &&
+            u.query == 'first=${k2.size}&second=${k2.size + 1}'),
+        isTrue,
+        reason: 'the log proved the way from the kept head to the record\'s');
+    expect(dee.handles.forkWarnings, isEmpty);
+    expect(dee.handles.witnessState, HandleWitnessState.agreed);
+
+    // A head the record already covers is not kept; with no witness nothing
+    // is, and nothing is stored.
+    final fay = await boot('Fay', config: witnessed(log, w), fetcher: f);
+    await fay.handles.request(await fay.handles.find('@lena.29'));
+    expect(fay.handles.outgoing, hasLength(1));
+    expect(fay.handles.keptHeads, isEmpty, reason: 'the record covers its head');
+    final gus = await boot('Gus', config: log.config);
+    await gus.handles.request(await gus.handles.find('@lena.29'));
+    expect(gus.handles.keptHeads, isEmpty);
+    expect(await gus.vault.kvGet('handle_witness_heads'), isNull);
+    // ignore: avoid_print
+    print('LOOKUP 29: kept at ${k1.size}, covered at its size by the drain; '
+        'kept at ${k2.size}, covered at ${k2.size + 1} with the proof by a '
+        'claim\'s check; nothing kept without a request, a witness or an '
+        'uncovered head');
+  });
+
+  test('30. a fork found after the fact marks exactly what relied on its head: '
+      'the contact a forked request brought and a request still waiting on '
+      'it, and nothing else — not a head the fork departs after', () async {
+    final (x, y, w) = await twoHistories('gwen.30');
+    final f = _Operator();
+    serve(f, w);
+    final sw = _Switch(f, x.port, y.port);
+    final dee = await boot('Dee', config: witnessed(x, w), fetcher: sw);
+    dee.handles.witnessReuse = Duration.zero;
+    // Olga, added by her code: a contact no handle lookup brought.
+    final olga = await boot('Olga', config: HandleConfig.off);
+    await dee.addContactFromCode(await olga.myContactCode());
+    expect(dee.contacts.containsKey(olga.myRid), isTrue);
+    // A request the record covered when it was sent (both at the shared
+    // head): nothing kept for it.
+    await dee.handles.request(await dee.handles.find('@gwen.30'));
+    expect(dee.handles.keptHeads, isEmpty);
+    // A request kept while the histories are still one, whose head the
+    // witness covers before they part: it goes, same roots.
+    await claimInEach([y, x], 'nils.30');
+    await dee.handles.request(await dee.handles.find('@nils.30'));
+    expect(dee.handles.keptHeads.single.handle, 'nils.30');
+    await sync(w, y);
+    expect((await dee.handles.find('@gwen.30')).state, HandleLookupState.found);
+    expect(dee.handles.keptHeads, isEmpty, reason: 'covered at its size');
+    // A request kept on a head the two histories still share, which the
+    // witness has not reached when they part: the fork departs after it.
+    await claimInEach([y, x], 'otto.30');
+    await dee.handles.request(await dee.handles.find('@otto.30'));
+    expect(dee.handles.keptHeads.single.handle, 'otto.30');
+    // The histories part: the operator's app claims @hal.30 in x, Hal in y;
+    // and @ivo.30 is in x alone. Dee asks both, past the witness's head.
+    final thief = await boot('Thief', config: x.config);
+    await claimIn(thief, 'hal.30');
+    await claimAt(y, 'hal.30');
+    final halFound = await dee.handles.find('@hal.30');
+    expect(halFound.introRid, thief.handles.own!.introRid);
+    await dee.handles.request(halFound);
+    await claimAt(x, 'ivo.30');
+    await dee.handles.request(await dee.handles.find('@ivo.30'));
+    expect(dee.handles.keptHeads.map((k) => k.handle),
+        ['otto.30', 'hal.30', 'ivo.30']);
+    // The operator's app accepts the request to @hal.30: the contact holds
+    // its head.
+    await receives(thief, dee.myRid);
+    await thief.acceptRequest(dee.myRid);
+    await linked(dee, thief, 'hal.30');
+    // The witness follows y past all three heads. Dee, still shown x, is
+    // refused as forked (15). Of what she kept, @ivo.30's head is at the
+    // record's size under other roots: the fork, on the request still
+    // waiting. @otto.30's and @hal.30's are below the record, on the history
+    // the lookup was shown, and the log proves neither to the record — as it
+    // could not for a head the fork departs after, which @otto.30's is — so
+    // neither is called a fork from here; each is said at once, on what
+    // relied on it, as an answer never confirmed, which is true.
+    await claimAt(y, 'pia.30');
+    await sync(w, y);
+    await expectLater(dee.handles.find('@gwen.30'), failsWith(HandleFailure.forked));
+    final byHandle = {for (final o in dee.handles.outgoing) o.handle: o};
+    expect(byHandle.keys.toSet(), {'gwen.30', 'nils.30', 'otto.30', 'ivo.30'},
+        reason: 'the request to @hal.30 was answered');
+    final ottoTold = dee.handles.forkWarningForRequest(byHandle['otto.30']!);
+    expect(ottoTold?.kind, HandleWarningKind.unconfirmed,
+        reason: 'the fork departs after its head: never confirmed, no fork');
+    final halTold = dee.handles.forkWarningForContact(thief.myRid);
+    expect(halTold?.kind, HandleWarningKind.unconfirmed,
+        reason: 'not decided from the history that forked');
+    final ivoWarning = dee.handles.forkWarningForRequest(byHandle['ivo.30']!);
+    expect(ivoWarning?.handle, 'ivo.30');
+    expect(idsOf(ivoWarning!.creqIds), idsOf(byHandle['ivo.30']!.creqIds));
+    expect(ivoWarning.rid, isNull);
+    expect(ivoWarning.kind, HandleWarningKind.forked);
+    expect(dee.handles.keptHeads.map((k) => k.handle), ['otto.30', 'hal.30'],
+        reason: 'their checks pending');
+    // The operator shows Dee y from now on, at the same address and under
+    // the same key. The head she is shown is held to each one kept: the log
+    // proves @otto.30's to it, so the record covers it and it goes, and so
+    // does the warning said of it; it cannot prove @hal.30's — two
+    // histories, the kept head not the witness's — and the fork's warning
+    // takes the place of the one on the contact that request brought.
+    sw.on = true;
+    expect((await dee.handles.find('@gwen.30')).state, HandleLookupState.found);
+    expect(dee.handles.keptHeads, isEmpty);
+    expect(dee.handles.forkWarnings.map((x) => x.handle).toSet(),
+        {'hal.30', 'ivo.30'});
+    expect(dee.handles.forkWarnings, hasLength(2),
+        reason: '@otto.30\'s gone, @hal.30\'s replaced');
+    // The contact the forked request brought; the request still waiting on
+    // a forked head; and nothing else.
+    final halWarning = dee.handles.forkWarningForContact(thief.myRid);
+    expect(halWarning?.handle, 'hal.30');
+    expect(halWarning!.kind, HandleWarningKind.forked);
+    expect(halWarning.against!.sameRootsAs(await headOf(y)), isTrue,
+        reason: 'the head the log showed next, which does not extend it');
+    expect(dee.handles.forkWarningForContact(olga.myRid), isNull,
+        reason: 'a contact added by code');
+    expect(dee.handles.forkWarningForRequest(byHandle['gwen.30']!), isNull,
+        reason: 'its head was covered when it was sent');
+    expect(dee.handles.forkWarningForRequest(byHandle['nils.30']!), isNull,
+        reason: 'its head was covered before the histories parted');
+    expect(dee.handles.forkWarningForRequest(byHandle['otto.30']!), isNull,
+        reason: 'the fork departs after its head, which the witness covers');
+    expect(dee.handles.witnessState, HandleWitnessState.forked);
+    // Sealed, as nothing in Vault.plainKeys is.
+    final rows = await dee.vault.db.query('kv',
+        columns: ['k'], where: 'k LIKE ?', whereArgs: ['%:handle_witness_warnings']);
+    expect(rows.map((r) => r['k']), ['s:handle_witness_warnings']);
+    // ignore: avoid_print
+    print('LOOKUP 30: after the fact -> the waiting request @ivo.30 warned on '
+        'the forked history; shown it, @otto.30 and the contact @hal.30 told '
+        '${ottoTold?.kind.name} and ${halTold?.kind.name}; shown the witness\'s, '
+        'the contact @hal.30 ${dee.handles.forkWarningForContact(thief.myRid)!.kind.name}, '
+        '@otto.30 covered and nothing on it; none on @gwen.30, @nils.30 or '
+        'Olga');
+  });
+
+  test('31. a proof the log withholds keeps the check pending: the head kept, '
+      'nothing warned of, not the witness agreeing; served, it ends the check',
+      () async {
+    final log = await startLog();
+    await claimAt(log, 'lena.31');
+    final w = await witnessOf(log);
+    await claimAt(log, 'liv.31');
+    final f = _Operator();
+    serve(f, w);
+    final withhold = _Withholding(f)..withholding = false;
+    final dee = await boot('Dee', config: witnessed(log, w), fetcher: withhold);
+    dee.handles.witnessReuse = Duration.zero;
+    // Quiet as soon as two checks a moment apart end without agreement.
+    dee.handles.witnessQuietAfter = const Duration(milliseconds: 1);
+    await dee.handles.request(await dee.handles.find('@lena.31'));
+    final kept = dee.handles.keptHeads.single;
+    final agreedAt = dee.handles.witnessOkMs;
+    expect(agreedAt, isNotNull);
+    // The log grows and the witness follows it past the kept head. The log
+    // now withholds the proof from the kept size — or serves something that
+    // is not one. The lookup's own head is the record's, which needs none.
+    await claimAt(log, 'lou.31');
+    await sync(w, log);
+    withhold.withholding = true;
+    for (final garbage in [false, true]) {
+      withhold.garbage = garbage;
+      final l = await dee.handles.find('@lena.31');
+      expect(l.state, HandleLookupState.found, reason: 'the lookup goes on');
+      expect(withhold.denied.last, 'first=${kept.size}&second=${kept.size + 1}');
+      expect(dee.handles.keptHeads.single.size, kept.size,
+          reason: 'pending, so still kept (garbage: $garbage)');
+      expect(dee.handles.forkWarnings, isEmpty);
+      expect(dee.handles.witnessOkMs, agreedAt,
+          reason: 'not the witness agreeing (garbage: $garbage)');
+      expect(dee.handles.witnessSinceMs, isNotNull);
+    }
+    expect(dee.handles.witnessState, HandleWitnessState.quiet,
+        reason: 'asked without an answer that counts');
+    // Served: consistent, so covered; the head goes and the witness agrees.
+    withhold.withholding = false;
+    expect((await dee.handles.find('@lena.31')).state, HandleLookupState.found);
+    expect(dee.handles.keptHeads, isEmpty);
+    expect(dee.handles.witnessState, HandleWitnessState.agreed);
+    expect(dee.handles.witnessOkMs, greaterThan(agreedAt!));
+
+    // On a forked head: withheld, nothing passes and nothing is said — shown
+    // the history that forked, the lookup's own head is the fork 15 refuses;
+    // shown the witness's, it goes on and is not the witness agreeing — and
+    // served, the fork: the log cannot prove the head it now shows extends
+    // the one kept.
+    final (x, y, wy) = await twoHistories('gwen.31');
+    await claimAt(x, 'hal.31');
+    final g = _Operator();
+    serve(g, wy);
+    final hold = _Withholding(g)..withholding = false;
+    final sw = _Switch(hold, x.port, y.port);
+    final eve = await boot('Eve', config: witnessed(x, wy), fetcher: sw);
+    eve.handles.witnessReuse = Duration.zero;
+    await eve.handles.request(await eve.handles.find('@hal.31'));
+    expect(eve.handles.keptHeads, hasLength(1));
+    // Both histories grow a head past the kept one, and the witness follows
+    // y: covering the kept head takes the log's proof from it.
+    await claimAt(x, 'ivy.31');
+    await claimAt(y, 'hal.31');
+    await claimAt(y, 'ida.31');
+    await sync(wy, y);
+    hold.withholding = true;
+    await expectLater(
+        eve.handles.find('@gwen.31'), failsWith(HandleFailure.forked));
+    expect(hold.denied, ['first=2&second=3'],
+        reason: 'the kept head\'s proof, withheld; the lookup\'s own head is '
+            'the record\'s size, and needs none');
+    expect(eve.handles.keptHeads, hasLength(1), reason: 'pending');
+    expect(eve.handles.forkWarnings, isEmpty);
+    sw.on = true;
+    final eveOk = eve.handles.witnessOkMs;
+    expect((await eve.handles.find('@gwen.31')).state, HandleLookupState.found);
+    expect(hold.denied, ['first=2&second=3', 'first=2&second=3']);
+    expect(eve.handles.keptHeads, hasLength(1), reason: 'pending');
+    expect(eve.handles.forkWarnings, isEmpty);
+    expect(eve.handles.witnessOkMs, eveOk, reason: 'not the witness agreeing');
+    hold.withholding = false;
+    expect((await eve.handles.find('@gwen.31')).state, HandleLookupState.found);
+    expect(eve.handles.forkWarnings.single.handle, 'hal.31');
+    expect(eve.handles.keptHeads, isEmpty);
+
+    // A record used again for ten minutes — the default — while a kept
+    // head's proof is withheld: the check stays pending across it, asked
+    // again at most once in ten minutes, and neither the agreement nor the
+    // quiet timer moves (the review's PROBE C).
+    final log3 = await startLog();
+    await claimAt(log3, 'mila.31');
+    final w3 = await witnessOf(log3);
+    await claimAt(log3, 'max.31');
+    final h3 = _Operator();
+    serve(h3, w3);
+    final first = _WithholdFirst(h3);
+    final fay = await boot('Fay', config: witnessed(log3, w3), fetcher: first);
+    expect(fay.handles.witnessReuse, const Duration(minutes: 10));
+    fay.handles.witnessQuietAfter = const Duration(milliseconds: 1);
+    await fay.handles.request(await fay.handles.find('@mila.31'));
+    final k3 = fay.handles.keptHeads.single;
+    await claimAt(log3, 'moe.31');
+    await sync(w3, log3);
+    first.first = k3.size;
+    final real = fay.handles.now;
+    var shift = 0;
+    fay.handles.now = () => real() + shift;
+    // Two fresh records, ten minutes apart, the kept head's proof withheld
+    // at each: the witness is quiet.
+    for (var i = 1; i <= 2; i++) {
+      shift = Duration(minutes: 10 * i).inMilliseconds;
+      expect((await fay.handles.find('@mila.31')).state, HandleLookupState.found);
+    }
+    expect(first.denied, hasLength(2));
+    expect(fay.handles.witnessState, HandleWitnessState.quiet);
+    final okBefore = fay.handles.witnessOkMs;
+    final sinceBefore = fay.handles.witnessSinceMs;
+    final lastBefore = fay.handles.witnessLastAskMs;
+    // A minute later, a lookup on the record held for ten minutes.
+    shift += const Duration(minutes: 1).inMilliseconds;
+    expect((await fay.handles.find('@max.31')).state, HandleLookupState.found);
+    // ignore: avoid_print
+    print('LOOKUP 31 (reuse): withheld ${first.denied}; after a lookup on the '
+        'record held: ${fay.handles.witnessState}, agreement moved '
+        '${fay.handles.witnessOkMs != okBefore}, quiet since moved '
+        '${fay.handles.witnessSinceMs != sinceBefore}, kept '
+        '${fay.handles.keptHeads.length}');
+    expect(fay.handles.witnessState, HandleWitnessState.quiet,
+        reason: 'a record used again is not the witness agreeing while a '
+            'check is pending');
+    expect(fay.handles.witnessOkMs, okBefore);
+    expect(fay.handles.witnessSinceMs, sinceBefore);
+    expect(fay.handles.witnessLastAskMs, lastBefore,
+        reason: 'nor is it the witness asked again');
+    expect(first.denied, hasLength(2),
+        reason: 'the proof asked again at most once in ten minutes');
+    expect(fay.handles.keptHeads.single.size, k3.size, reason: 'still pending');
+    // ignore: avoid_print
+    print('LOOKUP 31: withheld and garbage -> pending, quiet; served -> '
+        'covered and agreed; on a forked head withheld -> nothing said, '
+        'served -> the warning; a record used again -> still pending');
+  });
+
+  test('32. the bound: at most 20 heads that contacts hold, the one looked up '
+      'longest ago going first, and a head no contact holds bounded by the '
+      'outgoing list, not by them; each for at most 30 days; and a head the '
+      'bound or the lapse puts out of reach before the witness covered it is '
+      'said on what relied on it', () async {
+    final log = await startLog();
+    await claimAt(log, 'lena.32');
+    final w = await witnessOf(log);
+    await claimAt(log, 'liv.32');
+    final f = _Operator();
+    serve(f, w);
+    final dee = await boot('Dee', config: witnessed(log, w), fetcher: f);
+    expect(dee.handles.witnessKeptCap, 20);
+    expect(handleWitnessKeptCap, handleOutgoingCap);
+    expect(dee.handles.witnessKeepFor, const Duration(days: 30));
+    // Twenty-five requests, each answered as an acceptance answers one — the
+    // contact takes the head, the request goes. Twenty heads held by
+    // contacts fill the bound; each later one, once its acceptance makes it
+    // a contact's, pushes out the one looked up longest ago, and the contact
+    // that one is on is told.
+    for (var i = 0; i < 25; i++) {
+      await dee.handles.request(await dee.handles.find('@lena.32'));
+      final o = dee.handles.outgoing.single;
+      await dee.handles.contactAddedThrough('contact-$i', o);
+      await dee.handles.completeOutgoing(o);
+    }
+    final held = [for (final k in dee.handles.keptHeads) k.rid];
+    final stored =
+        (jsonDecode((await dee.vault.kvGet('handle_witness_heads'))!) as Map)
+            ['heads'] as List;
+    final told = {for (final x in dee.handles.forkWarnings) x.rid};
+    final toldKinds = {for (final x in dee.handles.forkWarnings) x.kind};
+    // And a request still waiting: bounded by the outgoing list, not by the
+    // heads contacts hold, so kept, and nothing said.
+    await dee.handles.request(await dee.handles.find('@liv.32'));
+    final heldAfter = [for (final k in dee.handles.keptHeads) k.rid];
+    final liv = dee.handles.outgoing.single;
+    final livTold = dee.handles.forkWarningForRequest(liv);
+
+    // Thirty days at most, covered or not: two requests still waiting, their
+    // heads kept across a restart 29 days on; at one 30 days and a minute on
+    // they have lapsed, and each request — still waiting, so an acceptance
+    // would still be matched to it — is told.
+    final eve = await boot('Eve', config: witnessed(log, w), fetcher: f);
+    for (final h in ['lena.32', 'liv.32']) {
+      await eve.handles.request(await eve.handles.find('@$h'));
+    }
+    final eveKept = eve.handles.keptHeads.length;
+    final vault = eve.vault;
+    final id = eve.identity;
+    await stop(eve);
+    final soon = await boot('Eve',
+        config: witnessed(log, w),
+        fetcher: f,
+        vault: vault,
+        id: id,
+        now: () => laterBy(const Duration(days: 29)));
+    // Their check-back, as the app starts: the witness has not moved, so
+    // they stay kept.
+    await waitUntil(() => soon.handles.checksBack == 1,
+        what: 'the check-back 29 days on');
+    final soonKept = soon.handles.keptHeads.length;
+    final soonTold = soon.handles.forkWarnings.length;
+    await stop(soon);
+    final lapsed = await boot('Eve',
+        config: witnessed(log, w),
+        fetcher: f,
+        vault: vault,
+        id: id,
+        now: () => laterBy(const Duration(days: 30, minutes: 1)));
+    await waitUntil(() => lapsed.handles.checksBack == 1,
+        what: 'the last check 30 days on');
+    final lapsedTold = {
+      for (final o in lapsed.handles.outgoing)
+        if (lapsed.handles.forkWarningForRequest(o) != null) o.handle
+    };
+    // ignore: avoid_print
+    print('LOOKUP 32: 25 answered -> kept $held, told $told; a waiting '
+        'request -> kept ${heldAfter.length}, told ${livTold != null}; 29 days -> kept '
+        '$soonKept, told $soonTold; 30 days and a minute -> kept '
+        '${lapsed.handles.keptHeads.length}, waiting '
+        '${lapsed.handles.outgoing.length}, told $lapsedTold');
+    expect(held, [for (var i = 5; i < 25; i++) 'contact-$i'],
+        reason: 'the one looked up longest ago went first');
+    expect(stored, hasLength(20), reason: 'and so in the vault');
+    expect(told, {for (var i = 0; i < 5; i++) 'contact-$i'},
+        reason: 'pushed out before the witness covered them: said');
+    expect(toldKinds, {HandleWarningKind.unconfirmed});
+    expect(heldAfter, [...held, null],
+        reason: 'a head no contact holds is bounded by the outgoing list');
+    expect(livTold, isNull, reason: 'a request still waiting, its head kept');
+    expect(eveKept, 2);
+    expect(soonKept, 2);
+    expect(soonTold, 0);
+    expect(lapsed.handles.keptHeads, isEmpty);
+    expect(lapsed.handles.outgoing, hasLength(2), reason: 'the requests still wait');
+    expect(lapsedTold, {'lena.32', 'liv.32'});
+    expect({for (final x in lapsed.handles.forkWarnings) x.kind},
+        {HandleWarningKind.unconfirmed});
+    expect(lapsed.handles.witnessState, HandleWitnessState.unconfirmed);
+    expect(await vault.kvGet('handle_witness_heads'), isNull);
+  });
+
+  /// [name] on a device holding two histories' fork after the fact: a
+  /// request to @[waiting] on a head the two histories share, and one to
+  /// @[warned] on x's next head, the fork. The witness of y then covers both:
+  /// the second at its size under other roots — found by the lookup that
+  /// holds its record — and the first below it, which a device shown x
+  /// cannot decide (30), so its head stays kept, its check pending, and the
+  /// request is told at once that its answer was never confirmed (42).
+  Future<({ChatService s, _Operator f, _Log x, _Log y, _Witness w})>
+      warnedAndWaiting(String name, String shared, String warned,
+          String waiting) async {
+    final (x, y, w) = await twoHistories(shared);
+    await claimInEach([y, x], waiting);
+    final f = _Operator();
+    serve(f, w);
+    final s = await boot(name, config: witnessed(x, w), fetcher: f);
+    s.handles.witnessReuse = Duration.zero;
+    await s.handles.request(await s.handles.find('@$waiting'));
+    await claimAt(x, warned);
+    await s.handles.request(await s.handles.find('@$warned'));
+    expect(s.handles.keptHeads.map((k) => k.handle), [waiting, warned]);
+    await claimAt(y, warned);
+    await sync(w, y);
+    await expectLater(s.handles.find('@$shared'), failsWith(HandleFailure.forked));
+    expect(s.handles.forkWarnings.where((x) => x.isFork).single.handle, warned);
+    expect(s.handles.keptHeads.single.handle, waiting);
+    expect(s.handles.forkWarnings.where((x) => !x.isFork).single.handle, waiting);
+    return (s: s, f: f, x: x, y: y, w: w);
+  }
+
+  test('33. a restart keeps the kept heads and the warnings, sealed, and a '
+      'backup carries them with the requests they are on', () async {
+    final (:s, :f, :x, y: _, :w) =
+        await warnedAndWaiting('Dee', 'gwen.33', 'hal.33', 'ivo.33');
+    final kept = s.handles.keptHeads.single;
+    final warning = s.handles.forkWarnings.firstWhere((x) => x.isFork);
+    final told = s.handles.forkWarnings.firstWhere((x) => !x.isFork);
+    for (final key in ['handle_witness_heads', 'handle_witness_warnings']) {
+      final rows = await s.vault.db.query('kv',
+          columns: ['k'], where: 'k LIKE ?', whereArgs: ['%:$key']);
+      expect(rows.map((r) => r['k']), ['s:$key'], reason: 'sealed');
+    }
+    // A restart: both read back as they were.
+    final vault = s.vault;
+    final id = s.identity;
+    await stop(s);
+    final again =
+        await boot('Dee', config: witnessed(x, w), fetcher: f, vault: vault, id: id);
+    expect(again.handles.keptHeads.single, kept);
+    expect(again.handles.forkWarnings, hasLength(2));
+    final t2 = again.handles.forkWarnings.firstWhere((x) => !x.isFork);
+    expect(t2.handle, told.handle);
+    expect(t2.foundMs, told.foundMs);
+    expect(t2.atFork, isTrue, reason: 'said at the fork, while its head is kept');
+    final w2 = again.handles.forkWarnings.firstWhere((x) => x.isFork);
+    expect(w2.handle, warning.handle);
+    expect(w2.lookedUpMs, warning.lookedUpMs);
+    expect(w2.foundMs, warning.foundMs);
+    expect(idsOf(w2.creqIds), idsOf(warning.creqIds));
+    expect(w2.kind, warning.kind);
+    expect(w2.shown.sameRootsAs(warning.shown), isTrue);
+    expect(w2.against!.sameRootsAs(warning.against!), isTrue);
+    final hal = again.handles.outgoing.firstWhere((o) => o.handle == 'hal.33');
+    expect(again.handles.forkWarningForRequest(hal)?.handle, 'hal.33');
+    expect(again.handles.witnessState, HandleWitnessState.forked);
+
+    // A backup, restored on a fresh vault: the requests come back, and with
+    // them the head kept for one and the warning on the other. A warning on a
+    // contact the archive does not hold — deleted while a build that kept it
+    // was not running — comes back too, for the first start to drop.
+    final onDisk = jsonDecode(
+        (await again.vault.kvGet('handle_witness_warnings'))!) as List;
+    await again.vault.kvPut(
+        'handle_witness_warnings',
+        jsonEncode([
+          ...onDisk,
+          {
+            ...(onDisk.firstWhere((m) => (m as Map)['k'] == 'forked') as Map),
+            'ids': [b64(Uint8List(32)..fillRange(0, 32, 9))],
+            'rid': 'no-such-contact',
+          },
+        ]));
+    final code = await RecoveryCode.generate();
+    final file = File(p.join(
+        (await Directory.systemTemp.createTemp('z_hlookup_zbk')).path, 'b.zbk'));
+    temps.add(file.parent);
+    final sink = file.openWrite();
+    await BackupArchive.export(vault: again.vault, code: code, out: sink);
+    await sink.close();
+    final dir = again.vault.root;
+    await stop(again);
+    await again.vault.db.close();
+    dir.deleteSync(recursive: true);
+    dir.createSync(recursive: true);
+    final restored = await Vault.open(rootOverride: dir);
+    await Restore.run(
+        vault: restored,
+        file: file,
+        secret: await code.format(),
+        kind: (await Restore.identify(file)).kind,
+        serverUrl: 'ws://127.0.0.1:$relayPort');
+    final id2 = await ZIdentity.fromJson(
+        (jsonDecode((await restored.kvGet('identity'))!) as Map)
+            .cast<String, Object?>());
+    expect(await restored.kvGet('handle_witness_warnings'),
+        contains('no-such-contact'),
+        reason: 'carried by the archive, as one on a contact is');
+    final back = await boot('Dee',
+        config: witnessed(x, w), fetcher: f, vault: restored, id: id2);
+    expect(back.handles.outgoing.map((o) => o.handle).toSet(),
+        {'hal.33', 'ivo.33'});
+    expect(back.handles.keptHeads.single, kept);
+    expect(back.handles.forkWarnings.map((x) => x.handle).toList()..sort(),
+        ['hal.33', 'ivo.33'],
+        reason: 'the one on a contact that did not come back is gone');
+    expect(await restored.kvGet('handle_witness_warnings'),
+        isNot(contains('no-such-contact')));
+    expect(
+        back.handles.forkWarningForRequest(
+            back.handles.outgoing.firstWhere((o) => o.handle == 'hal.33')),
+        isNotNull);
+
+    // What a restore leaves out: a head or a warning on a request the
+    // archive does not hold, and one that is not their shape. One on a
+    // contact comes back, for the first start to hold to the contacts.
+    final head = (await headOf(x)).toJson();
+    final held = b64(Uint8List(32)..fillRange(0, 32, 1));
+    final gone = b64(Uint8List(32)..fillRange(0, 32, 2));
+    final small = KtTreeHead(
+            size: 1,
+            logRoot: Uint8List(32),
+            mapRoot: Uint8List(32),
+            ts: 1,
+            sig: Uint8List(64))
+        .toJson();
+    Map<String, Object?> warningOn(String id, {String? rid, int found = 2}) => {
+          'k': 'forked',
+          'h': 'hal.33',
+          'at': 1,
+          'found': found,
+          'ids': [id],
+          if (rid != null) 'rid': rid,
+          'sth': head,
+          'against': head,
+        };
+    final out = HandleBackup.restore({
+      'kv': {
+        'handle_out': [
+          {
+            'h': 'hal.33',
+            'owner': b64(Uint8List(32)),
+            'intro': b64(Uint8List(32)),
+            'xintro': b64(Uint8List(32)),
+            'ids': [held],
+            'at': 5,
+          },
+        ],
+        'handle_witness_heads': {
+          'w': 'the witness',
+          'heads': [
+            {
+              'sth': head,
+              'at': 1,
+              'h': 'hal.33',
+              'ids': [held],
+              'ext': head,
+              'held': 9,
+            },
+            {'sth': head, 'at': 2, 'h': 'hal.33', 'ids': [gone]},
+            {'sth': 7, 'at': 3, 'h': 'hal.33', 'ids': [held]},
+            {'sth': head, 'at': 4, 'h': 'hal.33', 'ids': [held], 'ext': small},
+          ],
+        },
+        'handle_witness_warnings': [
+          warningOn(held),
+          warningOn(gone),
+          warningOn(gone, rid: 'a-contact', found: 3),
+          {...warningOn(gone, rid: 'a-contact', found: 4), 'k': 'unconfirmed'}
+            ..remove('against'),
+          {...warningOn(held), 'h': 'not a handle!'},
+          {...warningOn(held), 'k': 'unconfirmed'},
+          {...warningOn(held), 'k': 'maybe'},
+        ],
+      }
+    }, const {});
+    final heads = (jsonDecode(out['handle_witness_heads']!) as Map)['heads'] as List;
+    expect(heads.map((h) => (h as Map)['at']), [1],
+        reason: 'a stand-in smaller than the head is not one');
+    expect((heads.single as Map)['held'], 9);
+    final warnings = jsonDecode(out['handle_witness_warnings']!) as List;
+    expect(warnings.map((x) => ((x as Map)['ids'] as List).single), [held, gone],
+        reason: 'one a contact: a fork before an answer never confirmed found '
+            'after it; and never one of a kind it does not know, nor an answer '
+            'never confirmed that names a head against it');
+    expect((warnings[1] as Map)['rid'], 'a-contact');
+    expect((warnings[1] as Map)['k'], 'forked');
+  });
+
+  test('34. a change of log or witness puts the kept heads out of reach of '
+      'a check, so what relied on each is told, and keeps the warnings',
+      () async {
+    final (:s, :f, :x, y: _, w: _) =
+        await warnedAndWaiting('Dee', 'gwen.34', 'hal.34', 'ivo.34');
+    HandleWarningKind? kindOn(ChatService c, String handle) => c.handles
+        .forkWarningForRequest(
+            c.handles.outgoing.firstWhere((o) => o.handle == handle))
+        ?.kind;
+    // Another witness: the kept head is not its record's to cover, so the
+    // request it was kept for is told the answer was never confirmed.
+    final w2 = await witnessOf(x);
+    serve(f, w2);
+    await s.handles.setConfig(witnessed(x, w2));
+    expect(s.handles.keptHeads, isEmpty);
+    expect(await s.vault.kvGet('handle_witness_heads'), isNull);
+    expect(kindOn(s, 'ivo.34'), HandleWarningKind.unconfirmed);
+    expect(kindOn(s, 'hal.34'), HandleWarningKind.forked,
+        reason: 'about a request already sent');
+    expect(s.handles.witnessState, HandleWitnessState.forked);
+    // Kept again under that witness — x one head past it — and then the
+    // witness removed.
+    await claimAt(x, 'jon.34');
+    await s.handles.request(await s.handles.find('@jon.34'));
+    expect(s.handles.keptHeads.single.handle, 'jon.34');
+    await s.handles.setConfig(x.config);
+    expect(s.handles.keptHeads, isEmpty);
+    expect(kindOn(s, 'jon.34'), HandleWarningKind.unconfirmed);
+    expect(s.handles.forkWarnings, hasLength(3));
+    expect(s.handles.witnessState, HandleWitnessState.forked,
+        reason: 'the warnings stand with no witness configured');
+    // Kept again, and then another log under the same witness.
+    await s.handles.setConfig(witnessed(x, w2));
+    await claimAt(x, 'kai.34');
+    await s.handles.request(await s.handles.find('@kai.34'));
+    expect(s.handles.keptHeads.single.handle, 'kai.34');
+    final other = await startLog();
+    await s.handles.setConfig(HandleConfig(
+        logUrl: 'http://127.0.0.1:${other.port}',
+        logPubB64: b64(other.pub),
+        witnessUrl: w2.url,
+        witnessPubB64: b64(w2.pub)));
+    expect(s.handles.keptHeads, isEmpty);
+    expect(kindOn(s, 'kai.34'), HandleWarningKind.unconfirmed);
+    expect(s.handles.forkWarnings, hasLength(4));
+    // A lookup made under one witness, its request sent after the witness
+    // is removed: no record covers its head, and the request is told at once.
+    await s.handles.setConfig(witnessed(x, w2));
+    await claimAt(x, 'max.34');
+    final maxFound = await s.handles.find('@max.34');
+    await s.handles.setConfig(x.config);
+    await s.handles.request(maxFound);
+    expect(s.handles.keptHeads, isEmpty);
+    expect(kindOn(s, 'max.34'), HandleWarningKind.unconfirmed);
+    expect(s.handles.forkWarnings, hasLength(5));
+    // A build that pins another witness, over a vault that never saved a
+    // configuration of its own: setConfig never runs, and the heads are said
+    // at load.
+    final eve = await boot('Eve', config: witnessed(x, w2), fetcher: f);
+    await claimAt(x, 'lia.34');
+    await eve.handles.request(await eve.handles.find('@lia.34'));
+    expect(eve.handles.keptHeads, hasLength(1));
+    final vault = eve.vault;
+    final id = eve.identity;
+    await stop(eve);
+    final same = await boot('Eve',
+        config: witnessed(x, w2), fetcher: f, vault: vault, id: id);
+    expect(same.handles.keptHeads, hasLength(1), reason: 'the same build keeps them');
+    expect(same.handles.forkWarnings, isEmpty);
+    await stop(same);
+    final w3 = await witnessOf(x);
+    final rebuilt = await boot('Eve',
+        config: witnessed(x, w3), fetcher: f, vault: vault, id: id);
+    expect(rebuilt.handles.keptHeads, isEmpty);
+    expect(await vault.kvGet('handle_witness_heads'), isNull);
+    expect(kindOn(rebuilt, 'lia.34'), HandleWarningKind.unconfirmed);
+    expect(rebuilt.handles.witnessState, HandleWitnessState.unconfirmed);
+  });
+
+  test('35. a warning goes when it is dismissed, when its request is '
+      'forgotten, and when its contact is deleted; nothing else ends it',
+      () async {
+    final (x, y, w) = await twoHistories('gwen.35');
+    final thief = await boot('Thief', config: x.config);
+    await claimIn(thief, 'hal.35');
+    await claimAt(x, 'ivo.35');
+    await claimAt(x, 'jan.35');
+    final f = _Operator();
+    serve(f, w);
+    final dee = await boot('Dee', config: witnessed(x, w), fetcher: f);
+    dee.handles.witnessReuse = Duration.zero;
+    for (final h in ['hal.35', 'ivo.35', 'jan.35']) {
+      await dee.handles.request(await dee.handles.find('@$h'));
+    }
+    expect(dee.handles.keptHeads, hasLength(3));
+    // The operator's app accepts the first: answered, its head is the
+    // contact's.
+    await receives(thief, dee.myRid);
+    await thief.acceptRequest(dee.myRid);
+    await linked(dee, thief, 'hal.35');
+    for (final h in ['hal.35', 'ivo.35', 'jan.35']) {
+      await claimAt(y, h);
+    }
+    await sync(w, y);
+    await expectLater(dee.handles.find('@gwen.35'), failsWith(HandleFailure.forked));
+    expect(dee.handles.forkWarnings.map((x) => x.handle).toSet(),
+        {'hal.35', 'ivo.35', 'jan.35'});
+    expect(dee.handles.forkWarningForContact(thief.myRid)?.handle, 'hal.35',
+        reason: 'the request was answered: the warning is on the contact');
+    // Not ended by the witness agreeing again — its key co-signing x's head
+    // now, as a witness that had followed x would.
+    f.witness =
+        () async => KtResponse(200, await recordFor(await headOf(x), w.seed));
+    expect((await dee.handles.find('@gwen.35')).state, HandleLookupState.found);
+    expect(dee.handles.witnessForkMs, isNull, reason: 'the lookup\'s fork is over');
+    expect(dee.handles.forkWarnings, hasLength(3));
+    expect(dee.handles.witnessState, HandleWitnessState.forked);
+    // Dismissed.
+    final jan = dee.handles.outgoing.firstWhere((o) => o.handle == 'jan.35');
+    await dee.handles.dismissForkWarning(dee.handles.forkWarningForRequest(jan)!);
+    expect(dee.handles.forkWarningForRequest(jan), isNull);
+    expect(dee.handles.forkWarnings.map((x) => x.handle).toSet(),
+        {'hal.35', 'ivo.35'});
+    // The request forgotten.
+    await dee.handles.forgetOutgoing('ivo.35');
+    expect(dee.handles.forkWarnings.single.handle, 'hal.35');
+    expect(await dee.vault.kvGet('handle_witness_warnings'),
+        isNot(contains('ivo.35')));
+    // The contact deleted.
+    await dee.deleteContact(thief.myRid);
+    expect(dee.handles.forkWarningForContact(thief.myRid), isNull);
+    expect(dee.handles.forkWarnings, isEmpty);
+    expect(await dee.vault.kvGet('handle_witness_warnings'), isNull);
+    expect(dee.handles.witnessState, HandleWitnessState.agreed);
+  });
+
+  test('36. a fork padded past what the honest history reaches is found after '
+      'the fact, by the head the log shows next: kept on the fork, the '
+      'witness\'s record below the head kept contradicts it; taken back to '
+      'the honest history, the head shown is smaller than the one kept '
+      '(PROBE A of the review)', () async {
+    final (x, y, w) = await twoHistories('gwen.36');
+    final thief = await boot('Thief', config: x.config);
+    await claimIn(thief, 'hal.36');
+    // The operator pads the history it shows: @ivo.36 and five entries more,
+    // in x alone. Hal claims @hal.36 in y, the history the witness follows.
+    await claimAt(x, 'ivo.36');
+    for (var i = 0; i < 5; i++) {
+      await claimAt(x, 'pad$i.36');
+    }
+    await claimAt(y, 'hal.36');
+    // Dee is kept on x. Eve is taken back to y later, at the same address
+    // and under the same key.
+    final fd = _Operator();
+    serve(fd, w);
+    final dee = await boot('Dee', config: witnessed(x, w), fetcher: fd);
+    final fe = _Operator();
+    serve(fe, w);
+    final sw = _Switch(fe, x.port, y.port);
+    final eve = await boot('Eve', config: witnessed(x, w), fetcher: sw);
+    for (final s in [dee, eve]) {
+      s.handles.witnessReuse = Duration.zero;
+      final hal = await s.handles.find('@hal.36');
+      expect(hal.introRid, thief.handles.own!.introRid,
+          reason: 'the operator\'s mailbox');
+      await s.handles.request(hal);
+      await s.handles.request(await s.handles.find('@ivo.36'));
+      expect(s.handles.keptHeads, hasLength(2));
+      // The operator's app accepts the request to @hal.36.
+      await receives(thief, s.myRid);
+      await thief.acceptRequest(s.myRid);
+      await linked(s, thief, 'hal.36');
+    }
+    final keptSize = dee.handles.keptHeads.first.size;
+    // y grows honestly by two claims, and the witness follows it, healthy,
+    // to a head below the one kept.
+    await claimAt(y, 'ann.36');
+    await claimAt(y, 'bob.36');
+    await sync(w, y);
+    final honest = (await headOf(y)).size;
+
+    // (i) Dee, still shown x: her next lookup is the fork 15 refuses, and
+    // the record below the head kept contradicts that head too.
+    final onX = await look(dee, fd, '@gwen.36');
+    // (ii) Eve, shown y: every head is smaller than the one kept.
+    sw.on = true;
+    final from = fe.urls.length;
+    final onY = [
+      for (final h in ['@gwen.36', '@ann.36', '@bob.36'])
+        (await eve.handles.find(h)).state
+    ];
+    final again = await eve.handles.find('@hal.36');
+    final askedFromKept = fe.urls
+        .skip(from)
+        .where((u) =>
+            u.path == '/kt/v1/consistency' &&
+            u.queryParameters['first'] == '$keptSize')
+        .length;
+    ({bool contact, bool request, int kept, HandleWitnessState state}) seen(
+        ChatService s) {
+      final ivo = s.handles.outgoing.where((o) => o.handle == 'ivo.36');
+      return (
+        contact: s.handles.forkWarningForContact(thief.myRid) != null,
+        request: ivo.isNotEmpty && s.handles.forkWarningForRequest(ivo.single) != null,
+        kept: s.handles.keptHeads.length,
+        state: s.handles.witnessState,
+      );
+    }
+
+    final d = seen(dee), e = seen(eve);
+    // ignore: avoid_print
+    print('LOOKUP 36: kept at $keptSize, honest at $honest, the record at '
+        '$honest; (i) on x -> ${onX.error is HandleException ? (onX.error as HandleException).failure : onX.error}, '
+        'contact warned ${d.contact}, request warned ${d.request}, kept '
+        '${d.kept}, ${d.state}; (ii) on y -> $onY, @hal.36 ${again.state}, '
+        'proofs asked from the kept size $askedFromKept, contact warned '
+        '${e.contact}, request warned ${e.request}, kept ${e.kept}, ${e.state}');
+    expect(keptSize, greaterThan(honest), reason: 'padded past it');
+    expect(onX.error, forked());
+    expect(d.contact, isTrue, reason: 'the contact the forked request brought');
+    expect(d.request, isTrue, reason: 'the request still waiting on it');
+    expect(d.kept, 0);
+    expect(d.state, HandleWitnessState.forked);
+    expect(dee.handles.forkWarnings.where((x) => x.isFork), isNotEmpty,
+        reason: 'what Settings says: the request sent, not "nothing used"');
+    for (final s in [dee, eve]) {
+      final w = s.handles.forkWarningForContact(thief.myRid)!;
+      expect(w.kind, HandleWarningKind.forked);
+      expect(w.shown.size, keptSize);
+      expect(w.against!.sameRootsAs(await headOf(y)), isTrue,
+          reason: 'the witness\'s record (i), or the log\'s own smaller head '
+              '(ii): the honest head');
+    }
+    expect(onY, everyElement(HandleLookupState.found));
+    expect(again.state, HandleLookupState.changed,
+        reason: 'the operator\'s record, remembered, is not Hal\'s');
+    expect(askedFromKept, 0, reason: 'a smaller head needs no proof');
+    expect(e.contact, isTrue);
+    expect(e.request, isTrue);
+    expect(e.kept, 0);
+    expect(e.state, HandleWitnessState.forked);
+  });
+
+  test('37. a kept head the witness never covers is never dropped in '
+      'silence: a proof the log withholds for 30 days (PROBE B of the '
+      'review), and a witness unreachable for 30 days, end in a warning on '
+      'the contact', () async {
+    // (a) The operator shows Dee y once she holds the operator's account as
+    // @hal.37, and withholds only the proof from the head she kept.
+    final (x, y, w) = await twoHistories('gwen.37');
+    final thief = await boot('Thief', config: x.config);
+    await claimIn(thief, 'hal.37');
+    await claimAt(y, 'hal.37');
+    final f = _Operator();
+    serve(f, w);
+    final sw = _Switch(f, x.port, y.port);
+    final hold = _WithholdFirst(sw);
+    final dee = await boot('Dee', config: witnessed(x, w), fetcher: hold);
+    dee.handles.witnessReuse = Duration.zero;
+    dee.handles.witnessQuietAfter = const Duration(milliseconds: 1);
+    final found = await dee.handles.find('@hal.37');
+    expect(found.introRid, thief.handles.own!.introRid);
+    await dee.handles.request(found);
+    final kept = dee.handles.keptHeads.single;
+    await receives(thief, dee.myRid);
+    await thief.acceptRequest(dee.myRid);
+    await linked(dee, thief, 'hal.37');
+    sw.on = true;
+    hold.first = kept.size;
+    await claimAt(y, 'ann.37');
+    await claimAt(y, 'bob.37');
+    await sync(w, y);
+    for (final h in ['@gwen.37', '@ann.37', '@bob.37']) {
+      expect((await dee.handles.find(h)).state, HandleLookupState.found);
+    }
+    final denied = [...hold.denied];
+    final state = dee.handles.witnessState;
+    final keptNow = dee.handles.keptHeads.length;
+    final toldNow = dee.handles.forkWarnings.length;
+    final deeVault = dee.vault;
+    final deeId = dee.identity;
+    await stop(dee);
+    final deeLater = await boot('Dee',
+        config: witnessed(x, w),
+        fetcher: hold,
+        vault: deeVault,
+        id: deeId,
+        now: () => laterBy(const Duration(days: 30, minutes: 1)));
+    await waitUntil(() => deeLater.handles.checksBack == 1,
+        what: 'Dee\'s last check 30 days on');
+
+    // (b) Fay's witness cannot be reached at all: she asks Olaf through his
+    // handle, he accepts, and no record ever covers the head she kept.
+    final log = await startLog();
+    await claimAt(log, 'nia.37');
+    final w2 = await witnessOf(log);
+    final olaf = await boot('Olaf', config: log.config);
+    await claimIn(olaf, 'olaf.37');
+    final blocked = _Operator()
+      ..witnessUrl = w2.url
+      ..witness = () => Future<KtResponse>.error(
+          const SocketException('the witness cannot be reached'));
+    final fay = await boot('Fay', config: witnessed(log, w2), fetcher: blocked);
+    await fay.handles.request(await fay.handles.find('@olaf.37'));
+    final fayKept = fay.handles.keptHeads.length;
+    await receives(olaf, fay.myRid);
+    await olaf.acceptRequest(fay.myRid);
+    await linked(fay, olaf, 'olaf.37');
+    expect((await fay.handles.find('@nia.37')).state, HandleLookupState.found);
+    final fayHeld = fay.handles.keptHeads.map((k) => k.rid).toList();
+    final fayVault = fay.vault;
+    final fayId = fay.identity;
+    await stop(fay);
+    final fayLater = await boot('Fay',
+        config: witnessed(log, w2),
+        fetcher: blocked,
+        vault: fayVault,
+        id: fayId,
+        now: () => laterBy(const Duration(days: 30, minutes: 1)));
+    await waitUntil(() => fayLater.handles.checksBack == 1,
+        what: 'Fay\'s last check 30 days on');
+    // No answer: nothing spent, nothing said. A day and a minute later, in
+    // front, the witness still unreachable: after a day of tries the check
+    // is given up on, and the head lapses, said.
+    final fayAfterOne = fayLater.handles.keptHeads.length;
+    final fayToldAfterOne = fayLater.handles.forkWarningForContact(olaf.myRid);
+    shiftClock(fayLater, const Duration(days: 1, minutes: 1));
+    fayLater.handles.onForeground();
+    await waitUntil(() => fayLater.handles.checksBack == 2,
+        what: 'Fay\'s last check tried again a day on');
+    final deeTold = deeLater.handles.forkWarningForContact(thief.myRid);
+    final fayTold = fayLater.handles.forkWarningForContact(olaf.myRid);
+    // ignore: avoid_print
+    print('LOOKUP 37: (a) withheld $denied -> $state, kept $keptNow, told '
+        '$toldNow; 30 days on -> kept ${deeLater.handles.keptHeads.length}, '
+        'contact told ${deeTold != null}; (b) the witness unreachable -> kept '
+        '$fayKept, held by $fayHeld; 30 days on -> kept $fayAfterOne, told '
+        '${fayToldAfterOne != null}; a day later -> kept '
+        '${fayLater.handles.keptHeads.length}, contact told ${fayTold != null}');
+    expect(denied, isNotEmpty);
+    expect(state, HandleWitnessState.quiet);
+    expect(keptNow, 1);
+    expect(toldNow, 0, reason: 'pending: nothing is known yet');
+    expect(deeLater.handles.keptHeads, isEmpty);
+    expect(deeTold, isNotNull, reason: 'never confirmed, and said so');
+    expect(deeTold!.handle, 'hal.37');
+    expect(deeTold.lookedUpMs, kept.atMs);
+    expect(deeTold.kind, HandleWarningKind.unconfirmed);
+    expect(deeLater.handles.witnessState, HandleWitnessState.unconfirmed);
+    expect(fayKept, 1);
+    expect(fayHeld, [olaf.myRid]);
+    expect(fayAfterOne, 1, reason: 'no answer: nothing spent');
+    expect(fayToldAfterOne, isNull);
+    expect(fayLater.handles.keptHeads, isEmpty);
+    expect(fayTold, isNotNull, reason: 'never confirmed, and said so');
+    expect(fayTold!.handle, 'olaf.37');
+    expect(fayTold.kind, HandleWarningKind.unconfirmed);
+    expect(fayLater.handles.witnessState, HandleWitnessState.unconfirmed);
+  });
+
+  // ---- A kept head checked on its own (2026-10-24) ------------------------
+
+  test('38. a head the witness covers in the ordinary way is checked on its '
+      'own when nothing looks it up: half an hour on, at the first moment in '
+      'front, one record, and the head goes with nothing said — no false '
+      'alarm 30 days on for a requester who looks nothing up again', () async {
+    final log = await startLog();
+    await claimAt(log, 'lena.38');
+    final w = await witnessOf(log);
+    // Olaf's own app holds @olaf.38: the log a head past the witness's record
+    // when Dee looks him up.
+    final olaf = await boot('Olaf', config: log.config);
+    await claimIn(olaf, 'olaf.38');
+    final f = _Operator();
+    serve(f, w);
+    final dee = await boot('Dee', config: witnessed(log, w), fetcher: f);
+    expect(dee.handles.own, isNull, reason: 'a requester with no handle');
+    await dee.handles.request(await dee.handles.find('@olaf.38'));
+    expect(dee.handles.keptHeads, hasLength(1),
+        reason: 'the record did not cover its head');
+    await receives(olaf, dee.myRid);
+    await olaf.acceptRequest(dee.myRid);
+    await linked(dee, olaf, 'olaf.38');
+    // The witness follows the log, as it does every five minutes.
+    await sync(w, log);
+    final before = fetchesOf(f, w.url);
+    // Half an hour and a second on — past the check-back's moment, drawn 20
+    // to 30 minutes after the request — Dee brings the app to the front
+    // again and looks nothing up.
+    shiftClock(dee, const Duration(minutes: 30, seconds: 1));
+    dee.handles.onForeground();
+    final covered = await settled(
+        () async => await dee.vault.kvGet('handle_witness_heads') == null);
+    final asked = fetchesOf(f, w.url) - before;
+    // Thirty days and a minute on, with nothing answering at all — the
+    // device offline — and again a day later, so that a check made then
+    // could decide nothing, and would be given up on.
+    final vault = dee.vault;
+    final id = dee.identity;
+    await stop(dee);
+    final lapsed = await boot('Dee',
+        config: witnessed(log, w),
+        fetcher: _Nowhere(),
+        vault: vault,
+        id: id,
+        now: () => laterBy(const Duration(days: 30, minutes: 1)));
+    await waitUntil(
+        () => lapsed.handles.keptHeads.isEmpty || lapsed.handles.checksBack >= 1,
+        what: 'the first moment 30 days on');
+    shiftClock(lapsed, const Duration(days: 1, minutes: 1));
+    lapsed.handles.onForeground();
+    await waitUntil(
+        () => lapsed.handles.keptHeads.isEmpty || lapsed.handles.checksBack >= 2,
+        what: 'a day later');
+    await waitUntil(() => lapsed.handles.keptHeads.isEmpty,
+        what: 'nothing left kept 31 days on');
+    final told = lapsed.handles.forkWarningForContact(olaf.myRid);
+    // ignore: avoid_print
+    print('LOOKUP 38: half an hour on, in front -> covered $covered, records '
+        'fetched $asked; 30 days on -> warning on the contact '
+        '${told?.kind.name}, warnings ${lapsed.handles.forkWarnings.length}');
+    expect(told, isNull, reason: 'no false alarm');
+    expect(lapsed.handles.forkWarnings, isEmpty);
+    expect(covered, isTrue, reason: 'the check-back covered it');
+    expect(asked, 1, reason: 'one record, fetched afresh');
+  });
+
+  test('39. a fork padded past what the honest history reaches is found by '
+      'the check-back, with no lookup after it, as a fork', () async {
+    final (x, y, w) = await twoHistories('gwen.39');
+    final thief = await boot('Thief', config: x.config);
+    await claimIn(thief, 'hal.39');
+    for (var i = 0; i < 5; i++) {
+      await claimAt(x, 'pad$i.39');
+    }
+    await claimAt(y, 'hal.39');
+    // Dee is kept on x; Eve is taken back to y, at the same address and
+    // under the same key.
+    final fd = _Operator();
+    serve(fd, w);
+    final dee = await boot('Dee', config: witnessed(x, w), fetcher: fd);
+    final fe = _Operator();
+    serve(fe, w);
+    final sw = _Switch(fe, x.port, y.port);
+    final eve = await boot('Eve', config: witnessed(x, w), fetcher: sw);
+    for (final s in [dee, eve]) {
+      final hal = await s.handles.find('@hal.39');
+      expect(hal.introRid, thief.handles.own!.introRid,
+          reason: 'the operator\'s mailbox');
+      await s.handles.request(hal);
+      await receives(thief, s.myRid);
+      await thief.acceptRequest(s.myRid);
+      await linked(s, thief, 'hal.39');
+    }
+    final keptSize = dee.handles.keptHeads.single.size;
+    // The honest history grows past the fork point, and the witness follows
+    // it.
+    await claimAt(y, 'ann.39');
+    await claimAt(y, 'bob.39');
+    await sync(w, y);
+    final honest = (await headOf(y)).size;
+    // Half an hour and a second on, each brings the app to the front and
+    // looks nothing up.
+    sw.on = true;
+    final found = <bool>[];
+    for (final s in [dee, eve]) {
+      shiftClock(s, const Duration(minutes: 30, seconds: 1));
+      s.handles.onForeground();
+      found.add(await settled(() async =>
+          s.handles.forkWarningForContact(thief.myRid) != null &&
+          await s.vault.kvGet('handle_witness_heads') == null));
+    }
+    // Thirty days and a minute on: what each says of the contact.
+    final later = <ChatService>[];
+    for (final (s, fetcher) in <(ChatService, KtFetcher)>[(dee, fd), (eve, sw)]) {
+      final vault = s.vault;
+      final id = s.identity;
+      final name = s.displayName;
+      await stop(s);
+      final b = await boot(name,
+          config: witnessed(x, w),
+          fetcher: fetcher,
+          vault: vault,
+          id: id,
+          now: () => laterBy(const Duration(days: 30, minutes: 1)));
+      await waitUntil(() => b.handles.keptHeads.isEmpty,
+          what: '$name: nothing left kept 30 days on');
+      later.add(b);
+    }
+    final kinds = [
+      for (final b in later) b.handles.forkWarningForContact(thief.myRid)?.kind
+    ];
+    // ignore: avoid_print
+    print('LOOKUP 39: kept at $keptSize, the honest history at $honest; '
+        'found at the check-back $found; 30 days on -> $kinds');
+    expect(kinds, [HandleWarningKind.forked, HandleWarningKind.forked],
+        reason: 'found as a fork at the check-back, not said at the lapse as '
+            'never confirmed');
+    expect(found, [true, true]);
+  });
+
+  test('40. a head is checked on its own at most twice — the check-back, and '
+      'the last check at 30 days — each one record for every head due; '
+      'nothing is asked with no head kept, nor again once a head is decided',
+      () async {
+    final log = await startLog();
+    await claimAt(log, 'lena.40');
+    final w = await witnessOf(log);
+    final still = await witnessOf(log);
+    await claimAt(log, 'liv.40');
+    await claimAt(log, 'lou.40');
+    // Fay sends nothing; Gus sends two requests on two lookups; Han one,
+    // asking a witness that never moves on. Each asks afresh at every
+    // lookup, so that a lookup's fetch is one of its own.
+    final names = ['Fay', 'Gus', 'Han'];
+    final ops = {for (final n in names) n: _Operator()};
+    serve(ops['Fay']!, w);
+    serve(ops['Gus']!, w);
+    serve(ops['Han']!, still);
+    final dev = <String, ChatService>{
+      for (final n in names)
+        n: await boot(n,
+            config: witnessed(log, n == 'Han' ? still : w), fetcher: ops[n]!),
+    };
+    for (final s in dev.values) {
+      s.handles.witnessReuse = Duration.zero;
+    }
+    int asked(String n) =>
+        fetchesOf(ops[n]!, (n == 'Han' ? still : w).url);
+    expect((await dev['Fay']!.handles.find('@lena.40')).state,
+        HandleLookupState.found);
+    for (final h in ['lena.40', 'liv.40']) {
+      await dev['Gus']!.handles.request(await dev['Gus']!.handles.find('@$h'));
+    }
+    await dev['Han']!.handles.request(await dev['Han']!.handles.find('@lou.40'));
+    expect(dev['Fay']!.handles.keptHeads, isEmpty);
+    expect(dev['Gus']!.handles.keptHeads, hasLength(2));
+    expect(dev['Han']!.handles.keptHeads, hasLength(1));
+    // Gus's witness follows the log; Han's stays where it was.
+    await sync(w, log);
+    final start = {for (final n in names) n: asked(n)};
+    // Half an hour and a second on, each comes to the front.
+    for (final s in dev.values) {
+      shiftClock(s, const Duration(minutes: 30, seconds: 1));
+      s.handles.onForeground();
+    }
+    final gusDone = await settled(() async =>
+        await dev['Gus']!.vault.kvGet('handle_witness_heads') == null);
+    final hanDone = await settled(() async =>
+        asked('Han') > start['Han']! &&
+        ((await dev['Han']!.vault.kvGet('handle_witness_heads')) ?? '')
+            .contains('"back"'));
+    final atBack = {for (final n in names) n: asked(n) - start[n]!};
+    // A lookup on each, its record fetched afresh — after anything the
+    // moment in front asked, which would be asked before it.
+    Future<Map<String, int>> lookOnce() async {
+      final from = {for (final n in names) n: asked(n)};
+      for (final s in dev.values) {
+        expect((await s.handles.find('@lena.40')).state, HandleLookupState.found);
+      }
+      return {for (final n in names) n: asked(n) - from[n]!};
+    }
+
+    final first = await lookOnce();
+    // Twenty minutes later, each in front again, and another lookup: no check
+    // of its own again, decided or not.
+    final from40 = {for (final n in names) n: asked(n)};
+    for (final s in dev.values) {
+      shiftClock(s, const Duration(minutes: 20));
+      s.handles.onForeground();
+    }
+    final second = await lookOnce();
+    final at40 = {for (final n in names) n: asked(n) - from40[n]!};
+    // Thirty days and a minute on, Han's last check: one more record, and
+    // then, never covered, the answer said as never confirmed.
+    final han = dev['Han']!;
+    final hanBefore = asked('Han');
+    final vault = han.vault;
+    final id = han.identity;
+    await stop(han);
+    final hanLater = await boot('Han',
+        config: witnessed(log, still),
+        fetcher: ops['Han']!,
+        vault: vault,
+        id: id,
+        now: () => laterBy(const Duration(days: 30, minutes: 1)));
+    await waitUntil(() => hanLater.handles.keptHeads.isEmpty,
+        what: 'Han\'s head decided 30 days on');
+    final atLast = asked('Han') - hanBefore;
+    final hanTold = hanLater.handles.forkWarnings.singleOrNull;
+    // ignore: avoid_print
+    print('LOOKUP 40: records asked at the check-back $atBack (Gus covered '
+        '$gusDone, Han spent $hanDone); with a lookup after it $first; in '
+        'front again with a lookup $at40; Han at 30 days $atLast, then '
+        '${hanTold?.kind.name}');
+    expect(atBack['Fay'], 0, reason: 'nothing asked with no head kept');
+    expect(atBack['Gus'], 1, reason: 'one record for both heads due');
+    expect(atBack['Han'], 1);
+    expect(gusDone, isTrue);
+    expect(hanDone, isTrue);
+    expect(first, {'Fay': 1, 'Gus': 1, 'Han': 1},
+        reason: 'the lookup\'s own: none asked with no head kept');
+    expect(second, {'Fay': 1, 'Gus': 1, 'Han': 1},
+        reason: 'the lookup\'s own: none asked again, decided or spent');
+    expect(at40, second);
+    expect(atLast, 1, reason: 'the last check, once');
+    expect(hanTold?.kind, HandleWarningKind.unconfirmed);
+
+    // While the app stays in front, the moment comes by itself: a one-shot
+    // timer, here a second after the head was kept, and one record. The
+    // witness Ida asks co-signs the log's head as it is when asked.
+    await claimAt(log, 'max.40');
+    final fi = _Operator();
+    serve(fi, w);
+    final ida = await boot('Ida', config: witnessed(log, w), fetcher: fi);
+    ida.handles.witnessCheckBack = const Duration(seconds: 1);
+    ida.handles.witnessCheckBackMax = const Duration(seconds: 1);
+    final maxFound = await ida.handles.find('@max.40');
+    fi.witness = () async =>
+        KtResponse(200, await recordFor(await headOf(log), w.seed));
+    final idaBefore = fetchesOf(fi, w.url);
+    await ida.handles.request(maxFound);
+    expect(ida.handles.keptHeads, hasLength(1));
+    await waitUntil(
+        () async => await ida.vault.kvGet('handle_witness_heads') == null,
+        what: 'the timer\'s check-back, the app in front');
+    await waitUntil(() => ida.handles.checksBack == 1, what: 'one check');
+    expect(fetchesOf(fi, w.url) - idaBefore, 1);
+    expect(ida.handles.forkWarnings, isEmpty);
+  });
+
+  test('41. a head the check-back could not decide — the witness unreachable '
+      'then — is decided by the last check, at 30 days: covered by then, it '
+      'goes with nothing said', () async {
+    final log = await startLog();
+    await claimAt(log, 'lena.41');
+    final w = await witnessOf(log);
+    final olaf = await boot('Olaf', config: log.config);
+    await claimIn(olaf, 'olaf.41');
+    final f = _Operator();
+    serve(f, w);
+    final hana = await boot('Hana', config: witnessed(log, w), fetcher: f);
+    await hana.handles.request(await hana.handles.find('@olaf.41'));
+    expect(hana.handles.keptHeads, hasLength(1));
+    await receives(olaf, hana.myRid);
+    await olaf.acceptRequest(hana.myRid);
+    await linked(hana, olaf, 'olaf.41');
+    // The witness cannot be reached at the check-back.
+    f.witness = () => Future<KtResponse>.error(
+        const SocketException('the witness cannot be reached'));
+    final lastAsk = hana.handles.witnessLastAskMs;
+    final before = fetchesOf(f, w.url);
+    shiftClock(hana, const Duration(minutes: 30, seconds: 1));
+    hana.handles.onForeground();
+    final checkedBack =
+        await settled(() => hana.handles.witnessLastAskMs != lastAsk);
+    final atBack = fetchesOf(f, w.url) - before;
+    final keptAfter = hana.handles.keptHeads.length;
+    // By day 30 the witness has followed the log and answers again; Hana has
+    // looked nothing up.
+    await sync(w, log);
+    serve(f, w);
+    final vault = hana.vault;
+    final id = hana.identity;
+    await stop(hana);
+    final later = await boot('Hana',
+        config: witnessed(log, w),
+        fetcher: f,
+        vault: vault,
+        id: id,
+        now: () => laterBy(const Duration(days: 30, minutes: 1)));
+    await waitUntil(() => later.handles.keptHeads.isEmpty,
+        what: 'decided 30 days on');
+    final atLast = fetchesOf(f, w.url) - before - atBack;
+    // ignore: avoid_print
+    print('LOOKUP 41: the witness unreachable half an hour on -> checked '
+        '$checkedBack, asked $atBack, kept $keptAfter; 30 days on -> asked '
+        '$atLast, warnings ${later.handles.forkWarnings.length}');
+    expect(later.handles.forkWarnings, isEmpty,
+        reason: 'covered by day 30: no false alarm');
+    expect(checkedBack, isTrue);
+    expect(atBack, 1);
+    expect(keptAfter, 1, reason: 'left pending; its check-back, unanswered, '
+        'tried again at the next moment');
+    expect(atLast, 1, reason: 'the last check, once');
+  });
+
+  // ---- A second review of the checks (2026-10-24) -------------------------
+
+  /// The head of [w]'s record as it last wrote it.
+  KtTreeHead recordHeadOf(_Witness w) => KtWitnessRecord.fromJson(
+          (jsonDecode(w.record) as Map).cast<String, Object?>())
+      .head;
+
+  /// [name], with no handle of her own, holding the operator's account as
+  /// @[handle] on the history x the operator shows her; the honest history y
+  /// then grows two claims past the head she kept, and its witness follows
+  /// it there (the second review's PROBE D): a fork of one entry, no padding.
+  Future<
+      ({
+        ChatService s,
+        ChatService thief,
+        _Operator f,
+        _Log x,
+        _Log y,
+        _Witness w,
+        int kept
+      })> keptOnAFork(String name, String n) async {
+    final (x, y, w) = await twoHistories('gwen.$n');
+    final thief = await boot('Thief', config: x.config);
+    await claimIn(thief, 'hal.$n');
+    await claimAt(y, 'hal.$n');
+    final f = _Operator();
+    serve(f, w);
+    final s = await boot(name, config: witnessed(x, w), fetcher: f);
+    s.handles.witnessReuse = Duration.zero;
+    final hal = await s.handles.find('@hal.$n');
+    expect(hal.introRid, thief.handles.own!.introRid,
+        reason: 'the operator\'s mailbox');
+    await s.handles.request(hal);
+    final kept = s.handles.keptHeads.single.size;
+    await receives(thief, s.myRid);
+    await thief.acceptRequest(s.myRid);
+    await linked(s, thief, 'hal.$n');
+    await claimAt(y, 'ann.$n');
+    await claimAt(y, 'bob.$n');
+    await sync(w, y);
+    expect(recordHeadOf(w).size, greaterThan(kept),
+        reason: 'the honest history, and the record, past the kept head');
+    return (s: s, thief: thief, f: f, x: x, y: y, w: w, kept: kept);
+  }
+
+  test('42. a device kept on a fork the honest history has grown past is told '
+      'at once that the answer it sent on was never confirmed, on the contact '
+      'that request added: no fork it cannot show, and the head still kept '
+      '(PROBE D of the second review)', () async {
+    final (:s, :thief, :f, x: _, y: _, :w, :kept) = await keptOnAFork('Dee', '42');
+    // The operator goes on showing Dee x. Her next lookup is the fork 15
+    // refuses; the head x shows extends the one she kept, and the log cannot
+    // prove that one to the record past it.
+    final onX = await look(s, f, '@gwen.42');
+    final told = s.handles.forkWarningForContact(thief.myRid);
+    final forks = s.handles.forkWarnings.where((x) => x.isFork).length;
+    final keptNow = s.handles.keptHeads.length;
+    final state = s.handles.witnessState;
+    // Its check-back, half an hour on, in front, with no lookup: the same,
+    // and said once.
+    shiftClock(s, const Duration(minutes: 30, seconds: 1));
+    s.handles.onForeground();
+    await waitUntil(() => s.handles.checksBack == 1, what: 'the check-back');
+    final afterBack = s.handles.forkWarningForContact(thief.myRid);
+    final all = s.handles.forkWarnings.length;
+    // ignore: avoid_print
+    print('LOOKUP 42: kept at $kept, the record at ${recordHeadOf(w).size}; '
+        'the next lookup on x -> ${onX.error}, $state; the contact told '
+        '${told?.kind.name}, forks $forks, kept $keptNow; after the '
+        'check-back -> ${afterBack?.kind.name}, warnings $all, kept '
+        '${s.handles.keptHeads.length}');
+    expect(onX.error, forked());
+    expect(told?.kind, HandleWarningKind.unconfirmed,
+        reason: 'said at once, and true: no record has confirmed it');
+    expect(forks, 0, reason: 'no fork this device cannot show');
+    expect(keptNow, 1, reason: 'still kept: a later check may decide it');
+    expect(state, HandleWitnessState.forked);
+    expect(afterBack?.kind, HandleWarningKind.unconfirmed);
+    expect(all, 1, reason: 'said once');
+    expect(s.handles.keptHeads, hasLength(1));
+    // Dismissed — the person has compared safety numbers — it is not said
+    // again by the next check that finds the same.
+    await s.handles.dismissForkWarning(afterBack!);
+    expect((await look(s, f, '@gwen.42')).error, forked());
+    expect(s.handles.forkWarnings, isEmpty,
+        reason: 'said once: a dismissed warning is not said again');
+    expect(s.handles.keptHeads, hasLength(1));
+  });
+
+  test('43. 30 days on, the warning said at the fork stands and the head goes, '
+      'never decided (PROBE D30 of the second review)', () async {
+    final (:s, :thief, :f, :x, y: _, :w, kept: _) =
+        await keptOnAFork('Dee', '43');
+    expect((await look(s, f, '@gwen.43')).error, forked());
+    final atFork = s.handles.forkWarningForContact(thief.myRid);
+    final vault = s.vault;
+    final id = s.identity;
+    await stop(s);
+    final later = await boot('Dee',
+        config: witnessed(x, w),
+        fetcher: f,
+        vault: vault,
+        id: id,
+        now: () => laterBy(const Duration(days: 30, minutes: 1)));
+    await waitUntil(() => later.handles.checksBack == 1, what: 'the last check');
+    final told = later.handles.forkWarningForContact(thief.myRid);
+    // ignore: avoid_print
+    print('LOOKUP 43: at the fork -> ${atFork?.kind.name}; 30 days on -> kept '
+        '${later.handles.keptHeads.length}, the contact told '
+        '${told?.kind.name}, the one said at the fork '
+        '${told != null && atFork != null && told.foundMs == atFork.foundMs}, '
+        'warnings ${later.handles.forkWarnings.length}');
+    expect(atFork?.kind, HandleWarningKind.unconfirmed);
+    expect(later.handles.keptHeads, isEmpty,
+        reason: 'undecided at its check at 30 days: the head goes');
+    expect(told?.kind, HandleWarningKind.unconfirmed);
+    expect(told!.foundMs, atFork!.foundMs,
+        reason: 'the warning said at the fork stays');
+    expect(later.handles.forkWarnings, hasLength(1));
+  });
+
+  test('44. a check of a head\'s own that gets no answers spends nothing: '
+      'offline at the one moment after 30 days that is both its checks, it is '
+      'tried again at a later moment in front, and a head the witness covered '
+      'goes with nothing said (PROBE E of the second review)', () async {
+    final log = await startLog();
+    await claimAt(log, 'lena.44');
+    final w = await witnessOf(log);
+    final olaf = await boot('Olaf', config: log.config);
+    await claimIn(olaf, 'olaf.44');
+    final f = _Operator();
+    serve(f, w);
+    final net = _Flaky(f);
+    final dee = await boot('Dee', config: witnessed(log, w), fetcher: net);
+    expect(dee.handles.own, isNull, reason: 'a requester with no handle');
+    await dee.handles.request(await dee.handles.find('@olaf.44'));
+    final kept = dee.handles.keptHeads.single;
+    await receives(olaf, dee.myRid);
+    await olaf.acceptRequest(dee.myRid);
+    await linked(dee, olaf, 'olaf.44');
+    // The witness follows the log, as it does every five minutes: its record
+    // covers the head kept. Dee leaves the app before her check-back, and
+    // next brings it to the front 30 days and a minute later, at a moment
+    // the network is not there.
+    await sync(w, log);
+    final rec = recordHeadOf(w);
+    final vault = dee.vault;
+    final id = dee.identity;
+    await stop(dee);
+    net.offline = true;
+    final later = await boot('Dee',
+        config: witnessed(log, w),
+        fetcher: net,
+        vault: vault,
+        id: id,
+        now: () => laterBy(const Duration(days: 30, minutes: 1)));
+    await waitUntil(() => later.handles.checksBack == 1,
+        what: 'the check, offline');
+    final refused = net.refused;
+    final keptOffline = later.handles.keptHeads.length;
+    final toldOffline = later.handles.forkWarningForContact(olaf.myRid);
+    // The network is back. Ten minutes and a second later, in front again.
+    net.offline = false;
+    shiftClock(later, const Duration(minutes: 10, seconds: 1));
+    later.handles.onForeground();
+    final covered = await settled(
+        () async => await later.vault.kvGet('handle_witness_heads') == null);
+    final told = later.handles.forkWarningForContact(olaf.myRid);
+    // ignore: avoid_print
+    print('LOOKUP 44: kept at ${kept.size}, the record at ${rec.size}; 30 days '
+        'on, offline ($refused requests refused) -> kept $keptOffline, warning '
+        '${toldOffline?.kind.name}; ten minutes later, answered -> covered '
+        '$covered, warning ${told?.kind.name}');
+    expect(rec.size, greaterThanOrEqualTo(kept.size));
+    expect(keptOffline, 1, reason: 'no answers: nothing spent, nothing lapsed');
+    expect(toldOffline, isNull, reason: 'no false alarm');
+    expect(covered, isTrue, reason: 'tried again, and covered');
+    expect(told, isNull);
+    expect(later.handles.forkWarnings, isEmpty);
+  });
+
+  test('45. a check the app is killed during spends nothing: the next start '
+      'does not lapse the head, and a later check covers it (PROBE E2 of the '
+      'second review)', () async {
+    final log = await startLog();
+    await claimAt(log, 'lena.45');
+    final w = await witnessOf(log);
+    final olaf = await boot('Olaf', config: log.config);
+    await claimIn(olaf, 'olaf.45');
+    final f = _Operator();
+    serve(f, w);
+    final hang = _Hang(f);
+    final dee = await boot('Dee', config: witnessed(log, w), fetcher: hang);
+    await dee.handles.request(await dee.handles.find('@olaf.45'));
+    await receives(olaf, dee.myRid);
+    await olaf.acceptRequest(dee.myRid);
+    await linked(dee, olaf, 'olaf.45');
+    await sync(w, log); // covered at the witness
+    final vault = dee.vault;
+    final id = dee.identity;
+    await stop(dee);
+    hang.hang = true;
+    final first = await boot('Dee',
+        config: witnessed(log, w),
+        fetcher: hang,
+        vault: vault,
+        id: id,
+        now: () => laterBy(const Duration(days: 30, minutes: 1)));
+    await waitUntil(() => hang.hung > 0, what: 'the check\'s fetch out');
+    final hungAt = hang.hung;
+    // Killed while it is out.
+    await stop(first);
+    hang.hang = false;
+    final again = await boot('Dee',
+        config: witnessed(log, w),
+        fetcher: hang,
+        vault: vault,
+        id: id,
+        now: () => laterBy(const Duration(days: 30, minutes: 2)));
+    final keptAgain = again.handles.keptHeads.length;
+    final toldAgain = again.handles.forkWarningForContact(olaf.myRid);
+    // Ten minutes and a second later, in front: the check, answered.
+    shiftClock(again, const Duration(minutes: 10, seconds: 1));
+    again.handles.onForeground();
+    final covered = await settled(
+        () async => await again.vault.kvGet('handle_witness_heads') == null);
+    final told = again.handles.forkWarningForContact(olaf.myRid);
+    // ignore: avoid_print
+    print('LOOKUP 45: fetches out when killed $hungAt; the next start -> kept '
+        '$keptAgain, warning ${toldAgain?.kind.name}; ten minutes later -> '
+        'covered $covered, warning ${told?.kind.name}');
+    expect(keptAgain, 1, reason: 'a check the app was killed during spends '
+        'nothing: no lapse');
+    expect(toldAgain, isNull);
+    expect(covered, isTrue);
+    expect(told, isNull);
+  });
+
+  test('46. a throttle spends nothing: a check-back within ten minutes of a '
+      'check left pending asks nothing then, and is made at a later moment in '
+      'front, the proof asked then (PROBE H of the second review)', () async {
+    final log = await startLog();
+    await claimAt(log, 'lena.46');
+    final w = await witnessOf(log);
+    await claimAt(log, 'liv.46');
+    final f = _Operator();
+    serve(f, w);
+    final first = _WithholdFirst(f);
+    final dee = await boot('Dee', config: witnessed(log, w), fetcher: first);
+    expect(dee.handles.witnessReuse, const Duration(minutes: 10));
+    await dee.handles.request(await dee.handles.find('@lena.46'));
+    final k = dee.handles.keptHeads.single;
+    await claimAt(log, 'lou.46');
+    await sync(w, log);
+    List<String> fromKept(int from) => [
+          for (final u in f.urls.skip(from))
+            if (u.path == '/kt/v1/consistency' &&
+                u.queryParameters['first'] == '${k.size}')
+              u.query
+        ];
+    // Twenty-five minutes on, a lookup meets the proof from the kept size
+    // withheld once — a moment's failure: pending.
+    shiftClock(dee, const Duration(minutes: 25));
+    first.first = k.size;
+    expect((await dee.handles.find('@lena.46')).state, HandleLookupState.found);
+    final deniedAtLookup = first.denied.length;
+    first.first = null; // served from now on
+    // Five minutes and a second later, in front: the check-back is due,
+    // within ten minutes of the check left pending.
+    shiftClock(dee, const Duration(minutes: 5, seconds: 1));
+    final from = f.urls.length;
+    dee.handles.onForeground();
+    await waitUntil(() => dee.handles.checksBack == 1, what: 'the check-back');
+    final atBack = fromKept(from);
+    final keptAtBack = dee.handles.keptHeads.length;
+    // Ten minutes and a second later, in front again.
+    shiftClock(dee, const Duration(minutes: 10, seconds: 1));
+    final from2 = f.urls.length;
+    dee.handles.onForeground();
+    final covered = await settled(
+        () async => await dee.vault.kvGet('handle_witness_heads') == null);
+    final atRetry = fromKept(from2);
+    // ignore: avoid_print
+    print('LOOKUP 46: kept at ${k.size}; withheld at the lookup '
+        '$deniedAtLookup; the check-back, throttled -> proofs from the kept '
+        'size $atBack, kept $keptAtBack; ten minutes later -> proofs $atRetry, '
+        'covered $covered, warnings ${dee.handles.forkWarnings.length}');
+    expect(deniedAtLookup, 1);
+    expect(atBack, isEmpty, reason: 'throttled: nothing asked then');
+    expect(keptAtBack, 1);
+    expect(covered, isTrue, reason: 'the check-back made at the next moment');
+    expect(atRetry, isNotEmpty, reason: 'the proof asked then');
+    expect(dee.handles.forkWarnings, isEmpty);
+  });
+
+  test('47. a burst of requests in honest operation raises no warning: twenty '
+      'inside one record\'s reuse, while an acceptance holds another head, '
+      'are bounded by the outgoing list and none is said never confirmed; the '
+      'witness, following, covers them all', () async {
+    final log = await startLog();
+    await claimAt(log, 'lena.47');
+    final w = await witnessOf(log);
+    final olaf = await boot('Olaf', config: log.config);
+    await claimIn(olaf, 'olaf.47');
+    final names = [for (var i = 0; i < 20; i++) 'bur$i.47'];
+    for (final n in names) {
+      await claimAt(log, n);
+    }
+    final f = _Operator();
+    serve(f, w);
+    final dee = await boot('Dee', config: witnessed(log, w), fetcher: f);
+    expect(dee.handles.witnessReuse, const Duration(minutes: 10));
+    // Olaf accepts Dee's request: the contact holds its head.
+    await dee.handles.request(await dee.handles.find('@olaf.47'));
+    await receives(olaf, dee.myRid);
+    await olaf.acceptRequest(dee.myRid);
+    await linked(dee, olaf, 'olaf.47');
+    // Twenty requests, one to each handle, inside one record's reuse.
+    for (final n in names) {
+      await dee.handles.request(await dee.handles.find('@$n'));
+    }
+    final keptNow = dee.handles.keptHeads.length;
+    final waiting = dee.handles.outgoing.length;
+    final toldNow = dee.handles.forkWarnings.length;
+    // The witness follows; the check-back, in front, covers them all.
+    await sync(w, log);
+    shiftClock(dee, const Duration(minutes: 30, seconds: 1));
+    dee.handles.onForeground();
+    final covered = await settled(
+        () async => await dee.vault.kvGet('handle_witness_heads') == null,
+        within: const Duration(seconds: 30));
+    // ignore: avoid_print
+    print('LOOKUP 47: one head a contact holds and twenty requests waiting -> '
+        'kept $keptNow, waiting $waiting, told $toldNow; the check-back -> '
+        'covered $covered, warnings ${dee.handles.forkWarnings.length}');
+    expect(waiting, 20);
+    expect(keptNow, 21, reason: 'the contact\'s head, and one for each request');
+    expect(toldNow, 0, reason: 'a burst in honest operation is not "never '
+        'confirmed"');
+    expect(covered, isTrue);
+    expect(dee.handles.forkWarnings, isEmpty);
+  });
+
+  test('48. a check of a head\'s own is never made at the moment the app comes '
+      'to the front, but a few seconds after it, drawn as the drain\'s first '
+      'wait is; and the check-back\'s moment is drawn from 20 to 30 minutes '
+      'after the request (PROBE F of the second review)', () async {
+    final log = await startLog();
+    await claimAt(log, 'lena.48');
+    final w = await witnessOf(log);
+    final olaf = await boot('Olaf', config: log.config);
+    await claimIn(olaf, 'olaf.48');
+    final f = _Operator();
+    serve(f, w);
+    final clk = _Clocked(f);
+    final dee = await boot('Dee', config: witnessed(log, w), fetcher: clk);
+    // The drain's first wait: 3 to 30 seconds. Here a second and a half to
+    // two, to be seen.
+    expect(handleForegroundDelayMin, const Duration(seconds: 3));
+    expect(handleForegroundDelayMax, const Duration(seconds: 30));
+    dee.handles.foregroundDelayMin = const Duration(milliseconds: 1500);
+    dee.handles.foregroundDelayMax = const Duration(milliseconds: 2000);
+    await dee.handles.request(await dee.handles.find('@olaf.48'));
+    final head = ((jsonDecode((await dee.vault.kvGet('handle_witness_heads'))!)
+            as Map)['heads'] as List)
+        .single as Map;
+    final backAt = head['backAt'] as int?;
+    final drawn = backAt == null ? null : backAt - (head['kept'] as int);
+    await sync(w, log);
+    shiftClock(dee, const Duration(minutes: 30, seconds: 1));
+    final from = clk.at.length;
+    final t0 = DateTime.now();
+    dee.handles.onForeground();
+    await waitUntil(
+        () => clk.at.skip(from).any((e) => e.$2.toString() == w.url),
+        what: 'the record fetched');
+    final firstMs = clk.at.skip(from).first.$1.difference(t0).inMilliseconds;
+    // ignore: avoid_print
+    print('LOOKUP 48: the check-back drawn '
+        '${drawn == null ? null : Duration(milliseconds: drawn)} after the '
+        'request; after onForeground() its first request at +$firstMs ms '
+        '(drawn from 1500..2000 ms here, 3..30 s by default)');
+    expect(firstMs, greaterThanOrEqualTo(1500),
+        reason: 'never at the moment the app comes to the front');
+    expect(firstMs, lessThan(10000));
+    expect(drawn, isNotNull, reason: 'drawn as the head is kept');
+    expect(drawn!, inInclusiveRange(20 * 60000, 30 * 60000));
   });
 }

@@ -14,6 +14,7 @@ import 'package:record/record.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/alert_text.dart';
 import '../l10n/system_text.dart';
+import '../l10n/when_text.dart';
 import '../core/chat_service.dart';
 import '../core/file_export.dart';
 import '../core/key_transparency.dart';
@@ -643,6 +644,22 @@ class _ChatScreenState extends State<ChatScreen> {
                   l, svc.contactDevlistAlerts[widget.rid]!, contact!.name,
                   nameOf: (r) => svc.contacts[r]?.name),
               onDismiss: () => svc.acknowledgeContactDevlistAlert(widget.rid),
+            ),
+          // §21.8: a contact the acceptance of a handle request added, when
+          // the lookup it was sent on was found, after the fact, to be a
+          // history the handle service's witness never saw — or its answer
+          // was never confirmed by the witness. The transparency strip's
+          // shape, in the danger tone for a fork and the warning tone for the
+          // other, until the person dismisses it.
+          if (svc.handles.forkWarningForContact(widget.rid) case final w?
+              when !isGroup)
+            _KtBanner(
+              tone: w.isFork ? context.z.danger : context.z.warn,
+              icon: w.isFork ? Icons.gpp_bad : Icons.gpp_maybe,
+              message: (w.isFork ? l.hdlForkAfterContact : l.hdlUnconfirmedContact)(
+                  w.handle, whenText(context, w.lookedUpMs)),
+              action: l.dismiss,
+              onAction: () => svc.handles.dismissForkWarning(w),
             ),
           // 7.7b: what the transparency log says about this contact's device
           // list, when it says something that changes what is sent (ADR

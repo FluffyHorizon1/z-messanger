@@ -681,6 +681,9 @@
   "stHdlWitnessAgreed": "El servicio de alias coincidió con su testigo {when}",
   "stHdlWitnessQuiet": "Sin una respuesta al día del testigo desde {when}. Hasta que responda, el servicio de alias no se está comprobando con él.",
   "stHdlWitnessForked": "El servicio de alias mostró a este dispositivo un historial que su testigo no vio, el {when}. No se usó ni se envió nada de esa respuesta.",
+  "stHdlWitnessForkedRelied": "El servicio de alias mostró a este dispositivo un historial que su testigo no vio, el {when}. Puede que una solicitud que enviaste con una respuesta anterior se basara en ese historial: mira el aviso que lleva.",
+  "stHdlWitnessForkedAfter": "El servicio de alias mostró a este dispositivo un historial que su testigo nunca vio cuando buscaste @{handle} el {when}. Puede que la solicitud que enviaste entonces haya llegado a otra persona: comparad los números de seguridad con quien la responda.",
+  "stHdlWitnessUnconfirmed": "La respuesta del servicio de alias cuando buscaste @{handle} el {when} nunca la confirmó su testigo: comparad los números de seguridad con quien responda a la solicitud que enviaste entonces.",
   "stHdlWitnessPin": "Dirección y clave del testigo de alias",
   "hdlTitle": "Tu alias",
   "hdlUnavailable": "Los alias aún no están disponibles. Esta versión de Z no tiene un servicio de alias configurado, así que no puedes reservar un alias ni buscar a nadie por uno.",
@@ -804,6 +807,12 @@
   "hdlSemFound": "Alias @{handle}",
   "hdlWaiting": "Esperando respuesta",
   "hdlForgetRequest": "Olvidar",
+  "hdlForkAfterRequest": "El servicio de alias mostró un historial que su testigo nunca vio cuando buscaste @{handle} el {when}. Puede que esta solicitud haya llegado a otra persona: si alguien la acepta, comparad los números de seguridad antes de confiar en quien la aceptó.",
+  "hdlForkAfterContact": "El servicio de alias mostró un historial que su testigo nunca vio cuando buscaste @{handle} el {when}. Puede que tu solicitud haya llegado a otra persona: antes de confiar en este contacto, comparad los números de seguridad.",
+  "hdlForkAfterTitle": "Puede que el servicio de alias enviara tu solicitud a otra persona",
+  "hdlUnconfirmedRequest": "La respuesta del servicio de alias cuando buscaste @{handle} el {when} nunca la confirmó su testigo. Si alguien acepta esta solicitud, comparad los números de seguridad antes de confiar en quien la aceptó.",
+  "hdlUnconfirmedContact": "La respuesta del servicio de alias cuando buscaste @{handle} el {when} nunca la confirmó su testigo. Antes de confiar en este contacto, comparad los números de seguridad.",
+  "hdlUnconfirmedTitle": "La respuesta del servicio de alias nunca se confirmó",
   "requestsVia": "A través de @{handle}",
   "sysHandleAccepted": "@{handle} aceptó. Comparad los números de seguridad para verificar."
 }

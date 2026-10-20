@@ -5725,8 +5725,8 @@ lookup whose head and record differ in size when the log does not prove the
 way between them, whichever is ahead — as unreachable, or as a bad answer
 when what it serves is not a proof: step 3 requires consistency, its
 no‑verdict sentence covers only a record that cannot be fetched or does not
-verify, and a resolver, unlike the transparency client, keeps no head on
-which a later lookup would ask again. The record is fetched from the address
+verify, and a lookup that fails sends nothing, so nothing of it is kept on
+which a later lookup would ask again (below). The record is fetched from the address
 exactly as configured, at most once a lookup, and one that verified serves
 every lookup under the same log key, witness address and witness key for
 **10 minutes** after it was fetched: the log re‑signs its head at least that
@@ -5735,26 +5735,195 @@ old is a sync or two behind, while each fetch tells the witness's host the
 address and moment of one more step — the up to five checks of a free name
 in one claim, a run of lookups, a change with the read before it and the
 drain after it. A record that did not verify is not kept, and nothing asks
-the witness on a timer, so a device on which nobody uses handles asks it
-nothing. The client says when the witness last agreed with a current record;
-that it has gone quiet once lookups have asked it across **24 hours** with no
-agreement — measured across lookups, not by the clock, since nothing asks
-between them; and, until the witness next agrees, when a lookup was last
+the witness on a timer of its own while no head is kept (below): on a timer
+of its own, a device on which nobody uses handles, or one that sent no
+request, asks it nothing — its lookups and the owner's drains ask as above;
+one that did asks it twice more at most for each head it kept, a few seconds
+after it is first in front 20 to 30 minutes after the request and again at
+30 days, a check that gets no answers asked again at most every 10 minutes
+of being in front, for a day of such moments.
+The client says when the witness last agreed with a current record;
+that it has gone quiet once the checks that asked it — lookups', and the kept
+heads' own (below), which count alike — have done so across **24 hours** with
+no agreement, measured across those checks, not by the clock, since nothing
+asks between them; and, until the witness next agrees, when a lookup was last
 refused as two histories. A claim the log refused as taken, whose read‑back
 is refused so, is held for the person to publish again, not taken.
 
-**What the witness does not catch** (R50). A history that departs after the
-witness's latest co‑signed head. A lookup shown it holds a head that extends
-the record, the log proves the way within the history it shows, and the check
-passes and counts as agreement. A resolver keeps no head, so nothing looks
-again: a later lookup refuses that history only once the record it is held to
-was co‑signed after the departure, and a record used for up to 10 minutes
-widens the window by its age. A lookup of a handle the device found before is
-still held to what it remembers (below); a first lookup is not. An entry the
-owner rule refuses, appended after the witness's head, passes the same way: a
-witness that follows the log stops at it, and the client learns only that
-the record stops being current — no agreement once it is a day old, and
-quiet a day of lookups after that.
+**After the fact** (2026‑10‑20, R50). A history that departs after the
+witness's latest co‑signed head passes the lookup it is shown at: the
+lookup's head extends the record, the log proves the way within the history
+it shows, and the check counts as agreement. So when a request is sent on a
+lookup whose head the record did not cover — larger than the record's, or
+checked against no record that verified — the client keeps that head (its
+size, roots, `ts` and the log's signature, under the log key, witness address
+and witness key it was checked under) with what relied on it: the handle, the
+request's `creqId` and, once an acceptance adds one, the contact. Only a
+request keeps one. A lookup that sends nothing, a claim's check, a recovery's
+read and the owner's reads of its own record keep none: what they find is
+remembered and held to (below), refused where it differs and never sent to,
+so a fork shown to them leaves nothing a warning could point to — and the
+bound is the outgoing list's, which a run of lookups, or a day of drains,
+would otherwise fill.
+
+A record covers a kept head only once the history the witness follows
+reaches the kept size, which takes as long as the honest log takes to grow
+that far — and the size of a forked head is the operator's to choose. So
+every head a lookup ends with while a head is kept — those that keep nothing
+among them, the owner's drains, which look every 15 minutes or so while the
+app is in front, and the kept heads' own checks (below) — is held to each
+kept head as the transparency client holds the head it keeps (§19.5,
+`ktCheckHeadExtends`):
+smaller is the log shrinking under it; the same size under other roots is two
+histories; a larger one needs the log's consistency proof from the kept size,
+and a proof that fails is two histories as well. Each of these differs from
+the kept head within the kept head's own entries, so the lookup that kept it
+was shown a history the witness never saw (below). A proof that verifies
+leaves the head kept, since the witness has still not covered it, and the
+later head it proved stands in for it at the next lookup: one proof serves
+every kept head it stands in for. A proof from the stand‑in that fails
+decides nothing — a fork that departs after the kept head and before its
+stand‑in fails it, and that fork is not the kept head's — so the proof from
+the kept size itself is asked. Then the record the lookup holds, fetched now
+or used again: at the kept size, its roots decide; behind it, a record the
+lookup's head contradicts contradicts the kept head that head extends, since
+they differ within the record's entries; past it, the record covers the kept
+head when the lookup's head is consistent with it, and otherwise the log's
+proof from the kept size to the record's decides — verifying, covered;
+failing while the lookup's head and the record are consistent, two
+histories; anything else, pending, since a log that shows the client a
+history that forked after the kept head cannot prove the kept head to the
+record either, and that fork is not the kept head's. A covered head goes,
+and so does a warning said of it while it was kept (below).
+What is compared is what a lookup's own check compares (§19.5 step 3): both
+roots at equal size, and across sizes the log root alone, which is all a
+consistency proof proves — so a head whose map root does not match its own
+entries, under a log root the witness's history extends, is caught by a head
+or a record of its own size and not by a larger record. A lookup asks the log
+for at most **20** such proofs, each at most once, and normally none or one,
+the stand‑in's, shared; each names in `first=` a size this device holds.
+Two heads the log shows are not held to the kept heads: its own head, asked
+beside a witness ahead of a lookup's head when no proof is served, which
+decides that lookup's verdict alone; and the heads of a lookup the log
+contradicts within itself, which fails as a bad answer before its check.
+
+**Two histories shown while a head is kept.** A check — a lookup's, or a
+kept head's own (below) — whose record shows the head the log shows it to be
+two histories, when that head extends a kept head the check leaves pending,
+says at once, on what relied on the kept head, that the answer it was sent on
+was never confirmed (the warning below). That is true, since no record has
+covered it, and it raises no fork the client cannot show, since an honest
+head before the fork looks the same from here: so a device the log keeps on a
+fork, once the honest history has passed the kept head, is told then and not
+30 days later. It is said once. The head stays kept, and later checks go on
+deciding it: shown a fork, the fork's warning replaces this one; covered, this
+one goes, since no warning may stay false once shown; still undecided at 30
+days, it stays and the head goes. While it stands, Settings does not say that
+nothing from a refused answer was used or sent, but that a request sent on an
+earlier answer may have relied on that history, and to see the warning on it.
+
+A kept head nothing decides is also checked on its own, with no lookup,
+twice at most: its check‑back, at a moment drawn for it as it is kept,
+uniformly **20 to 30 minutes** after the request; and its last check, once
+it is 30 days old. Each is made at the first moment the app is in front at
+or after its time — a start, a return to the front, or, while it stays in
+front, the moment a one‑shot timer armed for it comes — and never at that
+instant, but at a moment drawn **3 to 30 seconds** after it, as the drain's
+first wait is, so that it is not lined up with the account's own connection
+coming back (R49). Each check fetches the witness's record afresh — one used
+again cannot cover a head kept after it was fetched — and the log's head,
+once for every head due then, holds every kept head to them as a lookup's
+head and record hold them, asking the log for the proofs that needs, and is
+recorded as a lookup's check is. The reference witness syncs every five
+minutes and the log re‑signs its head at least every ten, so a record
+fetched 20 minutes after an honest head was shown covers it, and the head
+goes with nothing said; a fork that departed before that record's size is
+found then, as a fork, and one the log keeps the device on while the record
+passes the kept head is said then as never confirmed (above). A check counts
+as made only once it got its answers: a record fetched afresh that verified,
+and the log's head and the proofs the head needs — or the log refusing or
+withholding them, which is an answer. A fetch that fails spends nothing; nor
+does an app killed while the fetch is out, a proof not asked because a check
+of the head waited on the log within its 10 minutes, or a write to the vault
+that failed. A check not made is tried again at later moments in front, at
+most once in **10 minutes**, for up to **24 hours** of such moments, counted
+across them as quiet is, and then given up on. A timer that finds no head
+due asks nothing. Only what the check at 30 days, made or given up on, leaves
+undecided is said as never confirmed (below). Each check costs a request for
+the record, one for the log's head, the proof between the two when their
+sizes differ, and the proofs the kept heads need — normally none or one.
+
+A head shown so to be two histories is a fork found after the fact: the
+client keeps a warning, sealed, with the kept head and the head it was held
+to — the record's, or a later one the log signed — on the request while it
+waits and on the contact its acceptance added: *the handle service showed a
+history its witness never saw when you looked up @nick.digits on ‹date›; the
+request may have reached someone else; compare safety numbers with that
+contact.* At the same size under other roots, or smaller, the two signed
+heads show the fork themselves. Across sizes they show nothing alone: it is
+the log's proof between them failing that does, and a proof is not signed —
+so a log that serves a bad proof can put a fork's warning on an honest
+contact while its head is kept. A log that serves one has misbehaved, and the
+warning says no more than it showed this device; but the two heads kept with
+it are not a proof anyone else can check. It is shown with the request, on
+the contact's chat and screen, and in Settings as the witness's fork, and it
+stands, whatever the witness says next, until the person dismisses it or the
+request or contact is deleted. A
+proof the log withholds, or something in its place that is not one, leaves
+the check pending: the head stays and never passes, and neither the lookup
+that met it nor one on the record used again within its 10 minutes is the
+witness agreeing — a record used again is not the witness asked either, so
+it moves no timer — and the log is asked again at most once in those 10
+minutes. A log that goes on withholding is a witness gone quiet a day later.
+
+A head no contact holds is bounded by the outgoing list, as its request is:
+one for each request still waited on, three at most to a handle. It goes
+with its request, in silence (below), so a burst of requests in honest
+operation raises no warning. Of the heads contacts hold, at most **20** are
+kept, past which the one looked up longest ago goes; each head is kept for
+at most **30 days**; and none of these goes in silence. One that goes before
+the witness covered it — lapsed, undecided by its check at 30 days, made or
+given up on; pushed out of the 20 that contacts hold; or out of every
+record's reach once another log or witness is set, after the request or
+between its lookup and it — is said on what relied on it, unless it was said
+so already while it was kept (above): *the handle service's answer when you
+looked up @nick.digits on ‹date› was never confirmed by its witness; compare
+safety numbers with that contact.* It is shown where a fork's warning is, in the
+warning tone, in Settings when no fork stands, and kept and cleared as a
+fork's is. It is said on a request that still waits, too: an acceptance is
+matched to a request however old the request is — the acceptance is signed
+when it is made, the owner may make it whenever the request is pending there,
+and the requests waited on here age out of nothing but the 20‑entry list.
+A head whose request leaves that list — forgotten, refused by the relay,
+pushed out by newer ones, or replaced when a lookup as new finds another
+mailbox — goes with it unless a contact holds it, and so does a warning on
+it: the acknowledgement is verified against the introduction key and the
+request id the entry holds, so once the entry is gone an acceptance of that
+request cannot be matched to it: it arrives as an ordinary contact request,
+which waits for the person's consent like any other, with no warning on it.
+
+**What it still does not catch** (R50). A fork shown to a lookup that sent
+nothing. A kept head nothing decides within its 30 days — a witness that
+stops, or one that will not follow a log whose next entry the owner rule
+refuses (it stops at that entry, and the client learns only that the record
+stops being current, no agreement once it is a day old, and quiet a day of
+lookups after that); a log that withholds the proof; or a device the log
+keeps on a history that forked between the kept head and the witness's
+record, where the kept head cannot be told from one before the fork — is
+said as an answer never confirmed, not as a fork: the last of them at once,
+at the first check that finds the log showing it two histories, the others
+at the lapse. A head whose map root alone is wrong, covered by a larger
+record. A build that pins another witness or log, or a person who sets one,
+ends every head still kept under the old one as never confirmed — one the old
+witness had covered too, when no check had yet held it to the record that
+covers it: fetching an address the build no longer pins is a decision of its
+own, so a release that moves the pinned witness or log ships after a build
+has checked back its kept heads, or decides how to (ROADMAP). An acceptance
+that arrives after its request left the outgoing list, which is asked for
+consent as any request is but carries no warning. And a warning is shown on
+the device that made the lookup: it rides no message. A lookup of a handle
+the device found before is still held to what it remembers (below); a first
+lookup is caught only after the fact.
 
 **Claiming** is never offered during account setup (F5). The client parses
 the handle (21.1) — two random digits by default, each draw checked free,
@@ -6017,7 +6186,15 @@ introduction seeds a pending request still needs; the requests kept for
 matching an acceptance; the handle log's address and key, its witness's,
 and when the witness last agreed, since when lookups have asked it without
 that, and when a lookup was last refused as two histories, each with the
-configuration it was recorded under; for lookups, the
+configuration it was recorded under; the heads kept after the fact, each
+with its handle, its requests' ids, its contact, the latest head shown to
+extend it, when its check was last left pending, when it was kept, when its
+check‑back is due, when its two checks of its own were made or given up on,
+when one last asked for it and when each first went without its answers, and
+whether it was said never confirmed while kept, under the configuration they
+were taken under, and the warnings found after the fact — a fork with the
+kept head and the head it was held to, an answer never confirmed with the
+head it was given, and whether that was said at a fork; for lookups, the
 decoy key, the estimate of k and what was found of each handle (above); and, for a
 contact made through a handle, which handle. Never the code or
 `recoverySeed`.
@@ -6025,7 +6202,9 @@ contact made through a handle, which handle. Never the code or
 **Backup and restore.** The archive carries all of it but those digests
 and counts, and the witness's times, in one record,
 `{"t":"handle","keep":1,"v":1,"kv":{…}}` (`BACKUP.md` §5), which a build
-that does not know it keeps and writes back. A restore drains the mailbox —
+that does not know it keeps and writes back; a head kept after the fact, or
+a warning, comes back with the request it is on, or on a contact the
+restore brings back. A restore drains the mailbox —
 reading the record first, so re‑flagging it at the difficulty the record
 asks, or leaving a mailbox the record no longer names — and publishes
 nothing by itself: a claim that was pending

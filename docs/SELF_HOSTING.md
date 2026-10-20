@@ -1219,7 +1219,9 @@ header, `/health` and its alarms — with these differences:
 - **The witness.** `node tools/mirror.js --mode handles` (or `KT_MODE=handles`
   for the witness service) mirrors and co‑signs the handle log under its own
   contexts, with its own directory and its own witness key. Until someone runs
-  one, the handle log is unwitnessed, as the transparency log is (G3).
+  one and the app holds the log to it — a build pinning the two together, or
+  Settings setting them — the handle log is unwitnessed (R50), as the
+  transparency log was until a build pinned its witness on 2026‑10‑17 (G3).
 - **Repairs.** `KT_MODE=handles node tools/repair.js <entries.jsonl>`, so the
   file is checked under the handle log's rules.
 
