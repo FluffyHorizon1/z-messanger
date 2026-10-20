@@ -44,6 +44,7 @@ String handleFailureText(AppLocalizations l, HandleFailure f) => switch (f) {
       HandleFailure.notConnected => l.hdlErrNotConnected,
       HandleFailure.powRefused => l.hdlErrPowRefused,
       HandleFailure.relayRefused => l.hdlErrRelayRefused,
+      HandleFailure.ownLink => l.plinkOwn,
       HandleFailure.paused => l.hdlErrPaused,
       HandleFailure.notClaimed => l.hdlErrNotClaimed,
       HandleFailure.wrongCode => l.hdlErrWrongCode,

@@ -14,12 +14,13 @@ not yet confirmed (decision 1), and phase 39 does not ship live until it is.
 its check and its reader, with a named reason for each refusal (PROTOCOL
 §21.9, §20.2, §15; `vectors/handles/intro_link.json`). 39.2 — the `/c` page
 (`server/pages.js`), unlisted like `/i`; the Android `/c` path waits for the
-release that turns links on. 39.3 — the owner's side, in the app, **built
-and switched off**: everything a person can see or do with a link is behind
-one build constant, `introLinksEnabled` (`app/lib/core/intro_links.dart`),
-`false` until the deployed relay is confirmed to run the hardened §21.6 (§5,
-decision 1). With it off nothing new shows and nothing is drained: no
-release makes or drains a link yet. 39.4–39.5 are not built.
+release that turns links on. 39.3–39.4 — the owner's side and the opener's,
+in the app, **built and switched off**: everything a person can see or do
+with a link is behind one build constant, `introLinksEnabled`
+(`app/lib/core/intro_links.dart`), `false` until the deployed relay is
+confirmed to run the hardened §21.6 (§5, decision 1). With it off nothing
+new shows and nothing is sent or drained: no release makes, opens or drains
+a link yet. 39.5 is not built.
 **Decides:** what a public link carries and how it is read; what the person
 who opens one sends, and when; what the owner's device does with what
 arrives; how a link is replaced, withdrawn or made dearer; what an older
@@ -264,5 +265,5 @@ Each patch starts from a failing test on its base.
 | 39.1 | The link in the protocol library: `IntroLink` encode and parse, with a named reason for each refusal and the check (`protocol/lib/src/handles.dart`); `vectors/handles/intro_link.json`; PROTOCOL §21's title, preamble and §21.0, §21.9's format and reading, §20.2, §15 | **built**; nothing makes, opens or drains a link |
 | 39.2 | The landing page and the Android app link: a `/c` page in `server/pages.js`, unlisted like `/i`; `android:path="/c"` on both hosts; `server/server.js` does not change | **built**: the page (`server/test/pages.test.js` 39.2); the Android path is the switch‑on release's |
 | 39.3 | The owner's side: the drain, the once‑only record, filing and the acknowledgement take either kind of mailbox, and a link does not depend on a handle log being configured; make, replace, withdraw and *Ask more work*; the stamp counted at the printed `pow`; one cap for handle and link requests; the `introlink` backup record, restored held; Settings › Your public link, in both languages | **built (switched off)**: `intro_link_test.dart` 1–11 |
-| 39.4 | The person who opens a link: held until they say yes; the Paste and Scan tabs, a QR image and the handle search take a link; link entries in the outgoing list, the re‑stamp on `pow_required`, matching `ia` and the 30‑day notice | planned |
+| 39.4 | The person who opens a link: held until they say yes; the Paste and Scan tabs, a QR image and the handle search take a link; link entries in the outgoing list, the re‑stamp on `pow_required`, matching `ia` and the 30‑day notice | **built (switched off)**: `intro_link_test.dart` 11–17; a tap is held too, for the release that claims `/c` |
 | 39.5 | The register and the claims, before any release ships links: R34, R47–R49 and the new row; USING_Z, WHAT_Z_CANNOT_DO, AUDIT_SCOPE; pointers to this record from ADR 0009 and 0015; ROADMAP | planned |

@@ -80,6 +80,33 @@ const Duration introLinkUnanswered = Duration(days: 30);
 int introLinkRestampBits(int printed, int refusalBits) =>
     refusalBits <= handlePowMaxBits ? max(printed, refusalBits) : printed;
 
+/// What a field that takes codes — or handles — holds, as far as public
+/// links go (ADR 0032 §3, PROTOCOL §21.9): a link to open ([link]); the
+/// reason one cannot be read ([problem]: made by a newer Z, damaged on its
+/// way, or not one a request can go through); or neither, when the text is
+/// nothing like a link and the field reads it as it did before links. With
+/// links off ([enabled] false) always neither: no field parses a link.
+/// [handleField]: the field takes handles too, so §21.1 is asked first —
+/// `zi1.42` is a handle, never a damaged link — before a link's reason is
+/// named. Pure, and sends nothing: a link found is opened held.
+({IntroLink? link, IntroLinkProblem? problem}) introLinkInField(String text,
+    {required bool enabled, bool handleField = false}) {
+  if (!enabled) return (link: null, problem: null);
+  try {
+    return (link: IntroLink.parse(text), problem: null);
+  } on IntroLinkFormatException catch (e) {
+    if (e.problem == IntroLinkProblem.notALink ||
+        (handleField && Handle.tryParse(text) != null)) {
+      return (link: null, problem: null);
+    }
+    return (link: null, problem: e.problem);
+  }
+}
+
+/// A link as a list shows it, so two can be told apart: its prefix and the
+/// first eight characters after it — the work and the start of its key.
+String introLinkShort(IntroLink link) => '${link.code.substring(0, 12)}…';
+
 /// Where the owner's link stands.
 enum IntroLinkPhase {
   /// Drained and taking requests.

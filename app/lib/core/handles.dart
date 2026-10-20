@@ -1106,13 +1106,23 @@ class HandleRequestMeta {
   }
 }
 
-/// A request this device sent to a handle and is waiting on: what an
-/// acceptance's `ia` is checked against.
+/// A request this device sent to a handle — or, since phase 39, through a
+/// public link — and is waiting on: what an acceptance's `ia` is checked
+/// against. Handles and links share one list of [handleOutgoingCap] entries
+/// (ADR 0032 §3).
 class OutgoingHandleRequest {
+  /// The handle it was sent to, canonical; empty for a link ([link]).
   final String handle;
 
-  /// The record's owner key and introduction keys as they were resolved.
-  final Uint8List ownerPub;
+  /// The public link it was sent through, whose keys it carries; null for a
+  /// handle. Stored as its code under `link`, with no `h`, so a build from
+  /// before links, which requires `h`, skips the entry rather than take it
+  /// for a handle's.
+  final IntroLink? link;
+
+  /// The record's owner key as it was resolved — null for a link, which
+  /// names none — and the introduction keys.
+  final Uint8List? ownerPub;
   final Uint8List introPub;
   final Uint8List xintroPub;
 
@@ -1124,21 +1134,43 @@ class OutgoingHandleRequest {
 
   OutgoingHandleRequest({
     required this.handle,
-    required this.ownerPub,
+    required Uint8List this.ownerPub,
     required this.introPub,
     required this.xintroPub,
     required this.creqIds,
     required this.sentMs,
-  });
+  }) : link = null;
 
-  Map<String, Object?> toJson() => {
-        'h': handle,
-        'owner': b64(ownerPub),
-        'intro': b64(introPub),
-        'xintro': b64(xintroPub),
+  /// One sent through [link] (ADR 0032 §3).
+  OutgoingHandleRequest.viaLink(
+      {required IntroLink this.link,
+      required this.creqIds,
+      required this.sentMs})
+      : handle = '',
+        ownerPub = null,
+        introPub = link.intro,
+        xintroPub = link.xintro;
+
+  bool get viaLink => link != null;
+
+  Map<String, Object?> toJson() {
+    final l = link;
+    if (l != null) {
+      return {
+        'link': l.code,
         'ids': [for (final i in creqIds) b64(i)],
         'at': sentMs,
       };
+    }
+    return {
+      'h': handle,
+      'owner': b64(ownerPub!),
+      'intro': b64(introPub),
+      'xintro': b64(xintroPub),
+      'ids': [for (final i in creqIds) b64(i)],
+      'at': sentMs,
+    };
+  }
 
   static OutgoingHandleRequest fromJson(Map<String, Object?> j) {
     Uint8List k(String n) {
@@ -1147,13 +1179,20 @@ class OutgoingHandleRequest {
       return v;
     }
 
-    Handle.parse(j['h'] as String);
     final ids = [
       for (final i in (j['ids'] as List)) unb64(i as String),
     ];
     if (ids.isEmpty || ids.any((i) => i.length != 32)) {
       throw const FormatException('ids');
     }
+    final code = j['link'];
+    if (code is String) {
+      return OutgoingHandleRequest.viaLink(
+          link: IntroLink.parse(code),
+          creqIds: ids,
+          sentMs: (j['at'] as num).toInt());
+    }
+    Handle.parse(j['h'] as String);
     return OutgoingHandleRequest(
       handle: j['h'] as String,
       ownerPub: k('owner'),
@@ -1610,6 +1649,10 @@ enum HandleFailure {
   /// The relay refused the request.
   relayRefused,
 
+  /// Phase 39 (ADR 0032 §2): the public link opened is this account's own;
+  /// nothing is sent to it.
+  ownLink,
+
   /// The handle is paused: nothing is sent to it.
   paused,
 
@@ -2012,10 +2055,12 @@ class HandleService extends ChangeNotifier {
   /// primary device, which holds the account root (v1).
   bool get canManage => host.holdsRoot;
 
-  /// The requests this device sent to handles and is waiting on, newest
-  /// first.
-  List<OutgoingHandleRequest> get outgoing =>
-      _outgoing.reversed.toList(growable: false);
+  /// The requests this device sent to handles, and through public links,
+  /// and is waiting on, newest first — a link's only where links are on.
+  List<OutgoingHandleRequest> get outgoing => [
+        for (final o in _outgoing.reversed)
+          if (linksEnabled || !o.viaLink) o
+      ];
 
   /// What this device holds about the pending request from [rid] that came
   /// through the handle, or null.
@@ -3898,30 +3943,108 @@ class HandleService extends ChangeNotifier {
         introRid == null) {
       throw const HandleException(HandleFailure.notClaimed);
     }
+    final handle = found.handle.canonical;
+    await _sendIntroRequest(
+        introRid: introRid,
+        xintro: rec.xintro!,
+        pow: rec.pow,
+        // The relay's day is not ours (near midnight): one stamp for its day,
+        // at the difficulty the record asks, and no more (§21.7).
+        restampBits: (_) => rec.pow,
+        remember: (creqId) async {
+          await _remember(handle, rec, creqId);
+          await _keepUnwitnessed(found, creqId); // §21.8, after the fact
+        },
+        forget: (creqId) =>
+            _forgetSent((o) => !o.viaLink && o.handle == handle, creqId));
+  }
+
+  /// Send a contact request through the public link [link] (ADR 0032 §3):
+  /// §21.7 unchanged — a `creq` to the link's mailbox sealed to its `xintro`,
+  /// kept first in the outgoing list (handles' and links' together, three
+  /// ids each) so an acceptance can be matched, stamped at the link's printed
+  /// work for this device's day off the UI thread, and sent on a connection
+  /// opened for it alone. One departure: on `pow_required` it stamps once
+  /// more, for the relay's day, at the greater of the printed work and the
+  /// refusal's ([introLinkRestampBits]), then stops — a printed link cannot
+  /// learn that its owner asked for more, and the refusal is how its holder
+  /// hears. Any device, and no handle log: a link names its own keys. Only
+  /// once its person has pressed Send request: nothing before this sends or
+  /// connects. A link this device made is refused, and nothing is sent.
+  Future<void> requestLink(IntroLink link) async {
+    if (!linksEnabled) throw StateError('public links are off in this build');
+    final introRid = await link.introRid();
+    if (isOwnMailbox(introRid)) {
+      throw const HandleException(HandleFailure.ownLink);
+    }
+    await _sendIntroRequest(
+        introRid: introRid,
+        xintro: link.xintro,
+        pow: link.pow,
+        restampBits: (bits) => introLinkRestampBits(link.pow, bits),
+        remember: (creqId) => _rememberLink(link, creqId),
+        forget: (creqId) => _forgetSent((o) => o.link == link, creqId));
+  }
+
+  /// Whether [introRid] is one of this account's own introduction mailboxes
+  /// as this device holds them — its public link's, a link or handle inbox
+  /// it replaced and still holds the seed of, or its handle's — so that a
+  /// link that names it is recognised as this account's own (ADR 0032 §2).
+  bool isOwnMailbox(String introRid) =>
+      link?.introRid == introRid ||
+      own?.introRid == introRid ||
+      _oldSeeds.containsKey(introRid) ||
+      _oldLinkSeeds.containsKey(introRid);
+
+  /// The request this device sent through [link] and is still waiting on,
+  /// or null — what the screen of a link opened again says was sent.
+  OutgoingHandleRequest? outgoingFor(IntroLink link) {
+    if (!linksEnabled) return null;
+    for (final o in _outgoing) {
+      if (o.link == link) return o;
+    }
+    return null;
+  }
+
+  /// Whether [o], a request through a link, has gone unanswered so long that
+  /// the link may have been replaced or withdrawn ([introLinkUnanswered]).
+  bool linkUnanswered(OutgoingHandleRequest o) =>
+      o.viaLink && now() - o.sentMs >= introLinkUnanswered.inMilliseconds;
+
+  /// One contact request to an introduction mailbox, a handle's or a link's
+  /// (§21.7): built, sealed to [xintro], remembered first ([remember]),
+  /// stamped at [pow] for this device's day and sent on a connection opened
+  /// for it alone ([HandleHost.sendStamped]); on `pow_required`, ONE stamp
+  /// more, for the relay's day, at [restampBits] of the refusal's bits, and
+  /// no more. A failure forgets the request ([forget]) and says why.
+  Future<void> _sendIntroRequest(
+      {required String introRid,
+      required Uint8List xintro,
+      required int pow,
+      required int Function(int refusalBits) restampBits,
+      required Future<void> Function(Uint8List creqId) remember,
+      required Future<void> Function(Uint8List creqId) forget}) async {
     final creq = await ContactRequest.create(
         me: host.identity, toRid: introRid, displayName: host.displayName);
     final payload = await SealedEnvelope.seal(
-        toXPub: rec.xintro!, fromRid: host.myRid, payload: creq.encode());
+        toXPub: xintro, fromRid: host.myRid, payload: creq.encode());
     final creqId = await contactRequestId(creq);
-    await _remember(found.handle.canonical, rec, creqId);
-    await _keepUnwitnessed(found, creqId); // §21.8, after the fact
+    await remember(creqId);
     final id = newMessageId();
     final envelope = Uint8List.fromList(utf8.encode(payload));
-    final first = await _stamp(introRid, introPowDay(now()), envelope, rec.pow);
+    final first = await _stamp(introRid, introPowDay(now()), envelope, pow);
     try {
       try {
         await host.sendStamped(to: introRid, id: id, payload: payload, pow: first);
       } on RelayPowRequired catch (e) {
-        // The relay's day is not ours (near midnight): one stamp for its day,
-        // at the difficulty the record asks, and no more (§21.7).
-        final again = await _stamp(introRid, e.day, envelope, rec.pow);
+        final again = await _stamp(introRid, e.day, envelope, restampBits(e.bits));
         await host.sendStamped(to: introRid, id: id, payload: payload, pow: again);
       }
     } on RelayPowRequired {
-      await _forgetSent(found.handle.canonical, creqId);
+      await forget(creqId);
       throw const HandleException(HandleFailure.powRefused);
     } on RelayException catch (e) {
-      await _forgetSent(found.handle.canonical, creqId);
+      await forget(creqId);
       throw HandleException(e.message == 'not connected'
           ? HandleFailure.notConnected
           : HandleFailure.relayRefused);
@@ -3944,25 +4067,46 @@ class HandleService extends ChangeNotifier {
       Isolate.run(() => createIntroPowStamp(
           introRid: introRid, day: day, envelope: envelope, bits: bits));
 
-  Future<void> _remember(
-      String handle, HandleRecord rec, Uint8List creqId) async {
-    final i = _outgoing.indexWhere((o) => o.handle == handle);
+  Future<void> _remember(String handle, HandleRecord rec, Uint8List creqId) =>
+      _keepOutgoing(
+          (o) => !o.viaLink && o.handle == handle,
+          rec.intro!,
+          creqId,
+          (ids) => OutgoingHandleRequest(
+                handle: handle,
+                ownerPub: rec.owner,
+                introPub: rec.intro!,
+                xintroPub: rec.xintro!,
+                creqIds: ids,
+                sentMs: now(),
+              ));
+
+  Future<void> _rememberLink(IntroLink link, Uint8List creqId) => _keepOutgoing(
+      (o) => o.link == link,
+      link.intro,
+      creqId,
+      (ids) => OutgoingHandleRequest.viaLink(
+          link: link, creqIds: ids, sentMs: now()));
+
+  /// Keep [creqId] in the outgoing list under the entry [same] picks — the
+  /// three latest ids of it, while its introduction key is [introPub] — as
+  /// the newest entry, [make] building it; at most [handleOutgoingCap]
+  /// entries, handles' and links' together, the oldest going first.
+  Future<void> _keepOutgoing(
+      bool Function(OutgoingHandleRequest) same,
+      Uint8List introPub,
+      Uint8List creqId,
+      OutgoingHandleRequest Function(List<Uint8List> ids) make) async {
+    final i = _outgoing.indexWhere(same);
     final ids = <Uint8List>[
-      if (i >= 0 && constantTimeEquals(_outgoing[i].introPub, rec.intro!))
+      if (i >= 0 && constantTimeEquals(_outgoing[i].introPub, introPub))
         ..._outgoing[i].creqIds,
       creqId,
     ];
     if (i >= 0) _outgoing.removeAt(i);
-    _outgoing.add(OutgoingHandleRequest(
-      handle: handle,
-      ownerPub: rec.owner,
-      introPub: rec.intro!,
-      xintroPub: rec.xintro!,
-      creqIds: ids.length > handleOutgoingIdsPerHandle
-          ? ids.sublist(ids.length - handleOutgoingIdsPerHandle)
-          : ids,
-      sentMs: now(),
-    ));
+    _outgoing.add(make(ids.length > handleOutgoingIdsPerHandle
+        ? ids.sublist(ids.length - handleOutgoingIdsPerHandle)
+        : ids));
     while (_outgoing.length > handleOutgoingCap) {
       _outgoing.removeAt(0);
     }
@@ -3970,8 +4114,9 @@ class HandleService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _forgetSent(String handle, Uint8List creqId) async {
-    final i = _outgoing.indexWhere((o) => o.handle == handle);
+  Future<void> _forgetSent(
+      bool Function(OutgoingHandleRequest) same, Uint8List creqId) async {
+    final i = _outgoing.indexWhere(same);
     if (i < 0) return;
     final o = _outgoing[i];
     o.creqIds.removeWhere((x) => constantTimeEquals(x, creqId));
@@ -3983,18 +4128,28 @@ class HandleService extends ChangeNotifier {
   /// Stop waiting for an answer from [handle]. An acceptance that arrives
   /// later is an ordinary request.
   Future<void> forgetOutgoing(String handle) async {
-    _outgoing.removeWhere((o) => o.handle == handle);
+    _outgoing.removeWhere((o) => !o.viaLink && o.handle == handle);
+    await _saveOutgoing();
+    notifyListeners();
+  }
+
+  /// Stop waiting for an answer to [o], a handle's or a link's.
+  Future<void> forgetOutgoingEntry(OutgoingHandleRequest o) async {
+    _outgoing.remove(o);
     await _saveOutgoing();
     notifyListeners();
   }
 
   /// The outgoing request an acceptance's [ia] acknowledges (§21.7): the
-  /// introduction key resolved for it signed this device's routing id, the
-  /// accepting account's key [ownerAccountEdPub] and one of its request ids.
-  /// Null when none does — and then the acceptance is an ordinary request.
+  /// introduction key resolved for it — or carried by the link it went
+  /// through — signed this device's routing id, the accepting account's key
+  /// [ownerAccountEdPub] and one of its request ids. Null when none does —
+  /// and then the acceptance is an ordinary request. A link's entry is
+  /// matched only where links are on.
   Future<OutgoingHandleRequest?> matchAcknowledgement(
       {required String ia, required Uint8List ownerAccountEdPub}) async {
     for (final o in _outgoing.reversed) {
+      if (o.viaLink && !linksEnabled) continue;
       for (final id in o.creqIds) {
         if (await verifyIntroAck(
             ia: ia,

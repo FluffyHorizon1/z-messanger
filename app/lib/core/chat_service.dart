@@ -2079,7 +2079,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// classical floor and unverified, exactly as accepting their request
   /// would; record the handle they came through; say what it means in the
   /// chat; and hand them a request back, which is how a hello of theirs that
-  /// arrived before this device held them gets sent again (ADR 0011).
+  /// arrived before this device held them gets sent again (ADR 0011). Since
+  /// phase 39 the same for the owner of a public link this device sent a
+  /// request through (ADR 0032 §3), whose acknowledgement verifies under the
+  /// link's own introduction key — and no handle is recorded: a link has
+  /// none.
   Future<void> _addFromHandleAcceptance(
       String rid, ContactRequest req, OutgoingHandleRequest answered) async {
     final name = (req.bundle.displayName?.trim().isNotEmpty ?? false)
@@ -2105,7 +2109,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       _blocked.remove(rid); // in memory too, which ADR 0024's checks read
       // Which handle they came through, before they are anybody's contact:
       // the record is never visible without it.
-      await vault.kvPut('hvia_$rid', answered.handle);
+      if (!answered.viaLink) await vault.kvPut('hvia_$rid', answered.handle);
       contacts[rid] = contact;
       return true;
     });
@@ -2118,15 +2122,22 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// The contact [rid] is the account the handle [answered] introduced:
   /// remember which handle, stop waiting, and say so in the chat — "accepted,
   /// compare safety numbers to verify", because the acknowledgement proves
-  /// which account answered and nothing about who it is.
+  /// which account answered and nothing about who it is. For a request
+  /// through a public link, "accepted through their public link" (ADR 0032
+  /// §3), and no handle to remember.
   Future<void> _noteHandleAccepted(
       String rid, OutgoingHandleRequest answered) async {
-    await vault.kvPut('hvia_$rid', answered.handle);
-    // §21.8: what the witness check keeps for the request is the contact's
-    // now — before the request is forgotten, which would take it along.
-    await handles.contactAddedThrough(rid, answered);
-    await _insertSystemMessage(
-        rid, systemBody(SystemKind.handleAccepted, {'h': answered.handle}));
+    if (answered.viaLink) {
+      await _insertSystemMessage(
+          rid, systemBody(SystemKind.introLinkAccepted));
+    } else {
+      await vault.kvPut('hvia_$rid', answered.handle);
+      // §21.8: what the witness check keeps for the request is the contact's
+      // now — before the request is forgotten, which would take it along.
+      await handles.contactAddedThrough(rid, answered);
+      await _insertSystemMessage(
+          rid, systemBody(SystemKind.handleAccepted, {'h': answered.handle}));
+    }
     await handles.completeOutgoing(answered);
     notifyListeners();
   }

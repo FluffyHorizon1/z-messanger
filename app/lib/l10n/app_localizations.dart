@@ -5149,6 +5149,84 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Via your public link'**
   String get requestsViaLink;
+
+  /// Title of the screen a public link opens on, before anything is sent.
+  ///
+  /// In en, this message translates to:
+  /// **'A public link'**
+  String get plinkOpenTitle;
+
+  /// Load-bearing, on the screen a public link opens on, before Send request: what sending shows the link's owner (THREAT_MODEL R48).
+  ///
+  /// In en, this message translates to:
+  /// **'Someone published this link so that people can ask to connect with them. If you send a request, whoever made the link will see your name and your contact code.'**
+  String get plinkOpenBody;
+
+  /// Load-bearing, on the screen a public link opens on: a link proves nothing about whose it is.
+  ///
+  /// In en, this message translates to:
+  /// **'A link verifies nothing: anyone can put one on a page, and whoever controls the page can change it. If they accept, compare safety numbers to be sure who they are.'**
+  String get plinkOpenNote;
+
+  /// On the screen of a public link opened again: a request through it is waiting for an answer, sent this many days ago.
+  ///
+  /// In en, this message translates to:
+  /// **'You sent a request through this link {days, plural, =0{earlier today} =1{a day ago} other{{days} days ago}}.'**
+  String plinkOpenSent(int days);
+
+  /// After 30 days with no answer to a request sent through a public link: a printed link cannot be updated, so a copy whose owner moved on fails without a word.
+  ///
+  /// In en, this message translates to:
+  /// **'No answer in 30 days: the link may have been replaced or withdrawn.'**
+  String get plinkUnanswered;
+
+  /// A public link this account made, opened on this device: recognised, and nothing is sent.
+  ///
+  /// In en, this message translates to:
+  /// **'This is your own public link. Nothing was sent.'**
+  String get plinkOwn;
+
+  /// Snackbar after a request was sent through a public link.
+  ///
+  /// In en, this message translates to:
+  /// **'Request sent. If they accept, they will appear in your chats.'**
+  String get plinkRequestSent;
+
+  /// A public link of a version this build cannot read (zi2. and later).
+  ///
+  /// In en, this message translates to:
+  /// **'This link was made by a newer version of Z. Update Z to open it.'**
+  String get plinkErrNewer;
+
+  /// A public link whose characters, length or check are wrong: a copy damaged on its way.
+  ///
+  /// In en, this message translates to:
+  /// **'This link is damaged: a character is missing or wrong. Copy it again from where you found it.'**
+  String get plinkErrDamaged;
+
+  /// A public link whose work or keys no reader takes.
+  ///
+  /// In en, this message translates to:
+  /// **'This is not a link Z can send a request through.'**
+  String get plinkErrInvalid;
+
+  /// In the list of requests waiting for an answer: one sent through a public link, shown by the start of its code.
+  ///
+  /// In en, this message translates to:
+  /// **'Public link {code}'**
+  String plinkWaitingEntry(String code);
+
+  /// Under the handle search field, in a build with public links on: the field takes a link too.
+  ///
+  /// In en, this message translates to:
+  /// **'You can also paste someone\'s public link here.'**
+  String get plinkFindAlso;
+
+  /// System line in a chat: the owner of a public link you sent a request through accepted, proven by the link's own key; who they are is for the safety number to confirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Accepted through their public link. Compare safety numbers to verify.'**
+  String get sysIntroLinkAccepted;
 }
 
 class _AppLocalizationsDelegate

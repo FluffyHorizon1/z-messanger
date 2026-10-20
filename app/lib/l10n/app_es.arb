@@ -855,5 +855,18 @@
   "plinkRelayPaced": "Puede que tu relé no esté protegiendo ahora el buzón de este enlace: se le pidió demasiadas veces, y se le volverá a pedir en la próxima comprobación.",
   "plinkStampsChecked": "Este teléfono sigue comprobando el trabajo de cada solicitud que llega por tu enlace y descarta las que no lo traen.",
   "plinkInboxDrops": "En los últimos cinco días este teléfono descartó {unstamped, plural, =1{una solicitud que llegó} other{{unstamped} solicitudes que llegaron}} sin el trabajo que debía traer y rechazó {copies, plural, =1{una copia} other{{copies} copias}} de solicitudes que ya había decidido. Cifras altas indican que alguien te está inundando; más trabajo por solicitud los frena.",
-  "requestsViaLink": "A través de tu enlace público"
+  "requestsViaLink": "A través de tu enlace público",
+  "plinkOpenTitle": "Un enlace público",
+  "plinkOpenBody": "Alguien publicó este enlace para que la gente pueda pedirle conectar. Si envías una solicitud, quien hizo el enlace verá tu nombre y tu código de contacto.",
+  "plinkOpenNote": "Un enlace no verifica nada: cualquiera puede ponerlo en una página, y quien controla la página puede cambiarlo. Si acepta, comparad los números de seguridad para estar seguros de quién es.",
+  "plinkOpenSent": "Enviaste una solicitud por este enlace {days, plural, =0{hoy mismo} =1{hace un día} other{hace {days} días}}.",
+  "plinkUnanswered": "Sin respuesta en 30 días: puede que el enlace se haya sustituido o retirado.",
+  "plinkOwn": "Este es tu propio enlace público. No se envió nada.",
+  "plinkRequestSent": "Solicitud enviada. Si la acepta, aparecerá en tus chats.",
+  "plinkErrNewer": "Este enlace se creó con una versión más reciente de Z. Actualiza Z para abrirlo.",
+  "plinkErrDamaged": "Este enlace está dañado: falta un carácter o hay uno mal. Vuelve a copiarlo de donde lo encontraste.",
+  "plinkErrInvalid": "Este no es un enlace por el que Z pueda enviar una solicitud.",
+  "plinkWaitingEntry": "Enlace público {code}",
+  "plinkFindAlso": "También puedes pegar aquí el enlace público de alguien.",
+  "sysIntroLinkAccepted": "Aceptó a través de su enlace público. Comparad los números de seguridad para verificar."
 }

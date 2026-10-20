@@ -414,7 +414,8 @@ class _BootstrapperState extends State<Bootstrapper>
     // here rather than in a provider so an invite tapped while the app was
     // closed is picked up as soon as there is a service to hand it to.
     final invites = ConnectInvites(service);
-    final links = DeepLinks(invites);
+    final links = DeepLinks(invites,
+        introLinks: () => service.handles.linksEnabled);
     unawaited(links.start());
     // The app is in front when this runs: start carrying whatever survived
     // the restart, and keep doing so until it leaves the foreground.

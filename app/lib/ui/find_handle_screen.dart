@@ -13,9 +13,12 @@ import 'package:z_protocol/z_protocol.dart';
 
 import '../core/chat_service.dart';
 import '../core/handles.dart';
+import '../core/intro_links.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/handle_text.dart';
+import '../l10n/link_text.dart';
 import '../l10n/when_text.dart';
+import 'open_link_screen.dart';
 import 'theme.dart';
 
 class FindHandleView extends StatefulWidget {
@@ -42,6 +45,24 @@ class _FindHandleViewState extends State<FindHandleView> {
     if (_looking || _sending) return;
     final l = AppLocalizations.of(context);
     final h = context.read<ChatService>().handles;
+    // Phase 39: a public link typed or pasted here is put in front of its
+    // person, held (ADR 0032 §3) — asked after §21.1, since a handle can
+    // begin as a link does. With no handle log configured it is the one thing
+    // this field can take.
+    final (:link, :problem) = introLinkInField(_input.text,
+        enabled: h.linksEnabled, handleField: true);
+    if (link != null || problem != null || !h.available) {
+      setState(() {
+        _found = null;
+        _error = link != null
+            ? null
+            : problem != null
+                ? introLinkProblemText(l, problem)
+                : l.hdlUnavailable;
+      });
+      if (link != null) await openIntroLink(context, link);
+      return;
+    }
     setState(() {
       _looking = true;
       _found = null;
@@ -116,7 +137,9 @@ class _FindHandleViewState extends State<FindHandleView> {
     final l = AppLocalizations.of(context);
     final svc = context.watch<ChatService>();
     final h = svc.handles;
-    if (!h.available) {
+    // Phase 39: with links on, the field takes a link where no handle log is
+    // configured; with links off, nothing has changed.
+    if (!h.available && !h.linksEnabled) {
       return Padding(
         padding: const EdgeInsets.all(24),
         child: Text(l.hdlUnavailable,
@@ -130,8 +153,19 @@ class _FindHandleViewState extends State<FindHandleView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(l.hdlFindHelp,
-              style: TextStyle(color: context.z.textSecondary, height: 1.5)),
+          if (h.available)
+            Text(l.hdlFindHelp,
+                style: TextStyle(color: context.z.textSecondary, height: 1.5))
+          else
+            Text(l.hdlUnavailable,
+                style: TextStyle(color: context.z.textSecondary, height: 1.5)),
+          if (h.linksEnabled)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(l.plinkFindAlso,
+                  style:
+                      TextStyle(color: context.z.textSecondary, height: 1.5)),
+            ),
           const SizedBox(height: 16),
           TextField(
             controller: _input,
@@ -179,26 +213,42 @@ class _FindHandleViewState extends State<FindHandleView> {
                 // be a history the handle service's witness never saw says
                 // so, in the danger tone, until it is forgotten or answered;
                 // one whose answer the witness never confirmed says that, in
-                // the warning tone.
-                leading: switch (h.forkWarningForRequest(o)) {
-                  null => const Icon(Icons.hourglass_empty),
-                  final w when w.isFork =>
-                    Icon(Icons.gpp_bad, color: context.z.danger),
-                  _ => Icon(Icons.gpp_maybe, color: context.z.warn),
-                },
-                title: Text('@${o.handle}'),
-                subtitle: switch (h.forkWarningForRequest(o)) {
-                  final w? => Text(
-                      (w.isFork ? l.hdlForkAfterRequest : l.hdlUnconfirmedRequest)(
-                          w.handle, whenText(context, w.lookedUpMs)),
-                      style: TextStyle(
-                          color: w.isFork ? context.z.danger : context.z.warn,
-                          fontSize: 12.5,
-                          height: 1.35)),
-                  null => null,
-                },
+                // the warning tone. A request through a public link has no
+                // handle log behind it, and after 30 days unanswered says so
+                // (ADR 0032 §3).
+                leading: o.viaLink
+                    ? const Icon(Icons.link)
+                    : switch (h.forkWarningForRequest(o)) {
+                        null => const Icon(Icons.hourglass_empty),
+                        final w when w.isFork =>
+                          Icon(Icons.gpp_bad, color: context.z.danger),
+                        _ => Icon(Icons.gpp_maybe, color: context.z.warn),
+                      },
+                title: Text(o.viaLink
+                    ? l.plinkWaitingEntry(introLinkShort(o.link!))
+                    : '@${o.handle}'),
+                subtitle: o.viaLink
+                    ? (h.linkUnanswered(o)
+                        ? Text(l.plinkUnanswered,
+                            style:
+                                TextStyle(color: context.z.warn, fontSize: 12))
+                        : null)
+                    : switch (h.forkWarningForRequest(o)) {
+                        final w? => Text(
+                            (w.isFork
+                                ? l.hdlForkAfterRequest
+                                : l.hdlUnconfirmedRequest)(
+                                w.handle, whenText(context, w.lookedUpMs)),
+                            style: TextStyle(
+                                color: w.isFork
+                                    ? context.z.danger
+                                    : context.z.warn,
+                                fontSize: 12.5,
+                                height: 1.35)),
+                        null => null,
+                      },
                 trailing: TextButton(
-                  onPressed: () => h.forgetOutgoing(o.handle),
+                  onPressed: () => h.forgetOutgoingEntry(o),
                   child: Text(l.hdlForgetRequest),
                 ),
               ),

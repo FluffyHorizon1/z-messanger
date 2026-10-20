@@ -3338,4 +3338,63 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get requestsViaLink => 'A través de tu enlace público';
+
+  @override
+  String get plinkOpenTitle => 'Un enlace público';
+
+  @override
+  String get plinkOpenBody =>
+      'Alguien publicó este enlace para que la gente pueda pedirle conectar. Si envías una solicitud, quien hizo el enlace verá tu nombre y tu código de contacto.';
+
+  @override
+  String get plinkOpenNote =>
+      'Un enlace no verifica nada: cualquiera puede ponerlo en una página, y quien controla la página puede cambiarlo. Si acepta, comparad los números de seguridad para estar seguros de quién es.';
+
+  @override
+  String plinkOpenSent(int days) {
+    String _temp0 = intl.Intl.pluralLogic(
+      days,
+      locale: localeName,
+      other: 'hace $days días',
+      one: 'hace un día',
+      zero: 'hoy mismo',
+    );
+    return 'Enviaste una solicitud por este enlace $_temp0.';
+  }
+
+  @override
+  String get plinkUnanswered =>
+      'Sin respuesta en 30 días: puede que el enlace se haya sustituido o retirado.';
+
+  @override
+  String get plinkOwn => 'Este es tu propio enlace público. No se envió nada.';
+
+  @override
+  String get plinkRequestSent =>
+      'Solicitud enviada. Si la acepta, aparecerá en tus chats.';
+
+  @override
+  String get plinkErrNewer =>
+      'Este enlace se creó con una versión más reciente de Z. Actualiza Z para abrirlo.';
+
+  @override
+  String get plinkErrDamaged =>
+      'Este enlace está dañado: falta un carácter o hay uno mal. Vuelve a copiarlo de donde lo encontraste.';
+
+  @override
+  String get plinkErrInvalid =>
+      'Este no es un enlace por el que Z pueda enviar una solicitud.';
+
+  @override
+  String plinkWaitingEntry(String code) {
+    return 'Enlace público $code';
+  }
+
+  @override
+  String get plinkFindAlso =>
+      'También puedes pegar aquí el enlace público de alguien.';
+
+  @override
+  String get sysIntroLinkAccepted =>
+      'Aceptó a través de su enlace público. Comparad los números de seguridad para verificar.';
 }

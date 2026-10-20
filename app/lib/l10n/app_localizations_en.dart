@@ -3308,4 +3308,62 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get requestsViaLink => 'Via your public link';
+
+  @override
+  String get plinkOpenTitle => 'A public link';
+
+  @override
+  String get plinkOpenBody =>
+      'Someone published this link so that people can ask to connect with them. If you send a request, whoever made the link will see your name and your contact code.';
+
+  @override
+  String get plinkOpenNote =>
+      'A link verifies nothing: anyone can put one on a page, and whoever controls the page can change it. If they accept, compare safety numbers to be sure who they are.';
+
+  @override
+  String plinkOpenSent(int days) {
+    String _temp0 = intl.Intl.pluralLogic(
+      days,
+      locale: localeName,
+      other: '$days days ago',
+      one: 'a day ago',
+      zero: 'earlier today',
+    );
+    return 'You sent a request through this link $_temp0.';
+  }
+
+  @override
+  String get plinkUnanswered =>
+      'No answer in 30 days: the link may have been replaced or withdrawn.';
+
+  @override
+  String get plinkOwn => 'This is your own public link. Nothing was sent.';
+
+  @override
+  String get plinkRequestSent =>
+      'Request sent. If they accept, they will appear in your chats.';
+
+  @override
+  String get plinkErrNewer =>
+      'This link was made by a newer version of Z. Update Z to open it.';
+
+  @override
+  String get plinkErrDamaged =>
+      'This link is damaged: a character is missing or wrong. Copy it again from where you found it.';
+
+  @override
+  String get plinkErrInvalid =>
+      'This is not a link Z can send a request through.';
+
+  @override
+  String plinkWaitingEntry(String code) {
+    return 'Public link $code';
+  }
+
+  @override
+  String get plinkFindAlso => 'You can also paste someone\'s public link here.';
+
+  @override
+  String get sysIntroLinkAccepted =>
+      'Accepted through their public link. Compare safety numbers to verify.';
 }

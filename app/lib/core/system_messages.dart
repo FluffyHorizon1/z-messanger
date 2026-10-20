@@ -100,6 +100,13 @@ abstract final class SystemKind {
   /// introduced, and nothing more: their identity is still the safety
   /// number's to confirm. Param `h`: the handle, canonical.
   static const handleAccepted = 'handle_accepted';
+
+  /// Phase 39 (ADR 0032 §3): the same for a request sent through a public
+  /// link — the acceptance carried an acknowledgement under the link's own
+  /// introduction key, so this contact is the account that holds the link,
+  /// and who that is is the safety number's to confirm. No parameters: a
+  /// link names nothing to show.
+  static const introLinkAccepted = 'intro_link_accepted';
 }
 
 /// The stored form of a system message.

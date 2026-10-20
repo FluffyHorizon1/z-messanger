@@ -11,19 +11,31 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/chat_service.dart';
+import '../core/intro_links.dart';
 import '../core/models.dart';
 import '../core/qr_image.dart';
 import '../core/share_text.dart';
+import '../l10n/link_text.dart';
 import 'connect_tab.dart';
 import 'find_handle_screen.dart';
+import 'open_link_screen.dart';
 import 'theme.dart';
 
 class AddContactScreen extends StatefulWidget {
-  const AddContactScreen({super.key, this.connect = false});
+  const AddContactScreen(
+      {super.key, this.connect = false, this.operatingSystem, this.readImage});
 
   /// Open on the CONNECT tab: an invite has just arrived by link, and the
   /// person wants to see it, not to be shown their own code.
   final bool connect;
+
+  /// The operating system the Scan tab and "Open a QR image" are offered
+  /// for, and what reads the code out of a picked image ([readQrImage]'s
+  /// `read`): this device's and the scanner's own, unless a test passes
+  /// others to drive both paths where there is no camera and no decoder.
+  /// Production passes neither.
+  final String? operatingSystem;
+  final RawQrRead? readImage;
 
   @override
   State<AddContactScreen> createState() => _AddContactScreenState();
@@ -39,12 +51,14 @@ class _AddContactScreenState extends State<AddContactScreen>
   bool _busy = false;
   bool _scanned = false;
 
-  bool get _canScan => Platform.isAndroid;
+  String get _os => widget.operatingSystem ?? Platform.operatingSystem;
+
+  bool get _canScan => _os == 'android';
 
   /// 24.3: "Open a QR image" only where there is a decoder to read it with
   /// (qr_image.dart) — on Linux and Windows every image would come back as
   /// "no code found", a perfectly good QR included.
-  bool get _canOpenImage => qrImageDecodeFor(Platform.operatingSystem);
+  bool get _canOpenImage => qrImageDecodeFor(_os);
 
   @override
   void initState() {
@@ -65,6 +79,27 @@ class _AddContactScreenState extends State<AddContactScreen>
 
   Future<void> _import(String code) async {
     if (_busy) return;
+    // Phase 39: a public link pasted, scanned or read from an image is put
+    // in front of its person, held — nothing is sent until they say so (ADR
+    // 0032 §3). With links off nothing here takes one, and the field reads a
+    // code as it always has: a `zi1.` link is not one.
+    final svc = context.read<ChatService>();
+    final (:link, :problem) =
+        introLinkInField(code, enabled: svc.handles.linksEnabled);
+    if (link != null || problem != null) {
+      setState(() {
+        // A link that cannot be read is said, and scanning goes on. One that
+        // can opens its own screen, and a scanner that found it stays
+        // stopped until this screen is opened again: the same code still in
+        // front of the camera would otherwise open it over and over.
+        if (problem != null) _scanned = false;
+        _error = problem == null
+            ? null
+            : introLinkProblemText(AppLocalizations.of(context), problem);
+      });
+      if (link != null) await openIntroLink(context, link);
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
@@ -144,7 +179,7 @@ class _AddContactScreenState extends State<AddContactScreen>
     });
     final String? code;
     try {
-      code = await readQrImage(path);
+      code = await readQrImage(path, read: widget.readImage);
     } finally {
       // The picker copied the image into the app cache — a plaintext copy of
       // a QR that encodes a contact code. Delete it now that it is decoded,
@@ -330,9 +365,19 @@ class _AddContactScreenState extends State<AddContactScreen>
           child: MobileScanner(
             onDetect: (capture) {
               if (_scanned) return;
+              final linksOn =
+                  context.read<ChatService>().handles.linksEnabled;
               for (final barcode in capture.barcodes) {
                 final raw = barcode.rawValue;
-                if (raw != null && raw.startsWith('zc1.')) {
+                // A contact code, or — links on (39.4) — a public link's QR,
+                // which carries the link itself.
+                final link = raw == null
+                    ? null
+                    : introLinkInField(raw, enabled: linksOn);
+                if (raw != null &&
+                    (raw.startsWith('zc1.') ||
+                        link!.link != null ||
+                        link.problem != null)) {
                   _scanned = true;
                   _import(raw);
                   break;

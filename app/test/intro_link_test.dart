@@ -57,7 +57,39 @@
 //  11. with `introLinksEnabled` false — this build's constant — none of it is
 //      reachable: no Settings row; a link the vault holds is neither loaded,
 //      shown nor drained, and nothing connects as its mailbox; making one is
-//      refused; a request recorded as through a link is an ordinary one.
+//      refused; a request recorded as through a link is an ordinary one; the
+//      Paste and Scan tabs, a QR image and the handle search parse no link —
+//      a scanned link is passed over and the code beside it read — and a
+//      tapped one is ignored; nothing is sent through one; and an acceptance
+//      is never matched to a request a backup says went through one;
+//  12. held: a link pasted, scanned, read from a QR image, typed into the
+//      handle search or tapped is put in front of its person on a screen
+//      saying that whoever made it will see their name and contact code and
+//      that a link verifies nothing, and nothing is sent and no connection
+//      opened until they press Send request — then one request, to the
+//      link's mailbox, on a connection opened for it alone; with no handle
+//      log configured, and a handle that begins as a link does still a handle;
+//      the Scan tab's own scanner and Open a QR image driven, a stand-in
+//      camera and picker behind them;
+//  13. requests through links share the outgoing list's 20 entries with
+//      handles', the oldest going first whichever it is, three ids each, and
+//      a link's entry is stored as its code with no handle;
+//  14. on `pow_required`, one stamp more for the relay's day at the greater
+//      of the printed work and the refusal's bits, then stop: a sender whose
+//      stamps never pass sends twice, and a refusal asking more than 28 bits
+//      is answered at the printed work;
+//  15. an acceptance whose `ia` verifies under the link's intro adds the
+//      owner unverified, says "accepted through their public link — compare
+//      safety numbers" in both languages, and the two can talk — the link
+//      made, drained, asked through and accepted with no handle log
+//      configured on either side; one with no `ia`, an `ia` under another
+//      key, or the genuine one carried by another account is an ordinary
+//      request;
+//  16. after 30 days unanswered, the waiting list and the link's own screen
+//      say the link may have been replaced or withdrawn, and not before, in
+//      both languages;
+//  17. a client recognises its own link: its screen says so and offers no
+//      Send request, and nothing is sent to it.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 6))
 library;
@@ -67,28 +99,50 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:cryptography/cryptography.dart' show Ed25519;
+import 'package:file_picker/file_picker.dart'
+    show FilePicker, FilePickerResult, FilePickerStatus, FileType, PlatformFile;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mobile_scanner/mobile_scanner.dart'
+    show
+        Barcode,
+        BarcodeCapture,
+        CameraFacing,
+        MobileScannerController,
+        MobileScannerPlatform,
+        MobileScannerViewAttributes,
+        StartOptions,
+        TorchState;
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:zapp/core/app_lock.dart';
 import 'package:zapp/core/archive.dart';
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/connect_invites.dart';
+import 'package:zapp/core/deep_links.dart';
 import 'package:zapp/core/handles.dart';
 import 'package:zapp/core/intro_links.dart';
 import 'package:zapp/core/key_transparency.dart';
+import 'package:zapp/core/models.dart';
 import 'package:zapp/core/prefs.dart';
 import 'package:zapp/core/push_service.dart';
 import 'package:zapp/core/restore.dart';
+import 'package:zapp/core/system_messages.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:zapp/l10n/app_localizations.dart';
 import 'package:zapp/l10n/app_localizations_en.dart';
 import 'package:zapp/l10n/app_localizations_es.dart';
 import 'package:zapp/l10n/handle_text.dart';
+import 'package:zapp/l10n/refusal_text.dart';
+import 'package:zapp/l10n/system_text.dart';
+import 'package:zapp/ui/add_contact_screen.dart';
+import 'package:zapp/ui/find_handle_screen.dart';
 import 'package:zapp/ui/intro_link_screen.dart';
+import 'package:zapp/ui/invite_link_watcher.dart';
+import 'package:zapp/ui/open_link_screen.dart';
 import 'package:zapp/ui/requests_screen.dart';
 import 'package:zapp/ui/settings_screen.dart';
 import 'package:zapp/ui/theme.dart';
@@ -185,6 +239,88 @@ class Tap {
       }, onDone: () => down.close(), onError: (_) => down.close());
     });
     return tap;
+  }
+}
+
+/// mobile_scanner's platform half with no camera behind it: it starts and
+/// stops when asked, and what it sees is what a test shows it ([show]) — so
+/// the Scan tab's own MobileScanner, and the onDetect the screen gives it,
+/// run as they do on a phone.
+class FakeCamera extends MobileScannerPlatform {
+  final _seen = StreamController<BarcodeCapture?>.broadcast();
+
+  /// A scanner is listening: the Scan tab is up and its camera on.
+  bool get on => _seen.hasListener;
+
+  /// A QR in front of the camera, carrying each of [raws].
+  void show(List<String> raws) => _seen.add(BarcodeCapture(
+      barcodes: [for (final r in raws) Barcode(rawValue: r)]));
+
+  @override
+  Stream<BarcodeCapture?> get barcodesStream => _seen.stream;
+  @override
+  Stream<TorchState> get torchStateStream => const Stream.empty();
+  @override
+  Stream<double> get zoomScaleStateStream => const Stream.empty();
+  @override
+  Future<MobileScannerViewAttributes> start(StartOptions startOptions) async =>
+      const MobileScannerViewAttributes(
+          cameraDirection: CameraFacing.back,
+          currentTorchMode: TorchState.unavailable,
+          size: Size(640, 480),
+          numberOfCameras: 1);
+  @override
+  Future<void> stop() async {}
+  @override
+  Future<void> pause() async {}
+  @override
+  Future<void> updateScanWindow(Rect? window) async {}
+  @override
+  Widget buildCameraView() => const SizedBox();
+  @override
+  Future<void> dispose() async {}
+}
+
+/// The file picker handing over one image, as Android's does — a copy in the
+/// app's cache, deleted when the app clears the picker's files — standing in
+/// for a picture of a QR that carries [qr], which [readImage], the decoder's
+/// stand-in, reads back.
+class QrImagePicker extends FilePicker {
+  QrImagePicker(this.cache);
+  final Directory cache;
+  String qr = '';
+  final copies = <File>[];
+
+  Future<String?> readImage(String path) async => File(path).readAsStringSync();
+
+  @override
+  Future<FilePickerResult?> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    bool allowCompression = true,
+    int compressionQuality = 30,
+    bool allowMultiple = false,
+    bool withData = false,
+    bool withReadStream = false,
+    bool lockParentWindow = false,
+    bool readSequential = false,
+  }) async {
+    final copy = File('${cache.path}/file_picker/${copies.length}/qr.png')
+      ..createSync(recursive: true)
+      ..writeAsStringSync(qr);
+    copies.add(copy);
+    return FilePickerResult(
+        [PlatformFile(path: copy.path, name: 'qr.png', size: qr.length)]);
+  }
+
+  @override
+  Future<bool?> clearTemporaryFiles() async {
+    final d = Directory('${cache.path}/file_picker');
+    if (d.existsSync()) d.deleteSync(recursive: true);
+    return true;
   }
 }
 
@@ -481,6 +617,66 @@ void main() {
   Future<String?> iaSentTo(ChatService owner, ZIdentity requester) async =>
       (await acceptanceTo(owner, requester))?.ia;
 
+  /// A contact request from [from] to [to], sealed to [xPub] — what any
+  /// client could build.
+  Future<String> sealedRequest(ZIdentity from,
+      {required String to, required Uint8List xPub, String? ia}) async {
+    final creq = await ContactRequest.create(
+        me: from, toRid: to, displayName: 'raw', ia: ia);
+    return SealedEnvelope.seal(
+        toXPub: xPub, fromRid: await from.routingId(), payload: creq.encode());
+  }
+
+  List<String> texts(ChatService s, String rid) => [
+        for (final m in s.messagesByChat[rid] ?? const <ChatMessage>[])
+          if (m.kind == 'text') m.body
+      ];
+
+  /// The sends to [rid] the tap carried, in order, after the first [skip].
+  List<Map<String, Object?>> sendsAfter(String rid, int skip) => [
+        for (final c in tap.conns) ...c.sendsTo(rid),
+      ].skip(skip).toList();
+
+  /// Add contact, as the app shows it, over [svc] — as on Android when
+  /// [picker] is given: with the Scan tab, whose camera is [FakeCamera], and
+  /// Open a QR image, whose picker and decoder are [picker]'s.
+  Widget addContact(ChatService svc, {Locale? locale, QrImagePicker? picker}) =>
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<ChatService>.value(value: svc),
+          ChangeNotifierProvider<ConnectInvites>(
+              create: (_) => ConnectInvites(svc)),
+        ],
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: ZTheme.light(),
+          locale: locale,
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: picker == null
+              ? const AddContactScreen()
+              : AddContactScreen(
+                  operatingSystem: 'android', readImage: picker.readImage),
+        ),
+      );
+
+  /// The phone's camera and file picker, as [addContact] uses them, for the
+  /// rest of the test: what the camera sees and what the picker hands over
+  /// are the test's to say.
+  Future<(FakeCamera, QrImagePicker)> cameraAndPicker(
+      WidgetTester tester) async {
+    final camera = FakeCamera();
+    final before = MobileScannerPlatform.instance;
+    MobileScannerPlatform.instance = camera;
+    addTearDown(() {
+      MobileScannerPlatform.instance = before;
+      MobileScannerController.resetPlatformSessionOwner();
+    });
+    final picker = QrImagePicker((await tester.runAsync(() => tempDir('qr')))!);
+    FilePicker.platform = picker;
+    return (camera, picker);
+  }
+
   Widget wrap(ChatService svc, Widget child, {Locale? locale}) =>
       ChangeNotifierProvider<ChatService>.value(
         value: svc,
@@ -494,6 +690,7 @@ void main() {
         ),
       );
 
+  /// Inside `runAsync`: pump until [cond], on real time.
   Future<void> until(WidgetTester tester, bool Function() cond, String what,
       {Duration timeout = const Duration(seconds: 20)}) async {
     final deadline = DateTime.now().add(timeout);
@@ -504,6 +701,38 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 20));
       await tester.pump();
     }
+  }
+
+  /// Outside `runAsync`, in the test's own zone: pump until [cond], moving
+  /// the test's clock on a frame at a time so that what animates — a tab
+  /// sliding in, a route arriving or leaving — gets there, and letting real
+  /// time pass between frames so that the network and the vault answer.
+  Future<void> settle(WidgetTester tester, bool Function() cond, String what,
+      {Duration timeout = const Duration(seconds: 40)}) async {
+    final deadline = DateTime.now().add(timeout);
+    await tester.pump();
+    while (!cond()) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('condition not met: $what');
+      }
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+  }
+
+  /// The tabs of the Add contact screen on screen now.
+  TabController tabsOf(WidgetTester tester) =>
+      tester.widget<TabBar>(find.byType(TabBar)).controller!;
+
+  /// Switch Add contact to the tab labelled [label], as a tap does, and
+  /// wait for the switch to finish: a tab still sliding when the test ends
+  /// leaves its ticker behind.
+  Future<void> toTab(WidgetTester tester, String label) async {
+    final tabs = tabsOf(tester);
+    await tester.tap(find.text(label));
+    await settle(tester, () => !tabs.indexIsChanging && tabs.animation!.value == tabs.index,
+        'the $label tab');
   }
 
   /// Settings over [svc], with the providers the screen reads, pumped until
@@ -833,6 +1062,9 @@ void main() {
           reason: 'connection ${c.n} carried both routing ids');
     }
     expect(otto.handles.linkRelayGuard, HandleRelayGuard.guarded);
+    // Its short timer stopped: the criteria after this one count
+    // connections.
+    otto.handles.onBackground();
   });
 
   test(
@@ -1451,10 +1683,13 @@ void main() {
 
   testWidgets(
       '11. with introLinksEnabled false, none of it is reachable: no row, no '
-      'link loaded or drained, none made, no request said to be a link\'s',
+      'link loaded, drained, made, parsed, opened or sent to, nothing matched',
       (tester) async {
     await tester.binding.setSurfaceSize(const Size(800, 2400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
+    ChatService? svcOff;
+    OwnIntroLink? linkOff;
+    String? ownCodeOff;
     await tester.runAsync(() async {
       expect(introLinksEnabled, isFalse, reason: 'this build\'s constant');
       // A vault that holds a link and a request recorded as through it — a
@@ -1500,17 +1735,53 @@ void main() {
       svc.dispose();
       await svc.transport.stop();
       await svc.vault.db.close();
+
+      // And a request a backup says this device sent through a link, with
+      // the acknowledgement its owner would sign for it.
+      final elsewhere = randomBytes(32);
+      final sentLink = await IntroLink.fromSeed(elsewhere, pow: 16);
+      final sentId = randomBytes(32);
+      final reopened = await Vault.open(rootOverride: dir);
+      await reopened.kvPut(
+          'handle_out',
+          jsonEncode([
+            OutgoingHandleRequest.viaLink(
+                    link: sentLink,
+                    creqIds: [sentId],
+                    sentMs: DateTime.now().millisecondsSinceEpoch)
+                .toJson()
+          ]));
       final again = await ChatService.init(
-          vault: await Vault.open(rootOverride: dir),
+          vault: reopened,
           identity: me,
           displayName: 'Off',
           transport: Transport(identity: me, serverUrl: tap.url),
           ktConfig: KtConfig.off);
       services.add(again);
       fast(again);
+      await connected([again]);
       expect(again.requestsByRid[rid]!.viaLink, isFalse,
           reason: 'with links off, nothing says "link"');
       expect(again.requestsByRid[rid]!.viaIntro, isFalse);
+      expect(again.handles.outgoing, isEmpty,
+          reason: 'a request through a link is not shown');
+      final owner = await ZIdentity.generate();
+      final ownerRid = await owner.routingId();
+      final ia = await signIntroAck(
+          introSeed: elsewhere,
+          requesterRid: again.myRid,
+          ownerAccountEdPub: owner.edPub,
+          creqId: sentId);
+      final raw = await rawSender();
+      await raw.send(
+          to: again.myRid,
+          id: newMessageId(),
+          payload: await sealedRequest(owner,
+              to: again.myRid, xPub: again.identity.xPub, ia: ia));
+      await waitUntil(() => again.requestsByRid.containsKey(ownerRid),
+          what: 'the acknowledged acceptance filed as an ordinary request');
+      expect(again.contacts.containsKey(ownerRid), isFalse,
+          reason: 'never matched to a request through a link');
 
       await settingsOf(tester, again, 'Settings without a link row',
           ready: () => find.text(en.hdlYourHandle).evaluate().isNotEmpty);
@@ -1522,9 +1793,618 @@ void main() {
           'the request shown as an ordinary one');
       expect(find.text(en.requestsViaLink), findsNothing);
       await tester.pumpWidget(const SizedBox());
+      expect(introLinkInField(link.url, enabled: again.handles.linksEnabled),
+          (link: null, problem: null));
+      svcOff = again;
+      linkOff = link;
+      ownCodeOff = await again.myContactCode();
+    });
+    final again = svcOff!;
+    final link = linkOff!;
+
+    // No field parses a link: Paste reads it as the contact code it is not,
+    // so do the Scan tab and a QR image, and the handle search, with no
+    // handle log, offers no field.
+    final sendsBefore = tap.sendsTo(link.introRid);
+    final (camera, picker) = await cameraAndPicker(tester);
+    await tester.pumpWidget(addContact(again, picker: picker));
+    await settle(tester, () => find.text(en.addPaste).evaluate().isNotEmpty,
+        'Add contact');
+    await toTab(tester, en.addPaste);
+    await tester.enterText(
+        find.widgetWithText(TextField, en.addTheirCode), link.url);
+    await tester.tap(find.text(en.addVerifyAndAdd));
+    final notACode = contactCodeRefusalText(
+        en, ContactCodeRefused(ContactCodeRefusal.invalidCode, '', ''));
+    await settle(tester, () => find.text(notACode).evaluate().isNotEmpty,
+        'the link refused as not a contact code');
+    expect(find.byType(OpenLinkScreen), findsNothing);
+    // Scanned, beside the account's own code: the link is passed over as
+    // nothing the Scan tab reads, and the code beside it is read — and
+    // refused as this account's own.
+    await toTab(tester, en.addScan);
+    await settle(tester, () => camera.on, 'the camera on');
+    camera.show([link.url, ownCodeOff!]);
+    final ownCode = contactCodeRefusalText(
+        en, ContactCodeRefused(ContactCodeRefusal.ownCode, '', ''));
+    await settle(tester, () => find.text(ownCode).evaluate().isNotEmpty,
+        'the code beside the link read');
+    expect(find.byType(OpenLinkScreen), findsNothing);
+    // A QR image carrying the link: read, and refused as the contact code
+    // it is not.
+    await toTab(tester, en.addPaste);
+    picker.qr = link.url;
+    await tester.tap(find.text(en.addOpenImage));
+    await settle(tester, () => find.text(notACode).evaluate().isNotEmpty,
+        'the link in an image refused as not a contact code');
+    expect(picker.copies, hasLength(1));
+    expect(find.byType(OpenLinkScreen), findsNothing);
+    await toTab(tester, en.addHandle);
+    expect(find.text(en.hdlUnavailable), findsOneWidget);
+    expect(find.widgetWithText(TextField, en.hdlFindLabel), findsNothing);
+    expect(find.text(en.plinkFindAlso), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+
+    await tester.runAsync(() async {
+      // A tapped link is ignored, and nothing is sent through one.
+      final deep = DeepLinks(ConnectInvites(again),
+          introLinks: () => again.handles.linksEnabled);
+      expect(await deep.handle(link.url), isNull);
+      expect(deep.lastRejected, link.url);
+      expect(deep.takeUnshownLink(), isNull);
+      expect(() => again.handles.requestLink(link.link), throwsStateError);
+      expect(tap.sendsTo(link.introRid), sendsBefore);
       await waitUntil(() => tap.named, what: 'every connection named');
       expect(tap.authedAs(link.introRid), isEmpty,
           reason: 'nothing ever connects as the link\'s mailbox');
+    });
+  });
+
+  testWidgets(
+      '12. held: pasted, scanned, from an image, typed into the handle search '
+      'or tapped, nothing is sent until Send request', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 2400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    late ChatService ola, rick;
+    late OwnIntroLink link;
+    late String code, flipped;
+    late int connsBefore;
+    await tester.runAsync(() async {
+      ola = await boot('OlaHeld');
+      rick = await boot('RickHeld');
+      await connected([ola, rick]);
+      link = await made(ola, pow: 16);
+      expect(rick.handles.available, isFalse, reason: 'no handle log');
+
+      // What the fields take: the link as printed, its bare code, either as a
+      // QR carries it or an image's decoder reads it, a copy with whitespace,
+      // and a link on any page; a handle that begins as a link does is a
+      // handle where handles are taken; a damaged link and a newer one are
+      // said as such; and a contact code is no link's business.
+      code = link.link.code;
+      for (final text in [
+        link.url,
+        code,
+        '  ${link.url}\n',
+        'https://example.org/page?x=1#$code',
+      ]) {
+        expect(introLinkInField(text, enabled: true).link, link.link,
+            reason: text);
+      }
+      expect(introLinkInField('zi1.42', enabled: true, handleField: true),
+          (link: null, problem: null));
+      expect(introLinkInField('zi1.42', enabled: true).problem,
+          IntroLinkProblem.wrongLength);
+      flipped = '${code.substring(0, 95)}${code[95] == 'A' ? 'B' : 'A'}';
+      expect(introLinkInField(flipped, enabled: true).problem,
+          IntroLinkProblem.badCheck);
+      expect(introLinkInField('zi2.${code.substring(4)}', enabled: true).problem,
+          IntroLinkProblem.newerVersion);
+      expect(introLinkInField(await rick.myContactCode(), enabled: true),
+          (link: null, problem: null));
+      await waitUntil(() => tap.named, what: 'every connection named');
+      connsBefore = tap.conns.length;
+    });
+
+    // Pasted: held on its screen, and nothing sent or opened.
+    final (camera, picker) = await cameraAndPicker(tester);
+    await tester.pumpWidget(addContact(rick, picker: picker));
+    await settle(tester, () => find.text(en.addPaste).evaluate().isNotEmpty,
+        'Add contact');
+    await toTab(tester, en.addPaste);
+    await tester.enterText(
+        find.widgetWithText(TextField, en.addTheirCode), link.url);
+    await tester.tap(find.text(en.addVerifyAndAdd));
+    final send = find.text(en.hdlSendRequest).hitTestable();
+    await settle(tester, () => send.evaluate().isNotEmpty,
+        'the link held on its screen');
+    expect(find.text(en.plinkOpenBody), findsOneWidget);
+    expect(find.text(en.plinkOpenNote), findsOneWidget);
+    expect(tap.conns.length, connsBefore, reason: 'no connection opened');
+    expect(tap.sendsTo(link.introRid), 0, reason: 'nothing sent');
+    expect(rick.handles.outgoing, isEmpty);
+    expect(rick.handles.stampsMade, 0);
+
+    // Sent, once its person says so: one request, on a connection opened for
+    // it alone.
+    await tester.tap(send);
+    await settle(
+        tester,
+        () =>
+            find.byType(OpenLinkScreen).evaluate().isEmpty &&
+            find.text(en.plinkRequestSent).evaluate().isNotEmpty,
+        'the request sent and the screen closed',
+        timeout: const Duration(seconds: 90));
+    // (Two sends, and two connections, only if the relay's day turned as it
+    // went: one stamp more for its day. The envelope is the same.)
+    final carriers = [
+      for (final c in tap.conns.skip(connsBefore))
+        if (c.sendsTo(link.introRid).isNotEmpty) c
+    ];
+    expect(carriers.length, inInclusiveRange(1, 2));
+    for (final c in carriers) {
+      expect(c.anonymous, isTrue);
+      expect(c.upTypes.where((t) => t == 'send'), hasLength(1),
+          reason: 'a connection opened for that send alone');
+    }
+    // One request in all: nothing went before Send request, whose one press
+    // sent this one.
+    expect({for (final f in sendsAfter(link.introRid, 0)) f['payload']},
+        hasLength(1));
+    expect(rick.handles.outgoing.single.link, link.link);
+    expect(rick.handles.outgoing.single.creqIds, hasLength(1));
+    // The snackbar's time, so that nothing of it is left at the end.
+    await tester.pump(const Duration(seconds: 5));
+    await settle(tester,
+        () => find.text(en.plinkRequestSent).evaluate().isEmpty, 'the snackbar gone');
+    await tester.runAsync(() async {
+      await receives(ola, rick.myRid);
+      expect(ola.requestsByRid[rick.myRid]!.viaLink, isTrue);
+    });
+
+    // Typed into the handle search: held too, and the request already sent
+    // is said.
+    await toTab(tester, en.addHandle);
+    expect(find.text(en.plinkFindAlso), findsOneWidget);
+    expect(find.text(en.hdlUnavailable), findsOneWidget,
+        reason: 'no handle log: a handle cannot be found here, a link can');
+    final field = find.widgetWithText(TextField, en.hdlFindLabel);
+    await tester.enterText(field, code);
+    await tester.tap(find.text(en.hdlFind));
+    await settle(tester, () => send.evaluate().isNotEmpty,
+        'held from the handle search');
+    expect(find.text(en.plinkOpenSent(0)), findsOneWidget);
+    final sends = tap.sendsTo(link.introRid);
+    await tester.pageBack();
+    await settle(tester, () => find.byType(OpenLinkScreen).evaluate().isEmpty,
+        'closed without sending');
+    expect(tap.sendsTo(link.introRid), sends,
+        reason: 'nothing sent without Send request');
+    // A handle, with no handle log: said, and nothing opened. A damaged
+    // link: said as damaged.
+    await tester.enterText(field, 'zi1.42');
+    await tester.tap(find.text(en.hdlFind));
+    await settle(tester,
+        () => find.text(en.hdlUnavailable).evaluate().length == 2,
+        'handles unavailable, said for the handle typed');
+    expect(find.byType(OpenLinkScreen), findsNothing);
+    await tester.enterText(field, flipped);
+    await tester.tap(find.text(en.hdlFind));
+    await settle(tester,
+        () => find.text(en.plinkErrDamaged).evaluate().isNotEmpty,
+        'a damaged link said as damaged');
+    expect(find.byType(OpenLinkScreen), findsNothing);
+
+    // Scanned: the Scan tab's camera sees the link's QR — held on its screen
+    // too, and nothing sent.
+    await toTab(tester, en.addScan);
+    await settle(tester, () => camera.on, 'the camera on');
+    camera.show([link.url]);
+    await settle(tester, () => send.evaluate().isNotEmpty,
+        'a scanned link held on its screen');
+    expect(find.text(en.plinkOpenBody), findsOneWidget);
+    expect(find.text(en.plinkOpenNote), findsOneWidget);
+    await tester.pageBack();
+    await settle(tester, () => find.byType(OpenLinkScreen).evaluate().isEmpty,
+        'the scanned link closed without sending');
+    // Read from a QR image — Open a QR image on the Paste tab, the picker's
+    // copy read and then deleted — held too.
+    await toTab(tester, en.addPaste);
+    picker.qr = link.url;
+    await tester.tap(find.text(en.addOpenImage));
+    await settle(tester, () => send.evaluate().isNotEmpty,
+        'a link read from an image held on its screen');
+    expect(find.text(en.plinkOpenBody), findsOneWidget);
+    expect(picker.copies, hasLength(1));
+    expect(picker.copies.single.existsSync(), isFalse,
+        reason: 'the picker\'s copy deleted once read');
+    await tester.pageBack();
+    await settle(tester, () => find.byType(OpenLinkScreen).evaluate().isEmpty,
+        'the image\'s link closed without sending');
+    expect(tap.sendsTo(link.introRid), sends,
+        reason: 'nothing sent from a scan or an image without Send request');
+    await tester.pumpWidget(const SizedBox());
+
+    // Tapped: held, and put in front of its person.
+    final deep = DeepLinks(ConnectInvites(rick),
+        introLinks: () => rick.handles.linksEnabled);
+    await tester.pumpWidget(MultiProvider(
+      providers: [
+        ChangeNotifierProvider<ChatService>.value(value: rick),
+        Provider<DeepLinks>.value(value: deep),
+      ],
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: ZTheme.light(),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: const InviteLinkWatcher(child: Scaffold(body: SizedBox())),
+      ),
+    ));
+    await tester.pump();
+    final opened = await tester.runAsync(() => deep.handle(link.url));
+    expect(opened, isNull, reason: 'a public link is not an invite');
+    await settle(tester, () => send.evaluate().isNotEmpty,
+        'a tapped link held on its screen');
+    expect(find.text(en.plinkOpenBody), findsOneWidget);
+    expect(tap.sendsTo(link.introRid), sends);
+    await tester.pumpWidget(const SizedBox());
+
+    // In Spanish, the held screen says the same.
+    await tester.pumpWidget(wrap(rick, OpenLinkScreen(link: link.link),
+        locale: const Locale('es')));
+    await settle(tester,
+        () => find.text(es.hdlSendRequest).hitTestable().evaluate().isNotEmpty,
+        'the held screen in Spanish');
+    expect(find.text(es.plinkOpenBody), findsOneWidget);
+    expect(find.text(es.plinkOpenNote), findsOneWidget);
+    expect(es.plinkOpenBody, isNot(en.plinkOpenBody));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test(
+      '13. the outgoing list: 20 entries for handles and links together, '
+      'three ids each, a link stored as its code', () async {
+    final dir = await tempDir('sam');
+    final vault = await Vault.open(rootOverride: dir);
+    final me = await ZIdentity.generate();
+    await vault.kvPut('identity', jsonEncode(me.toJson()));
+    // Ten requests to handles, as an earlier run of the app left them.
+    final t0 = DateTime.now().millisecondsSinceEpoch - 60000;
+    final earlier = [
+      for (var i = 0; i < 10; i++)
+        OutgoingHandleRequest(
+            handle: 'hand$i.39',
+            ownerPub: randomBytes(32),
+            introPub: randomBytes(32),
+            xintroPub: randomBytes(32),
+            creqIds: [randomBytes(32)],
+            sentMs: t0 + i)
+    ];
+    await vault.kvPut(
+        'handle_out', jsonEncode([for (final o in earlier) o.toJson()]));
+    final sam = await boot('Sam', id: me, vault: vault);
+    await connected([sam]);
+    expect(sam.handles.outgoing, hasLength(10));
+
+    // Eleven links, whose mailboxes nobody flagged: the relay takes them.
+    final links = [
+      for (var i = 0; i < 11; i++)
+        await IntroLink.fromSeed(randomBytes(32), pow: 16)
+    ];
+    for (final l in links) {
+      await sam.handles.requestLink(l);
+    }
+    final out = sam.handles.outgoing;
+    expect(out, hasLength(handleOutgoingCap));
+    expect([for (final o in out) if (o.viaLink) o.link], links.reversed.toList());
+    expect([for (final o in out) if (!o.viaLink) o.handle],
+        [for (final o in earlier.skip(1)) o.handle].reversed.toList(),
+        reason: 'the oldest went, though it was a handle\'s');
+
+    // Three more through the first link: its three latest ids, and it is
+    // the newest entry.
+    final first = links.first;
+    final firstId = sam.handles.outgoingFor(first)!.creqIds.single;
+    for (var i = 0; i < 3; i++) {
+      await sam.handles.requestLink(first);
+    }
+    final e = sam.handles.outgoingFor(first)!;
+    expect(e.creqIds, hasLength(handleOutgoingIdsPerHandle));
+    expect(e.creqIds.any((i) => constantTimeEquals(i, firstId)), isFalse,
+        reason: 'the three latest');
+    expect(sam.handles.outgoing.first.link, first);
+    expect(sam.handles.outgoing, hasLength(handleOutgoingCap));
+
+    // Stored as its code, with no handle and no owner key — what a build
+    // from before links, which requires both, skips — and read back.
+    final stored =
+        (jsonDecode((await sam.vault.kvGet('handle_out'))!) as List).cast<Map>();
+    final rows = [
+      for (final r in stored)
+        if (r.containsKey('link')) r
+    ];
+    expect(rows, hasLength(11));
+    for (final r in rows) {
+      expect(r.containsKey('h'), isFalse);
+      expect(r.containsKey('owner'), isFalse);
+      expect(IntroLink.parse(r['link'] as String).pow, 16);
+      final back = OutgoingHandleRequest.fromJson(r.cast<String, Object?>());
+      expect(back.viaLink, isTrue);
+      expect(back.handle, '');
+    }
+  });
+
+  test(
+      '14. pow_required: one re-stamp at max(printed, bits <= 28) for the '
+      'relay\'s day, then stop', () async {
+    final olga = await boot('OlgaR');
+    final rex = await boot('RexR');
+    final nina = await boot('NinaR');
+    final lia = await boot('LiaR');
+    await connected([olga, rex, nina, lia]);
+    final link = await made(olga, pow: 16);
+    final drains = olga.handles.linkDrains;
+    await olga.handles.askMoreWork(20);
+    await waitUntil(() => olga.handles.linkDrains > drains,
+        what: 'flagged at 20');
+
+    // Rex's clock is two days behind, so his first stamp is for a day the
+    // relay does not take: refused, with the work it asks and its day.
+    rex.handles.now = () => DateTime.now().millisecondsSinceEpoch - 2 * 86400000;
+    final before = tap.sendsTo(link.introRid);
+    await rex.handles.requestLink(link.link);
+    expect(rex.handles.stampsMade, 2);
+    final sends = sendsAfter(link.introRid, before);
+    expect(sends, hasLength(2));
+    expect(sends[1]['payload'], sends[0]['payload'],
+        reason: 'the same envelope, stamped again');
+    expect(
+        await verifyIntroPowStamp(
+            introRid: link.introRid,
+            day: today(),
+            envelope: utf8.encode(sends[1]['payload'] as String),
+            nonce: unb64url(sends[1]['pow'] as String),
+            bits: 20),
+        isTrue,
+        reason: 'for the relay\'s day, at the work its refusal asked');
+    await receives(olga, rex.myRid);
+
+    // Stamps that never pass: two sends, then it stops.
+    nina.handles.debugStampFilter = (_) => b64url(Uint8List(16));
+    final b2 = tap.sendsTo(link.introRid);
+    await expectLater(
+        nina.handles
+            .requestLink(link.link)
+            .timeout(const Duration(seconds: 60)),
+        failsWith(HandleFailure.powRefused));
+    expect(nina.handles.stampsMade, 2);
+    expect(tap.sendsTo(link.introRid), b2 + 2,
+        reason: 'the first send and one re-stamp, and no more');
+    expect(nina.handles.outgoing, isEmpty, reason: 'nothing to wait for');
+
+    // A refusal asking more than a link may carry, from a relay that lies:
+    // the one re-stamp stays at the printed work.
+    tap.rewriteDown = (c, f) =>
+        f['t'] == 'error' && f['code'] == 'pow_required' ? {...f, 'bits': 40} : f;
+    lia.handles.now = () => DateTime.now().millisecondsSinceEpoch - 2 * 86400000;
+    final b3 = tap.sendsTo(link.introRid);
+    try {
+      await lia.handles.requestLink(link.link).timeout(const Duration(seconds: 60));
+    } on HandleException catch (e) {
+      // The relay asks 20 of a stamp of 16: refused, most of the time.
+      expect(e.failure, HandleFailure.powRefused);
+    }
+    tap.rewriteDown = null;
+    expect(lia.handles.stampsMade, 2);
+    final liaSends = sendsAfter(link.introRid, b3);
+    expect(liaSends, hasLength(2));
+    expect(
+        await verifyIntroPowStamp(
+            introRid: link.introRid,
+            day: today(),
+            envelope: utf8.encode(liaSends[1]['payload'] as String),
+            nonce: unb64url(liaSends[1]['pow'] as String),
+            bits: 16),
+        isTrue,
+        reason: 'the printed work, for the relay\'s day');
+  });
+
+  test(
+      '15. an ia under the link\'s intro adds the owner unverified, said so; '
+      'any other acceptance is an ordinary request', () async {
+    final olga = await boot('OlgaA');
+    final rick = await boot('RickA');
+    final tess = await boot('TessA');
+    await connected([olga, rick, tess]);
+    // Made, drained, asked through and accepted with no handle log
+    // configured on either side: a link needs none.
+    for (final s in [olga, rick, tess]) {
+      expect(s.handles.config.enabled, isFalse, reason: s.displayName);
+      expect(s.handles.available, isFalse, reason: s.displayName);
+    }
+    final link = await made(olga, pow: 16);
+    await rick.handles.requestLink(link.link);
+    expect(rick.handles.outgoing.single.viaLink, isTrue);
+    await receives(olga, rick.myRid);
+    expect(olga.requestsByRid[rick.myRid]!.viaLink, isTrue);
+    await olga.acceptRequest(rick.myRid);
+    await waitUntil(
+        () =>
+            rick.contacts.containsKey(olga.myRid) &&
+            rick.handles.outgoing.isEmpty,
+        what: 'Rick holding Olga, through her link');
+    expect(rick.requestsByRid.containsKey(olga.myRid), isFalse,
+        reason: 'an acknowledged acceptance is not a request');
+    expect(rick.contacts[olga.myRid]!.verified, isFalse);
+    expect(olga.contacts[rick.myRid]!.verified, isFalse);
+    expect(rick.verificationWith(olga.myRid), VerificationState.unverified);
+    expect(olga.verificationWith(rick.myRid), VerificationState.unverified);
+    final said = systemBody(SystemKind.introLinkAccepted);
+    expect(
+        [
+          for (final m in rick.messagesByChat[olga.myRid]!)
+            if (m.kind == 'system') m.body
+        ],
+        contains(said));
+    expect(systemText(en, said), en.sysIntroLinkAccepted);
+    expect(systemText(es, said), es.sysIntroLinkAccepted);
+    expect(es.sysIntroLinkAccepted, isNot(en.sysIntroLinkAccepted));
+    expect(await rick.handleViaOf(olga.myRid), isNull,
+        reason: 'a link names no handle');
+    await rick.sendText(olga.myRid, 'found you by your link');
+    await waitUntil(
+        () => texts(olga, rick.myRid).contains('found you by your link'),
+        what: 'Olga reading Rick');
+    await olga.sendText(rick.myRid, 'so you did');
+    await waitUntil(() => texts(rick, olga.myRid).contains('so you did'),
+        what: 'Rick reading Olga');
+
+    // Tess asks too, and Olga's app answers as one from before the
+    // acknowledgement: an ordinary request.
+    await tess.handles.requestLink(link.link);
+    await receives(olga, tess.myRid);
+    final waiting = tess.handles.outgoing.single;
+    olga.handles.debugOmitAcknowledgement = true;
+    await olga.acceptRequest(tess.myRid);
+    olga.handles.debugOmitAcknowledgement = false;
+    await waitUntil(() => tess.requestsByRid.containsKey(olga.myRid),
+        what: 'the bare acceptance filed as an ordinary request');
+    expect(tess.contacts.containsKey(olga.myRid), isFalse);
+    expect(tess.handles.outgoing.single.viaLink, isTrue);
+
+    final raw = await rawSender();
+    // An ia under another link's intro.
+    final mallory = await ZIdentity.generate();
+    final forged = await signIntroAck(
+        introSeed: randomBytes(32),
+        requesterRid: tess.myRid,
+        ownerAccountEdPub: mallory.edPub,
+        creqId: waiting.creqIds.last);
+    await raw.send(
+        to: tess.myRid,
+        id: newMessageId(),
+        payload: await sealedRequest(mallory,
+            to: tess.myRid, xPub: tess.identity.xPub, ia: forged));
+    final malloryRid = await mallory.routingId();
+    await waitUntil(() => tess.requestsByRid.containsKey(malloryRid),
+        what: 'the forged acceptance filed as an ordinary request');
+    expect(tess.contacts.containsKey(malloryRid), isFalse);
+    // The genuine ia — the link's seed, for Olga's account — carried by
+    // another account.
+    final genuine = await signIntroAck(
+        introSeed: olga.handles.link!.seed,
+        requesterRid: tess.myRid,
+        ownerAccountEdPub: olga.identity.edPub,
+        creqId: waiting.creqIds.last);
+    final eve = await ZIdentity.generate();
+    await raw.send(
+        to: tess.myRid,
+        id: newMessageId(),
+        payload: await sealedRequest(eve,
+            to: tess.myRid, xPub: tess.identity.xPub, ia: genuine));
+    final eveRid = await eve.routingId();
+    await waitUntil(() => tess.requestsByRid.containsKey(eveRid),
+        what: 'the replayed acknowledgement filed as an ordinary request');
+    expect(tess.contacts.containsKey(eveRid), isFalse);
+    expect(tess.handles.outgoing.single.viaLink, isTrue,
+        reason: 'none of those answered it');
+    // The same acknowledgement from the account it names: linked.
+    await raw.send(
+        to: tess.myRid,
+        id: newMessageId(),
+        payload: await sealedRequest(olga.identity,
+            to: tess.myRid, xPub: tess.identity.xPub, ia: genuine));
+    await waitUntil(
+        () =>
+            tess.contacts.containsKey(olga.myRid) &&
+            tess.handles.outgoing.isEmpty,
+        what: 'Tess holding Olga, through her link');
+  });
+
+  testWidgets(
+      '16. after 30 days unanswered, the list and the link\'s screen say it '
+      'may have been replaced or withdrawn', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 2400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.runAsync(() async {
+      final svc = await boot('Una', relayUrl: 'ws://127.0.0.1:1');
+      final link = await IntroLink.fromSeed(randomBytes(32), pow: 16);
+      final sent = DateTime.now().millisecondsSinceEpoch;
+      await svc.vault.kvPut(
+          'handle_out',
+          jsonEncode([
+            OutgoingHandleRequest.viaLink(
+                    link: link, creqIds: [randomBytes(32)], sentMs: sent)
+                .toJson()
+          ]));
+      await svc.handles.load();
+      expect(svc.handles.outgoingFor(link), isNotNull);
+      for (final (days, said) in [(29, false), (30, true), (45, true)]) {
+        svc.handles.now = () => sent + days * 86400000 + 1000;
+        expect(svc.handles.linkUnanswered(svc.handles.outgoingFor(link)!), said,
+            reason: '$days days');
+        for (final (locale, l) in [
+          (const Locale('en'), en as AppLocalizations),
+          (const Locale('es'), es as AppLocalizations),
+        ]) {
+          await tester.pumpWidget(wrap(
+              svc, Scaffold(body: FindHandleView(key: UniqueKey())),
+              locale: locale));
+          await until(
+              tester,
+              () => find
+                  .text(l.plinkWaitingEntry(introLinkShort(link)))
+                  .evaluate()
+                  .isNotEmpty,
+              'the waiting list');
+          expect(find.text(l.plinkUnanswered), said ? findsOneWidget : findsNothing,
+              reason: '$days days, the list, ${locale.languageCode}');
+          await tester.pumpWidget(wrap(
+              svc, OpenLinkScreen(key: UniqueKey(), link: link),
+              locale: locale));
+          await until(tester,
+              () => find.text(l.plinkOpenSent(days)).evaluate().isNotEmpty,
+              'the link\'s screen');
+          expect(find.text(l.plinkUnanswered), said ? findsOneWidget : findsNothing,
+              reason: '$days days, the link\'s screen, ${locale.languageCode}');
+        }
+      }
+      expect(es.plinkUnanswered, isNot(en.plinkUnanswered));
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  testWidgets(
+      '17. a client recognises its own link: it says so, offers no Send '
+      'request, and sends nothing', (tester) async {
+    await tester.runAsync(() async {
+      final olga = await boot('OlgaOwn');
+      await connected([olga]);
+      final link = await made(olga, pow: 16);
+      expect(olga.handles.isOwnMailbox(link.introRid), isTrue);
+      final before = tap.sendsTo(link.introRid);
+      await expectLater(olga.handles.requestLink(link.link),
+          failsWith(HandleFailure.ownLink));
+      expect(olga.handles.stampsMade, 0);
+      expect(olga.handles.outgoing, isEmpty);
+      expect(tap.sendsTo(link.introRid), before);
+      expect(handleFailureText(en, HandleFailure.ownLink), en.plinkOwn);
+      for (final (locale, l) in [
+        (const Locale('en'), en as AppLocalizations),
+        (const Locale('es'), es as AppLocalizations),
+      ]) {
+        await tester.pumpWidget(wrap(
+            olga, OpenLinkScreen(key: UniqueKey(), link: link.link),
+            locale: locale));
+        await until(tester, () => find.text(l.plinkOwn).evaluate().isNotEmpty,
+            'its own link recognised');
+        expect(find.text(l.hdlSendRequest), findsNothing);
+        expect(find.text(l.plinkOpenBody), findsNothing);
+      }
+      expect(es.plinkOwn, isNot(en.plinkOwn));
+      await tester.pumpWidget(const SizedBox());
+      expect(tap.sendsTo(link.introRid), before);
     });
   });
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/services.dart';
+import 'package:z_protocol/z_protocol.dart' show IntroLink;
 
 import 'connect_invites.dart';
 
@@ -19,15 +20,37 @@ import 'connect_invites.dart';
 /// app on the device can send it a VIEW intent, so it must be safe to hand
 /// rubbish to.
 class DeepLinks {
-  DeepLinks(this._invites, {MethodChannel? channel})
-      : _channel = channel ?? const MethodChannel(channelName);
+  DeepLinks(this._invites, {MethodChannel? channel, bool Function()? introLinks})
+      : _channel = channel ?? const MethodChannel(channelName),
+        _introLinks = introLinks;
 
   static const String channelName = 'z/deeplink';
 
   final ConnectInvites _invites;
   final MethodChannel _channel;
 
+  /// Phase 39 (ADR 0032 §3): whether a public link is taken — the build's
+  /// `introLinksEnabled`, through the handle service. Off, or not given, a
+  /// `/c#zi1.…` link is ignored like any other foreign link. No build's
+  /// Android filter claims `/c` yet (the release that turns links on adds it),
+  /// so until then none arrives here at all.
+  final bool Function()? _introLinks;
+
   final _opened = StreamController<PendingInvite>.broadcast();
+  final _openedLinks = StreamController<IntroLink>.broadcast();
+
+  /// Public links that arrived by a tap — HELD: nothing is sent and nothing
+  /// connects until their person presses Send request on the screen the UI
+  /// puts them in front of (ADR 0032 §3).
+  Stream<IntroLink> get openedLinks => _openedLinks.stream;
+  IntroLink? _unshownLink;
+
+  /// The tapped link no screen has shown yet, once.
+  IntroLink? takeUnshownLink() {
+    final l = _unshownLink;
+    _unshownLink = null;
+    return l;
+  }
 
   /// Invites that arrived by link and were taken — held until their person
   /// says yes (ADR 0024). The UI listens so it can show them; nothing here
@@ -75,6 +98,7 @@ class DeepLinks {
   Future<void> dispose() async {
     _channel.setMethodCallHandler(null);
     await _opened.close();
+    await _openedLinks.close();
   }
 
   Future<void> _onCall(MethodCall call) async {
@@ -84,8 +108,21 @@ class DeepLinks {
   }
 
   /// Consume one link. Returns the invite it opened, or null if the link was
-  /// not one — a foreign VIEW intent, a stale link, or one already open.
+  /// not one — a foreign VIEW intent, a stale link, or one already open, or a
+  /// public link, which is handed to [openedLinks] instead.
   Future<PendingInvite?> handle(String url) async {
+    final links = _introLinks;
+    if (links != null && links()) {
+      final link = IntroLink.tryParse(url);
+      if (link != null) {
+        // Held, as an invite is: recorded nowhere, sent nowhere, only put in
+        // front of its person.
+        lastRejected = null;
+        _unshownLink = link;
+        if (!_openedLinks.isClosed) _openedLinks.add(link);
+        return null;
+      }
+    }
     if (ConnectInvites.parseInvite(url) == null) {
       lastRejected = url;
       return null;

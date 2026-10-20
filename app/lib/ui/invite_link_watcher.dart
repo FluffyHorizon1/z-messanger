@@ -3,9 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'package:z_protocol/z_protocol.dart' show IntroLink;
+
 import '../core/connect_invites.dart';
 import '../core/deep_links.dart';
 import 'add_contact_screen.dart';
+import 'open_link_screen.dart';
 
 /// Shows an invite that arrived by link (17.3b).
 ///
@@ -29,6 +32,7 @@ class InviteLinkWatcher extends StatefulWidget {
 
 class _InviteLinkWatcherState extends State<InviteLinkWatcher> {
   StreamSubscription<PendingInvite>? _sub;
+  StreamSubscription<IntroLink>? _linkSub;
   bool _showing = false;
 
   @override
@@ -36,16 +40,27 @@ class _InviteLinkWatcherState extends State<InviteLinkWatcher> {
     super.initState();
     final links = context.read<DeepLinks>();
     _sub = links.opened.listen((_) => _show());
+    // Phase 39: a tapped public link, held, put in front of its person.
+    _linkSub = links.openedLinks.listen(_showLink);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (links.takeUnshown() != null) _show();
+      final link = links.takeUnshownLink();
+      if (link != null) _showLink(link);
     });
   }
 
   @override
   void dispose() {
     _sub?.cancel();
+    _linkSub?.cancel();
     super.dispose();
+  }
+
+  void _showLink(IntroLink link) {
+    if (!mounted) return;
+    context.read<DeepLinks>().takeUnshownLink();
+    unawaited(openIntroLink(context, link));
   }
 
   /// One CONNECT screen at a time: a second link while it is open is already

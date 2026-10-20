@@ -5105,7 +5105,7 @@ account, with an acknowledgement signed by the introduction key.
 | 21.6 | introduction mailboxes at the relay | relay |
 | 21.7 | the request, its proof‑of‑work stamp, and the acknowledgement | client, relay |
 | 21.8 | the client: configuration, schedules, caps, connections, what it stores | client |
-| 21.9 | a public introduction link: its code, how a client reads one, and what its owner does | client |
+| 21.9 | a public introduction link: its code, how a client reads one, and what its owner and whoever opens it do | client |
 
 Every context string is disjoint from every other in this document:
 
@@ -5781,7 +5781,9 @@ there for, which is said beside it.*
 as the transparency log's are (§19.5) — its own key, never the
 transparency log's, and never one fetched from the log. A client with no
 handle log configured says, wherever a handle could be claimed or looked
-up, that handles are unavailable, and does nothing else; the reference
+up, that handles are unavailable, and does nothing else with a handle — a
+public link typed there is still opened, as it needs no log (§21.9); the
+reference
 build's defaults are empty until a build pins the log and its witness
 (below). A request goes to the
 requester's own relay: as for every envelope today (`adr/0008`, deferred),
@@ -6207,7 +6209,8 @@ the label's bucket without naming it (`app/lib/core/handle_lookups.dart`):
 `intro` null: the handle is paused, and nothing is sent. Otherwise the
 client builds a `creq` to `introRid`, seals it to `xintro`, and keeps the
 handle, its owner and introduction keys and the request's `creqId` — at most
-**20** handles, the three latest ids for each — before sending, so an
+**20** handles, public links counted among them (§21.9), the three latest
+ids for each — before sending, so an
 acceptance that comes back can be matched. It stamps the envelope (21.7) at
 the record's `pow` for its own day, off the UI thread, and sends it on an
 anonymous connection **opened for that send alone** and closed after: not
@@ -6308,12 +6311,11 @@ contacts the root device makes through the handle by self‑sync (§9).
 
 *Normative for clients that make or read a public introduction link
 (`adr/0032`). Built in 39.1: the code, and how a client reads one; in
-39.3 the owner's half — making, draining and managing a link — below.
-Built and **switched off**: the reference client holds it behind one build
-constant until the deployed relay is confirmed to run the hardened §21.6
-(below, "Switched off"), so no release makes or drains a link yet. The
-half of whoever opens one (39.4) is not built, and `adr/0032` §3 is its
-design.*
+39.3–39.4 the owner's half — making, draining and managing a link — and
+that of whoever opens one, below. Built and **switched off**: the reference
+client holds all of it behind one build constant until the deployed relay
+is confirmed to run the hardened §21.6 (below, "Switched off"), so no
+release makes, opens or drains a link yet.*
 
 A public link is a handle's introduction mailbox handed out directly — on a
 web page, in an email signature, on a printed card — with no handle log
@@ -6421,9 +6423,10 @@ replaced or withdrawn that a pending request still needs — never in
 `handle_in` beside a handle's, so never in a `handle` record. After a
 *Withdraw* the row stays, with no link, while one is needed. A pending
 request that came through the link is recorded in `handle_in` with
-`"link":1` and no `h`, so
-that a build from before links, which requires `h`, skips the record
-rather than file the request under a handle. In a
+`"link":1` and no `h`, and a
+request sent through a link is kept in `handle_out` as the link's code,
+under `link`, with no `h` or `owner`, so that a build from before links,
+which requires `h`, skips the entry rather than read it as a handle's. In a
 backup the row is the record
 `{"t":"introlink","keep":1,"v":1,"kv":{"intro_link":{…}}}`, old seeds and
 all (`BACKUP.md`
@@ -6434,13 +6437,42 @@ says to use it again, or replaces or withdraws it, which reads it once more
 as above. The device the backup came from may have replaced or withdrawn
 it since, and there is no log to ask.
 
+**Whoever opens one** (`adr/0032` §3). A link tapped, scanned, read from a
+QR image, pasted, or typed where a handle is taken is **held**: nothing is
+sent and no connection opened until its person presses *Send request*, on a
+screen that says first that whoever made the link will see their name and
+contact code (R48) and that a link verifies nothing. Then §21.7 runs
+unchanged: a `creq` to `introRid` sealed to `xintro`, kept first in §21.8's
+outgoing list — whose 20 entries hold handles' and links' requests
+together, three ids each — stamped at the link's `pow` for the sender's own
+day, off the UI thread, and sent on an anonymous connection opened for it
+alone. One departure: on `pow_required` the client stamps once more, for
+the relay's `day`, at the greater of the link's `pow` and the refusal's
+`bits` when those are at most 28 (at the link's `pow` otherwise), and then
+stops — a printed link cannot learn that its owner asked for more work, and
+the refusal is how its holder hears. Any device may send one, and no handle
+log is needed. An acceptance whose `ia` verifies under the link's `intro`,
+with the requester's own routing id, the acceptance's `bundle.ed` and a
+kept `creqId`, adds the owner as an unverified contact — *accepted through
+their public link — compare safety numbers to verify* — and any other
+acceptance is an ordinary request (§21.7). After 30 days with no answer,
+the screens that show the request say that the link may have been replaced
+or withdrawn. A client recognises its own link — the mailbox of its link, of
+its handle, or of one it replaced and still holds the seed of — and sends
+nothing to it. In v1 only the account's main device holds the link, so a
+linked device of the same account does not recognise it as its own: a
+request it sends there reaches the main device, which drops one from its own
+account, and after 30 days the linked device says the link may have been
+replaced or withdrawn.
+
 **Switched off.** All of the above is behind one build constant in the
 reference client, `introLinksEnabled` (`app/lib/core/intro_links.dart`),
 `false` until the deployed relay is confirmed to run the hardened §21.6,
 which hands each stamp on with its envelope so that the owner can count it
-(`adr/0032` §5, decision 1). With it off no client makes or drains a link:
-nothing connects as a link's mailbox, and a link a vault holds from a
-restore is kept unread. The release that sets it
+(`adr/0032` §5, decision 1). With it off no client makes, opens or drains a
+link: no field parses one, nothing connects as a link's mailbox, nothing is
+sent through one, no acceptance is matched to a request through one, and a
+link a vault holds from a restore is kept unread. The release that sets it
 also claims `/c` in the Android app's filter, as it claims `/i`; the page a
 link lands on, `/c` (`server/pages.js`), is the relay's, unlisted like
 `/i`, served either way, and says to open the link in Z or update Z and
@@ -6449,12 +6481,12 @@ paste it there.
 *Implementation note:* `IntroLink` in `protocol/lib/src/handles.dart`:
 `fromSeed` (20 bits unless told otherwise), `code`, `link`, `introRid`, and
 `parse`, whose `IntroLinkProblem` names the refusal. The reference
-client's owner half is `HandleService.makeLink`, `drainLink`,
-`askMoreWork`, `replaceLink`, `withdrawLink` and `useLinkAgain`
-(`app/lib/core/handles.dart`), beside the handle's, and
+client's two halves are `HandleService.makeLink`, `drainLink`,
+`askMoreWork`, `replaceLink`, `withdrawLink`, `useLinkAgain` and
+`requestLink` (`app/lib/core/handles.dart`), beside the handle's, and
 `OwnIntroLink`, `IntroLinkRow`, `IntroLinkBackup` and `introLinksEnabled`
 (`app/lib/core/intro_links.dart`); `app/test/intro_link_test.dart` drives
-it over a real relay.
+them over a real relay.
 `vectors/handles/intro_link.json` pins this section: links from seeds at
 `pow` 16, 20 and 28 with every intermediate; inputs taken — a bare code, the
 link, a host beginning `i`, a query before the fragment, surrounding

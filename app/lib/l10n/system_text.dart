@@ -99,6 +99,8 @@ String systemText(AppLocalizations l, String body) {
     SystemKind.listTooLarge => l.sysListTooLarge,
     // Handles (phase 38).
     SystemKind.handleAccepted => l.sysHandleAccepted(s('h', '?')),
+    // Public links (phase 39).
+    SystemKind.introLinkAccepted => l.sysIntroLinkAccepted,
     // A kind this build does not know — written by a newer one. The stored
     // object is the only thing there is to show; better than nothing, and
     // it says plainly that something happened here.

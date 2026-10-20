@@ -1,6 +1,27 @@
+import 'package:z_protocol/z_protocol.dart' show IntroLinkProblem;
+
 import '../core/handles.dart';
 import '../core/intro_links.dart';
 import 'app_localizations.dart';
+
+/// Why what was pasted, scanned or typed is a link this build cannot open
+/// (PROTOCOL §21.9's refusals), said so the person knows what to do: update
+/// Z for a link from a newer one, copy it again for one damaged on its way,
+/// and otherwise that it is not a link a request can go through — a link
+/// whose keys or work no reader takes.
+String introLinkProblemText(AppLocalizations l, IntroLinkProblem p) =>
+    switch (p) {
+      IntroLinkProblem.newerVersion => l.plinkErrNewer,
+      IntroLinkProblem.notBase64url ||
+      IntroLinkProblem.wrongLength ||
+      IntroLinkProblem.badCheck =>
+        l.plinkErrDamaged,
+      IntroLinkProblem.notALink ||
+      IntroLinkProblem.powOutOfRange ||
+      IntroLinkProblem.weakIntro ||
+      IntroLinkProblem.weakXintro =>
+        l.plinkErrInvalid,
+    };
 
 /// The words for where the account's public link stands (phase 39; ADR
 /// 0032), in the reader's language. The service reports each as a typed
