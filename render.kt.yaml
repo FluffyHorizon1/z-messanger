@@ -131,9 +131,12 @@ services:
         value: "33554432"       # 32 MiB — eight full pages — per address
       - key: READ_BYTES_PER_MIN_TOTAL
         value: "134217728"      # 128 MiB, whoever asks
-      # Set this to cf-connecting-ip ONLY once the service is reachable solely
-      # through Cloudflare. A forwarded address is the caller's to choose
-      # unless something in front overwrites it, and a limiter keyed on a
-      # value the caller picks is worse than one keyed on a value they cannot.
+      # SET (2026-10-20), and written here rather than left to the dashboard
+      # so a Blueprint sync cannot put the empty string back and turn the
+      # per-address publish gate off without anyone noticing. It rests on the
+      # condition this file cannot check: the origin (this service's
+      # onrender.com address) reachable through Cloudflare alone. Back to ""
+      # the same day if that origin is ever exposed, because a header on a
+      # connection that reached the origin directly is the caller's to forge.
       - key: KT_CLIENT_IP_HEADER
-        value: ""               # empty: use the socket's address
+        value: "cf-connecting-ip"

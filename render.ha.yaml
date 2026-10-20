@@ -9,7 +9,8 @@
 # are untouched by this one, and vice versa).
 #
 # The Key Value instance holds exactly what process RAM held before: opaque
-# ciphertext, presence, opaque push tokens — never plaintext, never keys.
+# ciphertext, presence, opaque push tokens, and the public introduction
+# keys of 44.10 — never plaintext, never private keys.
 # persistenceMode: off keeps it in RAM only; ipAllowList: [] keeps it off the
 # public internet — the instances reach it over Render's private network, so
 # every service here must be in the same region.
@@ -72,7 +73,15 @@ services:
       # being refused; they retry on `store_full`, so a brief refusal costs a
       # delay rather than a message.
       - key: NEW_MAILBOX_PER_MIN
-        value: "120"
+        value: "240"             # ADR 0036 Q3: a group of 128 adding members
+      # How many introduction keys the relay keeps (44.10): public keys only,
+      # checked under each mailbox's own key, in memory, served only to
+      # connections that never authenticated. Full, the least recently
+      # authenticated is forgotten for a new one. 20 000 is the code's own
+      # default (server.js, `ikeyCap`), named here so it is a decision on
+      # record rather than a number nobody chose; memory is its only cost.
+      - key: IKEY_CAP
+        value: "20000"
       # The names this relay answers to, and the ONLY names a v2 login
       # signature is verified against since phase 29 (server.js,
       # `authorities`; P1-16). Not the Host header a connection presents —
@@ -103,18 +112,24 @@ services:
       # dashboard into the scraper. Never a value in this file.
       - key: METRICS_TOKEN
         generateValue: true
-      # The header the front sets to the real client address. Set it to
-      # cf-connecting-ip ONLY once the origin (this service's onrender.com
-      # address) is reachable through Cloudflare alone: a header on a
-      # connection that reached the origin directly is the caller's to forge,
-      # and a limiter keyed on a value the caller picks is worse than one keyed
-      # on a value they cannot (the same rule as KT_CLIENT_IP_HEADER in
-      # render.kt.yaml). Empty: the socket address, which behind Cloudflare is
+      # The header the front sets to the real client address. SET
+      # (2026-10-20), and written here rather than left to the dashboard so a
+      # Blueprint sync cannot quietly put the empty string back and turn the
+      # per-address limits off without anyone noticing.
+      #
+      # It rests on one condition, which this file cannot check: the origin
+      # (this service's onrender.com address) must be reachable through
+      # Cloudflare alone. A header on a connection that reached the origin
+      # directly is the caller's to forge, and a limiter keyed on a value the
+      # caller picks is worse than one keyed on a value they cannot. If that
+      # origin is ever exposed again, this goes back to "" the same day.
+      # Empty would mean the socket address, which behind Cloudflare is
       # Cloudflare — one shared bucket for the per-address limits (new
-      # mailboxes' unowned bytes; new handle flags are then paced by the store's
-      # cap alone) while the global caps bound the flood.
+      # mailboxes' unowned bytes; new handle flags then paced by the store's
+      # cap alone) while the global caps bound the flood. Same rule as
+      # KT_CLIENT_IP_HEADER in render.kt.yaml.
       - key: CLIENT_IP_HEADER
-        value: ""
+        value: "cf-connecting-ip"
       # The Play App Signing certificate fingerprint (SHA-256, colon-separated
       # upper-case hex), read out of Play Console -> Setup -> App integrity.
       # It is public — it is published verbatim at
