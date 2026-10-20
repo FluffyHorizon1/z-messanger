@@ -12,9 +12,12 @@
 /// (`handles.dart`, `transparency_bucket.dart`, the relay client's `intro`
 /// frame and stamped send):
 ///
-/// * where the handle log is and which key signs it ([HandleConfig]) —
-///   EMPTY by default, so until a log is deployed and pinned every handle
-///   surface says handles are unavailable;
+/// * where the handle log is and which key signs it, and the witness it is
+///   held to ([HandleConfig]) — EMPTY by default, so until a build pins the
+///   log and its witness every handle surface says handles are unavailable;
+/// * the witness check ([HandleService.witnessState]): every lookup's head,
+///   held to a witness's record under the key pinned for it (§19.5 step 3,
+///   §21.8), and a lookup the record contradicts refused;
 /// * claiming one ([HandleService.prepareClaim], [HandleService.commitClaim]):
 ///   the owner and introduction seeds, a recovery code shown once and never
 ///   stored, and a publish after a random delay (§21.8) so the moment of the
@@ -56,8 +59,11 @@
 /// `handle_lookup` (the resolver's decoy key,
 /// the bucket size the log's answers bear out, and the owner key,
 /// commitment, version and record hash of each handle found —
-/// [HandleLookupMemory]) and `handle_config`. A contact made through a
-/// handle keeps the handle under `hvia_<rid>`.
+/// [HandleLookupMemory]), `handle_config`, and `handle_witness_ok_ms` and
+/// `handle_witness_since_ms` (when the witness last agreed, and since when it
+/// has been asked without an answer that counts, each with the configuration
+/// it was recorded under). A contact made through a handle keeps the handle
+/// under `hvia_<rid>`.
 library;
 
 import 'dart:async';
@@ -80,38 +86,113 @@ export 'handle_lookups.dart' show HandleChange;
 // Configuration
 // =============================================================================
 
-/// Build-time defaults: EMPTY. The handle log is a second public service with
-/// its own key (ADR 0015's Consequences 1); until it is deployed and its key
-/// written here, there is no log to claim in or resolve against, and the app
-/// says so on every handle surface rather than pointing at a guess. Set them
-/// in this file, as the transparency log's are set in `key_transparency.dart`
-/// — not with a `--dart-define` on one build command (`tool/check_ga.py`
+/// Build-time defaults: EMPTY. The four handle values — the handle log's
+/// address and key, and its witness's record address and key — are pinned
+/// here, in this file, together, in one release: a log pinned without its
+/// witness is a log whose readers cannot catch it showing two histories
+/// (THREAT_MODEL R50), and `tool/check_ga.py` refuses a tree that sets some
+/// of the four and not all. Until they are, there is no log to claim in or
+/// resolve against, and the app says so on every handle surface rather than
+/// pointing at a guess. The handle log is a second public service with its
+/// own key (ADR 0015's Consequences 1), and its witness a third. Set them in
+/// this file, as the transparency log's are set in `key_transparency.dart` —
+/// not with a `--dart-define` on one build command (`tool/check_ga.py`
 /// explains why a value on the command line is a value no rebuild
-/// reproduces).
+/// reproduces, and refuses `HANDLE_LOG_` and `HANDLE_WITNESS_` there).
+///
+/// The witness is a mirror of the handle log, run by somebody other than its
+/// operator, that co-signs each head it has verified in the handle witness
+/// context (§19.10, §21.5). Its address is that mirror's record, the
+/// `/sth.json` it serves, fetched as it stands; its key is the `witness.pub`
+/// inside it, handed over out of band. Both or neither
+/// ([HandleConfig.witnessProblem]).
 const String defaultHandleLogUrl =
     String.fromEnvironment('HANDLE_LOG_URL', defaultValue: '');
 const String defaultHandleLogPub =
     String.fromEnvironment('HANDLE_LOG_PUB', defaultValue: '');
+const String defaultHandleWitnessUrl =
+    String.fromEnvironment('HANDLE_WITNESS_URL', defaultValue: '');
+const String defaultHandleWitnessPub =
+    String.fromEnvironment('HANDLE_WITNESS_PUB', defaultValue: '');
+
+/// A configuration that cannot be saved ([HandleService.setConfig]):
+/// [reason] is an l10n key, not a sentence, and one of the transparency
+/// client's three (`KtConfigInvalid`) — the rule is the same rule, and the
+/// screen says it in the same words.
+class HandleConfigInvalid implements Exception {
+  final String reason;
+  HandleConfigInvalid(this.reason);
+  @override
+  String toString() => 'HandleConfigInvalid($reason)';
+}
 
 /// Where the handle log is and which key signs it — `kt/` run with
 /// `KT_MODE=handles`, a separate instance under its own key (§21.5), never
-/// the transparency log's. Persisted sealed under `handle_config`; absent,
-/// the build-time defaults apply. A developer-mode setting, like the
+/// the transparency log's — and the witness this device holds it to.
+/// Persisted sealed under `handle_config`; absent, the build-time defaults
+/// apply. A stored configuration from before the witness has no `wurl` or
+/// `wpub`, and reads as one with no witness, as a stored `kt_config` from
+/// before the transparency log's witness was pinned does: a device whose user
+/// saved a handle log of their own keeps it as it was, and gets a witness
+/// only by adding one beside it. A developer-mode setting, like the
 /// transparency log's address and key.
 class HandleConfig {
   final String logUrl;
   final String logPubB64;
+  final String witnessUrl;
+  final String witnessPubB64;
 
-  const HandleConfig({required this.logUrl, required this.logPubB64});
+  const HandleConfig({
+    required this.logUrl,
+    required this.logPubB64,
+    this.witnessUrl = '',
+    this.witnessPubB64 = '',
+  });
 
-  static const HandleConfig defaults =
-      HandleConfig(logUrl: defaultHandleLogUrl, logPubB64: defaultHandleLogPub);
+  static const HandleConfig defaults = HandleConfig(
+    logUrl: defaultHandleLogUrl,
+    logPubB64: defaultHandleLogPub,
+    witnessUrl: defaultHandleWitnessUrl,
+    witnessPubB64: defaultHandleWitnessPub,
+  );
 
   static const HandleConfig off = HandleConfig(logUrl: '', logPubB64: '');
 
   /// The pinned key, or null when it is absent or not 32 bytes of base64.
-  Uint8List? get logPub {
-    final b = logPubB64.trim();
+  Uint8List? get logPub => _key(logPubB64);
+
+  /// The key pinned for the witness, likewise.
+  Uint8List? get witnessPub => _key(witnessPubB64);
+
+  /// An address AND a key: a log nobody pinned is not one an answer can be
+  /// checked against, so half a configuration is none. A witness is not
+  /// needed for this: a self-hoster may run a handle log with no witness, as
+  /// with the transparency log. That the shipped build pins all four values
+  /// together is `tool/check_ga.py`'s rule, not this one's.
+  bool get enabled => logUrl.trim().isNotEmpty && logPub != null;
+
+  /// A witness is an address AND a key this device pinned (§19.5 step 3): a
+  /// co-signature checked against the key the record carries says only that
+  /// whoever served it could sign, which the log's own operator can. Half a
+  /// pair is no witness, and its address is never fetched.
+  bool get hasWitness => witnessUrl.trim().isNotEmpty && witnessPub != null;
+
+  /// Why this configuration cannot be saved, or null — the transparency
+  /// client's rule (`KtConfig.witnessProblem`) and its three reasons: half a
+  /// witness is not a weaker witness, and being quietly ignored is how
+  /// somebody ends up believing they have one.
+  String? get witnessProblem {
+    final hasUrl = witnessUrl.trim().isNotEmpty;
+    final hasKey = witnessPubB64.trim().isNotEmpty;
+    if (!hasUrl && !hasKey) return null;
+    if (hasUrl && !hasKey) return 'urlWithoutKey';
+    if (!hasUrl && hasKey) return 'keyWithoutUrl';
+    if (witnessPub == null) return 'keyNotValid';
+    return null;
+  }
+
+  static Uint8List? _key(String b64Key) {
+    final b = b64Key.trim();
     if (b.isEmpty) return null;
     try {
       final k = unb64(b);
@@ -121,15 +202,21 @@ class HandleConfig {
     }
   }
 
-  /// An address AND a key: a log nobody pinned is not one an answer can be
-  /// checked against, so half a configuration is none.
-  bool get enabled => logUrl.trim().isNotEmpty && logPub != null;
-
-  Map<String, Object?> toJson() => {'url': logUrl, 'pub': logPubB64};
+  /// The witness's two members are written only when set, so a
+  /// configuration with no witness is stored — and archived — exactly as it
+  /// was before there was one to set.
+  Map<String, Object?> toJson() => {
+        'url': logUrl,
+        'pub': logPubB64,
+        if (witnessUrl.isNotEmpty) 'wurl': witnessUrl,
+        if (witnessPubB64.isNotEmpty) 'wpub': witnessPubB64,
+      };
 
   static HandleConfig fromJson(Map<String, Object?> j) => HandleConfig(
         logUrl: (j['url'] as String?) ?? '',
         logPubB64: (j['pub'] as String?) ?? '',
+        witnessUrl: (j['wurl'] as String?) ?? '',
+        witnessPubB64: (j['wpub'] as String?) ?? '',
       );
 }
 
@@ -208,6 +295,33 @@ const List<int> handlePowLevels = [16, 18, 20, 22, 24];
 /// so does every stamp the relay took before its flag was renewed — and a
 /// stamp is good for one to two days of the relay's clock.
 const Duration handlePowGrace = Duration(days: 2);
+
+/// The witness's record is fetched at most once a lookup, and a record that
+/// verified under the pinned key is used again, by every lookup under the
+/// same configuration, for this long after it was fetched (§21.8). A record
+/// used again is compared afresh with each lookup's head — the log, not the
+/// witness, is asked for the proof between them — so reuse gives up only how
+/// recent the witness's view is: the log re-signs its head at least every ten
+/// minutes and the reference witness syncs every five, so a record this old
+/// is a sync or two behind. What it saves is the witness's host learning the
+/// address and the moment of every step — a claim's checks of up to five
+/// free names, a person's run of lookups, a change with the read before it
+/// and the drain after it. The record is not fetched on a timer of its own: a
+/// device nobody uses handles on asks the witness nothing.
+const Duration handleWitnessReuse = Duration(minutes: 10);
+
+/// A witness's record over a head older than this is checked like any other
+/// but is not the witness agreeing (§19.5): a witness that follows the log
+/// co-signs a head it re-signs every ten minutes, so a record a day old is a
+/// witness that stopped, or a replay.
+const Duration handleWitnessStale = Duration(hours: 24);
+
+/// Asking a witness for longer than this — from the first lookup whose check
+/// ended without its agreement to the latest — with no agreement in between
+/// is a witness gone quiet. Measured over lookups and not by the clock alone,
+/// since the client asks only when handles are used: a day of the calendar
+/// without a lookup is not a day of the witness saying nothing.
+const Duration handleWitnessQuietAfter = Duration(hours: 24);
 
 /// The fewest leading zero bits a stamp must reach for the owner's drain to
 /// count it: [pow], the difficulty published — or, until [prevPowUntil], the
@@ -990,6 +1104,42 @@ class HandleLookup {
       {required this.label, this.version, this.record, this.introRid, this.change});
 }
 
+/// The handle log's witness, as Settings says it (§19.5, §21.8): [none] with
+/// no handle log or no witness configured; [forked] once a lookup has been
+/// refused because the witness's record contradicted the log, until the
+/// witness next agrees with it; [quiet] when lookups have asked it for more
+/// than [handleWitnessQuietAfter] — from the first whose check ended without
+/// its agreement to the latest — and none agreed; otherwise [agreed] once it
+/// has agreed with the log over a current record, and [pending] before. A
+/// witness gone quiet is one the handle log is not being checked against.
+enum HandleWitnessState { none, pending, agreed, quiet, forked }
+
+/// What a witness's record says of the head a lookup ends with (§19.5
+/// step 3), and so what becomes of the lookup.
+enum _WitnessVerdict {
+  /// Equal roots at equal size, or a consistency proof that verifies, in
+  /// either direction: the lookup goes on.
+  consistent,
+
+  /// Two histories under one key: the same size under other roots, a proof
+  /// that fails, or — with the witness ahead and no proof — a log whose head
+  /// is now smaller than one it signed and the witness verified. The lookup
+  /// fails as [HandleFailure.forked].
+  forked,
+
+  /// The sizes differ and the log served no proof of the way between them:
+  /// step 3 requires one, and a resolver holds no head on which a later
+  /// lookup would ask again, so the lookup fails as
+  /// [HandleFailure.unreachable] — as a missing proof inside one lookup does
+  /// ([HandleService._accept]).
+  unproven,
+
+  /// The log served something in place of the proof that is not one: the
+  /// lookup fails as [HandleFailure.badAnswer], as [HandleService._accept]
+  /// takes it.
+  unreadable,
+}
+
 /// Why a handle operation did not happen — one value per thing the app tells
 /// the person. Never a sentence: core does not decide the language.
 enum HandleFailure {
@@ -1011,6 +1161,12 @@ enum HandleFailure {
   /// clock ([handleStaleHead]): a log that stopped, an old answer served
   /// again, or a clock that is wrong. Nothing it said is used.
   stale,
+
+  /// The handle log showed this lookup a different history from the one its
+  /// witness saw (§19.5 step 3, §21.8): a head the witness's record, verified
+  /// under the pinned key, contradicts. Nothing the lookup returned is used,
+  /// kept or sent.
+  forked,
 
   /// The log refused an entry this device made, for a reason waiting will
   /// not change.
@@ -1171,6 +1327,41 @@ class HandleService extends ChangeNotifier {
   /// unreachable, busy, rate-limited) is tried again.
   Duration publishRetry = const Duration(minutes: 5);
 
+  /// The witness's timings ([handleWitnessReuse], [handleWitnessStale],
+  /// [handleWitnessQuietAfter]).
+  Duration witnessReuse = handleWitnessReuse;
+  Duration witnessStale = handleWitnessStale;
+  Duration witnessQuietAfter = handleWitnessQuietAfter;
+
+  /// When the witness last agreed with the handle log over a current record:
+  /// its record verified under the pinned key, its head no older than
+  /// [witnessStale], and a lookup's head shown consistent with it. Sealed,
+  /// under `handle_witness_ok_ms`, with the configuration it was recorded
+  /// under.
+  int? witnessOkMs;
+
+  /// When this device began asking the witness without an answer that
+  /// counts — the first lookup, since the last agreement or ever, whose check
+  /// ended in no agreement — and the latest such lookup. Sealed together,
+  /// under `handle_witness_since_ms`, with the configuration they were
+  /// recorded under; an agreement forgets both. A lookup the witness's record
+  /// contradicts moves neither: that is the witness answering, and the
+  /// lookup says it.
+  int? witnessSinceMs;
+  int? witnessLastAskMs;
+
+  /// When a lookup was last refused because the witness's record contradicted
+  /// the log ([HandleFailure.forked]) — a refresh, a change, a drain's read or
+  /// a claim's read-back as much as a lookup someone made. Sealed, under
+  /// `handle_witness_fork_ms`, with the configuration it was recorded under;
+  /// the witness's next agreement forgets it, and so does a change of log or
+  /// witness.
+  int? witnessForkMs;
+
+  /// The record last fetched that verified, for [witnessReuse]: the
+  /// configuration it was fetched under, and when.
+  ({String w, int at, KtWitnessRecord record})? _witnessHeld;
+
   OwnHandle? own;
   final Map<String, HandleRequestMeta> _inbound = {};
 
@@ -1273,18 +1464,48 @@ class HandleService extends ChangeNotifier {
   /// for the transparency log, for the same reason: a test that builds a
   /// ChatService gets the build-time defaults, and the day they name a real
   /// log every such test would claim and look up names in it.
+  ///
+  /// The witness's address is judged by the same rule, as the transparency
+  /// client's has been since its witness was pinned (2026-10-17): the four
+  /// handle values are pinned together, so the day the log's address is a
+  /// real one the witness's is too, and a configuration pairing a loopback
+  /// log with it would ask a stranger's server for a record at every lookup.
   bool get _offLimitsInTest {
     if (!_inFlutterTest) return false;
-    final host = Uri.tryParse(config.logUrl.trim())?.host ?? '';
-    return !(host.isEmpty ||
+    return !(_loopbackOrEmpty(config.logUrl) &&
+        _loopbackOrEmpty(config.witnessUrl));
+  }
+
+  static bool _loopbackOrEmpty(String url) {
+    final host = Uri.tryParse(url.trim())?.host ?? '';
+    return host.isEmpty ||
         host == 'localhost' ||
         host == '127.0.0.1' ||
-        host == '::1');
+        host == '::1';
   }
 
   /// Whether a handle log is configured: until one is, nothing here can be
   /// claimed or found, and every screen says so.
   bool get available => config.enabled && !_offLimitsInTest;
+
+  /// What Settings says of the witness ([HandleWitnessState]).
+  HandleWitnessState get witnessState {
+    if (!available || !config.hasWitness) return HandleWitnessState.none;
+    if (witnessForkMs != null) return HandleWitnessState.forked;
+    final since = witnessSinceMs, last = witnessLastAskMs;
+    if (since != null &&
+        last != null &&
+        last - since > witnessQuietAfter.inMilliseconds) {
+      return HandleWitnessState.quiet;
+    }
+    return witnessOkMs != null
+        ? HandleWitnessState.agreed
+        : HandleWitnessState.pending;
+  }
+
+  /// What a quiet witness has been quiet since: its last agreement, or, with
+  /// none, the first lookup that asked it without one.
+  int? get witnessQuietSinceMs => witnessOkMs ?? witnessSinceMs;
 
   /// Whether this device may hold and manage the account's handle: only the
   /// primary device, which holds the account root (v1).
@@ -1311,6 +1532,7 @@ class HandleService extends ChangeNotifier {
             HandleConfig.fromJson((jsonDecode(c) as Map).cast<String, Object?>());
       } catch (_) {}
     }
+    await _loadWitness();
     final o = await vault.kvGet('handle');
     if (o != null) {
       try {
@@ -1473,11 +1695,127 @@ class HandleService extends ChangeNotifier {
     host.handlesChanged();
   }
 
+  /// Save [c]. Half a witness is refused here, not only by the screen that
+  /// edits it, as the transparency client refuses it: it is the one
+  /// configuration that looks like protection and is not.
   Future<void> setConfig(HandleConfig c) async {
+    final problem = c.witnessProblem;
+    if (problem != null) throw HandleConfigInvalid(problem);
+    final before = _witnessOf(config);
     config = c;
     await vault.kvPut('handle_config', jsonEncode(c.toJson()));
+    // One witness's answer is not another's: a new address or key, the
+    // witness removed, or another log under the same witness starts again.
+    if (_witnessOf(c) != before) await _forgetWitness();
     notifyListeners();
     _scheduleDrain(first: true);
+  }
+
+  // ---------------------------------------------------------------------------
+  // The witness's state (§19.5, §21.8)
+  // ---------------------------------------------------------------------------
+
+  static const String _witnessOkKey = 'handle_witness_ok_ms';
+  static const String _witnessSinceKey = 'handle_witness_since_ms';
+  static const String _witnessForkKey = 'handle_witness_fork_ms';
+
+  /// What a witness's answer is an answer under: the key of the log whose
+  /// heads it is held against, the witness's address and its key — as the
+  /// transparency client keys its own. Empty with no witness to ask.
+  static String _witnessOf(HandleConfig c) => c.hasWitness
+      ? jsonEncode(
+          [c.logPubB64.trim(), c.witnessUrl.trim(), c.witnessPubB64.trim()])
+      : '';
+
+  /// The witness's times from the vault, only when they were recorded under
+  /// the witness configured now: a build can pin another witness under a
+  /// vault that never saved a configuration of its own, which [setConfig]
+  /// never sees. Anything else is forgotten, and the next lookup asks again.
+  Future<void> _loadWitness() async {
+    final w = _witnessOf(config);
+    final okText = await vault.kvGet(_witnessOkKey);
+    final sinceText = await vault.kvGet(_witnessSinceKey);
+    final forkText = await vault.kvGet(_witnessForkKey);
+    Map<String, Object?>? mine(String? text) {
+      if (text == null || w.isEmpty) return null;
+      try {
+        final m = (jsonDecode(text) as Map).cast<String, Object?>();
+        return m['w'] == w && m['at'] is int ? m : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    final ok = mine(okText), since = mine(sinceText), fork = mine(forkText);
+    if ((okText != null && ok == null) ||
+        (sinceText != null && (since == null || since['last'] is! int)) ||
+        (forkText != null && fork == null)) {
+      await _forgetWitness();
+      return;
+    }
+    witnessOkMs = ok?['at'] as int?;
+    witnessSinceMs = since?['at'] as int?;
+    witnessLastAskMs = since?['last'] as int?;
+    witnessForkMs = fork?['at'] as int?;
+  }
+
+  /// Forget when the witness last agreed, since when it has been asked
+  /// without an answer, the last fork it showed, and the record held for
+  /// reuse.
+  Future<void> _forgetWitness() async {
+    witnessOkMs = null;
+    witnessSinceMs = null;
+    witnessLastAskMs = null;
+    witnessForkMs = null;
+    _witnessHeld = null;
+    await vault.kvDelete(_witnessOkKey);
+    await vault.kvDelete(_witnessSinceKey);
+    await vault.kvDelete(_witnessForkKey);
+  }
+
+  /// The witness configured as [asked] has just agreed with the log over a
+  /// current record: the asking without an answer is over, and so is the
+  /// last fork it showed. Not recorded when the configuration changed while
+  /// it was being asked — that answer is the last witness's.
+  Future<void> _witnessAgreed(String asked) async {
+    if (_witnessOf(config) != asked) return;
+    witnessOkMs = now();
+    witnessSinceMs = null;
+    witnessLastAskMs = null;
+    witnessForkMs = null;
+    await vault.kvPut(
+        _witnessOkKey, jsonEncode({'at': witnessOkMs, 'w': asked}));
+    await vault.kvDelete(_witnessSinceKey);
+    await vault.kvDelete(_witnessForkKey);
+    notifyListeners();
+  }
+
+  /// A lookup's head contradicted the record of the witness configured as
+  /// [asked]: kept, so Settings says so until the witness next agrees,
+  /// whichever path the lookup was on — the drain's read of the owner's own
+  /// record goes on without a word, and a claim's read-back is kept as the
+  /// claim's problem. The asking without an answer is left as it was: this
+  /// is the witness answering.
+  Future<void> _witnessForked(String asked) async {
+    if (_witnessOf(config) != asked) return;
+    witnessForkMs = now();
+    await vault.kvPut(
+        _witnessForkKey, jsonEncode({'at': witnessForkMs, 'w': asked}));
+    notifyListeners();
+  }
+
+  /// A lookup asked the witness configured as [asked] and its check ended in
+  /// no agreement: no record, one that did not verify, one a day old, or a
+  /// log that would not prove the way between the two heads (which fails the
+  /// lookup as well).
+  Future<void> _witnessUnanswered(String asked) async {
+    if (_witnessOf(config) != asked) return;
+    final t = now();
+    witnessSinceMs ??= t;
+    witnessLastAskMs = t;
+    await vault.kvPut(_witnessSinceKey,
+        jsonEncode({'at': witnessSinceMs, 'last': t, 'w': asked}));
+    notifyListeners();
   }
 
   // ---------------------------------------------------------------------------
@@ -1633,7 +1971,21 @@ class HandleService extends ChangeNotifier {
         }
         // Taken — or our own claim, accepted on an earlier try whose answer
         // never arrived. The log says which.
-        final mine = await _readBackOwn(o);
+        final bool mine;
+        try {
+          mine = await _readBackOwn(o);
+        } on HandleException catch (e) {
+          // The read-back's head contradicted the witness (the only failure
+          // _readBackOwn passes on): whose the label is cannot be read from
+          // this log, so the claim is neither ours nor taken. It is held,
+          // with the fork as its problem, for the person to publish again.
+          o.phase = HandlePhase.held;
+          o.publishAt = null;
+          o.problem = e.failure.name;
+          await _saveOwn();
+          notifyListeners();
+          return;
+        }
         if (mine) {
           notifyListeners();
           _drainSoon();
@@ -1657,7 +2009,9 @@ class HandleService extends ChangeNotifier {
   }
 
   /// Whether the log's latest record for [o] is one this device's owner key
-  /// signed — and if so, adopt its version, difficulty and phase.
+  /// signed — and if so, adopt its version, difficulty and phase. Throws
+  /// only [HandleFailure.forked]: a log its witness contradicts says nothing
+  /// about whose the label is.
   Future<bool> _readBackOwn(OwnHandle o) async {
     try {
       final leaf = await _resolve(o.label);
@@ -1675,7 +2029,8 @@ class HandleService extends ChangeNotifier {
       o.problem = null;
       await _saveOwn();
       return true;
-    } on HandleException {
+    } on HandleException catch (e) {
+      if (e.failure == HandleFailure.forked) rethrow;
       return false;
     }
   }
@@ -2631,6 +2986,14 @@ class HandleService extends ChangeNotifier {
   ///   (a log that grew past it needs a finer one), once, and the lookup
   ///   asked again at that; refused again, the log is unreachable;
   /// * the buckets asked are counted, and k moves as [handleNextBits] says;
+  /// * with a witness configured, the head the lookup ends with is held to
+  ///   the witness's record ([_witnessCheck]): a head the record contradicts
+  ///   fails the lookup as [HandleFailure.forked], and one the log will not
+  ///   prove the way from as [HandleFailure.unreachable] — so every way a
+  ///   head is taken here, a lookup, a claim's check that a name is free, the
+  ///   owner's reads of its own record before a change, at a refresh, before
+  ///   each drain and after a claim the log refused, and a recovery's read,
+  ///   is checked, once;
   /// * a leaf no honest log could serve ([handleLeafProblem]) is a bad
   ///   answer.
   Future<KtBucketLeaf?> _resolve(Uint8List label) async {
@@ -2661,6 +3024,18 @@ class HandleService extends ChangeNotifier {
         ..sort((a, b) => a.size - b.size);
       for (final h in heads) {
         await _accept(lookup, h);
+      }
+      // §19.5 step 3, once, on the head the lookup ends with: every answer
+      // it used is under that head or one it extends. Two histories, or a
+      // log that will not prove there are not, and nothing the lookup
+      // counted or found is kept — the estimate included.
+      if (config.hasWitness) {
+        try {
+          await _witnessCheck(lookup);
+        } on HandleException {
+          mem.bits = held;
+          rethrow;
+        }
       }
       mem.bits = handleNextBits(
           estimate, k, [for (final a in answers) a!.bucket.leaves.length]);
@@ -2764,7 +3139,7 @@ class HandleService extends ChangeNotifier {
   /// size under other roots, or no proof is a log that contradicted itself
   /// within one lookup: a bad answer, and nothing it said is used. (Between
   /// lookups nothing is held, so two histories shown at two lookups are a
-  /// witness's to catch, R50.)
+  /// witness's to catch — [_witnessCheck], R50.)
   Future<void> _accept(_HandleLookupHead lookup, KtTreeHead fresh) async {
     final held = lookup.head;
     if (held.sameRootsAs(fresh)) return;
@@ -2793,6 +3168,145 @@ class HandleService extends ChangeNotifier {
       throw const HandleException(HandleFailure.badAnswer);
     }
     lookup.head = fresh;
+  }
+
+  /// §19.5 step 3 for one lookup, in the handle log's contexts: the witness's
+  /// record ([_witnessRecord]) held against the head [lookup] ends with.
+  /// Throws [HandleFailure.forked] when the two are two histories, and
+  /// [HandleFailure.unreachable] (or [HandleFailure.badAnswer]) when their
+  /// sizes differ and the log serves no proof of the way between them
+  /// ([_witnessVerdict]): step 3 requires consistency or a proof that
+  /// verifies, and a resolver holds no head on which a later lookup would ask
+  /// again, so a proof withheld is refused rather than passed over.
+  ///
+  /// A witness that cannot be fetched, and a record that does not verify
+  /// under the pinned key — one co-signed by any other key among them,
+  /// however it compares — are no verdict, and the lookup goes on as it
+  /// would with no witness (§19.5: "A witness that cannot be fetched, or
+  /// whose record does not verify, is no verdict"). A record whose head is
+  /// more than [witnessStale] old is held to every comparison all the same,
+  /// and a fork it shows is a fork; it is not the witness agreeing. Only a
+  /// current record the head is shown consistent with is.
+  ///
+  /// What this does not catch (§21.8, R50): a history that departs after the
+  /// witness's latest co-signed head. The lookup's head then extends the
+  /// record, the log proves the way within the history it shows, and nothing
+  /// is held for a later lookup to look again — and the record used again
+  /// for [witnessReuse] widens that window. handle_lookup_test 26 pins it.
+  Future<void> _witnessCheck(_HandleLookupHead lookup) async {
+    final asked = _witnessOf(config);
+    final rec = await _witnessRecord(asked, lookup.pub);
+    if (rec == null) {
+      await _witnessUnanswered(asked);
+      return;
+    }
+    final verdict = await _witnessVerdict(lookup.head, rec.head, lookup.pub);
+    switch (verdict) {
+      case _WitnessVerdict.forked:
+        await _witnessForked(asked);
+        throw const HandleException(HandleFailure.forked);
+      case _WitnessVerdict.unproven:
+        await _witnessUnanswered(asked);
+        throw const HandleException(HandleFailure.unreachable);
+      case _WitnessVerdict.unreadable:
+        await _witnessUnanswered(asked);
+        throw const HandleException(HandleFailure.badAnswer);
+      case _WitnessVerdict.consistent:
+        // `ts` is inside what the log signed and the witness co-signed;
+        // `verifiedAt` is not, so it cannot say how old the record is.
+        if (now() - rec.head.ts <= witnessStale.inMilliseconds) {
+          await _witnessAgreed(asked);
+        } else {
+          await _witnessUnanswered(asked);
+        }
+    }
+  }
+
+  /// The witness's record, its two signatures verified in the handle log's
+  /// contexts against the log's key and the witness key this device pinned —
+  /// never the key the record carries — fetched from the address exactly as
+  /// configured, at most once for this lookup. A record that verified within
+  /// [witnessReuse], under the same configuration, is used again instead.
+  /// Null when it cannot be fetched or does not verify, which is not kept.
+  Future<KtWitnessRecord?> _witnessRecord(String asked, Uint8List logPub) async {
+    final t = now();
+    final held = _witnessHeld;
+    if (held != null &&
+        held.w == asked &&
+        t >= held.at &&
+        t - held.at < witnessReuse.inMilliseconds) {
+      return held.record;
+    }
+    final pinned = config.witnessPub;
+    if (pinned == null) return null;
+    final KtWitnessRecord rec;
+    try {
+      final r = await fetcher.get(Uri.parse(config.witnessUrl.trim()));
+      if (r.status != 200) return null;
+      rec = KtWitnessRecord.fromJson(r.json);
+    } catch (_) {
+      return null;
+    }
+    if (!await ktVerifyWitnessRecord(rec,
+        logPub: logPub, expectedWitnessPub: pinned, mode: KtLogMode.handles)) {
+      return null;
+    }
+    if (_witnessOf(config) == asked) {
+      _witnessHeld = (w: asked, at: t, record: rec);
+    }
+    return rec;
+  }
+
+  /// [witnessed] — the head of a record that verified — against [held], the
+  /// head a lookup ends with: equal roots at equal size; otherwise the log's
+  /// consistency proof between the two sizes, from the smaller to the larger.
+  /// No proof is [_WitnessVerdict.unproven], whichever is ahead — except
+  /// that with the witness ahead the log's own head is asked first, and one
+  /// smaller than the witness's is a log gone back below a head it signed
+  /// and the witness verified, a fork. (The transparency client takes no
+  /// proof as no verdict, and asks again at its next check, on the head it
+  /// keeps; a resolver keeps none.)
+  Future<_WitnessVerdict> _witnessVerdict(
+      KtTreeHead held, KtTreeHead witnessed, Uint8List logPub) async {
+    if (witnessed.size == held.size) {
+      return witnessed.sameRootsAs(held)
+          ? _WitnessVerdict.consistent
+          : _WitnessVerdict.forked;
+    }
+    final behind = witnessed.size < held.size;
+    final first = behind ? witnessed : held;
+    final second = behind ? held : witnessed;
+    final c = await _getJsonOrNull('$_base/kt/v1/consistency'
+        '?first=${first.size}&second=${second.size}');
+    if (c != null) {
+      final List<Uint8List> proof;
+      try {
+        proof = [for (final h in (c['proof'] as List)) unb64(h as String)];
+      } catch (_) {
+        return _WitnessVerdict.unreadable;
+      }
+      return await ktVerifyConsistency(
+              first: first.size,
+              second: second.size,
+              firstRoot: first.logRoot,
+              secondRoot: second.logRoot,
+              proof: proof)
+          ? _WitnessVerdict.consistent
+          : _WitnessVerdict.forked;
+    }
+    if (!behind) {
+      final j = await _getJsonOrNull('$_base/kt/v1/sth');
+      if (j != null) {
+        try {
+          final current = KtTreeHead.fromJson(j);
+          if (await ktVerifyHead(current, logPub, KtLogMode.handles) &&
+              current.size < witnessed.size) {
+            return _WitnessVerdict.forked;
+          }
+        } catch (_) {}
+      }
+    }
+    return _WitnessVerdict.unproven;
   }
 
   /// One bucket, verified under the pinned key on a fresh head, with that
@@ -2917,6 +3431,17 @@ class HandleService extends ChangeNotifier {
       return r.json;
     } catch (_) {
       throw const HandleException(HandleFailure.badAnswer);
+    }
+  }
+
+  /// [_getJson], or null where it would throw: the witness check's questions
+  /// to the log, whose silence [_witnessVerdict] judges itself — a proof not
+  /// served is no proof, and a head not served leaves it at that.
+  Future<Map<String, Object?>?> _getJsonOrNull(String url) async {
+    try {
+      return await _getJson(url);
+    } on HandleException {
+      return null;
     }
   }
 

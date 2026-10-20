@@ -5265,9 +5265,66 @@ as the transparency log's are (§19.5) — its own key, never the
 transparency log's, and never one fetched from the log. A client with no
 handle log configured says, wherever a handle could be claimed or looked
 up, that handles are unavailable, and does nothing else; the reference
-build's defaults are empty until a log is deployed. A request goes to the
+build's defaults are empty until a build pins the log and its witness
+(below). A request goes to the
 requester's own relay: as for every envelope today (`adr/0008`, deferred),
 the owner must use the same one.
+
+**The witness** (2026‑10‑19). A witness of the handle log (§21.5) is
+configured beside it as the transparency log's is: the address of the record
+it serves and a key the client pins, both or neither — half a pair is refused
+when it is set, and one held from before is no witness and is never fetched.
+A self‑hoster may run a log with none; the reference build pins the log and
+its witness together, all four values in one release, and pins none yet.
+With a witness configured, every lookup — finding a handle, checking that one
+is free, a recovery's read, and the owner's reads of its own record at a
+refresh, before each change, before each drain and after a claim the log
+refused — holds the head it ends with, which extends every head it used, to
+the witness's record by §19.5 step 3 in the handle contexts
+(`z-handle-witness-v1:` over the head's `sthInput`, under the pinned key),
+and by the freshness paragraph after it: a record whose head is more than 24
+hours old is checked but is not the witness agreeing, and a witness that
+cannot be fetched, or whose record does not verify — one co‑signed by any key
+but the pinned one among them — is no verdict, and the lookup goes on. A
+record the head is inconsistent with — the same size under other roots, a
+consistency proof that fails in either direction, or, with the witness ahead
+and no proof, a log whose own head is smaller than the witness's — is the log
+showing two histories, and the lookup is refused: nothing it returned is
+used, kept or sent — no request, no record remembered, no contact. So is a
+lookup whose head and record differ in size when the log does not prove the
+way between them, whichever is ahead — as unreachable, or as a bad answer
+when what it serves is not a proof: step 3 requires consistency, its
+no‑verdict sentence covers only a record that cannot be fetched or does not
+verify, and a resolver, unlike the transparency client, keeps no head on
+which a later lookup would ask again. The record is fetched from the address
+exactly as configured, at most once a lookup, and one that verified serves
+every lookup under the same log key, witness address and witness key for
+**10 minutes** after it was fetched: the log re‑signs its head at least that
+often and the reference witness syncs every five minutes, so a record that
+old is a sync or two behind, while each fetch tells the witness's host the
+address and moment of one more step — the up to five checks of a free name
+in one claim, a run of lookups, a change with the read before it and the
+drain after it. A record that did not verify is not kept, and nothing asks
+the witness on a timer, so a device on which nobody uses handles asks it
+nothing. The client says when the witness last agreed with a current record;
+that it has gone quiet once lookups have asked it across **24 hours** with no
+agreement — measured across lookups, not by the clock, since nothing asks
+between them; and, until the witness next agrees, when a lookup was last
+refused as two histories. A claim the log refused as taken, whose read‑back
+is refused so, is held for the person to publish again, not taken.
+
+**What the witness does not catch** (R50). A history that departs after the
+witness's latest co‑signed head. A lookup shown it holds a head that extends
+the record, the log proves the way within the history it shows, and the check
+passes and counts as agreement. A resolver keeps no head, so nothing looks
+again: a later lookup refuses that history only once the record it is held to
+was co‑signed after the departure, and a record used for up to 10 minutes
+widens the window by its age. A lookup of a handle the device found before is
+still held to what it remembers (below); a first lookup is not. An entry the
+owner rule refuses, appended after the witness's head, passes the same way: a
+witness that follows the log stops at it, and the client learns only that
+the record stops being current — no agreement once it is a day old, and
+quiet a day of lookups after that.
 
 **Claiming** is never offered during account setup (F5). The client parses
 the handle (21.1) — two random digits by default, each draw checked free,
@@ -5527,13 +5584,16 @@ as above; for
 each pending request that came through the handle, the handle, the mailbox
 it reached, its `creqId`, when it arrived and whether it has been seen; the
 introduction seeds a pending request still needs; the requests kept for
-matching an acceptance; the handle log's address and key; for lookups, the
+matching an acceptance; the handle log's address and key, its witness's,
+and when the witness last agreed, since when lookups have asked it without
+that, and when a lookup was last refused as two histories, each with the
+configuration it was recorded under; for lookups, the
 decoy key, the estimate of k and what was found of each handle (above); and, for a
 contact made through a handle, which handle. Never the code or
 `recoverySeed`.
 
 **Backup and restore.** The archive carries all of it but those digests
-and counts in one record,
+and counts, and the witness's times, in one record,
 `{"t":"handle","keep":1,"v":1,"kv":{…}}` (`BACKUP.md` §5), which a build
 that does not know it keeps and writes back. A restore drains the mailbox —
 reading the record first, so re‑flagging it at the difficulty the record

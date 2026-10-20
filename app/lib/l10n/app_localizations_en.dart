@@ -2575,6 +2575,33 @@ class AppLocalizationsEn extends AppLocalizations {
   String get stHdlLogKeyTitle => 'Handle service public key (base64)';
 
   @override
+  String get stHdlWitness => 'Handle witness';
+
+  @override
+  String get stHdlWitnessOff => 'Off: nothing is checked against a witness';
+
+  @override
+  String get stHdlWitnessPending => 'No answer from its witness yet';
+
+  @override
+  String stHdlWitnessAgreed(String when) {
+    return 'The handle service agreed with its witness $when';
+  }
+
+  @override
+  String stHdlWitnessQuiet(String when) {
+    return 'No current answer from the witness since $when. Until it answers, the handle service is not being checked against it.';
+  }
+
+  @override
+  String stHdlWitnessForked(String when) {
+    return 'The handle service showed this device a history its witness did not see, at $when. Nothing from that answer was used or sent.';
+  }
+
+  @override
+  String get stHdlWitnessPin => 'Handle witness address and key';
+
+  @override
   String get hdlTitle => 'Your handle';
 
   @override
@@ -2692,6 +2719,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get hdlPublishNow => 'Publish now';
+
+  @override
+  String hdlClaimForked(String handle) {
+    return 'The handle service answered that @$handle is taken, but then showed a history its witness did not see, so who holds the handle cannot be told from it. Nothing was published for you. You can publish the claim again, or cancel it.';
+  }
 
   @override
   String hdlTakenBody(String handle) {
@@ -2901,6 +2933,10 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get hdlErrStale =>
       'The handle service\'s answer was signed more than a day ago, so nothing it said was used. Check this device\'s date and time, or try again later.';
+
+  @override
+  String get hdlErrForked =>
+      'The handle service showed a different history from the one its witness saw. Nothing was sent, and nothing it answered was used.';
 
   @override
   String get hdlErrRefused => 'The handle service refused that.';

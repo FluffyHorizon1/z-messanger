@@ -34,7 +34,24 @@
 //      many requests came without the work and how many copies of requests
 //      already decided were refused, over the ledger's five days, singular
 //      and plural, nothing while both are zero — and a day of the ledger at
-//      its cap is said as a warning with the cap; in Spanish too.
+//      its cap is said as a warning with the cap; in Spanish too;
+//  10. Settings says whether the handle service is checked against its
+//      witness (2026-10-19), outside developer mode once a witness is set,
+//      each state in English and in Spanish: no answer yet; agreed, with
+//      when, in the agreeing tone; gone quiet, with since when, in the
+//      warning tone; a history the witness did not see, with when, in the
+//      danger tone and before anything else; and with no witness, no row —
+//      but in developer mode a row saying it is off, beside the row that
+//      edits the pair;
+//  11. in developer mode the witness's address and key are edited in one
+//      dialog and saved together: an address alone, or a key that is not
+//      one, is refused there with its reason and nothing is saved; both are
+//      saved, sealed, and the row asks for an answer; and the log's address
+//      edited afterwards keeps the witness beside it;
+//  12. a claim the handle service refused as taken, whose read-back its
+//      witness then contradicted, says that — not that someone else holds
+//      the handle, nor the words for a claim a restore brought back — and
+//      offers to publish it again or cancel it, in Spanish too.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -44,17 +61,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
+import 'package:zapp/core/app_lock.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/handles.dart';
+import 'package:zapp/core/prefs.dart';
+import 'package:zapp/core/push_service.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:zapp/l10n/app_localizations.dart';
 import 'package:zapp/l10n/app_localizations_en.dart';
 import 'package:zapp/l10n/app_localizations_es.dart';
 import 'package:zapp/l10n/handle_text.dart';
+import 'package:zapp/l10n/when_text.dart';
 import 'package:zapp/ui/find_handle_screen.dart';
 import 'package:zapp/ui/handle_screen.dart';
 import 'package:zapp/ui/requests_screen.dart';
+import 'package:zapp/ui/settings_screen.dart';
 import 'package:zapp/ui/theme.dart';
 
 void main() {
@@ -137,6 +159,35 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 20));
       await tester.pump();
     }
+  }
+
+  /// Settings over [svc], with the providers the screen reads (its preferences
+  /// and lock under [dir]), pumped until [ready].
+  Future<void> settingsOf(
+      WidgetTester tester, ChatService svc, Directory dir, String what,
+      {Locale? locale, required bool Function() ready}) async {
+    final prefs = AppPrefs(root: dir);
+    await prefs.load();
+    await tester.pumpWidget(MultiProvider(
+      providers: [
+        ChangeNotifierProvider<ChatService>.value(value: svc),
+        ChangeNotifierProvider<Transport>.value(value: svc.transport),
+        ChangeNotifierProvider<PushService>.value(
+            value: PushService(transport: svc.transport, vault: svc.vault)),
+        ChangeNotifierProvider<AppLock>.value(
+            value: AppLock(root: dir, store: MemorySecretStore())),
+        ChangeNotifierProvider<AppPrefs>.value(value: prefs),
+      ],
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: ZTheme.light(),
+        locale: locale,
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: SettingsScreen(key: UniqueKey()),
+      ),
+    ));
+    await until(tester, ready, what);
   }
 
   Future<void> untilAsync(WidgetTester tester, Future<bool> Function() cond,
@@ -461,6 +512,221 @@ void main() {
               .isNotEmpty);
       expect(es.hdlInboxSaturated(handleStampDayCap), contains('524.288'));
       await svc.handles.refresh();
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  testWidgets('10. Settings says whether the handle service is checked against '
+      'its witness — no answer yet, agreed, quiet, a history the witness did '
+      'not see, and off — in English and in Spanish', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.runAsync(() async {
+      // A witness on loopback that nothing answers: the states are set here,
+      // as a lookup would leave them (handle_lookup_test.dart drives them).
+      final witnessed = HandleConfig(
+          logUrl: silent.logUrl,
+          logPubB64: silent.logPubB64,
+          witnessUrl: 'http://127.0.0.1:1/sth.json',
+          witnessPubB64: b64(Uint8List(32)..fillRange(0, 32, 7)));
+      final svc = await service(config: witnessed);
+      final dir = dirs.last;
+
+      Icon iconOf(String title) => tester.widget<Icon>(find.descendant(
+          of: find.widgetWithText(ListTile, title), matching: find.byType(Icon)));
+
+      // The row, in English and then in Spanish: [text] is what it says in
+      // [words], with the screen's context for any date in it, and [tone]
+      // the colour of its icon in both.
+      Future<void> says(String what,
+          String Function(AppLocalizations words, BuildContext ctx) text,
+          {required Color Function(BuildContext ctx) tone}) async {
+        for (final (words, locale) in <(AppLocalizations, Locale?)>[
+          (l, null),
+          (es, const Locale('es')),
+        ]) {
+          await settingsOf(tester, svc, dir, '$what (${words.localeName})',
+              locale: locale,
+              ready: () => find
+                  .text(text(words, tester.element(find.byType(SettingsScreen))))
+                  .evaluate()
+                  .isNotEmpty);
+          final ctx = tester.element(find.byType(SettingsScreen));
+          expect(find.text(words.stHdlWitness), findsOneWidget, reason: what);
+          expect(iconOf(words.stHdlWitness).color, tone(ctx),
+              reason: '$what, its tone (${words.localeName})');
+        }
+      }
+
+      expect(svc.devMode, isFalse, reason: 'the row is everyone’s');
+      expect(svc.handles.witnessState, HandleWitnessState.pending);
+      await says('no answer yet', (w, _) => w.stHdlWitnessPending,
+          tone: (c) => c.z.textSecondary);
+      expect(find.text(es.stHdlWitnessPin), findsNothing,
+          reason: 'the pair is edited in developer mode only');
+
+      // Agreed five minutes ago, in the agreeing tone.
+      final now = DateTime.now().millisecondsSinceEpoch;
+      svc.handles.witnessOkMs = now - const Duration(minutes: 5).inMilliseconds;
+      expect(svc.handles.witnessState, HandleWitnessState.agreed);
+      await says('agreed, with when',
+          (w, c) => w.stHdlWitnessAgreed(whenText(c, svc.handles.witnessOkMs!)),
+          tone: (c) => c.z.ok);
+
+      // Lookups have asked for two days since without an answer: quiet since
+      // the last agreement, in the warning tone.
+      svc.handles.witnessOkMs = now - const Duration(days: 3).inMilliseconds;
+      svc.handles.witnessSinceMs = now - const Duration(days: 2).inMilliseconds;
+      svc.handles.witnessLastAskMs = now;
+      expect(svc.handles.witnessState, HandleWitnessState.quiet);
+      await says('quiet, with since when',
+          (w, c) => w.stHdlWitnessQuiet(whenText(c, svc.handles.witnessOkMs!)),
+          tone: (c) => c.z.warn);
+
+      // A lookup refused a minute ago because the witness's record
+      // contradicted the log: said before anything else, in the danger tone,
+      // until the witness agrees again.
+      svc.handles.witnessForkMs = now - const Duration(minutes: 1).inMilliseconds;
+      expect(svc.handles.witnessState, HandleWitnessState.forked);
+      await says('a history its witness did not see, with when',
+          (w, c) => w.stHdlWitnessForked(whenText(c, svc.handles.witnessForkMs!)),
+          tone: (c) => c.z.danger);
+      svc.handles.witnessForkMs = null;
+
+      // No witness: no row for everyone; in developer mode, off, beside the
+      // row that edits the pair.
+      svc.handles.config =
+          HandleConfig(logUrl: silent.logUrl, logPubB64: silent.logPubB64);
+      expect(svc.handles.witnessState, HandleWitnessState.none);
+      await settingsOf(tester, svc, dir, 'no witness',
+          ready: () => find.text(l.hdlYourHandle).evaluate().isNotEmpty);
+      expect(find.text(l.stHdlWitness), findsNothing);
+      svc.devMode = true;
+      await says('off, in developer mode', (w, _) => w.stHdlWitnessOff,
+          tone: (c) => c.z.textSecondary);
+      expect(find.text(es.stHdlWitnessPin), findsOneWidget);
+
+      // Each of them Spanish, not English copied.
+      for (final (en, sp) in [
+        (l.stHdlWitness, es.stHdlWitness),
+        (l.stHdlWitnessPending, es.stHdlWitnessPending),
+        (l.stHdlWitnessAgreed('x'), es.stHdlWitnessAgreed('x')),
+        (l.stHdlWitnessQuiet('x'), es.stHdlWitnessQuiet('x')),
+        (l.stHdlWitnessForked('x'), es.stHdlWitnessForked('x')),
+        (l.stHdlWitnessOff, es.stHdlWitnessOff),
+      ]) {
+        expect(sp, isNot(en));
+      }
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  testWidgets('11. in developer mode the witness is edited as a pair: half of '
+      'one refused in the dialog, both saved together, and kept when the log '
+      'is edited', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.runAsync(() async {
+      final svc = await service(config: silent);
+      final dir = dirs.last;
+      svc.devMode = true;
+      await settingsOf(tester, svc, dir, 'the developer rows',
+          ready: () => find.text(l.stHdlWitnessPin).evaluate().isNotEmpty);
+      expect(find.text(l.stHdlWitnessOff), findsOneWidget);
+
+      final dialog = find.byType(AlertDialog);
+      Finder inDialog(Finder f) => find.descendant(of: dialog, matching: f);
+      final urlField = inDialog(find.widgetWithText(TextField, l.stKtWitnessTitle));
+      final keyField = inDialog(find.widgetWithText(TextField, l.stKtWitnessKeyTitle));
+      final save = inDialog(find.text(l.stKtSave));
+      const url = 'http://127.0.0.1:1/sth.json';
+      final key = b64(Uint8List(32)..fillRange(0, 32, 5));
+
+      await tester.tap(find.text(l.stHdlWitnessPin));
+      await until(tester, () => dialog.evaluate().isNotEmpty, 'the pair\'s dialog');
+      // An address alone: refused there, with the reason, and the dialog
+      // stays open with what was typed.
+      await tester.enterText(urlField, url);
+      await tester.tap(save);
+      await until(tester, () => inDialog(find.text(l.stKtWitnessNeedsKey)).evaluate().isNotEmpty,
+          'an address without its key refused');
+      expect(svc.handles.config.witnessUrl, isEmpty, reason: 'nothing saved');
+      // A key that is not one: likewise.
+      await tester.enterText(keyField, 'not a key');
+      await tester.tap(save);
+      await until(tester, () => inDialog(find.text(l.stKtWitnessBadKey)).evaluate().isNotEmpty,
+          'a key that is not 32 bytes refused');
+      expect(svc.handles.config.hasWitness, isFalse);
+      expect(await svc.vault.kvGet('handle_config'), isNull, reason: 'nor stored');
+
+      // Both: saved together, sealed, and the row asks for an answer.
+      await tester.enterText(keyField, key);
+      await tester.tap(save);
+      await until(tester, () => dialog.evaluate().isEmpty, 'the dialog closed on saving');
+      expect(svc.handles.config.witnessUrl, url);
+      expect(svc.handles.config.witnessPubB64, key);
+      expect(svc.handles.config.logUrl, silent.logUrl, reason: 'the log as it was');
+      await until(tester, () => find.text(l.stHdlWitnessPending).evaluate().isNotEmpty,
+          'no answer yet');
+      final rows = await svc.vault.db.query('kv',
+          columns: ['k'], where: 'k LIKE ?', whereArgs: ['%:handle_config']);
+      expect(rows.map((r) => r['k']), ['s:handle_config'], reason: 'sealed');
+      Future<HandleConfig> stored() async => HandleConfig.fromJson(
+          (jsonDecode((await svc.vault.kvGet('handle_config'))!) as Map)
+              .cast<String, Object?>());
+      expect((await stored()).witnessUrl, url, reason: 'read back as saved');
+      expect((await stored()).witnessPubB64, key);
+
+      // The log's address edited after: the witness stays beside it.
+      await tester.tap(find.text(l.stHdlLogAddress));
+      await until(tester, () => dialog.evaluate().isNotEmpty, 'the address dialog');
+      await tester.enterText(inDialog(find.byType(TextField)), 'http://127.0.0.1:2');
+      await tester.tap(save);
+      await untilAsync(
+          tester,
+          () async => ((await svc.vault.kvGet('handle_config')) ?? '')
+              .contains('"url":"http://127.0.0.1:2"'),
+          'the new address stored');
+      expect(svc.handles.config.logUrl, 'http://127.0.0.1:2');
+      expect(svc.handles.config.witnessUrl, url);
+      expect(svc.handles.config.witnessPubB64, key);
+      expect(svc.handles.config.hasWitness, isTrue);
+      expect((await stored()).hasWitness, isTrue, reason: 'and stored so');
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
+
+  testWidgets('12. a claim held because the witness contradicted its read-back '
+      'says so, and offers to publish it again or cancel it', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 2000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.runAsync(() async {
+      final svc = await service(config: silent);
+      // As handle_lookup_test 28 leaves it: the log answered the claim's
+      // publish "taken", and the head it read the handle back under was one
+      // the witness's record contradicted.
+      svc.handles.own = published('finn.42')
+        ..phase = HandlePhase.held
+        ..problem = HandleFailure.forked.name;
+      for (final (words, locale) in <(AppLocalizations, Locale?)>[
+        (l, null),
+        (es, const Locale('es')),
+      ]) {
+        await tester.pumpWidget(wrap(svc, const HandleScreen(), locale: locale));
+        await until(
+            tester,
+            () => find.text(words.hdlClaimForked('finn.42')).evaluate().isNotEmpty,
+            'the fork said (${words.localeName})');
+        expect(find.text(words.hdlTakenBody('finn.42')), findsNothing,
+            reason: 'not someone else\'s');
+        expect(find.text(words.hdlHeldBody), findsNothing,
+            reason: 'not a claim a restore brought back');
+        expect(find.text(words.hdlErrForked), findsNothing,
+            reason: 'the claim was published: not "nothing was sent"');
+        expect(find.text(words.hdlPublishNow), findsOneWidget);
+        expect(find.text(words.hdlCancelClaim), findsOneWidget);
+      }
+      expect(es.hdlClaimForked('x'), isNot(l.hdlClaimForked('x')));
       await tester.pumpWidget(const SizedBox());
     });
   });

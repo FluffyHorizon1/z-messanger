@@ -2600,6 +2600,34 @@ class AppLocalizationsEs extends AppLocalizations {
   String get stHdlLogKeyTitle => 'Clave pública del servicio de alias (base64)';
 
   @override
+  String get stHdlWitness => 'Testigo del servicio de alias';
+
+  @override
+  String get stHdlWitnessOff =>
+      'Desactivado: no se comprueba nada con un testigo';
+
+  @override
+  String get stHdlWitnessPending => 'Aún sin respuesta de su testigo';
+
+  @override
+  String stHdlWitnessAgreed(String when) {
+    return 'El servicio de alias coincidió con su testigo $when';
+  }
+
+  @override
+  String stHdlWitnessQuiet(String when) {
+    return 'Sin una respuesta al día del testigo desde $when. Hasta que responda, el servicio de alias no se está comprobando con él.';
+  }
+
+  @override
+  String stHdlWitnessForked(String when) {
+    return 'El servicio de alias mostró a este dispositivo un historial que su testigo no vio, el $when. No se usó ni se envió nada de esa respuesta.';
+  }
+
+  @override
+  String get stHdlWitnessPin => 'Dirección y clave del testigo de alias';
+
+  @override
   String get hdlTitle => 'Tu alias';
 
   @override
@@ -2717,6 +2745,11 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get hdlPublishNow => 'Publicar ahora';
+
+  @override
+  String hdlClaimForked(String handle) {
+    return 'El servicio de alias respondió que @$handle ya está reservado, pero luego mostró un historial que su testigo no vio, así que por él no se puede saber quién tiene el alias. No se ha publicado nada a tu nombre. Puedes volver a publicar la reserva o cancelarla.';
+  }
 
   @override
   String hdlTakenBody(String handle) {
@@ -2928,6 +2961,10 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get hdlErrStale =>
       'La respuesta del servicio de alias se firmó hace más de un día, así que no se usó nada de lo que dijo. Comprueba la fecha y la hora de este dispositivo, o inténtalo más tarde.';
+
+  @override
+  String get hdlErrForked =>
+      'El servicio de alias mostró un historial distinto del que vio su testigo. No se envió nada, y no se usó nada de lo que respondió.';
 
   @override
   String get hdlErrRefused => 'El servicio de alias lo rechazó.';

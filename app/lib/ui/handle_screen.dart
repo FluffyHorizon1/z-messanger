@@ -281,6 +281,21 @@ class _HandleScreenState extends State<HandleScreen> {
               label: l.hdlCancelClaim,
               onTap: _busy ? null : () => _run(h.cancelClaim)),
         ],
+      // A claim the log refused, whose read-back the witness then
+      // contradicted, is held too (§21.8) — and was published, so neither
+      // the restore's words nor "nothing was sent" are true of it.
+      HandlePhase.held when o.problem == HandleFailure.forked.name => [
+          _Name(handle: name),
+          _Para(l.hdlClaimForked(name.canonical), warn: true),
+          _Action(
+              icon: Icons.publish_outlined,
+              label: l.hdlPublishNow,
+              onTap: _busy ? null : () => _run(h.publishHeld)),
+          _Action(
+              icon: Icons.close,
+              label: l.hdlCancelClaim,
+              onTap: _busy ? null : () => _run(h.cancelClaim)),
+        ],
       HandlePhase.held => [
           _Name(handle: name),
           _Para(l.hdlHeldBody),

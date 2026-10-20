@@ -61,6 +61,7 @@ const int handleHourMs = 3600000;
 
 const String _handleSthContext = 'z-handle-sth-v1:';
 const String _handleLeafContext = 'z-handle-leaf-v1:';
+const String _handleWitnessContext = 'z-handle-witness-v1:';
 
 // --- hashing, synchronously -------------------------------------------------------
 
@@ -227,6 +228,46 @@ Future<bool> ktVerifyHead(
     return await Ed25519().verify(ktHeadInput(head, mode),
         signature: Signature(head.sig,
             publicKey: SimplePublicKey(logPub, type: KeyPairType.ed25519)));
+  } catch (_) {
+    return false;
+  }
+}
+
+/// What a witness of [mode]'s log co-signs (§19.10; §21.5 for the handle
+/// log): its context, then the input the log signed for [head] — so a
+/// co-signature of one log's head is never one of the other's, as a head of
+/// one is never a head of the other.
+Uint8List ktWitnessInputFor(KtTreeHead head, KtLogMode mode) =>
+    mode == KtLogMode.kt
+        ? ktWitnessInput(head)
+        : concatBytes([
+            utf8.encode(_handleWitnessContext),
+            ktHeadInput(head, KtLogMode.handles),
+          ]);
+
+/// [record]'s two signatures in [mode]'s contexts (§19.5 step 3): the log's
+/// over its head under [logPub], and the witness's over that head under
+/// [expectedWitnessPub] — the key the client pinned, never the one the record
+/// carries, which says only that whoever served the record could sign it. A
+/// record naming another key is refused before anything is verified.
+/// ([KtWitnessRecord.verify] is the key-transparency half of this.)
+Future<bool> ktVerifyWitnessRecord(KtWitnessRecord record,
+    {required Uint8List logPub,
+    required Uint8List expectedWitnessPub,
+    required KtLogMode mode}) async {
+  if (mode == KtLogMode.kt) {
+    return record.verify(logPub, expectedWitnessPub: expectedWitnessPub);
+  }
+  if (expectedWitnessPub.length != 32 || record.witnessSig.length != 64) {
+    return false;
+  }
+  if (!constantTimeEquals(expectedWitnessPub, record.witnessPub)) return false;
+  if (!await ktVerifyHead(record.head, logPub, mode)) return false;
+  try {
+    return await Ed25519().verify(ktWitnessInputFor(record.head, mode),
+        signature: Signature(record.witnessSig,
+            publicKey: SimplePublicKey(expectedWitnessPub,
+                type: KeyPairType.ed25519)));
   } catch (_) {
     return false;
   }

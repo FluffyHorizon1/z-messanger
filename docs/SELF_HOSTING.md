@@ -1278,9 +1278,12 @@ What the operator has to do, none of it done by deploying this code:
    (e.g. `handles.zmessengers.com`) and TLS, and read its public key off its
    log (`z-kt: handle log, … public key …`) or `/kt/v1/pub`.
 3. **Pin that key in the app** — `defaultHandleLogUrl` and
-   `defaultHandleLogPub` in `app/lib/core/handles.dart` (phase 38), or per
-   device in Settings › Developer mode, then Handle service address and key;
-   until then the app says handles are unavailable and reads no handle log.
+   `defaultHandleLogPub` in `app/lib/core/handles.dart` (phase 38), with its
+   witness's `defaultHandleWitnessUrl` and `defaultHandleWitnessPub` (step 5)
+   beside them: `tool/check_ga.py` refuses some of the four without the rest.
+   Or per device in Settings › Developer mode, then Handle service address and
+   key, where a witness is optional; until then the app says handles are
+   unavailable and reads no handle log.
 4. **Set `KT_CLIENT_IP_HEADER`** as for the transparency log, once only
    Cloudflare can reach it.
 5. **Find a witness operator** for it (`--mode handles`); THREAT_MODEL

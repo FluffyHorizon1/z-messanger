@@ -4064,6 +4064,48 @@ abstract class AppLocalizations {
   /// **'Handle service public key (base64)'**
   String get stHdlLogKeyTitle;
 
+  /// Settings row label, in the Handle section, for whether the handle service is being checked against its witness: a copy of the service that somebody else runs, there to catch it showing different people different records.
+  ///
+  /// In en, this message translates to:
+  /// **'Handle witness'**
+  String get stHdlWitness;
+
+  /// Handle witness value when no witness is configured for the handle service, or no handle service is, so nothing is checked against one. Shown in developer mode.
+  ///
+  /// In en, this message translates to:
+  /// **'Off: nothing is checked against a witness'**
+  String get stHdlWitnessOff;
+
+  /// Handle witness value before the witness has first agreed with the handle service: not asked yet, or asked for less than a day without an answer that counts.
+  ///
+  /// In en, this message translates to:
+  /// **'No answer from its witness yet'**
+  String get stHdlWitnessPending;
+
+  /// Handle witness value: the last time the witness's record was current and a lookup's answer was shown consistent with it. {when} is a date and time.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service agreed with its witness {when}'**
+  String stHdlWitnessAgreed(String when);
+
+  /// Handle witness value, shown as a warning: lookups have asked the witness for more than a day without it agreeing over a current record — it could not be reached, or answered only with a record a day old or more, which is what a witness that stopped, or one being withheld, looks like. {when} is a date and time: its last agreement, or the first lookup that asked it without one. Load-bearing clause: the second sentence, which says the protection is not working until then.
+  ///
+  /// In en, this message translates to:
+  /// **'No current answer from the witness since {when}. Until it answers, the handle service is not being checked against it.'**
+  String stHdlWitnessQuiet(String when);
+
+  /// Handle witness value, shown as an alarm in the danger tone: the last time a lookup was refused because the handle service's signed answer contradicted its witness's co-signed record — two histories under one key, which is how a service shows different people different records for a handle. {when} is a date and time. It stays until the witness next agrees with the service. Load-bearing: nothing from that answer was used or sent.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service showed this device a history its witness did not see, at {when}. Nothing from that answer was used or sent.'**
+  String stHdlWitnessForked(String when);
+
+  /// Developer-mode row in the Handle section, and the title of its dialog: the address of the handle service witness's record and the public key pinned for it, edited and saved together.
+  ///
+  /// In en, this message translates to:
+  /// **'Handle witness address and key'**
+  String get stHdlWitnessPin;
+
   /// Title of the handle screen.
   ///
   /// In en, this message translates to:
@@ -4249,6 +4291,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Publish now'**
   String get hdlPublishNow;
+
+  /// Shown for a claim the handle service refused as taken, when reading the handle back to see whose it is was refused because the service's answer contradicted its witness's co-signed record. The claim is kept for the person to publish again or cancel. Load-bearing: nothing was published for them.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service answered that @{handle} is taken, but then showed a history its witness did not see, so who holds the handle cannot be told from it. Nothing was published for you. You can publish the claim again, or cancel it.'**
+  String hdlClaimForked(String handle);
 
   /// Shown when the claim lost the race to the handle service.
   ///
@@ -4567,6 +4615,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The handle service\'s answer was signed more than a day ago, so nothing it said was used. Check this device\'s date and time, or try again later.'**
   String get hdlErrStale;
+
+  /// A lookup refused because the handle service's signed answer contradicts its witness's co-signed record: two histories under one key, which is how a service shows different people different records for a handle. Load-bearing: nothing was sent — no request went to whatever the lookup found.
+  ///
+  /// In en, this message translates to:
+  /// **'The handle service showed a different history from the one its witness saw. Nothing was sent, and nothing it answered was used.'**
+  String get hdlErrForked;
 
   /// The handle service refused an entry for a reason waiting will not fix.
   ///

@@ -173,8 +173,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const HandleScreen())),
           ),
-          // Where the handle log is and which key signs it: developer-mode
-          // rows like the transparency log's, empty until a log is deployed.
+          // §19.5, §21.8: whether the handle service is being checked against
+          // its witness — when it last agreed, when, after a day of lookups
+          // asking it, it has gone quiet, and when it last showed a history
+          // the witness did not see, until the witness agrees again, in the
+          // danger tone. Everyone's row once a
+          // witness is configured, as the transparency log's witness row is;
+          // in developer mode, where the pair is set, "off" too.
+          if (svc.devMode ||
+              svc.handles.witnessState != HandleWitnessState.none)
+            ListTile(
+              leading: Icon(_hdlWitnessIcon(svc.handles.witnessState),
+                  color: _hdlWitnessTone(context, svc.handles.witnessState)),
+              title: Text(l.stHdlWitness),
+              subtitle: Text(_hdlWitnessText(context, l, svc.handles),
+                  style: const TextStyle(fontSize: 12)),
+            ),
+          // Where the handle log is and which key signs it, and its witness:
+          // developer-mode rows like the transparency log's, empty until a
+          // build pins them.
           if (svc.devMode) ...[
             ListTile(
               leading: const Icon(Icons.dns_outlined),
@@ -190,7 +207,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   l.stHdlLogUrlTitle,
                   svc.handles.config.logUrl,
                   (v) => HandleConfig(
-                      logUrl: v, logPubB64: svc.handles.config.logPubB64)),
+                      logUrl: v,
+                      logPubB64: svc.handles.config.logPubB64,
+                      witnessUrl: svc.handles.config.witnessUrl,
+                      witnessPubB64: svc.handles.config.witnessPubB64)),
             ),
             ListTile(
               leading: const Icon(Icons.key_outlined),
@@ -206,7 +226,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   l.stHdlLogKeyTitle,
                   svc.handles.config.logPubB64,
                   (v) => HandleConfig(
-                      logUrl: svc.handles.config.logUrl, logPubB64: v)),
+                      logUrl: svc.handles.config.logUrl,
+                      logPubB64: v,
+                      witnessUrl: svc.handles.config.witnessUrl,
+                      witnessPubB64: svc.handles.config.witnessPubB64)),
+            ),
+            // One row for the witness's pair, as for the transparency log's:
+            // two rows cannot express that an address with no key is not a
+            // weaker witness but none.
+            ListTile(
+              leading: const Icon(Icons.verified_outlined),
+              title: Text(l.stHdlWitnessPin),
+              subtitle: Text(
+                  svc.handles.config.witnessUrl.isEmpty &&
+                          svc.handles.config.witnessPubB64.isEmpty
+                      ? l.stKtNone
+                      : [
+                          svc.handles.config.witnessUrl,
+                          svc.handles.config.witnessPubB64
+                        ].join('\n'),
+                  style: const TextStyle(fontSize: 12)),
+              onTap: () => _editHandleWitness(context, svc),
             ),
           ],
           _SectionHeader(l.stAppearance),
@@ -675,6 +715,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _ => l.stKtWitnessPending,
       };
 
+  // The handle witness row: the transparency witness row's icons and tones.
+  static IconData _hdlWitnessIcon(HandleWitnessState s) => switch (s) {
+        HandleWitnessState.none => Icons.verified_outlined,
+        HandleWitnessState.pending => Icons.verified_outlined,
+        HandleWitnessState.agreed => Icons.verified,
+        HandleWitnessState.quiet => Icons.cloud_off_outlined,
+        HandleWitnessState.forked => Icons.gpp_bad,
+      };
+
+  static Color _hdlWitnessTone(BuildContext context, HandleWitnessState s) =>
+      switch (s) {
+        HandleWitnessState.agreed => context.z.ok,
+        HandleWitnessState.quiet => context.z.warn,
+        HandleWitnessState.forked => context.z.danger,
+        _ => context.z.textSecondary,
+      };
+
+  static String _hdlWitnessText(
+          BuildContext context, AppLocalizations l, HandleService h) =>
+      switch (h.witnessState) {
+        HandleWitnessState.none => l.stHdlWitnessOff,
+        HandleWitnessState.pending => l.stHdlWitnessPending,
+        HandleWitnessState.agreed =>
+          l.stHdlWitnessAgreed(whenText(context, h.witnessOkMs ?? 0)),
+        HandleWitnessState.quiet =>
+          l.stHdlWitnessQuiet(whenText(context, h.witnessQuietSinceMs ?? 0)),
+        HandleWitnessState.forked =>
+          l.stHdlWitnessForked(whenText(context, h.witnessForkMs ?? 0)),
+      };
+
   /// ADR 0029: the device-list signing row — the form the list is signed in,
   /// the readers still behind, and what the move waits on.
   static String _devlistGateText(AppLocalizations l, DevlistGate g) => [
@@ -723,6 +793,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _editHandles(BuildContext context, ChatService svc, String title,
       String current, HandleConfig Function(String) update) async {
     final l = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
     final ctrl = TextEditingController(text: current);
     final v = await showDialog<String>(
       context: context,
@@ -737,7 +808,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     );
-    if (v != null) await svc.handles.setConfig(update(v));
+    if (v == null) return;
+    try {
+      await svc.handles.setConfig(update(v));
+    } on HandleConfigInvalid catch (e) {
+      // A witness pair saved half-set by no screen — an archive's, say —
+      // is refused again with the log's address or key: said, not thrown.
+      messenger.showSnackBar(SnackBar(content: Text(_witnessReason(l, e.reason))));
+    }
   }
 
   /// The witness address and its pinned key, edited and saved together.
@@ -746,16 +824,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// dialog exists so that refusal is never a dead end: the fields go in
   /// together, the reason comes back in the user's own language, and the
   /// dialog stays open with what they typed.
-  Future<void> _editWitness(BuildContext context, ChatService svc) async {
+  Future<void> _editWitness(BuildContext context, ChatService svc) =>
+      _editWitnessPair(context,
+          title: AppLocalizations.of(context).stKtWitnessEdit,
+          url: svc.kt.config.witnessUrl,
+          key: svc.kt.config.witnessPubB64, save: (url, key) async {
+        try {
+          await svc.setKtConfig(KtConfig(
+            logUrl: svc.kt.config.logUrl,
+            logPubB64: svc.kt.config.logPubB64,
+            witnessUrl: url,
+            witnessPubB64: key,
+          ));
+          return null;
+        } on KtConfigInvalid catch (e) {
+          return e.reason;
+        }
+      });
+
+  /// The handle service's witness, edited the same way: `HandleService.setConfig`
+  /// refuses a half-set pair with the same three reasons.
+  Future<void> _editHandleWitness(BuildContext context, ChatService svc) =>
+      _editWitnessPair(context,
+          title: AppLocalizations.of(context).stHdlWitnessPin,
+          url: svc.handles.config.witnessUrl,
+          key: svc.handles.config.witnessPubB64, save: (url, key) async {
+        try {
+          await svc.handles.setConfig(HandleConfig(
+            logUrl: svc.handles.config.logUrl,
+            logPubB64: svc.handles.config.logPubB64,
+            witnessUrl: url,
+            witnessPubB64: key,
+          ));
+          return null;
+        } on HandleConfigInvalid catch (e) {
+          return e.reason;
+        }
+      });
+
+  /// A witness's address and key in one dialog: [save] takes both and says
+  /// why it refused them (an l10n key), or null once they are saved.
+  Future<void> _editWitnessPair(BuildContext context,
+      {required String title,
+      required String url,
+      required String key,
+      required Future<String?> Function(String url, String key) save}) async {
     final l = AppLocalizations.of(context);
-    final url = TextEditingController(text: svc.kt.config.witnessUrl);
-    final key = TextEditingController(text: svc.kt.config.witnessPubB64);
+    final urlField = TextEditingController(text: url);
+    final keyField = TextEditingController(text: key);
     String? error;
     await showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setLocal) => AlertDialog(
-          title: Text(l.stKtWitnessEdit),
+          title: Text(title),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -764,12 +886,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Text(l.stKtWitnessHelp, style: const TextStyle(fontSize: 12)),
                 const SizedBox(height: 12),
                 TextField(
-                    controller: url,
+                    controller: urlField,
                     autofocus: true,
                     decoration: InputDecoration(labelText: l.stKtWitnessTitle)),
                 const SizedBox(height: 8),
                 TextField(
-                    controller: key,
+                    controller: keyField,
                     decoration: InputDecoration(labelText: l.stKtWitnessKeyTitle)),
                 if (error != null) ...[
                   const SizedBox(height: 12),
@@ -783,17 +905,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
             FilledButton(
               onPressed: () async {
-                final next = KtConfig(
-                  logUrl: svc.kt.config.logUrl,
-                  logPubB64: svc.kt.config.logPubB64,
-                  witnessUrl: url.text.trim(),
-                  witnessPubB64: key.text.trim(),
-                );
-                try {
-                  await svc.setKtConfig(next);
+                final refused =
+                    await save(urlField.text.trim(), keyField.text.trim());
+                if (refused == null) {
                   if (ctx.mounted) Navigator.pop(ctx);
-                } on KtConfigInvalid catch (e) {
-                  setLocal(() => error = _witnessReason(l, e.reason));
+                } else {
+                  setLocal(() => error = _witnessReason(l, refused));
                 }
               },
               child: Text(l.stKtSave),
@@ -802,8 +919,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ),
     );
-    url.dispose();
-    key.dispose();
+    urlField.dispose();
+    keyField.dispose();
   }
 
   static String _witnessReason(AppLocalizations l, String reason) {

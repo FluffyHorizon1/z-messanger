@@ -26,7 +26,14 @@
 //     a recover published as the handle library will publish them, each
 //     label resolved by bucket to its latest record (both introduction keys
 //     in it), and a foreign update and a record whose introduction key comes
-//     without its X25519 key refused by the log.
+//     without its X25519 key refused by the log;
+//  7. a witness's record of the handle log (2026-10-19), written by the
+//     reference witness (`kt/tools/mirror.js --mode handles`) over the real
+//     handle log, verifies in the handle contexts against the key pinned for
+//     it — the handle witness context, then the head's handle input — and
+//     against nothing else: another pinned key, another log's key, the
+//     transparency log's contexts, a co-signature changed, one by another
+//     key that names itself, or one made in the transparency witness context.
 
 import 'dart:async';
 import 'dart:convert';
@@ -407,6 +414,65 @@ void main() {
       final unclaimed = await labelOf('nobody.00');
       final q0 = KtBucketQuery.forLabel(unclaimed, 0);
       expect((await ktVerifyBucketAnswer(await get('$url${q0.path}'), asked: [q0], logPub: pub, mode: KtLogMode.handles)).buckets.single.leafFor(unclaimed), isNull);
+    });
+
+    test('7. a handle log\'s witness record, from the reference witness, verifies in the handle contexts under the pinned key, and under nothing else', () async {
+      final seed = await sha256Bytes(utf8.encode('bucket test witnessed handle log'));
+      final url = await start(seed, mode: 'handles');
+      final pub = await _pub(await _ed.newKeyPairFromSeed(seed));
+      final owner = await _key('witnessed owner');
+      final rc = await _rc(await _key('witnessed recovery'));
+      for (var i = 0; i < 3; i++) {
+        final res = await post('$url/kt/v1/publish', await _handlePublish(await labelOf('witnessed.$i'), 1, owner, 'claim', rc: rc));
+        expect(res.$1, 201, reason: jsonEncode(res.$2));
+      }
+      // The reference witness, once: it verifies the head, re-derives both
+      // roots from the entries, holds them to the owner rule, and co-signs.
+      final dir = await Directory.systemTemp.createTemp('z_bucket_witness');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final witness = await _key('handle witness');
+      final witnessSeed = await sha256Bytes(utf8.encode('bucket test key: handle witness'));
+      final ran = await Process.run(
+          'node',
+          ['tools/mirror.js', '--log', url, '--pub', b64(pub), '--dir', dir.path, '--mode', 'handles', '--witness-seed-env', 'Z_HANDLE_WITNESS_SEED'],
+          workingDirectory: '${Directory.current.parent.path}${Platform.pathSeparator}kt',
+          environment: {'Z_HANDLE_WITNESS_SEED': hexOf(witnessSeed)});
+      expect(ran.exitCode, 0, reason: '${ran.stdout}${ran.stderr}');
+      final rec = KtWitnessRecord.fromJson(obj(jsonDecode(File('${dir.path}${Platform.pathSeparator}sth.json').readAsStringSync())));
+      final pinned = await _pub(witness);
+      expect(rec.head.size, 3);
+      expect(rec.witnessPub, pinned);
+      expect(await ktVerifyWitnessRecord(rec, logPub: pub, expectedWitnessPub: pinned, mode: KtLogMode.handles), isTrue);
+      expect(utf8.decode(ktWitnessInputFor(rec.head, KtLogMode.handles).sublist(0, 20)), 'z-handle-witness-v1:');
+      expect(ktWitnessInputFor(rec.head, KtLogMode.handles).sublist(20), ktHeadInput(rec.head, KtLogMode.handles));
+
+      // Under nothing else.
+      final other = await _pub(await _key('not the handle witness'));
+      expect(await ktVerifyWitnessRecord(rec, logPub: pub, expectedWitnessPub: other, mode: KtLogMode.handles), isFalse,
+          reason: 'another pinned key');
+      expect(await ktVerifyWitnessRecord(rec, logPub: other, expectedWitnessPub: pinned, mode: KtLogMode.handles), isFalse,
+          reason: 'another log\'s key');
+      expect(await ktVerifyWitnessRecord(rec, logPub: pub, expectedWitnessPub: pinned, mode: KtLogMode.kt), isFalse,
+          reason: 'a handle record is no transparency record');
+      expect(await rec.verify(pub, expectedWitnessPub: pinned), isFalse, reason: 'nor by the transparency library');
+      KtWitnessRecord withSig(Uint8List by, List<int> sig) =>
+          KtWitnessRecord(head: rec.head, witnessPub: by, witnessSig: Uint8List.fromList(sig), verifiedAt: rec.verifiedAt);
+      expect(await ktVerifyWitnessRecord(withSig(pinned, Uint8List.fromList(rec.witnessSig)..[9] ^= 1), logPub: pub, expectedWitnessPub: pinned, mode: KtLogMode.handles), isFalse,
+          reason: 'a co-signature changed');
+      // Another key co-signing the same head and naming itself: whoever
+      // serves the record can sign it, so the key it names is never the one
+      // a record is checked under.
+      final impostor = await _key('impostor witness');
+      final forged = withSig(await _pub(impostor),
+          (await _ed.sign(ktWitnessInputFor(rec.head, KtLogMode.handles), keyPair: impostor)).bytes);
+      expect(await ktVerifyWitnessRecord(forged, logPub: pub, expectedWitnessPub: pinned, mode: KtLogMode.handles), isFalse,
+          reason: 'co-signed by a key that is not the one pinned');
+      expect(await ktVerifyWitnessRecord(forged, logPub: pub, expectedWitnessPub: await _pub(impostor), mode: KtLogMode.handles), isTrue,
+          reason: 'what shows the refusal above was the pin');
+      // The pinned key co-signing in the transparency witness context.
+      final wrongContext = withSig(pinned, (await _ed.sign(ktWitnessInput(rec.head), keyPair: witness)).bytes);
+      expect(await ktVerifyWitnessRecord(wrongContext, logPub: pub, expectedWitnessPub: pinned, mode: KtLogMode.handles), isFalse,
+          reason: 'co-signed in the transparency witness context');
     });
   });
 }

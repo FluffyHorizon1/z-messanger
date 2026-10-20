@@ -17,6 +17,11 @@ The other four are facts about this tree, and facts drift:
       number changes with every migrated screen.
   --  and the doc must not claim to be READY while any criterion is ❌.
 
+And one fact about the handle log that no row states but the roadmap's rule
+needs (THREAT_MODEL R50, ROADMAP 36–38): its four values in
+app/lib/core/handles.dart — the log's address and key, its witness's record
+address and key — are set together or not at all.
+
 The last one is the point. The failure mode for a checklist is not that a row
 is wrong; it is that the summary at the top says "ready" while a row below it
 says otherwise, and the reader believes the summary.
@@ -145,6 +150,94 @@ def main() -> int:
                         f"witness, not deployment."
                     )
 
+    # The handle log's four values, pinned together or not at all
+    # (2026-10-19). `app/lib/core/handles.dart` holds the handle log's address
+    # and key and its witness's record address and key, all four empty while
+    # handles are off. The client checks a witness whenever one is configured,
+    # and a self-hoster may run a log with none, as with the transparency log;
+    # but the shipped build pins the four in one release (THREAT_MODEL R50,
+    # ROADMAP 36–38). A log pinned without its witness is a log whose readers
+    # cannot catch it showing two histories; a witness without its log is
+    # never asked; and half of either pair is refused by the client itself —
+    # it looks like a configuration and is none. Each is its own message.
+    # Unconditional, unlike G3's check: it reads the source, not a row, and a
+    # source that no longer reads the four the way this check does is refused
+    # rather than agreed with.
+    handles_src = ROOT / "app" / "lib" / "core" / "handles.dart"
+    handle_values = {}
+    if not handles_src.exists():
+        problems.append(
+            f"{handles_src.relative_to(ROOT)} is not where this check reads "
+            f"the four handle values from. If the file moved, move this check "
+            f"with it; a guard that cannot find its subject must refuse, not "
+            f"agree."
+        )
+    else:
+        hsrc = handles_src.read_text()
+        for name, what in (
+            ("HANDLE_LOG_URL", "the handle log's address"),
+            ("HANDLE_LOG_PUB", "the handle log's public key"),
+            ("HANDLE_WITNESS_URL", "the handle witness's record URL"),
+            ("HANDLE_WITNESS_PUB", "the handle witness's public key"),
+        ):
+            m = re.search(
+                rf"String\.fromEnvironment\(\s*'{name}'\s*,\s*defaultValue:\s*'([^']*)'",
+                hsrc, re.S)
+            if m is None:
+                problems.append(
+                    f"app/lib/core/handles.dart no longer reads {what} as "
+                    f"String.fromEnvironment('{name}', defaultValue: '…'), "
+                    f"which is where this check reads the four handle values; "
+                    f"a guard that cannot find its subject must refuse, not "
+                    f"agree."
+                )
+            else:
+                handle_values[name] = m.group(1).strip() != ""
+    if len(handle_values) == 4:
+        log_url = handle_values["HANDLE_LOG_URL"]
+        log_pub = handle_values["HANDLE_LOG_PUB"]
+        wit_url = handle_values["HANDLE_WITNESS_URL"]
+        wit_pub = handle_values["HANDLE_WITNESS_PUB"]
+        if log_url != log_pub:
+            given, missing = (("HANDLE_LOG_URL", "HANDLE_LOG_PUB") if log_url
+                              else ("HANDLE_LOG_PUB", "HANDLE_LOG_URL"))
+            problems.append(
+                f"app/lib/core/handles.dart sets {given} and leaves {missing} "
+                f"empty: half the handle log's pair. An address with no key, "
+                f"or a key with no address, is no log a client can check an "
+                f"answer against, and handles stay off with it. Set both, with "
+                f"the witness's two, or none."
+            )
+        if wit_url != wit_pub:
+            given, missing = (("HANDLE_WITNESS_URL", "HANDLE_WITNESS_PUB")
+                              if wit_url
+                              else ("HANDLE_WITNESS_PUB", "HANDLE_WITNESS_URL"))
+            problems.append(
+                f"app/lib/core/handles.dart sets {given} and leaves {missing} "
+                f"empty: half the handle witness's pair. The client refuses a "
+                f"half-set witness and never fetches it, so this would ship a "
+                f"witness nobody's client asks. Set both, with the log's two, "
+                f"or none."
+            )
+        if log_url == log_pub and wit_url == wit_pub:
+            if log_url and not wit_url:
+                problems.append(
+                    "app/lib/core/handles.dart pins the handle log "
+                    "(HANDLE_LOG_URL, HANDLE_LOG_PUB) without its witness "
+                    "(HANDLE_WITNESS_URL, HANDLE_WITNESS_PUB are empty). A log "
+                    "no reader can check for a second history is what R50 "
+                    "keeps from shipping: the four are pinned together, in one "
+                    "release."
+                )
+            if wit_url and not log_url:
+                problems.append(
+                    "app/lib/core/handles.dart pins a handle witness "
+                    "(HANDLE_WITNESS_URL, HANDLE_WITNESS_PUB) without the log "
+                    "it witnesses (HANDLE_LOG_URL, HANDLE_LOG_PUB are empty). "
+                    "With no log the witness is never asked; the four are "
+                    "pinned together, in one release."
+                )
+
     # And the values live in the SOURCE, not in a build command.
     #
     # Not a style preference. `reproducible` rebuilds the release APK four
@@ -178,9 +271,15 @@ def main() -> int:
         # handles on for one platform and not another, and the reproducible
         # rebuild would produce an artifact that is not the one shipped —
         # without this check saying so, because it only looked for `KT_`.
+        # `HANDLE_WITNESS_` is the handle log's witness (HANDLE_WITNESS_URL,
+        # HANDLE_WITNESS_PUB), pinned in the same file in the same release
+        # as the log (2026-10-19): a witness given to one platform's build
+        # and not another's would check one platform's lookups and not the
+        # other's.
         LOG_DEFINES = {
             "KT_": "app/lib/core/key_transparency.dart",
             "HANDLE_LOG_": "app/lib/core/handles.dart",
+            "HANDLE_WITNESS_": "app/lib/core/handles.dart",
         }
         for i, line in enumerate(wf_text.splitlines(), 1):
             if "--dart-define" not in line:

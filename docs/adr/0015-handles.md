@@ -268,7 +268,15 @@ renumbered when they were written.
   label, not who asked).
 - **R50** — The handle log is unwitnessed until phase 19 has an operator: a
   log that shows two people different records for one handle is caught only
-  by a witness, as R7 says of the KT log.
+  by a witness, as R7 says of the KT log. (2026‑10‑19: a witness runs, at
+  `handle-witness.zmessengers.com`, and the client checks one whenever one
+  is configured — each lookup's head held to its record under the key pinned
+  for it, and the lookup refused when the record contradicts its head or the
+  log will not prove the way between them (`PROTOCOL.md` §21.8). That does
+  not catch a history that departs after the witness's latest co‑signed
+  head, shown at a first lookup: the lookup's head extends the record, and
+  nothing is held to look again. No build pins the witness yet, nor the log;
+  the release that pins them pins all four values together.)
 
 Two things are not residuals because they are the design. A handle is a
 **standing open inbox** — bounded by the stamp, the caps and the 72‑hour
