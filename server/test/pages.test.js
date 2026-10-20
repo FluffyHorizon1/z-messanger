@@ -86,9 +86,10 @@ const { PAGES, ROUTES, STYLE } = require('../pages.js');
 
 // Every path that serves a full page, including the ones deliberately absent
 // from PAGES (and therefore from the nav and footer): /i is reached from an
-// invite link, never by browsing, but it is still a public page and the
-// site-wide sweeps below must cover it.
-const UNLISTED = ['/i'];
+// invite link, and /c from a public introduction link (39.2), never by
+// browsing, but they are still public pages and the site-wide sweeps below
+// must cover them.
+const UNLISTED = ['/i', '/c'];
 const ALL_PAGES = ['/', ...PAGES.map(([path]) => path), ...UNLISTED];
 
 test('every page in the site list is served as HTML, with nav and footer', async () => {
@@ -485,3 +486,148 @@ test('17.4 (3): the invite page links to Play and to how-it-works, and the route
       assert.ok(!page.body.includes('href="/i"'), `${path} links to /i`);
     }
   });
+
+// ---------------------------------------------------------------------------
+// 39.2 — the page a public introduction link lands on (ADR 0032, PROTOCOL
+// §21.9): `https://www.zmessengers.com/c#zi1.<code>`.
+//
+// The code is in the fragment, which no browser sends, so /c is one page for
+// every link, as /i is for every invite. No build's Android filter claims /c
+// yet (the release that turns links on adds it), so this page is what a tap
+// opens until then, and what a build too old to read a link opens after.
+//
+// Criteria, one test each:
+//   1. /c and /c/ serve the same page, with its headline, nav, footer,
+//      description and a canonical URL of its own;
+//   2. it is served with exactly the headers /i is — the same values, and no
+//      header either has that the other lacks: the relay's page headers, no
+//      Content-Security-Policy on either, and server.js unchanged;
+//   3. nothing on it can read the fragment — no script, no inline handler, no
+//      javascript: URL, no location object — and a code forged into the path
+//      or the query is never echoed back;
+//   4. it says what it is for: a public link to someone on Z, to open in Z or
+//      update Z and paste there, that a link verifies nothing, and what a
+//      request shows whoever made the link;
+//   5. it is unlisted: not in the site's navigation, and no listed page links
+//      to it.
+
+function getWithHeaders(path) {
+  return new Promise((resolve, reject) => {
+    http
+      .get(`http://127.0.0.1:${port}${path}`, (res) => {
+        let body = '';
+        res.on('data', (d) => (body += d));
+        res.on('end', () =>
+          resolve({ status: res.statusCode, headers: res.headers, body })
+        );
+      })
+      .on('error', reject);
+  });
+}
+
+test('39.2 (1): /c and /c/ serve the public-link page', async () => {
+  for (const path of ['/c', '/c/']) {
+    const r = await get(path);
+    assert.strictEqual(r.status, 200, `${path} did not serve`);
+    assert.ok(r.type.includes('text/html'), `${path} is not HTML`);
+    assert.ok(/<h1>[^<]{20,}<\/h1>/.test(r.body), `${path} has no headline`);
+    assert.ok(r.body.includes('<nav>'), `${path} has no nav`);
+    assert.ok(r.body.includes('<footer>'), `${path} has no footer`);
+    assert.ok(/<meta name="description" content="[^"]{40,}">/.test(r.body),
+      `${path} has no usable meta description`);
+  }
+  const bare = await get('/c');
+  const slashed = await get('/c/');
+  assert.strictEqual(slashed.body, bare.body);
+  assert.ok(
+    bare.body.includes('<link rel="canonical" href="https://zmessengers.com/c">'),
+    'no canonical URL'
+  );
+  const invite = await get('/i');
+  assert.notStrictEqual(bare.body, invite.body,
+    'a public link is not an invite, and its page must not say it is one');
+});
+
+test('39.2 (2): /c is served with exactly the headers /i is', async () => {
+  const strip = (h) => {
+    const out = { ...h };
+    delete out.date; // the one header that differs by the second
+    return out;
+  };
+  const c = await getWithHeaders('/c');
+  const i = await getWithHeaders('/i');
+  assert.strictEqual(c.status, 200);
+  assert.strictEqual(i.status, 200);
+  const ch = strip(c.headers);
+  const ih = strip(i.headers);
+  // The length is the page's own; every other header is the same value.
+  delete ch['content-length'];
+  delete ih['content-length'];
+  assert.deepStrictEqual(Object.keys(ch).sort(), Object.keys(ih).sort(),
+    'the two pages carry different headers');
+  assert.deepStrictEqual(ch, ih, 'the two pages carry different header values');
+  assert.strictEqual(ch['content-type'], 'text/html; charset=utf-8');
+  assert.strictEqual(ch['cache-control'], 'public, max-age=300');
+  // No policy header on either: the relay sets none on any page, and the
+  // property it would add here — no script reads the fragment — is the
+  // site's own, asserted over every route (17.4 (2), and 3 below).
+  assert.strictEqual(ch['content-security-policy'], undefined);
+  assert.strictEqual(ih['content-security-policy'], undefined);
+});
+
+test('39.2 (3): nothing on /c can read the fragment, and a code is never echoed',
+  async () => {
+    const html = ROUTES.get('/c');
+    assert.ok(html, '/c is not a route');
+    assert.ok(!/<script/i.test(html), '/c has a script tag');
+    assert.ok(!/\son[a-z]+=/i.test(html), '/c has an inline event handler');
+    assert.ok(!/javascript:/i.test(html), '/c has a javascript: URL');
+    assert.ok(
+      !/location\.hash|document\.location|window\.location/i.test(html),
+      '/c mentions the location object'
+    );
+    const code = 'zi1.SECRETLINKCODE';
+    for (const forged of [`/c%23${code}`, `/c?${code}`, `/c?c=${code}`,
+      `/c/%23${code}`]) {
+      const r = await get(forged);
+      assert.ok(!r.body.includes('SECRETLINKCODE'),
+        `${forged} was reflected in the body`);
+    }
+    // A query is not part of the route: the page is the same page.
+    const queried = await get(`/c?c=${code}`);
+    assert.strictEqual(queried.status, 200);
+    assert.strictEqual(queried.body, ROUTES.get('/c'));
+    const missed = await get(`/c%23${code}`);
+    assert.strictEqual(missed.status, 404);
+    assert.strictEqual(
+      missed.body,
+      'Z relay. Zero-knowledge, RAM-only. Connect via WebSocket.\n',
+      'the 404 body must be a constant: anything built from the request could carry a link'
+    );
+  });
+
+test('39.2 (4): /c says what a public link is, how to open it, and that it verifies nothing',
+  async () => {
+    const r = await get('/c');
+    const text = r.body.replace(/\s+/g, ' ');
+    assert.ok(/public link to someone on Z/.test(text), 'it does not say it is a Z public link');
+    assert.ok(/Open it in Z/.test(text), 'it does not say to open it in Z');
+    assert.ok(/update Z/.test(text), 'it does not say to update Z');
+    assert.ok(/paste it/.test(text), 'it does not say to paste it into Z');
+    assert.ok(/A link verifies nothing/.test(text), 'it does not say a link verifies nothing');
+    assert.ok(/sees your name and your contact code/.test(text),
+      'it does not say what a request shows whoever made the link');
+    assert.ok(r.body.includes(PLAY_URL), 'no link to the Play listing');
+    assert.ok(r.body.includes('href="/verify"'), 'no link to how verifying works');
+    assert.ok(/trademarks of\s+Google LLC/.test(r.body),
+      'Play trademark attribution missing');
+  });
+
+test('39.2 (5): /c is unlisted, like /i', async () => {
+  const paths = PAGES.map(([path]) => path);
+  assert.ok(!paths.includes('/c'), '/c must not be in the site navigation');
+  for (const path of ['/', ...paths, '/i']) {
+    const page = await get(path);
+    assert.ok(!page.body.includes('href="/c"'), `${path} links to /c`);
+  }
+});

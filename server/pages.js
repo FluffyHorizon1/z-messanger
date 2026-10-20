@@ -1070,6 +1070,61 @@ const INVITE_HTML = page(
 `
 );
 
+/**
+ * The page a public introduction link lands on (39.2; ADR 0032, PROTOCOL
+ * §21.9): `https://www.zmessengers.com/c#zi1.<code>`.
+ *
+ * Unlisted, like /i: a link is something somebody published, not a place to
+ * browse to. The code is in the fragment, which no browser sends, so this is
+ * the same page for every link, and no script on it could read the code even
+ * if one were added (none is: the site has no scripts, which
+ * server/test/pages.test.js holds over every route). No build's Android
+ * filter claims /c yet — the release that turns links on adds it — so this
+ * is what a tap opens until then, and what a build too old to read a link
+ * opens after: it says to open the link in Z, or update Z, and paste it there.
+ * And it says, as the app does before anything is sent, that a link verifies
+ * nothing.
+ */
+const LINK_HTML = page(
+  '/c',
+  'A public link to someone on Z',
+  'This is a public link to someone on Z, a messenger with no account and no phone number. Open it in Z, or update Z and paste it there. A link verifies nothing.',
+  `
+  <h1>A public link to someone on Z</h1>
+  <p class="lead">Somebody published this link so that people can ask to
+  connect with them on Z, a messenger with no account, no phone number and a
+  relay that holds nothing. Open it in Z to send them a request.</p>
+
+  <div class="btns">
+    <a class="btn" href="${PLAY}">Get Z — Google Play</a>
+    <a class="btn alt" href="${RELEASES}">Android (APK)</a>
+  </div>
+  <p class="muted">Android 7.0 or newer. Windows, macOS and Linux builds are
+  on the <a href="/download">download page</a>.</p>
+
+  <h2>Already have Z, and it did not open?</h2>
+  <p>Copy this page's address, open Z, go to <strong>Add contact →
+  Paste</strong>, paste it and tap the button. If Z says it cannot read it,
+  update Z first: public links are newer than the version you have. The link
+  is the part after the <code>#</code>; Z reads it there and sends nothing
+  until you say so.</p>
+
+  <h2>A link verifies nothing</h2>
+  <p>Anyone can put a link on a page, and whoever controls the page can change
+  it. If you send a request, whoever made the link sees your name and your
+  contact code, and nothing else happens unless they accept. If they do,
+  compare safety numbers with them before you trust that they are who the page
+  says. <a href="/verify">How verifying works</a>.</p>
+
+  <h2>This page never received the link</h2>
+  <p>The link's code is the part after the <code>#</code>. Browsers do not send
+  that part to a server, so this page is the same page everyone gets: it cannot
+  tell which link brought you here, or whose it is.</p>
+  <p class="muted">Google Play and the Google Play logo are trademarks of
+  Google LLC.</p>
+`
+);
+
 // path → html, used by the server's request listener and by the tests.
 const ROUTES = new Map([
   ['/', LANDING_HTML],
@@ -1085,6 +1140,7 @@ const ROUTES = new Map([
   ['/backup', BACKUP_HTML],
   ['/about', ABOUT_HTML],
   ['/i', INVITE_HTML],
+  ['/c', LINK_HTML],
 ]);
 
 // Trailing-slash forms answer identically, so a sitelink cannot 404 on a
