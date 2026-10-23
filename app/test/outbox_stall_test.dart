@@ -23,7 +23,8 @@
 // Criteria 4–18 are that change. They put a small WebSocket proxy between
 // the client and the real relay (`_Proxy`, below), which passes every frame
 // through unchanged except that it can hold back the answers to a client's
-// sends, in the order they came or each at its own time; can answer a send
+// sends, in the order they came, each at its own time, or until the test
+// lets them go; can answer a send
 // itself with exactly the error frame the relay sends (§12.2), in which case
 // the relay never sees that envelope — which is what a refusal is; can pass
 // the client's frames on no faster than a slow uplink would; and can drop a
@@ -79,11 +80,30 @@
 //  17. `pow_required` on an outbox row holds its own mailbox, not the
 //     outbox;
 //  18. answers out of order: eight `store_full`s in a row still end the
-//     pass, seven among the rest do not, and one per mailbox holds.
+//     pass, seven among the rest do not, and one per mailbox holds;
+//  19. 48.3 (ADR 0036 §4): a group file past the staging bound waits for
+//     the outbox to drain and goes once it has, with nothing else asking
+//     for it — no send, no reconnect; no more than the bound and one
+//     member's chunks are ever queued; and only the file waits: the text
+//     after it, and one sent meanwhile in another group, go to the members
+//     whose file still waits, ahead of it;
+//  20. a refusal holds its own mailbox, not the staging (ADR 0036 §3): with
+//     Dave's mailbox full, what is queued to it is not measured, so Bob and
+//     Carol get the group's photo and the text after it; Dave, a member
+//     too, is staged no new chunks while his mailbox refuses — what is
+//     stuck behind the refusal stays what was queued before it — and has
+//     the photo once his mailbox takes envelopes again;
+//  21. and with the shipped 64 MiB bound: two 24 MiB files stuck for Dave,
+//     past the bound by themselves, and Bob and Carol, in a group Dave is
+//     not in, still get its photo and the text after it;
+//  22. while the store refuses everyone — a pass ended on eight
+//     `store_full`s — no group file is staged, whosever mailbox it is for,
+//     and once the store takes an envelope again the file goes.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -1411,6 +1431,492 @@ void main() {
         reason: 'never two in flight to one mailbox');
     expect(proxy.dupWhileOpen, 0);
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  // ---- 48.3's fixtures ------------------------------------------------------
+
+  const full = ChatService.chunkEnvelopeChars;
+
+  /// [svc]'s outbox rows that carry a whole chunk, by mailbox.
+  Future<Map<String, int>> chunkRowsOf(ChatService svc) async {
+    final rows = await svc.vault.db.rawQuery(
+        'SELECT rid, COUNT(*) AS n FROM outbox WHERE LENGTH(payload) = ? '
+        'GROUP BY rid',
+        [full]);
+    return {for (final r in rows) r['rid'] as String: r['n'] as int};
+  }
+
+  /// What waits in [svc]'s queue for [gid], member by member, as the mids
+  /// it carries, in order.
+  Future<Map<String, List<String>>> waitingIn(
+      ChatService svc, String gid) async {
+    final out = <String, List<String>>{};
+    for (final r in await svc.vault.db.query('group_fanout',
+        where: 'gid = ?', whereArgs: [gid], orderBy: 'seq')) {
+      final inner = InnerMessage.fromBytes(Uint8List.fromList(
+          utf8.encode(await svc.vault.unseal(r['payload'] as String))));
+      (out[r['rid'] as String] ??= []).add(inner.mid);
+    }
+    return out;
+  }
+
+  /// Whether [p] holds [want], whole, as a file in [thread]. Over a copy of
+  /// the thread: messages go on arriving while each file is read.
+  Future<bool> hasWhole(ChatService p, String thread, Uint8List want) async {
+    for (final m in [...?p.messagesByChat[thread]]) {
+      if (m.kind != 'file' || m.fid == null) continue;
+      try {
+        final got = await p.readAttachment(m.fid!);
+        if (got.length != want.length) continue;
+        var same = true;
+        for (var i = 0; i < got.length && same; i++) {
+          same = got[i] == want[i];
+        }
+        if (same) return true;
+      } catch (_) {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  /// [length] bytes that differ from file to file, by [salt].
+  Uint8List bytesOf(int length, int salt) {
+    final out = Uint8List(length);
+    for (var i = 0; i < length; i++) {
+      out[i] = (i * salt + salt) % 251;
+    }
+    return out;
+  }
+
+  test(
+      '19. a group file past the staging bound waits for the outbox to drain '
+      'and goes once it has, nothing else asking; no more than the bound and '
+      'one member\'s chunks are queued, and only the file waits', () async {
+    final port = await startRelay({});
+    final toAlice = await startProxy(port);
+    final alice = await personAt('Alice', toAlice.url);
+    final direct = 'ws://127.0.0.1:$port';
+    const names = ['Bob', 'Carol', 'Dave'];
+    final them = [for (final n in names) await personAt(n, direct)];
+    for (final p in them) {
+      await introduce(alice, p);
+    }
+    await settled([alice, ...them]);
+    final rids = [for (final p in them) p.myRid];
+    final files = await alice.createGroup('Files', rids);
+    final talk = await alice.createGroup('Talk', rids);
+    await waitUntil(
+        () => them.every(
+            (p) => p.groups.containsKey(files) && p.groups.containsKey(talk)),
+        what: 'both groups reached their members');
+    await alice.waitForGroupFanout(files);
+    await alice.waitForGroupFanout(talk);
+    await waitFor(
+        () async => await outboxCount(alice) == 0 && !alice.pqSendPending,
+        what: 'Alice\'s outbox is empty');
+
+    // One member's three whole chunks are past a bound of two chunks'
+    // envelopes. And the relay is slow to answer chunks for now: it takes
+    // them and holds each answer until the test lets them go, so what is
+    // staged stays queued — one in flight to its mailbox, the rest behind
+    // it — and nothing is refused.
+    alice.groupStagingBound = 2 * full;
+    final chunkSends = <String>{};
+    final answering = Completer<void>();
+    toAlice.answer = (link, f) {
+      if ((f['payload'] as String?)?.length == full) {
+        chunkSends.add(f['id'] as String);
+      }
+      return null;
+    };
+    toAlice.holdUntil =
+        (link, a) => chunkSends.contains(a['id']) ? answering.future : null;
+    // What the outbox holds, watched for the whole send — and no longer once
+    // the test is over, however it ended.
+    var most = 0;
+    var watching = true;
+    addTearDown(() {
+      watching = false;
+      if (!answering.isCompleted) answering.complete();
+    });
+    final watcher = () async {
+      while (watching) {
+        try {
+          final q = firstIntValue(await alice.vault.db.rawQuery(
+                  'SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM outbox')) ??
+              0;
+          most = max(most, q);
+        } catch (_) {
+          return; // the vault closed under it
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    }();
+    final file = bytesOf(3 * defaultChunkSize, 1);
+    await alice.sendGroupFile(
+        files, 'three.bin', file, 'application/octet-stream');
+    await alice.sendGroupText(files, 'after the file');
+    await alice.sendGroupText(talk, 'meanwhile');
+    final fileMid =
+        alice.messagesByChat[files]!.singleWhere((m) => m.kind == 'file').mid;
+
+    // (a) Staging stops at the bound: one member's chunks are queued, and
+    // the file waits for the other two.
+    late String first;
+    await waitFor(() async {
+      final staged = await chunkRowsOf(alice);
+      if (staged.length != 1 || staged.values.single != 3) return false;
+      first = staged.keys.single;
+      final withFile = [
+        for (final e in (await waitingIn(alice, files)).entries)
+          if (e.value.contains(fileMid)) e.key
+      ];
+      return withFile.length == 2 && !withFile.contains(first);
+    }, what: 'the drain stopped writing chunk rows at the bound');
+    final rest = {...rids}..remove(first);
+
+    // (b) Only the file waits: the text after it left the queue for every
+    // member, the two whose file waits included — and the drain, which
+    // reached it behind their files, has staged no more chunks.
+    final textMid = alice.messagesByChat[files]!
+        .singleWhere((m) => m.body == 'after the file')
+        .mid;
+    await waitFor(
+        () async => !(await waitingIn(alice, files))
+            .values
+            .any((mids) => mids.contains(textMid)),
+        what: 'the text after the file left the queue for the two whose '
+            'file waits');
+    expect(await chunkRowsOf(alice), {first: 3},
+        reason: 'the drain has been past the other two\'s files, and still '
+            'only one member\'s chunks are queued: it stopped at the bound');
+    expect(await waitingIn(alice, files), {
+      for (final r in rest) r: [fileMid]
+    }, reason: 'only the file waits for the other two');
+
+    // (c) The texts go to those whose file waits, ahead of it: the text
+    // after it and the one sent meanwhile in another group are each in the
+    // outbox for them, or already on their phone, while their file is still
+    // to be staged. (Read there for certain only once the relay answers
+    // again: while it holds a chunk's answer, the outbox may keep back what
+    // does not fit beside that chunk in the payload it lets out at once,
+    // 48.2.)
+    final talkMid =
+        alice.messagesByChat[talk]!.singleWhere((m) => m.body == 'meanwhile').mid;
+    final waitingPeople = them.where((p) => rest.contains(p.myRid)).toList();
+    Future<bool> onItsWay(
+            ChatService p, String thread, String mid, String body) async =>
+        groupTexts(p, thread).contains(body) ||
+        (await alice.vault.db.query('outbox',
+                columns: ['seq'],
+                where: 'rid = ? AND mid = ?',
+                whereArgs: [p.myRid, mid]))
+            .isNotEmpty;
+    await waitFor(() async {
+      for (final p in waitingPeople) {
+        if (!await onItsWay(p, files, textMid, 'after the file') ||
+            !await onItsWay(p, talk, talkMid, 'meanwhile')) {
+          return false;
+        }
+      }
+      return true;
+    }, what: 'the texts went to those whose file waits');
+    expect((await waitingIn(alice, files)).keys.toSet(), rest,
+        reason: 'their file is still waiting');
+    final links = toAlice.links.length;
+
+    // (d) The relay answers again. What was staged drains, and that alone
+    // brings the drain back: nothing is sent and the link stays up.
+    answering.complete();
+    await waitFor(
+        () async =>
+            (await alice.vault.db.query('group_fanout')).isEmpty &&
+            await outboxCount(alice) == 0,
+        timeout: const Duration(seconds: 90),
+        what: 'every member\'s chunks staged in turn, and sent');
+    watching = false;
+    await watcher;
+    expect(toAlice.links.length, links, reason: 'no reconnect brought it back');
+    // ignore: avoid_print
+    print('48.3 staging: at most $most characters queued, against a bound of '
+        '${alice.groupStagingBound} and one member\'s chunks, ${3 * full}');
+    expect(most, greaterThanOrEqualTo(3 * full),
+        reason: 'a member\'s chunks were seen queued');
+    expect(most, lessThanOrEqualTo(alice.groupStagingBound + 3 * full + 65536),
+        reason: 'never more queued than the bound and one member\'s chunks, '
+            'and the few small rows beside them');
+
+    // (e) Everyone has the file whole, and both texts.
+    for (var i = 0; i < them.length; i++) {
+      await waitFor(() => hasWhole(them[i], files, file),
+          what: '${names[i]} has the file, whole');
+      await waitUntil(
+          () =>
+              groupTexts(them[i], files).contains('after the file') &&
+              groupTexts(them[i], talk).contains('meanwhile'),
+          what: '${names[i]} has both texts');
+    }
+  }, timeout: const Timeout(Duration(minutes: 4)));
+
+  test(
+      '20. a mailbox the relay refuses holds only itself: Bob and Carol get '
+      'the photo and the text after it while Dave\'s mailbox is full, and '
+      'Dave is staged no new chunks until it takes envelopes again',
+      () async {
+    final port = await startRelay({});
+    final toAlice = await startProxy(port);
+    final alice = await personAt('Alice', toAlice.url);
+    final direct = 'ws://127.0.0.1:$port';
+    final bob = await personAt('Bob', direct);
+    final carol = await personAt('Carol', direct);
+    final dave = await personAt('Dave', direct);
+    for (final p in [bob, carol, dave]) {
+      await introduce(alice, p);
+    }
+    await settled([alice, bob, carol, dave]);
+    final photos = await alice
+        .createGroup('Photos', [bob.myRid, carol.myRid, dave.myRid]);
+    await waitUntil(
+        () => [bob, carol, dave].every((p) => p.groups.containsKey(photos)),
+        what: 'the group reached its members');
+    await alice.waitForGroupFanout(photos);
+    await waitFor(
+        () async => await outboxCount(alice) == 0 && !alice.pqSendPending,
+        what: 'Alice\'s outbox is empty');
+
+    alice.groupStagingBound = 2 * full;
+    alice.outboxRetryDelay = const Duration(milliseconds: 300);
+    // Dave's mailbox is full: everything sent to it is refused `queue_full`,
+    // as the relay refuses a mailbox at its cap — answered here in the
+    // relay's place, which never sees those envelopes.
+    var daveFull = true;
+    var refusedToDave = 0;
+    toAlice.answer = (link, f) {
+      if (!daveFull || f['to'] != dave.myRid) return null;
+      refusedToDave++;
+      return {'t': 'error', 'code': 'queue_full', 'id': f['id']};
+    };
+    // How often the drain has looked at Dave's copy of a group file: it
+    // steps over nothing, and only counts.
+    var daveFileLooks = 0;
+    alice.debugHoldGroupFanout = (rid, inner) {
+      if (rid == dave.myRid && inner.kind == 'gfile') daveFileLooks++;
+      return false;
+    };
+
+    // A file to Dave alone: its three chunks stay in Alice's outbox, behind
+    // the refusal.
+    final forDave = bytesOf(3 * defaultChunkSize, 3);
+    await alice.sendFile(
+        dave.myRid, 'for-dave.bin', forDave, 'application/octet-stream');
+    await waitUntil(() => refusedToDave >= 2,
+        what: 'Dave\'s mailbox refused, and refused again');
+    expect((await chunkRowsOf(alice))[dave.myRid], 3);
+
+    // Then a photo to the group, and a text after it.
+    final photo = bytesOf(3 * defaultChunkSize, 7);
+    await alice.sendGroupFile(
+        photos, 'photo.bin', photo, 'application/octet-stream');
+    await alice.sendGroupText(photos, 'after the photo');
+    final photoMid =
+        alice.messagesByChat[photos]!.singleWhere((m) => m.kind == 'file').mid;
+
+    // (a) Bob and Carol get the photo whole and the text after it, Dave's
+    // mailbox full all the while: what is queued to it is not what the
+    // bound measures.
+    await waitFor(
+        () async =>
+            await hasWhole(bob, photos, photo) &&
+            await hasWhole(carol, photos, photo) &&
+            groupTexts(bob, photos).contains('after the photo') &&
+            groupTexts(carol, photos).contains('after the photo'),
+        timeout: const Duration(seconds: 60),
+        what: 'Bob and Carol have the photo whole and the text after it, '
+            'while Dave\'s mailbox is full');
+    expect(daveFull, isTrue);
+
+    // (b) Dave is staged no new chunks while his mailbox refuses. Once
+    // everything to Bob and Carol is taken, the drain is asked again until
+    // it has looked at Dave's photo twice more: it is still queued, and what
+    // is stuck behind the refusal is still the three chunks queued before it.
+    await waitFor(
+        () async =>
+            firstIntValue(await alice.vault.db.rawQuery(
+                'SELECT COUNT(*) FROM outbox WHERE rid != ?',
+                [dave.myRid])) ==
+            0,
+        what: 'everything to Bob and Carol was taken');
+    final looked = daveFileLooks;
+    await waitFor(() async {
+      await alice.retryGroupFanout();
+      return daveFileLooks >= looked + 2 ||
+          !(await waitingIn(alice, photos)).containsKey(dave.myRid);
+    }, what: 'the drain looked at Dave\'s photo twice more');
+    expect(await waitingIn(alice, photos), {
+      dave.myRid: [photoMid]
+    }, reason: 'Dave\'s photo waits, and nothing else does');
+    expect((await chunkRowsOf(alice))[dave.myRid], 3,
+        reason: 'no new chunk rows for a mailbox the relay refuses');
+    expect(daveFull, isTrue);
+
+    // (c) His mailbox takes envelopes again: that alone stages his photo,
+    // and he has his own file, the photo and the text.
+    daveFull = false;
+    await waitFor(
+        () async =>
+            await hasWhole(dave, alice.myRid, forDave) &&
+            await hasWhole(dave, photos, photo) &&
+            groupTexts(dave, photos).contains('after the photo'),
+        timeout: const Duration(seconds: 90),
+        what: 'once his mailbox takes envelopes, Dave has his file, the '
+            'photo and the text');
+    // ignore: avoid_print
+    print('48.3 refusal: $refusedToDave refusals to Dave; Bob and Carol had '
+        'the photo meanwhile; the drain looked at Dave\'s photo '
+        '$daveFileLooks times before it went');
+  }, timeout: const Timeout(Duration(minutes: 4)));
+
+  test(
+      '21. with the shipped bound: two 24 MiB files stuck for Dave, past it '
+      'by themselves, and Bob and Carol still get the photo and the text '
+      'after it', () async {
+    final port = await startRelay({});
+    final toAlice = await startProxy(port);
+    final alice = await personAt('Alice', toAlice.url);
+    final direct = 'ws://127.0.0.1:$port';
+    final bob = await personAt('Bob', direct);
+    final carol = await personAt('Carol', direct);
+    final dave = await personAt('Dave', direct);
+    for (final p in [bob, carol, dave]) {
+      await introduce(alice, p);
+    }
+    await settled([alice, bob, carol, dave]);
+    // Dave is not in the group.
+    final photos = await alice.createGroup('Photos', [bob.myRid, carol.myRid]);
+    await waitUntil(
+        () => [bob, carol].every((p) => p.groups.containsKey(photos)),
+        what: 'the group reached Bob and Carol');
+    await alice.waitForGroupFanout(photos);
+    await waitFor(
+        () async => await outboxCount(alice) == 0 && !alice.pqSendPending,
+        what: 'Alice\'s outbox is empty');
+    expect(alice.groupStagingBound, 64 * 1024 * 1024,
+        reason: 'the shipped bound');
+    alice.outboxRetryDelay = const Duration(milliseconds: 300);
+
+    // Dave's mailbox is full, and two of the largest files go to him.
+    var refusedToDave = 0;
+    toAlice.answer = (link, f) {
+      if (f['to'] != dave.myRid) return null;
+      refusedToDave++;
+      return {'t': 'error', 'code': 'queue_full', 'id': f['id']};
+    };
+    for (var n = 0; n < 2; n++) {
+      await alice.sendFile(dave.myRid, 'video$n.bin',
+          bytesOf(maxAttachmentBytes, n + 1), 'application/octet-stream');
+    }
+    await waitUntil(() => refusedToDave >= 2,
+        what: 'Dave\'s mailbox refused, and refused again');
+    final stuck = firstIntValue(await alice.vault.db.rawQuery(
+            'SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM outbox '
+            'WHERE rid = ?',
+            [dave.myRid])) ??
+        0;
+    expect(stuck, greaterThan(alice.groupStagingBound),
+        reason: 'what is stuck for Dave is past the bound by itself');
+
+    final photo = bytesOf(3 * defaultChunkSize, 7);
+    await alice.sendGroupFile(
+        photos, 'photo.bin', photo, 'application/octet-stream');
+    await alice.sendGroupText(photos, 'after the photo');
+    await waitFor(
+        () async =>
+            await hasWhole(bob, photos, photo) &&
+            await hasWhole(carol, photos, photo) &&
+            groupTexts(bob, photos).contains('after the photo') &&
+            groupTexts(carol, photos).contains('after the photo'),
+        timeout: const Duration(seconds: 60),
+        what: 'Bob and Carol have the photo whole and the text after it, '
+            'while Dave\'s mailbox is full');
+    // ignore: avoid_print
+    print('48.3 shipped bound ${alice.groupStagingBound}: $stuck characters '
+        'stuck for Dave, and Bob and Carol had the photo and the text');
+  }, timeout: const Timeout(Duration(minutes: 4)));
+
+  test(
+      '22. while the store refuses everyone no group file is staged, and once '
+      'it takes an envelope again the file goes', () async {
+    final port = await startRelay({});
+    final toAlice = await startProxy(port);
+    final alice = await personAt('Alice', toAlice.url);
+    final direct = 'ws://127.0.0.1:$port';
+    final bob = await personAt('Bob', direct);
+    final carol = await personAt('Carol', direct);
+    for (final p in [bob, carol]) {
+      await introduce(alice, p);
+    }
+    await settled([alice, bob, carol]);
+    final files = await alice.createGroup('Files', [bob.myRid, carol.myRid]);
+    await waitUntil(
+        () => [bob, carol].every((p) => p.groups.containsKey(files)),
+        what: 'the group reached Bob and Carol');
+    await alice.waitForGroupFanout(files);
+    await waitFor(
+        () async => await outboxCount(alice) == 0 && !alice.pqSendPending,
+        what: 'Alice\'s outbox is empty');
+
+    // The store is full: everything is refused `store_full`, in the relay's
+    // place. Eight envelopes to eight mailboxes nobody holds end a pass on
+    // it, the store refusing everyone (criterion 6), and the retry timer
+    // brings the next pass, which ends the same way: once sixteen are
+    // refused, a pass has ended so.
+    alice.outboxRetryDelay = const Duration(milliseconds: 300);
+    var storeFull = true;
+    var refusals = 0;
+    toAlice.answer = (link, f) {
+      if (!storeFull) return null;
+      refusals++;
+      return {'t': 'error', 'code': 'store_full', 'id': f['id']};
+    };
+    for (var i = 0; i < 8; i++) {
+      await queueRaw(alice, nobody());
+    }
+    await alice.flushOutbox();
+    await waitUntil(() => refusals >= 16,
+        what: 'two passes ended on eight refusals in a row');
+    // How often the drain has looked at a member's copy of a group file: it
+    // steps over nothing, and only counts.
+    var looks = 0;
+    alice.debugHoldGroupFanout = (rid, inner) {
+      if (inner.kind == 'gfile') looks++;
+      return false;
+    };
+
+    // (a) A file to the group: neither member's mailbox has been refused,
+    // and the outbox holds nothing for mailboxes that are taking envelopes,
+    // but nothing is staged — every mailbox would get the store's answer.
+    final file = bytesOf(3 * defaultChunkSize, 5);
+    await alice.sendGroupFile(files, 'f.bin', file, 'application/octet-stream');
+    await waitFor(() async {
+      await alice.retryGroupFanout();
+      return looks >= 4 || (await waitingIn(alice, files)).length < 2;
+    }, what: 'the drain looked at both members\' file twice');
+    expect(await chunkRowsOf(alice), isEmpty,
+        reason: 'no chunk staged while the store refuses everyone');
+    expect((await waitingIn(alice, files)).keys.toSet(),
+        {bob.myRid, carol.myRid},
+        reason: 'the file waits for both');
+
+    // (b) The store takes envelopes again: that alone stages the file, and
+    // both have it whole.
+    storeFull = false;
+    await waitFor(
+        () async =>
+            await hasWhole(bob, files, file) &&
+            await hasWhole(carol, files, file),
+        timeout: const Duration(seconds: 60),
+        what: 'once the store takes envelopes, Bob and Carol have the file');
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }
 
 /// One `send` frame, as the proxy saw it cross.
@@ -1503,6 +2009,12 @@ class _Proxy {
 
   /// Whether held answers are handed on in the order they came.
   bool inOrder = true;
+
+  /// Asked about every answer that names an envelope: a future to hold it
+  /// until, in place of [delayOf] and [replyDelay] — the relay slow to
+  /// answer that envelope for as long as a test wants — or null to time it
+  /// as they say.
+  Future<void>? Function(_Link link, Map<String, Object?> answer)? holdUntil;
 
   /// The uplink's speed, in characters a second; null for as fast as the
   /// frames come.
@@ -1636,6 +2148,15 @@ class _Proxy {
     if (f['id'] is! String) {
       _settle(l, f);
       _toClient(l, raw);
+      return;
+    }
+    final gate = holdUntil?.call(l, f);
+    if (gate != null) {
+      unawaited(gate.then((_) {
+        if (l.closed) return;
+        _settle(l, f);
+        _toClient(l, raw);
+      }));
       return;
     }
     final delay = delayOf?.call(l, f) ?? replyDelay;

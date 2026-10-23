@@ -1061,6 +1061,62 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String get chatGroupUploadTitle => 'Una subida grande';
+
+  @override
+  String chatGroupUploadBody(int mb, int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'a $count destinatarios',
+      one: 'a 1 destinatario',
+    );
+    return 'Enviar este archivo supone subir unos $mb MB ($_temp0). Cada miembro del grupo, y cada uno de tus otros dispositivos, recibe su propia copia.';
+  }
+
+  @override
+  String get chatGroupUploadSend => 'Enviar';
+
+  @override
+  String get chatGroupUploadRefusedTitle => 'Demasiado grande para este grupo';
+
+  @override
+  String chatGroupUploadRefusedBody(int mb, int count, int limit) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'a $count destinatarios',
+      one: 'a 1 destinatario',
+    );
+    return 'Enviar este archivo supondría subir unos $mb MB ($_temp0): más de los $limit MB que el relay público puede guardar para todos a la vez. No se ha enviado nada. Envía un archivo más pequeño o envíalo a menos personas.';
+  }
+
+  @override
+  String chatGroupVoiceUploadBody(int mb, int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'a $count destinatarios',
+      one: 'a 1 destinatario',
+    );
+    return 'Enviar este mensaje de voz supone subir unos $mb MB ($_temp0). Cada miembro del grupo, y cada uno de tus otros dispositivos, recibe su propia copia.';
+  }
+
+  @override
+  String chatGroupVoiceUploadRefusedBody(int mb, int count, int limit) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'a $count destinatarios',
+      one: 'a 1 destinatario',
+    );
+    return 'Enviar este mensaje de voz supondría subir unos $mb MB ($_temp0): más de los $limit MB que el relay público puede guardar para todos a la vez. No se ha enviado, y se guarda aquí hasta que lo envíes o lo descartes. Graba uno más corto o envíalo a menos personas.';
+  }
+
+  @override
+  String get chatVoiceHeld => 'Aún sin enviar: envíalo o descártalo';
+
+  @override
   String chatReactionFailed(String error) {
     return 'Error en la reacción: $error';
   }

@@ -95,6 +95,61 @@ class GroupListRefused implements Exception {
   String toString() => 'GroupListRefused: ${reason.name}';
 }
 
+/// What a file sent to a group uploads (ADR 0036 §4, 48.3), worked out from
+/// its size before anything is sealed, written or queued
+/// ([ChatService.groupFileCost]). A group file is encrypted once, but every
+/// chunk goes to every recipient in an envelope of its own, so the upload is
+/// [recipients] × [chunks] × [ChatService.chunkEnvelopeChars].
+@immutable
+class GroupFileCost {
+  const GroupFileCost(
+      {required this.recipients,
+      required this.chunks,
+      required this.noticeFrom,
+      required this.limit});
+
+  /// Who is sent every chunk: each member this device holds as a contact —
+  /// their main device; a member's own phone passes a file on to their
+  /// other devices — and each of my other devices.
+  final int recipients;
+
+  /// The chunks the file is split into (§7), a short last one counted whole.
+  final int chunks;
+
+  /// The thresholds it was judged against: [ChatService.groupFileNoticeFrom]
+  /// and [ChatService.groupFileLimit] when it was worked out.
+  final int noticeFrom;
+  final int limit;
+
+  /// The upload, in characters on the wire.
+  int get chars => recipients * chunks * ChatService.chunkEnvelopeChars;
+
+  /// The upload in decimal megabytes, as the composer says it: rounded up,
+  /// so it is never said to be less than it is.
+  int get megabytes => (chars + 999999) ~/ 1000000;
+
+  /// [limit] in decimal megabytes.
+  int get limitMegabytes => limit ~/ 1000000;
+
+  /// From [noticeFrom], the composer says what it costs before it goes.
+  bool get notice => chars >= noticeFrom;
+
+  /// Past [limit], it is not sent at all.
+  bool get refused => chars > limit;
+}
+
+/// [ChatService.sendGroupFile] would not send the file (ADR 0036 §4): its
+/// upload, [cost], is past [ChatService.groupFileLimit]. Nothing was sealed,
+/// written or queued, and the group is as it was.
+class GroupFileOverBudget implements Exception {
+  final GroupFileCost cost;
+  const GroupFileOverBudget(this.cost);
+
+  @override
+  String toString() => 'GroupFileOverBudget: about ${cost.megabytes} MB to '
+      '${cost.recipients} recipients, past ${cost.limitMegabytes} MB';
+}
+
 /// The orchestrator: owns contacts, protocol conversations, the message
 /// store, the outbox, attachments, receipts and disappearing messages.
 ///
@@ -4329,6 +4384,36 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if (_outboxWindow < outboxMaxInFlight) _outboxWindow++;
     await vault.db.delete('outbox', where: 'seq = ?', whereArgs: [row['seq']]);
     await _markSentIfLast(row);
+    // 48.3: a mailbox that takes an envelope is refusing no more, and a
+    // store that takes one is not full: a member's file that waited for
+    // either is staged now. And a file waiting for the outbox to drain goes
+    // once it has.
+    var resume = _refusedMailboxes.remove(row['rid']) || _storeRefusing;
+    _storeRefusing = false;
+    final waits = _stagingWaitChars;
+    if (waits != null) {
+      final left = waits - (row['payload'] as String).length;
+      _stagingWaitChars = left;
+      if (left < groupStagingBound) resume = true;
+    }
+    if (resume) _resumeStaging();
+  }
+
+  /// A group file waits on [groupStagingBound]: ask the drain for it again,
+  /// which measures the outbox for itself ([_drainGroupFanout]).
+  void _resumeStaging() {
+    _stagingWaitChars = null;
+    unawaited(_drainGroupFanout());
+  }
+
+  /// The relay refused an envelope to [rid], which is kept and tried again
+  /// (48.3, ADR 0036 §3): the refusal holds that mailbox and nothing else.
+  /// What is queued to it leaves the staging measure, so a file waiting on
+  /// the bound may go now.
+  void _mailboxRefusing(String rid) {
+    if (_refusedMailboxes.add(rid) && _stagingWaitChars != null) {
+      _resumeStaging();
+    }
   }
 
   Future<void> _outboxRefused(_OutboxPass p, Map<String, Object?> row,
@@ -4360,6 +4445,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // outbox row carries none. It used to stop every row behind it.
       _timeAnswer(out);
       p.held.add(rid);
+      _mailboxRefusing(rid);
     } else if (code.contains('store_full')) {
       // No room at the relay for this envelope (§12.4). That is the store
       // full, which refuses everyone, or the first-contact gate, which
@@ -4372,6 +4458,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // next reconnect.
       _timeAnswer(out);
       p.held.add(rid);
+      _mailboxRefusing(rid);
       p.storeFullRun.add(rid);
       if (p.storeFullRun.length >= outboxStoreFullRun) {
         p.stop ??= _OutboxStop.storeFull;
@@ -4415,6 +4502,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // one a refusal stopped, if it moved a message's status first.
     if (p.stop == null || p.sentAny || p.failedAny) notifyListeners();
     if (_disposed) return; // no timer on the way out
+    // 48.3: a store that refuses everyone stages nothing until it takes an
+    // envelope again ([_outboxTaken]).
+    if (p.stop == _OutboxStop.storeFull) _storeRefusing = true;
+    // What a group file waits for is the outbox draining, and rows also
+    // leave it by other ways than being taken; at the end of a pass the
+    // drain measures for itself.
+    if (_stagingWaitChars != null) _resumeStaging();
     switch (p.stop) {
       case _OutboxStop.rateLimited || _OutboxStop.refused:
         final delay = _otherRetryBackoff;
@@ -9085,6 +9179,36 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// waited for the next send or reconnect (`group_fanout_test` 6).
   bool _fanoutAgain = false;
 
+  /// ADR 0036 §4 (48.3): what the outbox held ([_outboxQueuedChars]) when
+  /// the drain last left a file waiting on [groupStagingBound], less what the
+  /// relay has taken since ([_outboxTaken]) — or 0 when that measure failed
+  /// — and null while nothing waits on it. Once it is under the bound, or an
+  /// outbox pass ends, the drain is asked for again and measures for itself.
+  /// Rows queued meanwhile are not counted here, and a row taken from a
+  /// mailbox that was refused, and not measured, is: so it can only ask
+  /// early, and asking early costs one measure.
+  int? _stagingWaitChars;
+
+  /// ADR 0036 §3 and §4 (48.3): the mailboxes the relay is refusing — a row
+  /// to each was answered `queue_full`, `store_full` or `pow_required`, and
+  /// is kept and tried again — until one of their envelopes is taken. A
+  /// refusal holds its mailbox, not the outbox: what is queued to these is
+  /// left out of what the staging bound measures, and a member among them
+  /// is staged no new chunks until their mailbox takes envelopes again
+  /// ([_mayStage]). Held in memory only: after a restart the first pass
+  /// finds them again.
+  final Set<String> _refusedMailboxes = {};
+
+  /// ... and whether the last outbox pass ended on the store refusing
+  /// everyone ([outboxStoreFullRun] in a row). Until anything is taken
+  /// again no file is staged at all: every mailbox would get that answer.
+  bool _storeRefusing = false;
+
+  /// Test seam: the staging measure ([_outboxQueuedChars]) fails, as a
+  /// vault that cannot answer would. Nothing in the app sets it.
+  @visibleForTesting
+  bool debugFailOutboxMeasure = false;
+
   /// Test hook: hold the queue so an interrupted fan-out can be observed.
   bool debugPauseGroupFanout = false;
 
@@ -9129,6 +9253,72 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// either way: receivers did not change. Nothing in the app sets it.
   @visibleForTesting
   bool debugBuildBefore0036 = false;
+
+  /// ADR 0036 §4 (48.3): what one chunk of a file costs on the wire, to one
+  /// recipient — a full chunk's sealed envelope, in the 262 144-byte bucket
+  /// (§7, §8): `zs1.` and the unpadded base64url of the ephemeral key, the
+  /// nonce, the padded body and the tag, 4 + 349 606 characters. A file's
+  /// last chunk is no longer.
+  static const int chunkEnvelopeChars = 349610;
+
+  /// ADR 0036 §4 (48.3): from this much upload, in characters — 128 MB — the
+  /// composer says what a file will cost before it is sent to a group, and
+  /// asks (Finnian's decision of 2026‑10‑17, the ADR's question 2).
+  /// Overridable, like [outboxRetryDelay], so a test need not build a file
+  /// that uploads 128 MB; nothing in the app changes it.
+  int groupFileNoticeFrom = 128 * 1000 * 1000;
+
+  /// ... and past this much — 256 MB, the public relay's whole store — a file
+  /// is not sent to a group at all: [sendGroupFile] refuses it before
+  /// anything is sealed, written or queued, and the composer says why. A
+  /// 1 MiB photo reaches 91 recipients within it, a 24 MiB file four.
+  /// Overridable likewise.
+  int groupFileLimit = 256 * 1000 * 1000;
+
+  /// ADR 0036 §4 (48.3): the fan-out drain writes a member's chunk rows only
+  /// while the outbox holds less than this, in payload characters
+  /// ([_outboxQueuedChars]). Past it, a file waits in the queue for the
+  /// outbox to drain, and the drain goes on with everything else
+  /// ([_drainGroupFanout]). The bound is on what is queued: the envelopes in
+  /// flight (48.2, [outboxMaxInFlightChars]) are part of it, since a row
+  /// leaves the outbox only once the relay has taken it. Overridable, like
+  /// [outboxRetryDelay], so a test need not stage 64 MiB.
+  int groupStagingBound = 64 * 1024 * 1024;
+
+  /// ADR 0036 §4 (48.3): what sending a [size]-byte file to [gid] would
+  /// upload, judged against [groupFileNoticeFrom] and [groupFileLimit] —
+  /// what the composer shows, and what [sendGroupFile] refuses. Counted as
+  /// the fan-out sends it: every chunk to each member the drain serves
+  /// ([_fanoutRids]) and to each of my other devices
+  /// ([DeviceSyncService.fanChunk]), one envelope each. A member's other
+  /// devices are sent the offer alone; their own phone passes the chunks on
+  /// ([_onChunk]), so they cost this upload nothing.
+  ///
+  /// The rule is a group's, as ADR 0036 frames it: what multiplies a file is
+  /// the group's members. A file to one contact is sent to them and to my
+  /// other devices, as before, and is not judged ([sendFile]).
+  GroupFileCost groupFileCost(String gid, int size) {
+    final g = groups[gid];
+    return _groupFileCostFor(
+        (g == null ? 0 : _fanoutRids(g).length) + _ownDeviceCount,
+        fileChunkCount(size));
+  }
+
+  GroupFileCost _groupFileCostFor(int recipients, int chunks) => GroupFileCost(
+      recipients: recipients,
+      chunks: chunks,
+      noticeFrom: groupFileNoticeFrom,
+      limit: groupFileLimit);
+
+  /// My other devices: each is sent every chunk of a file I send.
+  int get _ownDeviceCount => _sync?.deviceRoutingIds.length ?? 0;
+
+  /// Test seam: awaited in [sendGroupFile] once the file's blob is written
+  /// and before its fan-out is queued — the window in which the group can
+  /// outgrow the budget its first look found it within. Nothing in the app
+  /// sets it.
+  @visibleForTesting
+  Future<void> Function()? debugBeforeGroupFileQueued;
 
   /// ADR 0036: how many more accounts [gid]'s list may name if I add them —
   /// `0` for a full group, and below it for one an older build made larger,
@@ -9253,13 +9443,20 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// [extraRids]: recipients the list in [inner] no longer names but who
   /// must still be told — a member it removes, whose app marks the group as
   /// left on reading it.
+  ///
+  /// [fileChunks]: [inner] is a file of that many chunks, judged again
+  /// against the recipients this snapshot names (ADR 0036 §4) — the group
+  /// can have grown since [sendGroupFile] first looked — and refused with
+  /// [GroupFileOverBudget] before anything is written.
   Future<void> _queueGroupFanout(Group g, InnerMessage inner,
       {Future<void> Function(Transaction txn)? also,
-      Iterable<String> extraRids = const []}) async {
-    final rids = [
-      for (final rid in {...g.memberRids, ...extraRids})
-        if (contacts[rid] != null) rid
-    ];
+      Iterable<String> extraRids = const [],
+      int? fileChunks}) async {
+    final rids = _fanoutRids(g, extraRids);
+    if (fileChunks != null) {
+      final cost = _groupFileCostFor(rids.length + _ownDeviceCount, fileChunks);
+      if (cost.refused) throw GroupFileOverBudget(cost);
+    }
     // A group with nobody else in it still records the caller's row.
     if (rids.isEmpty && also == null) return;
     final payload =
@@ -9285,6 +9482,16 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     _fanoutWanted = true;
     unawaited(_drainGroupFanout());
   }
+
+  /// Who a fan-out for [g] is queued to: each member, and each of
+  /// [extraRids], this device holds as a contact — one row each
+  /// ([_queueGroupFanout]). What a group file's upload is counted by, too
+  /// ([groupFileCost]), so the two cannot come apart.
+  List<String> _fanoutRids(Group g, [Iterable<String> extraRids = const []]) =>
+      [
+        for (final rid in {...g.memberRids, ...extraRids})
+          if (contacts[rid] != null) rid
+      ];
 
   /// Work the queue off oldest-first, deleting each row only after the
   /// recipient's outbox row is committed. A row that fails is left in place
@@ -9323,6 +9530,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     _fanoutDraining = true;
     // This drain starts from the front: every call before it is served.
     _fanoutAgain = false;
+    // ... and measures for itself what a waiting file waits for (48.3).
+    _stagingWaitChars = null;
     try {
       // A cursor over the queue, and whether this sweep of it achieved
       // anything. A sweep that skipped rows and sent nothing must STOP —
@@ -9340,6 +9549,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // cache is dropped after each page, so a long queue of large files
       // holds at most a page's worth of ciphertext, not all of it.
       final chunkCache = <String, List<String>>{};
+      // ADR 0036 §4 (48.3): each member, by group, whose file this sweep left
+      // waiting ([_mayStage]). What waits with it is what must not overtake
+      // it: a list of that group ([_membershipKinds]) — one that removes
+      // them would reach them first, and they would then refuse the file
+      // ([_persistGroupFile]) — or my leaving it, and a later file of that
+      // group to them, which keeps its place behind this one. Their texts,
+      // edits, reactions and deletes go, and so does everything to everyone
+      // else and to them in other conversations.
+      final waiting = <(String, String)>{};
       while (!debugPauseGroupFanout) {
         _fanoutWanted = false;
         // Past `after`, not from the start. A row that cannot be sent yet —
@@ -9368,7 +9586,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             final again = sentThisSweep || _fanoutWanted || asked;
             after = 0;
             sentThisSweep = false;
-            if (again) continue;
+            // From the front, a waiting file is met before what waits behind
+            // it, and is measured again.
+            waiting.clear();
+            if (again) {
+              _stagingWaitChars = null;
+              continue;
+            }
             return;
           }
           if (_fanoutWanted || asked) continue;
@@ -9416,11 +9640,31 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             if (r['gid'] != rid) heldMembers.add(rid);
             continue;
           }
+          final key = (r['gid'] as String, rid);
           try {
             final inner = InnerMessage.fromBytes(Uint8List.fromList(
                 utf8.encode(await vault.unseal(r['payload'] as String))));
             final hold = debugHoldGroupFanout;
             if (hold != null && hold(rid, inner)) continue;
+            // Behind this member's file, which waits (48.3): only what must
+            // not overtake it.
+            if (waiting.contains(key) &&
+                (inner.kind == 'gfile' ||
+                    _membershipKinds.contains(inner.kind))) {
+              continue;
+            }
+            if (inner.kind == 'gfile' && !await _mayStage(rid)) {
+              // ADR 0036 §3, §4 (48.3): a member's chunk rows are written
+              // only while the outbox holds less than [groupStagingBound]
+              // for mailboxes that are taking envelopes, and not while the
+              // relay refuses theirs. Otherwise the file waits here, queued,
+              // and the rows behind it go now — but for what must not
+              // overtake it. Nothing bounded this before: every member's
+              // chunks were staged at once, up to the whole budget, and the
+              // outbox sends its oldest rows first.
+              waiting.add(key);
+              continue;
+            }
             // 23.2: a file offer travels with its sealed chunks, in the same
             // transaction as the offer's outbox row, so a member gets the key
             // and every chunk or nothing. The chunks are rebuilt from the
@@ -9526,6 +9770,65 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     }
     cache[inner.mid] = out;
     return out;
+  }
+
+  /// What a change to a group travels as: a list — who is in it, and its
+  /// name, roles and timer — or my leaving it. Neither may overtake a file
+  /// sent to a member while they were one (48.3, [_drainGroupFanout]).
+  static const _membershipKinds = {'ginvite', 'gleave'};
+
+  /// Whether the drain may write [rid]'s chunk rows for a group file now
+  /// (ADR 0036 §3, §4; 48.3). Not while the relay refuses their mailbox —
+  /// their file waits, and what is stuck behind the refusal stays what was
+  /// queued before it — nor while the store refuses everyone, nor while
+  /// what the outbox holds for mailboxes that are taking envelopes is at
+  /// [groupStagingBound] or past it. A measure that fails answers no, and
+  /// the next drain measures again.
+  Future<bool> _mayStage(String rid) async {
+    if (_storeRefusing || _refusedMailboxes.contains(rid)) return false;
+    final int queued;
+    try {
+      queued = await _outboxQueuedChars();
+    } catch (_) {
+      _stagingWaitChars = 0; // ask again as soon as anything is taken
+      return false;
+    }
+    if (queued < groupStagingBound) return true;
+    _stagingWaitChars = queued;
+    return false;
+  }
+
+  /// What the outbox holds for mailboxes that are taking envelopes, in
+  /// payload characters — every row, those in flight included, but for the
+  /// rows of a mailbox the relay is refusing ([_refusedMailboxes]): a
+  /// refusal holds its own mailbox, not the staging of everyone else's.
+  /// Measured with [Vault.outboxLengthFunction]: `octet_length`, which takes
+  /// a row's length from its record header without reading the payload,
+  /// where this SQLite has it, and `length` where it does not. A payload is
+  /// ASCII (`zs1.` and base64url, or base64), so its bytes are its
+  /// characters.
+  ///
+  /// Each row is measured in a subquery and the lengths summed by mailbox;
+  /// the subquery's `LIMIT -1` keeps SQLite from folding it into the
+  /// grouping, whose sorter would then carry every payload. At 5 000 rows on
+  /// the build machine (SQLite 3.45.1) this takes 8–9 ms with
+  /// `octet_length`, whatever the rows hold, where grouping the payloads
+  /// themselves took 224 ms with 64 MiB of chunks among them and 7.1 s with
+  /// 5 000 chunks; with `length`, which reads every payload, 9 ms of texts,
+  /// 57 ms with 64 MiB of chunks among them and 1.1 s with 5 000 chunks.
+  Future<int> _outboxQueuedChars() async {
+    if (debugFailOutboxMeasure) {
+      throw StateError('debugFailOutboxMeasure: the staging measure');
+    }
+    final fn = vault.outboxLengthFunction;
+    var queued = 0;
+    for (final r in await vault.db.rawQuery(
+        'SELECT rid, SUM(n) AS n FROM '
+        '(SELECT rid, $fn(payload) AS n FROM outbox LIMIT -1) GROUP BY rid')) {
+      if (_refusedMailboxes.contains(r['rid'])) continue;
+      queued += (r['n'] as num).toInt();
+    }
+    return queued;
   }
 
   /// Test helper: run one drain pass to completion, synchronously — so a test
@@ -10677,6 +10980,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       throw const FormatException(
           'attachment too large (max 24 MB in this build)');
     }
+    // ADR 0036 §4 (48.3): the upload is judged before anything is sealed,
+    // written or queued. Past [groupFileLimit] nothing is — no blob, no row,
+    // no message — and the composer says why. It used to be queued whatever
+    // it came to: a 24 MiB file to five members is 308 MB, more than the
+    // public relay holds for everyone.
+    final cost = groupFileCost(gid, bytes.length);
+    if (cost.refused) throw GroupFileOverBudget(cost);
     final ts = _now();
     // ADR 0030: the group's timer, as on a text.
     final ttl = _groupTtl(g);
@@ -10707,6 +11017,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       },
     );
     final keyInfo = await vault.writeBlob(km.fid, bytes);
+    final between = debugBeforeGroupFileQueued;
+    if (between != null) await between();
     // 23.2: the chunks are NOT encrypted on the send path. The fan-out is
     // queued like a text's, and the drain rebuilds each member's chunk rows
     // from the blob when that member's turn comes (`chunkNonce` is derived
@@ -10715,38 +11027,46 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // Local copy, placeholder and the delivery plan land in ONE transaction,
     // so the file either exists with its fan-out rows or does not exist at
     // all (the same shape as sendGroupText; group_file_fanout_test 4).
-    await _queueGroupFanout(g, inner, also: (txn) async {
-      await txn.insert('files', {
-        'fid': km.fid,
-        'rid': gid,
-        'mid': inner.mid,
-        'enc_meta': await vault.seal(jsonEncode({
-          'name': fileName,
-          'size': bytes.length,
-          'mime': mime,
-          'sha256': sha,
-          'local': keyInfo,
-          if (voice) 'voice': true,
-          if (durSec > 0) 'dur': durSec,
-        })),
-        'complete': 1,
-        'got_chunks': chunks.length,
-        'total_chunks': chunks.length,
+    try {
+      await _queueGroupFanout(g, inner, fileChunks: chunks.length,
+          also: (txn) async {
+        await txn.insert('files', {
+          'fid': km.fid,
+          'rid': gid,
+          'mid': inner.mid,
+          'enc_meta': await vault.seal(jsonEncode({
+            'name': fileName,
+            'size': bytes.length,
+            'mime': mime,
+            'sha256': sha,
+            'local': keyInfo,
+            if (voice) 'voice': true,
+            if (durSec > 0) 'dur': durSec,
+          })),
+          'complete': 1,
+          'got_chunks': chunks.length,
+          'total_chunks': chunks.length,
+        });
+        await txn.insert('messages', {
+          'mid': inner.mid,
+          'rid': gid,
+          'outgoing': 1,
+          'kind': 'file',
+          'enc_body': await vault.seal(jsonEncode({'fid': km.fid})),
+          'fid': km.fid,
+          'ts_ms': ts,
+          'status': MsgStatus.pending,
+          'expire_at_ms': expireAt,
+          'reply_to': quoted?.mid,
+          'forwarded': forwarded ? 1 : 0,
+        });
       });
-      await txn.insert('messages', {
-        'mid': inner.mid,
-        'rid': gid,
-        'outgoing': 1,
-        'kind': 'file',
-        'enc_body': await vault.seal(jsonEncode({'fid': km.fid})),
-        'fid': km.fid,
-        'ts_ms': ts,
-        'status': MsgStatus.pending,
-        'expire_at_ms': expireAt,
-        'reply_to': quoted?.mid,
-        'forwarded': forwarded ? 1 : 0,
-      });
-    });
+    } on GroupFileOverBudget {
+      // Refused at the fan-out's snapshot (the group grew while the blob was
+      // written): the blob is all there is of this send.
+      await vault.deleteBlob(km.fid);
+      rethrow;
+    }
     _appendLoaded(
         gid,
         ChatMessage(

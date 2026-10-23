@@ -1754,6 +1754,54 @@ abstract class AppLocalizations {
   /// **'Forward failed: {error}'**
   String chatForwardFailed(String error);
 
+  /// ADR 0036. Title of the dialog shown before a file is sent to a group when sending it will upload 128 MB or more, because every member and each of the sender's other devices is sent a copy of its own.
+  ///
+  /// In en, this message translates to:
+  /// **'A large upload'**
+  String get chatGroupUploadTitle;
+
+  /// ADR 0036. Body of the large-upload dialog, before a file is sent to a group. {mb} is the upload in megabytes (millions of bytes), rounded up; {count} is how many copies are sent: the group's members and the sender's other devices.
+  ///
+  /// In en, this message translates to:
+  /// **'This file will upload about {mb} MB ({count, plural, =1{to 1 recipient} other{to {count} recipients}}). Each member of the group, and each of your other devices, is sent a copy of its own.'**
+  String chatGroupUploadBody(int mb, int count);
+
+  /// ADR 0036. The large-upload dialog's button that sends the file to the group anyway.
+  ///
+  /// In en, this message translates to:
+  /// **'Send'**
+  String get chatGroupUploadSend;
+
+  /// ADR 0036. Title of the dialog shown when a file is not sent to a group because sending it would upload more than the limit.
+  ///
+  /// In en, this message translates to:
+  /// **'Too large for this group'**
+  String get chatGroupUploadRefusedTitle;
+
+  /// ADR 0036. Body of the dialog shown when a file is not sent to a group. {mb} is the upload it would have been, in megabytes (millions of bytes), rounded up; {count} is how many copies: the group's members and the sender's other devices; {limit} is the most a group file may upload, in megabytes. Nothing was sent.
+  ///
+  /// In en, this message translates to:
+  /// **'This file would upload about {mb} MB ({count, plural, =1{to 1 recipient} other{to {count} recipients}}): more than the {limit} MB the public relay can hold for everyone at once. Nothing was sent. Send a smaller file, or send it to fewer people.'**
+  String chatGroupUploadRefusedBody(int mb, int count, int limit);
+
+  /// ADR 0036. Body of the large-upload dialog before a recorded voice message is sent to a group; its title is chatGroupUploadTitle. {mb} is the upload in megabytes (millions of bytes), rounded up; {count} is how many copies are sent: the group's members and the sender's other devices.
+  ///
+  /// In en, this message translates to:
+  /// **'This voice message will upload about {mb} MB ({count, plural, =1{to 1 recipient} other{to {count} recipients}}). Each member of the group, and each of your other devices, is sent a copy of its own.'**
+  String chatGroupVoiceUploadBody(int mb, int count);
+
+  /// ADR 0036. Body of the dialog shown when a recorded voice message is not sent to a group because it would upload more than the limit; its title is chatGroupUploadRefusedTitle. The recording is kept in the composer of this chat, with Send and Discard, while the chat is open. {mb} is the upload it would have been, in megabytes (millions of bytes), rounded up; {count} is how many copies: the group's members and the sender's other devices; {limit} is the most a group file may upload, in megabytes.
+  ///
+  /// In en, this message translates to:
+  /// **'This voice message would upload about {mb} MB ({count, plural, =1{to 1 recipient} other{to {count} recipients}}): more than the {limit} MB the public relay can hold for everyone at once. It has not been sent, and is kept here until you send it or discard it. Record a shorter one, or send it to fewer people.'**
+  String chatGroupVoiceUploadRefusedBody(int mb, int count, int limit);
+
+  /// ADR 0036. Shown in the composer beside a recorded voice message to a group that has not gone yet (its cost was cancelled, or the group's budget refused it), next to the Discard and Send buttons.
+  ///
+  /// In en, this message translates to:
+  /// **'Not sent yet: send it or discard it'**
+  String get chatVoiceHeld;
+
   /// Toggling a reaction could not be queued.
   ///
   /// In en, this message translates to:

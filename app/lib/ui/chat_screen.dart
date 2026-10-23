@@ -192,15 +192,54 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final wav = wavFromPcm16(pcm);
     final dur = pcm16DurationSec(pcm.length);
+    if (svc.groups.containsKey(widget.rid)) {
+      await _sendGroupVoice(wav, dur);
+      return;
+    }
     try {
-      if (svc.groups.containsKey(widget.rid)) {
-        await svc.sendGroupVoiceNote(widget.rid, wav, dur, mime: 'audio/wav');
-      } else {
-        await svc.sendVoiceNote(widget.rid, wav, dur, mime: 'audio/wav');
-      }
+      await svc.sendVoiceNote(widget.rid, wav, dur, mime: 'audio/wav');
       _jumpToEnd();
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(l.chatSendFailed('$e'))));
+    }
+  }
+
+  /// 48.3: a voice message to a group recorded and not yet gone — the person
+  /// cancelled the cost, or the group's budget refused it, or the send
+  /// failed. Kept in the composer, with Send and Discard, until it goes or
+  /// they discard it; in memory only, as a recording is, so leaving the chat
+  /// discards it, as it does a text typed and not sent.
+  ({Uint8List wav, int dur})? _heldVoice;
+  bool _sendingVoice = false;
+
+  /// Send a recorded voice message to this group, within its budget
+  /// ([_groupUploadGoes]); if it does not go, it is kept ([_heldVoice]).
+  Future<void> _sendGroupVoice(Uint8List wav, int dur) async {
+    if (_sendingVoice) return;
+    final svc = context.read<ChatService>();
+    final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
+    void keep() {
+      if (mounted) setState(() => _heldVoice = (wav: wav, dur: dur));
+    }
+
+    _sendingVoice = true;
+    try {
+      if (!await _groupUploadGoes(widget.rid, wav.length, voice: true)) {
+        keep();
+        return;
+      }
+      await svc.sendGroupVoiceNote(widget.rid, wav, dur, mime: 'audio/wav');
+      if (mounted) setState(() => _heldVoice = null);
+      _jumpToEnd();
+    } on GroupFileOverBudget catch (e) {
+      keep();
+      await _showGroupUploadRefused(e.cost, voice: true);
+    } catch (e) {
+      keep();
+      messenger.showSnackBar(SnackBar(content: Text(l.chatSendFailed('$e'))));
+    } finally {
+      _sendingVoice = false;
     }
   }
 
@@ -334,8 +373,17 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (to == null) return;
     try {
+      // A file forwarded to a group is a group file (48.3).
+      final size = msg.kind == 'file' ? msg.file?.size : null;
+      if (size != null &&
+          svc.groups.containsKey(to) &&
+          !await _groupUploadGoes(to, size)) {
+        return;
+      }
       await svc.forwardMessage(widget.rid, msg.mid, to);
       messenger.showSnackBar(SnackBar(content: Text(l.chatForwarded)));
+    } on GroupFileOverBudget catch (e) {
+      await _showGroupUploadRefused(e.cost);
     } catch (e) {
       messenger
           .showSnackBar(SnackBar(content: Text(l.chatForwardFailed('$e'))));
@@ -489,14 +537,79 @@ class _ChatScreenState extends State<ChatScreen> {
     final messenger = ScaffoldMessenger.of(context);
     try {
       if (svc.groups.containsKey(widget.rid)) {
+        if (!await _groupUploadGoes(widget.rid, bytes.length)) return;
         await svc.sendGroupFile(widget.rid, name, bytes, mime);
       } else {
         await svc.sendFile(widget.rid, name, bytes, mime);
       }
       _jumpToEnd();
+    } on GroupFileOverBudget catch (e) {
+      await _showGroupUploadRefused(e.cost);
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('$e')));
     }
+  }
+
+  /// ADR 0036 §4 (48.3): whether a [size]-byte file goes to the group [gid].
+  /// A group file goes to every member and to each of my other devices, one
+  /// copy each. Under [ChatService.groupFileNoticeFrom] of upload it goes
+  /// without a word; from there the person is told what it will upload, and
+  /// to how many, and chooses; past [ChatService.groupFileLimit] it does not
+  /// go, and they are told why. The service refuses it too, whichever way it
+  /// comes ([GroupFileOverBudget]). A file to one contact never comes here.
+  /// [voice]: it is a voice message, and the dialogs say so.
+  Future<bool> _groupUploadGoes(String gid, int size,
+      {bool voice = false}) async {
+    if (!mounted) return false;
+    final cost = context.read<ChatService>().groupFileCost(gid, size);
+    if (cost.refused) {
+      await _showGroupUploadRefused(cost, voice: voice);
+      return false;
+    }
+    if (!cost.notice) return true;
+    final l = AppLocalizations.of(context);
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.chatGroupUploadTitle),
+        content: Text(voice
+            ? l.chatGroupVoiceUploadBody(cost.megabytes, cost.recipients)
+            : l.chatGroupUploadBody(cost.megabytes, cost.recipients)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(l.cancel)),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(l.chatGroupUploadSend)),
+        ],
+      ),
+    );
+    return go == true && mounted;
+  }
+
+  /// A group file past its budget, in the reader's words: what it would
+  /// have uploaded, to how many, and the limit — and that nothing was sent;
+  /// for a voice message, that it is kept ([_heldVoice]).
+  Future<void> _showGroupUploadRefused(GroupFileCost cost,
+      {bool voice = false}) async {
+    if (!mounted) return;
+    final l = AppLocalizations.of(context);
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.chatGroupUploadRefusedTitle),
+        content: Text(voice
+            ? l.chatGroupVoiceUploadRefusedBody(
+                cost.megabytes, cost.recipients, cost.limitMegabytes)
+            : l.chatGroupUploadRefusedBody(
+                cost.megabytes, cost.recipients, cost.limitMegabytes)),
+        actions: [
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx), child: Text(l.ok)),
+        ],
+      ),
+    );
   }
 
   /// Delete the picker's plaintext copies. Best effort: a failure here must
@@ -785,6 +898,44 @@ class _ChatScreenState extends State<ChatScreen> {
                       icon: const Icon(Icons.arrow_upward),
                       tooltip: l.chatSendVoice,
                       onPressed: () => _stopRecording(send: true),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else if (_heldVoice case final held?)
+            // 48.3: a group voice message that has not gone yet, kept.
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 8, 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.mic_none, color: context.z.textSecondary),
+                    const SizedBox(width: 10),
+                    Text(describeDuration(held.dur),
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(l.chatVoiceHeld,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 12, color: context.z.textSecondary)),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.delete_outline,
+                          color: context.z.textSecondary),
+                      tooltip: l.chatDiscard,
+                      onPressed: () => setState(() => _heldVoice = null),
+                    ),
+                    const SizedBox(width: 4),
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                          backgroundColor: context.z.accent,
+                          foregroundColor: context.z.onAccent),
+                      icon: const Icon(Icons.arrow_upward),
+                      tooltip: l.chatSendVoice,
+                      onPressed: () => _sendGroupVoice(held.wav, held.dur),
                     ),
                   ],
                 ),

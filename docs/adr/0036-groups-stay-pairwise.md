@@ -8,7 +8,9 @@ text where it asked them, and listed under "Decisions". Roadmap phase 48
 "Size" and §11.1's size bullet; `group_management_test.dart` 4–7,
 `group_invite_link_test.dart` 26). 48.2 — several envelopes in flight, at
 most one per mailbox (PROTOCOL §12.5 item 6; `outbox_stall_test.dart`
-4–18). 48.3–48.5 are not built.
+4–18). 48.3 — a group file within a budget, staged under a bound (PROTOCOL
+§7's note; `group_file_fanout_test.dart` 6–12, `group_fanout_test.dart` 7–10,
+`outbox_stall_test.dart` 19–22). 48.4 and 48.5 are not built.
 - **Amends:** PROTOCOL §11, §11.1, §12.5 and §7 (informative); `PERFORMANCE.md`; `THREAT_MODEL.md` (R12, R18, R29, R38, and a new register row when 48.5 lands); AUDIT_SCOPE C9; `USING_Z.md`; `WHAT_Z_CANNOT_DO.md`.
 - **No wire change**, and no new vector.
 - **Keeps** the standing non-goal of ADRs 0019 and 0030, no shared group key, and states its cost.
@@ -31,11 +33,11 @@ Phase 48 asks whether "one encryption per member per message" should give way to
   - the 65 536 bucket up to about 140 members (87.5 KB to each);
   - the 262 144 bucket up to about 570 (350 KB; §11.1's "fewer than 900" assumes empty names);
   - nothing beyond that, and until 48.1 it failed silently.
-- **Attachments multiply.** A file is encrypted once (§7), but each 143 360-byte chunk is sealed per member. Three base64 layers (`attachments.dart:83-91`, `sealed.dart:131-138`) make each chunk a 349 610-character envelope: 2.44 × the file, or 7.7 MB per member for a 3 MiB photo. The public relay holds 16 MiB a mailbox and 256 MB in all, so that photo, sent to about 33 offline members, fills it for everyone.
+- **Attachments multiply.** A file is encrypted once (§7), but each 143 360-byte chunk is sealed per member. Three base64 layers (`attachments.dart:83-91`, `sealed.dart:163-165`) make each chunk a 349 610-character envelope: 2.44 × the file, or 7.7 MB per member for a 3 MiB photo. The public relay holds 16 MiB a mailbox and 256 MB in all, so that photo, sent to about 33 offline members, fills it for everyone. *(Built, 48.3: a group file is judged before anything is sealed, and past 256 MB refused with nothing written, so one send never asks for more than that store: the photo goes to at most 33 recipients, and the table's photo row, from fifty members on, is sends a current client refuses (`group_file_fanout_test.dart` 6, 9).)*
 
 *(Built, 48.1: by the issuer's own measure, on lists of entries shaped as a real group's and a device with no other devices of its own, the frame rule first bites at 626 members with four-character names and at 550 with twenty-character ones (`group_management_test.dart` 5); a list of 128 travels as 87 466 characters, in the 65 536 bucket (4).)*
 
-The table counts one message to each member's main device. Linked devices multiply the text rows, not the photo (`chat_service.dart:5122-5128`). Nothing measures more than one device per member (`PERFORMANCE.md:778`).
+The table counts one message to each member's main device. Linked devices multiply the text rows, not the photo (`chat_service.dart:5487-5493`). Nothing measures more than one device per member (`PERFORMANCE.md:778`). *(Built, 48.3: so a member's other devices are no recipients of a file's budget — they are sent the offer, and their own phone passes the chunks on — while each of the sender's other devices is one, sent every chunk at once by the mirror (`DeviceSyncService.fanChunk`): within the budget, and outside the staging bound, which bounds the members' copies (§4; `group_fanout_test.dart` 8).)*
 
 | | 50 | 128 | 256 | 900 |
 |---|---:|---:|---:|---:|
@@ -96,7 +98,7 @@ This is a client change only; nothing on the wire changes.
   - From 128 MB, the composer shows it.
   - Past 256 MB, the public relay's whole store, it refuses (question 2, decided as drafted).
   - A 1 MiB photo can reach 91 recipients, a 24 MiB file four.
-- **Staging bound.** The drain writes a member's chunk rows only while the outbox holds under 64 MiB. Nothing bounds that today.
+- **Staging bound.** The drain writes a member's chunk rows only while the outbox holds under 64 MiB. Nothing bounds that today. *(Built, 48.3: before a member's chunks the drain measures what the outbox holds for the mailboxes that are taking envelopes: the rows in flight included, and the rows to a mailbox the relay is refusing — `queue_full`, `store_full` or `pow_required`, kept and tried again — left out, since a refusal holds its mailbox and not the staging (§3). It measures with `octet_length`, which takes each row's length from its record header, where the vault's SQLite has it — looked for once, when the vault opens — and with `length` where it does not: at 5 000 rows, summed by mailbox, 8–9 ms with `octet_length` whatever the rows hold, and with `length`, which reads every payload, 57 ms with 64 MiB of chunks among them and 1.1 s with 5 000 chunks. The members' copies are staged under the bound a member at a time, so the outbox can pass it by one member's file; my own devices' copies are queued at once by the mirror, within the budget and outside the staging. A member whose mailbox the relay is refusing is staged no new chunks until it takes envelopes again, so what is stuck behind a refusal stays what was queued before it; while the store refuses everyone — a pass ended on eight `store_full`s — nothing is staged until something is taken; and a measure that fails stages nothing until the next drain. A file that waits holds back, to that member in that group, only what must not overtake it: a list, my leaving, a later file. Their texts, edits, reactions and deletes go, and so does everything to everyone else. The outbox draining, or a refused mailbox taking an envelope, asks for the file again (`group_fanout_test.dart` 7–10, `outbox_stall_test.dart` 19–22).)*
 - **The store stays as it is.** The public relay's 256 MB is left alone, and decided a month after 48.3 from `z_store_full_total` and `z_refused_total` (question 4, decided as drafted).
 - **One base64 layer instead of three** would take uploads from 2.44 × the file to about 1.78 ×, but it is a wire change for every attachment: it gets its own ADR, later (question 7).
 
@@ -188,6 +190,6 @@ Five patches. None touches the relay's code. Each code patch starts from a test 
 |---|---|---|
 | 48.1 | The cap, and no list a frame cannot carry | **built** |
 | 48.2 | Several envelopes in flight, at most one per mailbox | **built** |
-| 48.3 | A group file within a budget, staged under a bound | planned |
+| 48.3 | A group file within a budget, staged under a bound | **built** |
 | 48.4 | Measurements | planned |
 | 48.5 | The register and the claims, before any release ships 48.1–48.3 | planned; what 48.1 makes true — R38's sentence, C9's clause, WHAT_Z_CANNOT_DO and this record — written with it |

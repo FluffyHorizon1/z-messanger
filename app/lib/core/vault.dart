@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -99,6 +100,31 @@ class Vault {
       this._hasPassphrase);
 
   bool get hasPassphrase => _hasPassphrase;
+
+  /// The SQL function the outbox's queued payload is measured with (48.3,
+  /// the group fan-out's staging bound): `octet_length`, which takes a row's
+  /// length from its record header without reading the payload, where this
+  /// SQLite has it (3.43 and later; the app bundles 3.52), and `length`
+  /// where it does not. Every payload is ASCII, so the two agree. Looked
+  /// for once, when the vault opens.
+  String get outboxLengthFunction => _outboxLengthFunction;
+  String _outboxLengthFunction = 'length';
+
+  /// Test seam: the function [open] looks for as [outboxLengthFunction]'s
+  /// first choice. A test names one no SQLite has to open a vault as on a
+  /// SQLite without `octet_length`. Nothing in the app sets it.
+  @visibleForTesting
+  static String debugOctetLengthName = 'octet_length';
+
+  static Future<String> _lengthFunctionOf(Database db) async {
+    final name = debugOctetLengthName;
+    try {
+      await db.rawQuery("SELECT $name('z')");
+      return name;
+    } catch (_) {
+      return 'length';
+    }
+  }
 
   /// Database schema version.
   ///
@@ -582,6 +608,7 @@ class Vault {
     shredDir(Directory(p.join(root.path, restoreSpillDirName)));
     final vault = Vault._(db, root, filesDir, SecretKey(masterKeyBytes),
         masterKeyBytes, deviceSecret, fallback, hasPass);
+    vault._outboxLengthFunction = await _lengthFunctionOf(db);
     await vault._resealStrays();
     return vault;
   }

@@ -154,6 +154,16 @@ but can only shrink.
 Nor is there a broadcast channel — one writer, many readers. That would be a
 different feature, and Z does not have it.
 
+A file to a group can wait, too. Every member's copy is its own upload, so Z
+hands the members' copies to your phone's queue a member at a time, each
+only while the queue holds less than 64 MiB, not counting what waits for a
+mailbox the relay is refusing; the others wait their turn. A member whose
+mailbox at the relay is full gets no part of a new file until it takes
+messages again, however long that is, and while the relay itself is full
+nobody does. While a member's copy waits, a change to the group sent to them
+after it — who is in it, its name, its admins, its timer — waits behind it,
+and so does your next file to the group. Texts, reactions and edits do not.
+
 ## It cannot make key verification happen for you
 
 Z shows you a safety number and tells you when it changes. It cannot make you

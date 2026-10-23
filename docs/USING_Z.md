@@ -461,6 +461,28 @@ so. A group an older version of Z made larger still works, and its screen
 shows it as over the limit: its admins can remove people and rename it, but
 cannot add anyone.
 
+A **file** sent to a group goes to each of them separately too, and to each
+of your other devices: a copy each, every copy about 2.4 times the size of
+the file. So a big file to a big group is a big upload. From 128 MB, Z tells
+you what a file will upload, and to how many, before it sends anything, and
+you choose; past 256 MB, all the public relay can hold for everyone at once,
+it does not send it, and says why. A 1 MiB photo can go to 91 recipients,
+your own devices counted, and the largest file Z sends (24 MiB) to four. A
+file to one person is not limited this way.
+
+Z hands the members' copies of a file to your phone's queue a member at a
+time, each only while the queue holds less than 64 MiB, not counting what
+waits for a mailbox the relay is refusing: so a small file goes to every
+member at once, a large one to a member at a time as the queue empties, and
+the queue can pass 64 MiB by one member's copy. Your own devices' copies are
+queued at once; they count towards the 256 MB. A member whose mailbox at the
+relay is full gets no new copy until it takes messages again, and holds up
+nobody else's; while the relay itself is full, every copy waits until it takes
+messages again. A member whose copy waits still gets your texts, reactions and
+edits; only a change to the group — who is in it, its name, its admins, its
+timer — and your next file to it wait behind the file for them. Your other
+conversations keep moving throughout.
+
 Whoever creates a group **owns** it. The owner can make other members
 **admins**: an admin can add people, remove members who are not admins, and
 rename the group. Only the owner decides who the admins are — making someone

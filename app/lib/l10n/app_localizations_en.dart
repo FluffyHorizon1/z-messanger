@@ -1050,6 +1050,62 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get chatGroupUploadTitle => 'A large upload';
+
+  @override
+  String chatGroupUploadBody(int mb, int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'to $count recipients',
+      one: 'to 1 recipient',
+    );
+    return 'This file will upload about $mb MB ($_temp0). Each member of the group, and each of your other devices, is sent a copy of its own.';
+  }
+
+  @override
+  String get chatGroupUploadSend => 'Send';
+
+  @override
+  String get chatGroupUploadRefusedTitle => 'Too large for this group';
+
+  @override
+  String chatGroupUploadRefusedBody(int mb, int count, int limit) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'to $count recipients',
+      one: 'to 1 recipient',
+    );
+    return 'This file would upload about $mb MB ($_temp0): more than the $limit MB the public relay can hold for everyone at once. Nothing was sent. Send a smaller file, or send it to fewer people.';
+  }
+
+  @override
+  String chatGroupVoiceUploadBody(int mb, int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'to $count recipients',
+      one: 'to 1 recipient',
+    );
+    return 'This voice message will upload about $mb MB ($_temp0). Each member of the group, and each of your other devices, is sent a copy of its own.';
+  }
+
+  @override
+  String chatGroupVoiceUploadRefusedBody(int mb, int count, int limit) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'to $count recipients',
+      one: 'to 1 recipient',
+    );
+    return 'This voice message would upload about $mb MB ($_temp0): more than the $limit MB the public relay can hold for everyone at once. It has not been sent, and is kept here until you send it or discard it. Record a shorter one, or send it to fewer people.';
+  }
+
+  @override
+  String get chatVoiceHeld => 'Not sent yet: send it or discard it';
+
+  @override
   String chatReactionFailed(String error) {
     return 'Reaction failed: $error';
   }

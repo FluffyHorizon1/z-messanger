@@ -1139,6 +1139,27 @@ message then showed under the other member's name. What remains is a race: an
 offer of an id that reaches a receiver before the genuine one is the one it
 keeps, shown under its own sender's name (`THREAT_MODEL.md`).
 
+**A file to a group** (informative; 48.3, `adr/0036` §4). A group file is
+encrypted once, but every chunk goes to every recipient in an envelope of its
+own, since nothing the relay sees may be shared across them (§8, §12.2): to
+each member's mailbox, and to each of the sender's other devices (§9). A
+member's other devices are sent the offer alone; their own device passes the
+chunks on. So the upload is recipients × chunks × 349 610 characters, a full
+chunk's envelope in the 262144 bucket — about 2.44 × the file for each
+recipient. The reference client works it out before anything is sealed: from
+128 MB it shows the cost and asks, and past 256 MB, the public relay's whole
+store, it sends nothing and says why. It writes a member's chunks to its
+outbox a member at a time, each only while what the outbox holds for
+mailboxes the relay is taking is less than 64 MiB, so the outbox can pass
+that by one member's chunks; the sender's other devices are sent theirs at
+once, within the budget. Rows to a mailbox the relay is refusing (§12.4,
+§21.6) are not counted, and that member is written no new chunks until the
+mailbox takes envelopes again. A file that waits holds back, to that member,
+only what must not overtake it: the group's later lists — one that removed
+them would reach them first, and they would then refuse the file — the
+sender's leave, and the group's later files. Everything else goes on. A file
+to one contact is not budgeted. Nothing on the wire changes.
+
 ## 8. Sealed sender
 
 Without this layer the relay learns the sender of every envelope (from the

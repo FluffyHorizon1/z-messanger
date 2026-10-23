@@ -34,15 +34,33 @@
 //   6. A retry asked for during a drain is not lost: the running drain,
 //      which may already have stepped over the row the retry is for, sweeps
 //      the queue once more before it stops.
+//   7. 48.3 (ADR 0036 §4): the drain writes a member's file chunks only while
+//      the outbox holds less than the staging bound. Past it the file waits,
+//      queued, and only a change to who is in the group waits behind it — a
+//      list removing one of them waits behind the file for both — while
+//      everything else goes: the text after the file to all three, the
+//      same members in another group; and once the outbox holds less, the
+//      next member's file is staged, and its list after it.
+//   8. Members' copies are staged under the bound, a member at a time, so
+//      members' rows stay at or under the bound and one member's file; my
+//      own devices' copies are queued at once, outside it, within the
+//      budget.
+//   9. On a SQLite without `octet_length` the vault falls back, at open, to
+//      measuring with `length`, and the bound still holds.
+//  10. A measure that fails stages nothing: the file waits, with any change
+//      to who is in the group behind it, the text goes, and the next drain
+//      that can measure stages it.
 @Tags(['integration'])
 library;
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/models.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -397,5 +415,305 @@ void main() {
     final sent = await svc.vault.db.query('outbox',
         where: 'rid = ? AND mid = ?', whereArgs: [member, mid]);
     expect(sent, hasLength(1), reason: 'the message is served, once');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  // ---- 48.3: the staging bound -------------------------------------------
+
+  const full = ChatService.chunkEnvelopeChars;
+
+  /// The outbox's rows that carry a full chunk, by mailbox.
+  Future<Map<String, int>> chunkRows(ChatService svc) async {
+    final rows = await svc.vault.db.rawQuery(
+        'SELECT rid, COUNT(*) AS n FROM outbox WHERE LENGTH(payload) = ? '
+        'GROUP BY rid',
+        [full]);
+    return {for (final r in rows) r['rid'] as String: r['n'] as int};
+  }
+
+  /// The mailboxes the outbox holds [mid] for.
+  Future<Set<String>> outboxTo(ChatService svc, String mid) async => {
+        for (final r in await svc.vault.db.query('outbox',
+            columns: ['rid'], where: 'mid = ?', whereArgs: [mid]))
+          r['rid'] as String
+      };
+
+  /// What waits in [gid]'s queue, member by member, as (mid, kind), in order.
+  Future<Map<String, List<(String, String)>>> queuedIn(
+      ChatService svc, String gid) async {
+    final out = <String, List<(String, String)>>{};
+    for (final r in await svc.vault.db.query('group_fanout',
+        where: 'gid = ?', whereArgs: [gid], orderBy: 'seq')) {
+      final inner = InnerMessage.fromBytes(Uint8List.fromList(
+          utf8.encode(await svc.vault.unseal(r['payload'] as String))));
+      (out[r['rid'] as String] ??= []).add((inner.mid, inner.kind));
+    }
+    return out;
+  }
+
+  Future<int> queuedChars(ChatService svc) async =>
+      firstIntValue(await svc.vault.db.rawQuery(
+          'SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM outbox')) ??
+      0;
+
+  /// A group of three for [svc] and a second group of the same three; the
+  /// outbox emptied once both are made, as the relay would have taken it.
+  Future<(List<String>, String, String)> twoGroups(ChatService svc) async {
+    final rids = [for (var i = 0; i < 3; i++) await addPhantom(svc, 'b$i')];
+    final gid = await svc.createGroup('Files', rids);
+    final other = await svc.createGroup('Talk', rids);
+    await svc.waitForGroupFanout(gid);
+    await svc.waitForGroupFanout(other);
+    await svc.vault.db.delete('outbox');
+    return (rids, gid, other);
+  }
+
+  test(
+      '7. a file past the staging bound waits for the outbox, and only a '
+      'change to who is in the group waits behind it', () async {
+    // Offline, so the outbox never drains and what the drain wrote stays to
+    // be read.
+    final svc = await makeClient('bound', offline: true);
+    final (rids, gid, other) = await twoGroups(svc);
+
+    // A file of three whole chunks: one member's are 1 048 830 characters,
+    // and the bound is two chunks' envelopes.
+    svc.groupStagingBound = 2 * full;
+    final file = Uint8List(3 * defaultChunkSize);
+    await svc.sendGroupFile(gid, 'big.bin', file, 'application/octet-stream');
+    await svc.sendGroupText(gid, 'after the file');
+    await svc.sendGroupText(other, 'in the other group');
+    String midOf(String thread, bool Function(ChatMessage) which) =>
+        svc.messagesByChat[thread]!.singleWhere(which).mid;
+    final fileMid = midOf(gid, (m) => m.kind == 'file');
+    final textMid = midOf(gid, (m) => m.body == 'after the file');
+    final otherMid = midOf(other, (m) => m.body == 'in the other group');
+
+    // The other group's text leaves the queue last, so once it has, the
+    // drain has been over every row.
+    await waitUntil(
+        () async =>
+            (await svc.vault.db.query('group_fanout',
+                    where: 'gid = ?', whereArgs: [other]))
+                .isEmpty &&
+            (await outboxTo(svc, otherMid)).length == rids.length,
+        what: 'the text sent to the other group went to all three, so the '
+            'drain has been over every row');
+
+    // One member's chunks were written; then the outbox was past the bound.
+    final staged = await chunkRows(svc);
+    expect(staged.values.toList(), [3],
+        reason: 'one member\'s chunks, and no one else\'s');
+    final first = staged.keys.single;
+    expect(await queuedChars(svc), greaterThanOrEqualTo(svc.groupStagingBound),
+        reason: 'what stopped the drain is the outbox it measured');
+    final rest = {...rids}..remove(first);
+    // The other two members' file waits, and nothing else does: the text
+    // after the file went to all three, theirs included.
+    expect(await queuedIn(svc, gid), {
+      for (final r in rest) r: [(fileMid, 'gfile')]
+    });
+    expect(await outboxTo(svc, textMid), rids.toSet(),
+        reason: 'the text after the file went to every member, the two '
+            'whose file waits included');
+    final firstRows = await svc.vault.db.rawQuery(
+        'SELECT seq, mid, LENGTH(payload) AS n FROM outbox WHERE rid = ? '
+        'ORDER BY seq',
+        [first]);
+    final lastChunk = firstRows.lastWhere((r) => r['n'] == full)['seq'] as int;
+    expect(firstRows.singleWhere((r) => r['mid'] == textMid)['seq'] as int,
+        greaterThan(lastChunk),
+        reason: 'to the member whose chunks are staged, behind them');
+    expect(await outboxTo(svc, otherMid), rids.toSet(),
+        reason: 'another group is not held behind this one\'s file');
+
+    // A change to who is in the group does wait: one of the two is removed,
+    // and the list saying so waits behind the file for both — the one it
+    // removes would read it first and then refuse the file. A text to the
+    // other group after it leaves the queue last: once it has gone to all
+    // three, the drain has been over the list.
+    final gone = rest.first;
+    await svc.removeGroupMember(gid, gone);
+    await svc.sendGroupText(other, 'after the removal');
+    final laterMid = midOf(other, (m) => m.body == 'after the removal');
+    await waitUntil(
+        () async => (await outboxTo(svc, laterMid)).length == rids.length,
+        what: 'the text sent after the removal went to all three, so the '
+            'drain has been over the list');
+    final lists = {
+      for (final rows in (await queuedIn(svc, gid)).values)
+        for (final (mid, kind) in rows)
+          if (kind == 'ginvite') mid
+    };
+    expect(lists, hasLength(1),
+        reason: 'the list waits behind the file, and is the only one');
+    final listMid = lists.single;
+    expect(await outboxTo(svc, listMid), contains(first),
+        reason: 'the list went to the member whose chunks are staged');
+    expect(await queuedIn(svc, gid), {
+      for (final r in rest) r: [(fileMid, 'gfile'), (listMid, 'ginvite')]
+    }, reason: 'the list waits behind the file, for the member it removes '
+        'and for the other');
+
+    // The relay takes what was staged: the next member's file goes, and
+    // the list behind it, and the third waits again.
+    await svc.vault.db.delete('outbox');
+    await svc.retryGroupFanout();
+    await waitUntil(
+        () async =>
+            (await queuedIn(svc, gid)).length == 1 &&
+            (await chunkRows(svc)).length == 1,
+        what: 'the next member staged');
+    final second = (await chunkRows(svc)).keys.single;
+    expect(rest, contains(second));
+    expect(await outboxTo(svc, listMid), contains(second),
+        reason: 'its list went once its file had');
+    expect(await queuedIn(svc, gid), {
+      for (final r in rest.where((r) => r != second))
+        r: [(fileMid, 'gfile'), (listMid, 'ginvite')]
+    });
+
+    await svc.vault.db.delete('outbox');
+    await svc.retryGroupFanout();
+    await svc.waitForGroupFanout(gid);
+    expect((await chunkRows(svc)).values.toList(), [3],
+        reason: 'and the last member\'s');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test(
+      '8. members\' copies are staged under the bound, a member at a time; '
+      'my own devices\' copies are queued at once, within the budget',
+      () async {
+    final svc = await makeClient('mirror', offline: true);
+    final members = [for (var i = 0; i < 2; i++) await addPhantom(svc, 'm$i')];
+    final gid = await svc.createGroup('Two', members);
+    await svc.waitForGroupFanout(gid);
+    final mine = <String>[];
+    for (final name in ['laptop', 'tablet', 'desktop']) {
+      final account = await svc.accountIdentity();
+      final dev = await ZIdentity.generate();
+      final cert = await account.signDeviceCert(
+          deviceEdPub: dev.edPub, deviceXPub: dev.xPub, deviceId: name);
+      await svc.addMyDevice(cert);
+      mine.add(await cert.routingId());
+    }
+    await svc.vault.db.delete('outbox');
+    svc.groupStagingBound = 2 * full;
+    // Three envelopes of a chunk's length already queued to a mailbox that
+    // has taken none of them yet: the outbox is past the bound before the
+    // file is sent.
+    final stuck = b64url(randomBytes(32));
+    for (var i = 0; i < 3; i++) {
+      await svc.vault.db.insert('outbox', {
+        'id': newMessageId(),
+        'rid': stuck,
+        'payload': 'zs1.${'A' * (full - 4)}',
+        'created_ms': DateTime.now().millisecondsSinceEpoch,
+      });
+    }
+    Future<int> rowsTo(Iterable<String> rids) async {
+      var n = 0;
+      for (final r in rids) {
+        n += (await chunkRows(svc))[r] ?? 0;
+      }
+      return n;
+    }
+
+    final file = Uint8List(3 * defaultChunkSize);
+    final cost = svc.groupFileCost(gid, file.length);
+    expect(cost.recipients, members.length + mine.length);
+    expect(cost.refused, isFalse, reason: 'within the budget');
+    await svc.sendGroupFile(gid, 'f.bin', file, 'application/octet-stream');
+    await waitUntil(() async => await rowsTo(mine) == 3 * mine.length,
+        what: 'every chunk queued to each of my three devices, at once');
+    await svc.drainGroupFanoutForTest();
+    expect(await rowsTo(members), 0,
+        reason: 'the outbox is past the bound: the members\' file waits');
+    expect(await rowsTo(mine), 3 * mine.length,
+        reason: 'my own devices\' copies are not staged: all of them at once');
+
+    // The relay takes the first rows: one member is staged, and then the
+    // other — members' rows never more than the bound and one member's file.
+    await svc.vault.db.delete('outbox');
+    await svc.retryGroupFanout();
+    await waitUntil(() async => await rowsTo(members) == 3,
+        what: 'one member staged');
+    expect((await svc.vault.db
+            .query('group_fanout', where: 'gid = ?', whereArgs: [gid]))
+        .length, 1, reason: 'and the other\'s file waits for it');
+    expect(await rowsTo(members) * full,
+        lessThanOrEqualTo(svc.groupStagingBound + 3 * full));
+    await svc.vault.db.delete('outbox');
+    await svc.retryGroupFanout();
+    await svc.waitForGroupFanout(gid);
+    expect(await rowsTo(members), 3, reason: 'then the other member');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test(
+      '9. on a SQLite without octet_length the vault falls back to length, '
+      'and the bound still holds', () async {
+    // Opened as on a SQLite without `octet_length`: the vault looks for a
+    // function no SQLite has, and the name stays so for the whole test.
+    Vault.debugOctetLengthName = 'octet_length_absent';
+    addTearDown(() => Vault.debugOctetLengthName = 'octet_length');
+    final svc = await makeClient('nooctet', offline: true);
+    expect(svc.vault.outboxLengthFunction, 'length',
+        reason: 'looked for once at open, absent, and fallen back from');
+    final (rids, gid, other) = await twoGroups(svc);
+    svc.groupStagingBound = 2 * full;
+    await svc.sendGroupFile(gid, 'big.bin', Uint8List(3 * defaultChunkSize),
+        'application/octet-stream');
+    await svc.sendGroupText(other, 'in the other group');
+    final otherMid = svc.messagesByChat[other]!
+        .singleWhere((m) => m.body == 'in the other group')
+        .mid;
+    await waitUntil(
+        () async => (await outboxTo(svc, otherMid)).length == rids.length,
+        what: 'the drain has been over every row');
+    expect((await chunkRows(svc)).values.toList(), [3],
+        reason: 'measured by length: one member staged, then the bound');
+    expect((await queuedIn(svc, gid)).length, 2,
+        reason: 'the other two wait');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test(
+      '10. a measure that fails stages nothing: the file waits, a change to '
+      'who is in the group waits behind it, the text goes', () async {
+    final svc = await makeClient('nomeasure', offline: true);
+    final (rids, gid, other) = await twoGroups(svc);
+    svc.debugFailOutboxMeasure = true;
+    await svc.sendGroupFile(gid, 'big.bin', Uint8List(3 * defaultChunkSize),
+        'application/octet-stream');
+    await svc.sendGroupText(gid, 'after the file');
+    final fileMid =
+        svc.messagesByChat[gid]!.singleWhere((m) => m.kind == 'file').mid;
+    final textMid = svc.messagesByChat[gid]!
+        .singleWhere((m) => m.body == 'after the file')
+        .mid;
+    await waitUntil(
+        () async => (await outboxTo(svc, textMid)).length == rids.length,
+        what: 'the text after the file went to all three');
+    // A list, removing one of them, after it.
+    await svc.removeGroupMember(gid, rids.first);
+    await svc.sendGroupText(other, 'in the other group');
+    final otherMid = svc.messagesByChat[other]!
+        .singleWhere((m) => m.body == 'in the other group')
+        .mid;
+    await waitUntil(
+        () async => (await outboxTo(svc, otherMid)).length == rids.length,
+        what: 'the drain has been over every row');
+    expect(await chunkRows(svc), isEmpty, reason: 'nothing staged unmeasured');
+    final queued = await queuedIn(svc, gid);
+    expect(queued.keys.toSet(), rids.toSet());
+    for (final rows in queued.values) {
+      expect(rows.map((r) => r.$2), ['gfile', 'ginvite'],
+          reason: 'each member\'s file waits, and the list behind it');
+      expect(rows.first.$1, fileMid);
+    }
+
+    // The next drain that can measure stages them.
+    svc.debugFailOutboxMeasure = false;
+    await svc.retryGroupFanout();
+    await svc.waitForGroupFanout(gid);
+    expect((await chunkRows(svc)).values.toList(), [3, 3, 3]);
   }, timeout: const Timeout(Duration(minutes: 3)));
 }
