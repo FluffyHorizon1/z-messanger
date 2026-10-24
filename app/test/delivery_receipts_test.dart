@@ -86,23 +86,44 @@ void main() {
     }
   }
 
+  /// 44.3: [x] and [y] each hold the other's sealing key and have heard that
+  /// the other holds theirs. A `pqseal` rides the next message once a
+  /// session is mixed (PROTOCOL §18.11), a receipt too, so until this holds
+  /// the next receipt can leave with one ahead of it.
+  bool sealed(ChatService x, ChatService y) =>
+      x.debugPqSealOf(y.myRid) != null &&
+      y.debugPqSealOf(x.myRid) != null &&
+      x.debugHoldsMySealKey(y.myRid) &&
+      y.debugHoldsMySealKey(x.myRid);
+
+  /// [x] and [y], who have added each other, talk until all the one-off
+  /// envelopes of a new pair — session, device list, post-quantum offer and
+  /// (44.3) each side's sealing key and the stamp that answers it — have
+  /// gone across, and their receipts with them: two exchanges each way at
+  /// least, and then until [sealed].
+  Future<void> introduce(ChatService x, ChatService y) async {
+    for (var i = 0; i < 2 || !sealed(x, y); i++) {
+      if (i >= 12) {
+        fail('${x.displayName} and ${y.displayName}: the sealing keys and '
+            'their stamps never crossed both ways');
+      }
+      await x.sendText(y.myRid, 'hi $i');
+      await deliver(x, y);
+      await y.flushDeliveryReceipts();
+      await deliver(y, x);
+      await y.sendText(x.myRid, 'hi back $i');
+      await deliver(y, x);
+      await x.flushDeliveryReceipts();
+      await deliver(x, y);
+    }
+  }
+
   Future<(ChatService, ChatService)> pair() async {
     final a = await makeClient('a');
     final b = await makeClient('b');
     await a.addContactFromCode(await b.myContactCode());
     await b.addContactFromCode(await a.myContactCode());
-    // Two exchanges each way: session, device list, post-quantum offer —
-    // all the one-off envelopes — go across, and their receipts with them.
-    for (var i = 0; i < 2; i++) {
-      await a.sendText(b.myRid, 'hi $i');
-      await deliver(a, b);
-      await b.flushDeliveryReceipts();
-      await deliver(b, a);
-      await b.sendText(a.myRid, 'hi back $i');
-      await deliver(b, a);
-      await a.flushDeliveryReceipts();
-      await deliver(a, b);
-    }
+    await introduce(a, b);
     return (a, b);
   }
 
@@ -182,16 +203,7 @@ void main() {
     final c = await makeClient('c');
     await c.addContactFromCode(await b.myContactCode());
     await b.addContactFromCode(await c.myContactCode());
-    for (var i = 0; i < 2; i++) {
-      await c.sendText(b.myRid, 'hi $i');
-      await deliver(c, b);
-      await b.flushDeliveryReceipts();
-      await deliver(b, c);
-      await b.sendText(c.myRid, 'hi back $i');
-      await deliver(b, c);
-      await c.flushDeliveryReceipts();
-      await deliver(c, b);
-    }
+    await introduce(c, b);
     b.debugHoldReceipts = true;
     for (var i = 0; i < 3; i++) {
       await a.sendText(b.myRid, 'from a $i');

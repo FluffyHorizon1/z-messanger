@@ -15,12 +15,18 @@ relay client's frames, with their vectors (§8.3, `vectors/intro-key/`);
 changed: no client seals `zs2.` before 44.7, which waits for constant‑time
 ML‑KEM upstream, and none publishes, fetches or emits an introduction key or
 `sk` before 44.11–44.12. 44.1 is built in the protocol library, with its
-vectors, and none of it is sent or run: the sealing key, `pqdc` and `zs2.`
-(PROTOCOL §8.2, §18.11; `vectors/sealed-v2/`, `v3/device_attestation.json`) —
-no `pqseal`, `pqs` or `pqdc` before 44.3, and no `zs2.` before 44.7 — and
-pairing v3 and CONNECT v3 (§10.2, §20.9; `vectors/pair-v3/`,
+vectors: the sealing key, `pqdc` and `zs2.` (PROTOCOL §8.2, §18.11;
+`vectors/sealed-v2/`, `v3/device_attestation.json`) — no `zs2.` before 44.7 —
+and pairing v3 and CONNECT v3 (§10.2, §20.9; `vectors/pair-v3/`,
 `connect/invite_v3.json`) — neither runs before 44.4 and 44.6, and
-`connectInviteVersion` stays 2. The rest of the build plan below is not built.
+`connectInviteVersion` stays 2. 44.3 is built: every device draws its sealing
+key at its first start and keeps it for its life, in the vault and the
+archive; the root signs its own `pqdc` and an earlier‑linked device's over
+self‑sync (§9, `dir:"pqdc"`); every device announces its key in `pqseal` to
+every device it has a session with — never beside `pqct` — keeps the keys
+announced to it, stamps `pqs:1` back, and carries its `pqdc` in its `pqid`.
+Nothing uses any of it before 44.5 and 44.7. The rest of the build plan below
+is not built.
 **Decides:** for each surface the 3 October analysis (§4.3) found classical —
 pairing enrolment, CONNECT, the sealed outer layer, contact requests, the
 device a scanned code names, session authentication — what becomes hybrid, on
@@ -78,7 +84,9 @@ pqdc    = ML-DSA-65.Sign(account_ml_sk,
   every `pqek` offer is. *(Measured with 44.1, 2026‑10‑20: on a message whose
   header carries `pqct` — the encapsulating side's, until the answer, and the
   first after each re-key — it is a 16 384 one, as anything riding such a
-  message is; whether 44.3 keeps `pqseal` off those is open.)*
+  message is. Finnian's decision of 2026‑10‑20, the more secure option: a
+  `pqseal` never rides such a message, and waits for the next that carries
+  none, so it stays a 4 096‑bucket envelope — built so in 44.3.)*
 * The root alone holds the ML-DSA seed and signs every `pqdc`: its own at
   first start; a new device's in pairing v3 (§3); an earlier-linked device's
   over self-sync (`dir:"pqdc"`: the device sends its `pqseal`, the root
@@ -362,7 +370,7 @@ failing test on the base where it can be expressed, and a mutation check.
 |---|---|---|---|
 | 44.1 | Protocol cores and vectors: sealing key, `zs2.` seal/open, `pqdc` sign/verify, pairing v3, CONNECT v3 | — | **built**; nothing emits |
 | 44.2 | The relay treats `zs2.` as sealed | — | **built**; deploy before 44.7 |
-| 44.3 | Every device gets a sealing key and attestation: `pqseal`/`pqs`, `pqid.pqdc`, `dir:"pqdc"`, archive | 44.1 | planned; sends keys, uses none |
+| 44.3 | Every device gets a sealing key and attestation: `pqseal`/`pqs`, `pqid.pqdc`, `dir:"pqdc"`, archive | 44.1 | **built**; sends keys, uses none |
 | 44.4 | Pairing v3 | 44.1, 44.3 | planned; highest value, so land it first |
 | 44.5 | The scanned device's link | 44.3 | planned; bites once peers run 44.3 |
 | 44.6 | CONNECT v3: readers first; minting a release later (decision 2), by making invites with version 3's run and the device's sealing key — not by moving `connectInviteVersion`, which the version‑2 run refuses | 44.1, 44.3 | planned |

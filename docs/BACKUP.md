@@ -78,6 +78,18 @@ A restore publishes nothing by itself: a published handle comes back as it
 was and its mailbox is read again, and a claim that was still waiting to be
 published comes back held until the person publishes it.
 
+Since 44.3, also the device's **sealing key** — its 64-byte seed — and the
+account's attestation of it (`pqdc`, `PROTOCOL.md` §18.11), in a record of
+their own that a build from before 44.3 keeps and writes back. A restore that
+drew a new key would leave every contact sealing to one nobody holds once the
+sealed layer moves to `zs2.`; the restored device holds the same key, and
+keeps the `pqdc` only once it verifies for that key. A 44.3 build that finds
+the record kept unread by an older one takes the key from there rather than
+draw another. The sealing keys other devices announced to this one are not in
+the archive. They are learned again: the restored device opens new ratchet
+sessions, and a new session with a device makes that device forget that this
+one held its key (`PROTOCOL.md` §18.11), so it announces it again.
+
 **Deliberately not in the archive:**
 
 * **Session state** (`conversations`). Those rows are live Double Ratchet
@@ -347,6 +359,7 @@ leaves the device.
 | `blocked` (1.1) | a blocked routing id and when |
 | `request` (1.1) | a pending inbound request: routing id, the requester's bundle (it must verify and name that routing id), the name offered, when |
 | `handle` (phase 38, `"keep":1`, `"v":1`) | `kv`: the account's handle (`handle` — the handle, its label, the owner and introduction seeds, the work a request costs, the recovery commitment, the version and where it stands; never the recovery code), the requests that came through it (`handle_in` — for each, the mailbox it reached and the request's id — and the seeds of mailboxes since replaced that one of them still needs), the requests sent to handles still waiting (`handle_out`), where the handle log is (`handle_config`) and what lookups found (`handle_lookup` — the decoy key, the bucket size the log's answers bore out, and for each handle found its owner key, commitment, version and record hash); and since 2026‑10‑20 what the witness check keeps after the fact (`handle_witness_heads`, the heads of lookups a request was sent on that the witness had not covered, and `handle_witness_warnings`, the forks found so and the answers never confirmed — of heads that went before the witness covered them, or that the log showed this device two histories about while they were kept — `PROTOCOL.md` §21.8). Written after the requests and applied after them: a request's record is restored only if its request was, a kept head or a warning only with the request it is on or on a contact, and of the heads on contacts no more than the service keeps (the first start forgets one whose contact did not come back), a claim waiting to be published comes back held, and a part that is not the shape the service reads is left out. Marked `keep`, so a build that predates handles carries it into its next archive unread |
+| `seal` (44.3, `"keep":1`, `"v":1`) | `seed`: this device's sealing seed (64 bytes), and `pqdc`: the account's attestation of the key it makes (3 309 bytes, `PROTOCOL.md` §18.11) — each held to its length on restore; the first start keeps the `pqdc` only if it verifies for that key, this device and this account. Marked `keep`, so a build that predates 44.3 carries it into its next archive unread |
 | `message` | mid, rid, direction, kind, body, timestamp, status, expiry, and the phase‑8 fields (`rt` reply target, `edited`, `deleted`, `fw`) |
 | `reaction` | rid, mid, sender, emoji, timestamp |
 | `file` | attachment metadata; the bytes follow in `kind = 1` frames |

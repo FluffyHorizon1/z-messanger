@@ -844,9 +844,9 @@ Unknown kinds MUST be ignored.
 | `gleave` | `gid`, opt. `e:[int,int]` | sender left the group (§11); `e` = the position of the membership it ends, `[0, 0]` included — absent only from a client before ADR 0030 (§11.2) |
 | `gsync` | `gid` | "send me what you hold for this group": asked by a member that had to refuse a list, of the owner and of any admin it may have missed the leave of (§11.1); answered with the asked admin's `ginvite`, and its `gleave` if it has left |
 | `pqek` | `alg:"ML-KEM-768", ek:b64` | v2 post‑quantum key offer (§17); consumed by the session layer, never shown |
-| `pqid` | `alg:"ML-DSA-65", pk:b64`, opt. `ack:true`, opt. `pqdc:b64` | v3 post‑quantum identity key (§18.2); checked against the commitment from the scanned code, or kept as a candidate when none is held. `ack` = the sender holds the receiver's key. `pqdc` = the account's attestation of the sending device's sealing key (§18.11), not yet sent |
+| `pqid` | `alg:"ML-DSA-65", pk:b64`, opt. `ack:true`, opt. `pqdc:b64` | v3 post‑quantum identity key (§18.2); checked against the commitment from the scanned code, or kept as a candidate when none is held. `ack` = the sender holds the receiver's key. `pqdc` = the account's attestation of the sending device's sealing key (§18.11), sent from 44.3 |
 | `pqack` | — | the sender holds the receiver's post‑quantum key (§18.2); the `ack` above without a key, for when no `pqid` is going out to carry it |
-| `pqseal` | `alg:"ML-KEM-768", ek:b64` | the sending device's sealing key (§18.11), which a `zs2.` envelope to it is sealed to (§8.2); answered by `pqs:1`, not by a kind. **Not yet sent:** built in the library (44.1), sent from 44.3 |
+| `pqseal` | `alg:"ML-KEM-768", ek:b64` | the sending device's sealing key (§18.11), which a `zs2.` envelope to it is sealed to (§8.2); answered by `pqs:1`, not by a kind. Sent from 44.3, ahead of a message and never beside `pqct`; on self‑sync it rides the ratchet bare, as `pqek` does (§9). Used by nothing before 44.5 and 44.7 |
 | `dlrm` | `acct:b64, v:int, h:b64`, opt. `list:string` | device‑list removal notice (§3.6); tells a device it was dropped from account `acct`'s list. `list` (ADR 0026) is that list, the JSON of §3.4 as a string — the evidence a receiver acts on; a notice without it is a claim |
 | `pdlreq` | `v:int, h:b64` | "send me the list you hold for my account" (ADR 0026): asked of a contact whose echo `pdl` (§3.6) named (`v`, `h`); answered with a `devlist` carrying that list. Keyless; ignored by clients that predate it |
 | `react` | `rt:string, emo:string` | reaction to one message (§6.5); `emo:""` withdraws |
@@ -866,8 +866,9 @@ clients that do not implement 7.7a ignore them. It MAY also carry `pqh:1`: the
 sender holds the receiver's post‑quantum key — a `pqack`'s statement, restated
 on every message so that one lost envelope cannot lose it (§18.2); clients that
 predate it ignore the member. And `dlr`, the device‑list shape the sending
-device reads (§3.7). And, not yet sent, `pqs:1`: the sending device holds the
-receiving device's sealing key (§18.11).
+device reads (§3.7). And, from 44.3, `pqs:1`: the sending device holds the
+receiving device's sealing key (§18.11) — set or left off per receiving
+device.
 
 ### 6.3 Receipts
 
@@ -1482,11 +1483,17 @@ real message.
 devices over the same per‑device sessions, wrapped as:
 
 ```
-utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping"|"acct"|"acctreq"|"pop"|"hist", "inner":b64(innerMessageBytes) } )
+utf8( JSON{ "thread":routingIdOrGid, "dir":"out"|"in"|"ping"|"acct"|"acctreq"|"pop"|"pqdc"|"hist", "inner":b64(innerMessageBytes) } )
 ```
 
 The wrapper also carries `dlr` (§3.7), the device‑list shape the sending device
 reads; a receiver reads the three members above by name and passes any other by.
+From 44.3 it carries `pqs:1` too where the sending device holds the receiving
+device's sealing key (§18.11), set per device. A device's own `pqseal` is the
+one inner message this channel carries unwrapped, beside the `pqek` offers of
+§17: the bare inner on the ratchet, ahead of the envelope it rides with, since
+wrapping it would encode its 1 184‑byte key twice and leave the 4 096 bucket. A
+build from before 44.3 finds no wrapper in it and drops it, acknowledged.
 
 `dir = "ping"` with a `hello` inner is the proactive session opener and is
 ignored on receipt; `"out"`/`"in"` insert the inner message into `thread` as
@@ -1510,7 +1517,16 @@ publish of a version naming a device it has just linked until that device's
 proof is in, for a bounded time, and a root whose log copy of its current
 version lacks a proof it holds moves the list to the next version, which
 carries it (ADR 0022, amended 2026‑10‑16). Any other device ignores it, and a
-device that predates it drops it as an unknown kind (§6.2); `"hist"`
+device that predates it drops it as an unknown kind (§6.2); `"pqdc"` (44.3,
+§18.11) carries an inner of kind `devpqdc` whose `pqdc` is the account's
+attestation of the RECEIVING device's sealing key — a root's answer to the
+`pqseal` a device of its account announces to it, which is that device's ask
+for one: the root signs it over the `ded` and `dx` of the certificate its
+current list holds for the device that asked, and sends nothing for a device
+its list does not name; the device keeps it only once it verifies under its
+account's ML‑DSA key for its own two keys and sealing key, and carries it in
+its `pqid` from then on. A device that predates it drops it, as a mirror for
+a thread (`""`) it does not hold; `"hist"`
 carries an inner of kind `hist` whose `items` replay recent history to a
 device that was just linked: each item is
 `{ "t":thread, "mid", "o":outgoing, "k":"text"|"gtext", "b":body, "ts", "sn"?, "x"? }`,
@@ -2755,6 +2771,21 @@ it issued, its linked devices, each contact's list and signature floor, the
 log's head, and the ids — never the keys — of past sessions, which a restored
 device holds as retired (§4) so a kept opening envelope cannot re‑create one.
 
+Since 44.3 the vault also keeps, sealed, the device's sealing seed
+(`seal_seed`, 64 bytes, drawn once at the first start of that build) and its
+`pqdc`; and for each device it has a session with — a contact's devices
+(`cseal_` and the contact's routing id, removed with the contact) and its own
+other devices (`oseal`) — the sealing key that device announced, its `pqdc`
+when one came, whether it has said it holds this device's (`pqs`) and when
+this device last announced its own to it (§18.11). The `.zbk` carries the
+seed and the `pqdc` in a record of their own that an older build keeps and
+writes back (`BACKUP.md`), so a restore brings back the same key; a 44.3
+build that finds that record kept by an older one takes the key from it
+rather than drawing another. The keys other devices announced are not in the
+archive. A restored device learns them again: it opens new ratchet sessions,
+and a new session with a device makes that device forget that this one holds
+its key (§18.11), so it announces it again.
+
 What a restore looks like on the wire is a device‑list update, never a
 rollback. The first start of a restored root, before it sends anything, asks
 the log what the account has published (§19.5) and signs its list at
@@ -3114,9 +3145,9 @@ numbers are all Ed25519, so the same adversary could forge a device
 certificate — mint a device that appears to belong to an account — without
 reading a word of what it recorded. v3 closes that.
 
-Status: everything below but §18.11, which no client sends before 44.3, is
-written, implemented and shipping, with its wire forms vectored in
-`docs/vectors/v3/`. The device set gets its post‑quantum
+Status: everything below but §18.11, which is sent from 44.3 and used by
+nothing before 44.5 and 44.7, is written, implemented and shipping, with its
+wire forms vectored in `docs/vectors/v3/`. The device set gets its post‑quantum
 signature from the account's whole‑list signature of §18.9; the per‑device
 hybrid certificate §18.4 first reached for is retired (ADR 0031). Nothing in
 v1 or v2 changes.
@@ -3879,10 +3910,11 @@ Vectors: `v3/contact_code_pqc_sig.json`.
 
 ### 18.11 A device's sealing key, and its account's attestation (`pqdc`)
 
-*Built in 44.1 (the library and `vectors/v3/device_attestation.json`). **No
-client sends `pqseal`, `pqs` or `pqdc` before 44.3**, and none seals to a
-sealing key before 44.7 (§8.2): until then this section defines values the
-library computes and members it builds and reads.*
+*Built in 44.1 (the library and `vectors/v3/device_attestation.json`), and
+**sent from 44.3**: every device draws its sealing key, its account attests
+it, and it is announced, kept and stamped as below. **Nothing uses any of it
+before 44.5 and 44.7**: no client judges a `pqdc` before 44.5 (`adr/0033`
+§2), and none seals to a sealing key before 44.7 (§8.2).*
 
 Every device has a sealing key for its life (`adr/0033` §1), as it has an
 X25519 key: the ML‑KEM‑768 pair a `zs2.` envelope to it encapsulates to
@@ -3903,7 +3935,7 @@ the root device `ded` is `acct`. It is ML‑DSA alone: against the adversary it
 exists for, who can forge Ed25519, a classical half would add nothing. Only
 the root holds the account's ML‑DSA seed, so only the root signs one — its
 own device's at first start, a new device's in its enrolment (pairing v3,
-§10.2), an earlier‑linked device's over self‑sync (44.3). In pairing v3 the
+§10.2), an earlier‑linked device's over self‑sync (§9, `dir:"pqdc"`). In pairing v3 the
 root holds the new device's `sk`, from its opening, and not yet its key, so
 it signs over the input built from that hash — the same 143 bytes — and the
 key itself is checked by whoever receives it, when the device's `pqseal`
@@ -3940,37 +3972,69 @@ The members that carry them, a new kind and two optional members (§14):
   mixed. On one that carries `pqct` — the encapsulating side's, until its
   peer's first mixed message arrives, at a session's first mixing and after
   every re‑key (§17.3, §17.7) — the header's 1 088 more bytes leave that
-  bucket 767, and a `pqseal` is a 16 384‑bucket envelope. Whether 44.3
-  keeps `pqseal` off a message carrying `pqct` is open: it is 44.3's to
-  decide. A receiver takes the key only when `alg` is `ML-KEM-768` and `ek`
+  bucket 767, and a `pqseal` is a 16 384‑bucket envelope. A sender **MUST
+  NOT** send a `pqseal` on a message whose header carries `pqct`: it waits
+  for the next message that carries none, so that every `pqseal` is a
+  4 096‑bucket envelope (Finnian's decision of 2026‑10‑20). As the
+  reference client sends it, measured, a `pqseal` is 1 776 bytes of inner
+  message on a contact's door (1 784 with `pqs`) and 1 671 bare on
+  self‑sync (1 679 with it), and its sealed envelope is always a
+  4 096‑bucket one, 5 546 characters on the wire. It goes in an envelope of
+  its own just ahead of the next message
+  to that device — the first time on the next one, again no sooner than
+  §17.4's retry interval after the last (six hours) and at most three times
+  a run, as `pqid` re‑sends are bounded — and a linked device's `pqseal` to
+  its root is also its ask for its `pqdc` (§9), owed until that has arrived
+  too. A receiver takes the key only when `alg` is `ML-KEM-768` and `ek`
   is the `b64` of 1 184 bytes passing FIPS 203 §7.2's check (§8.3);
   otherwise it takes nothing and refuses nothing, reading the message as one
-  of a kind it does not know (§6.1).
+  of a kind it does not know (§6.1). A key it takes it keeps for that
+  device, and from then on stamps `pqs:1` on what it sends there; a second,
+  different key from the same device replaces the first, and any `pqdc` held
+  over the first goes with it.
 * **`pqs:1`** says the sender holds the receiving device's sealing key — what
   `pqh` says of the account's post‑quantum key (§6.2) — and ends that
-  device's re‑sending of its `pqseal`.
+  device's re‑sending of its `pqseal`. It is said per device: on the copy for
+  a device whose key the sender holds and on no other — so one inner fanned
+  to a contact's devices can go stamped to one and not another — and on
+  self‑sync on the wrapper (§9). A device **MUST** forget a device's `pqs:1`
+  when a new ratchet session with that device begins (§4), one it accepts
+  from it or one it opens to it: a restore, a contact deleted and added back
+  and a device linked again each begin one, and none keeps the keys other
+  devices announced, so a stamp kept across it could leave that device never
+  hearing this one's key again. Its re‑sending then resumes on the same clock
+  and within the same bound, until the next `pqs:1`.
 * **`pqid.pqdc`** is the sending device's own `pqdc`, in the `pqid` it
   already sends (§18.2): measured, 7 114 bytes of inner message, and 7 261
   with `ack` and every decoration, of the 8 959 the 16 384 bucket holds
   classical or mixed, and the 7 679 it holds beside `pqct` — no new
   envelope and no new size, in every state. A contact that already holds
   the account's key gets the `pqid` once more, spread over hours as `dlpq`
-  is (§18.9). A receiver reads the member only as the `b64` of 3 309 bytes,
-  and checks it once the device's `pqseal` has arrived too.
+  is (§18.9) — the reference client sends it two hours after the device
+  comes to hold its `pqdc`, jittered by up to 40 %, once per contact. A
+  receiver reads the member only as the `b64` of 3 309 bytes, keeps it with
+  the device's key, and checks it once the device's `pqseal` has arrived too
+  (44.5).
 
 A client from before 44.3 reads none of it, and a message carrying any of it
 is read as it is without it: a `pqseal` is acknowledged and dropped with
 nothing stored (§6.8), a `pqid` carrying `pqdc` gives up its key as one
 without it does, and a message stamped `pqs` is the message
-(`app/test/malformed_inner_test.dart`). Self‑sync's `dir:"pqdc"`, by which an
-earlier‑linked device asks the root for its `pqdc`, is the client's and is
-specified with 44.3. *Implementation note:* `SealingKey`,
+(`app/test/malformed_inner_test.dart`); on self‑sync a bare `pqseal` is
+acknowledged with nothing mirrored, a wrapper's `pqs` is passed by, and a
+`dir:"pqdc"` mirror is dropped as one for a thread it does not hold.
+Self‑sync's `dir:"pqdc"`, by which an earlier‑linked device asks the root for
+its `pqdc`, is specified in §9. *Implementation note:* `SealingKey`,
 `deviceAttestationInput`, `signDeviceAttestation`, their forms from the
 hash, `deviceAttestationInputFromHash` and `signDeviceAttestationFromHash`,
 and `deviceAttestationValid` in `protocol/lib/src/sealing_key.dart`;
 `InnerMessage.pqSeal`, `pqSealKey`, `pqIdentity(pqdc:)`, `pqidAttestation`,
-`stampHoldsSealKey` and `saysHoldsSealKey` in `messages.dart`. Vectors:
-`v3/device_attestation.json`.
+`stampHoldsSealKey` and `saysHoldsSealKey` in `messages.dart`;
+`Conversation.nextSendCarriesPqCiphertext` in `session.dart`. The client's
+half (44.3): `app/lib/core/sealing_keys.dart` — what is kept, the archive's
+record, and `pqSealMayRide`, where the `pqct` rule is written once for every
+channel — and `ChatService` and `DeviceSyncService`, which announce, stamp
+and keep. Vectors: `v3/device_attestation.json`.
 
 ## 19. The transparency log (7.7b)
 

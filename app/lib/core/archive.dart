@@ -17,7 +17,9 @@
 // its owner and introduction keys, the requests that came through it, the
 // ones sent to handles and still waiting — in one `handle` record marked
 // for older builds to keep ([HandleBackup]); never its recovery code, which
-// no device holds. What does NOT travel, deliberately:
+// no device holds. Since 44.3, the device's sealing seed and its account's
+// attestation of the key (`pqdc`), in one `seal` record marked the same way
+// ([SealingKeyBackup]). What does NOT travel, deliberately:
 //
 //   * **session state** (`conversations`). Those rows are live double-ratchet
 //     state. Restoring them could put the same ratchet on two devices —
@@ -53,6 +55,7 @@ import 'handles.dart' show HandleBackup;
 import 'key_transparency.dart' show KtConfig;
 import 'kt_private_lookups.dart' show KtDecoys;
 import 'relay_url.dart';
+import 'sealing_keys.dart' show SealingKeyBackup;
 import 'vault.dart';
 
 /// Progress while exporting or importing, for a UI that must not look frozen
@@ -338,6 +341,13 @@ class BackupArchive {
             ..remove('accountEdSeed')),
       });
     }
+
+    // 44.3: this device's sealing key and its account's attestation of it,
+    // in a record of their own that a build from before 44.3 keeps and
+    // writes back (ADR 0025). Without the seed a restore would draw a new key
+    // and leave every contact sealing to one nobody holds.
+    final seal = await SealingKeyBackup.export(vault);
+    if (seal != null) await record(seal);
 
     // The account's device-list and transparency state (format minor 1):
     // the allow-list and the reason for each key are at [_stateKeys].
@@ -1090,6 +1100,12 @@ class BackupArchive {
               requests.add(r);
             case HandleBackup.recordType when r['v'] == 1:
               handle = r;
+            case SealingKeyBackup.recordType when r['v'] == 1:
+              // 44.3: this device's sealing seed and its `pqdc`, each held to
+              // its length; the first start checks the `pqdc` against the key.
+              for (final e in SealingKeyBackup.restore(r).entries) {
+                await kv(e.key, e.value);
+              }
             default:
               // A record type this build does not know: written by a newer
               // build of this major version. Kept for the next archive when

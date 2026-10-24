@@ -36,7 +36,9 @@
 //   3. a new root still links a device that predates it (one that reads
 //      only what it always read), and that device talks to its contacts;
 //   4. two first callers of `pqIdentity()` at once get one key — the one
-//      the vault keeps, and the one the contact code commits to;
+//      the vault keeps, and the one the contact code commits to; and since
+//      44.3 a fresh root makes it at its first start, once, to sign its own
+//      `pqdc`, and its contact code commits to that one;
 //   5. a device-list signature made with a post-quantum key the vault does
 //      not keep is replaced at start by one that verifies, and the contact
 //      that was handed the bad one is handed the good one;
@@ -208,7 +210,8 @@ void main() {
 
   /// A service over the vault in [dir], whose identity is the one the vault
   /// holds. The log is off: what is under test is not the log.
-  Future<Person> boot(Directory dir, String name, {Vault? vault}) async {
+  Future<Person> boot(Directory dir, String name,
+      {Vault? vault, bool beforeSealingKeys = false}) async {
     final v = vault ?? await Vault.open(rootOverride: dir);
     final id = await ZIdentity.fromJson(
         (jsonDecode((await v.kvGet('identity'))!) as Map)
@@ -224,7 +227,8 @@ void main() {
         // itself to v2-only lists between the two reads (ADR 0029) would
         // make them differ for a moment, so accounts here stay at stage 1:
         // the kill switch thrown.
-        signDevlistV2Only: false);
+        signDevlistV2Only: false,
+        debugBuildBeforeSealingKeys: beforeSealingKeys);
     // The production delay is hours; what is under test is not the delay.
     svc.pqListDelay = const Duration(milliseconds: 150);
     final x = (svc: svc, vault: v, dir: dir, id: id, name: name);
@@ -232,13 +236,13 @@ void main() {
     return x;
   }
 
-  Future<Person> person(String name) async {
+  Future<Person> person(String name, {bool beforeSealingKeys = false}) async {
     final dir = await tempDir(name);
     final vault = await Vault.open(rootOverride: dir);
     await vault.kvPut(
         'identity', jsonEncode((await ZIdentity.generate()).toJson()));
     await vault.kvPut('display_name', name);
-    return boot(dir, name, vault: vault);
+    return boot(dir, name, vault: vault, beforeSealingKeys: beforeSealingKeys);
   }
 
   /// The app stopped and started again on the same vault.
@@ -567,7 +571,11 @@ void main() {
 
   test('4. two first callers of pqIdentity get one key, the one kept',
       () async {
-    final alice = await person('Alice4');
+    // Since 44.3 a fresh root makes its seed at its first start, to sign its
+    // own `pqdc` (§18.11): that start is itself one of the first callers.
+    // The race pinned here is between callers that find no seed, so this
+    // account starts as a build from before 44.3 does, which makes none.
+    final alice = await person('Alice4', beforeSealingKeys: true);
     expect(await alice.vault.kvGet('pq_seed'), isNull,
         reason: 'a fresh account has not made its seed yet');
     final both = await Future.wait(
@@ -583,6 +591,18 @@ void main() {
     final code = await scanContactCode(await alice.svc.myContactCode());
     expect(b64(code.v3!.pqCommit), b64(await kept.publicKey.pqCommitment()),
         reason: 'and the contact code commits to it');
+
+    // And as a fresh root starts since 44.3: the seed made once, at the
+    // first start, and the one the contact code commits to.
+    final bea = await person('Bea4');
+    final made = await bea.vault.kvGet('pq_seed');
+    expect(made, isNotNull, reason: 'made at the first start, for the pqdc');
+    final beas = await HybridKeyPair.fromSeeds(
+        edSeed: bea.id.edSeed, mlSeed: unb64(made!));
+    final beaCode = await scanContactCode(await bea.svc.myContactCode());
+    expect(b64(beaCode.v3!.pqCommit), b64(await beas.publicKey.pqCommitment()),
+        reason: 'the code commits to the key the first start made');
+    expect(await bea.vault.kvGet('pq_seed'), made, reason: 'and made once');
   });
 
   test(

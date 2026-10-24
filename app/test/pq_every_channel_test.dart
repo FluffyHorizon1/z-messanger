@@ -53,14 +53,39 @@
 //      answers an offer, the new one reads what is then mixed with the
 //      secret. The rebuilt service used to read its own copy from the
 //      vault, and criterion 5 lost to that race in one run of three.
+//
+// And (44.3, PROTOCOL §18.11) every device's sealing key, which rides the
+// same channels: announced in a `pqseal` to every device a device has a
+// session with, kept by each, and answered by `pqs:1` on what it sends back.
+//   9. every device holds a sealing key from its first start — a root, a
+//      device linked to it as pairing v2 links one, a contact — and a
+//      restart keeps the same one;
+//  10. each device's key reaches every device it has a session with, on all
+//      three kinds of channel — a contact's device, a contact's other device
+//      and my own other device — riding a message there; each receiver keeps
+//      it and stamps `pqs:1` back; each announcing device then stops, with
+//      its re-announcement clock compressed to show it would not, and after
+//      all three restart none announces again; and nothing seals `zs2.` or
+//      publishes an introduction key: every envelope the three hand the
+//      relay starts `zs1.`, and the relay counts no introduction key;
+//  11. the root's own `pqdc` verifies under the account's ML-DSA key; the
+//      linked device obtains its own from its root over self-sync
+//      (`dir:"pqdc"`), and its `pqid` carries it to a contact; and while the
+//      root's list does not name the device — the moment between
+//      `removeMyDevice` writing the list and the session's rebuild — its ask
+//      gets nothing;
+//  12. deleting a contact removes what was held of their devices' sealing
+//      keys and `pqdc`s, in memory and in the vault.
 @Tags(['integration'])
 library;
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseException;
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/device_sync.dart';
 import 'package:zapp/core/transport.dart';
@@ -76,13 +101,15 @@ class Seen {
   final String? dir; // the self-sync envelope's `dir`, on the sync path
   final bool pq;
   final int? gen; // a `pqek` offer's generation
-  final String? ek; // a `pqek` offer's key
+  final String? ek; // a `pqek` offer's key, or a `pqseal`'s
+  final bool pqs; // 44.3: says the sender holds the receiver's sealing key
   final DateTime at;
-  Seen(this.path, this.from, this.kind, this.dir, this.pq, this.gen, this.ek)
+  Seen(this.path, this.from, this.kind, this.dir, this.pq, this.gen, this.ek,
+      {this.pqs = false})
       : at = DateTime.now();
   @override
   String toString() =>
-      '$path/$kind${dir == null ? '' : '/$dir'} pq=$pq${gen == null ? '' : ' g=$gen'}';
+      '$path/$kind${dir == null ? '' : '/$dir'} pq=$pq${gen == null ? '' : ' g=$gen'}${pqs ? ' pqs' : ''}';
 }
 
 Seen describe(String path, String from, DecryptResult dec) {
@@ -90,10 +117,16 @@ Seen describe(String path, String from, DecryptResult dec) {
   var kind = '?';
   String? dir;
   var data = const <String, Object?>{};
+  var pqs = false;
   try {
-    if (path == 'sync' && !InnerMessage.looksLikeKind(p, 'pqek')) {
+    // An offer, and (44.3) a `pqseal`, ride the self-sync ratchet bare;
+    // everything else on it is a mirror's envelope.
+    if (path == 'sync' &&
+        !InnerMessage.looksLikeKind(p, 'pqek') &&
+        !InnerMessage.looksLikeKind(p, 'pqseal')) {
       final j = jsonDecode(utf8.decode(p)) as Map;
       dir = j['dir'] as String?;
+      pqs = j['pqs'] == 1;
       final inner = InnerMessage.fromBytes(base64Decode(j['inner'] as String));
       kind = inner.kind;
       data = inner.data;
@@ -101,6 +134,7 @@ Seen describe(String path, String from, DecryptResult dec) {
       final inner = InnerMessage.fromBytes(p);
       kind = inner.kind;
       data = inner.data;
+      pqs = data['pqs'] == 1;
     }
   } catch (_) {}
   return Seen(
@@ -110,7 +144,23 @@ Seen describe(String path, String from, DecryptResult dec) {
       dir,
       dec.postQuantum,
       kind == 'pqek' ? ((data['g'] as num?)?.toInt() ?? 0) : null,
-      data['ek'] as String?);
+      data['ek'] as String?,
+      pqs: pqs);
+}
+
+/// Every envelope a client in this file hands the relay, as it hands it.
+final wire = <String>[];
+
+/// A transport that keeps what it hands the relay on [wire].
+class WireTransport extends Transport {
+  WireTransport({required super.identity, required super.serverUrl});
+
+  @override
+  Future<void> send(
+      {required String to, required String id, required String payload}) {
+    wire.add(payload);
+    return super.send(to: to, id: id, payload: payload);
+  }
 }
 
 /// What one client's probe saw and withheld.
@@ -175,20 +225,91 @@ void main() {
     }
   });
 
+  // Each service runs in an error zone of its own. A service [restart] has
+  // stopped can still have work in flight, which then fails against the
+  // database [restart] closed under it; that error, from a stopped service,
+  // is the one expected here and is dropped. Anything else raised inside a
+  // service is kept, and fails the test that was running.
+  final stopped = <ChatService>{};
+  final strays = <String>[];
+  tearDown(() {
+    final found = [...strays];
+    strays.clear();
+    expect(found, isEmpty, reason: 'errors raised inside a running service');
+  });
+
+  /// [name]'s service over [vault], started in an error zone of its own.
+  Future<ChatService> start(String name, Vault vault, ZIdentity id) {
+    final ready = Completer<ChatService>();
+    ChatService? made;
+    runZonedGuarded(() async {
+      try {
+        final svc = await ChatService.init(
+            vault: vault,
+            identity: id,
+            displayName: name,
+            transport: WireTransport(
+                identity: id, serverUrl: 'ws://127.0.0.1:$port'));
+        made = svc;
+        services.add(svc);
+        ready.complete(svc);
+      } catch (e, st) {
+        ready.completeError(e, st);
+      }
+    }, (e, st) {
+      final svc = made;
+      if (svc != null &&
+          stopped.contains(svc) &&
+          e is DatabaseException &&
+          e.isDatabaseClosedError()) {
+        return;
+      }
+      strays.add('$name: $e\n$st');
+    });
+    return ready.future;
+  }
+
   Future<ChatService> makeClient(String name, {ZIdentity? id}) async {
     final dir = await Directory.systemTemp.createTemp('z_pqc_$name');
     temps.add(dir);
     final vault = await Vault.open(rootOverride: dir);
     final identity = id ?? await ZIdentity.generate();
     await vault.kvPut('identity', jsonEncode(identity.toJson()));
-    final svc = await ChatService.init(
-        vault: vault,
-        identity: identity,
-        displayName: name,
-        transport:
-            Transport(identity: identity, serverUrl: 'ws://127.0.0.1:$port'));
-    services.add(svc);
-    return svc;
+    return start(name, vault, identity);
+  }
+
+  /// [s] stopped and started again over its own vault, as the app restarts.
+  /// [before] runs on the vault as it stands once [s] has stopped.
+  Future<ChatService> restart(ChatService s,
+      {Future<void> Function(Vault vault)? before}) async {
+    final dir = s.vault.root;
+    final name = s.displayName;
+    stopped.add(s);
+    s.dispose();
+    await s.transport.stop();
+    services.remove(s);
+    await s.vault.db.close();
+    final vault = await Vault.open(rootOverride: dir);
+    if (before != null) await before(vault);
+    final id = await ZIdentity.fromJson(
+        (jsonDecode((await vault.kvGet('identity'))!) as Map)
+            .cast<String, Object?>());
+    return start(name, vault, id);
+  }
+
+  /// A counter or gauge from the relay's `/metrics`, which is token-gated
+  /// (P1-14); -1 when it is not there.
+  Future<int> metric(String name) async {
+    final req =
+        await HttpClient().getUrl(Uri.parse('http://127.0.0.1:$port/metrics'));
+    req.headers.set('authorization', 'Bearer z-apptest-metrics');
+    final res = await req.close();
+    final body = await res.transform(utf8.decoder).join();
+    if (res.statusCode != 200) {
+      throw StateError('/metrics answered HTTP ${res.statusCode}');
+    }
+    final m = RegExp('^$name (\\d+)\$', multiLine: true).firstMatch(body);
+    return m == null ? -1 : int.parse(m.group(1)!);
   }
 
   /// [phone]'s account linked onto a new install with identity [devId], as
@@ -216,14 +337,7 @@ void main() {
     await vault.kvPut('account', jsonEncode(enrolled.toJson()));
     await vault.kvPut('my_devices', jsonEncode([account.deviceCert.toJson()]),
         sensitive: false);
-    final svc = await ChatService.init(
-        vault: vault,
-        identity: devId,
-        displayName: name,
-        transport:
-            Transport(identity: devId, serverUrl: 'ws://127.0.0.1:$port'));
-    services.add(svc);
-    return (svc, cert);
+    return (await start(name, vault, devId), cert);
   }
 
   Future<void> waitUntil(FutureOr<bool> Function() cond,
@@ -829,5 +943,282 @@ void main() {
     final got = await next.handleInbound(off.$3, toEnc.single);
     expect(got.mirrored?.inner.data['b'], 'after',
         reason: 'the new service holds the secret the old one took on');
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  // ---------------------------------------------------------------------------
+  // 44.3 (PROTOCOL §18.11).
+
+  /// One round of traffic on every channel of a linked trio: the phone and
+  /// the laptop each write to carol (each mirrored to the other), and carol
+  /// writes to the phone's account (to the phone, and fanned to the laptop).
+  Future<void> Function() roundsOf(
+      ChatService Function() phone,
+      ChatService Function() laptop,
+      ChatService Function() carol,
+      String tag) {
+    var n = 0;
+    return () async {
+      final i = n++;
+      final p = phone(), l = laptop(), c = carol();
+      await p.sendText(c.myRid, '$tag p$i');
+      await c.sendText(p.myRid, '$tag c$i');
+      await l.sendText(c.myRid, '$tag l$i');
+      await waitUntil(
+          () =>
+              texts(c, p.myRid).contains('$tag p$i') &&
+              texts(c, p.myRid).contains('$tag l$i') &&
+              texts(p, c.myRid).contains('$tag c$i') &&
+              texts(l, c.myRid).contains('$tag c$i') &&
+              texts(l, c.myRid).contains('$tag p$i') &&
+              texts(p, c.myRid).contains('$tag l$i'),
+          what: '$tag round $i on every channel');
+    };
+  }
+
+  test('9. every device holds a sealing key from its first start, and keeps '
+      'it across a restart', () async {
+    var phone = await makeClient('phone9');
+    var carol = await makeClient('carol9');
+    var (laptop, cert) =
+        await makeLinked('laptop9', phone, await ZIdentity.generate());
+    await waitUntil(() => laptop.transport.isConnected,
+        what: 'the laptop connected');
+    await phone.addMyDevice(cert);
+    final seeds = <String, String>{};
+    for (final s in [phone, laptop, carol]) {
+      final seed = await s.vault.kvGet('seal_seed');
+      expect(seed, isNotNull,
+          reason: '${s.displayName} holds no sealing key after its first '
+              'start');
+      expect(unb64(seed!).length, 64, reason: 'd || z');
+      expect(s.debugSealingKey, SealingKey.fromSeed(unb64(seed)).ek,
+          reason: 'the key in use is the one the seed makes');
+      seeds[s.displayName] = seed;
+    }
+    expect(seeds.values.toSet(), hasLength(3), reason: 'one key per device');
+    phone = await restart(phone);
+    laptop = await restart(laptop);
+    carol = await restart(carol);
+    for (final s in [phone, laptop, carol]) {
+      expect(await s.vault.kvGet('seal_seed'), seeds[s.displayName],
+          reason: '${s.displayName} drew another key at its restart');
+      expect(s.debugSealingKey,
+          SealingKey.fromSeed(unb64(seeds[s.displayName]!)).ek);
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('10. every device announces its sealing key to every device it has a '
+      'session with, which keeps it and says so; then none announces again, '
+      'even after a restart; and nothing leaves but zs1.', () async {
+    final pP = Probe(), lP = Probe(), cP = Probe();
+    var (phone, laptop, carol) =
+        await linkedTrio(phoneProbe: pP, laptopProbe: lP, carolProbe: cP);
+    final mark = wire.length;
+    // §17.4's clock, which the re-announcement runs on, compressed: from
+    // here on anything announced and not acknowledged is announced again
+    // within a round.
+    compress([phone, laptop, carol], retryMs: 600);
+    final round = roundsOf(() => phone, () => laptop, () => carol, 'k');
+    var probes = {'phone': pP, 'laptop': lP, 'carol': cP};
+    // Who should hear from whom, and on which door: the six sessions of the
+    // trio, both ways.
+    final expected = {
+      ('phone', carol.myRid, 'primary'),
+      ('phone', laptop.myRid, 'sync'),
+      ('laptop', carol.myRid, 'primary'),
+      ('laptop', phone.myRid, 'sync'),
+      ('carol', phone.myRid, 'primary'),
+      ('carol', laptop.myRid, 'extra'),
+    };
+    Set<(String, String, String)> heard(bool Function(Seen s) what) => {
+          for (final e in probes.entries)
+            for (final s in e.value.seen)
+              if (what(s)) (e.key, s.from, s.path)
+        };
+    await waitUntil(() async {
+      await round();
+      return heard((s) => s.kind == 'pqseal').containsAll(expected) &&
+          heard((s) => s.pqs).containsAll(expected) &&
+          laptop.debugOwnPqdc != null;
+    }, timeout: const Duration(seconds: 90),
+        what: 'every device hearing every other announce its key, and say '
+            'it holds its own');
+    for (final s in [for (final p in probes.values) ...p.seen]) {
+      if (s.kind != 'pqseal') continue;
+      expect(s.pq, isTrue, reason: 'a pqseal on a classical message: $s');
+    }
+    // A probe is shown each envelope on a copy, before the device acts on
+    // it: what the devices made of the last ones is waited for.
+    final devices = {'phone': phone, 'laptop': laptop, 'carol': carol};
+    ChatService senderOf(String rid) =>
+        devices.values.firstWhere((d) => d.myRid == rid);
+    bool same(Uint8List? x, Uint8List? y) =>
+        x != null && y != null && constantTimeEquals(x, y);
+    await waitUntil(
+        () => expected.every((e) =>
+            same(devices[e.$1]!.debugPqSealOf(e.$2),
+                senderOf(e.$2).debugSealingKey) &&
+            senderOf(e.$2).debugHoldsMySealKey(devices[e.$1]!.myRid)),
+        what: 'every key kept by its receiver, and every receiver heard to '
+            'hold it');
+    for (final (to, from, _) in expected) {
+      final sender = senderOf(from);
+      expect(devices[to]!.debugPqSealOf(from), sender.debugSealingKey,
+          reason: '$to keeps ${sender.displayName}\'s key');
+      expect(sender.debugHoldsMySealKey(devices[to]!.myRid), isTrue,
+          reason: '${sender.displayName} has heard $to holds its key');
+    }
+
+    // Stops: rounds longer than the clock, and no device announces again.
+    int announced() => [
+          for (final p in probes.values) ...p.seen
+        ].where((s) => s.kind == 'pqseal').length;
+    final before = announced();
+    for (var i = 0; i < 4; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await round();
+    }
+    expect(announced(), before,
+        reason: 'a device announced its key to one that holds it');
+
+    // And after a restart of all three.
+    phone = await restart(phone);
+    laptop = await restart(laptop);
+    carol = await restart(carol);
+    probes = {'phone': Probe(), 'laptop': Probe(), 'carol': Probe()};
+    probes['phone']!.attach(phone);
+    probes['laptop']!.attach(laptop);
+    probes['carol']!.attach(carol);
+    compress([phone, laptop, carol], retryMs: 600);
+    await waitUntil(
+        () => [phone, laptop, carol].every((s) => s.transport.isConnected),
+        what: 'all three connected again');
+    for (var i = 0; i < 4; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await round();
+    }
+    expect(heard((s) => s.kind == 'pqseal'), isEmpty,
+        reason: 'announced again after a restart');
+    expect(heard((s) => s.pqs), isNotEmpty,
+        reason: 'and each still says it holds the others\' keys');
+
+    // On the wire: every envelope zs1., and no introduction key.
+    final sent = wire.skip(mark).toList();
+    expect(sent, isNotEmpty);
+    expect(sent.where((p) => !p.startsWith('zs1.')), isEmpty,
+        reason: 'an envelope left sealed otherwise than zs1.');
+    expect(await metric('z_ikey_published_total'), 0,
+        reason: 'an introduction key was published');
+    expect(await metric('z_ikeys'), anyOf(0, -1));
+  }, timeout: const Timeout(Duration(minutes: 4)));
+
+  test("11. the root signs its own pqdc, a linked device gets its own over "
+      'dir:"pqdc", and one its list does not name gets none', () async {
+    final lP = Probe(), pP = Probe();
+    var (phone, laptop, carol) =
+        await linkedTrio(phoneProbe: pP, laptopProbe: lP);
+    compress([phone, laptop, carol], retryMs: 600);
+    final round = roundsOf(() => phone, () => laptop, () => carol, 'dc');
+    final acct = await phone.accountIdentity();
+    final ml = (await phone.pqAccountPublic())!;
+    bool attests(ChatService d, Uint8List? pqdc) =>
+        pqdc != null &&
+        deviceAttestationValid(
+            accountMlPub: ml,
+            accountEdPub: acct.accountEdPub,
+            deviceEdPub: d.identity.edPub,
+            deviceXPub: d.identity.xPub,
+            sealEk: d.debugSealingKey!,
+            pqdc: pqdc);
+
+    // The root's own, from its first start.
+    expect(attests(phone, phone.debugOwnPqdc), isTrue);
+    expect(await phone.vault.kvGet('pqdc'), b64(phone.debugOwnPqdc!));
+
+    // The laptop's, from the root: its pqseal over self-sync is the ask.
+    laptop.pqdcResendDelay = const Duration(milliseconds: 800);
+    await waitUntil(() async {
+      await round();
+      return laptop.debugOwnPqdc != null;
+    }, timeout: const Duration(seconds: 60), what: 'the laptop holds its pqdc');
+    expect(attests(laptop, laptop.debugOwnPqdc), isTrue);
+    expect(attests(phone, laptop.debugOwnPqdc), isFalse,
+        reason: "the laptop's, not the root's");
+    expect(
+        lP.seen.any((s) =>
+            s.path == 'sync' && s.dir == 'pqdc' && s.from == phone.myRid),
+        isTrue,
+        reason: 'it came from the root over self-sync');
+    // And its pqid carries it: carol held the account's key already, so
+    // the laptop sends her the pqid once more.
+    await waitUntil(() async {
+      await round();
+      return carol.debugPqdcOf(laptop.myRid) != null;
+    }, timeout: const Duration(seconds: 60),
+        what: "carol holds the laptop's pqdc");
+    expect(carol.debugPqdcOf(laptop.myRid), laptop.debugOwnPqdc);
+    expect(carol.debugPqdcOf(phone.myRid), phone.debugOwnPqdc);
+
+    // A device the root's list does not name. The list is what
+    // `my_devices` holds; dropped from it with the self-sync session left
+    // standing — `removeMyDevice` writes the one before it rebuilds the
+    // other — the laptop, holding no pqdc, asks again.
+    await phone.vault.kvPut('my_devices', jsonEncode([]), sensitive: false);
+    laptop = await restart(laptop,
+        before: (v) async => v.kvDelete('pqdc'));
+    final asked = Probe()..attach(laptop);
+    compress([laptop], retryMs: 600);
+    final askedBefore = pP.seen
+        .where((s) => s.kind == 'pqseal' && s.from == laptop.myRid)
+        .length;
+    expect(laptop.debugOwnPqdc, isNull);
+    await waitUntil(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await round();
+      return pP.seen
+              .where((s) => s.kind == 'pqseal' && s.from == laptop.myRid)
+              .length >
+          askedBefore;
+    }, timeout: const Duration(seconds: 60), what: 'the laptop asked again');
+    for (var i = 0; i < 3; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await round();
+    }
+    expect(laptop.debugOwnPqdc, isNull,
+        reason: 'the root signed for a device its list does not name');
+    expect(asked.seen.where((s) => s.dir == 'pqdc'), isEmpty);
+  }, timeout: const Timeout(Duration(minutes: 4)));
+
+  test("12. deleting a contact removes what was held of their devices' "
+      'sealing keys and pqdcs', () async {
+    final (phone, laptop, carol) = await linkedTrio();
+    final round = roundsOf(() => phone, () => laptop, () => carol, 'del');
+    await waitUntil(() async {
+      await round();
+      return carol.debugPqSealOf(phone.myRid) != null &&
+          carol.debugPqSealOf(laptop.myRid) != null &&
+          carol.debugPqdcOf(phone.myRid) != null;
+    }, timeout: const Duration(seconds: 60),
+        what: "carol holds the keys of both of the phone's devices");
+    final held = [
+      b64(phone.debugSealingKey!),
+      b64(laptop.debugSealingKey!),
+      b64(phone.debugOwnPqdc!),
+    ];
+    final row = (await carol.vault.kvGet('cseal_${phone.myRid}'))!;
+    for (final h in held) {
+      expect(row, contains(h), reason: 'the premise: kept in the vault');
+    }
+    await carol.deleteContact(phone.myRid);
+    expect(carol.debugPqSealOf(phone.myRid), isNull);
+    expect(carol.debugPqSealOf(laptop.myRid), isNull);
+    expect(carol.debugPqdcOf(phone.myRid), isNull);
+    expect(await carol.vault.kvGet('cseal_${phone.myRid}'), isNull);
+    final everything = await carol.vault.kvScan('');
+    for (final h in held) {
+      expect(everything.values.where((v) => v.contains(h)), isEmpty,
+          reason: 'a sealing key or pqdc of a deleted contact is left in '
+              'the vault');
+    }
   }, timeout: const Timeout(Duration(minutes: 2)));
 }

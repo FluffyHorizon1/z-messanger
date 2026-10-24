@@ -310,6 +310,21 @@ class Conversation {
   /// a send actually uses, and is false when a send would have to open one.
   bool get nextSendIsPostQuantum => _sendableSession()?.pq.established ?? false;
 
+  /// Whether the header of the next [encrypt] would carry the ML-KEM
+  /// ciphertext (`pqct`, §17.2): the session a send would go out on holds a
+  /// secret it encapsulated and has not yet seen the peer mix with — the
+  /// encapsulating side's every message until its peer's first mixed one
+  /// arrives, at a session's first mixing and after each re-key (§17.3,
+  /// §17.7). Exactly the test [ratchetEncrypt] applies when it builds the
+  /// header. The ciphertext's 1 088 bytes leave the 4 096 bucket 767 bytes of
+  /// inner message, so a caller keeping something in that bucket (a `pqseal`,
+  /// §18.11) asks this first and waits while it is true. False when a send
+  /// would have to open a session: a new one starts classical.
+  bool get nextSendCarriesPqCiphertext {
+    final p = _sendableSession()?.pq;
+    return p != null && p.k != null && !p.acked && p.ct != null;
+  }
+
   /// On session [sid] the encapsulating side holds a secret the peer has not
   /// yet been seen using — so its ciphertext rides every message sent there,
   /// and the offering side does not have the secret until one arrives. A

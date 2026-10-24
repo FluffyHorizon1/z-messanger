@@ -17,6 +17,7 @@ import 'key_transparency.dart';
 import 'models.dart';
 import 'picked_file.dart' show pickerCacheDir, sweepPickerCopies;
 import 'receipts.dart';
+import 'sealing_keys.dart';
 import 'system_messages.dart';
 import 'relay_url.dart';
 import 'transport.dart';
@@ -602,6 +603,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // Test-only: move at the first chance whatever the gate says, as ADR
     // 0017's signer did before ADR 0029 gave it one ([debugMoveUngated]).
     bool debugMoveUngated = false,
+    // Test-only: start this service as a build from before 44.3, which has
+    // no sealing key and neither sends nor reads `pqseal`, `pqs` or `pqdc`
+    // ([debugBuildBeforeSealingKeys]) — set here, so that the start draws
+    // no key and signs nothing.
+    bool debugBuildBeforeSealingKeys = false,
     // ADR 0028: when held receipts may leave. Production never passes it; a
     // test that is not about the delay passes a shorter one, from the start,
     // so that receipts a previous run left are timed by it too.
@@ -620,6 +626,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     svc._signerV2Only = signDevlistV2Only;
     svc.debugPreAdr0029 = debugPreAdr0029;
     svc._debugMoveUngated = debugMoveUngated;
+    svc.debugBuildBeforeSealingKeys = debugBuildBeforeSealingKeys;
     svc._receipts.timing = receiptTiming;
     svc.kt = KeyTransparency(
       vault: vault,
@@ -667,6 +674,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     svc._rootRid = b64url(await sha256Bytes(account.accountEdPub));
     svc._holdsRoot = account.holdsAccountRoot;
     svc._myBindingSig = await identity.bindingSignature();
+    // 44.3: this device's sealing key — drawn here, once, at the first start
+    // of this build, whether the account is new, the device just enrolled or
+    // the build just installed over an older one — its attestation, and the
+    // keys other devices have announced to it. Before anything can send.
+    await svc._loadSealingKeys();
     await svc._loadConversations();
     await svc._computeUnread();
     svc.devMode = (await vault.kvGet('dev_mode')) == '1';
@@ -696,6 +708,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // the seed race left — is made again before anything offers it.
     await svc._repairOwnListPqSignature();
     svc._schedulePqListDelivery(); // §18.9, on its own clock
+    svc._schedulePqdcResends(); // 44.3, §18.11: on the same kind of clock
     // ADR 0022: a linked device whose account's list does not carry its
     // proof of possession hands it to its root — the first start of this
     // build on a device linked before it. Through the outbox, which the
@@ -792,6 +805,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     _receiptTimers.clear();
     _historyTimer?.cancel();
     _pqListTimer?.cancel();
+    _pqdcTimer?.cancel();
     for (final t in _pqTimers.values) {
       t.cancel();
     }
@@ -2824,6 +2838,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     'hvia_', // phase 38: the handle a contact was made through
     'cdl_dlr_', // ADR 0029: what each of their devices said it reads
     'rcpt_', // phase 41: receipts owed to them, held (ADR 0028)
+    'cseal_', // 44.3: their devices' sealing keys and `pqdc`s (§18.11)
   ];
 
   /// Forget a contact: every row, every blob, every `kv` family, and every
@@ -2955,6 +2970,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if (_linkAdds.length + _linkJoins.length != links) await _saveLinks();
     for (final family in contactKvFamilies) {
       await vault.kvDelete('$family$rid');
+    }
+    // 44.3: what was held of their devices' sealing keys, `cseal_` above.
+    _contactSeals.remove(rid);
+    for (final r in [rid, ...extraRids]) {
+      _pqSealsThisRun.remove(r);
     }
     contacts.remove(rid);
     _convs.remove(rid);
@@ -3433,9 +3453,16 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       final ack = debugPreAdr0021
           ? contact.pqPub != null
           : contact.numberKey != null;
-      await _sendInner(contact,
-          InnerMessage.pqIdentity(newMessageId(), _now(), mlPub, ack: ack));
+      // 44.3 (§18.11): this device's own `pqdc`, when it holds one, rides in
+      // the `pqid` as its optional member — 3 309 bytes inside the 16 384
+      // bucket the `pqid` already is, so no new envelope and no new size.
+      final pqdc = debugBuildBeforeSealingKeys ? null : _ownPqdc;
+      await _sendInner(
+          contact,
+          InnerMessage.pqIdentity(newMessageId(), _now(), mlPub,
+              ack: ack, pqdc: pqdc));
       if (ack) await _markPqTold(contact);
+      if (pqdc != null) await _notePqdcSent(contact);
     } catch (_) {
       // The next reason re-offers it; see _onInbound.
     } finally {
@@ -3548,6 +3575,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     await _forgetCovered(contact, tick);
     contact.pqAcked = true;
     _applyTick(contact, tick);
+    // 44.3: a contact that holds the account's key and has not had this
+    // device's `pqdc` is owed one more `pqid`, on its own clock.
+    _schedulePqdcResends();
     return true;
   }
 
@@ -3787,6 +3817,527 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     return true;
   }
 
+  // ------------------------------------------------------------------
+  // 44.3: sealing keys (ADR 0033 §1, PROTOCOL §18.11)
+  // ------------------------------------------------------------------
+
+  /// Test-only, from `init`'s `debugBuildBeforeSealingKeys`: behave as a
+  /// build from before 44.3. No sealing key is drawn and no `pqdc` signed;
+  /// nothing sends `pqseal`, stamps `pqs` or carries `pqdc`; and what
+  /// arrives of them takes the paths that build had — a `pqseal` the unknown
+  /// kind's (acknowledged, nothing stored), a `pqid`'s `pqdc` unread, `pqs`
+  /// read by nothing, a `dir:"pqdc"` mirror the one for a thread this device
+  /// does not hold. The mixed-version case is what the re-announcement and
+  /// the one more `pqid` exist for, and the honest way to run it is to have
+  /// one side behave that way, as [debugPreAdr0021] does for its own.
+  @visibleForTesting
+  bool debugBuildBeforeSealingKeys = false;
+
+  /// This device's sealing key, from `seal_seed`; null as a build from
+  /// before 44.3, or when the vault could not give one this run.
+  SealingKey? _sealingKey;
+
+  /// This device's `pqdc`, held only once it verifies for this key, this
+  /// device and this account ([_attestsMe]).
+  Uint8List? _ownPqdc;
+
+  /// Whether this device can hold a `pqdc` at all: it knows its account's
+  /// ML-DSA key — a root derives it, a linked device was given it at
+  /// enrolment; one linked by a build from before v3 was not, and sends no
+  /// `pqid` to carry one in.
+  bool _pqdcPossible = false;
+
+  /// What is held of each contact's devices (`cseal_<rid>`), and of this
+  /// account's own other devices (`oseal`) — [SealRecord].
+  final Map<String, SealRecord> _contactSeals = {};
+  SealRecord _ownSeals = SealRecord();
+
+  /// Announcements made this run, per device: bounded as the `pqid`'s
+  /// re-sends are ([_maxPqNudges]).
+  final Map<String, int> _pqSealsThisRun = {};
+
+  /// A root's answers this run to each of its devices' asks (§9,
+  /// `dir:"pqdc"`), bounded the same way: each is a signature and a
+  /// 16 384-bucket envelope.
+  final Map<String, int> _pqdcAnswers = {};
+
+  /// `pqseal` envelopes this device has queued. Test seam.
+  @visibleForTesting
+  int debugPqSealSends = 0;
+
+  /// This device's sealing key (its encapsulation key) and its `pqdc`.
+  /// Test seams.
+  @visibleForTesting
+  Uint8List? get debugSealingKey => _sealingKey?.ek;
+  @visibleForTesting
+  Uint8List? get debugOwnPqdc => _ownPqdc;
+
+  /// What this device holds of the sealing key and the `pqdc` of
+  /// [deviceRid] — a contact's device or one of mine — and whether that
+  /// device has said it holds this one's. Test seams.
+  @visibleForTesting
+  Uint8List? debugPqSealOf(String deviceRid) => _heldSeal(deviceRid)?.ek;
+  @visibleForTesting
+  Uint8List? debugPqdcOf(String deviceRid) => _heldSeal(deviceRid)?.pqdc;
+  @visibleForTesting
+  bool debugHoldsMySealKey(String deviceRid) =>
+      _heldSeal(deviceRid)?.holdsMine ?? false;
+
+  DeviceSeal? _heldSeal(String deviceRid) {
+    final own = _ownSeals.devices[deviceRid];
+    if (own != null) return own;
+    final owner = contacts.containsKey(deviceRid)
+        ? deviceRid
+        : _extraRidToContact[deviceRid];
+    return owner == null ? null : _contactSeals[owner]?.devices[deviceRid];
+  }
+
+  /// This device's sealing key, its `pqdc`, and what is held of every other
+  /// device's — from the vault, at start. The key is drawn here when the
+  /// vault holds none: at the first start of this build on a new account,
+  /// on a device just enrolled (`installEnrollment` writes the vault before
+  /// this service starts) and on one updated from an older build. Once, for
+  /// the device's life: it is never drawn again while the seed is held, and
+  /// a restore brings the seed back ([SealingKeyBackup]). A build from
+  /// before 44.3 that restored an archive made by this one kept the seed
+  /// unread among the records it writes back; it is taken from there before
+  /// any new one is drawn.
+  Future<void> _loadSealingKeys() async {
+    if (debugBuildBeforeSealingKeys) return;
+    try {
+      var seed = await vault.kvGet(sealSeedKey);
+      if (seed == null &&
+          await SealingKeyBackup.adoptKept(vault, BackupArchive.keptKey)) {
+        seed = await vault.kvGet(sealSeedKey);
+      }
+      SealingKey? key;
+      if (seed != null) {
+        try {
+          key = SealingKey.fromSeed(unb64(seed));
+        } catch (_) {
+          key = null; // not a seed: the key it made is gone either way
+        }
+      }
+      if (key == null) {
+        final fresh = SealingKey.generate();
+        // Whatever attestation the vault held was for another key.
+        await vault.db.transaction((txn) async {
+          await vault.kvPut(sealSeedKey, b64(fresh.seed), txn: txn);
+          for (final p in const ['s:', 'p:']) {
+            await txn
+                .delete('kv', where: 'k = ?', whereArgs: ['$p$ownPqdcKey']);
+          }
+        });
+        key = fresh;
+      }
+      _sealingKey = key;
+    } catch (_) {
+      // The vault could not be read or written: no key this run, so nothing
+      // is announced; the next start tries again.
+      return;
+    }
+    try {
+      for (final e in (await vault.kvScan('cseal_')).entries) {
+        final rid = e.key.substring('cseal_'.length);
+        if (contacts.containsKey(rid)) {
+          _contactSeals[rid] = SealRecord.decode(e.value);
+        }
+      }
+      _ownSeals = SealRecord.decode(await vault.kvGet('oseal'));
+    } catch (_) {
+      // Unreadable: this run starts from nothing held, so it announces
+      // again and re-learns what it is told; nothing is lost but envelopes.
+    }
+    await _loadOwnPqdc();
+  }
+
+  /// This device's `pqdc` (§18.11): the one the vault holds when it verifies
+  /// under the account's ML-DSA key for this device and this sealing key —
+  /// one that does not (an archive's from another device, a key drawn since)
+  /// is dropped and never carried — or, on the root, which alone holds the
+  /// account's ML-DSA seed, its own, signed now. A linked device's comes
+  /// from its root over self-sync ([_applyOwnPqdc]), asked for by the
+  /// `pqseal` it announces there ([_owesPqSeal]).
+  Future<void> _loadOwnPqdc() async {
+    final key = _sealingKey;
+    if (key == null) return;
+    try {
+      final me = await accountIdentity();
+      final ml = await pqAccountPublic();
+      _pqdcPossible = ml != null;
+      if (ml == null) return;
+      final stored = await vault.kvGet(ownPqdcKey);
+      if (stored != null) {
+        Uint8List? raw;
+        try {
+          raw = unb64(stored);
+        } on FormatException {
+          raw = null;
+        }
+        if (raw != null && _attestsMe(me, ml, key, raw)) {
+          _ownPqdc = raw;
+          return;
+        }
+        await vault.kvDelete(ownPqdcKey);
+      }
+      if (!me.holdsAccountRoot) return;
+      final pq = await pqIdentity();
+      if (pq == null) return;
+      final pqdc = await signDeviceAttestation(
+          accountKey: pq,
+          deviceEdPub: me.deviceEdPub,
+          deviceXPub: me.deviceXPub,
+          sealEk: key.ek);
+      await vault.kvPut(ownPqdcKey, b64(pqdc));
+      _ownPqdc = pqdc;
+    } catch (_) {
+      // Best-effort: signed again, or asked for again, at the next start.
+    }
+  }
+
+  /// Whether [pqdc] is the account's attestation, under [ml], of [key] as
+  /// this device's sealing key ([deviceAttestationValid]).
+  bool _attestsMe(
+          AccountIdentity me, Uint8List ml, SealingKey key, Uint8List pqdc) =>
+      deviceAttestationValid(
+          accountMlPub: ml,
+          accountEdPub: me.accountEdPub,
+          deviceEdPub: me.deviceEdPub,
+          deviceXPub: me.deviceXPub,
+          sealEk: key.ek,
+          pqdc: pqdc);
+
+  /// Whether this device owes [deviceRid] — one of [owner]'s devices, or
+  /// (null) one of mine — its `pqseal` on the next message there (§18.11):
+  /// that device has not stamped `pqs:1` — or did, and a ratchet session
+  /// with it has begun since, which forgets the stamp ([_forgetHeldMine]) —
+  /// and this is the first time, or §17.4's clock ([pqOfferRetry]) has run
+  /// since the last — at most [_maxPqNudges] times a run, as the `pqid`'s
+  /// re-sends are bounded. A linked device's announcement to its root is
+  /// also its ask for its `pqdc` (§9, `dir:"pqdc"`), so it is owed there
+  /// until the answer is held, stamp or no stamp. Whether it can ride the
+  /// message at hand is the channel's to say ([pqSealMayRide]).
+  bool _owesPqSeal(String? owner, String deviceRid) {
+    if (debugBuildBeforeSealingKeys || _sealingKey == null) return false;
+    final held = (owner == null ? _ownSeals : _contactSeals[owner])
+        ?.devices[deviceRid];
+    final asking = owner == null &&
+        deviceRid == _rootRid &&
+        !_holdsRoot &&
+        _pqdcPossible &&
+        _ownPqdc == null;
+    if ((held?.holdsMine ?? false) && !asking) return false;
+    if ((_pqSealsThisRun[deviceRid] ?? 0) >= _maxPqNudges) return false;
+    final last = held?.announcedMs ?? 0;
+    if (last == 0) return true;
+    return _pqOfferRetry > 0 && _now() - last >= _pqOfferRetry;
+  }
+
+  /// This device's `pqseal`, decorated as anything it sends [contact] is
+  /// ([_decorateForWire]); the per-device stamp goes on each copy
+  /// ([_bytesForDevice]).
+  Future<InnerMessage> _decoratedPqSeal(Contact contact) async {
+    final seal = InnerMessage.pqSeal(newMessageId(), _now(), _sealingKey!.ek);
+    await _decorateForWire(seal, contact);
+    return seal;
+  }
+
+  /// The bare `pqseal` for [deviceRid], one of my devices, as it rides the
+  /// self-sync ratchet ([DeviceSyncService.pqSealFor]), stamped `pqs:1` when
+  /// this device holds that one's key; null when none is owed there.
+  Uint8List? _pqSealForOwnDevice(String deviceRid) {
+    if (!_owesPqSeal(null, deviceRid)) return null;
+    final seal = InnerMessage.pqSeal(newMessageId(), _now(), _sealingKey!.ek);
+    if (_stampsPqsTo(null, deviceRid)) seal.stampHoldsSealKey();
+    return seal.toBytes();
+  }
+
+  /// Whether what this device sends [deviceRid] — one of [owner]'s, or
+  /// (null) one of mine — says `pqs:1`: it holds that device's sealing key.
+  bool _stampsPqsTo(String? owner, String deviceRid) {
+    if (debugBuildBeforeSealingKeys) return false;
+    return (owner == null ? _ownSeals : _contactSeals[owner])
+            ?.devices[deviceRid]
+            ?.ek !=
+        null;
+  }
+
+  /// [owner]'s record — null for mine — made when first needed; null for a
+  /// contact this vault no longer holds.
+  SealRecord? _sealRecordFor(String? owner) {
+    if (owner == null) return _ownSeals;
+    if (!contacts.containsKey(owner)) return null;
+    return _contactSeals.putIfAbsent(owner, SealRecord.new);
+  }
+
+  /// Writes [owner]'s record — a contact's under that contact's lock, which
+  /// a deletion takes too, so a write that waited for it finds the contact
+  /// gone and writes nothing rather than putting back the row the deletion
+  /// removed. Never called with that lock held: [_withLock] is not
+  /// re-entrant.
+  Future<void> _saveSeals(String? owner) async {
+    if (owner == null) {
+      await _withLock('oseal', () => vault.kvPut('oseal', _ownSeals.encode()));
+      return;
+    }
+    final rid = owner;
+    await _withLock(rid, () async {
+      final rec = _contactSeals[rid];
+      if (rec == null || !contacts.containsKey(rid) || _disposed) return;
+      await vault.kvPut('cseal_$rid', rec.encode());
+    });
+  }
+
+  /// This device's `pqseal` has gone to [deviceRids], [owner]'s devices or
+  /// (null) mine: the clock and the bound run from now.
+  Future<void> _noteSealsSent(String? owner, List<String> deviceRids) async {
+    final rec = _sealRecordFor(owner);
+    if (rec == null) return;
+    final now = _now();
+    for (final r in deviceRids) {
+      _pqSealsThisRun[r] = (_pqSealsThisRun[r] ?? 0) + 1;
+      rec.device(r).announcedMs = now;
+      debugPqSealSends++;
+    }
+    try {
+      await _saveSeals(owner);
+    } catch (_) {
+      // Kept in memory for this run; written with the next change.
+    }
+  }
+
+  /// The sealing key a `pqseal` carries when FIPS 203 §7.2 accepts it
+  /// ([InnerMessage.pqSealKey]) — the one check a key meets before it is
+  /// kept, on every door. Any other is taken as nothing, and refuses
+  /// nothing: the message is read as one of a kind this build does not use.
+  static Uint8List? _announcedSealKey(InnerMessage inner) => inner.pqSealKey;
+
+  /// [d] with what arrived; whether anything changed. A different key from
+  /// the same device replaces the one held: the ratchet authenticates both
+  /// as that device's, and only a device that lost its seed — restored from
+  /// an archive older than this build — announces a second; the `pqdc` over
+  /// the first goes with it.
+  static bool _keepSeal(
+      DeviceSeal d, Uint8List? ek, Uint8List? pqdc, bool stamped) {
+    var changed = false;
+    if (ek != null && !(d.ek != null && constantTimeEquals(d.ek!, ek))) {
+      if (d.ek != null) d.pqdc = null;
+      d.ek = ek;
+      changed = true;
+    }
+    if (pqdc != null &&
+        !(d.pqdc != null && constantTimeEquals(d.pqdc!, pqdc))) {
+      d.pqdc = pqdc;
+      changed = true;
+    }
+    if (stamped && !d.holdsMine) {
+      d.holdsMine = true;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /// 44.3 (§18.11): a new ratchet session with [deviceRid] — one of
+  /// [owner]'s devices, or (null) one of mine — has begun, accepted from it
+  /// or opened to it, so this device forgets that that device holds its
+  /// sealing key: what said so was said on another session, by state a
+  /// restore, a contact deleted and added back or a device unlinked and
+  /// linked again does not keep, and a device that lost it would otherwise
+  /// never hear this one's key again. The announcement resumes on its clock
+  /// and within its bound ([_owesPqSeal]), and the next `pqs:1` from that
+  /// device ends it as the first did. In memory; whether anything changed.
+  bool _forgetHeldMine(String? owner, String deviceRid) {
+    final d = (owner == null ? _ownSeals : _contactSeals[owner])
+        ?.devices[deviceRid];
+    if (d == null || !d.holdsMine) return false;
+    d.holdsMine = false;
+    return true;
+  }
+
+  /// 44.3 (§18.11): what [inner], from [deviceRid] — one of [owner]'s
+  /// devices — says about sealing keys, taken in memory: the key its
+  /// `pqseal` announces ([_announcedSealKey]), from then on stamped back as
+  /// held (`pqs:1`) on what this device sends there; the `pqdc` a `pqid`
+  /// carries, kept with the key; and `pqs:1`, that device holding this
+  /// one's, which ends this device's announcements to it. [newSession]: it
+  /// came on a ratchet session it opened, which forgets an earlier stamp
+  /// first ([_forgetHeldMine]), so that what this message says stands. Taken
+  /// in the order the ratchet decrypted the messages — on the contact's
+  /// door under the conversation's lock, on their other devices' in the
+  /// dispatch's turn — so a stamp said on the old session cannot land after
+  /// the new one has forgotten it. Kept, not judged: whether a `pqdc`
+  /// verifies under the contact's established key is 44.5's question.
+  /// Whether anything changed, for the caller to write ([_saveSeals]).
+  bool _sealNews(String owner, String deviceRid, InnerMessage inner,
+      {bool newSession = false}) {
+    if (debugBuildBeforeSealingKeys) return false;
+    final forgot = newSession && _forgetHeldMine(owner, deviceRid);
+    final ek = _announcedSealKey(inner);
+    final pqdc = inner.pqidAttestation;
+    final stamped = inner.saysHoldsSealKey;
+    if (ek == null && pqdc == null && !stamped) return forgot;
+    final rec = _sealRecordFor(owner);
+    if (rec == null) return forgot;
+    return _keepSeal(rec.device(deviceRid), ek, pqdc, stamped) || forgot;
+  }
+
+  /// [_sealNews] for [contact]'s device [deviceRid], written down.
+  Future<void> _takeSealNews(
+      Contact contact, String deviceRid, InnerMessage inner,
+      {bool newSession = false}) async {
+    if (_sealNews(contact.rid, deviceRid, inner, newSession: newSession)) {
+      await _saveSeals(contact.rid);
+    }
+  }
+
+  /// The same for [deviceRid], one of this account's own devices, over
+  /// self-sync, as its envelope is decrypted ([DeviceSyncService.onSealNews]):
+  /// a session it opened ([newSession]), its `pqseal` ([seal], bare on that
+  /// ratchet) and whether it holds this device's key ([stamped] on the
+  /// wrapper, or `pqs:1` on the `pqseal` itself). In memory; whether
+  /// anything changed. On the root the `pqseal` is also that device's ask
+  /// for its `pqdc`, answered once the envelope is taken ([_answerPqdcAsk]).
+  bool _ownSealNews(String deviceRid, InnerMessage? seal, bool stamped,
+      {bool newSession = false}) {
+    if (debugBuildBeforeSealingKeys) return false;
+    final forgot = newSession && _forgetHeldMine(null, deviceRid);
+    final ek = seal == null ? null : _announcedSealKey(seal);
+    final says = stamped || (seal?.saysHoldsSealKey ?? false);
+    if (ek == null && !says) return forgot;
+    return _keepSeal(_ownSeals.device(deviceRid), ek, null, says) || forgot;
+  }
+
+  /// 44.3 (§9, `dir:"pqdc"`): the root answers a linked device's `pqseal`
+  /// with that device's `pqdc` — the account's ML-DSA signature that this
+  /// sealing key is the device's — if its current list names the device:
+  /// the certificate `my_devices` holds for that routing id, the set every
+  /// list this root signs is made from, whose `ded` and `dx` are what it
+  /// signs over. A device it does not name gets none, whichever channel it
+  /// spoke on. Pairing v3 (44.4) will carry a new device's in its
+  /// enrolment; every device linked before it is attested this way. At most
+  /// [_maxPqNudges] answers to one device a run.
+  Future<void> _answerPqdcAsk(String deviceRid, Uint8List ek) async {
+    if (!_holdsRoot || debugBuildBeforeSealingKeys) return;
+    final n = _pqdcAnswers[deviceRid] ?? 0;
+    if (n >= _maxPqNudges) return;
+    final pq = await pqIdentity();
+    if (pq == null) return;
+    DeviceCertificate? cert;
+    for (final d in await _myDevices()) {
+      if (await d.routingId() == deviceRid) {
+        cert = d;
+        break;
+      }
+    }
+    if (cert == null) return;
+    _pqdcAnswers[deviceRid] = n + 1;
+    final pqdc = await signDeviceAttestation(
+        accountKey: pq,
+        deviceEdPub: cert.deviceEdPub,
+        deviceXPub: cert.deviceXPub,
+        sealEk: ek);
+    await _sync?.mirrorTo(
+        deviceRid: deviceRid,
+        threadRid: '',
+        dir: 'pqdc',
+        inner: InnerMessage(
+            kind: 'devpqdc',
+            mid: newMessageId(),
+            ts: _now(),
+            data: {'pqdc': b64(pqdc)}));
+  }
+
+  /// 44.3 (§9): a linked device keeps the `pqdc` its root sent over
+  /// self-sync once it verifies under its account's ML-DSA key for this
+  /// device's two keys and its sealing key — whichever of its devices passed
+  /// it on, only the root can have made one that does — and its `pqid`
+  /// carries it from then on; contacts that already hold the account's key
+  /// get that `pqid` once more ([_schedulePqdcResends]). A root signs its own
+  /// and takes none.
+  Future<void> _applyOwnPqdc(InnerMessage inner) async {
+    final key = _sealingKey;
+    if (key == null || _holdsRoot || inner.kind != 'devpqdc') return;
+    final v = inner.data['pqdc'];
+    if (v is! String) return;
+    final Uint8List raw;
+    try {
+      raw = unb64(v);
+    } on FormatException {
+      return;
+    }
+    final me = await accountIdentity();
+    final ml = me.accountMlPub;
+    if (ml == null || !_attestsMe(me, ml, key, raw)) return;
+    final held = _ownPqdc;
+    if (held != null && constantTimeEquals(held, raw)) return;
+    await vault.kvPut(ownPqdcKey, b64(raw));
+    _ownPqdc = raw;
+    _schedulePqdcResends();
+  }
+
+  /// How long after this device comes to hold its `pqdc` the contacts that
+  /// already held the account's post-quantum key are sent the `pqid` once
+  /// more (§18.11), jittered by up to 40 %, as the list's signature is
+  /// delayed (§18.9): the 16 384-bucket envelope then marks neither the
+  /// moment the build was installed nor the moment the root answered. Hours
+  /// in production; tests shorten it.
+  Duration _pqdcResendDelay = const Duration(hours: 2);
+  Duration get pqdcResendDelay => _pqdcResendDelay;
+  @visibleForTesting
+  set pqdcResendDelay(Duration d) {
+    _pqdcResendDelay = d;
+    _pqdcTimer?.cancel();
+    _pqdcTimer = null;
+    _schedulePqdcResends();
+  }
+
+  Timer? _pqdcTimer;
+
+  /// [c] holds the account's post-quantum key — the exchange that would
+  /// carry this device's `pqdc` is over — and has not had the `pqdc`.
+  bool _owesPqdcResend(Contact c) =>
+      c.pqAcked && !(_contactSeals[c.rid]?.pqdcSent ?? false);
+
+  void _schedulePqdcResends() {
+    if (_disposed ||
+        _pqdcTimer != null ||
+        _ownPqdc == null ||
+        debugBuildBeforeSealingKeys) {
+      return;
+    }
+    if (!contacts.values.any(_owesPqdcResend)) return;
+    final jitter = Duration(
+        milliseconds:
+            (_pqdcResendDelay.inMilliseconds * 0.4 * _rand.nextDouble())
+                .round());
+    _pqdcTimer = Timer(_pqdcResendDelay + jitter, () {
+      _pqdcTimer = null;
+      unawaited(_deliverPqdcResends().then((_) {}, onError: (_) {}));
+    });
+  }
+
+  /// The one more `pqid`, to each contact still owed it — once: the send
+  /// records that it went ([_notePqdcSent]), and one that could not go is
+  /// tried at the next tick.
+  Future<void> _deliverPqdcResends() async {
+    for (final c in contacts.values.toList()) {
+      if (_disposed) return;
+      if (!identical(contacts[c.rid], c) || !_owesPqdcResend(c)) continue;
+      await _sendPqIdentity(c);
+    }
+    _schedulePqdcResends();
+  }
+
+  /// [contact] has had this device's `pqdc`, in a `pqid`.
+  Future<void> _notePqdcSent(Contact contact) async {
+    final rec = _sealRecordFor(contact.rid);
+    if (rec == null || rec.pqdcSent) return;
+    rec.pqdcSent = true;
+    try {
+      await _saveSeals(contact.rid);
+    } catch (_) {}
+  }
+
   /// Discard all ratchet sessions with this contact and open a fresh one.
   Future<void> resetSecureSession(String rid) async {
     final c = contacts[rid];
@@ -3832,6 +4383,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if (_ktHeldKinds.contains(inner.kind) && kt.sendsHeld(contact.rid)) {
       throw KtSendHeldException(contact.rid);
     }
+    // 44.3: whether this device's sealing key went with it, and whether the
+    // send opened a ratchet session ([_forgetHeldMine]), written down once
+    // the lock is let go ([_noteSealsSent] takes it to record that).
+    var sealed = false;
+    var opened = false;
     await _withLock(contact.rid, () async {
       // The contact can have been DELETED while this send waited for the
       // lock — [deleteContact] takes the same one. Writing now would put
@@ -3844,6 +4400,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // other send-side failure here does.
       if (!contacts.containsKey(contact.rid)) return;
       final conv = await _convFor(contact);
+      final sessionsBefore = conv.sessions.length;
       // Rollback snapshot WITHOUT the out-of-order key cache. A send never
       // reads or changes that cache, so it does not belong in the thing a
       // send rolls back to — and encoding it here would have left half the
@@ -3866,16 +4423,26 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             offer == null ? null : await _sealFor(contact.rid, offer);
         // 7.7a: stamp our device-list claim + an echo of theirs onto the wire.
         await _decorateForWire(inner, contact);
+        // 44.3 (§18.11): this device's sealing key rides ahead of the message
+        // to a device owed it, in an envelope of its own as the offer is —
+        // and only when that envelope is mixed and its header carries no
+        // `pqct` ([pqSealMayRide]), so it stays in the 4 096 bucket.
+        String? sealPayload;
+        if (_owesPqSeal(contact.rid, contact.rid) && pqSealMayRide(conv)) {
+          final seal = await _decoratedPqSeal(contact);
+          sealPayload = await _sealFor(
+              contact.rid,
+              await conv.encrypt(
+                  _bytesForDevice(seal, contact.rid, contact.rid)));
+        }
         // ADR 0029, per device: if the recipient's own (root) device is
         // behind — a mix where a linked device is capable but this one is
         // not — the `dl` claim is stripped from its copy, as from an
-        // incapable sibling's in the fan ([_fanToContactExtras]). The common
-        // case keeps the inner as decorated. The shared `inner` is not
-        // mutated: the fan reads it too.
-        final rootBytes = (inner.data.containsKey('dl') &&
-                _withholdsClaimFromDevice(contact.rid, contact.rid))
-            ? _withoutClaim(inner).toBytes()
-            : inner.toBytes();
+        // incapable sibling's in the fan ([_fanToContactExtras]); and (44.3)
+        // the copy says `pqs:1` when this device holds that one's sealing
+        // key. The common case keeps the inner as decorated. The shared
+        // `inner` is not mutated: the fan reads it too.
+        final rootBytes = _bytesForDevice(inner, contact.rid, contact.rid);
         final payload =
             await _sealFor(contact.rid, await conv.encrypt(rootBytes));
         // Read once and call only if set: `await gate?.call(...)` would await
@@ -3891,6 +4458,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
               'id': newMessageId(),
               'rid': contact.rid,
               'payload': offerPayload,
+              'created_ms': _now(),
+            });
+          }
+          if (sealPayload != null) {
+            await txn.insert('outbox', {
+              'id': newMessageId(),
+              'rid': contact.rid,
+              'payload': sealPayload,
               'created_ms': _now(),
             });
           }
@@ -3911,6 +4486,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           });
           if (also != null) await also(txn);
         });
+        sealed = sealPayload != null;
+        // 44.3 (§18.11): a session this send opened forgets, as one opened
+        // from their side does, that their device holds this one's sealing
+        // key ([_forgetHeldMine]) — in memory here, under the lock.
+        opened = conv.sessions.length > sessionsBefore &&
+            !debugBuildBeforeSealingKeys &&
+            _forgetHeldMine(contact.rid, contact.rid);
       } catch (e) {
         final restored = await _convFromSnapshot(snapshot);
         // Carry the out-of-order keys over from the object being replaced.
@@ -3925,6 +4507,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         rethrow;
       }
     });
+    if (sealed) {
+      await _noteSealsSent(contact.rid, [contact.rid]);
+    } else if (opened) {
+      try {
+        await _saveSeals(contact.rid);
+      } catch (_) {
+        // Kept in memory for this run; written with the next change.
+      }
+    }
     // ADR 0028: receipts owed to this person that may go now ride with what
     // the user is sending them — queued behind it, one flush — instead of
     // leaving later at a moment of their own.
@@ -4708,6 +5299,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
               // ADR 0022: the sending device's own proof of possession, held
               // to the certificate the root holds for that device.
               await _applyDevicePop(from, mirrored.inner);
+            } else if (mirrored.dir == 'pqdc' &&
+                !debugBuildBeforeSealingKeys) {
+              // 44.3 (§9): the root's attestation of this device's sealing
+              // key, answering the `pqseal` this device sent it; held to the
+              // key and to this account before it is kept.
+              await _applyOwnPqdc(mirrored.inner);
             } else {
               await _insertMirrored(
                   mirrored.thread, mirrored.dir, mirrored.inner);
@@ -4731,6 +5328,19 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // ADR 0029: what that device of mine says it reads.
       final level = r.readerLevel;
       if (level != null) await _noteOwnReaderLevel(from, level);
+      // 44.3 (§18.11): the sealing key that device of mine announces, and
+      // whether it holds mine, were taken as the ratchet decrypted them
+      // ([DeviceSyncService.onSealNews]); on the root its `pqseal` is also
+      // its ask for its `pqdc`.
+      final seal = r.pqSeal;
+      if (seal != null && !debugBuildBeforeSealingKeys) {
+        final ek = _announcedSealKey(seal);
+        if (ek != null) {
+          try {
+            await _answerPqdcAsk(from, ek);
+          } catch (_) {}
+        }
+      }
       // 26.2: what just arrived may have made that device's channel
       // post-quantum — its offer, or the answer to ours — which is what a
       // waiting history replay is waiting for.
@@ -4763,6 +5373,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     InnerMessage? inner;
     // What became of an attachment offer, as its transaction decided (§7).
     _OfferFate? offerFate;
+    // 44.3: whether what this message says of sealing keys changed what is
+    // held, written down once the lock is let go.
+    var sealsChanged = false;
 
     try {
       final (s, parsedInner) =
@@ -4803,6 +5416,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           // nothing sent, and the peer believing every message arrived.
           _convs[contact.rid] = await _convFromSnapshot(snapshot);
           return (kDropped, null);
+        }
+        // 44.3 (§18.11): a session their device opened — a restore, a
+        // re-add — forgets that it holds this device's sealing key, here, in
+        // the order the ratchet decrypts, whatever this message turns out to
+        // hold ([_forgetHeldMine]).
+        if (dec.createdNewSession &&
+            !debugBuildBeforeSealingKeys &&
+            _forgetHeldMine(contact.rid, contact.rid)) {
+          sealsChanged = true;
         }
 
         // The envelope decrypted, so the ratchet has validly advanced; the
@@ -4891,6 +5513,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           }
           rethrow;
         }
+        // 44.3 (§18.11): what it says of sealing keys, taken under the same
+        // lock as the decrypt ([_sealNews]).
+        if (_sealNews(contact.rid, contact.rid, parsed)) sealsChanged = true;
         return (kOk, parsed);
       });
       status = s;
@@ -4912,6 +5537,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       }
       status = kMalformed;
       inner = null;
+    }
+    if (sealsChanged) {
+      try {
+        await _saveSeals(contact.rid);
+      } catch (_) {
+        // Kept in memory for this run; written with the next change.
+      }
     }
 
     if (status == kWithheld) {
@@ -5015,6 +5647,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           _offerPqIdentity(contact, _PqReason.answer);
         }
       }
+      // 44.3 (§18.11): the sealing key this device of theirs announces, its
+      // account's attestation of it in a `pqid`, and whether it holds this
+      // device's (`pqs:1`) were taken under the lock, above ([_sealNews]).
       if (inner.kind == 'pqack' || _saysHoldsOurKey(inner)) {
         // ADR 0021: they hold our key, so a candidate's number can be shown.
         try {
@@ -8454,6 +9089,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         await vault.kvPut('own_dlr', jsonEncode(_ownReaderLevels));
       } catch (_) {}
     }
+    // 44.3: and what it announced of its sealing key is no longer this
+    // account's to keep.
+    if (_ownSeals.devices.remove(gone) != null) {
+      try {
+        await _saveSeals(null);
+      } catch (_) {}
+    }
     await _initSync();
     await broadcastMyDeviceList();
     notifyListeners();
@@ -8507,6 +9149,26 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       myDevices: devices,
       pqIntervals: () => _pqIntervals,
       advertiseReaderLevel: () => !debugPreAdr0029, // ADR 0029
+      // 44.3 (§18.11): this device's sealing key to my other devices, and
+      // `pqs:1` to those whose keys it holds.
+      pqSealFor: _pqSealForOwnDevice,
+      holdsSealKeyOf: (deviceRid) => _stampsPqsTo(null, deviceRid),
+      onPqSealSent: (deviceRids) =>
+          unawaited(_noteSealsSent(null, deviceRids).then((_) {},
+              onError: (_) {})),
+      // What my devices say of sealing keys, as the ratchet decrypts it, and
+      // the sessions this one opens to them ([_forgetHeldMine]): kept in
+      // memory under the sync lock, written down after it.
+      onSealNews: (deviceRid, newSession, seal, stamped) {
+        if (_ownSealNews(deviceRid, seal, stamped, newSession: newSession)) {
+          unawaited(_saveSeals(null).then((_) {}, onError: (_) {}));
+        }
+      },
+      onSessionOpened: (deviceRid) {
+        if (!debugBuildBeforeSealingKeys && _forgetHeldMine(null, deviceRid)) {
+          unawaited(_saveSeals(null).then((_) {}, onError: (_) {}));
+        }
+      },
       replacing: _sync,
     );
     await next.init();
@@ -9347,14 +10009,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// that is longest:
   ///
   ///  * a member's — the `ginvite` with every claim [_decorateForWire] can
-  ///    stamp on it, at its longest; encrypted on their ratchet (§5), padded
-  ///    to its 256-byte block, under the fullest header a message carries —
-  ///    a session's first, with its ephemeral key and the ML-KEM ciphertext
-  ///    (§17); that payload's JSON in base64; and sealed, with my routing id
-  ///    beside it;
+  ///    stamp on it, at its longest, and the `pqs:1` a copy says to a device
+  ///    whose sealing key this one holds (44.3, [_bytesForDevice]);
+  ///    encrypted on their ratchet (§5), padded to its 256-byte block, under
+  ///    the fullest header a message carries — a session's first, with its
+  ///    ephemeral key and the ML-KEM ciphertext (§17); that payload's JSON in
+  ///    base64; and sealed, with my routing id beside it;
   ///  * and, while this account has other devices, theirs: the same
   ///    `ginvite` inside the self-sync envelope (§9), which is one base64
-  ///    layer more, then the same ratchet and seal.
+  ///    layer more and says `pqs:1` too, then the same ratchet and seal.
   ///
   /// A member's other devices get a member's copy. Synchronous, so the list
   /// measured is the list issued.
@@ -9370,6 +10033,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           'pdl': {'v': _maxListVersion, 'h': b64(Uint8List(16))},
           'pql': _maxListVersion,
           'pqh': 1,
+          'pqs': 1,
         }).toBytes().length;
     var longest = _ratchetPayloadLength(member);
     if (_sync?.active ?? false) {
@@ -9383,6 +10047,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
                 'dir': 'out',
                 'inner': '',
                 'dlr': devlistReaderLevel,
+                'pqs': 1,
               }))
               .length +
           _b64Length(inner);
@@ -14297,6 +14962,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     final held = _contactExtras[rid];
     if (held == null || held.targetRoutingIds.isEmpty) return;
     var queued = false;
+    // 44.3: the devices this device's sealing key went to, and whether a
+    // session this fan opened forgot a stamp ([_forgetHeldMine]), written
+    // down once the lock is let go.
+    var sealedTo = <String>[];
+    var opened = false;
     await _withLock(rid, () async {
       // Re-read under the lock, and only for a contact this vault still
       // holds: this runs unawaited after the primary send, so a deletion can
@@ -14311,32 +14981,62 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // A device only an unconfirmed list added gets nothing (ADR 0006):
         // the hold is what makes a split view cost the attacker something.
         final held = kt.heldRids(rid);
+        final all = s.targetRoutingIds.toSet();
+        final to = all.difference(held);
+        final sessionsBefore = {
+          for (final r in to) r: s.targetConversation(r)?.sessions.length ?? 0
+        };
+        final fan = <FanoutMessage>[];
+        final seals = <String>[];
+        // 44.3 (§18.11): this device's sealing key, ahead of the message, to
+        // each of their devices owed it whose next message is mixed and
+        // carries no `pqct` ([pqSealMayRide]) — one envelope each, so each
+        // copy can say `pqs` for its own device.
+        InnerMessage? seal;
+        for (final r in to) {
+          final conv = s.targetConversation(r);
+          if (conv == null || !_owesPqSeal(rid, r) || !pqSealMayRide(conv)) {
+            continue;
+          }
+          seal ??= await _decoratedPqSeal(contact);
+          final f = await s.encryptFor(r, _bytesForDevice(seal, rid, r));
+          if (f != null) {
+            fan.add(f);
+            seals.add(r);
+          }
+        }
         // ADR 0029, per device: an incapable sibling of a capable contact is
         // left out of the `dl` claim (it names a list it cannot read, and it
-        // would raise `missingUpdate`). Only when `dl` is actually present —
-        // not withheld for the whole contact, not a kind that carries none —
-        // and some device is behind is there anything to split; the common
-        // case takes the single pass it always did.
-        final strip = inner.data.containsKey('dl')
-            ? <String>{
-                for (final r in s.targetRoutingIds)
-                  if (_withholdsClaimFromDevice(rid, r)) r
-              }
-            : const <String>{};
-        final fan = strip.isEmpty
-            ? await s.encrypt(inner.toBytes(), except: held)
-            : [
-                ...await s.encrypt(inner.toBytes(),
-                    except: {...held, ...strip}),
-                ...await s.encrypt(_withoutClaim(inner).toBytes(), except: {
-                  ...held,
-                  for (final r in s.targetRoutingIds)
-                    if (!strip.contains(r)) r
-                }),
-              ];
+        // would raise `missingUpdate`); and (44.3) a device whose sealing key
+        // this one holds is told so (`pqs:1`). One encryption per shape the
+        // copies take ([_bytesForDevice]); the common case, every device
+        // alike, takes the single pass it always did.
+        final shapes = <String, Set<String>>{};
+        for (final r in to) {
+          final strip = inner.data.containsKey('dl') &&
+              _withholdsClaimFromDevice(rid, r);
+          final stamp = _stampsPqsTo(rid, r);
+          shapes.putIfAbsent('$strip/$stamp', () => <String>{}).add(r);
+        }
+        for (final group in shapes.values) {
+          fan.addAll(await s.encrypt(_bytesForDevice(inner, rid, group.first),
+              except: all.difference(group)));
+        }
         // Persist the advanced ratchet BEFORE the envelopes exist anywhere,
         // so a redelivery is still decryptable.
         await _saveExtra(rid);
+        // 44.3 (§18.11): a session this fan opened to one of their devices
+        // forgets that it holds this one's sealing key, as on the contact's
+        // door ([_sendInner]).
+        if (!debugBuildBeforeSealingKeys) {
+          for (final r in to) {
+            if ((s.targetConversation(r)?.sessions.length ?? 0) >
+                    sessionsBefore[r]! &&
+                _forgetHeldMine(rid, r)) {
+              opened = true;
+            }
+          }
+        }
         final now = _now();
         final rows = <Map<String, Object?>>[];
         for (final f in fan) {
@@ -14362,8 +15062,22 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           }
         });
         queued = rows.isNotEmpty;
+        // A device whose seal was refused above got neither envelope.
+        sealedTo = [
+          for (final r in seals)
+            if (rows.any((row) => row['rid'] == r)) r
+        ];
       } catch (_) {}
     });
+    if (sealedTo.isNotEmpty) {
+      await _noteSealsSent(rid, sealedTo);
+    } else if (opened) {
+      try {
+        await _saveSeals(rid);
+      } catch (_) {
+        // Kept in memory for this run; written with the next change.
+      }
+    }
     if (queued) unawaited(flushOutbox());
   }
 
@@ -14377,6 +15091,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     }
     InnerMessage? inner;
     String? offer;
+    // 44.3: the envelope came on a ratchet session that device opened, kept
+    // once the ratchet is written down ([_forgetHeldMine], in the dispatch's
+    // turn).
+    var newSession = false;
     // The session as it was before the decrypt. Everything this method does
     // with `inner` below is a store, and the acknowledgement now waits for
     // all of it; if any of it throws, this is what puts the ratchet back so
@@ -14443,6 +15161,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         outcome = kUnpersisted;
         return;
       }
+      newSession = dec.createdNewSession;
       try {
         inner = InnerMessage.fromBytes(dec.plaintext);
       } on FormatException {
@@ -14501,13 +15220,22 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     }
     if (inner == null) {
       // A replay, or plaintext this build cannot parse. Either way a
-      // redelivery would end here too.
+      // redelivery would end here too. (44.3: the session it opened stands,
+      // so it forgets the stamp all the same.)
       transport.ackReceived(id: m.id, from: m.from);
+      if (newSession &&
+          !debugBuildBeforeSealingKeys &&
+          _forgetHeldMine(rid, fromDeviceRid)) {
+        try {
+          await _saveSeals(rid);
+        } catch (_) {}
+      }
       return;
     }
     try {
       if (before != null) await before;
-      await _dispatchExtraInner(contact, rid, fromDeviceRid, inner!);
+      await _dispatchExtraInner(contact, rid, fromDeviceRid, inner!,
+          newSession: newSession);
     } catch (e) {
       if (_isTransientInboundFailure(e)) {
         // Put the ratchet back and leave the envelope with the relay, exactly
@@ -14553,9 +15281,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// The stores an inner message from a contact's non-primary device implies.
   /// Separated from [_handleExtraInbound] so a failure anywhere in it is one
   /// catch, before the acknowledgement rather than after it.
-  Future<void> _dispatchExtraInner(Contact contact, String rid,
-      String fromDeviceRid, InnerMessage message) async {
+  Future<void> _dispatchExtraInner(
+      Contact contact, String rid, String fromDeviceRid, InnerMessage message,
+      {bool newSession = false}) async {
     final inner = message;
+    // 44.3 (§18.11): as on the primary path, for this one of their devices
+    // — a session it opened forgetting a stamp first ([newSession]) — taken
+    // first in this envelope's turn, which is the order the session
+    // decrypted them in, so nothing below can keep it from being taken.
+    try {
+      await _takeSealNews(contact, fromDeviceRid, inner,
+          newSession: newSession);
+    } catch (_) {}
     // ADR 0029: what this device of theirs says it reads, before anything
     // below answers it — as on the primary door ([_onInbound]); and, as
     // there, the move it may open is weighed after any list it installs.
@@ -15071,19 +15808,33 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     }
   }
 
-  /// [inner] with its own-list claim (`dl`) taken off, for a recipient device
-  /// withheld from per [_withholdsClaimFromDevice]. A shallow copy: the `data`
-  /// map is new so the original — fanned to this contact's capable devices —
-  /// keeps its claim. Everything else is the original's, the disappearing
-  /// timer included: a copy without it would keep for good, on that device, a
-  /// message its sender set to go.
-  InnerMessage _withoutClaim(InnerMessage inner) => InnerMessage(
-        kind: inner.kind,
-        mid: inner.mid,
-        ts: inner.ts,
-        ttlSec: inner.ttlSec,
-        data: {...inner.data}..remove('dl'),
-      );
+  /// The bytes of [inner] as they go to [deviceRid], one of [owner]'s
+  /// devices: with its own-list claim (`dl`) taken off for a device withheld
+  /// from per [_withholdsClaimFromDevice], and (44.3, §18.11) stamped `pqs:1`
+  /// for a device whose sealing key this one holds — a statement about that
+  /// device, so it is made on that device's copy and never on the shared
+  /// inner. A shallow copy when either applies: the `data` map is new so the
+  /// original — fanned to this contact's other devices — is left as it was.
+  /// Everything else is the original's, the disappearing timer included: a
+  /// copy without it would keep for good, on that device, a message its
+  /// sender set to go. A stamp the inner already carries is left on it.
+  Uint8List _bytesForDevice(
+      InnerMessage inner, String owner, String deviceRid) {
+    final strip = inner.data.containsKey('dl') &&
+        _withholdsClaimFromDevice(owner, deviceRid);
+    final stamp = !inner.saysHoldsSealKey && _stampsPqsTo(owner, deviceRid);
+    if (!strip && !stamp) return inner.toBytes();
+    final data = {...inner.data};
+    if (strip) data.remove('dl');
+    if (stamp) data['pqs'] = 1;
+    return InnerMessage(
+      kind: inner.kind,
+      mid: inner.mid,
+      ts: inner.ts,
+      ttlSec: inner.ttlSec,
+      data: data,
+    ).toBytes();
+  }
 
   /// Test seam: [list] as if this device's root had self-synced it — the
   /// one way a list for this account reaches a device that cannot sign one.

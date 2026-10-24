@@ -21,7 +21,12 @@
 //   2. Receipts are batched per person: a burst of six messages is answered
 //      with fewer receipt envelopes than messages — one, unless the burst
 //      straddles a release — each no sooner than the floor after every
-//      delivery it acknowledges, and nothing else goes to the sender.
+//      delivery it acknowledges, and nothing else goes to the sender once a
+//      new contact's one-off traffic is over. Since 44.3 that traffic ends
+//      only when each side has heard the other hold its sealing key: until
+//      then the first message after a session becomes post-quantum, a
+//      receipt too, carries a `pqseal` ahead of it (PROTOCOL §18.11), so the
+//      pair is introduced until it has.
 //   3. A receipt past its floor rides with the next message the user sends
 //      that person, in the same flush, and the sender's tick turns with it; a
 //      receipt still inside its floor does not ride, and is not lost.
@@ -216,10 +221,19 @@ void main() {
     return start(dir, name, timing: timing);
   }
 
+  /// 44.3: [x] and [y] each hold the other's sealing key and have heard that
+  /// the other holds theirs, so neither owes the other a `pqseal`.
+  bool sealed(ChatService x, ChatService y) =>
+      x.debugPqSealOf(y.myRid) != null &&
+      y.debugPqSealOf(x.myRid) != null &&
+      x.debugHoldsMySealKey(y.myRid) &&
+      y.debugHoldsMySealKey(x.myRid);
+
   /// Every pair in [all] that added each other holds the other's
-  /// post-quantum key, nothing is waiting in an outbox, no post-quantum send
-  /// is in flight and no receipt is held: the one-off traffic of a new
-  /// contact is over, and a measurement starts from silence.
+  /// post-quantum key and has exchanged sealing keys ([sealed]), nothing is
+  /// waiting in an outbox, no post-quantum send is in flight and no receipt
+  /// is held: the one-off traffic of a new contact is over, and a
+  /// measurement starts from silence.
   Future<void> quiet(List<ChatService> all, {required String what}) async {
     Future<bool> settled() async {
       for (final s in all) {
@@ -227,6 +241,7 @@ void main() {
           final c = s.contacts[o.myRid];
           if (identical(s, o) || c == null) continue;
           if (c.pqPub == null && c.pqCandidate == null) return false;
+          if (o.contacts.containsKey(s.myRid) && !sealed(s, o)) return false;
         }
       }
       for (final s in all) {
@@ -249,7 +264,10 @@ void main() {
     }, timeout: const Duration(seconds: 60), what: '$what, receipts sent');
   }
 
-  /// [a] and [b] add each other and say hello both ways.
+  /// [a] and [b] add each other and say hello both ways — and (44.3) talk on
+  /// until each holds the other's sealing key and has heard that its own is
+  /// held ([sealed]): a `pqseal` rides the next message once a session is
+  /// mixed, and is answered by `pqs:1` on the next one back.
   Future<void> introduce(ChatService a, ChatService b) async {
     await a.addContactFromCode(await b.myContactCode());
     await b.addContactFromCode(await a.myContactCode());
@@ -260,6 +278,24 @@ void main() {
             (a.messagesByChat[b.myRid] ?? []).any((m) => !m.outgoing) &&
             (b.messagesByChat[a.myRid] ?? []).any((m) => !m.outgoing),
         what: '${a.displayName} and ${b.displayName} have spoken');
+    bool got(ChatService s, ChatService from, String body) =>
+        (s.messagesByChat[from.myRid] ?? [])
+            .any((m) => !m.outgoing && m.body == body);
+    var n = 0;
+    await waitUntil(() async {
+      if (sealed(a, b)) return true;
+      final i = n++;
+      for (final (x, y) in [(a, b), (b, a)]) {
+        final body = 'keys $i from ${x.displayName}';
+        await x.sendText(y.myRid, body);
+        await waitUntil(() => got(y, x, body),
+            what: '${y.displayName} holds "$body"');
+      }
+      return sealed(a, b);
+    },
+        timeout: const Duration(seconds: 90),
+        what: '${a.displayName} and ${b.displayName} hold each other\'s '
+            'sealing keys, and have heard so');
   }
 
   /// [from] sends [body] to [to]'s thread; its mid.

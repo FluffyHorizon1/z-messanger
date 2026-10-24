@@ -17,12 +17,20 @@
 // And (44.1, PROTOCOL §18.11) an inner that is well formed but from a later
 // build: 44.3 has every device announce its sealing key in a `pqseal`, stamp
 // `pqs:1` on what it sends and carry its account's `pqdc` in its `pqid`, and
-// this build predates all three. The `pqseal` is acknowledged and dropped —
-// the unknown kind's door, `_persistInboundKind`'s default — with nothing
-// stored and the conversation going on; the `pqid` gives up its key exactly
-// as one without `pqdc` does (`_onPqIdentity` reads `alg`, `pk` and `ack`);
-// and the text carrying `pqs` is the text. All three are built by hand from
-// today's members, so nothing here calls what 44.1 adds to the library.
+// a build from before 44.3 — the receiver below runs as one
+// (`debugBuildBeforeSealingKeys`) — predates all three. The `pqseal` is
+// acknowledged and dropped — the unknown kind's door,
+// `_persistInboundKind`'s default — with nothing stored and the
+// conversation going on; the `pqid` gives up its key exactly as one without
+// `pqdc` does (`_onPqIdentity` reads `alg`, `pk` and `ack`); and the text
+// carrying `pqs` is the text. All three are built by hand from the members
+// as they are spelled, so nothing here calls what 44.1 adds to the library.
+//
+// And (44.3) a `pqseal` from a build that sends one, read by this build: its
+// key is kept only when FIPS 203 §7.2 accepts it. One that does not — the
+// right length, its coefficients above q — is taken as nothing and refuses
+// nothing: acknowledged, not kept, and nothing this device sends says it is
+// held; a key that does pass, by the same door, is kept and stamped back.
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -61,7 +69,8 @@ void main() {
   });
 
   Future<ChatService> makeClient(String name,
-      {Transport Function(ZIdentity)? transportFor}) async {
+      {Transport Function(ZIdentity)? transportFor,
+      bool before443 = false}) async {
     final dir = await Directory.systemTemp.createTemp('z_bad_$name');
     temps.add(dir);
     final vault = await Vault.open(rootOverride: dir);
@@ -73,6 +82,7 @@ void main() {
       displayName: name,
       transport: transportFor?.call(identity) ??
           Transport(identity: identity, serverUrl: 'ws://127.0.0.1:1'),
+      debugBuildBeforeSealingKeys: before443,
     );
     services.add(svc);
     return svc;
@@ -142,7 +152,8 @@ void main() {
       () async {
     final a = await makeClient('qa');
     late _AckSpy bSpy;
-    final b = await makeClient('qb', transportFor: (id) => bSpy = _AckSpy(id));
+    final b = await makeClient('qb',
+        transportFor: (id) => bSpy = _AckSpy(id), before443: true);
     await a.addContactFromCode(await b.myContactCode());
     await b.addContactFromCode(await a.myContactCode());
 
@@ -246,6 +257,8 @@ void main() {
         reason: 'its fate is decided, so it is acknowledged (§6.8)');
     expect(await rows(mid: sealMid), 0, reason: 'nothing is stored for it');
     expect(await rows(), storedBefore, reason: 'and no message is added');
+    expect(b.debugPqSealOf(a.myRid), isNull,
+        reason: 'a build from before 44.3 keeps no key');
     expect(b.messagesByChat[a.myRid]!.map((m) => m.mid), isNot(contains(sealMid)));
     expect(b.assuranceWith(a.myRid), IdentityAssurance.hybrid,
         reason: 'and nothing about her changes');
@@ -268,5 +281,63 @@ void main() {
     expect(a.messagesByChat[b.myRid]!.map((m) => m.body),
         contains('still with you'));
     expect(b.contacts[a.myRid]!.pqPub, aPq.publicKey.mlPub);
+  });
+
+  test(
+      "a pqseal whose key FIPS 203 refuses is taken as nothing: not kept, and "
+      'nothing says it is held', () async {
+    // a runs as a build from before 44.3, so the only `pqseal` b sees from
+    // it is the one handed over below; b is this build.
+    final a = await makeClient('fa', before443: true);
+    late _AckSpy bSpy;
+    final b = await makeClient('fb', transportFor: (id) => bSpy = _AckSpy(id));
+    // What a reads from b, and whether it said `pqs:1` (b holds a's key).
+    final stamps = <bool>[];
+    a.debugOnDecrypted = (path, from, dec) {
+      try {
+        stamps.add(InnerMessage.fromBytes(dec.plaintext).saysHoldsSealKey);
+      } catch (_) {}
+      return false;
+    };
+    await a.addContactFromCode(await b.myContactCode());
+    await b.addContactFromCode(await a.myContactCode());
+    await settle(a, b);
+    await a.sendText(b.myRid, 'hello');
+    await b.sendText(a.myRid, 'hi');
+    await settle(a, b);
+
+    // The right length, and every 12-bit coefficient 4 095: above q, so
+    // FIPS 203 §7.2's modulus check refuses it.
+    final bad = Uint8List(1184)..fillRange(0, 1184, 0xff);
+    expect(mlKemEncapsulationKeyValid(bad), isFalse);
+    final ackedBefore = bSpy.acked.length;
+    await a.sendRawInner(
+        b.myRid, InnerMessage.pqSeal(newMessageId(), DateTime.now().millisecondsSinceEpoch, bad));
+    await settle(a, b);
+    expect(bSpy.acked.length, greaterThan(ackedBefore),
+        reason: 'acknowledged: its fate is decided');
+    expect(b.debugPqSealOf(a.myRid), isNull, reason: 'a refused key is kept');
+    expect(await b.vault.kvGet('cseal_${a.myRid}') ?? '',
+        isNot(contains(b64(bad))),
+        reason: 'the refused key is written down');
+    stamps.clear();
+    await b.sendText(a.myRid, 'after the refused key');
+    await settle(a, b);
+    expect(stamps, isNotEmpty);
+    expect(stamps.any((s) => s), isFalse,
+        reason: 'b said it holds a key it refused');
+
+    // The same door takes a key FIPS 203 accepts, and says so from then on.
+    final (_, good) = pqGenerate();
+    await a.sendRawInner(b.myRid,
+        InnerMessage.pqSeal(newMessageId(), DateTime.now().millisecondsSinceEpoch, good));
+    await settle(a, b);
+    expect(b.debugPqSealOf(a.myRid), good);
+    stamps.clear();
+    await b.sendText(a.myRid, 'after the good key');
+    await settle(a, b);
+    expect(stamps, contains(true), reason: 'b says it holds the key it kept');
+    expect(a.messagesByChat[b.myRid]!.map((m) => m.body),
+        contains('after the good key'));
   });
 }

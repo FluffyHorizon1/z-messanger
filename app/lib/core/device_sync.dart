@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:z_protocol/z_protocol.dart';
 
+import 'sealing_keys.dart' show pqSealMayRide;
 import 'vault.dart';
 
 /// Mirrors your own messages across your linked devices (self-sync).
@@ -42,6 +43,37 @@ class DeviceSyncService {
   /// rest by.
   final bool Function() advertiseReaderLevel;
 
+  /// 44.3 (PROTOCOL §18.11): this device's `pqseal` for one of my devices
+  /// when one is owed there — its bytes, as it rides this ratchet bare, the
+  /// way an offer does: wrapped like a mirror, its 1 184-byte key would be
+  /// encoded twice and leave the 4 096 bucket — or null. Asked as each send
+  /// is made; whether it can ride that send is the channel's to say
+  /// ([pqSealMayRide]). Null on a service that announces nothing.
+  final Uint8List? Function(String deviceRid)? pqSealFor;
+
+  /// 44.3: whether this device holds that device's sealing key, so the
+  /// envelope going there says so (`pqs:1`, beside `dlr`).
+  final bool Function(String deviceRid)? holdsSealKeyOf;
+
+  /// 44.3: the devices a `pqseal` has just been queued for.
+  final void Function(List<String> deviceRids)? onPqSealSent;
+
+  /// 44.3 (§18.11): what an envelope from one of my devices says of sealing
+  /// keys, told as it is decrypted, under the lock — so in the order the
+  /// ratchet decrypted them: whether it came on a session that device has
+  /// just opened ([newSession], which forgets that it holds this device's
+  /// key), its `pqseal` when the envelope was one ([seal]), and whether it
+  /// says it holds this device's key ([stamped], the wrapper's `pqs`). The
+  /// owner keeps it in memory there and writes it down after; it must not
+  /// step on this session.
+  final void Function(String deviceRid, bool newSession, InnerMessage? seal,
+      bool stamped)? onSealNews;
+
+  /// 44.3: the devices a send has just opened a ratchet session to, under
+  /// the lock, which forgets that they hold this device's key as one they
+  /// open does ([onSealNews]).
+  final void Function(String deviceRid)? onSessionOpened;
+
   /// The session with my other devices and the lock every step on it takes:
   /// this service's own, or those of the service it took over from.
   final _SyncState _state;
@@ -63,20 +95,92 @@ class DeviceSyncService {
     required this.myDevices,
     required this.pqIntervals,
     bool Function()? advertiseReaderLevel,
+    this.pqSealFor,
+    this.holdsSealKeyOf,
+    this.onPqSealSent,
+    this.onSealNews,
+    this.onSessionOpened,
     DeviceSyncService? replacing,
   })  : advertiseReaderLevel = advertiseReaderLevel ?? _always,
         _state = replacing?._state ?? _SyncState();
 
   static bool _always() => true;
 
-  /// The envelope every mirror, ping and history batch travels in.
-  String _envelope(String thread, String dir, InnerMessage inner) =>
+  /// 44.3: how many ratchet sessions [s] holds with each of my devices, read
+  /// before a step that may open one ([_noteOpened]).
+  static Map<String, int> _sessionCounts(AccountSession s) => {
+        for (final r in s.targetRoutingIds)
+          r: s.targetConversation(r)?.sessions.length ?? 0
+      };
+
+  /// 44.3: tells [onSessionOpened] of each device the step since [before]
+  /// opened a session to — once the session is written down.
+  void _noteOpened(AccountSession s, Map<String, int> before) {
+    final tell = onSessionOpened;
+    if (tell == null) return;
+    for (final r in s.targetRoutingIds) {
+      if ((s.targetConversation(r)?.sessions.length ?? 0) > (before[r] ?? 0)) {
+        tell(r);
+      }
+    }
+  }
+
+  /// The envelope every mirror, ping and history batch travels in. [pqs]
+  /// (44.3) says this device holds the sealing key of the device it goes to;
+  /// a receiver reads the wrapper's members by name, so a build that
+  /// predates it passes it by as it passes `dlr` by.
+  String _envelope(String thread, String dir, InnerMessage inner,
+          {bool pqs = false}) =>
       jsonEncode({
         'thread': thread,
         'dir': dir,
         'inner': base64Encode(inner.toBytes()),
         if (advertiseReaderLevel()) 'dlr': devlistReaderLevel,
+        if (pqs) 'pqs': 1,
       });
+
+  bool _stamps(String deviceRid) => holdsSealKeyOf?.call(deviceRid) ?? false;
+
+  /// 44.3: this device's `pqseal`, ahead of what is about to be sent, to
+  /// each of [to] it is owed by and whose next message would be mixed with
+  /// no `pqct` in its header ([pqSealMayRide]) — one envelope each, recorded
+  /// in [sent]. Under the lock, in the step that encrypts what it rides.
+  Future<List<FanoutMessage>> _sealsAhead(
+      AccountSession s, Iterable<String> to, List<String> sent) async {
+    final out = <FanoutMessage>[];
+    final want = pqSealFor;
+    if (want == null) return out;
+    for (final rid in to) {
+      final conv = s.targetConversation(rid);
+      if (conv == null || !pqSealMayRide(conv)) continue;
+      final bytes = want(rid);
+      if (bytes == null) continue;
+      final f = await s.encryptFor(rid, bytes);
+      if (f != null) {
+        out.add(f);
+        sent.add(rid);
+      }
+    }
+    return out;
+  }
+
+  /// [inner] wrapped for every one of my devices, each envelope saying
+  /// `pqs:1` where this device holds that device's sealing key — one
+  /// encryption when they are all alike, two when they differ.
+  Future<List<FanoutMessage>> _encryptWrapped(
+      AccountSession s, String thread, String dir, InnerMessage inner) async {
+    final all = s.targetRoutingIds.toSet();
+    final stamped = {for (final r in all) if (_stamps(r)) r};
+    Uint8List bytes(bool pqs) =>
+        Uint8List.fromList(utf8.encode(_envelope(thread, dir, inner, pqs: pqs)));
+    if (stamped.isEmpty || stamped.length == all.length) {
+      return s.encrypt(bytes(stamped.isNotEmpty));
+    }
+    return [
+      ...await s.encrypt(bytes(true), except: all.difference(stamped)),
+      ...await s.encrypt(bytes(false), except: stamped),
+    ];
+  }
 
   AccountSession? get _session => _state.session;
   set _session(AccountSession? s) => _state.session = s;
@@ -160,10 +264,12 @@ class DeviceSyncService {
       // service taking over, may have put another in its place meanwhile.
       final s = _session;
       if (s == null) return;
+      final before = _sessionCounts(s);
       final fan = await s.openInitiatorSessions(
           Uint8List.fromList(utf8.encode(_pingEnvelope())));
       if (fan.isEmpty) return;
       await _save();
+      _noteOpened(s, before);
       for (final f in fan) {
         await reliableSend(f.routingId, f.payload);
       }
@@ -226,14 +332,20 @@ class DeviceSyncService {
     await _lock.run(() async {
       final s = _session;
       if (s == null) return;
-      final envelope = _envelope(threadRid, dir, inner);
-      final fan = await s.encrypt(Uint8List.fromList(utf8.encode(envelope)));
+      final before = _sessionCounts(s);
+      final sealed = <String>[];
+      final fan = [
+        ...await _sealsAhead(s, s.targetRoutingIds, sealed),
+        ...await _encryptWrapped(s, threadRid, dir, inner),
+      ];
       // Persist the advanced ratchet BEFORE handing payloads to the reliable
       // outbox, so any redelivery is still decryptable.
       await _save();
+      _noteOpened(s, before);
       for (final f in fan) {
         await reliableSend(f.routingId, f.payload);
       }
+      if (sealed.isNotEmpty) onPqSealSent?.call(sealed);
     });
   }
 
@@ -259,12 +371,21 @@ class DeviceSyncService {
       if (onlyPostQuantum && !(conv?.nextSendIsPostQuantum ?? false)) {
         return false;
       }
-      final envelope = _envelope(threadRid, dir, inner);
+      final before = _sessionCounts(s);
+      final sealed = <String>[];
+      final ahead = await _sealsAhead(s, [deviceRid], sealed);
+      final envelope =
+          _envelope(threadRid, dir, inner, pqs: _stamps(deviceRid));
       final f = await s.encryptFor(
           deviceRid, Uint8List.fromList(utf8.encode(envelope)));
       if (f == null) return false;
       await _save();
+      _noteOpened(s, before);
+      for (final a in ahead) {
+        await reliableSend(a.routingId, a.payload);
+      }
       await reliableSend(f.routingId, f.payload);
+      if (sealed.isNotEmpty) onPqSealSent?.call(sealed);
       return true;
     });
   }
@@ -283,8 +404,12 @@ class DeviceSyncService {
     final f = await _lock.run(() async {
       final s = _session;
       if (s == null) return null;
+      final before = _sessionCounts(s);
       final f = await s.takePqOfferFor(deviceRid);
-      if (f != null) await _save();
+      if (f != null) {
+        await _save();
+        _noteOpened(s, before);
+      }
       return f;
     });
     if (f != null) await reliableSend(f.routingId, f.payload);
@@ -372,6 +497,19 @@ class DeviceSyncService {
             intervals: pqIntervals());
         return const SyncInbound.transient();
       }
+      // 44.3 (§18.11): whatever the envelope turns out to be, what it says
+      // of sealing keys — the session it came on included — is told here,
+      // under the lock, as each is decrypted ([onSealNews]).
+      SyncInbound told(SyncInbound r) {
+        try {
+          onSealNews?.call(fromDeviceRid, dec.createdNewSession, r.pqSeal,
+              r.holdsMySealKey);
+        } catch (_) {
+          // What is held in memory; nothing here may cost the envelope.
+        }
+        return r;
+      }
+
       offer = dec.pqOfferPayload;
       // v2: a post-quantum key offer from my other device is consumed by the
       // session layer above; it carries no mirrored message.
@@ -388,8 +526,10 @@ class DeviceSyncService {
         try {
           final conv = s.targetConversation(fromDeviceRid);
           if (conv != null && conv.pqAnswerOwedOn(dec.sid)) {
-            final ping = await s.encryptFor(fromDeviceRid,
-                Uint8List.fromList(utf8.encode(_pingEnvelope())),
+            final ping = await s.encryptFor(
+                fromDeviceRid,
+                Uint8List.fromList(
+                    utf8.encode(_pingEnvelope(pqs: _stamps(fromDeviceRid)))),
                 sid: dec.sid);
             if (ping != null) {
               await _save(); // before it can leave, as for any send
@@ -402,8 +542,23 @@ class DeviceSyncService {
           // the vault busy when the answer is saved — sends nothing, and the
           // envelope, whose offer is already taken, is acknowledged.
         }
-        return const SyncInbound(null, null);
+        return told(const SyncInbound(null, null));
       }
+      // 44.3 (§18.11): one of my devices announcing its sealing key, bare on
+      // this ratchet as an offer is ([pqSealFor]), handed to the caller to
+      // keep. A build from before 44.3 finds no wrapper in it below and
+      // acknowledges it with nothing mirrored, as any envelope it cannot
+      // read.
+      if (InnerMessage.looksLikeKind(dec.plaintext, 'pqseal')) {
+        InnerMessage? seal;
+        try {
+          seal = InnerMessage.fromBytes(dec.plaintext);
+        } on FormatException {
+          seal = null;
+        }
+        return told(SyncInbound(null, null, pqSeal: seal));
+      }
+      SyncInbound read;
       try {
         final j =
             jsonDecode(utf8.decode(dec.plaintext)) as Map<String, Object?>;
@@ -411,20 +566,24 @@ class DeviceSyncService {
             InnerMessage.fromBytes(base64Decode(j['inner'] as String));
         final thread = j['thread'], dir = j['dir'];
         if (thread is! String || dir is! String) {
-          return const SyncInbound(null, null);
+          read = const SyncInbound(null, null);
+        } else {
+          // ADR 0029: what the sending device says it reads. An envelope
+          // without the member is from a build that predates it — every
+          // envelope this build sends carries it.
+          final dlr = j['dlr'];
+          read = SyncInbound((thread: thread, dir: dir, inner: inner),
+              snapshot,
+              readerLevel: dlr is num && dlr.isFinite ? dlr.toInt() : 0,
+              holdsMySealKey: j['pqs'] == 1);
         }
-        // ADR 0029: what the sending device says it reads. An envelope
-        // without the member is from a build that predates it — every
-        // envelope this build sends carries it.
-        final dlr = j['dlr'];
-        return SyncInbound((thread: thread, dir: dir, inner: inner), snapshot,
-            readerLevel: dlr is num && dlr.isFinite ? dlr.toInt() : 0);
       } catch (_) {
         // The ratchet is already saved and a redelivery would parse no
         // better, so the caller acknowledges; there is simply nothing to
         // store.
-        return const SyncInbound(null, null);
+        read = const SyncInbound(null, null);
       }
+      return told(read);
     });
     if (offer != null) await reliableSend(fromDeviceRid, offer!);
     if (answer != null) await reliableSend(answer!.routingId, answer!.payload);
@@ -434,8 +593,8 @@ class DeviceSyncService {
   /// The proactive opener's envelope (`dir:"ping"`, a `hello` inner), which
   /// the receiving device ignores — what [prime] sends, what answers an
   /// offer, and what [announce] sends.
-  String _pingEnvelope() =>
-      _envelope('', 'ping', InnerMessage.hello(newMessageId(), 0));
+  String _pingEnvelope({bool pqs = false}) =>
+      _envelope('', 'ping', InnerMessage.hello(newMessageId(), 0), pqs: pqs);
 
   /// ADR 0029: one ping to every one of my other devices, so each hears what
   /// this device reads ([advertiseReaderLevel]) even when it has nothing to
@@ -476,13 +635,24 @@ class SyncInbound {
   /// or one that did not decrypt or parse.
   final int? readerLevel;
 
-  const SyncInbound(this.mirrored, this.snapshot, {this.readerLevel})
+  /// 44.3: the sending device's `pqseal`, when that is what this payload
+  /// was — bare, not a mirror.
+  final InnerMessage? pqSeal;
+
+  /// 44.3: the envelope said `pqs:1` — the sending device holds this one's
+  /// sealing key.
+  final bool holdsMySealKey;
+
+  const SyncInbound(this.mirrored, this.snapshot,
+      {this.readerLevel, this.pqSeal, this.holdsMySealKey = false})
       : transientFailure = false;
 
   const SyncInbound.transient()
       : mirrored = null,
         snapshot = null,
         readerLevel = null,
+        pqSeal = null,
+        holdsMySealKey = false,
         transientFailure = true;
 }
 

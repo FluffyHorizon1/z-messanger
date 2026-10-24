@@ -60,7 +60,26 @@
 //      repair's record of the head and versions held when it first ran —
 //      which a restored vault must not record again from the archive's head,
 //      or the repair would reconcile entries the device it came from still
-//      reports.
+//      reports;
+//  13. (44.3, PROTOCOL §18.11) the device's sealing key comes back with it:
+//      the archive carries the seed and the root's `pqdc` in a record of
+//      their own marked `keep` (ADR 0025), and the restored device holds the
+//      same seed and the same `pqdc`, byte for byte, and uses them; an
+//      archive from before 44.3 restores, and a key is then drawn once — the
+//      same across a restart; and a build from before 44.3 that restored the
+//      archive kept the record unread, so updated, it takes the key from
+//      there rather than drawing one;
+//  14. (44.3, PROTOCOL §18.11) and its contact's comes back too: the archive
+//      carries no other device's sealing key, and the contact — which had
+//      heard the lost device hold its own — forgets that once the restored
+//      device's new ratchet session reaches it, and announces its key again
+//      on its clock; each ends holding the other's key, and having heard
+//      that the other holds its own;
+//  15. the same on the other two kinds of channel, for a restored LINKED
+//      device: its root forgets over self-sync, and its account's contact
+//      forgets on the door it takes a contact's other device by, and both
+//      announce again; all three end holding one another's keys and having
+//      heard that the others hold theirs.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -999,9 +1018,9 @@ void main() {
 
   /// [file] as a build before format 1.1 wrote it — what every archive taken
   /// before this phase is: no `mv` in the header; no `state`, `blocked` or
-  /// `request` record; no `account` beside the identity; a contact with only
-  /// the members 1.0 gave it. Record frames only, so the vault it was taken
-  /// from must hold no attachment.
+  /// `request` record, nor the `seal` record of 44.3; no `account` beside
+  /// the identity; a contact with only the members 1.0 gave it. Record
+  /// frames only, so the vault it was taken from must hold no attachment.
   Future<File> asFormat10(File file, RecoveryCode code, String name) async {
     final bytes = await file.readAsBytes();
     final header = Map<String, Object?>.from(
@@ -1010,7 +1029,9 @@ void main() {
     final records = <Map<String, Object?>>[];
     for (final text in await recordsOf(file, code)) {
       final r = Map<String, Object?>.from(jsonDecode(text) as Map);
-      if (const {'state', 'blocked', 'request'}.contains(r['t'])) continue;
+      if (const {'state', 'blocked', 'request', 'seal'}.contains(r['t'])) {
+        continue;
+      }
       if (r['t'] == 'identity') r.remove('account');
       if (r['t'] == 'contact') {
         for (final k in const ['req', 'kv', 'sids', 'xsids']) {
@@ -1305,5 +1326,247 @@ void main() {
     expect(revived.ownAccountAlert, ownAlertBody(OwnAlertKind.unissued));
     expect(revived.kt.ownListReconciled(7, reconciledFp), isTrue,
         reason: "the repair's reconciled entries did not survive");
+  });
+
+  test(
+      '13. the sealing key and its pqdc come back byte for byte; an archive '
+      'from before them restores and draws a key once; a kept record is '
+      'taken up', () async {
+    final (alice, aliceDir) = await fresh('alice13');
+    final seed = await alice.vault.kvGet('seal_seed');
+    final pqdc = await alice.vault.kvGet('pqdc');
+    expect(seed, isNotNull, reason: 'the premise: a key from the first start');
+    expect(pqdc, isNotNull, reason: 'and the root signed its pqdc');
+    final identity = (await alice.vault.kvGet('identity'))!;
+    final pqSeed = (await alice.vault.kvGet('pq_seed'))!;
+
+    // The archive carries both in a record of their own, which a build that
+    // does not know it keeps and writes back (ADR 0025).
+    final (file, code) = await backup(alice, 'alice13');
+    final texts = await recordsOf(file, code);
+    final sealTexts = [
+      for (final t in texts)
+        if ((jsonDecode(t) as Map)['t'] == 'seal') t
+    ];
+    expect(sealTexts, hasLength(1), reason: 'one record of its own');
+    final carried = jsonDecode(sealTexts.single) as Map;
+    expect(carried['keep'], 1);
+    expect(carried['seed'], seed);
+    expect(carried['pqdc'], pqdc);
+
+    // Restored onto the wiped device: the same key, and the same pqdc, kept
+    // because it is this key's.
+    await lose(alice, aliceDir);
+    final restored = await restoreInto(aliceDir, file, code);
+    expect(await restored.kvGet('seal_seed'), seed,
+        reason: 'the restore wrote another seed');
+    expect(await restored.kvGet('pqdc'), pqdc);
+    final revived = await boot(restored, 'alice13');
+    expect(await revived.vault.kvGet('seal_seed'), seed,
+        reason: 'its first start drew a new key');
+    expect(revived.debugSealingKey, SealingKey.fromSeed(unb64(seed!)).ek);
+    expect(revived.debugOwnPqdc, unb64(pqdc!),
+        reason: 'the restored pqdc was not kept');
+
+    // Started elsewhere with the same identity, so on a relay nothing
+    // listens on: one socket per routing id is the relay's rule.
+    Future<ChatService> offline(Vault vault, String name) async {
+      final id = await ZIdentity.fromJson(
+          (jsonDecode((await vault.kvGet('identity'))!) as Map)
+              .cast<String, Object?>());
+      return boot(vault, name,
+          transport: Transport(identity: id, serverUrl: 'ws://127.0.0.1:1'));
+    }
+
+    // An archive from before 44.3 carries no such record. It restores, and
+    // the first start draws a key — once: a restart keeps it.
+    final head = jsonDecode(utf8.decode(
+            (await file.readAsBytes()).takeWhile((b) => b != 0x0a).toList()))
+        as Map;
+    final older = await handMade(
+        code,
+        Map<String, Object?>.from(head)
+          ..['salt'] = b64(randomBytes(16))
+          ..['np'] = b64(randomBytes(16)),
+        [
+          for (final t in texts)
+            if ((jsonDecode(t) as Map)['t'] != 'seal')
+              (jsonDecode(t) as Map).cast<String, Object?>()
+        ],
+        'alice13_old');
+    final oldDir = await tempDir('alice13old');
+    final oldVault = await restoreInto(oldDir, older, code);
+    expect(await oldVault.kvGet('seal_seed'), isNull);
+    var fromOld = await offline(oldVault, 'alice13old');
+    final drawn = await fromOld.vault.kvGet('seal_seed');
+    expect(drawn, isNotNull,
+        reason: 'no key after restoring an archive from before 44.3');
+    expect(drawn, isNot(seed));
+    final acct = await fromOld.accountIdentity();
+    expect(
+        deviceAttestationValid(
+            accountMlPub: (await fromOld.pqAccountPublic())!,
+            accountEdPub: acct.accountEdPub,
+            deviceEdPub: acct.deviceEdPub,
+            deviceXPub: acct.deviceXPub,
+            sealEk: fromOld.debugSealingKey!,
+            pqdc: fromOld.debugOwnPqdc!),
+        isTrue,
+        reason: 'and the root signed a pqdc for the key it drew');
+    fromOld.dispose();
+    await fromOld.transport.stop();
+    services.remove(fromOld);
+    await fromOld.vault.db.close();
+    fromOld = await offline(await Vault.open(rootOverride: oldDir), 'alice13old');
+    expect(await fromOld.vault.kvGet('seal_seed'), drawn,
+        reason: 'a second key drawn at the next start');
+
+    // A build from before 44.3 that restored the archive kept the record,
+    // unread, as the text it arrived as, to write back into its next
+    // archive (`archive_kept`). Updated, this build takes the key from it.
+    final keptVault = await Vault.open(rootOverride: await tempDir('alice13k'));
+    await keptVault.kvPut('identity', identity);
+    await keptVault.kvPut('pq_seed', pqSeed);
+    await keptVault.kvPut(BackupArchive.keptKey, jsonEncode(sealTexts));
+    final updated = await offline(keptVault, 'alice13k');
+    expect(await updated.vault.kvGet('seal_seed'), seed,
+        reason: 'drew a new key though the kept record held the old one');
+    expect(await updated.vault.kvGet('pqdc'), pqdc);
+    expect(await updated.vault.kvGet(BackupArchive.keptKey), isNull,
+        reason: 'the record went on being kept beside the key it carries');
+  });
+
+  test(
+      "14. a restored device and its contact each hold the other's sealing "
+      'key again, and have heard so', () async {
+    final (alice, aliceDir) = await fresh('alice14');
+    final (bob, _) = await fresh('bob14');
+    await befriend(alice, bob);
+    var n = 0;
+    await waitFor(() async {
+      await exchange(alice, bob, 'k${n++}');
+      return alice.debugPqSealOf(bob.myRid) != null &&
+          bob.debugPqSealOf(alice.myRid) != null &&
+          alice.debugHoldsMySealKey(bob.myRid) &&
+          bob.debugHoldsMySealKey(alice.myRid);
+    }, what: 'keys exchanged and stamped both ways');
+    final aliceKey = alice.debugSealingKey!;
+    final bobKey = bob.debugSealingKey!;
+
+    // Bob has heard alice's device hold his key (the wait above), and goes
+    // on holding that while the device is lost and restored. What changes
+    // his mind is the restored device's first new session reaching him,
+    // which may already have happened by the time it is up.
+    final (file, code) = await backup(alice, 'alice14');
+    await lose(alice, aliceDir);
+    final revived =
+        await boot(await restoreInto(aliceDir, file, code), 'alice14');
+    await waitUntil(() => up(revived), what: 'the restored device up');
+    expect(revived.debugSealingKey, aliceKey,
+        reason: 'the premise: the same key comes back (13)');
+    expect(revived.debugPqSealOf(bob.myRid), isNull,
+        reason: "the premise: no other device's key is in the archive");
+    // §17.4's clock, which the announcement runs on, compressed on both
+    // sides: what is owed goes at the first message that may carry it.
+    revived.pqOfferRetry = 300;
+    bob.pqOfferRetry = 300;
+    final bobBefore = bob.debugPqSealSends;
+    var m = 0;
+    await waitFor(() async {
+      await exchange(revived, bob, 'after${m++}');
+      return revived.debugPqSealOf(bob.myRid) != null &&
+          bob.debugPqSealOf(revived.myRid) != null &&
+          revived.debugHoldsMySealKey(bob.myRid) &&
+          bob.debugHoldsMySealKey(revived.myRid);
+    }, what: "each holds the other's sealing key again, and has heard so");
+    expect(revived.debugPqSealOf(bob.myRid), bobKey);
+    expect(bob.debugPqSealOf(revived.myRid), aliceKey);
+    expect(bob.debugPqSealSends, greaterThan(bobBefore),
+        reason: 'bob announced his key again');
+  });
+
+  test(
+      "15. a restored linked device, its root and its contact hold one "
+      "another's sealing keys again, over self-sync and to a contact's "
+      'other device', () async {
+    final (phone, _) = await fresh('phone15');
+    final (laptop, laptopDir, _) = await linkTo(phone, 'laptop15');
+    final (carol, _) = await fresh('carol15');
+    await waitFor(() async => await laptop.ownDeviceListVersion() >= 2,
+        what: 'the laptop learning v2');
+    await befriend(phone, carol);
+    await waitUntil(() => laptop.contacts.containsKey(carol.myRid),
+        what: 'the laptop learning Carol from its root');
+    await holds(carol, phone.myRid, 2);
+
+    // [x] holds [y]'s key, and [y] has heard so, for every ordered pair of
+    // the three: the self-sync channel both ways, the laptop and Carol both
+    // ways (her door for a contact's other device, and the laptop's for a
+    // contact), and the phone and Carol both ways.
+    var lap = laptop;
+    List<String> missing() => [
+          for (final x in [phone, lap, carol])
+            for (final y in [phone, lap, carol])
+              if (!identical(x, y) &&
+                  !(x.debugPqSealOf(y.myRid) != null &&
+                      y.debugHoldsMySealKey(x.myRid)))
+                "${x.displayName} holding ${y.displayName}'s, and heard so"
+        ];
+    bool everyHeld() => missing().isEmpty;
+    // One text from each of the three, waited for where it cannot go
+    // astray: right after the restore, what the phone and Carol send the
+    // laptop can still go on sessions the restored laptop never held.
+    var n = 0;
+    Future<void> round(String tag) async {
+      final i = n++;
+      await phone.sendText(carol.myRid, '$tag p$i');
+      await carol.sendText(phone.myRid, '$tag c$i');
+      await lap.sendText(carol.myRid, '$tag l$i');
+      await waitUntil(
+          () =>
+              texts(carol, phone.myRid).contains('$tag p$i') &&
+              texts(carol, phone.myRid).contains('$tag l$i') &&
+              texts(phone, carol.myRid).contains('$tag c$i'),
+          what: '$tag round $i');
+    }
+
+    await waitFor(() async {
+      await round('k');
+      return everyHeld();
+    }, what: 'every key held and every stamp heard, among the three');
+    final laptopKey = laptop.debugSealingKey!;
+
+    final (file, code) = await backup(laptop, 'laptop15');
+    await lose(laptop, laptopDir);
+    final revived =
+        await boot(await restoreInto(laptopDir, file, code), 'laptop15');
+    await waitUntil(() => up(revived), what: 'the restored laptop up');
+    expect(revived.debugSealingKey, laptopKey,
+        reason: 'the premise: the same key comes back (13)');
+    expect(revived.debugPqSealOf(phone.myRid), isNull,
+        reason: "the premise: no other device's key is in the archive");
+    expect(revived.debugPqSealOf(carol.myRid), isNull);
+    lap = revived;
+    for (final s in [phone, revived, carol]) {
+      s.pqOfferRetry = 300; // §17.4's clock, which the announcement runs on
+    }
+    final phoneBefore = phone.debugPqSealSends;
+    final carolBefore = carol.debugPqSealSends;
+    try {
+      await waitFor(() async {
+        await round('after');
+        return everyHeld();
+      }, what: 'every key held and every stamp heard again, among the three');
+    } on TimeoutException {
+      fail('after the restore, never again: ${missing()}');
+    }
+    expect(revived.debugPqSealOf(phone.myRid), phone.debugSealingKey);
+    expect(revived.debugPqSealOf(carol.myRid), carol.debugSealingKey);
+    expect(phone.debugPqSealOf(revived.myRid), laptopKey);
+    expect(carol.debugPqSealOf(revived.myRid), laptopKey);
+    expect(phone.debugPqSealSends, greaterThan(phoneBefore),
+        reason: 'the root announced its key again, over self-sync');
+    expect(carol.debugPqSealSends, greaterThan(carolBefore),
+        reason: "Carol announced hers again, to her contact's other device");
   });
 }
