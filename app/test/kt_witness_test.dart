@@ -669,7 +669,7 @@ void main() {
     expect(await v.kvGet('kt_witness_since_ms'), isNull);
 
     // That witness agrees, and is then removed: its answer goes with it. (A
-    // head the log has re-signed since: the one held is not checked again.)
+    // head the log has re-signed since, as an honest log's is by now.)
     final h2 = await head(size: 4, root: 7, ts: now - minute);
     f.sth = jsonEncode(h2.toJson());
     f.witness = await record(h2, impostor, impostorPub);

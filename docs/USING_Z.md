@@ -408,9 +408,12 @@ messages until it appears, and the chat says so. A **disagreement** between
 the log and their devices holds your messages to them until it resolves or
 you choose to send anyway — for that disagreement; a new and different one
 asks you again. It is rare and worth a phone call. If the log
-itself misbehaves — shows two different histories — Z says so at the top of
-the chat list and confirms nothing new until you reset it in Settings; your
-conversations continue on the checks that existed before the log.
+itself misbehaves — shows two different histories, or stops showing an
+account it showed your app before, a contact's or your own — Z says so at
+the top of the chat list and confirms nothing new until you reset it in
+Settings; your conversations continue on the checks that existed before the
+log, and a disagreement that was holding your messages to someone goes on
+holding them.
 
 The built-in log also has a **witness**: a copy of the log that somebody
 other than its operator runs, there to catch a log showing different people

@@ -9,12 +9,17 @@
 /// by the pinned key, extends the last accepted head (a consistency proof),
 /// and agrees with the witness if one is configured — anything else is a
 /// **log fault**, after which nothing new is confirmed until the user resets
-/// the log's history in Settings. Under an accepted head, a contact whose
-/// held list matches the log is **confirmed**; one the log knows nothing of
-/// is **unlogged** (an older client — gossip only, as before); one whose log
-/// entry is newer has the newer list fetched, opened, verified and installed
-/// (the log as a source, 11.5); one whose held list is newer than the log's
-/// is **unconfirmed**, and after the grace period the devices only that list
+/// the log's history in Settings — and only while it is less than a day
+/// old, which a head the log stopped re-signing is not, however often it was
+/// accepted before: that is a log that cannot be reached. Under an accepted
+/// head, a contact whose held list matches the log is **confirmed**; one the
+/// log knows nothing of is **unlogged** (an older client — gossip only, as
+/// before) — unless this client read the label in the log's map before: a
+/// label the log has taken out of its map, or moved back to an earlier
+/// entry, is a log fault, the account's own included; one whose log entry is
+/// newer has the newer list fetched, opened, verified and installed (the log
+/// as a source, 11.5); one whose held list is newer than the log's is
+/// **unconfirmed**, and after the grace period the devices only that list
 /// added stop receiving messages; the same version with a different
 /// fingerprint, or a log entry that does not verify, is a **conflict**, and
 /// messages to that contact are held until the user says otherwise. The log
@@ -229,6 +234,16 @@ class KtContactStatus {
   /// Where that entry sits in the log, when a bucket said (phase 35).
   int? logIndex;
 
+  /// Which log, and which label in it, the three above were read for: the
+  /// log's key (b64) and the label (b64). A later head of the same log that
+  /// covers [logIndex] and leaves that label out of its map, or moves it
+  /// back, is the log contradicting itself ([KeyTransparency]'s check);
+  /// another log's or another label's answer is not compared with them.
+  /// Null in a status from before 4.7.2, which therefore proves nothing of
+  /// the kind until the next refresh that finds the label records them.
+  String? logKey;
+  String? label;
+
   /// What a later refresh needs from that entry without fetching it again
   /// (phase 35): whether it failed to open as the account's list, and — when
   /// it did open and the device-list rules refused it — the list, so the
@@ -267,6 +282,8 @@ class KtContactStatus {
     this.logVersion,
     this.logFpB64,
     this.logIndex,
+    this.logKey,
+    this.label,
     this.logUnopened = false,
     this.logList,
     this.heldVersion,
@@ -286,6 +303,8 @@ class KtContactStatus {
         if (logVersion != null) 'lv': logVersion,
         if (logFpB64 != null) 'lf': logFpB64,
         if (logIndex != null) 'li': logIndex,
+        if (logKey != null) 'lk': logKey,
+        if (label != null) 'lb': label,
         if (logUnopened) 'lu': true,
         if (logList != null) 'll': logList,
         if (heldVersion != null) 'hv': heldVersion,
@@ -303,6 +322,8 @@ class KtContactStatus {
         logVersion: (j['lv'] as num?)?.toInt(),
         logFpB64: j['lf'] as String?,
         logIndex: (j['li'] as num?)?.toInt(),
+        logKey: j['lk'] is String ? j['lk'] as String : null,
+        label: j['lb'] is String ? j['lb'] as String : null,
         logUnopened: j['lu'] == true,
         logList: j['ll'] is Map ? (j['ll'] as Map).cast<String, Object?>() : null,
         heldVersion: (j['hv'] as num?)?.toInt(),
@@ -490,6 +511,22 @@ class KeyTransparency {
   /// device first asked it — a witness is [KtWitnessState.quiet].
   Duration witnessQuietAfter = const Duration(hours: 24);
 
+  /// How long after a head was put to the witness the same head — the same
+  /// roots, signed at the same moment — is not put to it again. Every
+  /// answer of one refresh carries a head (§19.7): one that carries the head
+  /// already asked about adds no question, and a head signed since — after
+  /// a publish, or re-signed — is asked about, as it was before 4.7.2. The
+  /// log re-signs its head at least every ten minutes (§19.4), so the same
+  /// head served again later than this is a head no honest log is still
+  /// serving, and is asked about again as a head seen for the first time is
+  /// ([_adopt]).
+  Duration witnessReuse = const Duration(minutes: 10);
+
+  /// The head last put to the witness: under which witness configuration
+  /// ([_witnessOf]), the head ([_headId]), and when (this device's clock).
+  /// In memory only: a start asks again.
+  ({String w, String head, int at})? _witnessAsked;
+
   /// A refresh that is owed — a whole window without one, or this window's
   /// moment gone by while the app was not running it — catches up at a
   /// random moment this long after the app is next in front, at start or on
@@ -575,6 +612,11 @@ class KeyTransparency {
 
   KtTreeHead? head;
   KtFault? fault;
+
+  /// The head held when the check now running began ([check], [checkOwn]):
+  /// where a label the map has dropped or moved back sends the held head
+  /// back to ([_labelFault]).
+  KtTreeHead? _heldAtStart;
   KtOwnAlert? ownAlert;
   int lastOkMs = 0;
   int lastFailMs = 0;
@@ -629,6 +671,13 @@ class KeyTransparency {
   /// diagnostic, kept for whoever looks (ADR 0026). The account's contacts
   /// treat the same entry as a conflict (adr/0006), unchanged.
   KtOwnAlert? ownUnverified;
+
+  /// Where the log's map last put this account's own label, as this device
+  /// read it under a head it accepted: the log's key and the label (b64),
+  /// and the entry's index and version (`kt_own_latest`, sealed). A later
+  /// head of the same log that covers that entry and leaves the label out of
+  /// its map, or moves it back, is a fault (§19.8), as for a contact.
+  ({String lk, String lb, int i, int v})? _ownLatest;
 
   /// The evidence of every own-account alarm the user dismissed — this
   /// object's [ownAlert] and the service's banners alike (ADR 0026).
@@ -734,6 +783,18 @@ class KeyTransparency {
     if (u != null) {
       try {
         ownUnverified = KtOwnAlert.fromJson((jsonDecode(u) as Map).cast<String, Object?>());
+      } catch (_) {}
+    }
+    final ol = await vault.kvGet('kt_own_latest');
+    if (ol != null) {
+      try {
+        final m = (jsonDecode(ol) as Map).cast<String, Object?>();
+        _ownLatest = (
+          lk: m['lk'] as String,
+          lb: m['lb'] as String,
+          i: (m['i'] as num).toInt(),
+          v: (m['v'] as num).toInt(),
+        );
       } catch (_) {}
     }
     lastOkMs = int.tryParse(await vault.kvGet('kt_last_ok_ms') ?? '') ?? 0;
@@ -1015,12 +1076,17 @@ class KeyTransparency {
 
   /// Forget the accepted head and any fault — for a deliberate change of log,
   /// or after a fault has been reported and understood. Contact statuses are
-  /// re-derived by the next check.
+  /// re-derived by the next check, and so is where this account's own label
+  /// stood: what was recorded of either is what a fault for a label the map
+  /// left out rests on, and a reset takes the next head as it comes.
   Future<void> resetHistory() async {
     head = null;
     fault = null;
     lastOkMs = 0;
     lastFailMs = 0;
+    _witnessAsked = null;
+    _ownLatest = null;
+    await vault.kvDelete('kt_own_latest');
     // The own-list repair (ADR 0026) reconciles only entries inside the head
     // this device held when this build first ran: a set nothing can join
     // while every head the log serves has to extend the one held. A reset
@@ -1365,6 +1431,7 @@ class KeyTransparency {
       }
       try {
         final logPub = config.logPub!;
+        _heldAtStart = head;
         if (await _acceptHead(logPub)) {
           await _markOk();
           await _checkOwn(logPub);
@@ -1383,6 +1450,7 @@ class KeyTransparency {
     final logPub = config.logPub!;
     await _noteRefreshed();
     if (fault == null) {
+      _heldAtStart = head;
       final accepted = await _acceptHead(logPub);
       if (accepted) {
         // The log is reachable to this client when it answers what the
@@ -1390,7 +1458,11 @@ class KeyTransparency {
         // refuses buckets (one older than 36.2) checks nobody, and after
         // `unreachableAfter` says so rather than "ok" for ever.
         if (await _checkContacts(logPub)) await _markOk();
-        await _checkOwn(logPub);
+        // A fault the contacts' pass found ends what this check reads from
+        // the log that showed it. This account's own label was looked up
+        // after it all the same until 4.7.2; that lookup's head is adopted
+        // now, which would undo [_labelFault]'s putting the held head back.
+        if (fault == null) await _checkOwn(logPub);
         await _flushPublish();
       }
     }
@@ -1423,6 +1495,24 @@ class KeyTransparency {
     await vault.kvPut('kt_fault', jsonEncode(fault!.toJson()), sensitive: false);
   }
 
+  /// A label this client read in the log's map, which [served] leaves out
+  /// or moves back ([_wentBack], [_movedOn]). Steps 1–3 had accepted that
+  /// head earlier in this check — they do not look at the map — so it is
+  /// held by now. It is not kept: the held head goes back to the one held
+  /// when this check began ([_heldAtStart]), in memory and in the vault, and
+  /// the fault names the two, that one as held and [served] beside it.
+  Future<void> _labelFault(String reason, KtTreeHead served) async {
+    final before = _heldAtStart;
+    head = before;
+    if (before == null) {
+      await vault.kvDelete('kt_head');
+    } else {
+      await vault.kvPut('kt_head', jsonEncode(before.toJson()),
+          sensitive: false);
+    }
+    await _setFault(reason, served: served);
+  }
+
   /// Steps 1–3 of §19.5 for the log's current head. True when a head was
   /// accepted (and persisted).
   Future<bool> _acceptHead(Uint8List logPub) async {
@@ -1451,10 +1541,23 @@ class KeyTransparency {
 
   /// Steps 1–3 of §19.5 for any head the log serves — with a lookup or a
   /// history as much as on its own. The held head is only ever replaced
-  /// here. True when [fresh] is now the held head.
+  /// here. True when [fresh] is now the held head, or has its roots.
+  ///
+  /// A head with the held head's roots — the same head served again, or the
+  /// same tree signed again — is the held tree, so it needs no consistency
+  /// proof (step 2 asks only that the roots be equal), and nothing else is
+  /// skipped for it: its signature, its age, and with a witness pinned the
+  /// witness ([witnessReuse]). Until 4.7.2 one whose `ts` had not advanced
+  /// returned here before any of that (the 2026-10-28 review of 4.7.0,
+  /// finding A), so whatever stands between this device and the log — what
+  /// terminates its TLS (R44), or the log itself — could serve one genuinely
+  /// signed head again indefinitely: never stale, the witness never asked
+  /// while it lasted, and every check "ok". An honest log re-signs its head
+  /// at least every ten minutes (§19.4), so this costs it nothing: a head
+  /// more than [staleHead] old is the unreachable log of ADR 0006 however
+  /// often it has been seen, as it always was the first time.
   Future<bool> _adopt(KtTreeHead fresh, Uint8List logPub) async {
     final held = head;
-    if (held != null && held.sameRootsAs(fresh) && fresh.ts <= held.ts) return true;
     List<Uint8List>? consistency;
     if (held != null && fresh.size > held.size) {
       final c = await _getJson(_url('/kt/v1/consistency?first=${held.size}&second=${fresh.size}'));
@@ -1480,14 +1583,36 @@ class KeyTransparency {
       await _fail();
       return false;
     }
-    if (config.hasWitness) {
+    if (config.hasWitness && !_witnessAskedOf(fresh)) {
+      final asked = _witnessOf(config);
+      final at = now();
       final ok = await _checkWitness(fresh, logPub);
       if (!ok) return false;
+      _witnessAsked = (w: asked, head: _headId(fresh), at: at);
+    }
+    // The held tree, signed no later than the held head: nothing to replace.
+    if (held != null && held.sameRootsAs(fresh) && fresh.ts <= held.ts) {
+      return true;
     }
     head = fresh;
     await vault.kvPut('kt_head', jsonEncode(fresh.toJson()), sensitive: false);
     return true;
   }
+
+  /// Whether [h] was put to the witness configured now less than
+  /// [witnessReuse] ago, by this device's clock.
+  bool _witnessAskedOf(KtTreeHead h) {
+    final a = _witnessAsked;
+    if (a == null || a.w != _witnessOf(config) || a.head != _headId(h)) {
+      return false;
+    }
+    final t = now();
+    return t >= a.at && t - a.at < witnessReuse.inMilliseconds;
+  }
+
+  /// One head's identity: its size, its two roots and when it was signed.
+  static String _headId(KtTreeHead h) =>
+      '${h.size} ${b64(h.logRoot)} ${b64(h.mapRoot)} ${h.ts}';
 
   /// §19.5 step 3. A witness that cannot be fetched or does not verify is
   /// no verdict for this check; one that verifies and disagrees with the log
@@ -1672,7 +1797,8 @@ class KeyTransparency {
     final asked = decoys.plan(labels.values, bits);
     // Kept before asking: a refresh that fails is asked again the same way.
     await _saveDecoys(decoys);
-    final buckets = await _askBuckets(asked, logPub);
+    final under = <KtVerifiedBucket, KtTreeHead>{};
+    final buckets = await _askBuckets(asked, logPub, under);
     if (buckets == null) return false;
     decoys.observe(buckets, labels.values);
     await _saveDecoys(decoys);
@@ -1691,6 +1817,18 @@ class KeyTransparency {
       }
       if (holding == null) continue; // every label's bucket was asked
       final leaf = holding.leafFor(label);
+      // Judged before anything about any contact changes: a label this
+      // client read in this log's map, left out of it or moved back by a
+      // head that covers that entry, is the log contradicting itself
+      // (finding B2). No status then changes, this contact's or another's:
+      // each stays as the last good head left it, the evidence and the hold
+      // on sends with it.
+      final at = under[holding]!;
+      final gone = _wentBack(contacts[c.rid], label, leaf, at, logPub);
+      if (gone != null) {
+        await _labelFault(gone, at);
+        return false;
+      }
       leaves[c.rid] = leaf;
       if (leaf != null && _needsEntry(c, leaf, contacts[c.rid])) {
         needed.add(leaf.index);
@@ -1714,9 +1852,68 @@ class KeyTransparency {
       if (fault != null) return false;
       if (!leaves.containsKey(c.rid)) continue;
       final leaf = leaves[c.rid];
-      await _checkContact(c, leaf, leaf == null ? null : entries[leaf.index]);
+      await _checkContact(c, leaf, leaf == null ? null : entries[leaf.index],
+          label: labels[c.rid]!, logPub: logPub);
     }
     return true;
+  }
+
+  /// The fault [leaf] is — the map's latest for [label] under [at], null
+  /// for a verified absence — against what [prev] recorded that the same
+  /// log's map said of the same label under an earlier head; or null.
+  ///
+  /// The map holds every label's latest entry (§19.2), and the log only
+  /// grows, a label's versions only rising (§19.6). So once a head of a log
+  /// has mapped a label to its entry i at version v, every head of that log
+  /// whose size covers i maps it to entry i at v, or to a later entry at a
+  /// later version: an honest log never takes a label out of its map, or
+  /// moves it back. A head that covers i and does otherwise is one of two
+  /// heads under the log's key that cannot both be honest — whichever came
+  /// first, and whether or not this device holds the other. Nothing else
+  /// makes it so:
+  ///
+  ///  * another log is not compared: the key the evidence was read under is
+  ///    recorded with it ([KtContactStatus.logKey]), and must be the key
+  ///    [at] verified under — after a change of log, or of the build's pins,
+  ///    a status from the old log proves nothing about the new one;
+  ///  * nor another label ([KtContactStatus.label]): a contact's record can
+  ///    move to the account the device it was made from belongs to (phase
+  ///    33), which is another label;
+  ///  * nor a head that does not cover the entry — an old answer served
+  ///    again, or one taken as it came when no head was held: it says
+  ///    nothing of an entry it does not contain;
+  ///  * and a status that recorded none of this is nothing to compare: one
+  ///    from before 4.7.2; none at all for a contact never found, for one
+  ///    deleted (the status goes with them) and added back, or after the
+  ///    history is reset, which clears every status.
+  ///
+  /// The bucket's absence is the map's (§19.9): a bucket that verifies is
+  /// complete, so a label it does not hold is not in the map at that head.
+  static String? _wentBack(KtContactStatus? prev, Uint8List label,
+      KtBucketLeaf? leaf, KtTreeHead at, Uint8List logPub) {
+    if (prev == null) return null;
+    final v = prev.logVersion;
+    final i = prev.logIndex;
+    if (v == null || i == null || prev.logFpB64 == null) return null;
+    if (prev.logKey != b64(logPub) || prev.label != b64(label)) return null;
+    final what = _movedOn(v, i, leaf?.version, leaf?.index, at.size);
+    return what == null
+        ? null
+        : 'a contact\'s label ${_hex(label).substring(0, 16)} $what';
+  }
+
+  /// A label at version [v], entry [i], as an earlier head of a log mapped
+  /// it, against a later head of [size] entries of the same log that maps it
+  /// to [nowV] at [nowI], or to nothing: what that head did with it, or null
+  /// when it is what an honest log shows — or a head too small to cover
+  /// entry [i], which shows nothing either way.
+  static String? _movedOn(int v, int i, int? nowV, int? nowI, int size) {
+    if (size <= i) return null;
+    if (nowV == null || nowI == null) {
+      return '(v$v, entry $i) is missing from the map at size $size';
+    }
+    if ((nowV == v && nowI == i) || (nowV > v && nowI > i)) return null;
+    return '(v$v, entry $i) is v$nowV, entry $nowI, in the map at size $size';
   }
 
   /// Whether ADR 0006's table needs [leaf]'s entry for [c] — its fingerprint,
@@ -1805,9 +2002,11 @@ class KeyTransparency {
   /// one request for up to [ktMaxBuckets] of them. A request the log refuses
   /// as too large is asked again as two halves, and a single bucket as its
   /// two halves one bit finer — both, so together they say what the bucket
-  /// said. Null when the log could not be asked or did not answer.
-  Future<List<KtVerifiedBucket>?> _askBuckets(
-      List<KtBucketQuery> queries, Uint8List logPub) async {
+  /// said. Null when the log could not be asked or did not answer. [under]
+  /// is given, for each bucket returned, the accepted head it was verified
+  /// under.
+  Future<List<KtVerifiedBucket>?> _askBuckets(List<KtBucketQuery> queries,
+      Uint8List logPub, Map<KtVerifiedBucket, KtTreeHead> under) async {
     final out = <KtVerifiedBucket>[];
     final todo = <List<KtBucketQuery>>[
       for (var i = 0; i < queries.length; i += ktMaxBuckets)
@@ -1870,6 +2069,9 @@ class KeyTransparency {
         }
         at = v.head;
         out.addAll(v.buckets);
+        for (final b in v.buckets) {
+          under[b] = v.head;
+        }
         await Future<void>.delayed(Duration.zero);
       }
       // Under the accepted head or an extension of it (§19.5), as a lookup.
@@ -1969,8 +2171,11 @@ class KeyTransparency {
   /// bucket — null for a verified absence — and [entry], that entry when it
   /// was fetched. When it was not, the status from the refresh that last
   /// judged the same entry holds what is needed from it (see [_needsEntry]).
+  /// A status read from a leaf records [label] and the key [logPub] of the
+  /// log it was read in, for [_wentBack].
   Future<void> _checkContact(
-      KtContactInput c, KtBucketLeaf? leaf, KtEntry? entry) async {
+      KtContactInput c, KtBucketLeaf? leaf, KtEntry? entry,
+      {required Uint8List label, required Uint8List logPub}) async {
     final prev = contacts[c.rid];
     final t = now();
     final heldDevs = c.held == null
@@ -1984,6 +2189,8 @@ class KeyTransparency {
       // Unlogged: an account that has never published — an older client, or
       // one that has not been online since upgrading. Gossip only, as
       // before the log; nothing is held (ADR 0006, the migration argument).
+      // Not an account this client has read in this log's map: that one,
+      // absent now, was a fault before this ran ([_wentBack]).
       next = KtContactStatus(
         state: KtContactState.unlogged,
         checkedAtMs: t,
@@ -2128,6 +2335,8 @@ class KeyTransparency {
         );
       }
       next.logIndex = leaf.index;
+      next.logKey = b64(logPub);
+      next.label = b64(label);
       if (next.state == KtContactState.conflict) {
         next.logUnopened = unopened;
         next.logList = refused;
@@ -2191,7 +2400,32 @@ class KeyTransparency {
       await _setFault('lookup for this account: ${e.reason}');
       return;
     }
+    // The lookup's head is held to steps 1–3 before anything under it is
+    // used (§19.5), as every other head this client reads is. It was not,
+    // here, until 4.7.2; what follows can now rest a fault on what it shows.
+    if (!await _adopt(r.head, logPub)) return;
     final latest = r.latest;
+    // This account's own label, held to where this device last read it in
+    // this log's map, as a contact's is held ([_wentBack], finding B2): left
+    // out of the map, or moved back, by a head that covers that entry, it is
+    // the log contradicting itself. Until 4.7.2 that was an account that had
+    // not published yet, in silence: no publish, since the log had
+    // acknowledged the list (`kt_pub_done`), and no alarm, since there was
+    // no entry to judge (ADR 0026). A `201` alone is not this evidence — it
+    // is unsigned, and whatever terminates the log's TLS can answer one — so
+    // what is held is the entry this device read, proved, in the map.
+    final seen = _ownLatest;
+    if (seen != null && seen.lk == b64(logPub) && seen.lb == b64(label)) {
+      final what = _movedOn(
+          seen.v, seen.i, latest?.version, latest?.index, r.head.size);
+      if (what != null) {
+        await _labelFault(
+            'this account\'s label ${_hex(label).substring(0, 16)} $what',
+            r.head);
+        return;
+      }
+    }
+    if (latest != null) await _noteOwnLatest(label, latest, logPub);
     final canPublish = own.accountEdSeed != null && own.listJson != null;
     if (latest == null || latest.version < own.version) {
       // Not in the log, or behind it: publish what we hold (11.5 on first
@@ -2252,6 +2486,19 @@ class KeyTransparency {
       ownAlert = null;
       await vault.kvDelete('kt_own_alert');
     }
+  }
+
+  /// Record where the map put this account's own label ([_ownLatest]).
+  Future<void> _noteOwnLatest(
+      Uint8List label, KtEntry latest, Uint8List logPub) async {
+    final seen =
+        (lk: b64(logPub), lb: b64(label), i: latest.index, v: latest.version);
+    if (seen == _ownLatest) return;
+    _ownLatest = seen;
+    await vault.kvPut(
+        'kt_own_latest',
+        jsonEncode(
+            {'lk': seen.lk, 'lb': seen.lb, 'i': seen.i, 'v': seen.v}));
   }
 
   /// Every entry of this account's history, page by page, into [out]. False

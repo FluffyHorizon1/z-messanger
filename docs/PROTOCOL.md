@@ -4293,7 +4293,10 @@ entry is present, the entry's `leafInput` hash against `logRoot` through the
 inclusion path at `inclusion.size == sth.size`, and MUST check that the
 map leaf's `index` and `v` equal the entry's. It MUST NOT use an entry whose
 proofs fail. A head served with a lookup that is not the client's held head
-is checked by steps 1–3 before its proofs are used.
+is checked by steps 1–3 before its proofs are used. (The reference client's
+check of its own account read its lookup without that until 4.7.2, so a
+lookup answered from another history under the log's key was taken as the
+log's answer.)
 
 A head whose `ts` is more than 24 hours old, or no head at all, is
 **unreachable**; a head or proof that fails any check above is a **log
@@ -4302,6 +4305,52 @@ fault**. What a client does in each state, per contact, is the table in
 reference client; other clients MUST at least refuse to treat an entry as
 confirmed when its proofs fail and MUST NOT accept a head that does not
 extend the one they hold.
+
+**A head served again.** These rules hold for every head a client is
+served, the head it holds among them: a head with the held head's roots
+needs no consistency proof (step 2), and nothing else is waived for it — its
+age is judged as above and step 3 is asked of it as of a head seen for the
+first time. A log re‑signs its head at least every ten minutes (§19.4), so a
+head served again for more than a day is a log that stopped, or something in
+front of it serving one head again, and is unreachable however often it was
+accepted before. A client MAY put one head to its witness once for all the
+answers of one check; the reference client asks about the same head again
+once ten minutes have passed since it last did. Until 4.7.2 the reference
+client accepted its held head served again, `ts` not advanced, with neither
+check (the 2026‑10‑28 review of 4.7.0, finding A): whatever stands in front
+of the log could serve it one head indefinitely, never stale and never put to
+the witness.
+
+**A label the map has dropped, or moved back.** The map holds each label's
+latest entry (§19.2) and the log only grows, a label's versions only rising
+(§19.6). So once a head has mapped a label to entry `i` at version `v`, every
+head of the same log whose `size` exceeds `i` maps it to entry `i` at `v`, or
+to a later entry at a later version — whichever of the two heads came first.
+A client that recorded such a mapping under a head it accepted, and is then
+shown under a head of the same log — the same pinned key — whose `size`
+exceeds `i` that the label is absent (a verified absence: §19.2, §19.9) or
+mapped anywhere else, MUST treat that as a **log fault**, not as an account
+that has never published: the two heads cannot both be honest. It compares
+only what it recorded for that label under that key: not what another log
+showed — after a change of log or of the pinned key, nothing recorded under
+the old one is evidence — nor what was recorded for another label (a
+contact's record can move to the account its device belongs to, §18.7), and
+a head whose `size` does not exceed `i` says nothing about entry `i`. The
+rule covers a contact's label and the account's own (§19.8). The reference
+client records the log's key and the label with each contact's status,
+beside the entry's index and version, and where the map last put the
+account's own label (`kt_own_latest`); a contact's goes with the contact, and
+a reset of the history clears both. Under such a fault no contact's status
+changes in that check, and sends a conflict held stay held; nor is the head
+that showed it kept. Steps 1–3 do not read the map, so that head was
+accepted before the label was read under it: the reference client goes back
+to the head it held when the check began, in memory and on disk, names the
+two in the fault, and reads nothing more from the log in that check. (A
+check cut short in between keeps the newer head; the next judges the label
+under whichever head it is then served.) Until 4.7.2 the
+reference client took such a contact for one who never published —
+releasing held sends and dropping the evidence — and its own label for one
+yet to publish, saying nothing (finding B2).
 
 A witness's record is held to the same clock. A record whose head's `ts` is
 more than 24 hours old is still checked by step 3 — a different head at its
@@ -4407,6 +4456,16 @@ A device that does not hold the account root judges only versions it has
 seen: it learns lists by self-sync and may skip versions, so a version it
 never saw is not evidence. A version it HAS seen, carrying a different
 fingerprint, is a contradiction on any device.
+
+An absence is judged too. A lookup whose map proves the label absent, or at
+an earlier entry, after this device read the label in the map under a head
+it accepted, is the log fault of §19.5 ("A label the map has dropped"), not
+an account to publish for: an honest log keeps the label, so there is
+nothing else it can be. What this device holds the log to is the entry it
+read, proved, in the map — not the log's `201` to its publish, which is
+unsigned and which whatever terminates the log's TLS can answer — so an
+absence before any lookup has found the label raises nothing: a publish the
+log has not taken looks the same.
 
 A change in how the account signs is not an exception to that, and needs
 none. Both migrations so far move the fingerprint by publishing at a NEW

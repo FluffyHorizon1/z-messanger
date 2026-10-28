@@ -124,7 +124,11 @@ ten minutes old, so a client can require a recent timestamp and tell a log
 that has been *frozen* — kept serving one old head to hide a rewrite — from
 one that is quiet. A head older than **24 hours** is treated as unreachable
 (below), not as a fault: a stale clock is not an attack, and an attacker who
-can freeze the log for a day can more simply block it.
+can freeze the log for a day can more simply block it. That holds for the
+head a client already holds, served again, as for any other — and so does
+the witness (2026‑10‑28: until 4.7.2 the client accepted its held head
+served again, `ts` not advanced, without either, for as long as it was
+served; PROTOCOL.md §19.5, "A head served again").
 
 A **mirror** (`kt/tools/mirror.js`) keeps a full copy and, on every sync,
 verifies the head's signature, that it extends the last head it verified
@@ -152,12 +156,12 @@ what each costs the user:
 
 | state | when | what happens |
 |---|---|---|
-| **unlogged** | absence proof verifies | as before the log: gossip only. A quiet note on the contact screen ("not in the transparency log"); a contact on an older client, or one that has never been online since upgrading |
+| **unlogged** | absence proof verifies, for a label this client has not read in this log's map (since 4.7.2: one it has read there, now absent, is a **log fault**, below) | as before the log: gossip only. A quiet note on the contact screen ("not in the transparency log"); a contact on an older client, or one that has never been online since upgrading |
 | **confirmed** | `v_log = v_ib`, `fp_log = fp_ib` | nothing to show |
 | **log ahead** | `v_log > v_ib` | fetch the entry, open the value, verify the list (§3.4), require its fingerprint to equal `fp_log`, install it — the log is a source (11.5). A value that does not open or verify is a **conflict** |
 | **unconfirmed** | `v_ib > v_log` for longer than the **grace period, 24 h** from receipt of the in‑band list | devices that appear **only** in the unconfirmed list stop receiving messages; devices it removed stay removed; the banner says which list is unconfirmed. This is T2 made to cost the attacker something: a rogue device enrolled by a list that never reaches the log goes quiet after a day |
 | **conflict** | same `v`, different `fp`; a log entry whose list does not verify; a log history containing a version the contact's own devices claimed with a different fingerprint | **sends are held**, with the reason, until the next check agrees or the user chooses to send anyway — for *that* conflict: an acknowledgement is of the evidence on the screen (the log's version, its fingerprint, the way it is wrong), and a later conflict of another kind for the same contact holds sends again (2026‑09‑17; until then one acknowledgement silenced every later conflict for that contact). The hard fail 0001 asked for, applied to the one case that is unambiguously either an attack on that account or a log serving lies about it |
-| **log fault** | a head that does not verify, or does not extend the held one, or disagrees with the witness, or a proof under a good head that fails | trust freezes at the last good head: nothing new is confirmed, sends to already‑confirmed device sets continue, and a persistent alert names the fault with the two heads for reporting. The log cannot make the client trust anything new, and cannot stop what was already verified — it is not a kill switch |
+| **log fault** | a head that does not verify, or does not extend the held one, or disagrees with the witness, or a proof under a good head that fails; or, since 4.7.2, a label this client read in the map under an accepted head — a contact's or its own — that a later head of the same log covering that entry shows absent or at an earlier entry (PROTOCOL.md §19.5: an honest log never takes a label out of its map, nor moves one back) | trust freezes at the last good head: nothing new is confirmed, sends to already‑confirmed device sets continue, and a persistent alert names the fault with the two heads for reporting — for a label, the label, the version and entry read before and the size of the head that left it out. For a label the last good head is the one held when that check began: the head checks above do not read the map, so they accept the newer head before the label is read under it, and once it is found missing or moved back that head is dropped again, in memory and on disk, and named in the alert beside the one held; nothing more is read from the log in that check (a check cut short in between keeps the newer head, and the next judges the label under whichever head it is then served). The log cannot make the client trust anything new, and cannot stop what was already verified — it is not a kill switch. A contact's status keeps what it showed, a conflict's held sends included |
 | **unreachable** | no head within 24 h | sends continue on in‑band verification exactly as before the log; a banner after 24 h says the log has not been reachable since when. The grace period runs regardless: a contact's list that cannot be confirmed for a day is unconfirmed, whether because the account never published or because the log could not be asked — the client cannot tell those apart, and an attacker who could block the log for one victim must not be able to keep a rogue device alive by doing so |
 
 **Why unlogged never holds.** An account with no entry at all could be an

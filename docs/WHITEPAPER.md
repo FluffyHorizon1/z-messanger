@@ -304,8 +304,10 @@ an RFC 9162 Merkle tree with a map that pins each account's latest entry,
 under one signed head — and every client checks each contact's list against
 it and its own label's history for entries it never issued. What a client
 does with each answer is a table, not a judgement: a list the log confirms
-is confirmed; one the log does not know is an older client; one newer than
-the log's is a source (the client installs it); one the log has not
+is confirmed; one the log does not know is an older client — unless the
+client has seen it in the log, which an honest log never forgets, so that is
+the log at fault; one newer than the log's is a source (the client installs
+it); one the log has not
 confirmed after a day stops delivering to the devices only that list added;
 the same version with a different fingerprint holds messages. The log cannot
 make a client trust anything new — a head that does not extend the last one
