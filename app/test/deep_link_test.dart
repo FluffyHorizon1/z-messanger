@@ -25,7 +25,10 @@
 //     itself ran the first round, and the code went out without a yes);
 //  6. the platform is asked for the invite page alone: the intent filter
 //     names the path /i exactly, where until 2026-10-16 a prefix of /i also
-//     claimed /index.html and every other page beginning with the letter.
+//     claimed /index.html and every other page beginning with the letter;
+//  7. and for no app that takes text: the manifest queries none for
+//     ACTION_PROCESS_TEXT, which until 4.7.2 put a button for each beside
+//     Copy in every selection toolbar, and nothing in lib/ asks for one.
 import 'dart:convert';
 import 'dart:io';
 
@@ -285,5 +288,46 @@ void main() {
       expect(d, isNot(contains('pathAdvancedPattern')), reason: d);
       expect(d, isNot(contains('pathSuffix')), reason: d);
     }
+  });
+
+  test('7. the platform is asked for no app that takes text', () {
+    // Flutter's selection toolbar adds a button for every app Android lists
+    // as taking ACTION_PROCESS_TEXT — a translator, a dictionary, a notes
+    // app — on every field that shows its text and every text that can be
+    // selected, and a tap hands that app the selection: a recovery code, a
+    // pairing code, an invite, a message being edited. From Android 11 the
+    // platform lists only apps the manifest asks about, and until 4.7.2 it
+    // asked about these — `flutter create`'s <queries> block, which nothing
+    // in Z used. (Android 10 and earlier list them regardless: THREAT_MODEL
+    // R51.)
+    final manifest = File('android/app/src/main/AndroidManifest.xml')
+        .readAsStringSync()
+        .replaceAll(RegExp(r'<!--.*?-->', dotAll: true), '');
+    expect(manifest, contains('<application'), reason: 'the manifest was read');
+    expect(manifest, isNot(contains('android.intent.action.PROCESS_TEXT')),
+        reason: 'a query for PROCESS_TEXT puts every installed app that takes '
+            'text beside Copy, on every field that shows a secret');
+
+    // Nor does anything in the app ask for them itself.
+    final callers = <String>[];
+    var files = 0;
+    for (final f in Directory('lib')
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where((f) => f.path.endsWith('.dart'))) {
+      files++;
+      final lines = f.readAsLinesSync();
+      for (var i = 0; i < lines.length; i++) {
+        final line = lines[i].trimLeft();
+        if (line.startsWith('//')) continue;
+        if (line.contains(RegExp('ProcessText|processText'))) {
+          callers.add('${f.path}:${i + 1}: ${line.trim()}');
+        }
+      }
+    }
+    expect(files, greaterThanOrEqualTo(50), reason: 'lib/ was read');
+    expect(callers, isEmpty,
+        reason: 'ProcessTextService and the processText channel hand text to '
+            'another app');
   });
 }

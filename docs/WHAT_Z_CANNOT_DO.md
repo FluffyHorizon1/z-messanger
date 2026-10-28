@@ -29,6 +29,13 @@ That includes:
 * screen recording, keyboard apps, accessibility services on some platforms,
   and backup software that copies the app's data. (Z asks the keyboard not to
   learn a passphrase or a code; a keyboard app sees every key either way.)
+* the buttons other apps put in the menu that appears when you select text —
+  Translate, a dictionary, a notes app. Tapping one hands that app whatever is
+  selected: a recovery code, an invite, a message you are editing. Until 4.7.2
+  Z asked Android to offer them. It no longer does, so on Android 11 and later
+  one appears only if Android shows Z that app for some other reason; on
+  Android 10 and earlier Android offers every one installed, whatever Z asks
+  (`THREAT_MODEL.md`, R51).
 
 What Z does do is make the endpoint the *only* place worth attacking. That is
 a real achievement — it means no one can read your conversations by
