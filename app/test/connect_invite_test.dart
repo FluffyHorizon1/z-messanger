@@ -38,9 +38,16 @@
 //     the relay keeps one and the run the other, and the invite is spent on
 //     a mismatch nobody produced;
 //  9. a relay that cannot be reached is said so on the card, and the invite
-//     is kept for the next try rather than read as "waiting for them".
+//     is kept for the next try rather than read as "waiting for them";
+// 10. a stored invite this build cannot read costs that invite alone: of
+//     three, one whose peer revealed a code under an Ed25519 key of small
+//     order (PROTOCOL §2.4), the other two load, and once another invite
+//     is made the vault still holds all three, that one as it was — until
+//     2026-10-28 one such record left none loaded, and the next save wrote
+//     the shorter list over the vault's copy.
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -564,4 +571,61 @@ void main() {
     expect(es['connectAddedUnverified'] as String, contains('sin verificar'));
     expect(es['connectMismatchWarning'] as String, contains('No vuelvas'));
   });
+
+  test('10. a stored invite this build cannot read costs that invite alone, '
+      'and is written back as it was', () async {
+    final dir = await Directory.systemTemp.createTemp('z_ci_unread_');
+    temps.add(dir);
+    final id = await ZIdentity.generate();
+    var alice = await open(dir, id, 'Alice');
+    for (var i = 0; i < 3; i++) {
+      await alice.invites.create();
+    }
+    Future<List<Map<String, Object?>>> stored() async => [
+          for (final r in jsonDecode((await alice.vault.kvGet('connect_invites'))!)
+              as List)
+            (r as Map).cast<String, Object?>()
+        ];
+    final three = await stored();
+    expect(three, hasLength(3));
+
+    // The second as a build from before 2026-10-28 kept it once its peer
+    // had revealed a code under the Ed25519 point of order 2, "signed" with
+    // R the identity and S = 0: that build's verifier took the code, and
+    // this one's refuses it.
+    final peer = ContactBundle(
+            edPub: Uint8List.fromList(
+                [0xec, for (var i = 0; i < 30; i++) 0xff, 0x7f]),
+            xPub: (await ZIdentity.generate()).xPub,
+            bindingSig: Uint8List(64)..[0] = 1,
+            displayName: 'Mallory')
+        .encode();
+    final unread = {
+      ...three[1],
+      'run': {
+        ...(three[1]['run'] as Map).cast<String, Object?>(),
+        'session': {
+          'key': b64(randomBytes(32)),
+          'sas': '1234 5678',
+          'peer': peer,
+        },
+      },
+    };
+    await alice.vault.kvPut(
+        'connect_invites', jsonEncode([three[0], unread, three[2]]));
+
+    alice = await restart(alice, dir, id, 'Alice');
+    await alice.invites.load();
+    expect(alice.invites.invites.map((i) => i.id),
+        [three[0]['id'], three[2]['id']],
+        reason: 'the two that parse are read, and only they');
+
+    final made = await alice.invites.create();
+    final kept = await stored();
+    expect(kept.map((r) => r['id']),
+        unorderedEquals([for (final r in three) r['id'], made.id]),
+        reason: 'the vault still holds all three, and the one just made');
+    expect(kept.singleWhere((r) => r['id'] == unread['id']), equals(unread),
+        reason: 'the one that does not parse, as it was');
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }

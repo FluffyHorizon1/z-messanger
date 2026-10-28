@@ -229,32 +229,53 @@ class ConnectInvites extends ChangeNotifier {
   String? debugMyCode;
 
   final List<PendingInvite> _invites = [];
+
+  /// The stored records [load] could not read, each as the JSON it was
+  /// stored as, written back ahead of the invites by every [_save]. The
+  /// stored list is the only copy of them, and a later build may read what
+  /// this one does not.
+  final List<Object?> _unread = [];
   bool _loaded = false;
 
   List<PendingInvite> get invites => List.unmodifiable(_invites);
 
   /// Read the pending invites back after a restart. Safe to call twice.
+  ///
+  /// One record at a time. A record this build cannot read is passed over —
+  /// it is not worth losing the app over, and the invite it describes can be
+  /// made again in two taps — and kept as it was ([_unread]). Until
+  /// 2026-10-28 one such record left no invite loaded, and the next [_save]
+  /// wrote the shorter list over the vault's copy: one record cost every
+  /// invite. And since then a record whose shape is sound can be one: one
+  /// whose peer revealed a code under an Ed25519 key of small order
+  /// (PROTOCOL §2.4), which a build before took in and this one refuses. A
+  /// stored value that is not a list, which no build writes, is read as no
+  /// invites, as it always was.
   Future<void> load() async {
     if (_loaded) return;
     _loaded = true;
     final raw = await _svc.vault.kvGet(_kvKey);
     if (raw == null) return;
+    Object? stored;
     try {
-      for (final e in (jsonDecode(raw) as List)) {
-        _invites.add(
-            await PendingInvite.fromJson((e as Map).cast<String, Object?>()));
+      stored = jsonDecode(raw);
+    } catch (_) {}
+    if (stored is List) {
+      for (final e in stored) {
+        try {
+          _invites.add(await PendingInvite.fromJson(
+              (e as Map).cast<String, Object?>()));
+        } catch (_) {
+          _unread.add(e);
+        }
       }
-    } catch (_) {
-      // A record this build cannot read is not worth losing the app over, and
-      // the invite it describes can be made again in two taps.
-      _invites.clear();
     }
     notifyListeners();
   }
 
   Future<void> _save() async {
-    await _svc.vault
-        .kvPut(_kvKey, jsonEncode([for (final i in _invites) i.toJson()]));
+    await _svc.vault.kvPut(_kvKey,
+        jsonEncode([..._unread, for (final i in _invites) i.toJson()]));
   }
 
   Future<ConnectIdentity> _me() async => ConnectIdentity.fromCode(
