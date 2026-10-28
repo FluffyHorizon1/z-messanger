@@ -444,6 +444,18 @@ class ConnectInvites extends ChangeNotifier {
       if (invite.progress == ConnectProgress.done) continue;
       // Waiting for its person's yes (ADR 0024): not even a connection.
       if (invite.held) continue;
+      // What the run holds before its round. A round can move it and leave
+      // what the card shows as it was — the acceptor's message 2 draws the
+      // ephemeral its commitment covers, the inviter's message 3 takes in the
+      // reply it answers, and each acknowledges away the message it consumed
+      // — so a round that moved the run is written down like one that changed
+      // the card. Until 2026-10-28 it was not, and an app killed after such a
+      // round, while the other side was away, came back to the record from
+      // before it: it waited for a message the relay no longer held, and with
+      // both sides killed the acceptor drew a second ephemeral and spent the
+      // invite at message 3. A round that throws is not compared; it is
+      // written as before, when its failure is new or another invite is.
+      final before = jsonEncode(invite.run.toJson());
       final ConnectProgress next;
       try {
         next = await invite.run.step(
@@ -473,6 +485,7 @@ class ConnectInvites extends ChangeNotifier {
         changed = true;
       }
       if (next != invite.progress) changed = true;
+      if (jsonEncode(invite.run.toJson()) != before) changed = true;
       invite.progress = next;
     }
     if (changed) {

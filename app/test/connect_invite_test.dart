@@ -44,7 +44,15 @@
 //     order (PROTOCOL §2.4), the other two load, and once another invite
 //     is made the vault still holds all three, that one as it was — until
 //     2026-10-28 one such record left none loaded, and the next save wrote
-//     the shorter list over the vault's copy.
+//     the shorter list over the vault's copy;
+// 11. an app killed while its invite waits for the other side resumes
+//     where the invite got to — the acceptor after posting its message 2,
+//     the inviter after posting its message 3, or both — and the two meet
+//     at one string: until 2026-10-28 a round that moved the run without
+//     changing what the card shows was not written down, so a side killed
+//     came back to the record from before it and waited for a message the
+//     relay no longer held, and with both killed the acceptor spent the
+//     invite at message 3.
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -628,4 +636,58 @@ void main() {
     expect(kept.singleWhere((r) => r['id'] == unread['id']), equals(unread),
         reason: 'the one that does not parse, as it was');
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('11. an app killed while its invite waits for the other side resumes '
+      'where the invite got to', () async {
+    // One invite for each way of being killed. Where it ended: both sides
+    // at one string, or what each side's card was left at.
+    Future<String> killed({required bool acceptor, required bool inviter}) async {
+      final aDir = await Directory.systemTemp.createTemp('z_ci_wait_a_');
+      final bDir = await Directory.systemTemp.createTemp('z_ci_wait_b_');
+      temps
+        ..add(aDir)
+        ..add(bDir);
+      final aId = await ZIdentity.generate(), bId = await ZIdentity.generate();
+      var alice = await open(aDir, aId, 'Alice');
+      var bob = await open(bDir, bId, 'Bob');
+
+      final invite = await alice.invites.create();
+      await alice.invites.pump(); // message 1 waits for Bob
+      await bob.invites.open(invite.link);
+      // Bob's round reads message 1 and posts message 2: the ephemeral his
+      // commitment covers is drawn now, and message 1 is acknowledged away.
+      // Nothing on his card changes — it was waiting, and waits.
+      await bob.invites.pump();
+      expect(bob.invites.invites.single.progress, ConnectProgress.waiting);
+      if (acceptor) {
+        bob = await restart(bob, bDir, bId, 'Bob');
+        await bob.invites.load();
+      }
+      // Alice's round reads message 2 and posts message 3: the reply it
+      // answers is taken in now, and acknowledged away. Her card waits too.
+      await alice.invites.pump();
+      expect(alice.invites.invites.single.progress, ConnectProgress.waiting);
+      if (inviter) {
+        alice = await restart(alice, aDir, aId, 'Alice');
+        await alice.invites.load();
+      }
+
+      await danceTo(bob, alice);
+      final a = alice.invites.invites.single, b = bob.invites.invites.single;
+      if (a.sas != null && a.sas == b.sas) return 'one string';
+      final why = b.run.abortReason;
+      return 'acceptor ${b.progress.name}${why == null ? '' : ' ($why)'}, '
+          'inviter ${a.progress.name}';
+    }
+
+    expect(
+        [
+          await killed(acceptor: true, inviter: false),
+          await killed(acceptor: false, inviter: true),
+          await killed(acceptor: true, inviter: true),
+        ],
+        ['one string', 'one string', 'one string'],
+        reason: 'the acceptor killed after its message 2, the inviter after '
+            'its message 3, and both');
+  }, timeout: const Timeout(Duration(minutes: 4)));
 }
