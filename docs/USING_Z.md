@@ -417,7 +417,9 @@ holding them.
 
 The built-in log also has a **witness**: a copy of the log that somebody
 other than its operator runs, there to catch a log showing different people
-different histories. Z checks the log against it, and Settings › Transparency
+different histories of its entries — not a map of accounts rewritten while
+the log grows, which only a phone that had already read the account catches
+(THREAT_MODEL R7). Z checks the log against it, and Settings › Transparency
 log says when they last agreed. If the witness has not answered with a
 current record for a day, that row says so: until it answers, the log is not
 being checked against it. Nowhere else says so, so look there now and then.

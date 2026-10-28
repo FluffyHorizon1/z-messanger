@@ -119,10 +119,13 @@ since phase 41 at a random moment five seconds to a minute after the message
 arrived, no longer within a fraction of a second — so a relay that watches
 timing for long enough can still pair a sealed sender with the recipient
 (R41, `adr/0028`). The
-transparency log (§6), which the app uses by default, is asked about each of
-a user's contacts from that user's address, four times a day: its operator —
-for the public log, the relay's operator too — learns the contact list
-outright (R40). And the public relay and log sit behind Cloudflare, which
+transparency log (§6), which the app uses by default, is asked from a user's
+address, up to four times a day, for the buckets of 32 to 64 accounts their
+contacts fall in, among decoys the install keeps: its operator — for the
+public log, the relay's operator too — learns which buckets that address asks
+about, when the app is opened, and when a contact is added outside them, but
+not, since phase 35, the contact list itself (R40). And the public relay and
+log sit behind Cloudflare, which
 terminates their TLS and sees all of the above beside every address (R44).
 
 The same applies to the connect ceremony's shape (§6): the relay sees a pair
@@ -436,10 +439,12 @@ assume it does is where harm happens:
   machines at a stated checkout path, measured in CI — but no one outside the
   project has checked, and a reproducibility claim verified only by its author
   is a claim about intentions.
-* **Not a private transparency log.** Checking a contact's device list against
-  the log means asking the log about that contact, so its operator learns
-  whom each user is in contact with (R40). The app does this by default;
-  turning it off takes Developer mode.
+* **Not a private transparency log.** Checking contacts' device lists against
+  the log means asking it for the buckets they fall in, so its operator learns
+  which buckets each address asks about, among decoys, when the app is opened
+  and when a contact is added outside them — less than the contact list, which
+  it learned until phase 35, and more than nothing (R40). The app does this by
+  default; turning it off takes Developer mode.
 * **A witnessed transparency log, watched only in Settings.** The log runs and the
   client pins it (§6), so a device list handed to one contact and not another
   is recorded where both can look; since 2026‑10‑17 the client also pins a

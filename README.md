@@ -29,7 +29,8 @@ builds have not.
   introduction mailbox made for it, never to your account's key. The
   servers that keep a record are the public transparency log — it holds
   every device list an account publishes, for good, and the app's lookups
-  there tell it whom each user is in contact with — and, for a claimed
+  there tell it which buckets of 32 to 64 accounts, among decoys, each
+  user asks about, not who their contacts are (R40) — and, for a claimed
   handle, the handle log, which keeps the handle's keys for good;
   [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) says exactly what the
   relay and the logs *can* still observe (R1, R21, R40, R47–R50).
