@@ -527,6 +527,20 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   @visibleForTesting
   Future<void> Function(String rid)? debugBeforeSendCommit;
 
+  /// Test seam: on a contact's own door (the device they were added from),
+  /// awaited once an envelope from them has been read and stored and before
+  /// anything [inner] says is acted on; [debugInboundActedOn] is called when
+  /// that is done. So a test can hold one message's steps where a loaded
+  /// device holds them — a list's install queued behind another — while the
+  /// next message from the same device is acted on, instead of waiting for
+  /// the scheduler to do it by luck. Null in production.
+  @visibleForTesting
+  Future<void> Function(String rid, InnerMessage inner)? debugBeforeInboundActs;
+
+  /// Test seam: see [debugBeforeInboundActs].
+  @visibleForTesting
+  void Function(String rid, InnerMessage inner)? debugInboundActedOn;
+
   /// Test seam: shown every envelope as it would decrypt — [path] is
   /// `primary` (a contact's main device), `extra` (one of a contact's other
   /// devices) or `sync` (one of my own) — on a COPY of the ratchet, before
@@ -5558,6 +5572,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // 44.3 (§18.11): what it says of sealing keys, taken under the same
         // lock as the decrypt ([_sealNews]).
         if (_sealNews(contact.rid, contact.rid, parsed)) sealsChanged = true;
+        // 7.7a (§3.6): its device-list claim, recorded in the order the
+        // ratchet reads them, and judged once it has been acted on
+        // ([_recordClaim]).
+        _recordClaim(contact.rid, contact.rid, parsed);
         return (kOk, parsed);
       });
       status = s;
@@ -5619,6 +5637,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     await _clearRequested(contact.rid);
 
     if (inner != null) {
+      // Read once and called only if set, as [debugBeforeSendCommit] is.
+      final hold = debugBeforeInboundActs;
+      if (hold != null) await hold(contact.rid, inner);
       // ADR 0029: what this device of theirs says it reads — first, before
       // anything below answers this message. A claim withheld from a contact
       // whose devices had not said they read a v2-only list is made again as
@@ -5762,9 +5783,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       }
       // 7.7a: cross-check the device-list claim/echo on EVERY inbound. Runs
       // after any devlist install above so the "held" list is current.
-      await _observeDevlistGossip(contact.rid, contact.rid, inner);
+      await _observeDevlistGossip(contact.rid, inner);
       if (opensMove) unawaited(_maybeMoveToV2Only());
       notifyListeners();
+      debugInboundActedOn?.call(contact.rid, inner);
     }
   }
 
@@ -15253,6 +15275,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         return;
       }
       offer = dec.pqOfferPayload;
+      // 7.7a (§3.6): as on the primary door, its claim is recorded as the
+      // ratchet reads it ([_recordClaim]), under the lock both doors take.
+      _recordClaim(rid, fromDeviceRid, inner!);
     });
     if (outcome == kWithheld) {
       // A test withheld it (debugOnDecrypted): gone, as if never delivered.
@@ -15528,7 +15553,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     }
     // 7.7a: observe the claim/echo after any devlist install above, so the
     // "held" list this cross-check compares against is current.
-    await _observeDevlistGossip(rid, fromDeviceRid, inner);
+    await _observeDevlistGossip(rid, inner);
     if (opensMove) unawaited(_maybeMoveToV2Only());
   }
 
@@ -16244,17 +16269,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   /// Cross-check the claim ('dl') and echo ('pdl') carried by an inbound inner
-  /// from [deviceRid] of contact [rid].
-  Future<void> _observeDevlistGossip(
-      String rid, String deviceRid, InnerMessage inner) async {
+  /// from contact [rid], once it has been acted on: the claim, recorded when
+  /// the ratchet read the message ([_recordClaim]), is judged against the
+  /// list held now.
+  Future<void> _observeDevlistGossip(String rid, InnerMessage inner) async {
     if (!contacts.containsKey(rid)) return;
     // Best-effort: never let a transparency cross-check throw out of the
     // inbound path (e.g. the vault closing during shutdown/restart).
     try {
       final dl = inner.data['dl'];
       if (dl is Map && dl['v'] is num && dl['h'] is String) {
-        await _observeContactClaim(
-            rid, deviceRid, (dl['v'] as num).toInt(), dl['h'] as String);
+        await _saveClaims(rid);
+        await _evaluateContact(rid);
       }
       final pdl = inner.data['pdl'];
       if (pdl is Map && pdl['v'] is num && pdl['h'] is String) {
@@ -16266,14 +16292,39 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     }
   }
 
-  Future<void> _observeContactClaim(
-      String rid, String deviceRid, int v, String h) async {
+  /// 7.7a (§3.6): the claim ('dl') [inner] makes about [rid]'s account,
+  /// from [deviceRid], one of that account's devices — recorded as that
+  /// device's latest, beside the highest it has made.
+  ///
+  /// Called by both of a contact's doors as the ratchet reads the message,
+  /// under the conversation's lock, which orders the reads: a device's
+  /// claims are recorded in the order it sent them. [_observeDevlistGossip]
+  /// judges them once the message has been acted on. Through 4.7.2 they were
+  /// recorded there, as the message's last step, and the contact's own door
+  /// takes the steps of two messages from one device in no fixed order — a
+  /// list's install waits behind every other install, a receipt waits for
+  /// nothing. A claim made before the account's list moved was recorded
+  /// after one made after it, the device seemed to go back a version, and
+  /// an honest person was told their contact's device list had rolled back
+  /// (`dl_rollback`). device_pop_test 4 failed on it once in five runs of
+  /// the whole file on 4.7.2; with the claims logged, 3 of 11 runs of that
+  /// file raised it at contacts no criterion looks at, each a list's message
+  /// read before a `pqid` of the next version and recorded after it.
+  ///
+  /// A message the relay hands over after a later one from the same device
+  /// is read, and recorded, after it (THREAT_MODEL R14).
+  void _recordClaim(String rid, String deviceRid, InnerMessage inner) {
+    if (!contacts.containsKey(rid)) return;
+    final dl = inner.data['dl'];
+    if (dl is! Map || dl['v'] is! num || dl['h'] is! String) return;
+    final v = (dl['v'] as num).toInt();
     final claims = _contactClaims.putIfAbsent(rid, () => {});
     final prev = claims[deviceRid];
-    final mx = prev == null ? v : (prev.mx > v ? prev.mx : v);
-    claims[deviceRid] = (v: v, h: h, mx: mx);
-    await _saveClaims(rid);
-    await _evaluateContact(rid);
+    claims[deviceRid] = (
+      v: v,
+      h: dl['h'] as String,
+      mx: prev == null || v > prev.mx ? v : prev.mx,
+    );
   }
 
   /// Owner rule: a contact echoes the list it holds for MY account. A version

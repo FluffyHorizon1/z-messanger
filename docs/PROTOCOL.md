@@ -575,6 +575,19 @@ device of that account):
   claims a version **above** the held one and the account's broadcast that
   would install it never arrives.
 
+A device's claims are taken in the order the receiver reads that device's
+messages — the order its ratchet decrypts them — not the order it finishes
+acting on them: a message carrying a list is done with only once the list is
+installed, and a later message from the same device can be done with first.
+The reference client records each claim as its message is decrypted, under
+the lock that orders the decrypts, and judges it once the message has been
+acted on. Through 4.7.2 it recorded the claim as the message's last step, and
+a list's message read before a later message of the same device was
+sometimes recorded after it: the device seemed to go back a version, and an
+honest contact was shown a rollback. A message the relay hands over after a
+later one from the same device is read after it, and can still make the
+device seem to go back (`THREAT_MODEL.md` R14).
+
 **Owner rule.** On each `pdl` a device receives about its *own* account, it
 compares with the newest list it issued or learned by self‑sync (§9): an echo
 `v` higher than known, or the same `v` with a different `h`, says a device
