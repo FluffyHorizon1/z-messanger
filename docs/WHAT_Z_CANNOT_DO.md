@@ -173,7 +173,11 @@ separately to every member's every device, and every change to who is in it
 goes to every member. That is what keeps someone you remove out of
 everything sent afterwards, and it is why a group made in Z holds at most 128
 people, you included. A group an older version of Z made larger still works,
-but can only shrink.
+but can only shrink — unless it has grown so large that its list of members
+no longer fits in one message the relay will carry, which only an older or
+modified version, through a relay that carries more than ours, can have done.
+Then Z cannot change it at all, not even to remove someone; its members can
+still write to it, and leave.
 
 Nor is there a broadcast channel — one writer, many readers. That would be a
 different feature, and Z does not have it.
@@ -187,15 +191,28 @@ more than four recipients, your own devices counted: not to a group of you
 and five others, nor to you and four others while you have a linked device.
 A 1 MiB photo can go to 91. A file to one person is not limited this way.
 
+That limit keeps one file within what the public relay can hold; it cannot
+keep the relay from filling. What members who are offline have not yet
+collected waits there, so a file within the limit to a group most of whose
+members are offline — that photo to 91 of them — or two large files sent
+close together can still fill it, and then nobody's messages get through that
+relay, yours or anyone else's, until there is room again: as those members
+come online and collect their copies, and at the latest three days after the
+file was sent, when the relay drops what nobody collected. Nothing else is
+lost: what the relay refused waits on each sender's phone, and goes once
+there is room (`THREAT_MODEL.md`, R56).
+
 A file to a group can wait, too. Every member's copy is its own upload, so Z
 hands the members' copies to your phone's queue a member at a time, each
 only while the queue holds less than 64 MiB, not counting what waits for a
 mailbox the relay is refusing; the others wait their turn. A member whose
 mailbox at the relay is full gets no part of a new file until it takes
 messages again, however long that is, and while the relay itself is full
-nobody does. While a member's copy waits, a change to the group sent to them
-after it — who is in it, its name, its admins, its timer — waits behind it,
-and so does your next file to the group. Texts, reactions and edits do not.
+nobody does. While a member's copy waits, what must not overtake it waits
+behind it, for that member in that group: a change to the group sent to them
+after it — who is in it, its name, its admins, its timer — your leaving the
+group, and your next file to it. Texts, reactions, edits and deletes do not,
+and nothing you send anyone else waits behind it.
 
 ## It cannot make key verification happen for you
 

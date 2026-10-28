@@ -564,7 +564,10 @@ change to who is in it, goes to each of them separately. When a group is
 full, adding someone — by hand or from a group link — adds nobody, and says
 so. A group an older version of Z made larger still works, and its screen
 shows it as over the limit: its admins can remove people and rename it, but
-cannot add anyone.
+cannot add anyone — unless it is so large that its member list no longer
+fits in one message the relay carries, which only an older or modified
+version, through a relay that carries more than ours, can have made. Then Z
+cannot change it at all; everyone can still write to it, and leave.
 
 A **file** sent to a group goes to each of them separately too, and to each
 of your other devices: a copy each, every copy about 2.4 times the size of
@@ -583,10 +586,10 @@ the queue can pass 64 MiB by one member's copy. Your own devices' copies are
 queued at once; they count towards the 256 MB. A member whose mailbox at the
 relay is full gets no new copy until it takes messages again, and holds up
 nobody else's; while the relay itself is full, every copy waits until it takes
-messages again. A member whose copy waits still gets your texts, reactions and
-edits; only a change to the group — who is in it, its name, its admins, its
-timer — and your next file to it wait behind the file for them. Your other
-conversations keep moving throughout.
+messages again. A member whose copy waits still gets your texts, reactions,
+edits and deletes; only a change to the group — who is in it, its name, its
+admins, its timer — your leaving it, and your next file to it wait behind the
+file for them. Your other conversations keep moving throughout.
 
 Whoever creates a group **owns** it. The owner can make other members
 **admins**: an admin can add people, remove members who are not admins, and

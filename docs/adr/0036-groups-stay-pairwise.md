@@ -11,8 +11,11 @@ text where it asked them, and listed under "Decisions". Roadmap phase 48
 most one per mailbox (PROTOCOL §12.5 item 6; `outbox_stall_test.dart`
 4–18). 48.3 — a group file within a budget, staged under a bound (PROTOCOL
 §7's note; `group_file_fanout_test.dart` 6–12, `group_fanout_test.dart` 7–10,
-`outbox_stall_test.dart` 19–22). 48.4 and 48.5 are not built.
-- **Amends:** PROTOCOL §11, §11.1, §12.5 and §7 (informative); `PERFORMANCE.md`; `THREAT_MODEL.md` (R12, R18, R29, R38, and a new register row when 48.5 lands); AUDIT_SCOPE C9; `USING_Z.md`; `WHAT_Z_CANNOT_DO.md`.
+`outbox_stall_test.dart` 19–22). 48.5 — the register and the claims, written
+after 48.1–48.3 had shipped (`THREAT_MODEL.md` R12, R18, R29, R38, the trust
+table's "Your contact" and R56; AUDIT_SCOPE C9 and §4 item 10;
+`WHAT_Z_CANNOT_DO.md`; `USING_Z.md`'s "Groups"). 48.4 is not built.
+- **Amends:** PROTOCOL §11, §11.1, §12.5 and §7 (informative); `PERFORMANCE.md`; `THREAT_MODEL.md` (R12, R18, R29, R38, the trust table's "Your contact", and R56, the register row 48.5 adds); AUDIT_SCOPE C9 and §4 item 10; `USING_Z.md`; `WHAT_Z_CANNOT_DO.md`.
 - **No wire change**, and no new vector.
 - **Keeps** the standing non-goal of ADRs 0019 and 0030, no shared group key, and states its cost.
 
@@ -154,21 +157,21 @@ MLS has further costs:
 
 ## Consequences
 
-Each says whether it is written: 48.1–48.3 wrote theirs, and what the build plan gives 48.4 and 48.5 is not written yet.
+Each says whether it is written: 48.1–48.3 wrote theirs, 48.5 the register's and the claims' after them, and what the build plan gives 48.4 is not written yet.
 
 - **PROTOCOL**, written with 48.1–48.3: §11 "Size", §11.1's size bullet, §12.5's one-per-mailbox rule, and §7's upload per recipient (informative). §14 needs nothing.
 - **Vectors:** none.
 - **Tests:** in existing files, as the build plan lists, because the app's test-file count is guarded (`AUDIT_SCOPE.md` §2's app row, which `tool/check_audit_scope.py` holds to the tree).
 - **THREAT_MODEL:**
-  - **R18:** the burst is the group, pipelined — written with 48.2 — and capped (48.5).
-  - **R12** (48.5): the relay sends one FCM wake per envelope queued for an offline device, uncoalesced (the wake after a `send` in `server.js`, `pushSender.sendWake`), so Google sees R18's pattern too.
-  - **R29 and "Your contact"** (48.5): a group makes its members each other's contacts.
-  - **R38**, written with 48.1: the cap binds only current issuers; older or modified clients can still inflate a group to 1 024, and always will: receivers keep §11.1's bound for good, so R38 is permanent (question 8).
-  - **A new register row when 48.5 lands, accepted:** group media is bounded by the relay's store, not by the client. The budget keeps one send within the public store. Two sends, or one to a group with many members offline, can still fill it, and everyone on that relay is then refused until those members drain.
-- **AUDIT_SCOPE:** C9, written with 48.1 and 48.3 — no list grows a group past 128 or exceeds a frame, and a group file over budget writes nothing — and C1, with 48.2: a refusal holds only its own mailbox. §4 item 10 is to point here (48.5).
+  - **R18:** the burst is the group, pipelined — written with 48.2 — and capped, written with 48.5: a group only current clients have grown bursts to at most 127 other members' devices.
+  - **R12**, written with 48.5: the relay sends one FCM wake per envelope queued for an offline device, uncoalesced (the wake after a `send` in `server.js`, `pushSender.sendWake`), so Google sees R18's pattern too.
+  - **R29 and "Your contact"**, written with 48.5: a group makes its members each other's contacts.
+  - **R38**, written with 48.1: the cap binds only current issuers; older or modified clients can still inflate a group to 1 024, and always will: receivers keep §11.1's bound for good, so R38 is permanent (question 8). And, written with 48.5, the frame rule's other side: a group such a client grew past the frame, behind a relay with a larger one, takes no list from a current admin, a removal included.
+  - **R56, written with 48.5, accepted:** group media is bounded by the relay's store, not by the client. The budget keeps one send within the public store. Two sends, or one to a group with many members offline, can still fill it, and everyone on that relay is then refused until those members drain.
+- **AUDIT_SCOPE:** C9, written with 48.1 and 48.3 — no list grows a group past 128 or exceeds a frame, and a group file over budget writes nothing — and, with 48.5, its staging: a file is staged only while the outbox holds under 64 MiB, and one that waits holds back only a list, the sender's leaving or a later file; and C1, with 48.2: a refusal holds only its own mailbox. §4 item 10 points here (48.5).
 - **PERFORMANCE.md** (48.4, planned): a section, "Large groups (48)", to measure the table, and its lines 221–231, which still call membership changes synchronous and `sendGroupFile` unqueued, to be corrected.
-- **USING_Z, "Groups":** the cap, and the upload — written.
-- **WHAT_Z_CANNOT_DO:** no groups past 128, and no broadcast — written with 48.1.
+- **USING_Z, "Groups":** the cap, and the upload — written; and with 48.5, a group grown past the frame, and that your leaving waits behind a member's file while your deletes do not.
+- **WHAT_Z_CANNOT_DO:** no groups past 128, and no broadcast — written with 48.1; a file that waits, with 48.3; a file over budget refused, with 4.7.2's documentation pass; and with 48.5, that a group grown past the frame cannot be changed, that a file within the budget can still fill the public relay (R56), and that your leaving waits behind a member's file as a list does.
 
 ## What remains
 
@@ -195,4 +198,4 @@ Five patches. None touches the relay's code. Each code patch starts from a test 
 | 48.2 | Several envelopes in flight, at most one per mailbox | **built** |
 | 48.3 | A group file within a budget, staged under a bound | **built** |
 | 48.4 | Measurements | planned |
-| 48.5 | The register and the claims, meant to come before any release shipped 48.1–48.3 | planned — 48.1–48.3 shipped without it, in 4.5.0, 4.6.0 and 4.7.0; what 48.1 makes true — R38's sentence, C9's clause, WHAT_Z_CANNOT_DO and this record — written with it |
+| 48.5 | The register and the claims, meant to come before any release shipped 48.1–48.3 | **written** after 48.1–48.3 had shipped without it, in 4.5.0, 4.6.0 and 4.7.0: what they made true in R38's sentence, C9's clause, WHAT_Z_CANNOT_DO and this record, and the rest of the register's — R12, R18, R29, the trust table's "Your contact", R56 — AUDIT_SCOPE §4 item 10 and USING_Z's "Groups" |
