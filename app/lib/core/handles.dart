@@ -279,8 +279,9 @@ const Duration handleForegroundDelayMax = Duration(seconds: 30);
 const Duration handleDrainQuiet = Duration(milliseconds: 1500);
 const Duration handleDrainMax = Duration(seconds: 20);
 
-/// At most this many pending requests that came through the handle, counted
-/// apart from those that came by a code or a link (§21.8): past it the
+/// At most this many pending requests that came through the handle — and,
+/// once links are on, through a public link, which shares this cap (§21.9) —
+/// counted apart from those that came by a code or an invite (§21.8): past it the
 /// oldest one not yet seen on the Requests screen goes, and a request the
 /// person has looked at never does. A handle is a public door, so a wave
 /// through it must never push out a request from someone who had the

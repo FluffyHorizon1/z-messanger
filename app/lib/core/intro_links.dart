@@ -43,8 +43,9 @@ import 'vault.dart';
 /// the relay, which hands each stamp on with its envelope so the owner can
 /// count it, and whether the deployed relay runs it is not yet confirmed
 /// (ADR 0032 §5, decision 1). The release that sets this to `true` also adds
-/// the Android `/c` path (`android:path="/c"` on both hosts) and THREAT_MODEL's
-/// row for links (39.5). A constant, not a `--dart-define`: a value given on
+/// the Android `/c` path (`android:path="/c"` on both hosts); THREAT_MODEL's
+/// rows for links are written ahead of it (39.5: R34, R47–R49, R55). A
+/// constant, not a `--dart-define`: a value given on
 /// one build command is a value no rebuild reproduces (`tool/check_ga.py`).
 /// Tests turn it on through `ChatService.init`'s `introLinks`.
 const bool introLinksEnabled = false;

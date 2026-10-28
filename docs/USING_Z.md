@@ -866,7 +866,8 @@ nobody on it is ever prompted.
 
 No phone number, no email, no contacts-list upload, no analytics, no crash
 reporter, no advertising identifier. The app talks to the relay you configure,
-to the transparency log (which learns who your contacts are, above), to a
+to the transparency log and its witness (the log learns which buckets of
+accounts you ask about, among decoys, not who your contacts are: above), to a
 handle service only when you claim, change or look up a handle (above), and to
 your platform's notification service, which learns that a device should wake
 and nothing else. On Android push is on unless you turn it off in Settings —
