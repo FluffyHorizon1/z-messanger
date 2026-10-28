@@ -113,10 +113,11 @@ recipient device so the relay does not learn who sent it.
   what a backup of their account from before its last list does, run as
   their device by whoever holds it — is shown to you as their device list
   having gone back. Those claims are taken in the order their messages are
-  read, so an honest list moving while one of its messages is still being
-  acted on no longer looks like that; through 4.7.2 it sometimes did, and a
-  relay that hands one of a device's messages over after a later one still
-  can (R14).
+  read, and one send stamps one claim on everything it encrypts, so an
+  honest list moving while one of its messages is still being sent or acted
+  on no longer looks like that; through 4.7.2 it sometimes did, and a relay
+  that hands one of a device's messages over after a later one still can
+  (R14).
   What the gossip finds never blocks a send — the user is shown what
   disagrees. The transparency log is the exception `adr/0006` made: a
   conflict between the log and a contact's devices holds what the user says

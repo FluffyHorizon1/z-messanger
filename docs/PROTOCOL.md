@@ -561,6 +561,14 @@ id `input3` commits to. This is why a v2‑only list is never at version 1 (§3.
 "pdl" : { "v":version, "h":b64(fp) }   // newest list the sender holds for the RECIPIENT's account (echo)
 ```
 
+A sender stamps one claim on everything one send encrypts: a `pqseal` that
+rides ahead of a message (§18.11) carries that message's `dl` and `pdl`, and
+the other members it is decorated with, so that in the order a device's
+envelopes are encrypted its claim never goes down. Through 4.7.2 the seal read
+the claim again, after the message had, and went first: a list recorded
+between the two reads went out on the seal and the version before it on the
+message behind it, which the receiver rules below read as a rollback.
+
 **Receiver rules**, kept per contact account (latest `(v,h)` per sending
 device of that account):
 
@@ -4108,7 +4116,8 @@ The members that carry them, a new kind and two optional members (§14):
   self‑sync (1 679 with it), and its sealed envelope is always a
   4 096‑bucket one, 5 546 characters on the wire. It goes in an envelope of
   its own just ahead of the next message
-  to that device — the first time on the next one, again no sooner than
+  to that device, carrying that message's claim and echo (§3.6) — the first
+  time on the next one, again no sooner than
   §17.4's retry interval after the last (six hours) and at most three times
   a run, as `pqid` re‑sends are bounded — and a linked device's `pqseal` to
   its root is also its ask for its `pqdc` (§9), owed until that has arrived

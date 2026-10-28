@@ -541,6 +541,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   @visibleForTesting
   void Function(String rid, InnerMessage inner)? debugInboundActedOn;
 
+  /// Test seam: run in a send to a contact's own device that this device's
+  /// `pqseal` rides ahead of (§18.11) — inside the per-contact lock, once the
+  /// message has been decorated ([_decorateForWire]) and before the seal is
+  /// made — so a test can have this account's list move there, as a device
+  /// linked at that moment moves it. Null in production.
+  @visibleForTesting
+  Future<void> Function(String rid)? debugBeforePqSealRides;
+
   /// Test seam: shown every envelope as it would decrypt — [path] is
   /// `primary` (a contact's main device), `extra` (one of a contact's other
   /// devices) or `sync` (one of my own) — on a COPY of the ratchet, before
@@ -4084,14 +4092,31 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     return _pqOfferRetry > 0 && _now() - last >= _pqOfferRetry;
   }
 
-  /// This device's `pqseal`, decorated as anything it sends [contact] is
-  /// ([_decorateForWire]); the per-device stamp goes on each copy
-  /// ([_bytesForDevice]).
-  Future<InnerMessage> _decoratedPqSeal(Contact contact) async {
+  /// This device's `pqseal`, to ride ahead of [inner] in the same send to a
+  /// contact, with what [_decorateForWire] put on [inner] — the claim, the
+  /// echo and the rest read once, for both. The per-device stamp goes on
+  /// each copy ([_bytesForDevice]).
+  ///
+  /// The seal is encrypted first. Through 4.7.2 it was decorated on its own,
+  /// after [inner], and read the claim again: a list recorded between the
+  /// two reads — a device linked while the message went out — went out on
+  /// the seal, and the version before it on the message behind it, so in
+  /// the order the contact's ratchet read them the device claimed less than
+  /// it had, and the contact was told its device list had rolled back
+  /// (§3.6). With the claims logged, once in 11 runs of device_pop_test
+  /// whole: a root linking its laptop while a `pqid` to Bob went out — the
+  /// seal claimed version 2, the `pqid` behind it version 1.
+  InnerMessage _pqSealAhead(InnerMessage inner) {
     final seal = InnerMessage.pqSeal(newMessageId(), _now(), _sealingKey!.ek);
-    await _decorateForWire(seal, contact);
+    for (final k in _wireMembers) {
+      final v = inner.data[k];
+      if (v != null) seal.data[k] = v;
+    }
     return seal;
   }
+
+  /// The members [_decorateForWire] puts on what goes to a contact.
+  static const List<String> _wireMembers = ['dlr', 'dl', 'pdl', 'pql', 'pqh'];
 
   /// The bare `pqseal` for [deviceRid], one of my devices, as it rides the
   /// self-sync ratchet ([DeviceSyncService.pqSealFor]), stamped `pqs:1` when
@@ -4482,10 +4507,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // 44.3 (§18.11): this device's sealing key rides ahead of the message
         // to a device owed it, in an envelope of its own as the offer is —
         // and only when that envelope is mixed and its header carries no
-        // `pqct` ([pqSealMayRide]), so it stays in the 4 096 bucket.
+        // `pqct` ([pqSealMayRide]), so it stays in the 4 096 bucket. It
+        // carries the message's own claim ([_pqSealAhead]).
         String? sealPayload;
         if (_owesPqSeal(contact.rid, contact.rid) && pqSealMayRide(conv)) {
-          final seal = await _decoratedPqSeal(contact);
+          final gate = debugBeforePqSealRides;
+          if (gate != null) await gate(contact.rid);
+          final seal = _pqSealAhead(inner);
           sealPayload = await _sealFor(
               contact.rid,
               await conv.encrypt(
@@ -15095,14 +15123,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // 44.3 (§18.11): this device's sealing key, ahead of the message, to
         // each of their devices owed it whose next message is mixed and
         // carries no `pqct` ([pqSealMayRide]) — one envelope each, so each
-        // copy can say `pqs` for its own device.
+        // copy can say `pqs` for its own device — with the claim the message
+        // carries, as decorated just above ([_pqSealAhead]).
         InnerMessage? seal;
         for (final r in to) {
           final conv = s.targetConversation(r);
           if (conv == null || !_owesPqSeal(rid, r) || !pqSealMayRide(conv)) {
             continue;
           }
-          seal ??= await _decoratedPqSeal(contact);
+          seal ??= _pqSealAhead(inner);
           final f = await s.encryptFor(r, _bytesForDevice(seal, rid, r));
           if (f != null) {
             fan.add(f);

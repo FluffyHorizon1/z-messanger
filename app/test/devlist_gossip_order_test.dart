@@ -16,11 +16,15 @@
 // (if it carried one) was installed, and its contact's own door takes the
 // steps of two messages from one device in no fixed order: an install waits
 // behind every other install, a `pqid` waits for nothing. Bob's version 2,
-// read first, was recorded after his version 3, read next.
+// read first, was recorded after his version 3, read next. And the sender
+// stamped the `pqseal` riding ahead of a message (§18.11) with a claim read
+// after the message's, then encrypted the seal first: a list recorded in
+// between went out on the seal and the version before it on the message.
 //
 // Real clients through the real relay; no transparency log. An order the
-// fault met by luck is made here with a seam that holds one message's steps
-// once it has been read (`debugBeforeInboundActs`).
+// fault met by luck is made here with a seam: one that holds one message's
+// steps once it has been read (`debugBeforeInboundActs`), and one that runs
+// inside a send a seal rides on (`debugBeforePqSealRides`).
 //
 // Criteria, each a test below:
 //   1. a contact's list whose message is read and then held, while the same
@@ -31,7 +35,12 @@
 //      account from before its last list, run by someone holding it as the
 //      account's own device after that device has claimed the newer list,
 //      raises dl_rollback at once — with no grace to wait out, so nothing
-//      else here can raise anything — and the list it hands over is refused.
+//      else here can raise anything — and the list it hands over is refused;
+//   3. a seal riding ahead of a message claims what the message claims: the
+//      account's list recorded at the next version inside that send leaves
+//      its device's claims, in the order the contact's ratchet reads them,
+//      never going down (on 4a716af the seal claims the version after the
+//      message's).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -117,7 +126,8 @@ void main() {
     }
   });
 
-  Future<ChatService> run(String name, Vault vault, ZIdentity id) {
+  Future<ChatService> run(String name, Vault vault, ZIdentity id,
+      {bool beforeSealingKeys = false}) {
     final ready = Completer<ChatService>();
     ChatService? made;
     runZonedGuarded(() async {
@@ -133,6 +143,7 @@ void main() {
           signDevlistV2Only: false,
           receiptTiming: promptReceipts,
           ktConfig: KtConfig.off,
+          debugBuildBeforeSealingKeys: beforeSealingKeys,
         );
         made = svc;
         live.add(svc);
@@ -153,13 +164,15 @@ void main() {
     return ready.future;
   }
 
-  /// A new account called [name].
-  Future<ChatService> start(String name) async {
+  /// A new account called [name]; [beforeSealingKeys], on a build from
+  /// before 44.3.
+  Future<ChatService> start(String name,
+      {bool beforeSealingKeys = false}) async {
     final dir = dirs[name] = await Directory.systemTemp.createTemp('z_ord_$name');
     final vault = await Vault.open(rootOverride: dir);
     final id = await ZIdentity.generate();
     await vault.kvPut('identity', jsonEncode(id.toJson()));
-    return run(name, vault, id);
+    return run(name, vault, id, beforeSealingKeys: beforeSealingKeys);
   }
 
   Future<void> waitUntil(FutureOr<bool> Function() cond,
@@ -193,6 +206,13 @@ void main() {
             received(a, b.myRid, 'hello ${a.displayName}') &&
             received(b, a.myRid, 'hello ${b.displayName}'),
         what: '${a.displayName} and ${b.displayName} have spoken');
+  }
+
+  /// [from] says [text] to [to], and it arrives.
+  Future<void> heard(ChatService from, ChatService to, String text) async {
+    await from.sendText(to.myRid, text);
+    await waitUntil(() => received(to, from.myRid, text),
+        what: '"$text" reaches ${to.displayName}');
   }
 
   /// A device of [owner]'s account that runs no client: a certificate its
@@ -327,5 +347,63 @@ void main() {
         reason: 'the same device claimed version 3 and then version 2');
     expect(await vic.heldContactListVersion(bob.myRid), 3,
         reason: 'the version 2 the backup hands over is refused');
+  });
+  test(
+      '3. a seal riding ahead of a message claims what the message claims, '
+      'so a list recorded during the send never shows the device going back',
+      () async {
+    final alice = await start('alice3');
+    // Bob runs a build from before sealing keys (44.3): he never says he
+    // holds Alice's, so the first message of hers to his device that a seal
+    // may ride ahead of has one, whenever that is.
+    final bob = await start('bob3', beforeSealingKeys: true);
+    // Every envelope from Alice's device that claims a version, in the order
+    // Bob's ratchet reads them: its kind and the version.
+    final read = <({String kind, int v})>[];
+    bob.debugOnDecrypted = (path, from, dec) {
+      if (path == 'primary' && from == alice.myRid) {
+        try {
+          final m = InnerMessage.fromBytes(dec.plaintext);
+          final v = claimOf(m);
+          if (v != null) read.add((kind: m.kind, v: v));
+        } catch (_) {}
+      }
+      return false;
+    };
+    // The first time the seal rides to Bob, Alice links a device inside that
+    // send: her list is recorded at the next version after the message has
+    // been decorated and before the seal is made — the order device_pop_test
+    // 11 met by luck.
+    var linkedInSend = false;
+    alice.debugBeforePqSealRides = (rid) async {
+      if (rid != bob.myRid || linkedInSend) return;
+      linkedInSend = true;
+      final before = (await alice.debugOwnListClaim()).$1;
+      unawaited(alice.addMyDevice(await deviceOf(alice, 'tablet')));
+      await waitUntil(
+          () async => (await alice.debugOwnListClaim()).$1 > before,
+          what: "Alice's list at the next version, inside the send");
+    };
+    await introduce(alice, bob);
+    for (var i = 0; !linkedInSend && i < 8; i++) {
+      await heard(alice, bob, 'more $i');
+    }
+    expect(linkedInSend, isTrue,
+        reason: "Alice's seal rode ahead of a message of hers to Bob");
+    await waitUntil(
+        () async => await bob.heldContactListVersion(alice.myRid) == 2,
+        what: "Bob installs Alice's version 2");
+    await heard(alice, bob, 'at version 2');
+
+    final seal = read.indexWhere((r) => r.kind == 'pqseal');
+    expect(seal, isNonNegative, reason: 'read: $read');
+    expect(read[seal].v, read[seal + 1].v,
+        reason: 'the seal claims what the message behind it claims: $read');
+    for (var i = 1; i < read.length; i++) {
+      expect(read[i].v, greaterThanOrEqualTo(read[i - 1].v),
+          reason: "in the order Bob read them, Alice's device never claimed "
+              'less than it had: $read');
+    }
+    expect(bob.contactDevlistAlerts[alice.myRid], isNull);
   });
 }
