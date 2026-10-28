@@ -37,6 +37,7 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:pqcrypto/pqcrypto.dart' as pqc;
 
+import 'ed25519_strict.dart';
 import 'util.dart';
 
 final _ed = Ed25519();
@@ -196,7 +197,9 @@ class HybridKeyPair {
 }
 
 /// Verifies [sig] over [message] under [key]. True only if BOTH halves
-/// verify.
+/// verify — the Ed25519 half under §21.4's one rule
+/// ([ed25519VerifyStrict]), as every Ed25519 signature this library checks
+/// is since 2026-10-28, rather than the library's lenient verifier.
 ///
 /// Both are always evaluated — no short-circuit — so that the work done does
 /// not depend on which half failed. Nothing secret is involved either way,
@@ -207,11 +210,7 @@ Future<bool> hybridVerify(
   Uint8List message,
   HybridSignature sig,
 ) async {
-  final edOk = await _ed.verify(
-    message,
-    signature: Signature(sig.ed,
-        publicKey: SimplePublicKey(key.edPub, type: KeyPairType.ed25519)),
-  );
+  final edOk = ed25519VerifyStrict(key.edPub, message, sig.ed);
   // Returns false rather than throwing for any malformed input, per the
   // package contract — so a hostile signature cannot turn a verification into
   // an exception the caller might handle as something other than a failure.

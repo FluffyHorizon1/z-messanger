@@ -120,14 +120,34 @@ class ZArchive {
     return mv is int && mv >= 0 ? mv : 0;
   }
 
+  /// Parses the plaintext header line and checks what a reader takes from
+  /// it before any key is derived (`BACKUP.md` §4.1): an object, `z` the
+  /// magic, `v` this major — a newer one is [ArchiveTooNewException], asked
+  /// first, since a newer major may say anything else differently — and
+  /// `salt` and `np` base64 strings of 16 bytes each. Every malformed shape
+  /// throws a [FormatException]. Until 2026-10-28 a line that was JSON but
+  /// not an object threw a `TypeError` from a cast, and a missing salt or a
+  /// short nonce prefix one from the reader that took them on trust — an
+  /// Error, past every `on FormatException` a restore has (the review's F3).
   static Map<String, Object?> parseHeader(Uint8List headerLine) {
-    final j = jsonDecode(utf8.decode(headerLine)) as Map<String, Object?>;
+    final Object? decoded = jsonDecode(utf8.decode(headerLine));
+    if (decoded is! Map<String, Object?>) {
+      throw const FormatException('not a Z backup archive');
+    }
+    final j = decoded;
     if (j['z'] != magic) {
       throw const FormatException('not a Z backup archive');
     }
     if (isNewerMajor(j)) throw ArchiveTooNewException(j['v'] as int);
     if (j['v'] != version) {
       throw FormatException('unsupported archive version ${j['v']}');
+    }
+    for (final k in const ['salt', 'np']) {
+      final v = j[k];
+      if (v is! String || unb64(v).length != 16) {
+        throw FormatException('archive header member "$k" is not 16 bytes '
+            'of base64');
+      }
     }
     return j;
   }

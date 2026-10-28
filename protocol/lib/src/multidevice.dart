@@ -100,6 +100,57 @@ Future<Uint8List> _xPubFromSeed(Uint8List seed) async {
   return Uint8List.fromList((await kp.extractPublicKey()).bytes);
 }
 
+// The parsers' members (the 2026-10-28 review's F3). A JSON value of the
+// wrong type is a malformed certificate, list or account, and so a
+// [FormatException] — never the `TypeError` a cast throws, which is an Error
+// and escapes every `on FormatException` between a parser and its caller.
+
+/// [j]'s member [key], which must be a string.
+String _stringMember(Map<String, Object?> j, String key, String what) {
+  final v = j[key];
+  if (v is! String) {
+    throw FormatException('$what member "$key" is missing or not a string');
+  }
+  return v;
+}
+
+/// [j]'s member [key], which must be a base64 string: its bytes. A string
+/// that is not base64 is a [FormatException] as `base64Decode` throws one.
+Uint8List _bytesMember(Map<String, Object?> j, String key, String what) =>
+    unb64(_stringMember(j, key, what));
+
+/// [j]'s member [key], which must be an integer — what every writer puts
+/// there. A whole number spelled with a fraction part (`2.0`) reads as the
+/// integer it is, as it always did; a fraction, a number beyond 2^53, or
+/// `1e999`, which JSON decodes to infinity and whose `toInt()` throws an
+/// Error, is not a version.
+int _intMember(Map<String, Object?> j, String key, String what) {
+  final v = j[key];
+  if (v is int) return v;
+  if (v is double && v.isFinite && v == v.roundToDouble() &&
+      v.abs() <= 9007199254740992) {
+    return v.toInt();
+  }
+  throw FormatException('$what member "$key" is missing or not an integer');
+}
+
+/// [j]'s member [key], which must be a list of objects: the certificates of
+/// a list or an account.
+List<DeviceCertificate> _certsMember(
+    Map<String, Object?> j, String key, String what) {
+  final v = j[key];
+  if (v is! List) {
+    throw FormatException('$what member "$key" is missing or not a list');
+  }
+  return [
+    for (final d in v)
+      if (d is Map)
+        DeviceCertificate.fromJson(d.cast<String, Object?>())
+      else
+        throw FormatException('$what member "$key" holds a non-object')
+  ];
+}
+
 /// The account key's attestation that a device belongs to it. Self-contained:
 /// it carries the device's public keys, so it doubles as the device's public
 /// record inside an [AccountBundle].
@@ -214,40 +265,40 @@ class DeviceCertificate {
   /// not 64 bytes — fails the certificate, as a forged `sig2` fails a list.
   /// An absent one is not checked: that is every certificate made before it
   /// existed, and the account root's own.
+  ///
+  /// Every key in it is strong (§3.1, §21.4) — the account's and the
+  /// device's Ed25519 keys, and the device's X25519 key — and each signature
+  /// is checked under §21.4's one rule ([ed25519VerifyStrict]). Under an
+  /// account key of small order anyone can sign: R the identity and S = 0
+  /// verify over any input the library's lenient verifier is given, which is
+  /// what this called until 2026-10-28. A device key of small order, or one
+  /// spelled at or above p, is no device anybody holds, and an X25519 key of
+  /// small order is one every envelope sealed to would be open to all (§8):
+  /// the account's signature cannot make either safe for the people who
+  /// would fan out to it.
   Future<bool> verify(Uint8List accountEdPub) async {
-    if (deviceEdPub.length != 32 ||
-        deviceXPub.length != 32 ||
-        accountEdPub.length != 32) {
+    if (!handleStrongEdKey(accountEdPub) ||
+        !handleStrongEdKey(deviceEdPub) ||
+        !handleStrongXKey(deviceXPub)) {
       return false;
     }
     try {
-      final key = SimplePublicKey(accountEdPub, type: KeyPairType.ed25519);
-      final bool signed;
+      final Uint8List input;
       if (legacy) {
         if (deviceId != 'legacy-v1' ||
             !constantTimeEquals(deviceEdPub, accountEdPub)) {
           return false;
         }
-        signed = await _ed.verify(
-          concatBytes([utf8.encode(bindContext), deviceXPub]),
-          signature: Signature(sig, publicKey: key),
-        );
+        input = concatBytes([utf8.encode(bindContext), deviceXPub]);
       } else {
-        signed = await _ed.verify(
-          signingInput(deviceEdPub, deviceXPub, deviceId),
-          signature: Signature(sig, publicKey: key),
-        );
+        input = signingInput(deviceEdPub, deviceXPub, deviceId);
       }
-      if (!signed) return false;
+      if (!ed25519VerifyStrict(accountEdPub, input, sig)) return false;
       final p = pop;
       if (p == null) return true;
       if (p.length != 64) return false;
-      return await _ed.verify(
-        popInput(accountEdPub, deviceEdPub, deviceXPub, deviceId),
-        signature: Signature(p,
-            publicKey:
-                SimplePublicKey(deviceEdPub, type: KeyPairType.ed25519)),
-      );
+      return ed25519VerifyStrict(deviceEdPub,
+          popInput(accountEdPub, deviceEdPub, deviceXPub, deviceId), p);
     } catch (_) {
       return false;
     }
@@ -281,12 +332,18 @@ class DeviceCertificate {
   /// [FormatException], as a list's signature members do (§3.4): read as
   /// absent, a `null` one would make a reader that goes by the members
   /// present and one that goes by their values reach two answers.
+  ///
+  /// Any other malformed shape throws a [FormatException] too: `ded`, `dx`
+  /// and `sig` missing or not base64 strings, `id` missing or not a string.
+  /// Until 2026-10-28 each was a cast, which throws a `TypeError` — an Error,
+  /// past every `on FormatException` between here and the receive path.
+  /// What the values are worth is [verify]'s to say.
   static DeviceCertificate fromJson(Map<String, Object?> j) =>
       DeviceCertificate(
-        deviceEdPub: unb64(j['ded'] as String),
-        deviceXPub: unb64(j['dx'] as String),
-        deviceId: j['id'] as String,
-        sig: unb64(j['sig'] as String),
+        deviceEdPub: _bytesMember(j, 'ded', 'device certificate'),
+        deviceXPub: _bytesMember(j, 'dx', 'device certificate'),
+        deviceId: _stringMember(j, 'id', 'device certificate'),
+        sig: _bytesMember(j, 'sig', 'device certificate'),
         legacy: j['legacy'] == true,
         pop: _popMember(j),
       );
@@ -381,26 +438,31 @@ class AccountBundle {
       throw const FormatException('corrupt contact code');
     }
     if (j['v'] != 2) throw const FormatException('unsupported version');
-    final bundle = AccountBundle(
-      accountEdPub: unb64(j['acct'] as String),
-      devices: [
-        for (final d in (j['devs'] as List))
-          DeviceCertificate.fromJson((d as Map).cast<String, Object?>())
-      ],
-      displayName: j['name'] as String?,
-    );
-    if (!await bundle.verifyAll()) {
-      throw const FormatException(
-          'account code failed verification (possible tampering)');
-    }
-    // A device key of small order is refused as a `zc1.` code's is
-    // ([ContactBundle.verify], §3.3): an envelope sealed to it would be open
-    // to anyone (§8).
+    final bundle = AccountBundle.fromJson(j);
+    // A key that is not strong is refused as a `zc1.` code's is
+    // ([ContactBundle.decode], §3.3, §21.4), and said apart from a signature
+    // that fails, which [verifyAll] would also report it as: an account or
+    // device Ed25519 key of small order is one anyone can sign as, and every
+    // envelope sealed to an X25519 key of small order would be open to all
+    // (§8).
     for (final d in bundle.devices) {
-      if (!handleStrongXKey(d.deviceXPub)) {
+      if (d.deviceEdPub.length == 32 && !handleStrongEdKey(d.deviceEdPub)) {
+        throw const FormatException(
+            'account code key refused: not a strong Ed25519 key');
+      }
+      if (d.deviceXPub.length == 32 && !handleStrongXKey(d.deviceXPub)) {
         throw const FormatException(
             'account code key refused: not a strong X25519 key');
       }
+    }
+    if (bundle.accountEdPub.length == 32 &&
+        !handleStrongEdKey(bundle.accountEdPub)) {
+      throw const FormatException(
+          'account code key refused: not a strong Ed25519 key');
+    }
+    if (!await bundle.verifyAll()) {
+      throw const FormatException(
+          'account code failed verification (possible tampering)');
     }
     return bundle;
   }
@@ -411,14 +473,22 @@ class AccountBundle {
         'name': displayName,
       };
 
-  static AccountBundle fromJson(Map<String, Object?> j) => AccountBundle(
-        accountEdPub: unb64(j['acct'] as String),
-        devices: [
-          for (final d in (j['devs'] as List))
-            DeviceCertificate.fromJson((d as Map).cast<String, Object?>())
-        ],
-        displayName: j['name'] as String?,
-      );
+  /// Reads back what [toJson] wrote, or an account code's JSON. Throws a
+  /// [FormatException] for any malformed shape — `acct` not a base64
+  /// string, `devs` not a list of certificates ([DeviceCertificate.fromJson]),
+  /// `name` present and not a string — never a `TypeError`. Verifies nothing:
+  /// that is [verifyAll].
+  static AccountBundle fromJson(Map<String, Object?> j) {
+    final name = j['name'];
+    if (name != null && name is! String) {
+      throw const FormatException('account member "name" is not a string');
+    }
+    return AccountBundle(
+      accountEdPub: _bytesMember(j, 'acct', 'account'),
+      devices: _certsMember(j, 'devs', 'account'),
+      displayName: name as String?,
+    );
+  }
 }
 
 /// The LOCAL (private) view of an account on THIS device. Holds this device's
@@ -769,6 +839,15 @@ class SignedDeviceList {
   /// A list carrying `sig2` alone is not one — see [hasValidShape].
   bool get isV2Only => sig3 != null && sig == null && sig2 == null;
 
+  /// Whether the account key and every key a certificate names are strong
+  /// (§21.4): the part of [verify] that needs no signature and costs
+  /// nothing. For a list a reader already holds — verified when it arrived,
+  /// by a build that may have predated 2026-10-28 and checked none of it.
+  bool get keysStrong =>
+      handleStrongEdKey(accountEdPub) &&
+      devices.every((d) =>
+          handleStrongEdKey(d.deviceEdPub) && handleStrongXKey(d.deviceXPub));
+
   static Uint8List signingInput(int version, List<DeviceCertificate> devices) {
     final eds = [for (final d in devices) d.deviceEdPub]..sort(_lexCompare);
     return concatBytes([
@@ -902,28 +981,36 @@ class SignedDeviceList {
   /// That is the floor in the app (`cdev_sigfloor_`, and its third level): a
   /// policy about what this reader has already seen from the account, not a
   /// fact about the signatures in front of it.
+  ///
+  /// The account key and every key a certificate names are strong, and each
+  /// signature is checked under §21.4's one rule ([ed25519VerifyStrict]),
+  /// as [DeviceCertificate.verify] says. Until 2026-10-28 the account key was
+  /// held to a length and the signatures to the library's lenient verifier,
+  /// so a list "signed" with R the identity and S = 0 under an account key
+  /// of small order verified at any version, naming any device — and a
+  /// listed device's X25519 key was held to a length too (the review's F1
+  /// and F2).
   Future<bool> verify() async {
-    if (accountEdPub.length != 32 || devices.isEmpty) return false;
+    if (!handleStrongEdKey(accountEdPub) || devices.isEmpty) return false;
     if (!hasValidShape) return false;
     for (final d in devices) {
       if (!await d.verify(accountEdPub)) return false;
     }
     final s1 = sig, s2 = sig2, s3 = sig3;
     try {
-      final key = SimplePublicKey(accountEdPub, type: KeyPairType.ed25519);
       if (s1 != null &&
-          !await _ed.verify(signingInput(version, devices),
-              signature: Signature(s1, publicKey: key))) {
+          !ed25519VerifyStrict(
+              accountEdPub, signingInput(version, devices), s1)) {
         return false;
       }
       if (s2 != null &&
-          !await _ed.verify(signingInputV2(version, devices),
-              signature: Signature(s2, publicKey: key))) {
+          !ed25519VerifyStrict(
+              accountEdPub, signingInputV2(version, devices), s2)) {
         return false;
       }
       if (s3 != null &&
-          !await _ed.verify(signingInputV3(version, devices),
-              signature: Signature(s3, publicKey: key))) {
+          !ed25519VerifyStrict(
+              accountEdPub, signingInputV3(version, devices), s3)) {
         return false;
       }
       return true;
@@ -950,13 +1037,16 @@ class SignedDeviceList {
   /// reader that goes by which members are present refuses both — two
   /// readers of one list reaching two answers. Every reader handed a list it
   /// did not write catches the exception and treats the list as refused.
+  ///
+  /// So does every other malformed shape: `acct` not a base64 string, `ver`
+  /// not an integer, `devs` not a list of certificates
+  /// ([DeviceCertificate.fromJson]). Until 2026-10-28 those were casts, and a
+  /// cast throws a `TypeError`, which no `on FormatException` catches (the
+  /// review's F3).
   static SignedDeviceList fromJson(Map<String, Object?> j) => SignedDeviceList(
-        accountEdPub: unb64(j['acct'] as String),
-        version: (j['ver'] as num).toInt(),
-        devices: [
-          for (final d in (j['devs'] as List))
-            DeviceCertificate.fromJson((d as Map).cast<String, Object?>())
-        ],
+        accountEdPub: _bytesMember(j, 'acct', 'device list'),
+        version: _intMember(j, 'ver', 'device list'),
+        devices: _certsMember(j, 'devs', 'device list'),
         // A v2-only list has no `sig`. Every build before stage 2a cast this
         // member to a String unconditionally, so such a list does not even
         // parse there — the reason an account moves only once every device

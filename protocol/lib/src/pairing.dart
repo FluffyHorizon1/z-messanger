@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'ed25519_strict.dart';
 import 'identity.dart';
 import 'intro_key.dart' show mlKemEncapsulationKeyValid, sealKeyHash;
 import 'multidevice.dart';
@@ -379,6 +380,23 @@ Uint8List _fixed(Map<String, Object?> frame, String key, int length) {
   return bytes;
 }
 
+/// The new device's two keys, which the existing device is about to certify:
+/// strong (§3.1, §21.4), as every certificate's keys must be to verify. A
+/// device Ed25519 key of small order is one anyone can sign as, and an
+/// X25519 key of small order one an envelope sealed to is open to all (§8);
+/// certified, either would put a device in the account's list that every
+/// contact refuses, and with it every list the account signed after. An
+/// honest device's keys always pass: they are a clamped scalar times the
+/// base point.
+void _strongDeviceKeys(Uint8List deviceEdPub, Uint8List deviceXPub) {
+  if (!handleStrongEdKey(deviceEdPub)) {
+    throw const PairingAbort('weak device key: ded');
+  }
+  if (!handleStrongXKey(deviceXPub)) {
+    throw const PairingAbort('weak device key: dx');
+  }
+}
+
 /// The one variable-length field, bounded: a device id is what the account
 /// signs into a certificate and shows in a device list, not a payload.
 String _deviceIdField(Map<String, Object?> frame) {
@@ -574,6 +592,7 @@ class PairingResponderV2 {
     if (!constantTimeEquals(expected, _commitment)) {
       throw const PairingAbort('the opening does not match the commitment');
     }
+    _strongDeviceKeys(deviceEdPub, deviceXPub);
     final dh = await _dh(_ephSeed, theirEph);
     return PairingSession(
       channelKey: await _deriveChannelKeyV2(dh),
@@ -687,6 +706,7 @@ class PairingResponder {
     final deviceEdPub = _fixed(hello, 'ded', 32);
     final deviceXPub = _fixed(hello, 'dx', 32);
     final deviceId = _deviceIdField(hello);
+    _strongDeviceKeys(deviceEdPub, deviceXPub);
     final ephSeed = randomBytes(32);
     final ephPub = Uint8List.fromList(
         (await (await _x.newKeyPairFromSeed(ephSeed)).extractPublicKey()).bytes);
@@ -1120,6 +1140,7 @@ class PairingResponderV3 {
     if (!constantTimeEquals(expected, _commitment)) {
       throw const PairingAbort('the opening does not match the commitment');
     }
+    _strongDeviceKeys(deviceEdPub, deviceXPub);
     final dh = await _dhV3(_ephSeed, theirEph);
     final ikm = concatBytes([dh, _k]);
     return PairingSessionV3(

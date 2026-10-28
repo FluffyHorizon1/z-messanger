@@ -535,7 +535,11 @@ void main() {
               (e) => e.message, 'message', contains('small order'))));
       final kem = sealKeyOf(randomBytes(64));
       final sk = sealKeyHash(sealKeyOf(randomBytes(64)));
-      final ded = randomBytes(32), dx = randomBytes(32);
+      // A real device's keys, so that the ephemeral is the one thing wrong:
+      // random bytes would be refused first, as a weak device key, whenever
+      // they are not a strong key of their kind.
+      final device = await ZIdentity.generate();
+      final ded = device.edPub, dx = device.xPub;
       final forged = {
         'c': b64(await commitOf(
             await code.pairKey(), zero, ded, dx, kem, sk, 'dev')),

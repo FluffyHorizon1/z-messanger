@@ -25,9 +25,9 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:cryptography/cryptography.dart';
 import 'package:cryptography/dart.dart' show DartSha256;
 
+import 'ed25519_strict.dart';
 import 'transparency.dart';
 import 'util.dart';
 
@@ -220,14 +220,14 @@ Uint8List ktHeadInput(KtTreeHead head, KtLogMode mode) => mode == KtLogMode.kt
         _u64(head.ts),
       ]);
 
-/// [head]'s signature under [logPub] in [mode]'s context.
+/// [head]'s signature under [logPub] in [mode]'s context, under §21.4's one
+/// rule ([ed25519VerifyStrict]), as every Ed25519 signature this library
+/// checks is since 2026-10-28.
 Future<bool> ktVerifyHead(
     KtTreeHead head, Uint8List logPub, KtLogMode mode) async {
   if (logPub.length != 32 || head.sig.length != 64) return false;
   try {
-    return await Ed25519().verify(ktHeadInput(head, mode),
-        signature: Signature(head.sig,
-            publicKey: SimplePublicKey(logPub, type: KeyPairType.ed25519)));
+    return ed25519VerifyStrict(logPub, ktHeadInput(head, mode), head.sig);
   } catch (_) {
     return false;
   }
@@ -264,10 +264,8 @@ Future<bool> ktVerifyWitnessRecord(KtWitnessRecord record,
   if (!constantTimeEquals(expectedWitnessPub, record.witnessPub)) return false;
   if (!await ktVerifyHead(record.head, logPub, mode)) return false;
   try {
-    return await Ed25519().verify(ktWitnessInputFor(record.head, mode),
-        signature: Signature(record.witnessSig,
-            publicKey: SimplePublicKey(expectedWitnessPub,
-                type: KeyPairType.ed25519)));
+    return ed25519VerifyStrict(expectedWitnessPub,
+        ktWitnessInputFor(record.head, mode), record.witnessSig);
   } catch (_) {
     return false;
   }

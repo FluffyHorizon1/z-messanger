@@ -132,12 +132,20 @@ Future<List<BenchRow>> runCryptoBench(
     sig = await ed.sign(msg, keyPair: edKp);
   });
   await add('Ed25519', 'verify 200 B', () => ed.verify(msg, signature: sig));
-  // The relay's own check of the head signature, as one figure: a device
-  // list, a transparency head and a contact code each cost one of these.
   final verifyPub = SimplePublicKey(edPub.bytes, type: KeyPairType.ed25519);
   await add('Ed25519', 'verify (key from bytes)', () async {
     await ed.verify(msg,
         signature: Signature(sig.bytes, publicKey: verifyPub));
+  });
+  // What Z checks a signature with since 2026-10-28 — §21.4's one rule, not
+  // the package's verifier above — as one figure: a device list, a
+  // certificate, a transparency head and a contact code each cost one of
+  // these.
+  final sigBytes = Uint8List.fromList(sig.bytes);
+  await add('Ed25519', 'verify 200 B, §21.4 (what Z checks)', () async {
+    if (!ed25519VerifyStrict(edPub.bytes, msg, sigBytes)) {
+      throw StateError('verify failed');
+    }
   });
 
   // --- the post-quantum pair (pure Dart in every build) -----------------

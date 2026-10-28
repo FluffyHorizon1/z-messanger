@@ -800,6 +800,17 @@ class BackupArchive {
 
   static Future<bool> _isOwnList(String v, _Ctx c) => _isListOf(v, c.account);
 
+  /// Whether [v] is a certificate [DeviceCertificate.fromJson] reads.
+  static bool _parsesAsCert(Object? v) {
+    if (v is! Map) return false;
+    try {
+      DeviceCertificate.fromJson(v.cast<String, Object?>());
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// This account's other devices: certificates its account key signed.
   static Future<bool> _isOwnCertList(String v, _Ctx c) async {
     final l = _json(v);
@@ -1040,7 +1051,12 @@ class BackupArchive {
                     'verified_sn': r['vsn'],
                     'pq_mismatch': (r['pqbad'] as num?)?.toInt() ?? 0,
                     'acct_ed': r['acct'],
-                    if (r['cert'] != null) 'dev_cert': jsonEncode(r['cert']),
+                    // Read at every start by `DeviceCertificate.fromJson`,
+                    // which throws for a malformed one: one that does not
+                    // parse is not restored, rather than stopping every
+                    // start after this one (the 2026-10-28 review's F3).
+                    if (_parsesAsCert(r['cert']))
+                      'dev_cert': jsonEncode(r['cert']),
                     'added_by': r['addedby'],
                     'requested': r['req'] == 1 ? 1 : 0,
                   },

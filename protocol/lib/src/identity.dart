@@ -148,28 +148,24 @@ class ContactBundle {
 
   Future<String> routingId() async => b64url(await sha256Bytes(edPub));
 
-  /// Verifies that the X25519 key really belongs to the Ed25519 identity, and
-  /// that it is strong (§2.4; the test is §21.4's). A key of small order is
+  /// Verifies that the X25519 key really belongs to the Ed25519 identity —
+  /// the binding signature under §21.4's one rule ([ed25519VerifyStrict]),
+  /// never the library's lenient verifier — and that both keys are strong
+  /// (§2.3, §2.4; the test is §21.4's). An X25519 key of small order is
   /// refused even when signed: every envelope sealed to it would be open to
   /// anyone (§8), and a contact's own signature cannot make that safe for
-  /// the people who write to them. The doors a contact comes in by from
-  /// outside — a scanned or pasted code, a request, a restored backup, a
-  /// group's member list, a contact mirrored from one of the account's own
-  /// devices — verify here; an account code (`zc2.`) holds its devices' keys
-  /// to the same test ([AccountBundle.decode]).
+  /// the people who write to them. An Ed25519 key of small order is one
+  /// every signature verifies under — R the identity and S = 0 does, over
+  /// any message — so anyone could sign as it: its binding, its requests,
+  /// its account's certificates and lists. The doors a contact comes in by
+  /// from outside — a scanned or pasted code, a request, a restored backup,
+  /// a group's member list, a contact mirrored from one of the account's own
+  /// devices — verify here; an account code (`zc2.`) holds its keys to the
+  /// same test ([AccountBundle.decode], [DeviceCertificate.verify]).
   Future<bool> verify() async {
-    if (!handleStrongXKey(xPub)) return false;
-    try {
-      return await Ed25519().verify(
-        concatBytes([utf8.encode(bindContext), xPub]),
-        signature: Signature(
-          bindingSig,
-          publicKey: SimplePublicKey(edPub, type: KeyPairType.ed25519),
-        ),
-      );
-    } catch (_) {
-      return false;
-    }
+    if (!handleStrongEdKey(edPub) || !handleStrongXKey(xPub)) return false;
+    return ed25519VerifyStrict(
+        edPub, concatBytes([utf8.encode(bindContext), xPub]), bindingSig);
   }
 
   /// Encodes as a compact shareable string: `zc1.<base64url(json)>`.
@@ -185,7 +181,9 @@ class ContactBundle {
   }
 
   /// Parses and VERIFIES a contact code. Throws [FormatException] on any
-  /// malformed or tampered input.
+  /// malformed or tampered input — a member of the wrong type included,
+  /// which a cast would have thrown as a `TypeError`, past every
+  /// `on FormatException` between here and the person scanning.
   static Future<ContactBundle> decode(String code) async {
     final trimmed = code.trim();
     if (!trimmed.startsWith(contactCodePrefix)) {
@@ -200,14 +198,27 @@ class ContactBundle {
       throw const FormatException('corrupt contact code');
     }
     if (j['v'] != 1) throw const FormatException('unsupported version');
+    final ed = j['ed'], x = j['x'], sig = j['sig'], name = j['name'];
+    if (ed is! String || x is! String || sig is! String) {
+      throw const FormatException('the code is missing a key or its signature');
+    }
+    if (name != null && name is! String) {
+      throw const FormatException('malformed display name');
+    }
     final bundle = ContactBundle(
-      edPub: unb64(j['ed'] as String),
-      xPub: unb64(j['x'] as String),
-      bindingSig: unb64(j['sig'] as String),
-      displayName: j['name'] as String?,
+      edPub: unb64(ed),
+      xPub: unb64(x),
+      bindingSig: unb64(sig),
+      displayName: name as String?,
     );
     if (bundle.edPub.length != 32 || bundle.xPub.length != 32) {
       throw const FormatException('bad key length');
+    }
+    // Each said apart from a bad signature, which `verify` would also report
+    // it as (§2.4, §21.4).
+    if (!handleStrongEdKey(bundle.edPub)) {
+      throw const FormatException(
+          'contact code key refused: not a strong Ed25519 key');
     }
     if (!handleStrongXKey(bundle.xPub)) {
       throw const FormatException(

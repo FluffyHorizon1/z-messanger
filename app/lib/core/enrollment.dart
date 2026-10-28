@@ -202,10 +202,14 @@ Future<Map<String, String>> _kvOf(
     final v = await ok(f);
     if (v != null) kv[f] = v;
   }
+  // Each value is parsed again below, after [ok] has parsed it once: one that
+  // does not parse — which [ok] already refuses, so nothing reaches here that
+  // way — is left out as [ok] leaves it out, rather than thrown out of the
+  // enrolment (the 2026-10-28 review's F3).
   final listJson = await ok('cdev_');
-  if (listJson != null) {
-    final list = SignedDeviceList.fromJson(
-        (jsonDecode(listJson) as Map).cast<String, Object?>());
+  final list = listJson == null ? null : _parsedOrNull(listJson,
+      (j) => SignedDeviceList.fromJson(j));
+  if (listJson != null && list != null) {
     kv['cdev_'] = listJson;
     kv['cdev_ver_'] = '${list.version}';
     // A list installed as one that arrived now: the log's grace for it runs
@@ -219,15 +223,26 @@ Future<Map<String, String>> _kvOf(
     if (floor > 0) kv['cdev_sigfloor_'] = '$floor';
   }
   final sigJson = await ok('cdev_pq_');
-  if (sigJson != null) {
-    final sig = HybridDeviceListSignature.fromJson(
-        (jsonDecode(sigJson) as Map).cast<String, Object?>());
+  final sig = sigJson == null ? null : _parsedOrNull(sigJson,
+      (j) => HybridDeviceListSignature.fromJson(j));
+  if (sigJson != null && sig != null) {
     if (constantTimeEquals(sig.accountEdPub, account)) {
       kv['cdev_pq_'] = sigJson;
       kv['cdev_pq_ver_'] = '${sig.version}';
     }
   }
   return kv;
+}
+
+/// [json] parsed as an object and read by [read], or null for anything that
+/// is not one it reads — whatever the parser throws for it.
+T? _parsedOrNull<T>(String json, T Function(Map<String, Object?> j) read) {
+  try {
+    final j = jsonDecode(json);
+    return j is Map ? read(j.cast<String, Object?>()) : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 /// A `cstate` record, checked against the contact the account bundle beside

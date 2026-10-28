@@ -14196,14 +14196,34 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             d
       ];
 
+  /// The lists this device holds for its contacts, installed at start-up as
+  /// they were verified when they arrived — no signature is checked again
+  /// here, which would cost every start a verification per certificate and
+  /// per list. What is checked is what a build before 2026-10-28 did not
+  /// check when they arrived, and costs nothing: that the account key and
+  /// every listed device's keys are strong (§3.4, §21.4). A list held under
+  /// an account key of small order is one anybody could have signed — a
+  /// device of anybody's choosing fanned out to as that contact's — and one
+  /// naming a device key that is not strong names no device anybody holds;
+  /// either stays in the vault, as the contact does, and is not installed:
+  /// that contact's messages go to the device they were added from and to
+  /// no other, and every other contact's list installs as it would have. A
+  /// held list that does not parse is passed over the same way, rather than
+  /// stopping the start.
   Future<void> _loadContactDeviceLists({Map<String, String>? kv}) async {
     for (final rid in contacts.keys.toList()) {
       final devJson =
           kv != null ? kv['cdev_$rid'] : await vault.kvGet('cdev_$rid');
       final contact = contacts[rid];
       if (devJson == null || contact == null) continue;
-      final list = SignedDeviceList.fromJson(
-          (jsonDecode(devJson) as Map).cast<String, Object?>());
+      final SignedDeviceList list;
+      try {
+        list = SignedDeviceList.fromJson(
+            (jsonDecode(devJson) as Map).cast<String, Object?>());
+      } catch (_) {
+        continue;
+      }
+      if (!list.keysStrong) continue;
       await _installContactDeviceList(contact, list, persist: false, kv: kv);
     }
   }
@@ -15807,12 +15827,27 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// The newest verified (version, fingerprint) this device holds for a
   /// contact's account. Falls back to the baseline: version 1 over the single
   /// account-key device from their verified contact code.
+  ///
+  /// So does a held list that does not parse, which start-up does not
+  /// install either ([_loadContactDeviceLists]); the account's list, the
+  /// next time it arrives, takes its place. A vault restored from a `.zbk` by
+  /// a build from before 2026-10-28 can hold one: a list whose `ver` is not
+  /// a whole number, which that build read with the fraction dropped and
+  /// stored as the archive gave it. Read as it was, it threw, and this is
+  /// read for every contact by the transparency log's pass ([ktContacts]):
+  /// one such list stopped the pass for all of them. And every message to
+  /// that contact went without its echo and the two members stamped after it
+  /// (`pdl`, `pql`, `pqh`: [_decorateForWire]); the echo is what has the
+  /// account send its list again.
   Future<(int, String)> _heldClaimFor(Contact c) async {
     final stored = await vault.kvGet('cdev_${c.rid}');
     if (stored != null) {
-      final list = SignedDeviceList.fromJson(
-          (jsonDecode(stored) as Map).cast<String, Object?>());
-      return (list.version, b64(await list.fingerprint()));
+      SignedDeviceList? list;
+      try {
+        list = SignedDeviceList.fromJson(
+            (jsonDecode(stored) as Map).cast<String, Object?>());
+      } catch (_) {}
+      if (list != null) return (list.version, b64(await list.fingerprint()));
     }
     return (
       1,

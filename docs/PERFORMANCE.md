@@ -742,6 +742,70 @@ that, the pure-Dart build keeps its property — one implementation, read
 in one language, the same on every platform — which was the reason it was
 chosen.
 
+## Ed25519 under one rule (2026-10-28)
+
+Until 2026-10-28 every Ed25519 signature the client checked but the handle
+log's and `iks` went through the `cryptography` package's verifier, which
+compares the equation's points by x alone; now every one goes through
+`ed25519VerifyStrict` (PROTOCOL §0, §21.4) and every key that arrives from
+outside is held to the strong-key test first. The strict verifier is pure
+Dart on `BigInt`, so its cost was measured before anything moved onto it,
+on the same development VM as the rest of this document: one key, one
+200-byte message, the two verifiers interleaved, 500 calls each after a
+warm-up, medians.
+
+| | Dart, VM (JIT) | Dart, AOT |
+|---|---:|---:|
+| the package's verifier (what every check but the handle log's used) | 3.41 ms | 2.89 ms |
+| §21.4's rule (`ed25519VerifyStrict`, what every check uses now) | 1.84 ms | 1.90 ms |
+| §21.4's rule refusing a key that is not strong | 0.2 µs | 0.4 µs |
+
+The rule is the cheaper of the two — it is one pass over both scalars with
+no point decompression of R — and a key of small order costs it nothing,
+since the key test comes first. `protocol/lib/bench.dart` gains the row
+`Ed25519 · verify 200 B, §21.4 (what Z checks)`, so the Developer screen
+times it on a phone beside the package's own; the table above it is from
+2026-09-11 and does not have the row. The figures earlier in this document
+for a transparency head (2.5 ms) and a lookup's Ed25519 verification
+(3.5 ms) were the package's verifier.
+
+**How often the hot paths verify.** Counted by a scratch copy of the
+library with a counter in every door (`ContactBundle.verify`,
+`DeviceCertificate.verify`, `SignedDeviceList.verify`,
+`ContactRequest.verify`, `commitSignatureValid`) and in
+`ed25519VerifyStrict`, run under `receive_bench_test.dart` and
+`coldstart_bench_test.dart`; the counter was never committed:
+
+| | signature verifications |
+|---|---:|
+| the receive bench's 100 timed receives (in order, early, late, full cache), and the sends between them | 0 |
+| the breakdown's 40 whole-path receives | 0 |
+| `ChatService.init` over 10, 100 and 400 contacts | 0, 0 and 0 |
+| two people adding each other, the hellos and first messages included (both clients) | 8 |
+
+A receive verifies nothing: the ratchet authenticates a message, and a
+signature is checked only when something signed arrives — a code scanned,
+a request, a device list or a certificate, a group's member list (one
+bundle a member, once per list applied), a transparency answer. A start
+verifies nothing either: the lists it installs were verified when they
+arrived, and only their keys are tested again (§3.4), which costs nothing.
+The one repetition found is at an add — each side checks the other's
+binding signature at the scan and again in their request, the same bytes
+twice, once in a contact's life — so nothing is memoised: no hot path
+verifies the same bytes twice, and none verifies at all.
+
+The two benches, run twice each before and after on the same machine (in
+a container that other work shared, so the spread is wide):
+
+| | before (`14a5b3c`) | after |
+|---|---:|---:|
+| receive, in order | 17.77, 18.09 ms | 16.91, 20.00 ms |
+| receive, whole inbound path (breakdown) | 16.69, 16.78 ms | 17.87, 18.57 ms |
+| cold start, 400 contacts, per contact (budget 3 ms) | 1.87, 1.78 ms | 1.81, 2.03 ms |
+
+Both within their budget and within each other's spread, as they should
+be with no verification on either path.
+
 ## Not measured
 
 Named so this document does not read as more complete than it is:

@@ -1,15 +1,22 @@
-/// The one Ed25519 verification rule a handle's signatures are held to
-/// (PROTOCOL.md §21.4), and the strong-key test a handle record's keys pass.
+/// The one Ed25519 verification rule every signature this library checks is
+/// held to (PROTOCOL.md §0, §21.4), and the strong-key test every Ed25519 and
+/// X25519 key that arrives from outside passes.
 ///
 /// Why not `Ed25519().verify`: `package:cryptography`'s pure-Dart verifier
 /// compares the two points of the verification equation by their x
 /// coordinates alone (`Ed25519Point.equals` compares x twice), so it accepts
 /// whenever R + [k]A is [S]B *or* −[S]B plus the point of order 2 — which a
-/// key's owner can arrange at will, and under a small-order key anybody can.
-/// The handle log runs on OpenSSL, which compares R's bytes, so the two
-/// disagreed: an independent review (2026-10-09) found Dart accepting
-/// signatures under small-order owner keys that Node refused, and Node
-/// accepting a non-canonical identity key that Dart refused.
+/// key's owner can arrange at will, and under a small-order key anybody can:
+/// with A the point of order 2, R the identity and S = 0, one fixed 64 bytes
+/// verify over every message. The handle log runs on OpenSSL, which compares
+/// R's bytes, so the two disagreed: an independent review (2026-10-09) found
+/// Dart accepting signatures under small-order owner keys that Node refused,
+/// and Node accepting a non-canonical identity key that Dart refused. Until
+/// 2026-10-28 only the handle log's signatures and `iks` were checked here;
+/// a contact's binding signature, a device certificate and its proof, a
+/// device list, a code's commitment signature and a contact request were
+/// checked by the lenient verifier with their keys held to a length, so the
+/// triple above verified for each of them (that day's review, F1).
 ///
 /// The rule here is OpenSSL's computation with every leniency either side
 /// had refused first, written out so that both sides are this text and not
@@ -22,9 +29,11 @@
 ///   * A decodes (RFC 8032 §5.1.3), k = SHA-512(R ‖ A ‖ M) mod L, and the
 ///     bytes of [S]B − [k]A, encoded, are R's bytes.
 ///
-/// Pure Dart on BigInt: a few milliseconds a verification, which is what a
-/// record, a history or an acknowledgement costs a client — nothing here is
-/// on a hot path.
+/// Pure Dart on BigInt, and cheaper than the verifier it replaces: measured
+/// on 2026-10-28 on the development VM, 1.8 ms a verification against the
+/// library's 3.4 under the JIT, 1.9 against 2.9 compiled ahead of time
+/// (`docs/PERFORMANCE.md`, "Ed25519 under one rule"). A key that is not
+/// strong is refused before any arithmetic, in under a microsecond.
 library;
 
 import 'dart:typed_data';

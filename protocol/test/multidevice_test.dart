@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:test/test.dart';
 import 'package:z_protocol/z_protocol.dart';
 
@@ -126,16 +127,23 @@ void main() {
       // spelling through the same test).
       for (final weak in [Uint8List(32), Uint8List(32)..[0] = 1]) {
         final code = await codeWith(weak);
-        // Signed: every certificate in it verifies against the account…
+        // Signed: the account's signature over every certificate in it is
+        // genuine, and the library's verifier takes it…
+        final weakCert = await a.signDeviceCert(
+            deviceEdPub: laptop.edPub, deviceXPub: weak, deviceId: 'l');
+        expect(
+            await Ed25519().verify(
+                DeviceCertificate.signingInput(laptop.edPub, weak, 'l'),
+                signature: Signature(weakCert.sig,
+                    publicKey: SimplePublicKey(a.accountEdPub,
+                        type: KeyPairType.ed25519))),
+            isTrue);
+        // …but a certificate naming such a key does not verify (§3.1; until
+        // the 2026-10-28 review's F2 it did, held to a length)…
         final parsed = AccountBundle(
-            accountEdPub: a.accountEdPub,
-            devices: [
-              a.deviceCert,
-              await a.signDeviceCert(
-                  deviceEdPub: laptop.edPub, deviceXPub: weak, deviceId: 'l')
-            ]);
-        expect(await parsed.verifyAll(), isTrue);
-        // …and refused all the same, for the key.
+            accountEdPub: a.accountEdPub, devices: [a.deviceCert, weakCert]);
+        expect(await parsed.verifyAll(), isFalse);
+        // …and the code is refused, for the key.
         await expectLater(
             AccountBundle.decode(code),
             throwsA(isA<FormatException>().having((e) => e.message, 'message',

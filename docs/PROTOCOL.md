@@ -41,6 +41,16 @@ generated) it is marked *implementation note*.
   `X25519pub(priv)` — the corresponding public key.
 * `Ed25519.sign(seed, msg)` / `Ed25519.verify(pub, msg, sig)` — RFC 8032
   (pure Ed25519, no prehash, no context), 32‑byte seed, 64‑byte signature.
+  Every signature this document has a client verify is held to §21.4's one
+  rule: `pub` and R (the signature's first half) strong keys, S below L, and
+  [S]B − [k]A, encoded, equal to R's bytes. Every honest signature passes it.
+  Until 2026‑10‑28 the reference client held only the handle log's signatures
+  and `iks` (§8.3) to it, and every other one to a verifier that compares the
+  equation's points by x alone (§2.3 says what that let through). The handle
+  log holds what it is sent to the same rule (§21.5); the relay's check of a
+  device's authentication (§12.1) and the transparency log's of a publish
+  (§19.6) are OpenSSL's, which takes R the identity under a key of small
+  order — a key no honest device or account has.
 * `ChaCha20Poly1305(key, nonce12, aad, plain)` — RFC 8439 AEAD; returns
   `(ct, tag16)`. `XChaCha20Poly1305(key, nonce24, aad, plain)` —
   draft‑irtf‑cfrg‑xchacha: `subkey = HChaCha20(key, nonce24[0..16])`,
@@ -102,6 +112,19 @@ Proves the X25519 key belongs to the Ed25519 identity:
 bindingSig = Ed25519.sign(edSeed, utf8("z-bind-v1:") || xPub)
 ```
 
+A reader MUST verify it under §21.4's one rule (§0), with `edPub` a strong
+Ed25519 key: 32 bytes whose y (the sign bit cleared) is below p and is not
+that of a point of small order (§21.4). Under a key of small order every
+signature verifies — R the identity and S = 0 does, over any message — so a
+binding by one binds nothing, and nor does anything else signed by it: a
+request (§8.1), an account's certificates and lists (§3.1, §3.4), a code's
+commitment (§18.10). An honest key always passes: Ed25519 makes it as a
+clamped scalar times the base point. Builds before 2026‑10‑28 held `edPub`
+to its length and checked this signature, as every Ed25519 signature but the
+handle log's and `iks`, with `package:cryptography`'s verifier, which
+compares the two points of the equation by their x coordinates alone; with
+the key the point of order 2, that pair verified for each of them.
+
 ### 2.4 Contact code (`zc1.`)
 
 The public identity, exchanged out‑of‑band (QR code / paste):
@@ -112,21 +135,33 @@ code = "zc1." || b64url( utf8( JSON{ "v":1, "ed":b64(edPub), "x":b64(xPub),
 ```
 
 `name` is omitted when empty. A decoder MUST reject the code unless: the prefix
-matches, the JSON parses, `v == 1`, `ed` and `x` decode to exactly 32 bytes,
-`x` is a strong X25519 key as §21.4 defines one — its top bit clear, below p,
-and not a point of small order — and `bindingSig` verifies under §2.3.
-(Multi‑device accounts use the `zc2.` code of §3.3; every implementation MUST
-still accept `zc1.`.)
+matches, the JSON parses, `v == 1`, `ed`, `x` and `sig` are strings, `name` is
+a string when present, `ed` and `x` decode to exactly 32 bytes, `ed` is a
+strong Ed25519 key and `x` a strong X25519 key as §21.4 defines them — below
+p, not a point of small order, and for `x` its top bit clear — and
+`bindingSig` verifies under §2.3. (Multi‑device accounts use the `zc2.` code
+of §3.3; every implementation MUST still accept `zc1.`.)
 
-The key test is not the owner's to waive by signing. An envelope sealed to a
-key of small order is open to whoever holds it (§8), so a code carrying one
-would hand every person who writes to its owner to the relay; the same test
-applies wherever a bundle is taken in rather than scanned — a contact request
-(§8.1), a restored backup, a group's member list, a contact mirrored from one
-of the account's own devices. An honest key always passes: X25519 makes it
-as a clamped scalar times the base point. Builds from before 2026‑10‑16 did
-not apply the test, and what they took in is not re‑checked (§8 says what a
-send to such a key does).
+The key test is not the owner's to waive by signing. An envelope sealed to an
+X25519 key of small order is open to whoever holds it (§8), and an Ed25519
+key of small order is one anybody can sign as (§2.3), so a code carrying
+either would hand every person who writes to its owner to the relay; the same
+test applies wherever a bundle is taken in rather than scanned — a contact
+request (§8.1), a pending request restored from a `.zbk` archive, a contact
+restored from a `.zid` backup, a group's member list, a contact mirrored from
+one of the account's own devices (§18.8). An honest key always passes: X25519
+and Ed25519 both make one as a clamped scalar times the base point. Builds
+from before 2026‑10‑16 did not apply the test to `x`, and what they took in
+is not re‑checked (§8 says what a send to such a key does). Builds from
+before 2026‑10‑28 did not apply it to `ed`. A contact one took in so keeps
+its record on that device. A `.zbk` archive and a new device's enrolment
+(§10, `cstate`) carry it over as they carry every contact, though not a list
+held for it, which no longer verifies; a `.zid` restore and a mirror from
+another of the account's devices take in the bundle alone, check it as
+above, and leave the contact out. What is refused is everything signed by
+its key, wherever it is next checked — a request, a certificate or a list of
+its account, its code scanned again, a group's list naming it — and the list
+a client holds for it is not installed when the client starts (§3.4).
 
 ### 2.5 Safety number
 
@@ -167,14 +202,25 @@ JSON: { "ded":b64(deviceEdPub), "dx":b64(deviceXPub), "id":deviceId,
 ```
 
 `deviceId` is any UTF‑8 string (*implementation note:* `b64url` of 9 random
-bytes). Verification against an account key `A` MUST check `len(ded) ==
-len(dx) == len(A) == 32` and then:
+bytes). Verification against an account key `A` MUST check that `A` and
+`ded` are strong Ed25519 keys and `dx` a strong X25519 key (§21.4) — each
+then 32 bytes — and then, each signature under §21.4's one rule (§0):
 
 * `legacy` absent/false: `Ed25519.verify(A, input, sig)`.
 * `legacy == true`: the record must be exactly what a `zc1.` code decodes to
   (§3.5): `id == "legacy-v1"`, `ded == A`, and
   `Ed25519.verify(A, utf8("z-bind-v1:") || dx, sig)` — i.e. `sig` is the v1
   binding signature. The flag selects the rule; it never bypasses it.
+
+The key tests are not the account's to waive by signing. Under an `A` of
+small order anybody can sign a certificate (§2.3); a `ded` of small order,
+or spelled at or above p, names no device anybody holds, and its routing id
+(§3.2) no mailbox; and an envelope sealed to a `dx` of small order is open to
+all (§8). Until 2026‑10‑28 this section held all three to their lengths and
+the reference client checked `sig` and `pop` with the verifier §2.3
+describes: a certificate naming a `dx` of small order verified, and so did a
+list carrying it (§3.4), and only the sealer's refusal (§8) kept a send from
+going to that device.
 
 **Proof of possession (ADR 0022).** `sig` proves that the account signed the
 certificate, not that whoever holds the account holds the device key it
@@ -223,9 +269,13 @@ code = "zc2." || b64url( utf8( JSON{ "v":2, "acct":b64(accountEdPub),
                                      "devs":[ deviceCert... ], "name"?:string } ) )
 ```
 
-Reject unless the prefix matches, `v == 2`, `acct` is 32 bytes, `devs` is
-non‑empty, **every** certificate verifies under §3.1 against `acct`, and every
-certificate's `dx` is a strong X25519 key (§2.4, §21.4).
+Reject unless the prefix matches, `v == 2`, `acct` is a base64 string of a
+strong Ed25519 key (§21.4), `devs` is a non‑empty list of certificates,
+`name` is a string when present, and **every** certificate verifies under
+§3.1 against `acct` — which holds its `ded` to the same test and its `dx` to
+X25519's (§2.4, §21.4). A member of the wrong type is a malformed code,
+refused like any other (until 2026‑10‑28 the reference decoder threw on one
+past the error it promised).
 
 ### 3.4 Signed device list
 
@@ -264,16 +314,41 @@ included — is malformed too, whatever the rest of it is. (Present‑but‑null
 not absent. Read as absent, `{sig, sig2, "sig3": null}` would be a dual‑signed
 list and `{"sig": null, sig3}` a v2‑only one, while a reader going by the
 members present refuses both; one rule, the strict one, keeps every reader at
-one answer.)
+one answer.) So is a list whose `acct` is not a base64 string, whose `ver` is
+not an integer, or whose `devs` is not a list of certificates (§3.1: `ded`,
+`dx` and `sig` base64 strings, `id` a string): until 2026‑10‑28 the reference
+parser threw on each past the error it promised, so a reader that caught that
+error alone let it out of its receive path.
 
 A receiver MUST refuse a malformed list before it checks any signature. It MUST
-check that `acct` is the account key it already holds for that contact, verify
-every certificate (§3.1) and every signature the list carries, each over its own
-input — `sig` over `input`, `sig2` over `input2`, `sig3` over `input3` — and
-reject a list whose `ver` is lower than the highest verified version it already
-holds (an equal version is a repeat and may be re‑applied). It then fans
-messages out to exactly the listed devices (§9) and accepts messages only from
-them.
+check that `acct` is the account key it already holds for that contact and a
+strong Ed25519 key (§21.4), verify every certificate (§3.1) — which refuses a
+`ded` or a `dx` that is not strong — and every signature the list carries,
+each over its own input under §21.4's one rule (§0) — `sig` over `input`,
+`sig2` over `input2`, `sig3` over `input3` — and reject a list whose `ver` is
+lower than the highest verified version it already holds (an equal version is
+a repeat and may be re‑applied). It then fans messages out to exactly the
+listed devices (§9) and accepts messages only from them.
+
+**The keys, as §3.3 holds a code's (the 2026‑10‑28 review's F1 and F2).** A
+list naming a device whose `dx` is of small order is refused whole, though
+the account signed it, as an account code naming one is: until 2026‑10‑28
+only its length was checked here, the reference client installed such a list,
+and only the sealer's refusal (§8) kept a send from going to that device.
+And a list under an `acct` of small order is one anybody can sign (§2.3) — at
+any version, naming any device — which the reference client verified with R
+the identity and S = 0 as every signature. A receiver that holds a list
+installed before then, whose `acct` or any listed key is not strong, MUST
+NOT install it when it starts: it stays where it is kept, as the contact
+does, and the contact is reached at the device it was added from and no
+other. Checking the keys costs nothing; checking the signatures again at
+every start would cost one verification per certificate and per list. A
+held list that does not parse — a `ver` of 2.5, which the reference parser
+read as 2 until then, so that a `.zbk` restore by such a build stored it as
+the archive gave it — is not installed either, and is read as no list: what
+the receiver echoes to that contact (`pdl`, §3.6) and compares with the log
+(§19) is the baseline until the account's list next arrives and takes its
+place.
 
 **A device belongs to one account.** A certificate (§3.1) proves that the
 account signed it, not that whoever holds the account holds the device key it
@@ -1249,12 +1324,19 @@ The sealed layer hides the sender from the relay but proves nothing to the
 recipient — anyone can seal a `p` and set `f` to any routing id — so, unlike
 ratchet ciphertext, a `creq` carries its own authenticity. A recipient MUST
 verify, dropping silently on any failure: `to` is its own routing id; the
-bundle self‑verifies (§2.3 — its X key is bound to its identity); the bundle's
-routing id is `SHA‑256(edPub)` and equals the sealed sender `f`; and `sig`
-verifies under `bundle.edPub` over `sigInput`. This makes a forged *X wants to
-connect* impossible: an attacker holding X's public `zc1.` code cannot produce
-X's signature, and cannot replay a genuine request at a different recipient
-because `to` is signed in.
+bundle self‑verifies (§2.3, §2.4 — both its keys strong, and its X key bound
+to its identity); the bundle's routing id is `SHA‑256(edPub)` and equals the
+sealed sender `f`; and `sig` verifies under `bundle.edPub` over `sigInput`,
+under §21.4's one rule (§0). This makes a forged *X wants to connect*
+impossible: an attacker holding X's public `zc1.` code cannot produce X's
+signature, and cannot replay a genuine request at a different recipient
+because `to` is signed in. It needs the key test: under an `edPub` of small
+order R the identity and S = 0 verify as both signatures, so a request from
+such a key is anybody's, and — accepted — a contact anybody can sign lists
+for (§3.4). Until 2026‑10‑28 the reference client took one: it held the key
+to its length and both signatures to the verifier §2.3 describes. (Dropped
+silently is also acknowledged, as every envelope whose fate is decided is:
+a refused request is never left with the relay.)
 
 Accepting a request adds the contact from `bundle` at the **classical** floor,
 exactly as scanning that `zc1.` code would — the account identity and
@@ -1282,8 +1364,9 @@ asig     = Ed25519.Sign( bundle.edSk, asigIn )
 the account key; `cert` is the account's certificate for the sending device.
 A recipient that reads them, after verifying the request as above, MUST check
 that `cert` is not a `legacy` record and names exactly `bundle`'s two keys
-(§18.7's rule 3), that `root` binds its own X25519 key and is not the sender,
-that `cert` verifies under `root.ed`, and that `asig` verifies under
+(§18.7's rule 3), that `root` binds its own X25519 key — both its keys
+strong, as §2.3 and §2.4 hold a bundle's — and is not the sender, that `cert`
+verifies under `root.ed` (§3.1), and that `asig` verifies under
 `bundle.edPub` — which ties the account to this request, so the anchor cannot
 be carried to another request, or replaced by someone who passes the request
 on (§18.8) with another account that certified the same device keys. All of it
@@ -1785,6 +1868,14 @@ Rules:
    them apart (a relay could shift that byte until 2026-09-17, and both
    screens agreed while the host certified a 31-byte ratchet key that every
    contact then refused).
+7. The existing device MUST abort, in both ceremonies — §10's `hello`, and
+   `open-v2` once its commitment matches — when `ded` is not a strong
+   Ed25519 key or `dx` not a strong X25519 key (§21.4). It is about to
+   certify them, and a certificate naming either does not verify (§3.1):
+   the account would sign a device no contact takes, and every list naming
+   it would be refused at every contact (§3.4). No honest device presents
+   one; until 2026‑10‑28 the reference client certified whatever 32 bytes
+   arrived.
 
 Vectors: [`vectors/pair-v2/`](vectors/pair-v2/). §10's remain untouched.
 
@@ -1933,11 +2024,17 @@ tell group messages from direct ones.
   account's root device is not its to make. A receiver applies a `ginvite`
   for a known group only under §11.1's rules; for an unknown group it
   creates it as the list describes, the sender being trusted by
-  construction. Unknown members are auto‑added as contacts (unverified) so
-  the receiver can decrypt from them — only once the list is accepted — and
-  never one the receiver has blocked (§8.1, `adr/0024`), whom it holds as a
-  member, sends nothing and takes nothing from. A
-  list that no longer includes the receiver means they were removed.
+  construction. An entry whose bundle does not verify as a `zc1.` code's
+  would (§2.4) — a binding that fails, or a key that is not strong — is
+  passed over: the receiver applies the rest of the list without it, holds
+  that account as no member of the group, and adds no contact from it. An
+  Ed25519 key of small order is among them since 2026‑10‑28: a member
+  anybody can sign lists for (§2.3) is one anybody can add devices to, and
+  every member fans the group out to those. Unknown members are auto‑added
+  as contacts (unverified) so the receiver can decrypt from them — only once
+  the list is accepted — and never one the receiver has blocked (§8.1,
+  `adr/0024`), whom it holds as a member, sends nothing and takes nothing
+  from. A list that no longer includes the receiver means they were removed.
 * `gmsg` is accepted only from a current member of a known, not‑left group.
   With the group's timer on, it carries the timer as its `ttl` (§6.1,
   §11.2), as `gfile` does.
@@ -3590,10 +3687,15 @@ json = { "v":1, "ed":…, "x":…, "sig":…, "pqc":…,
 both absent — a claim without a certificate is an assertion, and a certificate
 without a claim proves nothing. A verifier MUST:
 
-1. verify `sig` against `ed` as in §2.4 (the device owns its X25519 key);
-2. verify `cert` against `acct` under §3.1 — and reject a `legacy` record,
-   whose rule is "the device key IS the account key", which is precisely what
-   an account-anchored code is not;
+1. verify `sig` against `ed` as in §2.4 (the device owns its X25519 key; both
+   keys strong);
+2. check that `acct` is a strong Ed25519 key (§21.4) and verify `cert`
+   against it under §3.1 — and reject a `legacy` record, whose rule is "the
+   device key IS the account key", which is precisely what an
+   account-anchored code is not. Under an `acct` of small order anybody can
+   sign the certificate (§2.3), and until 2026‑10‑28 the reference decoder
+   took one so signed: the code named whatever account its maker liked, and
+   one nobody holds;
 3. check that `cert.ded == ed` and `cert.dx == x`. **Without this a stranger
    holding any genuine certificate of that account — they are public, they
    travel in device lists — could present it beside their own keys and be
@@ -3881,7 +3983,10 @@ a code without it is what every code issued before looks like. A decoder:
 
 * MUST refuse a code whose `pqcs` is present and is not a string, does not
   decode to 64 bytes, or does not verify over `input` under `ed` — checked
-  after `sig` and `cert`, so the account `input` names is already proven;
+  after `sig` and `cert`, so the account `input` names is already proven,
+  and under §21.4's one rule with `ed` a strong key (§2.3): under one of
+  small order, R the identity and S = 0 "signed" any commitment, which the
+  reference client took until 2026‑10‑28;
 * MUST refuse a `zc1.` code that carries `pqcs` and no `pqc`, rather than read
   it as a classical code: a signature over a commitment the code no longer
   carries is a commitment that was removed;
@@ -5368,6 +5473,13 @@ verifier compares the two points by their x coordinates alone, so before
 2026‑10‑10 each accepted signatures the other refused — four of the seven
 disagreements among 92 histories an independent review generated; the other
 three were versions past 2⁵³ − 1, which the log's replay and its mirrors took.
+Since 2026‑10‑28 it is the rule for every Ed25519 signature this document
+has a client check, not only these (§0); and the strong‑key test above is
+held to every Ed25519 and X25519 key that reaches a client from outside —
+a code's, a request's, a certificate's, a list's, a pairing hello's (§2.3,
+§2.4, §3.1, §3.3, §3.4, §8.1, §10.1, §18.7) — so the triple R the identity
+and S = 0, which the Dart verifier took under a key of small order over any
+message, verifies at no client.
 
 An accepted entry makes `(v, record)` the label's state: its owner, its
 `rc`, its introduction keys and its difficulty. The rule compares `owner`

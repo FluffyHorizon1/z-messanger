@@ -17,6 +17,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'ed25519_strict.dart';
 import 'util.dart';
 
 final _ed = Ed25519();
@@ -657,15 +658,15 @@ class KtWitnessRecord {
 
 // --- helpers -----------------------------------------------------------------------------
 
+/// A head's or a witness's signature, under §21.4's one rule
+/// ([ed25519VerifyStrict]) like every Ed25519 signature this library checks
+/// since 2026-10-28. The keys are the ones the caller pinned, so the
+/// library's lenient verifier, which this called before, had nothing to be
+/// lenient about with an honest pin; one rule everywhere is what leaves
+/// nothing to argue about.
 Future<bool> _verify(Uint8List pub, Uint8List data, Uint8List sig) async {
   if (pub.length != 32 || sig.length != 64) return false;
-  try {
-    return await _ed.verify(data,
-        signature: Signature(sig,
-            publicKey: SimplePublicKey(pub, type: KeyPairType.ed25519)));
-  } catch (_) {
-    return false;
-  }
+  return ed25519VerifyStrict(pub, data, sig);
 }
 
 int _int(Object? v, String what) {

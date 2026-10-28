@@ -134,16 +134,17 @@ class ContactBundleV3 {
 
   /// Checks [pqCommitSig] — false when there is none. [decode] has already
   /// refused any code whose signature does not verify; this is for a bundle
-  /// that arrived some other way.
+  /// that arrived some other way. Under §21.4's one rule
+  /// ([ed25519VerifyStrict]), which refuses a signer key that is not strong:
+  /// under a key of small order the library's lenient verifier, which this
+  /// called until 2026-10-28, took R the identity and S = 0 as a signature
+  /// over any commitment, so "signed by its owner" (ADR 0027) said nothing.
   Future<bool> commitSignatureValid() async {
     final sig = pqCommitSig;
     if (sig == null || sig.length != 64) return false;
     try {
-      return await Ed25519().verify(
-        pqCommitSigningInput(accountEdPub, pqCommit),
-        signature: Signature(sig,
-            publicKey: SimplePublicKey(edPub, type: KeyPairType.ed25519)),
-      );
+      return ed25519VerifyStrict(
+          edPub, pqCommitSigningInput(accountEdPub, pqCommit), sig);
     } catch (_) {
       return false;
     }
@@ -356,6 +357,13 @@ class ContactBundleV3 {
       if (acctEd.length != 32) {
         throw const FormatException('bad account key length');
       }
+      // §18.7, §21.4: an account key of small order is one anyone can sign
+      // as — the certificate below would prove nothing — and a second
+      // spelling of a key is not the key.
+      if (!handleStrongEdKey(acctEd)) {
+        throw const FormatException(
+            'contact code account key refused: not a strong Ed25519 key');
+      }
       try {
         deviceCert = DeviceCertificate.fromJson(cert.cast<String, Object?>());
       } catch (_) {
@@ -431,8 +439,13 @@ class ContactBundleV3 {
     if (b.sealKeyCommit != null && b.sealKeyCommit!.length != 32) {
       throw const FormatException('bad sealing-key commitment length');
     }
-    // Said apart from a bad signature, which `verify` would also report it
-    // as (§2.4: an envelope sealed to a key of small order is anyone's).
+    // Each said apart from a bad signature, which `verify` would also report
+    // it as (§2.4: an envelope sealed to a key of small order is anyone's,
+    // and a signature under an Ed25519 key of small order anyone's to make).
+    if (!handleStrongEdKey(b.edPub)) {
+      throw const FormatException(
+          'contact code key refused: not a strong Ed25519 key');
+    }
     if (!handleStrongXKey(b.xPub)) {
       throw const FormatException(
           'contact code key refused: not a strong X25519 key');

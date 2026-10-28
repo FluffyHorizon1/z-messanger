@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'ed25519_strict.dart';
 import 'identity.dart';
 import 'multidevice.dart';
 import 'util.dart';
@@ -242,9 +243,14 @@ class ContactRequest {
   }
 
   /// Full verification. The bundle self-verifies (its X key is bound to its
-  /// identity), the request is addressed to us, the requester's routing id is
-  /// the one the bundle names (and, when known, the sealed sender), and the
-  /// signature is by the bundle's identity key over exactly these bytes.
+  /// identity, and both its keys are strong — [ContactBundle.verify]), the
+  /// request is addressed to us, the requester's routing id is the one the
+  /// bundle names (and, when known, the sealed sender), and the signature is
+  /// by the bundle's identity key over exactly these bytes — under §21.4's
+  /// one rule ([ed25519VerifyStrict]). Until 2026-10-28 both signatures were
+  /// the library's lenient verifier's, and under an identity key of small
+  /// order R the identity and S = 0 passed for each: a request from nobody,
+  /// as anybody (the review's F1).
   Future<bool> verify({required String expectedTo, String? sealedFrom}) async {
     if (toRid != expectedTo) return false;
     if (bundle.edPub.length != 32 || bundle.xPub.length != 32) return false;
@@ -252,13 +258,8 @@ class ContactRequest {
     final rid = await bundle.routingId();
     if (sealedFrom != null && rid != sealedFrom) return false;
     try {
-      return await Ed25519().verify(
-        signingInput(bundle, toRid, ts),
-        signature: Signature(
-          sig,
-          publicKey: SimplePublicKey(bundle.edPub, type: KeyPairType.ed25519),
-        ),
-      );
+      return ed25519VerifyStrict(
+          bundle.edPub, signingInput(bundle, toRid, ts), sig);
     } catch (_) {
       return false;
     }
@@ -279,7 +280,10 @@ class ContactRequest {
   /// their own keys (§18.7's rule 3); the root bundle is another device's
   /// and binds its own X25519 key; the certificate verifies under the root's
   /// key, which for an account's root device IS the account key; and the
-  /// requester signed that account into this request.
+  /// requester signed that account into this request. Every key strong and
+  /// every signature under §21.4's one rule, as [verify] says: the root's
+  /// bundle by [ContactBundle.verify], the certificate by
+  /// [DeviceCertificate.verify], `asig` by [ed25519VerifyStrict].
   Future<RequestAnchor?> anchor() async {
     final r = root, c = cert, s = anchorSig;
     if (r == null || c == null || s == null) return null;
@@ -293,12 +297,10 @@ class ContactRequest {
       if (constantTimeEquals(r.edPub, bundle.edPub)) return null;
       if (!await r.verify()) return null;
       if (!await c.verify(r.edPub)) return null;
-      final ok = await Ed25519().verify(
-        anchorInput(r.edPub, toRid, ts),
-        signature: Signature(s,
-            publicKey: SimplePublicKey(bundle.edPub, type: KeyPairType.ed25519)),
-      );
-      if (!ok) return null;
+      if (!ed25519VerifyStrict(
+          bundle.edPub, anchorInput(r.edPub, toRid, ts), s)) {
+        return null;
+      }
       return RequestAnchor(r.edPub, r, c);
     } catch (_) {
       return null;
