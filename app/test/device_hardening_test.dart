@@ -30,21 +30,32 @@
 // Here too what is tested is the request (16); what a keyboard does with it
 // is the keyboard's.
 //
+// A seventh came from the review of 4.7.0 on 2026-10-28: the unlock screen's
+// eye showed the passphrase in the clear on the one window nothing kept from
+// capture, the one before the vault opens, while the comment on the policy
+// said the field there was obscured (17).
+//
 // Criteria 2-7, 9, 12 and 14 use nothing the base build lacks, and were run
 // against 0d00a69 before anything was fixed: each failed there, except 14,
 // which pins a grep that was already clean, and the parts that assert an
 // absence — nothing asked of a desktop or with the setting off, no switch on
 // a desktop — which held there too. Criteria 1, 8, 10, 11, 13 and 15 test
 // what this change adds. Criterion 16 was run against 5a04d1f, before its
-// own fix: (a) named all twelve fields, and (b) and (c) failed.
+// own fix: (a) named all twelve fields, and (b) and (c) failed. Criterion
+// 17's (b) and (c) use nothing the base build lacks, and were run against
+// 14a5b3c before its fix: both failed, the passphrase shown and nothing
+// asked; (a) and (d) test what the fix adds.
 //
-// Criteria, each a test below (4, 9 and 16 in parts):
-//   1. the policy: the window is kept from capture exactly while the vault
-//      is open, on Android, with the setting on — which it is until the
-//      person turns it off — and the window is told only when that changes;
-//   2. started on Android, the app asks for a secure window the moment its
-//      vault opens and not before, asks for nothing with the setting off,
-//      and asks for nothing on a desktop;
+// Criteria, each a test below (4, 9, 16 and 17 in parts):
+//   1. the policy: on Android the window is kept from capture while the
+//      vault is open with the setting on — which it is until the person
+//      turns it off — and while the unlock screen shows the passphrase,
+//      whatever the setting; at no other time, and the window is told only
+//      when that changes;
+//   2. started on Android, with the passphrase never shown (17 shows it),
+//      the app asks for a secure window the moment its vault opens and not
+//      before, asks for nothing with the setting off, and asks for nothing
+//      on a desktop;
 //   3. Settings › Security has the switch on Android, on until it is
 //      turned off, the choice kept for the next start; a desktop has none;
 //   4. every way out of a restore after the pick deletes the picker's copy:
@@ -80,7 +91,16 @@
 //      and one that can show what it holds to suggest and correct nothing
 //      too: (a) each such field in lib/ui, by what marks it, (b) what the
 //      keyboard is told by the restore's recovery-code field, and (c) by the
-//      unlock screen's passphrase, hidden and shown.
+//      unlock screen's passphrase, hidden and shown;
+//  17. the unlock screen's passphrase, shown, is kept from capture before
+//      the vault opens, with the setting on or off: (a) the controller asks
+//      for a secure window as it is shown and lets it go as it is hidden,
+//      and through the unlock leaves the window as the vault and the setting
+//      say; started on Android, (b) Show asks and Hide lets go, the window
+//      kept through the unlock with the setting on, and (c) with it off kept
+//      while the passphrase shows and let go once the screen goes; and (d)
+//      the screen draws the passphrase only once the window is held, and
+//      lets go once, on Hide after the hidden field is drawn or as it goes.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -299,31 +319,39 @@ void main() {
   // -------------------------------------------------------------------
 
   test(
-      '1. the policy: kept from capture exactly while the vault is open, on '
-      'Android, with the setting on; the window is told only when that '
-      'changes', () async {
+      '1. the policy: kept from capture on Android while the vault is open '
+      'with the setting on, and while the passphrase is shown whatever the '
+      'setting; the window is told only when that changes', () async {
     for (final platform in TargetPlatform.values) {
       for (final open in [false, true]) {
         for (final setting in [false, true]) {
-          expect(
-              screenSecureFor(
-                  platform: platform,
-                  vaultOpen: open,
-                  setting: setting,
-                  isWeb: false),
-              platform == TargetPlatform.android && open && setting,
-              reason: '${platform.name}, vault ${open ? 'open' : 'shut'}, '
-                  'setting ${setting ? 'on' : 'off'}');
+          for (final shown in [false, true]) {
+            expect(
+                screenSecureFor(
+                    platform: platform,
+                    vaultOpen: open,
+                    setting: setting,
+                    passphraseShown: shown,
+                    isWeb: false),
+                platform == TargetPlatform.android &&
+                    (shown || (open && setting)),
+                reason: '${platform.name}, vault ${open ? 'open' : 'shut'}, '
+                    'setting ${setting ? 'on' : 'off'}, passphrase '
+                    '${shown ? 'shown' : 'hidden'}');
+          }
         }
       }
     }
-    expect(
-        screenSecureFor(
-            platform: TargetPlatform.android,
-            vaultOpen: true,
-            setting: true,
-            isWeb: true),
-        isFalse);
+    for (final shown in [false, true]) {
+      expect(
+          screenSecureFor(
+              platform: TargetPlatform.android,
+              vaultOpen: true,
+              setting: true,
+              passphraseShown: shown,
+              isWeb: true),
+          isFalse);
+    }
 
     final told = <String>[];
     final messenger =
@@ -369,9 +397,9 @@ void main() {
   });
 
   testWidgets(
-      '2. started on Android, the app asks for a secure window the moment '
-      'its vault opens and not before; on a desktop it asks for nothing',
-      (t) async {
+      '2. started on Android, the passphrase never shown, the app asks for a '
+      'secure window the moment its vault opens and not before; on a desktop '
+      'it asks for nothing', (t) async {
     final support = temp('support');
     final cache = temp('cache');
     mockPaths(t, support, cache);
@@ -1181,5 +1209,196 @@ void main() {
     expect(told['autocorrect'], isFalse);
     expect(told['enableSuggestions'], isFalse);
     expect(told['enableIMEPersonalizedLearning'], isFalse);
+  });
+
+  // -------------------------------------------------------------------
+  // Item 7: the passphrase, shown, before the vault is open
+  // -------------------------------------------------------------------
+
+  test(
+      '17a. the controller keeps the window from capture while the passphrase '
+      'shows, setting on or off, and through the unlock leaves it as the '
+      'vault and the setting say', () async {
+    final told = <String>[];
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(ScreenSecurity.channel, (call) async {
+      told.add('${call.method}:${call.arguments}');
+      return null;
+    });
+    addTearDown(
+        () => messenger.setMockMethodCallHandler(ScreenSecurity.channel, null));
+
+    for (final setting in [true, false]) {
+      final s = 'setting ${setting ? 'on' : 'off'}';
+      final prefs = AppPrefs(root: temp('prefs17_$setting'));
+      await prefs.load();
+      await prefs.setScreenSecurity(setting);
+      final screen = ScreenSecurity(prefs, platform: TargetPlatform.android);
+      final desktop = ScreenSecurity(prefs, platform: TargetPlatform.linux);
+
+      // Shown and hidden again, with the vault shut.
+      told.clear();
+      await screen.passphraseShown(true);
+      await desktop.passphraseShown(true);
+      expect(told, ['secure:true'], reason: '$s: shown, on Android only');
+      await screen.passphraseShown(true);
+      expect(told, ['secure:true'],
+          reason: '$s: nothing changed, nothing said');
+      await screen.passphraseShown(false);
+      await desktop.passphraseShown(false);
+      expect(told, ['secure:true', 'secure:false'],
+          reason: '$s: hidden, with the vault still shut');
+
+      // Shown as the vault opens, and the unlock screen gone after it.
+      told.clear();
+      await screen.passphraseShown(true);
+      await screen.vaultOpened();
+      await screen.passphraseShown(false);
+      expect(told, setting ? ['secure:true'] : ['secure:true', 'secure:false'],
+          reason: '$s: once the vault is open, the window is as the setting '
+              'says');
+      screen.dispose();
+      desktop.dispose();
+    }
+  });
+
+  /// The app started on Android over a vault with a passphrase, on its
+  /// unlock screen with the vault still shut, and what it has asked of the
+  /// window so far. [setting] is the screen-security switch, as Settings
+  /// writes it beside the vault (2b).
+  Future<List<String>> onUnlockScreen(WidgetTester t,
+      {required String name, required bool setting}) async {
+    final support = temp('support_$name');
+    mockPaths(t, support, temp('cache_$name'));
+    final asked = <String>[];
+    t.binding.defaultBinaryMessenger.setMockMethodCallHandler(_screenChannel,
+        (call) async {
+      asked.add('${call.method}:${call.arguments}');
+      return null;
+    });
+    addTearDown(() => t.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(_screenChannel, null));
+    await t.runAsync(() async {
+      final v = await Vault.open(rootOverride: Directory('${support.path}/z'));
+      await v.setPassphrase('correct horse battery');
+      await v.db.close();
+    });
+    if (!setting) {
+      File('${support.path}/z/prefs.json')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(
+            jsonEncode({'v': 1, 'theme': 'system', 'screen': false}));
+    }
+    app.startApp(operatingSystem: 'android');
+    await settleUntil(t, () => find.byType(UnlockScreen).evaluate().isNotEmpty,
+        what: 'the unlock screen');
+    return asked;
+  }
+
+  bool passphraseHidden(WidgetTester t) =>
+      t.widget<TextField>(find.byType(TextField)).obscureText;
+
+  /// Types the passphrase and unlocks; the vault that opened, on the first
+  /// screen behind the unlock screen.
+  Future<Vault> unlock(WidgetTester t) async {
+    await t.enterText(find.byType(TextField), 'correct horse battery');
+    await t.tap(find.text(en.unlockTitle));
+    await settleUntil(
+        t, () => find.byType(OnboardingScreen).evaluate().isNotEmpty,
+        what: 'the vault open, on the first screen behind it',
+        timeout: const Duration(seconds: 60));
+    return t.widget<OnboardingScreen>(find.byType(OnboardingScreen)).vault;
+  }
+
+  testWidgets(
+      '17b. started on Android, Show asks for a secure window before the '
+      'vault opens and Hide lets it go; through the unlock, with the setting '
+      'on, the window stays kept', (t) async {
+    final asked = await onUnlockScreen(t, name: '17b', setting: true);
+    expect(asked, isEmpty, reason: 'the vault shut, the passphrase hidden');
+
+    await t.tap(find.byTooltip(en.unlockShowPassphrase));
+    await settleUntil(t, () => !passphraseHidden(t),
+        what: 'the passphrase shown');
+    expect(asked, ['secure:true'], reason: 'asked for as it was shown');
+
+    await t.tap(find.byTooltip(en.unlockHidePassphrase));
+    await settleUntil(t, () => asked.length == 2, what: 'the window let go');
+    expect(passphraseHidden(t), isTrue);
+    expect(asked.last, 'secure:false', reason: 'hidden, the vault still shut');
+
+    await t.tap(find.byTooltip(en.unlockShowPassphrase));
+    await settleUntil(t, () => !passphraseHidden(t), what: 'shown again');
+    final vault = await unlock(t);
+    expect(asked, ['secure:true', 'secure:false', 'secure:true'],
+        reason: 'kept through the unlock: the vault is open, the setting on');
+    await t.runAsync(() => vault.db.close());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+  testWidgets(
+      '17c. started on Android with the setting off, the passphrase shown is '
+      'kept from capture all the same, and let go once the screen goes',
+      (t) async {
+    final asked = await onUnlockScreen(t, name: '17c', setting: false);
+    expect(asked, isEmpty);
+
+    await t.tap(find.byTooltip(en.unlockShowPassphrase));
+    await settleUntil(t, () => !passphraseHidden(t),
+        what: 'the passphrase shown');
+    expect(asked, ['secure:true'], reason: 'whatever the setting says');
+
+    final vault = await unlock(t);
+    await settleUntil(t, () => asked.length == 2, what: 'the window let go');
+    expect(asked, ['secure:true', 'secure:false'],
+        reason: 'the unlock screen gone, the vault open, the setting off');
+    await t.runAsync(() => vault.db.close());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+  testWidgets(
+      '17d. the unlock screen draws the passphrase only once the window is '
+      'held, and lets go once: on Hide after the hidden field is drawn, or as '
+      'the screen goes', (t) async {
+    final told = <bool>[];
+    var answer = Completer<void>();
+    await t.pumpWidget(MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ZTheme.light(),
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: UnlockScreen(
+        onUnlock: (_) async {},
+        onPassphraseShown: (shown) {
+          told.add(shown);
+          answer = Completer<void>();
+          return answer.future;
+        },
+      ),
+    ));
+    await t.enterText(find.byType(TextField), 'correct horse battery');
+
+    await t.tap(find.byTooltip(en.unlockShowPassphrase));
+    await t.pump();
+    expect(told, [true]);
+    expect(passphraseHidden(t), isTrue,
+        reason: 'not drawn in the clear before the window is held');
+    answer.complete();
+    await t.pump();
+    expect(passphraseHidden(t), isFalse, reason: 'drawn once it is');
+
+    await t.tap(find.byTooltip(en.unlockHidePassphrase));
+    expect(told, [true], reason: 'held until the hidden field is drawn');
+    await t.pump();
+    expect(passphraseHidden(t), isTrue);
+    expect(told, [true, false]);
+
+    // Shown again, and the screen goes while it shows: let go, once.
+    await t.tap(find.byTooltip(en.unlockShowPassphrase));
+    await t.pump();
+    answer.complete();
+    await t.pump();
+    expect(passphraseHidden(t), isFalse);
+    await t.pumpWidget(const SizedBox());
+    expect(told, [true, false, true, false]);
   });
 }

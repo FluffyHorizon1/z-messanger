@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
@@ -47,12 +49,21 @@ class UnexpectedUnlockError extends UnlockError {
 class UnlockScreen extends StatefulWidget {
   final Future<void> Function(String passphrase) onUnlock;
   final Future<void> Function()? onBiometric;
+
+  /// Told `true` before the passphrase is shown in the clear, and `false`
+  /// once it is not: hidden again, or the screen gone while it showed. The
+  /// bootstrapper keeps the window from capture meanwhile
+  /// (`ScreenSecurity.passphraseShown`); the passphrase is drawn in the clear
+  /// only once this has answered. Until 4.7.2 the eye showed it on a window
+  /// the recent-apps card and a screenshot could both take.
+  final Future<void> Function(bool shown)? onPassphraseShown;
   final bool busy;
   final UnlockError? error;
   const UnlockScreen(
       {super.key,
       required this.onUnlock,
       this.onBiometric,
+      this.onPassphraseShown,
       this.busy = false,
       this.error});
 
@@ -63,6 +74,39 @@ class UnlockScreen extends StatefulWidget {
 class _UnlockScreenState extends State<UnlockScreen> {
   final _ctrl = TextEditingController();
   bool _obscure = true;
+
+  /// Whether [UnlockScreen.onPassphraseShown] was told `true` and not yet
+  /// `false`: whichever comes first, Hide or the screen going, lets go, and
+  /// only once.
+  bool _held = false;
+
+  Future<void> _show() async {
+    _held = true;
+    // The window is kept from capture first; the passphrase is drawn after.
+    await widget.onPassphraseShown?.call(true);
+    if (mounted && _obscure) setState(() => _obscure = false);
+  }
+
+  void _hide() {
+    setState(() => _obscure = true);
+    // Let go once the hidden field has been drawn — unless the eye was
+    // tapped again before that.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_obscure) _letGo();
+    });
+  }
+
+  void _letGo() {
+    if (!_held) return;
+    _held = false;
+    unawaited(widget.onPassphraseShown?.call(false));
+  }
+
+  @override
+  void dispose() {
+    _letGo();
+    super.dispose();
+  }
 
   void _submit() {
     final p = _ctrl.text;
@@ -131,7 +175,13 @@ class _UnlockScreenState extends State<UnlockScreen> {
                       icon: Icon(
                           _obscure ? Icons.visibility : Icons.visibility_off,
                           color: context.z.textSecondary),
-                      onPressed: () => setState(() => _obscure = !_obscure),
+                      onPressed: () {
+                        if (_obscure) {
+                          unawaited(_show());
+                        } else {
+                          _hide();
+                        }
+                      },
                     ),
                   ),
                 ),

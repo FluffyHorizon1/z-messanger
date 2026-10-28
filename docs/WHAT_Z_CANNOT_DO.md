@@ -55,7 +55,10 @@ before you cross a border, and knowing what your jurisdiction can compel.
 
 Turning on the app passphrase does help against one specific case: someone who
 takes the storage but not an unlocked session. It does nothing against
-someone watching you type it.
+someone watching you type it, or watching the screen while you show it. On
+Android a passphrase shown on the unlock screen is kept out of screenshots and
+the recent-apps screen — since 4.7.2; before, either could take it — but not
+out of a camera.
 
 ## It cannot protect you from the person you are talking to
 

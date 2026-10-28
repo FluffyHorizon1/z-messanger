@@ -181,7 +181,8 @@ class _BootstrapperState extends State<Bootstrapper>
   PushService? _push;
   AppLock? _appLock;
   AppPrefs? _prefs;
-  // 42.1: FLAG_SECURE while the vault is open (core/screen_security.dart).
+  // 42.1: FLAG_SECURE while the vault is open, and while the unlock screen
+  // shows the passphrase (core/screen_security.dart).
   ScreenSecurity? _screen;
   bool _needsOnboarding = false;
   bool _locked = false; // vault exists but needs a passphrase
@@ -474,6 +475,12 @@ class _BootstrapperState extends State<Bootstrapper>
         home: UnlockScreen(
           onUnlock: _tryUnlock,
           onBiometric: _biometricOffered ? _tryBiometricUnlock : null,
+          // The passphrase shown in the clear is kept from capture by the
+          // same controller that keeps the open vault (42.1), setting or no
+          // setting (core/screen_security.dart says why).
+          onPassphraseShown: (shown) async {
+            await _screen?.passphraseShown(shown);
+          },
           busy: _unlocking,
           error: _unlockError,
         ),

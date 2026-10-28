@@ -637,6 +637,9 @@ only ever meant "the relay has it", never "it has not arrived".
   even with the screen lock on: the phone takes the picture as Z leaves the
   screen, before the lock is drawn. And a screenshot is a copy of the chat
   outside Z, in your gallery, which many phones then back up to the cloud.
+  Before the vault is open, a passphrase you show on the unlock screen is
+  kept out of screenshots and the recent‑apps screen too, whether the switch
+  is on or off.
 * **App passphrase** — a separate secret that encrypts the vault key. Without
   it nothing sealed in the database can be read, including by someone who
   copies the file off your disk. The file's structure is not sealed: which

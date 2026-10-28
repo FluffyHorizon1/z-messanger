@@ -135,7 +135,8 @@ recipient device so the relay does not learn who sent it.
   file picker for the recompressed copy of an image it writes to the shared
   Pictures folder. The recent‑apps card is a copy too, taken by the system
   of whatever was on screen: on Android the window is kept from capture
-  while the vault is open (screen security, below). And the app had never set
+  while the vault is open, and before it while the unlock screen shows the
+  passphrase (screen security, below). And the app had never set
   `android:allowBackup="false"`, so the platform default put the whole vault
   directory in Android's Auto Backup set: the database seals *cells* and not
   its structure, so the copy carried the contact graph and every message's
@@ -464,6 +465,12 @@ each of them had produced a plausible table (`ROADMAP_8_15.md`, revision
     FLAG_SECURE: no screenshot, no screen recording, a blank card. It is on
     unless turned off in Settings › Security, for someone who needs a
     screenshot of their own chat, and the switch says what that costs.
+    Before the vault is open the window is kept the same way while the
+    unlock screen shows the passphrase — asked for before it is drawn, let go
+    once it is hidden or the screen goes — with the switch on or off, since
+    the switch is for pictures of chats and the passphrase opens the vault.
+    Until 4.7.2 it was not: a passphrase shown to check it went into the
+    recent‑apps card as its person switched away, or into a screenshot.
   - *Unlock with biometrics* (only when an app passphrase is set) lets the
     prompt open the vault instead of typing the passphrase. To do that, Z
     keeps the Argon2id output for the current passphrase — never the

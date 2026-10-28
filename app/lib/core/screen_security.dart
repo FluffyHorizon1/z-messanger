@@ -11,8 +11,13 @@
 //
 // So the flag is set while the vault is open: the chats, the backup screen's
 // recovery code, a link code, the lock screen over them. Before the vault is
-// open there is nothing on screen worth taking — the unlock screen, whose
-// field is obscured.
+// open the one thing on screen worth taking is the passphrase, on the unlock
+// screen. Its field hides it, but the eye beside it shows it in the clear, so
+// the flag is set while it is shown, too — asked for before the passphrase is
+// drawn, and let go once it is hidden again or the screen goes, unless the
+// vault is open by then. Until 4.7.2 this comment called the field obscured,
+// and nothing set the flag for it: a passphrase someone had shown to check it
+// went into the recent-apps card as they switched away, or into a screenshot.
 //
 // It is a setting, on unless the person turns it off. A screenshot of one's
 // own chat is a real use — keeping what someone said, showing it to somebody
@@ -26,6 +31,14 @@
 // who turned the lock on, leave every copy the system makes of everybody
 // else's chats, and cost exactly the people who chose the lock their
 // screenshots unless the lock came off with them.
+//
+// The setting does not reach the passphrase. It could — it is kept in
+// prefs.json beside the vault, read before the unlock screen is drawn — and
+// is passed over on purpose: the use it exists for is a picture of one's own
+// chat, which the unlock screen holds none of, and what the eye shows is the
+// one secret there that opens the vault, of which the recent-apps card is a
+// copy nobody asked for. So the window is kept from capture while the
+// passphrase shows, with the switch on or off.
 //
 // Android only. Windows and macOS have their own ways of keeping a window out
 // of a capture, which nothing here asks for yet; Linux has none a program can
@@ -42,19 +55,25 @@ bool get screenSecurityAvailable =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
 /// Whether Z's window is to be kept from capture: on Android, while the
-/// vault is open, unless the person turned [setting] off.
+/// vault is open, unless the person turned [setting] off — and while the
+/// unlock screen shows the passphrase ([passphraseShown]), whatever the
+/// setting.
 bool screenSecureFor({
   required TargetPlatform platform,
   required bool vaultOpen,
   required bool setting,
+  bool passphraseShown = false,
   bool isWeb = kIsWeb,
 }) =>
-    !isWeb && platform == TargetPlatform.android && vaultOpen && setting;
+    !isWeb &&
+    platform == TargetPlatform.android &&
+    (passphraseShown || (vaultOpen && setting));
 
 /// Applies [screenSecureFor] to the window, through the `z/screen` channel
 /// the main activity answers (`MainActivity.kt`, `secure`: FLAG_SECURE on or
 /// off). Follows [prefs] as it changes; the bootstrapper says when the vault
-/// is open ([vaultOpened]).
+/// is open ([vaultOpened]) and when the unlock screen shows the passphrase
+/// ([passphraseShown]).
 class ScreenSecurity {
   ScreenSecurity(this.prefs, {TargetPlatform? platform})
       : _platform = platform {
@@ -66,6 +85,7 @@ class ScreenSecurity {
   final AppPrefs prefs;
   final TargetPlatform? _platform;
   bool _vaultOpen = false;
+  bool _passphraseShown = false;
 
   /// What the window was last told; null until it is told anything. A
   /// window starts without the flag, so there is nothing to clear before
@@ -75,13 +95,23 @@ class ScreenSecurity {
   bool get _wanted => screenSecureFor(
       platform: _platform ?? defaultTargetPlatform,
       vaultOpen: _vaultOpen,
-      setting: prefs.screenSecurity);
+      setting: prefs.screenSecurity,
+      passphraseShown: _passphraseShown);
 
   /// The vault is open: from here on the window is kept from capture
   /// (unless the setting is off). Awaited before anything from the vault is
   /// shown.
   Future<void> vaultOpened() {
     _vaultOpen = true;
+    return _apply();
+  }
+
+  /// The unlock screen shows the passphrase in the clear ([shown]), or no
+  /// longer does — it hid it, or went. While it shows, the window is kept
+  /// from capture whatever the setting; after, as the vault and the setting
+  /// say. Awaited before the passphrase is drawn in the clear.
+  Future<void> passphraseShown(bool shown) {
+    _passphraseShown = shown;
     return _apply();
   }
 
