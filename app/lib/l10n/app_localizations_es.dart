@@ -944,6 +944,14 @@ class AppLocalizationsEs extends AppLocalizations {
       'Cubre ambas mitades de ambas identidades: Ed25519 y ML-DSA-65. La clave poscuántica llegó por la sesión cifrada y coincidió con el compromiso del código que escaneaste.';
 
   @override
+  String get ciBlurbHybridConnect =>
+      'Cubre ambas mitades de ambas identidades: Ed25519 y ML-DSA-65. Su clave poscuántica llegó en el propio intercambio de la invitación, cifrada con claves del mismo secreto del que salen los ocho dígitos, y coincidió con el compromiso de su código.';
+
+  @override
+  String get ciDeviceLinkConnect =>
+      'El dispositivo desde el que lo añadiste está vinculado de forma poscuántica: sus claves llegaron cifradas en el intercambio de la invitación, y los ocho dígitos que comparaste avalan ese intercambio.';
+
+  @override
   String get ciBlurbWaiting =>
       'Su clave poscuántica ya ha llegado, pero ellos aún no tienen la tuya, así que el número de abajo sigue siendo el de Ed25519: el mismo que muestra su dispositivo. Pasará a ser el número poscuántico en ambos dispositivos a la vez, en cuanto cada uno tenga la clave del otro.';
 

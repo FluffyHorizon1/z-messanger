@@ -8,6 +8,121 @@ import 'package:z_protocol/z_protocol.dart';
 import 'chat_service.dart';
 import 'models.dart';
 
+/// One side of an invite's ceremony, whichever version the invite is.
+///
+/// The protocol library runs versions 1 and 2 as [ConnectRun] and version 3
+/// (PROTOCOL §20.9, ADR 0033 §4) as [ConnectRunV3], and keeps the two apart:
+/// each refuses the other's invite before it draws or posts anything, and
+/// the other's stored record. So a version-3 invite is never run as version
+/// 2 here either — [ConnectInvites.open] hands it to [InviteRun.hybrid] and
+/// nothing else, and [fromJson] reads a record by the version it names.
+/// This asks of either run only what both do.
+abstract class InviteRun {
+  /// The run of an invite of version 1 or 2, sealed under X25519 alone.
+  factory InviteRun.classical(ConnectRun run) = _ClassicalRun;
+
+  /// The run of an invite of version 3, hybrid with ML-KEM-768.
+  factory InviteRun.hybrid(ConnectRunV3 run) = _HybridRun;
+
+  /// A stored run, read by the reader of the version its record names
+  /// (`cv`, 3 for version 3, and 2 or absent for the others).
+  static Future<InviteRun> fromJson(Map<String, Object?> j) async =>
+      j['cv'] == 3
+          ? InviteRun.hybrid(await ConnectRunV3.fromJson(j))
+          : InviteRun.classical(await ConnectRun.fromJson(j));
+
+  bool get inviter;
+  int get issuedMs;
+  ConnectCode get code;
+
+  /// Set once both sides have revealed: a [ConnectSessionV3] for version 3.
+  ConnectSession? get session;
+  bool get finished;
+  String? get abortReason;
+  Map<String, Object?> toJson();
+  Future<ConnectProgress> step(
+      {required String relayUrl,
+      int? nowMs,
+      Future<bool> Function(ConnectIdentity peer)? refusePeer});
+  void confirmed();
+  void abandon();
+
+  /// What the peer's reveal carried beside its code, for the add (44.6):
+  /// its account's ML-DSA key when the code commits to one, and its
+  /// device's sealing key. Null before both sides have revealed, and always
+  /// for versions 1 and 2, whose reveals carry neither.
+  CeremonyKeys? get ceremonyKeys;
+}
+
+final class _ClassicalRun implements InviteRun {
+  _ClassicalRun(this._run);
+  final ConnectRun _run;
+
+  @override
+  bool get inviter => _run.inviter;
+  @override
+  int get issuedMs => _run.issuedMs;
+  @override
+  ConnectCode get code => _run.code;
+  @override
+  ConnectSession? get session => _run.session;
+  @override
+  bool get finished => _run.finished;
+  @override
+  String? get abortReason => _run.abortReason;
+  @override
+  Map<String, Object?> toJson() => _run.toJson();
+  @override
+  Future<ConnectProgress> step(
+          {required String relayUrl,
+          int? nowMs,
+          Future<bool> Function(ConnectIdentity peer)? refusePeer}) =>
+      _run.step(relayUrl: relayUrl, nowMs: nowMs, refusePeer: refusePeer);
+  @override
+  void confirmed() => _run.confirmed();
+  @override
+  void abandon() => _run.abandon();
+  @override
+  CeremonyKeys? get ceremonyKeys => null;
+}
+
+final class _HybridRun implements InviteRun {
+  _HybridRun(this._run);
+  final ConnectRunV3 _run;
+
+  @override
+  bool get inviter => _run.inviter;
+  @override
+  int get issuedMs => _run.issuedMs;
+  @override
+  ConnectCode get code => _run.code;
+  @override
+  ConnectSession? get session => _run.session;
+  @override
+  bool get finished => _run.finished;
+  @override
+  String? get abortReason => _run.abortReason;
+  @override
+  Map<String, Object?> toJson() => _run.toJson();
+  @override
+  Future<ConnectProgress> step(
+          {required String relayUrl,
+          int? nowMs,
+          Future<bool> Function(ConnectIdentity peer)? refusePeer}) =>
+      _run.step(relayUrl: relayUrl, nowMs: nowMs, refusePeer: refusePeer);
+  @override
+  void confirmed() => _run.confirmed();
+  @override
+  void abandon() => _run.abandon();
+  @override
+  CeremonyKeys? get ceremonyKeys {
+    final s = _run.session;
+    return s == null
+        ? null
+        : CeremonyKeys(pqKey: s.peerPqKey, sealKey: s.peerSealKey);
+  }
+}
+
 /// One invite in flight, and everything needed to pick it up later (17.3).
 ///
 /// An invite is not a live screen. It is a thing you made at lunchtime, sent
@@ -31,7 +146,8 @@ class PendingInvite {
   /// saying that a group is attached, and nothing that says which.
   final String? gid;
 
-  ConnectRun run;
+  /// The ceremony, of the invite's own version ([InviteRun]).
+  InviteRun run;
 
   /// The last thing [ConnectInvites.pump] learned about this invite.
   ConnectProgress progress;
@@ -152,7 +268,7 @@ class PendingInvite {
         mine: j['mine'] as bool,
         createdMs: (j['created'] as num).toInt(),
         gid: j['gid'] as String?,
-        run: await ConnectRun.fromJson(
+        run: await InviteRun.fromJson(
             (j['run'] as Map).cast<String, Object?>()),
         progress: ConnectProgress.values.firstWhere(
             (p) => p.name == j['progress'],
@@ -165,11 +281,18 @@ class PendingInvite {
 /// The app's half of the connect ceremony: making invites, opening them, and
 /// carrying each one forward whenever there is a network (17.3, §20).
 ///
-/// The protocol work is in `z_protocol`'s `ConnectRun`, which is a state
-/// machine rather than a conversation precisely because the two people are
-/// never online together. This class is the part that owns those runs: it
-/// writes them to the vault after every step, so closing the app is not an
-/// event the ceremony has to survive so much as one it does not notice.
+/// The protocol work is in `z_protocol`'s `ConnectRun` and `ConnectRunV3`,
+/// state machines rather than conversations precisely because the two
+/// people are never online together. This class is the part that owns those
+/// runs: it writes them to the vault after every step, so closing the app is
+/// not an event the ceremony has to survive so much as one it does not
+/// notice.
+///
+/// It opens an invite of any version this build reads — 1, 2 and, from
+/// 44.6, 3 (§20.9) — and makes version 2 only. Version 3 is made a release
+/// after the release that reads it (ADR 0033 decision 2), so nobody on the
+/// release before is handed an invite their app cannot open; until then
+/// only a test makes one ([debugMintV3]).
 class ConnectInvites extends ChangeNotifier {
   ConnectInvites(this._svc, {Duration pollEvery = defaultPollEvery})
       : _pollEvery = pollEvery;
@@ -207,11 +330,29 @@ class ConnectInvites extends ChangeNotifier {
   bool debugBeforeGroupLinks = false;
 
   /// Test seam: make and open invites as a client from before ADR 0024 —
-  /// it mints version 1, and refuses a version-2 invite as its parser does
-  /// ("that is not a Z invite"), because the marker that starts one is not
-  /// base32. That is the old client either side of a new one meets.
+  /// it mints version 1, and refuses a version-2 or version-3 invite as its
+  /// parser does ("that is not a Z invite"), because the marker that starts
+  /// one is not base32. That is the old client either side of a new one
+  /// meets.
   @visibleForTesting
   bool debugBeforeBinding = false;
+
+  /// Test seam: make invites of version 3 (§20.9) — version 3's own run,
+  /// with this device's sealing key and the account's ML-DSA key in its
+  /// reveal — so a test can drive a version-3 inviter, through a real relay,
+  /// against this build's acceptor.
+  ///
+  /// This release reads version 3 and makes version 2 only. Production
+  /// minting is the NEXT release's work (ADR 0033 decision 2): an invite is
+  /// minted a release after the release that reads it, so an acceptor on
+  /// the release before is never handed one it cannot open. That release
+  /// makes its invites this way, by version 3's run — not by moving
+  /// [connectInviteVersion], which the version-2 run refuses whatever it
+  /// says. Nothing outside a test sets this: `connect_pq_test.dart` holds
+  /// lib/ to that, and to reaching the version-3 inviter from behind it
+  /// alone.
+  @visibleForTesting
+  bool debugMintV3 = false;
 
   /// Test seam: an answer stops right after it has added the contact and
   /// written that down — where an app killed between the add and the rest
@@ -305,23 +446,54 @@ class ConnectInvites extends ChangeNotifier {
     await load();
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     // ADR 0024: a fresh invite is version 2, bound to its secret — never
-    // version 1, which a client before it still mints.
+    // version 1, which a client before it still mints. Version 3 is the
+    // next release's to mint (ADR 0033 decision 2), and here a test's alone.
+    final InviteRun run = debugMintV3
+        ? await _mintV3ForTests(now, group: gid != null)
+        : InviteRun.classical(await ConnectRun.invite(
+            me: await _me(),
+            nowMs: now,
+            group: gid != null,
+            code:
+                debugBeforeBinding ? ConnectCode.generate(version: 1) : null));
     final invite = PendingInvite(
       id: b64url(randomBytes(9)),
       mine: true,
       createdMs: now,
       gid: gid,
-      run: await ConnectRun.invite(
-          me: await _me(),
-          nowMs: now,
-          group: gid != null,
-          code: debugBeforeBinding ? ConnectCode.generate(version: 1) : null),
+      run: run,
     );
     _invites.add(invite);
     await _save();
     _arm();
     notifyListeners();
     return invite;
+  }
+
+  /// The version-3 inviter [debugMintV3] stands in for — what the release
+  /// after this one mints — reached from [create] behind that seam alone.
+  Future<InviteRun> _mintV3ForTests(int now, {required bool group}) async {
+    final (me, sealKey, pqKey) = await _ownV3Keys();
+    return InviteRun.hybrid(await ConnectRunV3.invite(
+        me: me, sealKey: sealKey, pqKey: pqKey, nowMs: now, group: group));
+  }
+
+  /// What this side brings to a ceremony of version 3 (§20.9): its contact
+  /// code and name, this device's sealing key, which its reveal always
+  /// carries, and the account's ML-DSA key, which it carries exactly when
+  /// that code commits to one. The run holds both keys to those rules
+  /// before it starts. A [FormatException] for the screen when this run of
+  /// the app holds no sealing key (the vault could not give one at start).
+  Future<(ConnectIdentity, Uint8List, Uint8List?)> _ownV3Keys() async {
+    final me = await _me();
+    final sealKey = _svc.sealingKey;
+    if (sealKey == null) {
+      throw const FormatException(
+          'this device has no sealing key yet, so it cannot run a '
+          'post-quantum invite');
+    }
+    final commits = me.pqCommit.any((b) => b != 0);
+    return (me, sealKey, commits ? await _svc.pqAccountPublic() : null);
   }
 
   /// Open an invite somebody sent: a `https://…/i#<code>` link or the printed
@@ -337,8 +509,12 @@ class ConnectInvites extends ChangeNotifier {
   /// arrived by tapping a link has had no yes yet: it is held, and nothing
   /// of the ceremony leaves the device until [consent].
   ///
-  /// Either version: one a client before ADR 0024 made runs as version 1,
-  /// as it always did.
+  /// Any version this build reads, each run as itself: one a client before
+  /// ADR 0024 made runs as version 1, as it always did; and from 44.6 one of
+  /// version 3 (§20.9) runs as version 3 and nothing else — its own
+  /// mailboxes, the ML-KEM exchange inside its four messages, and this
+  /// side's reveal carrying this device's sealing key and the account's
+  /// ML-DSA key.
   Future<PendingInvite> open(String linkOrCode,
       {int? nowMs, bool consented = true}) async {
     await load();
@@ -352,15 +528,28 @@ class ConnectInvites extends ChangeNotifier {
       }
     }
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    final InviteRun run;
+    if (code.version == 3) {
+      final (me, sealKey, pqKey) = await _ownV3Keys();
+      run = InviteRun.hybrid(ConnectRunV3.accept(
+          me: me,
+          sealKey: sealKey,
+          pqKey: pqKey,
+          code: code,
+          nowMs: now,
+          groupAware: !debugBeforeGroupLinks));
+    } else {
+      run = InviteRun.classical(ConnectRun.accept(
+          me: await _me(),
+          code: code,
+          nowMs: now,
+          groupAware: !debugBeforeGroupLinks));
+    }
     final invite = PendingInvite(
       id: b64url(randomBytes(9)),
       mine: false,
       createdMs: now,
-      run: ConnectRun.accept(
-          me: await _me(),
-          code: code,
-          nowMs: now,
-          groupAware: !debugBeforeGroupLinks),
+      run: run,
       consented: consented,
     );
     _invites.add(invite);
@@ -391,17 +580,26 @@ class ConnectInvites extends ChangeNotifier {
     await pump();
   }
 
-  /// A link or a printed code, whichever was handed over. Null if neither.
+  /// A link or a printed code, whichever was handed over, of any version
+  /// this build reads: 1 and 2 by the library's version-2 readers, as every
+  /// release since ADR 0024 has read them, and 3 by its version-3 readers
+  /// (§20.9, 44.6), asked only once those have refused. Each reads its own
+  /// marker alone and a link on the invite page alone, so what an older
+  /// reader took it still takes, as it did, and what it refused that is not
+  /// a version-3 invite is still refused. Null if neither.
   static ConnectCode? parseInvite(String input) {
     final s = input.trim();
     if (s.isEmpty) return null;
-    final fromLink = ConnectCode.fromLink(s);
+    final fromLink = ConnectCode.fromLink(s) ?? ConnectCode.fromLinkV3(s);
     if (fromLink != null) return fromLink;
-    try {
-      return ConnectCode.parse(s);
-    } on FormatException {
-      return null;
+    for (final read in const [ConnectCode.parse, ConnectCode.parseV3]) {
+      try {
+        return read(s);
+      } on FormatException {
+        // Not this reader's: the next one, or nothing.
+      }
     }
+    return null;
   }
 
   /// Carry every pending invite as far as it will go right now.
@@ -601,12 +799,22 @@ class ConnectInvites extends ChangeNotifier {
   /// [join]: for a group link opened here (ADR 0020), whether going ahead
   /// also joins the group — false makes the inviter a contact only, and
   /// tells them so. Ignored on any other invite.
+  ///
+  /// An invite of version 3 (§20.9, 44.6) carried their key in the reveal,
+  /// so it was established at the add and the tick lands on the
+  /// post-quantum number at once; and the device link goes with it: the
+  /// sealing key the reveal gave for their device is as authentic as the
+  /// digits just compared ([ChatService.noteComparedCeremony]).
   Future<Contact> confirm(PendingInvite invite, {bool join = true}) async {
     final (contact, ours) = await _contactFor(invite);
     // A contact this answer did not add is left exactly as it was: marking
     // an existing record as compared, from a ceremony run at a distance, is
     // the trust-model change [_add] describes.
     if (ours) {
+      final keys = invite.run.ceremonyKeys;
+      if (keys != null) {
+        await _svc.noteComparedCeremony(contact.rid, keys.sealKey);
+      }
       await _svc.setVerified(contact.rid, true,
           ceremonyCommit: invite.peer?.pqCommit);
     }
@@ -755,8 +963,14 @@ class ConnectInvites extends ChangeNotifier {
     // ADR 0021 made a re-scan upgrade an existing record; that is a decision
     // about a code the user scanned in person, and it does not carry over to
     // a ceremony run at a distance, which is the trust-model change above.
+    // 44.6: a version-3 ceremony's reveal carried their ML-DSA key and their
+    // device's sealing key, and the add holds both, so no `pqid` and no
+    // `pqseal` are needed for them (§20.9).
     return _svc.addContactFromCode(peer.contactCode,
-        alias: peer.displayName ?? '', requested: false, upgradeExisting: false);
+        alias: peer.displayName ?? '',
+        requested: false,
+        upgradeExisting: false,
+        ceremony: invite.run.ceremonyKeys);
   }
 
   Future<void> _finish(PendingInvite invite) async {

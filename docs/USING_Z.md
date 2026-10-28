@@ -94,7 +94,10 @@ So:
 * **They match** — you are added and verified. Done. A few seconds later
   their post-quantum key arrives and the safety number changes to the
   post-quantum one; the tick stays, because the eight digits covered that key
-  too.
+  too. An invite made by the next version of Z, which this one opens, is
+  post-quantum from its first message: their key comes with the digits, so
+  the number is the post-quantum one at once, and their contact screen says
+  that the device you added them from is linked post-quantum.
 * **We have not compared yet** — you are added, and Z says plainly that the
   contact is unverified. You can compare safety numbers later from the chat.
   This is no worse than pasting codes, which is what it replaces; it is just

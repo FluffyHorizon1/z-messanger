@@ -427,9 +427,10 @@ Future<ZIdentity> mailboxIdentity(ConnectCode code, String role) async {
 /// any abort, the mailbox acknowledged empty — around [ConnectInviterV3] and
 /// [ConnectAcceptorV3].
 ///
-/// Nothing in the app runs one before 44.6: [ConnectRun] refuses a
-/// version-3 invite, [ConnectRun.fromJson] a version-3 record
-/// ([connectRecordVersion]), and [fromJson] here any other.
+/// Nothing in the app ran one before 44.6, which runs it for an invite of
+/// version 3 that it opens — and makes one only for a test (ADR 0033
+/// decision 2). [ConnectRun] refuses a version-3 invite, [ConnectRun.fromJson]
+/// a version-3 record ([connectRecordVersion]), and [fromJson] here any other.
 class ConnectRunV3 {
   /// True for the side that made the invite.
   final bool inviter;

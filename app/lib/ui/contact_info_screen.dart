@@ -214,6 +214,21 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                         color: context.z.textSecondary,
                         height: 1.5),
                   ),
+                  // 44.6 (ADR 0033 §4): beside the number, the device they
+                  // were added from is linked post-quantum — said only once
+                  // the digits of the post-quantum invite that added them
+                  // were compared, which is what vouches for its keys.
+                  if (svc.deviceLinkedByCeremony(widget.rid)) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      l.ciDeviceLinkConnect,
+                      key: const ValueKey('ci-device-link-connect'),
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: context.z.textSecondary,
+                          height: 1.5),
+                    ),
+                  ],
                   if (contact.assurance == IdentityAssurance.hybrid) ...[
                     const SizedBox(height: 8),
                     Text(
@@ -391,12 +406,16 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
 /// candidate confirms nothing until it is compared, so it never reads as
 /// hybrid. This is what the sixty digits are DERIVED from, and the user needs
 /// both: which number this is, and what confirming it would buy.
+///
+/// A key a post-quantum invite's reveal carried (44.6) is said to have come
+/// that way: it never crossed a session, and nothing was scanned.
 String _pqBlurb(AppLocalizations l, Contact c) => switch (c.pqDisplay) {
       PqDisplay.classical => l.ciBlurbClassical,
       PqDisplay.pending => l.ciBlurbPending,
       PqDisplay.waitingForThem => l.ciBlurbWaiting,
       PqDisplay.unverified => l.ciBlurbCandidate,
-      PqDisplay.postQuantum => l.ciBlurbHybrid,
+      PqDisplay.postQuantum =>
+        c.pqFromConnect ? l.ciBlurbHybridConnect : l.ciBlurbHybrid,
       PqDisplay.mismatch => l.ciBlurbRefused,
     };
 

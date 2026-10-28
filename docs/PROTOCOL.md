@@ -3449,6 +3449,11 @@ inner message (§6):
 {"k":"pqid","mid":…,"ts":…,"alg":"ML-DSA-65","pk":b64(ml_pub)[,"ack":true]}
 ```
 
+Between two people a CONNECT invite of version 3 added, it is not: each
+reveal of that ceremony carries its account's key beside the code it
+commits to (§20.9), held to the commitment as a `pqid`'s key is, so neither
+side sends a `pqid` to the other (44.6).
+
 `ack`, when present and true, says **the sender holds the receiver's
 post‑quantum key** — established against its own commitment, or held as a
 candidate (ADR 0021). It is omitted otherwise, so a message without it is
@@ -3540,7 +3545,8 @@ landed by then, sends the opening key *with* the hello so the two arrive in
 one batch, waits longer before a re-send (one second; ten on the side that
 opened the session, whose key went with its hello — so two re-sends do not cross) and drops a re-send whose
 commitment was met while it waited. Measured, a mutual add is one envelope
-each way; before this it was two.
+each way; before this it was two. An add by a CONNECT invite of version 3 is
+none either way (§20.9, 44.6).
 
 **Multi-device rules.** An account has ONE post-quantum identity, and every
 device of it must reach the same view of every contact, or the safety number
@@ -4182,7 +4188,10 @@ it holds and the sealing key it was sent; a `pqdc` made over any other
 account key, device key, ratchet key or sealing key fails. Under a key held only as a candidate (§18.2, ADR 0021)
 a `pqdc` that verifies proves nothing; under an **established** one — a
 commitment met, or the number confirmed — it is the device link `adr/0033`
-§2 shows (44.5).
+§2 shows (44.5). The device a CONNECT ceremony of version 3 revealed needs
+none once its digits are compared: its sealing key came in that ceremony's
+reveal, as authentic as the digits (§20.9, `adr/0033` §4), and from 44.6 the
+reference client holds that link as post‑quantum and says so.
 
 The members that carry them, a new kind and two optional members (§14):
 
@@ -5285,9 +5294,14 @@ version 1 computes instead.
 
 *The protocol library builds version 3 (44.1: `connect.dart`,
 `connect_relay.dart`) — its reader beside 20.8's, its ceremony and its run —
-and nothing runs it before 44.6. It is minted a release after the release
-that reads it (Finnian's decision of 2026‑10‑17): `connectInviteVersion` stays
-2, and the library mints version 3 only when asked to.*
+and the reference client reads it from 44.6: it opens a version‑3 invite, by
+link or by paste, and runs its ceremony as the acceptor. It makes version 2
+still. Version 3 is minted a release after the release that reads it
+(Finnian's decision of 2026‑10‑17), so an acceptor on the release before is
+never handed an invite it cannot open: `connectInviteVersion` stays 2, the
+library mints version 3 only when asked to, and in 44.6 the reference client
+asks only from a test (`ConnectInvites.debugMintV3`). The release after makes
+its invites with version 3's own run.*
 
 Version 2's channel key and digits come from two X25519 ephemerals, so a
 recording of its frames gives both codes and both names to whoever later
@@ -5345,6 +5359,18 @@ x4  {"k":"x4","blob":<sealed>}
   to the same rules before it starts. On a confirmed comparison both keys are
   as authentic as the digits, so the contact needs no `pqid` (R17), and its
   device's sealing key no `pqseal` and no fetch (`adr/0033` §4).
+* **What the reference client holds (44.6).** The add that follows the
+  digits holds the ML‑DSA key as the contact's **established** key (§18.3),
+  held again to the commitment in the revealed code, as an in‑band `pqid` is
+  (§18.2) — whether the digits were compared or skipped, as for a `pqid` —
+  and the sealing key as the revealed device's (§18.11), so the first
+  message it sends that device stamps `pqs:1` and neither side announces a
+  key. It sends no `pqid` to a contact so added — its own key went in its
+  reveal — so a version‑3 add sends none either way (R17), nor any `pqdc`.
+  On a confirmed comparison it also records that device's link as
+  post‑quantum, and the contact's screen says so beside the number; after a
+  skipped one it says nothing of the link, which is 44.5's to judge. A
+  comparison that does not match keeps none of it.
 * **One decapsulation per invite.** The inviter decapsulates the first
   reply's ciphertext and refuses any later reply, and a stored ceremony keeps
   `K` rather than decapsulating again — so, as §10.2 rule 5 says, `pqcrypto`'s
@@ -5352,9 +5378,11 @@ x4  {"k":"x4","blob":<sealed>}
 * **Sizes.** Frames stay unpadded (20.5) and grow. As the library builds
   them, for two v3 identities named `Alice` and `Bob`, the inviter's code
   carrying `sk`: x1 1 649 bytes, x2 1 575, x3 6 526 and x4 6 372, against
-  version 2's 654‑byte message 3 (20.3). The relay can tell a version‑3
-  ceremony (R24); message 3 is still one length with the group bit set or
-  clear.
+  version 2's 654‑byte message 3 (20.3). Measured at the relay as the
+  reference client runs one (44.6), whose codes carry no `sk`: x1 1 649, x2
+  1 575, x3 6 434 and x4 6 372 for the same two names — messages 1 and 2 are
+  fixed width. The relay can tell a version‑3 ceremony (R24); message 3 is
+  still one length with the group bit set or clear.
 * **The renderings.** Both start with the marker `8`: `text = "8" ||
   base32(secret)`, grouped in fives by "-", and `link = "https://" || host ||
   "/i#8" || base32(secret)`. `8` is neither in RFC 4648's base32 alphabet nor
@@ -5371,6 +5399,10 @@ x4  {"k":"x4","blob":<sealed>}
   alone refuses a version‑3 invite and sends nothing. A client of this
   section MUST NOT mint version 3 before the release after the one that ships
   its reader, so an older acceptor is never handed an invite it cannot open.
+  The reference client ships its reader in 44.6, which asks 20.8's readers
+  first and this section's only once they have refused, and runs what it
+  reads as `ConnectRunV3` and nothing else; a version‑2 message 1 posted into
+  its mailbox stops it before it posts anything.
 
 Everything else is 20.3–20.8 as written: the seal, the group bit, the
 all‑zero check, both commitment checks, every abort, the lifetime, the

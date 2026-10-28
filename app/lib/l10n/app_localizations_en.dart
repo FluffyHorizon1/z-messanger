@@ -936,6 +936,14 @@ class AppLocalizationsEn extends AppLocalizations {
       'Covers both halves of both identities: Ed25519 and ML-DSA-65. The post-quantum key arrived over the encrypted session and matched the commitment in the code you scanned.';
 
   @override
+  String get ciBlurbHybridConnect =>
+      'Covers both halves of both identities: Ed25519 and ML-DSA-65. Their post-quantum key came in the invite\'s own exchange, sealed under keys from the same secret the eight digits come from, and matched the commitment in their code.';
+
+  @override
+  String get ciDeviceLinkConnect =>
+      'The device you added them from is linked post-quantum: its keys came sealed in the invite\'s exchange, and the eight digits you compared vouch for that exchange.';
+
+  @override
   String get ciBlurbWaiting =>
       'Their post-quantum key has arrived, but they do not have yours yet, so the number below is still the Ed25519 one — the same number their device is showing. It becomes the post-quantum number on both devices at once, as soon as each of you holds the other\'s key.';
 

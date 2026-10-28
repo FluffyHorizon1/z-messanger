@@ -1556,6 +1556,18 @@ abstract class AppLocalizations {
   /// **'Covers both halves of both identities: Ed25519 and ML-DSA-65. The post-quantum key arrived over the encrypted session and matched the commitment in the code you scanned.'**
   String get ciBlurbHybrid;
 
+  /// The complete state for a contact added by a post-quantum invite (PROTOCOL 20.9), shown instead of ciBlurbHybrid, which says the key arrived over the session from a scanned code — here it came inside the invite's ceremony itself, before any session. Load-bearing: 'matched the commitment in their code' (the code bound the key in advance, as for a scan) and 'the same secret the eight digits come from' (comparing the digits covers what the key came under). Ed25519 and ML-DSA-65 are algorithm names.
+  ///
+  /// In en, this message translates to:
+  /// **'Covers both halves of both identities: Ed25519 and ML-DSA-65. Their post-quantum key came in the invite\'s own exchange, sealed under keys from the same secret the eight digits come from, and matched the commitment in their code.'**
+  String get ciBlurbHybridConnect;
+
+  /// Shown under the safety number for a contact added by a post-quantum invite whose eight digits the user compared and confirmed (ADR 0033 section 4): the device they were added from needs no further post-quantum attestation, because the invite's ceremony carried its keys. Load-bearing: 'you compared' — it is said only after a confirmed comparison, never for an invite added without one — and 'linked post-quantum', the property itself. 'The device' is the contact's device, not the reader's.
+  ///
+  /// In en, this message translates to:
+  /// **'The device you added them from is linked post-quantum: its keys came sealed in the invite\'s exchange, and the eight digits you compared vouch for that exchange.'**
+  String get ciDeviceLinkConnect;
+
   /// One side holds the other's post-quantum key and is waiting for the reverse (ADR 0021). The load-bearing part is 'the same number their device is showing': the reason for waiting is that the two screens must never disagree, which is the whole point of a safety number. 'at once' matters too — the user should not go looking for a button. Nothing is wrong here; do not translate it as a warning.
   ///
   /// In en, this message translates to:

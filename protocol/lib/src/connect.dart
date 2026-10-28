@@ -112,7 +112,8 @@ const String connectRelayCtxV3 = 'z-connect-relay-v3:';
 /// as not a connect code — [ConnectCode.parse] included, which stays the
 /// reader of versions 1 and 2. [ConnectCode.parseV3] reads version 3, and
 /// the release that reads it (44.6) asks both. Minted by
-/// `ConnectCode.generate(version: 3)`, which nothing in the app calls.
+/// `ConnectCode.generate(version: 3)`, which the app reaches only from a
+/// test, through a seam no production path sets (44.6).
 /// Minting version 3 is not a matter of [connectInviteVersion]: an invite of
 /// version 3 runs as `ConnectRunV3`, which carries the device's sealing key,
 /// and the release after the readers ship (ADR 0033 decision 2) makes its
@@ -288,8 +289,10 @@ class ConnectCode {
   /// version 1 or 2 is refused here, as a version-3 code is by [parse].
   ///
   /// This is the reader the release that reads version 3 (44.6) puts beside
-  /// [parse]. Until then nothing in the app calls it, so the app can never
-  /// hold a version-3 invite, let alone run one as another version.
+  /// [parse], and it runs what this reads as `ConnectRunV3` and nothing
+  /// else. Before that release nothing in the app called it, so the app
+  /// could never hold a version-3 invite, let alone run one as another
+  /// version.
   static ConnectCode parseV3(String code) {
     const separators = [0x2D, 0x20, 0x09, 0x0A, 0x0D]; // - space tab nl cr
     final chars = <int>[
@@ -1075,8 +1078,9 @@ Future<(ConnectIdentity, bool?)> _openReveal(
 // Each reveal also carries the account's ML-DSA key and the device's sealing
 // key, so on a confirmed comparison the contact is post-quantum at once.
 //
-// Nothing in the app runs this before 44.6, and nothing mints it but a test:
-// [ConnectCode.generate] still mints [connectInviteVersion], 2.
+// Nothing in the app ran this before 44.6, which runs it as the acceptor;
+// nothing mints it but a test: [ConnectCode.generate] still mints
+// [connectInviteVersion], 2.
 // ---------------------------------------------------------------------------
 
 Uint8List _sha256Sync(List<int> data) =>

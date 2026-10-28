@@ -913,18 +913,37 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       );
       _sealKeys[r['rid'] as String] = bundle.xPub;
     }
-    // ADR 0027 and 26.3: three per-contact facts that live in `kv` rather
-    // than in a column — whether their codes sign their commitment, the
-    // commitment a connect ceremony's digits covered, and an unsigned
-    // commitment held as a candidate. One query each, for every contact.
-    final kv = await vault.kvScanMany(['pqcs_', 'vpqc_', 'pqcc_']);
+    // ADR 0027, 26.3 and 44.6: four per-contact facts that live in `kv`
+    // rather than in a column — whether their codes sign their commitment,
+    // the commitment a connect ceremony's digits covered, an unsigned
+    // commitment held as a candidate, and whether a CONNECT invite of
+    // version 3 added them. One query each, for every contact.
+    final kv = await vault.kvScanMany(['pqcs_', 'vpqc_', 'pqcc_', 'cvia_']);
     for (final c in contacts.values) {
       c.pqcSigned = kv['pqcs_${c.rid}'] == '1';
       final covered = kv['vpqc_${c.rid}'];
       c.verifiedPqc = covered == null ? null : unb64(covered);
       final hint = kv['pqcc_${c.rid}'];
       c.pqcHint = hint == null ? null : unb64(hint);
+      // 44.6: added by a CONNECT invite of version 3, and whether their key
+      // came in its reveal. Anything else there reads as neither.
+      final via = _viaConnect(kv['cvia_${c.rid}']);
+      c.connectV3 = via.v3;
+      c.pqFromConnect = via.v3 && via.key && c.pqPub != null;
     }
+  }
+
+  /// A `cvia_<rid>` row ([Contact.connectV3]) read back: `{"v":3}`, with
+  /// `"pk":1` when the contact's key came in the ceremony's reveal.
+  static ({bool v3, bool key}) _viaConnect(String? row) {
+    if (row == null) return (v3: false, key: false);
+    try {
+      final j = jsonDecode(row);
+      if (j is Map && j['v'] == 3) return (v3: true, key: j['pk'] == 1);
+    } on FormatException {
+      // A row this build did not write: neither.
+    }
+    return (v3: false, key: false);
   }
 
   /// Re-read the contact table from disk. Tests use it after writing a row
@@ -1276,7 +1295,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   Future<Contact> addContactFromCode(String code,
-      {String? alias, bool requested = true, bool upgradeExisting = true}) async {
+      {String? alias,
+      bool requested = true,
+      bool upgradeExisting = true,
+      CeremonyKeys? ceremony}) async {
     // Accepts zc1. and zc3.; a v3 code yields the same classical bundle plus
     // the commitment its post-quantum key must later match. (zc2. account
     // codes are for device linking, not contact exchange, and never reached
@@ -1287,6 +1309,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // The CONNECT ceremony passes false: both sides add each other as the
     // ceremony completes, so there is no one-sided limbo to show and no request
     // to send — the redundant creq would only fold on an existing contact.
+    //
+    // [ceremony] (44.6, §20.9): a CONNECT ceremony of version 3 revealed this
+    // code beside the account's ML-DSA key and the device's sealing key. The
+    // key is held ESTABLISHED from the add — the ceremony held it to the
+    // code's commitment, as an in-band `pqid` is held to it, and it is held
+    // to it again here — so the contact needs no `pqid`; the sealing key is
+    // held for the device the code names, as a `pqseal` would have been, so
+    // it needs none of those either (the first message stamps `pqs:1`); and
+    // the contact is marked [Contact.connectV3].
     final ScannedIdentity scanned;
     try {
       scanned = await scanContactCode(code);
@@ -1362,6 +1393,42 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // false (ADR 0012): both sides add each other as it completes.
       requested: requested,
     );
+    SealRecord? ceremonySeals;
+    if (ceremony != null) {
+      // 44.6: the two keys a version-3 reveal carried (§20.9). The ceremony
+      // refused any reveal whose keys break these rules before it completed;
+      // they are held to them again here, where they become the contact's,
+      // so nothing reaches this record that the rules would not let in.
+      final commit = contact.pqCommit;
+      final pqKey = ceremony.pqKey;
+      if ((commit == null) != (pqKey == null)) {
+        throw ArgumentError.value(pqKey?.length, 'ceremony.pqKey',
+            'a post-quantum key exactly when the code commits to one');
+      }
+      if (pqKey != null) {
+        final scannedV3 = ContactBundleV3(
+          edPub: contact.accountEd,
+          xPub: bundle.xPub,
+          bindingSig: bundle.bindingSig,
+          pqCommit: commit!,
+        );
+        if (!await scannedV3.acceptsPqKey(
+            HybridPublicKey(edPub: contact.accountEd, mlPub: pqKey))) {
+          throw ArgumentError.value(
+              'pqKey', 'ceremony.pqKey', 'not the key the code commits to');
+        }
+        contact.pqPub = Uint8List.fromList(pqKey);
+        contact.pqFromConnect = true;
+      }
+      if (!mlKemEncapsulationKeyValid(ceremony.sealKey)) {
+        throw ArgumentError.value(ceremony.sealKey.length, 'ceremony.sealKey',
+            'not an ML-KEM-768 encapsulation key');
+      }
+      contact.connectV3 = true;
+      ceremonySeals = SealRecord(devices: {
+        rid: DeviceSeal(ek: Uint8List.fromList(ceremony.sealKey)),
+      });
+    }
     // 13.7 put a second writer on this table: the same contact can arrive from
     // one of my own devices while the user is scanning it here. The check
     // above and the insert below have to be one step, or the two interleave
@@ -1379,6 +1446,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             'created_ms': contact.createdMs,
             'requested': requested ? 1 : 0,
             if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
+            if (contact.pqPub != null)
+              'enc_pq_pub': await vault.seal(b64(contact.pqPub!)),
             if (contact.accountEdPub != null)
               'acct_ed': b64(contact.accountEdPub!),
             if (contact.deviceCert != null)
@@ -1387,6 +1456,16 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
               'added_by': contact.addedByDevice,
           },
           conflictAlgorithm: ConflictAlgorithm.replace);
+      // 44.6: what a version-3 ceremony gave, written before the contact is
+      // in memory and so before anything is sent to them — the first message
+      // then says `pqs:1`, and their device never announces its key here.
+      final seals = ceremonySeals;
+      if (seals != null) {
+        await vault.kvPut('cvia_$rid',
+            jsonEncode({'v': 3, if (contact.pqFromConnect) 'pk': 1}));
+        await vault.kvPut('cseal_$rid', seals.encode());
+        _contactSeals[rid] = seals;
+      }
       // Adding someone we had blocked is a change of mind: the block goes, so
       // `contacts` and `blocked` never both name one id (ADR 0011) — in
       // memory too, which ADR 0024's checks read.
@@ -1663,7 +1742,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // With the hello, not a debounce later: the two must reach the peer
       // in one batch, or their answer to the hello goes out before our key
       // has landed and says it does not hold it — and earns a second one.
-      if (_pqSent.add(contact.rid)) await _sendPqIdentity(contact);
+      // 44.6: not to a contact a version-3 ceremony added — our key went to
+      // them in our reveal, as theirs came in theirs (R17).
+      if (!contact.connectV3 && _pqSent.add(contact.rid)) {
+        await _sendPqIdentity(contact);
+      }
       // 7.7a hardening: a multi-device account introduces its device set with
       // the hello, so the new contact fans out to every device from the first
       // message. If they have not added us yet this is dropped like the hello;
@@ -2899,6 +2982,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     'cdl_dlr_', // ADR 0029: what each of their devices said it reads
     'rcpt_', // phase 41: receipts owed to them, held (ADR 0028)
     'cseal_', // 44.3: their devices' sealing keys and `pqdc`s (§18.11)
+    'cvia_', // 44.6: the CONNECT invite version that added them (§20.9)
   ];
 
   /// Forget a contact: every row, every blob, every `kv` family, and every
@@ -3949,6 +4033,39 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   @visibleForTesting
   Uint8List? get debugOwnPqdc => _ownPqdc;
 
+  /// This device's sealing key — its ML-KEM-768 encapsulation key, public —
+  /// for the one place that hands it over directly rather than in a
+  /// `pqseal`: this side's reveal in a CONNECT ceremony of version 3 (§20.9,
+  /// 44.6). Null when this run holds none, as for [debugSealingKey].
+  Uint8List? get sealingKey => _sealingKey?.ek;
+
+  /// 44.6 (§20.9, ADR 0033 §4): whether the device [rid] was added from — a
+  /// contact's own — is linked post-quantum by a CONNECT ceremony of version
+  /// 3 whose digits this side compared: the sealing key held for it came in
+  /// that ceremony's reveal ([DeviceSeal.byCeremony]), as authentic as the
+  /// digits, so no `pqdc` is needed for it. False for every other contact,
+  /// whose link is 44.5's to judge.
+  bool deviceLinkedByCeremony(String rid) {
+    final d = _contactSeals[rid]?.devices[rid];
+    return d != null && d.byCeremony && d.ek != null;
+  }
+
+  /// 44.6: the person compared a CONNECT ceremony of version 3's digits and
+  /// they matched, so the sealing key [sealKey] that ceremony's reveal gave
+  /// for [rid]'s device — held for it since the add — is as authentic as the
+  /// digits ([deviceLinkedByCeremony]). Nothing when the key held for that
+  /// device is another: a device that has announced a different key since
+  /// is not the one the digits covered.
+  Future<void> noteComparedCeremony(String rid, Uint8List sealKey) async {
+    final d = _contactSeals[rid]?.devices[rid];
+    final ek = d?.ek;
+    if (d == null || ek == null || d.byCeremony) return;
+    if (!constantTimeEquals(ek, sealKey)) return;
+    d.byCeremony = true;
+    await _saveSeals(rid);
+    notifyListeners();
+  }
+
   /// What this device holds of the sealing key and the `pqdc` of
   /// [deviceRid] — a contact's device or one of mine — and whether that
   /// device has said it holds this one's. Test seams.
@@ -4214,12 +4331,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// the same device replaces the one held: the ratchet authenticates both
   /// as that device's, and only a device that lost its seed — restored from
   /// an archive older than this build — announces a second; the `pqdc` over
-  /// the first goes with it.
+  /// the first goes with it, and so does a compared CONNECT ceremony's word
+  /// for the first (44.6, [DeviceSeal.byCeremony]), which the digits never
+  /// gave the second.
   static bool _keepSeal(
       DeviceSeal d, Uint8List? ek, Uint8List? pqdc, bool stamped) {
     var changed = false;
     if (ek != null && !(d.ek != null && constantTimeEquals(d.ek!, ek))) {
-      if (d.ek != null) d.pqdc = null;
+      if (d.ek != null) {
+        d.pqdc = null;
+        d.byCeremony = false;
+      }
       d.ek = ek;
       changed = true;
     }
@@ -5789,7 +5911,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         } catch (_) {}
       }
       if (inner.kind == 'hello') {
-        _offerPqIdentity(contact, _PqReason.volunteer);
+        // 44.6: nothing to volunteer to a contact a version-3 ceremony added,
+        // whose device holds this account's key from this side's reveal.
+        if (!contact.connectV3) {
+          _offerPqIdentity(contact, _PqReason.volunteer);
+        }
         // ADR 0020: an inviter I owe an answer to has opened a session —
         // perhaps after dropping it as a stranger's, or before it was
         // waiting for it.

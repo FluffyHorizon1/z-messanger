@@ -124,6 +124,24 @@ class Contact {
   /// never a reason to refuse a key. Kept in `kv` as `pqcc_<rid>`.
   Uint8List? pqcHint;
 
+  /// 44.6 (PROTOCOL §20.9): this device added the contact through a CONNECT
+  /// invite of version 3, whose reveals carry each account's ML-DSA key and
+  /// each device's sealing key. This account's key went to them in this
+  /// side's reveal — so this device volunteers no `pqid` to them, nor they
+  /// to it (R17) — and theirs came in theirs when their code commits to one
+  /// ([pqFromConnect]). Kept in `kv` as `cvia_<rid>`, `{"v":3}` and `"pk":1`
+  /// for [pqFromConnect], on this device only: not in a backup, and not
+  /// handed to a device linked later, whose own `pqid` carries its own
+  /// `pqdc`.
+  bool connectV3;
+
+  /// 44.6: [pqPub] was established from that ceremony's reveal, held to the
+  /// commitment in their code — not from a `pqid`, which a contact so added
+  /// never needs. False for every other contact, and for one whose code
+  /// committed to no key, whose key (if one ever arrives) arrives as any
+  /// candidate does.
+  bool pqFromConnect;
+
   Contact({
     required this.rid,
     required this.bundle,
@@ -145,6 +163,8 @@ class Contact {
     this.pqcSigned = false,
     this.verifiedPqc,
     this.pqcHint,
+    this.connectV3 = false,
+    this.pqFromConnect = false,
   });
 
   /// What is actually known about this identity's authenticity.
@@ -296,6 +316,18 @@ class ContactCodeRefused extends FormatException {
 
   const ContactCodeRefused(this.kind, this.name, String message)
       : super(message);
+}
+
+/// What a CONNECT ceremony of version 3 (PROTOCOL §20.9, 44.6) hands over
+/// beside the contact code its peer revealed, for the add that follows it:
+/// the peer account's ML-DSA-65 key, present exactly when that code commits
+/// to one and already checked against the commitment by the ceremony, and
+/// the peer device's sealing key (ADR 0033 §1). Both are as authentic as
+/// the eight digits once they are compared; until then, as the code is.
+class CeremonyKeys {
+  final Uint8List? pqKey;
+  final Uint8List sealKey;
+  const CeremonyKeys({this.pqKey, required this.sealKey});
 }
 
 /// 26.3: whether the messages of a chat are protected by the post-quantum key

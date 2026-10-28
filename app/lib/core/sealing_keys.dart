@@ -33,7 +33,11 @@
 // The keys of other devices are judged by nothing here beyond FIPS 203 §7.2's
 // check, which `InnerMessage.pqSealKey` applies before any key is taken:
 // whether a `pqdc` verifies under a contact's established ML-DSA key, and what
-// the screen says about it, is 44.5.
+// the screen says about it, is 44.5. One key is more than announced (44.6,
+// §20.9): a contact's device that revealed it in a CONNECT ceremony of
+// version 3 gave it under the ceremony's hybrid channel, and once the eight
+// digits are compared it is as authentic as they are — the device link is
+// post-quantum without a `pqdc` ([DeviceSeal.byCeremony]).
 
 import 'dart:convert';
 import 'dart:typed_data';
@@ -65,14 +69,26 @@ class DeviceSeal {
   /// the epoch; 0 for never. The re-announcement clock runs from here.
   int announcedMs;
 
+  /// 44.6 (§20.9): [ek] came in the reveal of a CONNECT ceremony of version
+  /// 3 whose eight digits this side's person compared and found matching —
+  /// so it is as authentic as the digits, and the link to this device is
+  /// post-quantum without a `pqdc` (ADR 0033 §4). It goes with the key: a
+  /// different key from the device clears it, as it clears [pqdc].
+  bool byCeremony;
+
   DeviceSeal(
-      {this.ek, this.pqdc, this.holdsMine = false, this.announcedMs = 0});
+      {this.ek,
+      this.pqdc,
+      this.holdsMine = false,
+      this.announcedMs = 0,
+      this.byCeremony = false});
 
   Map<String, Object?> toJson() => {
         if (ek != null) 'ek': b64(ek!),
         if (pqdc != null) 'pqdc': b64(pqdc!),
         if (holdsMine) 'pqs': 1,
         if (announcedMs > 0) 'at': announcedMs,
+        if (byCeremony && ek != null) 'c3': 1,
       };
 
   /// Each member held to the shape it must have — a key FIPS 203 §7.2
@@ -97,6 +113,8 @@ class DeviceSeal {
     out.holdsMine = raw['pqs'] == 1;
     final at = raw['at'];
     if (at is int && at > 0) out.announcedMs = at;
+    // Only beside the key it was said of.
+    out.byCeremony = out.ek != null && raw['c3'] == 1;
     return out;
   }
 }

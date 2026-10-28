@@ -20,13 +20,20 @@ opening carries the new device's `sk` from 44.4, to the device linking it).
 `pqdc` and `zs2.` (PROTOCOL §8.2, §18.11; `vectors/sealed-v2/`,
 `v3/device_attestation.json`) — no `zs2.` before 44.7 —
 and pairing v3 and CONNECT v3 (§10.2, §20.9; `vectors/pair-v3/`,
-`connect/invite_v3.json`) — CONNECT v3 runs nowhere before 44.6, and
-`connectInviteVersion` stays 2. 44.3 is built: every device draws its sealing
-key at its first start and keeps it for its life, in the vault and the
+`connect/invite_v3.json`); `connectInviteVersion` stays 2. 44.6 is built: the
+app opens a CONNECT invite of version 3, by link or by paste, and runs its
+ceremony as the acceptor; the add holds the reveal's ML‑DSA key, established,
+and its sealing key, so neither side sends a `pqid` or a `pqseal`; on a
+confirmed comparison the device link is post‑quantum and the contact's screen
+says so. It mints version 2 still, and version 3 only behind a test seam — the
+release after mints it (decision 2). 44.3 is built: every device draws its
+sealing key at its first start and keeps it for its life, in the vault and the
 archive; the root signs its own `pqdc` and an earlier‑linked device's over
 self‑sync (§9, `dir:"pqdc"`); every device announces its key in `pqseal` to
-every device it has a session with — never beside `pqct` — keeps the keys
-announced to it, stamps `pqs:1` back, and carries its `pqdc` in its `pqid`.
+every device it has a session with — never beside `pqct`, and to none that
+says it holds it already, as a device a CONNECT ceremony of version 3 gave it
+to says from its first message (44.6) — keeps the keys announced to it,
+stamps `pqs:1` back, and carries its `pqdc` in its `pqid`.
 Nothing uses any of it before 44.5 and 44.7. 44.4 is built: the app links a
 device by pairing v3 on both sides and by nothing older — an existing device
 recognises an older new device by its first frame, says which version it
@@ -386,7 +393,7 @@ failing test on the base where it can be expressed, and a mutation check.
 | 44.3 | Every device gets a sealing key and attestation: `pqseal`/`pqs`, `pqid.pqdc`, `dir:"pqdc"`, archive | 44.1 | **built**; sends keys, uses none; the `pqid` once more to contacts that already held the key built and held until 44.5 (4.7.1) |
 | 44.4 | Pairing v3 | 44.1, 44.3 | **built**; the app links by v3 on both sides, by nothing older and with no fallback, says which device to update when the other is older, carries the new device's `pqdc` (refused, not the link, when it does not verify), sends nothing of the account until both people have confirmed the digits, and acknowledges every frame, so a finished ceremony leaves nothing on the relay |
 | 44.5 | The scanned device's link | 44.3 | planned; bites once peers run 44.3; turns on 44.3's `pqid` once more, paced and owed per contact device (4.7.1 records it per contact, which a device from before 44.3 spends), so contacts from before 44.3 hold each device's `pqdc` |
-| 44.6 | CONNECT v3: readers first; minting a release later (decision 2), by making invites with version 3's run and the device's sealing key — not by moving `connectInviteVersion`, which the version‑2 run refuses | 44.1, 44.3 | planned |
+| 44.6 | CONNECT v3: readers first; minting a release later (decision 2), by making invites with version 3's run and the device's sealing key — not by moving `connectInviteVersion`, which the version‑2 run refuses | 44.1, 44.3 | **built** (readers): the app opens version 3 and runs it as the acceptor, holding the reveal's keys — no `pqid`, no `pqseal`, the device link post‑quantum on a confirmed comparison (`connect_pq_test.dart`); it mints version 2, and version 3 only behind a test seam; the release after mints |
 | 44.7 | `zs2.` switched on | 44.2 deployed, 44.3, constant-time ML-KEM upstream (decision 4) | planned; goes last |
 | 44.8 | `kintro`: as addendum A changes it, §21.3's relay-held key signed by `intro`; the record does not change | 44.9–44.12 | planned; the handles hardening it was to land with shipped in 4.3.0 without it |
 | 44.9 | Protocol core and vectors of addendum A: `iks`, the entry, `sk` in codes, the FIPS 203 key check, `kintro`, the relay-client frames | 44.1, to be used (built on the library's ML-KEM) | **built**; nothing emits |
