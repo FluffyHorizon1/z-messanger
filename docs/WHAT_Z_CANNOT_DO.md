@@ -43,6 +43,10 @@ That includes:
   history to an account — and a disappearing message you copied outlives the
   message, there and on the clipboard. Write a recovery code down rather than
   copy it (`THREAT_MODEL.md`, R52).
+* another app on the phone, which can hand Z a link as if you had tapped it.
+  Since 4.7.2 Z takes only an invite link to its own site that way, and only
+  once you are past the app lock; an invite another app made still opens, and
+  nothing is sent unless you press Connect (`THREAT_MODEL.md`, R53).
 
 What Z does do is make the endpoint the *only* place worth attacking. That is
 a real achievement — it means no one can read your conversations by

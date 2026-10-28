@@ -438,6 +438,23 @@ class AppLock extends ChangeNotifier {
   bool get locked => _locked;
   bool get authInFlight => _authInFlight;
 
+  /// Whether the person will have passed the lock before they see anything
+  /// new: it is [locked], or it locks the moment the app is back in front —
+  /// the screen lock is on and the app has been in the background for
+  /// [LockSettings.lockAfterSec]. The second is what [locked] cannot say yet:
+  /// it locks only once [onLifecycle] hears the app is resumed, and Android
+  /// hands the activity a tapped link (`onNewIntent`) before it resumes it.
+  bool get lockedOrDue {
+    if (_locked) return true;
+    final at = _backgroundedAtMs;
+    return _settings.screenLock &&
+        at != null &&
+        lockDue(
+            backgroundedAtMs: at,
+            nowMs: _now(),
+            lockAfterSec: _settings.lockAfterSec);
+  }
+
   /// Outcome of the most recent prompt, for the lock screen's status line.
   GateResult? get lastResult => _lastResult;
 

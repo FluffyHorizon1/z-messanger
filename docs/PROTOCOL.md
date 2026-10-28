@@ -4765,14 +4765,28 @@ An invite of version 3 starts them with `8` (20.9).
 
 `host` defaults to `www.zmessengers.com` and is part of the deployment, not of the
 protocol: a self‑hosted relay serves its own landing page and its links carry
-its own host, and a client MUST accept an invite whatever host precedes the
-fragment. It MUST NOT accept one on any path but `/i` (a trailing `/` and a
-query are allowed, the scheme may be missing): a fragment that happens to read
-as base32 on another page of a site — `/index.html`, `/info` — is not an
-invite, and until 2026‑10‑16 any `/i` before the `#` made it one. Android's
-filter for these links names the path `/i` exactly for the same reason. The
-code lives in the URL **fragment**, which no browser transmits, so the site
-serving that page never receives an invite and cannot know one exists.
+its own host, and a client MUST accept an invite its person hands it — pasted
+or typed — whatever host precedes the fragment. It MUST NOT accept one on any
+path but `/i` (a trailing `/` and a query are allowed, the scheme may be
+missing): a fragment that happens to read as base32 on another page of a
+site — `/index.html`, `/info` — is not an invite, and until 2026‑10‑16 any
+`/i` before the `#` made it one. Android's filter for these links names the
+path `/i` exactly for the same reason. The code lives in the URL
+**fragment**, which no browser transmits, so the site serving that page never
+receives an invite and cannot know one exists.
+
+A link the platform hands a client is another door, and a narrower one. On
+Android a tap arrives as an intent, and the activity that takes it is
+exported, so any app on the device can address an intent to it directly and
+pass the filter by. The reference client takes from that door only what its
+filter claims — `https://`, then `zmessengers.com` or `www.zmessengers.com`
+as written, the path `/i` exactly, an optional query, then the fragment (and
+`/c` while public links are on, §21.9) — and drops anything else before it
+reads or writes the vault; a self‑hosted deployment's link, which no build's
+filter claims, is pasted. A link that arrives while the app lock is engaged,
+or due as the app comes back to the front, waits for the lock and is opened
+once, after it. Until 4.7.2 that door took any URI that read as an invite, on
+any host and by `http` as well as `https`, lock or no lock.
 
 A public introduction link (§21.9), `https://host/c#zi1.…`, is not an
 invite: it is printed on `/c`, and its code holds a `1` and a `.`, which no

@@ -7,8 +7,9 @@
 // exists. This file is the Dart half of that: the platform channel, and what
 // happens to whatever comes down it.
 //
-// It is a PUBLIC entry point — any app on the device can send a VIEW intent —
-// so most of these tests are about it being safe to hand rubbish to.
+// It is a PUBLIC entry point — any app on the device can send a VIEW intent,
+// and one that names the activity is never held to the intent filter — so
+// most of these tests are about it being safe to hand rubbish to.
 //
 // Criteria, each a test below:
 //  1. the link the app was launched with is drained on start and opens the
@@ -28,13 +29,27 @@
 //     claimed /index.html and every other page beginning with the letter;
 //  7. and for no app that takes text: the manifest queries none for
 //     ACTION_PROCESS_TEXT, which until 4.7.2 put a button for each beside
-//     Copy in every selection toolbar, and nothing in lib/ asks for one.
+//     Copy in every selection toolbar, and nothing in lib/ asks for one;
+//  8. what the filter would not hand over is dropped before the vault is
+//     touched, however it came: a URI of another scheme, host or path, with
+//     a port or a name before the host — which another app can send by
+//     naming the activity, past the filter — opens nothing and writes
+//     nothing, where until 4.7.2 one that read as an invite was opened on
+//     any host, by http as well as https; and the hosts taken are the hosts
+//     the filter names;
+//  9. a genuine link that arrives behind the app lock — engaged at launch,
+//     or due as the app comes back to the front, which it hears only after
+//     the link — waits for it, and is opened once, after it; and the app's
+//     own links are given its lock.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:z_protocol/z_protocol.dart';
+import 'package:zapp/core/app_lock.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/connect_invites.dart';
 import 'package:zapp/core/deep_links.dart';
@@ -54,6 +69,29 @@ class _NoNetwork extends HttpOverrides {
     created++;
     throw const SocketException('opening an invite must touch no network');
   }
+}
+
+/// The invites, writing down every link or code they are asked to open: an
+/// open is the vault's read and its write, and asked twice for one link is
+/// one link handled twice, though the second is refused as already open.
+class _CountingInvites extends ConnectInvites {
+  _CountingInvites(super.svc);
+  final asked = <String>[];
+
+  @override
+  Future<PendingInvite> open(String linkOrCode,
+      {int? nowMs, bool consented = true}) {
+    asked.add(linkOrCode);
+    return super.open(linkOrCode, nowMs: nowMs, consented: consented);
+  }
+}
+
+/// The OS prompt, passed every time.
+class _PassingGate implements BiometricGate {
+  @override
+  Future<bool> get isAvailable async => true;
+  @override
+  Future<GateResult> authenticate(String reason) async => GateResult.ok;
 }
 
 void main() {
@@ -111,6 +149,19 @@ void main() {
       const StandardMethodCodec().encodeMethodCall(MethodCall('link', url)),
       (_) {},
     );
+  }
+
+  /// Deliver a link as the platform does, and wait for the app's answer,
+  /// which comes once it has done with the link.
+  Future<void> deliver(String url) {
+    final answered = Completer<void>();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+      channel.name,
+      const StandardMethodCodec().encodeMethodCall(MethodCall('link', url)),
+      (_) => answered.complete(),
+    );
+    return answered.future.timeout(const Duration(seconds: 10));
   }
 
   test('1. the link the app was launched with opens the ceremony', () async {
@@ -191,14 +242,19 @@ void main() {
     expect(invites.invites, isEmpty,
         reason: 'a foreign VIEW intent must not create anything');
 
-    // A link on ANOTHER host is not rubbish, and is accepted: the invite is
+    // A link on ANOTHER host is not rubbish where it is pasted: the invite is
     // the secret in the fragment, and the host is only where the landing page
     // happens to live — self-hosting a relay means self-hosting that page
-    // too. Android never delivers one by tap (the intent filter is scoped to
-    // zmessengers.com); it arrives by paste, from someone running their own.
+    // too (PROTOCOL §20.2). Android never delivers one by tap (the intent
+    // filter is scoped to zmessengers.com), so from the platform it can only
+    // be another app naming the activity, and since 4.7.2 it is refused
+    // there (8); it arrives by paste, from someone running their own, and is
+    // accepted there.
     final elsewhere = ConnectCode.generate();
     expect(await links.handle(elsewhere.link(host: 'relay.example.org')),
-        isNotNull);
+        isNull);
+    expect(invites.invites, isEmpty);
+    await invites.open(elsewhere.link(host: 'relay.example.org'));
     expect(invites.invites, hasLength(1));
     await links.dispose();
 
@@ -222,8 +278,12 @@ void main() {
     expect(await links.handle(code.link()), isNull);
     expect(invites.invites, hasLength(1),
         reason: 'one invite, however many times the link is opened');
-    // And the printed rendering of the same secret is the same invite.
-    expect(await links.handle(code.text), isNull);
+    // And the printed rendering of the same secret, pasted, is the same
+    // invite. (From the platform it is no link at all, and refused: 8.)
+    await expectLater(
+        invites.open(code.text),
+        throwsA(isA<FormatException>().having(
+            (e) => e.message, 'message', 'that invite is already open')));
     expect(invites.invites, hasLength(1));
     await links.dispose();
   });
@@ -329,5 +389,148 @@ void main() {
     expect(callers, isEmpty,
         reason: 'ProcessTextService and the processText channel hand text to '
             'another app');
+  });
+
+  test('8. what the filter would not hand over opens nothing and writes '
+      'nothing, however it came', () async {
+    // MainActivity is exported, and an intent that names it is never held
+    // to the filter, so any app can hand over any URI at all. What is taken
+    // is what the filter claims: its hosts are DeepLinks.filterHosts, on
+    // https, at /i.
+    final manifest = File('android/app/src/main/AndroidManifest.xml')
+        .readAsStringSync()
+        .replaceAll(RegExp(r'<!--.*?-->', dotAll: true), '');
+    final filter = RegExp(
+            r'<intent-filter[^>]*>(?:(?!</intent-filter>).)*android\.intent\.action\.VIEW(?:(?!</intent-filter>).)*</intent-filter>',
+            dotAll: true)
+        .firstMatch(manifest)!
+        .group(0)!;
+    String? attr(String data, String name) =>
+        RegExp('android:$name="([^"]*)"').firstMatch(data)?.group(1);
+    final claimed = {
+      for (final m
+          in RegExp(r'<data\b[^>]*/>', dotAll: true).allMatches(filter))
+        (attr(m.group(0)!, 'scheme'), attr(m.group(0)!, 'host'),
+            attr(m.group(0)!, 'path')),
+    };
+    expect(claimed,
+        {for (final h in DeepLinks.filterHosts) ('https', h, '/i')});
+
+    final counted = _CountingInvites(svc);
+    final links = DeepLinks(counted, channel: channel);
+    await links.start();
+    // A real invite's code, everywhere but where the filter would take it.
+    final fragment = ConnectCode.generate().link().split('#').last;
+    for (final uri in [
+      'http://www.zmessengers.com/i#$fragment', // another scheme
+      'zmessengers://i#$fragment',
+      'intent://www.zmessengers.com/i#$fragment',
+      'file:///sdcard/i#$fragment',
+      'content://media/external/i#$fragment',
+      // The filter compares the scheme and the host exactly.
+      'HTTPS://WWW.ZMESSENGERS.COM/i#$fragment',
+      ' https://www.zmessengers.com/i#$fragment',
+      'https://relay.example.org/i#$fragment', // another host: pasted, 3
+      'https://zmessengers.com.example.org/i#$fragment',
+      'https://www.zmessengers.com.example.org/i#$fragment',
+      'https://example.org/https://www.zmessengers.com/i#$fragment',
+      'https://www.zmessengers.com:8443/i#$fragment', // a port
+      'https://someone@www.zmessengers.com/i#$fragment', // a name before it
+      'https://www.zmessengers.com/i/#$fragment', // another path
+      'https://www.zmessengers.com/x/i#$fragment',
+      'https://www.zmessengers.com/c#$fragment', // public links are off
+    ]) {
+      await deliver(uri);
+      expect(links.lastRejected, uri, reason: 'refused: $uri');
+    }
+    expect(counted.asked, isEmpty, reason: 'no invite was opened for any');
+    expect(await vault.kvGet('connect_invites'), isNull,
+        reason: 'nothing was written to the vault');
+    expect(counted.invites, isEmpty);
+    expect(links.takeUnshown(), isNull);
+
+    // The same code on the invite page itself, on either host, is taken.
+    await deliver('https://zmessengers.com/i#$fragment');
+    expect(counted.invites, hasLength(1));
+    expect(await vault.kvGet('connect_invites'), isNotNull);
+    expect(await links.handle('https://www.zmessengers.com/i?x=1#$fragment'),
+        isNull, reason: 'the same invite, already open');
+    expect(counted.asked, [
+      'https://zmessengers.com/i#$fragment',
+      'https://www.zmessengers.com/i?x=1#$fragment',
+    ]);
+    await links.dispose();
+  });
+
+  test('9. a link that arrives behind the app lock waits for it, and is '
+      'opened once, after it', () async {
+    var now = 1000000;
+    final lock = AppLock(
+        root: dir,
+        gate: _PassingGate(),
+        store: MemorySecretStore(),
+        clock: () => now);
+    await lock.save(const LockSettings(screenLock: true, lockAfterSec: 60));
+    final counted = _CountingInvites(svc);
+    final links = DeepLinks(counted, channel: channel, lock: lock);
+
+    // Launched with the screen lock on: locked before the first screen, and
+    // the launch intent drained behind it.
+    final first = ConnectCode.generate();
+    initial = first.link();
+    lock.lockNow();
+    await links.start();
+    expect(takes, 1);
+    expect(counted.asked, isEmpty, reason: 'nothing opened behind the lock');
+    expect(await vault.kvGet('connect_invites'), isNull,
+        reason: 'nothing written behind the lock');
+    expect(links.takeUnshown(), isNull);
+    expect(links.lastRejected, isNull, reason: 'waiting, not refused');
+
+    var next = links.opened.first;
+    expect(await lock.requestUnlock(), GateResult.ok);
+    final one = await next.timeout(const Duration(seconds: 10));
+    expect(b64(one.run.code.secret), b64(first.secret));
+    expect(one.held, isTrue, reason: 'held as every tapped link is: no yes');
+    expect(identical(links.takeUnshown(), one), isTrue);
+
+    // In the background past the lock's time, a tapped link reaches the app
+    // before it is told it is in front, and only that locks it: the link
+    // waits all the same, and a second tap of it waits as one.
+    lock.onLifecycle(AppLifecycleState.paused);
+    now += 61 * 1000;
+    final second = ConnectCode.generate();
+    await deliver(second.link());
+    expect(lock.locked, isFalse, reason: 'due, not yet locked');
+    lock.onLifecycle(AppLifecycleState.resumed);
+    expect(lock.locked, isTrue);
+    await deliver(second.link());
+    expect(counted.asked, [first.link()], reason: 'the second still waits');
+
+    next = links.opened.first;
+    expect(await lock.requestUnlock(), GateResult.ok);
+    final two = await next.timeout(const Duration(seconds: 10));
+    expect(b64(two.run.code.secret), b64(second.secret));
+
+    // Once: locked and unlocked again, nothing waits. A link handled after
+    // that is taken in turn behind anything an unlock could have queued, so
+    // when it is done, so is all of that.
+    lock.lockNow();
+    expect(await lock.requestUnlock(), GateResult.ok);
+    next = links.opened.first;
+    final third = ConnectCode.generate();
+    expect(await links.handle(third.link()), isNotNull);
+    final three = await next.timeout(const Duration(seconds: 10));
+    expect(b64(three.run.code.secret), b64(third.secret),
+        reason: 'the next one opened is the link that came next');
+    expect(counted.asked, [first.link(), second.link(), third.link()],
+        reason: 'each link opened once, in the order it came');
+
+    // And the app's own links are given the app's lock.
+    final main = File('lib/main.dart').readAsStringSync();
+    expect(
+        RegExp(r'DeepLinks\([^;]*\block: _appLock\b').hasMatch(main), isTrue,
+        reason: 'main.dart hands DeepLinks the app lock');
+    await links.dispose();
   });
 }

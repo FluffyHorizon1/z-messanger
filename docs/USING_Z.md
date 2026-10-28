@@ -65,7 +65,7 @@ the room. It works like this:
    the way in: copy the address and paste it under **I have an invite**.
    Z asks them first: nothing of a tapped invite leaves their phone until
    they press **Connect**, under a line saying what connecting sends and to
-   whom.
+   whom. With the app lock on, a tapped invite waits until they are past it.
 4. From here neither of you has to do anything. While Z is open it carries
    the invite forward on its own, a step every twenty seconds or so, and
    "Check now" only hurries it. An invite the other person has not opened yet
