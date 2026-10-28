@@ -20,11 +20,15 @@
 // stamped the `pqseal` riding ahead of a message (§18.11) with a claim read
 // after the message's, then encrypted the seal first: a list recorded in
 // between went out on the seal and the version before it on the message.
+// The echo that shows a contact behind has the account hand its list over
+// again, once a minute (§3.6); the minute was recorded only once the list
+// had been signed, so an echo read meanwhile handed it over again.
 //
 // Real clients through the real relay; no transparency log. An order the
 // fault met by luck is made here with a seam: one that holds one message's
-// steps once it has been read (`debugBeforeInboundActs`), and one that runs
-// inside a send a seal rides on (`debugBeforePqSealRides`).
+// steps once it has been read (`debugBeforeInboundActs`), one that runs
+// inside a send a seal rides on (`debugBeforePqSealRides`), and one that
+// holds a signing of the account's own list (`debugBetweenOwnListReads`).
 //
 // Criteria, each a test below:
 //   1. a contact's list whose message is read and then held, while the same
@@ -40,7 +44,12 @@
 //      account's list recorded at the next version inside that send leaves
 //      its device's claims, in the order the contact's ratchet reads them,
 //      never going down (on 4a716af the seal claims the version after the
-//      message's).
+//      message's);
+//   4. and the list a contact's echo asks for again: an echo read while the
+//      list is being signed for the one before it is held back by the
+//      minute, so the contact is handed that list once (on 4a716af it is let
+//      through, to sign the same list again — the double re-send
+//      device_pop_test 13 met one run in five).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -72,10 +81,11 @@ void main() {
   final dirs = <String, Directory>{};
   final live = <ChatService>[];
 
-  // Each service runs in an error zone of its own; an error raised inside a
-  // running service fails the test that was running — except the one a
-  // service [stop] has shut down still has in flight against the database
-  // it closed.
+  // Each service runs in an error zone of its own, and so does what this
+  // file asks of it ([inside]); an error raised there fails the test that
+  // was running — except the one a service [stop] has shut down still has
+  // in flight against the database it closed.
+  final zones = <ChatService, Zone>{};
   final stopped = <ChatService>{};
   final strays = <String>[];
 
@@ -146,6 +156,7 @@ void main() {
           debugBuildBeforeSealingKeys: beforeSealingKeys,
         );
         made = svc;
+        zones[svc] = Zone.current;
         live.add(svc);
         ready.complete(svc);
       } catch (e, st) {
@@ -163,6 +174,21 @@ void main() {
     });
     return ready.future;
   }
+
+  /// [f], run in [svc]'s zone: what it leaves running — the mirror of a
+  /// message to the account's other devices, a link's history — is that
+  /// service's, and fails no test by meeting the database [stop] closed.
+  Future<T> inside<T>(ChatService svc, Future<T> Function() f) =>
+      zones[svc]!.run(f);
+
+  Future<void> say(ChatService from, String toRid, String text) =>
+      inside(from, () => from.sendText(toRid, text));
+
+  Future<void> link(ChatService owner, DeviceCertificate cert) =>
+      inside(owner, () => owner.addMyDevice(cert));
+
+  Future<void> add(ChatService svc, String code) =>
+      inside(svc, () => svc.addContactFromCode(code));
 
   /// A new account called [name]; [beforeSealingKeys], on a build from
   /// before 44.3.
@@ -197,10 +223,10 @@ void main() {
   /// Two accounts that have exchanged codes and a message each way.
   Future<void> introduce(ChatService a, ChatService b) async {
     await waitUntil(() => linked(a) && linked(b), what: 'both connected');
-    await a.addContactFromCode(await b.myContactCode());
-    await b.addContactFromCode(await a.myContactCode());
-    await a.sendText(b.myRid, 'hello ${b.displayName}');
-    await b.sendText(a.myRid, 'hello ${a.displayName}');
+    await add(a, await b.myContactCode());
+    await add(b, await a.myContactCode());
+    await say(a, b.myRid, 'hello ${b.displayName}');
+    await say(b, a.myRid, 'hello ${a.displayName}');
     await waitUntil(
         () =>
             received(a, b.myRid, 'hello ${a.displayName}') &&
@@ -210,7 +236,7 @@ void main() {
 
   /// [from] says [text] to [to], and it arrives.
   Future<void> heard(ChatService from, ChatService to, String text) async {
-    await from.sendText(to.myRid, text);
+    await say(from, to.myRid, text);
     await waitUntil(() => received(to, from.myRid, text),
         what: '"$text" reaches ${to.displayName}');
   }
@@ -248,6 +274,9 @@ void main() {
     // loaded device — while Bob links another and Vic reads and acts on
     // version 3.
     final release = Completer<void>();
+    addTearDown(() {
+      if (!release.isCompleted) release.complete();
+    });
     String? held;
     var heldActedOn = false;
     var nextActedOn = false;
@@ -268,10 +297,10 @@ void main() {
         alertThen = vic.contactDevlistAlerts[bob.myRid];
       }
     };
-    await bob.addMyDevice(await deviceOf(bob, 'tablet'));
+    await link(bob, await deviceOf(bob, 'tablet'));
     await waitUntil(() => held != null,
         what: "Vic has read Bob's version 2, and holds what it says");
-    await bob.addMyDevice(await deviceOf(bob, 'phone2'));
+    await link(bob, await deviceOf(bob, 'phone2'));
     await waitUntil(() => nextActedOn,
         what: "Vic reads and acts on Bob's version 3");
     expect(await vic.heldContactListVersion(bob.myRid), 3);
@@ -298,7 +327,7 @@ void main() {
     // and an unconfirmed list's (§3.6) cannot be.
     vic.devlistGrace = const Duration(hours: 1);
     await introduce(vic, bob);
-    await bob.addMyDevice(await deviceOf(bob, 'tablet'));
+    await link(bob, await deviceOf(bob, 'tablet'));
     await waitUntil(
         () async => await vic.heldContactListVersion(bob.myRid) == 2,
         what: "Vic installs Bob's version 2");
@@ -310,13 +339,11 @@ void main() {
     final devices = (await bob.vault.kvGet('my_devices'))!;
 
     // Bob moves on, and his device says so to Vic.
-    await bob.addMyDevice(await deviceOf(bob, 'phone2'));
+    await link(bob, await deviceOf(bob, 'phone2'));
     await waitUntil(
         () async => await vic.heldContactListVersion(bob.myRid) == 3,
         what: "Vic installs Bob's version 3");
-    await bob.sendText(vic.myRid, 'at version 3');
-    await waitUntil(() => received(vic, bob.myRid, 'at version 3'),
-        what: "Vic reads a message of Bob's claiming version 3");
+    await heard(bob, vic, 'at version 3');
     expect(vic.contactDevlistAlerts[bob.myRid], isNull);
 
     // Bob's device goes quiet, and the backup comes up as it.
@@ -336,8 +363,8 @@ void main() {
     expect(backup.myRid, bob.myRid, reason: "it speaks as Bob's device");
     expect(await backup.ownDeviceListVersion(), 2);
     await waitUntil(() => linked(backup), what: 'the backup connected');
-    await backup.addContactFromCode(await vic.myContactCode());
-    await backup.sendText(vic.myRid, 'still me');
+    await add(backup, await vic.myContactCode());
+    await say(backup, vic.myRid, 'still me');
     await waitUntil(() => received(vic, bob.myRid, 'still me'),
         what: 'Vic reads the backup, as Bob');
 
@@ -348,6 +375,7 @@ void main() {
     expect(await vic.heldContactListVersion(bob.myRid), 3,
         reason: 'the version 2 the backup hands over is refused');
   });
+
   test(
       '3. a seal riding ahead of a message claims what the message claims, '
       'so a list recorded during the send never shows the device going back',
@@ -405,5 +433,61 @@ void main() {
               'less than it had: $read');
     }
     expect(bob.contactDevlistAlerts[alice.myRid], isNull);
+  });
+
+  test(
+      "4. an echo read while the list is being signed for the one before it "
+      'is held back by the minute: the contact is handed that list once',
+      () async {
+    final vic = await start('vic4');
+    final bob = await start('bob4');
+    await introduce(vic, bob);
+    // Vic takes no list of Bob's: everything she sends him echoes the one she
+    // held before — as when a first-come claim had her refuse it
+    // (device_pop_test 13) — and each echo asks his root to hand his list over
+    // again.
+    vic.debugOnDecrypted = (path, from, dec) {
+      if (path != 'primary' || from != bob.myRid) return false;
+      try {
+        return InnerMessage.fromBytes(dec.plaintext).kind == 'devlist';
+      } catch (_) {
+        return false;
+      }
+    };
+    // Bob's root signs the list it hands over. The signing after the one his
+    // link makes — the first re-send's — waits until the next echo has been
+    // read, as a signing waits behind another for the own-list lock on a
+    // loaded device.
+    final release = Completer<void>();
+    addTearDown(() {
+      if (!release.isCompleted) release.complete();
+    });
+    var signings = 0;
+    bob.debugBetweenOwnListReads = () async {
+      if (signings++ == 1) await release.future;
+    };
+    bob.debugListResends = [];
+    Iterable<({String rid, String? sent})> toVic() =>
+        bob.debugListResends!.where((r) => r.rid == vic.myRid);
+    await link(bob, await deviceOf(bob, 'tablet'));
+    await say(vic, bob.myRid, 'one');
+    await say(vic, bob.myRid, 'two');
+    // An echo read while the first re-send's list is being signed is held
+    // back by the minute — or, as through 4.7.2, let through, to wait for the
+    // lock and sign the same list again.
+    await waitUntil(
+        () => bob.debugOwnListWaiting || toVic().any((r) => r.sent == null),
+        what: "Bob's root reads an echo of Vic's while it signs the list");
+    expect(bob.debugOwnListWaiting, isFalse,
+        reason: 'an echo read while the list is being signed for the one '
+            'before it is held back, not let through to sign it again');
+    release.complete();
+    await waitUntil(() => toVic().any((r) => r.sent != null),
+        what: "Bob's root hands its list over again");
+    expect([for (final r in toVic()) if (r.sent != null) r.sent],
+        hasLength(1),
+        reason: 'the same list is handed over once in a minute, however many '
+            'echoes ask for it at once');
+    expect(toVic().where((r) => r.sent == null), isNotEmpty);
   });
 }

@@ -14170,9 +14170,32 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       debugListResends?.add((rid: rid, sent: null));
       return;
     }
-    final data = await _shareableDeviceList();
+    // Recorded now, in the step that checked the minute, and not once the
+    // list has been signed as it was through 4.7.2: signing waits for the
+    // own-list lock behind any other, and an echo read meanwhile found
+    // nothing recorded and handed the same list over again. Two arrive
+    // together whenever a `pqseal` rides ahead of a message, each carrying
+    // one. device_pop_test 13 failed on it one run in five on 4.7.1 and
+    // 4.7.2; with the decisions logged, 40 times in 11 runs of that file a
+    // contact was handed one list more than once inside its minute, at worst
+    // six times in a second.
+    final mine = (atMs: _now(), key: key);
+    _dlResent[rid] = mine;
+    String? data;
+    try {
+      data = await _shareableDeviceList();
+    } finally {
+      // Nothing handed over — no list to hand, or the signing failed: the
+      // minute is not spent on it.
+      if (data == null && _dlResent[rid] == mine) {
+        if (last == null) {
+          _dlResent.remove(rid);
+        } else {
+          _dlResent[rid] = last;
+        }
+      }
+    }
     if (data == null) return;
-    _dlResent[rid] = (atMs: _now(), key: key);
     debugListResends?.add((rid: rid, sent: data));
     await _sendInner(contact, _devlistInner(data));
   }
