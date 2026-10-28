@@ -70,7 +70,8 @@
 //      relay starts `zs1.`, and the relay counts no introduction key;
 //  11. the root's own `pqdc` verifies under the account's ML-DSA key; the
 //      linked device obtains its own from its root over self-sync
-//      (`dir:"pqdc"`), and its `pqid` carries it to a contact; and while the
+//      (`dir:"pqdc"`), and its `pqid` carries it to a contact (the re-send
+//      on, as 44.5 will have it); and while the
 //      root's list does not name the device — the moment between
 //      `removeMyDevice` writing the list and the session's rebuild — its ask
 //      gets nothing;
@@ -232,7 +233,12 @@ void main() {
   // service is kept, and fails the test that was running.
   final stopped = <ChatService>{};
   final strays = <String>[];
+  // Whether services started from here send their `pqdc` once more to the
+  // contacts that already held the account's key: held in this build
+  // (`pqdcResendsEnabled`), and on only for the criterion that sends it.
+  var pqdcResends = false;
   tearDown(() {
+    pqdcResends = false;
     final found = [...strays];
     strays.clear();
     expect(found, isEmpty, reason: 'errors raised inside a running service');
@@ -249,7 +255,8 @@ void main() {
             identity: id,
             displayName: name,
             transport: WireTransport(
-                identity: id, serverUrl: 'ws://127.0.0.1:$port'));
+                identity: id, serverUrl: 'ws://127.0.0.1:$port'),
+            pqdcResends: pqdcResends ? true : null);
         made = svc;
         services.add(svc);
         ready.complete(svc);
@@ -1114,6 +1121,9 @@ void main() {
 
   test("11. the root signs its own pqdc, a linked device gets its own over "
       'dir:"pqdc", and one its list does not name gets none', () async {
+    // The laptop's pqid carrying its pqdc to Carol is the re-send this build
+    // holds until 44.5; it is turned on here, as 44.5 will have it.
+    pqdcResends = true;
     final lP = Probe(), pP = Probe();
     var (phone, laptop, carol) =
         await linkedTrio(phoneProbe: pP, laptopProbe: lP);

@@ -4010,12 +4010,21 @@ The members that carry them, a new kind and two optional members (§14):
   with `ack` and every decoration, of the 8 959 the 16 384 bucket holds
   classical or mixed, and the 7 679 it holds beside `pqct` — no new
   envelope and no new size, in every state. A contact that already holds
-  the account's key gets the `pqid` once more, spread over hours as `dlpq`
-  is (§18.9) — the reference client sends it two hours after the device
-  comes to hold its `pqdc`, jittered by up to 40 %, once per contact. A
-  receiver reads the member only as the `b64` of 3 309 bytes, keeps it with
-  the device's key, and checks it once the device's `pqseal` has arrived too
-  (44.5).
+  the account's key is owed the `pqid` once more, so that it comes to hold
+  the `pqdc` 44.5 checks; the reference client builds that re-send — two
+  hours after the device comes to hold its `pqdc`, jittered by up to 40 %,
+  once per contact — and holds it until 44.5, which reads the attestation
+  and paces it (`pqdcResendsEnabled`, 4.7.1). As built, it is one 16 384
+  envelope (22 186 bytes at the relay) to every such contact device from
+  every device that updates, about two hours after it does, and a relay's
+  store holds each one for a contact who is offline. Its record that the
+  `pqid` went is one per contact, so a contact device from before 44.3 at
+  the time drops the member and, once updated, is not owed it again; 44.5
+  keeps the record per device, or clears it at that device's first `pqs:1`,
+  before it turns the re-send on. A `pqid` sent for any other reason
+  carries the `pqdc` meanwhile. A receiver reads the member only as the
+  `b64` of 3 309 bytes, keeps it with the device's key, and checks it once
+  the device's `pqseal` has arrived too (44.5).
 
 A client from before 44.3 reads none of it, and a message carrying any of it
 is read as it is without it: a `pqseal` is acknowledged and dropped with

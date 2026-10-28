@@ -95,7 +95,8 @@ pqdc    = ML-DSA-65.Sign(account_ml_sk,
   3 309 bytes inside the 16 384-bucket envelope `pqid` already is (≈7.1 KB of
   the ≈9 KB of inner message that bucket holds) — **no new envelope, no new
   size**. Contacts that already hold its key get `pqid` once more, spread over
-  hours as `dlpq` is (§18.9).
+  hours as `dlpq` is (§18.9) — from 44.5; held in 4.7.1
+  (`pqdcResendsEnabled`).
 * Per device, never in a list or a code: it says one device belongs, not what
   the set is, so ADR 0004's subset and bucket objections — why ADR 0031
   retired the per-certificate form — do not apply. A list that omits the
@@ -370,9 +371,9 @@ failing test on the base where it can be expressed, and a mutation check.
 |---|---|---|---|
 | 44.1 | Protocol cores and vectors: sealing key, `zs2.` seal/open, `pqdc` sign/verify, pairing v3, CONNECT v3 | — | **built**; nothing emits |
 | 44.2 | The relay treats `zs2.` as sealed | — | **built**; deploy before 44.7 |
-| 44.3 | Every device gets a sealing key and attestation: `pqseal`/`pqs`, `pqid.pqdc`, `dir:"pqdc"`, archive | 44.1 | **built**; sends keys, uses none |
+| 44.3 | Every device gets a sealing key and attestation: `pqseal`/`pqs`, `pqid.pqdc`, `dir:"pqdc"`, archive | 44.1 | **built**; sends keys, uses none; the `pqid` once more to contacts that already held the key built and held until 44.5 (4.7.1) |
 | 44.4 | Pairing v3 | 44.1, 44.3 | planned; highest value, so land it first |
-| 44.5 | The scanned device's link | 44.3 | planned; bites once peers run 44.3 |
+| 44.5 | The scanned device's link | 44.3 | planned; bites once peers run 44.3; turns on 44.3's `pqid` once more, paced and owed per contact device (4.7.1 records it per contact, which a device from before 44.3 spends), so contacts from before 44.3 hold each device's `pqdc` |
 | 44.6 | CONNECT v3: readers first; minting a release later (decision 2), by making invites with version 3's run and the device's sealing key — not by moving `connectInviteVersion`, which the version‑2 run refuses | 44.1, 44.3 | planned |
 | 44.7 | `zs2.` switched on | 44.2 deployed, 44.3, constant-time ML-KEM upstream (decision 4) | planned; goes last |
 | 44.8 | `kintro`: as addendum A changes it, §21.3's relay-held key signed by `intro`; the record does not change | 44.9–44.12 | planned; the handles hardening it was to land with shipped in 4.3.0 without it |

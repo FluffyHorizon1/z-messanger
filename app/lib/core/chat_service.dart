@@ -613,6 +613,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // ([debugBuildBeforeSealingKeys]) — set here, so that the start draws
     // no key and signs nothing.
     bool debugBuildBeforeSealingKeys = false,
+    // 44.3 (§18.11): whether this device sends its `pqdc` once more to the
+    // contacts that already held the account's key. Production never passes
+    // it, and null is the build's constant ([pqdcResendsEnabled], held until
+    // 44.5); a test of the re-send passes true.
+    bool? pqdcResends,
     // ADR 0028: when held receipts may leave. Production never passes it; a
     // test that is not about the delay passes a shorter one, from the start,
     // so that receipts a previous run left are timed by it too.
@@ -632,6 +637,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     svc.debugPreAdr0029 = debugPreAdr0029;
     svc._debugMoveUngated = debugMoveUngated;
     svc.debugBuildBeforeSealingKeys = debugBuildBeforeSealingKeys;
+    svc._pqdcResends = pqdcResends ?? pqdcResendsEnabled;
     svc._receipts.timing = receiptTiming;
     svc.kt = KeyTransparency(
       vault: vault,
@@ -4283,8 +4289,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// device's two keys and its sealing key — whichever of its devices passed
   /// it on, only the root can have made one that does — and its `pqid`
   /// carries it from then on; contacts that already hold the account's key
-  /// get that `pqid` once more ([_schedulePqdcResends]). A root signs its own
-  /// and takes none.
+  /// get that `pqid` once more ([_schedulePqdcResends]) from 44.5 — held in
+  /// 4.7.1 ([pqdcResendsEnabled]). A root signs its own and takes none.
   Future<void> _applyOwnPqdc(InnerMessage inner) async {
     final key = _sealingKey;
     if (key == null || _holdsRoot || inner.kind != 'devpqdc') return;
@@ -4324,13 +4330,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
 
   Timer? _pqdcTimer;
 
+  /// Whether this device sends the `pqid` once more at all
+  /// ([pqdcResendsEnabled], from `init`).
+  bool _pqdcResends = pqdcResendsEnabled;
+
   /// [c] holds the account's post-quantum key — the exchange that would
   /// carry this device's `pqdc` is over — and has not had the `pqdc`.
   bool _owesPqdcResend(Contact c) =>
       c.pqAcked && !(_contactSeals[c.rid]?.pqdcSent ?? false);
 
   void _schedulePqdcResends() {
-    if (_disposed ||
+    if (!_pqdcResends ||
+        _disposed ||
         _pqdcTimer != null ||
         _ownPqdc == null ||
         debugBuildBeforeSealingKeys) {

@@ -39,10 +39,12 @@
 //      and is a 4 096-bucket envelope, and each side ends holding the
 //      other's key;
 //   5. a `pqid` carries its device's `pqdc`, which verifies under the
-//      account's ML-DSA key; and a contact that held the account's key from
-//      a build before 44.3 gets one `pqid` more once the build is updated —
-//      after the delay and not at the upgrade, carrying the `pqdc`, and once:
-//      a restart sends no second;
+//      account's ML-DSA key; a contact that held the account's key from a
+//      build before 44.3 gets no `pqid` more from this build, which holds
+//      the re-send until 44.5 (`pqdcResendsEnabled`); and with the re-send
+//      on, as 44.5 will have it, one `pqid` more — after the delay and not at
+//      the upgrade, carrying the `pqdc`, and once: a restart sends no
+//      second;
 //   6. the same rule as 4 on the other two kinds of channel — a device's own
 //      other device over self-sync, and a contact's other device: with a
 //      linked laptop's mixed envelopes held back from its root and from a
@@ -63,6 +65,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/sealing_keys.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -277,7 +280,7 @@ void main() {
   /// A client over the vault in [dir]: the identity it holds, or a new one.
   /// [before] starts it as a build from before 44.3.
   Future<ChatService> clientAt(Directory dir, String name,
-      {bool before = false}) async {
+      {bool before = false, bool resends = false}) async {
     final vault = await Vault.open(rootOverride: dir);
     final stored = await vault.kvGet('identity');
     final identity = stored == null
@@ -293,6 +296,9 @@ void main() {
       displayName: name,
       transport: Transport(identity: identity, serverUrl: 'ws://127.0.0.1:1'),
       debugBuildBeforeSealingKeys: before,
+      // Null unless a test turns the re-send on, so that every other start
+      // takes the build's own constant, as production does.
+      pqdcResends: resends ? true : null,
     );
     services.add(svc);
     return svc;
@@ -431,8 +437,10 @@ void main() {
         reason: 'an envelope was sealed otherwise than zs1.');
   });
 
-  test('5. a pqid carries its pqdc, and a contact that held the key before '
-      'gets one more, later and once', () async {
+  test(
+      '5. a pqid carries its pqdc; a contact that held the key before gets no '
+      'pqid more from this build, and with the re-send on gets one, later '
+      'and once', () async {
     final da = await dirFor('upa'), db = await dirFor('upb');
     var a = await clientAt(da, 'a', before: true);
     final b = await clientAt(db, 'b');
@@ -479,16 +487,39 @@ void main() {
         reason: "b's pqid carried b's pqdc");
 
     // a is updated. Its next start draws a key and signs its own pqdc — and
-    // b, which already holds a's account key, is owed one pqid more.
+    // b, which already holds a's account key, is owed one pqid more. This
+    // build holds that re-send until 44.5 (pqdcResendsEnabled): past the
+    // delay, nothing goes, and b has none of a's.
     await stop(a);
     a = await clientAt(da, 'a');
     quick(a, d: counting);
     watch(a);
     const delay = Duration(milliseconds: 1500);
     a.pqdcResendDelay = delay;
-    final upgraded = DateTime.now();
     final aPqdc = a.debugOwnPqdc;
     expect(aPqdc, isNotNull, reason: 'a root signs its own at first start');
+    final held = log.length;
+    final heldUntil = DateTime.now().add(delay * 2);
+    while (DateTime.now().isBefore(heldUntil)) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      await carry(a, b, log);
+      await carry(b, a, log);
+    }
+    expect(log.skip(held).where((c) => c.from == a.myRid && c.kind == 'pqid'),
+        isEmpty,
+        reason: 'the re-send is held in this build: no 16 384 envelope '
+            'goes to every contact after the update');
+    expect(b.debugPqdcOf(a.myRid), isNull);
+    expect(pqdcResendsEnabled, isFalse);
+
+    // As 44.5 will have it: the re-send on, the same pqdc, once.
+    await stop(a);
+    a = await clientAt(da, 'a', resends: true);
+    quick(a, d: counting);
+    watch(a);
+    a.pqdcResendDelay = delay;
+    final upgraded = DateTime.now();
+    expect(a.debugOwnPqdc, aPqdc, reason: 'kept across the restart');
     final mark = log.length;
     await Future<void>.delayed(const Duration(milliseconds: 400));
     await carry(a, b, log);
@@ -511,7 +542,7 @@ void main() {
 
     // Once: a restart sends no second.
     await stop(a);
-    a = await clientAt(da, 'a');
+    a = await clientAt(da, 'a', resends: true);
     quick(a, d: counting);
     watch(a);
     a.pqdcResendDelay = const Duration(milliseconds: 300);

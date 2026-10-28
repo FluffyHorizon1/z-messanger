@@ -152,6 +152,17 @@ class SealRecord {
 bool pqSealMayRide(Conversation conv) =>
     conv.nextSendIsPostQuantum && !conv.nextSendCarriesPqCiphertext;
 
+/// Whether this build sends its `pqdc` to the contacts that already held the
+/// account's post-quantum key — the `pqid` once more, §18.11 — and it does
+/// not: built in 44.3 and held until 44.5, which reads the attestation and
+/// paces the re-send. Turned on as it stood, every device sends one
+/// 16 384-bucket envelope to every such contact device about two hours after
+/// it updates, and the relay holds each for a contact who is offline: a wave
+/// across a whole user base at once, for an attestation nothing reads before
+/// 44.5. A `pqid` that goes for any other reason still carries the device's
+/// `pqdc`. Tests turn the re-send on through `ChatService.init`.
+const bool pqdcResendsEnabled = false;
+
 /// The vault key of this device's own sealing seed, and of its `pqdc`.
 const String sealSeedKey = 'seal_seed';
 const String ownPqdcKey = 'pqdc';
