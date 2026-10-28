@@ -38,8 +38,8 @@ did not want it, **Decline** drops it quietly and **Block** stops any more.
 A request you declined does not come back on its own — only a new one, made
 later, is shown — and Z ignores a request more than 30 days old. At most 100
 wait at a time: when more arrive, the oldest you have not looked at goes
-first, never one you have. Requests through your handle (below) are counted
-apart, so a wave of them never pushes one of these out.
+first, never one you have. Requests through your handle or your public link
+(below) are counted apart, so a wave of them never pushes one of these out.
 
 Accepting adds them, but it does not confirm *who* they are — for that, compare
 safety numbers. What matters, when you *scan* someone in person, is that the
@@ -169,9 +169,10 @@ wakes for it — so a request through your handle waits at the relay until you
 next open Z, for up to three days like any message. Your phone checks the
 work on each request itself, and takes each one once, whoever sends it
 again; the handle's screen counts what it dropped, and says if someone is
-sending more than it can keep track of. At most 100 wait at a time, counted
-apart from requests made with your code or an invite; past that, the oldest
-you have not yet seen goes, never one you have.
+sending more than it can keep track of. At most 100 wait at a time, together
+with those through your public link (below), counted apart from requests made
+with your code or an invite; past that, the oldest you have not yet seen goes,
+never one you have.
 
 Only your main device holds a handle and reads its inbox. A linked device can
 find people by handle, and the people you meet through yours appear there
@@ -230,6 +231,105 @@ was still waiting to be published comes back waiting for you to tap
   inbox to your account, but an address is an address: Tor or a VPN hides it.
 
 `THREAT_MODEL.md` R47–R50 is the long version.
+
+## Being reached by a public link
+
+A public link is a web address that lets anyone who finds it ask to connect
+with you — on a web page, in an email signature, on a printed card — without
+a handle and without handing out your code. It looks like
+`https://www.zmessengers.com/c#zi1.…`, and as with an invite, the part after
+the `#` is the link: browsers never send it to the site. The link names
+nothing — not you, not your account, not a relay — and a request through it
+goes to an inbox made for the link, not to yours.
+
+Public links are switched off in this version of Z. Settings has no **Your
+public link**; a link pasted under Add contact, or read from a QR image, is
+refused as not a contact code, and the camera passes over a link's QR; and a
+link tapped opens its page in the browser, which says to open it in Z, or to
+update Z and paste it there — no version of Z takes one yet. The rest of this
+section is how they work once a version turns them on.
+
+### Making yours
+
+Settings → **Your public link** → **Make my link**, on your main device —
+never offered when you start, and one per account. You choose how much work
+each request costs whoever sends it: more stops more spam and makes everyone
+who asks wait longer. Z shows the link, its QR, **Copy link** and **Copy for a
+web page**, which opens the link with `rel="noreferrer"` so that a browser
+following it does not tell Z's server which page it came from. Making it
+sends nothing. A linked device cannot make or manage one, but the people you
+meet through it appear there too.
+
+### Sending a request through one
+
+Tap, scan or paste someone's link — or type it into the Handle tab — and Z
+shows it and holds it: nothing is sent until you press **Send request**,
+under a line saying that whoever made the link will see your name and your
+contact code, and that a link verifies nothing. The request takes a moment
+to send, on purpose: each one costs its sender some work. If they accept,
+they appear in your chats with "Accepted through their public link. Compare
+safety numbers to verify." If 30 days pass with no answer, Z says the link may
+have been replaced or withdrawn.
+
+**A link verifies nothing.** It is as good as the page it is on: whoever
+controls that page — or sticks another QR over a printed one — can put their
+own link there, and gets your name and key when you use it. Compare safety
+numbers with whoever accepts.
+
+### Requests through your link
+
+They arrive in Requests marked **Via your public link**, and you **Accept**,
+**Decline** or **Block** as usual. The link has an inbox of its own, separate
+from your account's and your handle's: your phone reads it a few seconds
+after you open Z and every quarter of an hour or so while Z is open, and
+never wakes for it — so a request through your link waits at the relay until
+you next open Z, for up to three days like any message. Your phone checks the
+work on each request, at what is printed on the link, and takes each one
+once. At most 100 wait at a time, together with those through your handle,
+counted apart from requests made with your code or an invite.
+
+### Managing it
+
+Settings → **Your public link**:
+
+* **Ask more work** — the relay asks each request for more work, up to the
+  most Z offers. The link itself does not change: a sender learns of the
+  raise when the relay refuses their request, and sends once more with more
+  work.
+* **Replace link** — a new link in place of this one, to end a wave of
+  unwanted requests. Every copy of the old link stops working, without
+  telling anyone who has one; requests already waiting stay.
+* **Withdraw link** — every copy stops working, and you have no link until
+  you make another. Requests already waiting stay.
+
+Nothing takes a published copy back. Replace, Withdraw, wiping Z or
+resetting your identity all leave every copy sending requests to an inbox
+nobody reads, in silence, and only the 30-day notice tells whoever sent one. A backup carries your link: a restore brings it back not in use, until
+you tap **Use it again**, because the phone the backup came from may have
+replaced or withdrawn it since.
+
+### Who can see what, with a link
+
+* **Anyone with a copy** — and a link on a web page can be copied by
+  anything that reads the page, search engines and web archives included —
+  can send it requests, and work out which inbox at the relay is the link's.
+* **Whoever made the link**, or whoever controls the page it is on, sees the
+  display name and key of everyone who sends a request through it, before
+  deciding anything.
+* **The relay** sees how many requests your link's inbox gets and when, and
+  the address your phone reads it from: the same address as your own
+  connection and your handle's inbox, so your link and your handle can be
+  tied together by it. A request through a link goes to the relay you use, so
+  it reaches someone only if they use the same relay.
+* **Opening a link in a browser** — which is what tapping one does, unless
+  Android opens it in Z — asks Z's server for the link's page from your
+  address, and tells it the site you came from unless that site carries the
+  link with `rel="noreferrer"`, as the copy for a web page does. The link
+  itself never reaches it. Pasting the link
+  into Z instead asks for nothing, and sends nothing until you press **Send
+  request**.
+
+`THREAT_MODEL.md` R34, R47–R49 and R55 are the long version.
 
 ## The safety number, and when it changes
 

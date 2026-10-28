@@ -237,7 +237,7 @@ account's newest list, or all of them, and the witness cannot either; and
 the app reaches the witness through the project's own domain, and says it
 has gone quiet only in Settings (`THREAT_MODEL.md`, R7).
 
-## It cannot tell you who is behind a handle
+## It cannot tell you who is behind a handle, or a public link
 
 This version of Z has no handle service set up, so nobody using it as it
 ships can claim a handle or find anyone by one; what follows is what holds
@@ -260,6 +260,28 @@ people would catch that, and not every way of doing it — and the app, as it
 ships, checks against none yet: one runs, but no build pins it, as none pins
 the service (R50). There too, the safety number is what catches the account
 that answered.
+
+A public link — a web address someone puts on a page or a printed card so
+that anyone can ask to connect — is a handle's inbox with no name and no
+service behind it. This version of Z has links switched off: nothing in it
+makes, opens, pastes or scans one, and a link tapped opens a page saying to
+open it in Z, which no version does yet. What follows is what holds once a
+version turns them on.
+
+Z checks that the account that answers is the one the link sent your request
+to; it cannot check whose account that is. A link is as good as the page it
+is on: whoever controls the page, or sticks another QR over a printed one,
+gets your request — your display name and key — and everyone else's who uses
+it (`THREAT_MODEL.md`, R48). A link cannot be updated, either. A copy whose
+owner has replaced or withdrawn it, or one whose owner uses another relay
+than yours, takes your request and nobody ever reads it, and all Z can say,
+after 30 days without an answer, is that the link may have been replaced or
+withdrawn (R55). The relay sees how many requests a link's inbox receives and
+the address its owner's phone reads them from — the same address as their
+own mailbox and their handle's inbox — and opening a link in a browser tells
+the site that serves its page your address, and which page you came from
+unless that page said not to (R47, R49). No service stands behind a link, so
+there is nothing that could vouch for one: the safety number is the check.
 
 ## It has not been audited
 

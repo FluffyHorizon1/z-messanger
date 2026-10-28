@@ -6,8 +6,8 @@ where it asked them, and listed under "Decisions". Phase 39. Adds PROTOCOL
 §21.9 and `docs/vectors/handles/intro_link.json`; amends §8.1, §15, §20.2,
 and §21's title, preamble, §21.0, §21.7 and §21.8 by a sentence or two each;
 the relay's protocol (§12) does not change. Settles ADR 0009's deferred
-public invite (17.8) as ADR 0015's shape F. R34 and R47–R49 are to be
-updated in place, and a new register row added, when 39.5 lands. Builds on the
+public invite (17.8) as ADR 0015's shape F. 39.5 updated R34 and R47–R49 in
+place and added the register row, R55. Builds on the
 handles hardening, landed in 4.3.0; whether the deployed relay runs it is
 not yet confirmed (decision 1), and phase 39 does not ship live until it is.
 **Built:** 39.1 — the link in the protocol library: `IntroLink`, its code,
@@ -20,7 +20,11 @@ with a link is behind one build constant, `introLinksEnabled`
 (`app/lib/core/intro_links.dart`), `false` until the deployed relay is
 confirmed to run the hardened §21.6 (§5, decision 1). With it off nothing
 new shows and nothing is sent or drained: no release makes, opens or drains
-a link yet. 39.5 is not built.
+a link yet. 39.5 — the register and the claims — is written, before any
+release ships links: THREAT_MODEL R34, R47–R49 and R55, DATA_MAP's rows
+(and `BACKUP.md`'s record), USING_Z's section, WHAT_Z_CANNOT_DO's, AUDIT_SCOPE
+C37 and the register's count, the pointers from ADR 0009 and ADR 0015, and
+ROADMAP, each saying what holds once a release turns links on.
 **Decides:** what a public link carries and how it is read; what the person
 who opens one sends, and when; what the owner's device does with what
 arrives; how a link is replaced, withdrawn or made dearer; what an older
@@ -210,31 +214,39 @@ not ship live until it is.
   `contact_erasure_test.dart`, `locale_es_test.dart`; new —
   `app/test/intro_link_test.dart`, two clients over a real relay with a
   recording tap.
-- **THREAT_MODEL**, with 39.5 (planned; none of it is written yet): R34 to
-  say "anyone can add me" is this link, stamped and capped apart; R47, that a
-  published link is crawlable; R48, that whoever controls the page, or a
-  sticker over a printed QR, collects requesters; R49, that one owner's
-  handle and link are linkable by address, and that until App Links verify,
-  a browser opening a link tells the relay host and Cloudflare its address
-  and, by `Referer`, the site, unless that site set `noreferrer`. And a new
-  register row: a published link cannot be updated — a replaced or withdrawn
-  copy fails silently; a raise reaches senders only through the relay, so
-  after a relay restart only the printed `pow` holds until the next drain; a
-  stolen seed holds every printed copy until each is replaced; a link names
-  no relay. R50 has no counterpart.
-- **DATA_MAP** (not yet written): `intro_link` (new); the `handle_in`,
-  `handle_out`, `hvia_<rid>`, relay introduction‑mailbox and "what leaves"
-  rows to name links; the relay host's row to gain the `/c` request; erasure
-  to gain *Withdraw*.
+- **THREAT_MODEL**, written with 39.5, each row saying what holds once a
+  release turns links on: R34, that "anyone can add me" is this link,
+  stamped and capped apart; R47, that a published link is crawlable; R48,
+  that whoever controls the page, or a sticker over a printed QR, collects
+  requesters; R49, that one owner's handle and link are linkable by address,
+  and that until App Links verify, a browser opening a link tells the relay
+  host and Cloudflare its address and, by `Referer`, the site, unless that
+  site set `noreferrer`. And a new register row, R55, accepted: a published
+  link cannot be updated — a replaced or withdrawn copy fails silently; a
+  raise reaches senders only through the relay, so after a relay restart
+  only the printed `pow` holds until the next drain; a stolen seed holds
+  every printed copy until each is replaced; a link names no relay. R50 has
+  no counterpart. R55 also says what is true now: links are built and
+  switched off, nothing makes, opens, pastes or scans one, and the `/c` page
+  is served and says to open the link in Z, or update Z and paste it, which
+  no version takes yet.
+- **DATA_MAP**, written with 39.5: `intro_link` (new), stating that no
+  release makes one, so a vault holds the row only from a restore; the
+  `handle_in`, `handle_out`, `hvia_<rid>`, relay introduction‑mailbox,
+  connections and "what leaves" rows name links; the relay host's row has
+  the `/c` request; the backup row and `BACKUP.md` §2 and §5 the `introlink`
+  record; erasure has *Withdraw*.
 - **Claims:** no directory and no username — those sentences and the Play
   listing stay true, and Play's Data‑safety form is unchanged (decision 6): a
   link's mailbox is a routing id and a number at the relay, as a handle's.
-  With 39.5, USING_Z is to gain a section, and WHAT_Z_CANNOT_DO's handle
-  section to cover links; neither does yet.
+  With 39.5, USING_Z gained a section, "Being reached by a public link";
+  WHAT_Z_CANNOT_DO's handle section covers links; and AUDIT_SCOPE's C37 says
+  that a link's acceptance is held to a handle's rule under the link's key
+  and that its requests share a handle's cap.
 
 ## What remains
 
-All a handle leaves but R50, and the row 39.5 adds. A link is as good as the
+All a handle leaves but R50, and the row 39.5 added, R55. A link is as good as the
 page it is on; the safety number, compared after the add, still catches a
 substituted account.
 
@@ -269,4 +281,4 @@ Each patch starts from a failing test on its base.
 | 39.2 | The landing page and the Android app link: a `/c` page in `server/pages.js`, unlisted like `/i`; `android:path="/c"` on both hosts; `server/server.js` does not change | **built**: the page (`server/test/pages.test.js` 39.2); the Android path is the switch‑on release's |
 | 39.3 | The owner's side: the drain, the once‑only record, filing and the acknowledgement take either kind of mailbox, and a link does not depend on a handle log being configured; make, replace, withdraw and *Ask more work*; the stamp counted at the printed `pow`; one cap for handle and link requests; the `introlink` backup record, restored held; Settings › Your public link, in both languages | **built (switched off)**: `intro_link_test.dart` 1–11 |
 | 39.4 | The person who opens a link: held until they say yes; the Paste and Scan tabs, a QR image and the handle search take a link; link entries in the outgoing list, the re‑stamp on `pow_required`, matching `ia` and the 30‑day notice | **built (switched off)**: `intro_link_test.dart` 11–17; a tap is held too, for the release that claims `/c` |
-| 39.5 | The register and the claims, before any release ships links: R34, R47–R49 and the new row; USING_Z, WHAT_Z_CANNOT_DO, AUDIT_SCOPE; pointers to this record from ADR 0009 and 0015; ROADMAP | planned |
+| 39.5 | The register and the claims, before any release ships links: R34, R47–R49 and the new row; USING_Z, WHAT_Z_CANNOT_DO, AUDIT_SCOPE; pointers to this record from ADR 0009 and 0015; ROADMAP | **written**, before any release ships links: R34, R47–R49 and R55, each saying what holds once a release turns links on; DATA_MAP and `BACKUP.md`; USING_Z's section; WHAT_Z_CANNOT_DO's; AUDIT_SCOPE C37 and the register's count; ADR 0009's and 0015's pointers; ROADMAP |

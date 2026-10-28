@@ -78,6 +78,16 @@ A restore publishes nothing by itself: a published handle comes back as it
 was and its mailbox is read again, and a claim that was still waiting to be
 published comes back held until the person publishes it.
 
+Since phase 39, also the account's **public link**, if the vault holds one,
+with the seeds of links since replaced or withdrawn that a pending request
+still needs (`PROTOCOL.md` §21.9), in a record of their own that a build
+from before links keeps and writes back. A restore brings the link back
+held: nothing reads its mailbox until the person says to use it again, since
+the device the backup came from may have replaced or withdrawn it, and there
+is no log to ask. Links are built and switched off, so no release makes one
+yet, and an archive carries one only when the vault it was taken from was
+itself restored from an archive that did.
+
 Since 44.3, also the device's **sealing key** — its 64-byte seed — and the
 account's attestation of it (`pqdc`, `PROTOCOL.md` §18.11), in a record of
 their own that a build from before 44.3 keeps and writes back. A restore that
@@ -362,6 +372,7 @@ leaves the device.
 | `blocked` (1.1) | a blocked routing id and when |
 | `request` (1.1) | a pending inbound request: routing id, the requester's bundle (it must verify and name that routing id), the name offered, when |
 | `handle` (phase 38, `"keep":1`, `"v":1`) | `kv`: the account's handle (`handle` — the handle, its label, the owner and introduction seeds, the work a request costs, the recovery commitment, the version and where it stands; never the recovery code), the requests that came through it (`handle_in` — for each, the mailbox it reached and the request's id — and the seeds of mailboxes since replaced that one of them still needs), the requests sent to handles still waiting (`handle_out`), where the handle log is (`handle_config`) and what lookups found (`handle_lookup` — the decoy key, the bucket size the log's answers bore out, and for each handle found its owner key, commitment, version and record hash); and since 2026‑10‑20 what the witness check keeps after the fact (`handle_witness_heads`, the heads of lookups a request was sent on that the witness had not covered, and `handle_witness_warnings`, the forks found so and the answers never confirmed — of heads that went before the witness covered them, or that the log showed this device two histories about while they were kept — `PROTOCOL.md` §21.8). Written after the requests and applied after them: a request's record is restored only if its request was, a kept head or a warning only with the request it is on or on a contact, and of the heads on contacts no more than the service keeps (the first start forgets one whose contact did not come back), a claim waiting to be published comes back held, and a part that is not the shape the service reads is left out. Marked `keep`, so a build that predates handles carries it into its next archive unread |
+| `introlink` (phase 39, `"keep":1`, `"v":1`) | `kv`: the public link's row, `intro_link` (`PROTOCOL.md` §21.9) — the link's introduction seed, the work printed on it and the work asked since, when it was made and whether it was in use, and the seeds and printed work of links since replaced or withdrawn that a pending request still needs; written whenever the vault holds that row. On restore it is held to the shape the service reads — each old seed filed under the mailbox it makes, whatever name the record gives it — and the link comes back **held**: nothing connects as its mailbox until its person says to use it again, or replaces or withdraws it. A link's seeds travel in this record and in no `handle` record, so a build that knows handles and not links finds none among its handle's. Marked `keep`, so a build that predates links carries it into its next archive unread |
 | `seal` (44.3, `"keep":1`, `"v":1`) | `seed`: this device's sealing seed (64 bytes), and `pqdc`: the account's attestation of the key it makes (3 309 bytes, `PROTOCOL.md` §18.11) — each held to its length on restore; the first start keeps the `pqdc` only if it verifies for that key, this device and this account. Marked `keep`, so a build that predates 44.3 carries it into its next archive unread |
 | `message` | mid, rid, direction, kind, body, timestamp, status, expiry, and the phase‑8 fields (`rt` reply target, `edited`, `deleted`, `fw`) |
 | `reaction` | rid, mid, sender, emoji, timestamp |

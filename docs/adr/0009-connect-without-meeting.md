@@ -4,7 +4,9 @@
 (17.2), the CONNECT tab (17.3), the deep link (17.3b), the landing page (17.4)
 and `PROTOCOL.md` §20 are built · amended by ADR 0024 (2026‑10‑09): an invite
 of version 2 binds its secret into the ceremony, because in this one a skipped
-comparison trusted the relay as well as whoever carried the link ·
+comparison trusted the relay as well as whoever carried the link · its
+deferred public invite (17.8) settled by ADR 0032 (2026‑10‑17), a public
+introduction link apart from every invite, built and switched off ·
 **Roadmap:** Phase 17 · **Decides:** how two people who cannot meet add each
 other, what a confirmed comparison is then worth, and what is deliberately
 left out.
@@ -148,7 +150,13 @@ Out of scope permanently, not for this phase.
 - Introduction by a mutually‑verified contact (17.7) and a deliberately
   separate "public invite" (17.8) are follow‑ons this decision does not
   settle. The public invite in particular must never share a button with a
-  one‑time invite, because the two have opposite properties.
+  one‑time invite, because the two have opposite properties. *(ADR 0032,
+  accepted 2026‑10‑17, settles it as a public introduction link: a `zi1.`
+  code at `/c`, which no invite parser takes and which takes no invite, made
+  only in Settings › Your public link — never during setup and never beside
+  an invite — and reaching a mailbox of its own with a handle's request,
+  stamp and acknowledgement. Built and switched off behind
+  `introLinksEnabled`: no release makes or opens one yet.)*
 
 ## What was built, rather than what was planned
 

@@ -422,7 +422,13 @@ would have been a construction new to Z.
 - **A durable public introduction link instead** (shape F, analysis §5.3):
   cheaper, with no registry, no second witness and no claims bill — and a link
   someone must still be handed. Finnian chose handles; F stays open as a
-  complement, not a replacement.
+  complement, not a replacement. *(ADR 0032, accepted 2026‑10‑17, is that
+  complement: a public introduction link, `zi1.` at `/c`, carrying the
+  three values a request takes from a handle's record, and reusing this
+  record's introduction mailbox, guard, request, stamp, drain and
+  acknowledgement with no handle log. Built and switched off behind
+  `introLinksEnabled`; THREAT_MODEL R34 and R47–R49 cover it, and R55 is
+  the row it adds.)*
 
 ## Revision — 2026‑09‑19
 
@@ -496,6 +502,9 @@ parameters stay: a phone has to compute a label too.
   on unenumerability grounds
 - `adr/0008` — federation, and the existing "no directory" decision
 - `adr/0009`, `adr/0011`, `adr/0012` — how people are found and added today
+- `adr/0032` — shape F built as a complement: the public introduction link,
+  this record's introduction mailbox handed out directly, with no handle log
+  (built and switched off)
 - `THREAT_MODEL.md` R20 (publish history), R21 (the address of a sealed
   sender), R7 (an unwitnessed log), and the design‑decisions list
 - `PROTOCOL.md` §19.1 — `label = SHA‑256(utf8("z-kt-label-v1:") ‖ accountEdPub)`
