@@ -6385,13 +6385,16 @@ the label's bucket without naming it (`app/lib/core/handle_lookups.dart`):
   one, which the rule forbids, or a recover after entries the client did not
   see: from one record the code's work cannot be told from the log's), or
   another history (an older version, another record at a version seen, or
-  no record). The person may look it up as new, which forgets what was kept
-  and takes what the log shows now. The owner rule over the label's whole
-  history stays the log's and its mirrors' to hold (§21.5): a bucket carries
-  each label's latest entry only, and the client fetches no history —
-  earlier entries are reached by naming the label or by indexes it does not
-  have — so a first lookup, or a log that goes on showing a reader the owner
-  it remembers after the handle moved on, is caught only by a witness (R50).
+  no record). The account's own handle, once its claim has gone live, counts
+  as found: no record for it is another history too, not a handle nobody has
+  claimed (until 4.7.2 it was the latter). The person may look it up as new,
+  which forgets what was kept and takes what the log shows now. The owner
+  rule over the label's whole history stays the log's and its mirrors' to
+  hold (§21.5): a bucket carries each label's latest entry only, and the
+  client fetches no history — earlier entries are reached by naming the
+  label or by indexes it does not have — so a first lookup, or a log that
+  goes on showing a reader the owner it remembers after the handle moved
+  on, is caught only by a witness (R50).
 
 `intro` null: the handle is paused, and nothing is sent. Otherwise the
 client builds a `creq` to `introRid`, seals it to `xintro`, and keeps the
@@ -6428,9 +6431,13 @@ no `ia`, a forged one, the genuine one carried by another account — and the
 
 **Managing** is the root device's. Each change reads the label's latest
 record first and is refused when its owner is not this device's key (the
-code was used: the handle is lost to this device); it then publishes at the
-latest version + 1, at once — a change answers spam, and binds nothing new
-to the account:
+code was used: the handle is lost to this device), or when there is no
+record: the claim went live, so that is the log going back on what it
+showed, refused — as the owner's refresh, and a recovery's read of the
+handle, report it — as an answer that does not check out, never as a handle
+nobody holds (until 4.7.2, the latter); it then publishes at the latest
+version + 1, at once — a change answers spam, and binds nothing new to the
+account:
 
 ```
 pause       intro, xintro = null; the mailbox is read once more, then not at all; the keys are kept

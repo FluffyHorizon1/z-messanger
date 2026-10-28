@@ -265,6 +265,13 @@
 //      few seconds after it, drawn as the drain's first wait is; and the
 //      check-back's moment is drawn from 20 to 30 minutes after the request
 //      (PROBE F).
+//  49. this account's own handle, live, then gone from the log — the log
+//      restarted empty under its key — is not taken for one nobody holds: a
+//      lookup of it is another history, as a handle a requester found before
+//      is; a refresh, a change and a recovery's read say the answer did not
+//      check out; the drain goes on with what the device holds; and someone
+//      who never found it is told nobody has claimed it (the base told the
+//      owner that too).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 8))
 library;
@@ -4511,5 +4518,47 @@ void main() {
     expect(firstMs, lessThan(10000));
     expect(drawn, isNotNull, reason: 'drawn as the head is kept');
     expect(drawn!, inInclusiveRange(20 * 60000, 30 * 60000));
+  });
+
+  test('49. this account\'s own handle, live, then gone from the log, is never '
+      'taken for one nobody holds', () async {
+    final log = await startLog();
+    final olive = await boot('Olive', config: log.config, fetcher: _Operator());
+    await claimIn(olive, 'olive.49');
+    expect(olive.handles.own!.phase, HandlePhase.live);
+    // The log forgets: restarted empty under its key, the label gone from
+    // its map — what an honest log, append-only, never does.
+    await restartEmpty(log);
+
+    // Looked up, her own handle is another history — as one a requester
+    // found before is — and not a handle nobody has claimed.
+    final look = await olive.handles.find('@olive.49');
+    expect(look.state, HandleLookupState.changed,
+        reason: 'the base: notFound, "Nobody has claimed @olive.49."');
+    expect(look.change, HandleChange.history);
+    // Her refresh says the answer did not check out — not that nobody holds
+    // it — and the handle stays hers.
+    await olive.handles.refresh();
+    expect(olive.handles.own!.problem, HandleFailure.badAnswer.name,
+        reason: 'the base: notClaimed, "Nobody holds that handle."');
+    expect(
+        handleStoredProblemText(AppLocalizationsEn(), olive.handles.own!.problem),
+        AppLocalizationsEn().hdlErrBadAnswer);
+    expect(olive.handles.own!.phase, HandlePhase.live);
+    // A change is refused for the same reason, before anything is
+    // published; so is the read a recovery makes first.
+    await expectLater(olive.handles.pause(), failsWith(HandleFailure.badAnswer));
+    final code = await formatHandleRecoveryCode(await RecoveryCode.generate());
+    await expectLater(olive.handles.prepareRecover('olive.49', code),
+        failsWith(HandleFailure.badAnswer));
+    // A drain goes on with what this device holds.
+    final drains = olive.handles.drains;
+    await olive.handles.drain();
+    expect(olive.handles.drains, drains + 1);
+    expect(olive.handles.own!.phase, HandlePhase.live);
+    // Someone who never found it can be told only what the log shows.
+    final nina = await boot('Nina', config: log.config);
+    expect((await nina.handles.find('@olive.49')).state,
+        HandleLookupState.notFound);
   });
 }

@@ -1612,7 +1612,8 @@ enum HandleFailure {
   unreachable,
 
   /// The handle log's answer did not verify under the pinned key, or was not
-  /// a complete bucket: nothing it said is used.
+  /// a complete bucket — or holds no record for this account's own handle,
+  /// which it has shown this device live: nothing it said is used.
   badAnswer,
 
   /// The handle log's answer was signed more than a day ago by this device's
@@ -3525,9 +3526,16 @@ class HandleService extends ChangeNotifier {
   /// The log's latest record for [o], checked and taken in
   /// ([_applyRecord]); throws [HandleFailure.lost] when it says this device
   /// no longer holds the handle.
+  ///
+  /// [o] has gone live — a refresh and a change read nothing else — so no
+  /// record at all for it is the log going back on what it showed this
+  /// device, as no record is for a requester who found the handle before
+  /// ([find]): an answer that does not check out, which nothing is taken
+  /// from. Until 4.7.2 it was [HandleFailure.notClaimed], and the owner of
+  /// a live handle was told that nobody holds it.
   Future<(KtBucketLeaf, HandleRecord)> _current(OwnHandle o) async {
     final leaf = await _resolve(o.label);
-    if (leaf == null) throw const HandleException(HandleFailure.notClaimed);
+    if (leaf == null) throw const HandleException(HandleFailure.badAnswer);
     final rec = await _checkedRecord(o.label, leaf);
     if (rec == null) throw const HandleException(HandleFailure.badAnswer);
     if (await _applyRecord(o, leaf, rec) == _RecordVerdict.lost) {
@@ -3586,6 +3594,20 @@ class HandleService extends ChangeNotifier {
     o.problem = null;
     await _saveOwn();
     return intro == null ? _RecordVerdict.paused : _RecordVerdict.current;
+  }
+
+  /// Whether [handle] is this account's own and its claim has gone live: the
+  /// log took it, and this device holds it as live, paused, or lost to
+  /// another owner key since — a handle the log has shown it. An answer with
+  /// no record for it is then the log going back on what it showed, not a
+  /// handle nobody holds.
+  bool _ownShown(Handle handle) {
+    final o = own;
+    return o != null &&
+        o.handle == handle &&
+        (o.phase == HandlePhase.live ||
+            o.phase == HandlePhase.paused ||
+            o.phase == HandlePhase.lost);
   }
 
   OwnHandle _requirePublished() {
@@ -3761,7 +3783,11 @@ class HandleService extends ChangeNotifier {
     }
     final label = await handleLabelOffThread(handle);
     final leaf = await _resolve(label);
-    if (leaf == null) throw const HandleException(HandleFailure.notClaimed);
+    if (leaf == null) {
+      throw HandleException(_ownShown(handle)
+          ? HandleFailure.badAnswer
+          : HandleFailure.notClaimed);
+    }
     final rec = await _checkedRecord(label, leaf);
     if (rec == null) throw const HandleException(HandleFailure.badAnswer);
     final oldKey = await handleRecoveryKey(code, label);
@@ -3852,7 +3878,8 @@ class HandleService extends ChangeNotifier {
   /// the recovery key's, on a recover) — and to what this device found the
   /// last time it looked the handle up ([handleKnownChange]). A record the
   /// owner rule does not lead to from there, or no record where there was
-  /// one, is [HandleLookupState.changed], and nothing can be sent to it.
+  /// one — this account's own handle, once it went live, among them — is
+  /// [HandleLookupState.changed], and nothing can be sent to it.
   /// Whatever else a lookup finds is remembered for the next.
   Future<HandleLookup> find(String input) async {
     _requireAvailable();
@@ -3862,7 +3889,10 @@ class HandleService extends ChangeNotifier {
     final mem = await _lookupMemory();
     final known = mem.knownFor(label);
     if (leaf == null) {
-      if (known != null) {
+      // This account's own handle, once it has gone live, is one this
+      // device found before as much as one in the memory is: no record for
+      // it is another history, not a handle nobody has claimed.
+      if (known != null || _ownShown(handle)) {
         return HandleLookup._(
             handle, HandleLookupState.changed, label, null, null, null,
             change: HandleChange.history);
