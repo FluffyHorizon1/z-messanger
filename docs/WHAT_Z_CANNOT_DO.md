@@ -36,6 +36,13 @@ That includes:
   one appears only if Android shows Z that app for some other reason; on
   Android 10 and earlier Android offers every one installed, whatever Z asks
   (`THREAT_MODEL.md`, R51).
+* the clipboard. Copy puts the text where the phone, your keyboard and the app
+  you paste into can read it, and Z neither clears it nor marks it as secret:
+  on Android 13 and later the phone shows what you copied at the bottom of the
+  screen, a keyboard with a clipboard history keeps it there — some sync that
+  history to an account — and a disappearing message you copied outlives the
+  message, there and on the clipboard. Write a recovery code down rather than
+  copy it (`THREAT_MODEL.md`, R52).
 
 What Z does do is make the endpoint the *only* place worth attacking. That is
 a real achievement — it means no one can read your conversations by
