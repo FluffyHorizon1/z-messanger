@@ -3838,12 +3838,19 @@ distinguishable cases:
 | no `pql` | a client that does not sign its lists | report `classical`; accuse nobody |
 | `pql` ≤ what it holds and verifies | nothing missing | clear any alert |
 | `pql` > what it holds | it was lost or removed | ask, then alert |
+| `pql`, and no list of theirs held | nothing for it to cover here: a list still at version 1 is never sent, since a contact computes it from the code | accuse nobody; ask nothing |
 
 A receiver MUST ask before alerting — most losses are a dropped connection,
 and the sender answers a `dlpqreq` with the signature it already holds. Only
 when asking (bounded; the reference client asks three times) has not produced
 it within the grace period is the user told. The list stays `classical`
-throughout: nothing is ever accepted on the strength of a claim.
+throughout: nothing is ever accepted on the strength of a claim. A claim is
+judged only over a list the receiver holds. A list goes to contacts only at a
+later version than 1 — once a device is linked or removed, or a migration
+re‑signs it — so an account still at version 1 never sends one, and builds
+before 4.7.1, which judged its claims too, asked such a contact three times a
+run — each answer a 16 384‑byte `dlpq` — and then reported it as having its
+signature removed. Such a report is dropped at the next start.
 
 ### 18.10 The commitment's signature (`pqcs`)
 

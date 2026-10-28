@@ -13864,6 +13864,26 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   ///     help within the grace period.
   Future<void> _observePqListClaim(Contact contact, int claimed) async {
     final rid = contact.rid;
+    // No list of theirs held, nothing to judge: the claim is about a list
+    // the signature covers, and the signature can only be checked over one
+    // this device holds. An account still at list version 1 never sends its
+    // list — a contact computes that baseline from the code, and a list goes
+    // out only at a later version — so its signature arrives and is kept
+    // with nothing to verify it over, and until 4.7.1 every claim it made
+    // failed this check for good:
+    // three requests a run, each answered with a 16 384-bucket `dlpq`, and,
+    // past the grace, the banner that something on the network removes the
+    // signature, on every such contact. A list that does arrive is held to
+    // the claim from then on, as before (`devlist_pq_suppression_test`).
+    if (await vault.kvGet('cdev_$rid') == null) {
+      _pqMissingSince.remove(rid);
+      _pqReqSent.remove(rid);
+      if (pqListAlerts.remove(rid) != null) {
+        await vault.kvDelete('pql_alert_$rid');
+        notifyListeners();
+      }
+      return;
+    }
     final held =
         int.tryParse(await vault.kvGet('cdev_pq_ver_$rid') ?? '0') ?? 0;
     if (held >= claimed && deviceAssuranceWith(rid) == DeviceAssurance.hybrid) {
@@ -15643,7 +15663,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // time that contact claims a signature this device does not hold and
       // the grace period passes, which is a delay rather than a loss — and
       // the alternative is keeping the name on disk to preserve a banner.
-      if (a != null && isDevlistAlertBody(a)) {
+      // Since 4.7.1, also one about a contact whose list this device does
+      // not hold: a list's signature covers that list, so with none of
+      // theirs held here it covers nothing this device could be missing —
+      // what builds before it raised for a contact still at list version 1
+      // ([_observePqListClaim]).
+      if (a != null && isDevlistAlertBody(a) && await get('cdev_$rid') != null) {
         pqListAlerts[rid] = a;
       } else if (a != null) {
         await vault.kvDelete('pql_alert_$rid');
