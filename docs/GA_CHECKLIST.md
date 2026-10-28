@@ -10,8 +10,8 @@ happened; it can check that this file has not drifted from the repository
 around it.
 
 **Status: NOT READY.** Three criteria are unmet — G1 waits on an engagement,
-G3 on a release that carries its witness and on its last condition, G7 on
-iOS — and G2 holds but has been checked by nobody outside the project.
+G3 on its last condition, G7 on iOS — and G2 holds but has been checked by
+nobody outside the project.
 
 ---
 
@@ -21,7 +21,7 @@ iOS — and G2 holds but has been checked by nobody outside the project.
 |---|---|---|
 | G1 | External cryptographic audit, zero open Critical/High | ❌ **not commissioned** |
 | G2 | Reproducible builds, verified by someone outside the project | ⚠️ **property holds, nobody outside has checked** |
-| G3 | Key transparency live | ❌ **deployed, pinned, and witnessed by a second person; condition 4 unconfirmed, and no release carries the witness yet** |
+| G3 | Key transparency live | ❌ **deployed, pinned, and witnessed by a second person, the witness in every release since 4.4.2; condition 4 unconfirmed** |
 | G4 | Encrypted backup and restore | ✅ |
 | G5 | Multi-device | ✅ |
 | G6 | Published threat model | ✅ |
@@ -64,7 +64,7 @@ reads the build path out of the APK and prints that. See
 project structurally cannot self-certify, and marking it ✅ on our own
 authority would be the exact overclaim these documents exist to prevent.
 
-### G3 — Key transparency ❌ — live, pinned and witnessed; not yet confirmed or shipped
+### G3 — Key transparency ❌ — live, pinned, witnessed and shipped; not yet confirmed
 
 Written into the GA criteria at the start of phase 8 and deferred by
 `adr/0001` until "a public launch with an operator committed to durable
@@ -99,13 +99,16 @@ under it.
 `SELF_HOSTING.md` "Running the transparency log" is the runbook, one step
 per condition, and since `render.kt.yaml` and `render.kt-witness.yaml` the
 log and the witness are a Blueprint each. The second person runs the witness
-now (condition 3), and its two values are in the build (condition 2). What is
-left is condition 4, and a release that carries them.
+now (condition 3), and its two values are in the build (condition 2): every
+release since 4.4.2 carries them — 4.4.2 with the address the witness's host
+assigned, every one since 4.4.3 with `witness.zmessengers.com`. What is left
+is condition 4.
 
-One gap is not among the four, and is R7's in `THREAT_MODEL.md`. The client
-reaches the witness at `witness.zmessengers.com`, a name in the project's own
-domain. Whoever controls that domain cannot sign as the witness, but could
-withhold its record, or serve an old one, from a reader it shows a fork to.
+Two gaps are not among the four, and are R7's in `THREAT_MODEL.md`; a third
+is below. The client reaches the witness at `witness.zmessengers.com`, a name
+in the project's own domain. Whoever controls that domain cannot sign as the
+witness, but could withhold its record, or serve an old one, from a reader
+it shows a fork to.
 Since 2026‑10‑17 the client says so: a record whose head is a day old does
 not count as the witness agreeing, and Settings › Transparency log says when
 the witness last agreed with a current record, and that it has gone quiet
@@ -125,15 +128,22 @@ on Android and not on Windows, which is exactly what "no build passes any
 transparency value on any build command, and refuses this row a ✅ while any
 of the four defaults is empty.
 
-Until a release carries the witness, the log is trusted on one point rather
-than checked — it is asked to show every reader the same history, and
-nothing outside this project confirms that it does. The same statement lives
-in `WHITEPAPER.md` §6 and §9, `WHAT_Z_CANNOT_DO.md`, `DATA_MAP.md`'s log and
-witness rows, `AUDIT_SCOPE.md` C31 and its residual list, and
+Since 4.4.2 every release holds the log's head to the witness's record, so a
+log that shows two readers different histories of its entries is caught by
+each reader whose client reaches the witness's current record. One part is
+still trusted rather than checked: the map, which says where each account's
+latest entry is. A head of another size than the one a client holds, or
+than the witness's record, is held to it by the log root alone, so a head
+whose map has dropped a label, or moved it back, while the log grew by
+honest entries passes both, and only a client that read that label before
+catches it (since 4.7.2; `THREAT_MODEL.md` R7). The same account of the log
+lives in `WHITEPAPER.md` §6 and §9, `WHAT_Z_CANNOT_DO.md`, `DATA_MAP.md`'s
+log and witness rows, `AUDIT_SCOPE.md` C31 and its residual list, and
 `THREAT_MODEL.md` R7; all were corrected on 2026-09-13 when the log went
-live and again on 2026‑10‑17 when the witness was pinned. R7's deferral ends
-when this row does; its two gaps, the path through the project's own domain
-and a reader who never opens Settings, outlast it.
+live, again on 2026‑10‑17 when the witness was pinned, and on 2026‑10‑28 for
+what the witness does not compare. R7's deferral ends when this row does;
+its three gaps — the path through the project's own domain, a reader who
+never opens Settings, and the map across sizes — outlast it.
 
 ### G4 — Encrypted backup and restore ✅
 
@@ -151,7 +161,7 @@ C14, C19, C21, C22.
 
 ### G6 — Published threat model ✅
 
-`THREAT_MODEL.md` including a fifty-three-row residual-risk register, `DATA_MAP.md`
+`THREAT_MODEL.md` including a fifty-four-row residual-risk register, `DATA_MAP.md`
 for the inventory beneath it, `WHITEPAPER.md` for the argument, and
 `WHAT_Z_CANNOT_DO.md` for the version a user can act on. Claims C28, C29.
 
@@ -187,7 +197,7 @@ description on every string, and `tool/check_l10n.py` holding the migrated
 screens — **25 of 25 screens** — to zero hardcoded literals and, now,
 holding every other locale to exactly the English key set with the same
 placeholders and plural cases.
-The service stores its thirty-eight kinds of system message as a kind and its
+The service stores its forty-six kinds of system message as a kind and its
 parameters (`core/system_messages.dart`), rendered through the ARB when
 shown, so they read in the user's language too — and, since 2026‑09‑13, the
 five device‑list banners as well, which had been built as English sentences by
@@ -199,7 +209,7 @@ as English sentences the same way, and the reason the system's unlock prompt
 gives, which was an English literal in the app‑lock code.
 
 **The app ships in two languages: English and Spanish** (`app_es.arb`,
-761 strings, every claim carried across — `locale_es_test.dart` checks the
+855 strings, every claim carried across — `locale_es_test.dart` checks the
 plurals, the stored system messages and that no string was copied through
 untranslated). Spanish was chosen because it is the second language Z's
 release notes have been published in since 2.0.

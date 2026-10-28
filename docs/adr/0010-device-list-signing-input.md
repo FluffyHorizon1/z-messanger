@@ -175,10 +175,14 @@ case for deciding soon is stronger than it was, not weaker.
 One caution for whoever takes it. The consequences above propose judging
 "how far the population has moved" from `PROVENANCE.md`'s Play figures.
 Do not substitute the log's label count for them: publishing is
-permissionless by design, and the rate limit meant to bound it
-(`kt/server.js:181`) is keyed on a source address the origin never sees
-behind Cloudflare and Render, so the number of labels in the log is not a
-number of users.
+permissionless by design, and the rate limit meant to bound it — the
+per‑address publish gate in `kt/server.js`, keyed by `clientKey` — was keyed,
+when this was written, on a source address the origin never sees behind
+Cloudflare and Render. It reads the client's own address only where
+`KT_CLIENT_IP_HEADER` names the header the front sets, as the public log's
+Blueprint has since 2026‑10‑20, and even then it bounds publishes per
+address, not accounts per person, so the number of labels in the log is not
+a number of users.
 
 ## Accepted / carried out, 2026-09-18
 

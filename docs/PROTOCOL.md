@@ -80,6 +80,7 @@ generated) it is marked *implementation note*.
 | Hashing, routing ids | SHA‑256 |
 | Backup passphrase KDF (§13, informative) | Argon2id |
 | Post‑quantum key encapsulation (v2, §17; the sealed outer layer `zs2.`, §8.2) | ML‑KEM‑768 (FIPS 203) |
+| Post‑quantum signatures (v3, §18.1: the account's signature over its device list, §18.9, and over a device's sealing key, `pqdc`, §18.11) | ML‑DSA‑65 (FIPS 204) |
 
 ## 2. Identity
 
@@ -6408,7 +6409,9 @@ the label's bucket without naming it (`app/lib/core/handle_lookups.dart`):
   client fetches no history — earlier entries are reached by naming the
   label or by indexes it does not have — so a first lookup, or a log that
   goes on showing a reader the owner it remembers after the handle moved
-  on, is caught only by a witness (R50).
+  on, is caught only by a witness, and by one only where a lookup's check
+  compares: both roots at the record's own size, the log root alone across
+  sizes (§19.5 step 3, above; R50).
 
 `intro` null: the handle is paused, and nothing is sent. Otherwise the
 client builds a `creq` to `introRid`, seals it to `xintro`, and keeps the

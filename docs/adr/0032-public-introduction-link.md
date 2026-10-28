@@ -6,8 +6,8 @@ where it asked them, and listed under "Decisions". Phase 39. Adds PROTOCOL
 §21.9 and `docs/vectors/handles/intro_link.json`; amends §8.1, §15, §20.2,
 and §21's title, preamble, §21.0, §21.7 and §21.8 by a sentence or two each;
 the relay's protocol (§12) does not change. Settles ADR 0009's deferred
-public invite (17.8) as ADR 0015's shape F. R34 and R47–R49 are updated in
-place, and a new register row is added when 39.5 lands. Builds on the
+public invite (17.8) as ADR 0015's shape F. R34 and R47–R49 are to be
+updated in place, and a new register row added, when 39.5 lands. Builds on the
 handles hardening, landed in 4.3.0; whether the deployed relay runs it is
 not yet confirmed (decision 1), and phase 39 does not ship live until it is.
 **Built:** 39.1 — the link in the protocol library: `IntroLink`, its code,
@@ -210,24 +210,27 @@ not ship live until it is.
   `contact_erasure_test.dart`, `locale_es_test.dart`; new —
   `app/test/intro_link_test.dart`, two clients over a real relay with a
   recording tap.
-- **THREAT_MODEL:** R34 — "anyone can add me" is this link, stamped and
-  capped apart. R47 — a published link is crawlable. R48 — whoever controls
-  the page, or a sticker over a printed QR, collects requesters. R49 — one
-  owner's handle and link are linkable by address; and until App Links
-  verify, a browser opening a link tells the relay host and Cloudflare its
-  address and, by `Referer`, the site, unless that site set `noreferrer`. A
-  new register row when 39.5 lands: a published link cannot be updated — a
-  replaced or withdrawn copy fails silently; a raise reaches senders only
-  through the relay, so after a relay restart only the printed `pow` holds
-  until the next drain; a stolen seed holds every printed copy until each is
-  replaced; a link names no relay. R50 has no counterpart.
-- **DATA_MAP:** `intro_link` (new); the `handle_in`, `handle_out`,
-  `hvia_<rid>`, relay introduction‑mailbox and "what leaves" rows name links;
-  the relay host's row gains the `/c` request; erasure gains *Withdraw*.
+- **THREAT_MODEL**, with 39.5 (planned; none of it is written yet): R34 to
+  say "anyone can add me" is this link, stamped and capped apart; R47, that a
+  published link is crawlable; R48, that whoever controls the page, or a
+  sticker over a printed QR, collects requesters; R49, that one owner's
+  handle and link are linkable by address, and that until App Links verify,
+  a browser opening a link tells the relay host and Cloudflare its address
+  and, by `Referer`, the site, unless that site set `noreferrer`. And a new
+  register row: a published link cannot be updated — a replaced or withdrawn
+  copy fails silently; a raise reaches senders only through the relay, so
+  after a relay restart only the printed `pow` holds until the next drain; a
+  stolen seed holds every printed copy until each is replaced; a link names
+  no relay. R50 has no counterpart.
+- **DATA_MAP** (not yet written): `intro_link` (new); the `handle_in`,
+  `handle_out`, `hvia_<rid>`, relay introduction‑mailbox and "what leaves"
+  rows to name links; the relay host's row to gain the `/c` request; erasure
+  to gain *Withdraw*.
 - **Claims:** no directory and no username — those sentences and the Play
   listing stay true, and Play's Data‑safety form is unchanged (decision 6): a
   link's mailbox is a routing id and a number at the relay, as a handle's.
-  USING_Z gains a section; WHAT_Z_CANNOT_DO's handle section covers links.
+  With 39.5, USING_Z is to gain a section, and WHAT_Z_CANNOT_DO's handle
+  section to cover links; neither does yet.
 
 ## What remains
 

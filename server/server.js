@@ -612,8 +612,10 @@ function leadingZeroBits(buf) {
  * It names the recipient and the envelope and nothing else: no sender, no
  * connection, so a sealed send from a connection that never authenticated
  * carries one exactly as it would from anywhere (sealed sender untouched).
- * The relay keeps nothing of it — it is not stored with the entry, logged or
- * forwarded. Cost: one SHA-256 over the payload and two over 99 bytes, and
+ * The relay logs none of it. A stamp worth INTRO_POW_MIN bits is kept with
+ * the entry, with its day, and handed on with it to the mailbox's owner
+ * (`pow`, `powDay`); a flagged mailbox keeps `hash` beside it (`ph`), never
+ * sent on. Cost: one SHA-256 over the payload and two over 99 bytes, and
  * the relay never asks it about a payload over INTRO_ENVELOPE_BYTES.
  */
 function introStamp(to, payload, pow, now = Date.now()) {

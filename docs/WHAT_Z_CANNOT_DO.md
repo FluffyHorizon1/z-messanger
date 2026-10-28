@@ -119,8 +119,11 @@ log, ends their encryption in transit (not the messages', which is
 end-to-end): it sees your address beside your mailbox, which mailbox each
 envelope you send is for, and which buckets you ask the log about (R44).
 
-If you claim a handle, or look one up, a third does. **The handle service**
-sees the address each claim, change and lookup comes from — a lookup names up
+Handles would add one more. They need a handle service, and this version of
+Z has none set up, so it says handles are unavailable: nobody using it as it
+ships can claim a handle or find anyone by one. Once a version has one, if
+you claim a handle, or look one up, **the handle service** sees the address
+each claim, change and lookup comes from — a lookup names up
 to four groups of 32 to 64 handles, counted by the app rather than taken from
 the service, instead of the one asked about, which hides what was asked and
 not who asked (though two of your devices, or a reinstall without a backup,
@@ -146,9 +149,9 @@ your passphrase, restore your history, or prove to a contact that you are you.
 
 If you lose your only device without a backup, the identity and the history
 are gone. This is not a support failure — it is the same fact that means a
-subpoena to us produces nothing. A handle is the same: lose the phone and its
-recovery code, and nobody can give the handle back — or take it from
-whoever holds that code.
+subpoena to us produces nothing. A handle, once a version of Z lets you claim
+one, is the same: lose the phone and its recovery code, and nobody can give
+the handle back — or take it from whoever holds that code.
 
 `USING_Z.md` has the recovery guidance. The short version: make a backup,
 write the recovery code on paper, keep them apart.
@@ -174,6 +177,15 @@ but can only shrink.
 
 Nor is there a broadcast channel — one writer, many readers. That would be a
 different feature, and Z does not have it.
+
+A file to a group can be refused outright. Each copy of it is its own
+upload, about 2.4 times the size of the file — one to each member, and one
+to each of your own other devices — and when the copies come to more than
+256 MB in all, what the public relay can hold for everyone at once, Z does
+not send it, and says why. So the largest file Z sends, 24 MiB, cannot go to
+more than four recipients, your own devices counted: not to a group of you
+and five others, nor to you and four others while you have a linked device.
+A 1 MiB photo can go to 91. A file to one person is not limited this way.
 
 A file to a group can wait, too. Every member's copy is its own upload, so Z
 hands the members' copies to your phone's queue a member at a time, each
@@ -214,12 +226,22 @@ hidden from the people you talk to. It does **not** catch an exchange the
 attacker controlled from the start — a substituted code is a different
 identity, with its own honest-looking history — so the safety number remains
 the check for that, and it only works if someone looks at it. The log is
-running and the app checks device lists against it. What it does not have
-yet is anyone outside the project co-signing what it says
-(`docs/GA_CHECKLIST.md`, G3) — the part that would catch the log itself
-misbehaving rather than the accounts in it.
+running and the app checks device lists against it — and, in every version
+since 4.4.2, checks the log against its witness, which somebody outside the
+project runs (above): the part that catches the log itself showing
+different people different histories, rather than the accounts in it
+(`docs/GA_CHECKLIST.md`, G3). It does not catch everything. An app that
+looks an account up in the log for the first time — a new install, a newly
+linked device — cannot tell whether the log has quietly dropped that
+account's newest list, or all of them, and the witness cannot either; and
+the app reaches the witness through the project's own domain, and says it
+has gone quiet only in Settings (`THREAT_MODEL.md`, R7).
 
 ## It cannot tell you who is behind a handle
+
+This version of Z has no handle service set up, so nobody using it as it
+ships can claim a handle or find anyone by one; what follows is what holds
+once a version has one.
 
 A handle — `@alex.42` — is a name someone claimed, first come, first served.
 Z checks that the account that answers a request is the one the handle sent
@@ -234,8 +256,10 @@ Nobody vouches for the handle service yet, either. It could show you a
 different record for a handle than it shows everyone else, and send your
 request to an inbox of its choosing; the app checks everything in an answer
 it can check, but only a witness comparing what the service tells different
-people would catch that, and the app checks against none yet: one runs, but no build pins it (R50). There too, the safety
-number is what catches the account that answered.
+people would catch that, and not every way of doing it — and the app, as it
+ships, checks against none yet: one runs, but no build pins it, as none pins
+the service (R50). There too, the safety number is what catches the account
+that answered.
 
 ## It has not been audited
 

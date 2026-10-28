@@ -3,7 +3,8 @@
 **Status:** **Accepted** (2026‑10‑17). Proposed the same day; Finnian's
 decisions of 2026‑10‑17 answer its eight open questions — folded into the
 text where it asked them, and listed under "Decisions". Roadmap phase 48
-(`ROADMAP.md` lines 60, 539).
+(`ROADMAP.md`: its row in "Where things stand" and its row in "Phases
+45–50").
 **Built:** 48.1 — the cap, and no list a frame cannot carry (PROTOCOL §11
 "Size" and §11.1's size bullet; `group_management_test.dart` 4–7,
 `group_invite_link_test.dart` 26). 48.2 — several envelopes in flight, at
@@ -37,7 +38,7 @@ Phase 48 asks whether "one encryption per member per message" should give way to
 
 *(Built, 48.1: by the issuer's own measure, on lists of entries shaped as a real group's and a device with no other devices of its own, the frame rule first bites at 626 members with four-character names and at 550 with twenty-character ones (`group_management_test.dart` 5); a list of 128 travels as 87 466 characters, in the 65 536 bucket (4).)*
 
-The table counts one message to each member's main device. Linked devices multiply the text rows, not the photo (`chat_service.dart:5487-5493`). Nothing measures more than one device per member (`PERFORMANCE.md:778`). *(Built, 48.3: so a member's other devices are no recipients of a file's budget — they are sent the offer, and their own phone passes the chunks on — while each of the sender's other devices is one, sent every chunk at once by the mirror (`DeviceSyncService.fanChunk`): within the budget, and outside the staging bound, which bounds the members' copies (§4; `group_fanout_test.dart` 8).)*
+The table counts one message to each member's main device. Linked devices multiply the text rows, not the photo (`chat_service.dart`: a member's other devices are sent each message by `_fanToContactExtras`, and a file's chunks only by that member's own phone, `_onChunk`). Nothing measures more than one device per member (`PERFORMANCE.md:778`). *(Built, 48.3: so a member's other devices are no recipients of a file's budget — they are sent the offer, and their own phone passes the chunks on — while each of the sender's other devices is one, sent every chunk at once by the mirror (`DeviceSyncService.fanChunk`): within the budget, and outside the staging bound, which bounds the members' copies (§4; `group_fanout_test.dart` 8).)*
 
 | | 50 | 128 | 256 | 900 |
 |---|---:|---:|---:|---:|
@@ -72,7 +73,7 @@ Three constraints come from earlier decisions:
   - Removals, renames, roles and timers go out at any size, so no group freezes.
 - **No list a frame cannot carry.** At any size, the issuer measures the list as it will travel and refuses one past the 262 144 bucket (§8). Until 48.1 the relay dropped such a list, and only the admin kept it. *(Built, 48.1: measured for the longest copy — a member's at its fullest header and claims, or, while the issuer's account has other devices, theirs, which carries the list in one base64 layer more inside the self-sync envelope — and refused before anything is saved or queued, the group put back as it was. So a group whose list is past the bucket already — only an older or modified build, behind a relay with a larger frame cap, can have made one — takes no list from a current client, a removal included; its members still write to it, and leave.)*
 - **Receivers are unchanged** (§11.1's 1 024), and stay so: Finnian's decision of 2026‑10‑17 is never to lower that bound to the cap (question 8), so a group made by an older or modified build always loads. A list of 300 from an older build is taken, shown as over the limit, and can shrink — shrink-only, as decided (question 5). The cap binds only what is issued, so mixed-version groups converge as now.
-- **Why a cap at all — the threat model.** Larger groups are cheap only if the relay is told who is in them (relay fan-out, store-once media; both rejected below), so Z does not make them. And each member is an unverified contact of every other (`_adoptGroupContacts`, `chat_service.dart:10994-11008`). Any of them can fill your mailbox (R22), send you chunks (R26) or claim a device first (§3.4); 127 strangers is plenty.
+- **Why a cap at all — the threat model.** Larger groups are cheap only if the relay is told who is in them (relay fan-out, store-once media; both rejected below), so Z does not make them. And each member is an unverified contact of every other (`_adoptGroupContacts` in `chat_service.dart`). Any of them can fill your mailbox (R22), send you chunks (R26) or claim a device first (§3.4); 127 strangers is plenty.
 - **Why 128 — the costs.**
   - The list stays in the 65 536 bucket: a change costs 11 MB to send, against 90 MB at 256.
   - A text is about 166 envelopes at an assumed 1.3 devices a member. Once pipelined, it fits one burst of the relay's per-connection limit (240, §12.4).
@@ -90,7 +91,7 @@ This is a client change only; nothing on the wire changes.
 - **A refusal holds its mailbox, not the outbox.**
   - `rate_limited` backs off from 1 s, doubling to the existing 60 s.
   - `store_full` holds that mailbox for the pass, as `queue_full` does. Only eight in a row, from different mailboxes, end the pass: a full store refuses everyone, the gate only fresh mailboxes.
-- **Membership changes stay queued ahead of later messages** (`_sendInvite`, `chat_service.dart:9043-9049`), so the snapshot rule holds.
+- **Membership changes stay queued ahead of later messages** (`_sendInvite` in `chat_service.dart`, through `_queueGroupFanout`), so the snapshot rule holds.
 
 ### 4. A group file has a budget, and stages under a bound
 
@@ -131,7 +132,7 @@ Lists change only over the pairwise channel of an admin the receiver holds, unde
 **Sender keys** (Signal's, WhatsApp's): each sender's chain and signing key go to every member pairwise, and each message is encrypted once.
 - **The saving.** Without relay fan-out Z still sends N envelopes, so all it saves is the ratchet step.
 - **Rotation.** Each removal costs every sender O(N) envelopes, O(N²) per group.
-- **What a removed member keeps.** Per-device sealing narrows what they read. But a quantum break of the classical sealed layer on recorded envelopes (`THREAT_MODEL.md:239-240`), or the key of one current device, reopens it until rotation.
+- **What a removed member keeps.** Per-device sealing narrows what they read. But a quantum break of the classical sealed layer on recorded envelopes (`THREAT_MODEL.md`, "The quantum layer's edges": the sealed‑sender outer layer), or the key of one current device, reopens it until rotation.
 
 **MLS** (TreeKEM and epochs; RFC 9750's architecture) needs one commit per epoch, agreed by every member. Nothing here can supply that order:
 - **A relay that orders** is the trusted orderer the non-negotiables refuse. It chooses which commit stands, a removal included.
@@ -153,19 +154,21 @@ MLS has further costs:
 
 ## Consequences
 
-- **PROTOCOL:** §11 "Size", §11.1's size bullet, §12.5's one-per-mailbox rule, and §7's upload per recipient (informative). §14 needs nothing.
+Each says whether it is written: 48.1–48.3 wrote theirs, and what the build plan gives 48.4 and 48.5 is not written yet.
+
+- **PROTOCOL**, written with 48.1–48.3: §11 "Size", §11.1's size bullet, §12.5's one-per-mailbox rule, and §7's upload per recipient (informative). §14 needs nothing.
 - **Vectors:** none.
-- **Tests:** in existing files, as the build plan lists, because the app's test-file count is guarded (`AUDIT_SCOPE.md:41`).
+- **Tests:** in existing files, as the build plan lists, because the app's test-file count is guarded (`AUDIT_SCOPE.md` §2's app row, which `tool/check_audit_scope.py` holds to the tree).
 - **THREAT_MODEL:**
-  - **R18:** the burst is the group, pipelined and capped.
-  - **R12:** the relay sends one FCM wake per envelope queued for an offline device, uncoalesced (`server.js:4206-4222`), so Google sees R18's pattern too.
-  - **R29 and "Your contact":** a group makes its members each other's contacts.
-  - **R38:** the cap binds only current issuers; older or modified clients can still inflate a group to 1 024, and always will: receivers keep §11.1's bound for good, so R38 is permanent (question 8).
+  - **R18:** the burst is the group, pipelined — written with 48.2 — and capped (48.5).
+  - **R12** (48.5): the relay sends one FCM wake per envelope queued for an offline device, uncoalesced (the wake after a `send` in `server.js`, `pushSender.sendWake`), so Google sees R18's pattern too.
+  - **R29 and "Your contact"** (48.5): a group makes its members each other's contacts.
+  - **R38**, written with 48.1: the cap binds only current issuers; older or modified clients can still inflate a group to 1 024, and always will: receivers keep §11.1's bound for good, so R38 is permanent (question 8).
   - **A new register row when 48.5 lands, accepted:** group media is bounded by the relay's store, not by the client. The budget keeps one send within the public store. Two sends, or one to a group with many members offline, can still fill it, and everyone on that relay is then refused until those members drain.
-- **AUDIT_SCOPE C9:** no list grows a group past 128 or exceeds a frame; a refusal holds only its own mailbox; a group file over budget writes nothing. §4 item 10 points here.
-- **PERFORMANCE.md:** "Large groups (48)" measures the table; lines 221–231 corrected.
-- **USING_Z, "Groups":** the cap, and the upload.
-- **WHAT_Z_CANNOT_DO:** no groups past 128, and no broadcast.
+- **AUDIT_SCOPE:** C9, written with 48.1 and 48.3 — no list grows a group past 128 or exceeds a frame, and a group file over budget writes nothing — and C1, with 48.2: a refusal holds only its own mailbox. §4 item 10 is to point here (48.5).
+- **PERFORMANCE.md** (48.4, planned): a section, "Large groups (48)", to measure the table, and its lines 221–231, which still call membership changes synchronous and `sendGroupFile` unqueued, to be corrected.
+- **USING_Z, "Groups":** the cap, and the upload — written.
+- **WHAT_Z_CANNOT_DO:** no groups past 128, and no broadcast — written with 48.1.
 
 ## What remains
 
@@ -192,4 +195,4 @@ Five patches. None touches the relay's code. Each code patch starts from a test 
 | 48.2 | Several envelopes in flight, at most one per mailbox | **built** |
 | 48.3 | A group file within a budget, staged under a bound | **built** |
 | 48.4 | Measurements | planned |
-| 48.5 | The register and the claims, before any release ships 48.1–48.3 | planned; what 48.1 makes true — R38's sentence, C9's clause, WHAT_Z_CANNOT_DO and this record — written with it |
+| 48.5 | The register and the claims, meant to come before any release shipped 48.1–48.3 | planned — 48.1–48.3 shipped without it, in 4.5.0, 4.6.0 and 4.7.0; what 48.1 makes true — R38's sentence, C9's clause, WHAT_Z_CANNOT_DO and this record — written with it |

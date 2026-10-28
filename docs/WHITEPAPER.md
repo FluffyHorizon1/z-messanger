@@ -318,16 +318,21 @@ service, a mirror that refuses a fork, two verifiers with no shared code and
 the client's six end-to-end states are built, and since 2026-09-13 the log
 runs at `kt.zmessengers.com` under the key the shipped client pins. Since
 2026‑10‑17 it has a second party: a mirror run under another person's
-account co‑signs each head it has verified, and the client pins its key, so
-a log that served one reader a different head from another's is caught by a
-reader whose client reaches the witness's current record. Two limits remain.
-The witness is reached at a name in the project's own domain, so whoever
-controls that domain can withhold its record or serve an old one; and since
-2026‑10‑17 the client says the witness has gone quiet, after a day without a
-current record the log agrees with, only in Settings, which a reader who never
-opens it does not see
-(`THREAT_MODEL.md` R7). G3 stays ❌ until a release carries the witness and
-its last condition is confirmed (`GA_CHECKLIST.md`).
+account co‑signs each head it has verified, and the client pins its key —
+every release since 4.4.2 does — so a log that served one reader a different
+history of its entries from another's is caught by a reader whose client
+reaches the witness's current record. At the record's own size the client
+compares both roots with it, and across sizes the log root alone, as it does
+with the head it holds (PROTOCOL.md §19.5), so a map that drops a label or
+moves it back while the log grows by honest entries is not caught by the
+witness, only by a client that read the label before. Three limits remain:
+that one, for a client that has not read the label; the witness is reached
+at a name in the project's own domain, so whoever controls that domain can
+withhold its record or serve an old one; and since 2026‑10‑17 the client
+says the witness has gone quiet, after a day without a current record the
+log agrees with, only in Settings, which a reader who never opens it does
+not see (`THREAT_MODEL.md` R7). G3 stays ❌ until its last condition is
+confirmed (`GA_CHECKLIST.md`).
 
 **How to check it.** `app/test/verification_ux_test.dart` asserts the words on
 the screen, not just the state behind them; `app/test/key_transparency_test.dart`
@@ -442,8 +447,11 @@ assume it does is where harm happens:
   that witness has gone quiet — out of reach, or its record a day old. What is
   missing is a path to the witness that is not the project's own domain, and
   a warning anywhere but Settings: on that path the log can go unchecked, and
-  only Settings says so. This bullet is removed when
-  `GA_CHECKLIST.md` G3 is ticked.
+  only Settings says so. Missing too is a check of the map across sizes: a
+  label the map drops or moves back while the log grows passes the witness,
+  and is caught only by a client that read it before (R7). This bullet
+  changes when `GA_CHECKLIST.md` G3 is ticked; what it says is missing
+  outlasts that.
 
 The full list, with severities and status, is the residual-risk register in
 `docs/THREAT_MODEL.md`.

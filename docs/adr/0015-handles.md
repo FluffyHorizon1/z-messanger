@@ -36,10 +36,13 @@ So the mechanism is not the problem. Three other things are.
 
 ### What Z says today, in three places
 
-- `THREAT_MODEL.md`, under "Design decisions that follow from zero trust":
-  **"No accounts, no phone numbers, no directory, no key server."**
-- `adr/0008` (federation) decides the client‑to‑many‑relays shape expressly
-  **"no relay‑to‑relay protocol, no directory"**.
+- `THREAT_MODEL.md`, under "Design decisions that follow from zero trust"
+  (as it read then): **"No accounts, no phone numbers, no directory, no key
+  server."**
+- `adr/0008` (federation) decides the client‑to‑many‑relays shape, and among
+  what it rejects: **"A directory of mailbox → relay. Rejected: a directory
+  is a server that knows who exists and where, which is the thing Z's design
+  refuses to build"**.
 - The Play listing: *"No phone number, no email, no username, no password."*
   The Data‑safety notes add that introducing **a directory service** requires
   the console form to be updated *before* the change ships.
@@ -233,8 +236,9 @@ is made before the release that ships handles:
 
 1. `THREAT_MODEL.md`, *Design decisions that follow from zero trust*: **"No
    accounts, no phone numbers, no directory, no key server."**
-2. `adr/0008`'s **"no relay‑to‑relay protocol, no directory"**, and its
-   rejection of a mailbox directory, which cites that line.
+2. `adr/0008`'s rejection of a mailbox directory, which cited item 1 as
+   **"no directory, no key server"**, and its row in the ADR index, **"no
+   relay‑to‑relay protocol, no directory"**.
 3. The Play listing's **"No phone number, no email, no username, no
    password"** and the **Data safety** form, which the console notes say must
    be updated *before* the change ships. Opt‑in does not shrink this: the form

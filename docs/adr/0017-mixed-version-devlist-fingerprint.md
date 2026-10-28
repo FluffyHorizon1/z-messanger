@@ -1,9 +1,14 @@
 # ADR 0017 — Mixed-version device lists: hold the fingerprint and ML-DSA at v1 while v1 signing continues
 
 **Status:** **Accepted** (2026‑09‑19) — stage 1 built (3.7.8); stage 2 built
-and switched off (2026‑09‑30, "Stage 2" below); its follow‑ups, one closed
-and two open, at the end (2026‑10‑02); the gate of stage 2b measured per
-account by ADR 0029 (2026‑10‑09, at the end). Amends ADR 0010.
+(2026‑09‑30, "Stage 2" below) and switched on since 4.2.0: the gate of stage
+2b is measured per account by ADR 0029 (2026‑10‑09, at the end), and
+`devlistSignV2Only` (`protocol/lib/src/multidevice.dart`) is `true`, so a
+root moves its account to v2‑only lists once every device that reads them
+has said it can. A build older than 3.9.9 cannot read a v2‑only list, nor
+start on a vault that holds a contact's: going below 3.9.9 after an account
+has moved is not supported. Its follow‑ups, one closed and two open, at the
+end (2026‑10‑02). Amends ADR 0010.
 **Decides:** what a current client reports as a device list's fingerprint, and
 what input its ML‑DSA covers, while clients that predate ADR 0010 are still in
 the field.
