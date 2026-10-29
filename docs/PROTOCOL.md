@@ -2067,16 +2067,23 @@ JSON. So the relay can tell a v3 pairing from a v2 one, whose `commit-v2` and
 frame it reads — `recv` with the frame's `id` and its sender (§12.5), as an
 ordinary envelope is acknowledged — as soon as it takes it, since a ceremony
 keeps nothing past its run and a frame read is as kept as it will be; and a
-frame that arrived and was not taken (a copy a reconnect flushed again, a
-kind it was not waiting for) is acknowledged when that side closes the
-mailbox. An existing device acknowledges the first frame of an older new
-device it recognises (§10.1 rule 4, rule 6 above) and sends nothing else
-for it: the relay drops the frame, and the older device is answered with
-nothing. The existing device keeps its connection after sending its
-enrollment until the relay's `delivered` for it arrives — at most ten
-seconds — so that the receipt for the new device's acknowledgement (§12.5
-item 3) is handed to it, not queued for a mailbox nobody reads again. So a
-finished ceremony leaves nothing on the relay. Until 2026‑10‑28 neither side
+frame that arrived and was not taken — a kind it was not waiting for — is
+acknowledged when that side closes the mailbox, but never `reply-v3`,
+whose acknowledgement tells the existing device that the new device's user
+confirmed (below). A relay delivers at least once (§12.5): it sends a
+mailbox again to a new connection, and an HA relay to the live one when the
+mailbox has not moved for a sweep (`reflushStalled`). So each side keeps
+the `id` and sender of every frame it has taken, and drops a later copy as
+it arrives, never acknowledging it: the copy taken is the one acknowledged,
+or not, and to the relay an acknowledgement of either is the same
+acknowledgement. An existing device acknowledges the first frame of an
+older new device it recognises (§10.1 rule 4, rule 6 above) and sends
+nothing else for it: the relay drops the frame, and the older device is
+answered with nothing. The existing device keeps its connection after
+sending its enrollment until the relay's `delivered` for it arrives — at
+most ten seconds — so that the receipt for the new device's acknowledgement
+(§12.5 item 3) is handed to it, not queued for a mailbox nobody reads
+again. So a finished ceremony leaves nothing on the relay. Until 2026‑10‑28 neither side
 acknowledged any frame: all four stayed queued until `QUEUE_TTL_HOURS` (72),
 the enrollment among them — 10 479 bytes of the relay's store for an account
 with one contact, measured through the app at 4.7.2. A frame sent to a side
@@ -2093,7 +2100,9 @@ relay's `delivered` for its reply — as long as it waits for any frame —
 and only then signs the new device's certificate, asks for its `pqdc` and
 sends `enroll-v3`; without it, it sends nothing and links nothing. So a
 new device whose user saw different digits is sent nothing of the account,
-whatever the other user pressed, and its `reply-v3` stays queued until
+whatever the other user pressed — on an HA relay too, whose sweep sends the
+reply again while the new device holds it: that copy is dropped, and
+neither is acknowledged — and its `reply-v3` stays queued until
 `QUEUE_TTL_HOURS`. The report is the relay's to make: a relay that forges
 it gives the existing device what every ceremony before this did, the
 enrollment sent on its own user's comparison alone. And the relay learns

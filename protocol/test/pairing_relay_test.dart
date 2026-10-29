@@ -382,6 +382,60 @@ void main() {
       await heldAgain(before, 'a v2 ceremony');
     }, timeout: const Timeout(Duration(minutes: 2)));
 
+    // A relay delivers at least once (§12.5): an HA relay sends a mailbox
+    // that has not moved for a sweep again, on the live connection
+    // (`reflushStalled`). Here a front before the relay hands the new device
+    // its reply twice, as that sweep does, and its person then says the
+    // digits differ. The copy it did not take is not acknowledged: the
+    // phone, whose person said they match, hears nothing, sends nothing and
+    // links nothing, and the relay keeps the reply alone.
+    test(
+        "a copy of the reply delivered again does not say the new device's "
+        'person confirmed', () async {
+      final before = await held();
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      var replies = 0, replyCharge = 0;
+      final tap = await front(url, (frame) {
+        if (kindOfFrame(frame) != 'reply-v3') return [frame];
+        replies += 2;
+        replyCharge =
+            charged(((jsonDecode(frame) as Map)['payload'] as String));
+        return [frame, frame];
+      });
+      try {
+        var phoneConfirmed = false;
+        final host = RelayPairing.runExistingDeviceV3(
+          relayUrl: url,
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => phoneConfirmed = true,
+          timeout: const Duration(seconds: 4),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final laptop = await RelayPairing.runNewDeviceV3(
+            relayUrl: 'ws://127.0.0.1:${tap.port}',
+            n: desktop,
+            confirm: (s) async {
+              // Both copies were handed over before this device sent the
+              // opening the phone's digits came from.
+              await waitUntil(() => replies == 2 && phoneConfirmed,
+                  what: 'both copies of the reply in, and the phone confirmed');
+              return false;
+            });
+        expect(laptop, isNull, reason: 'its person said the digits differ');
+        expect(await host, isNull,
+            reason: 'the phone hears no confirmation, and links nothing');
+        expect(await held(), (before.$1 + 1, before.$2 + replyCharge),
+            reason: 'the relay keeps the reply, unacknowledged, and nothing '
+                'else: no enrolment was sent');
+      } finally {
+        await tap.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     test('a v3 host that hears an older device leaves nothing of it',
         () async {
       for (final version in [2, 1]) {
@@ -416,6 +470,47 @@ void main() {
       }
     }, timeout: const Timeout(Duration(minutes: 2)));
   });
+}
+
+/// A front before the relay at [relayUrl] for one client: every frame passes
+/// both ways, and [down] says what the client is handed for each frame the
+/// relay sends it — the frame, a copy of it too, something else, or
+/// nothing. The Host header passes through, so the relay checks each
+/// authentication against the address the client dialled.
+Future<HttpServer> front(
+    String relayUrl, List<String> Function(String frame) down) async {
+  final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+  server.listen((req) async {
+    final client = await WebSocketTransformer.upgrade(req);
+    final relay = await WebSocket.connect(relayUrl,
+        headers: {'host': req.headers.value('host') ?? ''});
+    client.listen(relay.add,
+        onDone: () => relay.close(), onError: (Object _) => relay.close());
+    relay.listen((d) {
+      for (final f in down(d as String)) {
+        client.add(f);
+      }
+    }, onDone: () => client.close(), onError: (Object _) => client.close());
+  });
+  return server;
+}
+
+/// What the relay charges an envelope whose payload is [payload] against
+/// its store (`server.js`, `envelopeSize`): the payload as the store holds
+/// it, JSON-escaped, and 256 bytes for the entry around it.
+int charged(String payload) => jsonEncode(payload).length - 2 + 256;
+
+/// The kind (`k`) of the pairing frame a relay `msg` [frame] carries, or
+/// null for anything else.
+String? kindOfFrame(String frame) {
+  try {
+    final f = jsonDecode(frame);
+    if (f is! Map || f['t'] != 'msg' || f['payload'] is! String) return null;
+    final p = jsonDecode(f['payload'] as String);
+    return p is Map && p['k'] is String ? p['k'] as String : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 /// Polls [done] until it holds, failing with [what] after [timeout]: a wait

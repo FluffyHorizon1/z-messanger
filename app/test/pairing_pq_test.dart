@@ -53,7 +53,12 @@
 //      in Spanish, and anything else that stops a link is a failure;
 //   9. a device linked by v3 keeps the `pqdc` its enrolment carried: its
 //      `pqseal`, which to its root is also its ask for one, brings the root
-//      its sealing key, and the root sends it no other `pqdc`.
+//      its sealing key, and the root sends it no other `pqdc`;
+//  10. a copy of the reply that the relay delivers again while the laptop
+//      holds it — as an HA relay's sweep does — says nothing: the laptop's
+//      person says the digits differ and the phone's that they match, and
+//      the phone sends nothing and links nothing, the reply left at the
+//      relay unacknowledged.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -88,7 +93,9 @@ typedef Person = ({
 
 /// A front before the relay that passes every frame through, both ways,
 /// and keeps the payload of each pairing frame — what the relay carries —
-/// by its kind (`k`).
+/// by its kind (`k`). [hand], when given, says what the client is handed for
+/// each frame the relay sends it: the frame, a copy of it too, another
+/// frame, or nothing.
 class Recorder {
   final HttpServer _server;
   final frames = <String, List<String>>{};
@@ -96,7 +103,8 @@ class Recorder {
 
   String get url => 'ws://127.0.0.1:${_server.port}';
 
-  static Future<Recorder> start(String relayUrl) async {
+  static Future<Recorder> start(String relayUrl,
+      {List<String> Function(String frame)? hand}) async {
     final r =
         Recorder._(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
     r._server.listen((req) async {
@@ -111,10 +119,29 @@ class Recorder {
       }, onDone: () => up.close(), onError: (Object _) => up.close());
       up.listen((d) {
         r._note(d, 'msg');
-        down.add(d);
+        if (hand == null || d is! String) {
+          down.add(d);
+        } else {
+          for (final f in hand(d)) {
+            down.add(f);
+          }
+        }
       }, onDone: () => down.close(), onError: (Object _) => down.close());
     });
     return r;
+  }
+
+  /// The kind (`k`) of the pairing frame a relay `msg` [frame] carries, or
+  /// null for anything else.
+  static String? kindOf(String frame) {
+    try {
+      final f = jsonDecode(frame);
+      if (f is! Map || f['t'] != 'msg' || f['payload'] is! String) return null;
+      final p = jsonDecode(f['payload'] as String);
+      return p is Map && p['k'] is String ? p['k'] as String : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   void _note(Object? data, String t) {
@@ -870,5 +897,52 @@ void main() {
     expect(b64(laptop.svc.debugOwnPqdc!), b64(sent),
         reason: 'it holds the one its enrolment carried');
     expect(await laptop.vault.kvGet(ownPqdcKey), b64(sent));
+  });
+
+  test(
+      '10. a copy of the reply delivered again while the laptop holds it '
+      'says nothing: nothing is sent, nothing linked', () async {
+    final alice = await person('Alice10');
+    await connected([alice]);
+    alice.svc.linkTimeout = const Duration(seconds: 6);
+    final listBefore = await alice.svc.ownDeviceListVersion();
+    // The laptop connects through a front that hands it the reply twice, as
+    // an HA relay's sweep sends a mailbox that has not moved again (§12.5).
+    var replies = 0;
+    final tap = await Recorder.start(relayUrl(), hand: (f) {
+      if (Recorder.kindOf(f) != 'reply-v3') return [f];
+      replies += 2;
+      return [f, f];
+    });
+    try {
+      final n = await NewDeviceLink.create();
+      final code = PairingCode.parse(n.code);
+      var phoneConfirmed = false;
+      final hosted = alice.svc
+          .hostDeviceLink(n.code, confirmSas: (_) async => phoneConfirmed = true)
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      final result = await n.run(
+          relayUrl: tap.url,
+          confirm: (_) async {
+            // Both copies were handed over before the laptop sent the
+            // opening the phone's digits came from.
+            await waitUntil(() => replies == 2 && phoneConfirmed,
+                what: 'both copies of the reply in, and the phone confirmed');
+            return false;
+          });
+      expect(result, isNull, reason: "the laptop's person said they differ");
+      expect(await hosted, isFalse,
+          reason: 'the phone hears no confirmation: it sends nothing and '
+              'links nothing');
+      expect(await alice.svc.linkedDevices(), isEmpty);
+      expect(await alice.svc.ownDeviceListVersion(), listBefore);
+      final left = await peek(await RelayPairing.relayIdentityV3(code, 'i'));
+      expect([for (final e in left) (jsonDecode(e.payload) as Map)['k']],
+          ['reply-v3'],
+          reason: 'the reply waits at the relay, unacknowledged, and no '
+              'enrolment was sent');
+    } finally {
+      await tap.close();
+    }
   });
 }

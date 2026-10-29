@@ -29,8 +29,10 @@ import 'util.dart';
 /// for it is handed over rather than queued at a mailbox nobody reads again.
 /// One frame is acknowledged later: in v3 the new device acknowledges the
 /// reply only once its person has said the digits match, and the existing
-/// device sends the enrolment only once the relay has reported that.
-/// The v1 runners are left as builds before v2 ran them.
+/// device sends the enrolment only once the relay has reported that. A copy
+/// of a frame that the relay delivers again is dropped and never
+/// acknowledged ([_Mailbox]). The v1 runners are left as builds before v2
+/// ran them.
 
 const String _relayCtx = 'z-pair-relay:';
 // v2 (§10.1) derives its throwaway mailboxes from a different context, so a
@@ -549,21 +551,60 @@ class RelayPairing {
 /// A frame is acknowledged the moment it is taken — read, and never to be
 /// read again — as an ordinary envelope is once it is stored (`recv` with
 /// its id and sender, §12.5), and whatever arrived and was never taken is
-/// acknowledged when the mailbox closes: a copy a reconnect flushed again, a
-/// frame of a kind this side was not waiting for. Nothing of a ceremony is
-/// left on the relay for `QUEUE_TTL_HOURS` by the side that read it, but a
-/// frame taken to be acknowledged later ([takeHeld]) and never acknowledged:
-/// v3's reply, at a new device whose person said the digits differ.
+/// acknowledged when the mailbox closes: a frame of a kind this side was
+/// not waiting for. Nothing of a ceremony is left on the relay for
+/// `QUEUE_TTL_HOURS` by the side that read it, but a frame taken to be
+/// acknowledged later ([takeHeld]) and never acknowledged — v3's reply, at a
+/// new device whose person said the digits differ — and a frame whose
+/// acknowledgement tells the other device something ([_signals]), which
+/// closing never acknowledges.
+///
+/// A relay delivers at least once (§12.5): it sends a mailbox again on a
+/// new connection, and an HA relay sends one again on a live connection when
+/// it has not moved for a sweep (`reflushStalled`). A copy of a frame this
+/// mailbox holds or has handed out — the same id from the same sender — is
+/// dropped as it arrives and never acknowledged: the copy handed out is the
+/// one acknowledged, or not, and an acknowledgement of a later copy is the
+/// same acknowledgement to the relay. A later copy of a reply taken to be
+/// acknowledged later used to sit untaken, and closing acknowledged it: on
+/// an HA relay a new device whose person said the digits differ more than a
+/// sweep after the reply arrived told the existing device they matched.
 class _Mailbox {
   final RelayClient client;
   final _inbox = <RelayInbound>[];
+  final _handedOut = <String>{};
   final _acknowledged = <String>{};
   late final StreamSubscription<RelayInbound> _frames;
   late final StreamSubscription<DeliveredReceipt> _receipts;
 
+  /// The kinds whose acknowledgement is a signal to the other device: v3's
+  /// reply, which the new device acknowledges once its person has said the
+  /// digits match (§10.2). Acknowledged only by the step that means it;
+  /// closing never acknowledges one.
+  static const _signals = {'reply-v3'};
+
   _Mailbox._(this.client) {
-    _frames = client.messages.listen(_inbox.add);
+    _frames = client.messages.listen(_arrived);
     _receipts = client.delivered.listen((r) => _acknowledged.add(r.id));
+  }
+
+  /// A frame by what the relay knows it by: its id and its sender.
+  static String _key(RelayInbound f) => '${f.id}\u0000${f.from}';
+
+  void _arrived(RelayInbound f) {
+    final k = _key(f);
+    if (_handedOut.contains(k) || _inbox.any((e) => _key(e) == k)) return;
+    _inbox.add(f);
+  }
+
+  /// The kind (`k`) [frame] says it is, or null.
+  static String? _kindOf(RelayInbound frame) {
+    try {
+      final j = jsonDecode(frame.payload);
+      return j is Map && j['k'] is String ? j['k'] as String : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   static Future<_Mailbox> open(String relayUrl, ZIdentity who) async =>
@@ -580,7 +621,8 @@ class _Mailbox {
 
   /// [take] without the acknowledgement: the frame and its envelope, taken
   /// out, for the caller to [acknowledge] when it decides to. A frame taken
-  /// this way is no longer this mailbox's to acknowledge when it closes.
+  /// this way is no longer this mailbox's to acknowledge when it closes, and
+  /// a later copy of it is dropped as it arrives.
   (Map<String, Object?>, RelayInbound)? takeHeld(String kind) {
     for (var i = 0; i < _inbox.length; i++) {
       final Object? j;
@@ -590,7 +632,9 @@ class _Mailbox {
         continue;
       }
       if (j is Map && j['k'] == kind) {
-        return (j.cast<String, Object?>(), _inbox.removeAt(i));
+        final frame = _inbox.removeAt(i);
+        _handedOut.add(_key(frame));
+        return (j.cast<String, Object?>(), frame);
       }
     }
     return null;
@@ -613,10 +657,11 @@ class _Mailbox {
     }
   }
 
-  /// Acknowledges whatever arrived and was not taken, then closes.
+  /// Acknowledges whatever arrived and was not taken, but a frame whose
+  /// acknowledgement is a signal ([_signals]), then closes.
   Future<void> close() async {
     for (final frame in _inbox) {
-      _ack(frame);
+      if (!_signals.contains(_kindOf(frame))) _ack(frame);
     }
     _inbox.clear();
     await _frames.cancel();
