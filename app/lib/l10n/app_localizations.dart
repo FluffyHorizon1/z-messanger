@@ -926,10 +926,10 @@ abstract class AppLocalizations {
   /// **'The new device stopped waiting for this one, so nothing was sent to it. Start again on both devices, and confirm on both within about forty seconds of each other.'**
   String get linkPeerGaveUp;
 
-  /// On the existing device, after the account was sent: the new device never reported it installed — it had stopped waiting, or could not open or install it — so it was not added. Rarely the new device installed the account and the report was lost on the way; that device is not on the account, and must be reinstalled before it is linked again.
+  /// On the existing device, after the account was sent: the new device never reported it installed — it had stopped waiting, or could not open or install it — so it was not added. Sometimes the new device installed the account all the same: its report of that was lost, the connection to the relay closed once the account had gone, or installing took longer than this device waits. That device is not on the account; wiping it (Settings → Wipe everything, as stWipe words it) puts it back to where it can be linked again, with no reinstall.
   ///
   /// In en, this message translates to:
-  /// **'The new device did not finish linking, and this device has not added it. Start again on both devices. If the new device shows your chats anyway, reinstall Z on it first: it is not on your account.'**
+  /// **'The new device did not finish linking, and this device has not added it. Start again on both devices. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.'**
   String get linkPeerUnfinished;
 
   /// On the new device, after its person confirmed the codes match: the device it is linking from never sent the account within the wait — its person said the codes differ, confirmed too late, or it stopped. Nothing was installed.

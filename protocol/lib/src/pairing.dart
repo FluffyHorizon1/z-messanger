@@ -397,9 +397,13 @@ class PairingPeerGaveUp extends PairingAbort {
 /// A v3 existing device sent the enrolment, and the relay did not report
 /// the new device's acknowledgement of it within the time the new device
 /// can take (§10.2). The new device acknowledges the enrolment once it has
-/// opened and installed it, so it did not finish linking — it stopped
-/// waiting first, or could not open or install what it was sent — and the
-/// existing device links nothing.
+/// opened and installed it, so as far as this device can tell it did not
+/// finish linking — it stopped waiting first, or could not open or install
+/// what it was sent — and the existing device links nothing. It may have
+/// installed it all the same: its acknowledgement was lost, the report of
+/// it missed this device, whose connection closed once the enrolment had
+/// gone or whose relay restarted, or installing took longer than this
+/// device waits. It then holds the account unlisted until it is wiped.
 class PairingPeerUnfinished extends PairingAbort {
   const PairingPeerUnfinished()
       : super('the new device did not finish linking');

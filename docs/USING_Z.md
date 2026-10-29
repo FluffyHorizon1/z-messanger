@@ -464,8 +464,11 @@ stopped waiting or could not install it — sealed under a key that neither
 device keeps. Your phone adds the new device only once the new device says
 it has installed your account. If your phone says the new device did not
 finish linking while the new device shows your account anyway, the new
-device is not on your account: nothing it sends is delivered. Reinstall Z
-on it, then link it again.
+device is not on your account: nothing it sends is delivered. That happens
+when a connection drops at the last moment, or when the new device takes
+longer to install your account than your phone waits. On the new device,
+open Settings → Wipe everything, then link it again; there is no need to
+reinstall Z.
 
 A newly linked device knows your contacts as your phone does: each one shows
 the same safety number, the same tick if you verified them, the same

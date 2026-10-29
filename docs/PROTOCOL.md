@@ -2068,9 +2068,10 @@ frame it reads — `recv` with the frame's `id` and its sender (§12.5), as an
 ordinary envelope is acknowledged — as soon as it takes it, since a ceremony
 keeps nothing past its run and a frame read is as kept as it will be; and a
 frame that arrived and was not taken — a kind it was not waiting for — is
-acknowledged when that side closes the mailbox, but never `reply-v3`,
-whose acknowledgement tells the existing device that the new device's user
-confirmed (below). A relay delivers at least once (§12.5): it sends a
+acknowledged when that side closes the mailbox, but never `reply-v3` or
+`enroll-v3`, whose acknowledgements tell the existing device that the new
+device's user confirmed and that the new device installed the enrollment
+(below). A relay delivers at least once (§12.5): it sends a
 mailbox again to a new connection, and an HA relay to the live one when the
 mailbox has not moved for a sweep (`reflushStalled`). So each side keeps
 the `id` and sender of every frame it has taken, and drops a later copy as
@@ -2089,14 +2090,15 @@ v3 ceremony that stops part‑way can leave one thing, for
 `QUEUE_TTL_HOURS`: the `reply-v3` of a link the new device's user refused
 (1 530 bytes); an enrollment that reached a new device that had stopped
 waiting, or could not open or install it; or the relay's receipt (192
-bytes) for a reply the new device acknowledged after the existing device
-had stopped waiting for it. Until 2026‑10‑28 neither side
+bytes) for a reply or an enrollment the new device acknowledged after the
+existing device had stopped waiting for it, or had lost its connection.
+Until 2026‑10‑28 neither side
 acknowledged any frame: all four stayed queued until `QUEUE_TTL_HOURS` (72),
 the enrollment among them — 10 479 bytes of the relay's store for an account
 with one contact, measured through the app at 4.7.2. A frame sent to a side
 that never reads it — the other device gone, or never there — still waits
-out the queue's lifetime, as any envelope does. v3's reply is acknowledged
-later than it is read, below.
+out the queue's lifetime, as any envelope does. v3's reply and enrollment
+are acknowledged later than they are read, below.
 
 **Both comparisons before the enrollment (v3).** §10 has both users compare
 the digits before the existing device sends the enrollment, and in v3 the
@@ -2152,19 +2154,28 @@ links nothing and says the new device did not finish, not that the
 connection was lost, since the new device may hold its account all the
 same. Until 2026‑10‑29 a `sent` that came late or not at all ended the link
 on the existing device as a lost connection, while the new device installed
-the enrollment, unlisted. What this leaves
-is an installed but unlisted new device, when the report of an
-acknowledgement it made does not reach the existing device — its
-connection drops, or the relay restarts, between the two. That device
-holds the account and the contacts the enrollment carried, and no history;
-its account's list never names it, so its contacts drop what it sends, as
-from a device they do not know, and nothing reaches it; and having learned
-no list version it raises no alarm (ADR 0026). The existing device's
-screen says the new device did not finish linking. The reference client
-does not check for itself that its account lists it: the check needs a
-timeout, and one that fired while the phone was merely offline would
-report a fault where there is none. Reinstalling the app on the new device
-and linking again is the way out. No frame changes.
+the enrollment, unlisted.
+
+What this leaves is an installed but unlisted new device, whenever the new
+device installs the enrollment and the existing device never hears that it
+did. Its own acknowledgement can be lost: its connection drops as it sends
+it, or before the relay has it. The report can miss the existing device:
+that device's connection closes once the enrollment has gone up, or the
+relay restarts, in between. Or installing takes longer than the existing
+device waits: the new device's wait ends when the enrollment arrives, and
+nothing bounds the install that follows, so an install slower than what is
+left of the margin — a large account, slow storage — is acknowledged after
+the existing device has stopped. That device holds the account and the
+contacts the enrollment carried, and no history; its account's list never
+names it, so its contacts drop what it sends, as from a device they do not
+know, and nothing reaches it; and having learned no list version it raises
+no alarm (ADR 0026). The existing device's screen says the new device did
+not finish linking. The reference client does not check for itself that its
+account lists it: the check needs a timeout, and one that fired while the
+phone was merely offline would report a fault where there is none. The way
+out needs no reinstall: wiping the new device — Settings → Wipe everything,
+in the reference client — puts it back where it can be linked, and the
+existing device's screen says so. No frame changes.
 
 Vectors: [`vectors/pair-v3/`](vectors/pair-v3/). §10's and §10.1's remain
 untouched.

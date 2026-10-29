@@ -225,8 +225,8 @@ void main() {
       'both within about forty seconds of each other.';
   const phoneUnfinished = 'The new device did not finish linking, and this '
       'device has not added it. Start again on both devices. If the new '
-      'device shows your chats anyway, reinstall Z on it first: it is not on '
-      'your account.';
+      'device shows your chats anyway, it is not on your account: on it, '
+      'open Settings → Wipe everything, then link it again.';
   const laptopNoEnrolment = 'Your other device did not send your account in '
       'time: its person may have said the codes differ, or confirmed too '
       'late. Start again on both devices, and confirm on both within about '
@@ -977,7 +977,11 @@ void main() {
       expect(a, isNot(b), reason: 'the Spanish has words of its own');
     }
     expect(es.linkPeerGaveUp, contains('dejó de esperar'));
-    expect(es.linkPeerUnfinished, contains('reinstala Z'));
+    // A new device that installed the account unlisted is wiped, not
+    // reinstalled, and the phone names the setting as Settings shows it.
+    for (final l in [en, es]) {
+      expect(l.linkPeerUnfinished, contains('${l.stSettings} → ${l.stWipe}'));
+    }
   });
 
   test(

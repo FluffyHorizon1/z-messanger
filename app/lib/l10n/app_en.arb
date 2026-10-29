@@ -670,9 +670,9 @@
   "@linkPeerGaveUp": {
     "description": "On the existing device, when its person confirmed the codes long after the new device's person did: the new device stops waiting for the account about forty seconds after its own confirmation, so it would have stopped before the account reached it. Nothing was sent and nothing linked."
   },
-  "linkPeerUnfinished": "The new device did not finish linking, and this device has not added it. Start again on both devices. If the new device shows your chats anyway, reinstall Z on it first: it is not on your account.",
+  "linkPeerUnfinished": "The new device did not finish linking, and this device has not added it. Start again on both devices. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.",
   "@linkPeerUnfinished": {
-    "description": "On the existing device, after the account was sent: the new device never reported it installed \u2014 it had stopped waiting, or could not open or install it \u2014 so it was not added. Rarely the new device installed the account and the report was lost on the way; that device is not on the account, and must be reinstalled before it is linked again."
+    "description": "On the existing device, after the account was sent: the new device never reported it installed \u2014 it had stopped waiting, or could not open or install it \u2014 so it was not added. Sometimes the new device installed the account all the same: its report of that was lost, the connection to the relay closed once the account had gone, or installing took longer than this device waits. That device is not on the account; wiping it (Settings \u2192 Wipe everything, as stWipe words it) puts it back to where it can be linked again, with no reinstall."
   },
   "linkNoEnrolment": "Your other device did not send your account in time: its person may have said the codes differ, or confirmed too late. Start again on both devices, and confirm on both within about forty seconds of each other.",
   "@linkNoEnrolment": {

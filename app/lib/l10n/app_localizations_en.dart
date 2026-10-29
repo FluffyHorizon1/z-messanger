@@ -515,7 +515,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get linkPeerUnfinished =>
-      'The new device did not finish linking, and this device has not added it. Start again on both devices. If the new device shows your chats anyway, reinstall Z on it first: it is not on your account.';
+      'The new device did not finish linking, and this device has not added it. Start again on both devices. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.';
 
   @override
   String get linkNoEnrolment =>
