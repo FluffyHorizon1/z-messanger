@@ -573,14 +573,37 @@ void main() {
     // No pump() from here on. The two polls carry it: x1, x2, x3, x4. Five
     // rounds of a second and a half each on a quiet machine; the budget is
     // for the loaded CI runner, not for this one.
+    //
+    // Waited for is what is asserted below: each side at the digits AND the
+    // round that reached them over, `confirm` what it returned. The digits
+    // come first — the run's session is set inside the round, which then
+    // writes the run down and acknowledges what it read before it returns
+    // what the invite's progress is set from — so a wait for the digits
+    // alone could end with a poll's round still in flight, its invite's
+    // progress still `waiting`.
+    PendingInvite? only(Person p) =>
+        p.invites.invites.length == 1 ? p.invites.invites.single : null;
+    bool there(PendingInvite? i) =>
+        i != null && i.sas != null && i.progress == ConnectProgress.confirm;
+    String state(PendingInvite? i) => i == null
+        ? 'no single invite'
+        : '${i.progress.name}, digits ${i.sas ?? 'none'}, '
+            'failure ${i.lastFailure ?? 'none'}';
     final deadline = DateTime.now().add(const Duration(seconds: 120));
-    while (DateTime.now().isBefore(deadline) &&
-        !(alice.invites.invites.any((i) => i.sas != null) &&
-            bob.invites.invites.any((i) => i.sas != null))) {
+    while (!(there(only(alice)) && there(only(bob)))) {
+      if (DateTime.now().isAfter(deadline)) {
+        fail('the polls never brought both sides to the digits with their '
+            'rounds over: inviter ${state(only(alice))}; acceptor '
+            '${state(only(bob))}');
+      }
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
     alice.invites.pause();
     bob.invites.pause();
+    // A pass still in flight — the one that set the progress may still be
+    // writing it to the vault — joined, so nothing of either app's is left
+    // running.
+    await Future.wait([alice.invites.pump(), bob.invites.pump()]);
 
     final a = alice.invites.invites.single, b = bob.invites.invites.single;
     expect(a.sas, isNotNull, reason: 'the inviter reached the digits unaided');
