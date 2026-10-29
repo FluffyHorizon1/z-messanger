@@ -50,7 +50,10 @@
 //      not the link: the laptop installs its account and holds no `pqdc`,
 //      then asks its root over self-sync and holds one that verifies;
 //   8. the words: each screen says which device to update, in English and
-//      in Spanish, and anything else that stops a link is a failure.
+//      in Spanish, and anything else that stops a link is a failure;
+//   9. a device linked by v3 keeps the `pqdc` its enrolment carried: its
+//      `pqseal`, which to its root is also its ask for one, brings the root
+//      its sealing key, and the root sends it no other `pqdc`.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -804,5 +807,68 @@ void main() {
     expect(es.linkNewDeviceOlder(2), isNot(en.linkNewDeviceOlder(2)));
     expect(es.linkHostMayBeOlder, isNot(en.linkHostMayBeOlder));
     expect(es.linkNewCode, isNot(en.linkNewCode));
+  });
+
+  test(
+      '9. a device linked by v3 keeps the pqdc its enrolment carried, and its '
+      'root sends it no other', () async {
+    final alice = await person('Alice9');
+    final dave = await person('Dave9');
+    await pairUp(alice, dave);
+    final n = await NewDeviceLink.create();
+    final hosted =
+        alice.svc.hostDeviceLink(n.code, confirmSas: (_) async => true);
+    final result =
+        await n.run(relayUrl: relayUrl(), confirm: (_) async => true);
+    expect(result, isNotNull);
+    expect(await hosted, isTrue);
+    final sent = result!.data.pqdc;
+    expect(sent, isNotNull, reason: 'the enrolment carried a pqdc');
+
+    final (dir, vault) = await installed('Alice9-laptop', result, n);
+    final laptop = await boot(dir, 'Alice9-laptop', vault: vault);
+    // The `dir` of every self-sync mirror the laptop is sent.
+    final dirs = <String>[];
+    laptop.svc.debugOnDecrypted = (path, from, dec) {
+      if (path != 'sync') return false;
+      try {
+        final j = jsonDecode(utf8.decode(dec.plaintext));
+        if (j is Map && j['dir'] is String) dirs.add(j['dir'] as String);
+      } catch (_) {}
+      return false;
+    };
+    await connected([laptop]);
+    expect(b64(laptop.svc.debugOwnPqdc!), b64(sent!),
+        reason: 'the premise: it holds the pqdc its enrolment carried');
+
+    // Its pqseal reaches the root riding what it sends while messages flow:
+    // the announcement of its sealing key, and, to a root, its ask for its
+    // pqdc.
+    var i = 0;
+    await waitFor(() async {
+      final k = i++;
+      await laptop.svc.sendText(dave.svc.myRid, 'l$k');
+      await dave.svc.sendText(alice.svc.myRid, 'd$k');
+      await arrived(alice, dave.svc.myRid, 'l$k');
+      await arrived(laptop, dave.svc.myRid, 'd$k');
+      return alice.svc.debugPqSealOf(laptop.svc.myRid) != null;
+    }, timeout: const Duration(seconds: 90),
+        what: "the root holds the laptop's sealing key");
+    expect(b64(alice.svc.debugPqSealOf(laptop.svc.myRid)!),
+        b64(n.sealingKey.ek));
+
+    // A negative check over a window: three of the root's own messages
+    // reach the laptop over self-sync after the root took the pqseal. The
+    // root answers a pqseal as it takes it, so an answer would be in by the
+    // time the third of these is.
+    for (var k = 0; k < 3; k++) {
+      await alice.svc.sendText(dave.svc.myRid, 'p$k');
+      await arrived(laptop, dave.svc.myRid, 'p$k');
+    }
+    expect(dirs, isNot(contains('pqdc')),
+        reason: 'the root sent the laptop no pqdc over self-sync');
+    expect(b64(laptop.svc.debugOwnPqdc!), b64(sent),
+        reason: 'it holds the one its enrolment carried');
+    expect(await laptop.vault.kvGet(ownPqdcKey), b64(sent));
   });
 }

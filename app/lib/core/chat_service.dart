@@ -3932,6 +3932,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// 16 384-bucket envelope.
   final Map<String, int> _pqdcAnswers = {};
 
+  /// 44.4: the `pqdc` each device this root linked by pairing v3 this run
+  /// was enrolled with, by its routing id, until that device's first
+  /// `pqseal` ([_answerPqdcAsk]). In memory: a root that has started again
+  /// since answers that `pqseal` as it answers any.
+  final Map<String, Uint8List> _enrolledPqdc = {};
+
   /// `pqseal` envelopes this device has queued. Test seam.
   @visibleForTesting
   int debugPqSealSends = 0;
@@ -4306,11 +4312,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// list this root signs is made from, whose `ded` and `dx` are what it
   /// signs over. A device it does not name gets none, whichever channel it
   /// spoke on. Pairing v3 (44.4) carries a new device's in its enrolment
-  /// ([_attestLinkedDevice]); every device linked before it is attested this
-  /// way, and so is one whose enrolment's did not verify. A device that
-  /// holds one announces its key all the same, and is answered all the
-  /// same: nothing here tells an ask from an announcement. At most
-  /// [_maxPqNudges] answers to one device a run.
+  /// ([_attestLinkedDevice]), and that device's first `pqseal` after it is
+  /// not answered when the `pqdc` the enrolment carried verifies for the key
+  /// it announces ([_enrolledPqdc]) — the check the device made of it,
+  /// installing it (§10.2 rule 7), so it holds that one, and another would
+  /// be a 16 384-bucket envelope for nothing. Every device linked before
+  /// 44.4 is attested this way, and so is one whose enrolment's did not
+  /// verify. Past that, a device that holds one announces its key all the
+  /// same, and is answered all the same: nothing here tells an ask from an
+  /// announcement. At most [_maxPqNudges] answers to one device a run.
   Future<void> _answerPqdcAsk(String deviceRid, Uint8List ek) async {
     if (!_holdsRoot || debugBuildBeforeSealingKeys) return;
     final n = _pqdcAnswers[deviceRid] ?? 0;
@@ -4325,6 +4335,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       }
     }
     if (cert == null) return;
+    final enrolled = _enrolledPqdc.remove(deviceRid);
+    if (enrolled != null &&
+        deviceAttestationValid(
+            accountMlPub: pq.publicKey.mlPub,
+            accountEdPub: pq.publicKey.edPub,
+            deviceEdPub: cert.deviceEdPub,
+            deviceXPub: cert.deviceXPub,
+            sealEk: ek,
+            pqdc: enrolled)) {
+      return;
+    }
     _pqdcAnswers[deviceRid] = n + 1;
     final pqdc = await signDeviceAttestation(
         accountKey: pq,
@@ -8677,7 +8698,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// digits are confirmed on both devices ([_attestLinkedDevice]): the new
   /// device says its person confirmed by acknowledging this one's reply, and
   /// without that nothing of the account is sent and nothing is linked
-  /// (`RelayPairing.runExistingDeviceV3`). A new device on an older
+  /// (`RelayPairing.runExistingDeviceV3`). The first `pqseal` the device
+  /// then announces its key in is not answered with a second `pqdc`
+  /// ([_enrolledPqdc]). A new device on an older
   /// version speaks a ceremony this one only listens for: it is recognised
   /// by its first frame and answered with nothing — [PairingPeerOutdated],
   /// naming the version it spoke, so the screen can say to update that
@@ -8698,6 +8721,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         asBefore ? null : await _enrollmentStateWithin(bundles);
     final hostBundle =
         asBefore || !acct.holdsAccountRoot ? null : await identity.bundle();
+    Uint8List? enrolledPqdc;
     final linked = debugPairAsVersion2
         ? await RelayPairing.runExistingDeviceV2(
             relayUrl: transport.serverUrl,
@@ -8719,11 +8743,16 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             displayName: displayName,
             contactState: contactState,
             hostBundle: hostBundle,
-            attest: _attestLinkedDevice,
+            attest: (session) async =>
+                enrolledPqdc = await _attestLinkedDevice(session),
             confirm: confirmSas,
             timeout: linkTimeout,
           );
     if (linked == null) return false;
+    // Before the device is added: its first `pqseal` can arrive as soon as
+    // the self-sync channel names it ([_answerPqdcAsk]).
+    final pqdc = enrolledPqdc;
+    if (pqdc != null) _enrolledPqdc[await linked.routingId()] = pqdc;
     await addMyDevice(linked, awaitProof: true);
     return true;
   }

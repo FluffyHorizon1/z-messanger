@@ -1650,8 +1650,14 @@ for one: the root signs it over the `ded` and `dx` of the certificate its
 current list holds for the device that asked, and sends nothing for a device
 its list does not name; the device keeps it only once it verifies under its
 account's ML‑DSA key for its own two keys and sealing key, and carries it in
-its `pqid` from then on. A device that predates it drops it, as a mirror for
-a thread (`""`) it does not hold; `"hist"`
+its `pqid` from then on. A device the root linked by pairing v3 brought its
+`pqdc` in its enrollment (§10.2 rule 7), and the reference client's root
+(44.4) does not answer that device's first `pqseal` after the link when the
+`pqdc` the enrollment carried verifies for the key announced — the check the
+device made of it installing it — so a link costs no second 16 384‑bucket
+envelope; it answers any later one, and the first one of a device it linked
+before it last started. A device that predates `"pqdc"` drops it, as a
+mirror for a thread (`""`) it does not hold; `"hist"`
 carries an inner of kind `hist` whose `items` replay recent history to a
 device that was just linked: each item is
 `{ "t":thread, "mid", "o":outgoing, "k":"text"|"gtext", "b":body, "ts", "sn"?, "x"? }`,
@@ -2039,12 +2045,13 @@ addition:
    sealing key before the ceremony — the commitment binds its hash — and
    keeps it for its life; installing, it checks `pqdc` as §18.11 checks one,
    under the enrollment's `pqpub`, over `acct`, its own `ded` and `dx` and
-   that key. One that verifies it keeps as its own `pqdc`. One that does not
-   is refused, as ADR 0033 §2 refuses an attestation that fails — the
-   attestation, not the link: the account, the certificate and the contacts
-   are each checked on their own (§10) — and the device then asks its root
-   for its `pqdc` over self‑sync, as a device linked before 44.4 does (§9,
-   `dir:"pqdc"`).
+   that key. One that verifies it keeps as its own `pqdc`, and its root
+   sends it none over self‑sync when its first `pqseal` arrives (§9). One
+   that does not is refused, as ADR 0033 §2 refuses an attestation that
+   fails — the attestation, not the link: the account, the certificate and
+   the contacts are each checked on their own (§10) — and the device then
+   asks its root for its `pqdc` over self‑sync, as a device linked before
+   44.4 does (§9, `dir:"pqdc"`).
 
 Frames stay unpadded attributed sends, as v2's are. As the library builds them
 (the payload the relay carries), and measured on the wire between two clients
