@@ -2071,9 +2071,9 @@ frame that arrived and was not taken — a kind it was not waiting for — is
 acknowledged when that side closes the mailbox, but never `reply-v3` or
 `enroll-v3`, whose acknowledgements tell the existing device that the new
 device's user confirmed and that the new device installed the enrollment
-(below). A relay delivers at least once (§12.5): it sends a
-mailbox again to a new connection, and an HA relay to the live one when the
-mailbox has not moved for a sweep (`reflushStalled`). So each side keeps
+(below). A relay delivers at least once (§12.5): it sends a mailbox again
+to a new connection, and an HA relay to the live one when the mailbox has
+not moved for a sweep (`reflushStalled`). So each side keeps
 the `id` and sender of every frame it has taken, and drops a later copy as
 it arrives, never acknowledging it: the copy taken is the one acknowledged,
 or not, and to the relay an acknowledgement of either is the same
@@ -2092,8 +2092,8 @@ v3 ceremony that stops part‑way can leave one thing, for
 waiting, or could not open or install it; or the relay's receipt (192
 bytes) for a reply or an enrollment the new device acknowledged after the
 existing device had stopped waiting for it, or had lost its connection.
-Until 2026‑10‑28 neither side
-acknowledged any frame: all four stayed queued until `QUEUE_TTL_HOURS` (72),
+Until 2026‑10‑28 neither side acknowledged any frame: all four stayed
+queued until `QUEUE_TTL_HOURS` (72),
 the enrollment among them — 10 479 bytes of the relay's store for an account
 with one contact, measured through the app at 4.7.2. A frame sent to a side
 that never reads it — the other device gone, or never there — still waits
@@ -2133,8 +2133,9 @@ opened the enrollment and installed it — the reference client installs it
 into its vault first, in one transaction whose last write is the device's
 identity, so that an install that fails part‑way leaves nothing a later
 start would take for a device that is set up — so the relay's `delivered`
-for it says that the new device holds its account. The existing device links the new device on that
-report alone: it waits for it as long as the new device can take, and with
+for it says that the new device holds its account. The existing device
+links the new device on that report alone: it waits for it as long as the
+new device can take, and with
 none it links nothing, as for a new device that stopped waiting or could
 not open or install what it was sent. The new device waits for the
 enrollment its timeout and a margin from its user's confirmation; the
@@ -2204,9 +2205,11 @@ the honest ones, so the comparison cannot catch it. The new device, whose
 connection the relay closed with 4002, stops and says another connection
 took the link over — at once, or, when its user was comparing the digits,
 as soon as they answer, whatever the answer — and the reference client's
-next attempt is a new ceremony under a new code; a
-takeover of the existing device's mailbox ends that device's attempt in the
-same way. What is left is the device listed, which the user revokes. What
+next attempt is a new ceremony under a new code; a new device that has
+already stopped — its user said the digits differ — sees nothing of a later
+takeover. A takeover of the existing device's mailbox ends that device's
+attempt in the same way. What is left is the device listed, which the user
+revokes. What
 would close it is two frames sent under the channel key in place of the
 two acknowledgements as signals: the new device's MAC'd "confirmed", once
 its user has said the digits match, and its MAC'd "installed", once it has
